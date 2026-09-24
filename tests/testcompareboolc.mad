@@ -1,0 +1,12 @@
+// C twin of testcomparebool: in C the comparison and logical operators yield
+// int (C11 6.5.8p6, 6.5.9p3, 6.5.13p3, 6.5.14p3, 6.5.3.3p5), never _Bool —
+// the C++ bool result is gated on the language, and this pins the C side.
+#include <stdio.h>
+#define T(x) _Generic((x), _Bool: "bool", int: "int", long: "long", default: "other")
+int main(void) {
+    int i = 2, j = 3; double d = 1.5; int *p = &i;
+    printf("rel: %s %s %s %s %s %s\n", T(i == j), T(i != j), T(i < j), T(i > j), T(i <= j), T(i >= j));
+    printf("log: %s %s %s %s %s\n", T(i && j), T(i || j), T(!i), T(!p), T(d < 2.0));
+    printf("size: %d %d\n", (int)sizeof(i == j), (int)sizeof(!i));
+    return 0;
+}

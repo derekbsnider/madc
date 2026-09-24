@@ -1,0 +1,28 @@
+// C++ mode: a QUALIFIED pointer is a pointer (the C twin is
+// testqualifiedpointermember). A member `Node *volatile next` or a `vip`
+// typedef local has type QUAL(PTR) once volatile is part of the type in every
+// mode (modeled_cv); `->`, `[]`, `*`, arithmetic, a by-value argument, a
+// `T *` deduction ([temp.deduct.call]/2: the top-level cv of the argument is
+// ignored) all see through it. The
+// "is it a pointer" sites asked dynamic_cast<DataDefPTR *>, NULL for one:
+// `->` was refused and the deduction failed.
+// Oracle: g++ and clang++ print testqualifiedpointermembercxx.expect.
+#include <stdio.h>
+
+struct Node { Node *volatile next; int v; int *volatile p; };
+typedef int *volatile vip;
+
+template <class T> T first (T *p) { return p[0]; }
+
+int main ()
+{
+  int arr[3] = { 4, 5, 6 };
+  Node n2 = { 0, 7, arr };
+  Node n1 = { &n2, 1, arr + 1 };
+  Node *pn = &n1;
+  vip q = arr;
+  printf ("arrow: %d %d\n", n1.next->v, pn->next->v);
+  printf ("sub: %d %d %d\n", n1.p[1], q[2], (int) (n1.p + 1 - arr));
+  printf ("deduce: %d %d %d\n", first (n1.p), first (q), first (pn->next->p));
+  return 0;
+}

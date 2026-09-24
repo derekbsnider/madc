@@ -1,0 +1,47 @@
+// An object's top-level volatile is part of its declared TYPE, as a
+// member's and a typedef's already were (`volatile int x` is `vint x`): the
+// address of a volatile object points to volatile ([expr.unary.op]/3, C11
+// 6.5.3.2p3), a member of a volatile struct is volatile (6.5.2.3p3), an
+// element of a volatile array is volatile (6.7.3p9) — in madc's own types
+// (__typeof__, __builtin_types_compatible_p) and in c2mir's (_Generic,
+// whose member access now merges the object's qualifiers). The variable's
+// volatile rode a flag (vfVOLATILE) the CIR spelled but no type carried:
+// `compat:` printed 0 0 0 0 and `gen:` 1 for every member.
+// Oracle: gcc and clang print testvolatileobjecttypec.expect.
+#include <stdio.h>
+#include <stddef.h>
+
+struct S { int m; int a[2]; };
+typedef volatile int vint;
+static volatile int sg = 3;
+volatile int eg = 4;
+
+int main (void)
+{
+  volatile size_t n = 5;
+  volatile int a = 1, b = 2;
+  int x = 6;
+  int *volatile p = &x;
+  volatile int arr[3] = { 7, 8, 9 };
+  volatile struct S vs = { 10, { 11, 12 } };
+  struct S s = { 13, { 14, 15 } };
+  volatile struct S *pvs = &s;
+  static volatile int sl = 16;
+  vint tv = 17;
+  printf ("vals: %d %d %d %d %d %d %d %d %d %d %d\n", (int) n, a, b, *p, arr[2],
+          vs.m, vs.a[1], pvs->m, sl, sg + eg, tv);
+  printf ("gen: %d %d %d %d %d %d %d\n",
+          _Generic (&n, size_t *: 1, volatile size_t *: 2, default: 0),
+          _Generic (&b, int *: 1, volatile int *: 2, default: 0),
+          _Generic (&p, int **: 1, int *volatile *: 2, default: 0),
+          _Generic (&arr[1], int *: 1, volatile int *: 2, default: 0),
+          _Generic (&vs.m, int *: 1, volatile int *: 2, default: 0),
+          _Generic (&vs.a[0], int *: 1, volatile int *: 2, default: 0),
+          _Generic (&pvs->m, int *: 1, volatile int *: 2, default: 0));
+  printf ("compat: %d %d %d %d\n",
+          __builtin_types_compatible_p (__typeof__ (&a), volatile int *),
+          __builtin_types_compatible_p (__typeof__ (&vs.m), volatile int *),
+          __builtin_types_compatible_p (__typeof__ (&pvs->m), volatile int *),
+          __builtin_types_compatible_p (__typeof__ (&s.m), int *));
+  return 0;
+}

@@ -151,7 +151,7 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	// ("no formatter for pointer type 'array*'").
 	if ( u->is_reference() )
 	{
-		DataDefPTR *rp = dynamic_cast<DataDefPTR *>(u);
+		DataDefPTR *rp = pointer_dd_of(u);
 		DataDef *base = rp ? rp->base_type : NULL;
 		if ( base && base->unqualified()->is_madc_array() )
 			u = base->unqualified();
@@ -201,9 +201,9 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	{
 		// std gives only void* (and nullptr) a formatter; any other
 		// pointer type is ill-formed in real C++ too.
-		DataDefPTR *up = dynamic_cast<DataDefPTR *>(u);
+		DataDefPTR *up = pointer_dd_of(u);
 		DataDef *pt = up ? up->base_type : NULL;
-		if ( pt && pt->rawtype() == DataType::dtVOID )
+		if ( pt && pt->is_void() )
 			kind = fkPtr;
 		else
 		{
@@ -523,7 +523,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		TokenBase *a0 = tcf->parameters[0];
 		DataDef *a0dd = a0 ? a0->datadef() : NULL;
 		bool a0_char_ptr = false;
-		if ( DataDefPTR *a0p = dynamic_cast<DataDefPTR *>(a0dd) )
+		if ( DataDefPTR *a0p = pointer_dd_of(a0dd) )
 			a0_char_ptr = a0p->base_type
 				   && a0p->base_type->rawtype() == DataType::dtCHAR;
 		bool a0_literal = a0 && a0->type() == TokenType::ttString;

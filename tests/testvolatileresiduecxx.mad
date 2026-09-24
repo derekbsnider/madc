@@ -1,0 +1,26 @@
+// C++: the residue shapes of "an object's cv is its type's" — a volatile
+// parameter object survives longjmp (its definition declares it; the function
+// type, and so the symbol, drops it), a class-body member `volatile int v;` /
+// `int *volatile p;` is volatile (the class arm read its cv and threw it away,
+// and hand-rolled a star loop that dropped each level's), and a
+// `volatile int a[][3]` parameter's elements are volatile.
+// Oracle: clang++ -O2 and g++ -O0 print testvolatileresiduecxx.expect.
+#include <stdio.h>
+#include <setjmp.h>
+static jmp_buf jb;
+static void jump () { longjmp (jb, 1); }
+static int param (volatile int n) {
+  if (setjmp (jb) == 0) { n = n * 10 + 5; jump (); }
+  return n;
+}
+class K { public: volatile int v; int *volatile p; private: int w; public: int get () { return w; } };
+template <class T> struct is_v { enum { value = 0 }; };
+template <class T> struct is_v<T volatile> { enum { value = 1 }; };
+template <class T> int pv (T *) { return is_v<T>::value; }
+static int rows (volatile int a[][3]) { return pv (&a[1][2]); }
+int main () {
+  K k; k.v = 3; int x = 4; k.p = &x;
+  volatile int m[2][3] = { { 0 } };
+  printf ("cxx: %d %d %d %d\n", param (4), pv (&k.v), pv (&k.p), rows (m));
+  return 0;
+}

@@ -2317,6 +2317,9 @@ bool value_from_storage(DataDef *type, void *data, size_t count,
 {
     if ( !type || !data )
 	return false;
+    // A global's top-level cv is its declared type's (`volatile bool g`): the
+    // storage marshals as the unqualified type.
+    type = type->unqualified();
 
     if ( count != 1 || is_array_like )
 	return false;
@@ -2381,6 +2384,9 @@ bool set_storage_from_value(DataDef *type, void *data, size_t count,
 {
     if ( !type || !data )
 	return false;
+    // A global's top-level cv is its declared type's (`volatile bool g`): the
+    // storage marshals as the unqualified type.
+    type = type->unqualified();
 
     if ( count != 1 || is_array_like )
 	return false;
@@ -5979,13 +5985,13 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
 // type; a pointer/reference -> its operand (base_type; DataDefREF derives
 // from DataDefPTR, so the cast reads both); anything else -> itself.
 //
-// M-3 (const-cast hazard, fixed): DataDefCONST forwards is_pointer()/
+// M-3 (const-cast hazard, fixed): DataDefQUAL forwards is_pointer()/
 // is_reference() to its wrapped base_type but is NOT ITSELF a DataDefPTR —
 // `((DataDefPTR *)dd)->base_type` on a const-qualified pointer (`int *
 // const`, or a const-qualified typedef of one) would have been an unsafe
-// cross-class cast reading a DataDefCONST through a DataDefPTR* lens.
+// cross-class cast reading a DataDefQUAL through a DataDefPTR* lens.
 // Peel const FIRST (`dd->unqualified()` — a no-op on anything that is not
-// a DataDefCONST, so a FuncDef/DataDefPTR/DataDefREF/etc. passes through
+// a DataDefQUAL, so a FuncDef/DataDefPTR/DataDefREF/etc. passes through
 // unchanged), THEN dispatch on the unqualified `base`: the pointer/
 // reference cast now only ever sees a genuine DataDefPTR/DataDefREF.
 bool internal_program_graph_type_of(int64_t handle, int64_t node_id,

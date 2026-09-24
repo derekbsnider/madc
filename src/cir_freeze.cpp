@@ -2666,7 +2666,8 @@ void CirFrozenForest::materialize_pass()
 			if (r.kind == madc::dis::DK_REF)
 				d = new DataDefREF(*operand);
 			else if (r.kind == madc::dis::DK_CONST)
-				d = new DataDefCONST(*operand);
+				// The cv mask rides flags; a pre-mask record (0) was const.
+				d = new DataDefQUAL(*operand, r.flags ? r.flags : cvCONST);
 			else if (r.kind == madc::dis::DK_CARRAY) {
 				// v25: rebuild the fixed-size array VERBATIM (name +
 				// folded count; a runtime-sized array is never recorded).
@@ -3196,6 +3197,8 @@ void CirFrozenForest::materialize_pass()
 						fd->emit_symbol = es;
 				fd->is_const_method =
 					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
+				fd->is_volatile_method =
+					(fr.flags & madc::dis::DF_IS_VOLATILE_METHOD) != 0;
 				fd->pure_virtual =
 					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
 				fd->noexcept_spec =

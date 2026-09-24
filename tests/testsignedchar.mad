@@ -1,0 +1,23 @@
+// C++ twin of testsignedcharc: char, signed char and unsigned char are three
+// distinct types, so f(char) / f(signed char) / f(unsigned char) are three
+// overloads and signed char * does not convert to char *. The lowered C now
+// spells a signed char parameter `signed char`, so this rides the same path.
+// Oracle: g++ and clang++ print the lines of testsignedchar.expect.
+#include <cstdio>
+static const char *f(char) { return "char"; }
+static const char *f(signed char) { return "schar"; }
+static const char *f(unsigned char) { return "uchar"; }
+static const char *g(char *) { return "char*"; }
+static const char *g(signed char *) { return "schar*"; }
+template <class T> struct N { static const char *n() { return "other"; } };
+template <> struct N<char> { static const char *n() { return "char"; } };
+template <> struct N<signed char> { static const char *n() { return "schar"; } };
+static signed char neg(signed char v) { return (signed char)-v; }
+int main() {
+    char c = 'a'; signed char sc = -3; unsigned char uc = 200;
+    std::printf("ovl: %s %s %s %s\n", f(c), f(sc), f(uc), f((signed char)1));
+    std::printf("ptr: %s %s\n", g(&sc), g(&c));
+    std::printf("tmpl: %s %s\n", N<char>::n(), N<signed char>::n());
+    std::printf("val: %d %d %d\n", sc, (int)(signed char)200, neg(sc));
+    return 0;
+}

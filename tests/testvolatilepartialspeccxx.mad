@@ -1,0 +1,37 @@
+// C++: a class template partial specialization matches only an IDENTICAL
+// type ([temp.class.spec.match]), and a pointer level's cv is part of it.
+// The flat unifier skipped every qualifier after a `*`, so `ip<T*>` took
+// `int *volatile` and `iv<T *volatile>` took a plain `int *`, and it read
+// the core's `volatile` from a spelling PREFIX — `int *volatile` spells its
+// cv after the star, so `is_v<T volatile>` missed it. Silent wrong answers,
+// all older than the volatile work.
+// Oracle: g++ and clang++ print testvolatilepartialspeccxx.expect.
+#include <stdio.h>
+
+template <class T> struct ip { enum { value = 0 }; };
+template <class T> struct ip<T *> { enum { value = 1 }; };
+template <class T> struct iv { enum { value = 0 }; };
+template <class T> struct iv<T *volatile> { enum { value = 2 }; };
+template <class T> struct pv { enum { value = 0 }; };
+template <class T> struct pv<volatile T *> { enum { value = 3 }; };
+template <class T> struct is_v { enum { value = 0 }; };
+template <class T> struct is_v<T volatile> { enum { value = 1 }; };
+template <class T> struct rv { typedef T type; };
+template <class T> struct rv<T volatile> { typedef T type; };
+typedef int *volatile vp;
+int main ()
+{
+	printf ("ip: %d %d %d\n", ip<int *>::value, ip<int *volatile>::value,
+		ip<volatile int *>::value);
+	printf ("iv: %d %d %d\n", iv<int *volatile>::value, iv<int *>::value,
+		iv<vp>::value);
+	printf ("pv: %d %d %d\n", pv<volatile int *>::value, pv<int *>::value,
+		pv<volatile int *volatile>::value);
+	printf ("is_v: %d %d %d %d\n", is_v<int *volatile>::value,
+		is_v<volatile int>::value, is_v<vp>::value,
+		is_v<char *volatile *>::value);
+	rv<int *volatile>::type p = 0;
+	printf ("rv: %d %d\n", (int) sizeof (rv<volatile char>::type),
+		is_v<rv<int *volatile>::type>::value + (p == 0));
+	return 0;
+}

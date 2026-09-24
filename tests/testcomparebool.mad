@@ -1,0 +1,33 @@
+// C++'s built-in comparison and logical operators yield bool ([expr.rel]/1,
+// [expr.eq]/1, [expr.log.and]/1, [expr.log.or]/1, [expr.unary.op]/9); C's
+// yield int (C11 6.5.8-6.5.14, 6.5.3.3 — testcompareboolc). madc typed every
+// one of them int in both languages, silently: `f(i == j)` picked f(int) over
+// f(bool), `sizeof(i == j)` was 4, `auto a = (i == j)` deduced int, and a
+// template's `f(a < b)` did the same. The result is the operator token's OWN
+// type, recorded when the operator is reduced — an overloaded operator keeps
+// its declared return type (K::operator< returns int below).
+#include <cstdio>
+static const char *f(bool) { return "bool"; }
+static const char *f(int) { return "int"; }
+static const char *f(long) { return "long"; }
+template <class T> static const char *tf(T a, T b) { return f(a < b); }
+template <class T> static int tsz(T a) { return (int)sizeof(!a); }
+struct S { int v; };
+struct K {
+    int v;
+    bool operator==(const K &o) const { return v == o.v; }
+    int operator<(const K &o) const { return v < o.v ? 7 : 0; }
+};
+int main() {
+    int i = 2, j = 3; double d = 1.5; int *p = &i; S s{1};
+    auto a = (i == j); auto b = !i;
+    std::printf("rel: %s %s %s %s %s %s\n", f(i == j), f(i != j), f(i < j), f(i > j), f(i <= j), f(i >= j));
+    std::printf("log: %s %s %s %s %s\n", f(i && j), f(i || j), f(!i), f(!p), f(d < 2.0));
+    std::printf("size: %d %d %d %d\n", (int)sizeof(i == j), (int)sizeof(!i), (int)sizeof(a), (int)sizeof(b));
+    std::printf("tmpl: %s %d %s\n", tf(1, 2), tsz(5), f(s.v == 1));
+    K k1{1}, k2{2};
+    std::printf("class: %s %s %d\n", f(k1 == k2), f(k1 < k2), k1 < k2);
+    auto c = (i < j) + (i < j);
+    std::printf("val: %d %d %d %d %d\n", (int)(i < j) + 1, !j, (i == 2) << 3, c, (int)sizeof(c));
+    return 0;
+}

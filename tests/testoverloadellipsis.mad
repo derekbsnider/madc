@@ -1,0 +1,57 @@
+// An ELLIPSIS overload is viable for any argument count from its fixed
+// prefix up, and every argument past that prefix takes the ellipsis
+// conversion ([over.ics.ellipsis]) — it is never scored against a parameter.
+//
+// madc's free-function ranker (rank_fn_overload_candidates) scored those
+// arguments against the `...`'s SYNTHETIC slot — every C-variadic FuncDef
+// carries a ddINT64 `__va_args` in `parameters` — so `f(...)` was unviable for
+// a struct or a pointer argument, and the call fell through to the candidate
+// that could NOT take it:
+//   * pick(void **) vs pick(...) with an int**: madc called pick(void **),
+//     printed 1, exit 0 — a SILENT wrong answer (g++/clang++: 2).
+//   * f(long) vs f(...) with a struct: madc called f(long) with a struct and
+//     c2mir refused the call it had just emitted (g++/clang++: 2).
+// The constructor ranker and method_body_matches_args already apply the rule.
+//
+// Controls pin the other half of [over.ics.rank]/2.1 — an ellipsis match is
+// WORSE than any standard or user-defined conversion, so a viable named
+// candidate must keep winning: exact, a standard conversion (int** -> void*),
+// an arithmetic conversion, and a fixed-prefix variadic called with exactly
+// its fixed count (no ellipsis used, so it ranks like any other).
+//
+// g++ -std=c++17 and clang++ -std=c++17 both print the asserted lines.
+#include <stdio.h>
+
+struct T { int x; };
+
+int pick(void **) { return 1; }
+int pick(...) { return 2; }
+int f(long) { return 1; }
+int f(...) { return 2; }
+int two(int, ...) { return 1; }
+int two(double, double) { return 2; }
+
+int exact(int) { return 1; }		// controls: the named candidate wins
+int exact(...) { return 2; }
+int stdconv(void *) { return 1; }
+int stdconv(...) { return 2; }
+int arith(double) { return 1; }
+int arith(...) { return 2; }
+int prefix(int, ...) { return 1; }	// argc == fixed: no ellipsis used
+int prefix(long) { return 2; }
+
+int main()
+{
+	int *p = 0;
+	int **pp = &p;
+	T t;
+	t.x = 0;
+	printf("ellipsis-ptr %d\n", pick(pp));
+	printf("ellipsis-struct %d\n", f(t));
+	printf("ellipsis-extra-args %d\n", two(1, t, t));
+	printf("exact-control %d\n", exact(3));
+	printf("stdconv-control %d\n", stdconv(pp));
+	printf("arith-control %d\n", arith(3));
+	printf("prefix-control %d\n", prefix(3));
+	return 0;
+}

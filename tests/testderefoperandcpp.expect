@@ -1,0 +1,15 @@
+mcall1 7
+mcall-paren 7
+mcall2 7
+arrow-mcall2 7
+mcall3 7
+implicit2 7
+qualified2 7
+class-deref 7
+cast-class 7
+cast-mcall2 7
+preinc-class 9
+postinc-class 7 9
+ref-to-ptr 7
+ref-to-ptr2 7
+named-cast-plus 6

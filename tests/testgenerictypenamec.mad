@@ -1,0 +1,33 @@
+// C: a type NAME in a _Generic association and in __builtin_types_compatible_p
+// is read by the ONE type-id owner (parse_type_id) and rendered by the same
+// renderer as the controlling expression: `volatile int (*)[4]`, `int (**)
+// (int)`, `union U *`, `enum E *`, a top-level `const` on a pointer (ignored,
+// as gcc does). Its hand-rolled `*`/`[]` suffix reader refused the first two
+// ("Expecting ':' in _Generic association") and spelled a union `union:` on
+// one side, `struct:` on the other.
+// Oracle: gcc and clang print testgenerictypenamec.expect.
+#include <stdio.h>
+struct S { int m; };
+union U { int a; float b; };
+enum E { E0, E1 };
+static int twice (int x) { return 2 * x; }
+int main (void) {
+  volatile int (*pa)[4] = 0;
+  int (*fp) (int) = twice;
+  int (**pfp) (int) = &fp;
+  int *const cp = 0;
+  union U u; enum E e = E1; struct S s;
+  printf ("gen: %d %d %d %d %d %d\n",
+          _Generic (pa, volatile int (*)[4]: 1, int (*)[4]: 2, default: 0),
+          _Generic (pfp, int (**) (int): 1, default: 0),
+          _Generic (&u, union U *: 1, default: 0),
+          _Generic (&e, enum E *: 1, int *: 2, default: 0),
+          _Generic (&s, struct S *: 1, default: 0),
+          _Generic (cp, int *: 1, default: 0));
+  printf ("compat: %d %d %d %d\n",
+          __builtin_types_compatible_p (int *const, int *),
+          __builtin_types_compatible_p (volatile int (*)[4], int (*)[4]),
+          __builtin_types_compatible_p (const volatile int *, volatile const int *),
+          __builtin_types_compatible_p (int[3], int[3]));
+  return 0;
+}

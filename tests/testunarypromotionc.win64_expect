@@ -1,0 +1,8 @@
+narrow: int int int int int int int
+bool: int int int
+bitfield: int int int int int uint
+const: int int int
+wide: float uint long
+mod: long long uint
+sizeof: 4 4 4 4
+value: -201 200 705032704 -5

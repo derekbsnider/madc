@@ -6927,6 +6927,28 @@ static struct type *create_type (c2m_ctx_t c2m_ctx, struct type *copy) {
   return res;
 }
 
+/* C11 6.5.2.3p3-4: a member of a qualified object has the so-qualified type
+   (`vs.m` of a `volatile struct S vs` is a volatile int) -- an ARRAY member's
+   ELEMENTS (6.7.3p9).  Only const and volatile propagate; restrict and _Atomic
+   are the member's own.  TYPE is the member expression's private copy; an
+   array type is copied before its element is qualified (the declared member
+   type is shared). */
+static void qualify_member_type (c2m_ctx_t c2m_ctx, struct type *type,
+                                 const struct type_qual *obj_qual) {
+  if (!obj_qual->const_p && !obj_qual->volatile_p) return;
+  if (type->mode == TM_ARR) {
+    struct arr_type *arr_type = reg_malloc (c2m_ctx, sizeof (struct arr_type));
+
+    *arr_type = *type->u.arr_type;
+    arr_type->el_type = create_type (c2m_ctx, arr_type->el_type);
+    qualify_member_type (c2m_ctx, arr_type->el_type, obj_qual);
+    type->u.arr_type = arr_type;
+    return;
+  }
+  type->type_qual.const_p = type->type_qual.const_p || obj_qual->const_p;
+  type->type_qual.volatile_p = type->type_qual.volatile_p || obj_qual->volatile_p;
+}
+
 static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type *el_type,
                                                  mir_size_t size, mir_size_t nel,
                                                  node_t pos_node) {
@@ -7577,7 +7599,7 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
     CONV (TP_BOOL, mir_bool, u_val, mfrom) CONV (TP_UCHAR, mir_uchar, u_val, mfrom);     \
     CONV (TP_USHORT, mir_ushort, u_val, mfrom) CONV (TP_UINT, mir_uint, u_val, mfrom);   \
     CONV (TP_ULONG, mir_ulong, u_val, mfrom) CONV (TP_ULLONG, mir_ullong, u_val, mfrom); \
-    CONV (TP_SCHAR, mir_char, i_val, mfrom);                                             \
+    CONV (TP_SCHAR, mir_schar, i_val, mfrom);                                            \
     CONV (TP_SHORT, mir_short, i_val, mfrom) CONV (TP_INT, mir_int, i_val, mfrom);       \
     CONV (TP_LONG, mir_long, i_val, mfrom) CONV (TP_LLONG, mir_llong, i_val, mfrom);     \
     CONV (TP_FLOAT, mir_float, d_val, mfrom) CONV (TP_DOUBLE, mir_double, d_val, mfrom); \
@@ -7705,7 +7727,7 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
         else
           to_e->c.u_val = (mir_char) low;
         break;
-      case TP_SCHAR: to_e->c.i_val = (mir_char) low; break;
+      case TP_SCHAR: to_e->c.i_val = (mir_schar) low; break;
       case TP_SHORT: to_e->c.i_val = (mir_short) low; break;
       case TP_INT: to_e->c.i_val = (mir_int) low; break;
       case TP_LONG: to_e->c.i_val = (mir_long) low; break;
@@ -10346,12 +10368,15 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
   node_t scope;
   mir_size_t start_offset = 0; /* to remove an uninitialized warning */
 
-  /* Exclude decls which will be in regs: */
+  /* Exclude decls which will be in regs.  A VOLATILE object never is: every access to it
+     must be a real load or store (C11 5.1.2.3p6), and a volatile local modified between
+     setjmp and longjmp keeps its last value only in memory (C11 7.13.2.1p3) -- a register
+     is restored to its setjmp-time contents. */
   for (i = j = 0; i < VARR_LENGTH (decl_t, func_decls_for_allocation); i++) {
     decl = VARR_GET (decl_t, func_decls_for_allocation, i);
     type = decl->decl_spec.type;
     ns = decl->scope->attr;
-    if (scalar_type_p (type) && !int128_type_p (type)) {
+    if (scalar_type_p (type) && !int128_type_p (type) && !type->type_qual.volatile_p) {
       decl->reg_p = TRUE;
       continue;
     }
@@ -11032,6 +11057,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                NL_HEAD (declarator->u.ops)->u.s.s);
       }
       t2 = create_type (c2m_ctx, decl->decl_spec.type);
+      /* The member expression's qualifiers include its object's
+         (qualify_member_type): `&vs.m` of a volatile `vs` is `volatile int *`. */
+      t2->type_qual = type_qual_union (&t2->type_qual, &e1->type->type_qual);
       if (op1->code == N_DEREF_FIELD && (e2 = NL_HEAD (op1->u.ops)->attr)->const_p) {
         e->const_p = TRUE;
         e->c.u_val = e2->c.u_val + decl->offset;
@@ -11088,6 +11116,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       assert (sym.def_node->code == N_MEMBER);
       decl = sym.def_node->attr;
       *e->type = *decl->decl_spec.type;
+      qualify_member_type (c2m_ctx, e->type, &t1->type_qual);
       e->u.lvalue_node = sym.def_node;
       if ((width = NL_EL (sym.def_node->u.ops, 3))->code != N_IGNORE && e->type->mode == TM_BASIC
           && (width_expr = width->attr)->const_p
@@ -11701,8 +11730,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     op1 = NL_HEAD (r->u.ops);
     check (c2m_ctx, op1, r);
     e1 = op1->attr;
-    t = *e1->type;
-    if (integer_type_p (&t)) t = integer_promotion (&t);
+    /* The controlling expression undergoes lvalue conversion and array/function-to-pointer
+       conversion ONLY (C11 6.5.1.1p2, C17 DR 481): no integer promotions (a char selects
+       char), and only the top level's qualifiers drop -- a pointee's stay. */
+    t = *adjust_type (c2m_ctx, e1->type);
+    clear_type_qual (&t.type_qual);
     list = NL_NEXT (op1);
     for (ga = NL_HEAD (list->u.ops); ga != NULL; ga = NL_NEXT (ga)) {
       assert (ga->code == N_GENERIC_ASSOC);
@@ -11719,7 +11751,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       decl_spec = type_name->attr;
       if (incomplete_type_p (c2m_ctx, decl_spec->type)) {
         error (c2m_ctx, POS (ga), "_Generic case has incomplete type");
-      } else if (compatible_types_p (&t, decl_spec->type, TRUE)) {
+      } else if (compatible_types_p (&t, decl_spec->type, FALSE)) {
         if (ga_case)
           error (c2m_ctx, POS (ga_case),
                  "_Generic expr type is compatible with more than one generic association type");
@@ -11729,7 +11761,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
           type_name2 = NL_HEAD (ga2->u.ops);
           if (type_name2->code != N_IGNORE
               && !(incomplete_type_p (c2m_ctx, t2 = ((struct decl_spec *) type_name2->attr)->type))
-              && compatible_types_p (t2, decl_spec->type, TRUE)) {
+              && compatible_types_p (t2, decl_spec->type, FALSE)) {
             error (c2m_ctx, POS (ga), "two or more compatible generic association types");
             break;
           }
@@ -13683,10 +13715,35 @@ static MIR_label_t get_label (c2m_ctx_t c2m_ctx, node_t target) {
   return labels->attr = MIR_new_label (c2m_ctx->ctx);
 }
 
+/* An expression evaluated only for its side effects still performs its volatile read (C11
+   5.1.2.3p6): `*vp;`, `(void) *vp` and `(*vp, 0)` read *vp, as gcc and clang do.  R is the
+   discarded expression and RES its generated operand.  Only an lvalue designator reads: the
+   operand an assignment returns is the lvalue it stored to, never re-read. */
+static op_t gen_discarded_volatile_read (c2m_ctx_t c2m_ctx, node_t r, op_t res) {
+  MIR_type_t t;
+  op_t temp;
+
+  /* The node's code first: top_gen also generates statements, whose operand is never set. */
+  if ((r->code != N_ID && r->code != N_DEREF && r->code != N_IND && r->code != N_FIELD
+       && r->code != N_DEREF_FIELD)
+      || res.mir_op.mode != MIR_OP_MEM || !res.mir_op.u.mem.volatile_p
+      || !scalar_type_p (((struct expr *) r->attr)->type))
+    return res;
+  res = force_val (c2m_ctx, res, FALSE); /* a bit-field is read (and extracted) here */
+  if (res.mir_op.mode == MIR_OP_MEM) {
+    t = res.mir_op.u.mem.type;
+    temp = get_new_temp (c2m_ctx, promote_mir_int_type (t));
+    emit2 (c2m_ctx, tp_mov (t), temp.mir_op, res.mir_op);
+    res = temp;
+  }
+  return res;
+}
+
 static void top_gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,
                      int *expect_res) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   top_gen_last_op = gen (c2m_ctx, r, true_label, false_label, FALSE, NULL, expect_res);
+  if (true_label == NULL) top_gen_last_op = gen_discarded_volatile_read (c2m_ctx, r, top_gen_last_op);
 }
 
 static op_t modify_for_block_move (c2m_ctx_t c2m_ctx, op_t mem, op_t index) {
@@ -13954,13 +14011,28 @@ static op_t int128_temp (c2m_ctx_t c2m_ctx) {
   return new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, addr.mir_op.u.reg, 0, 1));
 }
 
-static op_t int128_half_op (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t type, int offset) {
-  MIR_context_t ctx = c2m_ctx->ctx;
+/* The memory operand for the part of MEM at byte OFFSET, of TYPE: a member, an __int128 half, a
+   complex component, a block chunk.  The ONE builder of a sub-object operand -- a part of a
+   volatile object is volatile too (C11 6.5.2.3p3). */
+static MIR_op_t mem_part_op (MIR_context_t ctx, MIR_op_t mem, MIR_type_t type, MIR_disp_t offset) {
+  MIR_op_t part;
 
+  assert (mem.mode == MIR_OP_MEM);
+  part = MIR_new_mem_op (ctx, type, mem.u.mem.disp + offset, mem.u.mem.base, mem.u.mem.index,
+                         mem.u.mem.scale);
+  part.u.mem.volatile_p = mem.u.mem.volatile_p;
+  return part;
+}
+
+static op_t int128_half_op (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t type, int offset) {
   assert (mem.mir_op.mode == MIR_OP_MEM);
-  return new_op (NULL, MIR_new_mem_op (ctx, type, mem.mir_op.u.mem.disp + offset,
-                                       mem.mir_op.u.mem.base, mem.mir_op.u.mem.index,
-                                       mem.mir_op.u.mem.scale));
+  return new_op (NULL, mem_part_op (c2m_ctx->ctx, mem.mir_op, type, offset));
+}
+
+/* An lvalue of volatile-qualified TYPE is accessed exactly as written (C11 5.1.2.3p6): mark its
+   memory operand, so the generator never removes, merges or moves the access. */
+static void mark_volatile_lvalue (op_t *op, struct type *type) {
+  if (op->mir_op.mode == MIR_OP_MEM && type->type_qual.volatile_p) op->mir_op.u.mem.volatile_p = TRUE;
 }
 
 static void store_int128_halves (c2m_ctx_t c2m_ctx, op_t dest, op_t low, op_t high) {
@@ -16036,9 +16108,7 @@ static op_t MIR_UNUSED simple_gen_post_call_res_code (c2m_ctx_t c2m_ctx,
     /* the V128 result register into the memory-backed result slot the call
        lowering reserved for a memory-value type returned in registers */
     assert (res.mir_op.mode == MIR_OP_MEM);
-    emit2 (c2m_ctx, MIR_VMOV,
-           MIR_new_mem_op (c2m_ctx->ctx, MIR_T_V128, res.mir_op.u.mem.disp, res.mir_op.u.mem.base,
-                           res.mir_op.u.mem.index, res.mir_op.u.mem.scale),
+    emit2 (c2m_ctx, MIR_VMOV, mem_part_op (c2m_ctx->ctx, res.mir_op, MIR_T_V128, 0),
            VARR_GET (MIR_op_t, call_ops, call_ops_start + 2));
   }
   return res;
@@ -16191,16 +16261,9 @@ static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct
     assert (size % 8 == 0);
     for (i = 0; size > 0; size -= 8, i++) {
       if (load_p) {
-        insn = MIR_new_insn (ctx, MIR_MOV, var_ops[i],
-                             MIR_new_mem_op (ctx, MIR_T_I64, mem_op.u.mem.disp + i * 8,
-                                             mem_op.u.mem.base, mem_op.u.mem.index,
-                                             mem_op.u.mem.scale));
+        insn = MIR_new_insn (ctx, MIR_MOV, var_ops[i], mem_part_op (ctx, mem_op, MIR_T_I64, i * 8));
       } else {
-        insn = MIR_new_insn (ctx, MIR_MOV,
-                             MIR_new_mem_op (ctx, MIR_T_I64, mem_op.u.mem.disp + i * 8,
-                                             mem_op.u.mem.base, mem_op.u.mem.index,
-                                             mem_op.u.mem.scale),
-                             var_ops[i]);
+        insn = MIR_new_insn (ctx, MIR_MOV, mem_part_op (ctx, mem_op, MIR_T_I64, i * 8), var_ops[i]);
       }
       MIR_append_insn (ctx, curr_func, insn);
     }
@@ -16216,10 +16279,7 @@ static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct
     for (i = 0; size > 0; size--, i++) {
       var_op = var_ops[i / 8];
       if (load_p) {
-        insn
-          = MIR_new_insn (ctx, MIR_MOV, op,
-                          MIR_new_mem_op (ctx, MIR_T_U8, mem_op.u.mem.disp + i, mem_op.u.mem.base,
-                                          mem_op.u.mem.index, mem_op.u.mem.scale));
+        insn = MIR_new_insn (ctx, MIR_MOV, op, mem_part_op (ctx, mem_op, MIR_T_U8, i));
         MIR_append_insn (ctx, curr_func, insn);
         if ((sh = i * 8 % 64) != 0) {
           insn = MIR_new_insn (ctx, MIR_LSH, op, op, MIR_new_int_op (ctx, sh));
@@ -16233,11 +16293,7 @@ static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct
         else
           insn = MIR_new_insn (ctx, MIR_URSH, op, var_op, MIR_new_int_op (ctx, sh));
         MIR_append_insn (ctx, curr_func, insn);
-        insn
-          = MIR_new_insn (ctx, MIR_MOV,
-                          MIR_new_mem_op (ctx, MIR_T_U8, mem_op.u.mem.disp + i, mem_op.u.mem.base,
-                                          mem_op.u.mem.index, mem_op.u.mem.scale),
-                          op);
+        insn = MIR_new_insn (ctx, MIR_MOV, mem_part_op (ctx, mem_op, MIR_T_U8, i), op);
         MIR_append_insn (ctx, curr_func, insn);
       }
     }
@@ -17035,6 +17091,9 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
                                                     ? init_el.container_type
                                                     : init_el.el_type),
                                   0);
+        /* Initializing a volatile object (or member) is a volatile store. */
+        mem.u.mem.volatile_p = (var.mir_op.mode == MIR_OP_MEM && var.mir_op.u.mem.volatile_p)
+                               || init_el.el_type->type_qual.volatile_p;
         val = cast (c2m_ctx, val, get_mir_type (c2m_ctx, init_el.el_type), FALSE);
         emit_scalar_assign (c2m_ctx, new_op (init_el.member_decl, mem), &val, t,
                             i == init_start || rel_offset == init_el.offset);
@@ -17286,9 +17345,7 @@ static op_t complex_load (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset
   op_t temp = get_new_temp (c2m_ctx, ct);
 
   assert (mem.mir_op.mode == MIR_OP_MEM);
-  emit2 (c2m_ctx, tp_mov (ct), temp.mir_op,
-         MIR_new_mem_op (ctx, ct, mem.mir_op.u.mem.disp + offset, mem.mir_op.u.mem.base,
-                         mem.mir_op.u.mem.index, mem.mir_op.u.mem.scale));
+  emit2 (c2m_ctx, tp_mov (ct), temp.mir_op, mem_part_op (ctx, mem.mir_op, ct, offset));
   return temp;
 }
 
@@ -17297,10 +17354,7 @@ static void complex_store (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offse
   MIR_context_t ctx = c2m_ctx->ctx;
 
   assert (mem.mir_op.mode == MIR_OP_MEM);
-  emit2 (c2m_ctx, tp_mov (ct),
-         MIR_new_mem_op (ctx, ct, mem.mir_op.u.mem.disp + offset, mem.mir_op.u.mem.base,
-                         mem.mir_op.u.mem.index, mem.mir_op.u.mem.scale),
-         val.mir_op);
+  emit2 (c2m_ctx, tp_mov (ct), mem_part_op (ctx, mem.mir_op, ct, offset), val.mir_op);
 }
 
 /* Promote a scalar operand to a complex temp: {value, 0}. */
@@ -18006,7 +18060,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                                                         // and str in initializer
     break;
   case N_COMMA:
-    gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+    gen_discarded_volatile_read (c2m_ctx, NL_HEAD (r->u.ops),
+                                 gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL));
     res = gen (c2m_ctx, NL_EL (r->u.ops, 1), true_label, false_label,
                true_label == NULL && !void_type_p (((struct expr *) r->attr)->type), NULL,
                expect_res);
@@ -18108,9 +18163,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       int offset = r->code == N_REALPART ? 0 : imoff;
 
       assert (op1.mir_op.mode == MIR_OP_MEM);
-      res = new_op (NULL, MIR_new_mem_op (ctx, rct, op1.mir_op.u.mem.disp + offset,
-                                          op1.mir_op.u.mem.base, op1.mir_op.u.mem.index,
-                                          op1.mir_op.u.mem.scale));
+      res = new_op (NULL, mem_part_op (ctx, op1.mir_op, rct, offset));
     }
     break;
   }
@@ -18674,6 +18727,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       reg_var = get_reg_var (c2m_ctx, t, name, decl->u.asm_str);
       res = new_op (decl, MIR_new_reg_op (ctx, reg_var.reg));
     }
+    mark_volatile_lvalue (&res, e->type);
     break;
   }
   case N_IND: {
@@ -18738,6 +18792,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       res.mir_op.u.mem.nonalias = arr_type->antialias;
     }
     res.mir_op.u.mem.type = t;
+    mark_volatile_lvalue (&res, el_type);
     break;
   }
   case N_LABEL_ADDR: {
@@ -18814,6 +18869,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       op1.mir_op = MIR_new_alias_mem_op (ctx, t, 0, op1.mir_op.u.reg, 0, 1,
                                          get_type_alias (c2m_ctx, type), op_e->type->antialias);
       res = new_op (NULL, op1.mir_op);
+      mark_volatile_lvalue (&res, type);
     }
     break;
   case N_FIELD:
@@ -18841,10 +18897,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                  ? op1.mir_op.u.mem.alias
                : anon_union_type != NULL ? get_type_alias (c2m_ctx, anon_union_type)
                                          : get_type_alias (c2m_ctx, e->type));
-      op1.mir_op
-        = MIR_new_alias_mem_op (ctx, t, op1.mir_op.u.mem.disp + decl->offset, op1.mir_op.u.mem.base,
-                                op1.mir_op.u.mem.index, op1.mir_op.u.mem.scale, alias,
-                                decl->decl_spec.type->antialias);
+      op1.mir_op = mem_part_op (ctx, op1.mir_op, t, decl->offset);
+      op1.mir_op.u.mem.alias = alias;
+      op1.mir_op.u.mem.nonalias = decl->decl_spec.type->antialias;
     } else {
       struct expr *left = NL_HEAD (r->u.ops)->attr;
       assert (left->type->mode == TM_PTR);
@@ -18859,6 +18914,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                 decl->decl_spec.type->antialias);
     }
     res = new_op (decl, op1.mir_op);
+    mark_volatile_lvalue (&res, e->type);
+    if (r->code == N_DEREF_FIELD)
+      mark_volatile_lvalue (&res, ((struct expr *) NL_HEAD (r->u.ops)->attr)->type->u.ptr_type);
     break;
   }
   case N_COND: {
@@ -18932,6 +18990,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     from_type = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
     op1 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, !void_type_p (type), NULL, NULL);
     if (void_type_p (type)) {
+      op1 = gen_discarded_volatile_read (c2m_ctx, NL_EL (r->u.ops, 1), op1);
       res = op1;
       res.decl = NULL;
       res.mir_op.mode = MIR_OP_UNDEF;

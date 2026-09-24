@@ -1,0 +1,4 @@
+local: 8 10 12
+param: 14 16 18
+ptr: 8 10
+rebind: 103 103

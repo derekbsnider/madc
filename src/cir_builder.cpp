@@ -270,6 +270,24 @@ node_t CirBuilder::id(const char *name, TokenBase *origin)
 	return cn->as_node();
 }
 
+// A function used as a VALUE (address-taken / function-pointer decay: `&abort`,
+// `f = exit`, `{abort}`, a reference bound to it, or the hoisted symbol of a
+// capture-free GNU nested fn): its call symbol, recorded so translate_module
+// emits a prototype — without it c2mir sees an "undeclared identifier" (call
+// sites already record callees; a bare value-use must too). NULL for a
+// CAPTURING nested fn, which cannot be a plain function pointer (no slot for
+// the captures — GCC uses a trampoline): the caller keeps the short source
+// name, so c2mir refuses cleanly rather than calling with garbage captures.
+node_t CirBuilder::function_value_symbol(const Variable &v, FuncDef *fd,
+					 TokenBase *origin)
+{
+	if (!fd->local_emit_name.empty() && !fd->captured_vars.empty())
+		return NULL;
+	std::string sym = call_emit_symbol(v, fd);
+	referenced_funcs.insert(sym);
+	return id(sym.c_str(), origin);
+}
+
 std::string CirBuilder::var_emit_name(const Variable &v) const
 {
 	// A wide string literal's Variable name embeds its raw UTF-32 payload
@@ -379,7 +397,7 @@ std::string CirBuilder::call_emit_symbol(const Variable &v, FuncDef *fd) const
 	// deduced from (for_each's `__f(*it)` calling print_name for a lambda
 	// argument once user functions carried Itanium symbols; a pointer to a
 	// library-bound function had the same latent bug).
-	if (v.type && v.type->is_function() && v.type->is_numeric())
+	if (v.type && v.type->as_fptr_dd())
 		return var_emit_name(v);
 	std::string sym = call_emit_symbol(fd, var_emit_name(v));
 	// task #69: the flavor-marshalling swap lives HERE — the one owner every
@@ -793,7 +811,7 @@ static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 		if (DataDefTemplateParam *tp =
 			    (dd ? dd->as_template_param_dd() : NULL))
 			return tp;
-		if (DataDefCONST *cd = (dd ? dd->as_const_dd() : NULL))
+		if (DataDefQUAL *cd = (dd ? dd->as_qualified_dd() : NULL))
 			{ dd = cd->base_type; continue; }
 		if (DataDefREF *rd = (dd ? dd->as_reference_dd() : NULL))
 			{ dd = rd->base_type; continue; }
@@ -812,11 +830,11 @@ static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
 static DataDefCLASS *dependent_placeholder_under_type_layers(DataDef *dd)
 {
 	for (int guard = 0; dd && guard < 8; ++guard) {
-		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+		if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(dd))
 			{ dd = cd->base_type; continue; }
 		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
 			{ dd = rd->base_type; continue; }
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+		if (DataDefPTR *pd = pointer_dd_of(dd))
 			{ dd = pd->base_type; continue; }
 		if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd))
 			{ dd = ad->element_type; continue; }
@@ -868,10 +886,12 @@ static std::string tsubst_datadef_key(DataDef *dd,
 		return tsubst_datadef_key(it->second, subst, seen);
 	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
 		return "ref(" + tsubst_datadef_key(rd->base_type, subst, seen) + ")";
-	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 		return "ptr(" + tsubst_datadef_key(pd->base_type, subst, seen) + ")";
-	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
-		return "const(" + tsubst_datadef_key(cd->base_type, subst, seen) + ")";
+	if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(dd))
+		return (cd->quals == cvCONST ? std::string("const(")
+			: "cv" + std::to_string(cd->quals) + "(")
+		       + tsubst_datadef_key(cd->base_type, subst, seen) + ")";
 	if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd)) {
 		std::ostringstream os;
 		os << "arr[" << ad->count << "]("
@@ -1204,23 +1224,25 @@ static bool tsubst_decompose_elem_tokens(DataDef *elem,
 		core = r->base_type;
 	}
 	while (core && !dynamic_cast<DataDefREF *>(core)) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(core);
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(core); // allowed-exception: structural (exact-class dispatch)
 		if (!p)
 			break;
 		++ptr_depth;
 		core = p->base_type;
 	}
-	bool is_const = false;
-	if (DataDefCONST *c = dynamic_cast<DataDefCONST *>(core)) {
-		is_const = true;
+	unsigned cv = cvNONE;
+	if (DataDefQUAL *c = dynamic_cast<DataDefQUAL *>(core)) {
+		cv = c->quals;
 		core = c->base_type;
 	}
-	if (!core || dynamic_cast<DataDefCONST *>(core)
-	    || dynamic_cast<DataDefPTR *>(core)
+	if (!core || dynamic_cast<DataDefQUAL *>(core)
+	    || dynamic_cast<DataDefPTR *>(core) // allowed-exception: structural (exact-class dispatch)
 	    || dynamic_cast<DataDefTemplateParam *>(core))
 		return false;
-	if (is_const)
+	if (cv & cvCONST)
 		run.push_back(new TokenCONST());
+	if (cv & cvVOLATILE)
+		run.push_back(new TokenVOLATILE());
 	const std::string &cs = core->canonical_cpp_spelling();
 	run.push_back(new TokenDataType(
 		(cs.empty() ? core->name : cs).c_str(), *core));
@@ -1462,7 +1484,7 @@ static DataDef *rebuild_dependent_derived(Program *prog, DataDefCLASS *shell,
 		return NULL;	// substitution left it dependent
 	// Unwrap const/ref down to the derivation operand.
 	for (int guard = 0; src && guard < 8; ++guard) {
-		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(src))
+		if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(src))
 			{ src = cd->base_type; continue; }
 		if (DataDefREF *rd = dynamic_cast<DataDefREF *>(src))
 			{ src = rd->base_type; continue; }
@@ -1471,7 +1493,7 @@ static DataDef *rebuild_dependent_derived(Program *prog, DataDefCLASS *shell,
 	if (org.kind == Program::DependentDerivedOrigin::Deref) {
 		// NOTE: DataDefREF derives from DataDefPTR — the ref unwrap
 		// above must run first or `T&` would "deref" to T's pointee.
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(src))
+		if (DataDefPTR *pd = pointer_dd_of(src))
 			return pd->base_type;
 		return NULL;	// class-type deref (operator*) — not re-derived here
 	}
@@ -1497,17 +1519,17 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 		return (prog && nb != rd->base_type)
 			   ? (DataDef *)prog->getReferenceType(nb) : dd;
 	}
-	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) {
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 		DataDef *nb = subst_datadef(prog, pd->base_type, subst,
 					    packs, pack_params);
 		return (prog && nb != pd->base_type)
 			   ? (DataDef *)prog->getPointerType(nb) : dd;
 	}
-	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd)) {
+	if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(dd)) {
 		DataDef *nb = subst_datadef(prog, cd->base_type, subst,
 					    packs, pack_params);
 		return (prog && nb != cd->base_type)
-			   ? (DataDef *)prog->getConstType(nb) : dd;
+			   ? prog->getQualifiedType(nb, cd->quals) : dd;
 	}
 	if (DataDefCArray *ad = dynamic_cast<DataDefCArray *>(dd)) {
 		DataDef *nb = subst_datadef(prog, ad->element_type, subst,
@@ -1740,7 +1762,7 @@ static bool tsubst_destroy_call_has_template_pointee(TokenCallFunc *tc)
 		return false;
 	TokenBase *arg = tc->parameters[0];
 	DataDef *argdd = arg ? arg->datadef() : NULL;
-	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd);
+	DataDefPTR *pdd = pointer_dd_of(argdd);
 	return pdd && template_param_under_type_layers(pdd->base_type);
 }
 
@@ -2232,7 +2254,7 @@ static bool requeue_tsubst_instance_body(CirBuilder *cb, Program *prog, Variable
 static DataDef *tsubst_overload_arg_type(DataDef *dd)
 {
 	if (dd && dd->is_reference())
-		if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd))
+		if (DataDefPTR *rp = pointer_dd_of(dd))
 			return rp->base_type;
 	return dd;
 }
@@ -3793,7 +3815,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				subst_datadef_active(src->datadef(), *subst);
 			DataDef *elem = concrete_obj;
 			if (td->is_arrow) {
-				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_obj);
+				DataDefPTR *pdd = pointer_dd_of(concrete_obj);
 				elem = pdd ? pdd->base_type : NULL;
 			}
 			if (!elem || template_param_under_type_layers(elem))
@@ -3837,7 +3859,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		}
 		if (destroy_marker) {
 			DataDef *concrete_arg = subst_datadef_active(src->datadef(), *subst);
-			DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(concrete_arg);
+			DataDefPTR *pdd = pointer_dd_of(concrete_arg);
 			DataDef *elem = pdd ? pdd->base_type : NULL;
 			if (!elem || template_param_under_type_layers(elem))
 				return CIR_NODE(error_node(
@@ -4469,7 +4491,7 @@ static const DataDefCLASS *as_user_class(const DataDef *dd)
 // domain like a class ([conv]: C has no implicit aggregate<->scalar
 // conversion, nor one between distinct aggregate types). Excludes _Complex
 // (DataDefCOMPLEX is layout-struct but converts like a scalar per GNU C) and
-// pointer/reference shapes (DataDefCONST forwards is_struct through them).
+// pointer/reference shapes (DataDefQUAL forwards is_struct through them).
 static const DataDefSTRUCT *as_plain_struct(const DataDef *dd)
 {
 	dd = unqualified_type(dd);
@@ -4508,46 +4530,24 @@ static bool same_scalar_type(const DataDef *a, const DataDef *b)
 	return a->rawtype() == b->rawtype();
 }
 
-// [conv.prom]/3-4: does an UNSCOPED enum argument PROMOTE to `target`? A
-// fixed enum promotes to its underlying type and, when that type itself
-// promotes (narrower than int), to int as well — both are promotions. An
-// unfixed enum promotes to the first of int / unsigned int / long / unsigned
-// long / long long / unsigned long long that holds every enumerator — by its
-// VALUE range (bmin..bmax, [dcl.enum]/8), not by the computed underlying type
-// (the canon rule makes that unsigned for a non-negative range, yet `enum {
-// a, b }` promotes to int: g++ and clang++ pick f(int) over f(long) for
-// `f(a)`, tests/testenumnsoverload.mad); a range past 32 bits promotes to
-// the first 64-bit SIGNED type of the list — `long` on LP64, `long long` on
-// LLP64 (where `long` is 32-bit) — never to the unsigned one, since every
-// enumerator value fits int64. "Is `target` that type" is type identity
-// (same_scalar_type), never storage width. Every other arithmetic parameter
-// is a conversion; a pointer or function pointer is not viable at all.
+// [conv.prom]/3-4: does an UNSCOPED enum argument PROMOTE to `target`? Its
+// promoted type is integer_promoted_type's (the one owner of the enum rule:
+// by VALUE range for an unfixed enum, the underlying type's promotion for a
+// fixed one — tests/testenumnsoverload.mad), and a FIXED enum's conversion to
+// the underlying type itself is a promotion too. "Is `target` that type" is
+// type identity (same_scalar_type), never storage width. Every other
+// arithmetic parameter is a conversion; a pointer or function pointer is not
+// viable at all.
 static bool enum_promotes_to(const DataDefENUM *e, const DataDef *target)
 {
 	if (!e || !target || !target->is_numeric() || target->is_real()
 	    || target->is_pointer() || target->as_fptr_dd()
 	    || target->rawtype() == DataType::dtBOOL)
 		return false;
-	const DataDef *t_int = Program::resolve_builtin_type_spelling("int");
-	if (e->fixed_base && e->underlying) {
-		if (same_scalar_type(e->underlying, target))
-			return true;
-		return e->underlying->size < ddINT.size
-		    && same_scalar_type(target, t_int);
-	}
-	int64_t lo = 0, hi = 0;
-	for (size_t i = 0; i < e->enumerators.size(); ++i) {
-		if (e->enumerators[i].second < lo) lo = e->enumerators[i].second;
-		if (e->enumerators[i].second > hi) hi = e->enumerators[i].second;
-	}
-	if (lo >= INT32_MIN && hi <= INT32_MAX)
-		return same_scalar_type(target, t_int);
-	if (lo >= 0 && hi <= (int64_t)UINT32_MAX)
-		return same_scalar_type(target,
-			Program::resolve_builtin_type_spelling("unsigned int"));
+	if (e->fixed_base && e->underlying && same_scalar_type(e->underlying, target))
+		return true;
 	return same_scalar_type(target,
-		Program::resolve_builtin_type_spelling(
-			target_llp64() ? "long long" : "long"));
+		integer_promoted_type(const_cast<DataDefENUM *>(e)));
 }
 
 static bool same_enum_type(const DataDefENUM *a, const DataDefENUM *b)
@@ -4631,7 +4631,7 @@ static bool same_object_class(const DataDef *a, const DataDef *b)
 static const DataDefCLASS *class_pointer_pointee(const DataDef *dd)
 {
 	dd = unqualified_type(dd);
-	const DataDefPTR *ptr = dynamic_cast<const DataDefPTR *>(dd);
+	const DataDefPTR *ptr = pointer_dd_of(dd);
 	if (!ptr || !ptr->base_type)
 		return NULL;
 	return as_user_class(ptr->base_type);
@@ -4674,7 +4674,7 @@ CirBuilder::ExternParam CirBuilder::native_param_shape(DataDef *dd, bool refp)
 	// parameter object's address).
 	if (DataDefCLASS *ic = class_param_via_invisible_ref(dd))
 		return { {}, true, ic };
-	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
+	if (DataDefPTR *p = pointer_dd_of(dd)) {
 		if (p->base_type && p->base_type->rawtype() == DataType::dtCHAR)
 			return { {N_CHAR}, true, NULL };
 		return { {N_VOID}, true, NULL };
@@ -4710,15 +4710,33 @@ void CirBuilder::native_func_shape(FuncDef *fd, bool &ret_ptr,
 	}
 }
 
-node_t CirBuilder::pointer()
+// The cv of a type's qualifier mask in the emitted tree: every modeled bit
+// (a volatile access reaches c2mir's MIR_mem_t.volatile_p; a const is c2mir's
+// and --emit=c11's to enforce and spell).
+void CirBuilder::append_cv_specs(node_t lst, unsigned cv)
 {
-	return node1(N_POINTER, list());
+	if (cv & cvCONST)
+		append(lst, simple(N_CONST));
+	if (cv & cvVOLATILE)
+		append(lst, simple(N_VOLATILE));
+}
+
+node_t CirBuilder::pointer(unsigned cv)
+{
+	node_t quals = list();
+	append_cv_specs(quals, cv);
+	return node1(N_POINTER, quals);
 }
 
 // Append type specifier nodes for a DataDef into a LIST node.
 void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 {
 	if (!dd) { append(lst, simple(N_INT)); return; }
+	// A qualified type spells its top-level cv, then renders unqualified.
+	if (unsigned cv = dd->cv_quals()) {
+		append_cv_specs(lst, cv);
+		dd = dd->unqualified();
+	}
 
 	// An UNRESOLVED template parameter must never reach type lowering: a
 	// pattern containing `T` is Tree-1 only, and tsubst replaces `T` with the
@@ -4793,7 +4811,16 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	switch (dt) {
 	case DataType::dtVOID:   append(lst, simple(N_VOID)); break;
 	case DataType::dtBOOL:   append(lst, simple(N_BOOL)); break;
-	case DataType::dtCHAR:   append(lst, simple(N_CHAR)); break;
+	// dtCHAR IS dtINT8 (one enum value), so the rawtype cannot tell plain
+	// `char` from `signed char` — two distinct types (C11 6.2.5p15) told apart
+	// only by identity, whose one owner is Program::proven_scalar_identity.
+	// Spelling signed char as plain char changes its VALUE on an unsigned-char
+	// target: aarch64-linux read `(signed char)200` as 200, not -56.
+	case DataType::dtCHAR:
+		if (Program::proven_scalar_identity(dd) == &ddINT8)
+			append(lst, simple(N_SIGNED));
+		append(lst, simple(N_CHAR));
+		break;
 	case DataType::dtINT16:  append(lst, simple(N_SHORT)); break;
 	case DataType::dtINT32:  append(lst, simple(N_INT)); break;
 	case DataType::dtINT64:  append_i64(lst); break;
@@ -5189,13 +5216,13 @@ bool CirBuilder::flavor_marshal_candidate(FuncDef *fd) const
 		DataDef *p = fd->parameters[i];
 		if (!p)
 			continue;
-		if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p))
+		if (DataDefPTR *pp = pointer_dd_of(p))
 			p = pp->base_type ? pp->base_type : p;
 		if (p->marshals_value_text())
 			return true;
 	}
 	DataDef *r = &fd->return_value_type();
-	if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
+	if (DataDefPTR *rp = pointer_dd_of(r))
 		r = rp->base_type ? rp->base_type : r;
 	return r && r->marshals_value_text();
 }
@@ -5373,7 +5400,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 		if (u->is_reference()) {
 			if (DataDef *r = ref_param_referent(u))
 				u = r;
-		} else if (DataDefPTR *pp = dynamic_cast<DataDefPTR *>(u))
+		} else if (DataDefPTR *pp = pointer_dd_of(u))
 			u = pp->base_type ? pp->base_type : u;
 		if (u->marshals_value_text()) {
 			if (u == p) {
@@ -5407,7 +5434,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 	if (ru->is_reference()) {
 		if (DataDef *r = ref_param_referent(ru))
 			ru = r;
-	} else if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(ru))
+	} else if (DataDefPTR *rp = pointer_dd_of(ru))
 		ru = rp->base_type ? rp->base_type : ru;
 	bool ret_carrier = ru && ru->marshals_value_text();
 	if (ret_carrier && ru == rv && !fd->returns_reference()) {
@@ -5416,8 +5443,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 				"carrier return\n", host_sym.c_str());
 		return NULL;	// by-value carrier return: unsupported
 	}
-	bool ret_void = !ret_carrier && rv->rawtype() == DataType::dtVOID
-		     && !rv->is_pointer();
+	bool ret_void = !ret_carrier && rv->is_void();
 	bool ret_real = !ret_carrier && !ret_void && rv->is_real();
 	bool ret_ptr = ret_carrier
 		    || (!ret_void && !ret_real
@@ -5453,7 +5479,7 @@ node_t CirBuilder::flavor_marshal_thunk_def(const char *thunk_sym,
 		DataDef *p2 = cand->parameters[2];
 		if (!p1 || !p2 || !p1->is_pointer() || !p2->is_integer())
 			continue;
-		DataDefPTR *p1p = dynamic_cast<DataDefPTR *>(p1);
+		DataDefPTR *p1p = pointer_dd_of(p1);
 		DataDef *p1b = p1p ? p1p->base_type : NULL;
 		if (!p1b || (p1b->rawtype() != DataType::dtCHAR
 			     && p1b->rawtype() != DataType::dtINT8
@@ -5680,13 +5706,17 @@ node_t CirBuilder::char_ptr_type()
 node_t CirBuilder::ptr_type_node(DataDef *dd)
 {
 	DataDef *base = dd;
-	int levels = dd_peel_pointers(base);   // the one pointer-peel owner
+	std::vector<unsigned> level_cv;	// each level's own cv + the base's
+	int levels = dd_peel_pointers(base, &level_cv);   // the one pointer-peel owner
 	if (levels == 0)
 		return void_ptr_type();
 	node_t decl_list = list();
-	for (int i = 0; i < levels; i++) append(decl_list, pointer());
-	return node2(N_TYPE, type_list(base),
-		     node2(N_DECL, ignore(), decl_list));
+	// Level 0 is the cast result's own cv (a cast yields the unqualified type).
+	for (int i = 0; i < levels; i++)
+		append(decl_list, pointer(i ? level_cv[i] : cvNONE));
+	node_t spec = type_list(base);
+	append_cv_specs(spec, level_cv.back());
+	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
 }
 
 // Tag-REFERENCE node for an aggregate type: N_UNION when the class/struct
@@ -5730,7 +5760,7 @@ node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
 static bool is_size1_pointer(DataDef *dd)
 {
 	if (!dd || !dd->is_pointer()) return false;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if (!p || !p->base_type) return false;
 	// A DEPENDENT pointee (a template-param placeholder, whose repr rawtype
 	// is dtVOID) is "type not known yet", NOT void: the Tree-1 pattern must
@@ -5747,10 +5777,9 @@ static bool is_size1_pointer(DataDef *dd)
 	// silent — c2mir's own `c2m_ctx_loc` is exactly `(void **) ctx + 1`, so
 	// a madc-built c2mir found its context at the wrong address and crashed
 	// only later, in teardown.
-	// DataDef::is_cstr() guards the identical trap one type over
-	// ("!is_pointer() excludes char**", datadef.h:1878).
-	if (p->base_type->is_pointer()) return false;
-	return p->base_type->rawtype() == DataType::dtVOID;
+	// DataDef::is_void() is the one owner of that exclusion (it also rejects
+	// a reference), as is_cstr() is for the identical trap one type over.
+	return p->base_type->is_void();
 }
 
 static bool is_char_pointer(DataDef *dd)
@@ -5761,7 +5790,7 @@ static bool is_char_pointer(DataDef *dd)
 	// question (coercions, key classification, ranking).
 	dd = unqualified_type(dd);
 	if (!dd || !dd->is_pointer()) return false;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if (!p || !p->base_type) return false;
 	return unqualified_type(p->base_type)->rawtype() == DataType::dtCHAR;
 }
@@ -5776,7 +5805,7 @@ static DataDefCLASS *pointee_user_class(DataDef *dd)
 	// initializer / a ref-valued rhs takes the same derived->base subobject
 	// adjustment as a `V *` (task #36).
 	if (!dd || (!dd->is_pointer() && !dd->is_reference())) return NULL;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if (!p) return NULL;
 	return as_user_class(p->base_type);
 }
@@ -6509,7 +6538,7 @@ DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 	// `base`, one level too deep, so `pair<base*,base*>(const base*&, …)` never
 	// matched (the arg looked like the class, not a `base*`).
 	if (r && r->is_reference())
-		if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(r))
+		if (DataDefPTR *rp = pointer_dd_of(r))
 			if (rp->base_type) r = rp->base_type;
 	return r;
 }
@@ -7100,10 +7129,43 @@ bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
 // does not record the reference-ness this test would need — spilling a
 // stream would copy a non-copyable class. (The classifier's own tkBSL/
 // tkBSR entries remain correct for BUILTIN scalar shifts.)
+// The POSTFIX overload a class step `it++` / `it--` calls ([over.inc]): the
+// int-taking operator++(int) / operator--(int), told from the prefix form by
+// its dummy parameter in the mangled family. NULL when the class declares
+// only the prefix form (a postfix use then falls back to that).
+static FuncDef *class_postfix_step_operator(DataDefCLASS *icls, TokenID step_id)
+{
+	if (!icls)
+		return NULL;
+	std::string mc = icls->name + "__operator"
+		+ (step_id == TokenID::tkInc ? "++" : "--");
+	std::string mu = mc + "_un";
+	for (Variable *mv : icls->methods) {
+		if (!mv || (mv->name != mc && mv->name != mu)) continue;
+		FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
+		if (fd && fd->parameters.size() > 1)
+			return fd;
+	}
+	return NULL;
+}
+
 static bool class_operator_value_result(TokenBase *arg)
 {
 	TokenOperator *op = dynamic_cast<TokenOperator *>(arg);
-	if (!op || op->argc() != 2 || !op->left || !op->right)
+	if (!op)
+		return false;
+	// A POSTFIX class step (`it++`) calls operator++(int), which returns the
+	// OLD value: by value — the same prvalue as the binary family below —
+	// unless the selected overload returns a reference. As a receiver
+	// (`(it++).get()`, `*it++` -> operator*) the raw path emitted
+	// `&operator++(&it, 0)`, which is not an lvalue.
+	if ((op->id() == TokenID::tkInc || op->id() == TokenID::tkDec)
+	    && op->left && !op->right) {
+		FuncDef *post = class_postfix_step_operator(
+			as_class_instance(op->left->datadef()), op->id());
+		return post && !post->returns_reference();
+	}
+	if (op->argc() != 2 || !op->left || !op->right)
 		return false;
 	DataDef *dd = op->datadef();
 	if (!dd || dd->is_reference() || dd->is_pointer())
@@ -7234,7 +7296,7 @@ static DataDef *ref_param_referent(DataDef *pt)
 {
 	if (!pt || !pt->is_reference())
 		return NULL;
-	DataDefPTR *rp = dynamic_cast<DataDefPTR *>(pt);
+	DataDefPTR *rp = pointer_dd_of(pt);
 	return rp ? rp->base_type : NULL;
 }
 
@@ -7603,7 +7665,7 @@ DataDefSTRUCT *CirBuilder::struct_behind(DataDef *dd)
 	}
 	DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
 	if (!s) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(unqualified_type(dd));
+		DataDefPTR *p = pointer_dd_of(unqualified_type(dd));
 		if (p) s = dynamic_cast<DataDefSTRUCT *>(unqualified_type(p->base_type));
 	}
 	return s;
@@ -7640,6 +7702,11 @@ void CirBuilder::append_decl_type_specs(node_t lst, DataDef *dd,
 	if (!typedef_alias.empty()) {
 		append(lst, id(typedef_emit_name(typedef_alias, dd).c_str()));
 		return;
+	}
+	// A qualified type spells its top-level cv, then renders unqualified.
+	if (dd && dd->cv_quals()) {
+		append_cv_specs(lst, dd->cv_quals());
+		dd = dd->unqualified();
 	}
 
 	// Struct types: LIST(STRUCT(ID("name"), IGNORE))
@@ -7803,10 +7870,12 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 // star and no pointee dims — `typedef int **PP` / `typedef arr10 *PA` both
 // rendered `typedef int *`).
 void CirBuilder::append_pointer_declarator(node_t decl_list, int levels,
-					   const std::vector<carray_dim_t> &ptr_array_dims)
+					   const std::vector<carray_dim_t> &ptr_array_dims,
+					   const std::vector<unsigned> *level_cv)
 {
 	for (int s = 0; s < levels; s++)
-		append(decl_list, pointer());
+		append(decl_list, pointer(level_cv && (size_t)s < level_cv->size()
+					  ? (*level_cv)[s] : cvNONE));
 	for (size_t d = 0; d < ptr_array_dims.size(); d++)
 		append(decl_list, node3(N_ARR, ignore(), list(),
 					 integer(ptr_array_dims[d])));
@@ -7841,7 +7910,9 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 	// Return-type specs: peel pointer levels, recording the star count so the
 	// stars can be appended as the outermost declarator suffix.
 	DataDef *ret_dd = fd ? &fd->return_value_type() : NULL;
-	int ret_stars = dd_peel_pointers(ret_dd);   // the one pointer-peel owner
+	std::vector<unsigned> ret_level_cv;	// each return level's own cv + the base's
+	int ret_stars = dd_peel_pointers(ret_dd, &ret_level_cv);   // the one pointer-peel owner
+	int ret_ptr_levels = ret_stars;	// before the reference's extra star
 	// A REFERENCE return lowers to a by-address (T*) return — the same rule
 	// func_proto / func_def apply to a function's own signature (ret_ptr =
 	// is_pointer || returns_reference). return_value_type() is the REFERENT,
@@ -7884,6 +7955,9 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 	} else {
 		append_type_specs(spec_list, ret_dd);
 	}
+	// The return base's own cv: `volatile int *(*fp)(void)` (lock-step with
+	// func_proto / func_def, or the target and the pointer disagree).
+	append_cv_specs(spec_list, ret_level_cv.back());
 
 	// Suffixes, innermost binding first.
 	for (size_t d = 0; d < lead_dims.size(); d++)
@@ -7892,7 +7966,8 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 		append(decl_list, pointer());        // the fn-ptr `(*name)`
 	append(decl_list, fnptr_func_node(fd));  // the `(params)`
 	for (int s = 0; s < ret_stars; s++)
-		append(decl_list, pointer());        // return-type `*`
+		append(decl_list, pointer(s < ret_ptr_levels ? ret_level_cv[s]
+					  : cvNONE));        // return-type `*`
 }
 
 // Extra pointer stars an fn-ptr usage carries beyond its typedef alias. The
@@ -7908,7 +7983,7 @@ int CirBuilder::fnptr_alias_stars(const std::string &alias)
 	// A Form-2 pointer-to-function typedef already carries the pointer (0
 	// extra stars); a Form-1 function typedef does not, so a fn-ptr use of
 	// the alias needs one explicit `*`.
-	if (DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&(*it)->definition))
+	if (DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&(*it)->definition)) // allowed-exception: the alias's own node
 		return afp->ptr_syntax ? 0 : 1;
 	return 1;
 }
@@ -7925,7 +8000,7 @@ bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
 	if (alias.empty() || !m_prog) return true;
 	flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
 	if (it == m_prog->datatype_map.end() || !*it) return true;
-	return dynamic_cast<DataDefFPTR *>(&(*it)->definition) != NULL;
+	return dynamic_cast<DataDefFPTR *>(&(*it)->definition) != NULL; // allowed-exception: the alias's own node
 }
 
 // -----------------------------------------------------------------------
@@ -7934,7 +8009,8 @@ bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
 
 static int dd_ptr_depth(DataDef *dd);      // defined below; counts int** -> 2
 static int peel_pointer_declarator(DataDef *&base_dd,
-				   std::vector<carray_dim_t> &ptr_array_dims); // defined below
+				   std::vector<carray_dim_t> &ptr_array_dims,
+				   std::vector<unsigned> *level_cv = NULL); // defined below
 // dd_peel_pointers is declared in cir_builder.h (cir_dump.cpp needs it too).
 
 // Peel DataDefCArray layers off a type, collecting fixed-array dimensions
@@ -7983,7 +8059,7 @@ static DataDef *vla_param_flat_elem(DataDef *ptype, int &stars)
 			continue;
 		}
 		if (elem && elem->is_pointer()) {
-			DataDefPTR *p = dynamic_cast<DataDefPTR *>(elem);
+			DataDefPTR *p = pointer_dd_of(elem);
 			if (p && p->base_type) {
 				elem = p->base_type;
 				elem_stars++;
@@ -8828,6 +8904,38 @@ node_t CirBuilder::multi_return_unpack(TokenAssign *as, TokenBase *origin)
 		     integer(0, origin), origin);
 }
 
+// A POINTER or REFERENCE TO a function pointer — `int (**t)(int)`, `int
+// (*&r)(int)` — or a reference to a FUNCTION (`int (&f)(int)`, whose one
+// level IS the function's pointer: a pointer to a function TYPE is the
+// function pointer, getPointerType's fold). The peeled levels bind closest to
+// the name ([POINTER..., POINTER, FUNC] in c2m's innermost-first order) and
+// the pointee renders through the ONE fn-ptr declarator owner. A declaration
+// that peeled to the DataDefFPTR and printed its 64-bit rawtype spelled
+// `long long *t`, so `(*t)(i)` called an integer. False when the chain does
+// not end at a function or function pointer.
+bool CirBuilder::pointer_to_fnptr_pieces(DataDef *t, node_t spec_list,
+					  node_t decl_list)
+{
+	DataDef *base = t;
+	int levels = 0;
+	while (base && base->is_pointer() && !base->as_fptr_dd()) {
+		DataDefPTR *p = base->as_pointer_dd();
+		if (!p || !p->base_type) break;
+		base = p->base_type;
+		levels++;
+	}
+	DataDefFPTR *fp = (levels > 0 && base) ? base->as_fptr_dd() : NULL;
+	if (!fp || !fp->target)
+		return false;
+	if (!fp->ptr_syntax)
+		levels--;	// the level over a function TYPE is its own `*`
+	for (int s = 0; s < levels; s++)
+		append(decl_list, pointer());
+	fnptr_decl_pieces(fp->target, true, spec_list, decl_list,
+			  std::vector<carray_dim_t>());
+	return true;
+}
+
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			      const std::string &typedef_alias)
 {
@@ -8896,14 +9004,20 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	if (!typedef_alias.empty()) {
 		int stars = explicit_star_count(ptype, typedef_alias);
 		node_t pspec = type_list(ptype, typedef_alias);
+		std::vector<unsigned> level_cv;
+		DataDef *pt = ptype;
+		dd_peel_pointers(pt, &level_cv);
+		// The spec is the alias: only the cv the use ADDS at its level.
+		append_cv_specs(pspec, alias_use_cv(typedef_alias, stars, level_cv));
 		node_t pdecl_list = list();
 		for (int s = 0; s < stars; s++)
-			append(pdecl_list, pointer());
+			append(pdecl_list, pointer((size_t)s < level_cv.size()
+						   ? level_cv[s] : cvNONE));
 		return wrap(pspec, pdecl_list);
 	}
 
 	// Function-pointer parameter (no typedef alias): `int (*fp)(int)`.
-	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(ptype)) {
+	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(ptype)) { // allowed-exception: renders the FPTR node (a const one renders via its wrapper)
 		node_t pspec = list();
 		node_t pdecl_list = list();
 		fnptr_decl_pieces(fp->target, true, pspec, pdecl_list,
@@ -8911,33 +9025,15 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		return wrap(pspec, pdecl_list);
 	}
 
-	// A POINTER TO a function pointer — `int (**t)(int)`, or an array of
-	// function pointers adjusted to its element pointer ([dcl.fct]/5:
-	// `int (*t[4])(int)`, c-testsuite 00209's `fptr4 fp`): peel the pointer
-	// levels, render the pointee through the ONE fn-ptr declarator owner and
-	// bind the peeled levels closest to the name ([POINTER..., POINTER,
-	// FUNC] in c2m's innermost-first order). The generic tail below peeled
-	// down to the DataDefFPTR and printed its 64-bit rawtype: `long long *t`,
-	// so `(*t[i])(i)` called an integer.
+	// A POINTER (or reference) TO a function pointer — `int (**t)(int)`, or
+	// an array of function pointers adjusted to its element pointer
+	// ([dcl.fct]/5: `int (*t[4])(int)`, c-testsuite 00209's `fptr4 fp`):
+	// pointer_to_fnptr_pieces, the one owner var_decl shares.
 	{
-		DataDef *base = ptype;
-		int levels = 0;
-		while (base && base->is_pointer() && !base->as_fptr_dd()) {
-			DataDefPTR *p = base->as_pointer_dd();
-			if (!p || !p->base_type) break;
-			base = p->base_type;
-			levels++;
-		}
-		DataDefFPTR *fp = (levels > 0 && base) ? base->as_fptr_dd() : NULL;
-		if (fp && fp->target) {
-			node_t pspec = list();
-			node_t pdecl_list = list();
-			for (int s = 0; s < levels; s++)
-				append(pdecl_list, pointer());
-			fnptr_decl_pieces(fp->target, true, pspec, pdecl_list,
-					  std::vector<carray_dim_t>());
+		node_t pspec = list();
+		node_t pdecl_list = list();
+		if (pointer_to_fnptr_pieces(ptype, pspec, pdecl_list))
 			return wrap(pspec, pdecl_list);
-		}
 	}
 
 	// Array parameter decay: `T m[N]` -> `T *m`, `T m[N][M]` -> `T (*m)[M]`.
@@ -8975,8 +9071,13 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			int decay_ptrs = ptr_levels ? ptr_levels : 1;
 			size_t first_dim = ptr_levels ? 0 : 1;
 			// Element's own pointer depth (`char *argv[]` -> element char*).
-			int elem_stars = dd_peel_pointers(elem);   // the one pointer-peel owner
+			// The peel unqualifies the element's base; its recorded cv
+			// is spelled on the spec (`volatile int a[][3]` -> `int
+			// volatile (*a)[3]`: the elements are volatile, 6.7.3p9).
+			std::vector<unsigned> elem_cv;
+			int elem_stars = dd_peel_pointers(elem, &elem_cv);   // the one pointer-peel owner
 			node_t pspec = type_list(elem);
+			append_cv_specs(pspec, elem_cv.empty() ? cvNONE : elem_cv.back());
 			node_t pdecl_list = list();
 			for (int s = 0; s < elem_stars; s++)
 				append(pdecl_list, pointer());          // element pointers (innermost)
@@ -8995,16 +9096,18 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	// `struct node **p` with base = `DataDefPTR(struct node)`, which is not a
 	// struct, so type_list fell through to the default `int` spec — dropping
 	// the struct/real base type for any multi-level pointer parameter.
-	// dd_peel_pointers is the one owner (const-level aware).
-	dd_peel_pointers(base_dd);
+	// dd_peel_pointers is the one owner (const-level aware); level_cv keeps
+	// each level's own cv (`volatile int *p`: the pointee's, in the spec).
+	std::vector<unsigned> level_cv;
+	int depth = dd_peel_pointers(base_dd, &level_cv);
 
 	node_t pspec = type_list(base_dd);
+	append_cv_specs(pspec, level_cv.back());
 	node_t pdecl_list = list();
 	if (is_ptr) {
 		// One '*' per indirection level (int** param -> 2).
-		int depth = dd_ptr_depth(ptype);
 		for (int s = 0; s < depth; s++)
-			append(pdecl_list, pointer());
+			append(pdecl_list, pointer(level_cv[s]));
 	}
 	return wrap(pspec, pdecl_list);
 }
@@ -9454,6 +9557,23 @@ DataDef *CirBuilder::init_nested_list_type(DataDef *dd, size_t idx)
 	return NULL;
 }
 
+// One MEMBER slot's initializer value. A REFERENCE member binds its
+// initializer's address, as a reference parameter does ([dcl.init.aggr]/4.2
+// copy-initializes each member from its initializer, [dcl.init.ref] binds a
+// reference to that object) — ref_param_arg_addr, the one reference-bind owner,
+// materializing a prvalue for a const referent. `RM rm{lv}` stored lv's VALUE
+// in the pointer slot and the first read dereferenced 40. Every other slot is
+// init_value's.
+node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i)
+{
+	DataDef *st = elem ? init_slot_type(unqualified_type(dd), i) : NULL;
+	if (DataDef *referent = st ? ref_param_referent(st) : NULL)
+		return ref_param_arg_addr(elem, referent,
+					  unqualified_type(referent) != referent);
+	return init_value(elem, init_slot_is_aggregate(dd, i),
+			  init_nested_list_type(dd, i));
+}
+
 // The ONE builder of an aggregate's brace initializer list:
 //
 //   initializer_list: N_LIST: N_INIT(N_LIST:(const_expr | N_FIELD_ID(N_ID))* initializer)*
@@ -9518,9 +9638,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 				append(des, node1(N_FIELD_ID,
 						  id(sdd->members[chosen].first.c_str())));
 			append(lst, node2(N_INIT, des,
-					  init_value(inits[chosen],
-						     init_slot_is_aggregate(dd, chosen),
-						     init_nested_list_type(dd, chosen))));
+					  init_slot_value(inits[chosen], dd, chosen)));
 			return lst;
 		}
 		// More than one slot is written. What they MEAN depends on
@@ -9582,9 +9700,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 					append(des, node1(N_FIELD_ID,
 							  id(sdd->members[i].first.c_str())));
 				append(lst, node2(N_INIT, des,
-						  init_value(inits[i],
-							     init_slot_is_aggregate(dd, i),
-							     init_nested_list_type(dd, i))));
+						  init_slot_value(inits[i], dd, i)));
 			}
 			return lst;
 		}
@@ -9597,9 +9713,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 			append(des, node1(N_FIELD_ID,
 					  id(sdd->members[chosen].first.c_str())));
 		append(lst, node2(N_INIT, des,
-				  init_value(inits[chosen],
-					     init_slot_is_aggregate(dd, chosen),
-					     init_nested_list_type(dd, chosen))));
+				  init_slot_value(inits[chosen], dd, chosen)));
 		return lst;
 	}
 	for (size_t i = 0; i < inits.size(); i++) {
@@ -9616,9 +9730,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 			continue;
 		}
 		append(lst, node2(N_INIT, list(),
-				  init_value(inits[i],
-					     init_slot_is_aggregate(dd, i),
-					     init_nested_list_type(dd, i))));
+				  init_slot_value(inits[i], dd, i)));
 	}
 	return lst;
 }
@@ -9852,9 +9964,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	bool is_ptr = base_dd && base_dd->is_pointer();
 	// The pointer piece — every level (dd_peel_pointers, const-level aware)
 	// and the pointee's fixed dims — through the ONE owner typedef_decl
-	// shares. base_dd becomes the innermost base the spec list renders.
+	// shares. base_dd becomes the innermost base the spec list renders;
+	// ptr_level_cv keeps each level's own cv and the base's (the spec's).
 	std::vector<carray_dim_t> ptr_array_dims;
-	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims);
+	std::vector<unsigned> ptr_level_cv;
+	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims,
+						       &ptr_level_cv);
 
 	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
 	// has no tag to forward-reference, so the body must be emitted inline in
@@ -9888,17 +10003,32 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// members, handled in member_node.)
 	// Declared through a typedef: the alias is the whole type spec ONLY when
 	// it names the function(-pointer) type itself — see fnptr_alias_is_fn.
-	DataDefFPTR *fnptr = dynamic_cast<DataDefFPTR *>(v->type);
+	DataDefFPTR *fnptr = dynamic_cast<DataDefFPTR *>(v->type); // allowed-exception: renders the FPTR node
 	if (fnptr && !v->typedef_name.empty()
 	    && fnptr_alias_is_fn(v->typedef_name))
 		fnptr = NULL;
 	node_t fnptr_decl_list = NULL;
+	// A pointer or reference TO a function pointer, or a reference to a
+	// function (pointer_to_fnptr_pieces, the rule param_decl already had):
+	// the peeled base is the DataDefFPTR, whose 64-bit rawtype spelled
+	// `long long *pp` — `(*pp)(4)` then called an integer.
+	bool ptr_to_fnptr = !fnptr && v->typedef_name.empty()
+			    && !v->is_fixed_array() && ptr_piece_levels > 0
+			    && base_dd && base_dd->as_fptr_dd();
+	bool fn_declarator = fnptr || ptr_to_fnptr;
 
 	// Emit ID("alias") for a variable declared via a typedef (matches c2m).
 	// Pointer usages keep the alias as the type spec and carry the explicit
 	// stars on the declarator below.
 	node_t tl;
-	if (fnptr) {
+	if (ptr_to_fnptr) {
+		tl = list();
+		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
+		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
+		if (v->flags & vfTHREADLOCAL) append(tl, simple(N_THREAD_LOCAL));
+		fnptr_decl_list = list();
+		pointer_to_fnptr_pieces(v->type, tl, fnptr_decl_list);
+	} else if (fnptr) {
 		tl = list();
 		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
 		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
@@ -9928,14 +10058,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// (append_var_type_specs) — a hand-rolled copy per storage class is how
 	// `static Cls g;` came to emit `static int g` while the extern arm had
 	// already been widened past the btStruct-only test.
-	if (!fnptr && (v->flags & vfSTATIC)) {
+	if (!fn_declarator && (v->flags & vfSTATIC)) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
 		if (v->flags & vfTHREADLOCAL) append(new_list, simple(N_THREAD_LOCAL));
 		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
-	if (!fnptr && (v->flags & vfEXTERN)) {
+	if (!fn_declarator && (v->flags & vfEXTERN)) {
 		// An extern is a forward reference to a symbol defined elsewhere, so
 		// emit its type exactly as the definition would — preserve the typedef
 		// alias and struct tag. Dropping the alias made `extern bool x` degrade
@@ -9959,14 +10089,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t share = node1(N_SHARE, tl);
 	std::string emitted_var_name = var_emit_name(*v);
 	node_t var_id = id(emitted_var_name.c_str(), origin);
-	node_t decl_list = fnptr ? fnptr_decl_list : list();
+	node_t decl_list = fn_declarator ? fnptr_decl_list : list();
 
 	// c2m declarator order: in `T *arr[N]` the `[]` binds tighter than `*`
 	// (array of pointers), and c2m's declarator parser appends the pointer
 	// ops AFTER the direct-declarator's array ops. So the N_ARR nodes must
 	// precede the N_POINTER nodes in the decl list. Emit arrays first, then
 	// pointers — matching `direct_declarator`/`declarator` in c2mir.c.
-	if (!fnptr && v->is_fixed_array() && !v->dims.empty()) {
+	if (!fn_declarator && v->is_fixed_array() && !v->dims.empty()) {
 		// One N_ARR per dimension, outer dimension first:
 		// int m[2][2] -> ARR(...,2) ARR(...,2)
 		//
@@ -10012,21 +10142,30 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// `DO_FUN *fp;` (1) as a function-pointer variable. Other variables keep
 	// the legacy depth-derived count.
 	int decl_stars;
-	if (fnptr)
+	if (fn_declarator)
 		decl_stars = -1;
 	else if (v->fnptr_explicit_stars >= 0)
 		decl_stars = v->fnptr_explicit_stars;
 	else
 		decl_stars = explicit_star_count(v->type, v->typedef_name);
-	if (fnptr) {
+	if (fn_declarator) {
 		// fn-ptr declarator suffixes already built by fnptr_decl_pieces.
 	} else if (decl_stars >= 0) {
 		for (int s = 0; s < decl_stars; s++)
-			append(decl_list, pointer());
-	} else if (is_ptr) {
-		append_pointer_declarator(decl_list, ptr_piece_levels, ptr_array_dims);
+			append(decl_list, pointer((size_t)s < ptr_level_cv.size()
+						  ? ptr_level_cv[s] : cvNONE));
+		// The spec is the alias: only the cv the use ADDS at its level.
+		append_cv_specs(tl, alias_use_cv(v->typedef_name, decl_stars,
+						 ptr_level_cv));
+	} else {
+		if (is_ptr)
+			append_pointer_declarator(decl_list, ptr_piece_levels,
+						  ptr_array_dims, &ptr_level_cv);
+		// The peeled base's own cv (`volatile int *q`: the pointee).
+		if (v->typedef_name.empty())
+			append_cv_specs(tl, ptr_level_cv.empty() ? cvNONE
+					    : ptr_level_cv.back());
 	}
-
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
 	node_t init_node = ignore();
 	// Set when a file-scope non-constant initializer is rerouted to
@@ -10068,7 +10207,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		node_t count = translate_expr(v->vla_size_expr);
 		{
 			DataDef *w = v->type;
-			if (DataDefPTR *wp = dynamic_cast<DataDefPTR *>(w))
+			if (DataDefPTR *wp = pointer_dd_of(w))
 				w = wp->base_type;
 			for (DataDefCArray *c = dynamic_cast<DataDefCArray *>(w);
 			     c; c = dynamic_cast<DataDefCArray *>(c->element_type)) {
@@ -10299,19 +10438,25 @@ static int dd_ptr_depth(DataDef *dd)
 // macros' `(*__ctype_b_loc())[i]` then subscripted a scalar.
 // as_pointer_dd(), not dynamic_cast: a const-qualified level
 // (`char * const *` = PTR(CONST(PTR(char)))) forwards through its
-// DataDefCONST wrapper, so the const level still counts as its pointer —
+// DataDefQUAL wrapper, so the const level still counts as its pointer —
 // the dynamic_cast form broke the walk there and LOST a star (SMAUG
 // reset.c's flagarray emitted `char *`). The final unqualified() peel
-// keeps the returned base renderable when the innermost pointee is const.
-int dd_peel_pointers(DataDef *&dd)
+// keeps the returned base renderable when the innermost pointee is qualified;
+// level_cv keeps what it peeled (see cir_builder.h) for the renderers that spell
+// each level's qualifiers (`volatile int *q` -> [0, volatile]).
+int dd_peel_pointers(DataDef *&dd, std::vector<unsigned> *level_cv)
 {
 	int depth = 0;
 	while (dd && dd->is_pointer()) {
 		DataDefPTR *p = dd->as_pointer_dd();
 		if (!p || !p->base_type) break;
+		if (level_cv)
+			level_cv->push_back(dd->cv_quals());
 		dd = p->base_type;
 		depth++;
 	}
+	if (level_cv)
+		level_cv->push_back(dd ? dd->cv_quals() : cvNONE);
 	if (dd)
 		dd = dd->unqualified();
 	return depth;
@@ -10328,9 +10473,10 @@ int dd_peel_pointers(DataDef *&dd)
 // in the emitted declarator (c2mir has no VLA types) — so its dims are
 // dropped: `int *rp`. Returns the pointer depth for append_pointer_declarator.
 static int peel_pointer_declarator(DataDef *&base_dd,
-				   std::vector<carray_dim_t> &ptr_array_dims)
+				   std::vector<carray_dim_t> &ptr_array_dims,
+				   std::vector<unsigned> *level_cv)
 {
-	int levels = dd_peel_pointers(base_dd);
+	int levels = dd_peel_pointers(base_dd, level_cv);
 	if (levels > 0) {
 		bool vm_pointee = carray_chain_has_runtime(base_dd);
 		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
@@ -10338,6 +10484,23 @@ static int peel_pointer_declarator(DataDef *&base_dd,
 			ptr_array_dims.clear();
 	}
 	return levels;
+}
+
+// Under a typedef alias, the cv the USE adds at the alias's own level beyond
+// what the alias itself spells: `volatile IP *p` (IP = int *) adds volatile,
+// `vint x` / `vint *p` (vint = volatile int) add nothing. level_cv is
+// dd_peel_pointers' record of the full type, `stars` the use's own levels.
+unsigned CirBuilder::alias_use_cv(const std::string &alias, int stars,
+				  const std::vector<unsigned> &level_cv)
+{
+	unsigned at = (stars >= 0 && (size_t)stars < level_cv.size())
+		? level_cv[stars] : cvNONE;
+	if (at && m_prog) {
+		flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
+		if (it != m_prog->datatype_map.end() && *it)
+			at &= ~(*it)->definition.cv_quals();
+	}
+	return at;
 }
 
 int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias)
@@ -10353,7 +10516,7 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 		flat_datatype_map_iter it = m_prog->datatype_map.find(alias);
 		if (it != m_prog->datatype_map.end() && *it) {
 			base_depth = dd_ptr_depth(&(*it)->definition);
-			fnptr_alias = (dynamic_cast<DataDefFPTR *>(
+			fnptr_alias = (dynamic_cast<DataDefFPTR *>( // allowed-exception: the alias's own node
 					&(*it)->definition) != NULL);
 		}
 	}
@@ -10550,7 +10713,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 	// pointer star(s) it carries beyond the alias (`DO_FUN *do_fun`). dtINT64
 	// rawtype would otherwise emit a `long` (or, via the alias, a member of
 	// bare function type) — both rejected/miscompiled by c2mir.
-	if (DataDefFPTR *mfp = dynamic_cast<DataDefFPTR *>(mtype)) {
+	if (DataDefFPTR *mfp = dynamic_cast<DataDefFPTR *>(mtype)) { // allowed-exception: renders the FPTR node
 		node_t mspec;
 		node_t mdl = list();
 		// The alias-spec form applies only when the typedef names the
@@ -10635,9 +10798,14 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 	int stars = explicit_star_count(mtype, mtypedef);
 	node_t mspec;
 	std::vector<carray_dim_t> m_ptr_array_dims;	// the pointee's dims, `T (*m)[N]`
+	std::vector<unsigned> m_level_cv;	// each level's own cv + the base's (dd_peel_pointers)
 	int m_ptr_levels = 0;
 	if (!mtypedef.empty()) {
 		mspec = type_list(mtype, mtypedef);
+		DataDef *mt = mtype;
+		dd_peel_pointers(mt, &m_level_cv);
+		// The spec is the alias: only the cv the use ADDS at its level.
+		append_cv_specs(mspec, alias_use_cv(mtypedef, stars, m_level_cv));
 	} else {
 		// Peel ALL pointer levels to the innermost base, so the type spec
 		// renders the real base (`struct A`, not the pointer's `int` rawtype)
@@ -10652,7 +10820,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		// emitted after the stars below. Peeling the levels alone rendered a
 		// pointer-to-array member (`B<int (*)[3]>::m`) as `int *m`, so
 		// `(*pa.m)[2]` had nothing to subscript.
-		m_ptr_levels = peel_pointer_declarator(mbase, m_ptr_array_dims);
+		m_ptr_levels = peel_pointer_declarator(mbase, m_ptr_array_dims,
+						       &m_level_cv);
 		// An anonymous nested struct/union member (`struct { ... } f;` or
 		// `union { ... } u;` inside the enclosing aggregate) has no tag to
 		// forward-reference, so type_list would emit `struct anonymous` — an
@@ -10665,6 +10834,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		} else {
 			mspec = type_list(mbase);
 		}
+		// The peeled base's own cv: `volatile int v;`, `volatile int *p;`.
+		append_cv_specs(mspec, m_level_cv.empty() ? cvNONE : m_level_cv.back());
 	}
 
 	// Bit-field signedness reconciliation. A bit-field's signedness is the
@@ -10755,13 +10926,14 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
 	if (!mtypedef.empty()) {
 		for (int s = 0; s < stars; s++)
-			append(mdecl_list, pointer());
+			append(mdecl_list, pointer((size_t)s < m_level_cv.size()
+						   ? m_level_cv[s] : cvNONE));
 	} else if (mtype && mtype->is_pointer()) {
 		// One star per pointer level (`A** data` is depth 2 — a single star
 		// under-declared it and halved the element stride), then the pointee's
 		// dims: the shared pointer-declarator piece.
 		append_pointer_declarator(mdecl_list, m_ptr_levels > 0 ? m_ptr_levels : 1,
-					  m_ptr_array_dims);
+					  m_ptr_array_dims, &m_level_cv);
 	}
 	node_t mdecl = m.first.empty() ? ignore() : node2(N_DECL, mid, mdecl_list);
 
@@ -11868,7 +12040,7 @@ DataDef *CirBuilder::operand_value_datadef(TokenBase *t)
 	if (!t) return NULL;
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(t))
 		if ((tv->var.is_reference()) && tv->var.type)
-			if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(tv->var.type))
+			if (DataDefPTR *p = pointer_dd_of(tv->var.type))
 				return p->base_type;
 	return t->datadef();
 }
@@ -11877,7 +12049,7 @@ static DataDef *reference_member_referent(TokenMember *tm)
 {
 	if (!tm || !tm->var.is_reference())
 		return NULL;
-	DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tm->var.type);
+	DataDefPTR *rp = pointer_dd_of(tm->var.type);
 	return rp ? rp->base_type : NULL;
 }
 
@@ -12997,7 +13169,7 @@ static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd)
 		DataDef *p1 = fd->parameters[1];
 		DataDef *bind = p1;
 		if (refp && p1 && p1->is_pointer()) {
-			DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p1);
+			DataDefPTR *pp = pointer_dd_of(p1);
 			if (pp && pp->base_type) bind = pp->base_type;
 		}
 		if (same_object_class(cdd, bind)) return fd;
@@ -13022,16 +13194,20 @@ static Variable *class_conversion_to_class(DataDefCLASS *source,
 		    || !same_object_class(&fd->return_value_type(), target))
 			continue;
 		declared = true;
+		// obj_cv is the implicit object's cv MASK (implicit_object_cv;
+		// -1 unknown): a conversion lacking one of its bits is not viable,
+		// and between siblings the one adding the fewest bits wins.
 		if (fd->is_deleted || fd->parameters.size() != 1
-		    || (obj_cv == 1 && !fd->is_const_method))
+		    || (obj_cv > 0 && ((unsigned)obj_cv & ~fd->method_cv())))
 			continue;
 		if (!best) {
 			best = mv;
 			continue;
 		}
 		FuncDef *bfd = dynamic_cast<FuncDef *>(best->type);
-		if (obj_cv == 0 && bfd && bfd->is_const_method
-		    && !fd->is_const_method)
+		if (obj_cv >= 0 && bfd
+		    && (bfd->method_cv() & ~(unsigned)obj_cv)
+		       > (fd->method_cv() & ~(unsigned)obj_cv))
 			best = mv;
 	}
 	if (best || declared) return best;
@@ -13071,7 +13247,7 @@ static FuncDef *class_assign_operator_def(DataDefCLASS *cdd)
 		DataDef *p1 = fd->parameters[1];
 		DataDef *bind = p1;
 		if (refp && p1 && p1->is_pointer()) {
-			DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p1);
+			DataDefPTR *pp = pointer_dd_of(p1);
 			if (pp && pp->base_type) bind = pp->base_type;
 		}
 		if (same_object_class(cdd, bind)) return fd;
@@ -14861,7 +15037,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// the referenced type T (object/value semantics), NOT as a raw pointer — so a
 	// `T` argument binds a `const T&` parameter (e.g. the copy ctor) like C++.
 	if (param_is_ref && pdc->is_pointer()) {
-		const DataDefPTR *pp = dynamic_cast<const DataDefPTR *>(pdc);
+		const DataDefPTR *pp = pointer_dd_of(pdc);
 		if (pp && pp->base_type)
 			pdc = pp->base_type;
 	}
@@ -14871,10 +15047,36 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	// ref wrapper fell through every lane to the trailing neutral 0, and a
 	// varargs catch-all outranked the exact numeric candidate.
 	if (adc->is_reference()) {
-		const DataDefPTR *ar = dynamic_cast<const DataDefPTR *>(adc);
+		const DataDefPTR *ar = pointer_dd_of(adc);
 		if (ar && ar->base_type)
 			adc = ar->base_type;
 	}
+	// A reference binds an lvalue of its referent's cv or a LESS qualified
+	// one ([dcl.init.ref]/5); a more-qualified referent ranks below the
+	// exact one ([over.ics.rank]/3.2.6: f(int&) over f(volatile int&) for an
+	// int lvalue). A non-const lvalue reference never binds a MORE qualified
+	// lvalue (g++: "binding reference of type 'int&' to 'volatile int'
+	// discards qualifiers"); a const one may, through a temporary. Only the
+	// modeled bits are in a type (modeled_cv), so the test is exact over
+	// what the types carry; the rest of the ranking reads the unqualified
+	// referent (param_is_ref is spent on the peels above).
+	if (param_is_ref) {
+		const unsigned acv = adc->cv_quals(), rcv = pdc->cv_quals();
+		if ((acv & ~rcv) && param_is_nonconst_lref)
+			return -1;
+		if (rcv & ~acv) {
+			int s = score_arg_to_param(adc, pdc->unqualified(), false,
+						   allow_udc, arg_is_zero_literal,
+						   param_is_nonconst_lref);
+			return s > 0 ? s - 1 : s;
+		}
+	}
+	// A by-value parameter receives the argument's VALUE: the lvalue-to-rvalue
+	// conversion drops the glvalue's top-level cv ([conv.lval]; the call
+	// argument type carries it for the reference arms above), so a `volatile
+	// int` argument ranks against `int` exactly as an int does.
+	if (!param_is_ref)
+		adc = adc->unqualified();
 	// A class-object parameter binds: an argument of the SAME class (identity
 	// / copy), or — via one user-defined conversion — an argument that one of
 	// the class's single-argument constructors accepts.
@@ -15058,16 +15260,61 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		}
 		return 5;
 	}
+	// A function ARGUMENT — a designator or a function pointer — against an
+	// ARITHMETIC parameter: [conv.bool] is its only conversion (a pointer
+	// converts to bool), ranked as one; none reaches an integer or floating
+	// type. The lane above answers every fn-pointer PARAMETER, but
+	// DataDefFPTR::is_numeric() is true, so a function pointer scored an
+	// exact 5 against `long` by its storage (rawtype 64 == 64), tied the
+	// fn-pointer overload and, declared first, won — `f(pg)` picked f(long)
+	// — while a designator scored the neutral 0 against bool as well as
+	// long: `k(g)` ambiguous. Any other arithmetic parameter ranks NEUTRAL,
+	// as a designator always did, not refused: a member-template or varargs
+	// placeholder's marker parameter is that same 64-bit storage, and a
+	// lambda (a function here) must still reach its instantiate-and-reselect
+	// arm (g++.dg lambda-conv10, lambda-mangle2, lambda-variadic8).
+	if ((adc->is_function() || adc->as_fptr_dd())
+	    && pdc->is_numeric() && !pdc->is_pointer())
+		return pdc->rawtype() == DataType::dtBOOL ? 3 : 0;
 	bool p_ptr = pdc->is_pointer(), a_ptr = adc->is_pointer();
 	bool p_num = pdc->is_numeric(), a_num = adc->is_numeric();
 	if (p_ptr || a_ptr) {
 		if (p_ptr && a_ptr) {
+			// [conv.qual]: a pointer converts to a pointer to a MORE
+			// cv-qualified pointee — a qualification adjustment, Exact
+			// Match rank but worse than the identity it would otherwise
+			// tie with ([over.ics.rank]/3.2.5: f(int*) over
+			// f(volatile int*) for an int* argument) — and never to a
+			// LESS qualified one (g++: "invalid conversion from
+			// 'volatile int*' to 'int*'"). Below the first pointee
+			// every level must match exactly: adding a qualifier there
+			// needs const at each level between (int** -> volatile int**
+			// is ill-formed), and the const levels are the const
+			// campaign's (modeled_cv). Only the modeled bits exist in a
+			// type, so the test is exact over what the type carries.
+			const DataDefPTR *aq = adc->as_pointer_dd();
+			const DataDefPTR *pq = pdc->as_pointer_dd();
+			const unsigned acv = aq && aq->base_type ? aq->base_type->cv_quals() : 0u;
+			const unsigned pcv = pq && pq->base_type ? pq->base_type->cv_quals() : 0u;
+			if (acv & ~pcv)
+				return -1;
+			for (const DataDef *al = aq ? aq->base_type : NULL,
+				     *pl = pq ? pq->base_type : NULL;
+			     al && pl && al->is_pointer() && pl->is_pointer(); ) {
+				const DataDefPTR *an = al->as_pointer_dd();
+				const DataDefPTR *pn = pl->as_pointer_dd();
+				al = an ? an->base_type : NULL;
+				pl = pn ? pn->base_type : NULL;
+				if (al && pl && al->cv_quals() != pl->cv_quals())
+					return -1;
+			}
+			const int qual_adjust = acv != pcv ? 1 : 0;
 			const DataDefCLASS *ac = class_pointer_pointee(adc);
 			const DataDefCLASS *pc = class_pointer_pointee(pdc);
 			if (ac && pc) {
 				if (ac == pc)
-					return 5;
-				return ac->is_or_derives_from(pc) ? 4 : -1;
+					return 5 - qual_adjust;
+				return ac->is_or_derives_from(pc) ? 4 - qual_adjust : -1;
 			}
 			// A class pointee on exactly ONE side: the only pointer
 			// conversions are derived->base (both class, above) and
@@ -15080,11 +15327,14 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			if (ac || pc) {
 				const DataDef *other = ac ? pdc : adc;
 				const DataDefPTR *op =
-					dynamic_cast<const DataDefPTR *>(other);
+					pointer_dd_of(other);
 				const DataDef *ob = op ? op->base_type : NULL;
-				if (!ob || ob->type() != DataType::dtVOID)
+				// [conv.ptr]: a class pointer converts to void*
+				// only — never to void** (whose type() is ALSO
+				// dtVOID: the silent int**/S* -> void** overload)
+				if (!ob || !ob->is_void())
 					return -1;
-				return 3;   // void* standard conversion
+				return 3 - qual_adjust;   // void* standard conversion
 			}
 			// BOTH pointees non-class: [conv.ptr] admits only the
 			// SAME pointee (cv-widening included) and to/from void*
@@ -15099,23 +15349,42 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			// this cast cannot see keeps the rawtype comparison —
 			// reject only what is PROVEN unrelated.
 			const DataDefPTR *apt =
-				dynamic_cast<const DataDefPTR *>(adc);
+				pointer_dd_of(adc);
 			const DataDefPTR *ppt =
-				dynamic_cast<const DataDefPTR *>(pdc);
+				pointer_dd_of(pdc);
 			const DataDef *ab = apt ? apt->base_type : NULL;
 			const DataDef *pb = ppt ? ppt->base_type : NULL;
-			if (const DataDefCONST *cw =
-			    dynamic_cast<const DataDefCONST *>(ab))
+			if (const DataDefQUAL *cw =
+			    dynamic_cast<const DataDefQUAL *>(ab))
 				ab = cw->base_type;
-			if (const DataDefCONST *cw =
-			    dynamic_cast<const DataDefCONST *>(pb))
+			if (const DataDefQUAL *cw =
+			    dynamic_cast<const DataDefQUAL *>(pb))
 				pb = cw->base_type;
 			if (ab && pb) {
-				if (ab->type() == DataType::dtVOID
-				    || pb->type() == DataType::dtVOID)
-					return 3;   // void* standard conversion
+				// Identity before the void conversion: void* to
+				// void* is the identity, and one level down
+				// (void** against void**, the recursion below) it
+				// must rank EXACT (tests/testvoidpointee).
 				if (ab == pb || ab->name == pb->name)
-					return 5;
+					return 5 - qual_adjust;
+				if (ab->is_void() || pb->is_void())
+					return 3 - qual_adjust;   // void* standard conversion
+				// A POINTER pointee on either side: [conv.ptr] has
+				// no T** -> T* conversion and none at all below the
+				// first level (derived-to-base included; [conv.qual]'s
+				// cv is checked above), so the pointee must BE the
+				// other's type — this scorer's own EXACT rank one
+				// level down. A pointer's rawtype() is its own
+				// pointee's, so the representation test below graded
+				// int** exact against int*: f(int*)/f(int**) was
+				// "ambiguous", sz<int*>'s call bound sz<int>'s
+				// instance, and D** bound B** over void*
+				// (tests/testpointeelevelovlcxx).
+				if (ab->is_pointer() || pb->is_pointer())
+					return score_arg_to_param(ab, pb, false,
+								  false, false,
+								  false) == 5
+						? 5 - qual_adjust : -1;
 				// ENUM pointees keep their own conversion domain
 				// exactly like enum VALUES above — [conv.ptr] has
 				// no enum*->other-enum* conversion. Enums are
@@ -15131,7 +15400,7 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 				if (ape || ppe)
 					return (ape && ppe
 						&& same_enum_type(ape, ppe))
-						? 5 : -1;
+						? 5 - qual_adjust : -1;
 				// Two scalar pointees compare by TYPE IDENTITY when
 				// both are proven (Program::proven_scalar_identity,
 				// the one builtin table): [conv.ptr] has no
@@ -15163,14 +15432,14 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 							aid->name.c_str(), pb->name.c_str(),
 							pb->canonical_cpp_spelling().c_str(),
 							pid->name.c_str());
-					return aid == pid ? 5 : -1;
+					return aid == pid ? 5 - qual_adjust : -1;
 				}
 				if (ab->is_numeric() && pb->is_numeric())
 					return ab->rawtype() == pb->rawtype()
-						? 5 : -1;
+						? 5 - qual_adjust : -1;
 				return -1;
 			}
-			return adc->rawtype() == pdc->rawtype() ? 5 : 4;
+			return adc->rawtype() == pdc->rawtype() ? 5 - qual_adjust : 4 - qual_adjust;
 		}
 		// A null-pointer constant (integer literal 0) binds any pointer
 		// parameter — a standard conversion ([conv.ptr]), ranked below a
@@ -15258,7 +15527,7 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 	// constructed string's rep stayed uninitialized.
 	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg))
 		if (tc->cast_type && tc->cast_type->is_reference())
-			if (DataDefPTR *rp = dynamic_cast<DataDefPTR *>(tc->cast_type))
+			if (DataDefPTR *rp = pointer_dd_of(tc->cast_type))
 				if (rp->base_type)
 					return rp->base_type;
 	// A class-returning CALL argument types by the RESOLVED callee's
@@ -15305,21 +15574,17 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 			// referent entirely — leaving a `const int&` arg as `int*`,
 			// so `tuple<const int&>(const int&)` never matched.
 			if (DataDefPTR *rp =
-			    dynamic_cast<DataDefPTR *>(tv->var.type))
+			    pointer_dd_of(tv->var.type))
 				if (rp->base_type)
 					return rp->base_type;
 		}
-		if (tv->var.is_fixed_array() && tv->var.type && m_prog)
-			return m_prog->getPointerType(tv->var.type);
 	}
-	if (TokenMember *tm = dynamic_cast<TokenMember *>(arg)) {
-		if (tm->is_fixed_array_member() && tm->var.type && m_prog)
-			return m_prog->getPointerType(tm->var.type);
-	}
-	if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(arg->datadef())) {
-		if (ca->element_type && m_prog)
-			return m_prog->getPointerType(ca->element_type);
-	}
+	// [conv.array] decay — ONE owner (Program::array_decay_pointer): a
+	// fixed-array variable or member, a partial subscript, a C array type.
+	// This function carried its own flattened copy of three of those arms.
+	if (m_prog)
+		if (DataDef *adp = m_prog->array_decay_pointer(arg))
+			return adp;
 	return arg->datadef();
 }
 
@@ -15667,7 +15932,7 @@ static DataDef *initializer_list_element_type(DataDefCLASS *ilc)
 {
 	if (!ilc || ilc->members.size() != 2)
 		return NULL;
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(ilc->members[0].second);
+	DataDefPTR *p = pointer_dd_of(ilc->members[0].second);
 	return p ? p->base_type : NULL;
 }
 
@@ -16036,13 +16301,13 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		TokenBase *src_arg = ctor_args[0];
 		TokenVar *tv = dynamic_cast<TokenVar *>(src_arg);
 		if (tv && src_arg->type() == TokenType::ttVariable && m_prog)
-			obj_cv = m_prog->implicit_object_constness(tv->var);
+			obj_cv = m_prog->implicit_object_cv(tv->var);
 		else if (src_arg->datadef()) {
 			DataDef *src_dd = src_arg->datadef();
 			if (src_dd->is_reference())
-				if (DataDefPTR *ref = dynamic_cast<DataDefPTR *>(src_dd))
+				if (DataDefPTR *ref = pointer_dd_of(src_dd))
 					if (ref->base_type) src_dd = ref->base_type;
-			obj_cv = src_dd->is_const() ? 1 : 0;
+			obj_cv = (int)(src_dd->cv_quals() & (cvCONST | cvVOLATILE));
 		}
 		Variable *conv = class_conversion_to_class(acls, cdd, obj_cv);
 		FuncDef *conv_fd = conv ? dynamic_cast<FuncDef *>(conv->type) : NULL;
@@ -16766,7 +17031,7 @@ node_t CirBuilder::class_aggregate_init(
 	// not a member fill — decline to the copy lane.
 	if (ctor_args.size() == 1 && ctor_args[0]) {
 		DataDef *ad = operand_value_datadef(ctor_args[0]);
-		while (DataDefCONST *ac = dynamic_cast<DataDefCONST *>(ad))
+		while (DataDefQUAL *ac = dynamic_cast<DataDefQUAL *>(ad))
 			ad = ac->base_type;
 		DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(ad);
 		if (acls && acls->is_or_derives_from(cdd))
@@ -16874,14 +17139,17 @@ node_t CirBuilder::class_aggregate_init(
 						      origin));
 				continue;
 			}
-			node_t init = translate_expr(arg);
+			// A reference member (pointer slot) BINDS to the
+			// initializer's address — the one reference-bind owner,
+			// which also materializes a prvalue for a const referent
+			// (a bare N_ADDR of `5` is not an lvalue).
+			DataDef *referent = ref_param_referent(mt);
+			node_t init = referent
+				? ref_param_arg_addr(arg, referent,
+						     unqualified_type(referent) != referent)
+				: translate_expr(arg);
 			if (!init)
 				return decline();
-			// A reference member (pointer slot) BINDS to the
-			// initializer's address (same rule as the ctor
-			// member-init lane).
-			if (mt && mt->is_reference())
-				init = node1(N_ADDR, init, origin);
 			node_t asgn = node2(N_ASSIGN, member_lvalue(mn), init,
 					    origin);
 			flush_pending_stmts(stmts);
@@ -17409,7 +17677,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 			if (ofd && ofd->returns_reference()) {
 				DataDef *rd = &ofd->return_value_type();
 				if (rd && rd->is_pointer()) {
-					DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rd);
+					DataDefPTR *rp = pointer_dd_of(rd);
 					if (rp && rp->base_type)
 						return rp->base_type;
 				}
@@ -17638,7 +17906,7 @@ std::string datadef_cpp_spelling_w2(DataDef *dd)
 	if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(dd))
 		return c->canonical_cpp_spelling().empty() ? c->name
 						         : c->canonical_cpp_spelling();
-	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 		return datadef_cpp_spelling_w2(p->base_type) + "*";
 	return dd->name;
 }
@@ -17737,11 +18005,11 @@ static bool w2_datadef_involves_template_param(DataDef *dd)
 	for (int guard = 0; dd && guard < 16; ++guard) {
 		if (dd->is_template_param())
 			return true;
-		if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd)) {
+		if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(dd)) {
 			dd = cd->base_type;
 			continue;
 		}
-		if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) {
+		if (DataDefPTR *pd = pointer_dd_of(dd)) {
 			dd = pd->base_type;
 			continue;
 		}
@@ -17972,7 +18240,7 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 				 ? tm->var.name : callee->method_display_name;
 	std::string sym = itanium_mangle_member_template_sub(
 		owner->canonical_cpp_spelling(), mname, targs, ret, params,
-		callee->is_const_method);
+		callee->method_cv());
 	if (sym.empty() || sym[0] != '_') {
 		if (probing) fprintf(stderr,
 			"[mtcall] %s: bail mangle sym='%s' ret='%s' targ0='%s'\n",
@@ -19699,6 +19967,7 @@ bool CirBuilder::int_complex_const_fold(TokenBase *tb, long &re, long &im)
 		if (!int_complex_const_fold(top->right, r, i))
 			return false;
 		if (tb->id() == TokenID::tkNeg) { re = -r; im = -i; return true; }
+		if (tb->id() == TokenID::tkUnaryPlus) { re = r; im = i; return true; }
 		if (tb->id() == TokenID::tkBnot) { re = r; im = -i; return true; }
 		return false;
 	}
@@ -20054,6 +20323,9 @@ node_t CirBuilder::int_complex_unary(TokenOperator *top, TokenBase *tb)
 	if (!oc)
 		return NULL;
 	TokenID op = tb->id();
+	// +z is z: the struct spine has no promotion to apply.
+	if (op == TokenID::tkUnaryPlus)
+		return translate_expr(top->right);
 	if (op != TokenID::tkNeg && op != TokenID::tkBnot && op != TokenID::tkLnot)
 		return NULL;
 	node_t items = list();
@@ -20583,7 +20855,9 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	// caught only when c2mir's checker refused `**pp` / `(*pa)[2]`.
 	DataDef *base_dd = dd;
 	std::vector<carray_dim_t> ptr_array_dims;
-	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims);
+	std::vector<unsigned> ptr_level_cv;	// each level's own cv + the base's
+	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims,
+						       &ptr_level_cv);
 
 	// Type specifier. A user/std:: CLASS instance is a DataDefCLASS (is-a
 	// DataDefSTRUCT) but reports is_struct() false (basetype btClass), so it must
@@ -20621,6 +20895,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	} else {
 		append_type_specs(tl, base_dd);
 	}
+	// The aliased base's own cv: `typedef volatile int vint;`.
+	append_cv_specs(tl, ptr_level_cv.empty() ? cvNONE : ptr_level_cv.back());
 
 	node_t share = node1(N_SHARE, tl);
 
@@ -20632,7 +20908,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	node_t decl_list = list();
 	for (size_t d = 0; d < arr_dims.size(); d++)
 		append(decl_list, node3(N_ARR, ignore(), list(), integer(arr_dims[d])));
-	append_pointer_declarator(decl_list, ptr_piece_levels, ptr_array_dims);
+	append_pointer_declarator(decl_list, ptr_piece_levels, ptr_array_dims,
+				  &ptr_level_cv);
 
 	node_t decl = node2(N_DECL, alias_id, decl_list);
 
@@ -20657,7 +20934,7 @@ static DataDef *main_ret_normalized(TokenFunc *tf, DataDef *ret_dd)
 	// name-only match: the same discriminator func_def's global-ctor
 	// wrapper uses for main (tf->method is populated for plain top-level
 	// functions too, so it cannot distinguish a class method here)
-	if (ret_dd && ret_dd->rawtype() == DataType::dtVOID
+	if (ret_dd && ret_dd->is_void()
 	    && tf->var.name == "main")
 		return &ddINT;
 	return ret_dd;
@@ -20676,7 +20953,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 			  ? (DataDef *)fd->multi_ret_struct
 			  : main_ret_normalized(tf, &fd->return_value_type());
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
-	int ret_star_depth = dd_peel_pointers(ret_dd);
+	std::vector<unsigned> ret_level_cv;	// each level's own cv + the base's
+	int ret_star_depth = dd_peel_pointers(ret_dd, &ret_level_cv);
 
 	// A by-value non-trivial class return uses the __retbuf ABI (void return +
 	// hidden `struct <T> *__retbuf` first param); keep the prototype in
@@ -20691,7 +20969,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	// DataDefFPTR return as a bare `long`. Kept in lock-step with func_def.
 	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_ref
 				 && fd->return_typedef_name.empty())
-				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
+				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL; // allowed-exception: renders the return's FPTR node
 
 	int ret_decl_stars = ret_star_depth;
 	node_t ret_type = NULL;
@@ -20705,8 +20983,11 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
 		ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 						     fd->return_typedef_name);
+		append_cv_specs(ret_type, alias_use_cv(fd->return_typedef_name,
+						       ret_decl_stars, ret_level_cv));
 	} else {
 		ret_type = type_list(ret_dd);
+		append_cv_specs(ret_type, ret_level_cv.back());	// `volatile int *f(void)`
 	}
 	// C internal linkage: the prototype must agree with the N_STATIC
 	// definition ("static declaration follows non-static" otherwise).
@@ -20785,7 +21066,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 				  std::vector<carray_dim_t>());
 	} else {
 		for (int rs = 0; rs < ret_decl_stars; rs++)
-			append(decl_list, pointer());
+			append(decl_list, pointer((size_t)rs < ret_level_cv.size()
+						  ? ret_level_cv[rs] : cvNONE));
 		// T&-returning method: returned by address (one extra pointer level), so
 		// the prototype matches the definition and call sites can deref.
 		if (ret_is_ref)
@@ -20834,7 +21116,7 @@ static std::string overflow_helper_name(const std::string &generic,
 		DataDef *dd = third_arg->datadef();
 		if (!is_p) {
 			// `&dst` — a pointer; the destination is its pointee.
-			if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd))
+			if (DataDefPTR *pdd = pointer_dd_of(dd))
 				dst = pdd->base_type;
 		} else {
 			// typed-zero — its own type is the destination type.
@@ -20907,6 +21189,7 @@ static bool constant_integer_operand(TokenBase *t, madc_wide_int &out)
 		return false;
 	switch (t->id()) {
 	case TokenID::tkNeg:  out = -out; break;
+	case TokenID::tkUnaryPlus: break;
 	case TokenID::tkBnot: out = ~out; break;
 	case TokenID::tkLnot: out = !out; break;
 	default: return false;
@@ -21815,24 +22098,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// function pointer (no slot for the captures — GCC uses a trampoline),
 			// so leaving the short name there yields a clean c2mir error rather
 			// than a callback that reads garbage captures.
-			if (FuncDef *nfd = (tv->var.type ? tv->var.type->as_funcdef_dd() : NULL)) {
-				// A function used as a VALUE (address-taken / function-pointer
-				// decay: `&abort`, `f = exit`, `{abort}`, or the hoisted symbol of
-				// a capture-free GNU nested fn). Emit its call symbol and record it
-				// so translate_module emits a prototype — without it c2mir sees an
-				// "undeclared identifier" (call sites already record callees; a bare
-				// value-use must too). EXCEPTION: a CAPTURING nested fn cannot be a
-				// plain function pointer (no slot for the captures — GCC uses a
-				// trampoline), so leave the short source name there to yield a clean
-				// c2mir error rather than a callback that reads garbage captures.
-				bool capturing_nested = !nfd->local_emit_name.empty()
-							&& !nfd->captured_vars.empty();
-				if (!capturing_nested) {
-					std::string sym = call_emit_symbol(tv->var, nfd);
-					referenced_funcs.insert(sym);
-					return id(sym.c_str(), tb);
-				}
-			}
+			if (FuncDef *nfd = (tv->var.type ? tv->var.type->as_funcdef_dd() : NULL))
+				if (node_t fv = function_value_symbol(tv->var, nfd, tb))
+					return fv;
 			// Record file-scope (non-local, non-param) references so
 			// translate_module can emit extern decls for libc globals
 			// (stderr/stdout/stdin) that were registered lazily and never
@@ -22161,6 +22429,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// path emitted the name without recording it, so
 			// `&std::numpunct<char>::id` produced a reference to
 			// _ZNSt7__cxx118numpunctIcE2idE that nothing declared.
+			// `&f` on a FUNCTION is its address, the same value its
+			// designator decays to ([conv.func]) — its call symbol. The
+			// source name made binding `int (&rf)(int) = g` an
+			// "undeclared identifier g".
+			if (FuncDef *afd = (ta->var.type ? ta->var.type->as_funcdef_dd() : NULL))
+				if (node_t fv = function_value_symbol(ta->var, afd, tb))
+					return fv;
 			note_global_reference(ta->var);
 			if (ta->var.is_reference())
 				return id(var_emit_name(ta->var).c_str(), tb);
@@ -22352,6 +22627,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						return flat;
 				}
 				base = id(var_emit_name(tsub->object).c_str(), tb);
+				// A REFERENCE to a pointer subscripts its REFERENT
+				// ([expr.sub]: `int *&rp; rp[1]` is `(*rp)[1]`): the
+				// reference is stored as a pointer to it — the TokenVar
+				// read's deref. The bare stored pointer indexed the
+				// reference's own cell (rp[1] read the NEXT int *).
+				// A carrier `value &` (its stored pointer IS the carrier
+				// address, below) and a class receiver (operator[],
+				// above) have no pointer referent.
+				if (tsub->object.is_reference()) {
+					DataDef *referent =
+						TokenSubscript::referent_type(tsub->object.type);
+					if (referent && referent->is_pointer()
+					    && !referent->is_reference())
+						base = node1(N_DEREF, base, tb);
+				}
 				}
 			}
 			// Carrier SLOT access (`bag["k"]`, `arr[i]` — parser-typed
@@ -22529,8 +22819,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// element value, so use `.` — even when the base `p` is a
 				// pointer (`MENU_DATA *m; m[i].field`). Use `->` only if the
 				// element itself is a pointer (`T **pp; pp[i]->field`).
+				// A PARTIAL subscript (`ps[1]->x`, struct P ps[2][2])
+				// denotes a row, which decays: its datadef() is the
+				// flattened element, so the array question goes to
+				// the decay owner. Only an arrow access — the parser
+				// synthesizes a POINTER object for it — takes `->`:
+				// `ps[1].x` stays `.`, which the checker rejects.
 				DataDef *pdd = tm->parent_expr->datadef();
-				ptr_like = pdd && pdd->is_pointer();
+				ptr_like = (pdd && pdd->is_pointer())
+					|| (m_prog && tm->object.type
+					    && tm->object.type->is_pointer()
+					    && m_prog->array_decay_pointer(tm->parent_expr));
 			} else {
 				// A pointer object uses `->`; a bare array object decays to a
 				// pointer and also uses `->`.
@@ -22853,13 +23152,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// target: "incompatible types in assignment to a pointer"). Only
 			// DataDefPTR chains carry stackable levels; a non-DataDefPTR
 			// pointer (e.g. DataDefFPTR) keeps the single-pointer fallback.
-			int cast_ptr_levels = 0;
-			while (cast_dd) {
-				DataDefPTR *p = (cast_dd ? cast_dd->as_pointer_dd() : NULL);
-				if (!p || !p->base_type) break;
-				cast_dd = p->base_type;
-				cast_ptr_levels++;
-			}
+			// The ONE peel owner, each level's own cv kept: `(volatile int *)p`
+			// dereferences a volatile int (the base's cv rides the spec).
+			std::vector<unsigned> cast_level_cv;
+			int cast_ptr_levels = dd_peel_pointers(cast_dd, &cast_level_cv);
 
 			// Pointer-to-array cast `(T (*)[N]) expr` (task #79): peel the
 			// pointee's CArray dims and emit them as N_ARR suffixes AFTER
@@ -22880,8 +23176,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t tl = type_list(cast_dd);
 			node_t cast_decl_list = list();
 			if (cast_ptr_levels > 0) {
+				append_cv_specs(tl, cast_level_cv.back());
+				// Level 0 is the cast RESULT's own cv — a cast yields the
+				// unqualified type (C11 6.5.4p5): never spelled.
 				for (int s = 0; s < cast_ptr_levels; s++)
-					append(cast_decl_list, pointer());
+					append(cast_decl_list, pointer(s ? cast_level_cv[s] : cvNONE));
 			} else if (cast_is_ptr) {
 				append(cast_decl_list, pointer());
 			}
@@ -22933,16 +23232,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			std::string opmname = std::string("operator") + uop;
 			DataDefCLASS *icls = as_class_instance(operand_tb->datadef());
 			if (is_post && icls) {
-				// Prefer the parameterized (postfix) overload: scan the mangled
-				// family for a params>1 (int-taking) operator++/--.
-				std::string mc = icls->name + "__" + opmname;
-				std::string mu = mc + "_un";
-				FuncDef *post = NULL;
-				for (Variable *mv : icls->methods) {
-					if (!mv || (mv->name != mc && mv->name != mu)) continue;
-					FuncDef *fd = (mv->type ? mv->type->as_funcdef_dd() : NULL);
-					if (fd && fd->parameters.size() > 1) { post = fd; break; }
-				}
+				// Prefer the parameterized (postfix) overload.
+				FuncDef *post = class_postfix_step_operator(icls, tb->id());
 				if (post) {
 					// type()==ttVariable, not a TokenVar downcast:
 					// TokenMember/TokenCallFunc derive from TokenVar
@@ -23001,6 +23292,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			const char *uop = NULL;
 			switch (tb->id()) {
 			case TokenID::tkNeg:  uop = "-"; break;
+			case TokenID::tkUnaryPlus: uop = "+"; break;
 			case TokenID::tkLnot: uop = "!"; break;
 			case TokenID::tkBnot: uop = "~"; break;
 			default: break;
@@ -23019,6 +23311,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t operand = (tb->id() == TokenID::tkLnot)
 				? translate_cond(top->right)
 				: translate_expr(top->right);
+			// Unary plus: c2mir's one-operand N_ADD (its own parse of `+x`)
+			// applies the promotions to an arithmetic operand. A pointer,
+			// array or function operand (C++, [expr.unary.op]/7) is its
+			// decayed VALUE, which c2mir takes from the operand itself —
+			// its `+` accepts arithmetic only.
+			if (tb->id() == TokenID::tkUnaryPlus) {
+				DataDef *rt = top->datadef();
+				if (rt && (rt->is_pointer() || rt->as_fptr_dd()))
+					return operand;
+				return node1(N_ADD, operand, tb);
+			}
 			if (tb->id() == TokenID::tkNeg)
 				// Unary negation: c2mir represents `-x` as a SINGLE-operand
 				// N_SUB (grammar: `N_SUB (expr)`), lowered with float UNOP
@@ -23070,11 +23373,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				}
 				// A const-qualified DATA MEMBER (`const char *const
 				// platform` — the madc::sys facts, task #91): the member
-				// view carries vfCONSTANT or a DataDefCONST-wrapped type.
+				// view carries vfCONSTANT or a const-qualified type.
 				// gcc canon: "assignment of read-only member 'm'".
 				if (TokenMember *ltm = (top->left ? top->left->as_member_tok() : NULL)) {
 					if (ltm->var.is_constant()
-					    || (ltm->var.type && ltm->var.type->as_const_dd())) {
+					    || (ltm->var.type && ltm->var.type->is_const())) {
 						std::string msg = "assignment of read-only member '"
 							+ ltm->var.name + "'";
 						return error_node(msg.c_str(), tb);
@@ -23270,8 +23573,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// c2mir rejects it, so cast the size-1 pointer operand(s) to
 			// `char *` — the exact size-1 semantics GCC uses — before the op.
 			if (code == N_ADD || code == N_SUB) {
-				DataDef *ldd = top->left  ? top->left->datadef()  : NULL;
-				DataDef *rdd = top->right ? top->right->datadef() : NULL;
+				// [conv.array]: an ARRAY operand decays to pointer-to-
+				// element BEFORE the arithmetic, and a C-array
+				// Variable's datadef() is its ELEMENT (the array-ness is
+				// a Variable flag, not a DataDefCArray). Asking about
+				// datadef() made `void *a[3]; a + 3` look like void*
+				// arithmetic and advance 3 BYTES instead of 24 — silent,
+				// on every build (gcc: 24). array_decay_pointer is the
+				// one owner of the decay; an array operand is never
+				// size-1 (its pointee is the complete element).
+				DataDef *ldd = m_prog ? m_prog->array_decay_pointer(top->left) : NULL;
+				DataDef *rdd = m_prog ? m_prog->array_decay_pointer(top->right) : NULL;
+				if (!ldd && top->left)
+					ldd = top->left->datadef();
+				if (!rdd && top->right)
+					rdd = top->right->datadef();
 				if (is_size1_pointer(ldd))
 					left = node2(N_CAST, char_ptr_type(), left, tb);
 				if (is_size1_pointer(rdd))
@@ -23358,7 +23674,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					}
 				}
 				DataDef *elem = NULL;
-				if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd))
+				if (DataDefPTR *pdd = pointer_dd_of(argdd))
 					elem = pdd->base_type;
 				DataDefCLASS *ecls = as_class_instance(elem);
 				// Scalar / pointer / dtor-less element: emit nothing.
@@ -23631,10 +23947,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					 : id(tva->ap_var->name.c_str(), tb);
 		// Build a (T *)0 carrier: base specs of T plus one extra '*'.
 		DataDef *base = tva->target_type;
-		int levels = dd_peel_pointers(base) + 1;   // the one pointer-peel owner
+		std::vector<unsigned> level_cv;	// T's levels' own cv + the base's
+		int levels = dd_peel_pointers(base, &level_cv) + 1;   // the one pointer-peel owner
 		node_t decl_list = list();
-		for (int i = 0; i < levels; i++) append(decl_list, pointer());
-		node_t type_node = node2(N_TYPE, type_list(base),
+		// [0] is the carrier's own `*`; T's level i is carrier level i + 1.
+		for (int i = 0; i < levels; i++)
+			append(decl_list, pointer(i ? level_cv[i - 1] : cvNONE));
+		node_t tspec = type_list(base);
+		append_cv_specs(tspec, level_cv.back());
+		node_t type_node = node2(N_TYPE, tspec,
 					 node2(N_DECL, ignore(), decl_list));
 		node_t typeptr = node2(N_CAST, type_node, integer(0));
 		node_t args = list();
@@ -23841,7 +24162,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// an error (which gcc reports too).
 	if (tr->returns && m_cur_func_returns_void) {
 		DataDef *edd = tr->returns->datadef();
-		if (edd && !edd->is_pointer() && edd->rawtype() == DataType::dtVOID) {
+		if (edd && edd->is_void()) {
 			node_t items = list();
 			node_t expr = translate_expr(tr->returns);
 			for (node_t p : m_pending_stmts)
@@ -25093,9 +25414,9 @@ static bool class_has_type_alias(DataDefCLASS *cls, const std::string &name)
 	// reason the pointer walk excludes them: they are addresses, not handles on
 	// a value.
 	if (brdd && brdd->is_pointer() && !brdd->is_reference()) {
-		DataDefPTR *bp = dynamic_cast<DataDefPTR *>(brdd->unqualified());
+		DataDefPTR *bp = pointer_dd_of(brdd->unqualified());
 		DataDef *pointee = bp ? bp->base_type : NULL;
-		if (!pointee || pointee->rawtype() == DataType::dtVOID
+		if (!pointee || pointee->is_void()
 		    || pointee->is_function() || brdd->is_member_pointer())
 			return decline("its begin() returns a pointer with no "
 				       "renderable pointee");
@@ -25543,7 +25864,7 @@ node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cl
 	} else {
 		DataDef *ibase = ip.itptr ? ip.itptr->unqualified() : NULL;
 		int stars = ibase ? 1 + dd_peel_pointers(ibase) : 0;
-		if (!ibase || !dump_pointee_specs(ibase, ispecs))
+		if (!ibase || !pointee_decl_specs(ibase, ispecs))
 			return error_node("range-for: iterator pointee has no "
 					  "renderable declaration", fe);
 		for (int i = 0; i < stars; i++)
@@ -25708,7 +26029,7 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
 		int astars_n = abase ? 1 + dd_peel_pointers(abase) : 0;
 		node_t aspecs = list();
 		node_t astars = list();
-		if (!abase || !dump_pointee_specs(abase, aspecs))
+		if (!abase || !pointee_decl_specs(abase, aspecs))
 			return error_node("range-for: array element type has no "
 					  "renderable declaration", fe);
 		for (int i = 0; i < astars_n; i++)
@@ -26017,8 +26338,7 @@ node_t CirBuilder::translate_go(TokenBase *tb)
 		    || u->is_complex() || u->is_member_pointer())
 			return error_node("go: only integer, floating and "
 				"pointer arguments spawn in this slice", tb);
-		if (u->is_pointer() || u->is_cstr()
-		    || dynamic_cast<DataDefFPTR *>(u))
+		if (u->is_pointer() || u->is_cstr() || u->as_fptr_dd())
 			slots.push_back(SK_PTR);
 		else if (u->is_real()) {
 			if (u->size > 8)
@@ -27145,9 +27465,9 @@ static bool tsubst_datadef_involves_template_param(DataDef *dd)
 		return true;
 	if (DataDefREF *rd = dynamic_cast<DataDefREF *>(dd))
 		return tsubst_datadef_involves_template_param(rd->base_type);
-	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd))
+	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 		return tsubst_datadef_involves_template_param(pd->base_type);
-	if (DataDefCONST *cd = dynamic_cast<DataDefCONST *>(dd))
+	if (DataDefQUAL *cd = dynamic_cast<DataDefQUAL *>(dd))
 		return tsubst_datadef_involves_template_param(cd->base_type);
 	return false;
 }
@@ -28657,7 +28977,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			  : main_ret_normalized(tf, &fd->return_value_type());
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	bool ret_is_ref = fd->returns_reference();   // T& -> returned by address (one more *)
-	int ret_star_depth = dd_peel_pointers(ret_dd);
+	std::vector<unsigned> ret_level_cv;	// each level's own cv + the base's
+	int ret_star_depth = dd_peel_pointers(ret_dd, &ret_level_cv);
 
 	// A by-value non-trivial class return uses the struct-return (__retbuf) ABI:
 	// the C return type is `void`, a hidden `struct <T> *__retbuf` is the first
@@ -28685,7 +29006,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// A retbuf-returning fn also has a `void` C return type but goes through the
 	// __retbuf path, so keep it out of the plain-void lowering.
 	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && !ret_via_retbuf && ret_dd
-				  && ret_dd->rawtype() == DataType::dtVOID;
+				  && ret_dd->is_void();
 	// Track reference return so translate_return emits `return &<expr>`.
 	m_cur_func_returns_ref = ret_is_ref;
 	// Track a `Cls *` or `Cls&` return so translate_return can emit a
@@ -28710,7 +29031,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// the function declarator (built by fnptr_decl_pieces at the decl_list below).
 	DataDefFPTR *ret_fnptr = (!ret_via_retbuf && !ret_is_ref
 				 && fd->return_typedef_name.empty())
-				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL;
+				? dynamic_cast<DataDefFPTR *>(ret_dd) : NULL; // allowed-exception: renders the return's FPTR node
 
 	// Retbuf-returning fn: C return type is `void`.
 	int ret_decl_stars = ret_star_depth;
@@ -28729,12 +29050,15 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		ret_type = type_list(&fd->return_value_type(), fd->return_typedef_name);
 		ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 						     fd->return_typedef_name);
+		append_cv_specs(ret_type, alias_use_cv(fd->return_typedef_name,
+						       ret_decl_stars, ret_level_cv));
 		if (!m_cur_func_returns_void) {
 			m_cur_func_ret_spec_dd = &fd->return_value_type();
 			m_cur_func_ret_spec_alias = fd->return_typedef_name;
 		}
 	} else {
 		ret_type = type_list(ret_dd);
+		append_cv_specs(ret_type, ret_level_cv.back());	// `volatile int *f(void)`
 		if (!m_cur_func_returns_void)
 			m_cur_func_ret_spec_dd = ret_dd;
 	}
@@ -28822,13 +29146,23 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		for (size_t i = 0; i < nparam; i++) {
 			const char *pname = "p";
 			std::string ptypedef;
+			DataDef *ptype = fd->parameters[i];
 			if (tf->method && i < tf->method->parameters.size()) {
-				pname = tf->method->parameters[i]->name.c_str();
-				ptypedef = tf->method->parameters[i]->typedef_name;
+				Variable *pv = tf->method->parameters[i];
+				pname = pv->name.c_str();
+				ptypedef = pv->typedef_name;
+				// The parameter OBJECT's own top-level cv (`int f(volatile
+				// int n)`): the function type drops it ([dcl.fct]/5 — the
+				// prototype keeps `int n`), the DEFINITION declares it, so a
+				// volatile parameter lives in memory and survives longjmp
+				// (C11 7.13.2.1p3). The two are compatible (6.7.6.3p15).
+				if (pv->type && pv->type != ptype && pv->type->cv_quals()
+				    && pv->type->unqualified() == ptype->unqualified())
+					ptype = pv->type;
 			}
 			if (ptypedef.empty() && i < fd->param_typedef_names.size())
 				ptypedef = fd->param_typedef_names[i];
-			append(param_list, param_decl(fd->parameters[i], pname, ptypedef));
+			append(param_list, param_decl(ptype, pname, ptypedef));
 		}
 	}
 	// Hidden `struct V *__madc_vb<i>` params for a madc-emitted ctor of a
@@ -28855,7 +29189,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				  std::vector<carray_dim_t>());
 	} else {
 		for (int rs = 0; rs < ret_decl_stars; rs++)
-			append(decl_list, pointer());
+			append(decl_list, pointer((size_t)rs < ret_level_cv.size()
+						  ? ret_level_cv[rs] : cvNONE));
 		// A T&-returning method returns by address: one extra pointer level (so
 		// `int&`->`int*`, `char*&`->`char**`). Matches g++'s reference ABI.
 		if (ret_is_ref)
@@ -29637,7 +29972,7 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		// K_INT and the shim passed a raw `long` to the fn-ptr parameter
 		// ("using integer without cast for pointer type parameter"). Treat it
 		// like any other pointer param: unmarshallable -> no shim.
-		if (pt->is_pointer() || pt->is_simd() || dynamic_cast<DataDefFPTR *>(pt))
+		if (pt->is_pointer() || pt->is_simd() || pt->as_fptr_dd())
 			return false;
 		if (pt->type() == DataType::dtBOOL)   { out.kind = ShimSlot::K_BOOL; return true; }
 		if (pt->is_integer())                 { out.kind = ShimSlot::K_INT;  return true; }
@@ -29689,15 +30024,15 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		ret_len_fd = class_method_def(ret_cdd, "size");
 		if (!ret_len_fd) ret_len_fd = class_method_def(ret_cdd, "length");
 		rkind = (ret_cstr_fd && ret_len_fd) ? R_TEXTOBJ : R_INST;
-	} else if (!rt || (rt->type() == DataType::dtVOID && !rt->is_pointer())) {
-		// Structural: a void* is a DataDefPTR whose type() is now dtVOID (the
-		// derivation moved off the tag), so guard with !is_pointer() — a void*
-		// return is not R_VOID; it falls to the pointer bail below (no shim).
+	} else if (!rt || rt->is_void()) {
+		// Structural: a void* is a DataDefPTR whose type() is ALSO dtVOID (the
+		// derivation moved off the tag); DataDef::is_void() owns that guard — a
+		// void* return is not R_VOID; it falls to the pointer bail below (no shim).
 		rkind = R_VOID;
 	} else if (rt->is_cstr()) {
 		rkind = R_CSTR;
 	} else if (as_class_instance(rt) || rt->is_pointer() || rt->is_simd()
-		   || dynamic_cast<DataDefFPTR *>(rt)) {
+		   || rt->as_fptr_dd()) {
 		// trivial-class / pointer / SIMD returns: not marshalled yet. A
 		// function-pointer return is the same case as a fn-ptr parameter
 		// (classify_param): DataDefFPTR reports dtINT64/is_integer() and not
@@ -30383,10 +30718,10 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			std::string sym;
 			if (dn.compare(0, 8, "operator") == 0)
 				sym = itanium_mangle_operator_sub(
-					cls, dn.substr(8), psp, fd->is_const_method);
+					cls, dn.substr(8), psp, fd->method_cv());
 			else
 				sym = itanium_mangle_member_sub(
-					cls, dn, psp, fd->is_const_method);
+					cls, dn, psp, fd->method_cv());
 			if (external_symbol_available(sym))
 				fd->emit_symbol = sym;
 		}
@@ -31998,7 +32333,8 @@ node_t CirBuilder::translate_module(Program *prog)
 
 		DataDef *ret_dd = &fd->return_value_type();
 		bool ret_is_ref = fd->returns_reference();
-		int ret_decl_stars = dd_peel_pointers(ret_dd);
+		std::vector<unsigned> ret_level_cv;	// each level's own cv + the base's
+		int ret_decl_stars = dd_peel_pointers(ret_dd, &ret_level_cv);
 
 		// A by-value non-trivial class return uses the __retbuf ABI — the
 		// extern must mirror func_proto/func_def and every call lane
@@ -32023,6 +32359,8 @@ node_t CirBuilder::translate_module(Program *prog)
 							      &fd->return_value_type()).c_str()));
 			ret_decl_stars = explicit_star_count(&fd->return_value_type(),
 							     fd->return_typedef_name);
+			append_cv_specs(ext_list, alias_use_cv(fd->return_typedef_name,
+							       ret_decl_stars, ret_level_cv));
 		} else if (ret_dd && (ret_dd->is_struct() || as_class_instance(ret_dd))
 			   && !ret_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(ret_dd));
@@ -32030,8 +32368,10 @@ node_t CirBuilder::translate_module(Program *prog)
 				append(ext_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
 			else
 				append_type_specs(ext_list, ret_dd);
+			append_cv_specs(ext_list, ret_level_cv.back());
 		} else {
 			append_type_specs(ext_list, ret_dd);
+			append_cv_specs(ext_list, ret_level_cv.back());	// lock-step with func_def
 		}
 		node_t share = node1(N_SHARE, ext_list);
 
@@ -32081,7 +32421,8 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t decl_list = list();
 		append(decl_list, func_inner);
 		for (int rs = 0; rs < ret_decl_stars; rs++)
-			append(decl_list, pointer());
+			append(decl_list, pointer((size_t)rs < ret_level_cv.size()
+						  ? ret_level_cv[rs] : cvNONE));
 		if (ret_is_ref)
 			append(decl_list, pointer());
 
@@ -32126,7 +32467,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (gv->type->is_function())
 			continue;
 		{
-			DataDefPTR *fp = dynamic_cast<DataDefPTR *>(gv->type);
+			DataDefPTR *fp = pointer_dd_of(gv->type);
 			if (fp && fp->base_type && fp->base_type->is_function())
 				continue;
 		}
@@ -32135,7 +32476,7 @@ node_t CirBuilder::translate_module(Program *prog)
 
 		DataDef *gdd = gv->type;
 		bool g_is_ptr = gdd->is_pointer();
-		DataDefPTR *gptr = g_is_ptr ? dynamic_cast<DataDefPTR *>(gdd) : NULL;
+		DataDefPTR *gptr = g_is_ptr ? dynamic_cast<DataDefPTR *>(gdd) : NULL; // allowed-exception: structural (exact-class dispatch)
 		if (gptr && gptr->base_type) gdd = gptr->base_type;
 
 		node_t ext_list = list();

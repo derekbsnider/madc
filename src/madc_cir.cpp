@@ -2844,7 +2844,7 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 	// — it is NOT a scalar. Exclude it structurally so the derived-type
 	// record path (DK_PTR/DK_REF/DK_CONST) handles it. Likewise an enum (named
 	// constants), SIMD vector, template param, or _Complex is its own concept.
-	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefCONST *>(dd)
+	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefQUAL *>(dd) // allowed-exception: structural (exact-class dispatch)
 	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
 	    || dd->is_template_param() || dd->is_complex())
 		return 0;
@@ -2918,17 +2918,21 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	uint32_t kind;
 	DataDef *operand;
 	uint64_t carray_count = 0;
+	uint32_t record_flags = 0;
 	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd))		// REF is-a PTR: check first
 	{
 		kind = madc::dis::DK_REF;   operand = rf->base_type;
 	}
-	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 	{
 		kind = madc::dis::DK_PTR;   operand = p->base_type;
 	}
-	else if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd))
+	else if (DataDefQUAL *k = dynamic_cast<DataDefQUAL *>(dd))
 	{
+		// The cv MASK rides flags (DK_CONST names the qualified variant;
+		// a pre-mask record's 0 reads back as const).
 		kind = madc::dis::DK_CONST; operand = k->base_type;
+		record_flags = k->quals;
 	}
 	else if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd))
 	{
@@ -2954,6 +2958,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	r.ref0     = forest_serialize_type_id(operand);	// operand, as a type-id
 	r.carray_count_lo = (uint32_t)(carray_count & 0xffffffffu);
 	r.carray_count_hi = (uint32_t)(carray_count >> 32);
+	r.flags    = record_flags;
 	forest_arena.set_def_at(tid, r);
 }
 
@@ -3368,6 +3373,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->c_linkage)        r.flags |= madc::dis::DF_FUNC_C_LINKAGE;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
+	if (fd->is_volatile_method) r.flags |= madc::dis::DF_IS_VOLATILE_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
 	if (fd->noexcept_spec == FuncDef::NxTrue)
 		r.flags |= madc::dis::DF_NOEXCEPT_TRUE;
@@ -3500,7 +3506,7 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 	if (!forest_arena_enabled)
 		return;
 	for (int depth = 0; dd && depth < 16; ++depth) {
-		if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(dd)) {
+		if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(dd)) { // allowed-exception: structural type-graph walk
 			uint32_t tid = type_id_for(fp);
 			if (!madc::dis::arena_id_is_project(tid)
 			    || forest_arena.has_def(tid))
@@ -3524,11 +3530,11 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			return;
 		}
 		// REF is-a PTR; both (and CONST) expose the operand as base_type.
-		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
+		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 			dd = p->base_type;
 			continue;
 		}
-		if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd)) {
+		if (DataDefQUAL *k = dynamic_cast<DataDefQUAL *>(dd)) {
 			dd = k->base_type;
 			continue;
 		}
@@ -3960,7 +3966,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back(method.is_deleted ? 1u : 0u);
 		words.push_back((uint32_t)method.noexcept_spec);
 		words.push_back(method.pure_virtual ? 1u : 0u);
-		words.push_back(method.is_const_method ? 1u : 0u);
+		// the member's cv MASK (bit 0 const, bit 1 volatile): a 0/1 word
+		// is the pre-mask record, read unchanged
+		words.push_back((method.is_const_method ? 1u : 0u)
+				| (method.is_volatile_method ? 2u : 0u));
 		words.push_back(method.is_member_template ? 1u : 0u);
 		words.push_back(method.has_eager_body ? 1u : 0u);
 		words.push_back((uint32_t)method.parameters.size());
@@ -4345,7 +4354,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	if (!owner)
 	    continue;
 	DataDefPTR *p0 = fd->parameters.empty()
-		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
+		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]); // allowed-exception: structural (exact-class dispatch)
 	bool instance = p0 && p0->base_type == owner;
 	// v36 semantics on the UNCHANGED record layout: the per-param default
 	// runs (always in the layout, previously written empty here) now carry

@@ -1,0 +1,6 @@
+rel: bool bool bool bool bool bool
+log: bool bool bool bool bool
+size: 1 1 1 1
+tmpl: bool 1 bool
+class: bool int 7
+val: 2 0 8 2 4

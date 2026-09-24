@@ -42,6 +42,9 @@
 #             negative control; refuses to run if the mask did not bite
 #   win       make -C src hosted-x86-64-windows (the MinGW+UCRT PE the wine
 #             lane tests; the mingw toolchain exists ONLY on the container)
+#   aarch64-ld  long double on the aarch64-linux axis: make cross-aarch64-linux,
+#             then scripts/aarch64_ldouble_lane.sh (gcc oracle, madc AOT object
+#             and a gcc-built aarch64 c2m JIT, all under qemu-aarch64)
 #   release-win  make -C src release-windows — the stripped, forest-packed PE
 #             that headerless-win runs and the Windows zip ships
 #   wine      the Win64 DOMAIN suite under a PERSISTENT wineserver. Every
@@ -356,6 +359,9 @@ for stage in $stages; do
 		# run_tests.sh test FILTER. `headerless_suite.sh win64` ran the
 		# NATIVE profile filtered to 0 of 1063 tests and exited 0.
 		run_remote "headerless-win" "make -C $REMOTE_MADC/src -j20 release-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p; MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh"
+		;;
+	aarch64-ld)
+		run_remote "aarch64-ld" "make -C $REMOTE_MADC/src -j20 cross-aarch64-linux; cd $REMOTE_MADC; bash scripts/aarch64_ldouble_lane.sh"
 		;;
 	release-win)
 		# The stripped, forest-packed PE the Windows zip ships — the

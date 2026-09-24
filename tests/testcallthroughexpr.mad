@@ -1,0 +1,40 @@
+// A `(` directly after a completed operand whose type is a function pointer
+// is a CALL ([expr.call]/1), whatever expression produced the pointer and
+// whatever binary operator is pending: a call is postfix and binds tighter.
+// The call-through-expression arm admitted only a ternary, deref, cast or
+// member callee, and only with no pending operator — so `g(3) + (*tab)(3)`
+// (the `+` pending), `(x, f)(x)` and `(f = twice)(x)` were refused as
+// "Malformed expression" (before 21f5b3366 the pending `+` could bind the
+// juxtaposed operands silently). Adjacency is asked the way every other call
+// arm asks it (paren_binds_to_receiver), and the callee's type with the
+// const-safe as_fptr_dd(). Oracle: gcc and clang, -std=c17.
+#include <stdio.h>
+
+typedef int (*fn_t)(int);
+
+static int twice(int v) { return 2 * v; }
+static int thrice(int v) { return 3 * v; }
+
+struct S { fn_t const cf; };
+
+int main(void)
+{
+    fn_t f = twice;
+    fn_t tab[2] = { twice, thrice };
+    fn_t const ctab[2] = { thrice, twice };
+    fn_t const cf = thrice;
+    const fn_t *pc = &cf;
+    struct S s = { twice };
+    int x = 4;
+
+    printf("pending: %d %d %d\n", twice(3) + (*tab)(3), (*pc)(3) + (**pc)(3),
+	   tab[1](3) + (*tab)(3));
+    printf("const: %d %d %d\n", (*ctab)(3), ctab[1](3) + (*s.cf)(3), 1 + (*pc)(2));
+    printf("comma: %d %d\n", (x, f)(x), (0, twice)(3));
+    int via_assign = (f = thrice)(x);
+    printf("assign: %d %d\n", via_assign, f(1));
+    printf("ternary: %d %d\n", 1 + (x > 0 ? f : tab[0])(2), 2 * ((fn_t)twice)(5));
+    int grouped = (*tab)(1) * (2);
+    printf("grouping: %d %d\n", grouped, twice(3) * (2 + 1));
+    return 0;
+}

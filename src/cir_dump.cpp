@@ -1636,12 +1636,15 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 // available: these are the user's own structs (a SMAUG CHAR_DATA), there is
 // nowhere to put a flag, and a dump must never write to the data it reads.
 
-// The pointee's declared spec list. ONE owner, because the generated function's
-// PARAMETER type and the cast at its call site have to be the SAME type — and a
-// silent mismatch there is an ABI bug, not a diagnostic.
-bool CirBuilder::dump_pointee_specs(DataDef *base, node_t specs)
+// The pointee's declared spec list — its SHAPE, void included. ONE owner,
+// because the generated function's PARAMETER type and the cast at its call site
+// have to be the SAME type — and a silent mismatch there is an ABI bug, not a
+// diagnostic. A DECLARATION takes it as-is (the range-for's iterator and array
+// walker: `void **it` is a perfectly good local); the dumper layers its own
+// refusal on top (dump_pointee_specs below).
+bool CirBuilder::pointee_decl_specs(DataDef *base, node_t specs)
 {
-	if (!base || base->rawtype() == DataType::dtVOID)
+	if (!base)
 		return false;
 	// A struct / class pointee is its TAG reference (`struct Node *`), which is
 	// also what keeps an incomplete-at-this-point type legal in a prototype.
@@ -1655,6 +1658,18 @@ bool CirBuilder::dump_pointee_specs(DataDef *base, node_t specs)
 	}
 	append_type_specs(specs, base);
 	return true;
+}
+
+// The DUMPER's form: a void pointee has nothing to render, so it is refused
+// here — and only here. The refusal used to live in the spec builder itself,
+// which two range-for arms borrow to DECLARE a local, so a range-for over a
+// `void *arr[2]` or a `void **` iterator was refused as if it were a dump of
+// `*(void *)` (g++ runs both).
+bool CirBuilder::dump_pointee_specs(DataDef *base, node_t specs)
+{
+	if (!base || base->is_void())
+		return false;
+	return pointee_decl_specs(base, specs);
 }
 
 // One parameter of a generated dumper. The spec list is consumed (c2mir op-lists
@@ -1994,12 +2009,12 @@ bool CirBuilder::dump_pointer(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			      int depth, bool nested, std::vector<node_t> &out,
 			      TokenBase *origin, std::string &why)
 {
-	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd->unqualified());
+	DataDefPTR *pdd = pointer_dd_of(dd->unqualified());
 	DataDef *pointee = pdd ? pdd->base_type : NULL;
 	// Refused by name, never guessed at. A void pointer has no pointee to
 	// render; a function pointer and a pointer-to-member are addresses rather
 	// than handles on a value.
-	if (!pointee || pointee->rawtype() == DataType::dtVOID
+	if (!pointee || pointee->is_void()
 	    || pointee->is_function() || dd->is_member_pointer()) {
 		why = std::string("no dumper for type '") + dd->name + "' yet";
 		return false;

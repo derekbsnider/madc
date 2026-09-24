@@ -1,0 +1,50 @@
+// A class POSTFIX step calls operator++(int) / operator--(int) ([over.inc]),
+// which returns the OLD value by value: a PRVALUE ([class.temporary]). Used
+// as a method receiver, `(a++).get()`, madc emitted `&operator++(&a, 0)` —
+// the address of a call, which c2mir refuses ("lvalue required as unary &
+// operand") — while `mk().get()` on a by-value CALL and `(a + b).get()` on a
+// by-value binary operator materialized their temporary. The postfix step now
+// joins that prvalue set (class_operator_value_result, with the overload
+// picked by class_postfix_step_operator — the one owner the step lowering
+// uses). A postfix step that returns a REFERENCE stays an lvalue (RefIt).
+// Oracle: g++ and clang++ -std=c++17 agree on every line.
+#include <stdio.h>
+
+struct It {
+    char *p;
+    char get() { return *p; }
+    char cget() const { return *p; }
+    It operator++(int) { It old = *this; ++p; return old; }
+    It operator--(int) { It old = *this; --p; return old; }
+};
+
+struct RefIt {
+    char *p;
+    char get() { return *p; }
+    RefIt &operator++(int) { ++p; return *this; }
+};
+
+static int take(It x) { return x.get(); }
+static int take_cref(const It &x) { return x.cget(); }
+
+int main()
+{
+    char buf[3] = { 7, 9, 11 };
+    It a;
+    a.p = buf;
+
+    int v1 = (a++).get();
+    printf("recv-postinc %d %d\n", v1, a.get());
+    int v2 = (a--).get();
+    printf("recv-postdec %d %d\n", v2, a.get());
+    int v3 = take(a++);
+    printf("arg-by-value %d %d\n", v3, a.get());
+    int v4 = take_cref(a++);
+    printf("arg-const-ref %d %d\n", v4, a.get());
+
+    RefIt b;
+    b.p = buf;
+    int v5 = (b++).get();
+    printf("recv-ref-postinc %d\n", v5);
+    return 0;
+}

@@ -59,7 +59,7 @@ TEST_SUITE("DataType enum") {
     // The pointer/reference tag-arithmetic cases (dt*ptr == base+10000,
     // dt*ref == base+20000, and the rtPtr/rtRef/rtDePtr/rtDeRef macro
     // inverses) were removed with the encoding itself (tag-arithmetic
-    // retirement). Derivation is now the DataDefPTR/DataDefREF/DataDefCONST
+    // retirement). Derivation is now the DataDefPTR/DataDefREF/DataDefQUAL
     // object graph — see the is_cstr() and DataDefPTR/REF suites and
     // is_pointer()/is_reference()/rawtype() for the structural contract.
 }
@@ -1506,9 +1506,9 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         DataDef i32("int", 4, DataType::dtINT32);
         DataDefPTR pc(ch);                              // char*
         DataDefPTR pp(static_cast<DataDef &>(pc));      // char**
-        DataDefCONST cc(ch);                            // const char
+        DataDefQUAL cc(ch, cvCONST);                    // const char
         DataDefPTR pcc(static_cast<DataDef &>(cc));     // const char*
-        DataDefCONST ccp(static_cast<DataDef &>(pc));   // char* const
+        DataDefQUAL ccp(static_cast<DataDef &>(pc), cvCONST); // char* const
         DataDefPTR pi(i32);                             // int*
         DataDefPTR pv(ddVOID);                          // void*
         DataDefREF rc(ch);                              // char& (lowers as char*)

@@ -1,0 +1,27 @@
+// C: an array parameter's ELEMENT keeps the cv after its last `*` —
+// `char *const arr[]` is `char *const *arr` (C11 6.7.6.3p7: only the
+// qualifiers inside the brackets reach the adjusted pointer). madc's
+// [dcl.fct]/5 adjustment applied a star-less declarator's cv to the element
+// but dropped this one, so the parameter was `char **arr`; once const reached
+// the emitted tree, every call passing a `char *const` table (SMAUG's
+// flag_string(obj->wear_flags, w_flags)) warned "discarding type qualifiers".
+// The .expect_quiet fixture fails any such warning.
+// Oracle: gcc -Wall -Wextra and clang -Wall print testconstptrarrayparamc.expect
+// with no diagnostic.
+#include <stdio.h>
+char *const names[] = { "zero", "one", "two" };
+const char *const cnames[] = { "a", "b" };
+char *const vp[] = { "x", "y" };
+char *const *const deep[] = { vp, vp };
+char *volatile vnames[] = { "v0", "v1" };
+static char *pick (int i, char *const arr[]) { return arr[i]; }
+static const char *pick2 (int i, const char *const arr[]) { return arr[i]; }
+static char *pick3 (int i, char *const *const arr[]) { return arr[i][1]; }
+static char *pick5 (int i, char *volatile arr[]) { return arr[i]; }
+static int count (char *const arr[], int n) { int c = 0; while (n--) c += arr[n][0] != 0; return c; }
+int main (void)
+{
+	printf ("pick: %s %s %s %s %d\n", pick (1, names), pick2 (1, cnames),
+		pick3 (0, deep), pick5 (1, vnames), count (names, 3));
+	return 0;
+}

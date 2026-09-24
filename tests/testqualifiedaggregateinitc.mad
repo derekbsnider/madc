@@ -1,0 +1,33 @@
+// A cv-qualified aggregate brace-initializes exactly like its unqualified type
+// (C11 6.7.9): a `typedef const struct` / `typedef volatile struct` local, a
+// volatile struct member reached by a nested designator, volatile scalar and
+// array members. The declaration reader tested for a struct with a
+// dynamic_cast on the QUALIFIED type, so `CP cp = { 3, 4 };` was read as an
+// expression ("Expecting identifier after ','"); a volatile member's nested
+// designator failed the same way once members carry their volatile, and a
+// volatile signed bit-field read back zero-extended (its signedness was
+// judged from the qualified type's name).
+// Oracle: gcc and clang (-O0 and -O2) print testqualifiedaggregateinitc.expect.
+#include <stdio.h>
+typedef const struct P { int x, y; } CP;
+typedef volatile struct Q { int x; float f; } VQ;
+typedef volatile float vfloat;
+struct T { int a, b; };
+struct O { volatile struct T t; volatile float f; volatile char name[4]; int tail; };
+struct O go = { { 1, 2 }, 2.5f, "ab", 9 };
+struct BF { signed a : 7; volatile signed b : 25; volatile unsigned c : 5; };
+struct BF gbf = { -3, -1877, 17 };
+int main (void) {
+  CP cp = { 3, 4 };
+  VQ vq = { 5, 1.5f };
+  struct O o = { .t = { .a = 6, .b = 7 }, .f = 0.25f, .name = "xy", .tail = 8 };
+  struct O o2 = go;
+  vfloat vf = 3.5f;
+  printf ("init: %d %d %d %.2f\n", cp.x + cp.y, vq.x, o.t.a * 10 + o.t.b, vq.f);
+  printf ("mem: %.2f %s %d %.2f\n", o.f, (char *) o.name, o.tail, vf);
+  printf ("glob: %d %d %.2f %s %d\n", o2.t.a, o2.t.b, o2.f, (char *) o2.name, o2.tail);
+  o.t.a += 5; vq.f *= 2;
+  printf ("rmw: %d %.2f %zu %zu\n", o.t.a, vq.f, sizeof (struct O), sizeof (VQ));
+  printf ("bits: %d %d %d\n", gbf.a, gbf.b, gbf.c);
+  return 0;
+}

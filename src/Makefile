@@ -1096,6 +1096,13 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-alias-symbol-emission.sh
+	@cd .. && bash scripts/check-one-void-predicate.sh
+	@cd .. && bash scripts/check-one-deref-builder.sh
+	@cd .. && bash scripts/check-one-fptr-predicate.sh
+	@cd .. && bash scripts/check-one-pointee-accessor.sh
+	@cd .. && bash scripts/check-one-operand-promotion.sh
+	@cd .. && bash scripts/check-one-nontype-splice.sh
+	@cd .. && bash scripts/check-volatile-accesses.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
 	@cd .. && bash scripts/check-one-declarator-reader.sh
 	@cd .. && bash scripts/check-clone-origin.sh

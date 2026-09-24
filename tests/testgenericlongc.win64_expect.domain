@@ -1,0 +1,7 @@
+# Labels whose line legitimately DIFFERS from tests/testgenericlongc.win64_expect
+# versus tests/testgenericlongc.expect — the win64 domain's own answers (LLP64:
+# a 32-bit long cannot hold every unsigned int, so long with unsigned is
+# unsigned long; x86_64-w64-mingw32 gcc under wine). Every other labelled
+# line must be identical in both (scripts/check-expect-twins.sh).
+arith
+mixed

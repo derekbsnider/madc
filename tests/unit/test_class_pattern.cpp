@@ -59,8 +59,9 @@ static std::string type_shape(DataDef *type)
 {
 	if (!type)
 		return "<null>";
-	if (DataDefCONST *qualified = dynamic_cast<DataDefCONST *>(type))
-		return "const(" + type_shape(qualified->base_type) + ")";
+	if (DataDefQUAL *qualified = dynamic_cast<DataDefQUAL *>(type))
+		return std::string(qualified->quals == cvCONST ? "const(" : "cv(")
+		       + type_shape(qualified->base_type) + ")";
 	if (DataDefREF *reference = dynamic_cast<DataDefREF *>(type))
 		return "ref(" + type_shape(reference->base_type) + ")";
 	if (DataDefPTR *pointer = dynamic_cast<DataDefPTR *>(type))

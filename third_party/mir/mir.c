@@ -1319,6 +1319,42 @@ static int wrong_type_p (MIR_type_t type) {
   return !((MIR_T_I8 <= type && type <= MIR_T_P) || MIR_vector_type_p (type));
 }
 
+/* A CROSS build whose host long double is x87 extended (LDBL_MANT_DIG 64: a
+   64-bit significand with an EXPLICIT integer bit, padded to 16 bytes)
+   emitting for a target whose long double is IEEE binary128 (aarch64-linux)
+   must re-encode LD DATA. Every long double value reaches the target as bytes
+   through MIR_new_data -- a folded constant via simplify's immediate-to-memory
+   step, a static initializer via c2mir -- and those bytes were the HOST's, which
+   aarch64 read as a binary128 near zero: `1.0L / 3.0L` printed 0.000... The two
+   formats share the sign bit and the 15-bit exponent with bias 16383, so the
+   re-encoding is EXACT: drop the explicit integer bit and left-align the 63
+   fraction bits in binary128's 112-bit field (inf and NaN included -- x87's
+   quiet bit lands on binary128's). A different, documented limit remains: a
+   constant FOLDED on such a host carries 64 significand bits, not 113
+   (c2mir/aarch64/caarch64.h). Native builds: the macro is off -- identity. MIR
+   text output of a cross module prints this LD data as host long doubles, which
+   it no longer is: in a cross build it is target data. */
+#if MIR_TARGET_IS_AARCH64 && !MIR_TARGET_APPLE_P && LDBL_MANT_DIG == 64
+#define MIR_LD_DATA_X87_TO_BINARY128 1
+static void ld_data_x87_to_binary128 (uint8_t *p, size_t nel) {
+  for (size_t i = 0; i < nel; i++, p += 16) {
+    uint64_t sig, lo, hi;
+    uint16_t se;
+
+    memcpy (&sig, p, 8);
+    memcpy (&se, p + 8, 2);
+    /* a pseudo-denormal (exponent 0, integer bit set) is the normal number
+       with exponent 1 */
+    if ((se & 0x7fff) == 0 && (sig >> 63) != 0) se |= 1;
+    sig &= ~((uint64_t) 1 << 63); /* the explicit integer bit: implicit in binary128 */
+    lo = sig << 49;
+    hi = (sig >> 15) | ((uint64_t) se << 48);
+    memcpy (p, &lo, 8);
+    memcpy (p + 8, &hi, 8);
+  }
+}
+#endif
+
 MIR_item_t MIR_new_data (MIR_context_t ctx, const char *name, MIR_type_t el_type, size_t nel,
                          const void *els) {
   MIR_item_t tab_item, item = create_item (ctx, MIR_data_item, "data");
@@ -1347,6 +1383,9 @@ MIR_item_t MIR_new_data (MIR_context_t ctx, const char *name, MIR_type_t el_type
   data->el_type = canon_type (el_type);
   data->nel = nel;
   memcpy (data->u.els, els, el_len * nel);
+#ifdef MIR_LD_DATA_X87_TO_BINARY128
+  if (data->el_type == MIR_T_LD) ld_data_x87_to_binary128 (data->u.els, nel);
+#endif
   return item;
 }
 
@@ -2804,6 +2843,7 @@ static MIR_op_t new_mem_op (MIR_context_t ctx MIR_UNUSED, MIR_type_t type, MIR_d
   op.u.mem.nloc = 0;
   op.u.mem.alias = alias;
   op.u.mem.nonalias = nonalias;
+  op.u.mem.volatile_p = FALSE;
   return op;
 }
 
@@ -2832,6 +2872,7 @@ static MIR_op_t new_var_mem_op (MIR_context_t ctx MIR_UNUSED, MIR_type_t type, M
   op.u.var_mem.nloc = 0;
   op.u.var_mem.alias = alias;
   op.u.var_mem.nonalias = nonalias;
+  op.u.var_mem.volatile_p = FALSE;
   return op;
 }
 
@@ -3214,6 +3255,7 @@ void MIR_output_op (MIR_context_t ctx, FILE *f, MIR_op_t op, MIR_func_t func) {
   case MIR_OP_VAR_MEM: {
     MIR_reg_t no_reg = op.mode == MIR_OP_MEM ? 0 : MIR_NON_VAR;
 
+    if (op.u.mem.volatile_p) fprintf (f, "volatile:");
     output_type (ctx, f, op.u.mem.type);
     fprintf (f, ":");
     if (op.u.mem.disp != 0 || (op.u.mem.base == no_reg && op.u.mem.index == no_reg))
@@ -4944,7 +4986,8 @@ typedef enum {
   REP4 (TAG_EL, ALIAS_MEM_DISP, ALIAS_MEM_BASE, ALIAS_MEM_INDEX, ALIAS_MEM_DISP_BASE),
   REP3 (TAG_EL, ALIAS_MEM_DISP_INDEX, ALIAS_MEM_BASE_INDEX, ALIAS_MEM_DISP_BASE_INDEX),
   TAG_EL (TV128),
-  TAG_EL (LAST) = TAG_EL (TV128),
+  TAG_EL (VOLATILE), /* prefix: the memory operand tag that follows is a volatile access */
+  TAG_EL (LAST) = TAG_EL (VOLATILE),
   /* unsigned integer 0..127 is kept in one byte.  The most significant bit of the byte is 1: */
   U0_MASK = 0x7f,
   U0_FLAG = 0x80,
@@ -5238,8 +5281,13 @@ static size_t write_op (MIR_context_t ctx, writer_func_t writer, MIR_func_t func
     } else {
       tag = alias_p ? TAG_ALIAS_MEM_DISP : TAG_MEM_DISP;
     }
+    len = 0;
+    if (op.u.mem.volatile_p) { /* a prefix: a module without volatile operands is unchanged */
+      put_byte (ctx, writer, TAG_VOLATILE);
+      len++;
+    }
     put_byte (ctx, writer, tag);
-    len = write_type (ctx, writer, op.u.mem.type) + 1;
+    len += write_type (ctx, writer, op.u.mem.type) + 1;
     if (op.u.mem.disp != 0 || (op.u.mem.base == 0 && op.u.mem.index == 0))
       write_int (ctx, writer, op.u.mem.disp);
     if (op.u.mem.base != 0) write_reg (ctx, writer, MIR_reg_name (ctx, op.u.mem.base, func));
@@ -5740,6 +5788,7 @@ static bin_tag_t read_token (MIR_context_t ctx, token_attr_t *attr) {
     REP3 (TAG_CASE, MEM_DISP_BASE_INDEX, EOI, EOFILE)
     REP4 (TAG_CASE, ALIAS_MEM_DISP, ALIAS_MEM_BASE, ALIAS_MEM_INDEX, ALIAS_MEM_DISP_BASE)
     REP3 (TAG_CASE, ALIAS_MEM_DISP_INDEX, ALIAS_MEM_BASE_INDEX, ALIAS_MEM_DISP_BASE_INDEX)
+    TAG_CASE (VOLATILE)
     break;
     REP8 (TAG_CASE, TI8, TU8, TI16, TU16, TI32, TU32, TI64, TU64)
     REP5 (TAG_CASE, TF, TD, TP, TV, TRBLOCK)
@@ -5785,10 +5834,17 @@ static int read_operand (MIR_context_t ctx, MIR_op_t *op, MIR_item_t func) {
   MIR_disp_t disp;
   MIR_reg_t base, index;
   MIR_scale_t scale;
-  int alias_p = FALSE;
+  int alias_p = FALSE, volatile_p = FALSE;
   const char *name;
 
   tag = read_token (ctx, &attr);
+  if (tag == TAG_VOLATILE) { /* the memory operand that follows is a volatile access */
+    volatile_p = TRUE;
+    tag = read_token (ctx, &attr);
+    if (!(TAG_MEM_DISP <= tag && tag <= TAG_MEM_DISP_BASE_INDEX)
+        && !(TAG_ALIAS_MEM_DISP <= tag && tag <= TAG_ALIAS_MEM_DISP_BASE_INDEX))
+      MIR_get_error_func (ctx) (MIR_binary_io_error, "wrong volatile memory tag %d", tag);
+  }
   switch (tag) {
     TAG_CASE (U0)
     REP8 (TAG_CASE, U1, U2, U3, U4, U5, U6, U7, U8) *op = MIR_new_uint_op (ctx, attr.u);
@@ -5852,6 +5908,7 @@ static int read_operand (MIR_context_t ctx, MIR_op_t *op, MIR_item_t func) {
       scale = (MIR_scale_t) read_uint (ctx, "wrong memory index scale");
     }
     *op = MIR_new_mem_op (ctx, t, disp, base, index, scale);
+    op->u.mem.volatile_p = volatile_p;
     if (alias_p) {
       name = read_name (ctx, func->module, "wrong alias name");
       if (strcmp (name, "") != 0) op->u.mem.alias = MIR_alias (ctx, name);
@@ -6754,6 +6811,7 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
   int module_p, end_module_p, proto_p, func_p, end_func_p, dots_p, export_p, import_p, forward_p;
   int weak_stmt_p, linkonce_stmt_p;
   int bss_p, ref_p, lref_p, expr_p, string_p, global_p, local_p, push_op_p, read_p, disp_p;
+  int mem_volatile_p;
   insn_name_t in, el;
 
   VARR_TRUNC (char, error_msg_buf, 0);
@@ -6922,12 +6980,24 @@ void MIR_scan_string (MIR_context_t ctx, const char *str) {
           }
           break;
         } /* Memory, type only, arg, or var */
+        mem_volatile_p = FALSE;
+        if (strcmp (name, "volatile") == 0 && !proto_p && !func_p && !global_p && !local_p) {
+          /* volatile:type:... -- a memory operand accessed through a volatile lvalue.  "volatile"
+             is not a type name, so a name followed by ':' reads this way unambiguously. */
+          scan_token (ctx, &t, get_string_char, unget_string_char);
+          if (t.code != TC_NAME) scan_error (ctx, "wrong volatile memory type");
+          name = t.u.name;
+          scan_token (ctx, &t, get_string_char, unget_string_char);
+          if (t.code != TC_COL) scan_error (ctx, "wrong volatile memory");
+          mem_volatile_p = TRUE;
+        }
         type = str2type (name);
         if (type == MIR_T_BOUND)
           scan_error (ctx, "Unknown type %s", name);
         else if ((global_p || local_p) && !MIR_reg_type_p (type))
           scan_error (ctx, "wrong type %s for local/global var", name);
         op = MIR_new_mem_op (ctx, type, 0, 0, 0, 1);
+        op.u.mem.volatile_p = mem_volatile_p;
         if (proto_p || func_p || global_p || local_p) {
           if (t.code == TC_COL) {
             scan_token (ctx, &t, get_string_char, unget_string_char);

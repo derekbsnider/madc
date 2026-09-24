@@ -258,6 +258,11 @@ typedef uint32_t MIR_alias_t; /* unique number of alias name */
    value expands to int64_t value when the insn is executed.  */
 typedef struct {
   MIR_type_t type : 8;
+  /* An access through a volatile-qualified lvalue (C11 5.1.2.3p6): the generator performs it
+     exactly as written -- never removed, merged with another access, moved, or given a value
+     -- and keeps its order with every other volatile access.  Spelled `volatile:type:...` in
+     textual MIR.  Not part of the location's identity (MIR_op_eq_p, MIR_op_hash_step). */
+  unsigned int volatile_p : 1;
   MIR_scale_t scale;
   MIR_alias_t alias;    /* 0 may alias any memory, memory with the same alias is aliased */
   MIR_alias_t nonalias; /* 0 for ignoring, memory with the same nonalias is not aliased */

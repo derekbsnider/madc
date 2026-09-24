@@ -1,0 +1,19 @@
+// `*arr` on an ARRAY of class objects is arr[0] ([conv.array]), never the
+// class's operator*: madc stores the array flattened, so the variable's
+// type is the CLASS and build_indirection dispatched operator* on the
+// array. Oracle: g++ and clang++, -std=c++17.
+#include <cstdio>
+
+struct C {
+    int v;
+    int operator*() const { return 99; }
+};
+
+int main()
+{
+    C arr[2] = { { 4 }, { 6 } };
+    C one = { 5 };
+    std::printf("elem: %d %d\n", (*arr).v, (*(arr + 1)).v);
+    std::printf("op: %d %d\n", *one, **arr);
+    return 0;
+}

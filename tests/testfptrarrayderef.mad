@@ -1,0 +1,36 @@
+// `*a` on an ARRAY of function pointers is a[0] ([conv.array]), not the
+// designator identity `*fp == fp`: madc stores an array flattened, so the
+// array's type view is its ELEMENT (a function pointer), and
+// build_indirection took the array for one. `(*table)(5)` emitted
+// `table(5)` (refused by c2mir), `sizeof(*table)` measured the whole array
+// (16, not 8 — silent), `(*grid[1])(5)` on a row was refused. The array
+// question now has ONE owner, Program::array_operand_element_type, asked
+// before the designator test. Oracle: gcc and clang, -std=c17.
+#include <stdio.h>
+
+typedef int (*fn_t)(int);
+
+static int twice(int v) { return 2 * v; }
+static int thrice(int v) { return 3 * v; }
+
+struct S { fn_t fa[2]; fn_t g2[2][2]; };
+
+static fn_t gfa[2] = { thrice, twice };
+
+int main(void)
+{
+    fn_t table[2] = { twice, thrice };
+    fn_t grid[2][2] = { { twice, thrice }, { thrice, twice } };
+    struct S s = { { thrice, twice }, { { twice, twice }, { thrice, thrice } } };
+    struct S *sp = &s;
+
+    printf("table: %d %d %d\n", (*table)(5), (**table)(5), (*table[1])(5));
+    printf("global: %d\n", (*gfa)(5));
+    printf("grid: %d %d\n", (*grid[1])(5), (**grid)(5));
+    printf("member: %d %d %d\n", (*s.fa)(5), (*sp->fa)(5), (*s.g2[1])(5));
+    printf("sizeof: %d %d %d\n", (int)sizeof(*table), (int)sizeof(*grid),
+	   (int)sizeof(*s.g2));
+    fn_t first = *table;
+    printf("value: %d %d\n", first(7), ((fn_t)*table)(7));
+    return 0;
+}

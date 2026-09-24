@@ -123,6 +123,11 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `Program::member_declarator`), gated by `check-one-declarator-reader.sh`;
    `[dims]` alone is `parse_array_dimensions` + `nest_carray_dims`. Never
    read a declarator by hand in an arm.
+   The operand of a unary `*`, a cast or a bare `sizeof` is a cast-expression
+   read by ONE owner, `Program::parseCastExpression` (the expression engine,
+   bounded), and a dereference is built only by `Program::build_indirection`
+   (gated by `check-one-deref-builder.sh`); every owner for layered pointers,
+   references, arrays and their symbols is indexed in `indirection.md`.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit
@@ -194,7 +199,8 @@ upstream MIR: it carries native C99 `_Complex`,
 `__attribute__((cleanup))`, the scope-depth auto-local layout fix, the
 struct/union statement-expression copy-out fix, ≤16-byte SIMD/vector
 (`vector_size`/`ext_vector_type`) support, the Mach-O executable writer,
-and the SysV-varargs / `_Complex` / `_Alignas` ABI fixes the CIR backend
+volatile memory accesses (`MIR_mem_t.volatile_p`, honoured by every
+optimization pass), and the SysV-varargs / `_Complex` / `_Alignas` ABI fixes the CIR backend
 depends on. `make -C src` builds libmir + c2m itself, into
 `obj/mir/<variant>` (never inside the subtree). `vnmakarov/mir` is the
 true upstream; `github.com/derekbsnider/mir` is the historical former
@@ -373,7 +379,7 @@ that fails any of these is not merged.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
+| [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
 | [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 55 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (six lanes, under three minutes, gated by the pre-push hook on every branch) · `make -C src fulltest` once per merge wave — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
@@ -396,13 +402,14 @@ editing — don't try to memorize all of them.
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
+| [indirection.md](.claude/rules/indirection.md) |    94 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); an operand's value + integer promotions (`operand_value_type` / `promoted_operand_type`, gated), type minting/peeling, an array operand's element (`array_operand_element_type`), decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **35 rules, 1093 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~453 lines** — loaded by Claude via
+- **36 rules, 1187 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~459 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1546 lines.**
+- **Grand total loaded by Claude Code per turn: ~1600 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

@@ -1625,21 +1625,25 @@ static bool is_cv_qualifier_token(TokenBase *tb)
 // Replaces the copy-pasted `while (tkMul) { ... if (!fnptr_base) getPointerType }`
 // loops so the explicit `*` count is handled the SAME way everywhere.
 int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
-				      bool leading_const, bool *out_cv_seen)
+				      unsigned leading_cv, bool *out_cv_seen,
+				      bool *out_volatile_after_star)
 {
     int stars = 0;
     bool fnptr_base = ((dd ? dd->as_fptr_dd() : NULL) != NULL);
     bool const_after = false;
-    // Pointee-const modeling (docs/plans/2026-06-19-const-qualified-types.md):
-    // a const pending at the CURRENT level wraps that level's type in
-    // DataDefCONST (getConstType) before the next '*' derives from it, so
-    // `const char *` and `char *` carry DISTINCT pointer identities
-    // (c-testsuite 00219's _Generic lines). C mode only for now — the C++
-    // producer is the campaign's Phase 3/4 transparency sweep (overload
-    // ranking, mangling, template keying). Top-level const — after the LAST
-    // star — stays the variable read-only flag, never a type wrap (lvalue
-    // conversion drops it, C11 6.3.2.1p2).
-    bool pending_const = leading_const && is_c_mode();
+    bool volatile_after = false;	// a `volatile` after the LAST `*`: the pointer object itself
+    // Pointee-cv modeling (docs/plans/2026-06-19-const-qualified-types.md):
+    // the cv PENDING at the CURRENT level qualifies that level's type
+    // (getQualifiedType) before the next '*' derives from it, so `const char *`
+    // and `char *` carry DISTINCT pointer identities (c-testsuite 00219's
+    // _Generic lines) and `volatile int *q` points to a volatile int — every
+    // `*q` an access performed exactly as written (C11 5.1.2.3p6). The bits
+    // modeled are modeled_cv()'s: volatile in every mode, const in C only
+    // (the C++ const identity is the campaign's Phase 3/4 sweep). Top-level
+    // cv — after the LAST star — stays the variable's flag, never a type wrap
+    // (lvalue conversion drops it, C11 6.3.2.1p2).
+    const unsigned modeled = modeled_cv();
+    unsigned pending_cv = leading_cv & modeled;
     while ( peekToken() && (peekToken()->id() == TokenID::tkMul
 			 || is_cv_qualifier_token(peekToken())) )
     {
@@ -1648,13 +1652,13 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
 	    nextToken();		// consume '*'
 	    ++stars;
 	    const_after = false;	// any const before this star was low-level
+	    volatile_after = false;
 	    if ( !fnptr_base )
 	    {
-		if ( pending_const )
-		    dd = getConstType(dd);
+		dd = getQualifiedType(dd, pending_cv);
 		dd = getPointerType(dd);
 	    }
-	    pending_const = false;
+	    pending_cv = cvNONE;
 	}
 	else
 	{
@@ -1662,15 +1666,23 @@ int Program::consume_declarator_stars(DataDef *&dd, bool *out_const_after_star,
 	    {
 		if ( stars > 0 )
 		    const_after = true;	// const after the last '*' = top-level const ptr
-		pending_const = is_c_mode();
+		pending_cv |= cvCONST & modeled;
 		if ( out_cv_seen )
 		    *out_cv_seen = true;
+	    }
+	    else if ( peekToken()->id() == TokenID::tkVOLATILE )
+	    {
+		if ( stars > 0 )
+		    volatile_after = true;	// volatile after the last '*' = the pointer object
+		pending_cv |= cvVOLATILE & modeled;
 	    }
 	    nextToken();		// consume const/volatile/restrict
 	}
     }
     if ( out_const_after_star )
 	*out_const_after_star = const_after;
+    if ( out_volatile_after_star )
+	*out_volatile_after_star = volatile_after;
     return stars;
 }
 
@@ -1687,11 +1699,21 @@ TokenBase *Program::skip_cv_qualifier_tokens(TokenBase *held)
     return held;
 }
 
-// Peek form: consumes the qualifier run, leaves the following token unread.
-void Program::skip_cv_qualifier_tokens()
+// Peek form: consumes the qualifier run, leaves the following token unread,
+// and returns the run's cv mask (CvQual; `restrict` is not modeled) for a
+// reader that qualifies the type it applies to (the C member arms).
+unsigned Program::skip_cv_qualifier_tokens()
 {
+    unsigned cv = cvNONE;
     while ( peekToken() && is_cv_qualifier_token(peekToken()) )
-	nextToken();
+    {
+	TokenBase *q = nextToken();
+	if ( q->id() == TokenID::tkCONST )
+	    cv |= cvCONST;
+	else if ( q->id() == TokenID::tkVOLATILE )
+	    cv |= cvVOLATILE;
+    }
+    return cv;
 }
 
 static bool is_type_qualifier_token(TokenBase *tb)
@@ -2428,6 +2450,10 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
     if ( !tb )
 	return NULL;
 
+    // An ARRAY head decays first ([conv.array]): its datadef() is the
+    // flattened element, so an array of pointers would read as one pointer.
+    if ( DataDef *decayed = array_decay_pointer(tb) )
+	return decayed;
     DataDef *dd = tb->datadef();
     // A REFERENCE head denotes its referent ([expr.ref]) — collapse it
     // BEFORE the pointer test when the referent is itself a pointer: a
@@ -2442,23 +2468,6 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
 	    dd = ref;
     if ( dd && dd->is_pointer() )
 	return dd;
-    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
-    {
-	DataDef *elem = add->element_type ? add->element_type : &ddINT64;
-	return getPointerType(elem);
-    }
-
-    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
-    {
-	if ( tv->var.is_fixed_array() && tv->var.type )
-	    return getPointerType(tv->var.type);
-    }
-
-    if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
-    {
-	if ( tm->is_fixed_array_member() && tm->var.type )
-	    return getPointerType(tm->var.type);
-    }
 
     if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
     {
@@ -2548,17 +2557,25 @@ static uint32_t member_proxy_flags(uint32_t owner_flags)
     return owner_flags & ~vfFIXEDARRAY;
 }
 
+static DataDef *build_fixed_array_query_type(DataDef *base_type,
+					     const std::vector<carray_dim_t> &dims,
+					     size_t consumed_dims);
+
+// The type `*var` denotes. A fixed array's `*a` is `a[0]`: its element for a
+// one-dimensional array, the ROW sub-array for a multi-dimensional one
+// (`int m[2][3]`: `*m` is int[3], so `**m` is an int — madc stores the
+// scalar element in var->type and the extents in var->dims).
 static DataDef *deref_type_for_variable(Variable *var)
 {
     if ( !var || !var->type )
 	return NULL;
 
     if ( var->is_fixed_array() )
-	return var->type;
+	return build_fixed_array_query_type(var->type, var->dims, 1);
 
     if ( var->type->is_pointer() )
     {
-	DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(var->type);
+	DataDefPTR *dptr = pointer_dd_of(var->type);
 	return (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
     }
 
@@ -2878,7 +2895,12 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 	return "";
     if ( as_ref )
     {
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
+	// A reference to a function (pointer) spells structurally, reference
+	// layer included (`int (*)(int)&`, `int (&)(int)` — RPFiiE / RFiiE).
+	std::string fps = fptr_structural_spelling(dd);
+	if ( !fps.empty() )
+	    return fps;
+	DataDefPTR *ptr = pointer_dd_of(dd);
 	DataDef *base = ptr && ptr->base_type ? ptr->base_type : dd;
 	std::string s = base->canonical_cpp_spelling().empty()
 		      ? base->name : base->canonical_cpp_spelling();
@@ -2900,10 +2922,84 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
     return dd->canonical_cpp_spelling().empty() ? dd->name : dd->canonical_cpp_spelling();
 }
 
+// THE mangle spelling of a declared parameter's type, for both parameter
+// readers (parseFunction, parseFnPtrParams): the token structure the reader
+// saw — the base type's spelling, then `stars` pointer levels — with EVERY
+// level's cv read from the declarator's TYPE (`param_dd`; a reference's
+// referent). The base level's cv (the leading `const` the reader consumed ORed
+// in: C++ const is not in the type yet, modeled_cv) qualifies the base, each
+// inner level's own cv follows its `*` (cv_qualified_spelling); the outermost
+// level is the parameter object itself — top-level, which a function type
+// drops ([dcl.fct]/5) — unless the parameter is a REFERENCE (`referent`, or
+// `param_dd` itself a reference): then the outermost level is the referent,
+// whose cv is part of the type (`int *volatile &` is RVPi). A volatile pointee
+// then mangles V (`volatile int *` is PVi) and a prototype and its definition
+// spell alike. The reader appends the reference and a multi-dimensional
+// array's `(*)[N]` form after it.
+static std::string param_declarator_spelling(DataDef *base, DataDef *param_dd,
+					     int stars, bool leading_const,
+					     bool referent)
+{
+    std::vector<unsigned> level_cv;	// [j] = cv after j dereferences
+    DataDef *t = param_dd;
+    if ( t && t->as_reference_dd() )
+    {
+	t = t->as_reference_dd()->base_type;
+	referent = true;
+    }
+    DataDef *base_level = NULL;		// the type at depth `stars`
+    for ( int j = 0; t && j <= stars; ++j )
+    {
+	level_cv.push_back(t->cv_quals());
+	if ( j == stars )
+	    base_level = t;
+	DataDefPTR *p = j < stars ? t->as_pointer_dd() : NULL;
+	t = p ? p->base_type : NULL;
+    }
+    unsigned base_cv = (level_cv.size() == (size_t)stars + 1 ? level_cv.back() : cvNONE)
+		     | (leading_const ? cvCONST : cvNONE);
+    // A POINTER TO ARRAY — `int (*a)[3]`, and an adjusted multi-dimensional
+    // `volatile int a[][3]` — spells its C++ declarator, `elem (*)[3]`, the
+    // form the mangler encodes (PA3_i; a bare `int*` minted Pi, a symbol g++
+    // never defines). The array's qualifiers are its ELEMENTS' (6.7.3p9):
+    // `volatile int (*)[3]` is PA3_Vi.
+    if ( stars == 1 && base_level && base_level->as_carray_dd() )
+    {
+	std::vector<carray_dim_t> dims;
+	DataDef *e = base_level;
+	while ( DataDefCArray *c = e->as_carray_dd() )
+	{
+	    dims.push_back(c->count);
+	    e = c->element_type;
+	}
+	DataDef *ue = e->unqualified();
+	std::string es = ue->canonical_cpp_spelling().empty() ? ue->name
+							       : ue->canonical_cpp_spelling();
+	es = cv_qualified_spelling(es, e->cv_quals() | (leading_const ? cvCONST : cvNONE),
+				   ue->is_pointer());
+	es += " (*)";
+	for ( size_t d = 0; d < dims.size(); ++d )
+	    es += "[" + std::to_string(dims[d]) + "]";
+	return es;
+    }
+    DataDef *ub = base ? base->unqualified() : NULL;
+    std::string s = ub ? (ub->canonical_cpp_spelling().empty()
+			  ? ub->name : ub->canonical_cpp_spelling())
+		       : std::string();
+    s = cv_qualified_spelling(s, base_cv, ub && ub->is_pointer());
+    for ( int j = stars - 1; j >= 0; --j )
+    {
+	s += "*";
+	if ( (j > 0 || referent) && (size_t)j < level_cv.size() )
+	    s = cv_qualified_spelling(s, level_cv[j], true);
+    }
+    return s;
+}
+
 // THE owner of a DataDefFPTR's structural C++ spelling (declared in
 // datadef.h): `Ret (*)(P1,P2)` from the target FuncDef — the form the
 // Itanium mangler's function-pointer arm parses into PF…E.
-std::string DataDefFPTR::structural_spelling(bool as_pointer) const
+std::string DataDefFPTR::structural_spelling_core(const std::string &core) const
 {
     if ( !target )
 	return name;
@@ -2917,7 +3013,7 @@ std::string DataDefFPTR::structural_spelling(bool as_pointer) const
     // is PFR1ORS_E, g++ parity), as is_ref_param does for the parameters.
     if ( target->returns_reference() )
 	s += "&";
-    s += as_pointer ? " (*)(" : " (";
+    s += core.empty() ? std::string(" (") : " (" + core + ")(";
     for ( size_t i = 0; i < target->parameters.size(); ++i )
     {
 	if ( i )
@@ -2928,7 +3024,11 @@ std::string DataDefFPTR::structural_spelling(bool as_pointer) const
 	       ? target->parameters[i]->name
 	       : target->parameters[i]->canonical_cpp_spelling();
 	s += ps;
-	if ( target->is_ref_param(i)
+	// A function-(pointer) parameter's structural spelling already spells
+	// its reference layer (`int (&)(int)`); every other one gains the `&`.
+	bool structural = target->parameters[i]
+	    && !fptr_structural_spelling(target->parameters[i]).empty();
+	if ( target->is_ref_param(i) && !structural
 	  && (ps.empty() || ps.back() != '&') )
 	    s += "&";
     }
@@ -2969,7 +3069,7 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 	    {
 		bool refp = fd->is_ref_param(i);
 		bool ptrp = !refp
-		    && dynamic_cast<DataDefPTR *>(fd->parameters[i]) != NULL;
+		    && pointer_dd_of(fd->parameters[i]) != NULL;
 		spelling = std_string_type()
 			 + (refp ? "&" : ptrp ? "*" : "");
 	    }
@@ -3161,7 +3261,7 @@ std::string Program::host_flavor_fn_symbol(const std::string &ns_name,
 	for ( size_t i = 0; i < fd->parameters.size(); ++i )
 	{
 	    DataDef *p = fd->parameters[i];
-	    if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p) )
+	    if ( DataDefPTR *pp = pointer_dd_of(p) )
 		p = pp->base_type ? pp->base_type : p;
 	    mask.push_back(p && p->marshals_value_text() ? 1 : 0);
 	}
@@ -3185,7 +3285,7 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
     if ( fd->param_cpp_spellings.size() != fd->parameters.size() )
 	return std::string();
     DataDefPTR *self = fd->parameters.empty()
-	? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
+	? NULL : pointer_dd_of(fd->parameters[0]);
     DataDefCLASS *cls = self
 	? dynamic_cast<DataDefCLASS *>(self->base_type) : NULL;
     if ( !cls )
@@ -3198,7 +3298,7 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
     for ( size_t i = 0; i < fd->parameters.size(); ++i )
     {
 	DataDef *p = fd->parameters[i];
-	if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(p) )
+	if ( DataDefPTR *pp = pointer_dd_of(p) )
 	    p = pp->base_type ? pp->base_type : p;
 	mask.push_back(p && p->marshals_value_text() ? 1 : 0);
     }
@@ -3212,7 +3312,7 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
 	{
 	    bool refp = fd->is_ref_param(i);
 	    bool ptrp = !refp
-		&& dynamic_cast<DataDefPTR *>(fd->parameters[i]) != NULL;
+		&& pointer_dd_of(fd->parameters[i]) != NULL;
 	    spelling = std_string_type() + (refp ? "&" : ptrp ? "*" : "");
 	}
 	psp.push_back(spelling);
@@ -3221,9 +3321,9 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
     if ( mname.compare(0, 8, "operator") == 0 && mname.size() > 8 )
 	return itanium_mangle_operator_sub(cls->canonical_cpp_spelling(),
 					   mname.substr(8), psp,
-					   fd->is_const_method);
+					   fd->method_cv());
     return itanium_mangle_member_sub(cls->canonical_cpp_spelling(), mname,
-				     psp, fd->is_const_method);
+				     psp, fd->method_cv());
 }
 
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
@@ -3231,7 +3331,7 @@ static DataDef *unwrap_subscript_element_type(DataDef *base_type)
     base_type = TokenSubscript::referent_type(base_type);
     if ( !base_type )
 	return &ddINT64;
-    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base_type) )
+    if ( DataDefPTR *pdd = pointer_dd_of(base_type) )
 	return pdd->base_type ? pdd->base_type : &ddINT64;
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(base_type) )
 	return add->element_type ? add->element_type : &ddINT64;
@@ -3253,22 +3353,16 @@ static DataDef *build_fixed_array_query_type(DataDef *base_type,
     return result;
 }
 
-static DataDef *type_query_chain_datadef(TokenBase *chain)
+// The type sizeof/alignof measures for an expression operand: the ARRAY an
+// array operand denotes (Program::array_operand_type — its extents, never the
+// flattened scalar the node reports), else the node's type. `*m` on a fixed
+// array is its row already (deref_type_for_variable).
+static DataDef *type_query_chain_datadef(Program &pgm, TokenBase *chain)
 {
     if ( !chain )
 	return NULL;
-    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(chain) )
-    {
-	if ( ts->object.is_fixed_array() )
-	    return build_fixed_array_query_type(ts->object.type, ts->object.dims,
-						1 + ts->extra_indices.size());
-    }
-    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(chain) )
-    {
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(tse->base_expr) )
-	    if ( tv->var.is_fixed_array() )
-		return build_fixed_array_query_type(tv->var.type, tv->var.dims, 1);
-    }
+    if ( DataDef *at = pgm.array_operand_type(chain) )
+	return at;
     return chain->datadef();
 }
 
@@ -3311,14 +3405,14 @@ Program::CarrierIndex Program::madc_array_index_kind(TokenBase *idx)
 	return CarrierIndex::Index;
     // A reference denotes its referent (`value &kn` keys like kn does).
     if ( dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(dd) )
 	    if ( rp->base_type )
 		dd = rp->base_type;
     if ( dd->is_madc_array() )
 	return CarrierIndex::Runtime;
     if ( dd->is_pointer() )
     {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	return p && p->base_type
 	    && p->base_type->rawtype() == DataType::dtCHAR
 	    ? CarrierIndex::Key : CarrierIndex::Index;
@@ -3733,7 +3827,7 @@ static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
 		continue;
 	    if ( user_params == 1 && fd->is_ref_param(1) )
 	    {
-		DataDefPTR *pp = dynamic_cast<DataDefPTR *>(fd->parameters[1]);
+		DataDefPTR *pp = pointer_dd_of(fd->parameters[1]);
 		if ( pp && pp->base_type == base )
 		    continue;
 	    }
@@ -5081,6 +5175,7 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    add_tokens(method.noexcept_condition_tokens);
 	    hash.add_bool(method.pure_virtual);
 	    hash.add_bool(method.is_const_method);
+	    hash.add_bool(method.is_volatile_method);
 	    hash.add_bool(method.is_member_template);
 	    hash.add_bool(method.has_eager_body);
 	    hash.add_u64(method.parameters.size());
@@ -5208,7 +5303,7 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     // reference collapsing ([dcl.ref]p6) then yields the single reference. The
     // referent keeps its own cv (`const int` -> `const int&`).
     if ( adt->definition.is_reference() )
-	if ( DataDefPTR *r = dynamic_cast<DataDefPTR *>(&adt->definition) )
+	if ( DataDefPTR *r = pointer_dd_of(&adt->definition) )
 	    if ( r->base_type )
 	    {
 		const std::string &rs = r->base_type->canonical_cpp_spelling();
@@ -5224,7 +5319,7 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
     // iterator arithmetic. Fires only when the base's canonical differs from
     // its bare name, keeping every other pointer spelling byte-identical.
     if ( !adt->definition.is_reference() && adt->definition.is_pointer() )
-	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(&adt->definition) )
+	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(&adt->definition) ) // allowed-exception: structural (exact-class dispatch)
 	    if ( p->base_type )
 	    {
 		const std::string &bs = p->base_type->canonical_cpp_spelling();
@@ -5368,7 +5463,7 @@ static std::string user_member_template_product_symbol(Program &pgm,
 	return std::string();
     std::string sym = itanium_mangle_member_template_sub(
 	owner->cpp_linkage_spelling(), name, targs, ret, params,
-	pattern->is_const_method);
+	pattern->method_cv());
     if ( sym.size() < 3 || sym.compare(0, 2, "_Z") != 0 )
 	return std::string();
     for ( size_t i = 2; i < sym.size(); ++i )
@@ -5385,7 +5480,7 @@ static std::string template_binding_identity_spelling(DataDef *dd)
     if ( !dd )
 	return std::string();
     if ( dd->is_reference() )
-	if ( DataDefPTR *r = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *r = pointer_dd_of(dd) )
 	    if ( r->base_type )
 		return template_binding_identity_spelling(r->base_type) + "&";
     DataDef *canon = canonical_template_binding_dd(dd);
@@ -5828,14 +5923,68 @@ static bool template_pack_real_instantiable(const Program::TemplateDef &td,
     return true;
 }
 
+// A non-type template argument spliced into a body as raw tokens must still
+// read as ONE operand. Only a POSTFIX step — `(` `[` `.` `->` `++` `--` —
+// binds tighter than an argument's own operators (`&g`, `&obj`, `ns::f`), so
+// only a postfix step after the parameter needs the argument grouped: `P()`
+// over `&g` had read `&(g())`, `O->m` over `&obj` `&(obj->m)`. A
+// template-argument position (`Other<P>`) is followed by `,` or `>`, never a
+// postfix step, so the spelling that keys the instantiation stays unchanged.
+static bool template_arg_groups_before(const TokenBase *next)
+{
+    if ( !next )
+	return false;
+    switch ( next->id() )
+    {
+	case TokenID::tkOpBrk: case TokenID::tkOpSqr: case TokenID::tkDot:
+	case TokenID::tkDeRef: case TokenID::tkInc: case TokenID::tkDec:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
+// A token the substitution SYNTHESIZES (a grouping paren) takes the source
+// position of the token it stands in for — the path back to the source
+// (mc11-ir.md).
+static TokenBase *synthesized_at(TokenBase *t, const TokenBase *at)
+{
+    if ( t && at )
+    {
+	t->file = at->file;
+	t->line = at->line;
+	t->column = at->column;
+    }
+    return t;
+}
+
+// THE splice of a non-type template argument into a cloned token run — the
+// class-template body clone, the out-of-line member clone and the default /
+// pattern clone (clone_template_tokens_with_type_subst) all substitute a
+// parameter NAME by the argument's tokens here: grouped when `next`, the body
+// token after the parameter, is a postfix step (template_arg_groups_before).
+static void splice_nontype_template_arg(std::vector<TokenBase *> &out,
+					const std::vector<TokenBase *> &arg,
+					const TokenBase *param, const TokenBase *next)
+{
+    bool group = arg.size() > 1 && template_arg_groups_before(next);
+    if ( group )
+	out.push_back(synthesized_at(new TokenOpBrk(), param));
+    for ( TokenBase *t : arg )
+	out.push_back(t ? t->clone_origin() : NULL);
+    if ( group )
+	out.push_back(synthesized_at(new TokenClBrk(), param));
+}
+
 static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 	const std::vector<TokenBase *> &src,
 	const std::map<std::string, TokenDataType *> &subst,
 	const std::map<std::string, std::vector<TokenBase *> > *token_subst = NULL)
 {
     std::vector<TokenBase *> out;
-    for ( TokenBase *bt : src )
+    for ( size_t si_ = 0; si_ < src.size(); ++si_ )
     {
+	TokenBase *bt = src[si_];
 	if ( bt && bt->type() == TokenType::ttIdentifier )
 	{
 	    const std::string &s = ((TokenIdent *)bt)->spelling();
@@ -5852,8 +6001,8 @@ static std::vector<TokenBase *> clone_template_tokens_with_type_subst(
 		    ti = token_subst->find(s);
 		if ( ti != token_subst->end() )
 		{
-		    for ( TokenBase *st : ti->second )
-			out.push_back(st ? st->clone_origin() : NULL);
+		    splice_nontype_template_arg(out, ti->second, bt,
+			si_ + 1 < src.size() ? src[si_ + 1] : NULL);
 		    continue;
 		}
 	    }
@@ -7125,7 +7274,7 @@ static bool datadef_has_unresolved_dependent_surface(DataDef *dd)
 	return true;
     if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd) )
 	return class_has_unresolved_dependent_surface(cls);
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return datadef_has_unresolved_dependent_surface(ptr->base_type);
     if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
 	return datadef_has_unresolved_dependent_surface(arr->element_type);
@@ -7143,7 +7292,7 @@ static std::string dependent_surface_reason(DataDef *dd,
 	return std::string();
     if ( dd->is_template_param() )
 	return dd->name + " is a template parameter";
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return dependent_surface_reason(ptr->base_type, seen);
     if ( DataDefCArray *arr = dynamic_cast<DataDefCArray *>(dd) )
 	return dependent_surface_reason(arr->element_type, seen);
@@ -7312,7 +7461,7 @@ DataDef *Program::dependent_deref_result_type(DataDef *dd)
 {
     if ( !dd )
 	return NULL;
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return ptr->base_type ? ptr->base_type : &ddINT64;
     if ( !datadef_has_unresolved_dependent_surface(dd) )
 	return NULL;
@@ -7385,16 +7534,13 @@ static std::string basic_class_datadef_spelling(DataDef *dd)
 {
     if ( !dd )
 	return std::string();
-    if ( DataDefCONST *qualified = dynamic_cast<DataDefCONST *>(dd) )
-    {
-	std::string operand = basic_class_datadef_spelling(qualified->base_type);
-	if ( dynamic_cast<DataDefPTR *>(qualified->base_type) )
-	    return operand + " const";
-	return "const " + operand;
-    }
+    if ( DataDefQUAL *qualified = dynamic_cast<DataDefQUAL *>(dd) )
+	return cv_qualified_spelling(basic_class_datadef_spelling(qualified->base_type),
+				     qualified->quals,
+				     pointer_dd_of(qualified->base_type) != NULL);
     if ( DataDefREF *ref = dynamic_cast<DataDefREF *>(dd) )
 	return basic_class_datadef_spelling(ref->base_type) + "&";
-    if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return basic_class_datadef_spelling(ptr->base_type) + "*";
     if ( DataDefCArray *array = dynamic_cast<DataDefCArray *>(dd) )
 	return basic_class_datadef_spelling(array->element_type) + "["
@@ -7456,10 +7602,8 @@ static std::string basic_class_pattern_type_spelling(
 	    {
 		const Program::ClassTypePattern &operand =
 		    binding.pattern.types[type.operand];
-		if ( operand.kind == Program::ClassTypePatternKind::Pointer )
-		    spelling += " const";
-		else
-		    spelling = "const " + spelling;
+		spelling = cv_qualified_spelling(spelling, type.flags ? type.flags : cvCONST,
+			operand.kind == Program::ClassTypePatternKind::Pointer);
 	    }
 	    else
 		for ( size_t i = 0; i < type.dimensions.size(); ++i )
@@ -8142,18 +8286,21 @@ class BasicClassPatternResolver
 	      && template_type_arg_spelling(slot_tok, "")
 		 != basic_class_datadef_spelling(memo_arguments[i]) )
 		replay.push_back(slot_tok->clone_origin());
-	    else if ( DataDefCONST *carg =
-			dynamic_cast<DataDefCONST *>(memo_arguments[i]) )
+	    else if ( DataDefQUAL *carg =
+			dynamic_cast<DataDefQUAL *>(memo_arguments[i]) )
 	    {
-		// A const-qualified argument re-enters the parse lane the way
-		// source spells it: a `const` qualifier token + the BASE type
+		// A cv-qualified argument re-enters the parse lane the way
+		// source spells it: its qualifier tokens + the BASE type
 		// (consume_template_type_arg_qualifiers owns it from there,
-		// keying the instantiation with the const in the SPELLING).
-		// Pushing the DataDefCONST wrapper itself would type the
+		// keying the instantiation with the cv in the SPELLING).
+		// Pushing the DataDefQUAL wrapper itself would type the
 		// instantiated class's members/params with the wrapper — a
 		// shape the parse lane never produces and member lookup walks
 		// as if it were a class (SIGSEGV on `pair<const K,V>::first`).
-		replay.push_back(new TokenCONST());
+		if ( carg->is_const() )
+		    replay.push_back(new TokenCONST());
+		if ( carg->is_volatile() )
+		    replay.push_back(new TokenVOLATILE());
 		replay.push_back(new TokenDataType(
 		    carg->base_type->name.c_str(), *carg->base_type));
 	    }
@@ -8170,16 +8317,19 @@ class BasicClassPatternResolver
 		// chain minted placeholder args (task #72).
 		DataDef *core = memo_arguments[i];
 		int stars = 0;
-		while ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(core) )
+		while ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(core) ) // allowed-exception: structural (exact-class dispatch)
 		{
 		    if ( !p->base_type || p->is_reference() )
 			break;
 		    core = p->base_type;
 		    ++stars;
 		}
-		if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(core) )
+		if ( DataDefQUAL *pc = dynamic_cast<DataDefQUAL *>(core) )
 		{
-		    replay.push_back(new TokenCONST());
+		    if ( pc->is_const() )
+			replay.push_back(new TokenCONST());
+		    if ( pc->is_volatile() )
+			replay.push_back(new TokenVOLATILE());
 		    core = pc->base_type ? pc->base_type : core;
 		}
 		replay.push_back(new TokenDataType(core->name.c_str(), *core));
@@ -8284,7 +8434,8 @@ public:
 	    result = pgm.getReferenceType(resolve(type.operand));
 	    break;
 	case Program::ClassTypePatternKind::ConstType:
-	    result = pgm.getConstType(resolve(type.operand));
+	    result = pgm.getQualifiedType(resolve(type.operand),
+					  type.flags ? type.flags : cvCONST);
 	    break;
 	case Program::ClassTypePatternKind::CArray:
 	    result = resolve(type.operand);
@@ -8742,6 +8893,7 @@ static void register_basic_class_pattern_method(
     fd->pure_virtual = pattern.pure_virtual;
     fd->decl_file = basic_class_pattern_source_file(binding.definition);
     fd->is_const_method = pattern.is_const_method;
+    fd->is_volatile_method = pattern.is_volatile_method;
     fd->is_member_template = pattern.is_member_template;
     fd->template_param_names = pattern.template_param_names;
     fd->template_param_is_type = pattern.template_param_is_type;
@@ -9712,7 +9864,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    Throw(at) << "Expecting a type argument to "
 				  << tname << "<>" << flush;
 		// Fold a trailing declarator suffix (`*`/`&`/`&&`) into the arg type.
-		adt = fold_template_arg_declarator(adt, at);
+		adt = fold_template_arg_declarator(adt, at, &cv_spelling);
 		type_args.push_back(adt);
 		arg_types_by_slot.push_back(adt);
 		arg_tokens_by_slot.push_back(std::vector<TokenBase *>());
@@ -11014,8 +11166,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		token_subst.find(s);
 	    if ( nti != token_subst.end() )
 	    {
-		for ( size_t ni = 0; ni < nti->second.size(); ++ni )
-		    inj.push_back(nti->second[ni]->clone_origin());
+		splice_nontype_template_arg(inj, nti->second, bt,
+		    bi + 1 < td.body.size() ? td.body[bi + 1] : NULL);
 		continue;
 	    }
 	    std::map<std::string, std::vector<TokenDataType *> >::iterator pki =
@@ -11991,13 +12143,16 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    TokenDataType *resolved = NULL;
 	    try
 	    {
+		// A leading cv is the type-id's (`using p_t = volatile T *;`):
+		// resolve the base past it, then fold it in.
+		unsigned body_lead_cv = skip_cv_qualifier_tokens();
 		TokenBase *head = nextToken();
 		resolved = resolve_declared_type_token(head, true, true);
 		// Declarator suffix (`= U *`) folds BEFORE the
 		// leftover-strictness check, so a pointer-target alias
 		// passes it legitimately (same owner as the arg loop).
 		if ( resolved )
-		    resolved = fold_template_arg_declarator(resolved, head);
+		    resolved = fold_template_arg_declarator(resolved, head, NULL, body_lead_cv);
 		// The substituted body IS the type spelling: tokens left
 		// before the `;` sentinel mean the resolution did not cover
 		// it — a FAILURE, not a success (#27's require_full_parse
@@ -12212,7 +12367,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	// (`value_type const`, optional:790) — same owner-pair as the leading
 	// consume above; without it the separator read the `const` and threw.
 	consume_trailing_type_arg_qualifiers(cv_spelling);
-	adt = fold_template_arg_declarator(adt, at);
+	adt = fold_template_arg_declarator(adt, at, &cv_spelling);
 	args.push_back(adt);
 	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
 	TokenBase *sep = nextToken();
@@ -12269,7 +12424,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 					<< td.typeparams[ai] << " in "
 					<< tname << "<>" << flush;
 	// A defaulted param's declarator suffix (`class V = U*`) folds too.
-	adt = fold_template_arg_declarator(adt, dtok);
+	adt = fold_template_arg_declarator(adt, dtok, &cv_spelling);
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	    nextToken();
 	args.push_back(adt);
@@ -12305,6 +12460,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	pushed_owner_scope = true;
     }
 
+    unsigned body_lead_cv = skip_cv_qualifier_tokens();	// the type-id's (`volatile T *`)
     TokenBase *head = nextToken();
     TokenDataType *resolved = resolve_declared_type_token(head, true, true);
     // Alias-target DECLARATOR suffix (`using rebind = U *;` — libc++
@@ -12314,7 +12470,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
     // — map's tree-iterator chain instantiated with de-pointered args and
     // its operator-> return degraded to a placeholder, task #72).
     if ( resolved )
-	resolved = fold_template_arg_declarator(resolved, head);
+	resolved = fold_template_arg_declarator(resolved, head, NULL, body_lead_cv);
     bool have_sentinel = false;
     for ( size_t si = 0; si < tokens.size(); ++si )
 	if ( tokens[si] == alias_sentinel )
@@ -12376,12 +12532,13 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	{ class_scope_stack.push_back(td.owner_class); po2 = true; }
 	namespace_stack.push_back(td.defining_namespace);
 
+	unsigned body_lead_cv2 = skip_cv_qualifier_tokens();	// the type-id's, as the main lane
 	TokenBase *head2 = nextToken();
 	try
 	{
 	    resolved = resolve_declared_type_token(head2, true, true);
 	    if ( resolved )   // same declarator-suffix fold as the main lane
-		resolved = fold_template_arg_declarator(resolved, head2);
+		resolved = fold_template_arg_declarator(resolved, head2, NULL, body_lead_cv2);
 	}
 	catch ( ... ) { resolved = NULL; }
 
@@ -14261,15 +14418,16 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
 {
     if ( !dd )
 	return "";
-    // A const-qualified level renders `const <base>` — the same canonical
-    // spelling parse_builtin_types_compatible_operand builds from a type
-    // name's leading qualifiers, so `const char *` associations match a
-    // ptr(const char) controlling type. Must precede every base-forwarding
-    // arm (a const pointer is DataDefCONST wrapping DataDefPTR).
-    if ( DataDefCONST *const_dd = dd->as_const_dd() )
+    // A qualified level renders its mask in gcc's order (`const volatile
+    // <base>`) — the same canonical spelling parse_builtin_types_compatible_operand
+    // builds from a type name's qualifiers, so `const char *` / `volatile int *`
+    // associations match a ptr(const char) / ptr(volatile int) controlling
+    // type. Must precede every base-forwarding arm (a const pointer is
+    // DataDefQUAL wrapping DataDefPTR).
+    if ( DataDefQUAL *qual_dd = dd->as_qualified_dd() )
     {
-	std::string base = canonical_builtin_simple_type_name(const_dd->base_type);
-	return base.empty() ? "" : "const " + base;
+	std::string base = canonical_builtin_simple_type_name(qual_dd->base_type);
+	return base.empty() ? "" : cv_prefix_spelling(qual_dd->quals) + base;
     }
     if ( dd == &ddDOUBLE )
 	return "double";
@@ -14280,7 +14438,7 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
 	std::string elem = canonical_builtin_simple_type_name(complex_dd->element_type);
 	return elem.empty() ? "" : "complex(" + elem + ")";
     }
-    if ( DataDefPTR *ptr_dd = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *ptr_dd = pointer_dd_of(dd) )
     {
 	std::string base = canonical_builtin_simple_type_name(ptr_dd->base_type);
 	return base.empty() ? "" : "ptr(" + base + ")";
@@ -14299,13 +14457,24 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
     // `long` (a _Generic association hazard).
     if ( dd->is_function() )
 	return "funcptr";
+    // A scalar renders its IDENTITY, never its storage: the platform long
+    // (LLP64, int's storage) and long long (darwin, long's) are distinct
+    // types the rawtype switch below cannot see — a win64 `long` selected the
+    // `int` association (tests/testconditionaltypec on the wine lane).
+    if ( DataDef *sid = Program::proven_scalar_identity(dd) )
+	if ( dd_is_platform_integer(sid) )
+	    return sid->name;
 
     switch ( dd->rawtype() )
     {
 	case DataType::dtVOID: return "void";
 	case DataType::dtBOOL: return "bool";
 	case DataType::dtUINT8: return "unsigned char";
-	case DataType::dtINT8: return "char";
+	// dtINT8 is dtCHAR: `signed char` is its own type, distinct from plain
+	// char (C11 6.2.5p15), told apart only by identity — a signed char
+	// operand must select the `signed char` association, not `char`.
+	case DataType::dtINT8:
+	    return Program::proven_scalar_identity(dd) == &ddINT8 ? "signed char" : "char";
 	case DataType::dtUINT16: return "unsigned short";
 	case DataType::dtINT16: return "short";
 	case DataType::dtUINT24: return "unsigned int24";
@@ -14322,26 +14491,6 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
     return dd->name;
 }
 
-static void strip_top_level_type_qualifiers(std::string &sig)
-{
-    static const char *prefixes[] = {"const ", "restrict "};
-    bool changed = true;
-    while ( changed )
-    {
-	changed = false;
-	for ( size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i )
-	{
-	    const char *prefix = prefixes[i];
-	    size_t len = strlen(prefix);
-	    if ( sig.compare(0, len, prefix) == 0 )
-	    {
-		sig.erase(0, len);
-		changed = true;
-	    }
-	}
-    }
-}
-
 bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 						   std::string &sig)
 {
@@ -14349,24 +14498,44 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
     if ( !type_tb )
 	return false;
 
-    std::string leading_qualifiers;
+    // These operands answer C type compatibility (6.2.7), whose identity is
+    // every cv bit — in madc and C++ modes too, where a declarator's type
+    // models only volatile until the const campaign (KG
+    // cxx_const_overload_identity). The read widens modeled_cv() for its
+    // extent; the spelling reader this replaced kept const the same way
+    // (tests/testbuiltintypescompatible: char * vs const char * in madc mode).
+    struct CvIdentityRead {
+	unsigned &slot; unsigned saved;
+	CvIdentityRead(unsigned &s) : slot(s), saved(s) { s = cvCONST | cvVOLATILE; }
+	~CvIdentityRead() { slot = saved; }
+    } cv_identity(cv_identity_read);
+
+    // A type NAME: the leading cv run, the base (a keyword or typedef type, a
+    // typeof operand, a struct/union/enum tag), then the declarator through
+    // the ONE type-id owner (parse_type_id — every level's cv, `(*)(params)`,
+    // `(*)[N]`, `[N]`) — rendered by the renderer the controlling side
+    // (generic_controlling_signature) reads, so both sides spell one type one
+    // way. Its hand-rolled `*`/`[]` suffix loop could not read `volatile int
+    // (*)[4]` or `int (**)(int)` at all. `restrict` is no type identity.
+    unsigned leading_cv = cvNONE;
     while ( is_type_qualifier_token(type_tb) )
     {
-	if ( !leading_qualifiers.empty() )
-	    leading_qualifiers += ' ';
-	leading_qualifiers += ((TokenKeyword *)type_tb)->spelling();
+	if ( type_tb->id() == TokenID::tkCONST )
+	    leading_cv |= cvCONST;
+	else if ( type_tb->id() == TokenID::tkVOLATILE )
+	    leading_cv |= cvVOLATILE;
 	type_tb = nextToken();
 	if ( !type_tb )
 	    return false;
     }
 
+    DataDef *base = NULL;
+    bool long_double = false;
     if ( type_tb->type() == TokenType::ttDataType )
     {
 	TokenDataType *tdt = (TokenDataType *)type_tb;
-	if ( tdt->spelling_is("long double") )
-	    sig = "long double";
-	else
-	    sig = canonical_builtin_simple_type_name(&tdt->definition);
+	long_double = tdt->spelling_is("long double");
+	base = &tdt->definition;
     }
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
@@ -14411,13 +14580,10 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 	    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
 	       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
 		return false;
-	    sig = canonical_builtin_simple_type_name(inner_dd);
+	    base = inner_dd;
 	}
 	else
-	{
-	    DataDef *dd = resolve_named_datadef(tname);
-	    sig = canonical_builtin_simple_type_name(dd);
-	}
+	    base = resolve_named_datadef(tname);
     }
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
@@ -14425,71 +14591,32 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return false;
-	sig = (type_tb->id() == TokenID::tkSTRUCT ? "struct:" : "union:")
-	    + contextual_identifier_name(tag_tb);
+	base = struct_tag_or_implicit_forward(contextual_identifier_name(tag_tb),
+					      type_tb->id() == TokenID::tkUNION);
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
     {
 	TokenBase *tag_tb = nextToken();
 	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
 	    return false;
-	sig = "enum:" + contextual_identifier_name(tag_tb);
+	TokenDataType *etdt = find_c_enum_tag(contextual_identifier_name(tag_tb));
+	base = etdt ? &etdt->definition : NULL;
     }
-    else
+    if ( !base )
 	return false;
 
-    if ( sig.empty() )
+    skip_expression_whitespace();
+    DeclaratorResult decl;
+    DataDef *t = parse_type_id(base, leading_cv, decl);
+    // Top-level qualifiers are no part of the comparison (gcc's
+    // __builtin_types_compatible_p; a _Generic controlling type is
+    // lvalue-converted, 6.5.1.1p2).
+    t = t ? t->unqualified() : NULL;
+    if ( !t )
 	return false;
-    if ( !leading_qualifiers.empty() )
-	sig = leading_qualifiers + " " + sig;
-
-    bool wrapped = false;
-    while ( peekToken() )
-    {
-	skip_expression_whitespace();
-	if ( !peekToken() )
-	    break;
-	if ( peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken();
-	    std::string ptr_qualifiers;
-	    skip_expression_whitespace();
-	    while ( peekToken() && is_type_qualifier_token(peekToken()) )
-	    {
-		if ( !ptr_qualifiers.empty() )
-		    ptr_qualifiers += ' ';
-		ptr_qualifiers += ((TokenKeyword *)nextToken())->spelling();
-	    }
-	    sig = ptr_qualifiers.empty()
-		? "ptr(" + sig + ")"
-		: ptr_qualifiers + " ptr(" + sig + ")";
-	    wrapped = true;
-	    continue;
-	}
-	if ( peekToken()->id() == TokenID::tkOpSqr )
-	{
-	    nextToken();
-	    int depth = 1;
-	    while ( depth > 0 )
-	    {
-		TokenBase *dim_tb = nextToken();
-		if ( !dim_tb )
-		    return false;
-		if ( dim_tb->id() == TokenID::tkOpSqr )
-		    ++depth;
-		else if ( dim_tb->id() == TokenID::tkClSqr )
-		    --depth;
-	    }
-	    sig = "array(" + sig + ")";
-	    wrapped = true;
-	    continue;
-	}
-	break;
-    }
-
-    if ( !wrapped )
-	strip_top_level_type_qualifiers(sig);
-    return true;
+    sig = (long_double && t == base->unqualified())
+	? std::string("long double") : canonical_builtin_simple_type_name(t);
+    return !sig.empty();
 }
 
 // C11 6.5.1.1 generic selection — `_Generic(ctrl, T1: e1, ..., default: eD)`.
@@ -14995,6 +15122,22 @@ bool Program::is_shared_global_extern_reference(TokenCpnd *code, Variable *var)
 }
 
 static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bool deref);
+// THE measurement of a sizeof/alignof EXPRESSION operand, parenthesized or
+// not: a named fixed array measures every element; anything else measures
+// its type-query type (type_query_chain_datadef — dims-aware for a
+// subscript or a deref of a multi-dimensional array). 0 when untyped.
+static size_t type_query_expression_value(Program &pgm, TokenBase *expr,
+					  bool want_alignof)
+{
+    if ( !expr )
+	return 0;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+	if ( tv->var.is_fixed_array() )
+	    if ( size_t v = query_fixed_array_sizeof_value(tv, want_alignof, false) )
+		return v;
+    DataDef *dd = type_query_chain_datadef(pgm, expr);
+    return dd ? query_datadef_measure(dd, want_alignof) : 0;
+}
 
 TokenBase *Program::parse_parenthesized_expression(const char *context,
 						 bool stop_on_closing_paren)
@@ -15015,52 +15158,15 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 					   const std::string &op_name,
 					   bool &have_value, size_t &query_value)
 {
-    bool want_alignof = is_alignof_identifier(op_name);
     DataDef *dd = NULL;
-    Variable *var = NULL;
 
     if ( is_contextual_identifier_token(type_tb) )
     {
 	std::string tname = contextual_identifier_name(type_tb);
-	var = findVariable(tname);
-	if ( var && peekToken()
-	  && (peekToken()->id() == TokenID::tkOpSqr
-	   || peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkDeRef) )
-	{
-	    TokenBase *chain = parsePostfixChain(type_tb);
-	    DataDef *cdd = chain ? chain->datadef() : NULL;
-	    if ( !cdd )
-		Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
-	    query_value = query_datadef_measure(cdd, want_alignof);
-	    if ( !want_alignof )
-	    {
-		if ( TokenMember *tm = dynamic_cast<TokenMember *>(chain) )
-		{
-		    if ( tm->is_fixed_array_member() )
-		    {
-			DataDef *otype = tm->object.type;
-			if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
-			    otype = opt->base_type;
-			if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype) )
-			{
-			    std::string mname = tm->var.name;
-			    query_value *= sdd->m_count(mname);
-			}
-		    }
-		}
-	    }
-	    have_value = true;
+	// A VARIABLE names an expression operand — the caller's one
+	// expression measure reads it (array_operand_type for an array).
+	if ( findVariable(tname) )
 	    return NULL;
-	}
-	if ( var )
-	{
-	    query_value = query_datadef_measure(var->type, want_alignof);
-	    if ( !want_alignof && var->is_fixed_array() )
-		query_value *= var->total_elements();
-	    have_value = true;
-	    return NULL;
-	}
 	dd = resolve_current_class_type_alias(tname);
 	if ( dd )
 	    return dd;
@@ -15098,45 +15204,9 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     else if ( type_tb->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)type_tb)->spelling();
-	var = findVariable(tname);
-	if ( var && peekToken()
-	  && (peekToken()->id() == TokenID::tkOpSqr
-	   || peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkDeRef) )
-	{
-	    TokenBase *chain = parsePostfixChain(type_tb);
-	    DataDef *cdd = chain ? chain->datadef() : NULL;
-	    if ( !cdd )
-		Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
-	    query_value = query_datadef_measure(cdd, want_alignof);
-	    if ( !want_alignof )
-	    {
-		if ( TokenMember *tm = dynamic_cast<TokenMember *>(chain) )
-		{
-		    if ( tm->is_fixed_array_member() )
-		    {
-			DataDef *otype = tm->object.type;
-			if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
-			    otype = opt->base_type;
-			if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype) )
-			{
-			    std::string mname = tm->var.name;
-			    query_value *= sdd->m_count(mname);
-			}
-		    }
-		}
-	    }
-	    have_value = true;
-	    var = NULL;
-	}
-	else if ( var )
-	{
-	    query_value = query_datadef_measure(var->type, want_alignof);
-	    if ( !want_alignof && var->is_fixed_array() )
-		query_value *= var->total_elements();
-	    have_value = true;
-	}
-	else
+	// A VARIABLE names an expression operand (see the arm above).
+	if ( findVariable(tname) )
+	    return NULL;
 	{
 	    dd = resolve_current_class_type_alias(tname);
 	    if ( !dd )
@@ -15186,56 +15256,9 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	TokenBase *inner = nextToken();
 	return resolve_type_query_datadef(inner, op_name, have_value, query_value);
     }
-    else if ( type_tb->id() == TokenID::tkMul )
-    {
-	// `*` followed by anything but an identifier — `sizeof(*(p))`, the
-	// shape Apple's FD_ZERO expands to (`__builtin_bzero(p, sizeof(*(p)))`),
-	// `sizeof(*p + 1)` — is an EXPRESSION operand, not this arm's
-	// `*ident[.chain]` fast path. Consume nothing and decline: the caller's
-	// sizeof(expression) fallback parses `*` as the unary deref it is and
-	// measures the result type (gcc/clang: sizeof(*(p)) == sizeof(*p)).
-	// Throwing here made a legal C operand a parse error (darwin D4:
-	// teststructinterop, the first FD_ZERO madc ever met).
-	if ( !peekToken() || !is_contextual_identifier_token(peekToken()) )
-	    return NULL;
-	TokenBase *deref_tb = nextToken();
-	DataDef *deref_base = NULL;
-	if ( peekToken()
-	  && (peekToken()->id() == TokenID::tkDot
-	   || peekToken()->id() == TokenID::tkDeRef
-	   || peekToken()->id() == TokenID::tkOpSqr) )
-	{
-	    TokenBase *chain = parsePostfixChain(deref_tb);
-	    DataDef *cdd = chain ? chain->datadef() : NULL;
-	    if ( !cdd )
-		Throw(deref_tb) << op_name << "(*expr): cannot determine type" << flush;
-	    if ( cdd->is_pointer() )
-	    {
-		DataDefPTR *cdp = dynamic_cast<DataDefPTR *>(cdd);
-		deref_base = (cdp && cdp->base_type) ? cdp->base_type : &ddINT64;
-	    }
-	    else
-		deref_base = cdd;
-	}
-	else
-	{
-	    std::string dname = contextual_identifier_name(deref_tb);
-	    Variable *dvar = findVariable(dname);
-	    if ( !dvar )
-		Throw(deref_tb) << "undeclared identifier '" << dname << "' in " << op_name << "(*...)" << flush;
-	    if ( dvar->is_fixed_array() )
-		deref_base = dvar->type;
-	    else if ( dvar->type->is_pointer() )
-	    {
-		DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dvar->type);
-		deref_base = (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
-	    }
-	    else
-		Throw(deref_tb) << op_name << "(*" << dname << "): not a pointer or array" << flush;
-	}
-	query_value = query_datadef_measure(deref_base, want_alignof);
-	have_value = true;
-    }
+    // A `*`-led operand is an EXPRESSION — no type-id starts with `*` — so
+    // nothing resolves here: the caller's expression operand reads it
+    // through the deref arm, the one reader (`sizeof(*(p))`, `sizeof(**pp)`).
 
     return dd;
 }
@@ -15293,46 +15316,20 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	return arity;
     }
 
+    // `sizeof unary-expression`, no parens (C11 6.5.3.4, [expr.sizeof]/1):
+    // the operand is a unary-expression — read by the one bounded reader,
+    // so `sizeof **pp`, `sizeof *c.pp()` and `sizeof -x` are operands like
+    // `sizeof *p`, and measured exactly as the parenthesized expression
+    // operand below is. A string literal is measured as the array it is.
     if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
     {
-	TokenBase *probe = peekToken();
-	bool deref = (probe->id() == TokenID::tkMul);
-	if ( deref )
-	{
-	    nextToken();
-	    probe = peekToken();
-	}
-	// sizeof "literal" — string literal without parens
-	if ( probe && probe->type() == TokenType::ttString )
-	    return literal_token_sizeof(static_cast<TokenStr *>(nextToken()));
-	// sizeof literal-constant — `sizeof 0` (c-testsuite 00038): the
-	// unary-expression operand needs no parens; a numeric/char literal
-	// carries its own type, measured exactly as the parenthesized
-	// expression fallback measures expr->datadef().
-	if ( probe && (probe->type() == TokenType::ttInteger
-		    || probe->type() == TokenType::ttReal
-		    || probe->type() == TokenType::ttChar)
-	  && probe->datadef() )
-	    return query_datadef_measure(nextToken()->datadef(), want_alignof);
-	if ( !probe || !is_contextual_identifier_token(probe) )
-	    Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
-	TokenBase *id_tb = nextToken();
-	TokenBase *chain = parsePostfixChain(id_tb);
-	DataDef *cdd = type_query_chain_datadef(chain);
-	if ( !cdd )
-	    Throw(id_tb) << op_name << ": cannot determine type of expression" << flush;
-	size_t value = query_datadef_measure(cdd, want_alignof);
-	if ( deref && cdd->is_pointer() )
-	{
-	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(cdd);
-	    if ( pdd && pdd->base_type )
-		value = query_datadef_measure(pdd->base_type, want_alignof);
-	}
-	else if ( TokenVar *tv = dynamic_cast<TokenVar *>(chain) )
-	{
-	    if ( tv->var.is_fixed_array() )
-		value = query_fixed_array_sizeof_value(tv, want_alignof, deref);
-	}
+	TokenBase *first = nextToken();
+	if ( first->type() == TokenType::ttString )
+	    return literal_token_sizeof(static_cast<TokenStr *>(first));
+	TokenBase *expr = parseCastExpression(first);
+	size_t value = type_query_expression_value(*this, expr, want_alignof);
+	if ( !value )
+	    Throw(first) << op_name << ": cannot determine type of expression" << flush;
 	return value;
     }
 
@@ -15381,13 +15378,7 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	TokenBase *expr = parseExpression(first, true, false, true, 1);
 	if ( expr && expr->datadef() )
 	{
-	    dd = expr->datadef();
-	    // For fixed arrays accessed as expressions, use element size
-	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
-		if ( tv->var.is_fixed_array() )
-		    value = query_fixed_array_sizeof_value(tv, want_alignof, false);
-	    if ( !value )
-		value = query_datadef_measure(dd, want_alignof);
+	    value = type_query_expression_value(*this, expr, want_alignof);
 	    have_value = true;
 	    dd = NULL; // have_value is set, skip the pointer/array loop below
 	    expr_fallback_consumed_paren = true;
@@ -15759,7 +15750,7 @@ struct TraitTypeArg
 // spelled form produces. madc's IR keeps ONE reference kind post-resolution,
 // so a baked reference reads as the LVALUE form (trait uses that need the
 // rvalue distinction spell it with trailing `&&` tokens, which win above).
-static void unwrap_baked_trait_arg(TraitTypeArg &a)
+static void unwrap_baked_trait_arg(Program &pgm, TraitTypeArg &a)
 {
     if ( a.is_lref || a.is_rref )
 	return;
@@ -15768,10 +15759,14 @@ static void unwrap_baked_trait_arg(TraitTypeArg &a)
 	a.is_lref = true;
 	a.dd = rdd->base_type;
     }
-    if ( DataDefCONST *cdd = dynamic_cast<DataDefCONST *>(a.dd) )
+    // A baked CONST rides referent_const — the flag the spelled form's leading
+    // `const` sets. Every other qualifier stays in the TYPE: it is the
+    // argument's identity (__is_same(volatile int, int) is false; peeling the
+    // whole wrapper made libstdc++'s is_same<volatile int, int> true).
+    if ( a.dd && a.dd->is_const() )
     {
 	a.referent_const = true;
-	a.dd = cdd->base_type;
+	a.dd = pgm.getQualifiedType(a.dd->unqualified(), a.dd->cv_quals() & ~cvCONST);
     }
 }
 
@@ -16301,10 +16296,10 @@ static int trait_class_constructible(DataDefCLASS *c,
 	{
 	    DataDef *pdd = fd->parameters[i + 1];
 	    DataDef *pref = pdd;
-	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(pref) )
+	    if ( DataDefPTR *pr = pointer_dd_of(pref) )
 		if ( pr->is_reference() && pr->base_type )
 		    pref = pr->base_type;
-	    if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(pref) )
+	    if ( DataDefQUAL *pc = dynamic_cast<DataDefQUAL *>(pref) )
 		pref = pc->base_type ? pc->base_type : pref;
 	    const TraitTypeArg &a = args[i];
 	    if ( !pref || !a.dd )
@@ -16362,10 +16357,10 @@ static int trait_class_constructible(DataDefCLASS *c,
 	{
 	    bool p_const = 1 < fd->const_params.size() && fd->const_params[1];
 	    DataDef *p1 = fd->parameters[1];
-	    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p1) )
+	    if ( DataDefPTR *pr = pointer_dd_of(p1) )
 		if ( pr->is_reference() && pr->base_type )
 		{
-		    if ( dynamic_cast<DataDefCONST *>(pr->base_type) )
+		    if ( pr->base_type->is_const() )
 			p_const = true;
 		    if ( p_const )
 			copylike_nx = nx;
@@ -16513,31 +16508,32 @@ TokenBase *Program::evaluate_type_trait(TokenBase *op_tb, const std::string &nam
 	if ( !adt )
 	    Throw(at ? at : op_tb) << "Expecting a type argument to " << name << flush;
 	DataDef *dd = &adt->definition;
-	// Fold trailing pointer stars (`__is_pointer(int*)`), mirroring the
-	// template-argument parser.
-	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-	{
-	    nextToken();
-	    dd = getPointerType(dd);
-	}
-	// cv-qualifiers on the POINTER itself (`char* const`, `const char*
-	// const&` — libc++'s `const _Tp&` with _Tp a pointer, once spelled):
-	// the top-level cv of a by-value operand is dropped ([expr.type]); on
-	// a reference operand it is the referent's constness.
-	bool pointer_const = false;
-	while ( peekToken() && (peekToken()->id() == TokenID::tkCONST
-			     || peekToken()->id() == TokenID::tkVOLATILE) )
-	{
-	    if ( nextToken()->id() == TokenID::tkCONST )
-		pointer_const = true;
-	}
+	// The type-id's declarator through the ONE type-id owner
+	// (parse_type_id): `*`s with every level's modeled cv (so
+	// `__is_same(volatile int *, int *)` is false — this reader hand-rolled
+	// its stars and dropped every volatile), then `&`/`&&` (load-bearing for
+	// __is_assignable). A const on the pointer itself (`char* const&`,
+	// libc++'s `const _Tp&` with _Tp a pointer, once spelled) is the
+	// referent's constness on a reference operand; C++ const is not in the
+	// type, so it rides referent_const as the leading `const` does.
+	unsigned trait_lead_cv = (cv_spelling.find("volatile") != std::string::npos
+				  ? cvVOLATILE : cvNONE)
+			       | (cv_spelling.find("const") != std::string::npos
+				  ? cvCONST : cvNONE);
+	DeclaratorResult td;
+	dd = parse_type_id(dd, trait_lead_cv, td);
 	a.dd = dd;
-	// Trailing reference (`T&` / `T&&`) — load-bearing for __is_assignable.
-	if ( peekToken() && peekToken()->id() == TokenID::tkBand )
-	{ nextToken(); a.is_lref = true; a.referent_const |= pointer_const; }
-	else if ( peekToken() && peekToken()->id() == TokenID::tkLand )
-	{ nextToken(); a.is_rref = true; a.referent_const |= pointer_const; }
-	unwrap_baked_trait_arg(a);
+	if ( td.ref == RefType::rtReference )
+	{
+	    if ( DataDefREF *r = dd->as_reference_dd() )
+		a.dd = r->base_type;
+	    if ( td.rvalue_ref )
+		a.is_rref = true;
+	    else
+		a.is_lref = true;
+	    a.referent_const |= td.const_after_star;
+	}
+	unwrap_baked_trait_arg(*this, a);
 	// [meta.rqmts]: a type trait's class operand shall be complete — a
 	// pending shell (a deferred template-argument instantiation, a bodyless
 	// forward instantiation) completes on demand here, as sizeof's operand
@@ -16706,7 +16702,7 @@ static int noexcept_destructor_spec(Program &pgm, DataDef *dd, int depth)
 	return -1;
     if ( DataDefCArray *a = dynamic_cast<DataDefCArray *>(dd) )
 	return noexcept_destructor_spec(pgm, a->element_type, depth + 1);
-    if ( DataDefCONST *q = dynamic_cast<DataDefCONST *>(dd) )
+    if ( DataDefQUAL *q = dynamic_cast<DataDefQUAL *>(dd) )
 	return noexcept_destructor_spec(pgm, q->base_type, depth + 1);
     DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
     if ( !s )
@@ -16766,7 +16762,8 @@ static int noexcept_destructor_spec(Program &pgm, DataDef *dd, int depth)
 //   arguments. A fn-pointer callee has no tracked exception spec: canon
 //   (g++/clang) answers `noexcept(p())` false, so 0.
 // - Builtin operators recurse; an operator RESOLVED onto a class overload
-//   types by resolved_type but does not name its method here — refuse.
+//   (a class operand) types by resolved_type but does not name its method
+//   here — refuse.
 // - TokenCast recurses (scalar conversions do not throw; a throwing
 //   dynamic_cast<T&> is not distinguishable post-parse and is accepted — no
 //   real-header noexcept condition spells one).
@@ -16793,7 +16790,7 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	    ta.dd = a ? a->datadef() : NULL;
 	    if ( !ta.dd )
 		return -1;
-	    unwrap_baked_trait_arg(ta);
+	    unwrap_baked_trait_arg(pgm, ta);
 	    cargs.push_back(ta);
 	}
 	if ( r == 0 )
@@ -16817,7 +16814,7 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	// callee is a call.
 	if ( !tc->var.type || !tc->var.type->is_function() )
 	    return r;
-	if ( dynamic_cast<DataDefFPTR *>(tc->var.type) )
+	if ( tc->var.type->as_fptr_dd() )
 	    return 0;
 	FuncDef *fd = pgm.resolved_call_funcdef(tc);
 	pgm.resolve_noexcept_spec(fd);
@@ -16853,7 +16850,13 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
     if ( tb->is_operator() )
     {
 	TokenOperator *to = static_cast<TokenOperator *>(tb);
-	if ( to->resolved_type )
+	// Refuse only an operator resolved onto a CLASS overload (a class
+	// operand). resolved_type alone also records a built-in's type — an
+	// array operand's decay (`a + 1`, `+a`), a SIMD comparison's vector, a
+	// <=> category — and those recurse like every built-in: g++ answers
+	// noexcept(a + 1) true where this refused it.
+	if ( to->resolved_type
+	  && (pgm.operand_object_class(to->left) || pgm.operand_object_class(to->right)) )
 	    return -1;
 	return noexcept_conjoin(noexcept_eval_expr(pgm, to->left, depth + 1),
 				noexcept_eval_expr(pgm, to->right, depth + 1));
@@ -16988,6 +16991,8 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
 	}
 	return false;
     }
+    if ( TokenUnaryPlus *tp = dynamic_cast<TokenUnaryPlus *>(tb) )
+	return try_eval_known_integer(tp->right, out);
     if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(tb) )
     {
 	int64_t lhs = 0, rhs = 0;
@@ -17009,59 +17014,6 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
 	return false;
     }
     return false;
-}
-
-TokenBase *Program::materialize_cast_literal_operand(TokenBase *tb)
-{
-    if ( !tb )
-	return tb;
-    if ( tb->type() != TokenType::ttString )
-	return tb;
-
-    TokenStr *first = static_cast<TokenStr *>(tb);
-    std::string literal = first->str;
-    bool wide_literal = first->wide;
-    while ( peekToken() && peekToken()->type() == TokenType::ttString )
-    {
-	TokenStr *next = static_cast<TokenStr *>(nextToken());
-	if ( wide_literal || next->wide )
-	{
-	    if ( !wide_literal )
-	    {
-		std::string converted;
-		for ( unsigned char c : literal )
-		{
-		    converted += (char)c;
-		    converted += '\0';
-		    converted += '\0';
-		    converted += '\0';
-		}
-		literal = converted;
-		wide_literal = true;
-	    }
-	    if ( next->wide )
-		literal += next->str;
-	    else
-	    {
-		for ( unsigned char c : next->str )
-		{
-		    literal += (char)c;
-		    literal += '\0';
-		    literal += '\0';
-		    literal += '\0';
-		}
-	    }
-	}
-	else
-	    literal += next->str;
-    }
-
-    Variable *var = wide_literal ? addWideLiteral(literal) : addLiteral(literal);
-    TokenVar *tv = new TokenVar(*var);
-    tv->file = tb->file;
-    tv->line = tb->line;
-    tv->column = tb->column;
-    return tv;
 }
 
 static int64_t fixed_array_object_size(const Variable &var)
@@ -17086,7 +17038,7 @@ static int64_t token_pointer_element_size(TokenBase *tb)
 	    return tm->var.type->size ? (int64_t)tm->var.type->size : 1;
     }
     DataDef *dd = tb->datadef();
-    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *pdd = pointer_dd_of(dd) )
 	return (pdd->base_type && pdd->base_type->size) ? (int64_t)pdd->base_type->size : 1;
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
 	return (add->element_type && add->element_type->size) ? (int64_t)add->element_type->size : 1;
@@ -17416,7 +17368,7 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
 					     bool paren, bool deref,
 					     size_t after_ix)
 {
-    DataDefPTR *vp = dynamic_cast<DataDefPTR *>(v->type);
+    DataDefPTR *vp = pointer_dd_of(v->type);
     DataDefCArray *vc = vp ? dynamic_cast<DataDefCArray *>(vp->base_type)
 			   : NULL;
     if ( !vc || !vc->chain_has_runtime_size() )
@@ -17497,7 +17449,7 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
 	    // Fold the same constant the generic path computes for these
 	    // shapes (the operand tokens are already consumed).
 	    TokenInt *ti = new TokenInt((int64_t)query_datadef_measure(
-					    type_query_chain_datadef(chain),
+					    type_query_chain_datadef(*this, chain),
 					    false));
 	    ti->setDataType(&ddUINT64);
 	    copy_token_location(ti, op_tb);
@@ -17595,7 +17547,7 @@ TokenBase *Program::try_parse_vla_variable_sizeof(TokenBase *op_tb,
     if ( !total )
 	return NULL;
     DataDef *elem = v->type;
-    if ( DataDefPTR *wp = dynamic_cast<DataDefPTR *>(elem) )
+    if ( DataDefPTR *wp = pointer_dd_of(elem) )
 	elem = wp->base_type;
     while ( DataDefCArray *c = dynamic_cast<DataDefCArray *>(elem) )
     {
@@ -17907,7 +17859,7 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
     DataDef *current = base_dd;
     while ( true )
     {
-	if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(current) )
+	if ( DataDefPTR *pdd = pointer_dd_of(current) )
 	    current = pdd->base_type;
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(current);
 	if ( !sdd )
@@ -19985,7 +19937,7 @@ static const DataDefSTRUCT *param_concrete_class_for_proof(DataDef *pt, bool ref
     if ( !pt )
 	return NULL;
     if ( refp )
-	if ( DataDefPTR *pp = dynamic_cast<DataDefPTR *>(pt) )
+	if ( DataDefPTR *pp = pointer_dd_of(pt) )
 	    pt = pp->base_type;
     return dynamic_cast<const DataDefSTRUCT *>(pt);
 }
@@ -20076,7 +20028,8 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	// carries the member's cv, and a CONST object argument cannot
 	// initialize a non-const implicit object param ([over.match.viable]).
 	// Dtors stay callable on const objects.
-	if ( obj_cv == 1 && hidden && !fd->is_const_method && name[0] != '~' )
+	if ( obj_cv > 0 && hidden && ((unsigned)obj_cv & ~fd->method_cv())
+	  && name[0] != '~' )
 	{
 	    // Receiver-cv misses stay in the lenient lane: the proven-miss
 	    // diagnostic is scoped to ARGUMENT-type confusion.
@@ -20213,9 +20166,15 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	    // parameter is the discriminator ([over.match.best] — a non-const
 	    // object's exact cv-match beats the qualification conversion).
 	    if ( obj_cv >= 0 && best_fd
-	      && best_fd->is_const_method != fd->is_const_method )
+	      && best_fd->method_cv() != fd->method_cv() )
 	    {
-		if ( fd->is_const_method == (obj_cv == 1) )
+		// The closest cv wins: the fewer qualifiers the member adds to
+		// the object's, the better the implicit object's conversion.
+		unsigned add_fd = fd->method_cv() & ~(unsigned)obj_cv;
+		unsigned add_best = best_fd->method_cv() & ~(unsigned)obj_cv;
+		int n_fd = ((add_fd & cvCONST) ? 1 : 0) + ((add_fd & cvVOLATILE) ? 1 : 0);
+		int n_best = ((add_best & cvCONST) ? 1 : 0) + ((add_best & cvVOLATILE) ? 1 : 0);
+		if ( n_fd < n_best )
 		    best = mv;
 	    }
 	    // Equal conversion sequences prefer a non-template function over a
@@ -20286,9 +20245,9 @@ bool DataDef::same_representation(DataDef &d)
 			return false;
 		FuncDef *af = dynamic_cast<FuncDef *>(a);
 		FuncDef *bf = dynamic_cast<FuncDef *>(b);
-		if ( DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(a) )
+		if ( DataDefFPTR *afp = a->as_fptr_dd() )
 			af = afp->target;
-		if ( DataDefFPTR *bfp = dynamic_cast<DataDefFPTR *>(b) )
+		if ( DataDefFPTR *bfp = b->as_fptr_dd() )
 			bf = bfp->target;
 		if ( !af || !bf )
 			return af == bf;
@@ -20329,8 +20288,8 @@ bool DataDef::same_representation(DataDef &d)
 	// Pointers: recurse on the pointee when both sides carry one. (The
 	// builtin dtXXXptr tags encode a simple pointee, and DataDefPTR sets the
 	// same tag, so the tag compare below also covers pointer-to-simple.)
-	DataDefPTR *ap = dynamic_cast<DataDefPTR *>(a);
-	DataDefPTR *bp = dynamic_cast<DataDefPTR *>(b);
+	DataDefPTR *ap = pointer_dd_of(a);
+	DataDefPTR *bp = pointer_dd_of(b);
 	if ( ap && bp )
 		return ap->base_type->same_representation(*bp->base_type);
 	// Both are btSimple and NOT both DataDefPTR (a pointer pair was handled
@@ -20636,6 +20595,7 @@ static const char *object_operator_symbol(TokenID id)
 	case TokenID::tkAdd: return "+";
 	case TokenID::tkSub: return "-";
 	case TokenID::tkNeg: return "-";
+	case TokenID::tkUnaryPlus: return "+";
 	case TokenID::tkMul: return "*";
 	case TokenID::tkDiv: return "/";
 	case TokenID::tkMod: return "%";
@@ -20708,40 +20668,104 @@ DataDef *Program::comparison_category_class(TokenOperator *to)
 // the matching operator, using that operator's return type. Without this,
 // object operators report the default arithmetic datadef, so copy-init ctor
 // selection, chained operator expressions, and `auto` all mis-resolve.
-// Array-to-pointer decay ([conv.array]) for an operator operand: a fixed-array
-// variable / array member / array-typed expression denotes `element *` in a
-// value context. Mirrors the trichotomy in CirBuilder::ctor_arg_datadef.
-// TokenMember derives from TokenVar, so it is checked first. Returns NULL when
-// the operand is not an array.
-DataDef *Program::array_decay_pointer(TokenBase *operand)
+// The ARRAY type an operand denotes — with its extents — or NULL when `e` is
+// not an array. A multi-dimensional array is the whole nested type: `int
+// m[2][3]` denotes int[2][3], `m[1]` int[3]; the element of either is its ROW.
+// THE owner of that question (sizeof measures it; array_operand_element_type,
+// decay, `*a` and `a->m` read its element). madc stores an array FLATTENED:
+// the node's datadef() reports the SCALAR, and the extents live beside it — a
+// variable's dims, the struct's m_dims, a TokenSubscript's extra_indices, the
+// depth of a TokenSubscriptExpr chain — so a consumer that asks datadef()
+// loses the rows (`sizeof s.n[1]` measured one char, an array of function
+// pointers read as one). Unrecorded extents are one dimension of the element
+// count (0 for a flexible member: its element is still right). TokenMember
+// derives from TokenVar, so it is asked first.
+DataDef *Program::array_operand_type(TokenBase *e)
 {
-    if ( !operand ) return NULL;
-    if ( TokenMember *tm = (operand ? operand->as_member_tok() : NULL) )
+    if ( !e ) return NULL;
+    size_t depth = 0;			// subscripts applied through a chain
+    TokenBase *root = e;
+    while ( TokenSubscriptExpr *tse = root->as_subscript_expr_tok() )
+    {
+	if ( !tse->base_expr )
+	    break;
+	++depth;
+	root = tse->base_expr;
+    }
+    DataDef *base = NULL;		// the scalar element
+    std::vector<carray_dim_t> dims;
+    size_t consumed = depth;		// extents already indexed
+    bool array = false;
+    if ( TokenMember *tm = root->as_member_tok() )
     {
 	if ( tm->is_fixed_array_member() && tm->var.type )
-	    return getPointerType(tm->var.type);
+	{
+	    DataDefSTRUCT *sdd = tm->owner_struct_type();
+	    const std::vector<carray_dim_t> *md =
+		sdd ? sdd->m_dims(tm->var.name) : NULL;
+	    std::string mname = tm->var.name;
+	    if ( md && !md->empty() )
+		dims = *md;
+	    else
+		dims.assign(1, sdd ? sdd->m_count(mname) : 0);
+	    base = tm->var.type;
+	    array = true;
+	}
     }
-    else if ( TokenVar *tv = (operand ? operand->as_var_tok() : NULL) )
+    else if ( TokenVar *tv = root->as_var_tok() )
     {
 	if ( tv->var.is_fixed_array() && tv->var.type )
-	    return getPointerType(tv->var.type);
+	{
+	    if ( !tv->var.dims.empty() )
+		dims = tv->var.dims;
+	    else
+		dims.assign(1, tv->var.total_elements());
+	    base = tv->var.type;
+	    array = true;
+	}
     }
-    else if ( TokenSubscript *ts = (operand ? operand->as_subscript_tok() : NULL) )
+    else if ( TokenSubscript *ts = root->as_subscript_tok() )
     {
-	// A PARTIAL subscript of a multi-dimensional fixed array denotes the
-	// row sub-array, which decays to a pointer to the element type in a
-	// VALUE context ([expr.sub] + [conv.array]): `char s[2][4]` makes
-	// `s[1]` rank as char*, not char. A full subscript (one index per
-	// dimension) denotes the element — no decay.
-	if ( ts->object.is_fixed_array() && ts->object.type
-	  && 1 + ts->extra_indices.size() < ts->object.dims.size() )
-	    return getPointerType(ts->object.type);
+	// A PARTIAL subscript of a multi-dimensional fixed array denotes a
+	// row; a full one (an index per dimension) denotes the element.
+	if ( ts->object.is_fixed_array() && ts->object.type )
+	{
+	    if ( !ts->object.dims.empty() )
+		dims = ts->object.dims;
+	    else
+		dims.assign(1, ts->object.total_elements());
+	    base = ts->object.type;
+	    consumed += 1 + ts->extra_indices.size();
+	    array = true;
+	}
     }
-    if ( DataDef *odd = operand->datadef() )
-	if ( DataDefCArray *ca = odd->as_carray_dd() )
-	    if ( ca->element_type )
-		return getPointerType(ca->element_type);
+    if ( array )
+	return consumed < dims.size()
+	    ? build_fixed_array_query_type(base, dims, consumed) : NULL;
+    if ( DataDef *odd = e->datadef() )
+	if ( odd->as_carray_dd() )
+	    return odd;
     return NULL;
+}
+
+// The ELEMENT type of an operand that denotes an array — the type of `e[0]`,
+// the ROW for a multi-dimensional one — or NULL. array_operand_type's element.
+DataDef *Program::array_operand_element_type(TokenBase *e)
+{
+    DataDef *at = array_operand_type(e);
+    DataDefCArray *ca = at ? at->as_carray_dd() : NULL;
+    if ( !ca )
+	return NULL;
+    return ca->element_type ? ca->element_type : &ddINT64;
+}
+
+// Array-to-pointer decay ([conv.array]) for an operand in a VALUE context: an
+// array denotes a pointer to its first element — a pointer to its ROW, for a
+// multi-dimensional one. Returns NULL when the operand is not an array.
+DataDef *Program::array_decay_pointer(TokenBase *operand)
+{
+    DataDef *elem = array_operand_element_type(operand);
+    return elem ? getPointerType(elem) : NULL;
 }
 
 void Program::resolve_object_operator_type(TokenOperator *to)
@@ -20773,11 +20797,32 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 						to->right->datadef()) )
 	{ to->set_resolved_type(vt); return; }
     }
+    // A built-in comparison or logical operator yields bool in C++
+    // ([expr.rel]/1, [expr.eq]/1, [expr.log.and]/1, [expr.log.or]/1,
+    // [expr.unary.op]/9) and int in C (C11 6.5.3.3p5, 6.5.8p6 ... 6.5.14p3,
+    // the token's default): `f(i == j)` picked f(int) and sizeof(i == j) was 4.
+    // It is the token's OWN type — never resolved_type, which reads as "an
+    // overload or a decay chose this" and which a class operand's overload
+    // below still sets, and wins with.
+    if ( to->yields_truth_value() && presents_as_cpp() )
+	to->setDataType(&ddBOOL);
     bool unary = to->argc() == 1;
     bool postfix = unary && to->left != NULL;
     TokenBase *operand = unary ? (postfix ? to->left : to->right) : to->left;
     if ( !operand ) return;
     DataDefCLASS *lc = operand_object_class(operand);
+    // Unary plus on an array or a function designator ([expr.unary.op]/7,
+    // [conv.array]/[conv.func]) is the decayed pointer. The operand's
+    // datadef() is the flattened element / the FuncDef, which the token's
+    // lazy view would read as a value (`sizeof(+a)` measured the array).
+    if ( !lc && to->id() == TokenID::tkUnaryPlus )
+    {
+	if ( DataDef *dp = array_decay_pointer(operand) )
+	{ to->set_resolved_type(dp); return; }
+	DataDef *od = operand->datadef();
+	if ( FuncDef *fd = od ? od->as_funcdef_dd() : NULL )
+	{ to->set_resolved_type(getPointerType(fd)); return; }
+    }
     if ( !lc && unary )
 	return;
     // Array-to-pointer decay in additive pointer arithmetic ([conv.array]):
@@ -21437,8 +21482,8 @@ static bool proven_distinct_types(const DataDef *a, const DataDef *b,
     b = b->unqualified();
     if ( !a || !b || a == b )
 	return false;
-    const DataDefPTR *pa = dynamic_cast<const DataDefPTR *>(a);
-    const DataDefPTR *pb = dynamic_cast<const DataDefPTR *>(b);
+    const DataDefPTR *pa = pointer_dd_of(a);
+    const DataDefPTR *pb = pointer_dd_of(b);
     if ( pa && pb )
 	return proven_distinct_types(pa->base_type, pb->base_type, depth + 1);
     if ( a->is_struct() && b->is_struct() )
@@ -21466,11 +21511,11 @@ static bool same_parameter_types(FuncDef *a, FuncDef *b, size_t n)
 	const DataDef *pa = a->parameters[i];
 	const DataDef *pb = b->parameters[i];
 	if ( a->is_ref_param(i) )
-	    if ( const DataDefPTR *r = dynamic_cast<const DataDefPTR *>(pa) )
+	    if ( const DataDefPTR *r = pointer_dd_of(pa) )
 		if ( r->base_type )
 		    pa = r->base_type;
 	if ( b->is_ref_param(i) )
-	    if ( const DataDefPTR *r = dynamic_cast<const DataDefPTR *>(pb) )
+	    if ( const DataDefPTR *r = pointer_dd_of(pb) )
 		if ( r->base_type )
 		    pb = r->base_type;
 	if ( proven_distinct_types(pa, pb, 0) )
@@ -21490,6 +21535,7 @@ static Variable *rank_fn_overload_candidates(
     const Program::NamespaceFnOverload *best_e = NULL;
     const Program::NamespaceFnOverload *tied = NULL;
     int best_score = -1;
+    bool best_uses_ellipsis = false;
     for ( const Program::NamespaceFnOverload &e : cands )
     {
 	FuncDef *fd = e.var ? dynamic_cast<FuncDef *>(e.var->type) : NULL;
@@ -21538,11 +21584,22 @@ static Variable *rank_fn_overload_candidates(
 	}
 	if ( !fd )
 	    continue;
-	size_t pn = fd->parameters.size();
-	// Default arguments make the function callable with
-	// [required..total] args (FuncDef::required_param_count).
-	if ( argtypes.size() < fd->required_param_count()
-	  || argtypes.size() > pn )
+	// [over.match.viable]/2: n arguments fit m parameters when n == m, when
+	// n < m and the rest have defaults (FuncDef::required_param_count), and —
+	// for a C-variadic candidate — when n > m, every extra argument taking
+	// the ellipsis ([over.ics.ellipsis]). Only the FIXED parameters are ever
+	// scored (fixed_param_count: the `...`'s synthetic ddINT64 slot is no
+	// parameter). Scoring an argument against that slot made `f(...)`
+	// unviable for a struct or a pointer, so `f(long)` vs `f(...)` with a
+	// struct called f(long) with a struct, and `pick(void **)` vs
+	// `pick(...)` with an int** called the void** one — g++ and clang++
+	// both take the ellipsis. The constructor ranker and
+	// method_body_matches_args already apply this rule.
+	size_t pn = fd->fixed_param_count();
+	bool variadic = fd->is_varargs;
+	if ( variadic ? argtypes.size() < pn
+		      : (argtypes.size() < fd->required_param_count()
+			 || argtypes.size() > pn) )
 	{
 #if MADC_DEBUG_FNTPL
 	    std::cerr << "FNTPL rank cand=" << e.var->name
@@ -21554,7 +21611,11 @@ static Variable *rank_fn_overload_candidates(
 	}
 	int total = 0;
 	bool ok = true;
-	for ( size_t i = 0; i < argtypes.size(); i++ )
+	// [over.ics.rank]/2.1: an ellipsis conversion sequence is WORSE than any
+	// standard or user-defined one, so a candidate that matched an argument
+	// by the ellipsis loses every tie to one that did not.
+	bool uses_ellipsis = variadic && argtypes.size() > pn;
+	for ( size_t i = 0; i < argtypes.size() && i < pn; i++ )
 	{
 	    bool refp = fd->is_ref_param(i);
 	    bool zlit = zero_args && i < zero_args->size() && (*zero_args)[i];
@@ -21571,14 +21632,18 @@ static Variable *rank_fn_overload_candidates(
 	    if ( s < 0 ) { ok = false; break; }
 	    total += s;
 	}
-	if ( ok && total > best_score )
+	if ( ok && (total > best_score
+		    || (total == best_score && best
+			&& best_uses_ellipsis && !uses_ellipsis)) )
 	{
 	    best_score = total;
 	    best = e.var;
 	    best_e = &e;
+	    best_uses_ellipsis = uses_ellipsis;
 	    tied = NULL;
 	}
-	else if ( ok && total == best_score && best && e.var != best )
+	else if ( ok && total == best_score && best && e.var != best
+	       && uses_ellipsis == best_uses_ellipsis )
 	{
 	    // Equal conversion totals. A non-template function beats a
 	    // template specialization ([over.match.best.general]); two PLAIN
@@ -21721,7 +21786,7 @@ DataDef *Program::free_operator_arg_datadef(TokenBase *operand)
     return operand->datadef();
 }
 
-int Program::implicit_object_constness(Variable &recv)
+int Program::implicit_object_cv(Variable &recv)
 {
     if ( recv.name == "__this" )
     {
@@ -21729,11 +21794,21 @@ int Program::implicit_object_constness(Variable &recv)
 	if ( code && code->method )
 	    if ( FuncDef *efd = dynamic_cast<FuncDef *>(
 			 code->method->returns.type) )
-		return efd->is_const_method ? 1 : 0;
+		return (int)efd->method_cv();
 	return -1;
     }
+    int cv = cvNONE;
+    // An ARROW call's receiver is the POINTER (`pc->get()`): the implicit
+    // object is `*pc`, of the pointee's cv — never the pointer variable's
+    // own (a `C *const p` is not a const object).
+    if ( recv.type && recv.type->is_pointer() && !recv.type->is_reference() )
+    {
+	DataDefPTR *pp = pointer_dd_of(recv.type);
+	return pp && pp->base_type ? (int)(pp->base_type->cv_quals() & (cvCONST | cvVOLATILE))
+				   : cvNONE;
+    }
     if ( recv.flags & (vfCONSTANT | vfCONSTDECL | vfCONSTBAKED) )
-	return 1;
+	cv |= cvCONST;
     // A MEMBER receiver read through the implicit `this` joins the implicit
     // object's cv ([expr.ref]): inside a const method a data member is a
     // const object — libc++ set::size() const reads __tree_.size() and must
@@ -21746,7 +21821,7 @@ int Program::implicit_object_constness(Variable &recv)
 	Method *m = code ? code->method : NULL;
 	DataDefCLASS *owner = m ? m->owner_class : NULL;
 	FuncDef *mfd = m ? dynamic_cast<FuncDef *>(m->returns.type) : NULL;
-	if ( owner && mfd && mfd->is_const_method )
+	if ( owner && mfd && mfd->method_cv() )
 	{
 	    std::string nm = recv.name;
 	    if ( owner->m_offset(nm) != -1 )
@@ -21760,18 +21835,19 @@ int Program::implicit_object_constness(Variable &recv)
 			    break;
 			}
 		if ( !is_block_local )
-		    return 1;
+		    cv |= (int)mfd->method_cv();
 	    }
 	}
     }
     DataDef *dd = recv.type;
     // Reference transparency: a reference receiver denotes its referent.
     if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(dd) )
 	    dd = rp->base_type;
-    if ( dd && dd->is_const() )
-	return 1;
-    return 0;
+    // The receiver's own qualifiers — an object's top-level cv is its type's.
+    if ( dd )
+	cv |= (int)dd->cv_quals();
+    return cv;
 }
 
 TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
@@ -21794,11 +21870,11 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     for ( size_t pi = 0; pi < n_rank; ++pi )
     {
 	TokenBase *p = tc->parameters[pi];
-	at.push_back(p ? operand_value_datadef(p) : NULL);
+	at.push_back(call_argument_type(p));
     }
     bool rejections_proven = true;
     Variable *ov = cls->findMethodOverload(id, at,
-					   implicit_object_constness(recv),
+					   implicit_object_cv(recv),
 					   &rejections_proven);
     TokenCallMethod *selected = tc;
     if ( !ov )
@@ -22223,7 +22299,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	bool all_args_known = true;
 	for ( TokenBase *p : tc->parameters )
 	{
-	    const DataDef *ad = p ? operand_value_datadef(p) : NULL;
+	    const DataDef *ad = call_argument_type(p);
 	    if ( !ad || datadef_involves_placeholder(
 			    const_cast<DataDef *>(ad), true) )
 		all_args_known = false;
@@ -22266,7 +22342,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
     }
     std::vector<const DataDef *> at;
     for ( TokenBase *p : tc->parameters )
-	at.push_back(p ? p->datadef() : NULL);
+	at.push_back(call_argument_type(p));
     // Selection: a more-specialized overload may win the [temp.func.order]
     // tiebreak (`take(U*)` over `take(P)`). When findMethodOverload can't score
     // a candidate (e.g. a typedef-reference param it doesn't model), keep the
@@ -22861,7 +22937,7 @@ void DataDefCLASS::collect_initializer_list_ctors(std::vector<Variable *> &out) 
 	if ( DataDefREF *rd = dynamic_cast<DataDefREF *>(behind) )
 	    behind = rd->base_type;
 	else if ( fd->is_ref_param(1) )
-	    if ( DataDefPTR *pd = dynamic_cast<DataDefPTR *>(behind) )
+	    if ( DataDefPTR *pd = pointer_dd_of(behind) )
 		behind = pd->base_type;
 	if ( behind ) behind = behind->unqualified();
 	if ( behind && behind->is_std_initializer_list() )
@@ -24782,7 +24858,15 @@ class ClassPatternPayloadReader
 	out.is_deleted = boolean();
 	out.noexcept_spec = (uint8_t)word();
 	out.pure_virtual = boolean();
-	out.is_const_method = boolean();
+	{
+	    // The const word carries the member's cv MASK (bit 0 const, bit 1
+	    // volatile) — a 0/1 record is a pre-mask one, read as before.
+	    uint32_t method_cv = word();
+	    if ( method_cv > 3 )
+		invalidate(__LINE__);
+	    out.is_const_method = (method_cv & 1u) != 0;
+	    out.is_volatile_method = (method_cv & 2u) != 0;
+	}
 	out.is_member_template = boolean();
 	out.has_eager_body = boolean();
 	uint32_t nparams = count();
@@ -26558,18 +26642,18 @@ static bool forest_adoptable_c_type(DataDef *dd, int depth = 0)
 	return false;
     if ( dynamic_cast<DataDefREF *>(dd) )
 	return false;
-    if ( DataDefCONST *cdd = dynamic_cast<DataDefCONST *>(dd) )
+    if ( DataDefQUAL *cdd = dynamic_cast<DataDefQUAL *>(dd) )
 	return forest_adoptable_c_type(cdd->base_type, depth + 1);
-    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
+    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) ) // allowed-exception: structural (exact-class dispatch)
 	return pdd->base_type == NULL
 	    || forest_adoptable_c_type(pdd->base_type, depth + 1);
-    if ( dynamic_cast<DataDefFPTR *>(dd) )
+    if ( dynamic_cast<DataDefFPTR *>(dd) ) // allowed-exception: structural walk (the CONST arm above recurses)
 	return true;
     if ( dd->is_struct() || dynamic_cast<DataDefENUM *>(dd)
       || dynamic_cast<DataDefARRAY *>(dd) || dynamic_cast<DataDefSIMD *>(dd)
       || dynamic_cast<DataDefAUTO *>(dd) || dynamic_cast<DataDefCOMPLEX *>(dd) )
 	return false;
-    return dd->type() == DataType::dtVOID || dd->is_numeric();
+    return dd->is_void() || dd->is_numeric();
 }
 
 // GCC canon (see the declaration): an undeclared variadic call adopts the
@@ -29026,7 +29110,7 @@ Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
     // K&R empty parameter list accepts any argument count.
     if ( fd->parameters.empty() && !fd->is_void_params )
 	return var;
-    size_t pn = fd->parameters.size() - (fd->is_varargs ? 1 : 0);
+    size_t pn = fd->fixed_param_count();
     bool accepts = fd->is_varargs
 		 ? argc >= pn
 		 : (argc >= fd->required_param_count() && argc <= pn);
@@ -29043,7 +29127,7 @@ Variable *Program::using_namespace_call_fallback(Variable *var, size_t argc)
 	    continue;
 	if ( nfd->parameters.empty() && !nfd->is_void_params )
 	    return nsv;   // placeholder/K&R: accepts any count
-	size_t npn = nfd->parameters.size() - (nfd->is_varargs ? 1 : 0);
+	size_t npn = nfd->fixed_param_count();
 	bool nacc = nfd->is_varargs
 		  ? argc >= npn
 		  : (argc >= nfd->required_param_count() && argc <= npn);
@@ -29495,6 +29579,16 @@ DataDef *Program::getPointerType(DataDef *base)
 	    ptr_type_cache[base] = twin;
 	    return twin;
 	}
+    // A pointer to a FUNCTION (a FuncDef — a named function's own DataDef) is
+    // the function pointer over its signature: [conv.func]'s decay type. The
+    // call through an expression, `+f`, deduction's decay and `auto fp = f`
+    // each minted their own; ONE mint, interned like every other `T*`.
+    if ( FuncDef *fd = base ? base->as_funcdef_dd() : NULL )
+    {
+	DataDefFPTR *fp = new DataDefFPTR(fd);
+	ptr_type_cache[base] = fp;
+	return fp;
+    }
 
     // return well-known globals for common types
     if ( base == &ddVOID )  return &ddVOIDptr;
@@ -29581,24 +29675,35 @@ DataDefREF *Program::getReferenceType(DataDef *base)
     return ref;
 }
 
-DataDefCONST *Program::getConstType(DataDef *base)
+DataDef *Program::getQualifiedType(DataDef *base, unsigned cv)
 {
-    // const is idempotent: const(const T) == const T.
-    if ( base->is_const() )
-	return static_cast<DataDefCONST *>(base);
+    cv &= (cvCONST | cvVOLATILE);
+    // Qualifiers only ACCUMULATE: q(q(T)) == q(T), and a variant is keyed by
+    // its UNQUALIFIED base plus the merged mask — const(volatile T) is the one
+    // `const volatile T`, never a wrapper over a wrapper.
+    unsigned have = base->cv_quals();
+    if ( (have | cv) == have )
+	return base;
+    DataDef *unq = base->unqualified();
+    std::pair<DataDef *, unsigned> key(unq, have | cv);
 
-    auto it = const_type_cache.find(base);
-    if ( it != const_type_cache.end() )
+    auto it = qualified_type_cache.find(key);
+    if ( it != qualified_type_cache.end() )
 	return it->second;
 
-    DataDefCONST *cst = new DataDefCONST(*base);
-    const_type_cache[base] = cst;
-    // B3 write-through (the const-idempotency early return above never reaches here — an
-    // existing const type is not re-recorded). Off by default → no change to bin/madc.
+    DataDefQUAL *q = new DataDefQUAL(*unq, key.second);
+    qualified_type_cache[key] = q;
+    // B3 write-through (the idempotency early return above never reaches here — an
+    // existing qualified type is not re-recorded). Off by default → no change to bin/madc.
     if ( forest_arena_enabled )
-	forest_arena_record_unary(cst);
-    DBG(std::cout << "getConstType() created const " << base->name << std::endl);
-    return cst;
+	forest_arena_record_unary(q);
+    DBG(std::cout << "getQualifiedType() created " << q->name << std::endl);
+    return q;
+}
+
+DataDefQUAL *Program::getConstType(DataDef *base)
+{
+    return static_cast<DataDefQUAL *>(getQualifiedType(base, cvCONST));
 }
 
 uint32_t Program::derived_type_id(DerivedKind kind, uint32_t operand_id)
@@ -29620,8 +29725,31 @@ uint32_t Program::derived_type_id(DerivedKind kind, uint32_t operand_id)
     return type_id_for(derived);
 }
 
+DataDef *Program::parse_type_id(DataDef *base, unsigned leading_cv, DeclaratorResult &decl)
+{
+    leading_cv &= modeled_cv();
+    DataDef *folded = parse_declarator(base, DeclaratorMode::Abstract, decl, NULL, leading_cv);
+    // With no `*`, the type-id's own cv: the leading run, and an EAST cv the
+    // declarator itself read and only reported (`_Tp volatile` — libstdc++'s
+    // is_volatile<_Tp volatile>, add_volatile's `using type = _Tp volatile`).
+    unsigned own_cv = leading_cv | (((decl.base_volatile ? cvVOLATILE : cvNONE)
+				     | (decl.base_const ? cvCONST : cvNONE)) & modeled_cv());
+    if ( own_cv && decl.ptr_depth == 0 && decl.nested_stars == 0
+      && decl.ref == RefType::rtValue && !folded->as_fptr_dd() && !folded->as_carray_dd()
+      && !folded->is_function() )
+	folded = getQualifiedType(folded, own_cv);
+    // A cv after the last `*` qualifies that pointer (`int *volatile`).
+    unsigned top_cv = ((decl.volatile_after_star ? cvVOLATILE : cvNONE)
+		       | (decl.const_after_star ? cvCONST : cvNONE)) & modeled_cv();
+    if ( top_cv && decl.ptr_depth > 0 && decl.ref == RefType::rtValue )
+	folded = getQualifiedType(folded, top_cv);
+    return folded;
+}
+
 TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
-						     TokenBase *origin)
+						     TokenBase *origin,
+						     std::string *cv_spelling,
+						     unsigned extra_lead_cv)
 {
     // A template argument is a type-id: an ABSTRACT declarator over the
     // resolved type — `*`s with their cv, `&`/`&&`, `(*)(params)`, a bare
@@ -29632,8 +29760,34 @@ TokenDataType *Program::fold_template_arg_declarator(TokenDataType *adt,
     // copy of the star fold — and before this call this site's copy knew
     // only `*`/`&` and `(*)(params)`.
     DataDef *dd = &adt->definition;
+    // The modeled cv the caller read around the base leaves the spelling for
+    // the type: a type-id's leading cv qualifies the pointee at the first `*`
+    // (the declarator's leading_cv), or — no `*` — the type itself: a
+    // template argument's top-level cv IS part of it (`is_v<volatile int>`),
+    // unlike a declaration's, which is its object's.
+    unsigned lead_cv = extra_lead_cv;
+    if ( cv_spelling && !cv_spelling->empty() )
+    {
+	std::string kept;
+	size_t pos = 0;
+	while ( pos < cv_spelling->size() )
+	{
+	    size_t sp = cv_spelling->find(' ', pos);
+	    std::string w = cv_spelling->substr(pos, sp == std::string::npos
+						      ? std::string::npos : sp - pos);
+	    pos = sp == std::string::npos ? cv_spelling->size() : sp + 1;
+	    if ( w.empty() )
+		continue;
+	    unsigned bit = w == "const" ? cvCONST : w == "volatile" ? cvVOLATILE : cvNONE;
+	    if ( bit & modeled_cv() )
+		lead_cv |= bit;
+	    else
+		kept += w + " ";
+	}
+	*cv_spelling = kept;
+    }
     DeclaratorResult decl;
-    DataDef *folded = parse_declarator(dd, DeclaratorMode::Abstract, decl);
+    DataDef *folded = parse_type_id(dd, lead_cv, decl);
     if ( folded == dd )
 	return adt;
     TokenDataType *next = new TokenDataType(folded->name.c_str(), *folded);
@@ -30249,7 +30403,7 @@ static TokenCallMethod *make_unary_object_operator_call(Program &pgm,
     // operator--'s `_Iter&` return, which models as a DataDefPTR and
     // otherwise fails the class cast below.
     if ( recv_dd && recv_dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(recv_dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(recv_dd) )
 	    recv_dd = rp->base_type;
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(recv_dd);
     if ( !cls )
@@ -30259,7 +30413,7 @@ static TokenCallMethod *make_unary_object_operator_call(Program &pgm,
     // receiver — a parent EXPRESSION's cv is not modeled here (and a const-
     // typed recv_dd cannot reach this line: the class cast above rejects it).
     int obj_cv = (!parent_expr && recv)
-	       ? pgm.implicit_object_constness(*recv) : -1;
+	       ? pgm.implicit_object_cv(*recv) : -1;
     Variable *mvar = cls->findMethodOverload(opname, no_args, obj_cv);
     if ( !mvar )
 	return NULL;
@@ -30577,10 +30731,11 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	bool dependent_pack_call =
 	    dependent_parse_in_progress
 	    && (saw_pack_expansion_arg || token_tree_has_pack_expansion(tc));
-	// function pointer variable: type is DataDefFPTR, get target FuncDef
-	if ( tc->var.type->is_function() && tc->var.type->is_numeric() )
+	// function pointer variable: get its target FuncDef (as_fptr_dd sees
+	// through a DataDefQUAL; the older is_function() && is_numeric() test
+	// was true for a const one too, and the static_cast then misread it)
+	if ( DataDefFPTR *fptr = tc->var.type->as_fptr_dd() )
 	{
-	    DataDefFPTR *fptr = static_cast<DataDefFPTR *>(tc->var.type);
 	    FuncDef *fd = fptr->target;
 	    // K&R: empty param list (not void) accepts any number of args
 	    if ( !dependent_pack_call
@@ -30588,8 +30743,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    {
 		// Capture params (nested fn / [&] lambda) live only in the CIR
 		// lowering, not fd->parameters — user arity is the full count.
-		size_t expected = fd->parameters.size()
-		    - (fd->is_varargs ? 1 : 0);
+		size_t expected = fd->fixed_param_count();
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		    Throw(tc) << "Incorrect number of parameters for '" << tc->var.name << "': expected " << expected << " got " << tc->argc() << flush;
 	    }
@@ -30641,9 +30795,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	  && !(fd->parameters.empty() && !fd->is_void_params)
 	      && !is_overloaded_allocation_operator(tc->var.name) )
 	    {
-		size_t expected = fd->parameters.size()
-			- (function_uses_hidden_this(tc->var) ? 1 : 0)
-			- (fd->is_varargs ? 1 : 0);
+		size_t expected = fd->fixed_param_count()
+			- (function_uses_hidden_this(tc->var) ? 1 : 0);
 		// varargs functions accept expected or more args; fixed functions require exact match
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		{
@@ -31198,6 +31351,11 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		    std::string thisid = "__this";
 		    Variable *thisvar = code->method->findParameter(thisid);
 		    DataDef *mtype = cls->m_type(name);
+		    // `v` in a member function is `this->v`: *this's cv (the
+		    // member function's) qualifies it ([expr.ref]/4).
+		    if ( thisvar && mtype )
+			mtype = member_access_type(mtype,
+			    (unsigned)std::max(0, implicit_object_cv(*thisvar)));
 		    if ( thisvar && mtype )
 		    {
 			Variable *member =
@@ -31286,7 +31444,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			    if ( ((tv->var.is_reference()) || tv->var.name == "__this")
 			      && obj_type && obj_type->is_pointer() )
 			    {
-				DataDefPTR *rp = dynamic_cast<DataDefPTR *>(obj_type);
+				DataDefPTR *rp = pointer_dd_of(obj_type);
 				if ( rp && rp->base_type
 				  && (rp->base_type->is_struct()
 				   || rp->base_type->is_object()) )
@@ -31320,7 +31478,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    Throw(mtb) << "expression before '->' must be a pointer" << flush;
 		if ( !fixed_array_arrow )
 		{
-		    DataDefPTR *pt = dynamic_cast<DataDefPTR *>(obj_type);
+		    DataDefPTR *pt = pointer_dd_of(obj_type);
 		    if ( !pt || !pt->base_type )
 			Throw(mtb) << "expression before '->' is not a typed pointer" << flush;
 		    // NOT peeled here. The pointee of `const S *` is `const S`, but the
@@ -31343,7 +31501,9 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		      && (peekToken()->id() == TokenID::tkOpBrk
 		       || peekToken()->id() == TokenID::tkLT) )
 		    {
-			DataDefCLASS *method_cls = (DataDefCLASS *)obj_type;
+			// as_class_dd: obj_type is left qualified above (a `volatile C *`
+			// pointee, a volatile object) — a C cast reinterpreted the wrapper.
+			DataDefCLASS *method_cls = obj_type->as_class_dd();
 			bool explicit_targs_follow =
 			    peekToken()->id() == TokenID::tkLT;
 			Variable *mvar = explicit_targs_follow
@@ -31394,7 +31554,7 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    // as_struct_dd() is the checked O(1) stand-in for
 		    // dynamic_cast<DataDefSTRUCT *> and answers NULL when this is not a
 		    // struct. The guard above classifies STRUCTURALLY (is_struct() sees
-		    // through a DataDefCONST wrapper), so an unchecked static_cast here
+		    // through a DataDefQUAL wrapper), so an unchecked static_cast here
 		    // reinterpreted the wrapper as the struct and m_offset walked
 		    // garbage — a SIGSEGV on `(T) p->m` through a `const S *`
 		    // (gcc.c-torture pr89369). A mismatch is a diagnostic, never a crash.
@@ -31408,7 +31568,11 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	    ssize_t ofs = sdd->m_offset(mname);
 	    if ( ofs == -1 )
 		Throw(mtb) << "no member named '" << mname << "'" << flush;
-	    DataDef *mtype = sdd->m_type(mname);
+	    // [expr.ref]/4: the object's cv qualifies the member — the pointee's
+	    // through `->` (obj_type is left qualified above), the head
+	    // glvalue's through `.`.
+	    DataDef *mtype = member_access_type(sdd->m_type(mname),
+		is_arrow ? obj_type->cv_quals() : glvalue_cv(result));
 	    Variable *mvar = new Variable(mname, *mtype, 1, NULL, false);
 	    mvar->flags = var ? member_proxy_flags(var->flags) : 0;
 
@@ -31563,10 +31727,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 	if ( pid == TokenID::tkOpBrk )
 	{
 	    // `(` is a postfix operator too ([expr.post]) — a call on a
-	    // function-typed head. Only the QUALIFIED operand paths reach it:
-	    // an unqualified `f(x)` cast operand is claimed earlier by
-	    // parse_cast_function_call_operand, so the chain never needed this
-	    // arm until `(int)N::f(x)` was traced. Without it the `(x)` was
+	    // function-typed head. Only the QUALIFIED operand paths reach it
+	    // (a cast operand is read by parseCastExpression, the engine), so
+	    // the chain never needed this arm until `(int)N::f(x)` was traced
+	    // through the old cast-operand chain reader. Without it the `(x)` was
 	    // left in the stream and re-read as a parenthesized expression,
 	    // whose value silently replaced the call.
 	    Variable *callee = postfix_expr_variable(result);
@@ -31642,194 +31806,126 @@ static void debug_deref_fail(Program &pgm, int site, TokenBase *deref_tb,
 #define debug_deref_fail(pgm, site, tb, dt) do { } while (0)
 #endif
 
-// The parenthesized operand of a unary dereference — `*(...)` with the '('
-// already consumed (open_tb). ONE owner for the discrimination every deref
-// arm needs (single-star, two-star, and the N-star collect arm): a CAST
-// head (`*(TYPE*)p`, c-testsuite 00103) or a statement expression delegates
-// the whole group to parseExpression, whose cast/stmt-expr paths own type
-// resolution and consume the matching ')' themselves; anything else is a
-// parenthesized expression whose ')' is consumed here. A trailing -> . [
-// postfix chain binds tighter than the outer '*' and is folded in.
-TokenBase *Program::parse_deref_paren_operand(TokenBase *open_tb)
+// THE reader of a cast-expression operand — see madc.h. It is the expression
+// engine re-entered with the unary_operand bound (parseExpression's peek
+// point ends it), so every shape a unary-expression can take — a postfix
+// chain, a call, `::name`, a nested `*`, a cast, a prefix step, `&x`, a
+// named cast, a parenthesized group — reads through the one grammar, and
+// nothing after the operand is swallowed. It replaces five hand-rolled
+// per-shape readers (the deref arm's single-, two- and N-star arms, the
+// cast operand's deref reader, sizeof's star fast path): each re-derived a
+// subset, and every one was wrong somewhere — `**c.pp()` refused, `**(q)++`
+// dereferenced once, `*&x + 1` read `*(&x + 1)`, `(char)**pp * 100` cast the
+// product (tests/testderefoperandc, testderefoperandcpp).
+TokenBase *Program::parseCastExpression(TokenBase *first)
 {
-    TokenBase *peek_inner = peekToken();
-    bool inner_is_statement_expr =
-	peek_inner && peek_inner->id() == TokenID::tkOpBrc;
-    // token_starts_type_name owns the type-head test (it knows tkUNION —
-    // the inline list this replaces did not, which lost `*(union U*)p`);
-    // tkCLASS/tkRESTRICT are the deref-context extras that arm carried.
-    bool inner_is_cast_head =
-	!inner_is_statement_expr
-	&& peek_inner
-	&& ( peek_inner->id() == TokenID::tkCLASS
-	  || peek_inner->id() == TokenID::tkRESTRICT
-	  || token_starts_type_name(peek_inner) );
-    TokenBase *deref_expr;
-    if ( inner_is_cast_head || inner_is_statement_expr )
-    {
-	// stop_on_closing_paren=true so the matching ')' of the
-	// cast/statement-expression group ends parsing — otherwise
-	// conditional mode would chase past it into a following `=` or
-	// operator chain (the SMAUG `*(EXT_BV *)p = fread_bitvector(...)`
-	// family). Delegation consumes the ')' itself.
-	deref_expr = parseExpression(open_tb, true, false, true);
-    }
-    else
-    {
-	TokenBase *inner_tb = nextToken();
-	deref_expr = parseExpression(inner_tb, true);
-	TokenBase *close = nextToken();
-	if ( !close || close->id() != TokenID::tkClBrk )
-	    Throw(close ? close : open_tb) << "expected ')' after *(expr)" << flush;
-    }
-    if ( peekToken()
-      && (peekToken()->id() == TokenID::tkDeRef
-       || peekToken()->id() == TokenID::tkDot
-       || peekToken()->id() == TokenID::tkOpSqr) )
-	deref_expr = parsePostfixChainFrom(deref_expr,
-	    postfix_expr_variable(deref_expr));
-    return deref_expr;
+    if ( !first )
+	Throw(curToken()) << "expecting an operand" << flush;
+    // The head of a cast-expression is in UNARY position whatever preceded
+    // it — `sizeof **p`, `(T)-x`, `* *p` — the convention the cast arm's
+    // own operand head already applies: an operator here is prefix, never
+    // binary ("Missing operand").
+    _prv_token = NULL;
+    TokenBase *operand = parseExpression(first, true, false, false, 0,
+					 false, false, true);
+    if ( !operand )
+	Throw(first) << "expecting an operand" << flush;
+    return operand;
 }
 
-TokenBase *Program::parse_cast_unary_deref_operand(TokenBase *star)
+// A `++`/`--` that binds AFTER its operand (`p++`): the shape `*p++` reads
+// as `*(p++)`. NULL for a prefix step (its operand is `right`) or any other
+// node.
+static TokenOperator *postfix_step_node(TokenBase *tb)
 {
-    if ( !star || star->id() != TokenID::tkMul )
+    if ( !tb || (tb->id() != TokenID::tkInc && tb->id() != TokenID::tkDec) )
 	return NULL;
+    TokenOperator *step = tb->as_operator_tok();
+    return (step && step->left && !step->right) ? step : NULL;
+}
 
-    TokenBase *deref_tb = nextToken();
-    if ( !deref_tb )
+// THE builder of a unary dereference node — see madc.h. Composed from the
+// arms it replaces; each case names the shape that needs it.
+TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
+{
+    if ( !operand )
 	Throw(star) << "expecting pointer expression after '*'" << flush;
+    // `*p++` is `*(p++)`: the step is the operand, and the pointer it
+    // dereferences is its OLD value — the step's own operand.
+    TokenOperator *step = postfix_step_node(operand);
+    TokenBase *pointer_expr = step ? step->left : operand;
 
-    if ( deref_tb->id() == TokenID::tkOpBrk )
+    // A NAMED variable keeps its dedicated nodes: the CIR lowering's
+    // TokenDeref / TokenDerefStep arms carry the variable-only paths
+    // (lambda-capture dispatch, ctx bindings). A REFERENCE variable does
+    // not qualify — its value is the referent, which the expression arm
+    // below resolves (effective_pointer_type_for_member_access).
+    TokenVar *tv = pointer_expr->type() == TokenType::ttVariable
+		 ? pointer_expr->as_var_tok() : NULL;
+    if ( tv && tv->var.type && !tv->var.type->is_reference() )
     {
-	// ONE owner for "what is inside *( ... )": parse_deref_paren_operand
-	// (right above) discriminates a CAST HEAD or a statement expression
-	// from a plain parenthesized expression, and folds the trailing
-	// -> . [ chain. This arm hand-rolled the plain-expression case only,
-	// so a cast head arrived at parseExpression as a bare TYPE token and
-	// died on "Expecting identifier": `(uint64_t) * (uint32_t *) v`
-	// (mir-hash.h:39, the one file that stopped madc preprocessing its
-	// own backend) refused, while the very same deref WITHOUT the outer
-	// cast — `*(uint32_t *) v`, which reaches the owner through the
-	// ordinary deref arm — compiled.
-	TokenBase *inner_expr = parse_deref_paren_operand(deref_tb);
-	if ( !inner_expr )
-	    Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-	DataDef *dtype = effective_pointer_type_for_member_access(inner_expr);
-	if ( !dtype )
-	    dtype = inner_expr->datadef();
-	if ( !dtype || !dtype->is_pointer() )
-	{
-	    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
-		return new TokenDerefExpr(inner_expr, dep_base);
-	    debug_deref_fail(*this, 1, deref_tb, dtype);
-	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	}
-	return new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
-    }
-
-    if ( deref_tb->type() != TokenType::ttIdentifier )
-    {
-	pushToken(deref_tb);
-	return NULL;
-    }
-
-    TokenBase *peek = peekToken();
-    if ( peek && peek->id() == TokenID::tkOpBrk )
-    {
-	pushToken(deref_tb);
-	return NULL;
-    }
-
-    TokenBase *pointer_expr = NULL;
-    if ( peek && (peek->id() == TokenID::tkDeRef
-	       || peek->id() == TokenID::tkDot
-	       || peek->id() == TokenID::tkOpSqr) )
-    {
-	pointer_expr = parsePostfixChain(deref_tb);
-	DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
-	if ( !dtype )
-	    dtype = pointer_expr ? pointer_expr->datadef() : NULL;
-	if ( !dtype )
-	{
-	    debug_deref_fail(*this, 2, deref_tb, dtype);
-	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	}
-	if ( dtype->is_function() && dtype->is_numeric() )
-	    return pointer_expr;
-	if ( !dtype->is_pointer() )
-	{
-	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
-		if ( tm->is_fixed_array_member() )
-		    return new TokenDerefExpr(pointer_expr, dtype);
-	    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
-		return new TokenDerefExpr(pointer_expr, dep_base);
-	    debug_deref_fail(*this, 3, deref_tb, dtype);
-	    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	}
-	return new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
-    }
-
-    std::string name = ((TokenIdent *)deref_tb)->spelling();
-    Variable *var = findVariable(name);
-    if ( !var )
-	Throw(deref_tb) << "undeclared identifier '" << name << "'" << flush;
-    if ( var->type->is_function() && var->type->is_numeric() )
-	return new TokenVar(*var);
-    if ( dynamic_cast<DataDefFPTR *>(var->type) != NULL )
-	return new TokenVar(*var);
-    DataDef *base = deref_type_for_variable(var);
-    if ( !base )
-    {
-	base = dependent_deref_result_type(var->type);
+	Variable &var = tv->var;
+	// An ARRAY variable is neither: `*table` is table[0]
+	// (deref_type_for_variable types the row). madc stores it flattened, so
+	// its type is the ELEMENT's — an array of function pointers answers
+	// as_fptr_dd, an array of class objects answers operator*.
+	bool array = var.is_fixed_array();
+	// `*f` on a function, `*fp` on a function pointer, is the function
+	// designator ([expr.unary.op]/1) — still callable as `(*fp)(args)`.
+	// Asked as FuncDef / DataDefFPTR (both const-safe); is_function() is
+	// true for both, and the older `is_function() && is_numeric()` test
+	// was true for the POINTER only, so `*twice` was refused.
+	if ( !step && !array
+	  && (var.type->as_funcdef_dd() || var.type->as_fptr_dd()) )
+	    return operand;
+	// `*obj` on a class object dispatches its operator*. With a step the
+	// operator applies to the step's RESULT (`*it++` is `*(it++)`) —
+	// the expression arm below.
+	if ( !step && !array )
+	    if ( TokenCallMethod *opcall =
+		    make_unary_object_operator_call(*this, &var, NULL, "operator*") )
+		return opcall;
+	DataDef *base = deref_type_for_variable(&var);
+	if ( !base )
+	    base = dependent_deref_result_type(var.type);
 	if ( base )
-	    return new TokenDeref(*var, base);
-	debug_deref_fail(*this, 4, deref_tb, var->type);
-	Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	{
+	    if ( step )
+		return new TokenDerefStep(var, base, step->id() == TokenID::tkInc);
+	    return new TokenDeref(var, base);
+	}
     }
-    return new TokenDeref(*var, base);
-}
 
-TokenBase *Program::parse_cast_function_call_operand(TokenBase *head)
-{
-    if ( !head || head->type() != TokenType::ttIdentifier )
-	return NULL;
-    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
-	return NULL;
-
-    TokenIdent *ident = static_cast<TokenIdent *>(head);
-    Variable *var = findVariable(ident->spelling());
-    if ( !var || !var->type || !var->type->is_function() )
-	return NULL;
-
-    Variable *call_var = runtime_eval_scope_target(var);
-    bool public_scope_rebind = false;
-    if ( call_var == var )
+    // An ARRAY operand decays to a pointer to its first element
+    // ([conv.array]), so `*a` is `a[0]` — a ROW, for a multi-dimensional
+    // array (`char name[2][3]`: `*t.name` is char[3], `**t.name` a char).
+    // Asked FIRST: the operand's type view is the flattened element, which
+    // has lost the extents — the designator test below would take an array
+    // of function pointers for one, the pointer test a row of pointers for
+    // one pointer (`*pa[1]` typed int, not int *).
+    if ( !step )
+	if ( DataDef *elem = array_operand_element_type(pointer_expr) )
+	    return new TokenDerefExpr(operand, elem);
+    DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
+    if ( !dtype )
+	dtype = pointer_expr->datadef();
+    if ( !dtype )
     {
-	call_var = runtime_eval_scope_public_target(var);
-	public_scope_rebind = (call_var != var);
+	debug_deref_fail(*this, 1, star, NULL);
+	Throw(star) << "cannot dereference non-pointer type" << flush;
     }
-    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-    tc->auto_scope_context = public_scope_rebind
-	|| (is_runtime_eval_scope_ctx_helper_name(call_var->name)
-	 && is_runtime_eval_scope_public_name(ident->spelling()));
-
-    TokenBase *open = nextToken();
-    tc->file = open->file;
-    tc->line = open->line;
-    tc->column = open->column;
-    parseCallFunc(tc);
-    // Postfix binds tighter than the cast ([expr.post] vs [expr.cast]):
-    // `(int)getb().n` casts the MEMBER, not the call. Continue the postfix
-    // chain (`.` `->` `[` chained calls) from the call result — stopping
-    // here applied the cast to the call and the trailing `.n` dereferenced
-    // an int ("member reference is not a structure or union"). The
-    // qualified operand paths already flow through this same owner.
-    // var = NULL: a call result is not a named variable — the chain must
-    // synthesize its member proxy from the result TYPE (passing the callee's
-    // function-typed var made the arrow arm's proxy non-pointer, emitting
-    // N_FIELD on a pointer value).
-    return parsePostfixChainFrom(tc, NULL);
+    if ( !step && (dtype->as_funcdef_dd() || dtype->as_fptr_dd()) )
+	return operand;
+    if ( dtype->is_pointer() )
+	return new TokenDerefExpr(operand, unwrap_subscript_element_type(dtype));
+    if ( TokenCallMethod *opcall =
+	    make_unary_object_operator_call(*this, NULL, operand, "operator*") )
+	return opcall;
+    if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
+	return new TokenDerefExpr(operand, dep_base);
+    debug_deref_fail(*this, 2, star, dtype);
+    Throw(star) << "cannot dereference non-pointer type" << flush;
+    return NULL;
 }
 
 TokenFunc *Program::build_expression_function(TokenProgram *tp,
@@ -31964,11 +32060,11 @@ static bool is_addressable_expression(TokenBase *expr)
 		|| dynamic_cast<TokenVar *>(tq->true_expr))
 	    && (is_addressable_expression(tq->false_expr)
 		|| dynamic_cast<TokenVar *>(tq->false_expr));
+    // Every dereference is an lvalue (C11 6.5.3.2p4) — `&*p++` included.
     return dynamic_cast<TokenMember *>(expr)
-	|| dynamic_cast<TokenDeref *>(expr)
+	|| expr->is_indirection()
 	|| dynamic_cast<TokenSubscript *>(expr)
-	|| dynamic_cast<TokenSubscriptExpr *>(expr)
-	|| dynamic_cast<TokenDerefExpr *>(expr);
+	|| dynamic_cast<TokenSubscriptExpr *>(expr);
 }
 
 // [expr.unary.op]p3: '&x' over a reference-typed operand yields the address
@@ -31985,9 +32081,70 @@ DataDef *Program::addressof_result_type(DataDef *operand_type)
     return getPointerType(operand_type);
 }
 
+unsigned Program::glvalue_cv(TokenBase *expr)
+{
+    DataDef *dd = expr ? expr->datadef() : NULL;
+    if ( dd && dd->is_reference() )
+	if ( DataDefPTR *rp = dd->as_pointer_dd() )
+	    dd = rp->base_type;
+    return dd ? dd->cv_quals() & modeled_cv() : cvNONE;
+}
+
+DataDef *Program::member_access_type(DataDef *member_type, unsigned object_cv)
+{
+    object_cv &= modeled_cv();
+    if ( !member_type || !object_cv || member_type->is_reference()
+      || member_type->is_function() || member_type->as_carray_dd() )
+	return member_type;
+    return getQualifiedType(member_type, object_cv);
+}
+
+DataDef *Program::call_argument_type(TokenBase *arg)
+{
+    if ( !arg )
+	return NULL;
+    if ( DataDef *adp = array_decay_pointer(arg) )
+	return adp;
+    return operand_value_datadef(arg);
+}
+
+// THE builder of a unary address-of node, for an operand parseCastExpression
+// read ([expr.unary.op]/3). A function DESIGNATOR is its own address
+// ([conv.func]: madc's value of a function name already IS the address); a
+// function POINTER is an object like any other, and its address points at
+// it — the reader once took every is_function() type for a designator, and
+// a DataDefFPTR answers is_function() too, so `fn_t *fpp = &f` stored `f`.
+// A named object gets TokenAddrOf (marked address-taken); any other
+// addressable expression TokenAddrExpr.
+TokenBase *Program::build_address_of(TokenBase *operand, TokenBase *amp)
+{
+    if ( !operand )
+	Throw(amp) << "expecting addressable expression after '&'" << flush;
+    TokenVar *tv = operand->type() == TokenType::ttVariable
+		 ? operand->as_var_tok() : NULL;
+    if ( tv && tv->var.type && tv->var.type->as_funcdef_dd() )
+	return operand;
+    if ( tv )
+    {
+	tv->var.flags |= vfADDRTAKEN;
+	return new TokenAddrOf(tv->var, addressof_result_type(tv->var.type));
+    }
+    if ( !is_addressable_expression(operand) )
+	Throw(amp) << "expecting addressable expression after '&'" << flush;
+    // Lvalue-conditional arms that are plain variables escape their address
+    // through the select — mark them like a named operand.
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(operand) )
+    {
+	if ( TokenVar *t = dynamic_cast<TokenVar *>(tq->true_expr) )
+	    t->var.flags |= vfADDRTAKEN;
+	if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
+	    fv->var.flags |= vfADDRTAKEN;
+    }
+    return new TokenAddrExpr(operand, addressof_result_type(operand->datadef()));
+}
+
 TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 {
-    bool paren = false;
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
       && next_parenthesized_type_is_compound_literal() )
     {
@@ -31999,101 +32156,20 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	DataDef *aptr = addressof_result_type(compound->datadef());
 	return new TokenAddrExpr(compound, aptr);
     }
-    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-    {
-	nextToken(); // consume '('
-	paren = true;
-    }
-
     TokenBase *addr_tb = nextToken();
-    TokenBase *addr_expr = NULL;
-    if ( paren )
-    {
-	addr_expr = parseExpression(addr_tb, true, false, true, 1);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    // Lvalue-conditional arms that are plain variables escape their
-	    // address through the select — mark them like the direct &var arm.
-	    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(addr_expr) )
-	    {
-		if ( TokenVar *tv = dynamic_cast<TokenVar *>(tq->true_expr) )
-		    tv->var.flags |= vfADDRTAKEN;
-		if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
-		    fv->var.flags |= vfADDRTAKEN;
-	    }
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
-	{
-	    if ( tv->var.type && tv->var.type->is_function() )
-		return tv;
-	    tv->var.flags |= vfADDRTAKEN;
-	    DataDef *aptr = addressof_result_type(tv->var.type);
-	    return new TokenAddrOf(tv->var, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable expression after '&('" << flush;
-    }
-
-    bool postfix_chain = is_contextual_identifier_token(addr_tb)
-	&& peekToken()
-	&& (peekToken()->id() == TokenID::tkDot
-	 || peekToken()->id() == TokenID::tkDeRef
-	 || peekToken()->id() == TokenID::tkOpSqr);
-    if ( !postfix_chain && addr_tb->type() == TokenType::ttString
-      && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
-    {
-	addr_expr = parseExpression(addr_tb, true, false, false, 0);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable string subscript after '&'" << flush;
-    }
-    if ( postfix_chain )
-    {
-	if ( addr_tb->type() == TokenType::ttIdentifier )
-	    addr_expr = parsePostfixChain(addr_tb);
-	else
-	    addr_expr = parseExpression(addr_tb, true, false, false, 0);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
-	{
-	    tv->var.flags |= vfADDRTAKEN;
-	    DataDef *aptr = addressof_result_type(tv->var.type);
-	    return new TokenAddrOf(tv->var, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
-    }
+    if ( !addr_tb )
+	Throw(ampersand) << "expecting addressable expression after '&'" << flush;
+    // An UNPARENTHESIZED qualified-id is the one operand this reader keeps:
+    // [expr.unary.op]/4 decides on the SPELLING whether `&C::m` names a
+    // pointer to member (`&(C::m)` does not), so the name is resolved here,
+    // before any expression reading. Every other operand is a
+    // cast-expression ([expr.unary.op]/3): parseCastExpression reads it —
+    // `&*p`, `&**pp`, `&*f(x)`, `&(expr)`, `&s.a[i]`, `&x` alike — and
+    // build_address_of builds the node.
     if ( is_contextual_identifier_token(addr_tb)
-      && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+      && peekToken() && peekToken()->id() == TokenID::tkNS )
     {
-	addr_expr = parseExpression(addr_tb, true, false, false, 0);
-	if ( is_addressable_expression(addr_expr) )
-	{
-	    DataDef *aptr = addressof_result_type(addr_expr->datadef());
-	    return new TokenAddrExpr(addr_expr, aptr);
-	}
-	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
-	{
-	    if ( tv->var.type && tv->var.type->is_function() )
-		return tv;
-	    tv->var.flags |= vfADDRTAKEN;
-	    DataDef *aptr = addressof_result_type(tv->var.type);
-	    return new TokenAddrOf(tv->var, aptr);
-	}
-	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
-    }
-
-    if ( !is_contextual_identifier_token(addr_tb) )
-	Throw(addr_tb) << "expecting variable name after '&'" << flush;
     std::string aname = contextual_identifier_name(addr_tb);
-    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
 	// A qualifier before `::` is a namespace OR a class — `&S::n` for a static
 	// data member is as ordinary as `&N::m`. Resolving only namespaces here made
@@ -32241,52 +32317,20 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 				 << "' is not a member of namespace '"
 				 << aname << "'" << flush;
 	}
-	if ( ns_var->type && ns_var->type->is_function()
+	// A FUNCTION is its own address; a function-POINTER object is not
+	// (is_function() answers true for both — the designator test is the
+	// FuncDef itself).
+	if ( ns_var->type && ns_var->type->as_funcdef_dd()
 	  && peekToken() && peekToken()->id() == TokenID::tkLT )
 	    skip_template_id_suffix();
-	if ( ns_var->type && ns_var->type->is_function() )
+	if ( ns_var->type && ns_var->type->as_funcdef_dd() )
 	    return new TokenVar(*ns_var);
 	ns_var->flags |= vfADDRTAKEN;
 	DataDef *aptr = addressof_result_type(ns_var->type);
 	return new TokenAddrOf(*ns_var, aptr);
     }
-    Variable *avar = findVariable(aname);
-    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
-    if ( !avar && code && code->method && code->method->owner_class )
-    {
-	DataDefCLASS *cls = code->method->owner_class;
-	ssize_t ofs = cls->m_offset(aname);
-	if ( ofs >= 0 )
-	{
-	    std::string thisid = "__this";
-	    Variable *thisvar = code->method->findParameter(thisid);
-	    DataDef *mtype = cls->m_type(aname);
-	    if ( thisvar && mtype )
-	    {
-		Variable *member = new Variable(aname, *mtype, 1, NULL, false);
-		TokenMember *tm = new TokenMember(*thisvar, *member, ofs);
-		DataDef *aptr = addressof_result_type(mtype);
-		return new TokenAddrExpr(tm, aptr);
-	    }
-	}
     }
-    if ( !avar && is_dynamic_symbol_fallback_enabled()
-      && is_dynamic_symbol_allowed(aname) )
-    {
-	void *sym = madcdl_sym_default(aname.c_str());
-	if ( sym )
-	    avar = addFunction(aname,
-		dynamic_symbol_fallback_signature(aname),
-		(fVOIDFUNC)sym, /*isMethod*/false,
-		/*builtin_registration*/true);
-    }
-    if ( !avar )
-	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
-    if ( avar->type && avar->type->is_function() )
-	return new TokenVar(*avar);
-    avar->flags |= vfADDRTAKEN;
-    DataDef *aptr = addressof_result_type(avar->type);
-    return new TokenAddrOf(*avar, aptr);
+    return build_address_of(parseCastExpression(addr_tb), ampersand);
 }
 
 // Is `cls` the same as `target`, or derived (single-inheritance chain) from it?
@@ -32810,7 +32854,8 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		    std::string thisid = "__this";
 		    if ( Variable *thisvar = code->method->findParameter(thisid) )
 		    {
-			DataDef *mtype = scope->m_type(member_name);
+			DataDef *mtype = pgm.member_access_type(scope->m_type(member_name),
+			    (unsigned)std::max(0, pgm.implicit_object_cv(*thisvar)));
 			Variable *member =
 			    new Variable(member_name, *mtype, 1, NULL, false);
 			TokenMember *tm = new TokenMember(*thisvar, *member,
@@ -33223,7 +33268,7 @@ bool Program::template_declared_in_namespace(const std::string &name,
 // — peel the pattern's pointer levels off the concrete type and bind PARAM to the
 // remainder), and a fully-concrete pattern (must spelling-equal the concrete arg).
 // On success records deductions in `ded`, adds a specificity score, returns true.
-static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
+static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> &pat,
 				   const std::vector<std::string> &spec_params,
 				   DataDef *concrete,
 				   const std::string &concrete_spelling,
@@ -33263,13 +33308,59 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
     std::string core;
     int ptr = 0;
     int ref = 0;   // reference declarator level in the pattern (`_Tp&` / `_Tp&&`)
+    // The cv the pattern spells after its j-th `*` (level_cv[j], j from 1 —
+    // the innermost star first): that POINTER's own qualification.
+    std::vector<unsigned> level_cv(1, cvNONE);
     if ( simple )
     {
 	core = contextual_identifier_name(pat[i]);
 	++i;
+	// An ALIAS TEMPLATE whose target is one of its own parameters is
+	// transparent ([temp.alias]/2): `volatile __has_tuple_size<T>` (`using
+	// __has_tuple_size = T;`, g++.dg alias-decl-57's tuple_size spec)
+	// matches as `volatile T`. The pattern's argument list is split at depth
+	// one by the shared tracker. (The alias's defaulted SFINAE parameters
+	// are not checked: the spec could not be matched at all before.)
+	if ( i < pat.size() && pat[i]->id() == TokenID::tkLT )
+	    if ( Program::TemplateAliasDef *ad = pgm.find_template_alias(core) )
+		if ( ad->target.size() == 1 && is_contextual_identifier_token(ad->target[0]) )
+		{
+		    std::string tgt = contextual_identifier_name(ad->target[0]);
+		    size_t k = 0;
+		    while ( k < ad->typeparams.size() && ad->typeparams[k] != tgt )
+			++k;
+		    DelimDepth d(&pgm);
+		    size_t j = i + delim_scan_step(pat, i, d);	// the opening `<`
+		    std::vector<std::vector<TokenBase *> > args(1);
+		    bool closed = false;
+		    while ( j < pat.size() )
+		    {
+			bool comma = pat[j]->id() == TokenID::tkComma;
+			size_t n = delim_scan_step(pat, j, d);
+			if ( d.angle == 0 && d.top() )
+			{
+			    j += n;
+			    closed = true;
+			    break;
+			}
+			if ( comma && d.angle == 1 && d.paren == 0 && d.square == 0 && d.brace == 0 )
+			    args.push_back(std::vector<TokenBase *>());
+			else
+			    for ( size_t m = 0; m < n; ++m )
+				args.back().push_back(pat[j + m]);
+			j += n;
+		    }
+		    if ( closed && k < ad->typeparams.size() && k < args.size()
+		      && args[k].size() == 1 && is_contextual_identifier_token(args[k][0]) )
+		    {
+			core = contextual_identifier_name(args[k][0]);
+			i = j;
+		    }
+		}
 	while ( i < pat.size() )
 	{
-	    if ( pat[i]->id() == TokenID::tkMul ) { ++ptr; ++i; }
+	    if ( pat[i]->id() == TokenID::tkMul )
+	    { ++ptr; level_cv.push_back(cvNONE); ++i; }
 	    // A reference declarator (`&`/`&&`). madc collapses lvalue/rvalue refs
 	    // into one DataDefREF, so both spellings peel one reference level; the
 	    // count just records that the slot is a reference pattern (`_Tp&`).
@@ -33283,8 +33374,7 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 		// the qualifier. Skipping it silently made `is_const<_Tp const>`
 		// match PLAIN long — a silent wrong `true` that poisoned every
 		// make_unsigned<_Integral> in libc++'s num_put. A qualifier after a
-		// declarator token (`_Tp* const`) qualifies the POINTER level, which
-		// the flat model does not track — skipped as before.
+		// `*` (`_Tp* volatile`) qualifies that POINTER level: level_cv.
 		if ( ptr == 0 && ref == 0 )
 		{
 		    if ( pat[i]->id() == TokenID::tkCONST )
@@ -33294,13 +33384,36 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
 		    else if ( pat[i]->id() == TokenID::tkRESTRICT )
 		    { required_cv += "restrict "; ++cv; }
 		}
+		else if ( ref == 0 )
+		{
+		    if ( pat[i]->id() == TokenID::tkCONST )
+			level_cv[ptr] |= cvCONST;
+		    else if ( pat[i]->id() == TokenID::tkVOLATILE )
+			level_cv[ptr] |= cvVOLATILE;
+		}
 		++i;
 	    }
 	    else { simple = false; break; }   // leftover token => not the simple shape
 	}
     }
-    if ( !required_cv.empty()
-      && concrete_spelling.compare(0, required_cv.size(), required_cv) != 0 )
+    // The pattern's cv on PARAM is a requirement on the concrete type at the
+    // core ([temp.deduct.type]/8). A modeled bit (modeled_cv) lives in the
+    // type and is tested there, after the declarator peel below — a spelling
+    // prefix cannot see `int *volatile` (its cv follows the star). An
+    // unmodeled bit (C++ const, restrict) lives in the spelling only.
+    const unsigned req_cv =
+	(required_cv.find("const") != std::string::npos ? cvCONST : cvNONE)
+	| (required_cv.find("volatile") != std::string::npos ? cvVOLATILE : cvNONE);
+    const unsigned typed_req = req_cv & pgm.modeled_cv();
+    std::string spelled_req;
+    if ( (req_cv & cvCONST) && !(typed_req & cvCONST) )
+	spelled_req += "const ";
+    if ( (req_cv & cvVOLATILE) && !(typed_req & cvVOLATILE) )
+	spelled_req += "volatile ";
+    if ( required_cv.find("restrict") != std::string::npos )
+	spelled_req += "restrict ";
+    if ( !spelled_req.empty()
+      && concrete_spelling.compare(0, spelled_req.size(), spelled_req) != 0 )
 	return false;
     bool is_param = false;
     if ( simple )
@@ -33328,14 +33441,32 @@ static bool unify_spec_pattern_arg(const std::vector<TokenBase *> &pat,
     if ( ref )
     {
 	if ( !cur || !cur->is_reference() ) return false;
-	cur = ((DataDefPTR *)cur)->base_type;
+	DataDefPTR *rp = pointer_dd_of(cur);
+	cur = rp ? rp->base_type : NULL;
     }
+    // Outermost level first: the concrete's k-th level is the pattern's star
+    // (ptr - k), and a class argument matches only an IDENTICAL type
+    // ([temp.class.spec.match]) — the level's modeled cv is exactly the
+    // pattern's (`_Tp*` never matches `int *volatile`, `_Tp *volatile` never
+    // a plain `int *`).
     for ( int k = 0; k < ptr; ++k )
     {
 	if ( !cur || !cur->is_pointer() || cur->is_reference() ) return false;
-	cur = ((DataDefPTR *)cur)->base_type;
+	if ( (cur->cv_quals() & pgm.modeled_cv())
+	     != (level_cv[ptr - k] & pgm.modeled_cv()) )
+	    return false;
+	DataDefPTR *pp = pointer_dd_of(cur);
+	cur = pp ? pp->base_type : NULL;
     }
     if ( !cur ) return false;
+    if ( typed_req && (cur->cv_quals() & typed_req) != typed_req )
+	return false;
+    // The qualifiers the pattern spells on PARAM are matched, not deduced
+    // ([temp.deduct.type]/8: `_Tp volatile` against `volatile int` binds
+    // _Tp = int): shed them from the binding. Only the modeled bits live in
+    // the type (modeled_cv); the rest were matched on the spelling above.
+    if ( req_cv && (cur->cv_quals() & req_cv) )
+	cur = pgm.getQualifiedType(cur->unqualified(), cur->cv_quals() & ~req_cv);
     std::map<std::string, DataDef *>::iterator d = ded.find(core);
     if ( d != ded.end() && d->second && d->second->name != cur->name )
 	return false;                         // inconsistent (e.g. pair<T,T> with T!=T)
@@ -33563,8 +33694,8 @@ struct Program::ClassRegistrationJournal::State
 	ptr_type_cache_transaction;
     registration_map<DataDef *, DataDefREF *>::transaction_state
 	ref_type_cache_transaction;
-    registration_map<DataDef *, DataDefCONST *>::transaction_state
-	const_type_cache_transaction;
+    registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *>::transaction_state
+	qualified_type_cache_transaction;
     funcdef_map_t::transaction_state funcdef_map_transaction;
     variable_map_t::transaction_state literal_map_transaction;
     std::map<std::string, variable_map_t::transaction_state>
@@ -33741,7 +33872,7 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(
     pgm.literal_map.begin_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.begin_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.begin_transaction(state->ref_type_cache_transaction);
-    pgm.const_type_cache.begin_transaction(state->const_type_cache_transaction);
+    pgm.qualified_type_cache.begin_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.begin_transaction(
 	state->namespace_fn_overload_sets_transaction);
     pgm.pending_template_instantiations.begin_transaction(
@@ -34104,7 +34235,7 @@ void Program::ClassRegistrationJournal::commit()
     pgm.literal_map.commit_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.commit_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.commit_transaction(state->ref_type_cache_transaction);
-    pgm.const_type_cache.commit_transaction(state->const_type_cache_transaction);
+    pgm.qualified_type_cache.commit_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.commit_transaction(
 	state->namespace_fn_overload_sets_transaction);
     pgm.pending_template_instantiations.commit_transaction(
@@ -34216,7 +34347,7 @@ void Program::ClassRegistrationJournal::rollback()
     pgm.literal_map.rollback_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.rollback_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.rollback_transaction(state->ref_type_cache_transaction);
-    pgm.const_type_cache.rollback_transaction(state->const_type_cache_transaction);
+    pgm.qualified_type_cache.rollback_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.rollback_transaction(
 	state->namespace_fn_overload_sets_transaction);
     pgm.pending_template_instantiations.rollback_transaction(
@@ -34756,9 +34887,15 @@ class ClassPatternNormalizer
 		: Program::ClassTypePatternKind::NestedType;
 	    pattern.types[id].nested_node_id = node;
 	}
-	else if ( DataDefCONST *qualified = dynamic_cast<DataDefCONST *>(dd) )
+	else if ( DataDefQUAL *qualified = dynamic_cast<DataDefQUAL *>(dd) )
 	{
+	    // A qualified level: its cv MASK rides `flags` (0 = const — the
+	    // records written before the mask existed; a volatile or const
+	    // volatile level spells its bits), so `typedef T volatile type;` in
+	    // a class template keeps the pattern — it was refused, and the
+	    // fallback lost the qualifier (av<int>::type was int).
 	    pattern.types[id].kind = Program::ClassTypePatternKind::ConstType;
+	    pattern.types[id].flags = qualified->quals == cvCONST ? 0u : qualified->quals;
 	    Program::ClassTypePatternId operand =
 		normalize_type(qualified->base_type);
 	    pattern.types[id].operand = operand;
@@ -34769,7 +34906,7 @@ class ClassPatternNormalizer
 	    Program::ClassTypePatternId operand = normalize_type(ref->base_type);
 	    pattern.types[id].operand = operand;
 	}
-	else if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) )
+	else if ( DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd) ) // allowed-exception: structural (exact-class dispatch)
 	{
 	    pattern.types[id].kind = Program::ClassTypePatternKind::Pointer;
 	    Program::ClassTypePatternId operand = normalize_type(ptr->base_type);
@@ -34784,7 +34921,7 @@ class ClassPatternNormalizer
 	    if ( array->count_expr )
 		fail(Program::ClassParseReason::DependentValueExpression);
 	}
-	else if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(dd) )
+	else if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(dd) ) // allowed-exception: structural pattern capture
 	{
 	    pattern.types[id].kind = Program::ClassTypePatternKind::FunctionPointer;
 	    pattern.types[id].flags = fptr->ptr_syntax ? 1u : 0u;
@@ -35116,6 +35253,7 @@ class ClassPatternNormalizer
 	class_pattern_clone_tokens(fd->noexcept_condition_tokens);
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
+	out.is_volatile_method = fd->is_volatile_method;
 	// Lazy member-template hydration: the capture below copies the
 	// pattern fields — a frozen fd would clone an EMPTY pattern.
 	fd->ensure_member_template_thawed();
@@ -35581,6 +35719,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     bool saved_thread_local_decl = parsing_thread_local_decl;
     int saved_unnamed_ns_depth = unnamed_namespace_depth;
     bool saved_const_decl = parsing_const_decl;
+    bool saved_volatile_decl = parsing_volatile_decl;
     bool saved_constexpr_decl = parsing_constexpr_decl;
     bool saved_typedef_decl = parsing_typedef_decl;
     bool saved_pattern_ctor_inits = dependent_pattern_ctor_inits;
@@ -35644,6 +35783,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_thread_local_decl = false;
     unnamed_namespace_depth = 0;
     parsing_const_decl = false;
+    parsing_volatile_decl = false;
     parsing_constexpr_decl = false;
     parsing_typedef_decl = false;
     dependent_pattern_ctor_inits = false;
@@ -35742,6 +35882,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_thread_local_decl = saved_thread_local_decl;
     unnamed_namespace_depth = saved_unnamed_ns_depth;
     parsing_const_decl = saved_const_decl;
+    parsing_volatile_decl = saved_volatile_decl;
     parsing_constexpr_decl = saved_constexpr_decl;
     parsing_typedef_decl = saved_typedef_decl;
     dependent_pattern_ctor_inits = saved_pattern_ctor_inits;
@@ -36922,7 +37063,7 @@ static bool read_local_type_arg(Program &pgm,
     { out.is_lref = true; ++i; }
     else if ( i < toks.size() && toks[i] && toks[i]->id() == TokenID::tkLand )
     { out.is_rref = true; ++i; }
-    unwrap_baked_trait_arg(out);
+    unwrap_baked_trait_arg(pgm, out);
     // A DEPENDENT argument is unanswerable here: the CAPTURE parse of
     // gcc13's is_assignable folded `__is_assignable(_Tp, _Up)` with UNBOUND
     // params to 0 and froze `__bool_constant<0>` (false_type) as the
@@ -37961,7 +38102,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 		!arg_types_by_slot[i]->definition.canonical_cpp_spelling().empty()
 		? arg_types_by_slot[i]->definition.canonical_cpp_spelling()
 		: arg_spellings[i];
-	    if ( !unify_spec_pattern_arg(spec.spec_pattern[i], spec.typeparams,
+	    if ( !unify_spec_pattern_arg(*this, spec.spec_pattern[i], spec.typeparams,
 					 &arg_types_by_slot[i]->definition,
 					 arg_spellings[i], ded, score)
 	      && !unify_nested_spec_pattern_arg(
@@ -38383,7 +38524,7 @@ Program::ExprStep Program::parseExpr_symbolArm(TokenBase *tb,
 static DataDef *referent_if_reference(DataDef *dd)
 {
     if ( dd && dd->is_reference() )
-	if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *rp = pointer_dd_of(dd) )
 	    return rp->base_type;
     return dd;
 }
@@ -39299,6 +39440,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 			    if ( lhs_dot->type() != TokenType::ttVariable
 			      && lhs_dot->type() != TokenType::ttMember
+			      && !lhs_dot->is_indirection()   // (*p++).member
 			      && lhs_dot->type() != TokenType::ttSubscript
 			      && lhs_dot->type() != TokenType::ttCompound
 			      && lhs_dot->type() != TokenType::ttStructLit
@@ -39330,14 +39472,15 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( ((tv->var.is_reference()) || tv->var.name == "__this")
 			  && struct_type && struct_type->is_pointer() )
 			{
-			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
+			    DataDefPTR *rp = pointer_dd_of(struct_type);
 			    if ( rp && rp->base_type
 			      && (rp->base_type->is_struct()
 			       || rp->base_type->is_object()) )
 				struct_type = rp->base_type;
 			}
 		    }
-		    else if ( lhs_dot->type() == TokenType::ttMember )
+		    else if ( lhs_dot->type() == TokenType::ttMember
+			   || lhs_dot->as_deref_step_tok() )
 		    {
 			TokenMember *tm = dynamic_cast<TokenMember *>(lhs_dot);
 			if ( tm )
@@ -39355,7 +39498,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    if ( tm->var.is_reference()
 			      && struct_type && struct_type->is_pointer() )
 			    {
-				DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
+				DataDefPTR *rp = pointer_dd_of(struct_type);
 				if ( rp && rp->base_type
 				  && (rp->base_type->is_struct()
 				   || rp->base_type->is_object()) )
@@ -39371,15 +39514,18 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    tv_var      = &tdl->var;
 			    struct_type =  tdl->deref_type;
 			}
-			else if ( TokenDerefExpr *tdxl = dynamic_cast<TokenDerefExpr *>(lhs_dot) )
+			else if ( lhs_dot->as_deref_expr_tok() || lhs_dot->as_deref_step_tok() )
 			{
-			    // (*expr).member — expr yields a pointer whose target
-			    // is a struct. Resolve member lookup against the
-			    // dereferenced struct type; codegen uses the expr's
-			    // pointer value as base via TokenMember's parent_expr
-			    // path.
-			    tv_var      = new Variable("__deref_expr", *tdxl->deref_type, 1, NULL, false);
-			    struct_type =  tdxl->deref_type;
+			    // (*expr).member / (*p++).member — the dereference
+			    // yields a struct lvalue through its own expression.
+			    // Resolve member lookup against the dereferenced
+			    // struct type; codegen uses the deref as base via
+			    // TokenMember's parent_expr path.
+			    DataDef *dt = lhs_dot->as_deref_expr_tok()
+				? lhs_dot->as_deref_expr_tok()->deref_type
+				: lhs_dot->as_deref_step_tok()->deref_type;
+			    tv_var      = new Variable("__deref_expr", *dt, 1, NULL, false);
+			    struct_type =  dt;
 			}
 			else
 			    Throw(tb) << "member reference '.' on unsupported deref expression" << flush;
@@ -39475,7 +39621,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    // through the typeid as parent_expr (class_this_arg passes
 			    // the pointer straight through as `this`).
 			    DataDef *rt = lhs_dot->datadef();
-			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(rt);
+			    DataDefPTR *rp = pointer_dd_of(rt);
 			    struct_type = rp ? rp->base_type : rt;
 			    if ( !struct_type )
 				Throw(tb) << "typeid result has no type for member access" << flush;
@@ -39492,7 +39638,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // A const receiver type (deref of a const pointee — C-mode
 		    // `(*pls).a`) resolves members against the unqualified
 		    // layout: the hard DataDefSTRUCT/DataDefCLASS casts below
-		    // must never see the DataDefCONST wrapper (the arrow arm
+		    // must never see the DataDefQUAL wrapper (the arrow arm
 		    // peels at its pointee extraction for the same reason).
 		    struct_type = struct_type->unqualified();
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
@@ -39553,7 +39699,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				Throw(tb) << "expected '(' after explicit template arguments" << flush;
 			    std::vector<const DataDef *> at;
 			    for ( TokenBase *p : tc->parameters )
-				at.push_back(p ? p->datadef() : NULL);
+				at.push_back(call_argument_type(p));
 			    if ( Variable *ov = method_cls->findMethodOverload(id, at) )
 				if ( ov != &tc->var && (ov->flags & vfSTATIC) )
 				{
@@ -39760,7 +39906,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( !av.empty() )
 			    Throw(tb) << av << flush;
 		    }
-		    DataDef *mtype = ((DataDefSTRUCT *)struct_type)->m_type(id);
+		    // The member of a qualified object has the so-qualified type
+		    // ([expr.ref]/4, C11 6.5.2.3p3): `vs.m` is a volatile int.
+		    DataDef *mtype = member_access_type(
+			((DataDefSTRUCT *)struct_type)->m_type(id), glvalue_cv(lhs_dot));
 		    // create new variable
 		    var = new Variable(id, *mtype, 1, NULL, false);
 		    var->flags = member_proxy_flags(tv_var->flags);
@@ -39784,7 +39933,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // materialize the pointer value at codegen, then accesses
 		    // [ptr + offset] via the struct-value ("dot chain") branch.
 		    bool is_deref_lhs = (dynamic_cast<TokenDeref *>(lhs_dot) != NULL);
-		    bool is_derefexpr_lhs = (dynamic_cast<TokenDerefExpr *>(lhs_dot) != NULL);
+		    bool is_derefexpr_lhs = lhs_dot->as_deref_expr_tok() != NULL
+					 || lhs_dot->as_deref_step_tok() != NULL;
 		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
 		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
 			    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc
@@ -39873,7 +40023,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				ref_collapsed_lhs = true;
 			    }
 		    }
-		    else if ( lhs->type() == TokenType::ttMember )
+		    // An ARRAY head (a fixed-array member `q.in->x`, a row `(*ps)->x`)
+		    // decays to a pointer to its first element ([conv.array]) — the
+		    // expression-backed arm below asks the decay owner; the member
+		    // arm would read the flattened element type as the object.
+		    else if ( lhs->type() == TokenType::ttMember
+			   && !array_decay_pointer(lhs) )
 		    {
 			// TokenDeref and TokenDerefExpr also report ttMember (reuse
 			// member type for assignment compat) but are not TokenMember
@@ -39919,16 +40074,19 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 
 		    // get the pointed-to type
 		    DataDef *base = obj_type;
+		    unsigned arrow_object_cv = fixed_array_arrow ? glvalue_cv(lhs) : cvNONE;
 		    if ( !fixed_array_arrow )
 		    {
-			DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(obj_type);
+			DataDefPTR *ptr_type = pointer_dd_of(obj_type);
 			if ( !ptr_type || !ptr_type->base_type )
 			    Throw(tb) << "expression before '->' is not a typed pointer" << flush;
 			// A const pointee (`const struct S *p`) accesses its
 			// members through the unqualified layout — the hard
 			// DataDefSTRUCT casts below must never see the
-			// DataDefCONST wrapper (write-rejection through a
+			// DataDefQUAL wrapper (write-rejection through a
 			// const pointee is the const campaign's P4 residue).
+			// Its qualifiers still qualify the member's TYPE (below).
+			arrow_object_cv = ptr_type->base_type->cv_quals();
 			base = ptr_type->base_type->unqualified();
 		    }
 		    if ( !base->is_struct() && !base->is_object() )
@@ -39993,7 +40151,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				std::vector<const DataDef *> at;
 				for ( TokenBase *p : tc->parameters )
-				    at.push_back(p ? p->datadef() : NULL);
+				    at.push_back(call_argument_type(p));
 				if ( Variable *ov = method_cls->findMethodOverload(id, at) )
 				    if ( ov != &tc->var && (ov->flags & vfSTATIC) )
 				    {
@@ -40120,7 +40278,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( !av.empty() )
 			    Throw(tb) << av << flush;
 		    }
-		    DataDef *mtype = ((DataDefSTRUCT *)base)->m_type(id);
+		    // [expr.ref]/4: the pointee's cv qualifies the member (`pv->m`
+		    // through a `volatile S *` is a volatile int).
+		    DataDef *mtype = member_access_type(((DataDefSTRUCT *)base)->m_type(id),
+							arrow_object_cv);
 
 		    // create variable for the member
 		    var = new Variable(id, *mtype, 1, NULL, false);
@@ -40451,6 +40612,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			Variable *thisvar = code->method->findParameter(thisid);
 			if ( thisvar )
 			{
+			    mtype = member_access_type(mtype,
+				(unsigned)std::max(0, implicit_object_cv(*thisvar)));
 			    Variable *member = new Variable(mname, *mtype, 1, NULL, false);
 			    exStack.push(new TokenMember(*thisvar, *member, ofs));
 			    return done ? ExprStep::Done : ExprStep::Break;
@@ -40802,6 +40965,31 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		}
 		ns_resolved:
+		// A REFERENCE to a function or a function pointer names its
+		// referent ([dcl.ref]): `int (*&r)(int) = pg; r(4)` calls pg's
+		// target, `int (&rf)(int) = g; rf(5)` calls g. madc stores the
+		// reference as a pointer, whose type is not callable, so the name
+		// was pushed as a value and `(4)` refused as a juxtaposed operand;
+		// the call goes through the referent's value, as `(expr)(args)`
+		// does.
+		if ( var->is_reference() && peekToken()
+		  && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    TokenVar *ref = new TokenVar(*var);
+		    if ( DataDefFPTR *fp =
+			    function_value_pointer_type(operand_value_type(ref)) )
+		    {
+			TokenBase *paren = nextToken();
+			TokenCallFunc *tc = build_call_through_value(ref, fp,
+								     paren, tb);
+			DBG(cout << "reference fptr call through " << var->name << endl);
+			opStack.push(tc);
+			if ( tb && tb->id() == TokenID::tkSemi )
+			    done = true;
+			return done ? ExprStep::Done : ExprStep::Break;
+		    }
+		    delete ref;
+		}
 		if ( var->type->is_function() )
 		{
 		    // Explicit template arguments on a namespace function call
@@ -40987,10 +41175,10 @@ static DataDefCLASS *dtor_receiver_class(TokenBase *lhs, bool is_arrow)
     DataDef *rdd = lhs ? lhs->datadef() : NULL;
     auto strip_cv_ref = [](DataDef *d) -> DataDef * {
 	for (;;) {
-	    if ( DataDefCONST *cq = dynamic_cast<DataDefCONST *>(d) )
+	    if ( DataDefQUAL *cq = dynamic_cast<DataDefQUAL *>(d) )
 		d = cq->base_type;
 	    else if ( d && d->is_reference() ) {
-		DataDefPTR *p = dynamic_cast<DataDefPTR *>(d);
+		DataDefPTR *p = pointer_dd_of(d);
 		if ( !p ) break;
 		d = p->base_type;
 	    }
@@ -41000,7 +41188,7 @@ static DataDefCLASS *dtor_receiver_class(TokenBase *lhs, bool is_arrow)
     };
     rdd = strip_cv_ref(rdd);
     if ( is_arrow && rdd && rdd->is_pointer() ) {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(rdd);
+	DataDefPTR *p = pointer_dd_of(rdd);
 	rdd = p ? strip_cv_ref(p->base_type) : NULL;
     }
     return dynamic_cast<DataDefCLASS *>(rdd);
@@ -41034,7 +41222,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		 std::stack<TokenBase *> &exStack, std::stack<TokenBase *> &opStack,
 		 int &brackets, TokenCpnd *code, bool conditional, bool ternary_branch,
 		 bool stop_on_closing_paren, int initial_brackets, bool push_back_comma,
-		 TokenBase *&result, bool cast_operand)
+		 bool cast_operand)
 {
     TokenOperator *to = NULL;
     Variable *var = NULL;
@@ -41143,7 +41331,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			if ( !dt )
 			    Throw(tyt ? tyt : tb) << "Unknown type in explicit destructor call" << flush;
 			DataDef *named = &dt->definition;
-			while ( DataDefCONST *nc = dynamic_cast<DataDefCONST *>(named) )
+			while ( DataDefQUAL *nc = dynamic_cast<DataDefQUAL *>(named) )
 			    named = nc->base_type;
 			dcls = dynamic_cast<DataDefCLASS *>(named);
 			// The named type must BE the receiver's class ([class.dtor];
@@ -41393,11 +41581,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				top_is_cast_subscriptable = true;
 			}
 		    }
+		    // Any DEREFERENCE is a subscript base — asked by kind-free
+		    // is_indirection(): a stepped deref (`(*rp++)[1]`) reports
+		    // ttBase, and naming only TokenDeref / TokenDerefExpr sent its
+		    // `[` to the lambda introducer.
 		    if ( !exStack.empty()
 		      && (exStack.top()->type() == TokenType::ttMember
 		       || exStack.top()->type() == TokenType::ttSubscript
-		       || dynamic_cast<TokenDerefExpr *>(exStack.top()) != NULL
-		       || dynamic_cast<TokenDeref *>(exStack.top()) != NULL
+		       || exStack.top()->is_indirection()
 		       || top_is_complex_ptr_expr
 		       || top_is_cast_subscriptable) )
 		    {
@@ -41534,7 +41725,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				elem_type = class_elem;
 			    else if ( elem_type && elem_type->is_pointer() )
 			    {
-				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
+				DataDefPTR *pdd = pointer_dd_of(elem_type);
 				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
 			    }
 			    else if ( elem_type && elem_type->is_simd() )
@@ -41601,14 +41792,14 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    Throw(close ? close : tb) << "Expected ')' after statement expression" << flush;
 			exStack.push(stmt_expr);
 			if ( stop_on_closing_paren && initial_brackets == 0 )
-			    { result = stmt_expr; return ExprStep::Return; }
+			    return ExprStep::Return;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
 		    // check for cast expression: (TYPE [*...]) expr
 		    TokenBase *peek1 = peekToken();
 		    DataDef *cast_dd = NULL;
 		    std::string cast_typedef_name;
-		    TokenBase *cast_qualifier = NULL;
+		    std::vector<TokenBase *> cast_qualifiers;	// the leading cv run: `(const volatile T *)`
 		    size_t cast_qualified_extra_tokens = 0;
 		    // When this `(` opens a call on a callable receiver already on
 		    // exStack, it is an argument list, not a `(TYPE)expr` cast — even
@@ -41618,10 +41809,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // paren_opens_call_on_receiver — std::set's _M_insert_ regression.)
 		    if ( peek1 && !paren_opens_call_on_receiver(exStack) )
 		    {
-			if ( peek1->id() == TokenID::tkCONST
-			  || peek1->id() == TokenID::tkVOLATILE )
+			while ( peek1 && (peek1->id() == TokenID::tkCONST
+				       || peek1->id() == TokenID::tkVOLATILE) )
 			{
-			    cast_qualifier = nextToken();
+			    cast_qualifiers.push_back(nextToken());
 			    peek1 = peekToken();
 			}
 			// __attribute__((vector_size(N))) type — inline SIMD type in cast/compound literal
@@ -41950,8 +42141,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			   || t1->id() == TokenID::tkOpBrc) )
 			    cast_dd = NULL;
 		    }
-		    if ( !cast_dd && cast_qualifier )
-			pushToken(cast_qualifier);
+		    if ( !cast_dd )
+			for ( size_t qk = cast_qualifiers.size(); qk-- > 0; )
+			    pushToken(cast_qualifiers[qk]);
 		    if ( cast_dd )
 		    {
 			// speculatively consume the type token (if not struct, which was already consumed)
@@ -41976,8 +42168,18 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			DataDef *array_elem_dd = NULL;
 			int64_t array_explicit_count = 0;
 			{
+			    // The leading cv this arm consumed (`(const char *)p`,
+			    // `(volatile int *)p`) qualifies the POINTEE, never the
+			    // cast's result (C11 6.5.4: a cast yields the unqualified
+			    // type) — leading_cv binds it to the first `*` exactly as a
+			    // declaration's does.
+			    unsigned cast_cv = cvNONE;
+			    for ( size_t qk = 0; qk < cast_qualifiers.size(); ++qk )
+				cast_cv |= cast_qualifiers[qk]->id() == TokenID::tkCONST
+					 ? cvCONST : cvVOLATILE;
 			    DeclaratorResult cast_decl;
-			    cast_dd = parse_declarator(cast_dd, DeclaratorMode::TypeIdOperand, cast_decl);
+			    cast_dd = parse_declarator(cast_dd, DeclaratorMode::TypeIdOperand, cast_decl,
+						       NULL, cast_cv);
 			    DataDefCArray *bare_array = (!cast_decl.saw_parens && !cast_decl.array_dims.empty())
 						      ? cast_dd->as_carray_dd() : NULL;
 			    if ( bare_array )
@@ -42065,174 +42267,18 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // position. Otherwise the cast's close-paren leaks into
 			    // isUnaryPosition and they mis-parse as binary ops.
 			    _prv_token = NULL;
-			    TokenBase *cast_expr = NULL;
-			    // Casts in C bind tighter than binary operators: `(long)q
-			    // - n` means `((long)q) - n`, not `(long)(q - n)`.
-			    // Identifier operands, including calls, stop before any
-			    // trailing binary operator so `(uint64)f() << 32` widens
-			    // before the shift.
-		    if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && (is_realpart_identifier(((TokenIdent *)cast_expr_tb)->spelling())
-		       || is_imagpart_identifier(((TokenIdent *)cast_expr_tb)->spelling())) )
-		    {
-			// (int)__real__ d — the component op is part of the cast
-			// operand; the plain identifier arms below would resolve
-			// `__real__` as a variable ("undeclared identifier").
-			cast_expr = parse_complex_component_operand(
-			    is_imagpart_identifier(((TokenIdent *)cast_expr_tb)->spelling()),
-			    cast_expr_tb);
-		    }
-		    else if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && (((TokenIdent *)cast_expr_tb)->spelling_is("sizeof")
-		       || is_alignof_identifier(((TokenIdent *)cast_expr_tb)->spelling())) )
-		    {
-			// (long long)sizeof chunk — sizeof/alignof as the cast
-			// operand, BOTH forms ([expr.sizeof] allows a paren-less
-			// unary-expression operand). The plain identifier arms
-			// below would resolve `sizeof` as a variable ("undeclared
-			// identifier 'sizeof'" — the rt_format.c ledger parse),
-			// the same trap as the __real__/__imag__ arm above. One
-			// owner: the same resolver trio the main expression arm
-			// uses (dynamic type query, VLA sizeof, constant fold).
-			const char *qname = ((TokenIdent *)cast_expr_tb)->spelling();
-			if ( TokenBase *query_tb = try_parse_dynamic_type_query(cast_expr_tb, qname) )
-			    cast_expr = query_tb;
-			else if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(cast_expr_tb, qname) )
-			    cast_expr = vla_tb;
-			else
-			{
-			    size_t query_value = evaluate_type_query(cast_expr_tb, qname);
-			    TokenInt *ti = new TokenInt((int64_t)query_value);
-			    ti->setDataType(&ddUINT64);
-			    ti->file = cast_expr_tb->file;
-			    ti->line = cast_expr_tb->line;
-			    ti->column = cast_expr_tb->column;
-			    cast_expr = ti;
-			}
-		    }
-		    else if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk
-		      && (cast_expr = parse_cast_function_call_operand(cast_expr_tb)) )
-		    {
-		    }
-		    else if ( cast_expr_tb
-		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && !(peekToken() && peekToken()->id() == TokenID::tkOpBrk) )
-		    {
-			cast_expr = parsePostfixChain(cast_expr_tb);
-		    }
-		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkMul )
-		    {
-			cast_expr = parse_cast_unary_deref_operand(cast_expr_tb);
-			if ( !cast_expr )
-			    cast_expr = parseExpression(cast_expr_tb, true);
-		    }
-		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkBand )
-		    {
-			cast_expr = parseAddressOfExpression(cast_expr_tb);
-		    }
-		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkOpBrk )
-		    {
-				// The cast body starts with `(`.  Two possibilities:
-				// a) Chained cast: `(long)(int)x` — the inner `(`
-				//    starts another `(type)expr` cast. Detected by
-				//    peeking for a type token inside the parens.
-				// b) Parenthesized expression: `(int)(a - b)`.
-				// For (a), push `(` back and let parseExpression
-				// handle the inner cast naturally. For (b), consume
-				// `(` and use stop_on_closing_paren.
-				TokenBase *inner_peek = peekToken();
-				bool inner_is_cast = inner_peek
-				    && (inner_peek->type() == TokenType::ttDataType
-					|| inner_peek->id() == TokenID::tkCONST
-					|| (inner_peek->type() == TokenType::ttIdentifier
-					    && (datatype_map.count(((TokenIdent *)inner_peek)->spelling())
-						|| struct_map.count(((TokenIdent *)inner_peek)->spelling())
-						|| resolve_current_class_type_alias(((TokenIdent *)inner_peek)->spelling())
-						// (__typeof (x))(x) — a typeof CAST
-						// (glibc math.h C++ regions);
-						// re-dispatch to the cast path,
-						// whose typeof arm resolves it.
-						|| is_typeof_identifier(((TokenIdent *)inner_peek)->spelling()))));
-				if ( inner_is_cast )
-				{
-				    // Push `(` back — parseExpression will handle it
-				    // as a cast via the normal `(type)expr` path.
-				    pushToken(cast_expr_tb);
-				    _prv_token = NULL;
-				    cast_expr = parseExpression(nextToken(), true);
-				}
-				else
-				{
-				    TokenBase *first_inner = nextToken();
-				    cast_expr = parseExpression(first_inner, true, false, true, 1);
-				}
-			    }
-			    else if ( cast_expr_tb
-				   && (cast_expr_tb->type() == TokenType::ttInteger
-				    || cast_expr_tb->type() == TokenType::ttReal
-				    || cast_expr_tb->type() == TokenType::ttChar
-				    || cast_expr_tb->type() == TokenType::ttString) )
-			    {
-				// Simple literal: cast binds tightly.
-				// (double)5 consumes only 5, not < 3.0.
-				cast_expr = materialize_cast_literal_operand(cast_expr_tb);
-			    }
-			    else if ( cast_expr_tb
-				   && (cast_expr_tb->id() == TokenID::tkBnot  // ~
-				    || cast_expr_tb->id() == TokenID::tkNeg   // -
-				    || cast_expr_tb->id() == TokenID::tkLnot  // !
-				    || cast_expr_tb->id() == TokenID::tkAdd)  // +
-				   && peekToken()
-				   && (peekToken()->type() == TokenType::ttInteger
-				    || peekToken()->type() == TokenType::ttReal) )
-			    {
-				// Unary operator + literal: cast binds tightly.
-				// (unsigned char)~0 consumes only ~0, not * ' '.
-				TokenBase *operand_tb = nextToken();
-				TokenOperator *uop = dynamic_cast<TokenOperator *>(cast_expr_tb);
-				// Unary PLUS is a no-op ([expr.unary.op]/2) —
-				// `(I)+15` must yield the literal, never a
-				// TokenAdd with NULL left (untranslatable at
-				// CIR; c-testsuite 00205's initializer rows).
-				if ( cast_expr_tb->id() == TokenID::tkAdd )
-				    cast_expr = operand_tb;
-				else if ( uop ) { uop->right = operand_tb; cast_expr = uop; }
-				else cast_expr = operand_tb;
-			    }
-			    else
-			    {
-				cast_expr = parseExpression(cast_expr_tb, true);
-			    }
-			    // C11 6.5.2/6.5.4: postfix ++/-- is part of the
-			    // POSTFIX-expression, and a cast's operand is a
-			    // unary-expression — so `(int) p->n++` is
-			    // `(int)(p->n++)`, never `((int)p->n)++`. madc built the
-			    // latter, which is not an lvalue: mir-debug.c's
-			    // `return (int) obj->n_syms++;` emitted
-			    // `return ((int)obj->n_syms)++;` and c2mir refused it
-			    // ("lvalue required as left operand of assignment").
-			    // Same rule the deref operand already applies below
-			    // (`*(*x)++` is `*(((*x)++))`); one hook here covers
-			    // every operand arm above, since this is the single site
-			    // that builds the cast.
-			    if ( cast_expr && peekToken()
-			      && (peekToken()->id() == TokenID::tkInc
-			       || peekToken()->id() == TokenID::tkDec) )
-			    {
-				TokenBase *step_tb = nextToken();
-				TokenOperator *step;
-				if ( step_tb->id() == TokenID::tkInc )
-				    step = new TokenInc();
-				else
-				    step = new TokenDec();
-				step->left = cast_expr;
-				step->right = NULL;
-				cast_expr = step;
-			    }
+			    // The operand of a cast is a CAST-EXPRESSION (C11 6.5.4,
+			    // [expr.cast]; gcc's c_parser_cast_expression recurses into
+			    // itself) — read by the one bounded reader. It binds tighter
+			    // than any binary operator (`(long)q - n` is `((long)q) - n`,
+			    // `(uint64)f() << 32` widens before the shift, `(char)-x *
+			    // 100` casts `-x`) and takes its whole postfix chain
+			    // (`(int) p->n++` is `(int)(p->n++)`, `(long)"abc"[1]`).
+			    // Nine shape arms read it before — identifier, call, postfix
+			    // chain, `*`, `&`, paren, chained cast, literal, the rest —
+			    // each a partial copy of the engine; the literal arm read
+			    // only the literal.
+			    TokenBase *cast_expr = parseCastExpression(cast_expr_tb);
 			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
 			    // Caller wants only the cast group, not whatever
@@ -42250,7 +42296,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // QUICKMATCH macro expansion regressed when this
 			    // returned early there.
 			    if ( stop_on_closing_paren && opStack.empty() && initial_brackets == 0 )
-				{ result = exStack.top(); return ExprStep::Return; }
+				return ExprStep::Return;
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
 			// not a cast after all — fall through to grouping
@@ -42489,7 +42535,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && !member_is_assign_lhs
 		      && exStack.top()->type() == TokenType::ttMember
 		      && (member_call_base = dynamic_cast<TokenMember *>(exStack.top())) != NULL
-		      && dynamic_cast<DataDefFPTR *>(member_call_base->var.type) )
+		      && member_call_base->var.type
+		      && member_call_base->var.type->as_fptr_dd() )
 		    {
 			TokenMember *tmem = member_call_base;
 			exStack.pop();
@@ -42519,7 +42566,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && (dynamic_cast<TokenSubscript *>(exStack.top()) != NULL
 		       || dynamic_cast<TokenSubscriptExpr *>(exStack.top()) != NULL)
 		      && (subscript_call_base = exStack.top()) != NULL
-		      && (subscript_call_type = dynamic_cast<DataDefFPTR *>(subscript_call_base->datadef())) != NULL )
+		      && subscript_call_base->datadef()
+		      && (subscript_call_type = subscript_call_base->datadef()->as_fptr_dd()) != NULL )
 		    {
 			exStack.pop();
 			Variable *call_var = new Variable("__subscript_fptr", *subscript_call_type, 1, NULL, false);
@@ -42544,7 +42592,8 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && !opstack_has_pending_op
 		      && exStack.top()->type() == TokenType::ttVariable
 		      && (var_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
-		      && dynamic_cast<DataDefFPTR *>(var_call_base->var.type)
+		      && var_call_base->var.type
+		      && var_call_base->var.type->as_fptr_dd()
 		      && !var_call_base->var.is_constant()
 		      && var_call_base->var.name.compare(0, 11, "__literal__") != 0 /* skip string literals */
 		      && var_call_base->var.name[0] != '(' /* skip grouped exprs */ )
@@ -42664,78 +42713,37 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    done = true;
 			return done ? ExprStep::Done : ExprStep::Break;
 		    }
-		    // Generic expression-as-function-pointer call:
-		    // `(c ? foo : bar)()`, `(expr)(args)` — when the
-		    // exStack top is a ternary or explicit DataDefFPTR
-		    // expression. Only trigger for ternary expressions
-		    // and already-typed function pointers, NOT for plain
-		    // identifiers that happen to have a function type
-		    // (which would be a normal function call or a
-		    // parenthesized expression starting with a func name).
-		    if ( !exStack.empty() && !opstack_has_pending_op )
+		    // Call through a function-pointer EXPRESSION ([expr.call]/1):
+		    // `(c ? f : g)(x)`, `(*fp)(x)`, `((fn_t)p)(x)`, `(x, f)(x)`,
+		    // `(f = g)(x)` — a `(` directly after a CLOSED operand whose type
+		    // is a function pointer, or a function designator (wrapped in
+		    // its pointer type, [conv.func]). Adjacency decides, asked like
+		    // every call arm here (the token before the `(` is the operand's
+		    // closing `)`): a call is postfix and binds tighter than any
+		    // pending binary operator, so `g(3) + (*tab)(3)` is a call while
+		    // `(*fp) * (2)` — an operator between — keeps the grouping.
+		    // Members, subscripts, plain variables, designators and call
+		    // results have their own arms above.
+		    if ( !exStack.empty() && prev_for_member
+		      && prev_for_member->id() == TokenID::tkClBrk
+		      && !member_is_assign_lhs )
 		    {
 			TokenBase *call_expr = exStack.top();
 			DataDef *call_dd = call_expr->datadef();
-			DataDefFPTR *fptr_type = dynamic_cast<DataDefFPTR *>(call_dd);
-			// For ternary: check if either branch is a function reference.
-			TokenTerQ *terq = dynamic_cast<TokenTerQ *>(call_expr);
-			if ( terq )
+			// A ternary's own type may be neither branch's: ask the
+			// branches for the function they select.
+			if ( TokenTerQ *terq = dynamic_cast<TokenTerQ *>(call_expr) )
 			{
 			    DataDef *td = terq->true_expr ? terq->true_expr->datadef() : NULL;
 			    DataDef *fd = terq->false_expr ? terq->false_expr->datadef() : NULL;
 			    if ( td && td->is_function() ) call_dd = td;
 			    else if ( fd && fd->is_function() ) call_dd = fd;
-			    // For ternary, wrap in FPTR if needed
-			    if ( !fptr_type && call_dd && call_dd->is_function() )
-			    {
-				FuncDef *func = dynamic_cast<FuncDef *>(call_dd);
-				if ( func )
-				    fptr_type = new DataDefFPTR(func);
-			    }
 			}
-			// Only trigger for genuine fptr patterns: ternary dispatch,
-			// member fptr, or deref fptr (*fptr)(args).
-			// Do NOT trigger for subscript expressions or plain
-			// identifiers — those are normal expressions followed by
-			// grouping parens, not function pointer invocations.
-			// (Subscript fptr calls like table[i](args) are rare and
-			// were not supported pre-v0.14; they cause false matches
-			// on SMAUG's DO_FUN/SPEC_FUN typedef system.)
-			if ( fptr_type && !terq )
-			{
-			    bool is_genuine_fptr =
-				call_expr->type() == TokenType::ttMember
-				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL
-				// A CAST to a fn-ptr type followed by `(` is
-				// unambiguously a call — a cast result has no
-				// grouping/identifier reading (the SMAUG
-				// false-match concern below is about plain
-				// names and subscripts). c-testsuite 00210:
-				// `((int(*)(void))p)()` silently dropped the
-				// call and assigned the pointer, exit 0.
-				|| call_expr->as_cast_tok() != NULL;
-			    if ( !is_genuine_fptr )
-				fptr_type = NULL;
-			}
-			// Only trigger for: ternary dispatch, deref fptr, or a
-			// cast to fn-ptr. Members and subscripts are handled by
-			// their own dedicated fptr paths earlier in the code.
-			// The generic path's is_function() check is too
-			// aggressive for those.
-			if ( fptr_type && !terq
-			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL
-			  && call_expr->as_cast_tok() == NULL )
-			    fptr_type = NULL;
-			if ( fptr_type )
+			if ( DataDefFPTR *fptr_type = function_value_pointer_type(call_dd) )
 			{
 			    exStack.pop();
-			    Variable *call_var = new Variable("__expr_fptr", *fptr_type, 1, NULL, false);
-			    TokenCallFunc *tc = new TokenCallFunc(*call_var);
-			    tc->src_node = call_expr;
-			    tc->file = tb->file;
-			    tc->line = tb->line;
-			    tc->column = tb->column;
-			    tb = parseCallFunc(tc);
+			    TokenCallFunc *tc = build_call_through_value(call_expr,
+							    fptr_type, tb, tb);
 			    DBG(cout << "expression fptr call" << endl);
 			    opStack.push(tc);
 			    if ( tb && tb->id() == TokenID::tkSemi )
@@ -42797,8 +42805,9 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    && next->id() == TokenID::tkOpBrk
 			    && !exStack.empty()
 			    && exStack.top()->datadef()
-			    && (exStack.top()->datadef()->is_function()
-			     || dynamic_cast<DataDefFPTR *>(exStack.top()->datadef()));
+			    // a function or a function pointer: is_function()
+			    // answers both (a DataDefQUAL forwards it)
+			    && exStack.top()->datadef()->is_function();
 			// A named-cast operand (`static_cast<T>(p)`) must STOP at its own closing
 			    // paren so a trailing `->m()`/`.m`/`[i]` binds to the CAST RESULT
 			    // (target type), not folds into the operand (base type).
@@ -42820,15 +42829,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    || (ternary_branch && next->id() == TokenID::tkTerC));
 			if ( ends_conditional )
 			{
-			    // Flush any remaining operators before returning so
-			    // expressions like `c = -(2)` complete the pending
-			    // unary `-` and assignment before the conditional-end
-			    // short-circuit. Otherwise exStack may hold only the
-			    // inner paren's value, losing the outer operator chain.
-			    while ( !opStack.empty() )
-				popOperator(opStack, exStack);
+			    // The conditional-end short-circuit is an END of the
+			    // expression: finish_expression binds the pending
+			    // operators (`c = -(2)` completes the unary `-` and the
+			    // assignment) and refuses leftover juxtaposed operands.
 			    DBG(std::cout << "Program::parseExpression() conditional end exStack:" << exStack.size() << std::endl);
-			    result = exStack.empty() ? NULL : exStack.top();
 			    return ExprStep::Return;
 			}
 		    }
@@ -42891,9 +42896,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // `feof(fp) ? "End" : fread_word(fp)`.
 		    DataDef *tdd = ternary->true_expr  ? ternary->true_expr->datadef()  : NULL;
 		    DataDef *fdd = ternary->false_expr ? ternary->false_expr->datadef() : NULL;
-		    DataDef *ternary_dd = tdd;
-		    if ( (!ternary_dd || ternary_dd == &ddINT) && fdd && fdd != &ddINT )
-			ternary_dd = fdd;
+		    // Two arithmetic arms: [expr.cond]/7's type, one owner.
+		    DataDef *ternary_dd = conditional_arithmetic_type(
+					    ternary->true_expr, ternary->false_expr);
+		    if ( !ternary_dd )
+		    {
+			ternary_dd = tdd;
+			if ( (!ternary_dd || ternary_dd == &ddINT) && fdd && fdd != &ddINT )
+			    ternary_dd = fdd;
+		    }
 		    // [expr.cond]/4 with the CARRIER (`var`): one arm a value (a
 		    // variable, a keyed slot, a `value &`), the other a type the
 		    // carrier's registered operator= rows take (a char pointer, a
@@ -42987,7 +42998,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    // should we delete tb ?
 		    tb = ts;
 		}
-		// Unary `+` (no-op): just consume and continue.
+		// Unary `+` ([expr.unary.op]/7): a real operator — the PROMOTED
+		// operand, an rvalue, and a class operand's operator+(). The lexer
+		// says TokenAdd; build the unary token here, as `-` becomes a
+		// TokenSub above, and let it bind by precedence like TokenNeg.
 		// Treat as unary when there's no value-producing operand
 		// on exStack, or when the previous token is a binary/assign
 		// operator (so `x = +20` works). Exclude postfix `++`/`--`
@@ -43014,7 +43028,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && _prv_token->id() != TokenID::tkClSqr
 		      && _prv_token->id() != TokenID::tkInc
 		      && _prv_token->id() != TokenID::tkDec)))) )
-		    return done ? ExprStep::Done : ExprStep::Break;
+		{
+		    TokenUnaryPlus *up = new TokenUnaryPlus();
+		    up->file = tb->file;
+		    up->line = tb->line;
+		    up->column = tb->column;
+		    tb = up;
+		}
 		// & address-of in unary position
 		if ( tb->id() == TokenID::tkBand && (isUnaryPosition() || awaiting_prefix_step_operand()) )
 		{
@@ -43032,624 +43052,19 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			getPointerType(&ddVOID)));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
-			// * dereference in unary position
-			if ( tb->id() == TokenID::tkMul && (isUnaryPosition() || awaiting_prefix_step_operand()) )
-			{
-			    TokenBase *deref_tb = nextToken();
-			    if ( deref_tb->id() == TokenID::tkOpBrk )
-		    {
-			// Cast head / statement expression / parenthesized
-			// expression — parse_deref_paren_operand owns the
-			// discrimination (shared with the multi-star arms).
-			TokenBase *deref_expr = parse_deref_paren_operand(deref_tb);
-			DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
-			if ( !dtype )
-			    dtype = deref_expr->datadef();
-			if ( !dtype )
-			    { debug_deref_fail(*this, 15702, deref_tb, NULL);
-			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-			    }
-			if ( dynamic_cast<DataDefFPTR *>(dtype) != NULL )
-			{
-			    exStack.push(deref_expr);
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
-			if ( dtype->is_function() && dtype->is_numeric() )
-			{
-			    exStack.push(deref_expr);
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
-			if ( !dtype->is_pointer() )
-			{
-			    // Allow dereference of fixed-array struct members —
-			    // they decay to pointers (e.g. *edit->line for char line[N])
-			    TokenMember *tm_deref = dynamic_cast<TokenMember *>(deref_expr);
-			    if ( tm_deref && tm_deref->is_fixed_array_member() )
-			    {
-				exStack.push(new TokenDerefExpr(deref_expr, dtype));
-				return done ? ExprStep::Done : ExprStep::Break;
-			    }
-			    if ( TokenCallMethod *opcall =
-				    make_unary_object_operator_call(*this, NULL,
-					deref_expr, "operator*") )
-			    {
-				exStack.push(opcall);
-				return done ? ExprStep::Done : ExprStep::Break;
-			    }
-			    if ( DataDef *dep_base =
-				    dependent_deref_result_type(dtype) )
-			    {
-				exStack.push(new TokenDerefExpr(deref_expr, dep_base));
-				return done ? ExprStep::Done : ExprStep::Break;
-			    }
-			    { debug_deref_fail(*this, 15736, deref_tb, NULL);
-			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-			    }
-			}
-			DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
-			DataDef *base = dptr ? dptr->base_type : &ddINT64;
-			if ( peekToken()
-			  && (peekToken()->id() == TokenID::tkInc
-			   || peekToken()->id() == TokenID::tkDec) )
-			{
-			    // Postfix ++/-- binds tighter than the outer unary `*`:
-			    // `*(*x)++` is `*(((*x)++))`, not `(*(*x))++`.
-			    TokenBase *step_tb = nextToken();
-			    TokenOperator *step;
-			    if ( step_tb->id() == TokenID::tkInc )
-				step = new TokenInc();
-			    else
-				step = new TokenDec();
-			    step->left = deref_expr;
-			    step->right = NULL;
-			    exStack.push(new TokenDerefExpr(step, base));
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
-			exStack.push(new TokenDerefExpr(deref_expr, base));
-			    }
-			    else
-			    {
-				if ( (deref_tb->type() == TokenType::ttIdentifier
-				      // `this` is a KEYWORD token (tkCPPKEYWORD) but names
-				      // the hidden __this receiver — a variable-like head.
-				      // Without it, `*this = sv` (the trivial-class swap
-				      // shape) fell to the parseExpression fallback below,
-				      // which swallowed `= sv` into the operand and built
-				      // `*(this = sv)`. Only `this` widens here: other
-				      // contextual keywords (`new`, casts) have their own
-				      // expression grammar the fallback must keep owning.
-				   || contextual_identifier_name(deref_tb) == "this")
-				  && !(peekToken()
-				    && (peekToken()->id() == TokenID::tkOpBrk
-				     || peekToken()->id() == TokenID::tkDeRef
-				     || peekToken()->id() == TokenID::tkDot
-				     || peekToken()->id() == TokenID::tkNS
-				     || peekToken()->id() == TokenID::tkOpSqr)) )
-				{
-				    std::string dname = contextual_identifier_name(deref_tb);
-				    Variable *dvar = findVariable(dname);
-				    if ( !dvar && dname == "this" && code )
-					dvar = code->findVariableLocal(strpool,
-							       "__this");
-				    if ( !dvar && code && code->method
-				      && code->method->owner_class )
-				    {
-					DataDefCLASS *cls = code->method->owner_class;
-					ssize_t ofs = cls->m_offset(dname);
-					if ( ofs >= 0 )
-					{
-					    std::string thisid = "__this";
-					    Variable *thisvar = code->method->findParameter(thisid);
-					    DataDef *mtype = cls->m_type(dname);
-					    if ( thisvar && mtype )
-					    {
-						Variable *member =
-						    new Variable(dname, *mtype, 1, NULL, false);
-						TokenMember *tm =
-						    new TokenMember(*thisvar, *member, ofs);
-						// `*member` where the member is a CLASS
-						// object dispatches its operator* (the
-						// implicit-this member twin of the
-						// variable arm below — move_iterator's
-						// `*_M_current` on __normal_iterator).
-						if ( TokenCallMethod *opcall =
-							make_unary_object_operator_call(
-							    *this, NULL, tm, "operator*") )
-						{
-						    exStack.push(opcall);
-						    return done ? ExprStep::Done
-								: ExprStep::Break;
-						}
-						DataDef *base = NULL;
-						if ( tm->is_fixed_array_member() )
-						{
-						    DataDefSTRUCT *sdd =
-							tm->owner_struct_type();
-						    const std::vector<carray_dim_t> *dims =
-							sdd ? sdd->m_dims(tm->var.name) : NULL;
-						    base = (dims && !dims->empty())
-							? build_fixed_array_query_type(tm->var.type,
-							    *dims, 1)
-							: tm->var.type;
-						}
-						if ( !base )
-						    base =
-							dependent_deref_result_type(mtype);
-						if ( !base )
-						    { debug_deref_fail(*this, 15808, deref_tb, NULL);
-						    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-						    }
-						// Postfix ++/-- binds tighter than the
-						// unary `*` ([expr.post]): `*p++ = c`
-						// post-steps the MEMBER pointer, then
-						// dereferences — the member twin of the
-						// variable arm's TokenDerefStep and the
-						// parenthesized arm's step-wrap. Without
-						// it the `++` stayed on the stream and
-						// applied to the DEREF result
-						// ((*p)++ = c, "lvalue required" —
-						// basic_streambuf::sputc's *__nout_++).
-						if ( peekToken()
-						  && (peekToken()->id() == TokenID::tkInc
-						   || peekToken()->id() == TokenID::tkDec) )
-						{
-						    TokenBase *step_tb = nextToken();
-						    TokenOperator *step;
-						    if ( step_tb->id() == TokenID::tkInc )
-							step = new TokenInc();
-						    else
-							step = new TokenDec();
-						    step->left = tm;
-						    step->right = NULL;
-						    exStack.push(new TokenDerefExpr(step, base));
-						    return done ? ExprStep::Done : ExprStep::Break;
-						}
-						exStack.push(new TokenDerefExpr(tm, base));
-						return done ? ExprStep::Done : ExprStep::Break;
-					    }
-					}
-				    }
-				    if ( !dvar )
-					Throw(deref_tb) << "undeclared identifier '" << dname << "'" << flush;
-				    // C function-to-pointer decay reverses through `*`:
-				    // `*fp` (where fp is a function pointer) IS the
-				    // function — still callable as `(*fp)(args)`. Push
-				    // the variable as a value and let the call-site
-				    // logic dispatch normally.
-				    if ( dvar->type->is_function() && dvar->type->is_numeric() )
-				    {
-					exStack.push(new TokenVar(*dvar));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    if ( dynamic_cast<DataDefFPTR *>(dvar->type) != NULL )
-				    {
-					exStack.push(new TokenVar(*dvar));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(*this, dvar,
-						NULL, "operator*") )
-				    {
-					exStack.push(opcall);
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    DataDef *base = deref_type_for_variable(dvar);
-				    if ( !base )
-					base = dependent_deref_result_type(dvar->type);
-				    if ( !base )
-					{ debug_deref_fail(*this, 15842, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    if ( peekToken() && (peekToken()->id() == TokenID::tkInc || peekToken()->id() == TokenID::tkDec) )
-				    {
-					TokenBase *step_tb = nextToken();
-					TokenBase *step_expr = new TokenDerefStep(*dvar, base, step_tb->id() == TokenID::tkInc);
-					exStack.push(step_expr);
-					_cur_token = step_expr;
-				    }
-				    else
-					exStack.push(new TokenDeref(*dvar, base));
-				}
-			    else
-			    {
-				TokenBase *deref_expr = NULL;
-				if ( deref_tb->id() == TokenID::tkMul )
-				{
-				    TokenBase *inner_tb = nextToken();
-				    if ( !inner_tb )
-					Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-				    if ( inner_tb->id() == TokenID::tkMul )
-				    {
-					// Multi-level dereference: ***p, ****p, etc.
-					// Collect all the `*` tokens, then the final
-					// operand, and build the deref chain bottom-up.
-					std::vector<TokenBase *> stars;
-					stars.push_back(deref_tb);  // the current `*`
-					stars.push_back(inner_tb);  // one more `*`
-					TokenBase *operand_tb = nextToken();
-					while ( operand_tb && operand_tb->id() == TokenID::tkMul )
-					{
-					    stars.push_back(operand_tb);
-					    operand_tb = nextToken();
-					}
-					// operand_tb is the identifier or '(' expr
-					if ( !operand_tb )
-					    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-					// How many of the stars the operand construction
-					// itself consumes: TokenDeref/TokenDerefStep deref
-					// once; a parenthesized/cast operand arrives
-					// underef'd, so EVERY star still needs a wrap (the
-					// old unconditional skip under-deref'd `***(expr)`
-					// by one — silent wrong answer, exit 0).
-					size_t derefs_done = 1;
-					// Build the innermost deref from the variable
-					if ( operand_tb->type() == TokenType::ttIdentifier )
-					{
-					    std::string vname = ((TokenIdent *)operand_tb)->spelling();
-					    Variable *var = findVariable(vname);
-					    if ( !var )
-						Throw(operand_tb) << "undeclared identifier '" << vname << "'" << flush;
-					    DataDef *base = deref_type_for_variable(var);
-					    if ( !base )
-						{ debug_deref_fail(*this, 15887, operand_tb, NULL);
-						Throw(operand_tb) << "cannot dereference non-pointer type" << flush;
-						}
-					    // Postfix ++/-- on the innermost variable:
-					    // `**pp++` = `*(*(pp++))`.  Wrap the variable
-					    // in a postfix step before building the deref
-					    // chain so the increment targets `pp`, not a
-					    // dereferenced value.
-					    if ( peekToken()
-					      && (peekToken()->id() == TokenID::tkInc
-					       || peekToken()->id() == TokenID::tkDec) )
-					    {
-						DBG(std::cout << "multi-deref: postfix step on " << vname << std::endl);
-						TokenBase *step_tb = nextToken();
-						deref_expr = new TokenDerefStep(*var, base,
-						    step_tb->id() == TokenID::tkInc);
-					    }
-					    else
-						deref_expr = new TokenDeref(*var, base);
-					}
-					else if ( operand_tb->id() == TokenID::tkOpBrk )
-					{
-					    deref_expr = parse_deref_paren_operand(operand_tb);
-					    derefs_done = 0;
-					}
-					else
-					    Throw(operand_tb) << "expecting identifier or '(' after multi-level '*'" << flush;
-					// Now wrap in TokenDerefExpr for each star the
-					// operand construction did not already consume.
-					for ( size_t si = derefs_done; si < stars.size(); ++si )
-					{
-					    DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
-					    if ( !dtype )
-						dtype = deref_expr->datadef();
-					    if ( !dtype || !dtype->is_pointer() )
-						{ debug_deref_fail(*this, 15929, stars[si], NULL);
-						Throw(stars[si]) << "cannot dereference non-pointer type" << flush;
-						}
-					    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
-					    DataDef *base = dptr ? dptr->base_type : &ddINT64;
-					    deref_expr = new TokenDerefExpr(deref_expr, base);
-					}
-				    }
-				    else if ( inner_tb->id() == TokenID::tkOpBrk )
-				    {
-					TokenBase *inner_expr = parse_deref_paren_operand(inner_tb);
-					DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
-					if ( !inner_dtype )
-					    inner_dtype = inner_expr ? inner_expr->datadef() : NULL;
-					if ( !inner_dtype || !inner_dtype->is_pointer() )
-					    { debug_deref_fail(*this, 15952, inner_tb, NULL);
-					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
-					    }
-					DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
-					DataDef *inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
-					if ( peekToken()
-					  && (peekToken()->id() == TokenID::tkInc
-					   || peekToken()->id() == TokenID::tkDec) )
-					{
-					    // Postfix ++/-- binds tighter than the outer unary
-					    // `*`: `*(*x)++` is `*(((*x)++))`, not `(*(*x))++`.
-					    // Lower it the same way as the explicit `*p++` fast
-					    // path: wrap the pointer-valued inner expression in a
-					    // postfix step node, then dereference the OLD pointer
-					    // result.
-					    TokenBase *step_tb = nextToken();
-					    TokenOperator *step;
-					    if ( step_tb->id() == TokenID::tkInc )
-						step = new TokenInc();
-					    else
-						step = new TokenDec();
-					    step->left = inner_expr;
-					    step->right = NULL;
-					    deref_expr = step;
-					}
-					else
-					    deref_expr = new TokenDerefExpr(inner_expr, inner_base);
-				    }
-				    else if ( inner_tb->type() == TokenType::ttIdentifier
-					  && !(peekToken()
-					    && (peekToken()->id() == TokenID::tkOpBrk
-					     || peekToken()->id() == TokenID::tkDeRef
-					     || peekToken()->id() == TokenID::tkDot
-					     || peekToken()->id() == TokenID::tkNS
-					     || peekToken()->id() == TokenID::tkOpSqr)) )
-				    {
-					std::string inner_name = ((TokenIdent *)inner_tb)->spelling();
-					Variable *inner_var = findVariable(inner_name);
-					if ( !inner_var )
-					    Throw(inner_tb) << "undeclared identifier '" << inner_name << "'" << flush;
-					DataDef *inner_base = deref_type_for_variable(inner_var);
-					if ( !inner_base )
-					    { debug_deref_fail(*this, 15991, inner_tb, NULL);
-					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
-					    }
-					// Postfix ++/-- on inner var: `**pp++`
-					// = `*(*(pp++))`.  Use TokenDerefStep so
-					// the increment targets pp.
-					if ( peekToken()
-					  && (peekToken()->id() == TokenID::tkInc
-					   || peekToken()->id() == TokenID::tkDec) )
-					{
-					    DBG(std::cout << "two-level deref: postfix step on " << inner_name << std::endl);
-					    TokenBase *step_tb = nextToken();
-					    deref_expr = new TokenDerefStep(*inner_var, inner_base,
-						step_tb->id() == TokenID::tkInc);
-					}
-					else
-					    deref_expr = new TokenDeref(*inner_var, inner_base);
-				    }
-				    else
-					Throw(inner_tb) << "expecting pointer expression after '*'" << flush;
-				}
-				else if ( (deref_tb->type() == TokenType::ttIdentifier
-					|| is_contextual_identifier_token(deref_tb))
-				   && peekToken()
-				   && (peekToken()->id() == TokenID::tkDeRef
-				    || peekToken()->id() == TokenID::tkDot
-				    || peekToken()->id() == TokenID::tkOpSqr) )
-				{
-				    // Postfix chain (e.g. `res->name`, `p.x`, `tab[i]`)
-				    // — parse only the chain so trailing binary operators
-				    // like `*p->name == '$'` don't get swallowed. The
-				    // head test matches parsePostfixChain's own contract
-				    // (contextual identifiers included): `this` is a
-				    // KEYWORD token, and `*this->pptr() = __c` (the
-				    // streambuf sputc shape) otherwise fell to the full
-				    // parseExpression fallback, which swallowed `= __c`
-				    // into the deref operand — the assignment's lhs
-				    // became the raw CALL ("lvalue required as left
-				    // operand of assignment").
-				    deref_expr = parsePostfixChain(deref_tb);
-				    // Postfix ++/-- binds tighter than the outer unary
-				    // `*`: `*s->p++ = c` is `*((s->p)++) = c`, never
-				    // `(*s->p)++ = c` — same lowering as the `*(expr)++`
-				    // arm: wrap the chain in a postfix step and deref
-				    // the OLD pointer value (Apple stdio's __sputc).
-				    if ( deref_expr && peekToken()
-				      && (peekToken()->id() == TokenID::tkInc
-				       || peekToken()->id() == TokenID::tkDec) )
-				    {
-					DataDef *chain_dtype =
-					    effective_pointer_type_for_member_access(deref_expr);
-					if ( !chain_dtype )
-					    chain_dtype = deref_expr->datadef();
-					if ( chain_dtype && chain_dtype->is_pointer() )
-					{
-					    DataDefPTR *chain_dptr =
-						dynamic_cast<DataDefPTR *>(chain_dtype);
-					    DataDef *chain_base = (chain_dptr && chain_dptr->base_type)
-						? chain_dptr->base_type : &ddINT64;
-					    TokenBase *step_tb = nextToken();
-					    TokenOperator *step;
-					    if ( step_tb->id() == TokenID::tkInc )
-						step = new TokenInc();
-					    else
-						step = new TokenDec();
-					    step->left = deref_expr;
-					    step->right = NULL;
-					    exStack.push(new TokenDerefExpr(step, chain_base));
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-				    }
-				}
-				else if ( deref_tb->type() == TokenType::ttIdentifier
-				   && peekToken()
-				   && peekToken()->id() == TokenID::tkOpBrk )
-				{
-				    // *func(args) — parse just the call expression so
-				    // trailing `=` stays for the outer assignment, e.g.
-				    // `*foo(&c) = 2`. Push the deref_tb back and let
-				    // parseExpression handle the identifier+call, but
-				    // use stop_on_closing_paren at bracket depth 0 so
-				    // the parse ends after the call's `)`.
-				    std::string fname = ((TokenIdent *)deref_tb)->spelling();
-				    Variable *fvar = findVariable(fname);
-				    if ( fvar )
-				    {
-					TokenCallFunc *tcf = new TokenCallFunc(*fvar);
-					nextToken(); // consume '('
-					parseCallFunc(tcf);
-					deref_expr = tcf;
-				    }
-				    else
-					deref_expr = parseExpression(deref_tb, true);
-				}
-				else if ( (deref_tb->id() == TokenID::tkInc
-				        || deref_tb->id() == TokenID::tkDec)
-				    && peekToken()
-				    && peekToken()->type() == TokenType::ttIdentifier )
-				{
-				    // Pre-increment / pre-decrement of a pointer:
-				    // `*++p`, `*--p`. The recursive parseExpression
-				    // path would happily consume any trailing binary
-				    // operator (`*++p == 'e'` would parse as
-				    // `*(++p == 'e')`), so handle the unary step
-				    // explicitly: build a `TokenInc(right=p)` (pre-
-				    // increment, which mutates p and yields its new
-				    // value), then wrap it in a `TokenDerefExpr` so
-				    // the deref reads through the post-step pointer.
-				    TokenBase *id_tb = nextToken();
-				    std::string id_name = ((TokenIdent *)id_tb)->spelling();
-				    Variable *id_var = findVariable(id_name);
-				    if ( !id_var )
-					Throw(id_tb) << "undeclared identifier '" << id_name << "'" << flush;
-				    if ( !id_var->type->is_pointer() )
-				    {
-					std::string step_op = deref_tb->id() == TokenID::tkInc
-							    ? "operator++" : "operator--";
-					TokenCallMethod *step_call =
-					    make_unary_object_operator_call(*this, id_var, NULL, step_op);
-					TokenCallMethod *deref_call = step_call
-					    ? make_unary_object_operator_call(*this, id_var, step_call,
-						"operator*") : NULL;
-					if ( deref_call )
-					{
-					    exStack.push(deref_call);
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-				    }
-				    if ( !id_var->type->is_pointer() )
-					{ debug_deref_fail(*this, 16078, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    DataDefPTR *idptr = dynamic_cast<DataDefPTR *>(id_var->type);
-				    DataDef *base = (idptr && idptr->base_type) ? idptr->base_type : &ddINT64;
-				    TokenOperator *step;
-				    if ( deref_tb->id() == TokenID::tkInc )
-					step = new TokenInc();
-				    else
-					step = new TokenDec();
-				    step->left = NULL;
-				    step->right = new TokenVar(*id_var);
-				    deref_expr = new TokenDerefExpr(step, base);
-				    DataDef *dtype = id_var->type;
-				    if ( !dtype || !dtype->is_pointer() )
-					{ debug_deref_fail(*this, 16091, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    exStack.push(deref_expr);
-				    return done ? ExprStep::Done : ExprStep::Break;
-				}
-				else if ( deref_tb->id() == TokenID::tkOpBrk )
-				{
-				    TokenBase *inner_expr = parse_deref_paren_operand(deref_tb);
-				    if ( !inner_expr )
-					Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-				    DataDef *inner_dtype = effective_pointer_type_for_member_access(inner_expr);
-				    if ( !inner_dtype )
-					inner_dtype = inner_expr->datadef();
-				    if ( !inner_dtype || !inner_dtype->is_pointer() )
-				    {
-					if ( TokenCallMethod *opcall =
-						make_unary_object_operator_call(*this, NULL,
-						    inner_expr, "operator*") )
-					{
-					    exStack.push(opcall);
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-					if ( DataDef *dep_base =
-						dependent_deref_result_type(inner_dtype) )
-					{
-					    exStack.push(new TokenDerefExpr(inner_expr, dep_base));
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-					{ debug_deref_fail(*this, 16128, deref_tb, NULL);
-					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-					}
-				    }
-				    DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
-				    DataDef *inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
-				    if ( peekToken()
-				      && (peekToken()->id() == TokenID::tkInc
-				       || peekToken()->id() == TokenID::tkDec) )
-				    {
-					// Postfix ++/-- binds tighter than the outer unary
-					// `*`: `*(*x)++` is `*(((*x)++))`, not `(*(*x))++`.
-					TokenBase *step_tb = nextToken();
-					TokenOperator *step;
-					if ( step_tb->id() == TokenID::tkInc )
-					    step = new TokenInc();
-					else
-					    step = new TokenDec();
-					step->left = inner_expr;
-					step->right = NULL;
-					exStack.push(new TokenDerefExpr(step, inner_base));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    else
-					deref_expr = new TokenDerefExpr(inner_expr, inner_base);
-				}
-				else
-				    deref_expr = parseExpression(deref_tb, true);
-				if ( !deref_expr )
-				    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-				DataDef *dtype = effective_pointer_type_for_member_access(deref_expr);
-				if ( !dtype )
-				    dtype = deref_expr->datadef();
-				if ( !dtype )
-				    { debug_deref_fail(*this, 16160, deref_tb, NULL);
-				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-				    }
-				if ( dtype->is_function() && dtype->is_numeric() )
-				{
-				    exStack.push(deref_expr);
-				    return done ? ExprStep::Done : ExprStep::Break;
-				}
-				if ( !dtype->is_pointer() )
-				{
-				    // Fixed-array struct members decay to pointers
-				    TokenMember *tm_d = dynamic_cast<TokenMember *>(deref_expr);
-				    if ( tm_d && tm_d->is_fixed_array_member() )
-				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    // Multi-dim array subscripts decay to pointers:
-				    // *argv[i] where argv is char[N][M]
-				    TokenSubscript *ts_d = dynamic_cast<TokenSubscript *>(deref_expr);
-				    if ( ts_d && ts_d->object.is_fixed_array() )
-				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    // Also handle TokenSubscriptExpr from parsePostfixChain
-				    TokenSubscriptExpr *tse_d = dynamic_cast<TokenSubscriptExpr *>(deref_expr);
-				    if ( tse_d )
-				    {
-					TokenVar *base_tv = dynamic_cast<TokenVar *>(tse_d->base_expr);
-					if ( base_tv && base_tv->var.is_fixed_array() )
-					{
-					    exStack.push(new TokenDerefExpr(deref_expr, dtype));
-					    return done ? ExprStep::Done : ExprStep::Break;
-					}
-				    }
-				    if ( TokenCallMethod *opcall =
-					    make_unary_object_operator_call(*this, NULL,
-						deref_expr, "operator*") )
-				    {
-					exStack.push(opcall);
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    if ( DataDef *dep_base =
-					    dependent_deref_result_type(dtype) )
-				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dep_base));
-					return done ? ExprStep::Done : ExprStep::Break;
-				    }
-				    { debug_deref_fail(*this, 16207, deref_tb, NULL);
-				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-				    }
-				}
-				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
-				DataDef *base = dptr ? dptr->base_type : &ddINT64;
-				exStack.push(new TokenDerefExpr(deref_expr, base));
-				}
-			    }
-			    return done ? ExprStep::Done : ExprStep::Break;
-			}
+		// * dereference in unary position ([expr.unary.op]/1): the
+		// operand is a cast-expression. parseCastExpression reads it —
+		// the engine, bounded — and build_indirection types it; a `**x`
+		// is the deref of `*x` by that same recursion, never a second
+		// reader.
+		if ( tb->id() == TokenID::tkMul && (isUnaryPosition() || awaiting_prefix_step_operand()) )
+		{
+		    TokenBase *first = nextToken();
+		    if ( !first )
+			Throw(tb) << "expecting pointer expression after '*'" << flush;
+		    exStack.push(build_indirection(parseCastExpression(first), tb));
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
 		if ( tb->id() == TokenID::tkNS )
 		{
 		    TokenBase *name_tb = nextToken();
@@ -43813,9 +43228,37 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
     return done ? ExprStep::Done : ExprStep::Break;
 }
 
+// The END of an expression — the ONE owner, every exit of parseExpression
+// finishes here: each pending operator binds, then exactly ONE operand must
+// remain. More than one are operands juxtaposed with no operator between them,
+// which gcc/clang reject; returning the top would SILENTLY drop the rest
+// (`var m = { "a" 1 }` built `{ 1 }`; `int r = (x)(4)` built `int r = x = 4`
+// — the pending `=` bound the two juxtaposed operands and `r` was dropped,
+// exit 0). Adjacent string literals never reach here (lexer-level concat:
+// push_token_with_literal_concat).
+TokenBase *Program::finish_expression(std::stack<TokenBase *> &opStack,
+				      std::stack<TokenBase *> &exStack)
+{
+    if ( !opStack.empty() )
+	DBG(cout << "Emptying operator stack" << endl);
+
+    while ( !opStack.empty() )
+	popOperator(opStack, exStack);
+
+    if ( exStack.size() > 1 )
+	Throw(exStack.top()) << "Malformed expression: " << exStack.size()
+	    << " operands with no operator between them" << flush;
+
+    DBG(cout << "parseExpression() exStack size: " << exStack.size() << endl);
+    DBG(if ( !exStack.empty() ) std::cout << " exStack.top()->type() = " << (int)exStack.top()->type() << endl);
+
+    return exStack.empty() ? NULL : exStack.top();
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
-				    bool push_back_comma, bool cast_operand)
+				    bool push_back_comma, bool cast_operand,
+				    bool unary_operand)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
     stack<TokenBase *> exStack;
@@ -43872,11 +43315,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    case TokenType::ttMultiOp:
 	    case TokenType::ttOperator:
 		{
-		    TokenBase *arm_result = NULL;
 		    ExprStep step = parseExpr_operatorArm(tb, exStack, opStack, brackets, code,
 				conditional, ternary_branch, stop_on_closing_paren, initial_brackets, push_back_comma,
-				arm_result, cast_operand);
-		    if ( step == ExprStep::Return ) return arm_result;
+				cast_operand);
+		    if ( step == ExprStep::Return ) return finish_expression(opStack, exStack);
 		    if ( step == ExprStep::Continue ) continue;
 		    if ( step == ExprStep::Done ) done = true;
 		}
@@ -44003,6 +43445,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// here, never a nil-deref (the pre-fix __recommend SIGSEGV shape).
 	if ( !tb )
 	    Throw(curToken()) << "unexpected end of input in expression" << flush;
+	// parseCastExpression's bound: a cast-expression ends, at depth 0, once
+	// its operand is complete and the next token cannot continue it — only
+	// a postfix `->` `.` `[` `(` `++` `--` can. The token stays in the
+	// stream for the enclosing parse (a binary operator, `?`, `,`, `;`,
+	// `=`, a pack-expansion `...`). A step still on the operator stack is
+	// PREFIX (`++p`, awaiting its operand), not the end of one.
+	if ( unary_operand && !brackets && cast_expression_complete(opStack) )
+	{
+	    TokenID nid = tb->id();
+	    bool continues = (nid == TokenID::tkDeRef || nid == TokenID::tkOpSqr
+			   || nid == TokenID::tkOpBrk || nid == TokenID::tkInc
+			   || nid == TokenID::tkDec
+			   || (nid == TokenID::tkDot && !ellipsis_ahead()));
+	    if ( !continues )
+		break;
+	}
 	// A pack-expansion ellipsis `...` (three consecutive dots) following a
 	// complete operand is the expansion marker, NOT a member access (a single
 	// `.`): `_Inherited(std::forward<_UElements>(__elements)...)`, `f(args...)`.
@@ -44082,27 +43540,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	tb = nextToken();
     }
 
-    if ( !opStack.empty() )
-	DBG(cout << "Emptying operator stack" << endl);
-
-    while ( !opStack.empty() )
-	popOperator(opStack, exStack);
-
-    // Operands left with NO operator between them = a malformed expression
-    // that would otherwise resolve to exStack.top() with the rest SILENTLY
-    // dropped (`var m = { "a" 1 }` built `{ 1 }` — exit 0, wrong value).
-    // gcc/clang error on operand juxtaposition; adjacent string literals
-    // never reach here (lexer-level concat: push_token_with_literal_concat).
-    if ( exStack.size() > 1 )
-	Throw(exStack.top()) << "Malformed expression: " << exStack.size()
-	    << " operands with no operator between them" << flush;
-
-    DBG(cout << "parseExpression() exStack size: " << exStack.size() << endl);
-    DBG(if ( !exStack.empty() ) std::cout << " exStack.top()->type() = " << (int)exStack.top()->type() << endl);
-
     DBG(std::cout << "Program::parseExpression() end" << std::endl);
 
-    return exStack.empty() ? NULL : exStack.top();
+    return finish_expression(opStack, exStack);
 }
 
 // parse a structure definition
@@ -44748,7 +44188,10 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	{
 	    std::string alias_name = using_declaration_name(tn);
 	    pgm.nextToken(); // consume '='
-	    TokenBase *type_tb = pgm.skip_cv_qualifier_tokens(pgm.nextToken());
+	    // The target's leading cv is part of the type-id (`using VI =
+	    // volatile int;`): read as a mask, applied by parse_type_id below.
+	    unsigned alias_lead_cv = pgm.skip_cv_qualifier_tokens();
+	    TokenBase *type_tb = pgm.nextToken();
 	    TokenDataType *target = pgm.resolve_declared_type_token(type_tb, true, true);
 	    if ( !target )
 		pgm.Throw(type_tb ? type_tb : tn) << "Expecting type in using alias" << flush;
@@ -44761,8 +44204,7 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    // copy knew `(*)(params)` and nothing else (initlist-array17/20/22/6,
 	    // ref-bind1 in g++.dg).
 	    Program::DeclaratorResult alias_decl;
-	    alias_dd = pgm.parse_declarator(alias_dd, Program::DeclaratorMode::Abstract,
-					    alias_decl);
+	    alias_dd = pgm.parse_type_id(alias_dd, alias_lead_cv, alias_decl);
 	    TokenBase *semi = pgm.nextToken();
 	    if ( !semi || semi->id() != TokenID::tkSemi )
 		pgm.Throw(semi ? semi : tn) << "Expecting ';' after using alias" << flush;
@@ -45725,6 +45167,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // later sibling parses must never inherit the outer typedef's alignment.
     size_t explicit_align = pgm.typedef_prefix_align;
     pgm.typedef_prefix_align = 0;
+    // `typedef const struct T *P;` / `typedef volatile struct T V;` (C): the
+    // alias derives from the cv-qualified aggregate. Read + clear here, like
+    // the alignment.
+    unsigned typedef_cv = pgm.typedef_prefix_cv;
+    pgm.typedef_prefix_cv = cvNONE;
     bool have_scalar_storage_order = false;
     bool reverse_scalar_storage = false;
     auto consume_attribute = [&]()
@@ -45964,7 +45411,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// `typedef struct S * (*fty)();` included; its `( * name )( params )`
 		// tail was a private copy of the reader's nested group).
 		Program::DeclaratorResult tag_decl;
-		DataDef *alias_dd = pgm.parse_declarator(tag_dd, Program::DeclaratorMode::Typedef, tag_decl);
+		DataDef *alias_dd = pgm.parse_declarator(
+		    pgm.getQualifiedType(tag_dd, typedef_cv),
+		    Program::DeclaratorMode::Typedef, tag_decl);
 		std::string alias_name = tag_decl.name;
 		tn = tag_decl.name_tok;
 		bool redecl = false;
@@ -46261,11 +45710,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    tn = pgm.peekToken();
 	}
 	uint32_t member_flags = 0;
+	// The line's cv (before and after the type specifier) — every
+	// declarator on it derives from the cv-qualified base (member_declarator).
+	unsigned member_cv = cvNONE;
 	for (;;)
 	{
 	    // cv-qualifiers through the ONE owner — which also covers
 	    // `restrict`, where this copy stopped at const/volatile.
-	    pgm.skip_cv_qualifier_tokens();
+	    member_cv |= pgm.skip_cv_qualifier_tokens();
 	    tn = pgm.peekToken();
 	    // `mutable` is a storage-class-specifier, not a cv-qualifier
 	    // ([dcl.stc]/9), so it stays here rather than in the owner: a
@@ -46383,7 +45835,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // member (`union { const char *asm_str; MIR_item_t item; }
 		    // u;`), and its failure cascaded into 113 "no member named
 		    // 'c2m_ctx'" errors from the members declared after it.
-		    pgm.skip_cv_qualifier_tokens();
+		    unsigned inner_cv = pgm.skip_cv_qualifier_tokens();
 		    if ( !(tn = pgm.peekToken()) )
 			pgm.Throw(loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		    TokenDataType *inner_type = NULL;
@@ -46490,7 +45942,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // `T const *p` — a qualifier between the type and the
 		    // declarator. Same owner, same rule as the leading run
 		    // (the class-body twin below has always had both).
-		    pgm.skip_cv_qualifier_tokens();
+		    inner_cv |= pgm.skip_cv_qualifier_tokens();
 
 		    DataDef *inner_base_dd = &inner_type->definition;
 		    DataDef *inner_member_dd = inner_base_dd;
@@ -46521,7 +45973,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // The member's declarator — the ONE reader through the member
 		    // contract (TokenSTRUCT's top-level member loop has the shapes).
 		    Program::MemberDeclarator imd;
-		    inner_member_dd = pgm.member_declarator(inner_member_dd, imd);
+		    inner_member_dd = pgm.member_declarator(inner_member_dd, imd, inner_cv);
 		    tn = imd.name_tok;
 		    std::string inner_name = imd.name;
 		    size_t inner_count = imd.count;
@@ -46556,7 +46008,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			// decorated type) through the ONE reader.
 			pgm.pushToken(tn);
 			Program::MemberDeclarator cmd;
-			DataDef *comma_dd = pgm.member_declarator(inner_base_dd, cmd);
+			DataDef *comma_dd = pgm.member_declarator(inner_base_dd, cmd, inner_cv);
 			tn = cmd.name_tok;
 			std::string cname = cmd.name;
 			size_t ccount = cmd.count;
@@ -46738,9 +46190,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( pgm.typedef_alias_matches_datadef(mtype->spelling(),
 						       base_member_dd) )
 		    member_typedef_alias = mtype->spelling();
-		// skip const/restrict qualifiers between type and pointer stars
-		// e.g. `char const *p;`
-		pgm.skip_cv_qualifier_tokens();
+		// the cv between the type and the pointer stars (`char const *p;`)
+		// is the line's too
+		member_cv |= pgm.skip_cv_qualifier_tokens();
 		// consume __attribute__((...)) after type — extract aligned(N)
 		// for struct member alignment (e.g. `int __attribute__((aligned(8))) a;`)
 		size_t member_align = 0;
@@ -46790,7 +46242,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // `name[N][M]` (a runtime dim rides as count_expr). The copy this
 		    // replaces knew stars, two `(` shapes, the `C::*` chain and dims.
 		    Program::MemberDeclarator md;
-		    member_dd = pgm.member_declarator(member_dd, md);
+		    member_dd = pgm.member_declarator(member_dd, md, member_cv);
 		    tn = md.name_tok;
 		    std::string mname = md.name;
 		    TokenBase *member_name_tok = tn;  // CIR origin for this member
@@ -47058,7 +46510,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // <stddef.h>: `typedef struct {...} max_align_t;`) — the reader's
 	    // Typedef-mode declarator-id rule (typedef_alias_spelling).
 	    Program::DeclaratorResult body_decl;
-	    DataDef *alias_dd = pgm.parse_declarator(dds, Program::DeclaratorMode::Typedef, body_decl);
+	    DataDef *alias_dd = pgm.parse_declarator(
+		pgm.getQualifiedType(dds, typedef_cv),
+		Program::DeclaratorMode::Typedef, body_decl);
 	    tn = body_decl.name_tok;
 	    TokenBase *alias = tn;
 	    const std::string alias_spelling = body_decl.name;
@@ -47402,15 +46856,15 @@ std::string Program::member_itanium_symbol(DataDefCLASS *ddc, Variable *mvar,
     case CppSymKind::Conversion:
 	return conversion_type.empty() ? std::string()
 	     : itanium_mangle_conversion_sub(cls, conversion_type,
-					     fd->is_const_method);
+					     fd->method_cv());
     case CppSymKind::Method:
 	if ( is_operator )
 	{
 	    std::string op = (mname.compare(0, 8, "operator") == 0)
 			   ? mname.substr(8) : mname;
-	    return itanium_mangle_operator_sub(cls, op, psp, fd->is_const_method);
+	    return itanium_mangle_operator_sub(cls, op, psp, fd->method_cv());
 	}
-	return itanium_mangle_member_sub(cls, mname, psp, fd->is_const_method);
+	return itanium_mangle_member_sub(cls, mname, psp, fd->method_cv());
     }
     return std::string();
 }
@@ -49412,10 +48866,10 @@ static void record_dropped_special_ctor(DataDefCLASS *ddc, FuncDef *fd)
     if ( !fd->is_deleted || fd->parameters.size() != 2 )
 	return;
     DataDef *p = fd->parameters[1];
-    if ( DataDefPTR *pr = dynamic_cast<DataDefPTR *>(p) )
+    if ( DataDefPTR *pr = pointer_dd_of(p) )
 	if ( pr->is_reference() && pr->base_type )
 	    p = pr->base_type;
-    if ( DataDefCONST *pc = dynamic_cast<DataDefCONST *>(p) )
+    if ( DataDefQUAL *pc = dynamic_cast<DataDefQUAL *>(p) )
 	p = pc->base_type ? pc->base_type : p;
     if ( p == ddc || (p && p->name == ddc->name) )
 	ddc->has_deleted_copy_ctor = true;
@@ -50772,10 +50226,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
 	// --- normal member or method: type name ... ---
 	// Optional leading cv-qualifiers on a data member / method return type:
-	// `const char *m;`, `volatile int v;`. madc does not enforce member
-	// const-correctness, so consume them (a const data member is an ordinary
-	// member).
-	pgm.skip_cv_qualifier_tokens();
+	// `const char *m;`, `volatile int v;` — kept as a mask: the pointee's at
+	// the first `*`, a data member's own when no `*` intervenes (below).
+	unsigned class_member_lead_cv = pgm.skip_cv_qualifier_tokens();
 
 	if ( pgm.peekToken()
 	  && pgm.peekToken()->id() == TokenID::tkENUM
@@ -51026,23 +50479,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// member-name parse below sees `const` where it expects the name — libstdc++'s
 	// `__concurrence_lock_error::what()` returns `char const*`, blocking the whole
 	// <memory> uninitialized-copy chain (vector reallocation).
-	while ( pgm.peekToken()
-	     && (pgm.peekToken()->id() == TokenID::tkCONST
-	      || pgm.peekToken()->id() == TokenID::tkVOLATILE) )
-	    pgm.nextToken();
+	unsigned class_member_east_cv = pgm.skip_cv_qualifier_tokens();
 
-	// check for pointer declarator(s): type * [*...] member_name
+	// Pointer declarator(s): type * [cv] [*...] member_name — the star+cv
+	// run's ONE owner, consume_declarator_stars: each pointee takes its level's
+	// cv (the leading/east run the first), and the cv after the last `*` is
+	// the pointer member's own. (Its hand-rolled copy dropped every cv.)
 	DataDef *cmember_dd = &mtype->definition;
-	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
-	{
-	    pgm.nextToken(); // consume '*'
-	    cmember_dd = pgm.getPointerType(cmember_dd);
-	    while ( pgm.peekToken()
-		 && (pgm.peekToken()->id() == TokenID::tkCONST
-		  || pgm.peekToken()->id() == TokenID::tkVOLATILE
-		  || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
-		pgm.nextToken();
-	}
+	bool member_const_after = false, member_volatile_after = false;
+	int member_stars = pgm.consume_declarator_stars(cmember_dd, &member_const_after,
+		class_member_lead_cv | class_member_east_cv, NULL, &member_volatile_after);
+	if ( cmember_dd->as_fptr_dd() )		// a fn-pointer base: the owner counts, the reader applies
+	    for ( int s = 0; s < member_stars; ++s )
+		cmember_dd = pgm.getPointerType(cmember_dd);
+	// A DATA member's own top-level cv (its type's — [class.mem]; a method's
+	// return keeps only the pointee levels above), applied once it is known
+	// to be one (below).
+	unsigned class_member_object_cv = (member_stars == 0
+	    ? (class_member_lead_cv | class_member_east_cv)
+	    : ((member_const_after ? cvCONST : cvNONE)
+	       | (member_volatile_after ? cvVOLATILE : cvNONE))) & pgm.modeled_cv();
 
 	// Reference return type on a method: `T& method()` / `T& operator[]()`.
 	// ret_is_ref drives the FuncDef return type: parseFunction builds it as a
@@ -51073,7 +50529,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // `(&r)[N]`, `(*fa[N])(params)` — the ONE reader through the member
 	    // contract. (A method's `(` follows its NAME and is handled below.)
 	    Program::MemberDeclarator gmd;
-	    cmember_dd = pgm.member_declarator(cmember_dd, gmd);
+	    cmember_dd = pgm.member_declarator(cmember_dd, gmd,
+		member_stars == 0 ? class_member_lead_cv | class_member_east_cv : cvNONE);
 	    if ( gmd.count_expr )
 		pgm.Throw(gmd.name_tok) << "Class member array dimension must be constant" << flush;
 	    ddc->addMember(gmd.name, *cmember_dd, gmd.count, NULL, gmd.is_array,
@@ -51380,6 +50837,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 				 ? 0 : member_count * member_dims[di];
 		}
 	    }
+	    if ( class_member_object_cv && !cmember_dd->is_reference()
+	      && !cmember_dd->is_function() )
+		cmember_dd = pgm.getQualifiedType(cmember_dd, class_member_object_cv);
 	    if ( is_static_member )
 	    {
 		ddc->static_member_types[mname] = cmember_dd;
@@ -51539,7 +50999,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			// Each tail declarator: the ONE reader through the member
 			// contract, from the undecorated base.
 			Program::MemberDeclarator nmd;
-			DataDef *next_dd = pgm.member_declarator(&mtype->definition, nmd);
+			DataDef *next_dd = pgm.member_declarator(&mtype->definition, nmd,
+				class_member_lead_cv | class_member_east_cv);
 			TokenBase *nm = nmd.name_tok;
 			std::string nmname = nmd.name;
 			size_t ncount = nmd.count;
@@ -51851,7 +51312,7 @@ DataDefSTRUCT *Program::multi_return_transport_struct(
 {
     for ( DataDef *t : types )
     {
-	if ( !t || t->rawtype() == DataType::dtVOID )
+	if ( !t || t->is_void() )
 	    Throw(where) << "multi-return values cannot be 'void'" << flush;
 	if ( t->is_reference() )
 	    Throw(where) << "multi-return cannot carry reference values ('"
@@ -53117,6 +52578,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // post-type position below; prefix-position mode()/aligned-on-scalar
     // stay unapplied like the post-type position (no known consumer).
     size_t prefix_align = 0, prefix_vector = 0;
+    // A prefix cv qualifies the aliased type (C11 6.7.8: `typedef const
+    // char *ccp;` names pointer-to-const-char, `typedef const int CI;` names
+    // const int, `typedef volatile int vint;` names volatile int). C models it
+    // on the BASE (getQualifiedType), the pointee-cv producer
+    // consume_declarator_stars derives from; C++ const identity is the
+    // const-qualified-types campaign's (docs/plans/2026-06-19-...).
+    unsigned prefix_cv = cvNONE;
     while ( tn && (tn->id() == TokenID::tkCONST
 		|| tn->id() == TokenID::tkRESTRICT
 		|| tn->id() == TokenID::tkVOLATILE
@@ -53130,7 +52598,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		pgm.pushToken(after);
 	}
 	else
+	{
+	    if ( tn->id() == TokenID::tkCONST )
+		prefix_cv |= cvCONST & pgm.modeled_cv();
+	    else if ( tn->id() == TokenID::tkVOLATILE )
+		prefix_cv |= cvVOLATILE;
 	    pgm.nextToken();
+	}
 	tn = pgm.peekToken();
     }
 
@@ -53141,9 +52615,11 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     {
 	pgm.parsing_typedef_decl = true;
 	pgm.typedef_prefix_align = prefix_align;
+	pgm.typedef_prefix_cv = prefix_cv;
 	TokenBase *result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
 	pgm.parsing_typedef_decl = false;
 	pgm.typedef_prefix_align = 0;	// TokenSTRUCT consumed it; the class path never reads it
+	pgm.typedef_prefix_cv = cvNONE;
 	return result;
     }
 
@@ -53392,6 +52868,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // The UNDECORATED base type: each declarator in a C typedef list
     // (`typedef signed char INT8,*PINT8;` — mingw basetsd.h/winnt.h) restarts
     // from here and takes its own pointer/array shape.
+    // (An array base's const qualifies its ELEMENTS, 6.7.3p9, and a function
+    // type has no qualified form — neither is wrapped here.)
+    if ( prefix_cv && base_dd && !base_dd->as_carray_dd() && !base_dd->is_function() )
+	base_dd = pgm.getQualifiedType(base_dd, prefix_cv);
     DataDef *list_base_dd = base_dd;
 
     // GNU attributes at the specifier position (`typedef int
@@ -53460,6 +52940,18 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	alias_dd = pgm.parse_declarator(base_dd, Program::DeclaratorMode::Typedef, td);
 	alias = td.name;
 	alias_tok = td.name_tok;
+	// The alias's OWN top-level cv — a typedef has no object flag to carry
+	// it, so it qualifies the aliased type: `typedef int const CI;` /
+	// `typedef int volatile VI;` (after the specifier, no `*` to bind to)
+	// and `typedef int *volatile VP;` (after the last `*`: the pointer).
+	unsigned post_cv = td.ptr_depth == 0
+	    ? ((td.base_const ? cvCONST : cvNONE)
+	       | (td.base_volatile ? cvVOLATILE : cvNONE))
+	    : ((td.const_after_star ? cvCONST : cvNONE)
+	       | (td.volatile_after_star ? cvVOLATILE : cvNONE));
+	post_cv &= pgm.modeled_cv();
+	if ( post_cv && alias_dd && !alias_dd->is_function() && !alias_dd->as_carray_dd() )
+	    alias_dd = pgm.getQualifiedType(alias_dd, post_cv);
     }
 
     if ( is_attribute_identifier_token(pgm.peekToken()) )
@@ -53569,6 +53061,35 @@ DataDef *Program::nest_carray_dims(DataDef *elem_dd,
     return arr;
 }
 
+unsigned Program::declarator_object_cv(const DeclaratorResult &r, unsigned leading_cv)
+{
+    unsigned cv = (r.ptr_depth == 0 && r.nested_stars == 0)
+	? (leading_cv | (r.base_const ? cvCONST : cvNONE)
+		      | (r.base_volatile ? cvVOLATILE : cvNONE))
+	: ((r.const_after_star ? cvCONST : cvNONE)
+	   | (r.volatile_after_star ? cvVOLATILE : cvNONE));
+    return cv & modeled_cv();
+}
+
+DataDef *Program::qualify_array_elements(DataDef *arr, unsigned cv)
+{
+    cv &= modeled_cv();
+    DataDefCArray *outer = arr ? arr->as_carray_dd() : NULL;
+    if ( !cv || !outer )
+	return arr;
+    std::vector<carray_dim_t> dims;
+    std::vector<TokenBase *> dim_exprs;
+    DataDef *elem = arr;
+    while ( DataDefCArray *c = elem->as_carray_dd() )
+    {
+	dims.push_back(c->count);
+	dim_exprs.push_back(c->count_expr);
+	elem = c->element_type;
+    }
+    return nest_carray_dims(getQualifiedType(elem, cv), dims, dim_exprs,
+			    std::string(), false);
+}
+
 // Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
 // AT the first '[' (unconsumed); stops with the token after the last ']'
 // unconsumed. `T (*)[N]` / `T (*name)[N]` bind the dims to the parenthesized
@@ -53636,10 +53157,10 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
 DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 				   DeclaratorResult &out,
 				   const std::set<std::string> *runtime_names,
-				   bool leading_const)
+				   unsigned leading_cv)
 {
     DataDef *dd = parse_declarator_level(base, mode, out, runtime_names, 0, false,
-					 leading_const);
+					 leading_cv);
     // [dcl.fct]/5 adjusts the parameter's TYPE — "array of T" to "pointer to
     // T", "function" to "pointer to function" — however it was spelled: a
     // typedef'd array or function type (`typedef int (*fptr4[4])(int);
@@ -53673,7 +53194,28 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 	{
 	    if ( dd == base )
 		out.alias_adjusted = true;
-	    dd = getPointerType(arr->element_type);
+	    // The adjusted pointer's pointee is the ELEMENT, so a leading cv
+	    // no `*` consumed is the pointee's (C11 6.7.3p9 qualifies an array's
+	    // elements; `volatile int a[]` is `volatile int *a`).
+	    DataDef *elem = arr->element_type;
+	    if ( out.ptr_depth == 0 && out.nested_stars == 0 )
+		elem = elem->as_carray_dd()
+		    ? qualify_array_elements(elem, leading_cv)	// `volatile int a[][3]`: the row's
+		    : getQualifiedType(elem, leading_cv & modeled_cv());
+	    else
+	    {
+		// The cv after the element's last `*` is the ELEMENT's own —
+		// `char *const a[]` is `char *const *a` (C11 6.7.6.3p7: only the
+		// qualifiers inside the brackets reach the adjusted pointer).
+		// declarator_object_cv reads it; a parameter OBJECT's cv it is
+		// not (the parameter reader skips an adjusted array's). Dropping
+		// it made SMAUG's flag_string(obj->wear_flags, w_flags) "discard
+		// qualifiers" once const reached the tree.
+		unsigned elem_cv = declarator_object_cv(out, leading_cv);
+		elem = elem->as_carray_dd() ? qualify_array_elements(elem, elem_cv)
+					    : getQualifiedType(elem, elem_cv);
+	    }
+	    dd = getPointerType(elem);
 	    out.adjusted_array = true;
 	}
     }
@@ -53697,15 +53239,27 @@ DataDefFPTR *Program::fnptr_twin(DataDefFPTR *fn_type)
 // member keeps its alias type), count = their product (0 for an unsized
 // `[]`), the first runtime dim as count_expr. Six member arms spelled this
 // by hand (stars, two `(` shapes, the `C::*` chain, a dims loop each).
-DataDef *Program::member_declarator(DataDef *base, MemberDeclarator &md)
+DataDef *Program::member_declarator(DataDef *base, MemberDeclarator &md,
+				    unsigned leading_cv)
 {
     DeclaratorResult dr;
-    DataDef *dd = parse_declarator(base, DeclaratorMode::Named, dr);
+    DataDef *dd = parse_declarator(base, DeclaratorMode::Named, dr, NULL, leading_cv);
     md.name = dr.name;
     md.name_tok = dr.name_tok;
     md.count_expr = NULL;
     md.dims.clear();
     DataDef *elem = peel_carray_dimensions(dd, md.dims, md.count_expr, base, false);
+    // A member has no object flag: its OWN top-level volatile — a leading or
+    // after-the-specifier one with no `*` (`volatile int v;`, `int volatile
+    // a[4]`: the elements), or one after the last `*` (`int *volatile p;`) —
+    // is its TYPE's (C11 6.7.2.1p7, 6.7.3p9), so `&s.v` is `volatile int *`
+    // and every access to it is performed as written — in every mode
+    // (modeled_cv); a top-level const member stays unmodeled.
+    // (modeled_cv: volatile everywhere, const too in C — a `const int c`
+    // member's `&s.c` is `const int *`.)
+    unsigned top_cv = declarator_object_cv(dr, leading_cv);
+    if ( top_cv && elem && !elem->is_function() )
+	elem = getQualifiedType(elem, top_cv);
     md.is_array = !md.dims.empty() || md.count_expr != NULL;
     md.count = 1;
     for ( size_t di = 0; di < md.dims.size(); ++di )
@@ -53811,7 +53365,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 					 DeclaratorResult &out,
 					 const std::set<std::string> *runtime_names,
 					 int depth, bool base_built_here,
-					 bool leading_const)
+					 unsigned leading_cv)
 {
     DataDef *dd = base;
     DataDefFPTR *fresh_fn = base_built_here ? dd->as_fptr_dd() : NULL;
@@ -53833,13 +53387,20 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    // `_bittest64(__int64 const *a, __int64 b)` prototype against its
 	    // `const __int64 *Base` macro definition "conflicted").
 	    if ( depth == 0 && out.ptr_depth == 0 && is_cv_qualifier_token(pk) )
+	    {
 		for ( size_t ci = 0; ci < tokens.size() && tokens[ci]
 				  && is_cv_qualifier_token(tokens[ci]); ++ci )
+		{
 		    if ( tokens[ci]->id() == TokenID::tkCONST )
 			out.base_const = true;
-	    bool const_after = false, cv_here = false;
+		    else if ( tokens[ci]->id() == TokenID::tkVOLATILE )
+			out.base_volatile = true;
+		}
+	    }
+	    bool const_after = false, cv_here = false, volatile_after = false;
 	    int stars = consume_declarator_stars(dd, &const_after,
-						 depth == 0 && leading_const, &cv_here);
+						 depth == 0 ? leading_cv : cvNONE, &cv_here,
+						 &volatile_after);
 	    if ( cv_here )
 		out.cv_seen = true;
 	    if ( fresh_fn )
@@ -53875,6 +53436,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    {
 		out.ptr_depth += stars;
 		out.const_after_star = const_after;
+		out.volatile_after_star = volatile_after;
 	    }
 	    else
 		out.nested_stars += stars;
@@ -53904,6 +53466,22 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    // operator>> parameters, `__pf(*this)`), not a reference to a
 	    // function pointer; applying the `&` after this level's suffixes
 	    // built the latter and every call through __pf failed to parse.
+	    // The cv this level still holds qualifies the REFERENT ([dcl.ref]:
+	    // `volatile int &r` binds a volatile int, `int *volatile &p` a
+	    // volatile pointer) — a reference has no object of its own for a
+	    // top-level flag to qualify, so nothing else would keep it: the
+	    // leading run the caller consumed, or `int volatile &` read into
+	    // base_cv, before any `*`; the run after the last `*` otherwise.
+	    if ( depth == 0 )
+	    {
+		unsigned ref_cv = out.ptr_depth == 0
+		    ? (leading_cv | (out.base_const ? cvCONST : cvNONE)
+				  | (out.base_volatile ? cvVOLATILE : cvNONE))
+		    : ((out.const_after_star ? cvCONST : cvNONE)
+		       | (out.volatile_after_star ? cvVOLATILE : cvNONE));
+		if ( !dd->as_fptr_dd() && !dd->as_carray_dd() )
+		    dd = getQualifiedType(dd, ref_cv & modeled_cv());
+	    }
 	    dd = getReferenceType(dd);
 	    ref_dd = dd;
 	    ref_here = true;
@@ -53957,6 +53535,12 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	}
 	stash.pop_back();		// the matching ')'
 	out.saw_parens = true;
+	// A leading cv no top-level `*` consumed qualifies the base the nested
+	// declarator derives from (`volatile int (*p)[4]`: pointer to array of
+	// volatile int; `const int (*x)` is `const int *x`) — the pointee-cv
+	// model of consume_declarator_stars, one level in.
+	if ( depth == 0 && out.ptr_depth == 0 && !dd->as_fptr_dd() && !dd->as_carray_dd() )
+	    dd = getQualifiedType(dd, leading_cv & modeled_cv());
 	bool built = false;
 	dd = parse_declarator_suffixes(dd, mode, out, runtime_names, depth, false, built);
 	for ( size_t k = stash.size(); k-- > 0; )
@@ -54250,9 +53834,12 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
     {
 	std::string param_alias;
 	bool param_leading_const = false;
-	while ( nt && nt->id() == TokenID::tkCONST )
+	unsigned param_leading_cv = cvNONE;	// the leading cv run, for the pointee-cv model
+	while ( nt && (nt->id() == TokenID::tkCONST || nt->id() == TokenID::tkVOLATILE) )
 	{
-	    param_leading_const = true;
+	    if ( nt->id() == TokenID::tkCONST )
+		param_leading_const = true;
+	    param_leading_cv |= nt->id() == TokenID::tkCONST ? cvCONST : cvVOLATILE;
 	    nt = nextToken();
 	}
 
@@ -54334,7 +53921,8 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	// stars/cv, one `&`, two `(` shapes and no `[N]`; its nested-`(` arm
 	// re-read the callback's declarator by hand.
 	DeclaratorResult pd;
-	param_dd = parse_declarator(param_dd, DeclaratorMode::Parameter, pd);
+	param_dd = parse_declarator(param_dd, DeclaratorMode::Parameter, pd, NULL,
+				    param_leading_cv);
 	if ( pd.base_const )
 	    param_leading_const = true;	// `T const *`: the base's const, spelled `const T*`
 	if ( pd.alias_adjusted )
@@ -54355,14 +53943,9 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 
 	func->parameters.push_back(param_dd);
 	func->const_params.push_back(param_leading_const);
-	std::string param_spelling;
-	if ( param_leading_const )
-	    param_spelling = "const ";
-	if ( base_param_dd )
-	    param_spelling += base_param_dd->canonical_cpp_spelling().empty()
-		? base_param_dd->name : base_param_dd->canonical_cpp_spelling();
-	for ( int sd = 0; sd < param_ptr_depth; ++sd )
-	    param_spelling += "*";
+	std::string param_spelling = param_declarator_spelling(
+	    base_param_dd, param_dd, param_ptr_depth, param_leading_const,
+	    param_is_ref);
 	if ( param_is_ref )
 	    param_spelling += param_rvalue_ref ? "&&" : "&";
 	func->param_cpp_spellings.push_back(param_spelling);
@@ -55168,6 +54751,7 @@ TokenBase *TokenRESTRICT::parse(Program &pgm)
 TokenBase *TokenVOLATILE::parse(Program &pgm)
 {
     DBG(std::cout << "TokenVOLATILE::parse() — consuming volatile" << std::endl);
+    pgm.parsing_volatile_decl = true;
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'volatile'" << flush;
@@ -55605,7 +55189,7 @@ TokenBase *TokenDELETE::parse(Program &pgm)
     DataDef *dd = expr->datadef();
     if ( dd && dd->is_pointer() )
     {
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *ptr = pointer_dd_of(dd);
 	if ( ptr )
 	    del_class = dynamic_cast<DataDefCLASS *>(ptr->base_type);
     }
@@ -55997,14 +55581,19 @@ static bool is_template_param_separator(TokenBase *tb)
 	|| tb->id() == TokenID::tkBSR);
 }
 
+// Is the stream at a `...` (three `.` tokens)? Consumes nothing.
+bool Program::ellipsis_ahead()
+{
+    return peekToken() && peekToken()->id() == TokenID::tkDot
+	&& tokens.size() >= 3
+	&& tokens[1] && tokens[2]
+	&& tokens[1]->id() == TokenID::tkDot
+	&& tokens[2]->id() == TokenID::tkDot;
+}
+
 bool Program::consume_ellipsis()
 {
-    if ( !peekToken() || peekToken()->id() != TokenID::tkDot )
-	return false;
-    if ( tokens.size() < 3
-      || !tokens[1] || !tokens[2]
-      || tokens[1]->id() != TokenID::tkDot
-      || tokens[2]->id() != TokenID::tkDot )
+    if ( !ellipsis_ahead() )
 	return false;
     nextToken();
     nextToken();
@@ -56144,7 +55733,7 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    // bound T = int — decltype(qq<int&>(0)) was Q<int>, a silent wrong
 	    // type — and no reference- or function-type SFINAE default over T
 	    // could ever fail (g++.dg sfinae8/12/15: `f<int&>`, `f<void()>`).
-	    adt = fold_template_arg_declarator(adt, at);
+	    adt = fold_template_arg_declarator(adt, at, &cv_spelling);
 	    dd = &adt->definition;
 	}
 	else
@@ -57680,14 +57269,18 @@ void Program::capture_explicit_template_instantiation(bool extern_declaration)
 // The `const` qualifier belongs to the function declarator, after its own
 // parameter list. Captured declarations use this shared token-range query;
 // later exception specifications and attributes may contain more parentheses.
-static bool function_declarator_is_const_member(
+// The cv-qualifier-seq after a member declarator's parameter list, as a
+// CvQual MASK (`f() const` 1, `f() volatile` 2, both 3) — the out-of-line
+// definition matches its declaration's FuncDef::method_cv() by it.
+static unsigned function_declarator_member_cv(
 	const std::vector<TokenBase *> &decl)
 {
     std::vector<std::vector<TokenBase *> > ignored;
     size_t param_close = decl.size();
     if ( !outofline_declarator_param_regions(decl, ignored, &param_close)
       || param_close == decl.size() )
-	return false;
+	return cvNONE;
+    unsigned cv = cvNONE;
     for ( size_t i = param_close + 1; i < decl.size(); ++i )
     {
 	TokenBase *t = decl[i];
@@ -57695,9 +57288,11 @@ static bool function_declarator_is_const_member(
 	if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
 	    break;
 	if ( t->id() == TokenID::tkCONST )
-	    return true;
+	    cv |= cvCONST;
+	else if ( t->id() == TokenID::tkVOLATILE )
+	    cv |= cvVOLATILE;
     }
-    return false;
+    return cv;
 }
 
 // User-parameter ARITY of an out-of-line member def's declarator. Returns
@@ -57929,7 +57524,7 @@ void Program::register_outofline_member_instantiations(
 	// other an undefined import. Pick the overload whose const-ness matches THIS
 	// def (and that has no body yet); fall back to findMethod for the common
 	// non-overloaded member.
-	bool def_const = function_declarator_is_const_member(def.decl);
+	unsigned def_cv = function_declarator_member_cv(def.decl);
 	// A CONSTRUCTOR out-of-line def names the class (`pair<T1,T2>::pair`), so
 	// def.member_name is the SOURCE class spelling (== class_name). The in-class
 	// registered member-template ctor's method_display_name is the FULL mangled
@@ -58053,9 +57648,8 @@ void Program::register_outofline_member_instantiations(
 		    toksubst.find(s);
 		if ( ti != toksubst.end() )
 		{
-		    for ( size_t ni2 = 0; ni2 < ti->second.size(); ++ni2 )
-			sub.push_back(ti->second[ni2]
-				      ? ti->second[ni2]->clone_origin() : NULL);
+		    splice_nontype_template_arg(sub, ti->second, bt,
+			bi + 1 < def.decl.size() ? def.decl[bi + 1] : NULL);
 		    continue;
 		}
 		if ( s == class_name )
@@ -58220,7 +57814,7 @@ void Program::register_outofline_member_instantiations(
 	    else
 	    {
 		if ( cfd->method_display_name != def.member_name ) continue;
-		if ( cfd->is_const_method != def_const ) continue;
+		if ( cfd->method_cv() != def_cv ) continue;
 		if ( cfd->is_member_template != def.is_member_template )
 		    continue;
 		if ( def.is_member_template
@@ -58693,7 +58287,7 @@ void Program::apply_template_call_return_inference(TokenCallFunc *tc)
     DataDef *deduced = tc->parameters[arg_index]->datadef();
     if ( fd->template_return_deduce_from_pointer )
     {
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(deduced);
+	DataDefPTR *ptr = pointer_dd_of(deduced);
 	deduced = ptr ? ptr->base_type : NULL;
     }
     if ( !deduced )
@@ -59763,8 +59357,7 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
 	// the instantiated iterator overload's `int*` parameter, so the call fell
 	// back to the declaration-only placeholder and emitted an undefined
 	// `__ns_<fn>` import. array_decay_pointer returns NULL for non-arrays.
-	DataDef *adp = array_decay_pointer(tc->parameters[i]);
-	at.push_back(adp ? adp : operand_value_datadef(tc->parameters[i]));
+	at.push_back(call_argument_type(tc->parameters[i]));
 	zeros.push_back(is_zero_integer_literal(tc->parameters[i]));
     }
     Variable *w = find_namespace_function_overload(
@@ -59847,6 +59440,95 @@ DataDef *Program::range_for_deduce_element(TokenBase *container, TokenBase *wher
     return NULL;	// Throw does not return; keeps the compiler satisfied
 }
 
+// [expr]/5 — the VALUE an operand denotes, given its datadef(): a
+// reference-typed expression (a DataDefREF) denotes its referent, and so does
+// a reference VARIABLE, which madc lowers as its pointer (var.type is the
+// pointer, flagged is_reference). The one reference arm of operand_value_type
+// (tokens.h) and Program::operand_value_datadef.
+static DataDef *operand_referent(TokenBase *operand, DataDef *dd)
+{
+    if ( !dd )
+	return NULL;
+    if ( dd->is_reference() )
+	return static_cast<DataDefPTR *>(dd)->base_type;
+    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
+    if ( tv && (tv->var.is_reference()) )
+	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
+	    return rp->base_type;
+    return dd;
+}
+
+DataDef *operand_value_type(TokenBase *operand)
+{
+    return operand ? operand_referent(operand, operand->datadef()) : NULL;
+}
+
+// [conv.prom] of an integer TYPE (tokens.h). The bit-field rule needs the
+// operand and lives in promoted_operand_type. Identities are the builtin
+// spellings' (resolve_builtin_type_spelling), so a same_scalar_type compare
+// sees the promoted `int` as the declared `int`.
+DataDef *integer_promoted_type(DataDef *dd)
+{
+    if ( !dd )
+	return NULL;
+    DataDef *t_int = Program::resolve_builtin_type_spelling("int");
+    if ( const DataDefENUM *e = dd->as_enum_dd() )
+    {
+	// [conv.prom]/4: a FIXED enum promotes to its underlying type, and on
+	// through that type's own promotion.
+	if ( e->fixed_base && e->underlying )
+	    return integer_promoted_type(e->underlying);
+	// [conv.prom]/3: an unfixed one to the first of int / unsigned int /
+	// long / unsigned long / long long / unsigned long long that holds every
+	// enumerator — by VALUE range ([dcl.enum]/8), not the computed underlying
+	// type (that is unsigned for a non-negative range, yet `enum { a, b }`
+	// promotes to int — g++ and clang++ pick f(int) over f(long)); past 32
+	// bits the first 64-bit SIGNED type, since every value fits int64 —
+	// `long` on LP64, `long long` on LLP64 (where long is 32-bit).
+	int64_t lo = 0, hi = 0;
+	for ( size_t i = 0; i < e->enumerators.size(); ++i )
+	{
+	    if ( e->enumerators[i].second < lo ) lo = e->enumerators[i].second;
+	    if ( e->enumerators[i].second > hi ) hi = e->enumerators[i].second;
+	}
+	if ( lo >= INT32_MIN && hi <= INT32_MAX )
+	    return t_int;
+	if ( lo >= 0 && hi <= (int64_t)UINT32_MAX )
+	    return Program::resolve_builtin_type_spelling("unsigned int");
+	return Program::resolve_builtin_type_spelling(
+	    target_llp64() ? "long long" : "long");
+    }
+    if ( dd->is_pointer() || dd->is_function() || dd->as_fptr_dd()
+      || dd->is_simd() || dd->is_complex() || !dd->is_integer() )
+	return dd;
+    // [conv.prom]/1-2: rank below int (bool, the character types, the shorts,
+    // char16_t, an LLP64 wchar_t) -> int. char32_t and an LP64 wchar_t are
+    // int-sized distinct types: the first of int / unsigned int holding them.
+    if ( dd->size < ddINT.size )
+	return t_int;
+    if ( dd->size == ddINT.size && (dd == dd_char32() || dd == dd_platform_wchar()) )
+	return dd->is_unsigned()
+	    ? Program::resolve_builtin_type_spelling("unsigned int") : t_int;
+    return dd;
+}
+
+DataDef *promoted_operand_type(TokenBase *operand)
+{
+    DataDef *dd = operand_value_type(operand);
+    if ( !dd )
+	return NULL;
+    dd = dd->unqualified();	// [conv.lval]: the prvalue is cv-unqualified
+    // [conv.prom]/5, C11 6.3.1.1p2: a bit-field narrower than int promotes to
+    // int whatever its declared type; one of int's width keeps its type's
+    // promotion (`unsigned w : 32` stays unsigned).
+    if ( dd->is_integer() && !dd->is_pointer() )
+	if ( TokenMember *tm = operand->as_member_tok() )
+	    if ( const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info() )
+		if ( bf->bit_width < ddINT.size * 8 )
+		    return Program::resolve_builtin_type_spelling("int");
+    return integer_promoted_type(dd);
+}
+
 DataDef *Program::operand_value_datadef(TokenBase *operand)
 {
     DataDef *dd = operand ? operand->datadef() : NULL;
@@ -59873,13 +59555,73 @@ DataDef *Program::operand_value_datadef(TokenBase *operand)
 		DataDef *r = &rfd->return_value_type();
 		return r;
 	    }
-    if ( dd->is_reference() )
-	return static_cast<DataDefPTR *>(dd)->base_type;
-    TokenVar *tv = (operand ? operand->as_var_tok() : NULL);
-    if ( tv && (tv->var.is_reference()) )
-	if ( DataDefPTR *rp = (tv->var.type ? tv->var.type->as_pointer_dd() : NULL) )
-	    return rp->base_type;
-    return dd;
+    return operand_referent(operand, dd);
+}
+
+// The function pointer a callable VALUE is called through ([expr.call]/1): a
+// function pointer is itself, a function designator its [conv.func] pointer
+// (getPointerType). NULL for a value that is not callable.
+DataDefFPTR *Program::function_value_pointer_type(DataDef *value_type)
+{
+    if ( !value_type )
+	return NULL;
+    if ( DataDefFPTR *fp = value_type->as_fptr_dd() )
+	return fp;
+    if ( FuncDef *func = value_type->as_funcdef_dd() )
+	return getPointerType(func)->as_fptr_dd();
+    return NULL;
+}
+
+// A call THROUGH a callable expression — `(c ? f : g)(x)`, `(*fp)(x)`, a
+// reference to a function or a function pointer: the lowering loads the
+// callee from src_node (the expression's VALUE), and the call is typed by the
+// pointer's signature through a synthetic `__expr_fptr` variable. The call's
+// `(` is already consumed; `next` receives the token parseCallFunc returns.
+TokenCallFunc *Program::build_call_through_value(TokenBase *callee,
+			DataDefFPTR *fptr_type, TokenBase *paren, TokenBase *&next)
+{
+    Variable *call_var = new Variable("__expr_fptr", *fptr_type, 1, NULL, false);
+    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+    tc->src_node = callee;
+    tc->file = paren->file;
+    tc->line = paren->line;
+    tc->column = paren->column;
+    next = parseCallFunc(tc);
+    return tc;
+}
+
+// The type of a conditional whose arms are both ARITHMETIC ([expr.cond]/7,
+// C11 6.5.15p5). In C++ a type the two arms share after lvalue-to-rvalue (cv
+// dropped) is the result — `b ? uc : uc2` is unsigned char, `b ? e1 : e2` the
+// enum, `b ? true : false` bool (7.1); otherwise, and always in C, the usual
+// arithmetic conversions over the promoted arms (7.2). NULL when an arm is not
+// arithmetic: a pointer, an array (it decays), a function, a class, complex or
+// SIMD keep the conditional's other rules. The arms' value, promotion and
+// conversion are the operators' owners, not a copy.
+DataDef *Program::conditional_arithmetic_type(TokenBase *t, TokenBase *f)
+{
+    auto arithmetic_value = [this](TokenBase *e) -> DataDef * {
+	DataDef *d = e ? operand_value_datadef(e) : NULL;
+	d = d ? d->unqualified() : NULL;
+	if ( !d || !(d->is_numeric() || d->as_enum_dd()) || d->is_pointer()
+	  || d->is_function() || d->is_complex() || d->is_simd()
+	  || array_operand_type(e) )
+	    return NULL;
+	return d;
+    };
+    DataDef *tv = arithmetic_value(t);
+    DataDef *fv = tv ? arithmetic_value(f) : NULL;
+    if ( !fv )
+	return NULL;
+    if ( presents_as_cpp() )
+    {
+	DataDef *ti = proven_scalar_identity(tv);
+	if ( tv == fv || (ti && ti == proven_scalar_identity(fv)) )
+	    return tv;
+    }
+    DataDef *ua = usual_arithmetic_result(promoted_operand_type(t),
+					  promoted_operand_type(f));
+    return ua ? ua : resolve_builtin_type_spelling("int");
 }
 
 // [temp.deduct.call]/3 needs the argument expression's value category for a
@@ -59982,12 +59724,32 @@ static int fn_template_deduce_param(const std::string &spelling,
 	}
 	dd = static_cast<DataDefPTR *>(dd)->base_type;
     }
+    // [temp.deduct.call]/2: a by-value parameter (`T`) ignores the
+    // argument's top-level cv — the call argument type carries a volatile
+    // glvalue's qualifier for the reference arms, never into T.
+    if ( shape.amps == 0 && shape.stars == 0 )
+	dd = dd->unqualified();
     for ( size_t i = 0; i < shape.stars; ++i )
     {
-	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	DataDefPTR *p = pointer_dd_of(dd);
 	if ( !p || !p->base_type )
 	    return -1;
 	dd = p->base_type;
+    }
+    // A cv the PARAMETER spells on T itself (`volatile T *`, `volatile T &`)
+    // is not T's ([temp.deduct.call]/4: `volatile T *` from `volatile int *`
+    // deduces T = int). The words before the first `*` / `&` are T's level.
+    {
+	unsigned spelled_cv = cvNONE;
+	std::vector<std::string> sw;
+	fn_template_split_words(spelling, sw);
+	for ( size_t i = 0; i < sw.size() && sw[i] != "*" && sw[i] != "&"; ++i )
+	    if ( sw[i] == "volatile" )
+		spelled_cv |= cvVOLATILE;
+	    else if ( sw[i] == "const" )
+		spelled_cv |= cvCONST;
+	if ( pgm && (dd->cv_quals() & spelled_cv) )
+	    dd = pgm->getQualifiedType(dd->unqualified(), dd->cv_quals() & ~spelled_cv);
     }
     tp_out = shape.core;
     dd_out = canonical_template_binding_dd(dd);
@@ -60033,9 +59795,9 @@ static bool fn_template_deduce_fnptr_param(const std::string &spelling,
     if ( p2 == std::string::npos || p2c == std::string::npos || p2c <= p2 )
 	return false;
 
-    FuncDef *fd = dynamic_cast<FuncDef *>(arg_dd);
+    FuncDef *fd = arg_dd ? arg_dd->as_funcdef_dd() : NULL;
     if ( !fd )
-	if ( DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(arg_dd) )
+	if ( DataDefFPTR *fp = arg_dd ? arg_dd->as_fptr_dd() : NULL )
 	    fd = fp->target;
     if ( !fd )
 	return false;
@@ -60397,9 +60159,9 @@ static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_cla
 	    if ( cls && cls->is_dependent_placeholder )
 		return true;
 	}
-	if ( DataDefCONST *c = dynamic_cast<DataDefCONST *>(dd) )
+	if ( DataDefQUAL *c = dynamic_cast<DataDefQUAL *>(dd) )
 	    { dd = c->base_type; continue; }
-	if ( DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd) )
+	if ( DataDefPTR *p = pointer_dd_of(dd) )
 	    { dd = p->base_type; continue; }
 	break;
     }
@@ -60537,7 +60299,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    for ( size_t i = 0; i < tc->parameters.size(); ++i )
 	    {
 		DataDef *ad = tc->parameters[i] ? tc->parameters[i]->datadef() : NULL;
-		DataDefPTR *ap = dynamic_cast<DataDefPTR *>(ad);
+		DataDefPTR *ap = pointer_dd_of(ad);
 		DataDef *ab = ap ? ap->base_type : NULL;
 		fprintf(stderr, "FNTPLPROBE   arg[%zu]='%s' canon='%s' pointee='%s'"
 			" pcanon='%s' ident=%s\n", i,
@@ -60745,7 +60507,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	if ( sp_.find('&') != std::string::npos )
 	    return arg_dd_;
 	if ( FuncDef *afd = dynamic_cast<FuncDef *>(arg_dd_) )
-	    return new DataDefFPTR(afd);
+	    return pgm.getPointerType(afd);
 	if ( DataDef *adp = pgm.array_decay_pointer(tc->parameters[ai]) )
 	    return adp;
 	return arg_dd_ ? arg_dd_->unqualified() : arg_dd_;
@@ -65170,7 +64932,7 @@ bool Program::instantiate_member_ctor_template_candidate(
     if ( ctor_args.size() == 1 && ctor_args[0] )
     {
 	DataDef *avd = operand_value_datadef(ctor_args[0]);
-	while ( DataDefCONST *ac = dynamic_cast<DataDefCONST *>(avd) )
+	while ( DataDefQUAL *ac = dynamic_cast<DataDefQUAL *>(avd) )
 	    avd = ac->base_type;
 	DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(avd);
 	if ( acls && acls->is_or_derives_from(cdd) )
@@ -66515,7 +66277,11 @@ static void stamp_member_template_pattern(
     size_t name_idx = skipped_template_function_declarator_name_index(tokens,
 								      NULL);
     size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
-    fd->is_const_method = function_declarator_is_const_member(tokens);
+    {
+	unsigned member_cv = function_declarator_member_cv(tokens);
+	fd->is_const_method = (member_cv & cvCONST) != 0;
+	fd->is_volatile_method = (member_cv & cvVOLATILE) != 0;
+    }
     if ( name_idx < tokens.size() && lparen < tokens.size()
       && tokens[lparen]
       && tokens[lparen]->id() == TokenID::tkOpBrk
@@ -67034,7 +66800,7 @@ static DataDef *unwrap_pointer_depth(DataDef *dd, int depth)
     DataDef *cur = dd;
     for ( int i = 0; i < depth; ++i )
     {
-	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(cur);
+	DataDefPTR *ptr = pointer_dd_of(cur);
 	if ( !ptr )
 	    return NULL;
 	cur = ptr->base_type;
@@ -67286,7 +67052,7 @@ static bool function_explicit_params_match(FuncDef *fd,
 	DataDef *expected = fd->parameters[pi];
 	if ( expected_ref )
 	{
-	    DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(expected);
+	    DataDefPTR *ptr = pointer_dd_of(expected);
 	    expected = ptr ? ptr->base_type : NULL;
 	}
 	else if ( sigs[i].pointer_depth > 0 )
@@ -68591,12 +68357,21 @@ bool Program::parse_array_designator_initializer(TokenBase *&next_init,
     return true;
 }
 
-DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
+DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_cv)
 {
+    // The leading qualifier run: its cv is the declaration's (a K&R
+    // `volatile int a;` declares a volatile parameter object).
     while ( nt && (nt->id() == TokenID::tkCONST
+	       || nt->id() == TokenID::tkVOLATILE
 	       || nt->id() == TokenID::tkREGISTER
 	       || is_restrict_token(nt)) )
+    {
+	if ( lead_cv && nt->id() == TokenID::tkCONST )
+	    *lead_cv |= cvCONST;
+	else if ( lead_cv && nt->id() == TokenID::tkVOLATILE )
+	    *lead_cv |= cvVOLATILE;
 	nt = nextToken();
+    }
 
     if ( !nt )
 	Throw << "Unexpected end of input in K&R parameter declaration" << flush;
@@ -68636,9 +68411,11 @@ DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt)
 void Program::parse_old_style_parameter_declaration(
 						  TokenBase *nt,
 						  const std::vector<std::string> &param_ids,
-						  std::map<std::string, DataDef *> &param_types)
+						  std::map<std::string, DataDef *> &param_types,
+						  std::map<std::string, unsigned> *param_object_cvs)
 {
-    DataDef *base_type = parse_old_style_parameter_base(nt);
+    unsigned lead_cv = cvNONE;
+    DataDef *base_type = parse_old_style_parameter_base(nt, &lead_cv);
     nt = nextToken();
 
     while ( nt )
@@ -68651,7 +68428,10 @@ void Program::parse_old_style_parameter_declaration(
 	// EVERY dimension a pointer level (`int a[2][3]` came out `int **`).
 	pushToken(nt);
 	DeclaratorResult kd;
-	DataDef *decl_type = parse_declarator(base_type, DeclaratorMode::Parameter, kd);
+	DataDef *decl_type = parse_declarator(base_type, DeclaratorMode::Parameter, kd,
+					      NULL, lead_cv);
+	if ( param_object_cvs && kd.ref != RefType::rtReference && !kd.adjusted_array )
+	    (*param_object_cvs)[kd.name] = declarator_object_cv(kd, lead_cv);
 	if ( kd.name.empty() )
 	    Throw(kd.name_tok ? kd.name_tok : nt) << "Expecting parameter name in K&R parameter declaration" << flush;
 	const std::string name = kd.name;
@@ -68682,6 +68462,7 @@ bool Program::is_old_style_parameter_declaration_start(TokenBase *tb)
 	return true;
     if ( tb->id() == TokenID::tkSTRUCT || tb->id() == TokenID::tkUNION
       || tb->id() == TokenID::tkENUM || tb->id() == TokenID::tkCONST
+      || tb->id() == TokenID::tkVOLATILE
       || tb->id() == TokenID::tkREGISTER || is_restrict_token(tb) )
 	return true;
     if ( is_contextual_identifier_token(tb) )
@@ -68884,6 +68665,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->noexcept_owner = src->noexcept_owner;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
+    f->is_volatile_method = src->is_volatile_method;
     f->vague_linkage = src->vague_linkage;
     f->internal_linkage = src->internal_linkage;
     return f;
@@ -69134,6 +68916,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // complete) instead of `struct anonymous *p` for a pointer-to-typedef-of-
     // anonymous-aggregate parameter ("struct has no member" otherwise).
     vector<std::string> param_aliases;
+    // Parallel to param_aliases: each parameter object's own top-level cv,
+    // which the FUNCTION TYPE drops ([dcl.fct]/5) and the body's parameter
+    // variable keeps.
+    vector<unsigned> param_object_cvs;
     std::string param_alias;  // alias for the parameter currently being parsed
     TokenDataType *pb = NULL; // parameter basetype
     std::string pid;          // parameter id
@@ -69145,6 +68931,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // pointee-const survives — the DataDef loses it).
     int param_ptr_depth = 0;
     bool param_rvalue_ref = false;
+    // The parameter OBJECT's own top-level cv (below, per parameter).
+    unsigned param_object_cv = cvNONE;
     int anon_param_index = 0;
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
@@ -69259,6 +69047,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->emit_symbol = func->emit_symbol;
 	    fresh->method_display_name = func->method_display_name;
 	    fresh->is_const_method = func->is_const_method;
+	    fresh->is_volatile_method = func->is_volatile_method;
 	    fresh->is_member_template = func->is_member_template;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -69308,6 +69097,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->emit_symbol = func->emit_symbol;
 	    fresh->method_display_name = func->method_display_name;
 	    fresh->is_const_method = func->is_const_method;
+	    fresh->is_volatile_method = func->is_volatile_method;
 	    fresh->is_member_template = func->is_member_template;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -69448,6 +69238,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	}
 	ids.push_back("__this");
 	param_aliases.push_back("");
+
+	param_object_cvs.push_back(cvNONE);
 	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }
 
@@ -69503,6 +69295,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		    Throw(nt) << "Duplicate K&R parameter name" << flush;
 		ids.push_back(pid);
 		param_aliases.push_back("");
+		param_object_cvs.push_back(cvNONE);
 		old_style_ids.push_back(pid);
 
 		nt = nextToken();
@@ -69534,6 +69327,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// (top-level, dropped by the ABI).
 	// Tracked separately from param_has_const so the spelling stays accurate.
 	bool param_leading_const = false;
+	unsigned param_leading_cv = cvNONE;	// the leading cv run, for the pointee-cv model
 	while ( nt && (nt->id() == TokenID::tkCONST
 	            || nt->id() == TokenID::tkVOLATILE
 	            || nt->id() == TokenID::tkREGISTER) )
@@ -69542,7 +69336,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		param_has_const = true;
 		param_leading_const = true;
+		param_leading_cv |= cvCONST;
 	    }
+	    else if ( nt->id() == TokenID::tkVOLATILE )
+		param_leading_cv |= cvVOLATILE;
 	    nt = nextToken();
 	}
 	std::vector<carray_dim_t> param_array_dims;
@@ -69578,6 +69375,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    }
 	    ids.push_back("__va_args");
 	    param_aliases.push_back("");
+
+	    param_object_cvs.push_back(cvNONE);
 	    DBG(cout << "parseFunction() detected varargs, injected __va_args" << endl);
 	    // next token should be )
 	    nt = nextToken();
@@ -69697,6 +69496,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	rtype = RefType::rtValue;
 	param_ptr_depth = 0;
 	param_rvalue_ref = false;
+	param_object_cv = cvNONE;
 	DataDef *param_dd = &pb->definition;
 	{
 	    // The parameter's declarator — the ONE reader in Parameter mode over
@@ -69713,7 +69513,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    std::set<std::string> earlier_params(ids.begin(), ids.end());
 	    DeclaratorResult pr;
 	    param_dd = parse_declarator(param_dd, DeclaratorMode::Parameter, pr,
-					&earlier_params);
+					&earlier_params, param_leading_cv);
 	    pid = pr.name.empty()
 		? "__anon_param_" + std::to_string(anon_param_index++) : pr.name;
 	    // The declared TYPE's pointer levels: the stars read before a
@@ -69724,6 +69524,12 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // spelling is structural (mangle_spelling_for) and ignores this.
 	    param_ptr_depth = pr.ptr_depth + pr.nested_stars;
 	    param_rvalue_ref = pr.rvalue_ref;
+	    // The parameter OBJECT's top-level cv: the function type drops it
+	    // ([dcl.fct]/5 — `void f(volatile int n)` is `void f(int)`), the body's
+	    // `n` keeps it (a volatile parameter survives longjmp, C11 7.13.2.1p3).
+	    // A reference's is its referent's; an adjusted array's, its elements'.
+	    if ( pr.ref != RefType::rtReference && !pr.adjusted_array )
+		param_object_cv = declarator_object_cv(pr, param_leading_cv);
 	    if ( pr.alias_adjusted )
 		param_alias.clear();	// `A3 a`: the type is int*, the alias names an array
 	    if ( pr.cv_seen )
@@ -69825,25 +69631,12 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // top-level pointee-const, so a DataDef-derived spelling would mangle
 	    // `const char*` as Pc not PKc); a redeclaration compares it against
 	    // the prior signature (redecl_prior_sig). Fed to the Itanium mangler.
-	    std::string param_spelling;
-	    if ( param_leading_const )
-		param_spelling = "const ";
-	    param_spelling += pb->definition.canonical_cpp_spelling().empty()
-		? pb->definition.name
-		: pb->definition.canonical_cpp_spelling();
-	    for ( int sd = 0; sd < param_ptr_depth; ++sd )
-		param_spelling += "*";
-	    // A multi-dimensional array parameter decays to a POINTER TO ARRAY
-	    // (`int a[2][3]` is `int (*)[3]`, Itanium PA3_i): spell that C++
-	    // declarator, so the encoder encodes it or refuses it — a bare
-	    // `int*` would mint the WRONG symbol (Pi) and misbind at link.
-	    if ( param_array_dims.size() > 1 )
-	    {
-		param_spelling.resize(param_spelling.size() - 1);	// the decay `*`
-		param_spelling += " (*)";
-		for ( size_t ad = 1; ad < param_array_dims.size(); ++ad )
-		    param_spelling += "[" + std::to_string(param_array_dims[ad]) + "]";
-	    }
+	    std::string param_spelling = param_declarator_spelling(
+		&pb->definition, param_dd, param_ptr_depth, param_leading_const,
+		rtype == RefType::rtReference);
+	    // (A multi-dimensional array parameter decays to a POINTER TO ARRAY,
+	    // `int a[2][3]` is `int (*)[3]`: param_declarator_spelling spells
+	    // that declarator for it and for a declared `int (*a)[3]` alike.)
 	    if ( rtype == RefType::rtReference )
 	    {
 		if ( param_dd->as_carray_dd() )
@@ -69863,6 +69656,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
+
+		param_object_cvs.push_back(param_object_cv);
 		// The SAME desugar the registered side reads through
 		// (FuncDef::mangle_param_spelling): a fn-pointer typedef spells
 		// structurally, a scalar alias canonically — else a prototype's
@@ -69885,6 +69680,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    {
 		ids.push_back(pid);
 		param_aliases.push_back(param_alias);
+
+		param_object_cvs.push_back(param_object_cv);
 		func->param_cpp_spellings.push_back(param_spelling);
 		func->param_typedef_names.push_back(param_alias);
 		func->param_template_param_spelled_directly.push_back(
@@ -69901,7 +69698,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
-		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL
+		else if ( param_dd->as_fptr_dd() != NULL
 		       || param_dd->is_member_pointer() )
 		{
 		    // A function-pointer or pointer-to-MEMBER parameter (`bool
@@ -69967,11 +69764,22 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     if ( old_style_params )
     {
 	std::map<std::string, DataDef *> old_style_param_types;
+	std::map<std::string, unsigned> old_style_object_cvs;
 	while ( nt && nt->id() != TokenID::tkOpBrc )
 	{
 	    parse_old_style_parameter_declaration(nt, old_style_ids,
-						  old_style_param_types);
+						  old_style_param_types,
+						  &old_style_object_cvs);
 	    nt = nextToken();
+	}
+	// Each parameter object's own cv reaches its body variable
+	// (param_object_cvs is parallel to ids).
+	for ( size_t k = 0; k < ids.size() && k < param_object_cvs.size(); ++k )
+	{
+	    std::map<std::string, unsigned>::const_iterator oc =
+		old_style_object_cvs.find(ids[k]);
+	    if ( oc != old_style_object_cvs.end() )
+		param_object_cvs[k] = oc->second;
 	}
 
 	if ( !func_already_declared )
@@ -70117,7 +69925,20 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	TokenBase *q = nt;
 	if ( !q ) break;
 	if ( q->id() == TokenID::tkCONST ) { func->is_const_method = true; nt = nextToken(); continue; }
-	if ( q->id() == TokenID::tkVOLATILE || q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
+	if ( q->id() == TokenID::tkVOLATILE )
+	{
+	    func->is_volatile_method = true;
+	    // [class.this]: in a volatile member function `this` is `volatile C *`
+	    // — every member read through it is performed as written. The hidden
+	    // parameter was typed before the qualifiers were read; the body's
+	    // `__this` is built from it below.
+	    if ( has_hidden_this && owner_class && !func->parameters.empty() )
+		func->parameters[0] = getPointerType(
+		    getQualifiedType(owner_class, cvVOLATILE & modeled_cv()));
+	    nt = nextToken();
+	    continue;
+	}
+	if ( q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
 	// C++11 ref-qualifier ([dcl.fct]p6): `T f() &`, `T f() const &&`.
 	// libc++ __optional_storage_base::__get declares all four cv/ref
 	// combinations; without this arm the loop broke on the '&' and the
@@ -70659,6 +70480,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// typedef's complete definition.
 	if ( (size_t)user_param_index < param_aliases.size() )
 	    v->typedef_name = param_aliases[user_param_index];
+	if ( (size_t)user_param_index < param_object_cvs.size()
+	  && param_object_cvs[user_param_index] && !d->is_reference()
+	  && !d->is_function() && !d->as_carray_dd() )
+	    v->type = getQualifiedType(d, param_object_cvs[user_param_index]);
 	if ( (size_t)i < func->const_params.size() && func->const_params[i] )
 	    v->flags |= vfCONSTANT;
 	std::map<std::string, TokenBase *>::iterator pvsi = param_vla_side_effects.find(pname);
@@ -70941,34 +70766,17 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
 {
     if ( !expr )
 	return NULL;
-
-    if ( pgm && dynamic_cast<TokenCallFunc *>(expr) )
+    // The initializer's VALUE type ([dcl.spec.auto], [temp.deduct.call]/2):
+    // Program::operand_value_datadef — a call's resolved callee, a reference's
+    // referent ([expr]/5). An operator types itself through its own datadef(),
+    // which reads its operands through the promotion owners (tokens.h). The
+    // arm that re-derived + - * / here was a second copy of that typing: it
+    // read a reference leaf as its lowered POINTER (`auto a = rl + 2` bound a
+    // pointer to 42 and crashed; so did `auto c = rl`) and answered double for
+    // any real operand (`auto x = f * 2` on a float measured 8 bytes).
+    if ( pgm )
 	if ( DataDef *dd = pgm->operand_value_datadef(expr) )
 	    return dd;
-
-    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(expr) )
-    {
-	// Comparison / logical operators yield bool regardless of operands;
-	// their own datadef() already reflects that, so only fold the
-	// value-producing arithmetic operators here.
-	switch ( op->id() )
-	{
-	case TokenID::tkAdd: case TokenID::tkSub:
-	case TokenID::tkMul: case TokenID::tkDiv:
-	    {
-		DataDef *l = deduce_expr_type(pgm, op->left);
-		DataDef *r = deduce_expr_type(pgm, op->right);
-		if ( (l && l->is_real()) || (r && r->is_real()) )
-		    return &ddDOUBLE;
-		if ( l && l->is_pointer() ) return l;
-		if ( r && r->is_pointer() ) return r;
-		break;
-	    }
-	default:
-	    break;
-	}
-    }
-
     return expr->datadef();
 }
 
@@ -71431,8 +71239,8 @@ static bool literal_integer_value(TokenBase *tb, int64_t &out)
 	    return true;
 	}
     }
-    // Unary plus: +N (no-op)
-    if ( tb->id() == TokenID::tkAdd && static_cast<TokenOperator *>(tb)->left == nullptr )
+    // Unary plus: +N
+    if ( tb->id() == TokenID::tkUnaryPlus )
     {
 	TokenOperator *op = static_cast<TokenOperator *>(tb);
 	return literal_integer_value(op->right, out);
@@ -72441,6 +72249,26 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 }
 
 // parse either a variable declaration, or a function declaration
+
+// The next declarator of a declaration LIST (`static volatile int a, b;`,
+// `Q a(1), b(2);`) re-enters parseDeclaration through the stream: push a
+// clone of the base-type token and the decl-specifiers it carried, which
+// qualify EVERY declarator of the list — one owner for both list arms (the
+// constructor-syntax arm and the initializer arm).
+void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
+					bool is_thread_local, bool is_volatile)
+{
+    pushToken(type_tb->clone_origin());
+    if ( is_volatile )
+	pushToken(new TokenVOLATILE());
+    if ( parsing_extern_decl )
+	pushToken(new TokenEXTERN());
+    if ( is_static )
+	pushToken(new TokenSTATIC());
+    if ( is_thread_local )
+	pushToken(new TokenCppKeyword("thread_local"));
+}
+
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
@@ -72463,6 +72291,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     if ( unnamed_namespace_depth > 0 && compounds.empty() && !parsing_extern_decl )
 	gotstatic = true;
     bool gotconst = parsing_const_decl;
+    bool gotvolatile = parsing_volatile_decl;
     bool gotconstexpr = parsing_constexpr_decl;
     bool gotinline = parsing_inline_decl;
     bool gotthreadlocal = parsing_thread_local_decl;
@@ -72472,6 +72301,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // storage duration.
     parsing_static_decl = false;
     parsing_const_decl = false;
+    parsing_volatile_decl = false;
     parsing_constexpr_decl = false;
     parsing_inline_decl = false;
     parsing_thread_local_decl = false;
@@ -72558,6 +72388,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     }
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
+    unsigned decl_object_cv = cvNONE;	// the object's top-level cv (declarator_object_cv)
     bool ret_is_ref = false;
     bool decl_rvalue_ref = false;
     // If this declaration names a user typedef alias (not a builtin, where
@@ -72576,10 +72407,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // function-pointer variable. The shared helper consumes the star/qualifier
     // run, wraps non-fn-ptr bases via getPointerType, and reports the count +
     // the top-level-const-pointer flag.
-    bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
+    bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL); // allowed-exception: the declarator's base node (a const base is a pointee)
     // The declarator — the ONE reader in Declaration mode over the declared
     // type: `C::[D::]*` chains (template-id owners included), stars with cv
-    // (the declaration's leading const feeds C mode's pointee-const model),
+    // (the declaration's leading cv feeds C mode's pointee-cv model),
     // `&`/`&&`, `(*[name])(params)`, `(C::*name)(params) const`, `(*name)[N]`,
     // `(&name)[N]`, `(*fa[N])(params)`, `name[N]...` (a runtime dim rides as
     // its level's count_expr) and the declarator-id; a `(` right after the id
@@ -72598,11 +72429,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	DataDef *declared_type = decl_type;
 	DeclaratorResult vd;
 	DataDef *read_type = parse_declarator(decl_type, DeclaratorMode::Declaration, vd,
-					      NULL, gotconst);
+					      NULL, (gotconst ? cvCONST : cvNONE)
+						  | (gotvolatile ? cvVOLATILE : cvNONE));
 	n_decl_stars = vd.ptr_depth;
 	if ( vd.ptr_depth > 0 || vd.nested_stars > 0 )
 	    saw_pointer_decl = true;
 	saw_const_after_star = vd.const_after_star;
+	decl_object_cv = declarator_object_cv(vd, (gotconst ? cvCONST : cvNONE)
+						  | (gotvolatile ? cvVOLATILE : cvNONE));
 	if ( is_fnptr_base )
 	    decl_fnptr_stars = vd.ptr_depth;	// an FPTR base: the alias + this count spell the variable (`DO_FUN *fp`)
 	decl_name_in_parens = vd.saw_parens;
@@ -72820,7 +72654,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	    // create a DataDefFPTR wrapping the target function's FuncDef
 	    FuncDef *target_func = (FuncDef *)rhs_var->type;
-	    DataDefFPTR *fptr_type = new DataDefFPTR(target_func);
+	    DataDef *fptr_type = getPointerType(target_func);
 
 	    bool alloc = (!code || gotstatic) ? true : false;
 	    var = addVariable(code, *fptr_type, id, 1, NULL, alloc);
@@ -73002,7 +72836,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	   && (paren_group_is_function_def()
 	       || paren_group_can_be_param_decl_clause())) )
     {
-	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
+	DataDefCLASS *ddc = decl_type->as_class_dd();	// a qualified class (a `vC` typedef) forwards
 	// An EMPTY braced list (`T x{}`) is value-initialization and keeps its
 	// existing brace-init route below; a NON-empty list with user ctors is
 	// a ctor-argument list and belongs here. EXCEPT the carrier: its `{}`
@@ -73103,13 +72937,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    comma_continuation_starts_declarator(peek);
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
-		pushToken(tb->clone_origin());
-		if ( parsing_extern_decl )
-		    pushToken(new TokenEXTERN());
-		if ( gotstatic )
-		    pushToken(new TokenSTATIC());
-		if ( gotthreadlocal )
-		    pushToken(new TokenCppKeyword("thread_local"));
+		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile);
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -73234,7 +73062,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // the name in funcdef_map while lookups kept the storage Variable, whose
     // ->data the vbase ctor probe then read as a Method* (the SMAUG tables.c
     // SIGSEGV; reducer tests/testfntypedefdecl.c).
-    if ( DataDefFPTR *fn_td = dynamic_cast<DataDefFPTR *>(decl_type) )
+    if ( DataDefFPTR *fn_td = dynamic_cast<DataDefFPTR *>(decl_type) ) // allowed-exception: the typedef's own node (Form-1 vs Form-2)
 	if ( !fn_td->ptr_syntax && fn_td->target && n_decl_stars == 0
 	  && arr_dims.empty() && !ret_is_ref
 	  && (nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkComma) )
@@ -73293,9 +73121,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// Only real user-defined structs/classes accept brace init.
 	// Runtime-library class types use DataDefCLASS but have a concrete DataType;
 	// user-defined structs/classes use
-	// dtRESERVED. Discriminate on that.
+	// dtRESERVED. Discriminate on that. A cv-qualified aggregate (`CP vp = {..}`
+	// with `typedef const struct P CP;`, a volatile struct member) brace-inits
+	// exactly like its unqualified type: every aggregate test below reads
+	// decl_type->unqualified(), while the variable keeps the qualified type.
     bool is_struct_init = arr_dims.empty()
-	    && dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
+	    && dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified()) != NULL
 	    && decl_type->type() == DataType::dtRESERVED;
 	bool is_simd_init = arr_dims.empty() && decl_type && decl_type->is_simd();
 	if ( nt->id() == TokenID::tkAssign && !provisional_decl_var )
@@ -73447,7 +73278,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		auto nested_slot_type = [&](size_t slot_idx) -> DataDef * {
 		    if ( target_dd )
 		    {
-			DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(target_dd);
+			DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(target_dd->unqualified());
 			if ( !tsdd )
 			    return NULL;
 			return aggregate_slot_member_type(tsdd,
@@ -73489,7 +73320,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			    // target keeps the old positional skip.
 			    TokenBase *field_tok = nextToken(); // field name
 			    nextToken(); // '='
-			    DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(target_dd);
+			    DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(
+				target_dd ? target_dd->unqualified() : NULL);
 			    if ( tsdd && field_tok
 			      && is_contextual_identifier_token(field_tok) )
 			    {
@@ -73578,7 +73410,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    auto top_slot_type = [&](size_t slot_idx) -> DataDef * {
 		if ( !arr_dims.empty() )
 		    return arr_dims.size() == 1 ? decl_type : NULL;
-		DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(decl_type);
+		DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified());
 		if ( !tsdd )
 		    return NULL;
 		return aggregate_slot_member_type(tsdd,
@@ -73637,7 +73469,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			next_init = nextToken();
 			if ( is_struct_init )
 			{
-			    DataDefSTRUCT *target_sdd = dynamic_cast<DataDefSTRUCT *>(decl_type);
+			    DataDefSTRUCT *target_sdd = dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified());
 			    std::vector<TokenBase *> *target_inits = &init_list;
 			    // NULL while the target is the declaration's OWN
 			    // list; set once the walk descends into a nested
@@ -73665,7 +73497,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 				    target_inits->resize(field_index + 1, NULL);
 				if ( pi + 1 == field_path.size() )
 				    break;
-				DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second);
+				DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second->unqualified());
 				if ( !nested_sdd )
 				    Throw(field_tok) << "Field '" << field_name << "' is not a struct in designated initializer" << flush;
 				TokenStructLit *nested_lit = dynamic_cast<TokenStructLit *>((*target_inits)[field_index]);
@@ -73724,7 +73556,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    }
 		    if ( is_struct_init && next_init->type() == TokenType::ttString )
 		    {
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(decl_type);
+			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified());
 			size_t field_index = init_list.size();
 			if ( sdd && field_index < sdd->members.size()
 			  && field_index < sdd->member_counts.size()
@@ -73849,6 +73681,22 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
+	// A top-level cv qualifies the OBJECT (C11 6.7.3p7) — `volatile int x`,
+	// `int volatile x`, `int *volatile p`, a volatile array or struct; `const`
+	// likewise — and an object's qualifiers are its declared TYPE's, as a
+	// member's and a typedef's are (`volatile int x` is `vint x`): `&x` is a
+	// `volatile int *` ([expr.unary.op]/3), `s.m` of a volatile `s` a volatile
+	// int, a reference binds it only as volatile, and the CIR spells it from
+	// the type. The bits are modeled_cv()'s (const in C only — the C++ const
+	// identity is the const campaign's; the vfCONSTANT read-only marking below
+	// is unchanged). A fixed array's is its element's (6.7.3p9; madc stores
+	// the element in var->type); a reference's is its referent's, already in
+	// its type (parse_declarator's `&`). Never `volatile int *p`, whose
+	// volatile is the POINTEE's. Before the file-scope snapshot below, which
+	// records the type the global is emitted with.
+	if ( decl_object_cv && var && var->type && !var->type->is_reference()
+	  && !var->type->as_fptr_dd() && !var->type->is_function() )
+	    var->type = getQualifiedType(var->type, decl_object_cv);
 	// Record file-scope variables in top_decls in source order for the CIR
 	// backend (a struct defined inline here, `struct X {...} v;`, rides in
 	// this declaration). Locals (inside a function compound) are excluded.
@@ -74299,13 +74147,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
-		pushToken(tb->clone_origin());
-		if ( parsing_extern_decl )
-		    pushToken(new TokenEXTERN());
-		if ( gotstatic )
-		    pushToken(new TokenSTATIC());
-		if ( gotthreadlocal )
-		    pushToken(new TokenCppKeyword("thread_local"));
+		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile);
 	    }
 	}
 
@@ -75835,9 +75677,13 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 			not_a_type_list = true;
 			break;
 		    }
+		    // The entry's leading const qualifies its base — the modeled
+		    // bits only (modeled_cv: in madc and C++ modes a declarator puts
+		    // no const into a type; minting one here made the entry a
+		    // `char const *` beside every other C++ `char *`).
 		    DataDef *entry = &tdt->definition;
 		    if ( entry_const )
-			entry = getConstType(entry);
+			entry = getQualifiedType(entry, cvCONST & modeled_cv());
 		    TokenBase *sep = nextToken();
 		    saved.push_back(sep);
 		    while ( sep && sep->id() == TokenID::tkMul )

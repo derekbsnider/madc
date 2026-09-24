@@ -123,6 +123,29 @@ TEST_SUITE("Itanium type encoding") {
 		CHECK(itanium_encode_type_sub("const int*") == "PKi");
 	}
 
+	TEST_CASE("Volatile and cv-set pointer types (g++ / clang++ oracle)") {
+		// One level's cv words are ONE <CV-qualifiers> set, order V K.
+		CHECK(itanium_encode_type_sub("volatile int*") == "PVi");
+		CHECK(itanium_encode_type_sub("int volatile*") == "PVi");
+		CHECK(itanium_encode_type_sub("const volatile int*") == "PVKi");
+		CHECK(itanium_encode_type_sub("volatile const int*") == "PVKi");
+		// A cv after a `*` is that pointer's; the leading cv the core's.
+		CHECK(itanium_encode_type_sub("volatile int* volatile*") == "PVPVi");
+		CHECK(itanium_encode_type_sub("int* volatile*") == "PVPi");
+		CHECK(itanium_encode_type_sub("const char* const*") == "PKPKc");
+		CHECK(itanium_encode_type_sub("volatile int&") == "RVi");
+	}
+
+	TEST_CASE("Volatile parameters: top level dropped, pointee kept, one substitution per cv set") {
+		CHECK(itanium_mangle_nested_sub({}, "f", {"volatile int*"}) == "_Z1fPVi");
+		CHECK(itanium_mangle_nested_sub({}, "m", {"int* volatile"}) == "_Z1mPi");
+		CHECK(itanium_mangle_nested_sub({}, "v", {"volatile int"}) == "_Z1vi");
+		CHECK(itanium_mangle_nested_sub({}, "n", {"const volatile char*", "const volatile char*"})
+		      == "_Z1nPVKcS0_");
+		CHECK(itanium_mangle_nested_sub({}, "u", {"volatile int*", "volatile int*"}) == "_Z1uPViS0_");
+		CHECK(itanium_mangle_nested_sub({}, "q", {"volatile T*", "volatile T*"}) == "_Z1qPV1TS1_");
+	}
+
 	TEST_CASE("Reference types") {
 		CHECK(itanium_encode_type_sub("int&") == "Ri");
 		CHECK(itanium_encode_type_sub("const int&") == "RKi");
@@ -851,6 +874,10 @@ TEST_SUITE("Itanium user-shape oracle (g++ == clang++, tests/abi/mangle_corpus.c
 		ORACLE_CHECK(free_fn("f_va",  {"const char*", "..."}), "_Z4f_vaPKcz");
 		ORACLE_CHECK(free_fn("f_fp",  {"int (*)(int)"}),       "_Z4f_fpPFiiE");
 		ORACLE_CHECK(free_fn("f_fpv", {"void (*)()"}),         "_Z5f_fpvPFvvE");
+		// A REFERENCE to a function pointer / to a function: the reference
+		// layer is R, never a second P (madc once minted PPFiiE for both).
+		ORACLE_CHECK(free_fn("f_fpref", {"int (*)(int)&"}),    "_Z7f_fprefRPFiiE");
+		ORACLE_CHECK(free_fn("f_fnref", {"int (&)(int)"}),     "_Z7f_fnrefRFiiE");
 		// `int[10]` arrives decayed — the parser spells the parameter `int*`
 		ORACLE_CHECK(free_fn("f_arr", {"int*"}),               "_Z5f_arrPi");
 		// A multi-dimensional array parameter decays to a POINTER TO ARRAY:

@@ -86,7 +86,6 @@
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
-g++.dg/cpp0x/alias-decl-26.C
 g++.dg/cpp0x/alias-decl-32.C
 g++.dg/cpp0x/alias-decl-38.C
 g++.dg/cpp0x/alias-decl-46.C
@@ -125,7 +124,6 @@ g++.dg/cpp0x/constexpr-77771.C
 g++.dg/cpp0x/constexpr-92015.C
 g++.dg/cpp0x/constexpr-__func__2.C
 g++.dg/cpp0x/constexpr-aggr1.C
-g++.dg/cpp0x/constexpr-aggr2.C
 g++.dg/cpp0x/constexpr-aggr3.C
 g++.dg/cpp0x/constexpr-arith-overflow.C
 g++.dg/cpp0x/constexpr-array-ptr.C
@@ -161,7 +159,6 @@ g++.dg/cpp0x/constexpr-decltype3.C
 g++.dg/cpp0x/constexpr-decltype5.C
 g++.dg/cpp0x/constexpr-delegating2.C
 g++.dg/cpp0x/constexpr-delegating3.C
-g++.dg/cpp0x/constexpr-deref.C
 g++.dg/cpp0x/constexpr-empty4.C
 g++.dg/cpp0x/constexpr-ex4.C
 g++.dg/cpp0x/constexpr-fnptr.C
@@ -216,7 +213,6 @@ g++.dg/cpp0x/constexpr-value3.C
 g++.dg/cpp0x/constexpr-volatile4.C
 g++.dg/cpp0x/conv-tmpl1.C
 g++.dg/cpp0x/conv-tmpl6.C
-g++.dg/cpp0x/decltype-71879.C
 g++.dg/cpp0x/decltype-bitfield1.C
 g++.dg/cpp0x/decltype-mem-initializer1.C
 g++.dg/cpp0x/decltype-nonstatic1.C
@@ -280,7 +276,6 @@ g++.dg/cpp0x/initlist-array13.C
 g++.dg/cpp0x/initlist-array15.C
 g++.dg/cpp0x/initlist-array18.C
 g++.dg/cpp0x/initlist-array19.C
-g++.dg/cpp0x/initlist-array20.C
 g++.dg/cpp0x/initlist-const1.C
 g++.dg/cpp0x/initlist-deduce2.C
 g++.dg/cpp0x/initlist-deduce3.C
@@ -319,7 +314,6 @@ g++.dg/cpp0x/lambda/lambda-80947.C
 g++.dg/cpp0x/lambda/lambda-constexpr3.C
 g++.dg/cpp0x/lambda/lambda-conv12.C
 g++.dg/cpp0x/lambda/lambda-conv4.C
-g++.dg/cpp0x/lambda/lambda-conv9.C
 g++.dg/cpp0x/lambda/lambda-debug.C
 g++.dg/cpp0x/lambda/lambda-decltype2.C
 g++.dg/cpp0x/lambda/lambda-ice12.C
@@ -371,7 +365,6 @@ g++.dg/cpp0x/nullptr29.C
 g++.dg/cpp0x/nullptr39.C
 g++.dg/cpp0x/pr102305.C
 g++.dg/cpp0x/pr105256.C
-g++.dg/cpp0x/pr107065.C
 g++.dg/cpp0x/pr112365.C
 g++.dg/cpp0x/pr118390.C
 g++.dg/cpp0x/pr118532.C
@@ -392,12 +385,10 @@ g++.dg/cpp0x/pr70887.C
 g++.dg/cpp0x/pr71054.C
 g++.dg/cpp0x/pr79457.C
 g++.dg/cpp0x/pr81325.C
-g++.dg/cpp0x/pr85462.C
 g++.dg/cpp0x/pr86379.C
 g++.dg/cpp0x/pr87125.C
 g++.dg/cpp0x/pr87539.C
 g++.dg/cpp0x/pr87750.C
-g++.dg/cpp0x/pr88410.C
 g++.dg/cpp0x/range-for11.C
 g++.dg/cpp0x/range-for17.C
 g++.dg/cpp0x/range-for18.C
@@ -413,7 +404,6 @@ g++.dg/cpp0x/rv-cond3.C
 g++.dg/cpp0x/rv-decl1.C
 g++.dg/cpp0x/rv-dotstar.C
 g++.dg/cpp0x/rv-return.C
-g++.dg/cpp0x/rv-this2.C
 g++.dg/cpp0x/scoped_enum10.C
 g++.dg/cpp0x/scoped_enum4.C
 g++.dg/cpp0x/sfinae12.C
@@ -423,7 +413,6 @@ g++.dg/cpp0x/sfinae23.C
 g++.dg/cpp0x/sfinae28.C
 g++.dg/cpp0x/sfinae29.C
 g++.dg/cpp0x/sfinae3.C
-g++.dg/cpp0x/sfinae32.C
 g++.dg/cpp0x/sfinae35.C
 g++.dg/cpp0x/sfinae36.C
 g++.dg/cpp0x/sfinae37.C
@@ -489,7 +478,6 @@ g++.dg/cpp0x/variadic22.C
 g++.dg/cpp0x/variadic27.C
 g++.dg/cpp0x/variadic29.C
 g++.dg/cpp0x/variadic37.C
-g++.dg/cpp0x/variadic44.C
 g++.dg/cpp0x/variadic7.C
 g++.dg/cpp0x/variadic75.C
 g++.dg/cpp0x/variadic87.C
@@ -531,7 +519,6 @@ g++.dg/template/evaluated1b.C
 g++.dg/template/evaluated1c.C
 g++.dg/template/explicit-args2.C
 g++.dg/template/explicit-instantiation7.C
-g++.dg/template/explicit3.C
 g++.dg/template/friend15.C
 g++.dg/template/friend6.C
 g++.dg/template/friend76.C

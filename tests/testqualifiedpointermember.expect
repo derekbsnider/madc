@@ -1,0 +1,11 @@
+arrow: 7 7 7
+sub: 5 6 4 7
+deref: 4 5 4
+arith: 2 1 1
+step: 5 5
+call: 5 5 4
+cond: 5
+amem: 6 5 4
+mem: 5 4
+addr: 7
+bits: -3 -3

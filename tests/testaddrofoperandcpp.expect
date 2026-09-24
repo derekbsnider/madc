@@ -1,0 +1,5 @@
+addr-class-deref 1
+addr-this 1
+member-pointer 3
+static-member 7
+namespace-member 5

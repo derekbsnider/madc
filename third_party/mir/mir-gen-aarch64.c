@@ -496,82 +496,123 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
   }
 }
 
+/* aarch64 long double. On arm64-macos it IS double: MIR_LD_IS_D turns every
+   LD insn into its D twin at creation, so none of these builtins is ever
+   reached there, and the C helpers are kept for that build exactly as before.
+
+   On aarch64-linux long double is IEEE binary128 and the ISA has no instruction
+   for it, so every LD operation is a CALL -- and GCC's lowering is a call to
+   libgcc's soft-float routine BY ITS REAL NAME (an object gcc compiles imports
+   __addtf3, __fixtfdi, __lttf2, ...). These builtins used to call C helpers
+   (`mir_ldadd (long double d1, long double d2) { return d1 + d2; }`) under a
+   DOTTED name, "mir.ldadd", that nothing exports on this target: a madc
+   aarch64-linux object imported 18 of them and any program doing long double
+   arithmetic failed to LINK. The same helpers are the bootstrap cycle x86-64
+   had -- a compiler built on MIR lowers a helper's own `d1 + d2` back into a
+   call to "mir.ldadd". Binding the builtins to the runtime routines ends both:
+   no helper body exists to recurse, and the import is the name the system
+   linker resolves from libgcc -- the same name gcc's object carries. The JIT
+   binds the same routines by address. Declared ADDRESS-ONLY: no C call is ever
+   made through these prototypes, so their C type is deliberately not the
+   routine's (on a cross host, long double is not even binary128). */
+#if MIR_TARGET_APPLE_P
 static long double mir_i2ld (int64_t i) { return i; }
 static const char *I2LD = "mir.i2ld";
-static const char *I2LD_P = "mir.i2ld.p";
-
 static long double mir_ui2ld (uint64_t i) { return i; }
 static const char *UI2LD = "mir.ui2ld";
-static const char *UI2LD_P = "mir.ui2ld.p";
-
 static long double mir_f2ld (float f) { return f; }
 static const char *F2LD = "mir.f2ld";
-static const char *F2LD_P = "mir.f2ld.p";
-
 static long double mir_d2ld (double d) { return d; }
 static const char *D2LD = "mir.d2ld";
-static const char *D2LD_P = "mir.d2ld.p";
-
 static int64_t mir_ld2i (long double ld) { return ld; }
 static const char *LD2I = "mir.ld2i";
-static const char *LD2I_P = "mir.ld2i.p";
-
 static float mir_ld2f (long double ld) { return ld; }
 static const char *LD2F = "mir.ld2f";
-static const char *LD2F_P = "mir.ld2f.p";
-
 static double mir_ld2d (long double ld) { return ld; }
 static const char *LD2D = "mir.ld2d";
-static const char *LD2D_P = "mir.ld2d.p";
-
 static long double mir_ldadd (long double d1, long double d2) { return d1 + d2; }
 static const char *LDADD = "mir.ldadd";
-static const char *LDADD_P = "mir.ldadd.p";
-
 static long double mir_ldsub (long double d1, long double d2) { return d1 - d2; }
 static const char *LDSUB = "mir.ldsub";
-static const char *LDSUB_P = "mir.ldsub.p";
-
 static long double mir_ldmul (long double d1, long double d2) { return d1 * d2; }
 static const char *LDMUL = "mir.ldmul";
-static const char *LDMUL_P = "mir.ldmul.p";
-
 static long double mir_lddiv (long double d1, long double d2) { return d1 / d2; }
 static const char *LDDIV = "mir.lddiv";
-static const char *LDDIV_P = "mir.lddiv.p";
-
 static long double mir_ldneg (long double d) { return -d; }
 static const char *LDNEG = "mir.ldneg";
-static const char *LDNEG_P = "mir.ldneg.p";
+static int64_t mir_ldeq (long double d1, long double d2) { return d1 == d2; }
+static const char *LDEQ = "mir.ldeq";
+static int64_t mir_ldne (long double d1, long double d2) { return d1 != d2; }
+static const char *LDNE = "mir.ldne";
+static int64_t mir_ldlt (long double d1, long double d2) { return d1 < d2; }
+static const char *LDLT = "mir.ldlt";
+static int64_t mir_ldge (long double d1, long double d2) { return d1 >= d2; }
+static const char *LDGE = "mir.ldge";
+static int64_t mir_ldgt (long double d1, long double d2) { return d1 > d2; }
+static const char *LDGT = "mir.ldgt";
+static int64_t mir_ldle (long double d1, long double d2) { return d1 <= d2; }
+static const char *LDLE = "mir.ldle";
+#define LD_BUILTIN(mir_name, helper, rt) \
+  _MIR_builtin_func (ctx, curr_func_item->module, mir_name, helper)
+#define LD_CMP_RES_TYPE MIR_T_I64
+#else
+extern void __floatditf (void), __floatunditf (void), __extendsftf2 (void),
+  __extenddftf2 (void), __fixtfdi (void), __trunctfsf2 (void), __trunctfdf2 (void),
+  __addtf3 (void), __subtf3 (void), __multf3 (void), __divtf3 (void), __negtf2 (void),
+  __eqtf2 (void), __netf2 (void), __lttf2 (void), __getf2 (void), __gttf2 (void),
+  __letf2 (void);
+#define LD_BUILTIN(mir_name, helper, rt) \
+  _MIR_builtin_func (ctx, curr_func_item->module, #rt, rt)
+/* libgcc's comparison routines return an ORDERING int (CMPtype: 32 bits on
+   aarch64 -- gcc tests it with `cmp w0, #0`), not 0/1; ld_cmp_result_code
+   says how machinize turns it into MIR's boolean. */
+#define LD_CMP_RES_TYPE MIR_T_I32
+#endif
 
+static const char *I2LD_P = "mir.i2ld.p";
+static const char *UI2LD_P = "mir.ui2ld.p";
+static const char *F2LD_P = "mir.f2ld.p";
+static const char *D2LD_P = "mir.d2ld.p";
+static const char *LD2I_P = "mir.ld2i.p";
+static const char *LD2F_P = "mir.ld2f.p";
+static const char *LD2D_P = "mir.ld2d.p";
+static const char *LDADD_P = "mir.ldadd.p";
+static const char *LDSUB_P = "mir.ldsub.p";
+static const char *LDMUL_P = "mir.ldmul.p";
+static const char *LDDIV_P = "mir.lddiv.p";
+static const char *LDNEG_P = "mir.ldneg.p";
 static const char *VA_ARG_P = "mir.va_arg.p";
 static const char *VA_ARG = "mir.va_arg";
 static const char *VA_BLOCK_ARG_P = "mir.va_block_arg.p";
 static const char *VA_BLOCK_ARG = "mir.va_block_arg";
-
-static int64_t mir_ldeq (long double d1, long double d2) { return d1 == d2; }
-static const char *LDEQ = "mir.ldeq";
 static const char *LDEQ_P = "mir.ldeq.p";
-
-static int64_t mir_ldne (long double d1, long double d2) { return d1 != d2; }
-static const char *LDNE = "mir.ldne";
 static const char *LDNE_P = "mir.ldne.p";
-
-static int64_t mir_ldlt (long double d1, long double d2) { return d1 < d2; }
-static const char *LDLT = "mir.ldlt";
 static const char *LDLT_P = "mir.ldlt.p";
-
-static int64_t mir_ldge (long double d1, long double d2) { return d1 >= d2; }
-static const char *LDGE = "mir.ldge";
 static const char *LDGE_P = "mir.ldge.p";
-
-static int64_t mir_ldgt (long double d1, long double d2) { return d1 > d2; }
-static const char *LDGT = "mir.ldgt";
 static const char *LDGT_P = "mir.ldgt.p";
-
-static int64_t mir_ldle (long double d1, long double d2) { return d1 <= d2; }
-static const char *LDLE = "mir.ldle";
 static const char *LDLE_P = "mir.ldle.p";
+
+/* The 32-bit integer compare that turns a libgcc comparison result into MIR's
+   0/1 -- gcc's own pairing, which also gives every UNORDERED (NaN) case the
+   answer C requires: __eqtf2/__netf2 return nonzero when unordered, __lttf2 and
+   __letf2 a positive value, __getf2 and __gttf2 a negative one. MIR_INSN_BOUND:
+   the builtin already returns 0/1 (the arm64-macos helpers). */
+static MIR_insn_code_t ld_cmp_result_code (MIR_insn_code_t code) {
+#if MIR_TARGET_APPLE_P
+  (void) code;
+  return MIR_INSN_BOUND;
+#else
+  switch (code) {
+  case MIR_LDEQ: return MIR_EQS; /* __eqtf2 == 0 */
+  case MIR_LDNE: return MIR_NES; /* __netf2 != 0 */
+  case MIR_LDLT: return MIR_LTS; /* __lttf2 <  0 */
+  case MIR_LDGE: return MIR_GES; /* __getf2 >= 0 */
+  case MIR_LDGT: return MIR_GTS; /* __gttf2 >  0 */
+  case MIR_LDLE: return MIR_LES; /* __letf2 <= 0 */
+  default: return MIR_INSN_BOUND;
+  }
+#endif
+}
 
 static int get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *proto_item,
                         MIR_item_t *func_import_item) {
@@ -584,109 +625,109 @@ static int get_builtin (gen_ctx_t gen_ctx, MIR_insn_code_t code, MIR_item_t *pro
     res_type = MIR_T_LD;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, I2LD_P, 1, &res_type, 1, MIR_T_I64, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, I2LD, mir_i2ld);
+    *func_import_item = LD_BUILTIN (I2LD, mir_i2ld, __floatditf);
     return 1;
   case MIR_UI2LD:
     res_type = MIR_T_LD;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, UI2LD_P, 1, &res_type, 1, MIR_T_I64, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, UI2LD, mir_ui2ld);
+    *func_import_item = LD_BUILTIN (UI2LD, mir_ui2ld, __floatunditf);
     return 1;
   case MIR_F2LD:
     res_type = MIR_T_LD;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, F2LD_P, 1, &res_type, 1, MIR_T_F, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, F2LD, mir_f2ld);
+    *func_import_item = LD_BUILTIN (F2LD, mir_f2ld, __extendsftf2);
     return 1;
   case MIR_D2LD:
     res_type = MIR_T_LD;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, D2LD_P, 1, &res_type, 1, MIR_T_D, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, D2LD, mir_d2ld);
+    *func_import_item = LD_BUILTIN (D2LD, mir_d2ld, __extenddftf2);
     return 1;
   case MIR_LD2I:
     res_type = MIR_T_I64;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, LD2I_P, 1, &res_type, 1, MIR_T_LD, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LD2I, mir_ld2i);
+    *func_import_item = LD_BUILTIN (LD2I, mir_ld2i, __fixtfdi);
     return 1;
   case MIR_LD2F:
     res_type = MIR_T_F;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, LD2F_P, 1, &res_type, 1, MIR_T_LD, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LD2F, mir_ld2f);
+    *func_import_item = LD_BUILTIN (LD2F, mir_ld2f, __trunctfsf2);
     return 1;
   case MIR_LD2D:
     res_type = MIR_T_D;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, LD2D_P, 1, &res_type, 1, MIR_T_LD, "v");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LD2D, mir_ld2d);
+    *func_import_item = LD_BUILTIN (LD2D, mir_ld2d, __trunctfdf2);
     return 1;
   case MIR_LDADD:
     res_type = MIR_T_LD;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDADD_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDADD, mir_ldadd);
+    *func_import_item = LD_BUILTIN (LDADD, mir_ldadd, __addtf3);
     return 2;
   case MIR_LDSUB:
     res_type = MIR_T_LD;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDSUB_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDSUB, mir_ldsub);
+    *func_import_item = LD_BUILTIN (LDSUB, mir_ldsub, __subtf3);
     return 2;
   case MIR_LDMUL:
     res_type = MIR_T_LD;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDMUL_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDMUL, mir_ldmul);
+    *func_import_item = LD_BUILTIN (LDMUL, mir_ldmul, __multf3);
     return 2;
   case MIR_LDDIV:
     res_type = MIR_T_LD;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDDIV_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDDIV, mir_lddiv);
+    *func_import_item = LD_BUILTIN (LDDIV, mir_lddiv, __divtf3);
     return 2;
   case MIR_LDNEG:
     res_type = MIR_T_LD;
     *proto_item
       = _MIR_builtin_proto (ctx, curr_func_item->module, LDNEG_P, 1, &res_type, 1, MIR_T_LD, "d");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDNEG, mir_ldneg);
+    *func_import_item = LD_BUILTIN (LDNEG, mir_ldneg, __negtf2);
     return 1;
   case MIR_LDEQ:
-    res_type = MIR_T_I64;
+    res_type = LD_CMP_RES_TYPE;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDEQ_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDEQ, mir_ldeq);
+    *func_import_item = LD_BUILTIN (LDEQ, mir_ldeq, __eqtf2);
     return 2;
   case MIR_LDNE:
-    res_type = MIR_T_I64;
+    res_type = LD_CMP_RES_TYPE;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDNE_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDNE, mir_ldne);
+    *func_import_item = LD_BUILTIN (LDNE, mir_ldne, __netf2);
     return 2;
   case MIR_LDLT:
-    res_type = MIR_T_I64;
+    res_type = LD_CMP_RES_TYPE;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDLT_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDLT, mir_ldlt);
+    *func_import_item = LD_BUILTIN (LDLT, mir_ldlt, __lttf2);
     return 2;
   case MIR_LDGE:
-    res_type = MIR_T_I64;
+    res_type = LD_CMP_RES_TYPE;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDGE_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDGE, mir_ldge);
+    *func_import_item = LD_BUILTIN (LDGE, mir_ldge, __getf2);
     return 2;
   case MIR_LDGT:
-    res_type = MIR_T_I64;
+    res_type = LD_CMP_RES_TYPE;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDGT_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDGT, mir_ldgt);
+    *func_import_item = LD_BUILTIN (LDGT, mir_ldgt, __gttf2);
     return 2;
   case MIR_LDLE:
-    res_type = MIR_T_I64;
+    res_type = LD_CMP_RES_TYPE;
     *proto_item = _MIR_builtin_proto (ctx, curr_func_item->module, LDLE_P, 1, &res_type, 2,
                                       MIR_T_LD, "d1", MIR_T_LD, "d2");
-    *func_import_item = _MIR_builtin_func (ctx, curr_func_item->module, LDLE, mir_ldle);
+    *func_import_item = LD_BUILTIN (LDLE, mir_ldle, __letf2);
     return 2;
   case MIR_VA_ARG:
     res_type = MIR_T_I64;
@@ -946,19 +987,30 @@ static void target_machinize (gen_ctx_t gen_ctx) {
         gen_delete_insn (gen_ctx, insn);
       } else { /* Use builtin: mov freg, func ref; call proto, freg, res_reg, op_reg[, op_reg2] */
         MIR_op_t freg_op, res_reg_op = insn->ops[0], op_reg_op = insn->ops[1], ops[5];
+        /* A libgcc comparison returns an ordering int: call into a temp, then
+           compare it with 0 into the insn's own result (gcc: bl __lttf2;
+           cmp w0, #0; cset w0, lt). */
+        MIR_insn_code_t cmp_code = ld_cmp_result_code (code);
+        MIR_op_t call_res_op = res_reg_op;
 
         assert (res_reg_op.mode == MIR_OP_VAR && op_reg_op.mode == MIR_OP_VAR);
+        if (cmp_code != MIR_INSN_BOUND)
+          call_res_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
         freg_op = _MIR_new_var_op (ctx, gen_new_temp_reg (gen_ctx, MIR_T_I64, func));
         next_insn = new_insn
           = MIR_new_insn (ctx, MIR_MOV, freg_op, MIR_new_ref_op (ctx, func_import_item));
         gen_add_insn_before (gen_ctx, insn, new_insn);
         ops[0] = MIR_new_ref_op (ctx, proto_item);
         ops[1] = freg_op;
-        ops[2] = res_reg_op;
+        ops[2] = call_res_op;
         ops[3] = op_reg_op;
         if (nargs == 2) ops[4] = insn->ops[2];
         new_insn = MIR_new_insn_arr (ctx, MIR_CALL, nargs + 3, ops);
         gen_add_insn_before (gen_ctx, insn, new_insn);
+        if (cmp_code != MIR_INSN_BOUND)
+          gen_add_insn_before (gen_ctx, insn,
+                               MIR_new_insn (ctx, cmp_code, res_reg_op, call_res_op,
+                                             MIR_new_int_op (ctx, 0)));
         gen_delete_insn (gen_ctx, insn);
       }
     } else if (code == MIR_VA_START) {

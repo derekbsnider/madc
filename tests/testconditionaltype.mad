@@ -1,0 +1,35 @@
+// A conditional expression whose arms are both arithmetic has the type
+// [expr.cond]/7 gives it: in C++ a type the two arms share after
+// lvalue-to-rvalue is the result (`b ? uc : uc2` is unsigned char, `b ? e1 :
+// e2` the enum, `b ? true : false` bool), otherwise the usual arithmetic
+// conversions over the promoted arms (`b ? uc : ss` int, `b ? i : l` long,
+// `b ? fl : d` double). madc preferred the TRUE arm's type, silently and with
+// wrong VALUES: `auto a1 = nb ? uc : ss` stored -5 as 251, `b ? i : d` and
+// `b ? fl : d` narrowed to int / float, sizeof(b ? uc : ss) was 1.
+#include <cstdio>
+static const char *f(bool) { return "bool"; }
+static const char *f(char) { return "char"; }
+static const char *f(signed char) { return "schar"; }
+static const char *f(unsigned char) { return "uchar"; }
+static const char *f(short) { return "short"; }
+static const char *f(unsigned short) { return "ushort"; }
+static const char *f(int) { return "int"; }
+static const char *f(unsigned) { return "uint"; }
+static const char *f(long) { return "long"; }
+static const char *f(unsigned long) { return "ulong"; }
+static const char *f(float) { return "float"; }
+static const char *f(double) { return "double"; }
+enum E { E0, E1 };
+static const char *f(E) { return "E"; }
+struct B { unsigned x : 3; };
+int main() {
+    bool b = true, nb = false; unsigned char uc = 200, uc2 = 3; short ss = -5; char c = 'a', c2 = 'b';
+    int i = 7; unsigned u = 1; long l = 2; float fl = 1.5f; double d = 2.5; E e1 = E0, e2 = E1; B bt{5};
+    std::printf("mix: %s %s %s %s %s %s %s\n", f(b ? uc : ss), f(b ? ss : 1), f(b ? i : u), f(b ? i : l), f(b ? fl : 1), f(b ? fl : d), f(b ? i : d));
+    std::printf("same: %s %s %s %s %s\n", f(b ? uc : uc2), f(b ? c : c2), f(b ? true : false), f(b ? e1 : e2), f(b ? bt.x : 1u));
+    std::printf("size: %d %d %d %d\n", (int)sizeof(b ? uc : ss), (int)sizeof(b ? uc : uc2), (int)sizeof(b ? c : 1), (int)sizeof(b ? fl : d));
+    auto a1 = nb ? uc : ss; auto a2 = b ? uc : ss; auto a3 = nb ? i : u;
+    std::printf("auto: %d %d %d %u %d\n", (int)sizeof(a1), a1, a2, a3, (int)sizeof(a3));
+    std::printf("val: %d %ld %.2f\n", (b ? uc : ss) + 100, (long)(nb ? i : -1L), (double)(nb ? fl : 3));
+    return 0;
+}

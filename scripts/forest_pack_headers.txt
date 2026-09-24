@@ -5,7 +5,7 @@
 # off it. Foundational/config headers first, containers, then streams —
 # the same discipline glibc/libstdc++'s internal ordering encodes.
 #
-# LIST VERSION 3 (2026-08-16). Grow deliberately: every header here must
+# LIST VERSION 4 (2026-09-24; v3 2026-08-16). Grow deliberately: every header here must
 # compile QUIETLY (exit 0, zero diagnostics) in this combined order — the
 # pack step is a release gate. algorithm CLEARED at v26 HEAD (quiet after
 # streams; the B4a istreambuf_iterator arity blocker is gone). Known
@@ -36,6 +36,13 @@
 # NOTE math.h, not cmath — the C header is clean here; cmath remains on the
 # blocker list above.
 #
+# v4 (2026-09-24) added setjmp.h and signal.h, here and in the win64 and darwin
+# lists: the volatile setjmp/longjmp and signal reducers were the first tests
+# to include them, and the headerless lane refused all nine — absent roots
+# again. (With no setjmp.h unit, a bare <setjmp.h> even tail-matched the
+# frozen bits/setjmp.h and tripped its "never include directly" #error; KG
+# forest_tail_match_subdir_unit.)
+#
 # ⚠ locale IS NOT QUIET, and is carried anyway pending a fix. It adds four
 # diagnostics, all one defect in one facet (bits/locale_facets_nonio.h):
 #   time_get<..>::do_get — "Expecting case or default in switch body" (x2) and
@@ -56,6 +63,8 @@ cstdlib
 ctime
 cerrno
 math.h
+setjmp.h
+signal.h
 unistd.h
 fcntl.h
 dirent.h

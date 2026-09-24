@@ -11,7 +11,7 @@
 # not gate the libc++ grove, and vice versa), so one shared list would
 # couple the two release gates.
 #
-# LIST VERSION 1 (2026-08-10), seeded from the Linux list. Every header
+# LIST VERSION 2 (2026-09-24: setjmp.h signal.h, see the Linux list; v1 2026-08-10, seeded from the Linux list). Every header
 # must compile QUIETLY in this combined order behind the prelude names —
 # scripts/forest_pack_darwin.sh is the gate.
 cstddef
@@ -22,6 +22,8 @@ cstdio
 cstdlib
 ctime
 cerrno
+setjmp.h
+signal.h
 string
 vector
 list

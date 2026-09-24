@@ -1,0 +1,6 @@
+# Labels whose line legitimately DIFFERS from tests/testunarypromotionc.win64_expect
+# versus tests/testunarypromotionc.expect — the win64 domain's own answers (long is 4 bytes on LLP64 (sizeof), and the value line's long arithmetic wraps at 32 bits;
+# the twin is x86_64-w64-mingw32 gcc/g++'s output under wine). Every other
+# labelled line must be identical in both (scripts/check-expect-twins.sh).
+sizeof
+value

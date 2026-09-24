@@ -69,7 +69,8 @@ enum DefKind : uint32_t {
 	DK_VOID,	// (reserved)
 	DK_PTR,		// ref0 = pointee type-id
 	DK_REF,		// ref0 = referee type-id
-	DK_CONST,	// ref0 = unqualified type-id
+	DK_CONST,	// DataDefQUAL: ref0 = unqualified type-id, flags = its cv mask
+			// (CvQual; 0 = const — the records written before the mask)
 	DK_ENUM,
 	DK_STRUCT,	// members_* slice
 	DK_UNION,	// members_* slice, union layout
@@ -145,6 +146,9 @@ enum DefFlags : uint32_t {
 	DF_IS_VOID_PARAMS    = 1u << 11,
 	DF_DECLARATION_ONLY  = 1u << 12,
 	DF_IS_CONST_METHOD   = 1u << 13,	// FuncDef::is_const_method
+	DF_IS_VOLATILE_METHOD = 1u << 27,	// FuncDef::is_volatile_method (`f() volatile`);
+						// function records only — the bit is
+						// DF_OPAQUE_TAG on an aggregate's
 	DF_HAS_FOREST_BODY   = 1u << 14,	// INLINE method: body_unit/body_idx locate its Tree-1 def
 	DF_IS_MEMBER_TEMPLATE = 1u << 15,	// FuncDef::is_member_template / template_param_names
 						// non-empty — a template method instantiates no

@@ -2,6 +2,262 @@
 
 ## [Unreleased]
 
+### Arrays, calls, casts, `sizeof` and arithmetic operands each read their operand through one owner
+
+The indirection families left open by the `*`/`&` consolidation, each measured
+against gcc and clang before it was touched. Five of them held silent wrong
+answers.
+
+- **The end of an expression is one function** (`Program::finish_expression`).
+  An initializer, call argument or condition ended through a second copy that
+  skipped the "two operands, no operator" check: `int r = (x)(4)` with `x` an
+  `int` compiled to `int r = x = 4` and exited 0.
+- **An array operand's element has one owner** (`array_operand_type` /
+  `array_operand_element_type`). madc stores arrays flattened, and four sites
+  re-derived rows from the scalar. `sizeof(*table)` on an array of function
+  pointers was 16 (gcc 8); `sizeof(*pa[1])`, `sizeof(*(m + 1))` and
+  `sizeof(*c3[1])` measured the scalar; `(*table)(5)`, `(*grid[1])(5)`,
+  `*s.g[1]`, `**pa[1]`, `q.in->x` and `ps[1]->x` were refused; `*arr` on a
+  class array called `operator*`.
+- **`sizeof` of an expression is measured once.** `sizeof s.a` on a member
+  array was 4 (gcc 12), `sizeof s.n` 1 (gcc 10) and `sizeof s.n[1]` 1 (gcc 5),
+  all silent. The parenthesized form had its own patched copy.
+- **A call through any function-pointer expression**: adjacency decides, not
+  a list of callee kinds or a pending operator. `g(3) + (*tab)(3)`,
+  `(x, f)(x)`, `(f = twice)(x)` and calls through a `const fn_t *` now work.
+- **The operand of a cast is a cast-expression**: nine shape arms deleted.
+  `(long)"abc"[1]` now works, and gxx-c++11 gains `initlist-array20`.
+- **`(*rp++)[1]`** (a subscript of a stepped dereference) now parses.
+- **"Is this a function pointer" has one owner** (`as_fptr_dd()`, which sees
+  through `const`). A site that `static_cast` a const wrapper is gone, and
+  the structural sites are marked.
+- **An arithmetic operand's type has one owner per step**: the value it
+  denotes (a reference is its referent) and that value's integer promotions.
+  Every operator reads its operands through them.
+  - Unary `~`, `-` and `+` now promote. `f(~uc)` picked `f(unsigned char)`,
+    and `sizeof(~ch)` was 1.
+  - Unary `+` is a real operator, not dropped. A class's `operator+()` now
+    runs (`(+k).v` was 1, g++ 101), `sizeof(+a)` is 8, not 12, and
+    `+[](int){...}` compiles.
+  - A bit-field narrower than `int` promotes to `int`.
+  - `%` has a type: `l % 3` on a `long` was 4 bytes.
+  - A reference operand no longer types the expression as a pointer.
+    `auto a = rl + 2` and even `auto c = rl` bound a pointer to the value
+    and crashed.
+  - `auto` and lambda return types stopped deducing `double` for `float`
+    arithmetic.
+- **C++ comparisons and logical operators yield `bool`** (C keeps `int`).
+  They were `int` in both languages: `f(i == j)` picked `f(int)` over
+  `f(bool)`, `sizeof(i == j)` was 4 and `auto a = (i == j)` deduced `int`. In
+  the madc dialect `println("{}", i < j)` now prints `true`, as `std::format`
+  does.
+- **`c ? a : b` over two arithmetic arms has the standard's type.** madc took
+  the true arm's type, which gave wrong values as well as wrong types:
+  `auto a = nb ? uc : ss` stored -5 as 251, and `b ? i : d` / `b ? fl : d`
+  narrowed to `int` / `float`. C++ keeps a type both arms share (`b ? uc : uc2`
+  is `unsigned char`). Otherwise, and always in C, the usual arithmetic
+  conversions apply.
+- **A compound assignment (`+=` ... `^=`) has its left operand's type**, as
+  `=` does. All ten were `int`: `sizeof(d *= 2)` was 4, and `*(p += 2)` was
+  refused.
+- **A function-pointer argument picks the function-pointer overload.**
+  `f(pg)` picked `f(long)` over `f(int (*)(int))`. `k(g)` was refused as
+  ambiguous between `k(bool)` and `k(long)`; it now picks `k(bool)`, as g++
+  and clang++ do.
+- **Calls through a reference to a function or function pointer work**
+  (`int (*&r)(int) = pg; r(4)`, `int (&rf)(int) = g; rf(5)`). The call
+  used to be refused. A local, `static` or file-scope pointer to a function
+  pointer (`int (**pp)(int)`) now declares with its real type in C and C++;
+  it had been declared `long long *`.
+- **A reference to a function or a function pointer mangles as g++ does**:
+  `RPFiiE` and `RFiiE`, not `PPFiiE`. A madc definition taking one, and a g++
+  caller of it, now link.
+- **An aggregate's reference member binds its initializer.** `RM rm{lv}` (for
+  `long &r`) used to store the value in the reference and then crash. A
+  `const &` member binds a temporary too.
+- **`signed char` is its own type in C.** `_Generic` chose the `char`
+  association for a `signed char` (and `char *` for `signed char *`), and
+  `__builtin_types_compatible_p(char, signed char)` was 1. The emitted C
+  spelled `signed char` as plain `char`, which on aarch64-linux (an
+  unsigned-char target) turned `(signed char)200` into 200 instead of -56.
+- **c2mir folds a constant cast to `signed char` as `signed char`.** It cast
+  through the target's plain char, so on aarch64-linux `int x = (signed
+  char)200;` folded to 200. The aarch64 qemu lane now runs every
+  `tests/cross/aarch64_*.c` fixture and carries a char-sign fixture.
+- **C: a leading `const` in a typedef or a cast qualifies the pointee.**
+  `typedef const char *ccp`, `typedef const int CI`, `typedef const struct T
+  *P` and `(const char *)p` had all named the unqualified type, so `_Generic`
+  chose `char *` and `__builtin_types_compatible_p(ccp, const char *)` was 0.
+- **A pointer non-type template argument is one operand in the template's
+  body.** `template <int (*P)()> ... P()` over `FnPtr<&g>` was refused as
+  `&(g())`, and `O->m` over `Obj<&obj>` as `&(obj->m)`. New gate
+  `check-one-nontype-splice.sh`.
+- **c2mir's own `_Generic` no longer promotes its controlling expression.** A
+  `char` or `short` operand selected `int` (or default) in C compiled by c2m,
+  and `_Generic(x, char *: ..., const char *: ...)` was refused as two
+  compatible associations. (madc resolves `_Generic` itself; this is c2m's.)
+- **A `volatile` local keeps its value across `longjmp`.** madc dropped the
+  qualifier, and c2mir ignored it anyway and kept every scalar local in a
+  register, so a `volatile` local changed between `setjmp` and `longjmp` came
+  back with its `setjmp`-time value, or garbage (gcc and clang: 4511; madc:
+  -834290028). c2m compiling C directly had the same bug. `volatile` now also
+  reaches `--emit=c11` output, including a pointer object's own qualifier
+  (`int *volatile p`).
+- **MIR knows what a volatile access is.** MIR had no volatile concept, so at
+  `-O2` its optimizer removed, merged and forwarded volatile loads and stores
+  like any others. A loop spinning on a `volatile sig_atomic_t` flag set by a
+  signal handler never ended, in madc and in c2m alike. A memory operand now
+  carries a volatile bit (`volatile:` in textual MIR, one prefix byte in binary
+  MIR), c2mir sets it on every access through a volatile lvalue, and every
+  optimization pass leaves such an access exactly as written: the same count
+  and order of loads and stores as gcc and clang, at every `-O` level.
+  `*vp;`, `(void) *vp` and `(*vp, 0)` now perform their read. New gate
+  `check-volatile-accesses.sh` counts the accesses at run time against gcc.
+- **`volatile` is part of the type.** Only a volatile object reached the
+  IR; `volatile int *q`, a volatile struct member, `typedef volatile int vint`,
+  a cast `(volatile int *)p`, a volatile parameter or return type all lost the
+  qualifier in the front end. A spin through a `volatile sig_atomic_t *` hung
+  at `-O2`, a `vint` local came back from `longjmp` as garbage, and `_Generic`
+  picked the `int *` association for every one. madc's const-qualified type
+  became one qualified type carrying a const/volatile mask (gcc's model), and
+  every spelling now reaches c2mir and `--emit=c11` output — in C, in madc
+  mode (what a `.c` file with no `--std` compiles in) and in C++ (`const` is
+  modeled in the type in C only). In C++ the qualifier is now part of the
+  function's identity: `f(volatile int *)` mangles `_Z1fPVi` (it was
+  `_Z1fPi`, the second overload renamed `f__o2`, which nothing links), every
+  level's cv reaches the symbol (`PVPVi`, `PVKcS0_`), `volatile int &` binds
+  a volatile referent (`_Z1kRVi`), and overload resolution follows
+  [conv.qual]: `int*` still picks `f(int*)` over `f(volatile int*)`, a
+  `volatile int*` never picks `f(int*)`. A qualified pointer is a pointer
+  everywhere: through a member `struct N *volatile next`, `n.next->v` was
+  refused, `n.p + 2` stepped by 8 instead of 4, and deduction from it failed.
+  A volatile object's lvalue is volatile: `&vx` is `volatile int *`, a
+  member of a volatile struct is volatile (in madc and in plain C through
+  c2m, where `_Generic (&vs.m, ...)` picked `int *`), a volatile lvalue binds
+  only `volatile int &`, and `T &` deduces `volatile int`. In C a const
+  object's lvalue is const the same way (`&cs.m` of a `const struct S cs` is
+  `const int *`). A template argument's `volatile` is part of it:
+  `std::is_same<volatile int, int>` is false, `remove_volatile`,
+  `add_volatile` and `remove_pointer` over volatile types give g++'s
+  answers, and an alias template whose target begins with `const` or
+  `volatile` (`template <class T> using c_t = const T *;`) is no longer
+  refused. A volatile member function (`int get() volatile`) is its own
+  overload with its own symbol (`_ZNV1C3getEv`), a volatile object calls it,
+  and `this` inside it is `volatile C *`. A volatile parameter keeps its
+  value across `longjmp`, K&R declarations may start with `volatile`, a
+  `volatile int a[][3]` parameter's elements are volatile, and a C++ class
+  member declared `volatile` (or `int *volatile`) is volatile. `_Generic`
+  associations and `__builtin_types_compatible_p` accept any type name
+  (`volatile int (*)[4]`, `int (**)(int)`), and `__is_same(volatile int *,
+  int *)` is false. `const` now reaches c2mir and `--emit=c11` output too
+  (`const int k` was emitted as `int k`).
+  Also fixed: a subscript through a reference to a pointer (`int *&rp;
+  rp[1]`) read the wrong memory and returned garbage — it now indexes the
+  referent; a brace-initialized `typedef const
+  struct` (or volatile) local was refused (`CP cp = { 3, 4 };`); overload
+  resolution ranked an `int**` argument as an exact match for an `int*`
+  parameter (and `D**` for `B**`), so `f(int*)` / `f(int**)` was reported
+  ambiguous and a function template could run the instance built for a
+  different type (`sizeof (T)` 4 for an `int *volatile`); and a class
+  template partial specialization ignored a pointer level's `volatile`
+  (`S<T*>` matched `int *volatile`, `S<T volatile>` missed it). The volatile
+  gate now counts madc's accesses too.
+  On win64 `long` is its own type in the parse-side type view: a `long`
+  operand selected `_Generic`'s `int` association, and `i + l` was typed
+  `int` and `u + l` `unsigned int` (C: `long`, and `unsigned long`, since a
+  32-bit `long` cannot hold every `unsigned int`); on macOS `long long`
+  rendered as `long`.
+  The release binaries serve `<setjmp.h>` and `<signal.h>` from their own
+  header pack — a machine with no headers installed could not compile a
+  program that included them.
+
+Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
+operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
+`check-one-operand-promotion.sh`.
+Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
+`testfptrarrayderef`, `testarrayrowderef`, `testarrayrowderefcpp`,
+`testderefstepsubscript`, `testcallthroughexpr`, `testcastoperand`,
+`testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`,
+`testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
+`testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
+`testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
+`testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
+`testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`,
+`testtplnontypegroup`, `testvolatileemit`, `testvolatilesetjmpc`,
+`testvolatilesetjmpo2c`, `testvolatilesignalc`, `testvolatilepointeec`,
+`testvolatilepointeeo2c`, `testqualifiedaggregateinitc`.
+
+### Unary `*` and `&` read their operand through one owner
+
+A handed-over parse error, `**c.pp()`, turned out to be one symptom of a
+family: six hand-written readers of a `*` operand, each covering part of the
+grammar, and every one wrong somewhere. The `&` reader had the same problem.
+Both now read their operand as a cast-expression through the expression
+engine, the way gcc's `c_parser_unary_expression` does, and each has one
+builder:
+
+- **Refused shapes that now parse:** `**c.pp()`, `**cp->p2`, `**first(pp)`,
+  `**arr2[0]`, `**::gpp`, `***sp->p3`, `**m` on a 2-D array, `sizeof **p`,
+  `sizeof -x`, `(int)*it`, `&*p`, `&**pp`, `&*it`, `&*this`, `(*twice)(3)`,
+  `&*q++`, `(*sq++).m`.
+- **Silent wrong answers fixed:** `*&x + 1` (was 0), `*static_cast<int*>(vp) + 1`
+  (9), `**(q)++` (dereferenced once), `(int)*p++` (lost the `++`),
+  `(char)**pp * 100`, `(char)-x * 100` and `(char)~x * 100` (the cast took
+  the whole product), `sizeof(*m)` on `int[2][3]` (4, not 12), and
+  `fn_t *fpp = &f`, which stored `f` itself.
+- **`*it++` on a class iterator** now compiles: the postfix step's by-value
+  result is materialized as a temporary before `operator*` is called on it.
+- **Conformance:** gxx-c++11 1464 → 1474 and c2mir-tests 302 → 304, with
+  nothing targeted at them; both baselines were shrunk.
+- **New rule** `.claude/rules/indirection.md` indexes the one owner for every
+  layered pointer, reference and array concern. The new gate
+  `scripts/check-one-deref-builder.sh` (in `fulltest`) keeps both families
+  from regrowing.
+
+Reducers: `tests/testderefoperandc`, `testderefoperandcpp`,
+`testaddrofoperand`, `testaddrofoperandcpp`, `testclasspostincprvalue`.
+
+### The audit's findings, measured and fixed: void pointers, ellipsis overloads, aarch64 long double
+
+The duplication audit run at the self-hosting merge reported two divergent
+families. Measured on the artifact, each turned out larger and different from
+what reading the code suggested, and each surfaced a defect one layer down.
+Five fixes, four of them silent wrong answers:
+
+- **`void **` is not `void`.** A pointer's `rawtype()` and `type()` both come
+  from its pointee, so sixteen hand-written "is this void" tests also said yes
+  to `void *` and `void **`; nine forgot the guard. Overload ranking treated
+  `int **` → `void **` as the `void *` conversion (a false ambiguity, or an
+  ill-typed call accepted); a multi-return refused a `void *` slot; a range-for
+  refused a `void **` iterator and — through the dumper's spec builder — a plain
+  `void *arr[2]`; `std::format` accepted `void **` while refusing `int *`.
+  `DataDef::is_void()` is now the one owner, gated by
+  `scripts/check-one-void-predicate.sh`.
+- **`void *a[3]; a + 3` advanced 3 bytes, not 24** — plain C, every build,
+  exit 0. The GNU `void *`-arithmetic rewrite asked about the array's element
+  type instead of its decay; it adopts `Program::array_decay_pointer` now.
+- **An ellipsis overload is viable.** `pick(void **)` vs `pick(...)` with an
+  `int **` called the `void **` one; `f(long)` vs `f(...)` with a struct called
+  `f(long)`. The free-function ranker scored the argument against the `...`'s
+  synthetic parameter slot; `FuncDef::fixed_param_count()` owns that slot now,
+  and an ellipsis match loses every tie ([over.ics.rank]).
+- **aarch64-linux could not link any program doing `long double`
+  arithmetic.** MIR's generator called helpers under dotted names nothing
+  exports on that target. They call libgcc's soft-float routines by name now —
+  exactly the set gcc's own objects import — with gcc's 32-bit post-compare for
+  the six comparisons. (ppc64, riscv64 and s390x carry the same helpers but are
+  not madc targets and have no object writer; they were never broken.)
+- **A `long double` constant reached aarch64-linux in the x86 host's byte
+  layout**, which reads as binary128 near zero (`1.0L/3.0L` printed `0.000…`).
+  `MIR_new_data`, the one place a value becomes target bytes, re-encodes x87 →
+  binary128 exactly. Folding on an x87 host is still 64-bit precise, not
+  113 — a documented limit.
+
+A new lane, `scripts/aarch64_ldouble_lane.sh` (`remote_build.sh aarch64-ld`),
+runs madc's aarch64-linux objects and a gcc-built aarch64 `c2m` under qemu
+against a gcc oracle: every long double builtin and every constant route,
+byte-identical. It is the first lane to exercise that madc target at all.
+
 ### A definition is a declaration — the win64 pack serves its libc prototypes
 
 A call to an undeclared C library function adopts the frozen pack's real

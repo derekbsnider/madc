@@ -1,0 +1,4 @@
+names: long long ulong long
+arith: long long long long
+mixed: ulong long
+compat: 0 1 0

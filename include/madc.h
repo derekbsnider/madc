@@ -224,11 +224,11 @@ public:
 	// A typedef'd const ref (`const_reference __x` — libc++ spells
 	// push_back this way) has NO leading const token, so const_params
 	// stays false; when the resolved type graph carries it (DataDefREF
-	// whose referent is DataDefCONST), read it from there.
+	// whose referent is const-qualified), read it from there.
 	if ( parameters[i]->is_reference() )
 	{
 	    const DataDefPTR *rp =
-		dynamic_cast<const DataDefPTR *>(parameters[i]);
+		pointer_dd_of(parameters[i]);
 	    if ( rp && rp->base_type && rp->base_type->is_const() )
 		return false;
 	}
@@ -239,7 +239,7 @@ public:
 	// ("const_reference", "reference") hides BOTH facts from every
 	// carrier above — abstain rather than refuse a binding madc cannot
 	// prove illegal. The type-graph test above tightens this
-	// automatically as DataDefCONST coverage grows.
+	// automatically as DataDefQUAL coverage grows.
 	if ( i >= param_cpp_spellings.size() )
 	    return false;
 	const std::string &sp = param_cpp_spellings[i];
@@ -300,6 +300,18 @@ public:
     // ownerless DEFBODY re-run reproduces that context so instantiation
     // allowances (the local-class reuse at TokenCLASS::parse) apply as live.
     bool forest_body_in_instantiation = false;
+    // The REAL parameters of a C-variadic function. Every is_varargs FuncDef
+    // carries a SYNTHETIC trailing slot in `parameters` for the `...` (a
+    // ddINT64 `__va_args`: parseFunction, the declarator reader,
+    // __builtin_va_start, the C89 implicit declaration and the member-template
+    // stub all push one), and it is no parameter: an argument past the fixed
+    // ones takes the ellipsis ([over.ics.ellipsis]) and is never scored
+    // against it. Hidden __this/__retbuf slots are NOT removed here.
+    size_t fixed_param_count() const
+    {
+	return ( is_varargs && !parameters.empty() )
+	    ? parameters.size() - 1 : parameters.size();
+    }
     // Number of leading parameters that have NO default — the minimum arg count a
     // call must supply. Equals parameters.size() when no parameter has a default.
     size_t required_param_count() const
@@ -632,6 +644,17 @@ public:
     // 'K' (e.g. _ZNKSt9basic_ios...4goodEv). Set by TokenCLASS::parse / parseFunction
     // when a trailing const follows the parameter list. Default false.
     bool is_const_method;
+    // `f() volatile` ([dcl.fct]/4 cv-qualifier-seq, [class.this]): the
+    // implicit object is volatile — `this` is `volatile C *`, a volatile object
+    // calls only such a member, the symbol spells V. The sibling of
+    // is_const_method; method_cv() is the pair as a CvQual mask, the ONE
+    // spelling every identity reader (mangling, overload tiebreak, out-of-line
+    // matching, the class-pattern record) takes.
+    bool is_volatile_method = false;
+    unsigned method_cv() const
+    {
+	return (is_const_method ? cvCONST : cvNONE) | (is_volatile_method ? cvVOLATILE : cvNONE);
+    }
     // C++11 ref-qualifier ([dcl.fct]p6) on the method: 0 = none, 1 = `&`,
     // 2 = `&&`. Overloads may differ ONLY in cv+ref qualification (libc++'s
     // __optional_storage_base::__get declares all four combinations), so this
@@ -1130,9 +1153,12 @@ public:
     DataDefSTRUCT *owner_struct_type() const
     {
 	DataDef *otype = object.type;
-	if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
+	if ( DataDefPTR *opt = pointer_dd_of(otype) )
 	    otype = opt->base_type;
-	return dynamic_cast<DataDefSTRUCT *>(otype);
+	// The object may be QUALIFIED (`volatile struct S *p`, a `vS` typedef):
+	// its layout is the unqualified struct's (as_struct_dd forwards a
+	// class to its struct view, as the cast did).
+	return otype ? otype->unqualified()->as_struct_dd() : NULL;
     }
     const DataDefSTRUCT::BitFieldInfo *bitfield_info() const
     {
@@ -1365,7 +1391,7 @@ public:
         else if ( bt->is_pointer() )
         {
             // Raw pointer: ptr[i] == *(ptr + i). Element type = pointed-to type.
-            DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
+            DataDefPTR *pdd = pointer_dd_of(bt);
             _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         }
         else if ( bt->type() == DataType::dtSIMD )
@@ -1386,7 +1412,7 @@ public:
     static DataDef *referent_type(DataDef *dd)
     {
         if ( dd && dd->is_reference() )
-            if ( DataDefPTR *rp = dynamic_cast<DataDefPTR *>(dd) )
+            if ( DataDefPTR *rp = pointer_dd_of(dd) )
                 if ( rp->base_type )
                     return rp->base_type;
         return dd;
@@ -2947,6 +2973,10 @@ protected:
     // (not const: intern_keyed_map::count() is not const-qualified)
     bool macro_name_defined(const std::string &name);
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
+    // The end of an expression (every exit of parseExpression): bind the
+    // pending operators, refuse juxtaposed operands, return the one left.
+    TokenBase *finish_expression(std::stack<TokenBase *> &opStack,
+				 std::stack<TokenBase *> &exStack);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
     void _tokenizer_init();
@@ -3281,6 +3311,7 @@ public:
 	std::vector<TokenBase *> noexcept_condition_tokens;
 	bool pure_virtual;
 	bool is_const_method;
+	bool is_volatile_method = false;	// rides the record's const word (bit 1)
 	bool is_member_template;
 	bool has_eager_body;
 	std::vector<ClassMethodParamPattern> parameters;
@@ -4525,7 +4556,8 @@ public:
     // stays its own object
     std::map<std::pair<DataDef *, size_t>, DataDefSIMD *> simd_type_cache;
     registration_map<DataDef *, DataDefREF *> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
-    registration_map<DataDef *, DataDefCONST *> const_type_cache; // cached const-T DataDefs
+    // cached cv-qualified DataDefs: ONE variant per (unqualified base, CvQual mask)
+    registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *> qualified_type_cache;
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
@@ -5264,6 +5296,7 @@ public:
     LinkageSpec current_linkage = LinkageSpec::Cpp;
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+    bool parsing_volatile_decl = false;	// current declaration's decl-specifiers carry `volatile` — it qualifies the variable's TYPE at the top level (no `*`); consumed by parseDeclaration like parsing_const_decl
     bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
     bool parsing_constexpr_decl = false;	// current declaration carried `constexpr` — stamp its FuncDef independently of object const-ness
     // Per-Program constexpr invocation stack. Each frame binds one callee's
@@ -5297,6 +5330,7 @@ public:
     int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
     size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it
+    unsigned typedef_prefix_cv = cvNONE;	// C: the cv (CvQual) between `typedef` and the aggregate keyword (`typedef const struct T *P;`, `typedef volatile struct T V;`) — the alias's base is the cv-qualified aggregate; TokenSTRUCT::parse consumes it ONCE (read + clear), the typedef_prefix_align model
 
     // ---- Script mode: STD_MADC file-scope statements → synthesized main.
     // Owner plan docs/plans/2026-07-21-script-mode-auto-main.md. The parser
@@ -6214,11 +6248,26 @@ public:
     }
     // helper: is prevToken in a position where the next operator would be postfix?
     // true when prevToken is ), ], or a non-operator value token
-    inline bool isPostfixPosition()
+    inline bool isPostfixPosition() { return token_ends_operand(_prv_token); }
+    // Does token `t` END an operand — so the operator after it is postfix or
+    // binary, never unary? The one answer isPostfixPosition() gives for
+    // prevToken and parseCastExpression's bound asks of the token just read.
+    // Has the cast-expression parseCastExpression is reading ended its
+    // operand? The token just read ends one (token_ends_operand), unless it
+    // is a step still waiting on the operator stack — a PREFIX `++`/`--`.
+    inline bool cast_expression_complete(const std::stack<TokenBase *> &opStack)
     {
-	if ( !_prv_token ) return false;
-	TokenID id = _prv_token->id();
-	if ( _prv_token->type() == TokenType::ttKeyword )
+	if ( !token_ends_operand(_cur_token) )
+	    return false;
+	return !( _cur_token
+	       && (_cur_token->id() == TokenID::tkInc || _cur_token->id() == TokenID::tkDec)
+	       && !opStack.empty() && opStack.top() == _cur_token );
+    }
+    inline bool token_ends_operand(TokenBase *t)
+    {
+	if ( !t ) return false;
+	TokenID id = t->id();
+	if ( t->type() == TokenType::ttKeyword )
 	    return !keywordStartsUnaryOperandContext(id);
 	// Symbols that open or continue expression contexts aren't values
 	// either — `{`, `(`, `,`, `;`, `=` mean the next `-` / `!` is
@@ -6231,7 +6280,7 @@ public:
 	    return false;
 	return id == TokenID::tkClBrk || id == TokenID::tkClSqr
 	    || id == TokenID::tkInc || id == TokenID::tkDec
-	    || !_prv_token->is_operator();
+	    || !t->is_operator();
     }
     inline TokenBase *nextToken()
     {
@@ -6493,9 +6542,12 @@ public:
     // [over.match.funcs]/4 — cv of the implicit object ARGUMENT a member call
     // on `recv` supplies. The hidden __this receiver takes the ENCLOSING
     // method's cv (a const member's this points at const T); a named receiver
-    // takes its declared constness (vfCONSTANT-family flags or a DataDefCONST
+    // takes its declared constness (vfCONSTANT-family flags or a const-qualified
     // identity, reference-transparent). 1 = const, 0 = non-const, -1 = unknown.
-    int implicit_object_constness(Variable &recv);
+    // The cv MASK of a member call's implicit object (-1: unknown) — cvCONST /
+    // cvVOLATILE bits, the object's own and, for a member read through `this`,
+    // the enclosing member function's.
+    int implicit_object_cv(Variable &recv);
     // Static-member-call analogue of reselect_method_overload: a qualified
     // static call (`Owner::m(args)`) resolves its callee by name+arity BEFORE
     // the args are parsed, so once the arg types are known reselect the overload
@@ -6516,6 +6568,14 @@ public:
     // A CALL operand types by its RESOLVED callee's return — see
     // resolved_call_funcdef.
     DataDef *operand_value_datadef(TokenBase *operand);
+    // [expr.cond]/7 / C11 6.5.15p5 for two ARITHMETIC arms; NULL otherwise.
+    DataDef *conditional_arithmetic_type(TokenBase *t, TokenBase *f);
+    // The fn pointer a callable value calls through (itself, or a designator's
+    // [conv.func] pointer); NULL when not callable.
+    DataDefFPTR *function_value_pointer_type(DataDef *value_type);
+    // A call through a callable expression's value (src_node + __expr_fptr).
+    class TokenCallFunc *build_call_through_value(TokenBase *callee,
+			DataDefFPTR *fptr_type, TokenBase *paren, TokenBase *&next);
     // The element type of `for (auto x : container)`, deduced from the
     // container expression — the shared iteration recognizers answer it
     // (positional: operator[]'s return; iterator: operator*'s return), the
@@ -6540,6 +6600,11 @@ public:
     // decayed `element *` type for a fixed-array variable / array member /
     // array-typed expression, else NULL. See parser.cpp.
     DataDef *array_decay_pointer(TokenBase *operand);
+    // The ARRAY type an operand denotes, with its extents, or NULL — madc
+    // stores arrays flattened; this is where the extents are read back.
+    DataDef *array_operand_type(TokenBase *e);
+    // Its element (the ROW, multi-dimensional) — the type of e[0] — or NULL.
+    DataDef *array_operand_element_type(TokenBase *e);
     // The return CLASS of a captured FREE namespace binary operator on class
     // operands whose return is a class BY VALUE deducing to one of the operand
     // classes. Structural template-head check only — full deduction, overload
@@ -6565,12 +6630,48 @@ public:
     // The type of '&x' from x's type: pointer-to-referent for a reference
     // operand ([expr.unary.op]p3), else pointer-to-type.
     DataDef *addressof_result_type(DataDef *operand_type);
+    // The cv of the OBJECT an lvalue expression designates: its type's (a
+    // reference denotes its referent). An object's top-level cv is its
+    // declared TYPE's — a variable's as a member's and a typedef's
+    // (parseDeclaration), a fixed array's its element's — so this is the one
+    // reader of "the glvalue's qualifiers" for member access ([expr.ref]/4,
+    // C11 6.5.2.3p3). Masked by modeled_cv().
+    unsigned glvalue_cv(TokenBase *expr);
+    // A data member's type as accessed through an object of cv `object_cv`
+    // (the member's own cv and the object's, merged — an array member's
+    // ELEMENT, madc storing it flattened; a reference member or a function
+    // unchanged).
+    DataDef *member_access_type(DataDef *member_type, unsigned object_cv);
+    // THE type a call argument ranks and deduces by (every overload and
+    // deduction argument vector): an array or function argument decayed,
+    // else the operand's value type — which keeps a volatile glvalue's
+    // qualifier: a by-value parameter drops it ([dcl.fct]/5,
+    // [temp.deduct.call]/2), a reference binds by it.
+    DataDef *call_argument_type(TokenBase *arg);
     DataDefREF *getReferenceType(DataDef *base);
-    // const-qualify a type: const T (idempotent — getConstType(const T) == const T).
-    // Cached in const_type_cache. Const has no runtime/ABI effect; this exists for
-    // TYPE IDENTITY (so const T != T survives deduction / instantiation keying).
+    // THE qualified-type minter: `base` with the cv bits of `cv` (CvQual) ADDED
+    // to whatever it already carries — canonical, one DataDefQUAL per
+    // (unqualified base, mask), cached in qualified_type_cache (gcc's
+    // build_qualified_type). Idempotent; cv == cvNONE returns base unchanged.
+    // A qualifier has no runtime/ABI effect; this exists for TYPE IDENTITY
+    // (const T != T survives deduction / instantiation keying) and for the
+    // volatile access semantics the CIR renders. getConstType is const on it.
     // See docs/plans/2026-06-19-const-qualified-types.md.
-    DataDefCONST *getConstType(DataDef *base);
+    DataDef *getQualifiedType(DataDef *base, unsigned cv);
+    DataDefQUAL *getConstType(DataDef *base);
+    // The cv bits a DECLARATOR's qualifiers put into the TYPE in the current
+    // mode — every producer (consume_declarator_stars, the nested and
+    // parameter-array arms of parse_declarator, member_declarator, the
+    // typedef reader) masks with this, the one statement of the scope.
+    // volatile is modeled in every mode (an access is performed as written,
+    // C11 5.1.2.3p6 / [intro.execution]); const in C only — the C++ const
+    // identity (overload ranking, mangling, deduction) is the const campaign's.
+    // A C type-NAME identity read (the _Generic / __builtin_types_compatible_p
+    // operand, C11 6.2.7 compatibility) models EVERY bit in every mode: the
+    // read ORs its mask in for its extent (parse_builtin_types_compatible_operand).
+    unsigned cv_identity_read = cvNONE;
+    unsigned modeled_cv() const
+    { return (is_c_mode() ? (cvCONST | cvVOLATILE) : cvVOLATILE) | cv_identity_read; }
     // Id-addressable derived-type API — the boundary adapter for the type table
     // (design docs/plans/2026-06-12-type-table-value-abi-design.md §2/§6.1).
     // "pointer-to(id)" / "reference-to(id)" / "const(id)" resolved by typeid:
@@ -6596,7 +6697,16 @@ public:
     // One owner of the rule, shared by every template-argument parser — a pointer
     // OR reference type is a valid template argument (`Vec<T*>`,
     // `conditional<b, int&, long>`, `__conditional_t<…, remove_reference_t<R>&&, …>`).
-    TokenDataType *fold_template_arg_declarator(TokenDataType *adt, TokenBase *origin);
+    // `cv_spelling`: the cv words the caller read around the base (west and
+    // east); the MODELED ones (modeled_cv) move out of the spelling into the
+    // TYPE — the pointee's at the first `*`, else the type-id's own — so a
+    // `volatile int *` argument is a distinct type (__is_same, partial
+    // specialization binding), never a spelling over `int *`.
+    // `lead_cv`: a leading cv the caller read as a MASK (an alias-template
+    // body's `volatile T *`) — the same type-id cv as the spelling's.
+    TokenDataType *fold_template_arg_declarator(TokenDataType *adt, TokenBase *origin,
+						std::string *cv_spelling = NULL,
+						unsigned lead_cv = cvNONE);
     // Resolve a fn-template parameter's DEFAULT token run to a concrete type,
     // substituting the already-bound type parameters in, then resolving in an
     // isolated token stream (handles trait-expression / template-id defaults like
@@ -6645,7 +6755,9 @@ public:
 	int ptr_depth = 0;		// `*`s read at the top level (before any parens)
 	int nested_stars = 0;		// `*`s read inside `( ... )` levels
 	bool const_after_star = false;	// consume_declarator_stars' top-level report
+	bool volatile_after_star = false;	// its volatile twin: `T *volatile p` — the POINTER object is volatile
 	bool cv_seen = false;		// any cv-qualifier among the ptr-operators (const_params)
+	bool base_volatile = false;	// a `volatile` read BEFORE the first top-level `*` (`int volatile x`): with no `*` it qualifies the object
 	bool base_const = false;	// a `const` read BEFORE the first top-level `*` (`char const *p`): qualifies the base exactly like a leading const — the spelling the Itanium mangler reads (PKc) must not depend on which side of the type it was written
 	bool adjusted_array = false;	// Parameter mode: an array THIS declarator built decayed ([dcl.fct]/5)
 	bool alias_adjusted = false;	// Parameter mode: the adjusted array was the BASE itself (a typedef'd array, `A3 a`) — the alias no longer names the parameter's type
@@ -6656,10 +6768,27 @@ public:
 	bool saw_parens = false;	// a `( declarator )` was read
 	bool function_pending = false;	// Declaration mode stopped at `name(`
     };
+    // THE type-id's type: the abstract declarator over `base` (parse_declarator,
+    // Abstract) with the leading cv the caller consumed — which qualifies the
+    // pointee at the first `*`, or, with no `*`, the type itself together with
+    // an east cv (`T volatile`); a cv after the last `*` qualifies that pointer.
+    // A type-id's top-level cv IS part of its type (a template argument, a
+    // using-alias target), unlike a declaration's, which is its object's.
+    // modeled_cv() bits only.
+    DataDef *parse_type_id(DataDef *base, unsigned leading_cv, DeclaratorResult &decl);
+    // THE top-level cv of the OBJECT a declarator declares (modeled_cv bits):
+    // the leading run the caller consumed plus the declarator's own east cv
+    // when no `*` intervenes, else the cv after the last `*` (the pointer
+    // object's). A declaration's variable, a parameter object, a member and a
+    // K&R parameter all read it.
+    unsigned declarator_object_cv(const DeclaratorResult &r, unsigned leading_cv);
+    // A qualified ARRAY qualifies its elements (C11 6.7.3p9): `arr` rebuilt
+    // through nest_carray_dims with its innermost element qualified by `cv`.
+    DataDef *qualify_array_elements(DataDef *arr, unsigned cv);
     DataDef *parse_declarator(DataDef *base, DeclaratorMode mode,
 			      DeclaratorResult &out,
 			      const std::set<std::string> *runtime_names = NULL,
-			      bool leading_const = false);
+			      unsigned leading_cv = cvNONE);
     bool nested_declarator_opens(DeclaratorMode mode);
     bool paren_starts_parameter_list();
     bool declarator_id_token(TokenBase *tb, DeclaratorMode mode);
@@ -6669,7 +6798,7 @@ private:
 				    DeclaratorResult &out,
 				    const std::set<std::string> *runtime_names,
 				    int depth, bool base_built_here,
-				    bool leading_const = false);
+				    unsigned leading_cv = cvNONE);
     DataDef *parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 				       DeclaratorResult &out,
 				       const std::set<std::string> *runtime_names,
@@ -6690,9 +6819,13 @@ public:
 	bool is_array = false;
 	std::vector<carray_dim_t> dims;
     };
-    DataDef *member_declarator(DataDef *base, MemberDeclarator &md);
+    DataDef *member_declarator(DataDef *base, MemberDeclarator &md,
+			       unsigned leading_cv = cvNONE);
+    void push_declarator_list_tail(TokenBase *type_tb, bool is_static,
+				   bool is_thread_local, bool is_volatile);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
-				 bool leading_const = false, bool *out_cv_seen = nullptr);
+				 unsigned leading_cv = cvNONE, bool *out_cv_seen = nullptr,
+				 bool *out_volatile_after_star = nullptr);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)
     // — consumed as hints; the param array decays to a pointer anyway.
@@ -6702,9 +6835,10 @@ public:
     bool comma_continuation_starts_declarator(TokenBase *peek);
     // Shared cv-qualifier consumers (const/volatile/restrict) for committed
     // type reads. Held form returns the first non-qualifier token; peek form
-    // consumes the run and leaves the following token unread.
+    // consumes the run, leaves the following token unread, and returns the
+    // run's cv mask (CvQual).
     TokenBase *skip_cv_qualifier_tokens(TokenBase *held);
-    void skip_cv_qualifier_tokens();
+    unsigned skip_cv_qualifier_tokens();
     // parse a `(params)` list after the opening '(' has been consumed; used by
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.
@@ -6756,7 +6890,8 @@ public:
 			       bool stop_on_closing_paren=false,
 			       int initial_brackets=0,
 			       bool push_back_comma=false,
-			       bool cast_operand=false);
+			       bool cast_operand=false,
+			       bool unary_operand=false);
     // Control-flow signal an extracted parseExpression switch-arm handler
     // returns to the shunting-yard loop, one-to-one with the arm's original
     // inline control flow: Break = fall to the per-token epilogue (peek/advance),
@@ -6830,7 +6965,7 @@ public:
 				   bool conditional, bool ternary_branch,
 				   bool stop_on_closing_paren,
 				   int initial_brackets, bool push_back_comma,
-				   TokenBase *&result, bool cast_operand=false);
+				   bool cast_operand=false);
     // Old-style (K&R) parameter declarations: detection + parsing of the
     // `int f(a, b) int a; char *b; { … }` form (C only). The detectors peek
     // the stream; parse_old_style_parameter_declaration fills param_types.
@@ -6838,10 +6973,11 @@ public:
     bool is_old_style_parameter_head(TokenBase *tb);
     bool try_parse_implicit_int_function_definition(TokenBase *tb);
     bool is_old_style_parameter_declaration_start(TokenBase *tb);
-    DataDef *parse_old_style_parameter_base(TokenBase *&nt);
+    DataDef *parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_cv = NULL);
     void parse_old_style_parameter_declaration(TokenBase *nt,
 		const std::vector<std::string> &param_ids,
-		std::map<std::string, DataDef *> &param_types);
+		std::map<std::string, DataDef *> &param_types,
+		std::map<std::string, unsigned> *param_object_cvs = NULL);
     bool scan_old_style_definition_suffix(std::vector<TokenBase *> &suffix);
     // Namespace resolution helpers: walk the enclosing-namespace chain to find
     // a member, resolve a bare name against the active namespace scope, and
@@ -6892,13 +7028,22 @@ public:
 					    madc_wide_int &out);
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
 				    const std::string &cast_name);
-    TokenBase *parse_cast_unary_deref_operand(TokenBase *star);
-    // The parenthesized operand of a unary '*' ('(' already consumed): ONE
-    // owner for the cast-head / statement-expr / grouped-expr discrimination
-    // shared by every deref arm; folds the trailing -> . [ postfix chain.
-    TokenBase *parse_deref_paren_operand(TokenBase *open_tb);
-    TokenBase *parse_cast_function_call_operand(TokenBase *head);
-    TokenBase *materialize_cast_literal_operand(TokenBase *tb);
+    // THE reader of a cast-expression operand (C11 6.5.3/6.5.4,
+    // [expr.unary.op]/1, [expr.cast]): the operand of unary `*`, of a cast,
+    // of an unparenthesized sizeof. `first` is its already-consumed first
+    // token. It is the expression engine itself, bounded: the parse ends
+    // before the first token, at bracket depth 0, that cannot continue a
+    // unary-expression (a binary operator, `?`, `,`, `;`, a closer) and
+    // leaves that token in the stream. Postfix `->` `.` `[` `(` `++` `--`
+    // bind inside it; so does a nested `*`, cast or prefix step.
+    TokenBase *parseCastExpression(TokenBase *first);
+    // THE builder of a unary dereference node, for an operand
+    // parseCastExpression read (`star` names the site). A named variable
+    // keeps its dedicated TokenDeref / TokenDerefStep nodes; a function or
+    // function pointer is its own designator; a class object dispatches its
+    // operator*; a fixed array decays; a dependent type defers; every other
+    // operand must be a pointer.
+    TokenBase *build_indirection(TokenBase *operand, TokenBase *star);
     // Template-machinery leaf consumers: recognize a template-argument-list
     // close (`>` or split `>>`), detect whether we're in an instantiated member
     // body, consume a template-parameter type suffix, and collect a template
@@ -7371,6 +7516,7 @@ public:
     size_t parse_gnu_vector_size_attribute();
     void consume_typedef_gnu_attributes(std::string *mode_name = NULL,
 					size_t *vector_bytes = NULL);
+    bool ellipsis_ahead();
     bool consume_ellipsis();
     // Parameter-signature / qualified-declarator parsing: count queued call args,
     // resolve a qualified class owner, parse a qualified declarator part, split an
@@ -7564,6 +7710,10 @@ public:
     // Parse the operand after unary `&`, preserving C precedence by
     // stopping before trailing binary operators.
     TokenBase *parseAddressOfExpression(TokenBase *ampersand);
+    // THE builder of a unary address-of node, for an operand
+    // parseCastExpression read: a function designator is its own address,
+    // a function POINTER an object like any other.
+    TokenBase *build_address_of(TokenBase *operand, TokenBase *amp);
     TokenFunc *build_expression_function(TokenProgram *tp,
 					 TokenBase *expr,
 					 DataDef *return_type,

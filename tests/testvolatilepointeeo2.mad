@@ -1,0 +1,45 @@
+// madc mode (no --std: a C-shaped source compiles with C++ semantics): a
+// volatile POINTEE, a volatile member and a volatile typedef are part of the
+// TYPE -- _Generic selects the volatile association, a spin through a
+// `volatile int *` ends at -O2, and a local declared through a volatile
+// typedef keeps its value across longjmp ([intro.execution]/7, C11
+// 5.1.2.3p6). The pointee-cv producers modeled volatile in C mode only: here
+// `gen:` printed 1 1 1, `longjmp:` garbage, and the -O2 spin never ended.
+// A C-interop plumbing test (signals, setjmp), hence the libc includes.
+// Oracle: gcc and clang (-O0 and -O2) print testvolatilepointeeo2.expect.
+#include <setjmp.h>
+#include <signal.h>
+#include <stdio.h>
+#include <sys/time.h>
+
+typedef volatile int vint;
+struct S { volatile int v; int w; };
+
+static int flag;
+static jmp_buf jb;
+
+static void on_alarm (int sig) { (void) sig; flag = 1; }
+static void jump (int v) { longjmp (jb, v); }
+
+static int viatypedef (int n) {
+  vint acc = 0;
+  vint i;
+  if (setjmp (jb) == 0) { for (i = 0; i < n; i++) acc += i; jump (1); }
+  return acc * 100 + i;
+}
+
+int main (void) {
+  printf ("gen: %d %d %d\n",
+          _Generic ((volatile int *) 0, int *: 1, volatile int *: 2, default: 0),
+          _Generic ((vint *) 0, int *: 1, volatile int *: 2, default: 0),
+          _Generic (&((struct S *) 0)->v, int *: 1, volatile int *: 2, default: 0));
+  printf ("longjmp: %d\n", viatypedef (10));
+  struct itimerval it = {{0, 0}, {0, 10000}};
+  signal (SIGALRM, on_alarm);
+  setitimer (ITIMER_REAL, &it, 0);
+  volatile int *q = &flag;
+  long spins = 0;
+  while (!*q) spins++;
+  printf ("spin: %d\n", spins > 0);
+  return 0;
+}

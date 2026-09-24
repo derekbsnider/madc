@@ -1,0 +1,32 @@
+// A multi-return slot of type `void *` is an OBJECT, not void.
+//
+// multi_return_transport_struct refuses a `void` slot ("multi-return values
+// cannot be 'void'") — correctly: void has no value. It asked that with a bare
+// `rawtype() == dtVOID`, which is also true for every pointer chain ending in
+// void, so a `void *` slot was refused too. C11 6.2.5p19-20: void is an
+// incomplete type that cannot be completed; a pointer to it is a complete
+// object type. g++ and clang++ accept the C++ analogue, std::pair<int, void *>,
+// and round-trip the pointer.
+//
+// The fix is DataDef::is_void() (the one owner of "is this type void");
+// scripts/check-one-void-predicate.sh keeps the bare test from returning.
+(int, void *) pick(void *p)
+{
+	return 7, p;
+}
+
+(void **, int) wrap(void **pp)
+{
+	return pp, 3;
+}
+
+int main()
+{
+	int anchor = 0;
+	n, q := pick(&anchor);
+	println("multiret-voidp {} {}", n, q == (void *) &anchor ? "same" : "DIFF");
+	void *slot = &anchor;
+	w, k := wrap(&slot);
+	println("multiret-voidpp {} {}", k, *w == (void *) &anchor ? "same" : "DIFF");
+	return 0;
+}

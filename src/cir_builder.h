@@ -460,6 +460,10 @@ class CirBuilder {
 	// declared type minus the typedef's own base depth. Returns -1 when
 	// alias is empty (caller falls back to the non-typedef pointer path).
 	int explicit_star_count(DataDef *full_type, const std::string &alias);
+	// Under a typedef alias: the cv the use ADDS at the alias's own level
+	// (level_cv = dd_peel_pointers' record of the full type).
+	unsigned alias_use_cv(const std::string &alias, int stars,
+			      const std::vector<unsigned> &level_cv);
 
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
 	// and the inline-struct path in typedef_decl).
@@ -952,9 +956,12 @@ private:
 	// second expansion. Empty string on failure, with `why` set.
 	std::string dump_pointer_fn(DumpFlavor fl, DataDef *pointee,
 				    TokenBase *origin, std::string &why);
-	// The pointee's declared spec list. ONE owner, because the generated
-	// function's PARAMETER type and the cast at its call site must be the same
-	// type. False for a pointee with no renderable spec (void).
+	// The pointee's declared spec list — its SHAPE, void included. ONE owner,
+	// because the generated function's PARAMETER type and the cast at its call
+	// site must be the same type. A declaration takes it as-is.
+	bool pointee_decl_specs(DataDef *base, node_t specs);
+	// The dumper's form: pointee_decl_specs, but false for a void pointee
+	// (nothing to render). Never for a DECLARATION — `void **it` is legal.
 	bool dump_pointee_specs(DataDef *base, node_t specs);
 	node_t dump_fn_param(node_t specs, int stars, const char *name,
 			     TokenBase *origin);
@@ -1501,7 +1508,11 @@ public:
 	// NULL Variable to skip the typedef-alias arm (specs only).
 	void append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd,
 				   DataDefSTRUCT *anon_sdd);
-	node_t pointer();
+	// One N_POINTER level; `cv` (CvQual) is the pointer's OWN qualifiers.
+	node_t pointer(unsigned cv = cvNONE);
+	// The cv qualifiers a spec list / N_POINTER qual list spells: every bit
+	// of the mask (const and volatile).
+	void append_cv_specs(node_t lst, unsigned cv);
 
 	// ---- Function-pointer declarators ----
 	// A fn-ptr type (DataDefFPTR) must render as `ret (*name)(params)`, not the
@@ -1512,12 +1523,24 @@ public:
 	// ([lead_dims..., POINTER, FUNC, ret-pointer stars...]).
 	node_t fnptr_func_node(class FuncDef *fd);
 	// The pointer piece of a declarator — N_POINTER per level, then the
-	// pointee's array dims — shared by var_decl and typedef_decl.
+	// pointee's array dims — shared by var_decl and typedef_decl. level_cv
+	// (dd_peel_pointers' record) gives each level its own qualifiers.
 	void append_pointer_declarator(node_t decl_list, int levels,
-				       const std::vector<carray_dim_t> &ptr_array_dims);
+				       const std::vector<carray_dim_t> &ptr_array_dims,
+				       const std::vector<unsigned> *level_cv = NULL);
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
+	// A pointer/reference TO a function pointer, or a reference to a function:
+	// the peeled levels + the fn-ptr pieces (param_decl and var_decl share it).
+	bool pointer_to_fnptr_pieces(DataDef *t, node_t spec_list, node_t decl_list);
+	// A function used as a value (its designator, `&f`, a reference bound to
+	// it): its call symbol, recorded for a prototype; NULL for a capturing
+	// nested fn.
+	node_t function_value_symbol(const Variable &v, class FuncDef *fd, TokenBase *origin);
+	// One aggregate MEMBER slot's initializer: a reference member binds the
+	// address (ref_param_arg_addr), every other slot is init_value's.
+	node_t init_slot_value(TokenBase *elem, DataDef *dd, size_t i);
 	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.
@@ -2480,8 +2503,11 @@ public:
 // Peel ALL pointer levels off `dd` to its base type, returning the star count.
 // The one owner: the function-return emitters and the generated pointer dumper
 // (cir_dump.cpp) both need a multi-star type's real base, and a peel-one-level
-// copy in either place emits the wrong number of stars.
-int dd_peel_pointers(DataDef *&dd);
+// copy in either place emits the wrong number of stars. The base comes back
+// UNQUALIFIED; with level_cv, each level's own cv (CvQual) is recorded —
+// level_cv[i] for pointer level i (0 = the outermost: the object's own
+// pointer), then ONE more entry: the base's cv, so level_cv->size() == depth+1.
+int dd_peel_pointers(DataDef *&dd, std::vector<unsigned> *level_cv = NULL);
 
 // Dump the cir_node tree (our own walker, not c2mir's): node types,
 // literal payloads, and the +madc fields (source position, typedef
