@@ -576,6 +576,28 @@ yet measured.
   spelled trait-argument reader (`__is_same(volatile int, int)` written
   directly) still hand-rolls its stars and drops volatile — with the
   `_Generic` and `typeof` readers, V5.
+- ~~`cxx_volatile_methods`~~ — fixed 2026-09-23 (V1e), silent. The method
+  qualifier reader dropped `volatile`, so `int get()` and `int get()
+  volatile` were one signature (the second renamed `C__get__o2`), every call
+  took the first, and inside the volatile member `this` was a plain `C *` —
+  its member reads were not volatile. `FuncDef::is_volatile_method` beside
+  `is_const_method`, and `method_cv()` the mask every identity reader takes:
+  the mangler's member prefix spells `V` before `K` (`_ZNV1C3getEv`,
+  `_ZNVK1C4bothEv`; its `bool const_method` parameters are an unsigned mask,
+  a bool still meaning const), the out-of-line definition matcher
+  (`function_declarator_member_cv`), the class-pattern record (the const
+  word carries the mask), the forest record (`DF_IS_VOLATILE_METHOD`). The
+  implicit object's cv is one owner, `implicit_object_cv` (was
+  `implicit_object_constness`, 1/0): a mask, the receiver's type cv, an
+  arrow receiver's POINTEE (`pc->get()` through a `volatile C *` read the
+  pointer variable's own cv — and a `C *const p` was taken for a const
+  object), a member function's own for `this`; `findMethodOverload` rejects
+  a member lacking one of the object's bits and prefers the closest sibling,
+  as the CIR's conversion-function selection does. In a volatile member
+  function `this` is `volatile C *` ([class.this]) and a member read through
+  the implicit `this` merges its cv. Reducer `tests/testvolatilemethodcxx`
+  (the g++ symbols called through their names). Residue: a pointer to a
+  volatile member function (`DataDefMemberFnPtr` carries const alone).
 - ~~`reference_to_pointer_subscript`~~ — fixed 2026-09-23, silent, older than
   the volatile work (the HEAD baseline returned garbage, exit 0). A
   subscript through a REFERENCE to a pointer (`int *&rp; rp[1]`) indexed the

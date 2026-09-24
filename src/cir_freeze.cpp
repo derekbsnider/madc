@@ -3197,6 +3197,8 @@ void CirFrozenForest::materialize_pass()
 						fd->emit_symbol = es;
 				fd->is_const_method =
 					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
+				fd->is_volatile_method =
+					(fr.flags & madc::dis::DF_IS_VOLATILE_METHOD) != 0;
 				fd->pure_virtual =
 					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
 				fd->noexcept_spec =

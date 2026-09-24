@@ -141,7 +141,9 @@ answers.
   `add_volatile` and `remove_pointer` over volatile types give g++'s
   answers, and an alias template whose target begins with `const` or
   `volatile` (`template <class T> using c_t = const T *;`) is no longer
-  refused.
+  refused. A volatile member function (`int get() volatile`) is its own
+  overload with its own symbol (`_ZNV1C3getEv`), a volatile object calls it,
+  and `this` inside it is `volatile C *`.
   Also fixed: a subscript through a reference to a pointer (`int *&rp;
   rp[1]`) read the wrong memory and returned garbage — it now indexes the
   referent; a brace-initialized `typedef const

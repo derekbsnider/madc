@@ -644,6 +644,17 @@ public:
     // 'K' (e.g. _ZNKSt9basic_ios...4goodEv). Set by TokenCLASS::parse / parseFunction
     // when a trailing const follows the parameter list. Default false.
     bool is_const_method;
+    // `f() volatile` ([dcl.fct]/4 cv-qualifier-seq, [class.this]): the
+    // implicit object is volatile — `this` is `volatile C *`, a volatile object
+    // calls only such a member, the symbol spells V. The sibling of
+    // is_const_method; method_cv() is the pair as a CvQual mask, the ONE
+    // spelling every identity reader (mangling, overload tiebreak, out-of-line
+    // matching, the class-pattern record) takes.
+    bool is_volatile_method = false;
+    unsigned method_cv() const
+    {
+	return (is_const_method ? cvCONST : cvNONE) | (is_volatile_method ? cvVOLATILE : cvNONE);
+    }
     // C++11 ref-qualifier ([dcl.fct]p6) on the method: 0 = none, 1 = `&`,
     // 2 = `&&`. Overloads may differ ONLY in cv+ref qualification (libc++'s
     // __optional_storage_base::__get declares all four combinations), so this
@@ -3300,6 +3311,7 @@ public:
 	std::vector<TokenBase *> noexcept_condition_tokens;
 	bool pure_virtual;
 	bool is_const_method;
+	bool is_volatile_method = false;	// rides the record's const word (bit 1)
 	bool is_member_template;
 	bool has_eager_body;
 	std::vector<ClassMethodParamPattern> parameters;
@@ -6532,7 +6544,10 @@ public:
     // method's cv (a const member's this points at const T); a named receiver
     // takes its declared constness (vfCONSTANT-family flags or a const-qualified
     // identity, reference-transparent). 1 = const, 0 = non-const, -1 = unknown.
-    int implicit_object_constness(Variable &recv);
+    // The cv MASK of a member call's implicit object (-1: unknown) — cvCONST /
+    // cvVOLATILE bits, the object's own and, for a member read through `this`,
+    // the enclosing member function's.
+    int implicit_object_cv(Variable &recv);
     // Static-member-call analogue of reselect_method_overload: a qualified
     // static call (`Owner::m(args)`) resolves its callee by name+arity BEFORE
     // the args are parsed, so once the arg types are known reselect the overload

@@ -590,12 +590,14 @@ public:
 	// the N..E (the outer N..E is supplied by the caller, so the name itself
 	// is NOT wrapped), registering its candidates so what follows — the
 	// parameters, a conversion target — may back-reference it (RS_).
-	std::string member_prefix(const std::string &qualified_class, bool const_method)
+	std::string member_prefix(const std::string &qualified_class, unsigned method_cv)
 	{
 		reset();
 		TypeNode cls = parse_type(qualified_class);
 		std::string out = "_ZN";
-		if (const_method) out += "K";
+		// <CV-qualifiers> of the member function ::= [r] [V] [K]
+		if (method_cv & 2u) out += "V";
+		if (method_cv & 1u) out += "K";
 		out += encode_name(cls.name, /*standalone=*/false);
 		return out;
 	}
@@ -617,9 +619,9 @@ public:
 	                          const std::string &unqualified,
 	                          const std::string &special,    // C1 / D1 / op code
 	                          const std::vector<std::string> &params,
-	                          bool const_method)
+	                          unsigned method_cv)
 	{
-		std::string out = member_prefix(qualified_class, const_method);
+		std::string out = member_prefix(qualified_class, method_cv);
 		out += special.empty() ? source_name(unqualified) : special;
 		out += "E";
 		out += params_enc(params);
@@ -633,9 +635,9 @@ public:
 	// Foo::operator bool() const → _ZNK3FoocvbEv.
 	std::string mangle_conversion(const std::string &qualified_class,
 	                              const std::string &target_type,
-	                              bool const_method)
+	                              unsigned method_cv)
 	{
-		std::string out = member_prefix(qualified_class, const_method);
+		std::string out = member_prefix(qualified_class, method_cv);
 		out += "cv" + encode_type(parse_type(target_type));
 		out += "Ev";
 		return out;
@@ -646,9 +648,9 @@ public:
 	                          const std::vector<std::string> &targs,
 	                          const std::string &ret,
 	                          const std::vector<std::string> &params,
-	                          bool const_method)
+	                          unsigned method_cv)
 	{
-		std::string out = member_prefix(qualified_class, const_method);
+		std::string out = member_prefix(qualified_class, method_cv);
 		add_sub("@member-template:" + qualified_class + "::" + unqualified);
 		out += source_name(unqualified);
 		out += "I";
@@ -1145,11 +1147,11 @@ std::string itanium_encode_type_sub(const std::string &cpp_type)
 std::string itanium_mangle_member_sub(const std::string &qualified_class,
                                        const std::string &member,
                                        const std::vector<std::string> &param_types,
-                                       bool const_method)
+                                       unsigned method_cv)
 {
 	ItaniumMangler m;
 	return m.settled(m.mangle_member(qualified_class, member, "",
-	                       param_types, const_method));
+	                       param_types, method_cv));
 }
 
 std::string itanium_mangle_member_template_sub(const std::string &qualified_class,
@@ -1157,12 +1159,12 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
                                        const std::vector<std::string> &template_arg_types,
                                        const std::string &return_type,
                                        const std::vector<std::string> &param_types,
-                                       bool const_method)
+                                       unsigned method_cv)
 {
 	ItaniumMangler m;
 	return m.settled(m.mangle_member_template(qualified_class, member,
 	                                template_arg_types, return_type,
-	                                param_types, const_method));
+	                                param_types, method_cv));
 }
 
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
@@ -1185,22 +1187,22 @@ std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
 std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::string &op,
                                          const std::vector<std::string> &param_types,
-                                         bool const_method)
+                                         unsigned method_cv)
 {
 	// A member operator is unary iff it takes no explicit parameter.
 	std::string code = op_special(op, param_types.empty());
 	if (code.empty()) return "";
 	ItaniumMangler m;
 	return m.settled(m.mangle_member(qualified_class, "", code,
-	                       param_types, const_method));
+	                       param_types, method_cv));
 }
 
 std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
                                            const std::string &target_type,
-                                           bool const_method)
+                                           unsigned method_cv)
 {
 	ItaniumMangler m;
-	return m.settled(m.mangle_conversion(qualified_class, target_type, const_method));
+	return m.settled(m.mangle_conversion(qualified_class, target_type, method_cv));
 }
 
 std::string itanium_mangle_std_free_template(const std::string &name,

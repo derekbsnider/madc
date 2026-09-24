@@ -13194,16 +13194,20 @@ static Variable *class_conversion_to_class(DataDefCLASS *source,
 		    || !same_object_class(&fd->return_value_type(), target))
 			continue;
 		declared = true;
+		// obj_cv is the implicit object's cv MASK (implicit_object_cv;
+		// -1 unknown): a conversion lacking one of its bits is not viable,
+		// and between siblings the one adding the fewest bits wins.
 		if (fd->is_deleted || fd->parameters.size() != 1
-		    || (obj_cv == 1 && !fd->is_const_method))
+		    || (obj_cv > 0 && ((unsigned)obj_cv & ~fd->method_cv())))
 			continue;
 		if (!best) {
 			best = mv;
 			continue;
 		}
 		FuncDef *bfd = dynamic_cast<FuncDef *>(best->type);
-		if (obj_cv == 0 && bfd && bfd->is_const_method
-		    && !fd->is_const_method)
+		if (obj_cv >= 0 && bfd
+		    && (bfd->method_cv() & ~(unsigned)obj_cv)
+		       > (fd->method_cv() & ~(unsigned)obj_cv))
 			best = mv;
 	}
 	if (best || declared) return best;
@@ -16277,13 +16281,13 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		TokenBase *src_arg = ctor_args[0];
 		TokenVar *tv = dynamic_cast<TokenVar *>(src_arg);
 		if (tv && src_arg->type() == TokenType::ttVariable && m_prog)
-			obj_cv = m_prog->implicit_object_constness(tv->var);
+			obj_cv = m_prog->implicit_object_cv(tv->var);
 		else if (src_arg->datadef()) {
 			DataDef *src_dd = src_arg->datadef();
 			if (src_dd->is_reference())
 				if (DataDefPTR *ref = pointer_dd_of(src_dd))
 					if (ref->base_type) src_dd = ref->base_type;
-			obj_cv = src_dd->is_const() ? 1 : 0;
+			obj_cv = (int)(src_dd->cv_quals() & (cvCONST | cvVOLATILE));
 		}
 		Variable *conv = class_conversion_to_class(acls, cdd, obj_cv);
 		FuncDef *conv_fd = conv ? dynamic_cast<FuncDef *>(conv->type) : NULL;
@@ -18216,7 +18220,7 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 				 ? tm->var.name : callee->method_display_name;
 	std::string sym = itanium_mangle_member_template_sub(
 		owner->canonical_cpp_spelling(), mname, targs, ret, params,
-		callee->is_const_method);
+		callee->method_cv());
 	if (sym.empty() || sym[0] != '_') {
 		if (probing) fprintf(stderr,
 			"[mtcall] %s: bail mangle sym='%s' ret='%s' targ0='%s'\n",
@@ -30684,10 +30688,10 @@ void CirBuilder::bind_external_class_symbols(Program *prog)
 			std::string sym;
 			if (dn.compare(0, 8, "operator") == 0)
 				sym = itanium_mangle_operator_sub(
-					cls, dn.substr(8), psp, fd->is_const_method);
+					cls, dn.substr(8), psp, fd->method_cv());
 			else
 				sym = itanium_mangle_member_sub(
-					cls, dn, psp, fd->is_const_method);
+					cls, dn, psp, fd->method_cv());
 			if (external_symbol_available(sym))
 				fd->emit_symbol = sym;
 		}

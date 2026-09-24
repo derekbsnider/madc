@@ -3373,6 +3373,7 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->c_linkage)        r.flags |= madc::dis::DF_FUNC_C_LINKAGE;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
+	if (fd->is_volatile_method) r.flags |= madc::dis::DF_IS_VOLATILE_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
 	if (fd->noexcept_spec == FuncDef::NxTrue)
 		r.flags |= madc::dis::DF_NOEXCEPT_TRUE;
@@ -3965,7 +3966,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back(method.is_deleted ? 1u : 0u);
 		words.push_back((uint32_t)method.noexcept_spec);
 		words.push_back(method.pure_virtual ? 1u : 0u);
-		words.push_back(method.is_const_method ? 1u : 0u);
+		// the member's cv MASK (bit 0 const, bit 1 volatile): a 0/1 word
+		// is the pre-mask record, read unchanged
+		words.push_back((method.is_const_method ? 1u : 0u)
+				| (method.is_volatile_method ? 2u : 0u));
 		words.push_back(method.is_member_template ? 1u : 0u);
 		words.push_back(method.has_eager_body ? 1u : 0u);
 		words.push_back((uint32_t)method.parameters.size());

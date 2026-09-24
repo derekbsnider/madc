@@ -3294,9 +3294,9 @@ std::string Program::host_flavor_method_symbol(FuncDef *fd)
     if ( mname.compare(0, 8, "operator") == 0 && mname.size() > 8 )
 	return itanium_mangle_operator_sub(cls->canonical_cpp_spelling(),
 					   mname.substr(8), psp,
-					   fd->is_const_method);
+					   fd->method_cv());
     return itanium_mangle_member_sub(cls->canonical_cpp_spelling(), mname,
-				     psp, fd->is_const_method);
+				     psp, fd->method_cv());
 }
 
 static DataDef *unwrap_subscript_element_type(DataDef *base_type)
@@ -5148,6 +5148,7 @@ uint64_t Program::class_pattern_fingerprint(const ClassPattern &pattern) const
 	    add_tokens(method.noexcept_condition_tokens);
 	    hash.add_bool(method.pure_virtual);
 	    hash.add_bool(method.is_const_method);
+	    hash.add_bool(method.is_volatile_method);
 	    hash.add_bool(method.is_member_template);
 	    hash.add_bool(method.has_eager_body);
 	    hash.add_u64(method.parameters.size());
@@ -5435,7 +5436,7 @@ static std::string user_member_template_product_symbol(Program &pgm,
 	return std::string();
     std::string sym = itanium_mangle_member_template_sub(
 	owner->cpp_linkage_spelling(), name, targs, ret, params,
-	pattern->is_const_method);
+	pattern->method_cv());
     if ( sym.size() < 3 || sym.compare(0, 2, "_Z") != 0 )
 	return std::string();
     for ( size_t i = 2; i < sym.size(); ++i )
@@ -8865,6 +8866,7 @@ static void register_basic_class_pattern_method(
     fd->pure_virtual = pattern.pure_virtual;
     fd->decl_file = basic_class_pattern_source_file(binding.definition);
     fd->is_const_method = pattern.is_const_method;
+    fd->is_volatile_method = pattern.is_volatile_method;
     fd->is_member_template = pattern.is_member_template;
     fd->template_param_names = pattern.template_param_names;
     fd->template_param_is_type = pattern.template_param_is_type;
@@ -20065,7 +20067,8 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	// carries the member's cv, and a CONST object argument cannot
 	// initialize a non-const implicit object param ([over.match.viable]).
 	// Dtors stay callable on const objects.
-	if ( obj_cv == 1 && hidden && !fd->is_const_method && name[0] != '~' )
+	if ( obj_cv > 0 && hidden && ((unsigned)obj_cv & ~fd->method_cv())
+	  && name[0] != '~' )
 	{
 	    // Receiver-cv misses stay in the lenient lane: the proven-miss
 	    // diagnostic is scoped to ARGUMENT-type confusion.
@@ -20202,9 +20205,15 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	    // parameter is the discriminator ([over.match.best] — a non-const
 	    // object's exact cv-match beats the qualification conversion).
 	    if ( obj_cv >= 0 && best_fd
-	      && best_fd->is_const_method != fd->is_const_method )
+	      && best_fd->method_cv() != fd->method_cv() )
 	    {
-		if ( fd->is_const_method == (obj_cv == 1) )
+		// The closest cv wins: the fewer qualifiers the member adds to
+		// the object's, the better the implicit object's conversion.
+		unsigned add_fd = fd->method_cv() & ~(unsigned)obj_cv;
+		unsigned add_best = best_fd->method_cv() & ~(unsigned)obj_cv;
+		int n_fd = ((add_fd & cvCONST) ? 1 : 0) + ((add_fd & cvVOLATILE) ? 1 : 0);
+		int n_best = ((add_best & cvCONST) ? 1 : 0) + ((add_best & cvVOLATILE) ? 1 : 0);
+		if ( n_fd < n_best )
 		    best = mv;
 	    }
 	    // Equal conversion sequences prefer a non-template function over a
@@ -21816,7 +21825,7 @@ DataDef *Program::free_operator_arg_datadef(TokenBase *operand)
     return operand->datadef();
 }
 
-int Program::implicit_object_constness(Variable &recv)
+int Program::implicit_object_cv(Variable &recv)
 {
     if ( recv.name == "__this" )
     {
@@ -21824,11 +21833,21 @@ int Program::implicit_object_constness(Variable &recv)
 	if ( code && code->method )
 	    if ( FuncDef *efd = dynamic_cast<FuncDef *>(
 			 code->method->returns.type) )
-		return efd->is_const_method ? 1 : 0;
+		return (int)efd->method_cv();
 	return -1;
     }
+    int cv = cvNONE;
+    // An ARROW call's receiver is the POINTER (`pc->get()`): the implicit
+    // object is `*pc`, of the pointee's cv — never the pointer variable's
+    // own (a `C *const p` is not a const object).
+    if ( recv.type && recv.type->is_pointer() && !recv.type->is_reference() )
+    {
+	DataDefPTR *pp = pointer_dd_of(recv.type);
+	return pp && pp->base_type ? (int)(pp->base_type->cv_quals() & (cvCONST | cvVOLATILE))
+				   : cvNONE;
+    }
     if ( recv.flags & (vfCONSTANT | vfCONSTDECL | vfCONSTBAKED) )
-	return 1;
+	cv |= cvCONST;
     // A MEMBER receiver read through the implicit `this` joins the implicit
     // object's cv ([expr.ref]): inside a const method a data member is a
     // const object — libc++ set::size() const reads __tree_.size() and must
@@ -21841,7 +21860,7 @@ int Program::implicit_object_constness(Variable &recv)
 	Method *m = code ? code->method : NULL;
 	DataDefCLASS *owner = m ? m->owner_class : NULL;
 	FuncDef *mfd = m ? dynamic_cast<FuncDef *>(m->returns.type) : NULL;
-	if ( owner && mfd && mfd->is_const_method )
+	if ( owner && mfd && mfd->method_cv() )
 	{
 	    std::string nm = recv.name;
 	    if ( owner->m_offset(nm) != -1 )
@@ -21855,7 +21874,7 @@ int Program::implicit_object_constness(Variable &recv)
 			    break;
 			}
 		if ( !is_block_local )
-		    return 1;
+		    cv |= (int)mfd->method_cv();
 	    }
 	}
     }
@@ -21864,9 +21883,10 @@ int Program::implicit_object_constness(Variable &recv)
     if ( dd && dd->is_reference() )
 	if ( DataDefPTR *rp = pointer_dd_of(dd) )
 	    dd = rp->base_type;
-    if ( dd && dd->is_const() )
-	return 1;
-    return 0;
+    // The receiver's own qualifiers — an object's top-level cv is its type's.
+    if ( dd )
+	cv |= (int)dd->cv_quals();
+    return cv;
 }
 
 TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
@@ -21893,7 +21913,7 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     }
     bool rejections_proven = true;
     Variable *ov = cls->findMethodOverload(id, at,
-					   implicit_object_constness(recv),
+					   implicit_object_cv(recv),
 					   &rejections_proven);
     TokenCallMethod *selected = tc;
     if ( !ov )
@@ -24877,7 +24897,15 @@ class ClassPatternPayloadReader
 	out.is_deleted = boolean();
 	out.noexcept_spec = (uint8_t)word();
 	out.pure_virtual = boolean();
-	out.is_const_method = boolean();
+	{
+	    // The const word carries the member's cv MASK (bit 0 const, bit 1
+	    // volatile) — a 0/1 record is a pre-mask one, read as before.
+	    uint32_t method_cv = word();
+	    if ( method_cv > 3 )
+		invalidate(__LINE__);
+	    out.is_const_method = (method_cv & 1u) != 0;
+	    out.is_volatile_method = (method_cv & 2u) != 0;
+	}
 	out.is_member_template = boolean();
 	out.has_eager_body = boolean();
 	uint32_t nparams = count();
@@ -30424,7 +30452,7 @@ static TokenCallMethod *make_unary_object_operator_call(Program &pgm,
     // receiver — a parent EXPRESSION's cv is not modeled here (and a const-
     // typed recv_dd cannot reach this line: the class cast above rejects it).
     int obj_cv = (!parent_expr && recv)
-	       ? pgm.implicit_object_constness(*recv) : -1;
+	       ? pgm.implicit_object_cv(*recv) : -1;
     Variable *mvar = cls->findMethodOverload(opname, no_args, obj_cv);
     if ( !mvar )
 	return NULL;
@@ -31362,6 +31390,11 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		    std::string thisid = "__this";
 		    Variable *thisvar = code->method->findParameter(thisid);
 		    DataDef *mtype = cls->m_type(name);
+		    // `v` in a member function is `this->v`: *this's cv (the
+		    // member function's) qualifies it ([expr.ref]/4).
+		    if ( thisvar && mtype )
+			mtype = member_access_type(mtype,
+			    (unsigned)std::max(0, implicit_object_cv(*thisvar)));
 		    if ( thisvar && mtype )
 		    {
 			Variable *member =
@@ -32860,7 +32893,8 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		    std::string thisid = "__this";
 		    if ( Variable *thisvar = code->method->findParameter(thisid) )
 		    {
-			DataDef *mtype = scope->m_type(member_name);
+			DataDef *mtype = pgm.member_access_type(scope->m_type(member_name),
+			    (unsigned)std::max(0, pgm.implicit_object_cv(*thisvar)));
 			Variable *member =
 			    new Variable(member_name, *mtype, 1, NULL, false);
 			TokenMember *tm = new TokenMember(*thisvar, *member,
@@ -35225,6 +35259,7 @@ class ClassPatternNormalizer
 	class_pattern_clone_tokens(fd->noexcept_condition_tokens);
 	out.pure_virtual = fd->pure_virtual;
 	out.is_const_method = fd->is_const_method;
+	out.is_volatile_method = fd->is_volatile_method;
 	// Lazy member-template hydration: the capture below copies the
 	// pattern fields — a frozen fd would clone an EMPTY pattern.
 	fd->ensure_member_template_thawed();
@@ -40583,6 +40618,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			Variable *thisvar = code->method->findParameter(thisid);
 			if ( thisvar )
 			{
+			    mtype = member_access_type(mtype,
+				(unsigned)std::max(0, implicit_object_cv(*thisvar)));
 			    Variable *member = new Variable(mname, *mtype, 1, NULL, false);
 			    exStack.push(new TokenMember(*thisvar, *member, ofs));
 			    return done ? ExprStep::Done : ExprStep::Break;
@@ -46825,15 +46862,15 @@ std::string Program::member_itanium_symbol(DataDefCLASS *ddc, Variable *mvar,
     case CppSymKind::Conversion:
 	return conversion_type.empty() ? std::string()
 	     : itanium_mangle_conversion_sub(cls, conversion_type,
-					     fd->is_const_method);
+					     fd->method_cv());
     case CppSymKind::Method:
 	if ( is_operator )
 	{
 	    std::string op = (mname.compare(0, 8, "operator") == 0)
 			   ? mname.substr(8) : mname;
-	    return itanium_mangle_operator_sub(cls, op, psp, fd->is_const_method);
+	    return itanium_mangle_operator_sub(cls, op, psp, fd->method_cv());
 	}
-	return itanium_mangle_member_sub(cls, mname, psp, fd->is_const_method);
+	return itanium_mangle_member_sub(cls, mname, psp, fd->method_cv());
     }
     return std::string();
 }
@@ -57187,14 +57224,18 @@ void Program::capture_explicit_template_instantiation(bool extern_declaration)
 // The `const` qualifier belongs to the function declarator, after its own
 // parameter list. Captured declarations use this shared token-range query;
 // later exception specifications and attributes may contain more parentheses.
-static bool function_declarator_is_const_member(
+// The cv-qualifier-seq after a member declarator's parameter list, as a
+// CvQual MASK (`f() const` 1, `f() volatile` 2, both 3) — the out-of-line
+// definition matches its declaration's FuncDef::method_cv() by it.
+static unsigned function_declarator_member_cv(
 	const std::vector<TokenBase *> &decl)
 {
     std::vector<std::vector<TokenBase *> > ignored;
     size_t param_close = decl.size();
     if ( !outofline_declarator_param_regions(decl, ignored, &param_close)
       || param_close == decl.size() )
-	return false;
+	return cvNONE;
+    unsigned cv = cvNONE;
     for ( size_t i = param_close + 1; i < decl.size(); ++i )
     {
 	TokenBase *t = decl[i];
@@ -57202,9 +57243,11 @@ static bool function_declarator_is_const_member(
 	if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
 	    break;
 	if ( t->id() == TokenID::tkCONST )
-	    return true;
+	    cv |= cvCONST;
+	else if ( t->id() == TokenID::tkVOLATILE )
+	    cv |= cvVOLATILE;
     }
-    return false;
+    return cv;
 }
 
 // User-parameter ARITY of an out-of-line member def's declarator. Returns
@@ -57436,7 +57479,7 @@ void Program::register_outofline_member_instantiations(
 	// other an undefined import. Pick the overload whose const-ness matches THIS
 	// def (and that has no body yet); fall back to findMethod for the common
 	// non-overloaded member.
-	bool def_const = function_declarator_is_const_member(def.decl);
+	unsigned def_cv = function_declarator_member_cv(def.decl);
 	// A CONSTRUCTOR out-of-line def names the class (`pair<T1,T2>::pair`), so
 	// def.member_name is the SOURCE class spelling (== class_name). The in-class
 	// registered member-template ctor's method_display_name is the FULL mangled
@@ -57726,7 +57769,7 @@ void Program::register_outofline_member_instantiations(
 	    else
 	    {
 		if ( cfd->method_display_name != def.member_name ) continue;
-		if ( cfd->is_const_method != def_const ) continue;
+		if ( cfd->method_cv() != def_cv ) continue;
 		if ( cfd->is_member_template != def.is_member_template )
 		    continue;
 		if ( def.is_member_template
@@ -66189,7 +66232,11 @@ static void stamp_member_template_pattern(
     size_t name_idx = skipped_template_function_declarator_name_index(tokens,
 								      NULL);
     size_t lparen = skipped_template_function_param_lparen(tokens, name_idx);
-    fd->is_const_method = function_declarator_is_const_member(tokens);
+    {
+	unsigned member_cv = function_declarator_member_cv(tokens);
+	fd->is_const_method = (member_cv & cvCONST) != 0;
+	fd->is_volatile_method = (member_cv & cvVOLATILE) != 0;
+    }
     if ( name_idx < tokens.size() && lparen < tokens.size()
       && tokens[lparen]
       && tokens[lparen]->id() == TokenID::tkOpBrk
@@ -68558,6 +68605,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->noexcept_owner = src->noexcept_owner;
     f->pure_virtual = src->pure_virtual;
     f->is_const_method = src->is_const_method;
+    f->is_volatile_method = src->is_volatile_method;
     f->vague_linkage = src->vague_linkage;
     f->internal_linkage = src->internal_linkage;
     return f;
@@ -68933,6 +68981,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->emit_symbol = func->emit_symbol;
 	    fresh->method_display_name = func->method_display_name;
 	    fresh->is_const_method = func->is_const_method;
+	    fresh->is_volatile_method = func->is_volatile_method;
 	    fresh->is_member_template = func->is_member_template;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -68982,6 +69031,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->emit_symbol = func->emit_symbol;
 	    fresh->method_display_name = func->method_display_name;
 	    fresh->is_const_method = func->is_const_method;
+	    fresh->is_volatile_method = func->is_volatile_method;
 	    fresh->is_member_template = func->is_member_template;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
@@ -69790,7 +69840,20 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	TokenBase *q = nt;
 	if ( !q ) break;
 	if ( q->id() == TokenID::tkCONST ) { func->is_const_method = true; nt = nextToken(); continue; }
-	if ( q->id() == TokenID::tkVOLATILE || q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
+	if ( q->id() == TokenID::tkVOLATILE )
+	{
+	    func->is_volatile_method = true;
+	    // [class.this]: in a volatile member function `this` is `volatile C *`
+	    // — every member read through it is performed as written. The hidden
+	    // parameter was typed before the qualifiers were read; the body's
+	    // `__this` is built from it below.
+	    if ( has_hidden_this && owner_class && !func->parameters.empty() )
+		func->parameters[0] = getPointerType(
+		    getQualifiedType(owner_class, cvVOLATILE & modeled_cv()));
+	    nt = nextToken();
+	    continue;
+	}
+	if ( q->id() == TokenID::tkRESTRICT ) { nt = nextToken(); continue; }
 	// C++11 ref-qualifier ([dcl.fct]p6): `T f() &`, `T f() const &&`.
 	// libc++ __optional_storage_base::__get declares all four cv/ref
 	// combinations; without this arm the loop broke on the '&' and the
