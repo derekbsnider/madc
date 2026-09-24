@@ -1,0 +1,5 @@
+# Labels whose line legitimately DIFFERS from tests/testcompoundassigntype.win64_expect
+# versus tests/testcompoundassigntype.expect — the win64 domain's own answers (auto's long-typed results are 4 bytes on LLP64;
+# the twin is x86_64-w64-mingw32 gcc/g++'s output under wine). Every other
+# labelled line must be identical in both (scripts/check-expect-twins.sh).
+auto

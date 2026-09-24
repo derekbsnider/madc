@@ -1,0 +1,4 @@
+type: uchar short int uint long float double int* int V&
+size: 1 2 8 8
+auto: 1 4 8 5 5 4.5
+val: 3 255 2

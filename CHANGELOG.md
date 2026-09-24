@@ -162,6 +162,11 @@ answers.
   template partial specialization ignored a pointer level's `volatile`
   (`S<T*>` matched `int *volatile`, `S<T volatile>` missed it). The volatile
   gate now counts madc's accesses too.
+  On win64 `long` is its own type in the parse-side type view: a `long`
+  operand selected `_Generic`'s `int` association, and `i + l` was typed
+  `int` and `u + l` `unsigned int` (C: `long`, and `unsigned long`, since a
+  32-bit `long` cannot hold every `unsigned int`); on macOS `long long`
+  rendered as `long`.
 
 Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
 operator drain, the cast operand); new `check-one-fptr-predicate.sh` and

@@ -1,0 +1,23 @@
+// C: `long` is its own type on every data model. On LLP64 (win64) it has
+// int's width, and two parse-side owners judged integers by STORAGE: the
+// type-name renderer (_Generic, __builtin_types_compatible_p) switched on
+// rawtype(), so a long operand selected the `int` association, and the usual
+// arithmetic conversions ranked by width, so `i + l` was int and `u + l`
+// unsigned int (C11 6.3.1.8: long; and unsigned long, since a 32-bit long
+// cannot hold every unsigned int). Silent wrong answers on the wine lane.
+// Oracle: gcc/clang print testgenericlongc.expect (LP64); x86_64-w64-mingw32
+// gcc under wine prints testgenericlongc.win64_expect.
+#include <stdio.h>
+#define T(x) _Generic((x), int: "int", unsigned: "uint", long: "long", unsigned long: "ulong", long long: "llong", unsigned long long: "ullong", default: "other")
+typedef long mylong;
+int main(void)
+{
+	int i = 7; unsigned u = 1; long l = 2; unsigned long ul = 3; mylong ml = 4;
+	printf("names: %s %s %s %s\n", T(l), T(1L), T(ul), T(ml));
+	printf("arith: %s %s %s %s\n", T(i + l), T(u + l), T(l + 1), T((long) i));
+	printf("mixed: %s %s\n", T(ul + i), T(l * u));
+	printf("compat: %d %d %d\n", __builtin_types_compatible_p(long, int),
+	       __builtin_types_compatible_p(long, mylong),
+	       __builtin_types_compatible_p(unsigned long, unsigned));
+	return 0;
+}

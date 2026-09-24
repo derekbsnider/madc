@@ -575,11 +575,41 @@ DataDef *promoted_operand_type(TokenBase *operand);
 // cir_builder's enum_promotes_to composes from it). NULL-safe.
 DataDef *integer_promoted_type(DataDef *dd);
 
+// Integer conversion rank (C11 6.3.1.1p1, [conv.rank]) of a PROMOTED operand
+// type: width orders the ranks, except where two integer types share a width —
+// the platform `long` (LLP64: 4 bytes, beside int) and the platform `long
+// long` (darwin: 8 bytes, beside long) each outrank the other type of their
+// width. A width test alone made `i + l` an int on win64 (mingw: long).
+static inline int integer_conversion_rank(const DataDef *dd)
+{
+    return (int)dd->size * 2 + (dd_is_platform_integer(dd) ? 1 : 0);
+}
+
+// The unsigned integer type corresponding to a signed one (C11 6.2.5p6) — the
+// usual arithmetic conversions' last case, where the signed operand outranks
+// the unsigned one but cannot represent all its values (win64 `long` against
+// `unsigned int` is `unsigned long`).
+static inline DataDef *unsigned_integer_counterpart(DataDef *dd)
+{
+    if ( dynamic_cast<DataDefPlatformLONG *>(dd) )
+	return dd_platform_ulong();
+    if ( dynamic_cast<DataDefPlatformLONGLONG *>(dd) )
+	return dd_platform_ulonglong();
+    if ( dd->size == ddUINT128.size )
+	return &ddUINT128;
+    if ( dd->size == ddUINT64.size )
+	return &ddUINT64;
+    return &ddUINT32;
+}
+
 // addition operator +
 // Usual arithmetic conversions (C11 6.3.1.8) — the parse-side VALUE view
 // shared by the binary arithmetic operators' datadef() overrides: a real
-// operand wins (wider real first), otherwise the wider integer wins and at
-// equal width unsigned wins. The operands arrive PROMOTED
+// operand wins (wider real first); otherwise the integer rule by RANK
+// (integer_conversion_rank) — same signedness, the higher rank; an unsigned
+// operand of rank >= the signed one's, the unsigned; a signed one wider than
+// the unsigned, the signed; else the signed one's unsigned counterpart. The
+// operands arrive PROMOTED
 // (promoted_operand_type), so plain int, pointer/function/complex operands
 // and NULL children answer NULL and each operator's own arms and the ddINT
 // default keep their behavior; the floor tests below stay as the contract.
@@ -602,13 +632,25 @@ static inline DataDef *usual_arithmetic_result(DataDef *ld, DataDef *rd)
 	    return ld->size >= rd->size ? ld : rd;
 	return lr ? ld : rd;
     }
-    DataDef *w = ld;
-    if ( rd->size > w->size
-      || (rd->size == w->size && rd->is_unsigned() && !w->is_unsigned()) )
-	w = rd;
+    const bool lu = ld->is_unsigned(), ru = rd->is_unsigned();
+    const int lk = integer_conversion_rank(ld), rk = integer_conversion_rank(rd);
+    DataDef *w;
+    if ( lu == ru )
+	w = rk > lk ? rd : ld;
+    else
+    {
+	DataDef *u = lu ? ld : rd, *sg = lu ? rd : ld;
+	if ( (lu ? lk : rk) >= (lu ? rk : lk) )
+	    w = u;
+	else if ( sg->size > u->size )
+	    w = sg;
+	else
+	    w = unsigned_integer_counterpart(sg);
+    }
     if ( w->size < ddINT.size )
 	return NULL;	// below the promotion floor: both promote to int
-    if ( w->size == ddINT.size && !w->is_unsigned() )
+    if ( !w->is_unsigned()
+      && integer_conversion_rank(w) == integer_conversion_rank(&ddINT) )
 	return NULL;	// plain int — the caller default already
     return w;
 }

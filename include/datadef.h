@@ -1770,6 +1770,18 @@ class DataDefPlatformLONGLONG:  public DataDef { public:
 	DataDefPlatformLONGLONG():  DataDef("long long", 8, DataType::dtINT64) {} };
 class DataDefPlatformULONGLONG: public DataDef { public:
 	DataDefPlatformULONGLONG(): DataDef("unsigned long long", 8, DataType::dtUINT64) {} };
+// A platform-width integer: one of the four singletons above — a DISTINCT
+// fundamental type sharing another integer's storage (LLP64 long beside int,
+// darwin long long beside long). Its rawtype cannot tell it apart; its class
+// can. The integer conversion rank (tokens.h) and the type-name renderer
+// (_Generic, __builtin_types_compatible_p) ask this.
+inline bool dd_is_platform_integer(const DataDef *dd)
+{
+    return dynamic_cast<const DataDefPlatformLONG *>(dd)
+	|| dynamic_cast<const DataDefPlatformULONG *>(dd)
+	|| dynamic_cast<const DataDefPlatformLONGLONG *>(dd)
+	|| dynamic_cast<const DataDefPlatformULONGLONG *>(dd);
+}
 // wchar_t / char16_t / char32_t (datadef.h decls above): distinct
 // fundamental types whose STORAGE is an integer DataType (so every width /
 // codegen consumer treats them as that integer, which IS the ABI) but whose

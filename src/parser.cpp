@@ -14457,6 +14457,13 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
     // `long` (a _Generic association hazard).
     if ( dd->is_function() )
 	return "funcptr";
+    // A scalar renders its IDENTITY, never its storage: the platform long
+    // (LLP64, int's storage) and long long (darwin, long's) are distinct
+    // types the rawtype switch below cannot see — a win64 `long` selected the
+    // `int` association (tests/testconditionaltypec on the wine lane).
+    if ( DataDef *sid = Program::proven_scalar_identity(dd) )
+	if ( dd_is_platform_integer(sid) )
+	    return sid->name;
 
     switch ( dd->rawtype() )
     {
