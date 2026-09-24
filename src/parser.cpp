@@ -53202,6 +53202,19 @@ DataDef *Program::parse_declarator(DataDef *base, DeclaratorMode mode,
 		elem = elem->as_carray_dd()
 		    ? qualify_array_elements(elem, leading_cv)	// `volatile int a[][3]`: the row's
 		    : getQualifiedType(elem, leading_cv & modeled_cv());
+	    else
+	    {
+		// The cv after the element's last `*` is the ELEMENT's own —
+		// `char *const a[]` is `char *const *a` (C11 6.7.6.3p7: only the
+		// qualifiers inside the brackets reach the adjusted pointer).
+		// declarator_object_cv reads it; a parameter OBJECT's cv it is
+		// not (the parameter reader skips an adjusted array's). Dropping
+		// it made SMAUG's flag_string(obj->wear_flags, w_flags) "discard
+		// qualifiers" once const reached the tree.
+		unsigned elem_cv = declarator_object_cv(out, leading_cv);
+		elem = elem->as_carray_dd() ? qualify_array_elements(elem, elem_cv)
+					    : getQualifiedType(elem, elem_cv);
+	    }
 	    dd = getPointerType(elem);
 	    out.adjusted_array = true;
 	}
