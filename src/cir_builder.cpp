@@ -15361,6 +15361,12 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 			    dynamic_cast<const DataDefQUAL *>(pb))
 				pb = cw->base_type;
 			if (ab && pb) {
+				// Identity before the void conversion: void* to
+				// void* is the identity, and one level down
+				// (void** against void**, the recursion below) it
+				// must rank EXACT (tests/testvoidpointee).
+				if (ab == pb || ab->name == pb->name)
+					return 5 - qual_adjust;
 				if (ab->is_void() || pb->is_void())
 					return 3 - qual_adjust;   // void* standard conversion
 				// A POINTER pointee on either side: [conv.ptr] has
@@ -15379,8 +15385,6 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 								  false, false,
 								  false) == 5
 						? 5 - qual_adjust : -1;
-				if (ab == pb || ab->name == pb->name)
-					return 5 - qual_adjust;
 				// ENUM pointees keep their own conversion domain
 				// exactly like enum VALUES above — [conv.ptr] has
 				// no enum*->other-enum* conversion. Enums are
