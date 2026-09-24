@@ -378,8 +378,16 @@ TypeNode parse_type(const std::string &raw)
 	}
 	// The core's leading words: its cv, and `typename rr<T>::type` — the
 	// keyword disambiguates a dependent name in source; the ABI encodes the
-	// nested-name alone (g++: RN2rrIT_E4typeE), a no-op decoration.
-	for (;;) {
+	// nested-name alone (g++: RN2rrIT_E4typeE), a no-op decoration. NOT when
+	// the rest is a COMPOSITE declarator (`volatile int (*)[3]`, `const char
+	// (*)(int)`): its leading cv is its element's / return's, read by the
+	// array and function arms' own parse_type below — taken here it landed on
+	// the outermost level and was dropped as a top-level cv (PA3_i for g++'s
+	// PA3_Vi).
+	bool composite = s.find("(*)") != std::string::npos
+		      || s.find("(&)") != std::string::npos
+		      || (!s.empty() && s.back() == ']');
+	for (; !composite;) {
 		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
 			level_cv |= 1u;
 			s = mstrip(s.substr(6));

@@ -20,7 +20,7 @@ template <class T> int pv (T *) { return is_v<T>::value; }
 static int rows (volatile int a[][3]) { return pv (&a[1][2]); }
 int main () {
   K k; k.v = 3; int x = 4; k.p = &x;
-  int m[2][3] = { { 0 } };
+  volatile int m[2][3] = { { 0 } };
   printf ("cxx: %d %d %d %d\n", param (4), pv (&k.v), pv (&k.p), rows (m));
   return 0;
 }

@@ -2947,14 +2947,41 @@ static std::string param_declarator_spelling(DataDef *base, DataDef *param_dd,
 	t = t->as_reference_dd()->base_type;
 	referent = true;
     }
+    DataDef *base_level = NULL;		// the type at depth `stars`
     for ( int j = 0; t && j <= stars; ++j )
     {
 	level_cv.push_back(t->cv_quals());
+	if ( j == stars )
+	    base_level = t;
 	DataDefPTR *p = j < stars ? t->as_pointer_dd() : NULL;
 	t = p ? p->base_type : NULL;
     }
     unsigned base_cv = (level_cv.size() == (size_t)stars + 1 ? level_cv.back() : cvNONE)
 		     | (leading_const ? cvCONST : cvNONE);
+    // A POINTER TO ARRAY — `int (*a)[3]`, and an adjusted multi-dimensional
+    // `volatile int a[][3]` — spells its C++ declarator, `elem (*)[3]`, the
+    // form the mangler encodes (PA3_i; a bare `int*` minted Pi, a symbol g++
+    // never defines). The array's qualifiers are its ELEMENTS' (6.7.3p9):
+    // `volatile int (*)[3]` is PA3_Vi.
+    if ( stars == 1 && base_level && base_level->as_carray_dd() )
+    {
+	std::vector<carray_dim_t> dims;
+	DataDef *e = base_level;
+	while ( DataDefCArray *c = e->as_carray_dd() )
+	{
+	    dims.push_back(c->count);
+	    e = c->element_type;
+	}
+	DataDef *ue = e->unqualified();
+	std::string es = ue->canonical_cpp_spelling().empty() ? ue->name
+							       : ue->canonical_cpp_spelling();
+	es = cv_qualified_spelling(es, e->cv_quals() | (leading_const ? cvCONST : cvNONE),
+				   ue->is_pointer());
+	es += " (*)";
+	for ( size_t d = 0; d < dims.size(); ++d )
+	    es += "[" + std::to_string(dims[d]) + "]";
+	return es;
+    }
     DataDef *ub = base ? base->unqualified() : NULL;
     std::string s = ub ? (ub->canonical_cpp_spelling().empty()
 			  ? ub->name : ub->canonical_cpp_spelling())
@@ -69542,17 +69569,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    std::string param_spelling = param_declarator_spelling(
 		&pb->definition, param_dd, param_ptr_depth, param_leading_const,
 		rtype == RefType::rtReference);
-	    // A multi-dimensional array parameter decays to a POINTER TO ARRAY
-	    // (`int a[2][3]` is `int (*)[3]`, Itanium PA3_i): spell that C++
-	    // declarator, so the encoder encodes it or refuses it — a bare
-	    // `int*` would mint the WRONG symbol (Pi) and misbind at link.
-	    if ( param_array_dims.size() > 1 )
-	    {
-		param_spelling.resize(param_spelling.size() - 1);	// the decay `*`
-		param_spelling += " (*)";
-		for ( size_t ad = 1; ad < param_array_dims.size(); ++ad )
-		    param_spelling += "[" + std::to_string(param_array_dims[ad]) + "]";
-	    }
+	    // (A multi-dimensional array parameter decays to a POINTER TO ARRAY,
+	    // `int a[2][3]` is `int (*)[3]`: param_declarator_spelling spells
+	    // that declarator for it and for a declared `int (*a)[3]` alike.)
 	    if ( rtype == RefType::rtReference )
 	    {
 		if ( param_dd->as_carray_dd() )

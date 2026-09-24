@@ -9071,8 +9071,13 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			int decay_ptrs = ptr_levels ? ptr_levels : 1;
 			size_t first_dim = ptr_levels ? 0 : 1;
 			// Element's own pointer depth (`char *argv[]` -> element char*).
-			int elem_stars = dd_peel_pointers(elem);   // the one pointer-peel owner
+			// The peel unqualifies the element's base; its recorded cv
+			// is spelled on the spec (`volatile int a[][3]` -> `int
+			// volatile (*a)[3]`: the elements are volatile, 6.7.3p9).
+			std::vector<unsigned> elem_cv;
+			int elem_stars = dd_peel_pointers(elem, &elem_cv);   // the one pointer-peel owner
 			node_t pspec = type_list(elem);
+			append_cv_specs(pspec, elem_cv.empty() ? cvNONE : elem_cv.back());
 			node_t pdecl_list = list();
 			for (int s = 0; s < elem_stars; s++)
 				append(pdecl_list, pointer());          // element pointers (innermost)

@@ -631,10 +631,19 @@ yet measured.
   each computed "the object's own top-level cv" from a declarator result —
   the declaration, the parameter reader, `member_declarator`, K&R — are one
   owner, `declarator_object_cv`. Reducers `tests/testvolatileresiduec`,
-  `tests/testvolatileresiduecxx`. Residues: a function-pointer OBJECT's own
-  volatile; a class-body volatile bit-field; the C++-valid qualification
-  conversion `int (*)[3]` -> `volatile int (*)[3]` lowers with no cast
-  (c2mir warns, the value is right).
+  `tests/testvolatileresiduecxx`. The warning ratchet then found the array
+  parameter's element cv reached madc's type but not the tree (`int (*a)[3]`
+  emitted; accesses non-volatile) nor the symbol (`PA3_i`, g++ `PA3_Vi`):
+  `param_decl`'s array arm unqualified the element before rendering it, and
+  the mangler's leading-words peel took a composite spelling's leading cv
+  (`volatile int (*)[3]`) for the outermost level — pre-existing for const
+  too (`const int a[][3]` minted `PA3_i`, g++ `PA3_Ki`). And a declared
+  POINTER-TO-ARRAY parameter (`int (*a)[3]`) spelled its dims nowhere (`Pi`):
+  `param_declarator_spelling` spells every pointer-to-array base as `elem
+  (*)[N]` now (parseFunction's adjusted-array special case folded in).
+  Residues: a function-pointer OBJECT's own volatile; a class-body volatile
+  bit-field; the C++-valid qualification conversion `int (*)[3]` ->
+  `volatile int (*)[3]` lowers with no cast (c2mir warns; the value is right).
 - ~~`generic_association_paren_declarator`~~ — fixed 2026-09-23 (V5), loud
   and silent. Two type-NAME readers hand-rolled their declarators outside the
   one owner. `parse_builtin_types_compatible_operand` (the `_Generic`
