@@ -32,9 +32,9 @@ public:
     // the Program's default standard. False when the session cannot start.
     bool begin(const std::string &std_option = std::string());
 
-    // Submit one complete entry. Its declarations persist, and its module is
-    // linked into the live context. False when the entry is refused; its
-    // diagnostics are program().diagnostics.
+    // Submit one complete entry. Its declarations persist, its module is
+    // linked into the live context, and its statements run once (D25). False
+    // when the entry is refused; its diagnostics are program().diagnostics.
     bool submit(const std::string &text);
 
     // The live address of a session function / global, by emitted name.
@@ -43,9 +43,11 @@ public:
     void *data(const char *name);
 
     Program &program() { return *prog; }
+    // The entries linked into the live context.
     unsigned entries() const { return entry_count; }
 
 private:
+    bool run_entry();
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;
     unsigned entry_count;

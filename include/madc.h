@@ -975,6 +975,19 @@ public:
     virtual TokenDecl *as_decl_tok() override { return this; }
 };
 
+// The point in an interactive entry's run (plan §41.2a slice 2, D25) where a
+// global the entry declares after its first statement is initialized, so the
+// entry runs in source order. Only Program::place_entry_initializers makes
+// one; the CIR builder runs the global's dynamic initialization there
+// instead of in the module init (CirBuilder::global_init_in_place).
+class TokenGlobalInit: public TokenBase
+{
+public:
+    Variable *var;
+    TokenGlobalInit(Variable *v) : var(v) {}
+    virtual TokenGlobalInit *as_global_init_tok() override { return this; }
+};
+
 // AST node for a typedef declaration. Returned by TokenTYPEDEF::parse()
 // so typedefs appear in the AST in source order (consumed by the CIR
 // layer via Program::top_decls). The JIT compiler ignores it: compile()
@@ -5414,10 +5427,15 @@ public:
     bool script_statement_result(TokenBase *ts) const;
     bool adopt_script_statement(TokenBase *ts);
     void ensure_script_main(TokenBase *loc);
+    TokenFunc *synthesize_function(const std::string &name, FuncDef *func, TokenBase *loc);
     void finalize_script_main();
     Variable *script_param_var(const std::string &id);
     Variable *script_param_lookup(const std::string &id);
     TokenCpnd *script_statement_scope(TokenBase *loc);
+    // The scope a `:=` declares into: script_statement_scope's, except at an
+    // interactive entry's top level, where a `:=` declares a session global
+    // as `T x = e;` does there (D25).
+    TokenCpnd *short_declaration_scope(TokenBase *loc);
     // Lookup-side twin of script_statement_scope: the synthesized main as
     // the active scope WHILE a file-scope script statement parses (never
     // creates it — creation belongs to the statement-parse sites).
@@ -6817,11 +6835,20 @@ public:
     // translation unit's tokenize + parse pair runs (the lexer's and the
     // parser's, a fresh tkProgram); parse_entry lexes one more unit into the
     // SAME Program and parses it to its end-of-entry token, keeping every
-    // macro, include, type and symbol the earlier entries made. A statement
-    // in an entry is collected into entry_statements (its lowering is D25's
-    // entry function), never adopted into script mode's main.
+    // macro, include, type and symbol the earlier entries made.
     bool interactive_session = false;
-    std::vector<TokenBase *> entry_statements;
+    // An entry's run (D25): its statements, in source order, go into
+    // `void __madc_entry_N(void)`, never into script mode's main. It is made
+    // at the entry's first statement; a global declared after that point gets
+    // a TokenGlobalInit there. entry_function_name names the last accepted
+    // entry's run ("" when it had no statement), which the session calls once
+    // its module links.
+    TokenFunc *entry_function = NULL;
+    unsigned entry_function_serial = 0;
+    std::string entry_function_name;
+    TokenFunc *ensure_entry_function(TokenBase *loc);
+    void adopt_entry_statement(TokenBase *ts, TokenBase *head);
+    void place_entry_initializers(size_t decls_before);
     bool begin_interactive_session(const std::string &display_name);
     bool parse_entry(const std::string &text, const std::string &display_name);
     bool lex_entry(const std::string &text, const std::string &display_name);

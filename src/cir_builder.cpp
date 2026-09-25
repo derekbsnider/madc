@@ -26989,6 +26989,9 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 {
 	if (!tb) return NULL;
 
+	if (TokenGlobalInit *gi = tb->as_global_init_tok())
+		return global_init_in_place(gi);
+
 	TokenRETURN *tr = (tb ? tb->as_return_tok() : NULL);
 	if (tr) return translate_return(tr);
 
@@ -30480,6 +30483,34 @@ void CirBuilder::queue_global_ctor_group(Variable *v, std::vector<node_t> &stmts
 		m_global_ctor_stmts.push_back(s);
 		grp.push_back(s);
 	}
+}
+
+// The module init runs before an interactive entry's run, so a global the
+// entry declares after its first statement would initialize ahead of the
+// statements before it. clang-repl runs an entry in source order
+// (`step(1); int y = step(2);` steps 1 then 2); so does this, by running the
+// global's group at its place in the entry's run instead. The group stays
+// the same statements; only the function that runs them changes. A constant
+// initializer queues no group: the storage holds its value from load.
+node_t CirBuilder::global_init_in_place(TokenGlobalInit *gi)
+{
+	for (size_t g = 0; g < m_ctor_groups.size(); ++g) {
+		if (m_ctor_groups[g].first != gi->var)
+			continue;
+		std::vector<node_t> &grp = m_ctor_groups[g].second;
+		if (grp.empty())
+			return NULL;
+		node_t items = list();
+		for (node_t s : grp) {
+			m_global_ctor_stmts.erase(std::remove(m_global_ctor_stmts.begin(),
+							      m_global_ctor_stmts.end(), s),
+						  m_global_ctor_stmts.end());
+			append(items, s);
+		}
+		grp.clear();
+		return node2(N_BLOCK, list(), items, gi);
+	}
+	return NULL;
 }
 
 void CirBuilder::collect_global_ctors(Program *prog,

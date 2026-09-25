@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### An interactive entry's statements run
+
+An entry in the interactive session can now hold statements as well as
+declarations (plan §41.2a, slice 2). They run once, in source order, when the
+entry is submitted. After `int x = 10;`, the entry `x = x * 2;` leaves `x` at
+20, and a later `for (int i = 1; i <= 4; ++i) x += i;` leaves it at 30.
+- The statements lower into `void __madc_entry_N(void)` in the entry's own
+  module, and the session calls it once the module links. Script mode's
+  synthesized `main` is untouched.
+- A declaration keeps its place among the statements. In `step(1); int y =
+  step(2); step(3);` the steps run 1, 2, 3, as clang-repl runs them. A
+  global's dynamic initializer that follows the entry's first statement
+  moves out of the module's init into the entry's run.
+- A top-level `:=` declares a session global, like `int n = e;`, so later
+  entries see it. A top-level `defer` runs when the entry ends.
+- An entry that does not compile runs none of its statements.
+
+Call statements run under `--std=c17` too. The rest of the D3 relaxation, a
+C standard's top-level assignment such as `x = 3;`, is the next slice.
+
+Tests: `test_repl_session`.
+
 ### A file-scope `:=` in an included file gets its storage
 
 Outside script mode, a `:=` at file scope declares a global, as `int
@@ -36,10 +58,9 @@ entry's `int h(void) { return f(2) + g; }` returns 12, the value gcc and clang
 give for the same two files linked together. This works under `--std=c17` and
 `--std=madc`.
 
-A statement in an entry, or a file-scope `static`, is refused for now with a
-clear message. Statements get their own entry function in slice 2. Statics
-wait for the redefinition rules (D6), because a later entry's module cannot
-import an internal-linkage name.
+A file-scope `static` is refused for now with a clear message. Statics wait
+for the redefinition rules (D6), because a later entry's module cannot import
+an internal-linkage name.
 
 Tests: `test_repl_session`.
 

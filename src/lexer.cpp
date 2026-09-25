@@ -10813,5 +10813,9 @@ bool Program::lex_entry(const std::string &text, const std::string &display_name
 	return false;
     inject_pending_auto_includes();
     flush_forest_pending_globals();
+    // The entry is the unit being parsed: its own tokens are the "main
+    // source" token_is_tu_origin tells from an included header's.
+    if ( tkProgram )
+	tkProgram->source = fname;
     return true;
 }

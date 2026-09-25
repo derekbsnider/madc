@@ -1851,6 +1851,28 @@ The set is `Program::session_defined`, keyed by emitted symbol. After each link,
 - Found on the way, for slice 3: host-callback trampolines come from `host_callback_regs`, not from the roots, so each module would re-emit them.
 - A refused entry can leave its declarations in the Program. Rollback is §41.3.
 
+**Built (2026-09-25), slice 2, statements run:**
+- An entry's statements, in source order, go into `void __madc_entry_N(void)`, which the session calls once the entry's module links (`InteractiveSession::run_entry`).
+  - It is made at the entry's first statement (`Program::ensure_entry_function`). Its registration is script mode's `main`'s, and both now go through `Program::synthesize_function`.
+  - N counts every run made, so a refused entry's number is never reused.
+  - Its plain name needs no linkage flag, since only a parsed declaration mints a C++ symbol.
+  - A later module declares it and never runs it again (`session_defined`).
+- **Order.** The module init runs before the entry's run, so a global declared after the entry's first statement would initialize ahead of the statements before it.
+  - clang-repl runs an entry in source order: `step(1); int y = step(2); step(3);` gives 1, 2, 3.
+  - `Program::place_entry_initializers` leaves a `TokenGlobalInit` in the run for each such global. `CirBuilder::global_init_in_place` moves the global's dynamic-init group there from the module init. A constant initializer has no group, since its storage holds the value from load.
+  - A global declared before the first statement keeps the module init, which already runs first.
+- **Declarations persist (D25), `:=` among them.** A top-level `:=` declares a session global (`Program::short_declaration_scope`), and so do the receivers of `a, b := f();`, which the statement then assigns.
+  - This needed a fix on the way (`fbf4efae7`): a file-scope `:=` outside script mode recorded no declaration, so it got no storage. `Program::record_global_top_decl` now owns that record.
+- A top-level `defer` binds to the entry's run and runs when the entry ends.
+- An entry's own text is the TU origin (`lex_entry` sets `tkProgram->source`). A statement from a header the entry includes is refused, as script mode refuses it.
+- `argc` / `argv` do not resolve in an entry. D25's `%run` hands a program's argv to its main.
+- Call statements run under `--std=c17` too, because they are classified by their parse result. The statement *starters* (`file_scope_statement_starter`) are still `--std=madc`-only, so a C standard's `x = 3;` is slice 2b, where C89's implicit-int reading has to be kept.
+- Gate: `tests/unit/test_repl_session.cpp`, 9 cases.
+  - The clang-repl oracle (`tmp/repl/s2/order2.repl`) gives `log=123 y=2`, `log=12345 w=4` and `x=30`, and the session gives the same.
+- Known, and named here:
+  - A refused entry's run stays registered by name, inert because it never reaches the builder's queues. §41.3 removes it with the entry's other leftovers.
+  - Like every root function, the entry's run gets a host-call shim.
+
 **Thread contract:** one session is driven by one thread. Concurrent clients go through the serialized verbs of D9.
 
 First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, `madc -i`). Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.

@@ -76237,8 +76237,9 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 
 		    // File-scope in script mode: the receivers bind to the
 		    // synthesized main (script_statement_scope) — main-locals,
-		    // exactly what receivers inside a written main are.
-		    TokenCpnd *code = script_statement_scope(tb);
+		    // exactly what receivers inside a written main are. At an
+		    // interactive entry's top level they are session globals.
+		    TokenCpnd *code = short_declaration_scope(tb);
 
 		    // Receivers are ordinary scope variables typed by the
 		    // callee's slot types (block-top declaration gives class
@@ -76261,6 +76262,10 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 			if ( code && code->findVariableThisScope(strpool, strpool.intern(ids[i]), ids[i]) )
 			    Throw(tb) << "'" << ids[i] << "' is already declared in this scope; ':=' declares a new variable, use '=' to assign it" << flush;
 			Variable *v = addVariable(code, *vtype, ids[i], 1, NULL, alloc);
+			// A global receiver is declared like a file-scope
+			// `T name;`; the statement assigns it.
+			if ( !code )
+			    record_global_top_decl(v, tb, NULL);
 			vars.push_back(v);
 		    }
 
@@ -76286,9 +76291,10 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		// File-scope in script mode: the receiver binds to the
 		// synthesized main (script_statement_scope) — a main-local,
 		// block-top declared by translate_block like the multi
-		// form's receivers; the statement is the bare assignment.
+		// form's receivers; the statement is the bare assignment. At
+		// an interactive entry's top level it is a session global.
 		bool file_scope = compounds.empty();
-		TokenCpnd *code = script_statement_scope(tb);
+		TokenCpnd *code = short_declaration_scope(tb);
 		bool alloc = (!code) ? true : false;
 		// Owner ruling 2026-09-19 (Go/C++ scoping): `:=` DECLARES a new variable.
 		// A name already declared in THIS scope is a redeclaration — an error,
@@ -76313,8 +76319,9 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		td->line = tb->line;
 		td->column = tb->column;
 		td->initialize = assign;
-		// A file-scope `:=` outside script mode declares a global, as
-		// `T name = e;` does there.
+		// A file-scope `:=` outside script mode (an included file, an
+		// interactive entry) declares a global, as `T name = e;` does
+		// there.
 		if ( !code )
 		    record_global_top_decl(var, tb, td);
 		return td;
@@ -76992,7 +76999,10 @@ Variable *Program::script_param_var(const std::string &id)
 // runs in __madc_global_init, where main's parameters do not exist).
 Variable *Program::script_param_lookup(const std::string &id)
 {
-    if ( !parsing_script_statement || language_std != STD_MADC )
+    // An interactive entry has no main to take them from (D25: `%run`
+    // passes a program's argv to its main).
+    if ( !parsing_script_statement || language_std != STD_MADC
+      || interactive_session )
 	return NULL;
     return script_param_var(id);
 }
@@ -77016,40 +77026,63 @@ void Program::ensure_script_main(TokenBase *loc)
     FuncDef *func = new FuncDef(returnDecl(ddINT32, false));
     func->parameters.push_back(&ddINT32);
     func->parameters.push_back(getPointerType(&ddCHARptr));
-    funcdef_map["main"] = func;
-    Variable *var = addVariable(NULL, *func, "main");
-    script_main_method = new Method(*var);
-    var->data = (void *)script_main_method;
+    script_main_tf = synthesize_function("main", func, loc);
+    script_main_method = script_main_tf->method;
     // Adopt the param Variables (created here, or earlier by
     // script_param_lookup when the first statement referenced them).
     script_main_method->parameters.push_back(script_param_var("argc"));
     script_main_method->parameters.push_back(script_param_var("argv"));
-    script_main_tf = new TokenFunc(*var);
-    script_main_tf->method = script_main_method;
-    script_main_tf->parent = NULL;
+}
+
+// A function the parser synthesizes (script mode's main, an interactive
+// entry's run), registered the way parseFunction registers a parsed
+// definition: FuncDef + funcdef_map + global name Variable + Method +
+// TokenFunc, positioned at `loc`. The caller adds the Method's parameter
+// Variables.
+TokenFunc *Program::synthesize_function(const std::string &name, FuncDef *func,
+					TokenBase *loc)
+{
+    funcdef_map[name] = func;
+    Variable *var = addVariable(NULL, *func, name);
+    Method *method = new Method(*var);
+    var->data = (void *)method;
+    TokenFunc *tf = new TokenFunc(*var);
+    tf->method = method;
+    tf->parent = NULL;
     if ( loc )
     {
-	script_main_tf->file = loc->file;
-	script_main_tf->line = loc->line;
-	script_main_tf->column = loc->column;
+	tf->file = loc->file;
+	tf->line = loc->line;
+	tf->column = loc->column;
 	func->decl_file = loc->file;
     }
+    return tf;
 }
 
 // The compound a statement-scoped binding (a `:=` receiver, a `defer`
 // registration) belongs to: the innermost open compound, or — for a
 // file-scope statement in script mode — the synthesized main itself
-// (TokenFunc IS the body compound translate_block walks). NULL means
-// "no scope": standards modes and include-origin files keep their
+// (TokenFunc IS the body compound translate_block walks), or at an
+// interactive entry's top level, under every standard, the entry's run.
+// NULL means "no scope": standards modes and include-origin files keep their
 // existing file-scope handling / rejects.
 TokenCpnd *Program::script_statement_scope(TokenBase *loc)
 {
     if ( !compounds.empty() )
 	return compounds.top();
+    if ( interactive_session )
+	return token_is_tu_origin(loc) ? ensure_entry_function(loc) : NULL;
     if ( language_std != STD_MADC || !token_is_tu_origin(loc) )
 	return NULL;
     ensure_script_main(loc);
     return script_main_tf;
+}
+
+TokenCpnd *Program::short_declaration_scope(TokenBase *loc)
+{
+    if ( interactive_session && compounds.empty() )
+	return NULL;
+    return script_statement_scope(loc);
 }
 
 // Route a classified file-scope statement into the synthesized main.
@@ -77071,6 +77104,56 @@ bool Program::adopt_script_statement(TokenBase *ts)
     ensure_script_main(ts);
     script_main_tf->statements.push_back((TokenStmt *)ts);
     return true;
+}
+
+// An interactive entry's run (D25): `void __madc_entry_N(void)`, made at the
+// entry's first statement, synthesized as script mode's main is, so the
+// builder lowers it as an ordinary function. N counts every run made, so a
+// refused entry's number is never reused. Its plain name needs no linkage
+// flag: only a parsed declaration mints a C++ symbol. Script mode's
+// "statements conflict with an explicit main()" is not a session rule: a
+// session may define main.
+TokenFunc *Program::ensure_entry_function(TokenBase *loc)
+{
+    if ( entry_function )
+	return entry_function;
+    std::string name = "__madc_entry_" + std::to_string(++entry_function_serial);
+    DBG(cout << "ensure_entry_function(): " << name << endl);
+    entry_function = synthesize_function(name, new FuncDef(returnDecl(ddVOID, false)), loc);
+    return entry_function;
+}
+
+// A statement of an interactive entry joins the entry's run, under every
+// standard (the D3 relaxation). One that came from an included file is
+// refused, as script mode refuses it. `head` is the statement's first token.
+void Program::adopt_entry_statement(TokenBase *ts, TokenBase *head)
+{
+    if ( !token_is_tu_origin(ts) )
+	Throw(ts) << "file-scope statement in an included file (top-level statements are allowed only in the entry itself)" << flush;
+    ensure_entry_function(head)->statements.push_back((TokenStmt *)ts);
+}
+
+// After one top-level item of an interactive entry: every global it declared
+// once the entry's run exists initializes at this point of the run
+// (TokenGlobalInit), not in the module init that runs before it. A global
+// declared before the entry's first statement keeps the module init, which
+// is already its place in source order. Called before the item itself joins
+// the run, so a statement's own receivers (`a, b := f();`) are constructed
+// before it assigns them.
+void Program::place_entry_initializers(size_t decls_before)
+{
+    if ( !entry_function )
+	return;
+    for ( size_t i = decls_before; i < top_decls.size(); ++i )
+    {
+	const TopDecl &td = top_decls[i];
+	if ( td.kind != DeclKind::dkGlobalVar || !td.var
+	  || (td.var->flags & vfEXTERN) )
+	    continue;
+	TokenGlobalInit *gi = new TokenGlobalInit(td.var);
+	copy_token_location(gi, td.origin);
+	entry_function->statements.push_back((TokenStmt *)gi);
+    }
 }
 
 // Seal the synthesized main at end of TU parse: hand it to the same queues
@@ -77375,6 +77458,7 @@ bool Program::parse_toplevel(TokenProgram *tp)
 	    bool script_stmt = file_scope_statement_starter(tb);
 	    if ( script_stmt )
 		parsing_script_statement = true;
+	    size_t decls_before = top_decls.size();
 	    ts = parseStatement(tb);
 	    parsing_script_statement = false;
 	    pack_close_toplevel_decl();
@@ -77383,13 +77467,15 @@ bool Program::parse_toplevel(TokenProgram *tp)
 		Throw(loop_head) << "Unexpected '"
 		    << overload_token_spelling(loop_head)
 		    << "' at file scope (parser made no progress)" << flush;
+	    if ( interactive_session )
+		place_entry_initializers(decls_before);
 	    if ( ts )
 	    {
-		// A session entry's statement lowers into its entry function
-		// (D25), never into script mode's main.
+		// A session entry's statement joins the entry's run (D25),
+		// never script mode's main.
 		if ( interactive_session
 		  && (script_stmt || script_statement_result(ts)) )
-		    entry_statements.push_back(ts);
+		    adopt_entry_statement(ts, tb);
 		else if ( (script_stmt || script_statement_result(ts))
 		  && adopt_script_statement(ts) )
 		{
@@ -77673,9 +77759,9 @@ bool Program::begin_interactive_session(const std::string &display_name)
 // One entry of the interactive session (plan §41.2a): lexed into this
 // Program and parsed to its end token, on everything the earlier entries
 // declared. False when the entry is refused; its diagnostics are recorded.
-// Slice 1 persists declarations. A statement (D25's entry function) and a
-// file-scope static (internal linkage: a later entry's module cannot import
-// it; its rule is D6's) are refused out loud until their slices land.
+// Its declarations persist (slice 1) and its statements form its run
+// (slice 2, D25). A file-scope static (internal linkage: a later entry's
+// module cannot import it; its rule is D6's) is refused out loud.
 bool Program::parse_entry(const std::string &text, const std::string &display_name)
 {
     if ( !interactive_session || !tkProgram )
@@ -77685,7 +77771,8 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     }
     clear_diagnostics();
     clear_error();
-    entry_statements.clear();
+    entry_function = NULL;
+    entry_function_name.clear();
     entry_end_token = NULL;
     entry_final_semicolon_omitted = false;
     entry_if_extendable = false;
@@ -77699,12 +77786,6 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     for ( size_t i = 0; i < diagnostics.size(); ++i )
 	if ( diagnostics[i].severity == DiagnosticSeverity::error )
 	    return false;
-    if ( !entry_statements.empty() )
-    {
-	record_parse_error("a statement in an interactive entry is not"
-			   " supported yet", entry_statements.front(), tkProgram);
-	return false;
-    }
     for ( size_t i = decls_before; i < top_decls.size(); ++i )
     {
 	TopDecl &td = top_decls[i];
@@ -77729,6 +77810,14 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
 			       " is not supported yet", tf, tkProgram);
 	    return false;
 	}
+    }
+    // The run joins the queues a parsed definition uses (finalize_script_main's
+    // shape), after the entry's own functions.
+    if ( entry_function )
+    {
+	ast.push_back(entry_function);
+	pending_funcs.push_back(entry_function);
+	entry_function_name = entry_function->var.name;
     }
     return true;
 }

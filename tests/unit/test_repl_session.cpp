@@ -105,15 +105,11 @@ TEST_CASE("an entry reaches back past the entry before it")
     CHECK(both() == 201);
 }
 
-TEST_CASE("an entry the first slice refuses says so, and the session goes on")
+TEST_CASE("an entry the session refuses says so, and the session goes on")
 {
     InteractiveSession s;
     REQUIRE(s.begin("--std=c17"));
     REQUIRE(s.submit("int g = 5;\nint f(int a) { return a + g; }"));
-
-    // A statement lowers into D25's entry function (slice 2).
-    CHECK_FALSE(s.submit("f(1);"));
-    CHECK(first_error(s).find("statement in an interactive entry") != std::string::npos);
 
     // A file-scope static has internal linkage: a later entry's module
     // cannot import it, and its REPL rule is D6's.
@@ -125,4 +121,87 @@ TEST_CASE("an entry the first slice refuses says so, and the session goes on")
     REQUIRE(k != (int_fn)NULL);
     CHECK(k() == 8);
     CHECK(s.entries() == 2);
+}
+
+TEST_CASE("an entry with a statement that does not compile runs none of it")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin());
+    REQUIRE(s.submit("int g = 5;"));
+    CHECK_FALSE(s.submit("g = 99; undeclared_fn(1);"));
+    CHECK(first_error(s).find("undeclared_fn") != std::string::npos);
+    CHECK(*(int *)s.data("g") == 5);
+    // The next entry's run is a fresh one.
+    REQUIRE(s.submit("g = g + 1;"));
+    CHECK(*(int *)s.data("g") == 6);
+    CHECK(s.entries() == 2);
+}
+
+// Slice 2 (D25): an entry's statements lower into its own entry function,
+// which runs once, after the entry's module links. The oracle is clang-repl
+// (tmp/repl/s2/order2.repl): the same entries give log=123 y=2,
+// log=12345 w=4, x=30.
+TEST_CASE("an entry's statements run once, on the session's globals")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin());			// D4: --std=madc
+    REQUIRE(s.submit("int x = 10;"));
+    REQUIRE(s.submit("x = x * 2;"));
+    int *x = (int *)s.data("x");
+    REQUIRE(x != (int *)NULL);
+    CHECK(*x == 20);
+    REQUIRE(s.submit("for (int i = 1; i <= 4; ++i)\n\tx += i;"));
+    CHECK(*x == 30);			// entry 2's run did not run again
+    REQUIRE(s.submit("if (x > 25) x = 1; else x = 2;"));
+    CHECK(*x == 1);
+    CHECK(s.entries() == 4);
+}
+
+TEST_CASE("a declaration's initializer runs at its place among the entry's statements")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin());
+    REQUIRE(s.submit("int log_v = 0;\n"
+		     "int step(int d) { log_v = log_v * 10 + d; return d; }"));
+    int *log_v = (int *)s.data("log_v");
+    REQUIRE(log_v != (int *)NULL);
+    // clang-repl: the statement before the declaration runs first.
+    REQUIRE(s.submit("step(1); int y = step(2); step(3);"));
+    CHECK(*log_v == 123);
+    CHECK(*(int *)s.data("y") == 2);
+    // A declaration before the entry's first statement.
+    REQUIRE(s.submit("int w = step(4); step(5);"));
+    CHECK(*log_v == 12345);
+    CHECK(*(int *)s.data("w") == 4);
+}
+
+TEST_CASE("a top-level := declares a session global, and defer runs at the entry's end")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin());
+    REQUIRE(s.submit("int log_v = 0;\n"
+		     "int step(int d) { log_v = log_v * 10 + d; return d; }"));
+    int *log_v = (int *)s.data("log_v");
+    REQUIRE(log_v != (int *)NULL);
+    // D25: an entry's declarations persist; `:=` is one.
+    REQUIRE(s.submit("step(1); n := step(2) + 5;"));
+    CHECK(*log_v == 12);
+    REQUIRE(s.submit("int get_n(void) { return n; }"));
+    int_fn get_n = (int_fn)s.function("_Z5get_nv");
+    REQUIRE(get_n != (int_fn)NULL);
+    CHECK(get_n() == 7);
+    REQUIRE(s.submit("n = n * 3;"));
+    CHECK(get_n() == 21);
+    // `defer` binds to the entry's run: it runs when the entry ends.
+    REQUIRE(s.submit("defer step(9); step(8);"));
+    CHECK(*log_v == 1289);
+}
+
+TEST_CASE("call statements run under a C standard too (D3)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("int g = 5;\nint bump(int a) { g += a; return g; }"));
+    REQUIRE(s.submit("bump(1); bump(2);"));
+    CHECK(*(int *)s.data("g") == 8);
 }

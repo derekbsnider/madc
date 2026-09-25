@@ -67,7 +67,7 @@ bool InteractiveSession::submit(const std::string &text)
     bool ok;
     try
     {
-	ok = jit->append(prog.get(), prog->intern_file(name));
+	ok = jit->append(prog.get(), prog->intern_file(name)) && run_entry();
     }
     catch (...)
     {
@@ -75,9 +75,23 @@ bool InteractiveSession::submit(const std::string &text)
 	throw;
     }
     prog->pop_runtime_scope();
-    if ( !ok )
-	return false;
+    return ok;
+}
+
+// The entry's run (D25): its statements, in source order, lowered into the
+// entry function of its own module. It runs once, after the module links and
+// its init ran. The entry counts from the link: its definitions are live even
+// when its run cannot be generated.
+bool InteractiveSession::run_entry()
+{
     ++entry_count;
+    const std::string &run = prog->entry_function_name;
+    if ( run.empty() )
+	return true;
+    void *code = jit->function_code(run.c_str());
+    if ( !code )
+	return false;
+    ((void (*)(void))code)();
     return true;
 }
 

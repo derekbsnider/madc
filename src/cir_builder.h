@@ -2306,6 +2306,10 @@ public:
 	// guard variable's declaration rides `deferred_globals`.
 	void queue_global_ctor_group(class Variable *v, std::vector<node_t> &stmts,
 				     std::vector<node_t> &deferred_globals);
+	// An interactive entry's global declared after the entry's first
+	// statement (plan §41.2a slice 2): its queued group moves from the module
+	// init to this point of the entry's run. NULL when it has none.
+	node_t global_init_in_place(class TokenGlobalInit *gi);
 
 	// ---- Expression translation ----
 	node_t translate_expr(TokenBase *tb);

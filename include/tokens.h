@@ -58,6 +58,7 @@ class TokenCpnd;
 class TokenFunc;
 class TokenInt;
 class TokenDecl;
+class TokenGlobalInit;
 class TokenCallFunc;
 class TokenMember;
 class TokenCallMethod;
@@ -434,6 +435,7 @@ public:
     virtual TokenFunc          *as_func_tok()       { return NULL; }
     virtual TokenInt           *as_int_tok()        { return NULL; }
     virtual TokenDecl          *as_decl_tok()       { return NULL; }
+    virtual TokenGlobalInit    *as_global_init_tok() { return NULL; }
     virtual TokenCallFunc      *as_callfunc_tok()   { return NULL; }
     virtual TokenMember        *as_member_tok()     { return NULL; }
     virtual TokenCallMethod    *as_callmethod_tok() { return NULL; }
