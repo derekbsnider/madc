@@ -6674,12 +6674,58 @@ public:
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseStatementBody(TokenBase *);	// the grammar; parseStatement stamps its extent
+    // An object declaration; it owes its `;` as a statement (StatementTerminator)
+    // unless its declarator list continues. The grammar is
+    // parse_declaration_body.
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     // The declarator's storage class (`static`, `thread_local`, `inline`)
     // onto the object — one owner for every declaration arm.
     void apply_declaration_storage(class Variable *var, TokenCpnd *code,
 				   bool is_static, bool is_thread_local,
 				   bool is_inline);
+    TokenBase *parse_declaration_body(TokenDataType *, bool is_static);
+    // What the statement being parsed owes at its end: an expression statement
+    // and a jump statement their `;`, an object declaration its `,` or `;`
+    // (C11 6.8.3, 6.8.6, 6.7; [stmt.expr], [stmt.jump], [dcl.dcl]). The
+    // construct's parser records it as its LAST act (parseExprStmt,
+    // parseDeclaration, parseKeyword); parseStatement, the one statement-level
+    // caller, pays it through require_statement_terminator. The expression
+    // engine stops ON a `;` (consuming it) and BEFORE a closer, so a closer
+    // where the `;` belongs used to end the statement silently: `{ x = 3 }`,
+    // `break }`, `g(1));`.
+    enum class StatementTerminator : unsigned char { None, Expression, Declaration, Jump };
+    StatementTerminator stmt_terminator_owed = StatementTerminator::None;
+    void require_statement_terminator(StatementTerminator owed);
+    // A region whose constructs' terminators are paid inside it: a statement
+    // (parseStatement pays what its construct recorded) and a class body,
+    // whose member-declarations end in their own `;` ([class.mem]). The
+    // region starts clean and hands the enclosing record back when it closes
+    // — a member typedef's record never reaches the statement the class
+    // specifier sits in (`typedef int T;` in a class instantiated for a
+    // return type left the instantiated definition owing a `;`, which it took
+    // from the OUTER stream). RAII, so a contained parse error unwinds it.
+    struct StatementTerminatorScope
+    {
+	Program &pgm;
+	StatementTerminator saved;
+	bool open = true;
+	explicit StatementTerminatorScope(Program &p)
+	    : pgm(p), saved(p.stmt_terminator_owed)
+	{ p.stmt_terminator_owed = StatementTerminator::None; }
+	StatementTerminatorScope(const StatementTerminatorScope &) = delete;
+	StatementTerminatorScope &operator=(const StatementTerminatorScope &) = delete;
+	// What the region's construct recorded; the enclosing record is back.
+	StatementTerminator close()
+	{
+	    StatementTerminator inner = pgm.stmt_terminator_owed;
+	    if ( open ) { pgm.stmt_terminator_owed = saved; open = false; }
+	    return inner;
+	}
+	~StatementTerminatorScope() { if ( open ) pgm.stmt_terminator_owed = saved; }
+    };
+    // Set by push_declarator_list_tail: the declaration just parsed hands its
+    // declarator list on to an injected tail declaration, which owes the `;`.
+    bool declarator_list_continues = false;
     // The pointer to `base`, interned. A pointer to a FUNCTION type IS the
     // function pointer (its fnptr_twin) — [dcl.ptr] over [dcl.fct]: no
     // PTR(function type) is ever built, so every `*` applied anywhere (a

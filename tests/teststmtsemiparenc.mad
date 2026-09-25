@@ -1,0 +1,7 @@
+// C11 6.8.3: a stray `)` after a call is not the statement's end. madc's
+// engine stopped at the unmatched `)`, the statement ended without its `;`,
+// and the `)` was read as an empty statement: `g(1));` ran (exit 0).
+// Oracle: gcc "error: expected ';' before ')' token", clang "error:
+// extraneous ')' before ';'".
+int g(int a) { return a; }
+int main(void) { g(1)); return 0; }

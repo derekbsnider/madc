@@ -49864,6 +49864,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // scope. Harmless historically (the first parse error aborted the whole
     // compile), fatal under the pack-time body drain, which tolerates a failed
     // body and keeps parsing (rung 1, 2026-07-09 plan).
+    // The member-declarations pay their own `;` here; the scope closes before
+    // the declarator after the `}` (`class C {...} c;`), whose record is the
+    // enclosing statement's.
+    Program::StatementTerminatorScope member_terminators(pgm);
     try {
 	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 	{
@@ -51279,6 +51283,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    parse_hoisted_friend_operator(pgm, synth, ddc);
     }
 
+    member_terminators.close();
     // what follows?
     tn = pgm.peekToken();
 
@@ -51843,6 +51848,9 @@ TokenBase *Program::parse_optional_init_statement(StatementHeaderScope &scope)
 	scope.open();
 	bool saved_ic = parsing_const_decl;
 	parsing_const_decl = init_const;
+	// The header pays the init-statement's `;` (below), never the
+	// statement it heads.
+	StatementTerminatorScope init_terminator(*this);
 	try
 	{
 	    init_stmt = parseDeclaration(init_type);
@@ -51922,8 +51930,9 @@ TokenBase *TokenIF::parse(Program &pgm)
 		// failure throws; a clean NULL is a legitimate empty body.
 		if ( !statement )
 		    statement = new TokenCpnd();
-		while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
-		    pgm.nextToken();
+		// The branch paid its own `;` (parseStatement) — a stray `;`
+		// after it ends the if, as in TokenIF's runtime path below.
+		tn = pgm.peekToken();
 		if ( tn && tn->id() == TokenID::tkELSE )
 		{
 		    pgm.nextToken();                 // consume `else`
@@ -51933,8 +51942,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 	    else
 	    {
 		pgm.skip_discarded_statement();      // discard the then branch
-		while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
-		    pgm.nextToken();
+		tn = pgm.peekToken();                // (it consumed the branch's `;`)
 		if ( tn && tn->id() == TokenID::tkELSE )
 		{
 		    pgm.nextToken();                 // consume `else`
@@ -51983,6 +51991,9 @@ TokenBase *TokenIF::parse(Program &pgm)
 	header_scope.open();
 	bool saved_const = pgm.parsing_const_decl;
 	pgm.parsing_const_decl = condition_const_decl;
+	// A condition's declaration ends at the `)`, owing no `;` to the
+	// statement it heads.
+	Program::StatementTerminatorScope condition_terminator(pgm);
 	try
 	{
 	    condition_decl = pgm.parseDeclaration(condition_type);
@@ -52025,17 +52036,10 @@ TokenBase *TokenIF::parse(Program &pgm)
     if ( !(statement=pgm.parse_substatement(tn)) )
 	pgm.Throw(tn) << "Failed to parse if statement" << flush;
 
-    // Some statement parsers (TokenBREAK, TokenCONT, plain TokenRETURN
-    // for void) leave the trailing ';' in the stream — they're handled
-    // as no-op statements by parseCompound on the next iteration.  But
-    // here, with `if (cond) break;` (or any bare-flow-statement body),
-    // peeking for `else` finds the unconsumed ';' first and we miss
-    // attaching the else to *this* if.  C semantics require the else
-    // to bind to the nearest unmatched if (the dangling-else rule), so
-    // skip past a trailing ';' before checking.
-    while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
-	pgm.nextToken();
-
+    // The body paid its own `;` (parseStatement), so the next token decides
+    // the else: a stray `;` here is an empty statement AFTER the if, and an
+    // `else` behind it has no if (gcc: "'else' without a previous 'if'").
+    tn = pgm.peekToken();
     if ( tn && tn->id() == TokenID::tkELSE )
     {
 	tn = pgm.nextToken(); // get the else
@@ -52254,8 +52258,21 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	if ( !pk || pk->id() == TokenID::tkSemi ) break;
 	if ( typed_for_init && pk->type() == TokenType::ttDataType )
 	{
+	    // The declarator list's tail is a for-init declaration too: its
+	    // `;` is the for statement's separator, consumed below.
 	    tn = pgm.nextToken();
-	    TokenBase *extra = pgm.parseStatement(tn);
+	    pgm.parsing_for_init = true;
+	    TokenBase *extra = NULL;
+	    try
+	    {
+		extra = pgm.parseStatement(tn);
+	    }
+	    catch ( ... )
+	    {
+		pgm.parsing_for_init = false;
+		throw;
+	    }
+	    pgm.parsing_for_init = false;
 	    if ( extra ) init_extras.push_back(extra);
 	    continue;
 	}
@@ -68162,6 +68179,22 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
 {
     TokenBase *tb = (TokenBase *)tk->parse(*this);
+    // A jump statement and a do-while end in `;` ([stmt.jump], [stmt.do],
+    // C11 6.8.5/6.8.6), and so does a typedef declaration; the statement
+    // pays it (parseStatement). A `throw` reaches here only in statement
+    // position — the expression engine parses a throw-expression itself.
+    switch ( tk->id() )
+    {
+	case TokenID::tkRETURN: case TokenID::tkBREAK: case TokenID::tkCONT:
+	case TokenID::tkGOTO: case TokenID::tkDO: case TokenID::tkTHROW:
+	    stmt_terminator_owed = StatementTerminator::Jump;
+	    break;
+	case TokenID::tkTYPEDEF:
+	    stmt_terminator_owed = StatementTerminator::Declaration;
+	    break;
+	default:
+	    break;
+    }
     return tb;
 }
 
@@ -72408,6 +72441,7 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 					bool is_thread_local, bool is_volatile)
 {
+    declarator_list_continues = true;
     pushToken(type_tb->clone_origin());
     if ( is_volatile )
 	pushToken(new TokenVOLATILE());
@@ -72448,6 +72482,21 @@ void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
 }
 
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
+{
+    declarator_list_continues = false;
+    TokenBase *r = parse_declaration_body(tb, is_static);
+    // An object declaration owes its terminator as its last act — unless its
+    // declarator list goes on (the injected tail declaration owes it) or it
+    // is a for-init declaration, whose `;` is the for statement's separator
+    // ([stmt.for]; TokenFOR consumes it).
+    if ( r && r->as_decl_tok() && !declarator_list_continues
+      && !parsing_for_init )
+	stmt_terminator_owed = StatementTerminator::Declaration;
+    declarator_list_continues = false;
+    return r;
+}
+
+TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
     TokenBase *nt; // next token;
@@ -74763,8 +74812,38 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 // only `e1` running per iteration. Found via SMAUG mud_prog.c:2437
 // `while ((*p = *i) != '\0') ++p, ++i;` segfaulting because `++i`
 // never ran inside the loop.
+// gcc's phrase for the token a diagnostic stops before (c-parser's
+// c_parse_error): "'}' token" for punctuation, "'return'" for a word,
+// "numeric constant" / "string constant" / "character constant" for a
+// literal.
+static std::string token_before_phrase(TokenBase *t)
+{
+    switch ( t->type() )
+    {
+	case TokenType::ttInteger:
+	case TokenType::ttReal:
+	    return "numeric constant";
+	case TokenType::ttString:
+	    return "string constant";
+	case TokenType::ttChar:
+	    return "character constant";
+	case TokenType::ttIdentifier:
+	case TokenType::ttKeyword:
+	case TokenType::ttDataType:
+	    return "'" + overload_token_spelling(t) + "'";
+	default:
+	    return "'" + overload_token_spelling(t) + "' token";
+    }
+}
+
 TokenBase *Program::parseExprStmt(TokenBase *tb)
 {
+    // A closer that opens nothing cannot start a statement ([stmt.expr]: an
+    // expression-statement begins an expression). The engine reads a head
+    // `)` as the end of an empty operand list and consumes it, so `);` was an
+    // empty statement (gcc: "expected statement before ')' token").
+    if ( tb && (tb->id() == TokenID::tkClBrk || tb->id() == TokenID::tkClSqr) )
+	Throw(tb) << "expected statement before " << token_before_phrase(tb) << flush;
     // push_back_comma=true so we can detect the chain by peeking after
     // each parseExpression — without it, parseExpression consumes the
     // `,` itself and the chain looks like a single expression.
@@ -74813,6 +74892,7 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 	}
     }
     update_pointer_object_size_hints(expr);
+    stmt_terminator_owed = StatementTerminator::Expression;
     return expr;
 }
 
@@ -75086,10 +75166,38 @@ TokenBase *Program::parse_yield_statement(TokenBase *tb)
 // statement). The declaration STATEMENT still ends at that ';' in the
 // grammar, so its extent is stamped from the peeked terminator's own END
 // stamp — read, not consumed.
+// Pay the terminator a statement owes (StatementTerminator): the engine
+// stopped ON its `;` (consumed — curToken), or the `;` is next. Anything else
+// is gcc's "expected ';' before ..." ("expected ',' or ';'" after a
+// declaration), at the token that is not the `;`.
+void Program::require_statement_terminator(StatementTerminator owed)
+{
+    TokenBase *cur = curToken();
+    if ( cur && cur->id() == TokenID::tkSemi )
+	return;
+    TokenBase *next = peekToken();
+    if ( next && next->id() == TokenID::tkSemi )
+    {
+	nextToken();
+	return;
+    }
+    const char *want = owed == StatementTerminator::Declaration
+		     ? "expected ',' or ';'" : "expected ';'";
+    if ( !next )
+	Throw(cur) << want << " at end of input" << flush;
+    Throw(next) << want << " before " << token_before_phrase(next) << flush;
+}
+
 TokenBase *Program::parseStatement(TokenBase *tb)
 {
     size_t funcs_before = pending_funcs.size();
+    StatementTerminatorScope terminator_scope(*this);
     TokenBase *r = parseStatementBody(tb);
+    // The statement's own terminator, paid before its extent is stamped so
+    // the extent includes it (as an expression statement's always has).
+    StatementTerminator owed = terminator_scope.close();
+    if ( owed != StatementTerminator::None )
+	require_statement_terminator(owed);
     if ( r )
     {
 	if ( !r->head_tok )
@@ -75763,6 +75871,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		    assign->multi_vars = vars; // store all target variables
 
 		    DBG(std::cout << "parseStatement() multi-return ':=' with " << ids.size() << " variables" << std::endl);
+		    stmt_terminator_owed = StatementTerminator::Expression;
 		    return assign;
 		}
 
@@ -75794,6 +75903,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		assign->left  = new TokenVar(*var);
 		assign->right = rhs;
 		DBG(std::cout << "parseStatement() ':=' declared '" << first_id << "' type=" << inferred->name << std::endl);
+		stmt_terminator_owed = StatementTerminator::Expression;
 		if ( file_scope && code )
 		    return assign;
 		TokenDecl *td = new TokenDecl(*var);
@@ -75992,7 +76102,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    {
 		DBG(std::cout << "parseStatement() 'class' used as identifier" << std::endl);
 		resetPrevToken();
-		return parseExpression(tb);
+		return parseExprStmt(tb);
 	    }
 	    // `try` / `catch` / `throw` are C++ keywords but valid C
 	    // identifiers (SMAUG has `int try;` then `try = saving_throw()`).
@@ -76011,7 +76121,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    {
 		DBG(std::cout << "parseStatement() 'catch' used as identifier" << std::endl);
 		resetPrevToken();
-		return parseExpression(tb);
+		return parseExprStmt(tb);
 	    }
 	    if ( tb->id() == TokenID::tkTRY
 	      && peekToken()
@@ -76019,15 +76129,21 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    {
 		DBG(std::cout << "parseStatement() 'try' used as identifier" << std::endl);
 		resetPrevToken();
-		return parseExpression(tb);
+		return parseExprStmt(tb);
 	    }
 	    if ( tb->id() == TokenID::tkNEW
 	      && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
 	    {
 		DBG(std::cout << "parseStatement() 'new' used as identifier" << std::endl);
 		resetPrevToken();
-		return parseExpression(tb);
+		return parseExprStmt(tb);
 	    }
+	    // No statement begins with `else` ([stmt.select]: it belongs to the
+	    // `if` whose substatement it follows — TokenIF::parse consumes it).
+	    // TokenELSE parses as nothing, so `if (x) a;; else b;` ran `b`
+	    // unconditionally once the stray `;` ended the if.
+	    if ( tb->id() == TokenID::tkELSE )
+		Throw(tb) << "'else' without a previous 'if'" << flush;
 	    DBG(std::cout << "parseKeyword(" << ((TokenKeyword *)tb)->spelling() << ") calling parseKeyword" << std::endl);
 	    return parseKeyword((TokenKeyword *)tb);
 

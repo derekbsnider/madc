@@ -1,0 +1,5 @@
+// C11 6.8.6: `break ;` — a jump statement owns its `;`. madc's break parsed
+// nothing after the keyword, so `break }` ran (exit 0).
+// Oracle: gcc "error: expected ';' before '}' token", clang "error:
+// expected ';' after break statement".
+int main(void) { for (;;) { break } return 0; }

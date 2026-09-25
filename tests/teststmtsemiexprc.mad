@@ -1,0 +1,7 @@
+// C11 6.8.3: an expression statement is an expression followed by `;`.
+// madc's expression engine stops BEFORE a closer and no statement parser
+// checked for its `;`, so `x = 3 }` ran (exit 3). The statement now pays
+// its terminator (Program::require_statement_terminator).
+// Oracle: gcc "error: expected ';' before '}' token", clang "error:
+// expected ';' after expression".
+int main(void) { int x; x = 3 }

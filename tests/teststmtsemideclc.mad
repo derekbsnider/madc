@@ -1,0 +1,6 @@
+// C11 6.7: a declaration ends in `;` (or continues with `,`). madc left the
+// `;` to be an empty statement and never required it: `int x = 3 }` ran
+// (exit 0).
+// Oracle: gcc "error: expected ',' or ';' before '}' token", clang "error:
+// expected ';' at end of declaration".
+int main(void) { int x = 3 }

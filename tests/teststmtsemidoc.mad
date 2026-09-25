@@ -1,0 +1,6 @@
+// C11 6.8.5: `do statement while ( expression ) ;`. madc stopped at the
+// `)` and accepted a do-while followed directly by the next statement
+// (exit 0).
+// Oracle: gcc "error: expected ';' before 'return'", clang "error:
+// expected ';' after do/while statement".
+int main(void) { do {} while (0) return 0; }

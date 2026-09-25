@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Statements own their `;` (REPL arc prerequisite P1)
+
+The expression engine stops on a `;` and before a closer. When a closer
+stood where the `;` belonged, the statement just ended, and all of these
+compiled with exit 0:
+- `{ x = 3 }`
+- `break }`
+- `return 0 }`
+- `int a = 1 }`
+- `g(1));`
+- `);`
+
+The first five are now gcc's "expected ';' before '}' token" (or "expected
+',' or ';'" after a declaration). The last two are "expected statement before
+')' token".
+
+How it works:
+
+- Each construct records what it owes as its last act, through
+  `Program::StatementTerminator`:
+  - an expression statement owes Expression;
+  - a jump statement, a do-while and `throw` owe Jump;
+  - an object declaration or `typedef` owes Declaration.
+  
+  `parseStatement` pays it through `require_statement_terminator`.
+- `StatementTerminatorScope` bounds where a record is valid:
+  - Each statement opens one.
+  - A class body opens one. A member typedef inside a class instantiated for
+    a return type used to consume the outer statement's `;`
+    (g++.dg `variadic121`, `typedef15`).
+  - An if/switch init-statement or condition declaration opens one; the
+    header pays those terminators itself.
+- The `;`-skip before `else` is removed from `TokenIF`, and from both
+  `if constexpr` paths. So `if (x) a;; else b;` is gcc's "'else' without a
+  previous 'if'". Before, it bound the `else`, and a bare `; else b;` ran `b`
+  unconditionally.
+
+This is file-parsing parity with gcc and is always on. The REPL's relaxations
+(an optional final `;`, and the incomplete-versus-invalid verdicts) will be a
+separate parser mode that is off by default.
+
 ### `new T[n]{…}` initializes its elements
 
 madc never read the braced list of an array new-expression. It fell out of
