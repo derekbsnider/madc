@@ -708,76 +708,110 @@ static uint32_t read_utf8_codepoint(Source &source, unsigned char first)
     return cp;
 }
 
-static uint32_t read_literal_escape_value(Source &source, char esc)
+// One escape sequence of a string or character literal (C11 6.4.4.4,
+// [lex.ccon], [lex.string]). A simple, octal or hex escape is a code-unit
+// VALUE; a universal-character-name is a CODE POINT, which the literal encodes
+// in its own encoding (UTF-8 in a narrow or u8 literal, one unit in a wide one).
+enum class EscapeKind : unsigned char { Simple, Octal, Hex, Ucn };
+struct LiteralEscape
 {
+    EscapeKind kind;
+    uint32_t value;
+};
+
+// The characters of an escape read from text already captured (the #if
+// condition) rather than from the live Source: the same good/peek/get shape.
+struct CapturedTextReader
+{
+    const std::string &text;
+    size_t &pos;
+    bool good() const { return pos < text.size(); }
+    int peek() const { return (unsigned char)text[pos]; }
+    int get() { return (unsigned char)text[pos++]; }
+};
+
+// Decode the escape whose `\` the caller consumed, `esc` being the character
+// after it: THE escape reader for every literal kind, over the live Source or
+// captured text (`in`; `at` places the warning). `unit_max` is the largest code
+// unit of the literal's element type; an octal or hex escape must fit it (C11
+// 6.4.4.4p9, clang's error). A hex escape takes every hex digit that follows
+// (6.4.4.4p7), an octal one at most three, `\u` / `\U` exactly four / eight.
+// `\e` is the GNU escape for ESC (gcc and clang). Any other character after
+// the backslash is gcc's "unknown escape sequence" warning, and the escape
+// denotes that character.
+template <class Reader>
+static LiteralEscape read_literal_escape(Program &pgm, Reader &in, Source &at,
+					 char esc, uint32_t unit_max)
+{
+    auto hex_digit = [](int c) -> int {
+	return (c >= '0' && c <= '9') ? c - '0'
+	     : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+	     : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+    };
+    LiteralEscape e = { EscapeKind::Simple, (unsigned char)esc };
     switch ( esc )
     {
-	case 'n':  return '\n';
-	case 't':  return '\t';
-	case 'r':  return '\r';
-	case '\\': return '\\';
-	case '"':  return '"';
-	case '\'': return '\'';
-	case 'a':  return '\a';
-	case 'b':  return '\b';
-	case 'f':  return '\f';
-	case 'v':  return '\v';
-	case '?':  return '\?';
-	case 'x': case 'X': {
-	    uint32_t val = 0;
+	case 'n':  e.value = '\n'; return e;
+	case 't':  e.value = '\t'; return e;
+	case 'r':  e.value = '\r'; return e;
+	case 'a':  e.value = '\a'; return e;
+	case 'b':  e.value = '\b'; return e;
+	case 'f':  e.value = '\f'; return e;
+	case 'v':  e.value = '\v'; return e;
+	case 'e': case 'E': e.value = 0x1B; return e;
+	case '\\': case '"': case '\'': case '?':
+	    return e;
+	case 'x': {
+	    e.kind = EscapeKind::Hex;
+	    uint64_t val = 0;
 	    int dig = 0;
-	    while ( dig < 2 && source.good() )
+	    bool over = false;
+	    while ( in.good() && hex_digit(in.peek()) >= 0 )
 	    {
-		int c = source.peek();
-		int d = (c >= '0' && c <= '9') ? c - '0'
-		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
-		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
-		if ( d < 0 )
-		    break;
-		val = (val << 4) | (uint32_t)d;
-		source.get();
+		val = (val << 4) | (uint64_t)hex_digit(in.get());
+		if ( val > unit_max )
+		    over = true;
 		++dig;
 	    }
-	    return val;
+	    if ( !dig )
+		throw "\\x used with no following hex digits";
+	    if ( over )
+		throw "hex escape sequence out of range";
+	    e.value = (uint32_t)val;
+	    return e;
 	}
 	case 'u': case 'U': {
-	    // Universal-character-name ([lex.charset]): \uXXXX / \UXXXXXXXX.
-	    // Only the wide/prefixed-literal reader routes escapes here, so
-	    // narrow-string escape handling is untouched.
+	    e.kind = EscapeKind::Ucn;
 	    int need = esc == 'u' ? 4 : 8;
 	    uint32_t val = 0;
-	    int dig = 0;
-	    while ( dig < need && source.good() )
+	    for ( int dig = 0; dig < need; ++dig )
 	    {
-		int c = source.peek();
-		int d = (c >= '0' && c <= '9') ? c - '0'
-		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
-		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
-		if ( d < 0 )
-		    break;
-		val = (val << 4) | (uint32_t)d;
-		source.get();
-		++dig;
+		if ( !in.good() || hex_digit(in.peek()) < 0 )
+		    throw "incomplete universal character name";
+		val = (val << 4) | (uint32_t)hex_digit(in.get());
 	    }
-	    return val;
+	    e.value = val;
+	    return e;
 	}
 	case '0': case '1': case '2': case '3':
 	case '4': case '5': case '6': case '7': {
+	    e.kind = EscapeKind::Octal;
 	    uint32_t val = (uint32_t)(esc - '0');
-	    int dig = 1;
-	    while ( dig < 3 && source.good() )
-	    {
-		int c = source.peek();
-		if ( c < '0' || c > '7' )
-		    break;
-		val = (val << 3) | (uint32_t)(c - '0');
-		source.get();
-		++dig;
-	    }
-	    return val;
+	    for ( int dig = 1; dig < 3 && in.good()
+		  && in.peek() >= '0' && in.peek() <= '7'; ++dig )
+		val = (val << 3) | (uint32_t)(in.get() - '0');
+	    if ( val > unit_max )
+		throw "octal escape sequence out of range";
+	    e.value = val;
+	    return e;
 	}
 	default:
-	    return (unsigned char)esc;
+	    pgm.report_warning(Program::DiagnosticPhase::lexer,
+			       std::string("unknown escape sequence: '\\")
+				   + esc + '\'',
+			       at.fname(), at.line(), at.column());
+	    pgm.print_last_diagnostic(pgm.error());
+	    return e;
     }
 }
 
@@ -820,6 +854,29 @@ static void append_utf8_codepoint(std::string &out, uint32_t cp)
 	out += (char)(0x80 | ((cp >> 6) & 0x3F));
 	out += (char)(0x80 | (cp & 0x3F));
     }
+}
+
+// A narrow or u8 literal's escape, appended as bytes: a code point (a UCN) in
+// UTF-8, a code-unit value as the one byte it is.
+static void append_byte_escape(std::string &out, const LiteralEscape &e)
+{
+    if ( e.kind == EscapeKind::Ucn )
+	append_utf8_codepoint(out, e.value);
+    else
+	out += (char)e.value;
+}
+
+// The largest code unit of an encoding-prefixed literal's element type — the
+// range an octal or hex escape must fit (C11 6.4.4.4p9): u8 is a byte, u is
+// char16_t, U is char32_t, and L is wchar_t (2-byte UTF-16 on the LLP64
+// target, 4-byte elsewhere).
+static uint32_t prefixed_literal_unit_max(const std::string &prefix, bool llp64)
+{
+    if ( prefix == "u8" )
+	return 0xFF;
+    if ( prefix == "u" || (prefix == "L" && llp64) )
+	return 0xFFFF;
+    return 0xFFFFFFFF;
 }
 
 // A quoted literal (a string or character literal, any encoding prefix)
@@ -874,6 +931,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	if ( prefix == "U" && target_llp64() )
 	    throw "char32_t string literals (U\"...\") are not supported on the LLP64 target";
 	std::string bytes;
+	uint32_t unit_max = prefixed_literal_unit_max(prefix, target_llp64());
 	while ( literal_body_continues(source, '"', row, col) )
 	{
 	    uint32_t cp;
@@ -882,7 +940,16 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 		source.get();
 		if ( !source.good() )
 		    break;
-		cp = read_literal_escape_value(source, source.get());
+		LiteralEscape e = read_literal_escape(*this, source, source, source.get(),
+						      unit_max);
+		// A u8 literal's code-unit escape is the byte it names, never
+		// a code point to encode (C11 6.4.5p6).
+		if ( prefix == "u8" )
+		{
+		    append_byte_escape(bytes, e);
+		    continue;
+		}
+		cp = e.value;
 	    }
 	    else
 		cp = read_utf8_codepoint(source, (unsigned char)source.get());
@@ -920,6 +987,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
     }
 
     uint32_t cp = 0;
+    uint32_t unit_max = prefixed_literal_unit_max(prefix, target_llp64());
     while ( literal_body_continues(source, '\'', row, col) )
     {
 	if ( source.peek() == '\\' )
@@ -927,7 +995,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	    source.get();
 	    if ( !source.good() )
 		break;
-	    cp = read_literal_escape_value(source, source.get());
+	    cp = read_literal_escape(*this, source, source, source.get(), unit_max).value;
 	}
 	else
 	    cp = read_utf8_codepoint(source, (unsigned char)source.get());
@@ -7366,47 +7434,8 @@ TokenBase *Program::_getToken()
 		{
 		    source.get(); // consume backslash
 		    if ( !source.good() ) break;
-		    char esc = source.get();
-		    switch (esc) {
-			case 'n':  word += '\n'; break;
-			case 't':  word += '\t'; break;
-			case 'r':  word += '\r'; break;
-			case '\\': word += '\\'; break;
-			case '"':  word += '"';  break;
-			case '\'': word += '\''; break;
-			case 'a':  word += '\a'; break;
-			case 'b':  word += '\b'; break;
-			case 'f':  word += '\f'; break;
-			case 'v':  word += '\v'; break;
-			case '?':  word += '\?'; break;
-			case 'x': case 'X': {
-			    // hex escape: \xHH (1-2 hex digits)
-			    int val = 0; int dig = 0;
-			    while ( dig < 2 && source.good() ) {
-				int c = source.peek();
-				int d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
-				if ( d < 0 ) break;
-				val = (val << 4) | d;
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			case '0': case '1': case '2': case '3':
-			case '4': case '5': case '6': case '7': {
-			    // octal escape: \NNN (1-3 octal digits, including the one already consumed)
-			    int val = esc - '0'; int dig = 1;
-			    while ( dig < 3 && source.good() ) {
-				int c = source.peek();
-				if ( c < '0' || c > '7' ) break;
-				val = (val << 3) | (c - '0');
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			default:   word += '\\'; word += esc; break;
-		    }
+		    append_byte_escape(word, read_literal_escape(*this, source, source,
+								 source.get(), 0xFF));
 		}
 		else
 		    word += source.get();
@@ -7441,45 +7470,8 @@ TokenBase *Program::_getToken()
 		{
 		    source.get(); // consume backslash
 		    if ( !source.good() ) break;
-		    char esc = source.get();
-		    switch (esc) {
-			case 'n':  word += '\n'; break;
-			case 't':  word += '\t'; break;
-			case 'r':  word += '\r'; break;
-			case '\\': word += '\\'; break;
-			case '\'': word += '\''; break;
-			case '"':  word += '"';  break;
-			case 'a':  word += '\a'; break;
-			case 'b':  word += '\b'; break;
-			case 'f':  word += '\f'; break;
-			case 'v':  word += '\v'; break;
-			case '?':  word += '\?'; break;
-			case 'x': case 'X': {
-			    int val = 0; int dig = 0;
-			    while ( dig < 2 && source.good() ) {
-				int c = source.peek();
-				int d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
-				if ( d < 0 ) break;
-				val = (val << 4) | d;
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			case '0': case '1': case '2': case '3':
-			case '4': case '5': case '6': case '7': {
-			    int val = esc - '0'; int dig = 1;
-			    while ( dig < 3 && source.good() ) {
-				int c = source.peek();
-				if ( c < '0' || c > '7' ) break;
-				val = (val << 3) | (c - '0');
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			default:   word += '\\'; word += esc; break;
-		    }
+		    append_byte_escape(word, read_literal_escape(*this, source, source,
+								 source.get(), 0xFF));
 		    continue;
 		}
 		word += source.get();
@@ -9312,50 +9304,15 @@ bool Program::evaluateIfCondition()
     std::function<int64_t()> parse_unary;
     std::function<int64_t()> parse_primary;
 
-    auto read_char_escape = [&]() -> int64_t {
+    // A character constant's escape in the condition: the one escape
+    // decoder, over the captured condition text.
+    auto read_char_escape = [&](bool wide) -> int64_t {
 	if ( pos >= expr.size() )
 	    return 0;
-	char esc = expr[pos++];
-	switch ( esc )
-	{
-	    case 'n':  return '\n';
-	    case 't':  return '\t';
-	    case 'r':  return '\r';
-	    case '\\': return '\\';
-	    case '"':  return '"';
-	    case '\'': return '\'';
-	    case 'a':  return '\a';
-	    case 'b':  return '\b';
-	    case 'f':  return '\f';
-	    case 'v':  return '\v';
-	    case '?':  return '\?';
-	    case 'x': case 'X': {
-		int64_t val = 0;
-		while ( pos < expr.size() && isxdigit((unsigned char)expr[pos]) )
-		{
-		    char c = expr[pos++];
-		    int d = (c >= '0' && c <= '9') ? c - '0'
-			: (c >= 'a' && c <= 'f') ? c - 'a' + 10
-			: (c >= 'A' && c <= 'F') ? c - 'A' + 10 : 0;
-		    val = (val << 4) | d;
-		}
-		return val;
-	    }
-	    case '0': case '1': case '2': case '3':
-	    case '4': case '5': case '6': case '7': {
-		int64_t val = esc - '0';
-		int dig = 1;
-		while ( dig < 3 && pos < expr.size()
-		     && expr[pos] >= '0' && expr[pos] <= '7' )
-		{
-		    val = (val << 3) | (expr[pos++] - '0');
-		    ++dig;
-		}
-		return val;
-	    }
-	    default:
-		return (unsigned char)esc;
-	}
+	CapturedTextReader in = { expr, pos };
+	char esc = (char)in.get();
+	return read_literal_escape(*this, in, source, esc,
+				   wide ? 0xFFFFFFFFu : 0xFFu).value;
     };
 
     auto read_char_literal = [&](bool wide) -> int64_t {
@@ -9371,7 +9328,7 @@ bool Program::evaluateIfCondition()
 	    if ( expr[pos] == '\\' )
 	    {
 		++pos;
-		ch = read_char_escape();
+		ch = read_char_escape(wide);
 	    }
 	    else
 		ch = (unsigned char)expr[pos++];

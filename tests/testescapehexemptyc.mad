@@ -1,0 +1,8 @@
+// C11 6.4.4.4p1: a hexadecimal-escape-sequence is `\x` followed by at least
+// one hex digit. madc read "\x" as a NUL byte and ran (exit 0).
+// Oracle: gcc and clang "error: \x used with no following hex digits".
+int main(void)
+{
+	const char *s = "\xg";
+	return s[0];
+}

@@ -1116,6 +1116,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-handle-table.sh
 	@cd .. && bash scripts/check-one-parse-error-recorder.sh
 	@cd .. && bash scripts/check-one-block-comment-reader.sh
+	@cd .. && bash scripts/check-one-escape-decoder.sh
 	@cd .. && bash scripts/check-one-subject-doc.sh
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh

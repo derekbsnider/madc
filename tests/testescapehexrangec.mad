@@ -1,0 +1,11 @@
+// C11 6.4.4.4p9: an octal or hex escape's value must be in the range of the
+// literal's element type. With `\x` now taking every following hex digit
+// (6.4.4.4p7), "\x41B" is ONE escape of value 0x41B, which no char holds.
+// madc read "\x41" + 'B' and ran with "AB" (exit 0).
+// Oracle: clang "error: hex escape sequence out of range"; gcc gives the same
+//         text as a warning and truncates to 0x1B.
+int main(void)
+{
+	const char *s = "\x41B";
+	return s[0];
+}
