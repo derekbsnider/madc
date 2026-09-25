@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### `enum TAG` in a cast, a parameter or `va_arg` names the enum
+
+Four readers of an elaborated `enum TAG` typed it `int` instead of the tag's
+enum: a cast (`(enum Big)x`), a function parameter (`long long f(enum Big b)`),
+a K&R parameter declaration, and `va_arg(ap, enum Big)`. A 64-bit enum's
+value was truncated (`(enum Big)0x100000005` read 5, gcc 4294967301; a
+parameter holding `0x100000001` read 1), and in C++ `h(c)` for an
+`enum Color c` parameter chose `h(int)` over `h(Color)`. All silent wrong
+answers. Each now resolves the tag through the one elaborated-specifier
+resolver, `Program::resolve_declared_type_token`, as `sizeof(enum X)` and
+struct members already did.
+
+Tests: `testenumelabtypec`, `testenumelabtypecxx`.
+
 ### An enum whose values need more than `int` is stored in a type that holds them
 
 madc stored every enum with no declared base in an `int`, and kept an

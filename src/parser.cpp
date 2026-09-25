@@ -39608,13 +39608,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				target_dd = sdmi->second;
 			}
 		    }
-		    // handle 'enum Tag' — treat as int
+		    // `va_arg(ap, enum TAG)`: the tag's type, through the one
+		    // elaborated-specifier resolver (this arm read an int).
 		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
 			&& type_tb->id() == TokenID::tkENUM )
-		    {
-			nextToken(); // consume tag name
-			target_dd = &ddINT;
-		    }
+			if ( TokenDataType *etdt =
+				resolve_declared_type_token(type_tb, true, true) )
+			    target_dd = &etdt->definition;
 		    // handle compound type specifiers: unsigned, long, etc.
 		    if ( !target_dd && type_tb->type() == TokenType::ttDataType )
 			target_dd = &((TokenDataType *)type_tb)->definition;
@@ -42249,10 +42249,15 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			}
 			else if ( peek1->id() == TokenID::tkENUM )
 			{
+			    // `(enum TAG)x`: the tag's type, through the one
+			    // elaborated-specifier resolver. This arm cast to int
+			    // (`(enum Big)x` truncated a 64-bit enum's value, and
+			    // `h((enum Color)i)` chose h(int) over h(Color)).
 			    nextToken(); // consume enum
-			    if ( peekToken() && is_contextual_identifier_token(peekToken()) )
-				nextToken(); // consume optional tag
-			    cast_dd = &ddINT32;
+			    TokenDataType *etdt =
+				resolve_declared_type_token(peek1, true, true);
+			    cast_dd = etdt ? &etdt->definition
+					   : static_cast<DataDef *>(&ddINT32);
 			}
 			else if ( peek1->type() == TokenType::ttIdentifier
 			       && is_typeof_identifier(((TokenIdent *)peek1)->spelling())
@@ -68836,10 +68841,12 @@ DataDef *Program::parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_
 
     if ( nt->id() == TokenID::tkENUM )
     {
-	TokenBase *tag = peekToken();
-	if ( tag && is_contextual_identifier_token(tag) )
-	    nextToken();
-	return &ddINT32;
+	// `enum TAG b;` — the tag's type, through the one elaborated-specifier
+	// resolver (this arm typed it int).
+	TokenDataType *etdt = resolve_declared_type_token(nt, true, true);
+	if ( !etdt )
+	    Throw(nt) << "Expecting enum tag in K&R parameter declaration" << flush;
+	return &etdt->definition;
     }
 
     if ( nt->type() == TokenType::ttDataType )
@@ -69869,11 +69876,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	else
 	if ( nt->id() == TokenID::tkENUM )
 	{
-	    // enum parameter — consume tag, treat as int
-	    TokenBase *tag_nt = peekToken();
-	    if ( tag_nt && tag_nt->type() == TokenType::ttIdentifier )
-		nextToken(); // consume tag name
-	    pb = new TokenDataType("int", ddINT);
+	    // `enum TAG` parameter: the tag's type, through the one
+	    // elaborated-specifier resolver (int for an unknown tag). This arm
+	    // typed every such parameter int, so a 64-bit enum argument was
+	    // truncated and `h(c)` chose h(int) over h(Color).
+	    pb = resolve_declared_type_token(nt, true, true);
+	    if ( !pb )
+		Throw(nt) << "Expecting enum tag in parameter type" << flush;
 	}
 	else
 	if ( nt->type() != TokenType::ttDataType )

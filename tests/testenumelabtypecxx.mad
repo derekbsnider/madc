@@ -1,0 +1,24 @@
+/* `enum TAG` spelled in a cast or a parameter names the tag's type. Those
+   readers typed it int, so `h(c)` for an `enum Color c` parameter and
+   `h((enum Color)i)` chose h(int) over h(Color), and a 64-bit enum's value
+   was truncated.
+   Oracle: g++ and clang++ -std=c++17 print
+   "param 2 cast 2 big 4294967297 bigcast 4294967301". */
+#include <cstdio>
+
+enum Color { RED, GREEN };
+enum Big { BA = 0x100000000LL, BB };
+
+int h(int) { return 1; }
+int h(Color) { return 2; }
+int viaparam(enum Color c) { return h(c); }
+int viacast(int i) { return h((enum Color)i); }
+long long bigparam(enum Big b) { return b; }
+
+int main()
+{
+    long long x = 0x100000005LL;
+    std::printf("param %d cast %d big %lld bigcast %lld\n", viaparam(GREEN),
+		viacast(1), bigparam(BB), (long long)(enum Big)x);
+    return 0;
+}
