@@ -6419,9 +6419,29 @@ public:
     // or expression-statement), consume its trailing `;`, and leave the stream
     // positioned at the condition/switch-expression. Returns the parsed
     // init-statement node, or NULL when no init-statement is present (stream
-    // untouched). The init-statement's declarations share the condition's
-    // enclosing scope.
-    TokenBase *parse_optional_init_statement();
+    // untouched). A declaring init-statement opens the statement's header
+    // scope (StatementHeaderScope) before it declares.
+    struct StatementHeaderScope;
+    TokenBase *parse_optional_init_statement(StatementHeaderScope &scope);
+    // The block scope a statement's header opens for the names it declares
+    // ([basic.scope.block]/1; C11 6.8.4p3, 6.8.5p5): an init-statement's, a
+    // condition's or a for-init's declaration belongs to the STATEMENT, never
+    // to the enclosing block, so sibling statements may each declare `c`
+    // (same-block reuse used to hand the second the FIRST one's variable and
+    // type; since declare_object it is "redefinition"). Opened by the
+    // header's first declaration, closed with the statement — RAII, so a
+    // contained parse error unwinds it. A parse-time name scope only: CIR
+    // declares the variable where it lowers the statement.
+    struct StatementHeaderScope
+    {
+	Program &pgm;
+	bool opened = false;
+	explicit StatementHeaderScope(Program &p) : pgm(p) {}
+	StatementHeaderScope(const StatementHeaderScope &) = delete;
+	StatementHeaderScope &operator=(const StatementHeaderScope &) = delete;
+	void open() { if ( !opened ) { pgm.pushCompound(); opened = true; } }
+	~StatementHeaderScope() { if ( opened ) pgm.popCompound(); }
+    };
     // Consume the operator symbol token(s) following an `operator` keyword token
     // and return the canonical operator-function-id name ("operator<",
     // "operator()", "operatornew", "operator[]", …). The `operator` token itself

@@ -51788,7 +51788,7 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     return this;
 }
 
-TokenBase *Program::parse_optional_init_statement()
+TokenBase *Program::parse_optional_init_statement(StatementHeaderScope &scope)
 {
     // An init-statement is present iff a top-level `;` precedes the matching
     // `)` (the same separator a for's init clause uses). Detect by scanning the
@@ -51830,6 +51830,7 @@ TokenBase *Program::parse_optional_init_statement()
 
     if ( TokenDataType *init_type = resolve_declared_type_token(tn, true, true) )
     {
+	scope.open();
 	bool saved_ic = parsing_const_decl;
 	parsing_const_decl = init_const;
 	try
@@ -51888,8 +51889,10 @@ TokenBase *TokenIF::parse(Program &pgm)
     if ( !tn || tn->id() != TokenID::tkOpBrk )
 	pgm.Throw(tn ? tn : this) << "expecting ( after if" << flush;
 
-    // C++17 init-statement: `if (init-statement; condition) ...`.
-    init_stmt = pgm.parse_optional_init_statement();
+    // C++17 init-statement: `if (init-statement; condition) ...`. What the
+    // header declares is the if statement's ([stmt.if]/3).
+    Program::StatementHeaderScope header_scope(pgm);
+    init_stmt = pgm.parse_optional_init_statement(header_scope);
 
     if ( is_constexpr )
     {
@@ -51967,6 +51970,7 @@ TokenBase *TokenIF::parse(Program &pgm)
     };
     if ( condition_type && condition_declarator_follows() )
     {
+	header_scope.open();
 	bool saved_const = pgm.parsing_const_decl;
 	pgm.parsing_const_decl = condition_const_decl;
 	try
@@ -52052,6 +52056,9 @@ struct ParseLoopDepthGuard
 TokenBase *TokenFOR::parse(Program &pgm)
 {
     ParseLoopDepthGuard loop_depth_guard(pgm);
+    // The range-for element and the typed for-init have LOOP scope
+    // ([stmt.for], [stmt.ranged]): the header's declarations open it.
+    Program::StatementHeaderScope header_scope(pgm);
     TokenBase *tn;
 
     DBG(std::cout << std::endl << "TokenFOR::parse() START" << std::endl);
@@ -52157,7 +52164,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		// same-block reuse handing loop 2 loop 1's variable + type.
 		// CIR never visits this compound; translate_foreach declares
 		// the element itself in its wrap block.
-		pgm.pushCompound();
+		header_scope.open();
 		// add the loop variable to the current scope. A reference loop
 		// var is a pointer-to-element with vfREFERENCE (auto-deref on
 		// read; writes hit the aliased source) — the same model as a
@@ -52175,9 +52182,6 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		fe->statement = pgm.parse_substatement(tn4);
 		if ( !fe->statement )
 		    pgm.Throw(tn4) << "Failed to parse range-for body" << flush;
-
-		// Close the range-for element scope opened above.
-		pgm.popCompound();
 
 		DBG(std::cout << "TokenFOR::parse() range-for END" << std::endl);
 		return fe;
@@ -52205,7 +52209,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	// conflated set/map _Rb_tree iterators). The compound is a parse-time
 	// name scope only: CIR never sees it (the for lowering declares the
 	// variable itself — init-slot var_decl or the synthetic block wrap).
-	pgm.pushCompound();
+	header_scope.open();
 	pgm.parsing_for_init = true;
 	initialize = pgm.parseDeclaration(dt);
 	pgm.parsing_for_init = false;
@@ -52322,10 +52326,6 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	    DBG(cout << "TokenFOR::parse() statement(s): calling parseStatement(" << (char)tn->get() << ')' << endl);
 	    if ( !(statement = pgm.parse_substatement(tn)) )
 		pgm.Throw(tn) << "Failed to parse statement" << flush;
-
-    // Close the for-init declaration scope opened above (typed init only).
-    if ( typed_for_init )
-	pgm.popCompound();
 
     DBG(std::cout << "TokenFOR::parse() END" << std::endl);
 
@@ -55430,8 +55430,10 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
     if ( tn->id() != TokenID::tkOpBrk )
 	pgm.Throw(tn) << "Expecting ( after switch" << flush;
 
-    // C++17 init-statement: `switch (init-statement; expression) ...`.
-    init_stmt = pgm.parse_optional_init_statement();
+    // C++17 init-statement: `switch (init-statement; expression) ...`. What
+    // the header declares is the switch statement's ([stmt.switch]/3).
+    Program::StatementHeaderScope header_scope(pgm);
+    init_stmt = pgm.parse_optional_init_statement(header_scope);
 
     // parse expression
     expression = pgm.parseExpression(pgm.nextToken(), true);
