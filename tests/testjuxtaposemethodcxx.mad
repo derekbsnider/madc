@@ -1,0 +1,6 @@
+// [expr.call]: a member call's arguments are separated by `,`. The method
+// call's argument loop (parseCallMethod, a twin of parseCallFunc's) took any
+// token after an argument as the next one: `s.f(a b)` ran as `s.f(a, b)`.
+// Oracle: g++ "error: expected ')' before 'b'", clang++ "error: expected ')'".
+struct S { int f(int a, int b) { return a + b; } };
+int main() { int a = 1, b = 2; S s; return s.f(a b); }

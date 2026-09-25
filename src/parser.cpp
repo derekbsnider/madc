@@ -13828,16 +13828,11 @@ void Program::parse_ctor_args_list(std::vector<TokenBase *> &args,
 	    if ( !keys.empty() )
 		keys.push_back(NULL);
 	}
-	if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-	    nextToken(); // consume ','
-	else if ( peekToken() && peekToken()->id() != close_id )
-	    // An element ends only at ',' or the close. parseExpression
-	    // PUSHES BACK a terminator it does not own (a bare ':' is the
-	    // ternary-branch pushback convention), so without this wall
-	    // the loop re-pops the same token forever — the associative-
-	    // literal hang class.
-	    Throw(peekToken()) << "Expected ',' or '" << close_sp
-		<< "' after constructor argument" << flush;
+	// An element ends only at ',' or the close. parseExpression PUSHES
+	// BACK a terminator it does not own (a bare ':' is the ternary-branch
+	// pushback convention), so without this wall the loop re-pops the
+	// same token forever — the associative-literal hang class.
+	finish_list_element(close_id, close_sp);
     }
     if ( !peekToken() || peekToken()->id() != close_id )
 	Throw(loc) << "Expected '" << close_sp
@@ -14201,8 +14196,7 @@ TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 		    else
 			slit->inits.push_back(parseExpression(elem));
 		}
-		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-		    nextToken();
+		finish_list_element(TokenID::tkClBrc, "}");
 	    }
 	    return slit;
 }
@@ -30822,6 +30816,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
 	tc->parameters.push_back(tb);
+	// The loop's `,` arm consumes the separator (and counts arity).
+	require_list_element_end(TokenID::tkClBrk, ")");
     }
 
     bool needs_runtime_scope_context = tc->auto_scope_context;
@@ -31237,6 +31233,8 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
 	tc->parameters.push_back(tb);
+	// The loop's `,` arm consumes the separator (and counts arity).
+	require_list_element_end(TokenID::tkClBrk, ")");
     }
 
     // (need check for optional parameters)
@@ -38981,8 +38979,7 @@ bool Program::ufcs_call_fallback(TokenIdent *ident_tb, bool operator_id,
     tc->line = tb->line;
     tc->column = tb->column;
     nextToken();			// the receiver identifier
-    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-	nextToken();			// the comma that followed it
+    finish_list_element(TokenID::tkClBrk, ")");	// the comma after it
     tb = parseCallMethod(tc);
     tc = reselect_method_overload(tc, *recv, cls, id);
     // Access control on the SELECTED overload ([class.access]). UFCS must
@@ -43442,6 +43439,54 @@ TokenBase *Program::finish_expression(std::stack<TokenBase *> &opStack,
     return exStack.empty() ? NULL : exStack.top();
 }
 
+static std::string token_before_phrase(TokenBase *t);	// with parseExprStmt
+
+// The items of a std::stack, bottom first (the standard protected-member
+// idiom: the engine's stacks are std::stack, which hides its container).
+template <class Stack>
+static const typename Stack::container_type &stack_items(const Stack &s)
+{
+    struct Items : Stack
+    {
+	static const typename Stack::container_type &of(const Stack &st)
+	{ return st.*(&Items::c); }
+    };
+    return Items::of(s);
+}
+
+// Would binding the pending operators leave a value — has the expression read
+// so far COMPLETED an operand? Read off the engine's own stacks: an arm's
+// lookahead can push tokens back, and then the last token READ
+// (operand_completed's test) is not the last one consumed — the `(` arm peeks
+// through `(q)` and leaves `q` as the current token. Each operand counts one;
+// each pending operator yields one and takes one per unfilled slot (a prefix
+// unary nets zero, a binary operator awaiting its right operand minus one); a
+// grouping `(` / `[` marker counts nothing, and a call parked on the operator
+// stack counts as the operand it is.
+static bool stacks_hold_complete_operand(const std::stack<TokenBase *> &opStack,
+					 const std::stack<TokenBase *> &exStack)
+{
+    long balance = (long)exStack.size();
+    for ( TokenBase *t : stack_items(opStack) )
+    {
+	if ( t->id() == TokenID::tkOpBrk || t->id() == TokenID::tkOpSqr )
+	    continue;
+	TokenOperator *to = dynamic_cast<TokenOperator *>(t);
+	if ( !to )
+	{
+	    ++balance;
+	    continue;
+	}
+	long unfilled = 0;
+	if ( to->argc() > 0 && !to->right )
+	    ++unfilled;
+	if ( to->argc() > 1 && !to->left )
+	    ++unfilled;
+	balance += 1 - unfilled;
+    }
+    return balance >= 1;
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
 				    bool push_back_comma, bool cast_operand,
@@ -43638,7 +43683,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// stream for the enclosing parse (a binary operator, `?`, `,`, `;`,
 	// `=`, a pack-expansion `...`). A step still on the operator stack is
 	// PREFIX (`++p`, awaiting its operand), not the end of one.
-	if ( unary_operand && !brackets && cast_expression_complete(opStack) )
+	if ( unary_operand && !brackets && operand_completed(opStack) )
 	{
 	    TokenID nid = tb->id();
 	    bool continues = (nid == TokenID::tkDeRef || nid == TokenID::tkOpSqr
@@ -43647,6 +43692,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			   || (nid == TokenID::tkDot && !ellipsis_ahead()));
 	    if ( !continues )
 		break;
+	}
+	// A literal or a name after a complete operand cannot continue the
+	// expression: it ends here, before that token, and the caller reports
+	// what it needed there (the statement's `;`, a declarator's `,` or `;`,
+	// an argument's `,` or `)`). Inside a parenthesis this expression opened
+	// the `)` is what was needed. Before this, the engine read on and bound
+	// juxtaposed operands to a LATER operator: `int x = 3 4 +;` built
+	// `3 + 4` and ran.
+	if ( token_begins_operand(tb) && operand_completed(opStack)
+	  && stacks_hold_complete_operand(opStack, exStack) )
+	{
+	    if ( brackets )
+		Throw(tb) << "expected ')' before " << token_before_phrase(tb) << flush;
+	    break;
 	}
 	// A pack-expansion ellipsis `...` (three consecutive dots) following a
 	// complete operand is the expansion marker, NOT a member access (a single
@@ -47588,8 +47647,7 @@ void Program::collect_braced_init_args(std::vector<TokenBase *> &args)
 	    collect_braced_init_args(args);
 	else
 	    args.push_back(parseExpression(nextToken(), true));
-	if ( peekToken() && peekToken()->id() == TokenID::tkComma )
-	    nextToken();
+	finish_list_element(TokenID::tkClBrc, "}");
     }
     if ( !peekToken() )
 	Throw << "Unexpected end of input in braced initializer" << flush;
@@ -52321,11 +52379,14 @@ TokenBase *TokenFOR::parse(Program &pgm)
 
     // C comma-expression init: `for (a=0, b=1, ... ; ...)`. parseExpression
     // consumes `,`, so after a comma-terminated init the peek is already
-    // the next expression starter; accept either case.
+    // the next expression starter; accept either case — but only a `,`
+    // continues the clause (`for (x = 0 a; ...)` is gcc's "expected ';'
+    // before 'a'", never a second expression).
     while ( tn->id() != TokenID::tkSemi && pgm.peekToken() )
     {
 	TokenBase *pk = pgm.peekToken();
-	if ( pk->id() == TokenID::tkComma ) { pgm.nextToken(); pk = pgm.peekToken(); }
+	bool separated = pgm.curToken() && pgm.curToken()->id() == TokenID::tkComma;
+	if ( pk->id() == TokenID::tkComma ) { pgm.nextToken(); pk = pgm.peekToken(); separated = true; }
 	if ( !pk || pk->id() == TokenID::tkSemi ) break;
 	if ( typed_for_init && pk->type() == TokenType::ttDataType )
 	{
@@ -52348,7 +52409,8 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	    continue;
 	}
 	// anything else must look like an expression starter
-	if ( pk->type() == TokenType::ttSymbol || pk->type() == TokenType::ttKeyword
+	if ( !separated || pk->type() == TokenType::ttSymbol
+	  || pk->type() == TokenType::ttKeyword
 	  || pk->type() == TokenType::ttDataType ) break;
 	tn = pgm.nextToken();
 	TokenBase *extra = pgm.parseExpression(tn, true);
@@ -52358,7 +52420,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
     if ( tn->id() != TokenID::tkSemi )
 	tn = pgm.nextToken(); // consume `;` after init when init wasn't empty
     if ( tn->id() != TokenID::tkSemi )
-	pgm.Throw(tn) << "Expecting ';' after for init" << flush;
+	pgm.Throw(tn) << "expected ';' before " << token_before_phrase(tn) << flush;
 
     tn = pgm.nextToken();
     if ( tn->id() == TokenID::tkSemi )
@@ -52390,7 +52452,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	tn = pgm.nextToken();  // consume ; separator between condition and increment
     }
     if ( tn->id() != TokenID::tkSemi )
-	pgm.Throw(tn) << "Expecting ';' after for condition" << flush;
+	pgm.Throw(tn) << "expected ';' before " << token_before_phrase(tn) << flush;
     tn = pgm.nextToken();  // first token of increment expression
     if ( tn->id() == TokenID::tkClBrk )
 	increment = NULL;
@@ -52405,9 +52467,11 @@ TokenBase *TokenFOR::parse(Program &pgm)
     while ( increment && pgm.peekToken() )
     {
 	TokenBase *pk = pgm.peekToken();
-	if ( pk->id() == TokenID::tkComma ) { pgm.nextToken(); pk = pgm.peekToken(); }
+	bool separated = pgm.curToken() && pgm.curToken()->id() == TokenID::tkComma;
+	if ( pk->id() == TokenID::tkComma ) { pgm.nextToken(); pk = pgm.peekToken(); separated = true; }
 	if ( !pk || pk->id() == TokenID::tkClBrk ) break;
-	if ( pk->type() == TokenType::ttSymbol || pk->type() == TokenType::ttKeyword
+	if ( !separated || pk->type() == TokenType::ttSymbol
+	  || pk->type() == TokenType::ttKeyword
 	  || pk->type() == TokenType::ttDataType ) break;
 	tn = pgm.nextToken();
 	TokenBase *extra = pgm.parseExpression(tn, true);
@@ -52417,7 +52481,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
     if ( tn->id() != TokenID::tkClBrk )
 	tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkClBrk )
-	pgm.Throw(tn) << "Expecting )" << flush;
+	pgm.Throw(tn) << "expected ')' before " << token_before_phrase(tn) << flush;
 
 	    tn = pgm.nextToken();
 	    pgm.resetPrevToken();
@@ -55280,8 +55344,7 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	{
 	    TokenBase *arg = pgm.parseExpression(pgm.nextToken(), true);
 	    ctor_args.push_back(arg);
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
-		pgm.nextToken(); // consume ','
+	    pgm.finish_list_element(TokenID::tkClBrk, ")");
 	}
 	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
 	    pgm.Throw(this) << "Expected ')' after new-expression arguments" << flush;
@@ -73693,9 +73756,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				place_slot(parseExpression(ni));
 			}
 		    }
-		    TokenBase *isep = peekToken();
-		    if ( isep && isep->id() == TokenID::tkComma )
-			nextToken();
+		    finish_list_element(TokenID::tkClBrc, "}");
 		}
 		// A row's missing clauses read as `0` for scalar elements. A C++
 		// class element is VALUE-initialized instead ([dcl.init.aggr]/5)
@@ -73824,15 +73885,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				(*target_inits)[field_index] = read_struct_lit(1,
 				    (target_sdd && field_index < target_sdd->members.size())
 					? target_sdd->members[field_index].second : NULL);
-				TokenBase *sep = peekToken();
-				if ( sep && sep->id() == TokenID::tkComma )
-				    nextToken();
+				finish_list_element(TokenID::tkClBrc, "}");
 				continue;
 			    }
 			    (*target_inits)[field_index] = parseExpression(next_init);
-			    TokenBase *sep = peekToken();
-			    if ( sep && sep->id() == TokenID::tkComma )
-				nextToken();
+			    finish_list_element(TokenID::tkClBrc, "}");
 			    continue;
 			}
 		    }
@@ -73853,9 +73910,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 			else
 			    design_value = parseExpression(next_init);
 			assign_initializer_range(init_list, first_index, last_index, design_value);
-			TokenBase *sep = peekToken();
-			if ( sep && sep->id() == TokenID::tkComma )
-			    nextToken();
+			finish_list_element(TokenID::tkClBrc, "}");
 			continue;
 		    }
 		    if ( is_struct_init && next_init->type() == TokenType::ttString )
@@ -73881,9 +73936,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				    slit->inits.push_back(new TokenInt(0));
 			    }
 			    init_list.push_back(slit);
-			    TokenBase *sep = peekToken();
-			    if ( sep && sep->id() == TokenID::tkComma )
-				nextToken();
+			    finish_list_element(TokenID::tkClBrc, "}");
 			    continue;
 			}
 		    }
@@ -73908,17 +73961,13 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				slit->inits.push_back(new TokenInt(0));
 			}
 			init_list.push_back(slit);
-			TokenBase *sep = peekToken();
-			if ( sep && sep->id() == TokenID::tkComma )
-			    nextToken();
+			finish_list_element(TokenID::tkClBrc, "}");
 			continue;
 		    }
 		    TokenBase *expr = parseExpression(next_init);
 		    init_list.push_back(expr);
 		}
-		TokenBase *sep = peekToken();
-		if ( sep && sep->id() == TokenID::tkComma )
-		    nextToken(); // consume ','
+		finish_list_element(TokenID::tkClBrc, "}");
 	    }
 	    }
 	    // Infer size for arrays with dims[0] == 0; validate count
@@ -74428,13 +74477,16 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    }
 	    // Either we just consumed ',' and expect another decl, or
 	    // parseExpression already consumed ',' and peek is the next one.
+	    // Only a CONSUMED ',' says so: the engine stops before a juxtaposed
+	    // operand, so `int y = a b;` leaves `b` next with no ',' — gcc's
+	    // "expected ',' or ';' before 'b'" (the terminator), never a second
+	    // declarator named `b`.
 	    bool looks_like_next_decl =
 		comma_continuation_starts_declarator(peek);
-	    bool stopped_at_condition_close =
-		curToken() && curToken()->id() == TokenID::tkClBrk;
-	    if ( have_comma || (looks_like_next_decl
-		&& nt->id() == TokenID::tkAssign
-		&& !stopped_at_condition_close) ) // only infer no-comma case when we had an init
+	    bool comma_consumed =
+		curToken() && curToken()->id() == TokenID::tkComma;
+	    if ( have_comma || (comma_consumed
+		&& nt->id() == TokenID::tkAssign) ) // only infer no-comma case when we had an init
 	    {
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
@@ -75257,6 +75309,35 @@ void Program::require_statement_terminator(StatementTerminator owed)
     if ( !next )
 	Throw(cur) << want << " at end of input" << flush;
     Throw(next) << want << " before " << token_before_phrase(next) << flush;
+}
+
+// A list element's end (madc.h): the engine stopped ON a `,` (consumed —
+// curToken), or a `,` or the list's close is next. Anything else cannot
+// continue the list: a juxtaposed operand (`g(a b)`, `{1 2}`), which the
+// engine stops before rather than reading it as a second element.
+void Program::require_list_element_end(TokenID close_id, const char *close_sp)
+{
+    TokenBase *cur = curToken();
+    if ( cur && cur->id() == TokenID::tkComma )
+	return;
+    TokenBase *next = peekToken();
+    if ( next && (next->id() == TokenID::tkComma || next->id() == close_id) )
+	return;
+    if ( !next )
+	Throw(cur) << "expected '" << close_sp << "' at end of input" << flush;
+    Throw(next) << "expected '" << close_sp << "' before "
+		<< token_before_phrase(next) << flush;
+}
+
+void Program::finish_list_element(TokenID close_id, const char *close_sp)
+{
+    TokenBase *cur = curToken();
+    if ( cur && cur->id() == TokenID::tkComma )
+	return;		// the engine consumed it — never a second one (`{1,,2}`)
+    require_list_element_end(close_id, close_sp);
+    TokenBase *next = peekToken();
+    if ( next && next->id() == TokenID::tkComma )
+	nextToken();
 }
 
 TokenBase *Program::parseStatement(TokenBase *tb)

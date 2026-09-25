@@ -1,0 +1,6 @@
+// C11 6.8.5.3: a for header's clauses are expressions; only `,` (the comma
+// operator) continues one. The for-init loop read any operand after the init
+// as another comma-clause, so `for (x = 0 a; ...)` ran as `x = 0, a`.
+// Oracle: gcc "error: expected ';' before 'a'", clang "error: expected ';' in
+// 'for' statement specifier".
+int main(void) { int a = 1, x; for (x = 0 a; x < 3; x++) ; return x; }

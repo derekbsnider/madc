@@ -1,0 +1,8 @@
+// C11 6.5.2.2: arguments are separated by `,`. The argument loop took any
+// token after an argument as the next argument, so once the engine stopped
+// before a juxtaposed operand `g(a b)` ran as `g(a, b)` (exit 3). Every list
+// reader now ends an element only at its `,` or close
+// (Program::require_list_element_end).
+// Oracle: gcc "error: expected ')' before 'b'", clang "error: expected ')'".
+int g(int a, int b) { return a + b; }
+int main(void) { int a = 1, b = 2; return g(a b); }

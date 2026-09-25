@@ -1,0 +1,7 @@
+// C11 6.7: an init-declarator list is separated by `,`. After an initializer
+// the declaration reader inferred "the engine already ate the `,`" from the
+// token that followed, so `int y = a b;` began a second declarator `b`
+// ("redefinition of 'b'"). Only a consumed `,` continues the list now.
+// Oracle: gcc "error: expected ',' or ';' before 'b'", clang "error: expected
+// ';' at end of declaration".
+int main(void) { int a = 1, b = 2; int y = a b; return y; }

@@ -1,0 +1,8 @@
+// C11 6.5: after a complete operand only an operator can continue an
+// expression. madc's engine read on past a juxtaposed operand and let a LATER
+// operator bind the pair: `int x = 3 4 +;` built `3 + 4` and exited 7. The
+// engine now ends the expression before the `4` (Program::parseExpression,
+// token_begins_operand) and the declaration reports what it needed there.
+// Oracle: gcc "error: expected ',' or ';' before numeric constant", clang
+// "error: expected ';' at end of declaration".
+int main(void) { int x = 3 4 +; return x; }

@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### An expression ends before a juxtaposed operand
+
+`int x = 3 4 +;` compiled as `3 + 4` and exited 7. The expression engine
+read on past a literal or a name that followed a complete operand, and
+refused the pair at the end only when no later operator had bound it. gcc
+and clang stop at the `4` ("expected ',' or ';' before numeric constant").
+The engine now ends the expression there too; inside a parenthesis it opened,
+the error is "expected ')' before …".
+
+Stopping there exposed readers that had relied on the old refusal: each took
+whatever followed an element as the next element. `Program::
+require_list_element_end` / `finish_list_element` are now the one separator
+step, where an element ends at its `,` or at the list's close. These readers
+use it:
+- call and member-call arguments (`g(a b)` ran as `g(a, b)`);
+- `new T(…)` arguments;
+- constructor-argument lists and the carrier literal;
+- compound literals and declaration initializer lists (`int z[2] = {a b};`
+  gave `{1, 2}`), including designated initializers;
+- flattened braced arguments and the UFCS receiver.
+
+The for header's init and increment clauses need a `,` before another
+expression, and a declarator list continues only after a consumed `,`
+(`int y = a b;` used to begin a declarator `b`).
+
+Whether an operand is complete is read off the engine's own stacks as well
+as the last token read. An arm's lookahead can push tokens back, which left
+`q` as the current token in `(q) = 0`.
+
 ### A discarded `if constexpr` branch ends where its statement does
 
 madc skips a discarded branch without parsing it. The skip used to run to

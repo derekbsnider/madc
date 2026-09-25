@@ -1,0 +1,7 @@
+// C11 6.7.9: a designated initializer's value is one assignment-expression,
+// ended by `,` or `}`. `{ .x = a b }` initialized x from `a` and then read
+// `b` as the next positional clause. Program::finish_list_element owns the
+// separator for the designated arm too.
+// Oracle: gcc "error: expected '}' before 'b'", clang "error: expected '}'".
+struct P { int x, y; };
+int main(void) { int a = 1, b = 2; struct P p = { .x = a b }; return p.x * 10 + p.y; }

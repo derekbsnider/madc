@@ -6287,10 +6287,11 @@ public:
     // Does token `t` END an operand — so the operator after it is postfix or
     // binary, never unary? The one answer isPostfixPosition() gives for
     // prevToken and parseCastExpression's bound asks of the token just read.
-    // Has the cast-expression parseCastExpression is reading ended its
-    // operand? The token just read ends one (token_ends_operand), unless it
-    // is a step still waiting on the operator stack — a PREFIX `++`/`--`.
-    inline bool cast_expression_complete(const std::stack<TokenBase *> &opStack)
+    // Has the token the expression engine just read COMPLETED an operand? It
+    // ends one (token_ends_operand), unless it is a step still waiting on the
+    // operator stack — a PREFIX `++`/`--`. Two bounds ask it: a cast-
+    // expression's (parseCastExpression) and a juxtaposed operand's.
+    inline bool operand_completed(const std::stack<TokenBase *> &opStack)
     {
 	if ( !token_ends_operand(_cur_token) )
 	    return false;
@@ -6316,6 +6317,26 @@ public:
 	return id == TokenID::tkClBrk || id == TokenID::tkClSqr
 	    || id == TokenID::tkInc || id == TokenID::tkDec
 	    || !t->is_operator();
+    }
+    // Does token `t` BEGIN an operand that can never continue the one before
+    // it — a literal or a name? After a complete operand no expression
+    // continues with one (C11 6.5, [expr]): the expression ends before it,
+    // where gcc and clang end it (`int x = 3 4;` fails at the `4`, "expected
+    // ',' or ';' before numeric constant"). Punctuation and keywords are not
+    // listed: `(` `[` `.` `->` continue an operand, and a keyword's reading is
+    // its own arm's.
+    static bool token_begins_operand(TokenBase *t)
+    {
+	if ( !t ) return false;
+	switch ( t->type() )
+	{
+	    case TokenType::ttInteger: case TokenType::ttReal:
+	    case TokenType::ttString:  case TokenType::ttChar:
+	    case TokenType::ttIdentifier: case TokenType::ttVariable:
+		return true;
+	    default:
+		return false;
+	}
     }
     inline TokenBase *nextToken()
     {
@@ -6699,6 +6720,15 @@ public:
     enum class StatementTerminator : unsigned char { None, Expression, Declaration, Jump };
     StatementTerminator stmt_terminator_owed = StatementTerminator::None;
     void require_statement_terminator(StatementTerminator owed);
+    // A list's element ends at the list's `,` or at its close (`)` `}`):
+    // an argument ([expr.call]), an initializer-clause ([dcl.init]), a
+    // constructor argument. The engine stops ON a `,` it consumed or BEFORE
+    // a `,` or the close; anything else is gcc's "expected ')' before ...".
+    // require_ checks only (the call-argument loop consumes the `,` itself);
+    // finish_ also consumes a `,` still next. The ONE separator step of
+    // every comma-separated list reader.
+    void require_list_element_end(TokenID close_id, const char *close_sp);
+    void finish_list_element(TokenID close_id, const char *close_sp);
     // A region whose constructs' terminators are paid inside it: a statement
     // (parseStatement pays what its construct recorded) and a class body,
     // whose member-declarations end in their own `;` ([class.mem]). The
