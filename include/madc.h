@@ -2012,6 +2012,16 @@ public:
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { std::ostringstream tmp; tmp << sb; _buf = tmp.str(); _gpos = 0; }
     void str(const std::string &s) { _buf = s; _gpos = 0; }
+    // A fresh unit read into the same Source (an interactive entry, plan
+    // §41.2a): its text, cursor and position all start over at line 1.
+    void start_unit(const std::string &s)
+    {
+	str(s);
+	_lf = 0;
+	_cr = 0;
+	_column = 0;
+	_last_token_line = 0;
+    }
     const std::string &text() const { return _buf; }
     void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
     // Push back text that was ALREADY read (lexer lookahead/backtrack). Those
@@ -5847,6 +5857,13 @@ public:
     // forward proto instead of the loaded def for these, and the call resolves
     // as a MIR import against the loaded cache module at link.
     std::set<std::string> mir_cache_exports;
+    // The interactive session (plan §41.2a): symbols a module ALREADY LINKED
+    // into the session's live MIR context defines (its exported items, by
+    // emitted name). The CIR builder emits a declaration for each, never a
+    // second definition, so a later entry's module links to the live one.
+    // Unlike mir_cache_exports, where the consumer module wins every overlap,
+    // here the earlier module does.
+    std::set<std::string> session_defined;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
@@ -6790,6 +6807,27 @@ public:
     // Does an `else` continue the if statement just parsed? (TokenIF's three
     // arms; records the extendable if at an entry's end.)
     bool if_statement_else_follows();
+    // The persistent interactive session (plan §41.2a). ONE Program accepts
+    // appended entries: begin_interactive_session runs, once, the init a
+    // translation unit's tokenize + parse pair runs (the lexer's and the
+    // parser's, a fresh tkProgram); parse_entry lexes one more unit into the
+    // SAME Program and parses it to its end-of-entry token, keeping every
+    // macro, include, type and symbol the earlier entries made. A statement
+    // in an entry is collected into entry_statements (its lowering is D25's
+    // entry function), never adopted into script mode's main.
+    bool interactive_session = false;
+    std::vector<TokenBase *> entry_statements;
+    bool begin_interactive_session(const std::string &display_name);
+    bool parse_entry(const std::string &text, const std::string &display_name);
+    bool lex_entry(const std::string &text, const std::string &display_name);
+    bool lex_unit_text(const char *fname, const std::string &text);
+    // The top-level parse loop parse() and parse_entry() share: statements
+    // to the end of the token stream (a TU) or to the end-of-entry token.
+    bool parse_toplevel(TokenProgram *tp);
+    // The lazy surfaces an #include of <iostream> / <stdio.h> arms
+    // (embedded-headers.md). _parser_init registers them; an entry that
+    // includes one later registers it after its lex.
+    void register_included_lazy_surfaces();
     // A list's element ends at the list's `,` or at its close (`)` `}`):
     // an argument ([expr.call]), an initializer-clause ([dcl.init]), a
     // constructor argument. The engine stops ON a `,` it consumed or BEFORE

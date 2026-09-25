@@ -10756,14 +10756,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     _tokenizer_init();
 
-    forest_root_file = fname;	// v24 (see tokenize)
-    source.fname(fname);
-    { ReadTimer _rt(_read_seconds); source.str(source_text); }
-    _input_bytes += source_text.size();	// --show-stats: load_buffer main-source bytes
-    pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
-    Throw.source(source);
-
-    if ( !lex_main_unit(fname) )
+    if ( !lex_unit_text(fname, source_text) )
 	return NULL;
 
     DBG(std::cout << "Program::tokenize_buffer() finished tokenizing" << std::endl);
@@ -10781,4 +10774,44 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     tkProgram->bytes = source_text.size();
 
     return tkProgram;
+}
+
+// Read one main unit's text and lex it: tokenize_buffer's unit, and each
+// entry of an interactive session (lex_entry). The unit's name, its text from
+// line 1, its tokens.
+bool Program::lex_unit_text(const char *fname, const std::string &text)
+{
+    forest_root_file = fname;	// v24 (see tokenize)
+    source.fname(fname);
+    { ReadTimer _rt(_read_seconds); source.start_unit(text); }
+    _input_bytes += text.size();	// --show-stats: load_buffer main-source bytes
+    pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
+    Throw.source(source);
+    return lex_main_unit(fname);
+}
+
+// Lex one interactive entry into THIS Program (plan §41.2a): the unit lex
+// tokenize_buffer runs, WITHOUT _tokenizer_init — the session's macros,
+// include guards, auto-include state and tkProgram carry over from the
+// entries before. The entry is whole lines, and lex_main_unit appends the
+// end-of-entry token (ParseMode::InteractiveEntry).
+bool Program::lex_entry(const std::string &text, const std::string &display_name)
+{
+    std::string entry = text;
+    if ( entry.empty() || entry[entry.size() - 1] != '\n' )
+	entry += '\n';
+    const char *fname = intern_file(display_name.empty() ? "<entry>" : display_name);
+
+    DBG(cout << "Program::lex_entry(" << fname << ") START" << endl);
+    activate_token_pools();
+    // An entry's tokens take their positions from its own text, never the
+    // previous entry's (the _tokenizer_init reset, per unit).
+    TokenBase::_parse_file = NULL;
+    TokenBase::_parse_line = 0;
+    TokenBase::_parse_column = 0;
+    if ( !lex_unit_text(fname, entry) )
+	return false;
+    inject_pending_auto_includes();
+    flush_forest_pending_globals();
+    return true;
 }

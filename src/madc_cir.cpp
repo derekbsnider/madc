@@ -993,8 +993,20 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 
 CirJitSession::CirJitSession()
     : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL),
-      cache_mod(NULL)
+      cache_mod(NULL), live_mode(false)
 {
+}
+
+// The function item named `name` in ONE module: a TU's own init (a static,
+// so a same-named init in another module is not it) or a --project entry.
+static MIR_item_t cir_module_func_item(MIR_module_t m, const char *name)
+{
+    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, m->items);
+	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item))
+	if (item->item_type == MIR_func_item
+	    && strcmp(item->u.func->name, name) == 0)
+	    return item;
+    return NULL;
 }
 
 CirJitSession::~CirJitSession()
@@ -1014,6 +1026,8 @@ void CirJitSession::teardown()
     }
     delete builder;
     delete forest;
+    for (CirBuilder *b : live_builders)
+	delete b;
     ctx = NULL;
     c2m = NULL;
     builder = NULL;
@@ -1021,6 +1035,9 @@ void CirJitSession::teardown()
     mod = NULL;
     cache_mod = NULL;	// owned by ctx (MIR_finish freed it above)
     gen_cache.clear();
+    live_mode = false;
+    live_mods.clear();	// owned by ctx
+    live_builders.clear();
 }
 
 bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
@@ -1156,7 +1173,10 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// them all, untruncated (host-regs still set for accurate resolution).
 	cir_dump_undefined_imports(ctx);
 	cir_active_host_regs = NULL;
-	teardown();
+	// A live session's context holds every earlier entry: one refused
+	// module must not end it (its rollback is plan §41.3).
+	if (!live_mode)
+	    teardown();
 	return false;
     }
     cir_mir_error_armed = true;
@@ -1506,14 +1526,8 @@ void *CirJitSession::function_code(const char *emitted_name)
     }
     cir_mir_error_armed = true;
     void *code = NULL;
-    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
-	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-	if (item->item_type == MIR_func_item &&
-	    strcmp(item->u.func->name, emitted_name) == 0) {
-	    code = MIR_gen(ctx, item);
-	    break;
-	}
-    }
+    if (MIR_item_t item = find_item(emitted_name, /*func=*/true))
+	code = MIR_gen(ctx, item);
     cir_mir_error_armed = false;
     if (code) gen_cache[emitted_name] = code;
     return code;
@@ -1522,20 +1536,113 @@ void *CirJitSession::function_code(const char *emitted_name)
 void *CirJitSession::data_address(const char *emitted_name)
 {
     if (!mod || !emitted_name || !emitted_name[0]) return NULL;
-    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
-	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-	const char *name = NULL;
-	switch (item->item_type) {
-	    case MIR_data_item:      name = item->u.data->name; break;
-	    case MIR_bss_item:       name = item->u.bss->name; break;
-	    case MIR_ref_data_item:  name = item->u.ref_data->name; break;
-	    case MIR_expr_data_item: name = item->u.expr_data->name; break;
-	    default: break;
+    MIR_item_t item = find_item(emitted_name, /*func=*/false);
+    return item ? item->addr : NULL;
+}
+
+// The definition named `name` (a function item, or a data item: data, bss,
+// ref-data, expr-data) in `mod`, then in every earlier live-mode module,
+// newest first. An import or a prototype defines nothing, so an entry that
+// only calls `f` never shadows the module that defines it.
+MIR_item_t CirJitSession::find_item(const char *name, bool func) const
+{
+    auto in_module = [&](MIR_module_t m) -> MIR_item_t {
+	if (func)
+	    return cir_module_func_item(m, name);
+	for (MIR_item_t item = DLIST_HEAD(MIR_item_t, m->items);
+	     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
+	    const char *nm = NULL;
+	    switch (item->item_type) {
+		case MIR_data_item:      nm = item->u.data->name; break;
+		case MIR_bss_item:       nm = item->u.bss->name; break;
+		case MIR_ref_data_item:  nm = item->u.ref_data->name; break;
+		case MIR_expr_data_item: nm = item->u.expr_data->name; break;
+		default: break;
+	    }
+	    if (nm != NULL && strcmp(nm, name) == 0)
+		return item;
 	}
-	if (name != NULL && strcmp(name, emitted_name) == 0)
-	    return item->addr;
-    }
+	return (MIR_item_t)NULL;
+    };
+    if (mod)
+	if (MIR_item_t item = in_module(mod))
+	    return item;
+    for (size_t i = live_mods.size(); i-- > 0; )
+	if (live_mods[i] != mod)
+	    if (MIR_item_t item = in_module(live_mods[i]))
+		return item;
     return NULL;
+}
+
+bool CirJitSession::begin_live(const char *session_name)
+{
+    if (ctx) teardown();
+    if (!init_contexts(session_name, /*dump_checked=*/false))
+	return false;
+    live_mode = true;
+    return true;
+}
+
+bool CirJitSession::append(Program *prog, const char *entry_name)
+{
+    if (!live_mode || !ctx || !prog)
+	return false;
+    // The project-TU shape: this entry's init is a static under its own
+    // name, called here (the engine's ld.so role, as --project calls each
+    // TU's) — never a second exported __madc_global_init.
+    CirBuilder *b = NULL;
+    bool stop = false;
+    // MADC_SESSION_DUMP_TREE=1: each entry's module tree, pre-check (the
+    // --dump-cir twin for a session, which has no command line).
+    static const bool dump_tree = getenv("MADC_SESSION_DUMP_TREE") != NULL;
+    MIR_module_t m = build_tu_module(ctx, c2m, prog, entry_name,
+				     dump_tree, false, false, b, stop,
+				     /*project_tu=*/true);
+    if (!m)
+	return false;
+    live_builders.push_back(b);
+    live_mods.push_back(m);
+    mod = m;
+    if (!load_and_link(entry_name, prog))
+	return false;
+    // What this module now defines for every later one: its exported
+    // definitions (MIR marks the definition an export item names).
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	switch (it->item_type) {
+	    case MIR_func_item: case MIR_data_item: case MIR_bss_item:
+	    case MIR_ref_data_item: case MIR_expr_data_item:
+		break;
+	    default:
+		continue;
+	}
+	if (!it->export_p)
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	if (nm && nm[0])
+	    prog->session_defined.insert(nm);
+    }
+    const std::string ini = b ? b->tu_init_name() : std::string();
+    if (ini.empty())
+	return true;
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "%s: MIR codegen error: %s\n", entry_name,
+		cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    void *icode = NULL;
+    if (MIR_item_t it = cir_module_func_item(m, ini.c_str()))
+	icode = MIR_gen(ctx, it);
+    cir_mir_error_armed = false;
+    if (!icode) {
+	fprintf(stderr, "%s: TU init '%s' not found in its module\n",
+		entry_name, ini.c_str());
+	return false;
+    }
+    ((void (*)(int, char **, char **))icode)(0, NULL, NULL);
+    return true;
 }
 
 int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
@@ -6362,16 +6469,11 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	void *code = nullptr;
 	MIR_module_t entry_mod = nullptr;
 	for (MIR_module_t m : modules) {
-		for (MIR_item_t item = DLIST_HEAD(MIR_item_t, m->items);
-		     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-			if (item->item_type == MIR_func_item &&
-			    strcmp(item->u.func->name, manifest.entry.c_str()) == 0) {
-				code = MIR_gen(ctx, item);
-				entry_mod = m;
-				break;
-			}
+		if (MIR_item_t item = cir_module_func_item(m, manifest.entry.c_str())) {
+			code = MIR_gen(ctx, item);
+			entry_mod = m;
+			break;
 		}
-		if (code) break;
 	}
 	if (!code) {
 		fprintf(stderr, "madc_project_execute: entry '%s' not found\n",
@@ -6393,14 +6495,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		if (ini.empty())
 			continue;
 		void *icode = nullptr;
-		for (MIR_item_t item = DLIST_HEAD(MIR_item_t, modules[bi]->items);
-		     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-			if (item->item_type == MIR_func_item
-			    && strcmp(item->u.func->name, ini.c_str()) == 0) {
-				icode = MIR_gen(ctx, item);
-				break;
-			}
-		}
+		if (MIR_item_t item = cir_module_func_item(modules[bi], ini.c_str()))
+			icode = MIR_gen(ctx, item);
 		if (!icode) {
 			fprintf(stderr, "madc_project_execute: %s: TU init '%s'"
 				" not found in its module\n",

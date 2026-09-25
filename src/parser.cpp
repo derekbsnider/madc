@@ -28317,8 +28317,7 @@ void Program::_parser_init()
     add_host_callbacks();
     add_array_methods();
     // populate lazy_map for included headers (actual registration deferred to first use)
-    if ( _include_iostream ) add_iostream();
-    if ( _include_stdio )   add_stdio();
+    register_included_lazy_surfaces();
     register_namespace_specs();
     // clang's __make_integer_seq builtin template: a marker registration so
     // every template-id head lookup (type AND expression lanes) recognizes
@@ -28374,6 +28373,14 @@ void Program::_parser_init()
 	}
     }
     _braces = 0;
+}
+
+// populate lazy_map for included headers (actual registration deferred to
+// first use)
+void Program::register_included_lazy_surfaces()
+{
+    if ( _include_iostream ) add_iostream();
+    if ( _include_stdio )   add_stdio();
 }
 
 bool Program::is_namespace_registration_enabled(const std::string &name) const
@@ -77273,9 +77280,6 @@ void Program::contain_toplevel_parse_error(TokenProgram *tp,
 // parse the token queue
 bool Program::parse(TokenProgram *tp)
 {
-    TokenBase *tb = NULL;
-    TokenBase *ts = NULL;
-
     DBG(cout << endl << "Program::parse() START" << endl);
     clear_diagnostics();
     clear_error();
@@ -77301,6 +77305,17 @@ bool Program::parse(TokenProgram *tp)
 
     DBG(cout << endl << "Program::parse() calling ast.push for TokenProgram" << endl);
     ast.push_back(tp);
+
+    return parse_toplevel(tp);
+}
+
+// The top-level statement loop, to the end of the token stream or to an
+// interactive entry's end token. parse() runs it once for a translation unit;
+// parse_entry() runs it once per entry on the same Program (plan §41.2a).
+bool Program::parse_toplevel(TokenProgram *tp)
+{
+    TokenBase *tb = NULL;
+    TokenBase *ts = NULL;
 
     try
     {
@@ -77382,7 +77397,12 @@ bool Program::parse(TokenProgram *tp)
 		    << "' at file scope (parser made no progress)" << flush;
 	    if ( ts )
 	    {
-		if ( (script_stmt || script_statement_result(ts))
+		// A session entry's statement lowers into its entry function
+		// (D25), never into script mode's main.
+		if ( interactive_session
+		  && (script_stmt || script_statement_result(ts)) )
+		    entry_statements.push_back(ts);
+		else if ( (script_stmt || script_statement_result(ts))
 		  && adopt_script_statement(ts) )
 		{
 		    DBG(cout << "Program::parse() adopted file-scope script statement" << endl);
@@ -77481,8 +77501,8 @@ bool Program::parse(TokenProgram *tp)
 	return false;
     }
 
-    DBG(std::cout << "Program::parse() finished parsing" << std::endl);
-    
+    DBG(std::cout << "Program::parse_toplevel() finished parsing" << std::endl);
+
     return true;
 }
 
@@ -77636,6 +77656,93 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
 				    : EntryVerdict::Complete;
     r.shows_value = entry_final_semicolon_omitted;
     return r;
+}
+
+// The one-time init of an interactive session (plan §41.2a): what
+// tokenize_buffer and parse run before a translation unit's first token — the
+// lexer's init, a fresh tkProgram, the parser's init — with no unit read yet.
+// Every entry lexes and parses on top of it (parse_entry).
+bool Program::begin_interactive_session(const std::string &display_name)
+{
+    parse_mode = ParseMode::InteractiveEntry;
+    interactive_session = true;
+    clear_diagnostics();
+    clear_error();
+    _tokenizer_init();
+    const char *fname = intern_file(display_name.empty() ? "<session>" : display_name);
+    forest_root_file = fname;
+    source.fname(fname);
+    tkProgram = new TokenProgram();
+    tkFunction = tkProgram;
+    flush_forest_pending_globals();
+    tkProgram->source = fname;
+    tkProgram->is = new std::stringstream(std::string());
+    _parser_init();
+    ast.push_back(tkProgram);
+    return true;
+}
+
+// One entry of the interactive session (plan §41.2a): lexed into this
+// Program and parsed to its end token, on everything the earlier entries
+// declared. False when the entry is refused; its diagnostics are recorded.
+// Slice 1 persists declarations. A statement (D25's entry function) and a
+// file-scope static (internal linkage: a later entry's module cannot import
+// it; its rule is D6's) are refused out loud until their slices land.
+bool Program::parse_entry(const std::string &text, const std::string &display_name)
+{
+    if ( !interactive_session || !tkProgram )
+    {
+	set_error(DiagnosticPhase::parser, "no interactive session has begun");
+	return false;
+    }
+    clear_diagnostics();
+    clear_error();
+    entry_statements.clear();
+    entry_end_token = NULL;
+    entry_final_semicolon_omitted = false;
+    entry_if_extendable = false;
+    size_t decls_before = top_decls.size();
+    size_t funcs_before = pending_funcs.size();
+    if ( !lex_entry(text, display_name) )
+	return false;
+    register_included_lazy_surfaces();
+    if ( !parse_toplevel(tkProgram) )
+	return false;
+    for ( size_t i = 0; i < diagnostics.size(); ++i )
+	if ( diagnostics[i].severity == DiagnosticSeverity::error )
+	    return false;
+    if ( !entry_statements.empty() )
+    {
+	record_parse_error("a statement in an interactive entry is not"
+			   " supported yet", entry_statements.front(), tkProgram);
+	return false;
+    }
+    for ( size_t i = decls_before; i < top_decls.size(); ++i )
+    {
+	TopDecl &td = top_decls[i];
+	if ( td.kind == DeclKind::dkGlobalVar && td.var
+	  && (td.var->flags & vfSTATIC) )
+	{
+	    record_parse_error("'" + td.var->name + "' has internal linkage:"
+			       " a static declaration in an interactive"
+			       " session is not supported yet",
+			       td.origin, tkProgram);
+	    return false;
+	}
+    }
+    for ( size_t i = funcs_before; i < pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = pending_funcs[i] ? pending_funcs[i]->as_func_tok() : NULL;
+	FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+	if ( fd && fd->internal_linkage )
+	{
+	    record_parse_error("'" + tf->var.name + "' has internal linkage:"
+			       " a static function in an interactive session"
+			       " is not supported yet", tf, tkProgram);
+	    return false;
+	}
+    }
+    return true;
 }
 
 TokenBase *Program::parse_expression_unit(TokenProgram *tp)

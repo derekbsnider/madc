@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### The interactive session keeps each entry's definitions for the next
+
+This is the core of the REPL arc (plan §41.2a, slice 1). `InteractiveSession`
+(`include/madc_session.h`) holds one Program and one live MIR context.
+- Each entry is parsed on top of everything the earlier entries declared:
+  macros, includes, types and symbols.
+- Each entry is compiled to its own MIR module and linked into the live
+  context, so a later entry calls an earlier entry's functions and reads its
+  globals in place. Nothing is replayed or recompiled.
+- Anything an earlier module defines is declared, never defined again, in a
+  later module. There is one `g`, and writing it through its live address
+  changes what the next entry reads.
+
+For example, after `int g = 5; int f(int a) { return a + g; }`, the next
+entry's `int h(void) { return f(2) + g; }` returns 12, the value gcc and clang
+give for the same two files linked together. This works under `--std=c17` and
+`--std=madc`.
+
+A statement in an entry, or a file-scope `static`, is refused for now with a
+clear message. Statements get their own entry function in slice 2. Statics
+wait for the redefinition rules (D6), because a later entry's module cannot
+import an internal-linkage name.
+
+Tests: `test_repl_session`.
+
 ### `_Generic` and `__builtin_types_compatible_p` see a C enum's compatible type
 
 A C enum is compatible with its underlying integer type (C11 6.7.2.2p4),

@@ -9954,6 +9954,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// destructor when one exists. Construction is injected as a separate
 	// class_ctor_call by translate_block (the 1->N C++ lowering).
 
+	// A declaration, not a definition: the Variable is `extern`, or an
+	// earlier module of the interactive session defines it (m_extern_decl,
+	// plan §41.2a). Every storage-class decision below reads this one fact.
+	const bool is_extern = (v->flags & vfEXTERN) != 0 || m_extern_decl;
+
 	// madc array object (`array a;`, a madc::value): same opaque-storage
 	// model as runtime-object classes.
 	// madarray_construct is emitted as a separate statement by translate_block;
@@ -9981,7 +9986,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// applies the same rule — g++ parity with `extern std::string s;`).
 		// An initializer makes it a definition (C semantics), so only the
 		// bare form takes the extern shape.
-		if ((v->flags & vfEXTERN) && !carrier_defines)
+		if (is_extern && !carrier_defines)
 			return array_storage_decl(var_emit_name(*v).c_str(),
 						  origin, ObjStorage::Extern);
 		if (m_file_scope_decl && carrier_defines)
@@ -10063,14 +10068,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (ptr_to_fnptr) {
 		tl = list();
 		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
-		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
+		if (is_extern) append(tl, simple(N_EXTERN));
 		if (v->flags & vfTHREADLOCAL) append(tl, simple(N_THREAD_LOCAL));
 		fnptr_decl_list = list();
 		pointer_to_fnptr_pieces(v->type, tl, fnptr_decl_list);
 	} else if (fnptr) {
 		tl = list();
 		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
-		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
+		if (is_extern) append(tl, simple(N_EXTERN));
 		if (v->flags & vfTHREADLOCAL) append(tl, simple(N_THREAD_LOCAL));
 		fnptr_decl_list = list();
 		// An array-of-fn-ptr variable (`int (*ops[N])(args)`) keeps a bare
@@ -10104,7 +10109,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
-	if (!fn_declarator && (v->flags & vfEXTERN)) {
+	if (!fn_declarator && is_extern) {
 		// An extern is a forward reference to a symbol defined elsewhere, so
 		// emit its type exactly as the definition would — preserve the typedef
 		// alias and struct tag. Dropping the alias made `extern bool x` degrade
@@ -10121,7 +10126,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// it — the attr binds the MIR data item LINKONCE (captured STB_WEAK)
 	// so per-TU copies merge at a multi-.o link, and --emit=c11 renders
 	// __attribute__((weak)). An extern reference is not a definition.
-	if ((v->flags & vfLINKONCE) && !(v->flags & vfEXTERN)
+	if ((v->flags & vfLINKONCE) && !is_extern
 	    && !(v->flags & vfSTATIC))
 		append(tl, node2(N_ATTR, id("linkonce"), list()));
 
@@ -10168,7 +10173,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			// An unsized extern array (`extern char buf[]`) carries dim 0 —
 			// emit `[]` (incomplete type, compatible with the sized
 			// definition) rather than `[0]`, which conflicts.
-			node_t size = ((v->flags & vfEXTERN) && v->dims[d] == 0)
+			node_t size = (is_extern && v->dims[d] == 0)
 					? ignore() : integer(v->dims[d]);
 			node_t arr = node3(N_ARR, ignore(), list(), size);
 			append(decl_list, arr);
@@ -10227,7 +10232,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// (no init needed).
 	bool is_vla_local = v->is_vla() && v->vla_size_expr && is_ptr
 			    && (v->flags & vfLOCAL)
-			    && !(v->flags & (vfSTATIC | vfEXTERN));
+			    && !(v->flags & vfSTATIC) && !is_extern;
 	node_t vla_init = NULL;
 	if (is_vla_local) {
 		referenced_funcs.insert("malloc");
@@ -10311,7 +10316,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// reconstruct: require that THIS TokenDecl originally had one
 	// (has_brace_init for `{...}`, or `initialize` for the string-literal form).
 	bool baked_static_array = tdecl && (!is_ptr)
-				  && !(v->flags & vfEXTERN)
+				  && !is_extern
 				  && tdecl->baked_static_init
 				  && v->is_fixed_array()
 				  && v->data && tdecl->init_list.empty()
@@ -10442,7 +10447,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// ("cleanup argument not a function"); the c2mir fork applies
 		// cleanup to automatic variables only, so this attach was inert
 		// for externs in the JIT lane anyway.
-		DataDefCLASS *cdd = (!is_ptr && !(v->flags & vfEXTERN))
+		DataDefCLASS *cdd = (!is_ptr && !is_extern)
 				    ? as_class_instance(base_dd) : NULL;
 		if (cdd && class_needs_dtor(cdd)) {
 			// A fixed ARRAY gets the per-(class,N) wrapper: the cleanup
@@ -30541,6 +30546,24 @@ void CirBuilder::collect_global_ctors(Program *prog,
 			continue;
 		}
 		bool already_emitted = emitted_globals.count(v->name) != 0;
+		// An earlier module of the interactive session defines this object
+		// (plan §41.2a) and ran its construction: this module only declares
+		// it. A source global is declared by the dkGlobalVar pass (which
+		// never queued its dynamic init above); a built-in one is declared
+		// here.
+		if (session_defines(var_emit_name(*v))) {
+			if (!already_emitted) {
+				m_extern_decl = true;
+				node_t gd = var_decl(v, NULL);
+				m_extern_decl = false;
+				if (gd) {
+					deferred_globals.push_back(gd);
+					m_global_decl_node[v] = gd;
+				}
+				emitted_globals.insert(v->name);
+			}
+			continue;
+		}
 		TokenDecl *decl = NULL;
 		if (!already_emitted) {
 			// Built-in (not source-declared): emit its struct storage now —
@@ -31764,6 +31787,12 @@ static std::string tu_init_symbol(const std::string &tu)
 	return out;
 }
 
+bool CirBuilder::session_defines(const std::string &sym) const
+{
+	return m_prog && !m_prog->session_defined.empty()
+	       && m_prog->session_defined.count(sym) != 0;
+}
+
 node_t CirBuilder::translate_module(Program *prog)
 {
 	if (!prog) return NULL;
@@ -32070,8 +32099,14 @@ node_t CirBuilder::translate_module(Program *prog)
 				// Deferred until after the function prototypes (see above).
 				// m_file_scope_decl arms the dynamic-init routing for
 				// non-constant scalar initializers (C++ modes).
+				// An earlier module of the interactive session owns
+				// this global (plan §41.2a): declare it `extern`, with
+				// no initializer, so this module reads the live storage.
+				const bool earlier = session_defines(var_emit_name(*td.var));
 				m_file_scope_decl = true;
-				node_t gd = var_decl(td.var, td.decl);
+				m_extern_decl = earlier;
+				node_t gd = var_decl(td.var, earlier ? NULL : td.decl);
+				m_extern_decl = false;
 				m_file_scope_decl = false;
 				if (gd) {
 					stamp(gd, td);
@@ -32202,6 +32237,11 @@ node_t CirBuilder::translate_module(Program *prog)
 	static const char *rs_probe = getenv("MADC_ROOTSPLIT_PROBE");
 	for (TokenFunc *tf : funcs) {
 		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
+		// An earlier module of the interactive session defines this
+		// function (plan §41.2a): Pass 1 still prototypes it, and the call
+		// links to the live body.
+		if (session_defines(func_emit_name(tf->var, tfd)))
+			continue;
 		bool sys = tfd && prog->is_system_header_path(tf->file);
 		if (rs_probe && *rs_probe
 		    && tf->var.name.find(rs_probe) != std::string::npos)

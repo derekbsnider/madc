@@ -113,6 +113,17 @@ public:
 		      const char *module_name);
     bool built() const { return mod != 0; }
 
+    // Live mode (plan §41.2a): ONE MIR context that modules are APPENDED to,
+    // an interactive session's entries. begin_live() initializes the context
+    // once. append() translates the Program as it stands into a new module
+    // (whatever an earlier module defines is declared, not defined:
+    // Program::session_defined), loads and links it into the context,
+    // records its exports into session_defined and runs its TU init.
+    // function_code / data_address then search every appended module, the
+    // newest first. The context lives until the session is destroyed.
+    bool begin_live(const char *session_name);
+    bool append(Program *prog, const char *entry_name);
+
     // The generated code address for a module function by its EMITTED name
     // (plain madc functions emit under their source name; the eval entry is
     // "__madc_eval"). Generates on first use, memoized. NULL when absent.
@@ -157,6 +168,12 @@ private:
     MIR_module_t cache_mod;	// build(): the container's MIR cache module,
 				// loaded beside `mod` (rung 3); NULL = no cache
     std::map<std::string, void *> gen_cache;
+    // Live mode: the appended modules (oldest first) and the builders whose
+    // node arenas back them. `mod` is the newest.
+    bool live_mode;
+    std::vector<MIR_module_t> live_mods;
+    std::vector<CirBuilder *> live_builders;
+    MIR_item_t find_item(const char *name, bool func) const;
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);
     void teardown();

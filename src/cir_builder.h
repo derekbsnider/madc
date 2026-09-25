@@ -323,6 +323,15 @@ class CirBuilder {
 	// pass) — the only context where the dynamic-init routing applies;
 	// block-scope declarations take runtime initializers natively.
 	bool m_file_scope_decl = false;
+	// True while var_decl emits the DECLARATION of a global an earlier
+	// module of the interactive session defines (plan §41.2a): the
+	// `extern` form, exactly as if the Variable carried vfEXTERN.
+	bool m_extern_decl = false;
+	// Plan §41.2a: does a module already linked into the interactive
+	// session's live context define this emitted symbol
+	// (Program::session_defined)? Such a symbol is declared, never defined
+	// again, so this module links to the live definition.
+	bool session_defines(const std::string &sym) const;
 	// Wide string literals (parser addWideLiteral): the sanitized module
 	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
 	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for

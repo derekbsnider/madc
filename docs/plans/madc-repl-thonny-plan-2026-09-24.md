@@ -1806,6 +1806,53 @@ Balance first keeps stage 2 honest. Once the delimiters balance, the parser can 
   - a discarded `if constexpr` branch that omits its final `;`.
 - Done since (`9cc3dfe49`): an `enum {…}` definition's missing `;` is refused in file mode too, and reads Incomplete as an entry. Four enum defects found on the way were fixed in their own commits: the typedef that dropped the tag, `packed`, `sizeof(enum X)`, and enums past 32 bits.
 
+### 41.2a The persistent session, designed against the code (2026-09-25)
+
+**The core is `InteractiveSession`** (`include/madc_session.h`, `src/madc_session.cpp`). It owns one `Program` in `ParseMode::InteractiveEntry` and one live MIR context. §40 says the REPL is a client of this core, so the core is not named after the REPL.
+
+**What the code does today:**
+- `Program::tokenize_buffer` runs `_tokenizer_init()` and makes a new `tkProgram` on every call. `tkProgram` holds the program's variables and functions, and the init also clears the included-files list and the auto-include state.
+- `Program::parse` runs `_parser_init()` on every call. That registers the builtin functions, globals and namespaces.
+- `CirJitSession::build` tears the MIR context down and translates the whole Program into one module.
+- MIR is already incremental. `MIR_load_module` queues a module, `MIR_link` links the queue, and imports resolve against every module loaded earlier (`third_party/mir/mir.c`, `modules_to_link`). The MIR cache lane loads and links two modules in one context today.
+
+**Program side:**
+- `begin_interactive_session`: the one-time init, done once per session. It runs `_tokenizer_init()`, creates `tkProgram` and runs `_parser_init()`.
+- `parse_entry(text)`: lexes the text as one more unit into the same Program, with the end-of-entry token appended. It then runs the top-level parse loop up to that token.
+  - It keeps macros, includes, types, symbols and `tkProgram`.
+  - It skips script mode's `finalize_script_main` (D25).
+- `parse()` and `parse_entry()` share the top-level loop. Only the start and the end differ.
+
+**Builder side:** every entry is translated as a whole program, with one change. Anything an earlier module in the live context already defines is emitted as a declaration:
+- a global becomes `extern T g;`, with no initializer;
+- a function keeps its Pass 1 prototype and loses its body.
+
+The set is `Program::session_defined`, keyed by emitted symbol. After each link, the session fills it from the exported items of the module it just linked, the way the cache lane fills `mir_cache_exports`.
+- This is not merged with `mir_cache_exports`: there the consumer module wins every overlap, and here the earlier module does, until D5 redefinition exists.
+- Skipping at translate time also keeps entry N from recompiling every body of entries 1 to N−1.
+
+**JIT side:** `CirJitSession` gains an append mode. The context is initialized once, then each entry's module is loaded and linked into it, and the context is never torn down between entries. A per-module init (`tu_init_name`) needs a unique name per entry.
+
+**Slices,** each its own commit with a unit test on the production entry points:
+1. **C declarations persist.** Entry 1 is `int g = 5; int f(int a) { return a + g; }`. Entry 2 is `int h(void) { return f(2) + g; }`. The host calls `h` and gets 12, through two modules in one context. The test also writes `g` between the entries, which proves entry 2 reads entry 1's storage and not a copy. This is the §41.2 gate.
+2. **Statements run** (D25). An entry's statements lower into `__madc_entry_N` in that entry's module, and it runs once. `int x = 10;` then `x * 2` gives 20 through the host.
+3. **C++ vague linkage.** Template instantiations, inline functions, frozen-header bodies, vtables and synthesized destructors that a later entry would emit again go through the same `session_defined` filter at their definition sites.
+
+**Static definitions:** `static int s;` or a `static` function in one entry is module-local in MIR, so a later entry can't import it. Re-emitting it in a later module would silently give that module a fresh copy. The first slice therefore refuses a file-scope `static` in an entry, with a clear message. The REPL rule for statics is settled with D6.
+
+**Built (2026-09-25), slice 1:**
+- `InteractiveSession` (`include/madc_session.h`, `src/madc_session.cpp`).
+- `Program::begin_interactive_session`, `parse_entry` and `lex_entry`. `parse()` and `parse_entry()` share `parse_toplevel`, and `tokenize_buffer` and `lex_entry` share `lex_unit_text`.
+- `Program::session_defined`. The builder reads it through `CirBuilder::session_defines` at the global declaration pass, in `collect_global_ctors` and at the function roots split.
+- `CirJitSession::begin_live` and `append`. `find_item` is now the one lookup behind `function_code` and `data_address`.
+- `MADC_SESSION_DUMP_TREE=1` dumps each entry's module tree.
+- The gate is `tests/unit/test_repl_session.cpp`, under `--std=c17` and `--std=madc`. Its oracle is the same entries compiled as separate translation units and linked by gcc and clang: `6 12 22 11` from both.
+- Under `--std=madc` a function has C++ linkage, so the host looks it up by its Itanium name.
+- Found on the way, for slice 3: host-callback trampolines come from `host_callback_regs`, not from the roots, so each module would re-emit them.
+- A refused entry can leave its declarations in the Program. Rollback is §41.3.
+
+**Thread contract:** one session is driven by one thread. Concurrent clients go through the serialized verbs of D9.
+
 First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, `madc -i`). Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
 
 ## 42. Decisions (owner, 2026-09-25)
