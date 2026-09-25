@@ -304,6 +304,19 @@ madc --repl -Iinclude -lfoo
 
 Cross-target builds must refuse interactive execution just as they refuse other run lanes.
 
+> **Decision D20 (2026-09-25):** there is **no `--repl`**. madc enters the REPL the way Julia, Python, Node and Lua do, so the convenience form above is the canonical one and the explicit flag is `-i` / `--interactive`:
+>
+> ```text
+> madc                        # no program file, stdin a terminal  -> the REPL
+> madc --std=c++17 -Iinc -lm  # options without a file              -> the REPL, configured
+> madc -i file.c              # run the file, then the REPL with its names (python -i; F5, D16)
+> madc -i < transcript        # force the REPL on a non-terminal stdin (transcript tests)
+> madc < prog.c               # no file, piped stdin               -> compile and run stdin
+> madc -o out                 # an artifact request, no input       -> "no input files" (gcc)
+> ```
+>
+> Read every later `madc --repl` in this document as "the interactive session" entered this way. This changes today's no-file behaviour, which prints the usage line and exits 0.
+
 ### 4.2 One reusable `ReplSession`
 
 The command-line REPL, madcide shell, tests, embeddings and future notebook/kernel frontends should all consume the same engine object.
@@ -1363,7 +1376,7 @@ Tasks:
 
 Implement in madc/libmadc:
 
-- `--repl`;
+- the interactive entry (D20): `madc` with no file on a terminal, `-i` / `--interactive`, and stdin as a program when piped;
 - `ReplSession` service;
 - parser-driven multiline completeness;
 - expression/declaration/statement/directive classification;
@@ -1507,7 +1520,7 @@ Add invitation/trust/UI over the existing Nexus/session transport:
 ## 33. Proposed first-run transcript
 
 ```text
-$ madc --repl
+$ madc
 madc 0.x — C/C++ interactive session
 std: madc   (? for help, :help for commands)
 
@@ -1615,7 +1628,7 @@ This is the core product experience. Everything else is additive.
 
 Before implementing the stepper or memory visualizer, build the smallest end-to-end slice that proves the product direction:
 
-1. `madc --repl` starts a persistent session.
+1. `madc` with no file (or `madc -i`) starts a persistent session (D20).
 2. `int x = 10;` persists.
 3. `x * 2` prints `20`.
 4. `x * 2;` prints nothing.
@@ -1733,7 +1746,7 @@ Phase 0 is engine proof, each piece independently testable:
 
 Gate: the §24 gate, run as a scripted transcript that replays byte-identically (the 2026-09-21 gate).
 
-First slice: §37 items 1–6 in `madc --repl` only. Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
+First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, `madc -i`). Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
 
 ## 42. Decisions (owner, 2026-09-25)
 
@@ -1747,13 +1760,13 @@ These decisions supersede the plan text they name.
 ### Engine
 
 - **D1. Persistence.** One live `Program` accepts appended entries. Each entry lowers to its own MIR module, linked into one live MIR context. Nothing is replayed (all three precedents are incremental). The core is new and is not built on `eval_*` (§40).
-- **D2. Where the session runs.** A backend process, for `madc --repl` and madcide alike.
+- **D2. Where the session runs.** A backend process, for the CLI session (D20) and madcide alike.
   - Julia, the IPython terminal and Clang-Repl run in-process and die on a segfault.
   - Jupyter console (IPython's kernel) and Thonny's backend survive a crash with the session state lost, and so does madc.
   - The core stays host-agnostic; the backend is its host.
   - Supersedes §16.2's "backed by `ReplSession`, not a pseudo-terminal running a second `madc`": the panel talks to the backend over a channel, not a pty.
 - **D3. Gating.**
-  - One *interactive* feature flag in the feature registry, independent of `--std=`, like Clang's `-fincremental-extensions`. It is on for `--repl` under every standard.
+  - One *interactive* feature flag in the feature registry, independent of `--std=`, like Clang's `-fincremental-extensions`. It is on for every interactive session (D20) under every standard.
   - Each relaxation it enables is a listed registry entry per standard (I3/I4/I8): top-level statements, the optional final `;`, `ans`, redefinition, late binding, auto-supply.
   - `:strict` / `%strict` is a view of that list. It supersedes §11.6's free-standing toggle.
 - **D4. Default standard.** `--std=madc`; `--std=` is honoured. `%std` resets the session (§39: switching mid-session is unsafe).
@@ -1816,6 +1829,13 @@ These decisions supersede the plan text they name.
   - **Still open:** C++-linkage same-signature redefinition, which `fold_same_signature_overload` cannot tell from a `long` / `long long` type-model twin. It rides with D5.
   - D6's interactive redefinition branches in `declare_object`.
 - **D19. The MIR interpreter is not part of this arc.** The REPL and Run are JIT-only (§21 code check).
+- **D20. Entry follows the other REPL languages** (Julia, Python, Node, Lua). There is no `--repl` flag.
+  - No program file with a terminal stdin enters the REPL, and language/config options still apply.
+  - No program file with piped stdin compiles and runs stdin.
+  - `-i` / `--interactive` forces the REPL, and with a file runs it first (`python -i`, the CLI form of D16's F5).
+  - An artifact request (`-o`, `-c`, `--emit=…`, `--project`) with no input keeps gcc's "no input files".
+  - `-i` is free: madc matches options exactly (`src/madc.cpp:524` on), so it cannot collide with `-I` or `-isystem`.
+  - Supersedes §4.1's `madc --repl`.
 
 ### Next
 
