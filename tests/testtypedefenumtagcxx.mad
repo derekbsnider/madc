@@ -1,0 +1,26 @@
+// [dcl.typedef]: a typedef-name is a synonym for its type, not a new type,
+// and `typedef enum Tag {...} Alias;` also declares `Tag`. The typedef reader
+// used to consume the tag itself, so `Tag` was undeclared afterwards; and
+// `typedef enum Tag Alias;` minted a fresh 4-byte enum, so sizeof(Alias) of
+// a `: unsigned char` enum read 4, and f(Alias) chose f(int) over f(Tag).
+// Oracle: g++/clang++ -std=c++17 print a=1 b=1 c=1 d=1.
+#include <cstdio>
+
+typedef enum Color { RED, GREEN } Color_t;
+enum Small : unsigned char { S0, S1 };
+typedef enum Small Small_t;
+struct Holder { typedef enum Kind { K0, K1 } Kind_t; };
+
+int pick(Color) { return 1; }
+int pick(int) { return 2; }
+
+int main()
+{
+    Color c = GREEN;		// the tag the typedef declared
+    Color_t a = c;
+    Holder::Kind k = Holder::K1;	// a class member's tag
+    Holder::Kind_t ka = k;
+    std::printf("a=%d b=%d c=%d d=%d\n", pick(a), (int)sizeof(Small_t),
+		(int)(ka == Holder::K1), (int)(a == GREEN));
+    return 0;
+}

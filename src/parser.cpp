@@ -53030,34 +53030,30 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     {
 	pgm.nextToken(); // consume enum
 
-	// optional tag name: typedef enum Tag { ... } Alias;
-	tn = pgm.peekToken();
-	if ( tn && tn->type() == TokenType::ttIdentifier )
-	    pgm.nextToken();
-
-	// optional body: typedef enum { ... } Alias; — or, C++11, an enum-base
-	// before it: typedef enum [Tag] : T { ... } Alias; TokenENUM::parse
-	// owns the `: T` (resolved + recorded as the underlying type) exactly
-	// as for a plain `enum Tag : T {`; this arm only has to hand it the
-	// stream at the ':' (datadef.h:248 `typedef enum : uint32_t {`).
-	bool body_parsed = false;
+	// The whole enum-specifier — tag, `: T` enum-base, body — is
+	// TokenENUM::parse's, the one owner of an enum's tag (the C tag
+	// namespace, the C++ type name, a class member's tag), its fixed base
+	// and its forward references. This arm used to consume the tag itself
+	// and hand over only the body, so `typedef enum Color {...} C_t;`
+	// registered no `Color` (C: a later `enum Color` decayed to int, and a
+	// 2-bit bit-field of it read back signed; C++: `Color` undeclared), and
+	// `typedef enum Color C_t;` minted a fresh int-layout enum instead of
+	// naming Color's type (sizeof 4 for a `: unsigned char` Color; f(C_t)
+	// chose f(int) over f(Color)).
 	pgm.last_anon_enum = Program::AnonEnumDefinition();	// never adopt a stale one
-	if ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkOpBrc
-			      || pgm.peekToken()->id() == TokenID::tkTerC) )
-	{
-	    TokenENUM tenum;
-	    tenum.parse(pgm);
-	    body_parsed = true;
-	    // TokenENUM::parse re-feeds the enum's type token when the body
-	    // is followed by a declarator; THIS arm reads the ALIAS name
-	    // itself (the branches below even accept an alias spelled like
-	    // an existing type) — drop the re-fed type so the alias read
-	    // sees the real name, not "int". The enum's layout and
-	    // enumerators arrive through last_anon_enum below.
-	    if ( pgm.peekToken()
-	      && pgm.peekToken()->type() == TokenType::ttDataType )
-		pgm.nextToken();
-	}
+	TokenENUM tenum;
+	tenum.parse(pgm);
+	// TokenENUM::parse hands the enum's type back as a type token for the
+	// declarator: a tagged enum's own DataDefENUM (the alias NAMES it), or
+	// the int / fixed base of an anonymous one, whose layout and enumerators
+	// arrive through last_anon_enum below. THIS arm reads the ALIAS name
+	// itself (the branches below even accept an alias spelled like an
+	// existing type), so the type token is taken here.
+	DataDefENUM *tag_dd = NULL;
+	if ( pgm.peekToken()
+	  && pgm.peekToken()->type() == TokenType::ttDataType )
+	    tag_dd = dynamic_cast<DataDefENUM *>(
+		&static_cast<TokenDataType *>(pgm.nextToken())->definition);
 
 	tn = pgm.nextToken();
 	if ( !tn )
@@ -53071,16 +53067,22 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	else
 	    pgm.Throw(tn) << "Expecting alias name in typedef enum" << flush;
 
-	DataDefENUM *enum_alias_dd = new DataDefENUM(alias);
-	if ( !pgm.current_namespace().empty() )
-	    enum_alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
-	// [dcl.enum]p8: the alias IS the enumeration — a FIXED base
-	// (`typedef enum : uint32_t {...} varflag_t;`) gives it that base's
-	// size and raw type through the one layout owner (set_underlying),
-	// and the enumerator list rides along so a value of the alias type
-	// renders by name. Without this the alias stayed a 4-byte int enum
+	// A tagged enum's alias is a second name for the tag's type ([dcl.typedef]:
+	// a typedef-name is a synonym, not a new type).
+	DataDefENUM *enum_alias_dd = tag_dd;
+	if ( !enum_alias_dd )
+	{
+	    enum_alias_dd = new DataDefENUM(alias);
+	    if ( !pgm.current_namespace().empty() )
+		enum_alias_dd->set_canonical_spelling(pgm.current_namespace() + "::" + alias);
+	}
+	// [dcl.enum]p8: an anonymous enum's alias IS the enumeration — a FIXED
+	// base (`typedef enum : uint32_t {...} varflag_t;`) gives it that base's
+	// size and raw type through the one layout owner (set_underlying), and
+	// the enumerator list rides along so a value of the alias type renders
+	// by name. Without this the alias stayed a 4-byte int enum
 	// (sizeof(varflag_t) 4, oracle 4 — but 1 for `: unsigned char`).
-	if ( body_parsed && pgm.last_anon_enum.live )
+	if ( !tag_dd && pgm.last_anon_enum.live )
 	{
 	    if ( pgm.last_anon_enum.fixed_base )
 		enum_alias_dd->set_underlying(pgm.last_anon_enum.fixed_base);

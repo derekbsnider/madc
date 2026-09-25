@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### `typedef enum Tag {…} Alias;` declares the tag, and an alias names its enum
+
+The typedef reader consumed an enum's tag itself and handed the enum parser
+only the body, so the tag was never declared. Silent wrong answers followed:
+- In C, a later `enum Color` decayed to plain `int`. A 2-bit bit-field of it
+  holding 3 read back -1 where gcc reads 3, because the enum's underlying
+  type is unsigned.
+- `typedef enum Color C8;` minted a new 4-byte enum instead of naming
+  `Color`. For `enum Color : unsigned char`, `sizeof(C8)` was 4 (g++: 1),
+  and `f(C8)` chose `f(int)` over `f(Color)`.
+
+It also made valid C++ fail: `Color` and `Holder::Kind` were undeclared after
+their typedefs.
+
+The enum parser now reads the whole specifier, tag included, and a tagged
+enum's alias is a second name for the tag's type ([dcl.typedef]). Anonymous
+enums keep their alias-is-the-enum model.
+
+Tests: `testtypedefenumtagc`, `testtypedefenumtagcxx`.
+
 ### An enum definition ends in its `;`
 
 After an enum body, the parser treated the `;` as optional. So `enum E { A, B }`
