@@ -24,7 +24,7 @@ The priority order should be:
 
 The command-line REPL is important in its own right, but its main strategic value is that it defines a **single reusable interactive-session contract** that madcide can present graphically. madcide must not implement a second REPL.
 
-The old BASIC-style stored-program idea is explicitly deferred from this proposal.
+The old BASIC-style stored-program idea is explicitly deferred from this proposal. The deferral covers BASIC's *vocabulary* (`LIST`, `RUN`, line-numbered program entry), not the functionality: editing a file buffer at the prompt with ed/ex commands is in scope (D24, owner 2026-09-25).
 
 ---
 
@@ -1595,7 +1595,7 @@ This is the core product experience. Everything else is additive.
 
 ## 35. Deferred
 
-- BASIC-style stored-program/list/edit/run workspace at the REPL prompt;
+- BASIC-style verbiage at the REPL prompt (`LIST`, `RUN`, line-numbered program entry). Editing a buffer with ed/ex commands is NOT deferred (D24);
 - Jupyter kernel/notebook protocol;
 - a package manager REPL mode;
 - replacing CLion/VS Code as a professional IDE;
@@ -1911,6 +1911,52 @@ These decisions supersede the plan text they name.
     - Its rules follow one pinned PHP version (8.x) and are tested against the `php` CLI.
   - Thread contract: the rows are pure functions of their operands.
   - Each row retires the matching refusal from `534ba8a6e` by construction.
+
+### Prompt, line editor and commands (owner, 2026-09-25)
+
+- **D22. The prompt names the standard in force.**
+  - The language prompt is `Program::standard_canonical_name(language_std)` + `"> "`: `madc> `, `c11> `, `c++17> `. Aliases normalize to the canonical row: `--std=c` shows `c11> ` and `--std=c++` shows `c++11> `.
+  - Mode prompts are Julia's in every standard: `help?> ` after `?` and `shell> ` after a lone `;`.
+  - Continuation lines carry no prompt; they are indented to the current prompt's width (Julia).
+  - Numbered input (`c11 [9]> `) is an option. The IDs exist either way (§6).
+  - `%std` resets the session (D4), so the prompt's change doubles as the reset's cue.
+  - Supersedes the fixed `madc> ` in the plan's examples.
+- **D23. A readline-class line editor of our own, in the engine.**
+  - Julia (LineEdit.jl) and IPython (prompt_toolkit) each own their editor.
+  - GNU readline is GPL.
+  - A vendored linenoise or replxx would be a second keyboard owner, which the one-key-owner gate (`check-one-key-owner.sh`) forbids.
+  - A `line_edit` component in `include/madcdis` rides the existing input owners: `tui_keyparse`, `key_resolver`, `ui_apply_keys`.
+  - It provides: a caret over the entry, multiline entries, a history ring and history file, Ctrl-R / Ctrl-S incremental search, and two hooks, *complete* and *is this entry finished?*. The REPL answers the second with `classify_entry`, as Julia's REPL answers LineEdit's.
+  - Keys come from the profile data madcide already reads: Emacs-style defaults, a vi profile later.
+  - New engine pieces it needs (recon 2026-09-25: none exist):
+    - an inline raw terminal mode that stays on the normal screen (`ui_term`'s only raw mode takes the alternate screen);
+    - Alt/Meta keys, for Meta-Enter "force a newline" (§5);
+    - UTF-8 input (`tui_keyparse` drops bytes of 0x80 and above).
+  - madcide's `:` prompt and vised's find prompt, which are append-only today, adopt it.
+  - Graceful fallback: piped stdin has no prompt (D20); a dumb terminal gets cooked lines (madcide LINE mode's level); a terminal gets the editor.
+  - Thread contract: per-instance state.
+- **D24. One command registry, and ed/ex buffer commands at the prompt.**
+  - Every command, for the REPL and madcide alike, resolves by name to an enum ONCE, at input (D13, enum-over-strings).
+  - madcide's `colon_command` is a chain of string compares today, which enum-over-strings forbids. It moves onto the registry. lined's `.madv` verbs, already in the engine's verb registry, register there too.
+  - `%` names IPython-style session commands (`%run`, `%load`, `%history`, `%std`). `:` accepts those AND ex buffer commands. Ex commands are colon-only, because vim's `%` range (`:%s/a/b/`) would otherwise collide with the `%` prefix. A name shared by both sets has one meaning (`:cd` = `%cd`).
+  - A buffer is a file bound to a `text_buffer` (`:e file.c`); `%run file.c` / `:source` runs or loads it (D16).
+  - The command set is modern ex/vim/neovim, line-oriented, with nothing that needs visual or normal mode. Modern spellings are preferred over archaic ones.
+    - **Addresses and ranges:** `N`, `.`, `$`, `%`, `N,M`, `/re/`, `?re?`, `'x` marks, offsets `+N` / `-N`.
+    - **Ed core:** `p`, `n` / `number`, `l`, `a`, `i`, `c`, `d`, `j`, `=`, `r`, `w`, `e`, `q`, and the `!` forms (`q!`, `e!`).
+    - **Ex/vim additions:**
+      - `s/re/rep/flags` with `&` repeat;
+      - `g/re/cmd` and `v/re/cmd`;
+      - `m`, `t` / `copy`, `>` / `<`;
+      - `u` / `redo` (`text_buffer`'s undo);
+      - `wq` / `x`, `update`, `saveas`;
+      - `r !cmd`, `w !cmd`, `!cmd` (colon-prefixed, so it does not collide with C's `!`, cf. D14);
+      - `sort`, `retab`, `cd` / `pwd`, `mark` / `marks`;
+      - `set` for `number`, `tabstop`, `shiftwidth`, `expandtab`;
+      - `ls` / `b N` / `bn` / `bp` for more than one buffer;
+      - `h` / `help`, which maps to the REPL's `?`.
+    - **Excluded:** anything that needs visual or normal mode (`normal`, `visual`), and vi's archaic `open` / `z`.
+    - **Regular expressions** use the modern extended syntax (ERE: unescaped `+ ? | ( )`) rather than ed's BRE. The exact flavour is settled at design time.
+  - The REPL can therefore edit a file line by line and run it, with no IDE. madcide extends the same registry and buffers with panes and views.
 
 ### Next
 
