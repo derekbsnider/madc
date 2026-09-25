@@ -286,6 +286,32 @@ int main(void) {
   subscript, `switch` and the conditional operator. They are refused at the
   right position, except the subscript, but in madc's own wording.
 
+### B16. A C file-scope initializer that is not constant is refused by c2mir, not the front end
+
+- Found 2026-09-25, while building the entry transaction's JIT half (plan
+  §41.3).
+
+```c
+int f(void) { return 7; }
+int r = f();
+int main(void) { return r; }
+```
+
+- gcc `-std=c17`: `2:9: error: initializer element is not constant`. clang:
+  `2:9: error: initializer element is not a compile-time constant`. madc
+  `--std=c17`: exit 1, but with c2mir's `2:10: initializer of non-auto or
+  thread local object should be a constant expression or address`, then
+  `cir_compile failed`. That is not a madc diagnostic: no `error:`, the
+  column is one past the expression, and nothing is recorded on the Program.
+  An interactive entry records only "the entry did not compile".
+- Where: C11 6.7.9p4. The front end should refuse a non-constant
+  initializer of a static-storage object in C, where it already folds the
+  constant ones. C++ runs it as dynamic initialization instead, and madc
+  does that correctly.
+- `test_cir`'s "a tree compiles after an earlier tree failed" uses this
+  input to make c2mir refuse a tree. Once the front end refuses it, that
+  test needs another input only c2mir refuses.
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++
