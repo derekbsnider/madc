@@ -1,0 +1,15 @@
+// C11 6.4.4.4p10: an integer character constant has type int. madc typed it
+// char in every mode, so in C sizeof('a') was 1 (gcc/clang 4), _Generic
+// picked the char arm, and __typeof__('a') truncated 300 to 44 — all exit 0.
+// C++ keeps char for a single c-char ([lex.ccon]/2): testcharconsttypecxx.
+// Oracle: gcc and clang print exactly the .expect lines.
+#include <stdio.h>
+int main(void)
+{
+	char c = 'x';
+	printf("sizeof: %zu %zu %zu\n", sizeof('a'), sizeof 'a', sizeof(c));
+	printf("_Generic: %s\n", _Generic('a', int: "int", char: "char", default: "other"));
+	__typeof__('a') t = 300;
+	printf("typeof: %d\n", t);
+	return 0;
+}

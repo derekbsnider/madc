@@ -1,0 +1,14 @@
+// [lex.ccon]/2: in C++ a character literal with one c-char has type char, and a
+// multicharacter literal has type int. The C rule (every character constant is
+// an int, testcharconsttypec) must not leak into C++.
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+int main()
+{
+	char c = 'x';
+	printf("sizeof: %zu %zu %zu\n", sizeof('a'), sizeof 'a', sizeof(c));
+	printf("multichar: %zu\n", sizeof('ab'));
+	__typeof__('a') t = 300;
+	printf("typeof: %d\n", t);
+	return 0;
+}

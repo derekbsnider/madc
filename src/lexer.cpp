@@ -6466,7 +6466,13 @@ TokenBase *Program::make_str(const std::string &bytes, bool wide)
 
 TokenBase *Program::make_char(int code)
 {
-    return new TokenChar(code);
+    TokenChar *tc = new TokenChar(code);
+    // The literal's TYPE is the language's: an integer character constant is
+    // an int in C (C11 6.4.4.4p10 — sizeof 'a' is sizeof(int)), a
+    // single-c-char literal a char in C++ and the madc dialect ([lex.ccon]/2).
+    if ( is_c_mode() )
+	tc->setDataType(&ddINT32);
+    return tc;
 }
 
 // [lex.ext]/1 — capture the ud-suffix of a user-defined-literal onto the
