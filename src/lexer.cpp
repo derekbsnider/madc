@@ -2810,7 +2810,9 @@ static std::string read_macro_body(Source &source)
 	}
 	if ( ch == '/' )
 	{
+	    int row = source.line();
 	    source.get();
+	    int col = source.column();
 	    if ( source.peek() == '/' )
 	    {
 		source.get();
@@ -2821,15 +2823,7 @@ static std::string read_macro_body(Source &source)
 	    if ( source.peek() == '*' )
 	    {
 		source.get();
-		while ( source.good() && !source.eof() )
-		{
-		    ch = source.get();
-		    if ( ch == '*' && source.peek() == '/' )
-		    {
-			source.get();
-			break;
-		    }
-		}
+		source.consume_block_comment(row, col);
 		if ( !body.empty() && body.back() != ' ' && body.back() != '\t' )
 		    body += ' ';
 		continue;
@@ -6283,19 +6277,14 @@ static void skip_directive_line_tail(Source &source)
 	    break;
 	if ( c == '/' )
 	{
+	    int row = source.line();
 	    source.get();
+	    int col = source.column();
 	    int n = source.peek();
 	    if ( n == '*' )
 	    {
 		source.get();
-		int prev = 0;
-		while ( source.good() && !source.eof() )
-		{
-		    int cc = source.get();
-		    if ( prev == '*' && cc == '/' )
-			break;
-		    prev = cc;
-		}
+		source.consume_block_comment(row, col);
 		continue;
 	    }
 	    if ( n == '/' )
@@ -6514,19 +6503,11 @@ TokenBase *Program::_getToken()
 	    }
 	    if (source.peek() == '*')					// /*
 	    {
+		row = source.line();
+		col = source.column();
 		source.get();
 		word = "/*";
-		while ( source.good() && !source.eof() )
-		{
-		    ch = source.get();
-		    if ( ch == '*' && source.peek() == '/' )		// */
-		    {
-			word += ch;
-			word += source.get();
-			break;
-		    }
-		    word += ch;
-		}
+		source.consume_block_comment(row, col, &word);
 		return make_rem(word);
 	    }
 	    return make_token(TokenID::tkSlash);
@@ -9243,19 +9224,14 @@ bool Program::evaluateIfCondition()
 	    break;
 	if ( !in_str && !in_chr && ch == '/' )
 	{
+	    int row = source.line();
 	    source.get();
+	    int col = source.column();
 	    int nx = source.peek();
 	    if ( nx == '*' )
 	    {
 		source.get();
-		int prev = 0;
-		while ( source.good() && !source.eof() )
-		{
-		    int c2 = source.get();
-		    if ( prev == '*' && c2 == '/' )
-			break;
-		    prev = c2;
-		}
+		source.consume_block_comment(row, col);
 		raw_expr += ' ';
 		continue;
 	    }
@@ -10366,6 +10342,22 @@ void Program::printt(TokenBase *tb)
 	    std::cout << std::endl << "printt: Got unknown token (type: " << (int)tb->type() << "): " << (char)tb->get() << endl;
 	    break;
     } // end switch
+}
+
+void Source::consume_block_comment(int row, int col, std::string *keep)
+{
+    int prev = 0;
+    while ( good() && !eof() )
+    {
+	int c = get();
+	if ( keep )
+	    *keep += (char)c;
+	if ( prev == '*' && c == '/' )
+	    return;
+	prev = c;
+    }
+    setpos(row, col);
+    throw "unterminated comment";
 }
 
 void Source::showerror(int row, int col)

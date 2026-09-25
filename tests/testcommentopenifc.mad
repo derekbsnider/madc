@@ -1,0 +1,8 @@
+// C11 6.4.9p1 in an #if condition: the condition reader consumes a block
+// comment through its `*/` wherever it closes, and input that ends first is an
+// unterminated comment. madc's reader stopped at the end of input silently.
+// Oracle: gcc "error: unterminated comment" at the `/*`,
+//         clang "error: unterminated /* comment".
+int main(void) { return 0; }
+#if 1 /* the closing delimiter never comes
+#endif

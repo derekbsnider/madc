@@ -2340,6 +2340,15 @@ public:
     }
     void setpos(int row, int col) { _lf = _cr = (row-1); _column = col; }
     void showerror(int row=0, int col=0);
+    // Consume a block comment through its closing `*/`, the caller having
+    // consumed the opening `/*` whose `/` sat at `row`/`col`; the consumed
+    // text (the `*/` included) is appended to *keep when given. The ONE
+    // reader of a block comment on the live source: the tokenizer, the
+    // #define body, the #if condition and a directive's tail all consume
+    // through it. Input that ends first is an unterminated comment (C11
+    // 6.4.9p1; gcc and clang refuse it): the position rewinds to the `/*`
+    // and it throws, so every lexing path reports it the same way.
+    void consume_block_comment(int row, int col, std::string *keep = NULL);
 };
 
 // Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the

@@ -1,0 +1,7 @@
+// C11 6.4.9p1 in a directive: a block comment inside a #define body may span
+// lines, but input that ends before its `*/` is an unterminated comment.
+// madc's #define body reader stopped at the end of input and kept the macro.
+// Oracle: gcc "error: unterminated comment" at the `/*`,
+//         clang "error: unterminated /* comment".
+int main(void) { return 0; }
+#define LIMIT 10 /* the closing delimiter never comes
