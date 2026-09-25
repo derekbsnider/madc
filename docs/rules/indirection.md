@@ -534,7 +534,12 @@ yet measured.
   `type == &ddINT`, so a qualified int stored nothing and `int arr[N]` with
   `const int N = 4` folded to `int arr[0]` (sizeof refused) — they read
   `slot_type()`, the unqualified type, now; so do libmadc's host value
-  marshallers. Reducers `tests/testvolatileobjecttypec`,
+  marshallers. The five accessors' identity ladders had also drifted from
+  one another (get() had no bool row, none had the character types or the
+  LLP64 `long`), so on 2026-09-25 they consolidated onto
+  `Variable::slot_kind()`: the special rows, then every other integer
+  scalar by its storage (`tests/testconstslotkindscxx`,
+  `check-one-slot-dispatch.sh`). Reducers `tests/testvolatileobjecttypec`,
   `tests/testvolatilelvaluecxx`, `tests/testconstobjecttypec`. Residues: a
   function-pointer OBJECT's own volatile (`int (*volatile fp)(int)`) is not
   modeled (it was spelled nowhere either); a volatile PARAMETER object

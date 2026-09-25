@@ -68,7 +68,7 @@
   (parseDeclaration), a member's (incl. a class body's), a typedef's, a parameter
   OBJECT's (the definition's, never the function type's), a reference's referent (the
   `&`); never a flag — all through `declarator_object_cv`. A qualified array: its
-  ELEMENTS (`qualify_array_elements`). A value slot dispatches on `Variable::slot_type()`. A declarator list's tail re-pushes it:
+  ELEMENTS (`qualify_array_elements`). A value slot dispatches on `Variable::slot_kind()` (gated: `check-one-slot-dispatch.sh`). A declarator list's tail re-pushes it:
   `push_declarator_list_tail`. Member access merges the object's cv: `member_access_type`
   over `glvalue_cv`; a call argument's type: `call_argument_type`.
 - A TYPE-ID (a template argument, a using-alias or alias-template target, a `_Generic` /

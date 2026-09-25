@@ -1097,6 +1097,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-alias-symbol-emission.sh
 	@cd .. && bash scripts/check-one-void-predicate.sh
+	@cd .. && bash scripts/check-one-slot-dispatch.sh
 	@cd .. && bash scripts/check-one-deref-builder.sh
 	@cd .. && bash scripts/check-one-fptr-predicate.sh
 	@cd .. && bash scripts/check-one-pointee-accessor.sh

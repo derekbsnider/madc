@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A `bool`, character-type or win64 `long` constant keeps its value
+
+madc keeps a constant's value in a parse-time slot. The five slot accessors
+(`set`, `get`, `cmp` and the increment and decrement steps) each chose the
+slot by comparing the type against their own list of builtin types, and the
+lists had drifted apart. `get` had no `bool` entry, so
+`constexpr bool B = false;` read as true and `B ? 7 : 8` gave 7. `wchar_t`,
+`char16_t` and `char32_t` constants stored nothing, so
+`constexpr wchar_t W = 5; int a[W];` made a zero-length array. On win64,
+`long` is its own type with `int`'s storage, so the same happened to
+`const long N = 4; int a[N];` (mingw g++: 16 bytes, madc: 0). These were
+silent wrong answers.
+
+The slot is now chosen once, `Variable::slot_kind()`, which keeps the
+special cases and picks every other integer type by its size and
+signedness. All five accessors use it.
+
+Tests: `testconstslotkindscxx`, and a `test_datadef` case that checks the
+LLP64 `long` slot.
+
 ### A C enumerator past `int` has its enum's type, as gcc gives it
 
 In C an enumerator has type `int` while every value of its enum fits `int`.
