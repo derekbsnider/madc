@@ -154,7 +154,10 @@ TEST_CASE("an entry's statements run once, on the session's globals")
     CHECK(*x == 30);			// entry 2's run did not run again
     REQUIRE(s.submit("if (x > 25) x = 1; else x = 2;"));
     CHECK(*x == 1);
-    CHECK(s.entries() == 4);
+    // A block is a statement too, with its own locals.
+    REQUIRE(s.submit("{ int t = 4; x = x + t; }"));
+    CHECK(*x == 5);
+    CHECK(s.entries() == 5);
 }
 
 TEST_CASE("a declaration's initializer runs at its place among the entry's statements")

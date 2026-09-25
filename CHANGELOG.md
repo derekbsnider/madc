@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A top-level block runs instead of being dropped
+
+In a `--std=madc` script, a block at file scope, `{ int t = 2; g = g + t; }`,
+was parsed and then silently discarded, so the script went on with `g`
+unchanged and nothing inside the block ran. It now runs in the synthesized `main`, in order with the
+statements around it, as it would inside a written `main`. gcc and clang
+print `3` and `in block 30` for the test's statements inside `main`, and so
+does madc. An interactive entry's block runs the same way.
+
+Tests: `testscripttopblock`, `test_repl_session`.
+
 ### An interactive entry's statements run
 
 An entry in the interactive session can now hold statements as well as

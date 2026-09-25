@@ -126,6 +126,25 @@ int main(void) { return g() - 1; }
 - gcc, clang: accept, and the program exits 0. madc: `2:17: error: expected ','
   or ';' before '(' token`.
 
+### B11. A script's top-level block does not see the script's `:=` names
+
+- Found 2026-09-25, while making a top-level block run (plan §41.2a slice 2).
+  An interactive session is unaffected, because an entry's `:=` declares a
+  global there.
+
+```c
+y := 1;
+{ println("{}", y); }
+```
+
+- Expected: `1`, as for the same two lines inside a written `main`. madc:
+  `2:17: error: use of undeclared identifier 'y'`.
+- Where: `parseStatement`'s `{` arm pushes a parentless compound when the
+  compound stack is empty. `parse_substatement` already chains an `if`/`for`
+  arm's block to the synthesized main (`script_lookup_scope`); a bare block
+  needs the same chain, and `{` needs to arm `parsing_script_statement`
+  (`file_scope_statement_starter`) for it to apply.
+
 ## Diagnostics
 
 ### B7. An undeducible function-template call dies in MIR without a location

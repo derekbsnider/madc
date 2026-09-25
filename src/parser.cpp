@@ -76960,6 +76960,10 @@ bool Program::script_statement_result(TokenBase *ts) const
 	case TokenType::ttMultiOp:
 	case TokenType::ttSubscript:
 	case TokenType::ttMember:
+	// A compound statement: at file scope only parseStatement's `{` arm
+	// yields one (namespace and linkage blocks return their members'
+	// results, never a compound).
+	case TokenType::ttCompound:
 	    return true;
 	default:
 	    return false;

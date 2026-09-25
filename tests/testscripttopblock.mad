@@ -1,0 +1,12 @@
+// A top-level block in script mode is a statement: it runs in the
+// synthesized main, in order with the statements around it. It used to be
+// dropped without a word (the first println printed 1). Oracle: the same
+// statements inside `int main()`, compiled by gcc and clang, print "3" and
+// then "in block 30".
+int g = 1;
+{ int t = 2; g = g + t; }
+println("{}", g);
+{
+	g = g * 10;
+	println("in block {}", g);
+}
