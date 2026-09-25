@@ -1,0 +1,28 @@
+// A block-scope `static var` lives for the program and is constructed ONCE
+// ([stmt.dcl]/4): its storage was emitted as an automatic local with a
+// scope-exit destructor, so every call started from an empty value —
+// `seen.count()` read 1, 1, 1. Static storage (ObjStorage::Static) plus the
+// once-block (emit_static_local_once) carry it across calls.
+// Oracle: the C++ equivalent (a static std::vector) counts 1 2 3 | 1 2.
+long remember(const char *item)
+{
+	static var seen = {};
+	php::array_push(seen, item);
+	return seen.count();
+}
+long remember_bare(const char *item)
+{
+	static var log;
+	php::array_push(log, item);
+	return log.count();
+}
+int main()
+{
+	long a = remember("x");
+	long b = remember("y");
+	long c = remember("z");
+	long d = remember_bare("p");
+	long e = remember_bare("q");
+	println("static carrier {} {} {} | {} {}", a, b, c, d, e);
+	return 0;
+}

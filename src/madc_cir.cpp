@@ -2010,12 +2010,21 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 // owner per target — an any-target test let the cross madc's ELF cover set
 // leak into a pure-C image as three load commands (macho_exe_dylib_gate
 // [A] caught it). One owner for both Mach-O writers (image + object link).
+// An import the C++ runtime serves: an Itanium-mangled name, or an unmangled
+// entry of the Itanium C++ ABI runtime (libc++abi, which libc++.1.dylib
+// re-exports) — the `__cxa_guard_*` of a block-scope static's once-init
+// ([stmt.dcl]/4) is imported by a program that names nothing from std.
+static bool cir_cxx_runtime_import(const std::string &s)
+{
+    return s.compare(0, 2, "_Z") == 0 || s.compare(0, 6, "__cxa_") == 0;
+}
+
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 				   const std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
 {
     for (const std::string &s : imports)
-	if (s.compare(0, 2, "_Z") == 0) {
+	if (cir_cxx_runtime_import(s)) {
 	    libs.push_back("/usr/lib/libc++.1.dylib");
 	    break;
 	}

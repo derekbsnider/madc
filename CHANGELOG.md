@@ -2,6 +2,51 @@
 
 ## [Unreleased]
 
+### A block-scope static is initialized once
+
+[stmt.dcl]/4 says a block-scope static is initialized once, the first time
+control passes its declaration. madc re-initialized these on every call,
+exit 0:
+
+- class-type statics spelled `static Foo s(8);`, `static Foo s{8};`, or
+  `static auto s = Foo(8);`;
+- default-constructed statics and static arrays (`static Foo a[2];`);
+- `static var`;
+- the scalar `static auto n = 5;`, which restarted at 5 each call.
+
+Also, `static int n = g();` was refused by c2mir as a non-constant static
+initializer.
+
+The causes and fixes:
+
+- **The storage class was dropped.** The constructor-argument and `auto`
+  declaration arms never recorded `static`, `thread_local` or `inline`.
+  `Program::apply_declaration_storage` is now the one owner, and every arm
+  calls it. In C++, a block-scope `thread_local` implies `static`.
+- **Construction was emitted unguarded.** `CirBuilder::emit_static_local_once`
+  lowers it as gcc does under `-fthreadsafe-statics`: a static guard,
+  `__cxa_guard_acquire`, the construction, then `__cxa_guard_release`. A
+  constructor that throws runs `__cxa_guard_abort` on the SJLJ unwind, so the
+  next pass retries.
+- **Dynamic scalar initializers.** A dynamic initializer on a scalar static
+  now runs in the same once-block (`m_dynamic_static_locals`, the block-scope
+  twin of the file-scope dynamic-init queue).
+- **`static var` storage.** A static `var` gets static storage with no
+  scope-exit destructor (`ObjStorage::Static`).
+
+On macOS, a `__cxa_` import now loads libc++, the same as an Itanium-mangled
+import does.
+
+Thread-safety contract: concurrent first passes wait in `__cxa_guard_acquire`,
+and exactly one of them constructs. `teststaticlocalmtcxx` checks this with
+four threads.
+
+Still open:
+- `thread_local` objects are emitted `_Thread_local` with a per-thread guard,
+  but MIR has no TLS, so they are process-wide in practice. This is the
+  existing floor gap.
+- Local statics, like file-scope objects, are not destroyed at exit.
+
 ### A braced list on an array of class type initializes every element
 
 Found while fixing `new T[n]{…}` for the REPL arc's statement-terminator
@@ -41,8 +86,8 @@ Two g++.dg tests now pass: `constexpr-61484` and `initlist50`.
 Still open:
 - A by-value call as an element is not elided (`Foo a[1] = {make()}` runs one
   copy constructor more than gcc).
-- A local static array is constructed on every call, as every local static
-  class object is. That is fixed next.
+- A local static array was constructed on every call, as every local static
+  class object was. That is fixed in the entry above.
 
 ### The lexer refuses what gcc and clang refuse, and decodes literals their way (REPL arc prerequisites)
 

@@ -5927,11 +5927,16 @@ node_t CirBuilder::upcast_class_ref_addr(node_t value, DataDefCLASS *base,
 // `__attribute__`-emptying issue doesn't apply).
 node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 				    const char *dtor_sym, TokenBase *origin,
-				    size_t align, bool is_extern)
+				    size_t align, ObjStorage storage)
 {
+	const bool is_extern = storage == ObjStorage::Extern;
 	node_t spec = list();
 	if (is_extern)
 		append(spec, simple(N_EXTERN));
+	if (storage == ObjStorage::Static || storage == ObjStorage::ThreadStatic)
+		append(spec, simple(N_STATIC));
+	if (storage == ObjStorage::ThreadStatic)
+		append(spec, simple(N_THREAD_LOCAL));
 	// An object whose alignment exceeds the long[] buffer's natural 8
 	// (e.g. the 16-aligned madc_value inside madc::value) declares it:
 	// _Alignas(align) long name[words]. The extern shape keeps the
@@ -5946,10 +5951,11 @@ node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
 				integer((int64_t)words, origin)));
 	node_t decl = node2(N_DECL, id(name, origin), decl_list);
 	node_t attrs;
-	if (is_extern) {
-		// The object is defined — and destroyed — in another TU: no
-		// cleanup registration here (same rule as the class-instance
-		// arm in var_decl, g++ parity with `extern std::string s;`).
+	if (storage != ObjStorage::Automatic) {
+		// The object is defined — and destroyed — in another TU, or it
+		// has static (thread) storage duration: no scope-exit cleanup
+		// (same rule as the class-instance arm in var_decl, g++ parity
+		// with `extern std::string s;`).
 		attrs = ignore();
 	} else {
 		need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
@@ -6005,10 +6011,10 @@ size_t CirBuilder::array_obj_words() const
 }
 
 node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin,
-				      bool is_extern)
+				      ObjStorage storage)
 {
 	return obj_storage_decl(name, array_obj_words(), "madarray_destruct", origin,
-				alignof(madc::value), is_extern);
+				alignof(madc::value), storage);
 }
 
 node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
@@ -9952,12 +9958,20 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// bare form takes the extern shape.
 		if ((v->flags & vfEXTERN) && !carrier_defines)
 			return array_storage_decl(var_emit_name(*v).c_str(),
-						  origin, true);
+						  origin, ObjStorage::Extern);
 		if (m_file_scope_decl && carrier_defines)
 			m_dynamic_global_inits.insert(v);
+		// A block-scope static value lives for the program: static
+		// storage (zero = the empty value), no scope-exit destruction —
+		// its construction runs once (translate_block's carrier arm).
+		ObjStorage storage = ObjStorage::Automatic;
+		if (!m_file_scope_decl && (v->flags & vfSTATIC))
+			storage = (v->flags & vfTHREADLOCAL)
+				? ObjStorage::ThreadStatic : ObjStorage::Static;
 		// var_emit_name like the general shapes below (line ~6700): this
 		// early return was the one path in var_decl that skipped it.
-		return array_storage_decl(var_emit_name(*v).c_str(), origin);
+		return array_storage_decl(var_emit_name(*v).c_str(), origin,
+					  storage);
 	}
 
 	DataDef *base_dd = v->type;
@@ -10350,6 +10364,20 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (m_file_scope_decl && m_prog && m_prog->presents_as_cpp()
 		    && init_expr_needs_dynamic_init(init_node, false)) {
 			m_dynamic_global_inits.insert(v);
+			m_pending_stmts.resize(pending_before);
+			init_node = ignore();
+			init_deferred = true;
+		}
+		// The block-scope twin: a static's non-constant initializer
+		// runs ONCE, the first time control passes the declaration
+		// ([stmt.dcl]/4) — translate_block's statement loop emits it
+		// inside emit_static_local_once. C modes keep c2mir's
+		// constant-only diagnosis, as at file scope.
+		else if (!m_file_scope_decl && (v->flags & vfSTATIC)
+			 && tdecl && tdecl->initialize
+			 && m_prog && m_prog->presents_as_cpp()
+			 && init_expr_needs_dynamic_init(init_node, false)) {
+			m_dynamic_static_locals.insert(v);
 			m_pending_stmts.resize(pending_before);
 			init_node = ignore();
 			init_deferred = true;
@@ -27051,6 +27079,130 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 				  node_t items)
 {
 	append(items, var_decl(&sdcl->var, sdcl));
+	// A block-scope static (class_decl_stmts serves block scope only —
+	// file scope is global_ctor_call) is constructed once. Its object
+	// outlives every try it sits in, so none of its construction registers
+	// for a try body's unwind (m_try_body_depth reads 0 while it is built).
+	if (sdcl->var.flags & vfSTATIC) {
+		node_t init_items = list();
+		int saved_try_depth = m_try_body_depth;
+		m_try_body_depth = 0;
+		class_decl_construction(sdcl, cdcl, init_items);
+		m_try_body_depth = saved_try_depth;
+		emit_static_local_once(items, init_items, sdcl,
+				       (sdcl->var.flags & vfTHREADLOCAL) != 0);
+		return;
+	}
+	class_decl_construction(sdcl, cdcl, items);
+}
+
+void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
+					TokenBase *origin, bool per_thread)
+{
+	if (!c2mir_node_first_op(init_items))
+		return;			// nothing to construct: no guard
+	char guard[32], entry[32];
+	snprintf(guard, sizeof(guard), "__madc_sguard%d", m_strtmp_counter++);
+	snprintf(entry, sizeof(entry), "__madc_sgent%d", m_strtmp_counter++);
+	if (per_thread) {
+		// thread_local: each thread initializes its own object, so the
+		// guard is per-thread and uncontended (gcc: a TLS guard byte, no
+		// __cxa_guard). Set AFTER the initialization — a throwing
+		// constructor leaves it clear and the next pass tries again.
+		//   static _Thread_local unsigned char G;
+		//   if (!G) { init_items; G = 1; }
+		node_t tspec = list();
+		append(tspec, simple(N_STATIC, origin));
+		append(tspec, simple(N_THREAD_LOCAL, origin));
+		append(tspec, simple(N_UNSIGNED, origin));
+		append(tspec, simple(N_CHAR, origin));
+		node_t tdecl = simple(N_SPEC_DECL, origin);
+		append(tdecl, node1(N_SHARE, tspec));
+		append(tdecl, node2(N_DECL, id(guard, origin), list()));
+		append(tdecl, ignore());
+		append(tdecl, ignore());
+		append(tdecl, ignore());
+		append(items, tdecl);
+		node_t tbody = list();
+		append(tbody, node2(N_BLOCK, list(), init_items, origin));
+		append(tbody, node2(N_EXPR, list(),
+			node2(N_ASSIGN, id(guard, origin), integer(1, origin), origin),
+			origin));
+		append(items, node4(N_IF, list(),
+			node1(N_NOT, id(guard, origin), origin),
+			node2(N_BLOCK, list(), tbody, origin), ignore()));
+		return;
+	}
+	// static long long G;	(zero: static storage)
+	node_t gspec = list();
+	append(gspec, simple(N_STATIC, origin));
+	append(gspec, simple(N_LONG, origin));
+	append(gspec, simple(N_LONG, origin));
+	node_t gdecl = simple(N_SPEC_DECL, origin);
+	append(gdecl, node1(N_SHARE, gspec));
+	append(gdecl, node2(N_DECL, id(guard, origin), list()));
+	append(gdecl, ignore());
+	append(gdecl, ignore());
+	append(gdecl, ignore());
+	append(items, gdecl);
+	auto guard_addr = [&]() -> node_t {
+		return node1(N_ADDR, id(guard, origin), origin);
+	};
+	auto call1 = [&](const char *fn, node_t arg) -> node_t {
+		node_t a = list();
+		append(a, arg);
+		return node2(N_CALL, id(fn, origin), a, origin);
+	};
+	need_output_extern("__cxa_guard_acquire", false,
+			   { { {N_LONG, N_LONG}, true } }, { N_INT });
+	need_output_extern("__cxa_guard_release", false,
+			   { { {N_LONG, N_LONG}, true } });
+	need_output_extern("__cxa_guard_abort", false,
+			   { { {N_LONG, N_LONG}, true } });
+	need_output_extern("__madc_cleanup_push_dtor", false,
+			   { { {N_VOID}, true }, { {N_VOID}, true } });
+	need_output_extern("__madc_cleanup_top", true, {});
+	need_output_extern("__madc_cleanup_remove", false,
+			   { { {N_VOID}, true } });
+	node_t body = list();
+	// __madc_cleanup_push_dtor((void *)__cxa_guard_abort, (void *)&G);
+	{
+		node_t a = list();
+		append(a, node2(N_CAST, void_ptr_type(),
+				id("__cxa_guard_abort", origin), origin));
+		append(a, node2(N_CAST, void_ptr_type(), guard_addr(), origin));
+		append(body, node2(N_EXPR, list(),
+			node2(N_CALL, id("__madc_cleanup_push_dtor", origin), a,
+			      origin), origin));
+	}
+	// void *E = __madc_cleanup_top();
+	{
+		node_t espec = list();
+		append(espec, simple(N_VOID, origin));
+		node_t edecl = simple(N_SPEC_DECL, origin);
+		append(edecl, node1(N_SHARE, espec));
+		append(edecl, node2(N_DECL, id(entry, origin),
+				    node1(N_LIST, pointer())));
+		append(edecl, ignore());
+		append(edecl, ignore());
+		append(edecl, node2(N_CALL, id("__madc_cleanup_top", origin),
+				    list(), origin));
+		append(body, edecl);
+	}
+	append(body, node2(N_BLOCK, list(), init_items, origin));
+	// __madc_cleanup_remove(E); __cxa_guard_release(&G);
+	append(body, node2(N_EXPR, list(),
+		call1("__madc_cleanup_remove", id(entry, origin)), origin));
+	append(body, node2(N_EXPR, list(),
+		call1("__cxa_guard_release", guard_addr()), origin));
+	append(items, node4(N_IF, list(),
+		call1("__cxa_guard_acquire", guard_addr()),
+		node2(N_BLOCK, list(), body, origin), ignore()));
+}
+
+void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
+					 node_t items)
+{
 	// A construction whose arguments contain a pack expansion cannot
 	// select a ctor overload in the shared Tree-1 pattern (pack arity
 	// is per-instantiation; g++ defers the whole call). Emit a
@@ -27418,8 +27570,16 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// A block-scope `extern var X;` declares another TU's object:
 			// no construction here (var_decl already emitted extern
 			// storage with no cleanup).
-			if (!(v->flags & vfEXTERN))
-				append(items, array_ctor_call(v->name.c_str(), tc));
+			if (!(v->flags & vfEXTERN)) {
+				// A block-scope static one is constructed once.
+				if (v->flags & vfSTATIC) {
+					node_t cons = list();
+					append(cons, array_ctor_call(v->name.c_str(), tc));
+					emit_static_local_once(items, cons, tc,
+						(v->flags & vfTHREADLOCAL) != 0);
+				} else
+					append(items, array_ctor_call(v->name.c_str(), tc));
+			}
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
 			// explicit constructor-call (no ctor args). class_ctor_call owns
@@ -27428,9 +27588,12 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// scope-exit destruction is via the cleanup attribute (var_decl).
 			// The argful form `Foo f(a,b)` parses to a TokenDecl statement
 			// handled below.
+			// A block-scope static one is constructed once.
+			const bool once = (v->flags & vfSTATIC) != 0;
+			node_t cons = once ? list() : items;
 			node_t cc = class_ctor_call(v, cdd,
 						    std::vector<TokenBase *>(), tc);
-			if (cc) append(items, cc);
+			if (cc) append(cons, cc);
 			// C++11 default member initializers on a ctorless instance
 			// (incl. a scalar-only struct promoted to a class purely for
 			// its NSDMI, and a polymorphic ctorless class whose cc is the
@@ -27441,8 +27604,11 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				if (emit_member_default_inits(cdd, v->name.c_str(), false,
 							      nsdmi_stmts, tc, NULL))
 					for (node_t s : nsdmi_stmts)
-						append(items, s);
+						append(cons, s);
 			}
+			if (once)
+				emit_static_local_once(items, cons, tc,
+					(v->flags & vfTHREADLOCAL) != 0);
 		}
 	}
 
@@ -27502,6 +27668,11 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				    && !sdcl->initialize && !sdcl->ctor_args_braced
 				    && sdcl->ctor_args.empty())
 					continue;
+				// A block-scope static value is constructed and
+				// initialized ONCE ([stmt.dcl]/4): both go into
+				// the once-block.
+				const bool once = (sdcl->var.flags & vfSTATIC) != 0;
+				node_t cons = once ? list() : items;
 				{
 					// Parens direct-init (`value v(7);`): the
 					// selected madarray_construct_* entry's
@@ -27512,9 +27683,9 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					// keeps for `=` initializers).
 					node_t cc = array_decl_ctor_call(sdcl);
 					for (node_t p : m_pending_stmts)
-						append(items, p);
+						append(cons, p);
 					m_pending_stmts.clear();
-					if (cc) append(items, cc);
+					if (cc) append(cons, cc);
 				}
 				// …and its INITIALIZER. Without this the `continue`
 				// below dropped it silently: `value v = "hello";`
@@ -27530,10 +27701,13 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				// without it the temp was used but never declared.
 				node_t vi = value_init_assign(sdcl);
 				for (node_t p : m_pending_stmts)
-					append(items, p);
+					append(cons, p);
 				m_pending_stmts.clear();
 				if (vi)
-					append(items, vi);
+					append(cons, vi);
+				if (once)
+					emit_static_local_once(items, cons, sdcl,
+						(sdcl->var.flags & vfTHREADLOCAL) != 0);
 				continue;
 			}
 			// Class instance declared with constructor args `Foo f(a,b)` or an
@@ -27574,6 +27748,23 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			append(items, p);
 		m_pending_stmts.clear();
 		append(items, s);
+		// A block-scope static whose initializer is DYNAMIC (`static int
+		// n = g();`): var_decl kept it out of the storage declaration
+		// (m_dynamic_static_locals); it runs once, the first time
+		// control passes here ([stmt.dcl]/4).
+		TokenDecl *dsdcl = stb ? stb->as_decl_tok() : NULL;
+		if (dsdcl && dsdcl->initialize
+		    && m_dynamic_static_locals.count(&dsdcl->var)) {
+			node_t init_items = list();
+			node_t as = translate_expr(dsdcl->initialize);
+			for (node_t p : m_pending_stmts)
+				append(init_items, p);
+			m_pending_stmts.clear();
+			if (as)
+				append(init_items, node2(N_EXPR, list(), as, dsdcl));
+			emit_static_local_once(items, init_items, dsdcl,
+				(dsdcl->var.flags & vfTHREADLOCAL) != 0);
+		}
 	}
 
 	if (!pending_labels.empty()) {

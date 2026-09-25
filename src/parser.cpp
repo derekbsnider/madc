@@ -72410,6 +72410,34 @@ void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 	pushToken(new TokenCppKeyword("thread_local"));
 }
 
+// The declarator's storage class onto the object it declares — the ONE
+// owner every parse_declaration_body arm (the `=` flow, its provisional
+// self-reference variable, the `auto` flow, the constructor-argument flow)
+// applies. The `auto` and constructor-argument arms used to skip it, so
+// `static auto n = 5;`, `static Foo s(8);` and `thread_local Foo t{3};` in a
+// function were plain automatic objects, re-initialized on every call.
+// A C++ `inline` variable has vague linkage: every including TU defines it,
+// so the CIR backend emits a linkonce data binding (STB_WEAK — per-TU copies
+// merge at a multi-.o link, and dynamic init runs once behind a linkonce
+// guard). `static` wins: internal linkage is never vague.
+void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
+					bool is_static, bool is_thread_local,
+					bool is_inline)
+{
+    if ( !var )
+	return;
+    // A block-scope `thread_local` implies `static` in C++ ([dcl.stc]/3); C
+    // requires the `static` spelled (C11 6.7.1p3 — c2mir diagnoses it, as
+    // gcc does).
+    const bool block_scope = code != NULL && code != tkProgram;
+    if ( is_static || (is_thread_local && block_scope && presents_as_cpp()) )
+	var->flags |= vfSTATIC;
+    if ( is_thread_local )
+	var->flags |= vfTHREADLOCAL;
+    if ( is_inline && !is_static && (code == NULL || code == tkProgram) )
+	var->flags |= vfLINKONCE;
+}
+
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
@@ -72856,6 +72884,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = declare_object(code, *auto_decl_type, id, 1, alloc, true, tb);
+	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline);
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
@@ -72999,6 +73028,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    var = declare_object(code, *decl_type, id, 1, alloc, true, tb,
 				 NULL, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
+	    apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline);
 	    if ( !decl_typedef_alias.empty() )
 		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
@@ -73279,12 +73309,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    provisional_decl_var = declare_object(code, *decl_type, id, prov_count, alloc,
 						  true, tb, &arr_dims, decl_object_cv);
 	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
-	    if ( gotstatic )
-		provisional_decl_var->flags |= vfSTATIC;
-	    if ( gotthreadlocal )
-		provisional_decl_var->flags |= vfTHREADLOCAL;
-	    if ( gotinline && !gotstatic && !code )
-		provisional_decl_var->flags |= vfLINKONCE;
+	    apply_declaration_storage(provisional_decl_var, code, gotstatic,
+				      gotthreadlocal, gotinline);
 	    if ( parsing_extern_decl )
 		provisional_decl_var->flags |= vfEXTERN;
 	    // Set dims early so self-referencing init expressions like
@@ -73867,18 +73893,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(code, var);
-	if ( gotstatic )
-	    var->flags |= vfSTATIC;
-	if ( gotthreadlocal )
-	    var->flags |= vfTHREADLOCAL;
-	// A C++ `inline` variable has vague linkage: every including TU
-	// defines it, so the CIR backend emits a linkonce data binding
-	// (STB_WEAK — per-TU copies merge at a multi-.o link, and dynamic
-	// init runs once behind a linkonce guard). `static` wins: internal
-	// linkage is never vague.
-	if ( gotinline && !gotstatic
-	  && (code == NULL || code == tkProgram) )
-	    var->flags |= vfLINKONCE;
+	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline);
 	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
 	// read-only-ness (reject assignment to it — P2.4). The variable itself is
 	// const only when const qualifies the VALUE (`const int x`) or is the

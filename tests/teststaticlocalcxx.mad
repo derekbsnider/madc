@@ -1,0 +1,54 @@
+// [stmt.dcl]/4: a block-scope static is initialized ONCE, the first time
+// control passes its declaration; a constructor that throws leaves it
+// uninitialized, so the next pass tries again. madc constructed a class-type
+// static on EVERY call — `static Foo s(8);`, `static Foo s{8};`, `static auto
+// s = Foo(8);`, `thread_local Foo t(3);`, `static Foo a[2];` — and even a
+// scalar `static auto n = 5;` restarted at 5 (the constructor-argument and
+// `auto` declaration arms dropped the storage class; the construction was
+// emitted unguarded). A dynamic scalar initializer (`static int n = g();`)
+// was refused by c2mir as a non-constant static initializer. Now the
+// declarator's storage class has one owner (apply_declaration_storage) and
+// the construction runs in gcc's once-block (__cxa_guard_acquire/release,
+// __cxa_guard_abort on the unwind of a throwing constructor).
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+struct Foo {
+	int v;
+	Foo() : v(-1) {}
+	Foo(int x) : v(x) { printf("Foo(%d)\n", x); if (x == 13) throw 1; }
+};
+int calls = 0;
+int g() { return ++calls * 100; }
+int parens() { static Foo s(8); return ++s.v; }
+int braces() { static Foo s{9}; return ++s.v; }
+int copy_init() { static Foo s = 10; return ++s.v; }
+int elided() { static Foo s = Foo(11); return ++s.v; }
+int deflt() { static Foo s; return ++s.v; }
+int auto_class() { static auto s = Foo(12); return ++s.v; }
+int auto_scalar() { static auto n = 5; return ++n; }
+int array_plain() { static Foo a[2]; return ++a[1].v; }
+int array_list() { static Foo a[2] = {20}; return ++a[0].v * 100 + ++a[1].v; }
+int dynamic_scalar() { static int n = g(); return ++n; }
+int dynamic_parens() { static int m(g()); return ++m; }
+int thread_obj() { thread_local Foo t(30); return ++t.v; }
+int tries = 0;
+int retry() { static Foo s(tries++ == 0 ? 13 : 7); return ++s.v; }
+int main()
+{
+	int a, b;
+	a = parens(); b = parens(); printf("parens %d %d\n", a, b);
+	a = braces(); b = braces(); printf("braces %d %d\n", a, b);
+	a = copy_init(); b = copy_init(); printf("copy-init %d %d\n", a, b);
+	a = elided(); b = elided(); printf("elided %d %d\n", a, b);
+	a = deflt(); b = deflt(); printf("default %d %d\n", a, b);
+	a = auto_class(); b = auto_class(); printf("auto-class %d %d\n", a, b);
+	a = auto_scalar(); b = auto_scalar(); printf("auto-scalar %d %d\n", a, b);
+	a = array_plain(); b = array_plain(); printf("array %d %d\n", a, b);
+	a = array_list(); b = array_list(); printf("array-list %d %d\n", a, b);
+	a = dynamic_scalar(); b = dynamic_scalar(); printf("dynamic %d %d calls=%d\n", a, b, calls);
+	a = dynamic_parens(); b = dynamic_parens(); printf("dynamic-parens %d %d calls=%d\n", a, b, calls);
+	a = thread_obj(); b = thread_obj(); printf("thread_local %d %d\n", a, b);
+	try { retry(); } catch (int) { printf("first construction threw\n"); }
+	a = retry(); b = retry(); printf("retry %d %d tries=%d\n", a, b, tries);
+	return 0;
+}

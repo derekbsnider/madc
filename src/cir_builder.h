@@ -504,9 +504,16 @@ class CirBuilder {
 	// fans out (1->N) into these lowered nodes; all share the originating
 	// TokenDecl in cir_node::origin and set synth_from_origin.
 	// See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
+	// Where a runtime object's opaque storage lives: an AUTOMATIC local is
+	// destroyed at every scope exit (the cleanup attribute); an EXTERN one
+	// is another TU's; a block-scope STATIC (or thread_local) one lives for
+	// the program (or thread), so it takes no scope-exit cleanup — its
+	// destruction at exit is deferred like a file-scope object's.
+	enum class ObjStorage { Automatic, Extern, Static, ThreadStatic };
 	node_t obj_storage_decl(const char *name, size_t words,
 				const char *dtor_sym, TokenBase *origin,
-				size_t align = 0, bool is_extern = false);
+				size_t align = 0,
+				ObjStorage storage = ObjStorage::Automatic);
 	// Host-call shim synthesis (translate_module): a per-function
 	// `long __madc_shim_<sym>(char *__args, char *__out)` adapter over
 	// the 32-byte madc_value ABI. NULL when the signature is not
@@ -763,7 +770,7 @@ class CirBuilder {
 	static DataDefCLASS *carrier_behind(DataDef *dd);
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
 	node_t array_storage_decl(const char *name, TokenBase *origin,
-				  bool is_extern = false);
+				  ObjStorage storage = ObjStorage::Automatic);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
 	// The construction statement for a DECLARED value/array local — the one
 	// owner of the parens-vs-bare decision: `value v(7);` (TokenDecl::
@@ -2312,6 +2319,30 @@ public:
 	// translate_block's statement loop and the for-init wrap.
 	void class_decl_stmts(class TokenDecl *sdcl, DataDefCLASS *cdcl,
 			      node_t items);
+	// The construction half of class_decl_stmts (everything after the
+	// storage declaration).
+	void class_decl_construction(class TokenDecl *sdcl, DataDefCLASS *cdcl,
+				     node_t items);
+	// A block-scope STATIC object is initialized once, the first time
+	// control passes its declaration ([stmt.dcl]/4): `init_items` (its
+	// construction) run inside gcc's guard protocol (-fthreadsafe-statics,
+	// the Itanium ABI) —
+	//   static long long G;
+	//   if (__cxa_guard_acquire(&G)) {
+	//       <abort-G cleanup entry>; init_items; <remove it>;
+	//       __cxa_guard_release(&G); }
+	// THREAD SAFETY: concurrent first passes wait in __cxa_guard_acquire
+	// (libstdc++ / libc++abi) and exactly one constructs. A constructor that
+	// THROWS runs __cxa_guard_abort on the SJLJ unwind (the runtime cleanup
+	// stack), so the next pass tries again instead of waiting on a guard
+	// left pending. Appends the guard and the guarded block to `items`.
+	// thread_local (`per_thread`): a per-thread guard byte, set after the
+	// initialization, instead of the __cxa_guard protocol.
+	void emit_static_local_once(node_t items, node_t init_items,
+				    TokenBase *origin, bool per_thread);
+	// Block-scope statics whose DYNAMIC initializer var_decl deferred to
+	// the once-block (the block-scope twin of m_dynamic_global_inits).
+	std::set<Variable *> m_dynamic_static_locals;
 	node_t translate_block(TokenCpnd *tc);
 	node_t translate_return(TokenRETURN *tr);
 	node_t translate_if(TokenIF *ti);

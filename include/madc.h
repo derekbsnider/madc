@@ -6675,6 +6675,11 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseStatementBody(TokenBase *);	// the grammar; parseStatement stamps its extent
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
+    // The declarator's storage class (`static`, `thread_local`, `inline`)
+    // onto the object — one owner for every declaration arm.
+    void apply_declaration_storage(class Variable *var, TokenCpnd *code,
+				   bool is_static, bool is_thread_local,
+				   bool is_inline);
     // The pointer to `base`, interned. A pointer to a FUNCTION type IS the
     // function pointer (its fnptr_twin) — [dcl.ptr] over [dcl.fct]: no
     // PTR(function type) is ever built, so every `*` applied anywhere (a

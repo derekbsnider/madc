@@ -1,0 +1,23 @@
+Foo(8)
+parens 9 10
+Foo(9)
+braces 10 11
+Foo(10)
+copy-init 11 12
+Foo(11)
+elided 12 13
+default 0 1
+Foo(12)
+auto-class 13 14
+auto-scalar 6 7
+array 0 1
+Foo(20)
+array-list 2100 2201
+dynamic 101 102 calls=1
+dynamic-parens 201 202 calls=2
+Foo(30)
+thread_local 31 32
+Foo(13)
+first construction threw
+Foo(7)
+retry 8 9 tries=2
