@@ -6744,9 +6744,10 @@ public:
     // engine stops ON a `;` (consuming it) and BEFORE a closer, so a closer
     // where the `;` belongs used to end the statement silently: `{ x = 3 }`,
     // `break }`, `g(1));`.
-    // A TypeDeclaration (a typedef; a class or enum definition with no
-    // declarator) owes what an object declaration owes (its `,` or `;`) but
-    // declares no object — no value for an interactive entry to show (D10).
+    // A TypeDeclaration (a typedef) owes what an object declaration owes (its
+    // `,` or `;`) but declares no object — no value for an interactive entry
+    // to show (D10). A class or enum definition with no declarator refuses a
+    // missing `;` in its own parser (TokenSTRUCT/TokenCLASS/TokenENUM::parse).
     enum class StatementTerminator : unsigned char { None, Expression, Declaration, TypeDeclaration, Jump };
     StatementTerminator stmt_terminator_owed = StatementTerminator::None;
     void require_statement_terminator(StatementTerminator owed);

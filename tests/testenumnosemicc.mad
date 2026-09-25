@@ -1,0 +1,6 @@
+// C11 6.7: a declaration ends in `;`. After an enum body the parser took the
+// `;` as optional, so an enum definition that ended the file compiled.
+// Oracle: gcc "error: expected identifier or '(' at end of input", clang
+// "error: expected ';' after enum".
+int main(void) { return 0; }
+enum E { A, B }

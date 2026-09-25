@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### An enum definition ends in its `;`
+
+After an enum body, the parser treated the `;` as optional. So `enum E { A, B }`
+compiled at the end of a file, before `return 0;` in a block, and as the last
+member of a class (`struct S { enum { A } };`). gcc and clang refuse all
+three ("expected ';' after enum"). The definition now takes its `;` or a
+declarator; anything else is refused as the struct and class definitions
+refuse it: "Expecting variable name or ';' after enum definition". In an
+interactive entry, `enum E { A, B }` now reads Incomplete.
+
+Tests: `testenumnosemicc`, `testenumnosemicstmtc`,
+`testenumnosemicmembercxx`, and the classifier corpus.
+
 ### The REPL input classifier: an interactive entry is a parser mode
 
 `Program::classify_entry` decides whether one REPL entry is complete, needs

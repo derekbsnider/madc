@@ -54695,10 +54695,16 @@ TokenBase *TokenENUM::parse(Program &pgm)
 		    : static_cast<DataDef *>(&ddUINT64);
 	}
 
-    // consume optional semicolon
-    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+    // The definition's tail ([dcl.dcl], C11 6.7): its `;`, or a declarator the
+    // CALLER reads (below). Anything else is refused, as the struct and class
+    // definitions refuse it — the `;` used to be optional here, so
+    // `enum E { A, B }` compiled at the end of a file, before `return`, and
+    // before a class body's `}` (gcc "expected identifier or '(' at end of
+    // input", clang "expected ';' after enum").
+    TokenBase *after_body = pgm.peekToken();
+    if ( after_body && after_body->id() == TokenID::tkSemi )
 	pgm.nextToken();
-    else if ( pgm.peekToken() )
+    else
     {
 	// Trailing declarator on the definition (`enum [Tag] {...} e;`, the
 	// bit-field member `enum : char32_t {...} __status : 1 {__ok};` —
@@ -54707,30 +54713,26 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// model the forward-reference path above and the class walk's
 	// nested-aggregate arm use. An ANONYMOUS enum has no DataDefENUM;
 	// its variable's type is the fixed underlying when declared, int
-	// otherwise (the C model madc's enums lower to). Re-feed ONLY when
-	// the next token can actually START a declarator — a '}' (enum as
-	// the last construct of an enclosing body) or other closer must not
-	// receive a dangling type token. The typedef-enum arm reads its
-	// ALIAS name itself and drops the re-fed type token.
-	TokenBase *after_body = pgm.peekToken();
-	bool declarator_follows =
-	       after_body->type() == TokenType::ttIdentifier
-	    || after_body->type() == TokenType::ttDataType
-	    || after_body->id() == TokenID::tkMul
-	    || after_body->id() == TokenID::tkBand
-	    || after_body->id() == TokenID::tkOpBrk;
-	if ( declarator_follows )
-	{
-	    DataDef *refeed_dd = enum_dd;
-	    if ( !refeed_dd )
-		refeed_dd = fixed_base ? fixed_base : &ddINT;
-	    TokenDataType *refeed =
-		new TokenDataType(refeed_dd->name.c_str(), *refeed_dd);
-	    refeed->file = tn->file;
-	    refeed->line = tn->line;
-	    refeed->column = tn->column;
-	    pgm.pushToken(refeed);
-	}
+	// otherwise (the C model madc's enums lower to). Only a token that
+	// can START a declarator continues the definition. The typedef-enum
+	// arm reads its ALIAS name itself and drops the re-fed type token.
+	bool declarator_follows = after_body
+	    && (after_body->type() == TokenType::ttIdentifier
+	     || after_body->type() == TokenType::ttDataType
+	     || after_body->id() == TokenID::tkMul
+	     || after_body->id() == TokenID::tkBand
+	     || after_body->id() == TokenID::tkOpBrk);
+	if ( !declarator_follows )
+	    pgm.Throw(after_body) << "Expecting variable name or ';' after enum definition" << flush;
+	DataDef *refeed_dd = enum_dd;
+	if ( !refeed_dd )
+	    refeed_dd = fixed_base ? fixed_base : &ddINT;
+	TokenDataType *refeed =
+	    new TokenDataType(refeed_dd->name.c_str(), *refeed_dd);
+	refeed->file = tn->file;
+	refeed->line = tn->line;
+	refeed->column = tn->column;
+	pgm.pushToken(refeed);
     }
 
     return NULL;

@@ -88,6 +88,8 @@ TEST_CASE("complete entries run, with or without their final ';'") {
 	{ "int f(int a)\n{\n  return a;\n}", V::Complete },
 	{ "struct P { int x; };", V::Complete },
 	{ "struct P { int x; } p", V::Complete },
+	{ "enum E { A, B };", V::Complete },
+	{ "enum E { A, B } e", V::Complete },
 	{ "for (int i = 0; i < 3; i++) { }", V::Complete },
 	{ "while (0) { }", V::Complete },
 	{ "do { } while (0);", V::Complete },
@@ -132,6 +134,7 @@ TEST_CASE("incomplete entries keep reading") {
 	{ "template <class T>", V::Incomplete },
 	{ "int f(int a)", V::Incomplete },
 	{ "struct P { int x; }", V::Incomplete },
+	{ "enum E { A, B }", V::Incomplete },
 	{ "typedef int T", V::Incomplete },
 	{ "return", V::Incomplete },
 	// stage 1b: an open delimiter
@@ -164,6 +167,8 @@ TEST_CASE("invalid entries fail where the grammar does") {
 	{ "int x; { x = 3 }", V::Invalid },
 	{ "else", V::Invalid },
 	{ "int int", V::Invalid },
+	{ "enum E { A, B } return", V::Invalid },
+	{ "struct S { enum { A } };", V::Invalid },
 	{ "#include \"no_such_header_for_the_classifier.h\"", V::Invalid },
     };
     check_corpus(cases, sizeof(cases) / sizeof(cases[0]));
