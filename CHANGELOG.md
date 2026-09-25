@@ -2,6 +2,48 @@
 
 ## [Unreleased]
 
+### A braced list on an array of class type initializes every element
+
+Found while fixing `new T[n]{…}` for the REPL arc's statement-terminator
+work. Before this, every case below compiled and ran with exit 0 and wrong
+values:
+
+- `Foo a[3] = {4, 7};` ran one constructor on the whole array with `4`. The
+  `7` was dropped, and `a[1]` and `a[2]` were never constructed.
+- An aggregate element with a `std::string` member (`S s[2] = {{"hi", 4}}`)
+  had its string bit-copied from the literal.
+- A global array had the same fault as a local one.
+- `Two t[] = {1, 2, 3}` (a class with a constructor) got its size from its
+  data members, as if brace elision applied, and came out with 2 elements
+  instead of 3.
+
+Now `CirBuilder::class_array_list_init` owns the elements, for local and
+global arrays:
+
+- Each element is copy-initialized from its clause:
+  - a braced clause list-initializes it, choosing an initializer-list
+    constructor first;
+  - a same-class temporary is elided into it;
+  - an aggregate element takes its members by brace elision.
+- Rows of a multi-dimensional array fill the same way.
+- Every element without a clause is value-initialized: the default
+  constructor, after zero-fill when that constructor isn't user-provided.
+- The declaration reader no longer pads a class row with `0` clauses, which
+  would have constructed the element from 0.
+
+`DataDef::brace_elision_width` sizes unsized arrays and replaces the parser's
+`flattened_scalar_capacity`. `DataDefCLASS::is_aggregate` is the one predicate
+for the new code. The older inline copies of that predicate are recorded as an
+open family.
+
+Two g++.dg tests now pass: `constexpr-61484` and `initlist50`.
+
+Still open:
+- A by-value call as an element is not elided (`Foo a[1] = {make()}` runs one
+  copy constructor more than gcc).
+- A local static array is constructed on every call, as every local static
+  class object is. That is fixed next.
+
 ### The lexer refuses what gcc and clang refuse, and decodes literals their way (REPL arc prerequisites)
 
 The REPL's input classifier (plan §41.1) tells input that is still being

@@ -114,7 +114,6 @@ g++.dg/cpp0x/constexpr-52892-2.C
 g++.dg/cpp0x/constexpr-55708.C
 g++.dg/cpp0x/constexpr-57764.C
 g++.dg/cpp0x/constexpr-60199.C
-g++.dg/cpp0x/constexpr-61484.C
 g++.dg/cpp0x/constexpr-65080.C
 g++.dg/cpp0x/constexpr-67376.C
 g++.dg/cpp0x/constexpr-69315.C
@@ -301,7 +300,6 @@ g++.dg/cpp0x/initlist3.C
 g++.dg/cpp0x/initlist30.C
 g++.dg/cpp0x/initlist34.C
 g++.dg/cpp0x/initlist35.C
-g++.dg/cpp0x/initlist50.C
 g++.dg/cpp0x/initlist54.C
 g++.dg/cpp0x/initlist67.C
 g++.dg/cpp0x/initlist73.C

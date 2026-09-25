@@ -1833,9 +1833,41 @@ public:
 	// `for (long __ci = 0; __ci < <count>; __ci += 1)
 	//      <construct (arr_ptr + __ci)>;`
 	// NULL when the element class needs no construction (trivial).
+	// `first` starts the loop past the elements a braced list initialized.
 	node_t class_array_construct_loop(const char *arr_ptr,
 			       const std::function<node_t()> &mint_count,
-			       DataDefCLASS *cdd, TokenBase *origin);
+			       DataDefCLASS *cdd, TokenBase *origin,
+			       long first = 0);
+	// TRUE when a braced list on a fixed ARRAY of class type needs real
+	// per-element construction — the element class has a user ctor, a
+	// vptr, bases, or object members. var_decl leaves such storage BARE and
+	// class_decl_stmts hands the whole list to class_array_list_init; a
+	// C-initializable element (a plain aggregate) keeps var_decl's C INIT.
+	// A same-class (or derived) initializer copies the class ([over.match.
+	// list], [dcl.init.aggr]/4): never a member list, never brace elision.
+	bool initializer_copies_class(TokenBase *init, DataDefCLASS *cdd);
+	bool braced_class_array_needs_construction(Variable *v,
+			       TokenDecl *tdecl, DataDefCLASS *cdd);
+	// THE owner of a class array's elements from a braced list
+	// ([dcl.init.aggr]/3-5, [dcl.init.list]): each element is copy-
+	// initialized from its initializer-clause (a braced element list-
+	// initializes, a same-class temporary is elided, an aggregate element
+	// takes its members by brace elision), rows fill by the same rules, and
+	// every element without a clause is value-initialized. Serves the
+	// declared array (`Foo a[2][3] = {...}`, local or global) and the array
+	// new-expression (`new Foo[n]{...}`). `dims` are the extents; EMPTY means
+	// one dimension counted at run time (`mint_count` mints the count; an
+	// initializer past it is not stored). `storage_zeroed`: the storage is
+	// already zero (calloc, static storage), so value-initialization needs
+	// no zero-fill. Statements append to `out`, each element's materialized
+	// temporaries just ahead of its construction.
+	void class_array_list_init(const char *arr_ptr,
+			       const std::vector<size_t> &dims,
+			       const std::function<node_t()> &mint_count,
+			       DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &elements,
+			       bool storage_zeroed, TokenBase *origin,
+			       std::vector<node_t> &out);
 	// Itanium new[] cookie size: max(sizeof(size_t), alignof) when the
 	// element class has a non-trivial dtor (delete[] reads the element
 	// count back to run per-element dtors), else 0 — new[] and delete[]

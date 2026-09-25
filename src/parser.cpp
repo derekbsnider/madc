@@ -71897,23 +71897,22 @@ static void assign_initializer_range(std::vector<TokenBase *> &inits,
 	inits[idx] = (idx == first_index) ? value : (value ? value->clone_origin() : NULL);
 }
 
-// How many FLAT scalar initializers one object of `dd` consumes under
-// C brace elision (C11 6.7.9p20): a struct eats one per scalar leaf
-// (member arrays included), a union eats its first member's worth, an
-// array dd eats count x element. The unsized-array count inference
-// divides by this — `struct P {long c[2]; long b;} a[] = {1,2,3,4,5,6}`
-// is TWO elements, not six (c-testsuite 00205: cases[] sized 63 not 9,
-// so sizeof-driven loops printed 54 phantom rows of zeros).
-static size_t flattened_scalar_capacity(DataDef *dd)
+// The unsized-array count inference divides by DataDef::brace_elision_width
+// — `struct P {long c[2]; long b;} a[] = {1,2,3,4,5,6}` is TWO elements, not
+// six (c-testsuite 00205: cases[] sized 63 not 9, so sizeof-driven loops
+// printed 54 phantom rows of zeros); `Two t[] = {1, 2, 3}` with a user ctor
+// is THREE (each clause constructs one element).
+size_t DataDef::brace_elision_width() const
 {
-    if ( !dd )
-	return 1;
-    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+    if ( const DataDefCArray *add = dynamic_cast<const DataDefCArray *>(this) )
     {
 	size_t n = add->count ? add->count : 1;
-	return n * flattened_scalar_capacity(add->element_type);
+	return n * (add->element_type ? add->element_type->brace_elision_width() : 1);
     }
-    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd) )
+    if ( const DataDefCLASS *cls = dynamic_cast<const DataDefCLASS *>(this) )
+	if ( !cls->is_aggregate() )
+	    return 1;
+    if ( const DataDefSTRUCT *sdd = dynamic_cast<const DataDefSTRUCT *>(this) )
     {
 	if ( sdd->members.empty() )
 	    return 1;
@@ -71922,7 +71921,8 @@ static size_t flattened_scalar_capacity(DataDef *dd)
 	{
 	    size_t cnt = i < sdd->member_counts.size() && sdd->member_counts[i]
 		? sdd->member_counts[i] : 1;
-	    size_t one = cnt * flattened_scalar_capacity(sdd->members[i].second);
+	    DataDef *mt = sdd->members[i].second;
+	    size_t one = cnt * (mt ? mt->brace_elision_width() : 1);
 	    if ( sdd->union_layout )
 		return one;	// a union initializes its FIRST member only
 	    total += one;
@@ -73542,7 +73542,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    if ( isep && isep->id() == TokenID::tkComma )
 			nextToken();
 		}
-		if ( !arr_dims.empty() && depth < arr_dims.size() )
+		// A row's missing clauses read as `0` for scalar elements. A C++
+		// class element is VALUE-initialized instead ([dcl.init.aggr]/5)
+		// — a `0` clause would construct it from 0 — so its row stays
+		// short and the construction owner (CIR class_array_list_init)
+		// value-initializes the absent slots.
+		if ( !arr_dims.empty() && depth < arr_dims.size()
+		  && !dynamic_cast<DataDefCLASS *>(decl_type ? decl_type->unqualified() : NULL) )
 		    while ( slit->inits.size() < arr_dims[depth] )
 			slit->inits.push_back(zero_array_initializer(depth));
 		return slit;
@@ -73777,7 +73783,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		// historical divide), the flattened member count for struct
 		// elements (C11 6.7.9p20; c-testsuite 00205's cases[]).
 		size_t elem_scalars = has_nested_init
-		    ? 1 : flattened_scalar_capacity(decl_type);
+		    ? 1 : (decl_type ? decl_type->brace_elision_width() : 1);
 		size_t per_elem = tail_count * elem_scalars;
 		if ( arr_dims[0] == 0 )
 		{

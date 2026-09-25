@@ -531,6 +531,13 @@ public:
     // value domain? Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
     // §2.1. Defined in src/parser.cpp (needs the DataDef subclass set).
     bool same_representation(DataDef &d);
+    // How many initializer-clauses ONE object of this type takes under brace
+    // elision (C11 6.7.9p20, [dcl.init.aggr]/12): an array its count x its
+    // element's, a struct one per scalar leaf (a union its first member's),
+    // a scalar one — and a C++ class that is not an aggregate ONE: it is
+    // initialized through a constructor from a single clause, never by
+    // elision into its members.
+    size_t brace_elision_width() const;
     // Canonical typeid: index into the segmented type table
     // (include/madc_typeid.h; docs/plans/2026-06-12-type-table-value-abi-design.md
     // §2). 0 = not yet registered. Primitives carry fixed ABI slots
@@ -1560,6 +1567,12 @@ public:
     // (has_vptr_slot only — Itanium still gives it a prologue-only vtable of
     // [vbase offsets, offset_to_top, RTTI] per group).
     bool has_any_vptr() const { return has_vtable || has_vptr_slot; }
+    // [dcl.init.aggr]/1 as madc models it: no user-declared constructor, no
+    // virtual function, no base class. A braced list initializes an
+    // aggregate member-wise (brace elision included); any other class only
+    // through a constructor.
+    bool is_aggregate() const
+    { return !has_user_ctor && !has_any_vptr() && bases.empty() && !base_class; }
     // A class's alignment is the strongest of its members, bases, and (if
     // polymorphic) the vptr — computed by compute_layout and cached in
     // class_align. Until then, fall back to the own-member alignment (max_align).

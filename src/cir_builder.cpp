@@ -10246,9 +10246,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// storage): its braced list needs real construction —
 		// braced_aggregate_needs_construction, served by the
 		// declaration lanes' decl_aggregate_claim.
+		// Likewise an ARRAY whose elements need construction
+		// (braced_class_array_needs_construction).
 		if (aggc && !aggc->has_user_ctor && !aggc->has_any_vptr()
 		    && aggc->bases.empty() && !aggc->base_class
-		    && !braced_aggregate_needs_construction(v, tdecl, aggc))
+		    && !braced_aggregate_needs_construction(v, tdecl, aggc)
+		    && !braced_class_array_needs_construction(v, tdecl, aggc))
 			class_instance = false;
 	}
 	// A static/global fixed array whose constant initializer the parser baked
@@ -15920,7 +15923,11 @@ bool CirBuilder::ctor_args_are_braced(TokenBase *origin)
 	// incl. one re-spelled from a braced-init-list call argument) arrives as
 	// a TokenObjTemp — the third spelling of the same list-initialization.
 	TokenObjTemp *ot = origin ? origin->as_objtemp_tok() : NULL;
-	return ot && ot->braced;
+	if (ot)
+		return ot->braced;
+	// A braced ELEMENT of a class array's list (class_array_list_init) is
+	// the fourth spelling: the clause is itself a braced-init-list.
+	return origin && origin->as_struct_lit_tok();
 }
 
 // The element type E of std::initializer_list<E>, read off the LAYOUT: the
@@ -16965,14 +16972,14 @@ size_t CirBuilder::class_array_cookie_size(DataDefCLASS *cdd)
 	return a > sizeof(size_t) ? a : sizeof(size_t);
 }
 
-// `for (long __ci = 0; __ci < <count>; __ci += 1)
+// `for (long __ci = <first>; __ci < <count>; __ci += 1)
 //      <complete-object construct (arr_ptr + __ci)>;`
 // arr_ptr names an element pointer (or a fixed array, which decays in the
 // N_ADD); `mint_count` returns a fresh count expression node per call.
 // NULL when the element class needs no construction.
 node_t CirBuilder::class_array_construct_loop(
 	const char *arr_ptr, const std::function<node_t()> &mint_count,
-	DataDefCLASS *cdd, TokenBase *origin)
+	DataDefCLASS *cdd, TokenBase *origin, long first)
 {
 	char ci[32];
 	snprintf(ci, sizeof(ci), "__ci%d", m_strtmp_counter++);
@@ -16999,7 +17006,7 @@ node_t CirBuilder::class_array_construct_loop(
 	append(init, node2(N_DECL, id(ci, origin), list()));
 	append(init, ignore());
 	append(init, ignore());
-	append(init, integer(0, origin));
+	append(init, integer(first, origin));
 
 	node_t cond = node2(N_LT, id(ci, origin), mint_count(), origin);
 	node_t incr = node2(N_ADD_ASSIGN, id(ci, origin), integer(1, origin), origin);
@@ -17007,6 +17014,242 @@ node_t CirBuilder::class_array_construct_loop(
 	for (node_t s : elem_stmts) append(body_items, s);
 	node_t body = node2(N_BLOCK, list(), body_items, origin);
 	return node5(N_FOR, list(), init, cond, incr, body, origin);
+}
+
+// A same-class (or derived) initializer is a COPY of the class, never a
+// member list ([over.match.list], [dcl.init.aggr]/4): `T{t}` copy-constructs
+// and an aggregate element takes no brace elision from it.
+bool CirBuilder::initializer_copies_class(TokenBase *init, DataDefCLASS *cdd)
+{
+	if (!init || !cdd) return false;
+	DataDef *ad = operand_value_datadef(init);
+	while (DataDefQUAL *ac = dynamic_cast<DataDefQUAL *>(ad))
+		ad = ac->base_type;
+	DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(ad);
+	return acls && acls->is_or_derives_from(cdd);
+}
+
+bool CirBuilder::braced_class_array_needs_construction(Variable *v,
+						       TokenDecl *tdecl,
+						       DataDefCLASS *cdd)
+{
+	// Static storage too: no C initializer can construct an element (a
+	// bit-copied std::string member is garbage whatever the storage).
+	return v && tdecl && cdd
+	    && v->is_fixed_array()
+	    && !tdecl->init_list.empty()
+	    && (!cdd->is_aggregate() || class_has_object_members(cdd));
+}
+
+void CirBuilder::class_array_list_init(const char *arr_ptr,
+	const std::vector<size_t> &dims,
+	const std::function<node_t()> &mint_count, DataDefCLASS *cdd,
+	const std::vector<TokenBase *> &elements, bool storage_zeroed,
+	TokenBase *origin, std::vector<node_t> &out)
+{
+	// One SLOT per element, filled from the clauses row by row. A braced
+	// clause opens the next row (or, at the element level, is the element's
+	// own list); a row whose clause is not braced takes only as many
+	// clauses as it has elements, by brace elision ([dcl.init.aggr]/12). At
+	// the element level a same-class functional temporary is elided into the
+	// element (its arguments construct it directly); an AGGREGATE element
+	// whose clause is neither braced nor of its class takes one clause per
+	// member; any other clause copy-initializes the element from itself. An
+	// absent slot (a short row, a designator gap) is value-initialized.
+	struct ElementInit {
+		std::vector<TokenBase *> args;
+		TokenBase *origin;
+		bool present;
+	};
+	const bool runtime = dims.empty();	// one dimension, counted at run time
+	size_t total = 1;
+	for (size_t d : dims) total *= d;
+	std::vector<ElementInit> slots(runtime ? 0 : total,
+				       ElementInit{ std::vector<TokenBase *>(), origin, false });
+	const bool aggregate = cdd->is_aggregate() && !cdd->union_layout;
+	node_t refusal = NULL;
+	auto take_element = [&](const std::vector<TokenBase *> &list, size_t &pos,
+				ElementInit &ei) -> bool {
+		TokenBase *e = list[pos];
+		if (!e) {
+			++pos;
+			return true;
+		}
+		ei.present = true;
+		ei.origin = e;
+		if (TokenStructLit *sl = e->as_struct_lit_tok()) {
+			ei.args = sl->inits;
+			++pos;
+			return true;
+		}
+		if (TokenObjTemp *ot = e->as_objtemp_tok())
+			if (as_class_instance(ot->obj_class) == cdd) {
+				ei.args = ot->ctor_args;
+				++pos;
+				return true;
+			}
+		if (aggregate && !initializer_copies_class(e, cdd)) {
+			// One clause per member — exact only while every member
+			// takes one clause (brace_elision_width); a member that is
+			// itself an array or an aggregate takes its own run, and
+			// that shape is refused, never guessed.
+			if (cdd->brace_elision_width() != cdd->members.size()) {
+				std::string msg = "brace elision into an element of '"
+					+ cdd->name + "', whose members are arrays or"
+					  " aggregates, is not supported; brace each element";
+				refusal = error_node(msg.c_str(), e);
+				return false;
+			}
+			size_t take = std::min(cdd->members.size(), list.size() - pos);
+			ei.args.assign(list.begin() + pos, list.begin() + pos + take);
+			pos += take;
+			return true;
+		}
+		ei.args.assign(1, e);
+		++pos;
+		return true;
+	};
+	// Fill the subarray at `depth` whose first element slot is `base` from
+	// list[pos...]: the WHOLE list when it is the subarray's own braced list,
+	// else only as many clauses as the subarray takes.
+	std::function<bool(const std::vector<TokenBase *> &, size_t &, size_t,
+			   size_t, bool)> fill;
+	fill = [&](const std::vector<TokenBase *> &list, size_t &pos, size_t depth,
+		   size_t base, bool whole) -> bool {
+		const bool elements_here = runtime || depth + 1 == dims.size();
+		const size_t extent = runtime ? list.size() : dims[depth];
+		size_t stride = 1;
+		for (size_t d = depth + 1; d < dims.size(); ++d) stride *= dims[d];
+		for (size_t i = 0; i < extent && pos < list.size(); ++i) {
+			if (elements_here) {
+				if (runtime && slots.size() <= base + i)
+					slots.resize(base + i + 1, ElementInit{
+						std::vector<TokenBase *>(), origin, false });
+				if (!take_element(list, pos, slots[base + i]))
+					return false;
+				continue;
+			}
+			TokenBase *c = list[pos];
+			if (!c) {
+				++pos;	// no clause for this row: value-initialized
+				continue;
+			}
+			if (TokenStructLit *row = c->as_struct_lit_tok()) {
+				size_t rp = 0;
+				if (!fill(row->inits, rp, depth + 1, base + i * stride, true))
+					return false;
+				++pos;
+			} else if (!fill(list, pos, depth + 1, base + i * stride, false))
+				return false;
+		}
+		if (whole && pos < list.size()) {
+			std::string msg = "too many initializers for '" + cdd->name
+				+ " [" + std::to_string(extent) + "]'";
+			refusal = error_node(msg.c_str(), list[pos] ? list[pos] : origin);
+			return false;
+		}
+		return true;
+	};
+	size_t top = 0;
+	if (!fill(elements, top, 0, 0, true)) {
+		out.push_back(refusal);
+		return;
+	}
+	// Value-initialization ([dcl.init]/8) zero-fills first unless the class
+	// has a user-provided default constructor.
+	FuncDef *dflt = class_default_ctor_def(cdd);
+	const bool value_init_zeroes = !storage_zeroed
+		&& !(dflt && !cdd->has_defaulted_default_ctor);
+	auto struct_type = [&]() -> node_t {
+		return node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
+			     node2(N_DECL, ignore(), list()));
+	};
+	auto elem_addr = [&](size_t index) -> node_t {
+		node_t flat = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, class_tag_ref(cdd)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			id(arr_ptr, origin), origin);
+		return node2(N_ADD, flat, integer((int64_t)index, origin), origin);
+	};
+	auto zero_fill = [&](size_t from, node_t nelems) -> node_t {
+		need_output_extern("memset", true,
+			{ { {N_VOID}, true }, { {N_INT}, false },
+			  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+		node_t zargs = list();
+		append(zargs, node2(N_CAST, void_ptr_type(), elem_addr(from), origin));
+		append(zargs, integer(0, origin));
+		append(zargs, node2(N_MUL, nelems,
+				    node1(N_SIZEOF, struct_type(), origin), origin));
+		return node2(N_EXPR, list(),
+			     node2(N_CALL, id("memset", origin), zargs, origin),
+			     origin);
+	};
+	// A runtime count below the list constructs nothing past it (g++ throws
+	// std::bad_array_new_length; madc's new[] has no length check yet).
+	auto below_count = [&](size_t index, std::vector<node_t> &stmts) {
+		if (!runtime) {
+			out.insert(out.end(), stmts.begin(), stmts.end());
+			return;
+		}
+		node_t blk = list();
+		for (node_t s : stmts) append(blk, s);
+		out.push_back(node4(N_IF, list(),
+			node2(N_LT, integer((int64_t)index, origin), mint_count(), origin),
+			node2(N_BLOCK, list(), blk, origin), ignore()));
+	};
+	const size_t k = slots.size();
+	for (size_t i = 0; i < k; ) {
+		if (!slots[i].present && !runtime) {
+			// A run of absent slots [i, b): one zero-fill + one loop.
+			size_t b = i;
+			while (b < k && !slots[b].present) ++b;
+			if (value_init_zeroes)
+				out.push_back(zero_fill(i, integer((int64_t)(b - i), origin)));
+			const size_t end = b;
+			if (node_t loop = class_array_construct_loop(arr_ptr,
+					[&]() -> node_t { return integer((int64_t)end, origin); },
+					cdd, origin, (long)i))
+				out.push_back(loop);
+			i = b;
+			continue;
+		}
+		const ElementInit &ei = slots[i];
+		// This element's materialized temporaries are declared right
+		// before its construction, not hoisted ahead of every element.
+		std::vector<node_t> saved_pending;
+		saved_pending.swap(m_pending_stmts);
+		std::vector<node_t> stmts;
+		if (ei.args.empty() && value_init_zeroes)
+			stmts.push_back(zero_fill(i, integer(1, origin)));
+		node_t agg = class_aggregate_init(
+			[&](const std::string &m) -> node_t {
+				return node2(N_DEREF_FIELD, elem_addr(i),
+					     id(m.c_str(), origin));
+			}, cdd, ei.args, ei.origin);
+		if (agg)
+			stmts.push_back(agg);
+		else
+			complete_object_construct_stmts([&]() -> node_t {
+				return elem_addr(i);
+			}, cdd, ei.args, ei.origin, stmts);
+		std::vector<node_t> elem;
+		elem.swap(m_pending_stmts);
+		m_pending_stmts.swap(saved_pending);
+		elem.insert(elem.end(), stmts.begin(), stmts.end());
+		below_count(i, elem);
+		++i;
+	}
+	if (!runtime)
+		return;
+	// The elements past the list value-initialize up to the runtime count.
+	if (value_init_zeroes) {
+		std::vector<node_t> fill_stmts(1, zero_fill(k,
+			node2(N_SUB, mint_count(), integer((int64_t)k, origin), origin)));
+		below_count(k, fill_stmts);
+	}
+	if (node_t loop = class_array_construct_loop(arr_ptr, mint_count, cdd,
+						     origin, (long)k))
+		out.push_back(loop);
 }
 
 node_t CirBuilder::class_aggregate_init(
@@ -17029,14 +17272,8 @@ node_t CirBuilder::class_aggregate_init(
 		return NULL;
 	// T{t} with a same-class (or derived) t is a COPY ([over.match.list]),
 	// not a member fill — decline to the copy lane.
-	if (ctor_args.size() == 1 && ctor_args[0]) {
-		DataDef *ad = operand_value_datadef(ctor_args[0]);
-		while (DataDefQUAL *ac = dynamic_cast<DataDefQUAL *>(ad))
-			ad = ac->base_type;
-		DataDefCLASS *acls = dynamic_cast<DataDefCLASS *>(ad);
-		if (acls && acls->is_or_derives_from(cdd))
-			return NULL;
-	}
+	if (ctor_args.size() == 1 && initializer_copies_class(ctor_args[0], cdd))
+		return NULL;
 	// The flush calls below must drain ONLY the pendings this helper's own
 	// translate_expr calls generate — the caller's pending list already
 	// holds the receiver temp's declaration, and draining it into this
@@ -26827,6 +27064,33 @@ void CirBuilder::class_decl_stmts(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		append(items, marker->as_node());
 		return;
 	}
+	// A braced list on an ARRAY of class type initializes EVERY element
+	// (class_array_list_init). The object lanes below read init_list[0]
+	// alone, as the initializer of the whole array: `Foo a[3] = {4, 7}`
+	// ran one constructor on &a with 4, dropped the 7, and never touched
+	// a[1] or a[2] — garbage, exit 0.
+	if (braced_class_array_needs_construction(&sdcl->var, sdcl, cdcl)) {
+		const std::string aname = var_emit_name(sdcl->var);
+		const std::vector<size_t> dims(sdcl->var.dims.begin(),
+					       sdcl->var.dims.end());
+		const long n = (long)sdcl->var.total_elements();
+		std::vector<node_t> stmts;
+		// Static storage is zero before any initialization runs.
+		class_array_list_init(aname.c_str(), dims,
+			[&]() -> node_t { return integer(n, sdcl); },
+			cdcl, sdcl->init_list,
+			(sdcl->var.flags & vfSTATIC) != 0, sdcl, stmts);
+		// Pendings from before the list (the owner kept each element's
+		// own beside its construction) precede it.
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		for (node_t s : stmts)
+			append(items, s);
+		emit_try_body_cleanup_push(aname.c_str(), cdcl, items, sdcl,
+					   (size_t)n);
+		return;
+	}
 	// [dcl.init.aggr] braced list on an OBJECT-member aggregate
 	// (`S v = {string("hi"), 42}`, `S v{...}`): var_decl left the storage
 	// BARE (braced_aggregate_needs_construction — its C INIT list
@@ -29663,6 +29927,22 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 	std::vector<TokenBase *> ctor_args;
 	if (decl) {
 		ctor_args = decl->ctor_args;
+		// A braced list on a global ARRAY of class type constructs every
+		// element (class_array_list_init) — the file-scope twin of
+		// class_decl_stmts' arm; static storage is already zero.
+		if (braced_class_array_needs_construction(v, decl, cdd)) {
+			const std::string aname = var_emit_name(*v);
+			const std::vector<size_t> dims(v->dims.begin(), v->dims.end());
+			const long n = (long)v->total_elements();
+			std::vector<node_t> stmts;
+			class_array_list_init(aname.c_str(), dims,
+				[&]() -> node_t { return integer(n, decl); },
+				cdd, decl->init_list, true, decl, stmts);
+			if (stmts.empty()) return NULL;
+			node_t blk = list();
+			for (node_t st : stmts) append(blk, st);
+			return node2(N_BLOCK, list(), blk, decl);
+		}
 		// Braced OBJECT-member aggregate global (`S gs = {string("gg"),
 		// 3};`): var_decl left the storage bare
 		// (braced_aggregate_needs_construction); this is the

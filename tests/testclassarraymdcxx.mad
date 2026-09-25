@@ -1,0 +1,39 @@
+// A braced list on a MULTI-dimensional array of class type fills row by row
+// ([dcl.init.aggr]/12): a braced clause opens the next row, an unbraced row
+// takes only as many clauses as it has elements (brace elision), and every
+// element without a clause is VALUE-initialized. The declaration reader
+// padded short rows with `0` clauses, which constructed a class element from
+// 0; class rows now stay short and class_array_list_init value-initializes
+// the absent slots (g++.dg constexpr-63241 is the `A array[2][2]` shape).
+// A plain aggregate keeps its C initializer, rows unpadded.
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+#include <string>
+struct Foo {
+	int v;
+	Foo() : v(-1) { printf("Foo()\n"); }
+	Foo(int x) : v(x) { printf("Foo(%d)\n", x); }
+	~Foo() { printf("~Foo(%d)\n", v); }
+};
+struct A { int k; constexpr A(int x) : k(x) {} };
+struct S { std::string s; int n; };
+struct P { int x, y; };
+int main() {
+	{
+		Foo m[2][3] = {{1, 2}, {4}};
+		printf("rows: %d %d %d | %d %d %d\n", m[0][0].v, m[0][1].v, m[0][2].v, m[1][0].v, m[1][1].v, m[1][2].v);
+	}
+	{
+		Foo e[2][2] = {1, 2, 3};
+		printf("elided: %d %d | %d %d\n", e[0][0].v, e[0][1].v, e[1][0].v, e[1][1].v);
+	}
+	int i = 7;
+	A arr[2][2] = {{{0}, {i}}, {{0}, {0}}};
+	printf("braced-elems: %d %d %d %d\n", arr[0][0].k, arr[0][1].k, arr[1][0].k, arr[1][1].k);
+	S s[2][2] = {{{"a", 1}}, {"b", 2, "c", 3}};
+	printf("aggr: %s %d [%s] %d | %s %d %s %d\n", s[0][0].s.c_str(), s[0][0].n, s[0][1].s.c_str(), s[0][1].n,
+		   s[1][0].s.c_str(), s[1][0].n, s[1][1].s.c_str(), s[1][1].n);
+	P p[2][2] = {{{1, 2}}, {{3, 4}, {5, 6}}};
+	printf("plain: %d %d %d %d %d %d %d %d\n", p[0][0].x, p[0][0].y, p[0][1].x, p[0][1].y, p[1][0].x, p[1][0].y, p[1][1].x, p[1][1].y);
+	return 0;
+}

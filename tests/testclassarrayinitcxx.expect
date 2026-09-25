@@ -1,0 +1,35 @@
+Foo(4)
+Foo(5)
+Foo()
+global: 4 5 -1
+Foo(4)
+Foo(7)
+Foo()
+convert: 4 7 -1
+~Foo(-1)
+~Foo(7)
+~Foo(4)
+Foo(1,2)
+Foo(3,4)
+Foo()
+braced: 12 34 -1
+~Foo(-1)
+~Foo(34)
+~Foo(12)
+Foo(5)
+Foo(6)
+deduced: 5 6 n=2
+deduced-ctor: n=3 1 2 -3
+deduced-elision: n=2 p 1 q 2
+elision: a 1 b 0 [] 0
+value-init: [] 0 z 9 [] 0
+init-list: 3 6 -7
+virtual: 1 1
+Foo(6)
+Foo(7)
+try: 6 7
+~Foo(7)
+~Foo(6)
+caught
+~Foo(6)
+~Foo(5)
