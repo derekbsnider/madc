@@ -2201,6 +2201,18 @@ size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
   return skipped;
 }
 
+/* madc fork: MIR_load_module's refusal rule, shared with MIR_module_link_check.
+   An exported func whose name the environment already holds is a redefinition,
+   refused unless func redefinition is permitted. */
+static int func_redef_prohibited_p (MIR_context_t ctx, MIR_item_t item) {
+  return item->item_type == MIR_func_item && !func_redef_permission_p
+#if MIR_TARGET_APPLE_P /* target-code semantics: darwin SDK sources carry these */
+         /* macosx can have multiple equal external inline definitions of the same function: */
+         && strncmp (item->u.func->name, "__darwin", 8) != 0
+#endif
+    ;
+}
+
 void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
   int lref_p = FALSE;
   mir_assert (m != NULL);
@@ -2227,13 +2239,7 @@ void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
                   && first_item->item_type != MIR_import_item
                   && first_item->item_type != MIR_forward_item);
       if (setup_global (ctx, MIR_item_name (ctx, first_item), first_item->addr, first_item)
-          && item->item_type == MIR_func_item
-          && !func_redef_permission_p
-#if MIR_TARGET_APPLE_P /* target-code semantics: darwin SDK sources carry these */
-          /* macosx can have multiple equal external inline definitions of the same function: */
-          && strncmp (item->u.func->name, "__darwin", 8) != 0
-#endif
-      )
+          && func_redef_prohibited_p (ctx, item))
         MIR_get_error_func (ctx) (MIR_repeated_decl_error, "func %s is prohibited for redefinition",
                                   item->u.func->name);
     }
@@ -2249,6 +2255,50 @@ void MIR_load_external (MIR_context_t ctx, const char *name, void *addr) {
   if (strcmp (name, SETJMP_NAME) == 0 || (SETJMP_NAME2 != NULL && strcmp (name, SETJMP_NAME2) == 0))
     setjmp_addr = addr;
   setup_global (ctx, name, addr, NULL);
+}
+
+/* madc fork: where MIR_link binds import NAME, shared with MIR_module_link_check.
+   Returns the environment's item for it; when the environment has none, returns
+   NULL with *ADDR_P set to IMPORT_RESOLVER's address (NULL: it has none either,
+   and the import is undefined). */
+static MIR_item_t import_binding (MIR_context_t ctx, const char *name,
+                                  void *import_resolver (const char *), void **addr_p) {
+  MIR_item_t tab_item = item_tab_find (ctx, name, &environment_module);
+
+  *addr_p = NULL;
+  if (tab_item == NULL && import_resolver != NULL) *addr_p = import_resolver (name);
+  return tab_item;
+}
+
+size_t MIR_module_link_check (MIR_context_t ctx, MIR_module_t m,
+                              void *import_resolver (const char *),
+                              void (*report) (MIR_error_type_t error_type, const char *name,
+                                              void *arg),
+                              void *arg) {
+  MIR_error_type_t error_type;
+  const char *name;
+  void *addr;
+  size_t failures = 0;
+
+  mir_assert (m != NULL);
+  for (MIR_item_t item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
+       item = DLIST_NEXT (MIR_item_t, item)) {
+    if (item->item_type == MIR_import_item) {
+      if (import_binding (ctx, item->u.import_id, import_resolver, &addr) != NULL || addr != NULL)
+        continue;
+      error_type = MIR_undeclared_op_ref_error;
+      name = item->u.import_id;
+    } else if (item->export_p && func_redef_prohibited_p (ctx, item)
+               && item_tab_find (ctx, item->u.func->name, &environment_module) != NULL) {
+      error_type = MIR_repeated_decl_error;
+      name = item->u.func->name;
+    } else {
+      continue;
+    }
+    failures++;
+    if (report != NULL) report (error_type, name, arg);
+  }
+  return failures;
 }
 
 static void simplify_module_init (MIR_context_t ctx);
@@ -2282,8 +2332,8 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
         assert (item->data == NULL);
         if (simplify_func (ctx, item, TRUE)) item->data = (void *) 1; /* flag inlining */
       } else if (item->item_type == MIR_import_item) {
-        if ((tab_item = item_tab_find (ctx, item->u.import_id, &environment_module)) == NULL) {
-          if (import_resolver == NULL || (addr = import_resolver (item->u.import_id)) == NULL)
+        if ((tab_item = import_binding (ctx, item->u.import_id, import_resolver, &addr)) == NULL) {
+          if (addr == NULL)
             MIR_get_error_func (ctx) (MIR_undeclared_op_ref_error, "import of undefined item %s",
                                       item->u.import_id);
           MIR_load_external (ctx, item->u.import_id, addr);

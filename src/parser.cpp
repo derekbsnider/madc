@@ -23721,6 +23721,23 @@ const Program::Diagnostic *Program::last_diagnostic() const
     return &diagnostics.back();
 }
 
+const Program::Diagnostic *Program::first_error_diagnostic() const
+{
+    for ( size_t i = 0; i < diagnostics.size(); ++i )
+	if ( diagnostics[i].is_error() )
+	    return &diagnostics[i];
+    return NULL;
+}
+
+size_t Program::error_diagnostic_count() const
+{
+    size_t n = 0;
+    for ( size_t i = 0; i < diagnostics.size(); ++i )
+	if ( diagnostics[i].is_error() )
+	    ++n;
+    return n;
+}
+
 void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
 {
     Diagnostic diag;
@@ -77682,12 +77699,6 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
     EntryClassification r;
     parse_mode = ParseMode::InteractiveEntry;
     DiagnosticRenderMute mute;
-    auto first_error = [this]() -> const Diagnostic * {
-	for ( size_t i = 0; i < diagnostics.size(); ++i )
-	    if ( diagnostics[i].severity == DiagnosticSeverity::error )
-		return &diagnostics[i];
-	return (const Diagnostic *)NULL;
-    };
     auto synthesized = [](TokenBase *t, const std::string &message) {
 	Diagnostic d;
 	d.phase = DiagnosticPhase::parser;
@@ -77704,7 +77715,7 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
     TokenProgram *tp = tokenize_buffer(entry, display_name);
     if ( !tp )
     {
-	if ( const Diagnostic *d = first_error() )
+	if ( const Diagnostic *d = first_error_diagnostic() )
 	{
 	    r.diagnostic = *d;
 	    if ( d->cause == DiagnosticCause::end_of_input )
@@ -77721,7 +77732,7 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
 	return r;
     }
     parse(tp);
-    if ( const Diagnostic *d = first_error() )
+    if ( const Diagnostic *d = first_error_diagnostic() )
     {
 	r.diagnostic = *d;
 	if ( d->cause == DiagnosticCause::end_of_input
@@ -77794,11 +77805,8 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     bool parsed = parse_toplevel(tkProgram);
     entry_decls_end = top_decls.size();
     entry_funcs_end = pending_funcs.size();
-    if ( !parsed )
+    if ( !parsed || has_error_diagnostic() )
 	return false;
-    for ( size_t i = 0; i < diagnostics.size(); ++i )
-	if ( diagnostics[i].severity == DiagnosticSeverity::error )
-	    return false;
     for ( size_t i = decls_before; i < top_decls.size(); ++i )
     {
 	TopDecl &td = top_decls[i];

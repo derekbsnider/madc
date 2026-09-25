@@ -25,6 +25,7 @@
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
+#include <cxxabi.h>	// abi::__cxa_demangle: a link refusal names the symbol as ld does
 #include "madc_guards.h"	// the GUI memory-guard lift after the project parse
 #include "madc_posix_io.h"	// resolve_real_path — used by the MADC_CROSS_TARGET arm
 
@@ -1574,6 +1575,63 @@ MIR_item_t CirJitSession::find_item(const char *name, bool func) const
     return NULL;
 }
 
+// A symbol as the linker names it in a diagnostic: an Itanium name
+// demangled (ld's default), any other name as emitted.
+static std::string cir_link_display_name(const char *sym)
+{
+    if (!sym)
+	return std::string();
+    if (sym[0] == '_' && sym[1] == 'Z') {
+	int status = 0;
+	char *dem = abi::__cxa_demangle(sym, NULL, NULL, &status);
+	std::string shown = (dem && status == 0) ? dem : sym;
+	free(dem);
+	return shown;
+    }
+    return sym;
+}
+
+struct CirLinkRefusal
+{
+    Program *prog;
+    const char *entry_name;
+};
+
+// MIR_module_link_check's report: one diagnostic per failing symbol, recorded
+// and rendered on the entry, in the linker's words (ld's "undefined reference
+// to" / "multiple definition of"). The position is the entry's: MIR items
+// carry no source location.
+static void cir_record_link_refusal(MIR_error_type_t error_type,
+				    const char *name, void *arg)
+{
+    CirLinkRefusal *r = (CirLinkRefusal *)arg;
+    std::string msg = error_type == MIR_repeated_decl_error
+	? "multiple definition of '" : "undefined reference to '";
+    msg += cir_link_display_name(name) + "'";
+    r->prog->record_frontend_error(Program::DiagnosticPhase::compiler, msg,
+				   r->entry_name, 0, 0);
+}
+
+// The entry transaction's JIT half (plan §41.3). MIR_load_module and MIR_link
+// change the live context before they can fail: a loaded module's exports
+// join the environment, and a failed link leaves the module queued, so every
+// later link re-links it. A module either would refuse is refused HERE,
+// before either runs, by MIR's own rules and against the resolver the link
+// uses, so the context stays exactly as the earlier entries left it. (A
+// session is JIT-only: the object lane's resolver never applies.)
+bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name)
+{
+    // The link's view of the host (load_and_link's): the stdlib flavor's
+    // runtime is open (idempotent), the Program's host callbacks resolve.
+    cir_open_stdlib_runtime(prog->active_stdlib_flavor());
+    cir_active_host_regs = &prog->host_callback_regs;
+    CirLinkRefusal refusal = { prog, entry_name };
+    size_t failures = MIR_module_link_check(ctx, m, cir_import_resolver,
+					    cir_record_link_refusal, &refusal);
+    cir_active_host_regs = NULL;
+    return failures == 0;
+}
+
 bool CirJitSession::begin_live(const char *session_name)
 {
     if (ctx) teardown();
@@ -1598,13 +1656,30 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
     MIR_module_t m = build_tu_module(ctx, c2m, prog, entry_name,
 				     dump_tree, false, false, b, stop,
 				     /*project_tu=*/true);
-    if (!m)
+    if (!m) {
+	// build_tu_module rendered why on stderr (c2mir's own messages are
+	// not captured as rows); the entry records that it did not compile.
+	if (!prog->has_error_diagnostic())
+	    prog->set_error(Program::DiagnosticPhase::compiler,
+			    "the entry did not compile (the backend's"
+			    " diagnostic is on stderr)", entry_name, 0, 0);
 	return false;
+    }
+    // The builder's node arena backs the module, admitted or not.
     live_builders.push_back(b);
+    // Refused: never loaded, never one of live_mods, never `mod`.
+    if (!admits(m, prog, entry_name))
+	return false;
     live_mods.push_back(m);
     mod = m;
-    if (!load_and_link(entry_name, prog))
+    if (!load_and_link(entry_name, prog)) {
+	// Past admits(), a MIR fatal is internal; load_and_link rendered it
+	// on stderr, and the entry records it too.
+	prog->set_error(Program::DiagnosticPhase::compiler,
+			std::string("MIR error: ") + cir_mir_error_text,
+			entry_name, 0, 0);
 	return false;
+    }
     // What this module now defines for every later one: its exported
     // definitions (MIR marks the definition an export item names).
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;

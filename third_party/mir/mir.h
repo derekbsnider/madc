@@ -751,6 +751,22 @@ extern MIR_item_t MIR_get_global_item (MIR_context_t ctx, const char *name);
    privatized. */
 extern size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
                                              const char *const *unexport_names, size_t n);
+/* madc fork: would MIR_load_module and MIR_link accept module M, loaded ALONE into
+   the context as it stands?  A pure query of the context's own tables, run before
+   the load, since both calls change the context before they can fail (a loaded
+   export joins the environment; a failed link leaves its module queued).  It
+   applies their rules: each import resolves (the environment holds it, or
+   IMPORT_RESOLVER returns an address), and no exported func redefines an
+   environment item.  Calls REPORT (when not NULL) once per failing item, with
+   MIR_undeclared_op_ref_error or MIR_repeated_decl_error and the item's name, and
+   returns the number of failures; 0 means the load and the link's resolution
+   will succeed.  An incremental host (a REPL) refuses a failing module this way
+   and keeps its context intact. */
+extern size_t MIR_module_link_check (MIR_context_t ctx, MIR_module_t m,
+                                     void *(*import_resolver) (const char *),
+                                     void (*report) (MIR_error_type_t error_type,
+                                                     const char *name, void *arg),
+                                     void *arg);
 extern void MIR_load_module (MIR_context_t ctx, MIR_module_t m);
 extern void MIR_load_external (MIR_context_t ctx, const char *name, void *addr);
 extern void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_item_t item),

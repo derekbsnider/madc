@@ -4845,17 +4845,6 @@ bool internal_program_source_emit(::Program &self,
 					     out, display_name);
 }
 
-// Does the child carry at least one ERROR-severity diagnostic? The
-// build lane's silent-failure belt: a failed build must return rows
-// that SAY why (see internal_program_build_native).
-static bool child_has_error_row(::Program &child)
-{
-    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
-	if ( child.diagnostics[i].severity == ::Program::DiagnosticSeverity::error )
-	    return true;
-    return false;
-}
-
 // ONE owner for the build-surface kind vocabulary ("exe" | "obj") — the
 // path lane and the live-handle lane must never drift (a new kind lands
 // here once). False = unknown name; the caller owns the diagnostic.
@@ -4879,7 +4868,7 @@ static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
 // incomplete tree — parse_build and parse_run both refuse on it.
 static bool parse_tree_backend_ready(::Program &child)
 {
-    return child.tkProgram && !child_has_error_row(child);
+    return child.tkProgram && !child.has_error_diagnostic();
 }
 
 // The build surface (madcide IDE-10c): the CLI's AOT lane — tokenize +
@@ -4932,7 +4921,7 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 					  outpath.c_str(),
 					  std::vector<std::string>()) == 0;
 	}
-	if ( !ok && !child_has_error_row(child) )
+	if ( !ok && !child.has_error_diagnostic() )
 	    child.set_error(::Program::DiagnosticPhase::compiler,
 			    "build failed with no recorded diagnostic"
 			    " (backend output goes to stderr)",
@@ -5308,11 +5297,7 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
 // not raise (warnings never gate — the diag_error_count rule).
 static size_t child_error_count(::Program &child)
 {
-    size_t n = child.error_nodes;
-    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
-	if ( child.diagnostics[i].severity == ::Program::DiagnosticSeverity::error )
-	    ++n;
-    return n;
+    return child.error_nodes + child.error_diagnostic_count();
 }
 
 // The VALIDATED whole-TU refresh (code-graph MCP L3, design §6.6: "validated by
@@ -7446,7 +7431,7 @@ bool internal_program_parse_build(int64_t handle,
 	    ok = madc_cir_emit_native(&child, st->display_name.c_str(),
 				      kind, outpath.c_str(),
 				      std::vector<std::string>()) == 0;
-	if ( !ok && !child_has_error_row(child) )
+	if ( !ok && !child.has_error_diagnostic() )
 	    child.set_error(::Program::DiagnosticPhase::compiler,
 			    "build failed with no recorded diagnostic"
 			    " (backend output goes to stderr)",
@@ -7734,7 +7719,7 @@ bool internal_program_project_build(::Program &self,
 					  std::vector<std::string>(),
 					  self.registration_policy.enable_forest_bind,
 					  self.forest_bind_path) == 0;
-	if ( !ok && !child_has_error_row(synth) )
+	if ( !ok && !synth.has_error_diagnostic() )
 	    synth.set_error(::Program::DiagnosticPhase::compiler,
 			    "project build failed with no recorded diagnostic"
 			    " (run a project check for per-TU rows; backend"

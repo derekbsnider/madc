@@ -2968,6 +2968,9 @@ public:
 	std::string file;
 	int line = 0;
 	int column = 0;
+	// The one test of "an error, not a warning"
+	// (scripts/check-one-error-diagnostic-scan.sh).
+	bool is_error() const { return severity == DiagnosticSeverity::error; }	// allowed-exception: the owner
     };
 
 protected:
@@ -5766,6 +5769,11 @@ public:
 					 DiagnosticPhase phase, const char *file,
 					 int line, int column);
     const Diagnostic *last_diagnostic() const;
+    // The recorded errors (Diagnostic::is_error): the first (NULL: none),
+    // whether there is one, how many.
+    const Diagnostic *first_error_diagnostic() const;
+    bool has_error_diagnostic() const { return first_error_diagnostic() != NULL; }
+    size_t error_diagnostic_count() const;
     void report_warning(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0);
     void report_error(DiagnosticPhase phase, const std::string &message,

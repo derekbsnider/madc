@@ -34,14 +34,17 @@ namespace {
 typedef int (*int_fn)(void);
 typedef int (*int_int_fn)(int);
 
-// The first error the refused entry recorded, or "" when it has none.
+// The first error the refused entry recorded, or NULL when it has none.
+const ::Program::Diagnostic *first_error_diagnostic(InteractiveSession &s)
+{
+    return s.program().first_error_diagnostic();
+}
+
+// Its message, or "" when it has none.
 std::string first_error(InteractiveSession &s)
 {
-    const std::vector< ::Program::Diagnostic> &d = s.program().diagnostics;
-    for ( size_t i = 0; i < d.size(); ++i )
-	if ( d[i].severity == ::Program::DiagnosticSeverity::error )
-	    return d[i].message;
-    return std::string();
+    const ::Program::Diagnostic *d = first_error_diagnostic(s);
+    return d ? d->message : std::string();
 }
 
 // The §41.2 gate, under one standard. The session looks definitions up by
@@ -137,6 +140,44 @@ TEST_CASE("an entry with a statement that does not compile runs none of it")
     CHECK(s.entries() == 2);
 }
 
+// The entry transaction's JIT half (plan §41.3). An entry whose module cannot
+// link is refused before it loads, with the linker's diagnostic, and the live
+// context stays as the earlier entries left it. The refused entry's run and
+// global are not live, and no later module defines them. The failed module
+// used to stay loaded, so every later entry was refused, with no diagnostic.
+// Oracle: clang-repl-18 and -20 (tmp/repl/s2b/linkfail.repl) report "Symbols
+// not found: [ _Z1fv ]" and go on; a later `int k = 3;` gives 3, and once f
+// is defined, `f()` gives 7.
+TEST_CASE("an entry that cannot link is refused, and the session goes on (§41.3)")
+{
+    const char *stds[] = { "--std=c89", "--std=c17", "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("int f(void);"));
+	CHECK_FALSE(s.submit("int z = 5;\nf();"));
+	const ::Program::Diagnostic *d = first_error_diagnostic(s);
+	REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+	// ld's words; a C++ symbol demangled, as ld shows it.
+	CHECK(d->message == (i < 2 ? "undefined reference to 'f'"
+				   : "undefined reference to 'f()'"));
+	CHECK(d->phase == ::Program::DiagnosticPhase::compiler);
+	CHECK(d->file == "REPL[2]");
+	CHECK(s.data("z") == (void *)NULL);	// never loaded
+	CHECK(s.entries() == 1);
+
+	REQUIRE(s.submit("int k = 3;"));
+	CHECK(*(int *)s.data("k") == 3);
+	REQUIRE(s.submit("int f(void) { return 7; }"));
+	REQUIRE(s.submit("int r = 0;\nr = f();"));
+	CHECK(*(int *)s.data("r") == 7);
+	CHECK(s.entries() == 4);
+    }
+}
+
 // A refused entry's definitions stay out of every later module, whatever
 // refused it (plan §41.3): its parse, or its translation. Before, the next
 // entry's module defined them itself: a function written before a parse
@@ -150,12 +191,29 @@ TEST_CASE("a refused entry's definitions never come alive later (§41.3)")
 
     CHECK_FALSE(s.submit("int h(void) { return 1; }\nint x = ;"));
     CHECK_FALSE(s.submit("int r = f();"));
+    CHECK(first_error_diagnostic(s) != (const ::Program::Diagnostic *)NULL);
 
     REQUIRE(s.submit("int k = 0;\nk = f() - 4;"));
     CHECK(*(int *)s.data("k") == 3);
     CHECK(s.function("h") == (void *)NULL);
     CHECK(s.data("r") == (void *)NULL);
     CHECK(s.entries() == 2);
+}
+
+// C89's call of an undeclared function is an implicit declaration: the entry
+// is refused at link, as clang-repl-20 -xc -std=c89 refuses it ("Symbols not
+// found: [ f ]", tmp/repl/s2b/c89.repl), and defining f later lets a call
+// link (g = 7).
+TEST_CASE("an implicitly declared function links once it is defined (c89)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c89"));
+    REQUIRE(s.submit("int g = 0;"));
+    CHECK_FALSE(s.submit("f();"));
+    CHECK(first_error(s) == "undefined reference to 'f'");
+    REQUIRE(s.submit("int f(void) { return 7; }"));
+    REQUIRE(s.submit("g = f();"));
+    CHECK(*(int *)s.data("g") == 7);
 }
 
 // Slice 2 (D25): an entry's statements lower into its own entry function,

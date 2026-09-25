@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### An entry that cannot link is refused, and the session goes on
+
+In the interactive session, an entry whose module could not link used to end
+the session. After `int f(void);`, the entry `f();` failed at link, and so
+did every later entry, `int k = 3;` included. None of the failures recorded
+a diagnostic. Loading a module into MIR registers its exports before the
+link can fail, and a failed link leaves the module queued, so every later
+link re-linked it. This takes the common C path too: under c89 through c17,
+calling a function that is declared but not yet defined ends up here.
+
+Now the session asks MIR first. `MIR_module_link_check`, in madc's MIR
+subtree, answers from the context's own tables whether the module would load
+and link, without changing them, and the load and link share its two rules.
+A module that would fail is never loaded. The entry records one diagnostic
+per symbol, in ld's words: `undefined reference to 'f'`, or `'f()'` for a
+C++ symbol, demangled as ld shows it, and `multiple definition of ...`.
+The next entry links as if the refused one had never been tried:
+- clang-repl-18 and -20 report "Symbols not found: [ _Z1fv ]", then give
+  `k=3`, and `f=7` once `f` is defined. So does the session.
+- Under c89, as clang-repl-20 with `-xc` does, an undeclared `f();` is
+  refused, and `g = f();` gives 7 after `f` is defined.
+
+An entry that fails to compile now records a diagnostic too, instead of
+printing to stderr only. "Is this diagnostic an error" has one owner,
+`Diagnostic::is_error`, gated by `check-one-error-diagnostic-scan.sh`.
+
+Tests: `test_c2mir`, `test_repl_session`.
+
 ### A refused entry's definitions never come alive in a later entry
 
 In the interactive session, the definitions a refused entry had parsed were

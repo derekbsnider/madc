@@ -119,6 +119,9 @@ public:
     // (whatever an earlier module defines is declared, not defined:
     // Program::session_defined), loads and links it into the context,
     // records its exports into session_defined and runs its TU init.
+    // A module the context would refuse (plan §41.3) is refused before it
+    // loads, with a diagnostic per failing symbol on the Program, and
+    // leaves the context as the earlier entries left it.
     // function_code / data_address then search every appended module, the
     // newest first. The context lives until the session is destroyed.
     bool begin_live(const char *session_name);
@@ -174,6 +177,7 @@ private:
     std::vector<MIR_module_t> live_mods;
     std::vector<CirBuilder *> live_builders;
     MIR_item_t find_item(const char *name, bool func) const;
+    bool admits(MIR_module_t m, Program *prog, const char *entry_name);
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);
     void teardown();
