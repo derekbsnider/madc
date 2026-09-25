@@ -15253,11 +15253,13 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
     {
-	// sizeof(enum X) — enums are int-sized
-	if ( peekToken() && is_contextual_identifier_token(peekToken()) )
-	    nextToken(); // consume tag
-	query_value = sizeof(int);
-	have_value = true;
+	// sizeof(enum X): the tag's own DataDefENUM through the one
+	// elaborated-specifier resolver (int for an unknown tag), measured
+	// like any type — its declared or packed base sets its size
+	// ([dcl.enum]p8). This arm used to answer sizeof(int) for every enum,
+	// so `enum F : unsigned char` and a packed enum both read 4.
+	if ( TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true) )
+	    dd = &tdt->definition;
     }
     else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkCONST )
     {

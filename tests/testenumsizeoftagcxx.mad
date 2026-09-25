@@ -1,0 +1,16 @@
+// [dcl.enum]p8: sizeof an enumeration is sizeof its underlying type, spelled
+// with or without the `enum` keyword. The type-query arm answered sizeof(int)
+// for every `sizeof(enum X)`, so `enum F : unsigned char` read 4 through the
+// elaborated spelling and 1 through the bare name.
+// Oracle: g++ and clang++ -std=c++17 print "1 1 2 8".
+#include <cstdio>
+
+enum F : unsigned char { FA };
+enum class G : short { GA };
+
+int main()
+{
+    std::printf("%zu %zu %zu %zu\n", sizeof(enum F), sizeof(F),
+		alignof(enum G), sizeof(enum F *));
+    return 0;
+}

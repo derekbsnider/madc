@@ -1,0 +1,19 @@
+/* sizeof / _Alignof of an elaborated enum type (`sizeof(enum E)`) measure
+   the enum's own type. The type-query arm answered sizeof(int) for every
+   `enum X`, so a packed enum's type read 4 where gcc and clang read 1 or 2
+   (its objects already measured right), and `enum X *` read 4 too.
+   Oracle: gcc and clang -std=c17 print "1 2 4 8 2 8". */
+#include <stdio.h>
+
+enum __attribute__((packed)) P { PA = 255 };	/* unsigned char */
+enum __attribute__((packed)) Q { QA = -129 };	/* short */
+enum R { RA = 1 };				/* unsigned int */
+enum Fwd;					/* incomplete (GNU) */
+
+int main(void)
+{
+    printf("%zu %zu %zu %zu %zu %zu\n", sizeof(enum P), sizeof(enum Q),
+	   sizeof(enum R), sizeof(enum P *), _Alignof(enum Q),
+	   sizeof(enum Fwd *));
+    return 0;
+}

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### `sizeof(enum X)` measures the enum
+
+The `sizeof` / `alignof` type-query arm answered `sizeof(int)` for every
+elaborated `enum X`, whatever its base. `enum F : unsigned char` read 4 as
+`sizeof(enum F)` and 1 as `sizeof(F)` (g++: 1 both), and a packed enum's type
+read 4 while its objects read 1. The arm now resolves the tag through the one
+elaborated-specifier resolver and measures its type; `sizeof(enum X *)` reads
+the declarator like any other type-id.
+
+Tests: `testenumsizeoftagc`, `testenumsizeoftagcxx`.
+
 ### `__attribute__((packed))` on an enum
 
 GNU `packed` gives an enum with no declared base the smallest integer type
