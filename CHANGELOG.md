@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### `_Generic` and `__builtin_types_compatible_p` see a C enum's compatible type
+
+A C enum is compatible with its underlying integer type (C11 6.7.2.2p4),
+but madc compared type names as strings. So `_Generic(e, unsigned int: 1,
+default: 0)` chose `default` for an `enum A { A1 = 1 }` operand (gcc: 1), as
+did `_Generic(&e, unsigned int *: …)`. `__builtin_types_compatible_p(enum A,
+unsigned int)` answered 0, and `enum A g; extern unsigned int g;` was refused
+as "conflicting types". The first two were silent wrong answers. All three
+now use one compatibility relation, `c_type_signatures_compatible`. It
+matches an enum against its integer type at any depth of pointer, array or
+qualifier. Two distinct enums stay incompatible, as gcc and clang have them.
+
+Tests: `testenumgenericc`.
+
 ### A `bool`, character-type or win64 `long` constant keeps its value
 
 madc keeps a constant's value in a parse-time slot. The five slot accessors

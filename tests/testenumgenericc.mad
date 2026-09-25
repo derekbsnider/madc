@@ -1,0 +1,36 @@
+/* A C enum is compatible with its underlying integer type (C11 6.7.2.2p4),
+   so _Generic selects that type's association, __builtin_types_compatible_p
+   answers 1, and an object may be redeclared with that type. Two distinct
+   enums stay incompatible even when both are compatible with one integer
+   type. madc compared type names as strings: every _Generic below fell to
+   `default` (silent wrong answers), and the redeclaration of `ga` was
+   refused as "conflicting types".
+   Oracle: gcc and clang -std=c17 print "gen 1 0 3 4 5" and
+   "btc 1 0 0 1 1". */
+#include <stdio.h>
+
+enum A { A1 = 1 };
+enum B { B1 = 1 };
+enum S { S1 = -1 };
+enum A ga;
+extern unsigned int ga;
+
+int main(void)
+{
+    enum A a = A1;
+    enum S s = S1;
+    unsigned int ui = 0;
+    printf("gen %d %d %d %d %d\n",
+	   _Generic(a, unsigned int: 1, default: 0),
+	   _Generic(a, enum B: 2, default: 0),
+	   _Generic(ui, enum A: 3, default: 0),
+	   _Generic(s, int: 4, default: 0),
+	   _Generic(&a, unsigned int *: 5, default: 0));
+    printf("btc %d %d %d %d %d\n",
+	   __builtin_types_compatible_p(enum A, unsigned int),
+	   __builtin_types_compatible_p(enum A, enum B),
+	   __builtin_types_compatible_p(enum A, int),
+	   __builtin_types_compatible_p(enum A *, unsigned int *),
+	   __builtin_types_compatible_p(const enum A, const unsigned int));
+    return 0;
+}

@@ -14440,8 +14440,16 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
     }
     if ( dd == &ddDOUBLE )
 	return "double";
+    // A C enum carries the integer type it is compatible with (C11
+    // 6.7.2.2p4), which c_type_signatures_compatible reads; a C++ enum is a
+    // distinct type.
     if ( DataDefENUM *enum_dd = dynamic_cast<DataDefENUM *>(dd) )
-	return "enum:" + enum_dd->enum_name;
+    {
+	std::string sig = "enum:" + enum_dd->enum_name;
+	if ( enum_dd->c_compatible && enum_dd->underlying )
+	    sig += "=" + canonical_builtin_simple_type_name(enum_dd->underlying);
+	return sig;
+    }
     if ( DataDefCOMPLEX *complex_dd = dynamic_cast<DataDefCOMPLEX *>(dd) )
     {
 	std::string elem = canonical_builtin_simple_type_name(complex_dd->element_type);
@@ -14498,6 +14506,51 @@ static std::string canonical_builtin_simple_type_name(DataDef *dd)
 	default: break;
     }
     return dd->name;
+}
+
+// C type compatibility (6.2.7) over two type-name signatures
+// (canonical_builtin_simple_type_name): identical, or matching level by level
+// (the same cv prefix, the same pointer / array / complex wrapper) down to a C
+// enum against the integer type it is compatible with (6.7.2.2p4:
+// `enum A { A1 = 1 }` and unsigned int). Two distinct enums never match, even
+// when both are compatible with one integer type: compatibility is not
+// transitive (gcc and clang: __builtin_types_compatible_p(enum A, enum B) is
+// 0). The one comparison behind _Generic, __builtin_types_compatible_p and an
+// object's redeclaration; string equality selected `default` for an enum
+// controlling `unsigned int:` and refused `enum A g; extern unsigned g;`.
+static bool c_type_signatures_compatible(const std::string &a, const std::string &b)
+{
+    if ( a == b )
+	return true;
+    static const char *const cv_prefixes[] = {
+	"const volatile ", "const ", "volatile " };
+    for ( size_t i = 0; i < sizeof(cv_prefixes) / sizeof(cv_prefixes[0]); ++i )
+    {
+	size_t n = strlen(cv_prefixes[i]);
+	bool qa = a.compare(0, n, cv_prefixes[i]) == 0;
+	bool qb = b.compare(0, n, cv_prefixes[i]) == 0;
+	if ( qa || qb )
+	    return qa && qb && c_type_signatures_compatible(a.substr(n), b.substr(n));
+    }
+    static const char *const wrappers[] = { "ptr(", "array(", "complex(" };
+    for ( size_t i = 0; i < sizeof(wrappers) / sizeof(wrappers[0]); ++i )
+    {
+	size_t n = strlen(wrappers[i]);
+	bool wa = a.compare(0, n, wrappers[i]) == 0 && a.size() > n && a.back() == ')';
+	bool wb = b.compare(0, n, wrappers[i]) == 0 && b.size() > n && b.back() == ')';
+	if ( wa || wb )
+	    return wa && wb
+		&& c_type_signatures_compatible(a.substr(n, a.size() - n - 1),
+						b.substr(n, b.size() - n - 1));
+    }
+    bool ea = a.compare(0, 5, "enum:") == 0;
+    bool eb = b.compare(0, 5, "enum:") == 0;
+    if ( ea == eb )
+	return false;
+    const std::string &e = ea ? a : b;
+    const std::string &other = ea ? b : a;
+    size_t eq = e.find('=');
+    return eq != std::string::npos && e.compare(eq + 1, std::string::npos, other) == 0;
 }
 
 bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
@@ -14694,7 +14747,8 @@ TokenBase *Program::parse_generic_selection(TokenBase *generic_tb)
 	TokenBase *val = parseExpression(val_tb, true, false, false, 0, true);
 	if ( is_default )
 	    default_expr = val;
-	else if ( !selected && !assoc_sig.empty() && assoc_sig == ctrl_sig )
+	else if ( !selected && !assoc_sig.empty()
+	       && c_type_signatures_compatible(assoc_sig, ctrl_sig) )
 	    selected = val;
     }
     TokenBase *cb = nextToken();
@@ -29696,9 +29750,12 @@ DataDef *Program::object_declared_type(DataDef *type, unsigned object_cv)
 
 // Whether declaring the object again with `type` (+ `dims`, + top-level
 // `object_cv`) names a DIFFERENT type than `prior` was declared with (C11
-// 6.7p4 via 6.2.7; [basic.link]/11). Identity is the C type-name signature —
-// canonical_builtin_simple_type_name, the _Generic / __builtin_types_compatible_p
-// owner — of each object type with its top-level qualifiers. The signature is
+// 6.7p4 via 6.2.7; [basic.link]/11). The two are compared as C type-name
+// signatures — canonical_builtin_simple_type_name, the _Generic /
+// __builtin_types_compatible_p owner — of each object type with its top-level
+// qualifiers, through the one compatibility relation
+// (c_type_signatures_compatible: a C enum and its compatible integer type
+// agree). The signature is
 // coarse only toward "same" (every function-pointer type renders alike), so a
 // conflict it reports is real. An array's unknown bound is compatible with any
 // bound (6.7.6.2p6); bounds are compared only when both declarations are arrays
@@ -29711,7 +29768,7 @@ bool Program::object_redeclaration_conflicts(Variable *prior, DataDef *type,
     std::string now = canonical_builtin_simple_type_name(object_declared_type(type, object_cv));
     if ( was.empty() || now.empty() )
 	return false;
-    if ( was != now )
+    if ( !c_type_signatures_compatible(was, now) )
 	return true;
     if ( !dims || dims->empty() || prior->dims.empty() )
 	return false;
@@ -39425,7 +39482,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    TokenBase *close_tb = nextToken();
 		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
 			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_types_compatible_p" << flush;
-		    TokenInt *ti = new TokenInt(lhs_sig == rhs_sig ? 1 : 0);
+		    TokenInt *ti = new TokenInt(
+			c_type_signatures_compatible(lhs_sig, rhs_sig) ? 1 : 0);
 		    ti->setDataType(&ddINT);
 		    ti->file = tb->file;
 		    ti->line = tb->line;
