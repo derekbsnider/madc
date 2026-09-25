@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Every submitted entry has its own number
+
+An interactive entry's diagnostics cite `REPL[N]`. N counted only the entries
+that linked, so the entry after a refused one took the refused one's name,
+and two entries' diagnostics both cited `REPL[2]`. N now counts every entry
+submitted, refused ones included, as Julia's `REPL[N]` and IPython's `In [N]`
+do. `InteractiveSession::submitted()` reports that count, and `entries()`
+still counts the entries linked.
+
+Test: `test_repl_session`, "every submitted entry has its own number".
+
 ### An entry that cannot link is refused, and the session goes on
 
 In the interactive session, an entry whose module could not link used to end

@@ -35,7 +35,8 @@
 #include "madc_session.h"
 
 InteractiveSession::InteractiveSession()
-    : prog(new Program()), jit(new CirJitSession()), entry_count(0)
+    : prog(new Program()), jit(new CirJitSession()), entry_count(0),
+      submit_count(0)
 {
 }
 
@@ -58,7 +59,9 @@ bool InteractiveSession::begin(const std::string &std_option)
 bool InteractiveSession::submit(const std::string &text)
 {
     // Julia's spelling: the entry's diagnostics cite REPL[N]:line:column.
-    std::string name = "REPL[" + std::to_string(entry_count + 1) + "]";
+    // N counts every entry submitted, as Julia's REPL[N] and IPython's
+    // In [N] do, so a refused entry's number is never reused.
+    std::string name = "REPL[" + std::to_string(++submit_count) + "]";
     if ( !prog->parse_entry(text, name) )
 	return refuse();
     // Running the entry's init is a host-call boundary, like main() in

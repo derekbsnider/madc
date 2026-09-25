@@ -47,6 +47,8 @@ public:
     Program &program() { return *prog; }
     // The entries linked into the live context.
     unsigned entries() const { return entry_count; }
+    // The entries submitted, refused ones included: entry N is REPL[N].
+    unsigned submitted() const { return submit_count; }
 
 private:
     bool run_entry();
@@ -54,6 +56,7 @@ private:
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;
     unsigned entry_count;
+    unsigned submit_count;
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };

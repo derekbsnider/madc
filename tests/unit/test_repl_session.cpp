@@ -178,6 +178,27 @@ TEST_CASE("an entry that cannot link is refused, and the session goes on (§41.3
     }
 }
 
+// Entry N is REPL[N] for the Nth entry submitted, refused ones counted, as in
+// Julia's REPL[N] and IPython's In [N]. The entry after a refused one used to
+// take the refused one's name, so two entries' diagnostics cited REPL[2].
+TEST_CASE("every submitted entry has its own number, a refused one's included")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("int g = 1;"));
+    CHECK_FALSE(s.submit("int x = ;"));
+    const ::Program::Diagnostic *d = first_error_diagnostic(s);
+    REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+    CHECK(d->file == "REPL[2]");
+    CHECK_FALSE(s.submit("g = ;"));
+    d = first_error_diagnostic(s);
+    REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+    CHECK(d->file == "REPL[3]");
+    REQUIRE(s.submit("g = 2;"));
+    CHECK(s.submitted() == 4);
+    CHECK(s.entries() == 2);
+}
+
 // A refused entry's definitions stay out of every later module, whatever
 // refused it (plan §41.3): its parse, or its translation. Before, the next
 // entry's module defined them itself: a function written before a parse
