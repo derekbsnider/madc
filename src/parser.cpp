@@ -43348,8 +43348,18 @@ TokenBase *Program::finish_expression(std::stack<TokenBase *> &opStack,
     if ( !opStack.empty() )
 	DBG(cout << "Emptying operator stack" << endl);
 
+    // The engine's contract: when an expression returns, curToken() is the
+    // token it stopped ON (a consumed `;`) or after — its callers read it
+    // (the statement terminator, parse_expression_unit, return's `,`). Binding
+    // a pending operator can INSTANTIATE a template (the free-operator
+    // lowering: std::less<string>'s `__x < __y` instantiates basic_string's
+    // operator<), and those nested parses move the token context into the
+    // instantiated body. Keep the stop token across them.
+    TokenBase *stop_cur = _cur_token;
+    TokenBase *stop_prv = _prv_token;
     while ( !opStack.empty() )
 	popOperator(opStack, exStack);
+    setTokenContext(stop_cur, stop_prv);
 
     if ( exStack.size() > 1 )
 	Throw(exStack.top()) << "Malformed expression: " << exStack.size()
@@ -62639,6 +62649,17 @@ static bool instantiate_fn_template_binding(Program &pgm,
     }
 
     size_t base_depth = pgm.tokens.size();
+    // The OUTER parse's token context: an instantiation runs mid-expression
+    // (a call or an operator resolving to a template, finish_expression's
+    // free-operator lowering), and the body parse plus the boundary drain
+    // below move curToken/prevToken into the instantiated body. The outer
+    // parse resumes reading them: a statement's terminator check saw the
+    // body's `}` where its own consumed `;` was, and isUnaryPosition reads
+    // prevToken. Restored with the rest of the caller's state (the pattern
+    // builder, instantiate_free_operator_template's parseFunction path,
+    // restores the same pair).
+    TokenBase *saved_cur_token = pgm.curToken();
+    TokenBase *saved_prv_token = pgm.prevToken();
     if ( as_method )
     {
 	for ( size_t k = inj.size(); k-- > method_params_start; )
@@ -62808,6 +62829,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
     // cannot be repaired here; it is at least made visible above.
     while ( pgm.tokens.size() > base_depth )
 	pgm.nextToken();
+    pgm.setTokenContext(saved_cur_token, saved_prv_token);
 
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
