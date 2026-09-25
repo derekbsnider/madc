@@ -1803,8 +1803,8 @@ Balance first keeps stage 2 honest. Once the delimiters balance, the parser can 
 - The corpus is `tests/unit/test_repl_input.cpp`.
 - Not yet, and named here:
   - top-level statements under `--std=c*` / `--std=c++*` in interactive mode (a D3 relaxation; `--std=madc` has them already);
-  - a discarded `if constexpr` branch that omits its final `;`;
-  - an `enum {…}` definition's missing `;`. File mode accepts it too; it is fixed next, in its own commit.
+  - a discarded `if constexpr` branch that omits its final `;`.
+- Done since (`9cc3dfe49`): an `enum {…}` definition's missing `;` is refused in file mode too, and reads Incomplete as an entry. Four enum defects found on the way were fixed in their own commits: the typedef that dropped the tag, `packed`, `sizeof(enum X)`, and enums past 32 bits.
 
 First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, `madc -i`). Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
 
