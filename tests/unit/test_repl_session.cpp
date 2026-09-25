@@ -137,6 +137,27 @@ TEST_CASE("an entry with a statement that does not compile runs none of it")
     CHECK(s.entries() == 2);
 }
 
+// A refused entry's definitions stay out of every later module, whatever
+// refused it (plan §41.3): its parse, or its translation. Before, the next
+// entry's module defined them itself: a function written before a parse
+// error came alive there, and a C global whose initializer c2mir refuses
+// (gcc: "initializer element is not constant") refused every later entry.
+TEST_CASE("a refused entry's definitions never come alive later (§41.3)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("int f(void) { return 7; }"));
+
+    CHECK_FALSE(s.submit("int h(void) { return 1; }\nint x = ;"));
+    CHECK_FALSE(s.submit("int r = f();"));
+
+    REQUIRE(s.submit("int k = 0;\nk = f() - 4;"));
+    CHECK(*(int *)s.data("k") == 3);
+    CHECK(s.function("h") == (void *)NULL);
+    CHECK(s.data("r") == (void *)NULL);
+    CHECK(s.entries() == 2);
+}
+
 // Slice 2 (D25): an entry's statements lower into its own entry function,
 // which runs once, after the entry's module links. The oracle is clang-repl
 // (tmp/repl/s2/order2.repl): the same entries give log=123 y=2,

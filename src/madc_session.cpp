@@ -60,22 +60,34 @@ bool InteractiveSession::submit(const std::string &text)
     // Julia's spelling: the entry's diagnostics cite REPL[N]:line:column.
     std::string name = "REPL[" + std::to_string(entry_count + 1) + "]";
     if ( !prog->parse_entry(text, name) )
-	return false;
+	return refuse();
     // Running the entry's init is a host-call boundary, like main() in
     // madc_cir_execute: runtime services inherit the Program's policy.
     prog->push_runtime_scope();
-    bool ok;
+    bool linked = false;
+    bool ok = false;
     try
     {
-	ok = jit->append(prog.get(), prog->intern_file(name)) && run_entry();
+	linked = jit->append(prog.get(), prog->intern_file(name));
+	ok = linked && run_entry();
     }
     catch (...)
     {
 	prog->pop_runtime_scope();
+	if ( !linked )
+	    refuse();
 	throw;
     }
     prog->pop_runtime_scope();
-    return ok;
+    return linked ? ok : refuse();
+}
+
+// A refused entry (its parse, its translation or its link): none of its
+// definitions is live, and no later module defines one (plan §41.3).
+bool InteractiveSession::refuse()
+{
+    prog->withhold_entry_definitions();
+    return false;
 }
 
 // The entry's run (D25): its statements, in source order, lowered into the

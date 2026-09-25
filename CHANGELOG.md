@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A refused entry's definitions never come alive in a later entry
+
+In the interactive session, the definitions a refused entry had parsed were
+defined by every later entry's module. A function written before a parse
+error came alive in the next entry, although its entry was refused. A
+definition that could not compile or link, such as a C global with a
+non-constant initializer, was re-emitted by every later entry, so all of
+them were refused too. Now no later module defines a refused entry's own
+definitions. It declares them, so using one is refused by name.
+- A template instantiation or another vague-linkage definition may still be
+  defined by any later module that needs it.
+- So may a definition with internal linkage.
+- A header the entry included keeps its definitions, as it keeps its
+  include.
+
+Removing a refused entry's declarations as well is the rest of plan §41.3.
+
+Test: `test_repl_session`, "a refused entry's definitions never come alive
+later".
+
 ### An entry compiles after an earlier entry failed to compile
 
 In the interactive session, one refused compile made every later entry fail

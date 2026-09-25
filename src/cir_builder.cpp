@@ -30578,11 +30578,11 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		}
 		bool already_emitted = emitted_globals.count(v->name) != 0;
 		// An earlier module of the interactive session defines this object
-		// (plan §41.2a) and ran its construction: this module only declares
-		// it. A source global is declared by the dkGlobalVar pass (which
+		// (plan §41.2a) and ran its construction, or a refused entry did
+		// (§41.3): this module only declares it. A source global is declared by the dkGlobalVar pass (which
 		// never queued its dynamic init above); a built-in one is declared
 		// here.
-		if (session_defines(var_emit_name(*v))) {
+		if (session_defines(*v, var_emit_name(*v))) {
 			if (!already_emitted) {
 				m_extern_decl = true;
 				node_t gd = var_decl(v, NULL);
@@ -31818,10 +31818,10 @@ static std::string tu_init_symbol(const std::string &tu)
 	return out;
 }
 
-bool CirBuilder::session_defines(const std::string &sym) const
+bool CirBuilder::session_defines(const Variable &v, const std::string &sym) const
 {
-	return m_prog && !m_prog->session_defined.empty()
-	       && m_prog->session_defined.count(sym) != 0;
+	return m_prog && (m_prog->session_defined.count(sym) != 0
+			  || m_prog->session_withheld.count(&v) != 0);
 }
 
 node_t CirBuilder::translate_module(Program *prog)
@@ -32131,9 +32131,10 @@ node_t CirBuilder::translate_module(Program *prog)
 				// m_file_scope_decl arms the dynamic-init routing for
 				// non-constant scalar initializers (C++ modes).
 				// An earlier module of the interactive session owns
-				// this global (plan §41.2a): declare it `extern`, with
-				// no initializer, so this module reads the live storage.
-				const bool earlier = session_defines(var_emit_name(*td.var));
+				// this global (plan §41.2a), or a refused entry does
+				// (§41.3): declare it `extern`, with no initializer, so
+				// this module reads the live storage.
+				const bool earlier = session_defines(*td.var, var_emit_name(*td.var));
 				m_file_scope_decl = true;
 				m_extern_decl = earlier;
 				node_t gd = var_decl(td.var, earlier ? NULL : td.decl);
@@ -32269,9 +32270,9 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (TokenFunc *tf : funcs) {
 		FuncDef *tfd = dynamic_cast<FuncDef *>(tf->var.type);
 		// An earlier module of the interactive session defines this
-		// function (plan §41.2a): Pass 1 still prototypes it, and the call
-		// links to the live body.
-		if (session_defines(func_emit_name(tf->var, tfd)))
+		// function (plan §41.2a), or a refused entry did (§41.3): Pass 1
+		// still prototypes it, and the call links to the live body.
+		if (session_defines(tf->var, func_emit_name(tf->var, tfd)))
 			continue;
 		bool sys = tfd && prog->is_system_header_path(tf->file);
 		if (rs_probe && *rs_probe

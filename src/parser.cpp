@@ -77786,12 +77786,15 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     entry_end_token = NULL;
     entry_final_semicolon_omitted = false;
     entry_if_extendable = false;
-    size_t decls_before = top_decls.size();
-    size_t funcs_before = pending_funcs.size();
+    size_t decls_before = entry_decls_begin = entry_decls_end = top_decls.size();
+    size_t funcs_before = entry_funcs_begin = entry_funcs_end = pending_funcs.size();
     if ( !lex_entry(text, display_name) )
 	return false;
     register_included_lazy_surfaces();
-    if ( !parse_toplevel(tkProgram) )
+    bool parsed = parse_toplevel(tkProgram);
+    entry_decls_end = top_decls.size();
+    entry_funcs_end = pending_funcs.size();
+    if ( !parsed )
 	return false;
     for ( size_t i = 0; i < diagnostics.size(); ++i )
 	if ( diagnostics[i].severity == DiagnosticSeverity::error )
@@ -77827,9 +77830,40 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     {
 	ast.push_back(entry_function);
 	pending_funcs.push_back(entry_function);
+	entry_funcs_end = pending_funcs.size();
 	entry_function_name = entry_function->var.name;
     }
     return true;
+}
+
+// A refused entry's definitions (plan §41.3): the ones written in the entry
+// itself (an included header's stay, as its include does), with external
+// linkage (an internal-linkage copy is any module's own) and not vague (any
+// module may define a linkonce copy). No later module defines them again;
+// session_withheld says why.
+void Program::withhold_entry_definitions()
+{
+    for ( size_t i = entry_decls_begin; i < entry_decls_end && i < top_decls.size(); ++i )
+    {
+	const TopDecl &td = top_decls[i];
+	if ( td.kind != DeclKind::dkGlobalVar || !td.var
+	  || (td.var->flags & (vfEXTERN | vfSTATIC | vfLINKONCE)) )
+	    continue;
+	// A NULL origin carries its position in file/line.
+	bool in_entry = td.origin ? token_is_tu_origin(td.origin)
+	    : (!td.file || tkProgram->source == td.file);
+	if ( in_entry )
+	    session_withheld.insert(td.var);
+    }
+    for ( size_t i = entry_funcs_begin; i < entry_funcs_end && i < pending_funcs.size(); ++i )
+    {
+	TokenFunc *tf = pending_funcs[i] ? pending_funcs[i]->as_func_tok() : NULL;
+	FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
+	if ( !tf || !fd || fd->internal_linkage || fd->is_linkonce()
+	  || !token_is_tu_origin(tf) )
+	    continue;
+	session_withheld.insert(&tf->var);
+    }
 }
 
 TokenBase *Program::parse_expression_unit(TokenProgram *tp)

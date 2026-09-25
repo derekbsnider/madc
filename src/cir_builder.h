@@ -327,11 +327,13 @@ class CirBuilder {
 	// module of the interactive session defines (plan §41.2a): the
 	// `extern` form, exactly as if the Variable carried vfEXTERN.
 	bool m_extern_decl = false;
-	// Plan §41.2a: does a module already linked into the interactive
-	// session's live context define this emitted symbol
-	// (Program::session_defined)? Such a symbol is declared, never defined
-	// again, so this module links to the live definition.
-	bool session_defines(const std::string &sym) const;
+	// Plan §41.2a: does an earlier entry of the interactive session define
+	// `v` (emitted as `sym`), in a module linked into the live context
+	// (Program::session_defined), or in an entry the session refused (§41.3,
+	// Program::session_withheld)? Such a definition is declared, never
+	// defined again: this module links to the live one, or is refused
+	// naming the withheld one.
+	bool session_defines(const Variable &v, const std::string &sym) const;
 	// Wide string literals (parser addWideLiteral): the sanitized module
 	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
 	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for

@@ -5887,6 +5887,16 @@ public:
     // Unlike mir_cache_exports, where the consumer module wins every overlap,
     // here the earlier module does.
     std::set<std::string> session_defined;
+    // The definitions a REFUSED entry of the session parsed (plan §41.3):
+    // its functions (TokenFunc::var) and file-scope objects, the vague-
+    // linkage ones excepted. No later module defines one: the entry owns it
+    // and is not live, and re-emitting a body that did not compile or link
+    // refuses every later entry for the same reason. A later module declares
+    // it, so a use of it is refused naming it. A linkonce definition is not
+    // withheld: any module may define its own copy.
+    // Scaffolding for §41.3's Program rollback, which deletes it: a rolled-
+    // back entry leaves no definition behind to withhold.
+    std::set<const Variable *> session_withheld;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
@@ -6851,6 +6861,15 @@ public:
     TokenFunc *entry_function = NULL;
     unsigned entry_function_serial = 0;
     std::string entry_function_name;
+    // What the last entry's parse added to top_decls and pending_funcs:
+    // [begin, end) of each, its run included. Translation appends past the
+    // end (instantiations), and those are not the entry's own.
+    size_t entry_decls_begin = 0, entry_decls_end = 0;
+    size_t entry_funcs_begin = 0, entry_funcs_end = 0;
+    // The last entry was refused (by its parse, its translation or its
+    // link): withhold its definitions from every later module
+    // (session_withheld).
+    void withhold_entry_definitions();
     TokenFunc *ensure_entry_function(TokenBase *loc);
     void adopt_entry_statement(TokenBase *ts, TokenBase *head);
     void place_entry_initializers(size_t decls_before);
