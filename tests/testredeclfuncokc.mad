@@ -1,0 +1,25 @@
+// C: the function redeclarations C11 ALLOWS beside the one body stay legal
+// under the C-linkage redefinition rule (testredeclfuncc) — unprototyped and
+// prototyped declarations before and after the definition (6.7.6.3p14), a
+// `static` prototype then its definition, a call before the definition, a
+// block-scope prototype after it, and a prototype of a libc function the
+// header already declared.
+// Oracle: gcc -std=gnu17 and clang -std=gnu17 print testredeclfuncokc.expect.
+#include <stdio.h>
+#include <string.h>
+int g();
+int g(void);
+int g(void) { return 4; }
+int g();
+static int h(int);
+static int h(int x) { return x * 2; }
+int later(void);
+int use(void) { return later() + 1; }
+int later(void) { return 10; }
+size_t strlen(const char *);
+int main(void)
+{
+	int g(void);
+	printf("%d %d %d %d\n", g(), h(3), use(), (int)strlen("abc"));
+	return 0;
+}

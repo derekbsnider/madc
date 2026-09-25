@@ -69242,11 +69242,19 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // C — reads as a signature clash. Captured HERE, beside the prior sig, because
     // the definition's own parse may re-settle func->internal_linkage in between.
     bool redecl_prior_internal = false;
+    // ...and whether that prior C-linkage function already has a BODY: a C
+    // function is one function per name (no overloading), so a second body is
+    // a redefinition whatever its spelling (C11 6.9p3/p5; [basic.def.odr]/1 for
+    // extern "C"). C++-linkage same-signature bodies are
+    // fold_same_signature_overload's — twins the type model cannot yet split.
+    bool redecl_prior_bodied = false;
+    TokenBase *redecl_at = curToken();
     if ( func_already_declared && !owner_class
       && (is_c_mode() || current_linkage == LinkageSpec::C || func->c_linkage) )
     {
 	redecl_prior_sig = namespace_cpp_function_symbol(std::string(), id, func);
 	redecl_prior_internal = func->internal_linkage;
+	redecl_prior_bodied = func->body_parsed;
     }
     std::vector<std::string> redecl_spellings;
     bool redecl_varargs = false;
@@ -70496,7 +70504,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
     pop_param_scope();
 
+    if ( redecl_prior_bodied )
+	Throw(redecl_at) << "redefinition of '" << id << "'" << flush;
     func->declaration_only = false;
+    func->body_parsed = true;
     // A class madc defines: whatever external binding its declared member
     // carried (an asm label; bind_declared_cpp_symbol's user arm already
     // names the own body directly) now names THIS body — emit_symbol means

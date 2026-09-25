@@ -589,6 +589,14 @@ public:
     // can bind emit_symbol to the mangled external symbol. Stays false for any
     // madc-compiled (bodied) function.
     bool declaration_only;
+    // A body for this function has been PARSED in this TU — the positive mark
+    // the C-linkage redefinition rule reads (C11 6.9p3/p5: one body per TU).
+    // Not declaration_only's negation, and not a copy of it: !declaration_only
+    // answers "does a body exist" (it also counts a forest-restored header
+    // body, which fold_same_signature_overload's twin rule needs), while a
+    // FuncDef minted with no body (a lazy or machine registration) never set
+    // declaration_only at all. This asks only "was a body parsed here twice".
+    bool body_parsed = false;
     // True for a constructor declared `explicit` ([class.conv.ctor]): it
     // serves DIRECT-initialization only, so the overload ranker's
     // converting-constructor probe must not count it as an implicit
