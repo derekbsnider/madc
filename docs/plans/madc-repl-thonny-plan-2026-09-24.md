@@ -1976,6 +1976,30 @@ These decisions supersede the plan text they name.
     - A crash still restarts the backend with the state lost (D2).
   - Feeds §41.2 (persistent session) and §41.3 (rollback).
 
+### Diagnostic positions (owner, 2026-09-25)
+
+- **D26. A diagnostic cites where the problem STARTS, in gcc's screen columns, with the token underlined.**
+  - **Measured (2026-09-25).** Every tool reports the start: gcc 13, clang 18, Python 3.12 and Node 22 on the dev host. From their documentation: Julia (JuliaSyntax), Rust and LSP.
+    - They differ only in units:
+      - gcc: screen columns, tab stops every 8, one column per character;
+      - clang: bytes;
+      - Python: characters;
+      - LSP: UTF-16, 0-based.
+    - They also differ in whether a range's end is exclusive. The end appears only as the far side of a range, never as the headline position.
+    - The GNU Coding Standards specify gcc's form (1-based, tabs every 8); Emacs compilation mode and vim's quickfix list jump to it.
+  - **madc today.** A token's `column` is its last byte (gcc's "finish"), and consumers compute the start as `column - spelling length`. Measured consequences:
+    - `foo` at columns 28–30 is cited at 30, where gcc cites 28.
+    - A token split by a line splice is cited on its last line (madc `2:1`, gcc `1:28`); the subtraction goes negative there.
+    - The caret line counts bytes as spaces under a line printed with its tabs raw: a tab indent puts the caret 7 columns left of the token, and `éé` earlier on the line puts it 2 columns right.
+  - **The decision:**
+    - The lexer records each token's start (line, byte column) when it begins reading the token. `column` becomes the start (gcc's caret), and the token's end is kept for ranges.
+    - Bytes stay the stored unit. Diagnostics print gcc's screen columns, and the LSP layer converts to UTF-16 in its one owner.
+    - The caret line expands tabs, counts screen width, and underlines the token (`^~~`, gcc's form).
+    - The `column - spelling` compensations are deleted from the highlighter, the code graph and the LSP diagnostics path.
+  - **Order:**
+    - The caret drawing is a display bug under either anchor, so it is fixed first, in its own commit.
+    - The start-column switch is suite-wide: the fixtures that pin columns change, and the frozen-header pack stores token columns, so its format version is bumped. It rides the next merge wave.
+
 ### Next
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
