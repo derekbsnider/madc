@@ -40,6 +40,60 @@ int main() { printf("%zu %d\n", sizeof(BIG), (int)(BIG >> 32)); return 0; }
   brace. madc's retype at the `TokenENUM` close runs in C only, and the C++
   anonymous path keeps `int`.
 
+### B12. A C file-scope declaration with no type specifier is dropped
+
+- Found 2026-09-25, while measuring C89's implicit-int reading for §41.2a
+  slice 2b.
+
+```c
+#include <stdio.h>
+int y;
+y = 4;
+int main(void) { printf("%d\n", y); return 0; }
+```
+
+- gcc `-std=c89`: `4`, warning "data definition has no type or storage
+  class". gcc `-std=c17`: `4`, plus "type defaults to 'int'". clang
+  `-std=c89`: `4`. clang `-std=c17`: error, "ISO C99 and later do not support
+  implicit int". madc `--std=c89` and `--std=c17`: `0`, silently.
+- Undeclared, `x = 3;` at file scope is madc's "use of undeclared identifier
+  'x'" where gcc declares `int x = 3`.
+- Where: a file-scope `name = e;` under `knr_supported()` parses as an
+  expression (parseExprStmt), and parse_toplevel sends the result to
+  `tp->statements`, which nothing lowers. The implicit-int reading is a
+  declaration with no declaration-specifiers (C89 6.5; gcc extends it to
+  data definitions). It belongs in parseStatementBody's identifier arm,
+  beside the implicit-int function definition (`name(params) { body }`).
+- Keep the session's reading when fixing it: in an interactive entry, a
+  declared name's `y = 4;` is an assignment statement (D3), never a
+  redeclaration. The implicit-int reading is for file mode, and for an
+  undeclared name.
+
+### B13. `int(f(3));` in a function body is read as a declaration
+
+- Found 2026-09-25, while probing top-level cast statements for §41.2a
+  slice 2b. The same happens at an interactive entry's top level.
+
+```cpp
+#include <cstdio>
+int log_v = 0;
+int step(int d) { log_v = log_v * 10 + d; return d; }
+int main() { int(step(3)); printf("%d\n", log_v); }
+```
+
+- g++, clang++: `3`. madc: `0`, silently. The call never runs.
+- `int(step(3))` cannot be a declaration: a parenthesized declarator is
+  `( declarator )`, and `step(3)` is not one, since `3` is no
+  parameter-declaration ([stmt.ambig], [dcl.ambig.res]). So it is a
+  functional cast whose operand is the call.
+- Where: `datatype_statement_starts_functional_expr` (parser.cpp) decides
+  a type-headed statement is an expression only for its cases (a)–(e). A
+  group whose first declarator-id is followed by a non-declarator `(` list
+  falls through to parseDeclaration. As a declaration, madc reads
+  `int step(3)`, a variable `step` initialized to 3, which shadows the
+  function (an earlier line calling `step` failed with "called object is
+  not a function").
+
 ## Accepts invalid code
 
 ### B2. A stray top-level `}` is accepted
@@ -56,6 +110,43 @@ int main(void) { return 0; }
 - Where: the `tkClBrc` arm of `parseStatementBody`. When `compounds` is
   empty it should throw clang's wording. `extern "C"` blocks and namespace
   bodies consume their own `}`, so they are unaffected as far as checked.
+
+### B14. `:=` is accepted under every C and C++ standard
+
+- Found 2026-09-25, while checking which of the statement starters matter to
+  a C session (§41.2a slice 2b).
+
+```c
+int main(void) { x := 3; return x; }
+```
+
+- gcc `-std=c17`: "expected expression before '=' token" and "'x'
+  undeclared". clang: "use of undeclared identifier 'x'" and "expected
+  expression". madc `--std=c17` and `--std=c++17`: compiles, and the program
+  exits 3. madc-dialect syntax is silently accepted (invariant I8).
+- In a `--std=c17` session, `int g = 0;` then `g := 3;` is accepted and
+  leaves `g` at 0. The `:=` declares a global whose initializing statement
+  no one runs, since only madc's statement starter arms `:=`.
+- Where: the lexer makes `tkColEq` under every standard (lexer.cpp, the
+  `':'` arm), and parseStatementBody's `:=` arm has no dialect gate. The gate
+  is the madc dialect (`language_std == STD_MADC`), in one predicate beside
+  `ufcs_enabled()`. Under C and C++, `:` then `=` should lex as two tokens.
+
+### B15. A `for`-init declaration is accepted under `--std=c89`
+
+- Found 2026-09-25, in a `--std=c89` session probe for §41.2a slice 2b.
+
+```c
+int main(void) { int s = 0; for (int i = 0; i < 3; i++) s += i; return s; }
+```
+
+- gcc `-std=c89` (with or without `-pedantic-errors`): "'for' loop initial
+  declarations are only allowed in C99 or C11 mode". clang `-std=c89`: a
+  `-Wgcc-compat` warning, and it compiles. madc `--std=c89`: compiles, exit 3.
+- Where: the `for` statement's init clause (`TokenFOR::parse`) takes a
+  declaration under every standard. C99 6.8.5.3 added it; before C99 the
+  clause is an expression. The gate is `language_std` below `STD_C99` in the
+  C range (C78 to C95).
 
 ## Refuses valid code
 

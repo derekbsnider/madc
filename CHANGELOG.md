@@ -51,8 +51,9 @@ entry is submitted. After `int x = 10;`, the entry `x = x * 2;` leaves `x` at
   entries see it. A top-level `defer` runs when the entry ends.
 - An entry that does not compile runs none of its statements.
 
-Call statements run under `--std=c17` too. The rest of the D3 relaxation, a
-C standard's top-level assignment such as `x = 3;`, is the next slice.
+Statements run under the C and C++ standards too (D3). Under `--std=c89`,
+`c99`, `c17` and `c++17`, an entry's `x = 3;`, calls, `if`, loops, `switch`,
+blocks and labels run as they do under `--std=madc`.
 
 Tests: `test_repl_session`.
 

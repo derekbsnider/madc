@@ -1866,12 +1866,28 @@ The set is `Program::session_defined`, keyed by emitted symbol. After each link,
 - A top-level `defer` binds to the entry's run and runs when the entry ends.
 - An entry's own text is the TU origin (`lex_entry` sets `tkProgram->source`). A statement from a header the entry includes is refused, as script mode refuses it.
 - `argc` / `argv` do not resolve in an entry. D25's `%run` hands a program's argv to its main.
-- Call statements run under `--std=c17` too, because they are classified by their parse result. The statement *starters* (`file_scope_statement_starter`) are still `--std=madc`-only, so a C standard's `x = 3;` is slice 2b, where C89's implicit-int reading has to be kept.
+- Call statements run under `--std=c17` too, because they are classified by their parse result. (This slice's text said a C standard's `x = 3;` waited for slice 2b; it did not, since an assignment is classified by its result as well. See slice 2b.)
 - Gate: `tests/unit/test_repl_session.cpp`, 9 cases.
   - The clang-repl oracle (`tmp/repl/s2/order2.repl`) gives `log=123 y=2`, `log=12345 w=4` and `x=30`, and the session gives the same.
 - Known, and named here:
   - A refused entry's run stays registered by name, inert because it never reaches the builder's queues. §41.3 removes it with the entry's other leftovers.
   - Like every root function, the entry's run gets a host-call shim.
+
+**Built (2026-09-25), slice 2b, a C or C++ standard's top-level statements (D3):**
+- A session runs top-level statements under every standard: an assignment, a call, `if`, `for`, `while`, `do`, `switch`, a block and a label, under c89, c99, c17 and c++17 as under madc. The route is the post-parse classifier (`script_statement_result`), which is not gated on the dialect.
+  - The pre-parse starter (`file_scope_statement_starter`) stays madc-only. In a session, arming it would add nothing: `argc`/`argv` do not resolve in an entry, and `:=` is the dialect's.
+  - Gate: `tests/unit/test_repl_session.cpp`, "top-level statements run under every standard (D3)". Oracle: the same statements in a function body, gcc `-std=c89`/`c99`/`c17` and g++ `-std=c++17`: `3 6 100 105 100 1 41`.
+  - clang-repl-18 cannot serve as the C oracle: in C mode (`-Xcc -xc`) it keeps no declaration from one input to the next (`int y;` then `y = 4;` is "use of undeclared identifier 'y'"). It also prints no values yet ("Not implement yet."). For C, the oracle is gcc on each entry's statements in a function body.
+- **The classifier reads the grammar's verdict** (`baac688d5`). It had recognized an expression statement by the token at the top of its tree, and a cast (`ttBase`) was not on its list. So `(void)f();` in an entry was dropped under every C and C++ standard, and `static_cast<void>(f());` in a madc script and every C++ entry. It now reads the terminator the statement owes (`StatementTerminator::Expression`, recorded by `parseExprStmt`, kept by `parseStatement` as `last_statement_terminator`).
+  - An audit over the JIT suite (old list against the verdict) found one arm that hid it: a namespace-qualified statement re-entered `parseStatement` for the rest of itself. It continues in `parseStatementBody` now, and its extent starts at the namespace name.
+- **A delete statement is an expression statement** (`cccf592c2`). `parseKeyword` recorded no terminator for it, so `delete p }` compiled, and a top-level `delete p;` was dropped (its destructor never ran).
+- **C89's implicit-int reading, decided per standard:**
+  - A declared name's `x = 3;` is an assignment in a session under every standard, K&R-era C included. gcc's file scope reads it as a redeclaration (`int x = 3`), which in a session would be a D6 redefinition; Julia and IPython assign.
+  - An undeclared `f();` under a K&R-era standard (c78 to c17) keeps C's reading, an implicit function declaration and a call. madc does not read implicit-int *data* declarations in file mode either (BUGS.md B12); the session inherits that fix when it lands, for undeclared names only.
+- Found on the way, and filed as off the REPL's path: B12 (a file-scope `y = 4;` after `int y;` is silently dropped in C), B13 (`int(f(3));` read as a declaration), B14 (`:=` accepted under every C and C++ standard; in a C session `g := 3;` silently leaves `g` alone), B15 (a `for`-init declaration accepted under c89).
+- **Found on the way, ON the REPL's path, and next:** an entry that fails to link poisons the live context. Under every standard, `int f(void);` then `f();` is refused at link ("import of undefined item"), and every later entry is refused too, `int k = 3;` included, because the failed module stays loaded and each later `MIR_link` re-links it. The refusal also reaches no diagnostic (`first_error` is empty); MIR's error text goes to stderr only. Under c89 and c17 the ordinary C call of a not-yet-defined function takes this path.
+  - Fix, the JIT half of §41.3: `CirJitSession::append` validates the entry's module before `MIR_load_module` (each import resolves against the live modules' exports or the host resolver; no export redefines a live item). A module that fails is refused with a recorded diagnostic, never loaded, and never joins `live_mods`.
+- For slice 3: an OUT-OF-LINE member body (`S::~S() { … }`) is re-emitted by every later entry too ("func _ZN1SD2Ev is prohibited for redefinition"), so the `session_defined` filter is needed for every class member function, not only inline and synthesized ones. That refusal takes the poisoning path above.
 
 **Thread contract:** one session is driven by one thread. Concurrent clients go through the serialized verbs of D9.
 
@@ -2073,4 +2089,4 @@ These decisions supersede the plan text they name.
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
 
-D18 and the classifier are done. §41.2a slices 1 and 2 are done: entries persist, and an entry's statements run once, in source order. Slice 2b (a C or C++ standard's top-level statements, D3) is next, then slice 3 (C++ vague linkage). Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
+D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). Next is the entry transaction's JIT half (§41.3, pulled ahead of slice 3): a module that fails to link is refused with a diagnostic and never joins the live context, which today it poisons. Slice 3 (C++ vague linkage) follows, since its re-emission refusals take the same path. Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.

@@ -76874,7 +76874,10 @@ bool Program::token_is_tu_origin(TokenBase *tb) const
 // parse RESULT (script_statement_result) — there is deliberately no second
 // statement-vs-declaration disambiguator, parseStatement's own dispatch
 // stays the decider. Under an explicit --std=c*/c++* this never arms; the
-// result classifier produces the standard error instead.
+// result classifier produces the standard error instead. In an interactive
+// session the result classifier alone routes a C or C++ standard's
+// statements into the entry's run (D3); arming would add nothing there, as
+// argc/argv do not resolve in an entry and `:=` is the dialect's.
 bool Program::file_scope_statement_starter(TokenBase *tb)
 {
     if ( language_std != STD_MADC || !tb )

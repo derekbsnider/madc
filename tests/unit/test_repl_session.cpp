@@ -200,13 +200,38 @@ TEST_CASE("a top-level := declares a session global, and defer runs at the entry
     CHECK(*log_v == 1289);
 }
 
-TEST_CASE("call statements run under a C standard too (D3)")
+// D3: top-level statements are an interactive relaxation under every
+// standard, not only the madc dialect's. A declared name's `x = 3;` is an
+// assignment in a session, also under a K&R-era C standard, where gcc's file
+// scope would read a redeclaration (`int x = 3`). Oracle: the same
+// statements in a function body, gcc -std=c89/c99/c17 and g++ -std=c++17.
+TEST_CASE("top-level statements run under every standard (D3)")
 {
-    InteractiveSession s;
-    REQUIRE(s.begin("--std=c17"));
-    REQUIRE(s.submit("int g = 5;\nint bump(int a) { g += a; return g; }"));
-    REQUIRE(s.submit("bump(1); bump(2);"));
-    CHECK(*(int *)s.data("g") == 8);
+    const char *stds[] = { "--std=c89", "--std=c99", "--std=c17", "--std=c++17" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("int x = 10;\nint bump(int a) { x += a; return x; }"));
+	int *x = (int *)s.data("x");
+	REQUIRE(x != (int *)NULL);
+	REQUIRE(s.submit("x = 3;"));
+	CHECK(*x == 3);
+	REQUIRE(s.submit("bump(1); bump(2);"));
+	CHECK(*x == 6);
+	REQUIRE(s.submit("if (x > 5) x = 100; else x = 0;"));
+	CHECK(*x == 100);
+	REQUIRE(s.submit("{ int t = 5; x = x + t; }"));
+	CHECK(*x == 105);
+	REQUIRE(s.submit("while (x > 100) x--;"));
+	CHECK(*x == 100);
+	REQUIRE(s.submit("switch (x) { case 100: x = 1; break; default: x = 2; }"));
+	CHECK(*x == 1);
+	REQUIRE(s.submit("done: x += 40;"));
+	CHECK(*x == 41);
+    }
 }
 
 // A cast statement is an expression statement, whatever the cast: an
