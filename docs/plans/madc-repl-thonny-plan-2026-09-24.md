@@ -1878,6 +1878,7 @@ The set is `Program::session_defined`, keyed by emitted symbol. After each link,
   - The pre-parse starter (`file_scope_statement_starter`) stays madc-only. In a session, arming it would add nothing: `argc`/`argv` do not resolve in an entry, and `:=` is the dialect's.
   - Gate: `tests/unit/test_repl_session.cpp`, "top-level statements run under every standard (D3)". Oracle: the same statements in a function body, gcc `-std=c89`/`c99`/`c17` and g++ `-std=c++17`: `3 6 100 105 100 1 41`.
   - clang-repl-18 cannot serve as the C oracle: in C mode (`-Xcc -xc`) it keeps no declaration from one input to the next (`int y;` then `y = 4;` is "use of undeclared identifier 'y'"). It also prints no values yet ("Not implement yet."). For C, the oracle is gcc on each entry's statements in a function body.
+  - clang-repl-20 (20.1.2, installed 2026-09-25) keeps C declarations, and it agrees with this slice's per-standard reading. After `int y = 0;`, `y = 4;` is an assignment. Under `-std=c89`, an undeclared `x = 3;` is "use of undeclared identifier 'x'", and an undeclared `f();` is an implicit declaration and a call (`tmp/repl/s2b/c89.repl`). One gap: an uninitialized `int y;` fails every later input with "Duplicate definition of symbol 'y'".
 - **The classifier reads the grammar's verdict** (`baac688d5`). It had recognized an expression statement by the token at the top of its tree, and a cast (`ttBase`) was not on its list. So `(void)f();` in an entry was dropped under every C and C++ standard, and `static_cast<void>(f());` in a madc script and every C++ entry. It now reads the terminator the statement owes (`StatementTerminator::Expression`, recorded by `parseExprStmt`, kept by `parseStatement` as `last_statement_terminator`).
   - An audit over the JIT suite (old list against the verdict) found one arm that hid it: a namespace-qualified statement re-entered `parseStatement` for the rest of itself. It continues in `parseStatementBody` now, and its extent starts at the namespace name.
 - **A delete statement is an expression statement** (`cccf592c2`). `parseKeyword` recorded no terminator for it, so `delete p }` compiled, and a top-level `delete p;` was dropped (its destructor never ran).
@@ -1887,8 +1888,9 @@ The set is `Program::session_defined`, keyed by emitted symbol. After each link,
 - Found on the way, and filed as off the REPL's path: B12 (a file-scope `y = 4;` after `int y;` is silently dropped in C), B13 (`int(f(3));` read as a declaration), B14 (`:=` accepted under every C and C++ standard; in a C session `g := 3;` silently leaves `g` alone), B15 (a `for`-init declaration accepted under c89).
 - **Found on the way, ON the REPL's path, and next:** an entry that fails to link poisons the live context. Under every standard, `int f(void);` then `f();` is refused at link ("import of undefined item"), and every later entry is refused too, `int k = 3;` included, because the failed module stays loaded and each later `MIR_link` re-links it. The refusal also reaches no diagnostic (`first_error` is empty); MIR's error text goes to stderr only. Under c89 and c17 the ordinary C call of a not-yet-defined function takes this path.
   - Fix, the JIT half of §41.3: `CirJitSession::append` validates the entry's module before `MIR_load_module` (each import resolves against the live modules' exports or the host resolver; no export redefines a live item). A module that fails is refused with a recorded diagnostic, never loaded, and never joins `live_mods`.
-  - Oracle, clang-repl-18 (`tmp/repl/s2b/linkfail.repl`): `int f(); f();` reports "Symbols not found: [ _Z1fv ]", and the session goes on. A later `int k = 3;` gives `k=3`, and once `int f() { return 7; }` is entered, `f()` gives 7.
-  - cling is measured beside clang-repl-18 as the precedent for the C++ adaptation (§42, "cling, measured"). It doesn't answer this case: it wraps a lone `int f();` input into the run as a block-scope declaration, so the later `f();` is "undeclared" rather than a link failure.
+  - Oracle, clang-repl-18 and -20 (`tmp/repl/s2b/linkfail.repl`): `int f(); f();` reports "Symbols not found: [ _Z1fv ]", and the session goes on. A later `int k = 3;` gives `k=3`, and once `int f() { return 7; }` is entered, `f()` gives 7.
+  - C oracle, clang-repl-20 `-Xcc -xc -Xcc -std=c89` (`tmp/repl/s2b/c89.repl`): an undeclared `f();` reports "Symbols not found: [ f ]", the session goes on, and after `int f(void) { return 7; }`, `g = f();` gives 7.
+  - cling is measured beside clang-repl-18 as the precedent for the C++ adaptation (§42, "cling and clang-repl, measured"). It doesn't answer this case: it wraps a lone `int f();` input into the run as a block-scope declaration, so the later `f();` is "undeclared" rather than a link failure.
 - For slice 3: an OUT-OF-LINE member body (`S::~S() { … }`) is re-emitted by every later entry too ("func _ZN1SD2Ev is prohibited for redefinition"), so the `session_defined` filter is needed for every class member function, not only inline and synthesized ones. That refusal takes the poisoning path above.
 
 **Thread contract:** one session is driven by one thread. Concurrent clients go through the serialized verbs of D9.
@@ -1900,13 +1902,13 @@ First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, 
 **The rule:** Julia + IPython behaviour first, then cling, then clang-repl, weighted so the choice makes the most sense for C, C++ and madc language behaviour.
 - When Julia and IPython disagree, **Julia decides language semantics**: binding, redefinition, value display, interrupts.
 - **IPython decides the toolbox**: command names and what they do, history, introspection, numbered I/O.
-- **cling comes third.** It follows in IPython's footsteps in C++, and it is closer to IPython than clang-repl is (measured below), so it is often the C++ adaptation to look at. IPython itself is far more widely used, which is one reason it ranks above cling. **clang-repl comes fourth.** It is the evolution of cling seeded into clang: cling's developers built it to upstream cling's design into LLVM. So where clang-repl deliberately changed a cling behaviour, the change is weighed as the design's newer thinking. The `%` command prefix is an example (D13). The installed clang-repl-18 is an early point in that evolution. A later one (Ubuntu 24.04's `clang-tools-20` has 20.1) measures it better. (Owner, 2026-09-25; cling was added to the order and put ahead of clang-repl.)
+- **cling comes third.** It follows in IPython's footsteps in C++, and it is closer to IPython than clang-repl is (measured below), so it is often the C++ adaptation to look at. IPython itself is far more widely used, which is one reason it ranks above cling. **clang-repl comes fourth.** It is the evolution of cling seeded into clang: cling's developers built it to upstream cling's design into LLVM. So where clang-repl deliberately changed a cling behaviour, the change is weighed as the design's newer thinking. The `%` command prefix is an example (D13). clang-repl-18 is an early point in that evolution, and clang-repl-20 (20.1.2, `/usr/bin/clang-repl-20`, installed 2026-09-25) is the later one measured. (Owner, 2026-09-25; cling was added to the order and put ahead of clang-repl.)
 - madc's REPL is not competing with clang-repl or cling. Those projects have their own purpose, following and expectations. madc takes a behaviour from them only where it makes the most sense in the situation.
 - A precedent that C syntax cannot host is adapted, and the adaptation is stated.
 
 These decisions supersede the plan text they name.
 
-### cling, measured (2026-09-25)
+### cling and clang-repl, measured (2026-09-25)
 
 cling is the precedent for adapting IPython-style interaction to C++, so it is measured beside clang-repl. Where it differs from a decision below, the decision stands, and the difference is recorded here. The version is cling 1.2 on LLVM 18 (conda-forge, `~/.local/cling`; the owner may delete it later). Probe inputs are `tmp/repl/s2b/cl_*.repl`.
 
@@ -1920,7 +1922,12 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - redefinition: cling accepts it; clang-repl-18 refuses it ("redefinition of 'f'");
   - commands: cling has about 30, including `.x`/`.L` (run or load a file, like `%run`), `.class`/`.g`/`.typedef`/`.namespace`/`.files` (introspection), `.undo`, `.>` (redirection) and `.dynamicExtensions` (late binding); clang-repl-18 has 3, `%quit`, `%undo` and `%lib` (which loads a shared library);
   - undo: clang-repl-18's `%undo` works; cling's `.undo` crashed on our input.
-  - Later LLVM releases than 18 have been adding cling features to clang-repl (value printing among them). That is not measured here.
+- **clang-repl-20 (20.1.2), measured the same way.** It has moved little on these features since 18:
+  - a value without the final `;` is still "Not implement yet."; `"abc"` without its `;` even fails inside the value machinery ("no matching function for call to 'operator new[]'");
+  - a declaration without its `;` is refused ("expected ';' after top level declarator");
+  - redefinition is still refused, and in both 18 and 20 the refused redefinition also removes the earlier, valid definition (a later `f()` is "undeclared"). §41.3's rollback must not copy that: a refused entry takes only its own declarations with it;
+  - a refused input is rolled back whole, as in cling, and `%undo` works;
+  - C mode keeps declarations now (see slice 2b).
 
 ### Engine
 
