@@ -1897,16 +1897,18 @@ First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, 
 
 ## 42. Decisions (owner, 2026-09-25)
 
-**The rule:** Julia + IPython behaviour first, Clang-Repl second.
+**The rule:** Julia + IPython behaviour first, then cling, then clang-repl, weighted so the choice makes the most sense for C, C++ and madc language behaviour.
 - When Julia and IPython disagree, **Julia decides language semantics**: binding, redefinition, value display, interrupts.
 - **IPython decides the toolbox**: command names and what they do, history, introspection, numbered I/O.
+- **cling comes third.** It follows IPython's footsteps in C++, so it is often the adaptation to look at. **clang-repl comes fourth.** (Owner, 2026-09-25; cling was added to the order and put ahead of clang-repl.)
+- madc's REPL is not competing with clang-repl or cling. Those projects have their own purpose, following and expectations. madc takes a behaviour from them only where it makes the most sense in the situation.
 - A precedent that C syntax cannot host is adapted, and the adaptation is stated.
 
 These decisions supersede the plan text they name.
 
 ### cling, measured (2026-09-25)
 
-cling is the precedent for adapting IPython-style interaction to C++, so it is measured beside clang-repl. It does not decide: where it differs from a decision below, the decision stands, and the difference is recorded here. The version is cling 1.2 on LLVM 18 (conda-forge, `~/.local/cling`; the owner may delete it later). Probe inputs are `tmp/repl/s2b/cl_*.repl`.
+cling is the precedent for adapting IPython-style interaction to C++, so it is measured beside clang-repl. Where it differs from a decision below, the decision stands, and the difference is recorded here. The version is cling 1.2 on LLVM 18 (conda-forge, `~/.local/cling`; the owner may delete it later). Probe inputs are `tmp/repl/s2b/cl_*.repl`.
 
 - **Value display (D10, D11).** A final expression without `;` shows `(type) value`: `(int) 6`, `(const char[4]) "abc"`, `(char) 'a'`, `(double) 3.5000000`, `(int *) 0x…`. A declaration without `;` shows its value too (`int y = 7` gives `(int) 7`), as D10 decides. With `;` nothing shows. A struct shows only its address (`(P &) @0x…`), where D10 shows its fields, and D10 prints a scalar bare (`30`, not `(int) 30`).
 - **A refused input (§41.3).** The whole input is rolled back: after `int z = 1; undeclared_fn(); int w = 2;` is refused, `z` is undeclared. That is §41.3's rule. Today madc keeps the refused entry's declarations.
