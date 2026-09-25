@@ -4734,7 +4734,25 @@ public:
     // should_tokenize_include.
     std::map<std::string, std::string> include_guard_by_file;
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
-    std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
+    // One OPEN conditional group (#if / #ifdef / #ifndef ... #endif), pushed
+    // at its opening directive and popped at its #endif: whether a branch has
+    // been taken, the group's latest directive (#elif / #else move it — gcc
+    // names an unterminated group by it), and where the group opened.
+    enum class CondDirective : unsigned char { If, Ifdef, Ifndef, Elif, Else };
+    struct ConditionalGroup
+    {
+	bool taken;
+	CondDirective directive;
+	int line;
+	int column;
+    };
+    std::stack<ConditionalGroup> cond_groups;
+    // A file closes every conditional group it opens (C11 6.10.1's groups
+    // never span a source file's end — gcc "unterminated #if", clang
+    // "unterminated conditional directive"). Each file's token loop ends by
+    // calling this with the group depth it started at; a group still open
+    // is refused at its opening directive.
+    void refuse_open_conditional_groups(size_t groups_at_entry);
     // --- B4a pack-time forest recording (grove payload v2; see
     // docs/plans/2026-07-04-forest-default-mode-design.md §2). Populated during
     // lex+parse ONLY when pack_recording is on (--freeze / --freeze-append);

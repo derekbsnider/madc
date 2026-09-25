@@ -1,0 +1,10 @@
+// C11 6.10.1: a group whose taken branch never comes (`#if 0` with no #else,
+// #elif or #endif) is skipped to the end of the file — and is still open
+// there. madc reported "Unterminated conditional compilation block" at the
+// end of input; the group's opening line and gcc's wording are the ones to
+// report.
+// Oracle: gcc "9: error: unterminated #if", clang "9:2: error: unterminated
+// conditional directive".
+int main(void) { return 0; }
+#if 0
+int skipped;

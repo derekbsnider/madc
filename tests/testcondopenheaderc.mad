@@ -1,0 +1,7 @@
+// C11 6.10.1: each source file closes the groups it opens — a header whose
+// include guard never reaches #endif is refused IN THE HEADER, not carried
+// back into the includer (where a later #endif would have closed it).
+// Oracle: gcc "testcondopenheaderc_helper.h:1: error: unterminated #ifndef",
+// clang "...helper.h:1:2: error: unterminated conditional directive".
+#include "testcondopenheaderc_helper.h"
+int main(void) { return helper_value; }

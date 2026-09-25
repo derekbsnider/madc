@@ -220,7 +220,7 @@ struct MadcSharedPreludeCache
     {
 	if ( !pgm.compile_group || pgm.pack_recording || pgm.keep_trivia
 	  || pgm.suppress_auto_include_scan || !pgm._pending_pack_ops.empty()
-	  || !pgm.ifdef_stack.empty() || !pgm.ifdef_done_stack.empty()
+	  || !pgm.ifdef_stack.empty() || !pgm.cond_groups.empty()
 	  || !pgm._macro_save_stack.empty() )
 	    return false;
 	const std::string *embedded = find_embedded_header(header);
@@ -626,7 +626,7 @@ struct MadcSharedPreludeCache
 	Entry &entry)
     {
 	if ( !pgm._pending_pack_ops.empty() || !pgm._macro_save_stack.empty()
-	  || !pgm.ifdef_stack.empty() || !pgm.ifdef_done_stack.empty() )
+	  || !pgm.ifdef_stack.empty() || !pgm.cond_groups.empty() )
 	    return false;
 	entry.tokens.reserve(pgm.tokens.size() - begin);
 	for ( size_t i = begin; i < pgm.tokens.size(); ++i )
@@ -2060,11 +2060,13 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 		pack_unit_subtree[interned].insert(interned);
 		pack_unit_stack.push_back(interned);
 	}
+	size_t groups_at_entry = cond_groups.size();
 	while ( (itb = getRealToken()) )
 	{
 		itb->file = interned;
 		push_token_with_literal_concat(itb);
 	}
+	refuse_open_conditional_groups(groups_at_entry);
 	if ( pack_recording && !protocol_visit )
 		pack_unit_stack.pop_back();
 	source = std::move(saved);
@@ -6682,6 +6684,10 @@ TokenBase *Program::_getToken()
 	    // #include directive
 	    if ( isalpha(source.peek()) )
 	    {
+		// Where the directive's name starts: a conditional group
+		// records it as its opening position.
+		int dir_line = source.line();
+		int dir_col = source.column() + 1;
 		std::string directive;
 		// '_' is accepted so the compound directive #include_next is
 		// read whole (no standard directive but include_next uses '_').
@@ -7062,11 +7068,13 @@ TokenBase *Program::_getToken()
 			pack_unit_subtree[_interned2].insert(_interned2);
 			pack_unit_stack.push_back(_interned2);
 		    }
+		    size_t groups_at_entry = cond_groups.size();
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
 			push_token_with_literal_concat(itb);
 		    }
+		    refuse_open_conditional_groups(groups_at_entry);
 		    if ( pack_recording && !protocol_visit )
 			pack_unit_stack.pop_back();
 		    source = std::move(saved);
@@ -7279,7 +7287,9 @@ TokenBase *Program::_getToken()
 		    pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
-		    ifdef_done_stack.push(active);
+		    cond_groups.push({ active, directive == "ifdef" ? CondDirective::Ifdef
+							: CondDirective::Ifndef,
+				       dir_line, dir_col });
 		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -7294,7 +7304,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    bool active = evaluateIfCondition();
 		    ifdef_stack.push(active);
-		    ifdef_done_stack.push(active);
+		    cond_groups.push({ active, CondDirective::If, dir_line, dir_col });
 		    DBG(std::cout << "#if -> " << (active ? "true" : "false") << std::endl);
 		    if ( !active )
 			return skipConditionalBlock();
@@ -7304,7 +7314,8 @@ TokenBase *Program::_getToken()
 		{
 		    if ( ifdef_stack.empty() )
 			Throw << "#elif without matching #if/#ifdef" << flush;
-		    bool already_done = ifdef_done_stack.top();
+		    cond_groups.top().directive = CondDirective::Elif;
+		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
 		    if ( already_done )
 		    {
@@ -7316,7 +7327,7 @@ TokenBase *Program::_getToken()
 		    bool active = evaluateIfCondition();
 		    ifdef_stack.push(active);
 		    if ( active )
-			ifdef_done_stack.top() = true;
+			cond_groups.top().taken = true;
 		    DBG(std::cout << "#elif -> " << (active ? "true" : "false") << std::endl);
 		    if ( !active )
 			return skipConditionalBlock();
@@ -7326,12 +7337,13 @@ TokenBase *Program::_getToken()
 		{
 		    if ( ifdef_stack.empty() )
 			Throw << "#else without matching #if/#ifdef" << flush;
-		    bool already_done = ifdef_done_stack.top();
+		    cond_groups.top().directive = CondDirective::Else;
+		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
 		    bool active = !already_done;
 		    ifdef_stack.push(active);
 		    if ( active )
-			ifdef_done_stack.top() = true;
+			cond_groups.top().taken = true;
 		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -7345,7 +7357,7 @@ TokenBase *Program::_getToken()
 		    if ( ifdef_stack.empty() )
 			Throw << "#endif without matching #if/#ifdef" << flush;
 		    ifdef_stack.pop();
-		    ifdef_done_stack.pop();
+		    cond_groups.pop();
 		    DBG(std::cout << "#endif" << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -8840,7 +8852,7 @@ TokenBase *Program::skipConditionalBlock()
 	    {
 		// this #endif closes our block
 		ifdef_stack.pop();
-		ifdef_done_stack.pop();
+		cond_groups.pop();
 		DBG(std::cout << "skipConditionalBlock: popped, stack now=" << ifdef_stack.size() << std::endl);
 		return getToken();
 	    }
@@ -8850,12 +8862,13 @@ TokenBase *Program::skipConditionalBlock()
 	{
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
-	    bool already_done = ifdef_done_stack.top();
+	    cond_groups.top().directive = CondDirective::Else;
+	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
 	    bool active = !already_done;
 	    ifdef_stack.push(active);
 	    if ( active )
-		ifdef_done_stack.top() = true;
+		cond_groups.top().taken = true;
 	    if ( active )
 		return getToken();
 	    // still false, keep skipping
@@ -8863,7 +8876,8 @@ TokenBase *Program::skipConditionalBlock()
 	else if ( depth == 0 && dir == "elif" )
 	{
 	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
-	    bool already_done = ifdef_done_stack.top();
+	    cond_groups.top().directive = CondDirective::Elif;
+	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
 	    if ( already_done )
 	    {
@@ -8878,7 +8892,7 @@ TokenBase *Program::skipConditionalBlock()
 		bool active = evaluateIfCondition();
 		ifdef_stack.push(active);
 		if ( active )
-		    ifdef_done_stack.top() = true;
+		    cond_groups.top().taken = true;
 		DBG(std::cout << "#elif (in skip) -> " << (active ? "true" : "false") << std::endl);
 		if ( active )
 		    return getToken();
@@ -8892,8 +8906,27 @@ TokenBase *Program::skipConditionalBlock()
 		source.get();
 	}
     }
-    Throw << "Unterminated conditional compilation block" << flush;
+    // The file ended inside a skipped group: the group is still open.
+    refuse_open_conditional_groups(cond_groups.empty() ? 0 : cond_groups.size() - 1);
     return NULL;
+}
+
+void Program::refuse_open_conditional_groups(size_t groups_at_entry)
+{
+    if ( cond_groups.size() <= groups_at_entry )
+	return;
+    const ConditionalGroup &g = cond_groups.top();
+    const char *name = "if";
+    switch ( g.directive )
+    {
+	case CondDirective::If:     name = "if";     break;
+	case CondDirective::Ifdef:  name = "ifdef";  break;
+	case CondDirective::Ifndef: name = "ifndef"; break;
+	case CondDirective::Elif:   name = "elif";   break;
+	case CondDirective::Else:   name = "else";   break;
+    }
+    source.setpos(g.line, g.column);
+    Throw << "unterminated #" << name << flush;
 }
 
 // evaluate #if condition: supports defined(NAME), !, &&, ||, ?:, the
@@ -10605,6 +10638,7 @@ TokenProgram *Program::tokenize(const char *fname)
 	// chunk grain — sub-millisecond slices; the check is one counter
 	// compare, and parse_yield_point itself no-ops without tasks).
 	uint32_t pump = 0;
+	size_t groups_at_entry = cond_groups.size();
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
@@ -10617,6 +10651,7 @@ TokenProgram *Program::tokenize(const char *fname)
 		lex_abort_if_task_cancelled();	// MT-3b: clean abort
 	    }
         }
+	refuse_open_conditional_groups(groups_at_entry);
     }
     catch(const char *err_msg)
     {
@@ -10701,6 +10736,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 	// Stage-2: the same yield grain as tokenize() — this is the pump
 	// the IDE's parse handles ride (parse_open -> tokenize_buffer).
 	uint32_t pump = 0;
+	size_t groups_at_entry = cond_groups.size();
 	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
@@ -10711,6 +10747,7 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 		lex_abort_if_task_cancelled();	// MT-3b: clean abort
 	    }
 	}
+	refuse_open_conditional_groups(groups_at_entry);
     }
     catch(const char *err_msg)
     {
