@@ -2097,9 +2097,10 @@ public:
     // declaration — readers fall back to int. Serves __underlying_type,
     // which both libstdc++'s and libc++'s std::underlying_type are built
     // on. A FIXED base also drives the enum's LAYOUT via set_underlying
-    // below; the computed base is recorded by direct assignment and keeps
-    // madc's historical int layout (gcc without -fshort-enums: unfixed
-    // enums are int-sized).
+    // below. A computed base is recorded by direct assignment; the layout of
+    // an unfixed enum is chosen separately (set_layout — TokenENUM::parse):
+    // int unless its values need more (gcc without -fshort-enums), or the
+    // packed base.
     DataDef *underlying = NULL;
     // Was the base DECLARED (`enum E : short`)? [conv.prom]/4 promotes a
     // fixed enum to its underlying type; an unfixed one promotes by its
@@ -2136,11 +2137,26 @@ public:
     {
 	underlying = u;
 	fixed_base = (u != NULL);
-	if ( u && u->size )
+	set_layout(u);
+    }
+    // The enum's STORAGE: what its objects are laid out and lowered as (size
+    // and raw type). A fixed base is its own storage; an unfixed enum keeps
+    // the constructor's int unless its values need a wider type, or it is
+    // packed. The storage never changes what the base IS, nor whether it
+    // was declared.
+    void set_layout(DataDef *storage)
+    {
+	if ( storage && storage->size )
 	{
-	    size = u->size;
-	    _type = (uint32_t)u->rawtype();
+	    size = storage->size;
+	    _type = (uint32_t)storage->rawtype();
 	}
+    }
+    // The forest restore's twin of set_layout: the recorded size and raw type.
+    void restore_layout(size_t storage_size, uint32_t storage_rawtype)
+    {
+	size = storage_size;
+	_type = storage_rawtype;
     }
     // A PACKED enum with no declared base (GNU `__attribute__((packed))`):
     // its computed base is the smallest integer type that holds the range,

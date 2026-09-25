@@ -2577,15 +2577,23 @@ void CirFrozenForest::materialize_pass()
 		if (!nm || !*nm)
 			continue;
 		DataDefENUM *edd = new DataDefENUM(std::string(nm));
-		if (r.size)
-			edd->size = r.size;
-		// v27: re-adopt the FIXED underlying base (ref0, a pinned
-		// primitive id) — set_underlying restores size AND raw type
-		// so the restored enum lowers to the same C type the live
-		// parse emitted ([dcl.enum]p8; libc++ `enum class : uint8_t`).
+		// v48: the underlying type (ref0, a pinned primitive id) and
+		// whether it was DECLARED (DF_ENUM_FIXED_BASE) restore apart —
+		// promotion reads them apart ([conv.prom]/3-4); v27-v47 re-adopted
+		// every recorded base as declared. The STORAGE (size + raw type)
+		// restores verbatim, so the restored enum lowers to the same C
+		// type the live parse emitted ([dcl.enum]p8; libc++
+		// `enum class : uint8_t`, a packed enum, a 64-bit range).
 		if (r.ref0)
 			if (DataDef *u = arena_swizzle(r.ref0, by_id))
-				edd->set_underlying(u);
+			{
+				edd->underlying = u;
+				edd->fixed_base =
+					(r.flags & madc::dis::DF_ENUM_FIXED_BASE) != 0;
+			}
+		if (r.size)
+			edd->restore_layout(r.size, r.datatype ? r.datatype
+						     : (uint32_t)edd->rawtype());
 		if (r.canon_id)
 			if (const char *cn = a.c_str(r.canon_id))
 				edd->set_canonical_spelling(cn);

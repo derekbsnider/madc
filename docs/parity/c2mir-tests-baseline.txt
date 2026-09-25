@@ -52,7 +52,6 @@ new/cleanup-matrix.c
 new/cleanup-prefix-attr.c
 new/cleanup-return.c
 new/empty-asm.c
-new/enum_test.c
 new/int_min.c
 new/issue186-1.c
 new/issue189.c

@@ -1,0 +1,32 @@
+// [dcl.enum]/7-8, [conv.prom]/3: an enum whose values need more than int is
+// stored in a type that holds them, and promotes to the first of int /
+// unsigned int / long that does. madc stored every enum with no declared base
+// in an int and kept each enumerator's value in a 32-bit slot, so
+// `enum Big { B = 0x100000000LL }` read 0 (and B + 1 read 1), and
+// `enum U { M = 0xFFFFFFFFu }` read back as -1.
+// Oracle: g++ and clang++ -std=c++17 print "sizes 8 4 8 8 16",
+// "values 4294967297 4294967295 8589934592 12884901888" and "overloads 2 3 1".
+#include <cstdio>
+
+enum Big { BIG_A = 0x100000000LL, BIG_B };
+enum Umax { U_MAX = 0xFFFFFFFFu };
+enum { ANON_A = 0x200000000LL } anon = ANON_A;
+typedef enum { ALIAS_A = 0x300000000LL } Alias;
+struct holds { Big b; char c; };
+
+int f(int) { return 1; }
+int f(long) { return 2; }
+int f(unsigned) { return 3; }
+
+int main()
+{
+    Big b = BIG_B;
+    Umax u = U_MAX;
+    Alias alias = ALIAS_A;
+    std::printf("sizes %zu %zu %zu %zu %zu\n", sizeof(Big), sizeof(Umax),
+		sizeof(anon), sizeof(Alias), sizeof(holds));
+    std::printf("values %lld %u %lld %lld\n", (long long)b, (unsigned)u,
+		(long long)anon, (long long)alias);
+    std::printf("overloads %d %d %d\n", f(b), f(u), (int)(u == U_MAX));
+    return 0;
+}

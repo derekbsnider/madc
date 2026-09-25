@@ -143,6 +143,13 @@ enum DefFlags : uint32_t {
 						// DF_TYPEDEF_TAG_ALIAS kind-scoping precedent — all
 						// 32 bits are taken)
 	DF_IS_VARARGS        = 1u << 10,
+	DF_ENUM_FIXED_BASE   = 1u << 10,	// v48, DK_ENUM-scoped: DataDefENUM::fixed_base
+						// (the base was DECLARED, `enum E : T`). A
+						// recorded COMPUTED base (ref0) is not declared:
+						// the restore used to re-adopt every base as
+						// declared, so a restored unfixed enum promoted
+						// to its underlying type where a live parse
+						// promotes by value range ([conv.prom]/3)
 	DF_IS_VOID_PARAMS    = 1u << 11,
 	DF_DECLARATION_ONLY  = 1u << 12,
 	DF_IS_CONST_METHOD   = 1u << 13,	// FuncDef::is_const_method

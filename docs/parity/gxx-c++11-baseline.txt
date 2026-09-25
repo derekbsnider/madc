@@ -238,7 +238,6 @@ g++.dg/cpp0x/desig2.C
 g++.dg/cpp0x/desig3.C
 g++.dg/cpp0x/dr2061.C
 g++.dg/cpp0x/dyncast1.C
-g++.dg/cpp0x/enum17.C
 g++.dg/cpp0x/enum30.C
 g++.dg/cpp0x/enum44.C
 g++.dg/cpp0x/fntmpdefarg10.C

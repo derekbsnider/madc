@@ -1,0 +1,23 @@
+/* An enum whose values need more than int is stored in a type that holds
+   them (gcc and clang: 8 bytes). madc stored every enum with no declared base
+   in an int, so `enum Big { B = 0x100000000LL }` objects were 4 bytes and B
+   read back 0: a silent truncation.
+   Oracle: gcc and clang -std=c17 print "sizes 8 8 8 16" and
+   "values 4294967296 4294967297 8589934592 12884901888". */
+#include <stdio.h>
+
+enum Big { BIG_A = 0x100000000LL, BIG_B };
+typedef enum { ALIAS_A = 0x300000000LL } Alias;
+struct holds { enum Big b; char c; };
+
+int main(void)
+{
+    enum Big a = BIG_A, b = BIG_B;
+    enum { ANON_A = 0x200000000LL } anon = ANON_A;
+    Alias alias = ALIAS_A;
+    printf("sizes %zu %zu %zu %zu\n", sizeof(a), sizeof(anon), sizeof(alias),
+	   sizeof(struct holds));
+    printf("values %lld %lld %lld %lld\n", (long long)a, (long long)b,
+	   (long long)anon, (long long)alias);
+    return 0;
+}

@@ -5176,12 +5176,18 @@ static void forest_record_enum(Program *prog, DataDefENUM *edd,
 		   : prog->forest_arena.strings.intern(
 			edd->canonical_cpp_spelling().c_str());
 	r.size    = (uint32_t)edd->size;
-	// A FIXED underlying base drives the enum's layout AND its lowered C type
-	// ([dcl.enum]p8, DataDefENUM::set_underlying); the restore must re-adopt
-	// both, so carry the base's type-id in ref0 (free for DK_ENUM; primitives
-	// are pinned ids).
+	// v48: the enum's STORAGE — its size above and its raw type here — is
+	// what its objects lower to (DataDefENUM::set_layout): a fixed base, a
+	// packed base, the wider type its values need, or int. The restore
+	// re-adopts it verbatim, whatever chose it.
+	r.datatype = (uint32_t)edd->rawtype();
+	// The underlying type (declared or computed) rides ref0 (free for
+	// DK_ENUM; primitives are pinned ids), and whether it was DECLARED rides
+	// DF_ENUM_FIXED_BASE: promotion reads the two apart ([conv.prom]/3-4).
 	r.ref0    = edd->underlying
 		  ? forest_serialize_type_id(edd->underlying) : 0u;
+	if (edd->fixed_base)
+		r.flags |= madc::dis::DF_ENUM_FIXED_BASE;
 	// The enumerators come from the TAG, which owns them
 	// (DataDefENUM::enumerators, stamped at the one point in TokenENUM::parse
 	// where a name and a value are both known). This used to re-derive them

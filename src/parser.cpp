@@ -53098,8 +53098,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	{
 	    if ( pgm.last_anon_enum.fixed_base )
 		enum_alias_dd->set_underlying(pgm.last_anon_enum.fixed_base);
-	    else if ( pgm.last_anon_enum.packed_base )
-		enum_alias_dd->set_packed_underlying(pgm.last_anon_enum.packed_base);
+	    else if ( pgm.last_anon_enum.packed )
+		enum_alias_dd->set_packed_underlying(pgm.last_anon_enum.computed_base);
+	    else if ( pgm.last_anon_enum.computed_base )
+	    {
+		enum_alias_dd->underlying = pgm.last_anon_enum.computed_base;
+		enum_alias_dd->set_layout(pgm.last_anon_enum.storage);
+	    }
 	    enum_alias_dd->enumerators = pgm.last_anon_enum.enumerators;
 	    pgm.last_anon_enum = Program::AnonEnumDefinition();	// consumed
 	}
@@ -54344,6 +54349,41 @@ static DataDef *enum_computed_underlying(bool scoped, bool packed,
 	? static_cast<DataDef *>(&ddUINT32) : static_cast<DataDef *>(&ddUINT64);
 }
 
+// [conv.prom]/3: an unscoped enum with no declared base promotes to the first
+// of int / unsigned int / long / unsigned long / long long / unsigned long
+// long that holds every enumerator — by VALUE range ([dcl.enum]/8), not the
+// computed underlying type (that is unsigned for a non-negative range, yet
+// `enum { a, b }` promotes to int — g++ and clang++ pick f(int) over f(long));
+// past 32 bits the first 64-bit SIGNED type, since every value fits int64 —
+// `long` on LP64, `long long` on LLP64 (where long is 32-bit). The ONE rule:
+// integer_promoted_type reads it for an unfixed enum's promotion, and
+// TokenENUM::parse for the storage of an enum whose values do not fit int
+// (so its objects lower to the type they promote to).
+static DataDef *enum_value_range_promotion(int64_t lo, int64_t hi)
+{
+    if ( lo >= INT32_MIN && hi <= INT32_MAX )
+	return Program::resolve_builtin_type_spelling("int");
+    if ( lo >= 0 && hi <= (int64_t)UINT32_MAX )
+	return Program::resolve_builtin_type_spelling("unsigned int");
+    return Program::resolve_builtin_type_spelling(
+	target_llp64() ? "long long" : "long");
+}
+
+// The STORAGE of an unscoped enum with no declared base (DataDefENUM::
+// set_layout): NULL keeps the int layout; an enum whose values do not fit int
+// is stored in the type it promotes to (gcc and clang: 8 bytes for
+// `enum { B = 0x100000000 }`, which the int layout truncated to 0); a packed
+// one in its packed base.
+static DataDef *enum_storage_type(bool packed, DataDef *computed,
+				  int64_t min_val, int64_t max_val)
+{
+    if ( packed )
+	return computed;
+    if ( min_val >= INT32_MIN && max_val <= INT32_MAX )
+	return NULL;
+    return enum_value_range_promotion(min_val, max_val);
+}
+
 TokenBase *TokenENUM::parse(Program &pgm)
 {
     DBG(std::cout << "TokenENUM::parse()" << std::endl);
@@ -54732,8 +54772,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // gcc and clang ignore `packed` on a scoped or fixed-base enum.
     packed = packed && !scoped && !fixed_base;
 
-    // A packed enum's base drives its layout; any other computed base keeps
-    // the int layout (DataDefENUM::underlying).
+    // A computed base, and the storage it implies (enum_storage_type): a
+    // packed enum's base drives its layout; an enum whose values need more
+    // than int is stored in the type it promotes to; any other keeps int.
     if ( DataDefENUM *under_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
 	if ( !under_edd->underlying )
 	{
@@ -54742,16 +54783,26 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    if ( packed )
 		under_edd->set_packed_underlying(computed);
 	    else
+	    {
 		under_edd->underlying = computed;
+		if ( !scoped )
+		    under_edd->set_layout(enum_storage_type(false, computed,
+							    enum_min_val, enum_max_val));
+	    }
 	}
-    // An anonymous packed enum has no DataDefENUM: its base is the declared
-    // objects' type (re-fed below) and a typedef alias's layout.
-    DataDef *anon_packed_base = NULL;
-    if ( !enum_dd && packed )
+    // An anonymous enum has no DataDefENUM: its storage is its objects' type
+    // (re-fed below), and last_anon_enum carries it with the computed base to
+    // a typedef alias.
+    DataDef *anon_storage = NULL;
+    if ( !enum_dd && !fixed_base )
     {
-	anon_packed_base = enum_computed_underlying(false, true,
-						    enum_min_val, enum_max_val);
-	pgm.last_anon_enum.packed_base = anon_packed_base;
+	DataDef *computed = enum_computed_underlying(scoped, packed,
+						     enum_min_val, enum_max_val);
+	anon_storage = enum_storage_type(packed, computed,
+					 enum_min_val, enum_max_val);
+	pgm.last_anon_enum.computed_base = computed;
+	pgm.last_anon_enum.storage = anon_storage;
+	pgm.last_anon_enum.packed = packed;
     }
 
     // The definition's tail ([dcl.dcl], C11 6.7): its `;`, or a declarator the
@@ -54771,10 +54822,11 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// type token so the CALLER parses `EnumType declarator...` — the same
 	// model the forward-reference path above and the class walk's
 	// nested-aggregate arm use. An ANONYMOUS enum has no DataDefENUM;
-	// its variable's type is the fixed underlying when declared, the
-	// packed base when packed, int otherwise (the C model madc's enums
-	// lower to). Only a token that
-	// can START a declarator continues the definition. The typedef-enum
+	// its variable's type is the fixed underlying when declared, else its
+	// storage (enum_storage_type: the packed base, the wider type its
+	// values need, or int — the C model madc's enums lower to). Only a
+	// token that can START a declarator continues the definition. The
+	// typedef-enum
 	// arm reads its ALIAS name itself and drops the re-fed type token.
 	bool declarator_follows = after_body
 	    && (after_body->type() == TokenType::ttIdentifier
@@ -54787,7 +54839,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	DataDef *refeed_dd = enum_dd;
 	if ( !refeed_dd )
 	    refeed_dd = fixed_base ? fixed_base
-		      : anon_packed_base ? anon_packed_base : &ddINT;
+		      : anon_storage ? anon_storage : &ddINT;
 	TokenDataType *refeed =
 	    new TokenDataType(refeed_dd->name.c_str(), *refeed_dd);
 	refeed->file = tn->file;
@@ -59857,25 +59909,15 @@ DataDef *integer_promoted_type(DataDef *dd)
 	// through that type's own promotion.
 	if ( e->fixed_base && e->underlying )
 	    return integer_promoted_type(e->underlying);
-	// [conv.prom]/3: an unfixed one to the first of int / unsigned int /
-	// long / unsigned long / long long / unsigned long long that holds every
-	// enumerator — by VALUE range ([dcl.enum]/8), not the computed underlying
-	// type (that is unsigned for a non-negative range, yet `enum { a, b }`
-	// promotes to int — g++ and clang++ pick f(int) over f(long)); past 32
-	// bits the first 64-bit SIGNED type, since every value fits int64 —
-	// `long` on LP64, `long long` on LLP64 (where long is 32-bit).
+	// [conv.prom]/3: an unfixed one by the VALUE range of its enumerators
+	// (enum_value_range_promotion, the one rule).
 	int64_t lo = 0, hi = 0;
 	for ( size_t i = 0; i < e->enumerators.size(); ++i )
 	{
 	    if ( e->enumerators[i].second < lo ) lo = e->enumerators[i].second;
 	    if ( e->enumerators[i].second > hi ) hi = e->enumerators[i].second;
 	}
-	if ( lo >= INT32_MIN && hi <= INT32_MAX )
-	    return t_int;
-	if ( lo >= 0 && hi <= (int64_t)UINT32_MAX )
-	    return Program::resolve_builtin_type_spelling("unsigned int");
-	return Program::resolve_builtin_type_spelling(
-	    target_llp64() ? "long long" : "long");
+	return enum_value_range_promotion(lo, hi);
     }
     if ( dd->is_pointer() || dd->is_function() || dd->as_fptr_dd()
       || dd->is_simd() || dd->is_complex() || !dd->is_integer() )

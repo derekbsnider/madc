@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+### An enum whose values need more than `int` is stored in a type that holds them
+
+madc stored every enum with no declared base in an `int`, and kept an
+enum-typed constant's value in a 32-bit slot. So `enum Big { B = 0x100000000LL }`
+objects were 4 bytes, and `B` read back 0 (`B + 1` read 1); gcc and clang
+store 8 bytes and read 4294967296. In C++, `enum U { M = 0xFFFFFFFFu }` read
+back as -1. This was a silent truncation.
+
+Such an enum is now stored in the type it promotes to ([conv.prom]/3: the
+first of `int`, `unsigned int` and `long` that holds every enumerator), and
+enum-typed constants carry 64-bit values. `enum_value_range_promotion` is
+the one rule behind both the promotion and the storage. Enums whose values
+fit `int` are stored exactly as before.
+
+The frozen-header pack (format v48) now records an enum's storage type and
+whether its base was declared. The restore used to treat every recorded base
+as declared, which changes how a C++ enum promotes.
+
+Now passing, and removed from their baselines: c2mir's `new/enum_test.c` and
+g++'s `cpp0x/enum17.C`.
+
+Tests: `testenum64c`, `testenum64cxx`.
+
 ### `sizeof(enum X)` measures the enum
 
 The `sizeof` / `alignof` type-query arm answered `sizeof(int)` for every

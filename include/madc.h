@@ -5372,8 +5372,10 @@ public:
     // The typedef_prefix_align model: one producer, one consumer, cleared on read.
     struct AnonEnumDefinition {
 	bool live = false;
-	DataDef *fixed_base = NULL;	// NULL = unfixed (int layout)
-	DataDef *packed_base = NULL;	// unfixed but packed: the computed smallest base
+	DataDef *fixed_base = NULL;	// NULL = unfixed
+	DataDef *computed_base = NULL;	// unfixed: the computed underlying type
+	DataDef *storage = NULL;	// unfixed: its layout (NULL = int)
+	bool packed = false;		// unfixed and packed: computed_base drives the layout
 	std::vector<std::pair<std::string, int64_t> > enumerators;
     } last_anon_enum;
     int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic

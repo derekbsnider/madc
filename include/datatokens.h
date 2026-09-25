@@ -180,9 +180,14 @@ public:
     // not type->size, or set() writes 4 bytes past the block (a heap
     // overflow valgrind caught on every enum-constant parse). Array
     // allocations keep type->size elements (C layout).
+    // An ENUM-typed constant (a C++ enumerator, a folded enum object) carries
+    // its value the same way: an enumerator past 32 bits
+    // (`enum { B = 0x100000000 }`) was stored as int32 and folded to 0.
     static size_t slot_size(const DataDef &d)
     {
 	const DataDef *u = d.unqualified();
+	if ( dynamic_cast<const DataDefENUM *>(u) )
+	    return 8;
 	return (u == &ddINT && u->size < 8) ? 8 : u->size;
     }
     // The type the value slot is laid out and dispatched by: the variable's
@@ -213,7 +218,7 @@ public:
 	else if (slot_type() == &ddUINT64) *((uint64_t *)data) = c;
 	else if (slot_type() == &ddFLOAT)  *((float *)data) = c;
 	else if (slot_type() == &ddDOUBLE) *((double *)data) = c;
-	else if (dynamic_cast<const DataDefENUM *>(slot_type())) *((int32_t *)data) = c;
+	else if (dynamic_cast<const DataDefENUM *>(slot_type())) *((int64_t *)data) = c;
 	else 	     { return false; }
 	return true;
     }
@@ -235,7 +240,7 @@ public:
 	if (slot_type() == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
 	if (slot_type() == &ddFLOAT)  return *((float *)data) == c;
 	if (slot_type() == &ddDOUBLE) return *((double *)data) == c;
-	if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int32_t *)data) == c;
+	if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int64_t *)data) == c;
 	return 0;
     }
     int cmp(std::string &s)
@@ -304,7 +309,7 @@ public:
 	else if (slot_type() == &ddUINT128) return *((madc_wide_uint *)data);
 	else if (slot_type() == &ddFLOAT)  return *((float *)data);
 	else if (slot_type() == &ddDOUBLE) return *((double *)data);
-	else if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int32_t *)data);
+	else if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int64_t *)data);
 	return true;
     }
 };
