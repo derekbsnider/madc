@@ -1899,6 +1899,9 @@ First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, 
 
 ## 42. Decisions (owner, 2026-09-25)
 
+**The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.
+- What cling and clang-repl do today is a floor, not a ceiling. Where a measurement shows a limit of their design, that is where madc aims past them. Examples are redefinition refused, value printing unimplemented in clang-repl 20.1, and a refused redefinition removing the earlier definition.
+
 **The rule:** Julia + IPython behaviour first, then cling, then clang-repl, weighted so the choice makes the most sense for C, C++ and madc language behaviour.
 - When Julia and IPython disagree, **Julia decides language semantics**: binding, redefinition, value display, interrupts.
 - **IPython decides the toolbox**: command names and what they do, history, introspection, numbered I/O.
