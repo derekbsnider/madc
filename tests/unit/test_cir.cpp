@@ -595,6 +595,49 @@ static std::string cir_capture(const std::string &source) {
     return cir_capture(source.c_str());
 }
 
+// A parsed Program's tree compiled in a c2mir context the caller shares; the
+// builder owns the tree's nodes, so it lives as long as the test does.
+static int cir_compile_in(MIR_context_t mir_ctx, c2m_ctx_t c2m,
+			  CirBuilder &builder, Program &prog,
+			  const char *std_option, const char *source) {
+    REQUIRE(prog.set_language_standard_option(std_option));
+    TokenProgram *tp = prog.tokenize_buffer(source, "<test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog.parse(tp));
+    node_t tree = builder.translate_module(&prog);
+    REQUIRE(tree != nullptr);
+    return cir_compile(mir_ctx, c2m, tree, "test_mod");
+}
+
+// madc fork: c2mir_compile_tree answers for ITS tree. One c2mir context
+// compiles many trees (an interactive session's entries), and it answered
+// failure for every tree after one that c2mir's check refused: it tested the
+// context's lifetime error count, where its check tests this tree's.
+TEST_CASE("CIR: a tree compiles after an earlier tree failed in the same c2mir context") {
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+
+    // C's file-scope initializer must be constant (gcc: "initializer element
+    // is not constant"). c2mir's check refuses it; madc's front end does not
+    // yet (BUGS.md B16). Once it does, this tree must come from another
+    // input only c2mir's check refuses.
+    CirBuilder refused_builder(c2m);
+    Program refused;
+    CHECK(cir_compile_in(mir_ctx, c2m, refused_builder, refused, "--std=c17",
+			 "int f(void) { return 7; }\nint r = f();\n") == 0);
+
+    CirBuilder next_builder(c2m);
+    Program next;
+    CHECK(cir_compile_in(mir_ctx, c2m, next_builder, next, "--std=c17",
+			 "int main(void) { return 42; }\n") == 1);
+
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+}
+
 TEST_CASE("CirBuilder: capture helper baseline") {
     // No output yet; just verify the helper runs a program and returns "".
     CHECK(cir_capture("int main() { return 0; }") == "");

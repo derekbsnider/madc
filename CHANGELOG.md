@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### An entry compiles after an earlier entry failed to compile
+
+In the interactive session, one refused compile made every later entry fail
+to compile, even a valid `int k = 0;`. Only "cir_compile failed" was shown,
+with no message of the entry's own. One c2mir context compiles every entry of
+a session, and `c2mir_compile_tree` (in madc's MIR subtree) counted the
+context's errors since it was created, not the errors of the tree it was
+given. Its type check already counted per tree. Now its answer does too. A
+one-shot build has a fresh context per program, so it never met this.
+
+Test: `test_cir`, a tree after a refused one in the same c2mir context.
+
 ### A `delete` statement owes its `;`, and runs at the top level
 
 `delete p }`, a delete statement with no `;`, compiled in every C++ mode;

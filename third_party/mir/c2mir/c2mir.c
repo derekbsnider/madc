@@ -21508,7 +21508,10 @@ int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
   gen_mir (c2m_ctx, tree);
   MIR_finish_module (ctx);
 
-  return n_errors == 0;
+  /* madc fork: THIS compile's verdict.  n_errors counts for the context's
+     whole life, and one context compiles many trees (a REPL session's
+     entries): an earlier tree's errors are not this one's. */
+  return n_errors == n_error_before;
 }
 
 void c2mir_dump_tree (c2m_ctx_t c2m_ctx, FILE *f, node_t tree) {
