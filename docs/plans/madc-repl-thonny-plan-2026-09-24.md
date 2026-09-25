@@ -1958,6 +1958,24 @@ These decisions supersede the plan text they name.
     - **Regular expressions** use the modern extended syntax (ERE: unescaped `+ ? | ( )`) rather than ed's BRE. The exact flavour is settled at design time.
   - The REPL can therefore edit a file line by line and run it, with no IDE. madcide extends the same registry and buffers with panes and views.
 
+### Execution model (owner, 2026-09-25)
+
+- **D25. The REPL has its own execution space; a program's `main` is just one of its functions.**
+  - **The mode rule.** REPL mode works differently from non-REPL mode, by design (owner: "do not try to force/shoehorn REPL mode and non-REPL mode together").
+    - Interactive entries have their own lowering. Script mode (a `--std=madc` file's top-level statements synthesized into `main`) stays exactly as it is.
+    - Neither path is bent to serve the other. Shared machinery is shared only where the behavior is genuinely the same.
+  - **Entries (Cling / Clang-Repl).** An entry's declarations become persistent session definitions (`int x = 5` is a session global). Its statements lower into a uniquely named entry function (`__madc_entry_N`) in that entry's own MIR module (D1), which runs once.
+    - Script mode's rule "top-level statements conflict with an explicit main()" belongs to script mode only. Loading a program that defines `main` into a session is normal.
+  - **A codebase as a playground.**
+    - `%load prog.c` defines everything, `main` included, and runs nothing.
+    - `%run prog.c args` runs `main` with that argv, as the command line would, and leaves the program's names callable (D16).
+    - `madc -i prog.c` runs it first (D20, `python -i`).
+    - The loaded code's globals and statics persist between calls; `%reset` or a fresh `%run` gives clean state. Static initializers run once, at load.
+  - **Calling `main` directly** (`main(2, argv)`) is legal C. C++ forbids it (`[basic.start.main]/3`; g++ and clang only warn), so under `--std=c++*` it is a listed interactive relaxation (D3).
+  - **`exit()` from session code returns to the prompt (proposed).** `exit`, `_Exit` and `quick_exit` flush stdio, show the status, and unwind to the entry's boundary, the same point where a failed entry rolls back (§41.3). IPython's `%run` catches `SystemExit` the same way. Whether `atexit` handlers run is settled at design time.
+    - A crash still restarts the backend with the state lost (D2).
+  - Feeds §41.2 (persistent session) and §41.3 (rollback).
+
 ### Next
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
