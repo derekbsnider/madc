@@ -5373,6 +5373,7 @@ public:
     struct AnonEnumDefinition {
 	bool live = false;
 	DataDef *fixed_base = NULL;	// NULL = unfixed (int layout)
+	DataDef *packed_base = NULL;	// unfixed but packed: the computed smallest base
 	std::vector<std::pair<std::string, int64_t> > enumerators;
     } last_anon_enum;
     int unnamed_namespace_depth = 0;	// > 0 while parsing the members of an unnamed namespace (`namespace { ... }`): they register in the ENCLOSING namespace (the implicit using-directive, [namespace.unnamed]) and every file-scope function/variable defined there has internal linkage — parseDeclaration folds it into gotstatic
@@ -7708,6 +7709,10 @@ public:
 				      std::string *alias_target = NULL,
 				      size_t *explicit_align = NULL,
 				      size_t *vector_bytes = NULL);
+    // The GNU attribute groups NEXT in the stream, consumed (the stream is
+    // left at the token after them): does one of them name `kind`? The kind
+    // is compared as the enum (madc_gnu_attribute_kind), never the spelling.
+    bool consume_gnu_attributes_naming(GnuAttributeKind kind);
     // Set by consume_gnu_attributes on optimize("-fno-strict-aliasing") in any
     // position; consumed (and cleared) by the function-declaration parse.
     bool pending_no_strict_aliasing;

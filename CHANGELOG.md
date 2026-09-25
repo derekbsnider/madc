@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### `__attribute__((packed))` on an enum
+
+GNU `packed` gives an enum with no declared base the smallest integer type
+that holds its range: char, short, int or long long, unsigned unless an
+enumerator is negative. madc refused the attribute before the tag
+(`enum __attribute__((packed)) E {…}`), and after the body it left the
+attribute to the declarator, which dropped it. So every packed enum object
+was 4 bytes where gcc and clang give 1 or 2, and a struct holding one was
+8 bytes where they give 2: a silent wrong answer. Both positions are now the
+type's. A scoped or fixed-base enum ignores `packed`, as gcc and clang do.
+
+`Program::consume_gnu_attributes_naming(kind)` is now the one reader of "do
+the attribute groups ahead name this kind" (comparing the enum, not the
+spelling). The using-declaration's `using_if_exists` reader uses it too.
+
+Tests: `testenumpackedc`, `testenumpackedcxx`.
+
 ### `typedef enum Tag {…} Alias;` declares the tag, and an alias names its enum
 
 The typedef reader consumed an enum's tag itself and handed the enum parser

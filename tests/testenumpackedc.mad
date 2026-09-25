@@ -1,0 +1,46 @@
+/* GNU `__attribute__((packed))` on an enum (before the tag or after the
+   body) gives an enum with no declared base the smallest integer type that
+   holds its range: char, short, int or long long, unsigned unless an
+   enumerator is negative. madc refused the attribute before the tag and
+   dropped it after the body, so every packed enum object was 4 bytes (a
+   packed member made its struct 8 bytes where gcc makes it 2).
+   Oracle: gcc and clang -std=c17 print the same lines. */
+#include <stdio.h>
+
+enum __attribute__((packed)) Two { TWO_A, TWO_B };		/* before the tag */
+enum Tail { TAIL_A, TAIL_B } __attribute__((packed));		/* after the body */
+enum __attribute__((packed)) Neg { NEG_LO = -1, NEG_HI = 1 };	/* signed char */
+enum __attribute__((packed)) U8 { U8_MAX = 255 };		/* unsigned char */
+enum __attribute__((packed)) U16 { U16_MIN = 256 };		/* unsigned short */
+enum __attribute__((packed)) S16 { S16_LO = -129 };		/* short */
+enum __attribute__((packed)) U32 { U32_MIN = 70000 };		/* unsigned int */
+enum __attribute__((packed)) U64 { U64_MIN = 0x100000000LL };	/* 8 bytes */
+typedef enum { ALIAS_A = 300 } __attribute__((packed)) Alias;	/* unsigned short */
+typedef enum __attribute__((packed)) { LEAD_A } Lead;		/* unsigned char */
+
+struct holds_anon { enum { M_LO = -1 } __attribute__((packed)) m; char c; };
+struct holds_tag { enum Two t; char c; };
+
+int main(void)
+{
+    enum Two two = TWO_B;
+    enum Tail tail = TAIL_B;
+    enum Neg neg = NEG_LO;
+    enum U8 u8 = U8_MAX;
+    enum U16 u16 = U16_MIN;
+    enum S16 s16 = S16_LO;
+    enum U32 u32 = U32_MIN;
+    enum U64 u64 = U64_MIN;
+    Alias alias = ALIAS_A;
+    Lead lead = LEAD_A;
+    enum { Q_MAX = 255 } __attribute__((packed)) q = Q_MAX;
+    struct holds_anon ha;
+    ha.m = M_LO;
+    printf("sizes %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu\n",
+	   sizeof(two), sizeof(tail), sizeof(neg), sizeof(u8), sizeof(u16),
+	   sizeof(s16), sizeof(u32), sizeof(u64), sizeof(alias), sizeof(lead),
+	   sizeof(q));
+    printf("structs %zu %zu\n", sizeof(struct holds_anon), sizeof(struct holds_tag));
+    printf("values %d %d %d %d %d\n", (int)neg, (int)u8, (int)s16, (int)ha.m, q > 0);
+    return 0;
+}

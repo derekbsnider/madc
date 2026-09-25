@@ -1852,6 +1852,21 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
     return nt;
 }
 
+bool Program::consume_gnu_attributes_naming(GnuAttributeKind kind)
+{
+    if ( !is_attribute_identifier_token(peekToken()) )
+	return false;
+    std::set<std::string> attrs;
+    TokenBase *after = consume_gnu_attributes(nextToken(), &attrs);
+    if ( after )
+	pushToken(after);
+    for ( std::set<std::string>::const_iterator ai = attrs.begin();
+	  ai != attrs.end(); ++ai )
+	if ( madc_gnu_attribute_kind(*ai) == kind )
+	    return true;
+    return false;
+}
+
 static bool is_gnu_asm_identifier_token(TokenBase *tb)
 {
     TokenIdent *ident = (tb ? tb->as_ident_tok() : NULL);
@@ -44291,15 +44306,10 @@ TokenBase *TokenUSING::parse(Program &pgm)
     // missing imports must keep the diagnostic below.
     auto consume_using_attributes = [&](TokenBase *&end) -> bool
     {
-	std::set<std::string> attrs;
+	bool if_exists =
+	    pgm.consume_gnu_attributes_naming(GnuAttributeKind::UsingIfExists);
 	end = pgm.nextToken();
-	if ( is_attribute_identifier_token(end) )
-	    end = pgm.consume_gnu_attributes(end, &attrs);
-	for ( std::set<std::string>::const_iterator ai = attrs.begin();
-	      ai != attrs.end(); ++ai )
-	    if ( madc_gnu_attribute_kind(*ai) == GnuAttributeKind::UsingIfExists )
-		return true;
-	return false;
+	return if_exists;
     };
 
     // using namespace std;
@@ -53086,6 +53096,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	{
 	    if ( pgm.last_anon_enum.fixed_base )
 		enum_alias_dd->set_underlying(pgm.last_anon_enum.fixed_base);
+	    else if ( pgm.last_anon_enum.packed_base )
+		enum_alias_dd->set_packed_underlying(pgm.last_anon_enum.packed_base);
 	    enum_alias_dd->enumerators = pgm.last_anon_enum.enumerators;
 	    pgm.last_anon_enum = Program::AnonEnumDefinition();	// consumed
 	}
@@ -54301,6 +54313,35 @@ TokenDataType *Program::resolve_enum_member_type(TokenBase *enum_tb)
     return NULL;
 }
 
+// The underlying type of an enum with no declared base ([dcl.enum]/7), the
+// canon g++/clang rule (verified against both, 2026-07-28): scoped -> int;
+// unscoped with a negative enumerator -> int (long if it does not fit); all
+// non-negative -> unsigned int (unsigned long if it does not fit). PACKED
+// (GNU `__attribute__((packed))`) takes the smallest of char, short, int and
+// long long that holds the range, signed only with a negative enumerator
+// (gcc and clang agree, 2026-09-25). The range always includes 0.
+static DataDef *enum_computed_underlying(bool scoped, bool packed,
+					 int64_t min_val, int64_t max_val)
+{
+    if ( scoped )
+	return &ddINT32;
+    if ( min_val < 0 )
+    {
+	if ( packed && min_val >= INT8_MIN && max_val <= INT8_MAX )
+	    return &ddINT8;
+	if ( packed && min_val >= INT16_MIN && max_val <= INT16_MAX )
+	    return &ddINT16;
+	return (min_val >= INT32_MIN && max_val <= INT32_MAX)
+	    ? static_cast<DataDef *>(&ddINT32) : static_cast<DataDef *>(&ddINT64);
+    }
+    if ( packed && max_val <= (int64_t)UINT8_MAX )
+	return &ddUINT8;
+    if ( packed && max_val <= (int64_t)UINT16_MAX )
+	return &ddUINT16;
+    return (max_val <= (int64_t)UINT32_MAX)
+	? static_cast<DataDef *>(&ddUINT32) : static_cast<DataDef *>(&ddUINT64);
+}
+
 TokenBase *TokenENUM::parse(Program &pgm)
 {
     DBG(std::cout << "TokenENUM::parse()" << std::endl);
@@ -54320,6 +54361,15 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	pgm.nextToken(); // consume 'class' / 'struct'
 	tn = pgm.peekToken();
     }
+
+    // GNU attributes before the tag (`enum __attribute__((packed)) E {`) and
+    // after the body (below) are the TYPE's. `packed` gives an enum with no
+    // declared base the smallest integer type that holds its range; gcc and
+    // clang ignore it on a scoped or fixed-base enum. Both positions used to
+    // be unread: the first was refused, and the second was left to the
+    // declarator, which dropped it (sizeof 4 where gcc gives 1).
+    bool packed = pgm.consume_gnu_attributes_naming(GnuAttributeKind::Packed);
+    tn = pgm.peekToken();
 
     // optional tag name: enum colors { ... }
     std::string enum_tag;
@@ -54675,27 +54725,32 @@ TokenBase *TokenENUM::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unterminated enum" << flush;
     pgm.nextToken(); // consume '}'
+    if ( pgm.consume_gnu_attributes_naming(GnuAttributeKind::Packed) )
+	packed = true;
+    // gcc and clang ignore `packed` on a scoped or fixed-base enum.
+    packed = packed && !scoped && !fixed_base;
 
-    // [dcl.enum] underlying type for an UNFIXED enum, the canon g++/clang
-    // rule (verified against both, 2026-07-28): scoped -> int; unscoped with
-    // a negative enumerator -> int (long if it does not fit); all
-    // non-negative -> unsigned int (unsigned long if it does not fit).
+    // A packed enum's base drives its layout; any other computed base keeps
+    // the int layout (DataDefENUM::underlying).
     if ( DataDefENUM *under_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
 	if ( !under_edd->underlying )
 	{
-	    if ( scoped )
-		under_edd->underlying = &ddINT32;
-	    else if ( enum_min_val < 0 )
-		under_edd->underlying =
-		    (enum_min_val >= INT32_MIN && enum_max_val <= INT32_MAX)
-		    ? static_cast<DataDef *>(&ddINT32)
-		    : static_cast<DataDef *>(&ddINT64);
+	    DataDef *computed = enum_computed_underlying(scoped, packed,
+							 enum_min_val, enum_max_val);
+	    if ( packed )
+		under_edd->set_packed_underlying(computed);
 	    else
-		under_edd->underlying =
-		    (enum_max_val <= (int64_t)UINT32_MAX)
-		    ? static_cast<DataDef *>(&ddUINT32)
-		    : static_cast<DataDef *>(&ddUINT64);
+		under_edd->underlying = computed;
 	}
+    // An anonymous packed enum has no DataDefENUM: its base is the declared
+    // objects' type (re-fed below) and a typedef alias's layout.
+    DataDef *anon_packed_base = NULL;
+    if ( !enum_dd && packed )
+    {
+	anon_packed_base = enum_computed_underlying(false, true,
+						    enum_min_val, enum_max_val);
+	pgm.last_anon_enum.packed_base = anon_packed_base;
+    }
 
     // The definition's tail ([dcl.dcl], C11 6.7): its `;`, or a declarator the
     // CALLER reads (below). Anything else is refused, as the struct and class
@@ -54714,8 +54769,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// type token so the CALLER parses `EnumType declarator...` — the same
 	// model the forward-reference path above and the class walk's
 	// nested-aggregate arm use. An ANONYMOUS enum has no DataDefENUM;
-	// its variable's type is the fixed underlying when declared, int
-	// otherwise (the C model madc's enums lower to). Only a token that
+	// its variable's type is the fixed underlying when declared, the
+	// packed base when packed, int otherwise (the C model madc's enums
+	// lower to). Only a token that
 	// can START a declarator continues the definition. The typedef-enum
 	// arm reads its ALIAS name itself and drops the re-fed type token.
 	bool declarator_follows = after_body
@@ -54728,7 +54784,8 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    pgm.Throw(after_body) << "Expecting variable name or ';' after enum definition" << flush;
 	DataDef *refeed_dd = enum_dd;
 	if ( !refeed_dd )
-	    refeed_dd = fixed_base ? fixed_base : &ddINT;
+	    refeed_dd = fixed_base ? fixed_base
+		      : anon_packed_base ? anon_packed_base : &ddINT;
 	TokenDataType *refeed =
 	    new TokenDataType(refeed_dd->name.c_str(), *refeed_dd);
 	refeed->file = tn->file;

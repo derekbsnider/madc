@@ -2142,6 +2142,15 @@ public:
 	    _type = (uint32_t)u->rawtype();
 	}
     }
+    // A PACKED enum with no declared base (GNU `__attribute__((packed))`):
+    // its computed base is the smallest integer type that holds the range,
+    // and that base drives the layout as a fixed one does. It was not
+    // DECLARED, so promotion stays by value range ([conv.prom]/3).
+    void set_packed_underlying(DataDef *u)
+    {
+	set_underlying(u);
+	fixed_base = false;
+    }
     virtual DataDefENUM *as_enum_dd() override { return this; }
     virtual DataDef *enum_underlying() override { return underlying; }
 };
