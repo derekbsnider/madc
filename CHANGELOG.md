@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Redeclarations are decided in the front end (REPL arc, decision D18)
+
+The REPL + teaching-IDE arc (`docs/plans/madc-repl-thonny-plan-2026-09-24.md`)
+depends on madc knowing exactly when a redeclaration is legal, so D18 fixed
+that first. The front end had no redeclaration rule for objects, and C
+functions had only a signature check.
+
+- **One owner for object redeclarations** (`Program::declare_object`, gcc's
+  `duplicate_decls` for objects).
+  - `int x; double x = 2.5;` and `int a[3]; int a[4];` compiled and exited 0.
+    The second declaration silently overwrote the first's type.
+  - Under `--std=c++17`, `int x; int x = 2;`, `static int s = 4; static int s;`
+    and `int u, u;` compiled and exited 0; C++ has no tentative definitions.
+  - Two initialized definitions of one global died as a location-less
+    `MIR fatal error: Repeated item declaration`, a process exit.
+  - All are now refused where the declaration binds, with gcc's wording
+    ("conflicting types for 'x'", "redefinition of 'x'") and a line number.
+  - C and the madc dialect keep tentative definitions.
+- **A second body for a C-linkage function** (a C function, `static` included,
+  or an `extern "C"` function in C++) is now `redefinition of 'f'` at the
+  definition, not a MIR fatal error.
+- **Still open:** a C++-linkage same-signature redefinition still reaches MIR.
+  madc cannot yet tell it from a `long` / `long long` type-model twin, and the
+  fix is a distinct `long long` type on LP64.
+
 ### Arrays, calls, casts, `sizeof` and arithmetic operands each read their operand through one owner
 
 The indirection families left open by the `*`/`&` consolidation, each measured

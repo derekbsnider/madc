@@ -1810,6 +1810,11 @@ These decisions supersede the plan text they name.
 ### Ordering
 
 - **D18. Redeclaration bug first.** The same-scope variable reuse and same-signature body folding (§11.6 code check) are reproduced and fixed first, in their own commit with a gcc/clang-oracled reducer.
+  - **DONE 2026-09-25.** Reproduction corrected the audit: nothing gave a silent wrong value. Ill-formed programs were accepted (conflicting types and bounds, C++ tentative duplicates), and duplicate definitions died in MIR without a location.
+  - `bd3c56500`: `Program::declare_object` owns object redeclaration, and the madc dialect keeps C tentative definitions.
+  - `a74fd49ba`: a second body for a C-linkage function is refused at the definition.
+  - **Still open:** C++-linkage same-signature redefinition, which `fold_same_signature_overload` cannot tell from a `long` / `long long` type-model twin. It rides with D5.
+  - D6's interactive redefinition branches in `declare_object`.
 - **D19. The MIR interpreter is not part of this arc.** The REPL and Run are JIT-only (§21 code check).
 
 ### Next
