@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A top-level cast statement runs instead of being dropped
+
+A cast used as a statement at the top level, such as
+`static_cast<void>(f());`, was silently discarded in a `--std=madc` script,
+so `f` never ran. In an interactive entry, `(void)f();` was discarded the
+same way under every C and C++ standard. An expression statement now runs
+whatever its expression is, as it would inside `main`. For the test's
+statements inside `main`, g++ and clang++ print `12345`, and so does madc.
+
+Tests: `testscripttopcast`, `test_repl_session`.
+
 ### A top-level block runs instead of being dropped
 
 In a `--std=madc` script, a block at file scope, `{ int t = 2; g = g + t; }`,

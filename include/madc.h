@@ -6793,6 +6793,11 @@ public:
     // missing `;` in its own parser (TokenSTRUCT/TokenCLASS/TokenENUM::parse).
     enum class StatementTerminator : unsigned char { None, Expression, Declaration, TypeDeclaration, Jump };
     StatementTerminator stmt_terminator_owed = StatementTerminator::None;
+    // What the statement parseStatement last finished owed: the outermost
+    // call's, since it finishes last. Expression is the grammar's own verdict
+    // that the statement is an expression statement; the top-level loop
+    // classifies its result by it (script_statement_result).
+    StatementTerminator last_statement_terminator = StatementTerminator::None;
     void require_statement_terminator(StatementTerminator owed);
     // The parser's INPUT MODE — the grammar its token stream is read
     // against, one mode among several (owner guidance 2026-09-25: the REPL

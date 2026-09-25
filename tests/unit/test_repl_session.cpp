@@ -208,3 +208,29 @@ TEST_CASE("call statements run under a C standard too (D3)")
     REQUIRE(s.submit("bump(1); bump(2);"));
     CHECK(*(int *)s.data("g") == 8);
 }
+
+// A cast statement is an expression statement, whatever the cast: an
+// entry's `(void)f();` used to be dropped under every C and C++ standard,
+// and a named cast under madc too. Oracle: the same statements in a
+// function body, g++ and clang++.
+TEST_CASE("a cast statement runs at an entry's top level, under every standard")
+{
+    const char *stds[] = { "--std=c89", "--std=c17", "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("int log_v = 0;\n"
+			 "int step(int d) { log_v = log_v * 10 + d; return d; }"));
+	int *log_v = (int *)s.data("log_v");
+	REQUIRE(log_v != (int *)NULL);
+	REQUIRE(s.submit("(void)step(1); (long)step(2);"));
+	CHECK(*log_v == 12);
+	if ( i < 2 )
+	    continue;			// the named casts are C++'s
+	REQUIRE(s.submit("static_cast<void>(step(3));"));
+	CHECK(*log_v == 123);
+    }
+}

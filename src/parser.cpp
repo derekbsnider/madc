@@ -75594,6 +75594,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
     // The statement's own terminator, paid before its extent is stamped so
     // the extent includes it (as an expression statement's always has).
     StatementTerminator owed = terminator_scope.close();
+    last_statement_terminator = owed;
     if ( owed != StatementTerminator::None )
 	require_statement_terminator(owed);
     if ( r )
@@ -76170,7 +76171,11 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		    // parseCallFunc/parseCallMethod clear it once the head is
 		    // resolved so arguments resolve lexically.
 		    QualifiedCalleeScope callee_scope(*this, ns_name);
-		    return parseStatement(nextToken());
+		    // The rest is the SAME statement, so it is the grammar's
+		    // (parseStatementBody), never a second parseStatement: this
+		    // statement's own call records what it owes and pays its
+		    // `;`, and its extent starts at the namespace name.
+		    return parseStatementBody(nextToken());
 		}
 	    }
 	    // := short declaration: identifier := expression;
@@ -76939,35 +76944,27 @@ bool Program::file_scope_statement_starter(TokenBase *tb)
 }
 
 // Post-parse classification: is this parseStatement RESULT a statement (vs
-// a declaration/typedef/struct-def/compound)? Positive list only — unknown
-// result kinds keep today's file-scope handling, so exotic constructs are
-// never misrouted.
+// a declaration/typedef/struct-def)? An expression statement is one by the
+// grammar's own verdict: its parser owed the statement's `;` as an
+// expression's (last_statement_terminator), whatever token tops its tree —
+// a call, an operator, a cast, a `new`. A `:=` owes the same `;`,
+// but where it declares a global it returns that declaration, which stays a
+// declaration here. Otherwise a positive list; unknown result kinds keep
+// today's file-scope handling, so exotic constructs are never misrouted.
 bool Program::script_statement_result(TokenBase *ts) const
 {
     if ( !ts )
 	return false;
+    if ( last_statement_terminator == StatementTerminator::Expression )
+	return !ts->as_decl_tok();
     if ( ts->type() == TokenType::ttKeyword )
 	return is_statement_keyword_id(ts->id());
     if ( dynamic_cast<TokenLabel *>((TokenBase *)ts) )
 	return true;
-    switch ( ts->type() )
-    {
-	// Expression-statement results (parseExprStmt returns the raw
-	// expression tree).
-	case TokenType::ttCallFunc:
-	case TokenType::ttCallMethod:
-	case TokenType::ttOperator:
-	case TokenType::ttMultiOp:
-	case TokenType::ttSubscript:
-	case TokenType::ttMember:
-	// A compound statement: at file scope only parseStatement's `{` arm
-	// yields one (namespace and linkage blocks return their members'
-	// results, never a compound).
-	case TokenType::ttCompound:
-	    return true;
-	default:
-	    return false;
-    }
+    // A compound statement: at file scope only parseStatement's `{` arm
+    // yields one (namespace and linkage blocks return their members'
+    // results, never a compound).
+    return ts->type() == TokenType::ttCompound;
 }
 
 // Create-or-return one of the synthesized main's parameter Variables.
