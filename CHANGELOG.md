@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### A discarded `if constexpr` branch ends where its statement does
+
+madc skips a discarded branch without parsing it. The skip used to run to
+the first `;` outside a group, which went wrong in two ways, both exit 0:
+
+- `if constexpr (false) while (c) { x++; }` also swallowed the next
+  statement.
+- `if constexpr (false) if (c) a; else b;` stopped before the `else`, which
+  then bound to the `if constexpr` and ran.
+
+`Program::skip_discarded_statement` now skips by the statement grammar:
+- blocks;
+- `if`/`else`, including `if constexpr` and `if consteval`;
+- `while`, `for` and `switch`;
+- `do … while (…);`;
+- `try`/`catch`;
+- labeled statements;
+- any other statement, through its `;`.
+
+Groups are skipped through the shared delimiter tracker, replacing a
+hand-rolled depth count.
+
 ### Statements own their `;` (REPL arc prerequisite P1)
 
 The expression engine stops on a `;` and before a closer. When a closer

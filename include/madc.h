@@ -6556,10 +6556,13 @@ public:
     // successful fold; on failure restores the stream (condition tokens + `)` back)
     // and returns false so the caller falls back to a runtime `if`.
     bool fold_if_constexpr_condition(int64_t &out);
-    // Skip ONE statement's tokens (a `{...}` block, balanced, or a single statement
-    // through its terminating `;`) WITHOUT parsing — so a discarded `if constexpr`
-    // branch is never instantiated or emitted.
+    // Skip ONE statement's tokens by its grammar shape (a `{...}` block, an
+    // if/else, a loop, do-while, try/catch, a labeled statement, or a simple
+    // statement through its `;`) WITHOUT parsing — so a discarded
+    // `if constexpr` branch is never instantiated or emitted.
     void skip_discarded_statement();
+    // The balanced group whose opener is next on the stream, consumed.
+    void skip_discarded_group();
     // Speculatively fold a static-member initializer ('=' already consumed) to a
     // constant int, expecting ';'. Consumes the initializer on success, restores
     // and returns false otherwise. See parser.cpp.

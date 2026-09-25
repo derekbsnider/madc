@@ -19170,39 +19170,110 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     return ok;
 }
 
+// A balanced group — the opener next on the stream through its matching
+// closer — consumed via the shared tracker. Explicit paren/square/brace
+// depths, NOT d.top(): an unparsed discarded branch has no name lookup to
+// judge a `<`, and `a < b` must never open an angle that swallows the rest.
+void Program::skip_discarded_group()
+{
+    DelimDepth d(this);
+    TokenBase *t = nextToken();
+    delimStepStream(t, d);
+    while ( (d.paren || d.square || d.brace) && (t = nextToken()) )
+	delimStepStream(t, d);
+}
+
+// ONE statement by its grammar shape ([stmt.stmt]), so a discarded branch
+// ends exactly where the statement does. The token-count skip it replaces
+// ran to the first `;` at depth 0: `while (c) { x++; }` took the NEXT
+// statement with it, and a nested `if (c) a; else b;` stopped before the
+// `else`, which then bound to the `if constexpr` — both exit 0.
 void Program::skip_discarded_statement()
 {
     TokenBase *p = peekToken();
     if ( !p )
 	return;
-    if ( p->id() == TokenID::tkOpBrc )
+    switch ( p->id() )
     {
-	nextToken();                       // consume '{'
-	int depth = 1;
-	TokenBase *t;
-	while ( depth > 0 && (t = nextToken()) )
-	{
-	    if ( t->id() == TokenID::tkOpBrc ) ++depth;
-	    else if ( t->id() == TokenID::tkClBrc ) --depth;
-	}
+	case TokenID::tkOpBrc:			// compound-statement
+	    skip_discarded_group();
+	    return;
+	case TokenID::tkIF:
+	    nextToken();
+	    // `if constexpr (...)`, `if consteval {...}`, `if !consteval {...}`
+	    while ( (p = peekToken())
+		 && (p->id() == TokenID::tkLnot
+		  || (is_contextual_identifier_token(p)
+		   && (contextual_identifier_name(p) == "constexpr"
+		    || contextual_identifier_name(p) == "consteval"))) )
+		nextToken();
+	    if ( (p = peekToken()) && p->id() == TokenID::tkOpBrk )
+		skip_discarded_group();
+	    skip_discarded_statement();
+	    if ( (p = peekToken()) && p->id() == TokenID::tkELSE )
+	    {
+		nextToken();
+		skip_discarded_statement();
+	    }
+	    return;
+	case TokenID::tkWHILE:
+	case TokenID::tkFOR:
+	case TokenID::tkSWITCH:
+	    nextToken();
+	    if ( (p = peekToken()) && p->id() == TokenID::tkOpBrk )
+		skip_discarded_group();
+	    skip_discarded_statement();
+	    return;
+	case TokenID::tkDO:
+	    nextToken();
+	    skip_discarded_statement();
+	    if ( (p = peekToken()) && p->id() == TokenID::tkWHILE )
+	    {
+		nextToken();
+		if ( (p = peekToken()) && p->id() == TokenID::tkOpBrk )
+		    skip_discarded_group();
+		if ( (p = peekToken()) && p->id() == TokenID::tkSemi )
+		    nextToken();
+	    }
+	    return;
+	case TokenID::tkTRY:
+	    nextToken();
+	    if ( (p = peekToken()) && p->id() == TokenID::tkOpBrc )
+		skip_discarded_group();
+	    while ( (p = peekToken()) && p->id() == TokenID::tkCATCH )
+	    {
+		nextToken();
+		if ( (p = peekToken()) && p->id() == TokenID::tkOpBrk )
+		    skip_discarded_group();
+		if ( (p = peekToken()) && p->id() == TokenID::tkOpBrc )
+		    skip_discarded_group();
+	    }
+	    return;
+	default:
+	    break;
+    }
+    // A labeled statement: `name :` then the statement it labels.
+    if ( is_contextual_identifier_token(p) && tokens.size() > 1
+      && tokens[1] && tokens[1]->id() == TokenID::tkTerC )
+    {
+	nextToken();
+	nextToken();
+	skip_discarded_statement();
 	return;
     }
-    // A single (non-block) statement: consume through its terminating ';' at
-    // bracket/brace/paren depth 0.
-    int pd = 0, bd = 0, sd = 0;
+    // Any other statement ends at its `;` outside every group (a lambda's or
+    // a class body's braces, a call's parens), which it consumes.
+    DelimDepth d(this);
     TokenBase *t;
     while ( (t = peekToken()) )
     {
-	TokenID id = t->id();
-	if ( id == TokenID::tkSemi && pd == 0 && bd == 0 && sd == 0 )
-	{ nextToken(); break; }
+	if ( t->id() == TokenID::tkSemi && !d.paren && !d.square && !d.brace )
+	{
+	    nextToken();
+	    return;
+	}
 	nextToken();
-	if ( id == TokenID::tkOpBrk ) ++pd;
-	else if ( id == TokenID::tkClBrk && pd > 0 ) --pd;
-	else if ( id == TokenID::tkOpBrc ) ++bd;
-	else if ( id == TokenID::tkClBrc && bd > 0 ) --bd;
-	else if ( id == TokenID::tkOpSqr ) ++sd;
-	else if ( id == TokenID::tkClSqr && sd > 0 ) --sd;
+	delimStepStream(t, d);
     }
 }
 
