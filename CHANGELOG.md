@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### A folded constant reads in its own type, so unsigned constants compute unsigned
+
+madc folds a read of an enumerator or a baked `const` scalar to a literal,
+and that literal was always signed. So `const unsigned U = 5; U - 6 > 0` was
+false (g++ and clang++: true), and so was `MB - 2 > 0` for
+`enum M { MA = 0xFFFFFFFFu, MB = 1 }`, an enum that promotes to
+`unsigned int`. These were silent wrong answers. The literal now carries
+the constant's promoted type (`CirBuilder::constant_value_literal`). A
+packed enum still promotes to `int`, and an anonymous enum's enumerator past
+`int` keeps its full value.
+
+Tests: `testconstfoldunsignedcxx`.
+
 ### A C enum is its compatible type: unsigned int when no enumerator is negative
 
 In C an enumerated type is compatible with an integer type the compiler

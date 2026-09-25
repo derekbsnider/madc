@@ -707,6 +707,9 @@ class CirBuilder {
 	// when the variable is not such a binding. One owner for the fold —
 	// the plain-read, subscript-base, and deref arms all use it.
 	node_t baked_cstr_constant(Variable &var, TokenBase *origin);
+	// The literal a folded integer constant (an enumerator, a baked const
+	// scalar) reads as: its value in its PROMOTED type.
+	node_t constant_value_literal(Variable &var, TokenBase *origin);
 	// True when object_cstr_arg would really produce a char* for this operand
 	// (the class has a resolvable c_str()) rather than falling back to the raw
 	// object — the one test, for callers that cannot use that fallback.

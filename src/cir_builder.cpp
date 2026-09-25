@@ -6483,6 +6483,27 @@ node_t CirBuilder::baked_cstr_constant(Variable &var, TokenBase *origin)
 	return str(text, strlen(text) + 1, origin);
 }
 
+// A folded integer constant reads as a literal in its PROMOTED type — a read
+// is a value in arithmetic ([conv.prom], C11 6.3.1.1) — so c2mir's usual
+// arithmetic conversions see its signedness: `const unsigned U = 5;
+// U - 6 > 0`, and an enumerator of an enum that promotes to unsigned
+// (`enum M { MA = 0xFFFFFFFFu, MB = 1 }; MB - 2 > 0`), are unsigned. The bare
+// width-chosen literal (integer()) was always signed, so both computed signed
+// (g++/clang++: true, madc: false). A value the promoted type cannot hold (a
+// C++ anonymous enum's enumerator past int, which madc types int) keeps that
+// width-chosen literal. The value is sign-carried (Variable::get), which is
+// what integer_typed reads; any 8-byte type holds its bits.
+node_t CirBuilder::constant_value_literal(Variable &var, TokenBase *origin)
+{
+	int64_t v = var.get<int64_t>();
+	DataDef *pt = integer_promoted_type(var.type);
+	if (pt && pt->is_integer() && !pt->is_pointer()
+	    && (pt->size >= 8
+		|| apply_integer_cast_value(pt, (madc_wide_int)v) == (madc_wide_int)v))
+		return integer_typed((madc_wide_int)v, pt, origin);
+	return integer(v, origin);
+}
+
 node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 {
 	DataDefCLASS *cdd = as_class_instance(arg ? arg->datadef() : NULL);
@@ -22534,7 +22555,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				|| (tv->var.flags & vfCONSTBAKED)) && tv->var.type
 			    && tv->var.type->is_integer() && !tv->var.type->is_pointer()
 			    && !tv->var.is_fixed_array())
-				return integer(tv->var.get<int64_t>(), tb);
+				return constant_value_literal(tv->var, tb);
 			if (tv->var.name.compare(0, 11, "__literal__") == 0) {
 				const std::string &content = tv->var.name.substr(11);
 				return str(content.c_str(), content.size() + 1, tb);
