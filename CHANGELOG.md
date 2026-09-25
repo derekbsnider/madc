@@ -32,6 +32,9 @@ Each fix has its own commit and gcc/clang-oracled tests.
   instead of 97. `''` is an error, and `#if '\xff' < 0` agrees with code.
 - **In C a character constant is an `int`**: `sizeof('a')` is 4, and
   `_Generic` and `__typeof__` see `int`. C++ keeps `char`.
+- **A template instantiated while an expression completes** (the free-operator
+  lowering of `__x < __y` on strings) no longer moves the outer parse's
+  current token into the instantiated body.
 - **An if/switch init-statement or condition declares in the statement's own
   scope.** Two sibling `if (int c = …)` statements were refused as a
   redefinition since D18 (`tests/testifinit` had regressed). Before D18 the

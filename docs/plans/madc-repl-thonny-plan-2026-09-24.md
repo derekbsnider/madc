@@ -1790,7 +1790,8 @@ Balance first keeps stage 2 honest. Once the delimiters balance, the parser can 
   - D18 had regressed if/switch init-statement scope;
   - an unterminated `#if` was accepted.
 - After these the whole JIT suite ran green (1648/0/0, 9 skipped).
-- Next: **statements do not own their `;`**. `{ x = 3 }`, `break }`, `do {} while (0) return 0;`, `g(1));` and a lone `);` are all accepted in every mode, because the expression engine stops at a closer and no statement parser checks its terminator. The optional-`;` relaxation must live in that one terminator owner, so the owner comes first.
+- Also done: a template instantiated mid-expression moved the outer parse's current token (`012f2dfce`).
+- In progress (parked in `tmp/repl/P1_wip`, UPDATE 101): **statements do not own their `;`**. `{ x = 3 }`, `break }`, `do {} while (0) return 0;`, `g(1));` and a lone `);` are all accepted in every mode, because the expression engine stops at a closer and no statement parser checks its terminator. The optional-`;` relaxation must live in that one terminator owner, so the owner comes first.
 
 **Where the verdict is tested in Phase 0:** a corpus run through `classify_entry` on a fresh `Program` per entry, needing neither persistence nor rollback. The session calls the same function inside the entry transaction once §41.2 and §41.3 land.
 
