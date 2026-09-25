@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### `new T[n]{…}` initializes its elements
+
+madc never read the braced list of an array new-expression. It fell out of
+the expression and was parsed as a separate compound statement, so
+`new int[4]{1, 2, 7}` allocated four zeros and `new Foo[2]{3, 4}`
+default-constructed both elements, with exit 0.
+
+`TokenNEW` now reads the list, as `array_init`, with the one expression-position
+brace-list reader. It is lowered like this:
+
+- **Scalar elements:** `n` is evaluated once, the block is zeroed, and each
+  clause becomes a store (`scalar_array_new_list_init`).
+- **Class elements:** these go through the class array owner,
+  `class_array_list_init`.
+- **The elements past the list** are value-initialized.
+
+A constant count with too many clauses is gcc's "too many initializers for
+'T [n]'". A runtime count below the list stores nothing past it. gcc throws
+`std::bad_array_new_length` there; madc's `new[]` has no length check yet.
+
+g++.dg `pr52742` now passes, including the template case.
+
 ### A builtin operation on a `var` is refused, not run on its storage
 
 A `var` / `madc::value` is stored in C as a `long long` array. When no carrier

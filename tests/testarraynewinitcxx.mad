@@ -1,0 +1,45 @@
+// [expr.new]/18: `new T[n]{...}` initializes the elements from the braced
+// list, and the ones past it are value-initialized. madc never read the list:
+// it fell out of the new-expression and parsed as a compound statement AFTER
+// it, so `new int[4]{1, 2, 7}` allocated four zeros and a class array was
+// default-constructed — exit 0. A scalar element takes a store per clause (the
+// count is evaluated ONCE); a class element goes through the class array owner
+// (class_array_list_init), braced elements list-initialized; a runtime count
+// below the list stores nothing past it.
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+struct Foo {
+	int v;
+	Foo() : v(-1) { printf("Foo()\n"); }
+	Foo(int x) : v(x) { printf("Foo(%d)\n", x); }
+	Foo(int x, int y) : v(x * 10 + y) { printf("Foo(%d,%d)\n", x, y); }
+	~Foo() { printf("~Foo(%d)\n", v); }
+};
+struct P { int x, y; };
+int seven() { return 7; }
+long count(long n) { printf("count(%ld)\n", n); return n; }
+int main()
+{
+	int *a = new int[4]{1, 2, seven()};
+	printf("scalar: %d %d %d %d\n", a[0], a[1], a[2], a[3]);
+	long n = 3;
+	double *d = new double[n]{1.5, 2};
+	printf("runtime-count: %g %g %g\n", d[0], d[1], d[2]);
+	int *z = new int[2]{};
+	printf("empty: %d %d\n", z[0], z[1]);
+	int *once = new int[count(3)]{{1}, {}, 3};
+	printf("braced-scalars: %d %d %d\n", once[0], once[1], once[2]);
+	double *k = new double[2 * 2]{0.5};
+	printf("folded-count: %g %g %g %g\n", k[0], k[1], k[2], k[3]);
+	Foo *f = new Foo[4]{{1, 2}, 7, {8}};
+	printf("class: %d %d %d %d\n", f[0].v, f[1].v, f[2].v, f[3].v);
+	delete[] f;
+	Foo *r = new Foo[n]{5};
+	printf("class-runtime: %d %d %d\n", r[0].v, r[1].v, r[2].v);
+	delete[] r;
+	P *p = new P[3]{{1, 2}, {3}};
+	printf("aggregate: %d %d %d %d %d %d\n", p[0].x, p[0].y, p[1].x, p[1].y,
+	       p[2].x, p[2].y);
+	delete[] a; delete[] d; delete[] z; delete[] once; delete[] k; delete[] p;
+	return 0;
+}

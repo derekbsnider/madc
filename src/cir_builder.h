@@ -1866,15 +1866,22 @@ public:
 	// one dimension counted at run time (`mint_count` mints the count; an
 	// initializer past it is not stored). `storage_zeroed`: the storage is
 	// already zero (calloc, static storage), so value-initialization needs
-	// no zero-fill. Statements append to `out`, each element's materialized
-	// temporaries just ahead of its construction.
+	// no zero-fill. Statements append to `out`. `element_local_temps`: each
+	// element's materialized temporaries go just ahead of its construction
+	// (a declaration's block); false leaves them pending for the enclosing
+	// statement (an expression — a cleanup-tagged temporary declared inside
+	// a statement-expression block mis-scopes its destructor in c2mir).
+	// `new T[n]{...}` for a non-class element: one count evaluation, a
+	// zeroed block, a store per clause (the class twin is the owner below).
+	node_t scalar_array_new_list_init(class TokenNEW *tn, DataDef *et,
+					  TokenBase *tb);
 	void class_array_list_init(const char *arr_ptr,
 			       const std::vector<size_t> &dims,
 			       const std::function<node_t()> &mint_count,
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &elements,
-			       bool storage_zeroed, TokenBase *origin,
-			       std::vector<node_t> &out);
+			       bool storage_zeroed, bool element_local_temps,
+			       TokenBase *origin, std::vector<node_t> &out);
 	// Itanium new[] cookie size: max(sizeof(size_t), alignof) when the
 	// element class has a non-trivial dtor (delete[] reads the element
 	// count back to run per-element dtors), else 0 — new[] and delete[]

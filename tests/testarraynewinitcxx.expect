@@ -1,0 +1,23 @@
+scalar: 1 2 7 0
+runtime-count: 1.5 2 0
+empty: 0 0
+count(3)
+braced-scalars: 1 0 3
+folded-count: 0.5 0 0 0
+Foo(1,2)
+Foo(7)
+Foo(8)
+Foo()
+class: 12 7 8 -1
+~Foo(-1)
+~Foo(8)
+~Foo(7)
+~Foo(12)
+Foo(5)
+Foo()
+Foo()
+class-runtime: 5 -1 -1
+~Foo(-1)
+~Foo(-1)
+~Foo(5)
+aggregate: 1 2 3 0 0 0

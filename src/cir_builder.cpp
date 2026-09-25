@@ -3714,6 +3714,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			lowered.ctor_args = tn->ctor_args;
 			lowered.braced = tn->braced;
 			lowered.array_size = tn->array_size;
+			lowered.array_init = tn->array_init;
 			lowered.alloc_class = concrete_class;
 			lowered.alloc_type = lowered.alloc_class ? NULL : concrete;
 			bool saved_mode = m_tsubst_pattern_mode;
@@ -17075,11 +17076,104 @@ bool CirBuilder::braced_class_array_needs_construction(Variable *v,
 	    && (!cdd->is_aggregate() || class_has_object_members(cdd));
 }
 
+// `new T[n]{e0, ...}` for a NON-class element: evaluate n once, zero the
+// block, store each clause's value into its element; the elements past the
+// list value-initialize, which calloc's zero is ([dcl.init.aggr]/5).
+//   ({ long N = <n>; T *P = (T *)calloc(N, sizeof(T));
+//      P[i] = <e_i>; ...  — each `if (i < N)` for a runtime count
+//      P; })
+// A braced clause is an aggregate element's own list (a compound literal of
+// the element type), or the one optional brace pair around a scalar.
+node_t CirBuilder::scalar_array_new_list_init(TokenNEW *tn, DataDef *et,
+					      TokenBase *tb)
+{
+	char ntmp[32], ptmp[32];
+	snprintf(ntmp, sizeof(ntmp), "__an%d", m_strtmp_counter++);
+	snprintf(ptmp, sizeof(ptmp), "__new%d", m_strtmp_counter++);
+	const std::vector<TokenBase *> &inits = tn->array_init->inits;
+	long known = -1;
+	if (TokenInt *kn = dynamic_cast<TokenInt *>(tn->array_size))
+		known = kn->ival();
+	if (known >= 0 && inits.size() > (size_t)known) {
+		std::string msg = "too many initializers for '" + et->name + " ["
+			+ std::to_string(known) + "]'";
+		return error_node(msg.c_str(), tn->array_init);
+	}
+	node_t items = list();
+	// long N = <n>;
+	node_t nspec = list();
+	append_i64(nspec, tb);
+	node_t ndecl = simple(N_SPEC_DECL);
+	append(ndecl, node1(N_SHARE, nspec));
+	append(ndecl, node2(N_DECL, id(ntmp, tb), list()));
+	append(ndecl, ignore());
+	append(ndecl, ignore());
+	append(ndecl, translate_expr(tn->array_size));
+	append(items, ndecl);
+	// T *P = (T *)calloc(N, sizeof(T));
+	auto ptr_type = [&]() -> node_t {
+		return node2(N_TYPE, type_list(et),
+			     node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	};
+	node_t cargs = list();
+	append(cargs, id(ntmp, tb));
+	append(cargs, node1(N_SIZEOF, node2(N_TYPE, type_list(et),
+					    node2(N_DECL, ignore(), list())), tb));
+	node_t pdecl = simple(N_SPEC_DECL);
+	append(pdecl, node1(N_SHARE, type_list(et)));
+	append(pdecl, node2(N_DECL, id(ptmp, tb), node1(N_LIST, pointer())));
+	append(pdecl, ignore());
+	append(pdecl, ignore());
+	append(pdecl, node2(N_CAST, ptr_type(),
+			    node2(N_CALL, id("calloc", tb), cargs, tb), tb));
+	append(items, pdecl);
+	const bool aggregate_elem = et->is_struct();
+	for (size_t i = 0; i < inits.size(); ++i) {
+		TokenBase *e = inits[i];
+		if (!e)
+			continue;		// a designator gap: calloc's zero
+		node_t val = NULL;
+		if (TokenStructLit *sl = e->as_struct_lit_tok()) {
+			if (aggregate_elem) {
+				sl->setDataType(et);
+				val = translate_struct_lit(sl);
+			} else if (sl->inits.empty()) {
+				continue;	// `{}`: value-initialized (zero)
+			} else if (sl->inits.size() == 1 && sl->inits[0]
+				   && !sl->inits[0]->as_struct_lit_tok()) {
+				val = translate_expr(sl->inits[0]);
+			} else {
+				return error_node("too many initializers for a scalar"
+						  " element of an array new", sl);
+			}
+		} else
+			val = translate_expr(e);
+		node_t store = node2(N_EXPR, list(),
+			node2(N_ASSIGN,
+			      node2(N_IND, id(ptmp, tb), integer((int64_t)i, tb), tb),
+			      val, tb), tb);
+		if (known >= 0) {
+			append(items, store);
+			continue;
+		}
+		// A runtime count below the list stores nothing past it (g++
+		// throws std::bad_array_new_length; madc's new[] has no length
+		// check yet).
+		node_t blk = list();
+		append(blk, store);
+		append(items, node4(N_IF, list(),
+			node2(N_LT, integer((int64_t)i, tb), id(ntmp, tb), tb),
+			node2(N_BLOCK, list(), blk, tb), ignore()));
+	}
+	append(items, node2(N_EXPR, list(), id(ptmp, tb), tb));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+}
+
 void CirBuilder::class_array_list_init(const char *arr_ptr,
 	const std::vector<size_t> &dims,
 	const std::function<node_t()> &mint_count, DataDefCLASS *cdd,
 	const std::vector<TokenBase *> &elements, bool storage_zeroed,
-	TokenBase *origin, std::vector<node_t> &out)
+	bool element_local_temps, TokenBase *origin, std::vector<node_t> &out)
 {
 	// One SLOT per element, filled from the clauses row by row. A braced
 	// clause opens the next row (or, at the element level, is the element's
@@ -17249,9 +17343,11 @@ void CirBuilder::class_array_list_init(const char *arr_ptr,
 		}
 		const ElementInit &ei = slots[i];
 		// This element's materialized temporaries are declared right
-		// before its construction, not hoisted ahead of every element.
+		// before its construction, not hoisted ahead of every element —
+		// in a declaration's block (element_local_temps).
 		std::vector<node_t> saved_pending;
-		saved_pending.swap(m_pending_stmts);
+		if (element_local_temps)
+			saved_pending.swap(m_pending_stmts);
 		std::vector<node_t> stmts;
 		if (ei.args.empty() && value_init_zeroes)
 			stmts.push_back(zero_fill(i, integer(1, origin)));
@@ -17267,8 +17363,10 @@ void CirBuilder::class_array_list_init(const char *arr_ptr,
 				return elem_addr(i);
 			}, cdd, ei.args, ei.origin, stmts);
 		std::vector<node_t> elem;
-		elem.swap(m_pending_stmts);
-		m_pending_stmts.swap(saved_pending);
+		if (element_local_temps) {
+			elem.swap(m_pending_stmts);
+			m_pending_stmts.swap(saved_pending);
+		}
 		elem.insert(elem.end(), stmts.begin(), stmts.end());
 		below_count(i, elem);
 		++i;
@@ -22050,6 +22148,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				need_output_extern("calloc", true,
 					{ { {N_UNSIGNED, N_LONG, N_LONG}, false },
 					  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+				if (tn->array_init)
+					return scalar_array_new_list_init(tn, et, tb);
 				node_t cargs = list();
 				append(cargs, translate_expr(tn->array_size));
 				append(cargs, t_sizeof());
@@ -22172,9 +22272,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				append(items, node2(N_EXPR, list(),
 					node2(N_ASSIGN, cookie, id(ntmp, tb), tb), tb));
 			}
-			node_t loop = class_array_construct_loop(tmp,
-				[&]() -> node_t { return id(ntmp, tb); }, cdd, tb);
-			if (loop) append(items, loop);
+			if (tn->array_init) {
+				// new C[n]{...}: every element from the list, the
+				// rest value-initialized — the class array owner
+				// (calloc zeroed the block).
+				std::vector<size_t> dims;
+				if (TokenInt *kn = dynamic_cast<TokenInt *>(tn->array_size))
+					if (kn->ival() >= 0)
+						dims.push_back((size_t)kn->ival());
+				std::vector<node_t> stmts;
+				class_array_list_init(tmp, dims,
+					[&]() -> node_t { return id(ntmp, tb); },
+					cdd, tn->array_init->inits, true, false, tb,
+					stmts);
+				for (node_t st : stmts)
+					append(items, st);
+			} else {
+				node_t loop = class_array_construct_loop(tmp,
+					[&]() -> node_t { return id(ntmp, tb); }, cdd, tb);
+				if (loop) append(items, loop);
+			}
 			append(items, node2(N_EXPR, list(), id(tmp, tb), tb));
 			return node1(N_STMTEXPR,
 				     node2(N_BLOCK, list(), items, tb), tb);
@@ -27321,7 +27438,7 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		class_array_list_init(aname.c_str(), dims,
 			[&]() -> node_t { return integer(n, sdcl); },
 			cdcl, sdcl->init_list,
-			(sdcl->var.flags & vfSTATIC) != 0, sdcl, stmts);
+			(sdcl->var.flags & vfSTATIC) != 0, true, sdcl, stmts);
 		// Pendings from before the list (the owner kept each element's
 		// own beside its construction) precede it.
 		for (node_t p : m_pending_stmts)
@@ -28098,7 +28215,8 @@ static bool tsubst_pattern_has_destroy_template_pointee(TokenBase *tb)
 				return true;
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
 		if (tsubst_pattern_has_destroy_template_pointee(tn->placement)
-		    || tsubst_pattern_has_destroy_template_pointee(tn->array_size))
+		    || tsubst_pattern_has_destroy_template_pointee(tn->array_size)
+		    || tsubst_pattern_has_destroy_template_pointee(tn->array_init))
 			return true;
 		for (TokenBase *a : tn->ctor_args)
 			if (tsubst_pattern_has_destroy_template_pointee(a))
@@ -28432,7 +28550,8 @@ static bool tsubst_pattern_has_dependent_call(TokenBase *tb)
 				return true;
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
 		if (tsubst_pattern_has_dependent_call(tn->placement)
-		    || tsubst_pattern_has_dependent_call(tn->array_size))
+		    || tsubst_pattern_has_dependent_call(tn->array_size)
+		    || tsubst_pattern_has_dependent_call(tn->array_init))
 			return true;
 		for (TokenBase *a : tn->ctor_args)
 			if (tsubst_pattern_has_dependent_call(a))
@@ -30218,7 +30337,7 @@ node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *d
 			std::vector<node_t> stmts;
 			class_array_list_init(aname.c_str(), dims,
 				[&]() -> node_t { return integer(n, decl); },
-				cdd, decl->init_list, true, decl, stmts);
+				cdd, decl->init_list, true, true, decl, stmts);
 			if (stmts.empty()) return NULL;
 			node_t blk = list();
 			for (node_t st : stmts) append(blk, st);

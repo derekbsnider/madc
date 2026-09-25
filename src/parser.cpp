@@ -55158,8 +55158,11 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	    pgm.Throw(tn) << "'" << class_name << "' is not a class type" << flush;
     }
 
-    // Array new: `new T[n]` — parse the element-count expression. (A new[] has
-    // no constructor-argument list; an init-list `[n]{...}` is a follow-up.)
+    // Array new: `new T[n]` — parse the element-count expression. A new[] has
+    // no constructor-argument list; a braced list `[n]{...}` initializes the
+    // elements ([expr.new]/18). It was never read: the list fell out of the
+    // expression and parsed as a compound statement AFTER it, so
+    // `new int[3]{1, 2, 3}` allocated zeroed elements (exit 0).
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
     {
 	pgm.nextToken(); // consume '['
@@ -55169,6 +55172,12 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
 	    pgm.Throw(this) << "Expected ] after new[] array size" << flush;
 	pgm.nextToken(); // consume ']'
+	// The one brace-list reader for an expression-position list: nested
+	// braces are element lists, positional clauses are elements. The CIR
+	// lowering constructs each element (class_array_list_init) or stores
+	// it (a scalar element).
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrc )
+	    array_init = pgm.parse_compound_struct_lit(NULL, this);
 	// `new T[n]` is a `T *` ([expr.new]/5).
 	result_type = pgm.getPointerType(alloc_class ? (DataDef *)alloc_class : alloc_type);
 	return this;

@@ -2004,12 +2004,15 @@ public:
     TokenBase *placement;
     DataDef *alloc_type;
     TokenBase *array_size;	// `new T[n]` — the element count expr (NULL for scalar new)
+    // `new T[n]{...}`: the braced list that initializes the elements
+    // ([expr.new]/18, [dcl.init.aggr]); NULL when the array new has none.
+    class TokenStructLit *array_init;
     // The expression's TYPE ([expr.new]/1: a prvalue of type `T *`), set by
     // parse() for both the scalar and the array form. A new-expression is the
     // keyword token itself, so without this datadef() answered the keyword
     // default and `auto c = new T(...)` deduced `char`.
     DataDef *result_type;
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; result_type = NULL; }
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; array_init = NULL; result_type = NULL; }
     virtual TokenID id() const override { return TokenID::tkNEW; }
     virtual TokenBase *clone() override { return new TokenNEW(); }
     virtual TokenBase *parse(Program &) override;
