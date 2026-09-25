@@ -1,6 +1,7 @@
 #!/bin/bash
 # check-one-escape-decoder.sh — ONE decoder of a literal's escape sequence
-# (read_literal_escape, src/lexer.cpp).
+# (read_literal_escape, src/lexer.cpp), and ONE rule for a narrow character
+# constant's value from its bytes (narrow_char_constant_value).
 #
 # The rule: the narrow string arm, the narrow character arm, the prefixed
 # (L/u8/u/U) reader and the #if evaluator's character constants each carried
@@ -15,6 +16,11 @@
 # simplest escape): `case 'n':` producing '\n'. The encode direction
 # (`case '\n':` -> "\\n", in the emitters and dumpers) does not match.
 # One permitted site: the decoder's body.
+#
+# Second rule: the tokenizer took a character constant's FIRST byte ('ab' was
+# 97) while the #if evaluator folded the bytes but read '\xff' unsigned. Both
+# now value the bytes through narrow_char_constant_value. Marker: the byte
+# fold `(x << 8) |` in src/lexer.cpp, one permitted site (its body).
 set -u
 cd "$(dirname "$0")/.."
 
@@ -34,6 +40,16 @@ if [ "$count" -lt 1 ]; then
 	fail=1
 fi
 
+fold_marker='<< *8\) *\|'
+folds=$(grep -nE "$fold_marker" src/lexer.cpp 2>/dev/null || true)
+fold_count=0
+[ -n "$folds" ] && fold_count=$(echo "$folds" | wc -l)
+if [ "$fold_count" -ne 1 ]; then
+	echo "check-one-escape-decoder: character-constant byte fold outside narrow_char_constant_value ($fold_count sites):"
+	echo "$folds"
+	fail=1
+fi
+
 # Negative control: the marker must catch the shapes the old copies used, or
 # the gate is dead and its verdict means nothing.
 ctrl=$(mktemp)
@@ -46,9 +62,13 @@ if [ "$ctrl_hits" -ne 2 ]; then
 	echo "check-one-escape-decoder: NEGATIVE CONTROL FAILED ($ctrl_hits of 2 shapes matched)"
 	fail=1
 fi
+if ! echo '	    value = (value << 8) | (ch & 0xff);' | grep -qE "$fold_marker"; then
+	echo "check-one-escape-decoder: NEGATIVE CONTROL FAILED (fold marker)"
+	fail=1
+fi
 rm -f "$ctrl"
 
 if [ "$fail" -ne 0 ]; then
 	exit 1
 fi
-echo "check-one-escape-decoder: OK (one owner, control live)"
+echo "check-one-escape-decoder: OK (one escape decoder, one char-constant value rule, controls live)"

@@ -866,6 +866,38 @@ static void append_byte_escape(std::string &out, const LiteralEscape &e)
 	out += (char)e.value;
 }
 
+// The value of a narrow character constant from its c-char BYTES (escapes
+// decoded, a UCN already UTF-8): C11 6.4.4.4p10, [lex.ccon]/2. THE rule the
+// tokenizer and the #if evaluator share, gcc's (narrow_str_to_charconst). One
+// byte is a plain char's value, sign-extended while char is signed. Several
+// are a multi-character constant of type int, each byte shifted in from the
+// right with the last four surviving — gcc's and clang's "multi-character
+// character constant" warning, and past four gcc's "character constant too
+// long for its type". No c-char at all is an error. Diagnostics point at
+// `row`/`col` (the opening quote).
+static int32_t narrow_char_constant_value(Program &pgm, Source &at,
+					  const std::string &bytes,
+					  int row, int col)
+{
+    if ( bytes.empty() )
+    {
+	at.setpos(row, col);
+	throw "empty character constant";
+    }
+    uint32_t v = 0;
+    for ( unsigned char b : bytes )
+	v = (v << 8) | b;
+    if ( bytes.size() == 1 )
+	return ddCHAR.is_unsigned() ? (int32_t)(uint8_t)v : (int32_t)(int8_t)v;
+    pgm.report_warning(Program::DiagnosticPhase::lexer,
+		       bytes.size() > 4
+			   ? "character constant too long for its type"
+			   : "multi-character character constant",
+		       at.fname(), row, col);
+    pgm.print_last_diagnostic(pgm.error());
+    return (int32_t)v;
+}
+
 // The largest code unit of an encoding-prefixed literal's element type — the
 // range an octal or hex escape must fit (C11 6.4.4.4p9): u8 is a byte, u is
 // char16_t, U is char32_t, and L is wchar_t (2-byte UTF-16 on the LLP64
@@ -7480,7 +7512,13 @@ TokenBase *Program::_getToken()
 		refuse_unterminated_literal(source, '\'', row, col);
 	    source.get();
 	    {
-		TokenBase *ctok = make_char(word[0]);
+		int32_t cval = narrow_char_constant_value(*this, source, word,
+							  row, col);
+		// A multi-character constant has type int in C and C++ alike
+		// ([lex.ccon]/2); a single c-char stays the char token.
+		TokenBase *ctok = word.size() == 1 ? make_char(cval) : make_int(cval);
+		if ( word.size() > 1 )
+		    ((TokenInt *)ctok)->setDataType(&ddINT32);
 		lex_ud_suffix(ctok);
 		return ctok;
 	    }
@@ -9306,13 +9344,11 @@ bool Program::evaluateIfCondition()
 
     // A character constant's escape in the condition: the one escape
     // decoder, over the captured condition text.
-    auto read_char_escape = [&](bool wide) -> int64_t {
-	if ( pos >= expr.size() )
-	    return 0;
+    auto read_char_escape = [&](bool wide) -> LiteralEscape {
 	CapturedTextReader in = { expr, pos };
 	char esc = (char)in.get();
 	return read_literal_escape(*this, in, source, esc,
-				   wide ? 0xFFFFFFFFu : 0xFFu).value;
+				   wide ? 0xFFFFFFFFu : 0xFFu);
     };
 
     auto read_char_literal = [&](bool wide) -> int64_t {
@@ -9321,24 +9357,31 @@ bool Program::evaluateIfCondition()
 	if ( pos >= expr.size() || expr[pos] != '\'' )
 	    return 0;
 	++pos;
+	// A wide constant is its last c-char (gcc); a narrow one is its
+	// bytes, valued by the tokenizer's own rule.
 	int64_t value = 0;
+	std::string bytes;
 	while ( pos < expr.size() && expr[pos] != '\'' )
 	{
-	    int64_t ch;
-	    if ( expr[pos] == '\\' )
+	    if ( expr[pos] == '\\' && pos + 1 < expr.size() )
 	    {
 		++pos;
-		ch = read_char_escape(wide);
+		LiteralEscape e = read_char_escape(wide);
+		value = e.value;
+		append_byte_escape(bytes, e);
 	    }
 	    else
-		ch = (unsigned char)expr[pos++];
-	    value = (value << 8) | (ch & 0xff);
-	    if ( wide )
-		value = ch;
+	    {
+		value = (unsigned char)expr[pos];
+		bytes += expr[pos++];
+	    }
 	}
 	if ( pos < expr.size() && expr[pos] == '\'' )
 	    ++pos;
-	return value;
+	if ( wide )
+	    return value;
+	return narrow_char_constant_value(*this, source, bytes,
+					  source.line(), source.column());
     };
 
     parse_primary = [&]() -> int64_t {

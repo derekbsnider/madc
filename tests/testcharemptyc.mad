@@ -1,0 +1,8 @@
+// C11 6.4.4.4p1: a character constant holds at least one c-char. madc took
+// '' as a NUL and ran (exit 0).
+// Oracle: gcc "error: empty character constant"; clang warns "empty
+// character constant" and then errors "expected expression".
+int main(void)
+{
+	return '';
+}
