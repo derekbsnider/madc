@@ -1897,6 +1897,21 @@ These decisions supersede the plan text they name.
   - `-i` is free: madc matches options exactly (`src/madc.cpp:524` on), so it cannot collide with `-I` or `-isystem`.
   - Supersedes §4.1's `madc --repl`.
 
+### The value carrier
+
+- **D21. `var` operators follow Julia's equality with strict arithmetic** (owner, 2026-09-25). Background: `534ba8a6e` refused every builtin operator on a `var`, because they had been running on the carrier's storage address. The strict-equality spec (`docs/superpowers/specs/2026-06-11-strict-equality-design.md` §2.5–2.6) anticipated this choice.
+  - `==` / `!=` compare numbers by value across the integer and real kinds (5 == 5.0), and strings as strings. They never convert between strings and numbers (`"5" == 5` is false). This is the one change to existing behavior: an integer-versus-real comparison of two `var`s flips from false to true, so `tools/` is audited for it.
+  - `===` / `!==` keep today's strict kind-and-value compare, as the carrier's own `operator===` row (spec §2.5). The pair then splits on a `var` exactly as it does on scalars.
+  - Arithmetic and relational operators work on the numeric kinds. Any other kind is the catchable runtime error `as_integer` raises. The compound forms (`v += 1`) come first; the binary forms (`v + 1`) wait for L3's by-value `value` returns.
+  - `if (v)` stays refused, as in Julia. Test with `as_boolean()`, `is_null()`, `empty()` or `v === true`.
+  - **PHP juggling is a configurable opt-in, off by default.** It covers loose `==`, string↔number arithmetic and relations, and PHP truthiness (`"0"` and `[]` are false).
+    - Proposed shape, confirmed at design time: a per-file directive modelled on PHP's `declare(strict_types=1)`, scoped to the file that states it. It is never inherited through `#include`: `dialect-lean.md` forbids carrier semantics that vary with the headers a TU parsed.
+    - It is also an entry in the REPL's relaxation list (D3), so `%strict` shows it.
+    - It is a feature-registry entry (I4) and never a `--std=` value, because it is not a language standard.
+    - Its rules follow one pinned PHP version (8.x) and are tested against the `php` CLI.
+  - Thread contract: the rows are pure functions of their operands.
+  - Each row retires the matching refusal from `534ba8a6e` by construction.
+
 ### Next
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
