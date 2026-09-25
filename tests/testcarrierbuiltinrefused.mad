@@ -1,0 +1,30 @@
+// A builtin operation on the value carrier's REPRESENTATION is refused.
+// The carrier's C storage is a long long array, so every one of these used
+// to compile with exit 0 and a garbage answer (at most a c2mir warning):
+// `x + 1` was pointer arithmetic on the storage, `x < y` an address compare,
+// `int a = x` the storage address, and `if (f)` was always taken — the
+// decayed address is never null — even for a false or null value. A plain
+// class operand is a c2mir error already; the carrier's representation hid
+// it. The carrier converts EXPLICITLY (as_integer / as_real / as_boolean) or
+// to text (c_str, and the `const char *` coercion). The expected lines are
+// gcc's wording for a class that lacks the operator or conversion (madc
+// spells int as its int32_t).
+int take(int v) { return v; }
+int give() { var r = 7; return r; }
+int main()
+{
+	var x = 5;
+	var y = 6;
+	var f = false;
+	int s = 0;
+	s = x + 1;
+	if (x < y) s = 2;
+	x -= 1;
+	int a = x;
+	int b = 0;
+	b = x;
+	int c = take(x);
+	if (f) s = 3;
+	println("{} {} {} {} {}", s, a, b, c, give());
+	return 0;
+}

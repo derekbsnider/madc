@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### A builtin operation on a `var` is refused, not run on its storage
+
+A `var` / `madc::value` is stored in C as a `long long` array. When no carrier
+row served an operation, c2mir quietly accepted the array's address instead.
+Each of these compiled with exit 0 and a garbage answer, with at most a
+warning:
+
+- `x + 1` did pointer arithmetic, `x < y` compared addresses, and `x -= 1`
+  stepped a pointer.
+- `int a = x;`, `b = x;`, `take(x)` and `return x;` from an `int` function
+  each read the address as a number.
+- `if (f)` was always taken, even for a false or null value, because the
+  address is never null.
+
+A plain class in the same positions is already a c2mir error; the carrier's
+representation hid the mistake.
+
+Each of these is now gcc's error for a class without the operator or
+conversion:
+- `CirBuilder::carrier_builtin_operator_refusal` rejects a binary operator
+  once class-operator selection has missed (e.g. "no match for 'operator+'").
+- `carrier_scalar_conversion_refusal` rejects a conversion into an
+  arithmetic slot: initialization, assignment, argument passing and return
+  ("cannot convert … to 'int32_t' in …").
+- `translate_cond` rejects a truth test ("could not convert … to 'bool'").
+
+The carrier's own conversions are unchanged:
+- the explicit ones, `as_integer`, `as_real`, `as_boolean`, `is_null` and
+  `empty`;
+- the text coercion into a `const char *` slot.
+
+Nothing in the suite, the tools or Tier 2 relied on the old behaviour.
+
+Still open, as an owner decision: whether the carrier gets PHP-style
+arithmetic and truthiness. Adding those rows would retire these refusals
+without any other change.
+
 ### A block-scope static is initialized once
 
 [stmt.dcl]/4 says a block-scope static is initialized once, the first time

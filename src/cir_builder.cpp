@@ -7484,6 +7484,9 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 					  node2(N_DECL, ignore(), dl));
 			append(args, node2(N_CAST, ct, translate_expr(arg), arg));
 		}
+		else if (node_t refused = carrier_scalar_conversion_refusal(
+				arg, pt, "argument passing", arg))
+			append(args, refused);
 		else if (pt && pt->is_struct()
 			 && reference_member_value_is_stored_address(arg))
 			// A plain-struct BY-VALUE formal taking an aggregate
@@ -10351,6 +10354,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			// Runtime initializer (scalar, other complex, expression):
 			// convert to this lowered type.
 			init_node = int_complex_value(init_expr, low, origin);
+		else if (node_t refused = carrier_scalar_conversion_refusal(
+				init_expr, v->type, "initialization", origin))
+			init_node = refused;
 		else {
 		size_t pending_before = m_pending_stmts.size();
 		init_node = translate_expr(init_expr);
@@ -17906,6 +17912,71 @@ static const char *binop_overload_symbol(TokenID id)
 	}
 }
 
+// A builtin binary operator with a CARRIER (`var` / madc::value) operand is
+// never meaningful: the carrier's C storage is a long long array, so c2mir
+// reads `v + 1` as pointer arithmetic, `v < w` as an address compare and
+// `v -= 1` as a pointer step — garbage with exit 0 and one warning. A plain
+// class needs no such check (its struct operand is a c2mir error); the
+// carrier's representation hides it. Called once its operator rows had their
+// chance (class_operator_call). Assignment has its own lanes (the operator=
+// rows, the copy), `===` / `!==` their strict-equality owner, and `&&` / `||`
+// test truth rather than operate on the representation. gcc canon: "no match
+// for 'operator+' (operand types are 'X' and 'int')".
+node_t CirBuilder::carrier_builtin_operator_refusal(TokenOperator *top,
+						    TokenBase *tb)
+{
+	switch (tb->id()) {
+	case TokenID::tkAssign:
+		// `n = v` into an arithmetic lvalue: the conversion refusal; a
+		// carrier on the left is its operator= rows' business.
+		return top ? carrier_scalar_conversion_refusal(top->right,
+			top->left ? top->left->datadef() : NULL, "assignment", tb)
+			   : NULL;
+	case TokenID::tk3Eq: case TokenID::tk3NotEq:
+	case TokenID::tkLand: case TokenID::tkLor:
+		return NULL;
+	default:
+		break;
+	}
+	const char *sym = binop_overload_symbol(tb->id());
+	if (!sym[0] || !top)
+		return NULL;
+	DataDef *ld = top->left ? top->left->datadef() : NULL;
+	DataDef *rd = top->right ? top->right->datadef() : NULL;
+	if (!carrier_behind(ld) && !carrier_behind(rd))
+		return NULL;
+	std::string msg = std::string("no match for 'operator") + sym
+		+ "' (operand types are '" + (ld ? ld->name : std::string("?"))
+		+ "' and '" + (rd ? rd->name : std::string("?")) + "')";
+	return error_node(msg.c_str(), tb);
+}
+
+// A carrier VALUE flowing into an ARITHMETIC slot (an int / double / bool
+// object, parameter or return): the carrier has no implicit conversion off
+// it — its explicit ones are the as_integer / as_real / as_boolean rows, and
+// its implicit text coercion (object_cstr_arg) serves only a `const char *`
+// slot — while its C storage is a long long array, so c2mir converted the
+// storage ADDRESS (garbage, exit 0, one warning). `context` names the slot
+// for gcc's wording: "cannot convert 'X' to 'int' in initialization".
+node_t CirBuilder::carrier_scalar_conversion_refusal(TokenBase *src,
+						     DataDef *target,
+						     const char *context,
+						     TokenBase *origin)
+{
+	if (!src || !target || !carrier_behind(src->datadef()))
+		return NULL;
+	DataDef *t = target->unqualified();
+	if (!t || carrier_behind(t) || as_class_instance(t) || t->is_reference()
+	    || t->is_pointer() || !t->is_numeric())
+		return NULL;
+	std::string msg = "cannot convert '" + src->datadef()->name + "' to '"
+		+ t->name + "'";
+	if (context && *context)
+		msg += std::string(" in ") + context;
+	msg += "; read it with as_integer(), as_real() or as_boolean()";
+	return error_node(msg.c_str(), origin ? origin : src);
+}
+
 // Does this operator WRITE its left operand? True for plain assignment and the
 // compound assignments (+= -= *= /= %= &= |= ^= <<= >>=). Used by the const-LHS
 // enforcement: writing through a const lvalue is an error. (The inc/dec write
@@ -23674,6 +23745,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// operation on an object representation. Operators that can be
 			// resolved by kind (member, external, or retained free-template body)
 			// have already returned.
+			// A builtin operator on the CARRIER's object representation:
+			// its rows (==, !=, +=, =) were tried just above and none
+			// served this operand pair (carrier_builtin_operator_refusal).
+			if (node_t refused = carrier_builtin_operator_refusal(top, tb))
+				return refused;
 			if (m_tsubst_pattern_mode && !is_assign_op(tb->id())) {
 				if (operand_object_class(top->left)
 				    || operand_object_class(top->right)) {
@@ -24698,7 +24774,10 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		// stays the type error g++ gives; this is dialect coercion,
 		// not a class-wide one.
 		expr = object_cstr_arg(tr->returns);
-	} else
+	} else if (node_t refused = carrier_scalar_conversion_refusal(
+			tr->returns, m_cur_func_scalar_ret, "return", tr))
+		expr = refused;
+	else
 		expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	// Integer-_Complex return conversions (GNU ext, struct spine): a complex
 	// value returned from a scalar function takes its real part; from a
@@ -24914,6 +24993,17 @@ node_t CirBuilder::translate_cond(TokenBase *cond)
 {
 	if (node_t conv = cond_contextual_bool(cond))
 		return conv;
+	// A carrier has no contextual conversion to bool (its as_boolean /
+	// is_null / empty rows are explicit), and its storage is an array whose
+	// decayed address is never null: `if (v)` was ALWAYS taken, even for a
+	// false or null value. gcc canon for a class without operator bool:
+	// "could not convert 'v' from 'X' to 'bool'".
+	if (cond && carrier_behind(cond->datadef())) {
+		std::string msg = "could not convert the value from '"
+			+ cond->datadef()->name + "' to 'bool'; test it with"
+			  " as_boolean(), is_null() or empty()";
+		return error_node(msg.c_str(), cond);
+	}
 	return translate_expr(cond);
 }
 

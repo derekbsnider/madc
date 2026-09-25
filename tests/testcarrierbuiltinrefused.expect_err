@@ -1,0 +1,8 @@
+no match for 'operator+' (operand types are 'array' and 'int')
+no match for 'operator<' (operand types are 'array' and 'array')
+no match for 'operator-=' (operand types are 'array' and 'int')
+cannot convert 'array' to 'int32_t' in initialization
+cannot convert 'array' to 'int32_t' in assignment
+cannot convert 'array' to 'int32_t' in argument passing
+cannot convert 'array' to 'int32_t' in return
+could not convert the value from 'array' to 'bool'

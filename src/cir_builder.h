@@ -2338,6 +2338,16 @@ public:
 	// left pending. Appends the guard and the guarded block to `items`.
 	// thread_local (`per_thread`): a per-thread guard byte, set after the
 	// initialization, instead of the __cxa_guard protocol.
+	// A builtin binary operator on a carrier operand no carrier row served:
+	// the loud refusal (NULL when the pair is not a carrier's).
+	node_t carrier_builtin_operator_refusal(class TokenOperator *top,
+						TokenBase *tb);
+	// A carrier value into an ARITHMETIC slot (initialization, assignment,
+	// argument passing, return): the loud refusal — the carrier converts
+	// only explicitly (as_integer / as_real / as_boolean) or to text.
+	node_t carrier_scalar_conversion_refusal(TokenBase *src, DataDef *target,
+						 const char *context,
+						 TokenBase *origin);
 	void emit_static_local_once(node_t items, node_t init_items,
 				    TokenBase *origin, bool per_thread);
 	// Block-scope statics whose DYNAMIC initializer var_decl deferred to
