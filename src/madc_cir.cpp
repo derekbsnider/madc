@@ -5188,6 +5188,10 @@ static void forest_record_enum(Program *prog, DataDefENUM *edd,
 		  ? forest_serialize_type_id(edd->underlying) : 0u;
 	if (edd->fixed_base)
 		r.flags |= madc::dis::DF_ENUM_FIXED_BASE;
+	// v49: a C enum promotes as its underlying type too (its compatible
+	// type, C11 6.7.2.2p4).
+	if (edd->c_compatible)
+		r.flags |= madc::dis::DF_ENUM_C_COMPATIBLE;
 	// The enumerators come from the TAG, which owns them
 	// (DataDefENUM::enumerators, stamped at the one point in TokenENUM::parse
 	// where a name and a value are both known). This used to re-derive them

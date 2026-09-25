@@ -53110,6 +53110,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		enum_alias_dd->underlying = pgm.last_anon_enum.computed_base;
 		enum_alias_dd->set_layout(pgm.last_anon_enum.storage);
 	    }
+	    enum_alias_dd->c_compatible = pgm.is_c_mode();
 	    enum_alias_dd->enumerators = pgm.last_anon_enum.enumerators;
 	    pgm.last_anon_enum = Program::AnonEnumDefinition();	// consumed
 	}
@@ -54375,14 +54376,16 @@ static DataDef *enum_value_range_promotion(int64_t lo, int64_t hi)
 }
 
 // The STORAGE of an unscoped enum with no declared base (DataDefENUM::
-// set_layout): NULL keeps the int layout; an enum whose values do not fit int
-// is stored in the type it promotes to (gcc and clang: 8 bytes for
+// set_layout). In C (c_rules) it is the computed base, the type the enum is
+// compatible with (C11 6.7.2.2p4; gcc and clang: `enum { A }` is unsigned
+// int). In C++: NULL keeps the int layout; an enum whose values do not fit
+// int is stored in the type it promotes to (gcc and clang: 8 bytes for
 // `enum { B = 0x100000000 }`, which the int layout truncated to 0); a packed
 // one in its packed base.
-static DataDef *enum_storage_type(bool packed, DataDef *computed,
+static DataDef *enum_storage_type(bool c_rules, bool packed, DataDef *computed,
 				  int64_t min_val, int64_t max_val)
 {
-    if ( packed )
+    if ( c_rules || packed )
 	return computed;
     if ( min_val >= INT32_MIN && max_val <= INT32_MAX )
 	return NULL;
@@ -54777,10 +54780,13 @@ TokenBase *TokenENUM::parse(Program &pgm)
     // gcc and clang ignore `packed` on a scoped or fixed-base enum.
     packed = packed && !scoped && !fixed_base;
 
-    // A computed base, and the storage it implies (enum_storage_type): a
-    // packed enum's base drives its layout; an enum whose values need more
-    // than int is stored in the type it promotes to; any other keeps int.
+    // A computed base, and the storage it implies (enum_storage_type): in C
+    // the computed base itself, the type the enum is compatible with; in
+    // C++ a packed enum's base drives its layout, an enum whose values need
+    // more than int is stored in the type it promotes to, and any other
+    // keeps int.
     if ( DataDefENUM *under_edd = dynamic_cast<DataDefENUM *>(enum_dd) )
+    {
 	if ( !under_edd->underlying )
 	{
 	    DataDef *computed = enum_computed_underlying(scoped, packed,
@@ -54791,10 +54797,13 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    {
 		under_edd->underlying = computed;
 		if ( !scoped )
-		    under_edd->set_layout(enum_storage_type(false, computed,
-							    enum_min_val, enum_max_val));
+		    under_edd->set_layout(enum_storage_type(pgm.is_c_mode(), false,
+							    computed, enum_min_val,
+							    enum_max_val));
 	    }
 	}
+	under_edd->c_compatible = pgm.is_c_mode();
+    }
     // An anonymous enum has no DataDefENUM: its storage is its objects' type
     // (re-fed below), and last_anon_enum carries it with the computed base to
     // a typedef alias.
@@ -54803,7 +54812,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
     {
 	DataDef *computed = enum_computed_underlying(scoped, packed,
 						     enum_min_val, enum_max_val);
-	anon_storage = enum_storage_type(packed, computed,
+	anon_storage = enum_storage_type(pgm.is_c_mode(), packed, computed,
 					 enum_min_val, enum_max_val);
 	pgm.last_anon_enum.computed_base = computed;
 	pgm.last_anon_enum.storage = anon_storage;
@@ -54828,11 +54837,10 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// model the forward-reference path above and the class walk's
 	// nested-aggregate arm use. An ANONYMOUS enum has no DataDefENUM;
 	// its variable's type is the fixed underlying when declared, else its
-	// storage (enum_storage_type: the packed base, the wider type its
-	// values need, or int — the C model madc's enums lower to). Only a
-	// token that can START a declarator continues the definition. The
-	// typedef-enum
-	// arm reads its ALIAS name itself and drops the re-fed type token.
+	// storage (enum_storage_type: C's compatible type, the packed base, the
+	// wider type its values need, or int). Only a token that can START a
+	// declarator continues the definition. The typedef-enum arm reads its
+	// ALIAS name itself and drops the re-fed type token.
 	bool declarator_follows = after_body
 	    && (after_body->type() == TokenType::ttIdentifier
 	     || after_body->type() == TokenType::ttDataType
@@ -59911,8 +59919,9 @@ DataDef *integer_promoted_type(DataDef *dd)
     if ( const DataDefENUM *e = dd->as_enum_dd() )
     {
 	// [conv.prom]/4: a FIXED enum promotes to its underlying type, and on
-	// through that type's own promotion.
-	if ( e->fixed_base && e->underlying )
+	// through that type's own promotion; so does a C enum, which IS its
+	// compatible type (C11 6.7.2.2p4, 6.3.1.1: its rank is that type's).
+	if ( e->promotes_as_underlying() )
 	    return integer_promoted_type(e->underlying);
 	// [conv.prom]/3: an unfixed one by the VALUE range of its enumerators
 	// (enum_value_range_promotion, the one rule).

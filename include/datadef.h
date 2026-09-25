@@ -2099,14 +2099,29 @@ public:
     // on. A FIXED base also drives the enum's LAYOUT via set_underlying
     // below. A computed base is recorded by direct assignment; the layout of
     // an unfixed enum is chosen separately (set_layout — TokenENUM::parse):
-    // int unless its values need more (gcc without -fshort-enums), or the
-    // packed base.
+    // in C its computed base; in C++ int unless its values need more (gcc
+    // without -fshort-enums), or the packed base.
     DataDef *underlying = NULL;
     // Was the base DECLARED (`enum E : short`)? [conv.prom]/4 promotes a
     // fixed enum to its underlying type; an unfixed one promotes by its
     // VALUE range ([conv.prom]/3), not by the computed base — the two
     // readers (overload ranking) need to tell them apart.
     bool fixed_base = false;
+    // Defined in C. C11 6.7.2.2p4 makes an enumerated type COMPATIBLE with
+    // its underlying integer type (gcc's choice, which clang shares:
+    // unsigned int with no negative enumerator, int with one, the 64-bit
+    // twin past 32 bits, the smallest that holds the range when packed). It
+    // is laid out as that type and has its rank, so it promotes as that type
+    // does: C has no [conv.prom]/3 value-range rule, and `enum U { A }`
+    // arithmetic is unsigned (`(enum U)-1 > 0` holds).
+    bool c_compatible = false;
+
+    // Does the enum promote as its underlying type (a declared base, or C's
+    // compatible type), rather than by its value range?
+    bool promotes_as_underlying() const
+    {
+	return underlying && (fixed_base || c_compatible);
+    }
 
     // The tag's OWN enumerators, in DECLARATION order — the one live owner of
     // "which enumerators belong to this enum, and what are their values".
@@ -2140,10 +2155,10 @@ public:
 	set_layout(u);
     }
     // The enum's STORAGE: what its objects are laid out and lowered as (size
-    // and raw type). A fixed base is its own storage; an unfixed enum keeps
-    // the constructor's int unless its values need a wider type, or it is
-    // packed. The storage never changes what the base IS, nor whether it
-    // was declared.
+    // and raw type). A fixed base is its own storage, and so is a C enum's
+    // computed one; an unfixed C++ enum keeps the constructor's int unless
+    // its values need a wider type, or it is packed. The storage never
+    // changes what the base IS, nor whether it was declared.
     void set_layout(DataDef *storage)
     {
 	if ( storage && storage->size )

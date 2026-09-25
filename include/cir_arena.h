@@ -151,6 +151,11 @@ enum DefFlags : uint32_t {
 						// to its underlying type where a live parse
 						// promotes by value range ([conv.prom]/3)
 	DF_IS_VOID_PARAMS    = 1u << 11,
+	DF_ENUM_C_COMPATIBLE = 1u << 11,	// v49, DK_ENUM-scoped: DataDefENUM::c_compatible
+						// (defined in C: compatible with its underlying
+						// type, so it promotes as that type, C11
+						// 6.7.2.2p4). Shares its bit with the
+						// function-only DF_IS_VOID_PARAMS
 	DF_DECLARATION_ONLY  = 1u << 12,
 	DF_IS_CONST_METHOD   = 1u << 13,	// FuncDef::is_const_method
 	DF_IS_VOLATILE_METHOD = 1u << 27,	// FuncDef::is_volatile_method (`f() volatile`);

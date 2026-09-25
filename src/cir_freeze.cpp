@@ -2591,6 +2591,8 @@ void CirFrozenForest::materialize_pass()
 				edd->fixed_base =
 					(r.flags & madc::dis::DF_ENUM_FIXED_BASE) != 0;
 			}
+		// v49: defined in C, so compatible with that underlying type.
+		edd->c_compatible = (r.flags & madc::dis::DF_ENUM_C_COMPATIBLE) != 0;
 		if (r.size)
 			edd->restore_layout(r.size, r.datatype ? r.datatype
 						     : (uint32_t)edd->rawtype());

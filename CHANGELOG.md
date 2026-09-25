@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A C enum is its compatible type: unsigned int when no enumerator is negative
+
+In C an enumerated type is compatible with an integer type the compiler
+chooses (C11 6.7.2.2p4). gcc and clang choose `unsigned int` when no
+enumerator is negative, `int` when one is, and the 64-bit type past 32 bits.
+The enum has that type's rank, so its arithmetic is that type's. madc lowered
+every such C enum as a signed `int`: `(enum U)-1 > 0` was false,
+`u - 2 > 0` was false for `u = 1`, `(enum U)-2 / 2` divided signed, and
+`unsigned long long w = (enum U)-1` read 18446744073709551615 where gcc reads
+4294967295. These were silent wrong answers.
+
+A C enum is now stored as that type and promotes as it does
+(`DataDefENUM::c_compatible`, read by `integer_promoted_type`). C++ keeps
+[conv.prom]/3, where an enum with no declared base promotes by the range of
+its values, so `enum U { UA = 1 }` still promotes to `int` there. The
+frozen-header pack (format v49) records the flag.
+
+Tests: `testenumcompatc`, `testenumcompatcxx`.
+
 ### `enum TAG` in a cast, a parameter or `va_arg` names the enum
 
 Four readers of an elaborated `enum TAG` typed it `int` instead of the tag's
