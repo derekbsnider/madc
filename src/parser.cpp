@@ -68570,6 +68570,12 @@ TokenBase *Program::parseKeyword(TokenKeyword *tk)
 	case TokenID::tkTYPEDEF:
 	    stmt_terminator_owed = StatementTerminator::TypeDeclaration;
 	    break;
+	// A delete-expression in statement position is an expression
+	// statement ([stmt.expr], [expr.delete]): it owes its `;` as one. (A
+	// statement-initial `new` is the expression engine's already.)
+	case TokenID::tkDELETE:
+	    stmt_terminator_owed = StatementTerminator::Expression;
+	    break;
 	default:
 	    break;
     }
@@ -76947,7 +76953,7 @@ bool Program::file_scope_statement_starter(TokenBase *tb)
 // a declaration/typedef/struct-def)? An expression statement is one by the
 // grammar's own verdict: its parser owed the statement's `;` as an
 // expression's (last_statement_terminator), whatever token tops its tree —
-// a call, an operator, a cast, a `new`. A `:=` owes the same `;`,
+// a call, an operator, a cast, a `new` or `delete`. A `:=` owes the same `;`,
 // but where it declares a global it returns that declaration, which stays a
 // declaration here. Otherwise a positive list; unknown result kinds keep
 // today's file-scope handling, so exotic constructs are never misrouted.

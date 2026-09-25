@@ -1,0 +1,6 @@
+// [stmt.expr]: a delete-expression statement owns its `;` like any other
+// expression statement. madc's delete statement recorded no terminator, so
+// `delete p }` compiled and ran (exit 0).
+// Oracle: g++ "error: expected ';' before '}' token", clang++ "error:
+// expected ';' after expression".
+int main() { int *p = new int; delete p }

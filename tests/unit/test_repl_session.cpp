@@ -234,3 +234,26 @@ TEST_CASE("a cast statement runs at an entry's top level, under every standard")
 	CHECK(*log_v == 123);
     }
 }
+
+// A delete-expression statement is an expression statement too; it used to
+// be dropped, so the destructor never ran (log 1). The class is defined in
+// the same entry: a later entry re-emits its members (slice 3).
+TEST_CASE("a delete statement runs at an entry's top level")
+{
+    const char *stds[] = { "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("int log_v = 0;\n"
+			 "int step(int d) { log_v = log_v * 10 + d; return d; }"));
+	REQUIRE(s.submit("struct T { int a; ~T(); };\n"
+			 "T::~T() { step(9); }\n"
+			 "T *tp = new T;\n"
+			 "step(1);\n"
+			 "delete tp;"));
+	CHECK(*(int *)s.data("log_v") == 19);
+    }
+}

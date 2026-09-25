@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A `delete` statement owes its `;`, and runs at the top level
+
+`delete p }`, a delete statement with no `;`, compiled in every C++ mode;
+g++ and clang++ refuse it with "expected ';'", and so does madc now. The same
+gap dropped a top-level `delete p;` from a `--std=madc` script and from an
+interactive entry, so the destructor never ran. For the test's statements
+inside `main`, g++ and clang++ print `dtor` then `after`, and so does madc.
+
+Tests: `teststmtsemideletecxx`, `testscripttopdelete`, `test_repl_session`.
+
 ### A top-level cast statement runs instead of being dropped
 
 A cast used as a statement at the top level, such as
