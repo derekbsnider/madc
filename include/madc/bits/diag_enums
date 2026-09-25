@@ -1,9 +1,10 @@
 // madc embedded <bits/diag_enums> — the diagnostics-row vocabularies as
 // ENUMS, the ONE text for two readers: the engine (madc.h aliases
-// Program::DiagnosticSeverity / DiagnosticPhase to these) and the dialect
-// (<ns_madc> includes it, so an IDE compares `r["severity_code"] ==
-// madc::diag_severity::error` — an enumerator the compiler checks — instead
-// of `r["severity"] == "error"`, a string a typo turns into a silent miss).
+// Program::DiagnosticSeverity / DiagnosticPhase / DiagnosticCause to these)
+// and the dialect (<ns_madc> includes it, so an IDE compares
+// `r["severity_code"] == madc::diag_severity::error` — an enumerator the
+// compiler checks — instead of `r["severity"] == "error"`, a string a typo
+// turns into a silent miss).
 // Plain C++11 enums, nothing else (dialect-lean). The names at the boundary
 // (the rows' `severity` / `phase` text) are derived by the engine
 // (Program::diagnostic_severity_name), never re-typed here.
@@ -15,6 +16,12 @@
 namespace madc {
     enum class diag_severity : unsigned char { warning, error };
     enum class diag_phase : unsigned char { unknown, lexer, parser, compiler, runtime };
+    // WHY a refusal stopped: end_of_input when the input ended inside a
+    // construct more text would finish (an open comment, conditional group,
+    // line splice; an interactive entry's parse reaching its end). The
+    // interactive-entry classifier's test (plan §41.1a). Engine-side until
+    // a diagnostics row carries it.
+    enum class diag_cause : unsigned char { none, end_of_input };
 }
 
 #endif // __MADC_BITS_DIAG_ENUMS

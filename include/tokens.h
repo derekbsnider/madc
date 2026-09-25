@@ -131,8 +131,9 @@ enum class TokenID {
 			      // same contextual discipline as tkGO/tkYIELD:
 			      // `scope { ... }` structured-concurrency block
 			      // and `await <chan-expr>` channel receive.
-  tkUnaryPlus                 // unary `+` ([expr.unary.op]/7) — built by the engine in
+  tkUnaryPlus,                // unary `+` ([expr.unary.op]/7) — built by the engine in
 			      // unary position; the lexer always says tkAdd
+  tkEndOfEntry                // the end of one interactive entry (TokenEndOfEntry)
 };
 
 enum class TokenAssoc {
@@ -1397,6 +1398,11 @@ class TokenSemi:  public TokenSymbol   { public: TokenSemi()   :   TokenSymbol('
 class TokenColEq: public TokenSymbol   { public: TokenColEq()  :  TokenSymbol(':') {} virtual TokenID id() const override { return TokenID::tkColEq; } virtual TokenBase *clone() override { return new TokenColEq(); } };
 class TokenQuote: public TokenSymbol   { public: TokenQuote()  :   TokenSymbol('"') {} virtual TokenID id() const override { return TokenID::tkQuote; }  virtual TokenBase *clone() override { return new TokenQuote(); } };
 class TokenApost: public TokenSymbol   { public: TokenApost()  :  TokenSymbol('\'') {} virtual TokenID id() const override { return TokenID::tkApost; }  virtual TokenBase *clone() override { return new TokenApost(); } };
+// The end of ONE interactive entry (Program::ParseMode::InteractiveEntry):
+// Clang-Repl's annot_repl_input_end, Python's ENDMARKER. Only
+// Program::finish_interactive_entry makes one, after the entry's last token;
+// a TranslationUnit parse never sees it.
+class TokenEndOfEntry: public TokenSymbol { public: TokenEndOfEntry() : TokenSymbol(0) {} virtual TokenID id() const override { return TokenID::tkEndOfEntry; } virtual TokenBase *clone() override { return new TokenEndOfEntry(); } };
 
 
 // base numerics

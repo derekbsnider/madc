@@ -2239,26 +2239,13 @@ public:
 	if ( !_pushback_frames.empty() )
 	    _pushback_frames.clear();
 	if ( _gpos >= _buf.size() ) return -1;
-	int ch = (unsigned char)_buf[_gpos++];
-	// C line splice: backslash + optional trailing whitespace + newline
-	if ( ch == '\\' )
+	if ( size_t splice = splice_length_at(_gpos) )
 	{
-	    size_t splice_start = _gpos;
-	    // skip optional trailing spaces/tabs after backslash
-	    while ( _gpos < _buf.size() && (_buf[_gpos] == ' ' || _buf[_gpos] == '\t') )
-		++_gpos;
-	    int next = _gpos < _buf.size() ? (unsigned char)_buf[_gpos] : -1;
-	    if ( next == '\n' || next == '\r' )
-	    {
-		++_gpos;
-		if ( next == '\r' && _gpos < _buf.size() && _buf[_gpos] == '\n' )
-		    ++_gpos;
-		++_lf; _column = 0;
-		return get(); // recurse to get next real char
-	    }
-	    // not a line splice — rewind
-	    _gpos = splice_start;
+	    _gpos += splice;
+	    ++_lf; _column = 0;
+	    return get(); // recurse to get next real char
 	}
+	int ch = (unsigned char)_buf[_gpos++];
 	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; }
 	else if ( ch == '\r' ) { ++_cr; _column = 0; }
 	else { ++_column; }
@@ -2269,30 +2256,42 @@ public:
 	if ( !_pushback.empty() )
 	    return (unsigned char)_pushback[0];
 	if ( _gpos >= _buf.size() ) return -1;
-	// C line splice: skip backslash + optional whitespace + newline in peek
-	int ch = (unsigned char)_buf[_gpos];
-	if ( ch == '\\' )
+	// A line splice is consumed here too, so the peeked char is the real one.
+	if ( size_t splice = splice_length_at(_gpos) )
 	{
-	    size_t saved = _gpos;
-	    ++_gpos; // consume '\'
-	    // skip optional trailing spaces/tabs
-	    while ( _gpos < _buf.size() && (_buf[_gpos] == ' ' || _buf[_gpos] == '\t') )
-		++_gpos;
-	    int next = _gpos < _buf.size() ? (unsigned char)_buf[_gpos] : -1;
-	    if ( next == '\n' || next == '\r' )
-	    {
-		// There IS a line splice — consume it and peek the real char
-		++_gpos;
-		if ( next == '\r' && _gpos < _buf.size() && _buf[_gpos] == '\n' )
-		    ++_gpos;
-		++_lf; _column = 0;
-		ch = _gpos < _buf.size() ? (unsigned char)_buf[_gpos] : -1;
-		return ch;
-	    }
-	    // Not a line splice — rewind
-	    _gpos = saved;
+	    _gpos += splice;
+	    ++_lf; _column = 0;
+	    return _gpos < _buf.size() ? (unsigned char)_buf[_gpos] : -1;
 	}
-	return ch;
+	return (unsigned char)_buf[_gpos];
+    }
+    // A C line splice at `pos` (C11 5.1.1.2p1 phase 2): a backslash, then
+    // optional spaces/tabs (the gcc/clang extension), then a new-line (\n,
+    // \r, or \r\n). Its length in the buffer, 0 when none begins there. The
+    // ONE splice rule: get(), peek() and ends_in_line_splice() read it.
+    size_t splice_length_at(size_t pos) const
+    {
+	if ( pos >= _buf.size() || _buf[pos] != '\\' )
+	    return 0;
+	size_t p = pos + 1;
+	while ( p < _buf.size() && (_buf[p] == ' ' || _buf[p] == '\t') )
+	    ++p;
+	if ( p >= _buf.size() )
+	    return 0;
+	if ( _buf[p] == '\n' )
+	    return p + 1 - pos;
+	if ( _buf[p] == '\r' )
+	    return (p + 1 < _buf.size() && _buf[p + 1] == '\n') ? p + 2 - pos : p + 1 - pos;
+	return 0;
+    }
+    // Does the text END in a line splice — its last line continues onto a
+    // line not yet written? (gcc accepts it at the end of a file; an
+    // interactive entry reads it as unfinished — Program::
+    // finish_interactive_entry.)
+    bool ends_in_line_splice() const
+    {
+	size_t bs = _buf.rfind('\\');
+	return bs != std::string::npos && splice_length_at(bs) == _buf.size() - bs;
     }
     // Fast-path identifier-continuation scan (perf lever, 2026-06-23). When NOT
     // inside a pushback/macro expansion, scan the maximal identifier-continuation
@@ -2349,6 +2348,17 @@ public:
     // 6.4.9p1; gcc and clang refuse it): the position rewinds to the `/*`
     // and it throws, so every lexing path reports it the same way.
     void consume_block_comment(int row, int col, std::string *keep = NULL);
+    // WHY this Source's last refusal stopped, read once by
+    // Program::diagnostic_cause_for onto the lexer diagnostic: end_of_input
+    // when the text ENDED inside a construct more text would finish (a
+    // block comment, a conditional group, a trailing line splice).
+    ::madc::diag_cause refusal_cause = ::madc::diag_cause::none;
+    // Refuse because the text ended inside a construct (sets the cause).
+    [[noreturn]] void refuse_at_end_of_input(const char *message)
+    {
+	refusal_cause = ::madc::diag_cause::end_of_input;
+	throw message;
+    }
 };
 
 // Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the
@@ -2923,11 +2933,14 @@ public:
     // on a diagnostics row).
     typedef ::madc::diag_severity DiagnosticSeverity;
     typedef ::madc::diag_phase DiagnosticPhase;
+    typedef ::madc::diag_cause DiagnosticCause;
 
     struct Diagnostic
     {
 	DiagnosticSeverity severity = DiagnosticSeverity::error;
 	DiagnosticPhase phase = DiagnosticPhase::unknown;
+	// Stamped by add_diagnostic (diagnostic_cause_for), never by a caller.
+	DiagnosticCause cause = DiagnosticCause::none;
 	std::string message;
 	std::string file;
 	int line = 0;
@@ -5708,6 +5721,14 @@ public:
     std::ostream &error();
     void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
 	const std::string &message, const char *file=NULL, int line=0, int column=0);
+    // WHY an error refused (Diagnostic::cause), from the refusal's own
+    // context: a lexer refusal's is its Source's (the MAIN unit's only — a
+    // header that ends inside a comment is broken, not unfinished); an
+    // interactive entry's parse error is end_of_input when the parse reached
+    // the entry's end (it consumed the end-of-entry token, or cites it).
+    DiagnosticCause diagnostic_cause_for(DiagnosticSeverity severity,
+					 DiagnosticPhase phase, const char *file,
+					 int line, int column);
     const Diagnostic *last_diagnostic() const;
     void report_warning(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0);
@@ -6216,6 +6237,12 @@ public:
     std::string reconstruct_source();
     TokenProgram *tokenize_buffer(const std::string &source_text,
 				  const std::string &display_name);
+    // The ONE lex loop of tokenize and tokenize_buffer (lexer.cpp); false
+    // after a recorded refusal.
+    bool lex_main_unit(const char *fname);
+    // An interactive entry's end: a trailing line splice is refused as the
+    // input's end, then the end-of-entry token closes the stream.
+    void finish_interactive_entry(const char *fname);
     // C/C++ translation phase 6: adjacent string literals concatenate.
     // Funnel every tokens.push_back through this helper so an
     // included `SYSTEM_DIR "file.dat"` (= `"../system/" "file.dat"`)
@@ -6717,9 +6744,48 @@ public:
     // engine stops ON a `;` (consuming it) and BEFORE a closer, so a closer
     // where the `;` belongs used to end the statement silently: `{ x = 3 }`,
     // `break }`, `g(1));`.
-    enum class StatementTerminator : unsigned char { None, Expression, Declaration, Jump };
+    // A TypeDeclaration (a typedef; a class or enum definition with no
+    // declarator) owes what an object declaration owes (its `,` or `;`) but
+    // declares no object — no value for an interactive entry to show (D10).
+    enum class StatementTerminator : unsigned char { None, Expression, Declaration, TypeDeclaration, Jump };
     StatementTerminator stmt_terminator_owed = StatementTerminator::None;
     void require_statement_terminator(StatementTerminator owed);
+    // The parser's INPUT MODE — the grammar its token stream is read
+    // against, one mode among several (owner guidance 2026-09-25: the REPL
+    // is a parser mode, off by default; file parsing never changes to serve
+    // it). TranslationUnit: a file or buffer, read exactly as gcc reads one.
+    // InteractiveEntry: one REPL entry (plan §41.1a) — the lexer appends the
+    // end-of-entry token (TokenEndOfEntry), and only this mode's relaxations
+    // apply: the optional final `;` of a statement with a value (D11), the
+    // entry-end cause on a parse error, the extendable if.
+    enum class ParseMode : unsigned char { TranslationUnit, InteractiveEntry };
+    ParseMode parse_mode = ParseMode::TranslationUnit;
+    bool interactive_entry() const { return parse_mode == ParseMode::InteractiveEntry; }
+    TokenBase *entry_end_token = NULL;		// the appended end-of-entry token
+    bool entry_final_semicolon_omitted = false;	// D10: the entry shows its value
+    bool entry_if_extendable = false;		// an if ended at the entry's end
+    // The classifier's verdict on one entry (plan §41.1a): run it; run it
+    // unless the next line starts with `else` (D11); keep reading; or show
+    // the diagnostic and return to a clean prompt.
+    enum class EntryVerdict : unsigned char { Complete, CompleteExtendable, Incomplete, Invalid };
+    struct EntryClassification
+    {
+	EntryVerdict verdict = EntryVerdict::Invalid;
+	Diagnostic diagnostic;		// the deciding error (Incomplete / Invalid)
+	bool shows_value = false;	// D10: the final statement omitted its `;`
+    };
+    EntryClassification classify_entry(const std::string &text,
+				       const std::string &display_name);
+    // Stage 1b: the entry's `(` `[` `{` balance (DelimDepth + an order check).
+    struct EntryBalance
+    {
+	enum Kind { Balanced, Open, Stray } kind = Balanced;
+	TokenBase *where = NULL;	// the unclosed open / the stray close
+    };
+    EntryBalance entry_delimiter_balance(const char *entry_file);
+    // Does an `else` continue the if statement just parsed? (TokenIF's three
+    // arms; records the extendable if at an entry's end.)
+    bool if_statement_else_follows();
     // A list's element ends at the list's `,` or at its close (`)` `}`):
     // an argument ([expr.call]), an initializer-clause ([dcl.init]), a
     // constructor argument. The engine stops ON a `,` it consumed or BEFORE

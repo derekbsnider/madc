@@ -23655,11 +23655,39 @@ void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
     Diagnostic diag;
     diag.severity = severity;
     diag.phase = phase;
+    diag.cause = diagnostic_cause_for(severity, phase, file, line, column);
     diag.message = message;
     diag.file = file ? file : "";
     diag.line = line;
     diag.column = column;
     diagnostics.push_back(diag);
+}
+
+Program::DiagnosticCause Program::diagnostic_cause_for(DiagnosticSeverity severity,
+							DiagnosticPhase phase,
+							const char *file,
+							int line, int column)
+{
+    if ( severity != DiagnosticSeverity::error )
+	return DiagnosticCause::none;
+    if ( phase == DiagnosticPhase::lexer )
+    {
+	// Read once: the refusal that set it is the one being recorded.
+	DiagnosticCause cause = source.refusal_cause;
+	source.refusal_cause = DiagnosticCause::none;
+	// A refusal inside an #include leaves `source` the header's (the
+	// include's restore never runs on a throw).
+	bool main_unit = !forest_root_file.empty()
+	    && forest_root_file == source.fname();
+	return main_unit ? cause : DiagnosticCause::none;
+    }
+    const TokenBase *end = entry_end_token;
+    if ( phase == DiagnosticPhase::parser && end
+      && (end->read_count > 0
+	  || (line == end->line && column == end->column
+	      && file && end->file && strcmp(file, end->file) == 0)) )
+	return DiagnosticCause::end_of_input;
+    return DiagnosticCause::none;
 }
 
 void Program::report_warning(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
@@ -43511,6 +43539,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
     if ( tb && tb->id() == TokenID::tkOpBrc )
 	Throw(tb) << "braced-init-list is not supported in this context"
 		     " (no target type to list-initialize)" << flush;
+    // An interactive entry that ends where an expression must begin
+    // (`int x =`, `return`) is unfinished: the error cites its end token.
+    if ( tb && tb == entry_end_token )
+	Throw(tb) << "expected expression at end of input" << flush;
 
     DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
 
@@ -43677,6 +43709,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// here, never a nil-deref (the pre-fix __recommend SIGSEGV shape).
 	if ( !tb )
 	    Throw(curToken()) << "unexpected end of input in expression" << flush;
+	// An interactive entry's end ends the expression. An operand still
+	// owed there (`1 +`) cites the end token: the entry is unfinished,
+	// never a "missing operand" at the operator.
+	if ( tb == entry_end_token )
+	{
+	    if ( !stacks_hold_complete_operand(opStack, exStack) )
+		Throw(tb) << "expected expression at end of input" << flush;
+	    break;
+	}
 	// parseCastExpression's bound: a cast-expression ends, at depth 0, once
 	// its operand is complete and the next token cannot continue it — only
 	// a postfix `->` `.` `[` `(` `++` `--` can. The token stays in the
@@ -52061,8 +52102,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 		    statement = new TokenCpnd();
 		// The branch paid its own `;` (parseStatement) — a stray `;`
 		// after it ends the if, as in TokenIF's runtime path below.
-		tn = pgm.peekToken();
-		if ( tn && tn->id() == TokenID::tkELSE )
+		if ( pgm.if_statement_else_follows() )
 		{
 		    pgm.nextToken();                 // consume `else`
 		    pgm.skip_discarded_statement();  // discard the else branch
@@ -52071,8 +52111,8 @@ TokenBase *TokenIF::parse(Program &pgm)
 	    else
 	    {
 		pgm.skip_discarded_statement();      // discard the then branch
-		tn = pgm.peekToken();                // (it consumed the branch's `;`)
-		if ( tn && tn->id() == TokenID::tkELSE )
+		// (it consumed the branch's `;`)
+		if ( pgm.if_statement_else_follows() )
 		{
 		    pgm.nextToken();                 // consume `else`
 		    tn = pgm.nextToken();
@@ -52168,8 +52208,7 @@ TokenBase *TokenIF::parse(Program &pgm)
     // The body paid its own `;` (parseStatement), so the next token decides
     // the else: a stray `;` here is an empty statement AFTER the if, and an
     // `else` behind it has no if (gcc: "'else' without a previous 'if'").
-    tn = pgm.peekToken();
-    if ( tn && tn->id() == TokenID::tkELSE )
+    if ( pgm.if_statement_else_follows() )
     {
 	tn = pgm.nextToken(); // get the else
 	tn = pgm.nextToken(); // skip the else
@@ -52179,8 +52218,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 	    pgm.Throw(tn) << "parse error on else" << flush;
     }
     else
-    if ( tn )
-	DBG(cout << "TokenIF::peekToken() type: " << (int)tn->type() << " id: " << (int)tn->id() << ')' << endl);
+	DBG(if ( TokenBase *pk = pgm.peekToken() ) cout << "TokenIF::peekToken() type: " << (int)pk->type() << " id: " << (int)pk->id() << ')' << endl);
 
     return this;
 }
@@ -68324,7 +68362,7 @@ TokenBase *Program::parseKeyword(TokenKeyword *tk)
 	    stmt_terminator_owed = StatementTerminator::Jump;
 	    break;
 	case TokenID::tkTYPEDEF:
-	    stmt_terminator_owed = StatementTerminator::Declaration;
+	    stmt_terminator_owed = StatementTerminator::TypeDeclaration;
 	    break;
 	default:
 	    break;
@@ -73465,9 +73503,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    return NULL;
 	}
 
-    // variable declaration
+    // variable declaration — ending where its `;` would, or where an
+    // interactive entry ends (the terminator's owner decides whether the
+    // `;` may be omitted there, D11)
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign
-      || nt->id() == TokenID::tkComma )
+      || nt->id() == TokenID::tkComma || nt == entry_end_token )
     {
 	if ( ret_is_ref )
 	{
@@ -75304,10 +75344,22 @@ void Program::require_statement_terminator(StatementTerminator owed)
 	nextToken();
 	return;
     }
-    const char *want = owed == StatementTerminator::Declaration
+    // D11: an interactive entry's final statement may omit its `;` when it
+    // has a value to show (D10) — an expression statement or an object
+    // declaration (Julia's `x = 5`). A jump or a type declaration still
+    // owes it, and so reads "keep reading" at the entry's end.
+    if ( next && next == entry_end_token
+      && (owed == StatementTerminator::Expression
+       || owed == StatementTerminator::Declaration) )
+    {
+	entry_final_semicolon_omitted = true;
+	return;
+    }
+    const char *want = (owed == StatementTerminator::Declaration
+			|| owed == StatementTerminator::TypeDeclaration)
 		     ? "expected ',' or ';'" : "expected ';'";
-    if ( !next )
-	Throw(cur) << want << " at end of input" << flush;
+    if ( !next || next == entry_end_token )
+	Throw(next ? next : cur) << want << " at end of input" << flush;
     Throw(next) << want << " before " << token_before_phrase(next) << flush;
 }
 
@@ -75390,6 +75442,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 TokenBase *Program::parseStatementBody(TokenBase *tb)
 {
     DBG(cout << "parseStatement() start" << endl);
+    // A statement is required where an interactive entry ended (`if (c)`,
+    // `else`, `while (x)`): the entry is unfinished.
+    if ( tb && tb == entry_end_token )
+	Throw(tb) << "expected a statement at end of input" << flush;
     // Skip C23 [[...]] attributes before declarations/definitions.
     if ( tb->id() == TokenID::tkOpSqr
       && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
@@ -77062,6 +77118,13 @@ bool Program::parse(TokenProgram *tp)
 			  "parse cancelled (task cancellation)");
 		return false;
 	    }
+	    // An interactive entry ends at its end token (the lexer appended
+	    // it after the entry's last token).
+	    if ( entry_end_token && tokens.front() == entry_end_token )
+	    {
+		nextToken();
+		break;
+	    }
 	    pack_open_toplevel_decl();	// B4a: decl-boundary recording (no-op unless packing)
 	    // Progress guard: a parseStatement that restores the stream to
 	    // exactly this state (its dispatchee consumed nothing and pushed
@@ -77218,6 +77281,158 @@ bool Program::parse(TokenProgram *tp)
     DBG(std::cout << "Program::parse() finished parsing" << std::endl);
     
     return true;
+}
+
+// --- interactive entry (ParseMode::InteractiveEntry; plan §41.1a, D11) ---
+
+// Does an `else` continue the if statement just parsed? The token after its
+// body decides (the body paid its own `;`). In an interactive entry the
+// entry's END there leaves the if EXTENDABLE (D11): complete, yet an `else`
+// on the next line would still continue it — and it is the entry's last
+// statement, since nothing follows the end token.
+bool Program::if_statement_else_follows()
+{
+    TokenBase *tn = peekToken();
+    if ( tn && tn == entry_end_token )
+	entry_if_extendable = true;
+    return tn && tn->id() == TokenID::tkELSE;
+}
+
+// Stage 1b: the entry's `(` `[` `{` balance. DelimDepth owns the depths (and
+// reads an operator-function-id's symbols as the name they are); the ORDER
+// check rides on top — which open a close pops. Only the entry's own tokens
+// count: an included header's are its own. The first close that opens
+// nothing (DelimDepth clamps it at zero) or pops another kind is Stray; an
+// open left at the end is Open.
+Program::EntryBalance Program::entry_delimiter_balance(const char *entry_file)
+{
+    EntryBalance r;
+    DelimDepth d(this);
+    std::vector<TokenBase *> open;
+    size_t i = 0;
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	int paren = d.paren, square = d.square, brace = d.brace;
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+	if ( !t || n != 1 || !t->file || strcmp(t->file, entry_file) != 0 )
+	    continue;
+	if ( d.paren > paren || d.square > square || d.brace > brace )
+	{
+	    open.push_back(t);
+	    continue;
+	}
+	TokenID opener;
+	switch ( t->id() )
+	{
+	    case TokenID::tkClBrk: opener = TokenID::tkOpBrk; break;
+	    case TokenID::tkClSqr: opener = TokenID::tkOpSqr; break;
+	    case TokenID::tkClBrc: opener = TokenID::tkOpBrc; break;
+	    default: continue;
+	}
+	bool closed = d.paren < paren || d.square < square || d.brace < brace;
+	if ( !closed || open.empty() || open.back()->id() != opener )
+	{
+	    r.kind = EntryBalance::Stray;
+	    r.where = t;
+	    return r;
+	}
+	open.pop_back();
+    }
+    if ( !open.empty() )
+    {
+	r.kind = EntryBalance::Open;
+	r.where = open.back();
+    }
+    return r;
+}
+
+// Is one interactive entry complete (plan §41.1a)? The criterion Julia's
+// parser, Python's and IPython's share: the FIRST error decides, and an
+// error at the entry's end means "keep reading".
+//   stage 1a, the lexer: the text ended inside a block comment, a
+//     conditional group or a line splice (DiagnosticCause::end_of_input) is
+//     Incomplete; any other refusal is Invalid — a literal cut by the
+//     new-line among them, since a C string cannot continue on the next line
+//     (Julia's can: the stated adaptation);
+//   stage 1b, the balance: an open delimiter is Incomplete, without a parse;
+//     a close that opens nothing is Invalid. Balance first keeps stage 2
+//     honest: the parser then meets the entry's end only at its outermost
+//     level, where few sites fail;
+//   stage 2, the parser, with the end-of-entry token appended: an error that
+//     consumed or cites it is Incomplete, any other Invalid; none is
+//     Complete — CompleteExtendable when an if ended at the entry's end
+//     (D11). The deciding diagnostic rides along; shows_value says the
+//     final statement omitted its `;` (D10).
+// The entry parses on THIS Program in ParseMode::InteractiveEntry. A Program
+// is not resettable, so it is called on a fresh one (the §41.2 session will
+// call it inside the entry transaction). Nothing renders: the verdict is
+// data, and the REPL decides what to show.
+Program::EntryClassification Program::classify_entry(const std::string &text,
+						     const std::string &display_name)
+{
+    EntryClassification r;
+    parse_mode = ParseMode::InteractiveEntry;
+    DiagnosticRenderMute mute;
+    auto first_error = [this]() -> const Diagnostic * {
+	for ( size_t i = 0; i < diagnostics.size(); ++i )
+	    if ( diagnostics[i].severity == DiagnosticSeverity::error )
+		return &diagnostics[i];
+	return (const Diagnostic *)NULL;
+    };
+    auto synthesized = [](TokenBase *t, const std::string &message) {
+	Diagnostic d;
+	d.phase = DiagnosticPhase::parser;
+	d.message = message;
+	d.file = t && t->file ? t->file : "";
+	d.line = t ? t->line : 0;
+	d.column = t ? t->column : 0;
+	return d;
+    };
+    // An entry is whole lines: the last one ends in its new-line.
+    std::string entry = text;
+    if ( entry.empty() || entry[entry.size() - 1] != '\n' )
+	entry += '\n';
+    TokenProgram *tp = tokenize_buffer(entry, display_name);
+    if ( !tp )
+    {
+	if ( const Diagnostic *d = first_error() )
+	{
+	    r.diagnostic = *d;
+	    if ( d->cause == DiagnosticCause::end_of_input )
+		r.verdict = EntryVerdict::Incomplete;
+	}
+	return r;
+    }
+    EntryBalance balance = entry_delimiter_balance(forest_root_file.c_str());
+    if ( balance.kind == EntryBalance::Open )
+    {
+	r.verdict = EntryVerdict::Incomplete;
+	r.diagnostic = synthesized(balance.where, "'"
+	    + overload_token_spelling(balance.where) + "' is not closed");
+	return r;
+    }
+    parse(tp);
+    if ( const Diagnostic *d = first_error() )
+    {
+	r.diagnostic = *d;
+	if ( d->cause == DiagnosticCause::end_of_input
+	  && balance.kind == EntryBalance::Balanced )
+	    r.verdict = EntryVerdict::Incomplete;
+	return r;
+    }
+    if ( balance.kind == EntryBalance::Stray )
+    {
+	// The parser took a close that opens nothing: still no C program.
+	r.diagnostic = synthesized(balance.where, "unmatched '"
+	    + overload_token_spelling(balance.where) + "'");
+	return r;
+    }
+    r.verdict = entry_if_extendable ? EntryVerdict::CompleteExtendable
+				    : EntryVerdict::Complete;
+    r.shows_value = entry_final_semicolon_omitted;
+    return r;
 }
 
 TokenBase *Program::parse_expression_unit(TokenProgram *tp)

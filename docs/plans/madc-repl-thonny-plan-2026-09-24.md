@@ -1791,9 +1791,20 @@ Balance first keeps stage 2 honest. Once the delimiters balance, the parser can 
   - an unterminated `#if` was accepted.
 - After these the whole JIT suite ran green (1648/0/0, 9 skipped).
 - Also done: a template instantiated mid-expression moved the outer parse's current token (`012f2dfce`).
-- In progress (parked in `tmp/repl/P1_wip`, UPDATE 101): **statements do not own their `;`**. `{ x = 3 }`, `break }`, `do {} while (0) return 0;`, `g(1));` and a lone `);` are all accepted in every mode, because the expression engine stops at a closer and no statement parser checks its terminator. The optional-`;` relaxation must live in that one terminator owner, so the owner comes first.
+- Done (`8b624a758`, P1): **statements own their `;`**. `{ x = 3 }`, `break }`, `do {} while (0) return 0;`, `g(1));` and a lone `);` had been accepted in every mode, because the expression engine stops at a closer and no statement parser checked its terminator. The optional-`;` relaxation lives in that one terminator owner (`require_statement_terminator`).
+- Done (`2bcd34fc8`): **an expression ends before a juxtaposed operand.** The engine read on past `3 4` and let a later operator bind the pair (`int x = 3 4 +;` ran as `3 + 4`). "The first error decides" needs the error where the grammar breaks. The list readers now own their separators.
 
 **Where the verdict is tested in Phase 0:** a corpus run through `classify_entry` on a fresh `Program` per entry, needing neither persistence nor rollback. The session calls the same function inside the entry transaction once §41.2 and §41.3 land.
+
+**Built (2026-09-25):**
+- `ParseMode::InteractiveEntry` is the mode, off by default.
+- `Program::classify_entry` returns an `EntryClassification` (verdict, deciding diagnostic, `shows_value`).
+- `Diagnostic::cause` (`madc::diag_cause`) carries `end_of_input` from the lexer's refusals and from the entry parse.
+- The corpus is `tests/unit/test_repl_input.cpp`.
+- Not yet, and named here:
+  - top-level statements under `--std=c*` / `--std=c++*` in interactive mode (a D3 relaxation; `--std=madc` has them already);
+  - a discarded `if constexpr` branch that omits its final `;`;
+  - an `enum {…}` definition's missing `;`. File mode accepts it too; it is fixed next, in its own commit.
 
 First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, `madc -i`). Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
 

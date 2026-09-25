@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### The REPL input classifier: an interactive entry is a parser mode
+
+`Program::classify_entry` decides whether one REPL entry is complete, needs
+more input, or is invalid, before anything runs (plan §41.1a). It runs in a
+parser mode, `ParseMode::InteractiveEntry`, which is off by default. File
+parsing accepts and refuses exactly what it did before.
+
+The verdict (`EntryVerdict`) uses the criterion Julia, Python and IPython
+share: the first error decides, and an error at the end of the entry means
+"keep reading".
+- **The lexer says why it refused** (`Diagnostic::cause`). An open block
+  comment, an open conditional group, or a trailing line splice in an entry
+  is `end_of_input`. A literal cut by the new-line is not: a C string cannot
+  continue on the next line.
+- **Delimiters are checked first.** An unclosed `(` `[` `{` is Incomplete
+  without a parse. A close that opens nothing is Invalid.
+- **The parser reads the entry with an end-of-entry token appended**
+  (`TokenEndOfEntry`, like Clang-Repl's `annot_repl_input_end`). An error
+  that consumed or cites it is Incomplete: `1 +`, `if (c)`, `do {}`,
+  `template <class T>`, `int f(int a)`, `struct P {…}`. Any other error is
+  Invalid: `int x = 5 5`.
+- **A statement with a value may omit its final `;`** (decision D11): an
+  expression statement or an object declaration, such as `int x = 5`. A
+  jump, a typedef and a function declarator still wait for it.
+  `shows_value` records that the `;` was omitted (D10).
+- **An `if` that ends at the entry's end is `CompleteExtendable`**: an
+  `else` on the next line would still continue it.
+
+Along the way:
+- `tokenize` and `tokenize_buffer` now share one lex loop (`lex_main_unit`).
+- `Source`'s two copies of the line-splice rule are now one
+  (`splice_length_at`).
+- The three `else` lookaheads of `if` are now one
+  (`if_statement_else_follows`).
+
+The corpus is `tests/unit/test_repl_input.cpp`.
+
 ### An expression ends before a juxtaposed operand
 
 `int x = 3 4 +;` compiled as `3 + 4` and exited 7. The expression engine

@@ -8926,6 +8926,7 @@ void Program::refuse_open_conditional_groups(size_t groups_at_entry)
 	case CondDirective::Else:   name = "else";   break;
     }
     source.setpos(g.line, g.column);
+    source.refusal_cause = ::madc::diag_cause::end_of_input;
     Throw << "unterminated #" << name << flush;
 }
 
@@ -10412,7 +10413,7 @@ void Source::consume_block_comment(int row, int col, std::string *keep)
 	prev = c;
     }
     setpos(row, col);
-    throw "unterminated comment";
+    refuse_at_end_of_input("unterminated comment");
 }
 
 void Source::showerror(int row, int col)
@@ -10589,10 +10590,92 @@ void Program::tokenize(istream &ss)
 #endif
 
 
+// Lex the main unit whose text the Source holds — the ONE lex loop of
+// tokenize (a file) and tokenize_buffer (a buffer). Every token goes into the
+// stream, with a yield point every LEX_YIELD_GRAIN tokens (the token pump's
+// chunk grain — sub-millisecond slices; the check is one counter compare, and
+// parse_yield_point itself no-ops without tasks; it is the pump the IDE's
+// parse handles ride). Then the refusals only the unit's END can make: an
+// open conditional group, and an interactive entry's own end
+// (finish_interactive_entry). False after a refusal, recorded as a lexer
+// diagnostic whose cause add_diagnostic reads off the Source.
+bool Program::lex_main_unit(const char *fname)
+{
+    TokenBase *tb;
+    try
+    {
+	uint32_t pump = 0;
+	size_t groups_at_entry = cond_groups.size();
+	while ( (tb=getRealToken()) )
+	{
+	    tb->file = fname;
+	    push_token_with_literal_concat(tb);
+	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+	    {
+		parse_yield_point();
+		lex_abort_if_task_cancelled();	// MT-3b: clean abort
+	    }
+	}
+	refuse_open_conditional_groups(groups_at_entry);
+	if ( interactive_entry() )
+	    finish_interactive_entry(fname);
+    }
+    catch(const char *err_msg)
+    {
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      err_msg ? err_msg : "(null error message)",
+			      fname, source.line(), source.column());
+	return false;
+    }
+    catch(TokenIdent *ti)
+    {
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("use of undeclared identifier '")
+				  + ti->spelling() + '\'',
+			      fname, source.line(), source.column());
+	return false;
+    }
+    catch(TokenBase *tb)
+    {
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("unexpected token type ")
+				  + std::to_string((int)tb->type()),
+			      fname, source.line(), source.column());
+	return false;
+    }
+    catch(std::exception &e)
+    {
+	if ( !last_error.has_error )
+	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
+				    fname, source.line(), source.column());
+	print_unrendered_diagnostic();
+	return false;
+    }
+    return true;
+}
+
+// The end of one interactive entry (ParseMode::InteractiveEntry). A line
+// splice that ends the text continues onto a line not yet typed: refused as
+// the input's end, so the entry reads Incomplete (a `#define` still being
+// written); gcc accepts it at the end of a FILE, and TranslationUnit mode
+// never gets here. Then the end-of-entry token closes the stream — Clang-
+// Repl's annot_repl_input_end, Python's ENDMARKER — positioned past every
+// token of the text, so a diagnostic that cites it cites nothing else.
+void Program::finish_interactive_entry(const char *fname)
+{
+    if ( source.ends_in_line_splice() )
+	source.refuse_at_end_of_input("backslash-newline at end of input");
+    TokenBase *eoe = new TokenEndOfEntry();
+    eoe->file = fname;
+    eoe->line = source.line();
+    eoe->column = source.column() + 1;
+    tokens.push_back(eoe);	// no lexed token: the pop-1 factory never sees it
+    entry_end_token = eoe;
+}
+
 // tokenize a file
 TokenProgram *Program::tokenize(const char *fname)
 {
-    TokenBase *tb;
     ifstream file(fname);
 
     DBG(cout << "Program::tokenize(" << fname << ") START" << endl);
@@ -10632,58 +10715,8 @@ TokenProgram *Program::tokenize(const char *fname)
     pack_note_unit(pack_recording ? intern_file(fname) : NULL);	// B4a: main unit first
     Throw.source(source);
 
-    try
-    {
-	// Stage-2: yield every LEX_YIELD_GRAIN tokens (the token pump's
-	// chunk grain — sub-millisecond slices; the check is one counter
-	// compare, and parse_yield_point itself no-ops without tasks).
-	uint32_t pump = 0;
-	size_t groups_at_entry = cond_groups.size();
-	while ( (tb=getRealToken()) )
-	{
-	    tb->file = fname;
-//	    tb->line = source.line();
-//	    tb->column = source.column();
-	    push_token_with_literal_concat(tb);
-	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
-	    {
-		parse_yield_point();
-		lex_abort_if_task_cancelled();	// MT-3b: clean abort
-	    }
-        }
-	refuse_open_conditional_groups(groups_at_entry);
-    }
-    catch(const char *err_msg)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      err_msg ? err_msg : "(null error message)",
-			      fname, source.line(), source.column());
+    if ( !lex_main_unit(fname) )
 	return NULL;
-    }
-    catch(TokenIdent *ti)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("use of undeclared identifier '")
-				  + ti->spelling() + '\'',
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(TokenBase *tb)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("unexpected token type ")
-				  + std::to_string((int)tb->type()),
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(std::exception &e)
-    {
-	if ( !last_error.has_error )
-	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
-				    fname, source.line(), source.column());
-	print_unrendered_diagnostic();
-	return NULL;
-    }
 
     DBG(std::cout << "Program::tokenize() finished tokenizing" << std::endl);
 
@@ -10714,7 +10747,6 @@ TokenProgram *Program::tokenize(const char *fname)
 TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 				       const std::string &display_name)
 {
-    TokenBase *tb;
     std::string effective_name = display_name.empty() ? "<memory>" : display_name;
     const char *fname = intern_file(effective_name);
 
@@ -10731,55 +10763,8 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
     Throw.source(source);
 
-    try
-    {
-	// Stage-2: the same yield grain as tokenize() — this is the pump
-	// the IDE's parse handles ride (parse_open -> tokenize_buffer).
-	uint32_t pump = 0;
-	size_t groups_at_entry = cond_groups.size();
-	while ( (tb=getRealToken()) )
-	{
-	    tb->file = fname;
-	    push_token_with_literal_concat(tb);
-	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
-	    {
-		parse_yield_point();
-		lex_abort_if_task_cancelled();	// MT-3b: clean abort
-	    }
-	}
-	refuse_open_conditional_groups(groups_at_entry);
-    }
-    catch(const char *err_msg)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      err_msg ? err_msg : "(null error message)",
-			      fname, source.line(), source.column());
+    if ( !lex_main_unit(fname) )
 	return NULL;
-    }
-    catch(TokenIdent *ti)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("use of undeclared identifier '")
-				  + ti->spelling() + '\'',
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(TokenBase *tb)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("unexpected token type ")
-				  + std::to_string((int)tb->type()),
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(std::exception &e)
-    {
-	if ( !last_error.has_error )
-	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
-				    fname, source.line(), source.column());
-	print_unrendered_diagnostic();
-	return NULL;
-    }
 
     DBG(std::cout << "Program::tokenize_buffer() finished tokenizing" << std::endl);
 
