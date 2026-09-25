@@ -2,7 +2,8 @@
 
 **Date:** 2026-09-24  
 **Status:** research + design proposal; does not authorize code  
-**Scope:** (1) the REPL facilities that belong in `madc` / `libmadc`, and (2) the madcide features that consume those facilities to provide a beginner-friendly, Thonny-like C/C++ environment.
+**Scope:** (1) the REPL facilities that belong in `madc` / `libmadc`, and (2) the madcide features that consume those facilities to provide a beginner-friendly, Thonny-like C/C++ environment.  
+**Code cross-reference:** checked against `develop` @ `3c5ae4344` on 2026-09-24. The notes marked **Code check** below correct the plan where the code disagrees; the full evidence and the eval-vs-REPL split are in Part F (§39–§41). **The owner's decisions of 2026-09-25 (§42) supersede the plan text they name.**
 
 ---
 
@@ -214,6 +215,8 @@ Already present or explicitly reserved:
 - madc dialect top-level statements and no-required-`main()` behavior;
 - common native/runtime declarations available without conventional boilerplate in the madc dialect.
 
+> **Code check:** `madc::eval_*` / `_ctx` are **not** REPL substrate. Each call builds a fresh child `Program` and a fresh MIR context, runs once, and discards both; a ctx is a read-only bag of values copied in as constants (`src/madc_program.cpp:4560-4602`, `:2484-2522`). eval and the REPL are separate clients of a new incremental-session core; see §40. The MIR interpreter is wired only in unit tests (`tests/unit/test_cir*.cpp`); every product path is the JIT. Script mode (top-level statements, no `main`) exists for `--std=madc` only and works on a whole TU at a time (`parser.cpp:76165-76383`).
+
 ### 3.2 madcide substrate
 
 Current `madcide` already has much more infrastructure than a teaching IDE needs:
@@ -233,6 +236,12 @@ Current `madcide` already has much more infrastructure than a teaching IDE needs
 - permission tiers.
 
 The plan should therefore add a **new interaction profile**, not rebuild the IDE framework.
+
+> **Code check:** the inventory is real, with limits:
+> - Commands and panel kinds are compiled enums (`madcide_enums.inc:25-58`, `:460-463`), and each panel's content is a `switch` (`compose_chrome_pane`, `madcide_core.inc:6989`). Only menus, keys and layout placement are data.
+> - Startup hard-codes the `joe`/`default` profile set (`init_view_es`, `madcide_core.inc:7696-7718`).
+> - The event journal persists only when a project manifest is open.
+> - There is no completion (the LSP rejects `textDocument/completion`), no toolbar, no Debug or Variables view, and no readline-style line editor to reuse.
 
 ### 3.3 Important architecture boundary
 
@@ -349,6 +358,11 @@ public:
 
 The important requirement is **one reusable semantic service**, not these exact names.
 
+> **Code check:** the C++ class is right (`cpp-first-api.md`), but the sketch can't be madcide's API:
+> - **madcide is dialect code** (`tools/madcide/*.mad|.inc`). Until L3 (value-by-value returns) lands, the script-facing surface must follow the `diagnostics(value &out, …)` precedent (`include/madc/ns_madc:74-87`): `value&` out-parameters and ring-lifetime `const char*`. It cannot return a struct holding `std::string` or `madc::value` by value (`dialect-lean.md`, `value-first.md`).
+> - **`Diagnostic` already exists** (`include/madc.h:2910`) with the enum severity/phase from `bits/diag_enums`. Reuse it.
+> - **No thread-safety contract is stated,** though the CLI, madcide and a teacher would share one session. See §42 Q10.
+
 ### 4.3 The session is persistent
 
 A successful input may add:
@@ -405,6 +419,11 @@ madc> struct Point {
 ```
 
 The error-tolerant parse work is directly relevant here. "Missing more input" must be distinguishable from "this is already invalid."
+
+> **Code check:**
+> - Error-tolerant parse slice A is **merged** (`a5b78c58c`, 2026-08-25): top-level containment plus `SkippedTokens`.
+> - The complete / incomplete / invalid classification **does not exist**. An unclosed `{` at EOF is just an error, so the classifier is new work.
+> - Balanced-delimiter bookkeeping goes through `DelimDepth` (`delimiter-tracking.md`), never a hand-rolled counter.
 
 The line editor should also provide a force-newline key (Julia uses Meta-Enter) so a user can format an otherwise complete expression across lines.
 
@@ -494,6 +513,11 @@ Later display providers may add pretty printers for containers and user types.
 
 The existing plan's decision that automatic result handling goes through the `var`/value-carrier direction stands. If arbitrary C++ objects cannot be faithfully copied into that carrier, extend it with a typed borrowed/owned handle rather than inventing a second public result system.
 
+> **Code check:**
+> - Typed capture exists only for scalars and `char*` (`value_from_storage`, `madc_program.cpp:2315-2370`). Other pointers become integers, and structs fail with "cannot marshal this result type".
+> - The carrier's `instance` kind could hold a struct, but nothing builds one on this path.
+> - The compile-time `php::print_r` / `var_dump` walk (`src/cir_dump.cpp`) already renders real C types, so synthesizing a display call is the shortest route to §6.4's list. See §42 Q5 for the display *format*.
+
 ---
 
 ## 7. Prompt modes and command vocabulary
@@ -507,6 +531,8 @@ Use three levels:
 3. **session/compiler commands** via `:`.
 
 Support `%...` aliases for familiar IPython/Clang-Repl/Thonny commands where useful, but do not make `%` the primary madc vocabulary.
+
+> **Decision D13 (2026-09-25):** reversed. `%` is primary (IPython and Clang-Repl agree), and `:` is an accepted alias. Read every `:name` in §7 as `%name`. The shell is D14 (`;` mode, `%sx`/`%system`), and help is D15.
 
 ### 7.2 Help mode
 
@@ -698,6 +724,18 @@ For a resolved symbol, the REPL should be able to say:
 
 This uses compiler truth rather than a parallel documentation database wherever possible.
 
+> **Code check:**
+> - **Mostly existing machinery:** `:overloads`, `:type`, `:which`, `:decl`/`:where` for user code, `:libs`/`:loadlib`, and member/keyword completion. Their owners are `namespace_fn_overload_sets`, `resolved_call_funcdef`/`call_target_funcdef`, `TopDecl` and `TokenFunc` locations, `bind_module_namespace`, `DataDefSTRUCT`/`CLASS`, and `keyword_map`.
+> - **Need new owners:**
+>   - a completion enumeration service (`dump_registered_names` omits variables, scope locals and not-yet-materialized forest/lazy names)
+>   - signature help
+>   - an `:explain` trace sink passed into the rankers (at least eight call `score_arg_to_param`, and only the winner survives)
+>   - a symbol→header reverse index (the forest declaration index is per-unit, frozen-headers-only, with no lines)
+>   - a human-readable type renderer
+>   - diagnostic codes/payloads (`Diagnostic` is text only)
+> - **Lookup side effects:** parser lookups have them (forest materialization, `dlsym` registration, throwing). A query service must use or add side-effect-free forms.
+> - **Location gaps:** `Variable` has no location, and declaration and definition merge into one `FuncDef`.
+
 ---
 
 ## 9. History model
@@ -772,6 +810,15 @@ It does **not** claim to reverse:
 
 If an entry had observable side effects, the UI may warn that only compiler/session definitions are being retracted.
 
+> **Code check:**
+> - **No in-`Program` rollback.** Recovery restores only the compound and class-scope stacks. A failed statement's symbol, typedef and funcdef insertions stay.
+> - **Rollback primitives exist:** `registration_map` has begin/commit/rollback (`include/madc.h:1749-1777`), and `ClassRegistrationJournal` does the same for classes (`parser.cpp:33760-33870`).
+> - **Process-fatal paths remain:**
+>   - a MIR error outside the armed trap calls `exit(1)` (`madc_cir.cpp:442-447`)
+>   - a guest fault during in-process execution kills the host
+>
+>   §10.2 therefore depends on where the session runs (§42 Q2).
+
 ---
 
 ## 11. Redefinition semantics
@@ -834,6 +881,8 @@ A plain Cling-style shadow without either mechanism may leave already-compiled c
 
 The implementation spike must decide this before function redefinition is declared complete.
 
+> **Decision D5 (2026-09-25):** callers see the newest body, achieved by dependency recompile, and a function's address stays stable across redefinitions (Julia). Variables and types are D6; late binding is D7.
+
 ### 11.5 Types/classes
 
 Friendly mode may permit:
@@ -854,6 +903,16 @@ A first implementation may conservatively require `:reset` for structural type r
 `:strict` means "enforce source-language declaration/redefinition rules." It does not disable harmless transport conveniences such as multiline editing or history.
 
 Any interactive syntax extension which changes what source text is accepted must be listable/explainable, preserving the earlier plan's principle that the REPL can tell the user what it did beyond ISO C/C++.
+
+> **Code check:**
+> - **`:strict` has nothing to switch to.** Redeclaration rules are not enforced today:
+>   - `addVariable` reportedly reuses the existing `Variable` on a same-scope redeclaration (`parser.cpp:~29445`, `~29487`)
+>   - a second same-signature function body loses to the first (`fold_same_signature_overload`, `parser.cpp:3108`)
+>   - `TokenFunc::is_overridden` is read but never set
+>
+>   If reproduced, this is a silent wrong answer and is fixed first, in its own commit (§42 Q13).
+> - **Gating (restores 2026-09-21 §6.3):** every relaxation is a registered feature gated through `--std=`/`LanguageStd` (invariants I3/I4/I8), not a free-standing toggle. That includes top-level statements, bare-expression display, `ans`, redefinition and auto-supply. `:strict` is at most a view of that registry.
+> - **Where "newest wins" would land:** `addVariable`, `var_index`, the `funcdef_map` reconcile, `fold_same_signature_overload`, the struct guard (`parser.cpp:49495`) and the emitted-symbol identity.
 
 ---
 
@@ -907,6 +966,11 @@ implicit for this session:
 ```
 
 The goal is "easy now, explainable later."
+
+> **Code check:** nothing records what was supplied implicitly.
+> - `printf` does not come from auto-include. It comes from silent frozen-header adoption or a `dlsym` fallback (`parser.cpp:40743`), gated by the dlfcn policy rather than `--std=`.
+> - The auto-include pending set is cleared on every tokenize (`lexer.cpp:2132`, `:3038`).
+> - `:show implicit` needs a new implicit-supply ledger written by auto-include, forest adoption, the `dlsym` fallback and lazy namespaces.
 
 ---
 
@@ -1019,6 +1083,11 @@ madcide --simple file.cpp
 
 A later product decision can make it the default first-run GUI profile.
 
+> **Code check:**
+> - **Command line:** `madcide` requires the file as argv[1] and parses flags only from argv[2] on (`madcide.mad:64-232`), so `madcide --learn file.cpp` would treat `--learn` as the file. With no arguments it prints usage and exits.
+> - **Profile selection:** needs a flag threaded through `run_tui` → `IdeSession::open` → `init_view_es`, plus `learn.layout` / `learn.menu` files.
+> - **Toolbar:** no face has one.
+
 ### 16.1 Initial GUI layout
 
 Recommended default:
@@ -1085,6 +1154,10 @@ For the teaching/simple profile, model Thonny's beginner predictability:
 4. leave the resulting globals/objects available in the REPL for inspection and experimentation.
 
 This prevents stale REPL state from making a beginner's program behave mysteriously.
+
+> **Code check:**
+> - **Step 4 is new engine capability, not reuse.** Run executes in a forked child that exits (`RunChannelFactory`, `src/madc_program.cpp:5065-5128`). Only the exit status and output return; globals and functions die with the child.
+> - **There is no F5.** `ui::key` has no function keys and no Alt/Shift modifiers (`include/madc/bits/ui_enums:20-33`, `include/madcdis/keys.h:55-111`). Adding them is engine work in the key owners.
 
 ### 17.3 Explicit live-reload action
 
@@ -1226,6 +1299,13 @@ Thonny research reinforces the UX:
 
 The critical change is sequencing: the editor+REPL experience should become useful before the full stepper exists.
 
+> **Code check / owner direction (2026-09-24):** the MIR interpreter is **not assumed**. Its one clear advantage is the central dispatch loop with a per-instruction hook (`third_party/mir/mir-interp.c:922-1180`), which suits stepping and UB events. Its costs:
+> - native calls go through generated thunks, which risks every madc ABI path (varargs, `long double`, struct passing, v128)
+> - the host shims, exceptions, setjmp and multi-return are all proven only under the JIT
+> - a large slowdown
+>
+> The REPL and Run are JIT-only. The stepper's executor is decided when the stepper is designed, as a stated trade-off (for example, JIT plus statement probes versus the interpreter). This supersedes §3.1's "MIR interpreter reserved" line, the executor wording in §14.5, and Phase 7's "MIR interpreter execution".
+
 ---
 
 ## 22. Source/IR teaching views
@@ -1274,6 +1354,8 @@ Tasks:
 6. Do **not** require perfect language conformance before prototyping the REPL; require that the documented REPL-safe subset is highly reliable and that unsupported constructs fail clearly.
 
 **Gate:** a programmatic `ReplSession` test can submit several expressions/declarations, preserve state, reject a malformed input, then continue correctly.
+
+> **Code check:** tasks 1 and 2 rest on false premises. The parse work is merged but has no completeness signal, and `eval_*_ctx` cannot persist declarations. Phase 0 is therefore **new engine work**, replaced by the proofs in §41.
 
 ---
 
@@ -1584,3 +1666,152 @@ madc sources cross-referenced:
 - `src/madc.cpp`
 - `include/madc/bits/ui_enums`
 
+
+---
+
+# Part F — code cross-reference (2026-09-24, `develop` @ `3c5ae4344`)
+
+## 39. What exists, what doesn't
+
+| Plan relies on | Verdict | Evidence |
+|---|---|---|
+| Persistent session state via `eval_*_ctx` | **Missing** | Each eval is a fresh child `Program` + fresh `CirJitSession` (`madc_program.cpp:4560-4602`, `:685-742`; `madc_cir.cpp:1026-1035`). "A Program is not resettable" (`madc_program.cpp:5287`); "A RECOMPILE means a fresh session" (`madc_cir.h:91`). |
+| Adding declarations to a compiled program | **Missing** | Nothing links a second module against a live context. Seams: `MIR_module_privatize_for_link` (`third_party/mir/mir.h:740-753`), the cache lane's two-module `MIR_link` (`madc_cir.cpp:1179-1214`). |
+| complete / incomplete / invalid input | **Missing** | Error-tolerant slice A is merged (`a5b78c58c`) but has no "needs more input" signal. |
+| Failed input commits nothing | **Missing** | No symbol-table rollback; `registration_map` transactions and `ClassRegistrationJournal` exist to build it from. |
+| One bad input never ends the session | **Partial** | Containment via throwaway children only; `exit(1)` on an untrapped MIR error; guest faults kill an in-process host. |
+| Result display through the carrier | **Partial** | Scalars and `char*` only (`value_from_storage`); the `var_dump` walk renders real C types. |
+| Top-level statements without `main` | **Partial** | Script mode, `--std=madc` only, whole-TU (`parser.cpp:76165-76383`). |
+| MIR interpreter as an executor | **Tests only** | The JIT is every product path (§21 code check). |
+| Completion / signature help | **Missing** | LSP has hover/definition/references/symbols/semantic tokens, no completion. |
+| `:which` / `:overloads` / `:type` / `:decl` / `:libs` | **Mostly present** | §8 code check. |
+| `:explain`, `:show implicit`, symbol→header, type renderer | **Missing** | §8 and §12.3 code checks. |
+| Redefinition / strict redeclaration | **Missing** (and a suspected bug) | §11.6 code check. |
+| `:std` inside a live session | **Unsafe** | Keywords only accumulate (`lexer.cpp:5921`); declarations keep their mode's identity. `:std` must mean reset. |
+| Line editor with history / Ctrl-R / multiline | **Missing** | `tools/texteditor` line editors are ed-style; no readline-class library in `third_party`. |
+| madcide REPL panel, teaching profile | **Clean insertion points** | A panel kind beside Terminal (`compose_chrome_pane`, a `term_pump`-style pump); a profile flag into `init_view_es` plus `learn.*` files. |
+| F5, program state after Run | **Missing** | No function keys; Run is a forked child. |
+
+Other anchors the plan should cite:
+- `docs/plans/2026-06-10-libmadc-eval-on-cir-plan.md:70-85`: `CirJitSession`, "REPL tier rides the same session, incremental modules".
+- The ~100 skipped libmadc eval unit tests (`claude_status.json` gaps), which remain **eval's** specification, not the REPL's.
+- `docs/plans/madc-vision-and-invariants.md` I3/I4/I8 and its checklist.
+
+## 40. eval and the REPL are separate clients of one new core
+
+In languages that have both, eval and the REPL differ in who calls, whose scope, how long definitions live, and what happens on error:
+
+| | eval | REPL |
+|---|---|---|
+| Caller | running code | a person at the top level |
+| Scope | the caller's, or a namespace passed in | one session-wide top level |
+| Definitions live | per call / the namespace passed | across entries |
+| Input completeness | not a question | the core problem |
+| Result | returned to the caller | displayed, kept as `ans` / history |
+| Errors | propagate to the caller | caught by the loop; the session continues |
+| Rule relaxations | none | expected (redefinition, bare-expression display) |
+| Security posture | sandboxed code inside a program | the user owns the session |
+
+- **Julia** builds the REPL as `eval(Main, parse(input))`, eval targeting one persistent module.
+- **Python's** console is `codeop` completeness + `exec(compile(src, 'single'))` into one persistent dict + `sys.displayhook`.
+- **Cling/Clang-Repl** did it in the other order. The incremental interpreter came first, and programs later called into it (`gInterpreter->ProcessLine`).
+
+madc's `eval_*` is Python's `eval(src, {ctx})` with a fresh dict per call. That is the right shape for C: compiled code cannot reach a caller's locals, so they are captured at parse time. It carries sandbox policy (fork-per-invocation, dlfcn restrictions) that a REPL must not inherit.
+
+Decision proposed by this cross-reference:
+- **One new core, an incremental session.** A chunk is compiled against a persistent namespace, committed or rolled back as a unit, lowered to its own MIR module linked into one live context, run, and its value captured.
+- **The REPL is a client** that adds completeness, display, history, commands and the `--std=`-gated relaxations.
+- **`eval_*` is unchanged.** Letting eval target a named session (Julia's `eval(Module, …)`) is a later, additive option, never a dependency.
+
+## 41. Revised Phase 0 and first slice
+
+Phase 0 is engine proof, each piece independently testable:
+1. **Input classifier:** complete / incomplete / invalid over a corpus (braces, parens, templates, lambdas, strings/comments holding delimiters, preprocessor lines), built on the parser and `DelimDepth`.
+2. **Persistent session proof:** entry 2 calls a function and reads a global defined by entry 1, through a second MIR module linked into the live context.
+3. **Atomic rollback:** a rejected entry leaves no symbol, type, overload or module behind; the next valid entry behaves as if it never happened.
+4. **Result capture:** display for scalars, `char*`, pointers, enums and structs through one owner.
+
+Gate: the §24 gate, run as a scripted transcript that replays byte-identically (the 2026-09-21 gate).
+
+First slice: §37 items 1–6 in `madc --repl` only. Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
+
+## 42. Decisions (owner, 2026-09-25)
+
+**The rule:** Julia + IPython behaviour first, Clang-Repl second.
+- When Julia and IPython disagree, **Julia decides language semantics**: binding, redefinition, value display, interrupts.
+- **IPython decides the toolbox**: command names and what they do, history, introspection, numbered I/O.
+- A precedent that C syntax cannot host is adapted, and the adaptation is stated.
+
+These decisions supersede the plan text they name.
+
+### Engine
+
+- **D1. Persistence.** One live `Program` accepts appended entries. Each entry lowers to its own MIR module, linked into one live MIR context. Nothing is replayed (all three precedents are incremental). The core is new and is not built on `eval_*` (§40).
+- **D2. Where the session runs.** A backend process, for `madc --repl` and madcide alike.
+  - Julia, the IPython terminal and Clang-Repl run in-process and die on a segfault.
+  - Jupyter console (IPython's kernel) and Thonny's backend survive a crash with the session state lost, and so does madc.
+  - The core stays host-agnostic; the backend is its host.
+  - Supersedes §16.2's "backed by `ReplSession`, not a pseudo-terminal running a second `madc`": the panel talks to the backend over a channel, not a pty.
+- **D3. Gating.**
+  - One *interactive* feature flag in the feature registry, independent of `--std=`, like Clang's `-fincremental-extensions`. It is on for `--repl` under every standard.
+  - Each relaxation it enables is a listed registry entry per standard (I3/I4/I8): top-level statements, the optional final `;`, `ans`, redefinition, late binding, auto-supply.
+  - `:strict` / `%strict` is a view of that list. It supersedes §11.6's free-standing toggle.
+- **D4. Default standard.** `--std=madc`; `--std=` is honoured. `%std` resets the session (§39: switching mid-session is unsafe).
+- **D5. Redefinition of functions.**
+  - Calls see the newest body. This includes code compiled before the redefinition (Julia), achieved by recompiling dependents.
+  - A function's address stays the same across redefinitions, so pointers taken earlier reach the new body (Julia: `f` is one object).
+  - Resolves §11.4's open mechanism: dependency recompile plus a stable address.
+- **D6. Redefinition of variables and types.**
+  - A redefined variable gets new storage, and code that uses it is recompiled against the new binding (Julia 1.12 / Python).
+  - Old storage stays alive until `%reset`, since C has no GC to decide when it is unreferenced. Destructors of replaced C++ objects run at `%reset` or exit.
+  - A redefined struct is a new versioned type, and old objects keep the old type (Julia 1.12). The first slice may refuse struct redefinition with a clear message.
+  - Resolves §11.3 / §11.5.
+- **D7. Late binding.**
+  - A function body may call a name defined later (Julia / Python). The body is held and compiled when the name is defined; calling it before then is a runtime error naming the missing definition.
+  - This is a registered relaxation (D3), and it rides the D5/D6 dependency tracking.
+- **D8. Interrupts.**
+  - Ctrl-C returns to the prompt with the session intact (Julia / IPython), via an interrupt poll on loop back-edges in session-compiled code: a runtime hook like `--finstrument-functions`, emitted in the tree.
+  - Code stuck in a native library cannot be polled, so a repeated Ctrl-C restarts the backend.
+- **D9. Thread safety.**
+  - Concurrent `complete` / `help` / `type` reads are safe.
+  - `submit` / `undo` / `reset` are serialized verbs through the hub/channel machinery (`thread-safety.md`).
+  - One session serves N clients.
+- **D10. Result capture and display.**
+  - Values print in re-enterable syntax (Julia `show` / IPython `repr`): `30`, `"abc"`, `'a'`, `(int *) 0x7ffd…`, `(struct Point){ .x = 1.0, .y = 2.0 }`.
+  - An entry without its final `;` shows its value. This includes a declaration: `int x = 5` shows `5`, as Julia's `x = 5` does. With `;` it is silent.
+  - Refines §6.2 (aggregates and pointers carry their type, as Julia's do).
+
+### Input and prompt
+
+- **D11. Completeness.** An entry runs as soon as it parses complete, with the final `;` optional (Julia). The one C adaptation is a completed top-level `if`, which waits one more line:
+  - a line starting with `else` continues it;
+  - an empty Enter runs it.
+
+  That is IPython's compound-statement rule, narrowed to the only C construct that is complete yet legally extendable.
+- **D12. Result names.**
+  - `ans` (Julia).
+  - `_`, `__`, `___`, `_N` (IPython). These are reserved to the implementation at file scope in C (C11 7.1.3) and in the global namespace in C++ ([lex.name]), so no legal user name collides.
+  - `ans` is a registered relaxation (D3).
+- **D13. Command prefix.**
+  - `%` is primary: IPython and Clang-Repl agree, and Julia has none. `:` is an accepted alias.
+  - A command is recognized only when `%` or `:` plus a name starts a new entry, so the `%:` digraph and a continuation line like `% b;` stay C.
+  - Command names resolve through the command registry at input (enum-over-strings).
+  - Supersedes §7.1 / §7.5 / §7.6: read every `:name` there as `%name`.
+- **D14. Shell.** A lone `;` on an empty prompt enters shell mode (Julia), and Backspace on an empty shell prompt leaves it. `%sx` / `%system` are the commands (IPython). IPython's `!cmd` is not supported, since it collides with C's `!x`.
+- **D15. Help.**
+  - Prefix `?name` / `??name` (Julia / IPython). IPython's postfix `name?` is not supported, since it reads as an unfinished C conditional.
+  - Documentation is the doc comment attached to the declaration (`///`, `/** */`), as clang/clangd attach it, plus the compiler's signature.
+
+### Session commands
+
+- **D16. F5 = `%run file`** (Thonny F5 / IPython `%run`): run in a fresh namespace, then leave its names in the REPL. `%run -i file` runs in the current session. `%load` is Julia's `include`.
+- **D17. `%undo`** is kept (Clang-Repl, the secondary precedent), with semantics limited per §10.3, in Phase 4. Rollback of *failed* entries (§41.3) is Phase 0.
+
+### Ordering
+
+- **D18. Redeclaration bug first.** The same-scope variable reuse and same-signature body folding (§11.6 code check) are reproduced and fixed first, in their own commit with a gcc/clang-oracled reducer.
+- **D19. The MIR interpreter is not part of this arc.** The REPL and Run are JIT-only (§21 code check).
+
+### Next
+
+Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
