@@ -1,0 +1,17 @@
+// C11 6.4.5p1: no s-char is a new-line, so a string literal whose line ends
+// before its closing quote is missing that quote. madc read on across the
+// new-line and ran the program with a two-line string (exit 0). A `\`-new-line
+// splice is still one literal (`ok` below).
+// Oracle: gcc "error: missing terminating \" character" at the opening quote,
+//         clang "warning: missing terminating '"' character" then
+//         "error: expected expression" (the program is refused).
+#include <stdio.h>
+int main(void)
+{
+	const char *ok = "sp\
+liced";
+	const char *bad = "ab
+cd";
+	printf("%s %s\n", ok, bad);
+	return 0;
+}

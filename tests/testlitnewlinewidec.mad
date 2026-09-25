@@ -1,0 +1,13 @@
+// C11 6.4.5p1 for an encoding-prefixed literal: the wide / UTF reader has the
+// same rule as the plain one — a raw new-line before the closing quote means
+// the quote is missing. madc's wide reader read on across the new-line.
+// Oracle: gcc "error: missing terminating \" character",
+//         clang "warning: missing terminating '"' character" then
+//         "error: expected expression" (the program is refused).
+#include <wchar.h>
+int main(void)
+{
+	const wchar_t *w = L"ab
+cd";
+	return (int)wcslen(w);
+}

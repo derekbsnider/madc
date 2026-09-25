@@ -822,6 +822,34 @@ static void append_utf8_codepoint(std::string &out, uint32_t cp)
     }
 }
 
+// A quoted literal (a string or character literal, any encoding prefix)
+// whose closing quote never comes: no s-char or c-char is a new-line (C11
+// 6.4.5p1, 6.4.4.4p1; [lex.string], [lex.ccon]), so a raw new-line or the
+// end of input before the quote is gcc's and clang's "missing terminating
+// quote". A `\`-new-line splice never reaches a literal reader (Source folds
+// it). The position rewinds to the opening quote at `row`/`col`.
+[[noreturn]] static void refuse_unterminated_literal(Source &source, char quote,
+						     int row, int col)
+{
+    source.setpos(row, col);
+    throw quote == '"' ? "missing terminating \" character"
+		       : "missing terminating ' character";
+}
+
+// Does a quoted literal's body continue — is the next character not its
+// closing `quote`? The one loop test every literal reader shares; it refuses
+// a raw new-line or the end of input before the quote
+// (refuse_unterminated_literal).
+static bool literal_body_continues(Source &source, char quote, int row, int col)
+{
+    if ( !source.good() )
+	refuse_unterminated_literal(source, quote, row, col);
+    int c = source.peek();
+    if ( c == '\n' || c == '\r' )
+	refuse_unterminated_literal(source, quote, row, col);
+    return c != quote;
+}
+
 static std::string narrow_string_as_wide(const std::string &narrow)
 {
     std::string out;
@@ -846,7 +874,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	if ( prefix == "U" && target_llp64() )
 	    throw "char32_t string literals (U\"...\") are not supported on the LLP64 target";
 	std::string bytes;
-	while ( source.good() && source.peek() != '"' )
+	while ( literal_body_continues(source, '"', row, col) )
 	{
 	    uint32_t cp;
 	    if ( source.peek() == '\\' )
@@ -870,10 +898,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 		append_wide_codepoint(bytes, cp);
 	}
 	if ( !source.good() )
-	{
-	    source.setpos(row, col);
-	    throw "Unterminated wide string";
-	}
+	    refuse_unterminated_literal(source, '"', row, col);
 	source.get();
 	{
 	    TokenBase *stok = make_str(bytes, prefix != "u8");
@@ -895,7 +920,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
     }
 
     uint32_t cp = 0;
-    while ( source.good() && source.peek() != '\'' )
+    while ( literal_body_continues(source, '\'', row, col) )
     {
 	if ( source.peek() == '\\' )
 	{
@@ -908,10 +933,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	    cp = read_utf8_codepoint(source, (unsigned char)source.get());
     }
     if ( !source.good() )
-    {
-	source.setpos(row, col);
-	throw "Unterminated wide character literal";
-    }
+	refuse_unterminated_literal(source, '\'', row, col);
     source.get();
     TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
     // [lex.ccon] literal types: L'' -> wchar_t (target-shaped:
@@ -7338,7 +7360,7 @@ TokenBase *Program::_getToken()
 	    word = "";
 	    row = source.line();
 	    col = source.column();
-	    while ( source.good() && source.peek() != '"' )
+	    while ( literal_body_continues(source, '"', row, col) )
 	    {
 		if ( source.peek() == '\\' )
 		{
@@ -7390,17 +7412,14 @@ TokenBase *Program::_getToken()
 		    word += source.get();
 	    }
 	    if ( !source.good() )
-	    {
-		source.setpos(row, col);
-		Throw << "Unterminated string" << flush;
-	    }
+		refuse_unterminated_literal(source, '"', row, col);
 	    source.get();
 	    {
 		TokenBase *stok = make_str(word);
 		lex_ud_suffix(stok);
 		// Source extent of this piece (see TokenStr::SrcPiece): from
 		// the opening quote through the closing quote, single-line
-		// only — a line-spanning literal (scanner-tolerated) keeps no
+		// only — a literal spliced across lines (`\`-new-line) keeps no
 		// piece and the consumer falls back.
 		if ( source.line() == row )
 		{
@@ -7416,7 +7435,7 @@ TokenBase *Program::_getToken()
 	    word = "";
 	    row = source.line();
 	    col = source.column();
-	    while ( source.good() && source.peek() != '\'' )
+	    while ( literal_body_continues(source, '\'', row, col) )
 	    {
 		if ( source.peek() == '\\' )
 		{
@@ -7466,10 +7485,7 @@ TokenBase *Program::_getToken()
 		word += source.get();
 	    }
 	    if ( !source.good() )
-	    {
-		source.setpos(row, col);
-		Throw << "Unterminated string" << flush;
-	    }
+		refuse_unterminated_literal(source, '\'', row, col);
 	    source.get();
 	    {
 		TokenBase *ctok = make_char(word[0]);
