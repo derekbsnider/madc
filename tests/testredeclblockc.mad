@@ -1,0 +1,14 @@
+// C11 6.7p3: a block-scope object without linkage is declared once per
+// block (a `static` local too). The duplicate reached c2mir, whose check
+// ("repeated declaration x") was the only thing refusing it — so the
+// front end's own diagnostics (madcide's Problems panel) never saw it.
+// Now refused where the declarator binds (Program::declare_object).
+// Oracle: gcc and clang "redefinition of 's'" (g++ "redeclaration").
+#include <stdio.h>
+int main(void)
+{
+	static int s = 1;
+	static int s = 2;
+	printf("%d\n", s);
+	return 0;
+}

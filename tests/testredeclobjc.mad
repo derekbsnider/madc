@@ -1,0 +1,33 @@
+// C: the object redeclarations C11 ALLOWS stay legal once Program::
+// declare_object owns the redeclaration rules — tentative definitions in any
+// number beside one initialized definition (6.9.2p2), `int u, u;`, an array of
+// unknown bound completed later (6.7.6.2p6), an `extern const` completed by
+// its definition, repeated block-scope `extern` (6.2.2p4), inner-block
+// shadowing (6.2.1p4) and a K&R parameter-type line naming the parameter.
+// testredecl{conflict,def,block,bound}c are the refused twins.
+// Oracle: gcc -std=gnu17 and clang -std=gnu17 print testredeclobjc.expect.
+#include <stdio.h>
+extern int a[];
+int a[3] = { 1, 2, 3 };
+int t;
+int t;
+int t = 5;
+int u, u;
+struct S { int v; };
+struct S s;
+struct S s;
+extern const int k;
+const int k = 9;
+int kr(x) int x; { return x + 1; }
+int main(void)
+{
+	extern int t;
+	extern int t;
+	int w = 1;
+	{
+		int w = 2;
+		printf("%d %d %d %d %d %d\n", a[2], t, s.v, k, kr(1), w);
+	}
+	printf("%d %d\n", w, u);
+	return 0;
+}

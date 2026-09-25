@@ -7764,6 +7764,39 @@ public:
 
     // data management
     Variable *addVariable(TokenCpnd *, DataDef &, const std::string &, int c=1, void *init=NULL, bool alloc=true);
+    // An object DECLARATOR's binding — the one owner of its redeclaration
+    // rules (gcc's duplicate_decls for objects): C11 6.7p3 (a no-linkage
+    // identifier is declared once per block), 6.7p4 (every declaration of one
+    // object names one type), 6.9.2 / [basic.def.odr]/1 (at most one definition
+    // per TU). Refuses an ill-formed redeclaration, then registers through
+    // addVariable, which stays the plain registration primitive its other
+    // callers rely on. `dims` / `object_cv` are the declarator's own array
+    // bounds and top-level cv (C11 6.7.3p7).
+    Variable *declare_object(TokenCpnd *code, DataDef &type, const std::string &id,
+			     int count, bool alloc, bool has_initializer, TokenBase *where,
+			     const std::vector<carray_dim_t> *dims = NULL,
+			     unsigned object_cv = 0);
+    bool object_declaration_is_definition(TokenCpnd *code, bool has_initializer) const;
+    Variable *same_scope_object(TokenCpnd *code, const std::string &id);
+    // The parse is at the scope of a NAMED C++ namespace ([basic.namespace]):
+    // its members are registered per-namespace, not in the TU's bare-name
+    // index. An unnamed namespace and a C-linkage block are not.
+    bool in_named_cpp_namespace() const
+    {
+	return !current_namespace().empty() && unnamed_namespace_depth == 0
+	    && current_linkage == LinkageSpec::Cpp;
+    }
+    // The object `id` already registered in the CURRENT namespace — a pure
+    // probe (no forest materialization, no module binding: that is
+    // find_namespace_member's miss path).
+    Variable *current_namespace_variable(const std::string &id);
+    bool object_redeclaration_conflicts(Variable *prior, DataDef *type,
+					const std::vector<carray_dim_t> *dims,
+					unsigned object_cv);
+    // An object's declared type: the declarator's top-level cv qualifies the
+    // OBJECT, so it is the type's (C11 6.7.3p7); a reference, a function
+    // pointer and a function carry theirs elsewhere.
+    DataDef *object_declared_type(DataDef *type, unsigned object_cv);
     Variable *resolve_global_storage_variable(Variable *var) const;
     Variable *addGlobal(DataDef &d, std::string str, int c=1, void *init=NULL)
     {

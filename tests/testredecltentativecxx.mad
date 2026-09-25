@@ -1,0 +1,15 @@
+// C++ has no tentative definitions: a namespace-scope `int x;` IS a
+// definition ([basic.def]/2), so a second definition in the TU is ill-formed
+// ([basic.def.odr]/1) — `int x; int x = 2;`, `static int s = 4; static int
+// s;` and `int u, u;` all compiled with exit 0 under --std=c++17 (C's
+// tentative rule applied). The madc dialect keeps C's tentative definitions
+// (tests/testmainaddr).
+// Oracle: g++ "redefinition of 'int x'"; clang++ "redefinition of 'x'".
+#include <stdio.h>
+int x;
+int x = 2;
+int main()
+{
+	printf("%d\n", x);
+	return 0;
+}

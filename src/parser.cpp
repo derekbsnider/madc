@@ -29470,18 +29470,8 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
     // Two named namespaces may each own the same source identifier. Only a
     // member already registered in THIS namespace is a redeclaration; the
     // program-scope bare-name index cannot decide that identity.
-    var = NULL;
-    if ( !current_namespace().empty() && unnamed_namespace_depth == 0
-      && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
-    {
-	namespace_map_t::iterator nsi = namespace_map.find(current_namespace());
-	if ( nsi != namespace_map.end() )
-	{
-	    variable_map_iter vmi = nsi->second.find(id);
-	    if ( vmi != nsi->second.end() )
-		var = vmi->second;
-	}
-    }
+    if ( in_named_cpp_namespace() && !dd.is_function() )
+	var = current_namespace_variable(id);
     else
 	var = tkProgram->findVariable(strpool, id);
     if ( var )
@@ -29493,8 +29483,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 	    if ( !parsing_extern_decl )
 		var->flags &= ~vfEXTERN;
 	}
-	if ( !current_namespace().empty() && unnamed_namespace_depth == 0
-	  && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
+	if ( in_named_cpp_namespace() && !dd.is_function() )
 	    var->storage_alias_name =
 		namespace_cpp_variable_symbol(current_namespace(), id);
 	if ( !current_namespace().empty() )
@@ -29525,8 +29514,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 	if ( FuncDef *pfd = var->type ? var->type->as_funcdef_dd() : NULL )
 	    pfd->vague_linkage = true;
     }
-    if ( !current_namespace().empty() && unnamed_namespace_depth == 0
-      && current_linkage == LinkageSpec::Cpp && !dd.is_function() )
+    if ( in_named_cpp_namespace() && !dd.is_function() )
 	var->storage_alias_name =
 	    namespace_cpp_variable_symbol(current_namespace(), id);
     tkProgram->variables.push_back(var);
@@ -29537,6 +29525,124 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, const std::string &
 		<< dd.size << " name: " << id << " ptr: " << var << " flags: " << var->flags << std::endl);
     DBG(std::cout << "Data address: " << (uint64_t)var->data << std::endl);
 
+    return var;
+}
+
+// C11 6.9.2 / [basic.def]/2: whether THIS object declaration is a definition.
+// An initializer always makes one; an `extern` without one never does. At
+// block scope every other declaration defines (a no-linkage object, 6.7p3).
+// At file / namespace scope C has TENTATIVE definitions (6.9.2p2: any number,
+// merged at the end of the TU), so only an initializer defines; an explicit
+// C++ standard defines on the declaration itself. The madc dialect keeps C's
+// tentative definitions — it accepts the C it is fed (tests/testmainaddr pins
+// c-testsuite 00095's `int x; int x = 3; int x;` there).
+bool Program::object_declaration_is_definition(TokenCpnd *code, bool has_initializer) const
+{
+    if ( has_initializer )
+	return true;
+    if ( parsing_extern_decl )
+	return false;
+    if ( code && code != tkProgram )
+	return true;
+    return is_cpp_mode();
+}
+
+// The object `id` this declaration REDECLARES in the current scope, or NULL:
+// the block's own binding (an enclosing block's is a legal shadow), the named
+// C++ namespace's member, or the translation unit's file-scope object. Any
+// other scope (an unnamed namespace, a namespace-scope extern "C" name) answers
+// NULL rather than guess an identity. A function shares the ordinary name
+// space but is not an object — object-vs-function is a different rule.
+Variable *Program::same_scope_object(TokenCpnd *code, const std::string &id)
+{
+    Variable *prior = NULL;
+    if ( code && code != tkProgram )
+	prior = code->findVariableThisScope(strpool, strpool.intern(id), id);
+    else if ( current_namespace().empty() )
+	prior = tkProgram->findVariableThisScope(strpool, strpool.intern(id), id);
+    else if ( in_named_cpp_namespace() )
+	prior = current_namespace_variable(id);
+    if ( prior && prior->type && prior->type->as_funcdef_dd() )
+	return NULL;
+    return prior;
+}
+
+Variable *Program::current_namespace_variable(const std::string &id)
+{
+    namespace_map_t::iterator nsi = namespace_map.find(current_namespace());
+    if ( nsi == namespace_map.end() )
+	return NULL;
+    variable_map_iter vmi = nsi->second.find(id);
+    return vmi != nsi->second.end() ? vmi->second : NULL;
+}
+
+DataDef *Program::object_declared_type(DataDef *type, unsigned object_cv)
+{
+    if ( !object_cv || !type || type->is_reference() || type->as_fptr_dd()
+      || type->is_function() )
+	return type;
+    return getQualifiedType(type, object_cv);
+}
+
+// Whether declaring the object again with `type` (+ `dims`, + top-level
+// `object_cv`) names a DIFFERENT type than `prior` was declared with (C11
+// 6.7p4 via 6.2.7; [basic.link]/11). Identity is the C type-name signature —
+// canonical_builtin_simple_type_name, the _Generic / __builtin_types_compatible_p
+// owner — of each object type with its top-level qualifiers. The signature is
+// coarse only toward "same" (every function-pointer type renders alike), so a
+// conflict it reports is real. An array's unknown bound is compatible with any
+// bound (6.7.6.2p6); bounds are compared only when both declarations are arrays
+// of one rank. A type the signature cannot render never conflicts.
+bool Program::object_redeclaration_conflicts(Variable *prior, DataDef *type,
+					     const std::vector<carray_dim_t> *dims,
+					     unsigned object_cv)
+{
+    std::string was = canonical_builtin_simple_type_name(prior->type);
+    std::string now = canonical_builtin_simple_type_name(object_declared_type(type, object_cv));
+    if ( was.empty() || now.empty() )
+	return false;
+    if ( was != now )
+	return true;
+    if ( !dims || dims->empty() || prior->dims.empty() )
+	return false;
+    if ( dims->size() != prior->dims.size() )
+	return true;
+    for ( size_t i = 0; i < dims->size(); ++i )
+	if ( (*dims)[i] && prior->dims[i] && (*dims)[i] != prior->dims[i] )
+	    return true;
+    return false;
+}
+
+Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const std::string &id,
+				  int count, bool alloc, bool has_initializer, TokenBase *where,
+				  const std::vector<carray_dim_t> *dims, unsigned object_cv)
+{
+    bool is_definition = object_declaration_is_definition(code, has_initializer);
+    // A template's products are re-minted from a pattern that was checked
+    // when it was declared.
+    Variable *prior = _inst_depth > 0 ? NULL : same_scope_object(code, id);
+    if ( prior )
+    {
+	if ( code && code != tkProgram )
+	{
+	    // A block-scope object without linkage: one declaration per block.
+	    // An `extern` redeclaration names the file-scope object (addVariable's
+	    // alias arm). Only a prior this owner DEFINED counts — a parameter,
+	    // a K&R parameter-type line, or a machinery local is not refused here.
+	    if ( !parsing_extern_decl && (prior->flags & vfDEFINED) )
+		Throw(where) << "redefinition of '" << id << "'" << flush;
+	}
+	else
+	{
+	    if ( object_redeclaration_conflicts(prior, &type, dims, object_cv) )
+		Throw(where) << "conflicting types for '" << id << "'" << flush;
+	    if ( is_definition && (prior->flags & vfDEFINED) )
+		Throw(where) << "redefinition of '" << id << "'" << flush;
+	}
+    }
+    Variable *var = addVariable(code, type, id, count, NULL, alloc);
+    if ( var && is_definition )
+	var->flags |= vfDEFINED;
     return var;
 }
 
@@ -72657,7 +72763,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    DataDef *fptr_type = getPointerType(target_func);
 
 	    bool alloc = (!code || gotstatic) ? true : false;
-	    var = addVariable(code, *fptr_type, id, 1, NULL, alloc);
+	    var = declare_object(code, *fptr_type, id, 1, alloc, true, tb);
 	    if ( !decl_typedef_alias.empty() )
 		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
@@ -72714,7 +72820,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 
 	bool alloc = (!code || gotstatic) ? true : false;
-	var = addVariable(code, *auto_decl_type, id, 1, NULL, alloc);
+	var = declare_object(code, *auto_decl_type, id, 1, alloc, true, tb);
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
@@ -72855,7 +72961,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    nextToken(); // consume '(' or '{'
 	    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	    bool alloc = (!code || gotstatic) ? true : false;
-	    var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	    var = declare_object(code, *decl_type, id, 1, alloc, true, tb,
+				 NULL, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	    if ( !decl_typedef_alias.empty() )
 		var->typedef_name = decl_typedef_alias;
@@ -73134,7 +73241,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    bool alloc = parsing_extern_decl ? false : ((!code || gotstatic) ? true : false);
 	    uint32_t prov_count = 1;
 	    for ( auto d : arr_dims ) prov_count *= d;
-	    provisional_decl_var = addVariable(code, *decl_type, id, prov_count, NULL, alloc);
+	    provisional_decl_var = declare_object(code, *decl_type, id, prov_count, alloc,
+						  true, tb, &arr_dims, decl_object_cv);
 	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
 	    if ( gotstatic )
 		provisional_decl_var->flags |= vfSTATIC;
@@ -73671,7 +73779,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	else
 	{
-	    var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
+	    var = declare_object(code, *decl_type, id, elem_count, alloc, false, tb,
+				 &arr_dims, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	}
 	if ( var && !decl_asm_alias.empty() )
@@ -73694,9 +73803,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// its type (parse_declarator's `&`). Never `volatile int *p`, whose
 	// volatile is the POINTEE's. Before the file-scope snapshot below, which
 	// records the type the global is emitted with.
-	if ( decl_object_cv && var && var->type && !var->type->is_reference()
-	  && !var->type->as_fptr_dd() && !var->type->is_function() )
-	    var->type = getQualifiedType(var->type, decl_object_cv);
+	if ( var )
+	    var->type = object_declared_type(var->type, decl_object_cv);
 	// Record file-scope variables in top_decls in source order for the CIR
 	// backend (a struct defined inline here, `struct X {...} v;`, rides in
 	// this declaration). Locals (inside a function compound) are excluded.

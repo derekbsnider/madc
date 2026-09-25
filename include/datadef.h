@@ -365,6 +365,10 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // storage-class SPECIFIER, not a
 			                        // duration of its own in madc's model)
 			                        // and lowers to c2mir's N_THREAD_LOCAL
+			  vfDEFINED    =16777216, // an object DEFINITION of this variable
+			                        // has been declared in this TU (C11 6.9.2,
+			                        // [basic.def]/2) — Program::declare_object
+			                        // sets it; a second definition is refused
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:

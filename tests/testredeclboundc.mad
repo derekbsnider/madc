@@ -1,0 +1,13 @@
+// C11 6.7p4 via 6.7.6.2p6: two declarations of one array must agree on every
+// KNOWN bound (an unknown bound is compatible with any — testredeclobjc).
+// `int a[3]; int a[4];` compiled with exit 0.
+// Oracle: gcc "conflicting types for 'a'; have 'int[4]'"; clang
+// "redefinition of 'a' with a different type: 'int[4]' vs 'int[3]'".
+#include <stdio.h>
+int a[3];
+int a[4];
+int main(void)
+{
+	printf("%d\n", (int)sizeof a);
+	return 0;
+}
