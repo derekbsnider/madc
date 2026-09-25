@@ -1888,7 +1888,7 @@ The set is `Program::session_defined`, keyed by emitted symbol. After each link,
 - **Found on the way, ON the REPL's path, and next:** an entry that fails to link poisons the live context. Under every standard, `int f(void);` then `f();` is refused at link ("import of undefined item"), and every later entry is refused too, `int k = 3;` included, because the failed module stays loaded and each later `MIR_link` re-links it. The refusal also reaches no diagnostic (`first_error` is empty); MIR's error text goes to stderr only. Under c89 and c17 the ordinary C call of a not-yet-defined function takes this path.
   - Fix, the JIT half of §41.3: `CirJitSession::append` validates the entry's module before `MIR_load_module` (each import resolves against the live modules' exports or the host resolver; no export redefines a live item). A module that fails is refused with a recorded diagnostic, never loaded, and never joins `live_mods`.
   - Oracle, clang-repl-18 (`tmp/repl/s2b/linkfail.repl`): `int f(); f();` reports "Symbols not found: [ _Z1fv ]", and the session goes on. A later `int k = 3;` gives `k=3`, and once `int f() { return 7; }` is entered, `f()` gives 7.
-  - cling is a documented precedent, not an installed oracle (owner, 2026-09-25: "we can just go by documentation"; the install took 5.9 GB). It is the precedent for adapting IPython-style interaction to C++, so its documentation is read for value display without the final `;` (D10/D11), `.undo` (§41.3), dynamic scopes (D7) and redefinition (D5/D6), and cited wherever a decision leans on it. The measured oracles stay clang-repl-18 for C++ and gcc for C.
+  - cling is measured beside clang-repl-18 as the precedent for the C++ adaptation (§42, "cling, measured"). It doesn't answer this case: it wraps a lone `int f();` input into the run as a block-scope declaration, so the later `f();` is "undeclared" rather than a link failure.
 - For slice 3: an OUT-OF-LINE member body (`S::~S() { … }`) is re-emitted by every later entry too ("func _ZN1SD2Ev is prohibited for redefinition"), so the `session_defined` filter is needed for every class member function, not only inline and synthesized ones. That refusal takes the poisoning path above.
 
 **Thread contract:** one session is driven by one thread. Concurrent clients go through the serialized verbs of D9.
@@ -1903,6 +1903,16 @@ First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, 
 - A precedent that C syntax cannot host is adapted, and the adaptation is stated.
 
 These decisions supersede the plan text they name.
+
+### cling, measured (2026-09-25)
+
+cling is the precedent for adapting IPython-style interaction to C++, so it is measured beside clang-repl. It does not decide: where it differs from a decision below, the decision stands, and the difference is recorded here. The version is cling 1.2 on LLVM 18 (conda-forge, `~/.local/cling`; the owner may delete it later). Probe inputs are `tmp/repl/s2b/cl_*.repl`.
+
+- **Value display (D10, D11).** A final expression without `;` shows `(type) value`: `(int) 6`, `(const char[4]) "abc"`, `(char) 'a'`, `(double) 3.5000000`, `(int *) 0x…`. A declaration without `;` shows its value too (`int y = 7` gives `(int) 7`), as D10 decides. With `;` nothing shows. A struct shows only its address (`(P &) @0x…`), where D10 shows its fields, and D10 prints a scalar bare (`30`, not `(int) 30`).
+- **A refused input (§41.3).** The whole input is rolled back: after `int z = 1; undeclared_fn(); int w = 2;` is refused, `z` is undeclared. That is §41.3's rule. Today madc keeps the refused entry's declarations.
+- **`.undo` (§41.3).** It crashed cling 1.2 (a segfault in `DeclUnloader`), so its semantics come from the documentation only.
+- **Redefinition (D5, D6).** Accepted, and it shadows: after `f` is redefined, `f()` gives the new body, but `g()`, compiled earlier, still calls the old one. A variable is the same (`v` is 2, the earlier `rv()` still reads 1). D5 and D6 follow Julia instead: earlier code sees the newest binding. A redefined struct is a new type, and an old object keeps the old one (`sizeof` 4 and 8), as D6 decides.
+- **A function declaration as an input.** `int f();` alone was wrapped into the input's run as a block-scope declaration (clang's vexing-parse warning), so a later `f();` was "undeclared". madc keeps a declaration at file scope.
 
 ### Engine
 
