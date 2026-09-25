@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### The lexer refuses what gcc and clang refuse, and decodes literals their way (REPL arc prerequisites)
+
+The REPL's input classifier (plan §41.1) tells input that is still being
+typed from input that is already wrong. That needs the lexer to report an
+open comment, an open `#if` or a cut string at all. A survey of end-of-input
+cases turned up more accepted-invalid programs and silent wrong values.
+Each fix has its own commit and gcc/clang-oracled tests.
+
+- **An unterminated `/* comment`** was swallowed with the rest of the file,
+  and the program ran. It is now "unterminated comment" at the `/*`. One
+  reader (`Source::consume_block_comment`) replaced four copies, and
+  `check-one-block-comment-reader.sh` gates it.
+- **A file closes every `#if` it opens.** A taken `#if 1` with no `#endif` ran,
+  and a header whose include guard never closed leaked the open group into
+  its includer. Both are now gcc's "unterminated #if" (named by the group's
+  latest directive) at the group's opening line.
+- **A string or character literal cut by a new-line** (`"ab⏎cd"`) became a
+  two-line string. It is now gcc's "missing terminating \" character".
+  A `\`-new-line splice still joins lines.
+- **Escapes have one decoder** (`read_literal_escape`, gated by
+  `check-one-escape-decoder.sh`). Before, all of these ran with exit 0:
+  - `L"\x1234"` was three wide characters.
+  - `"\x041"` lost its last digit.
+  - `"é"` kept its six spelled characters instead of UTF-8.
+  - `"\e"` was a backslash and an `e`.
+  - `"\x41B"` and an empty `"\x"` were accepted.
+- **A multi-character constant** such as `'ab'` is 24930 (gcc and clang)
+  instead of 97. `''` is an error, and `#if '\xff' < 0` agrees with code.
+- **In C a character constant is an `int`**: `sizeof('a')` is 4, and
+  `_Generic` and `__typeof__` see `int`. C++ keeps `char`.
+- **An if/switch init-statement or condition declares in the statement's own
+  scope.** Two sibling `if (int c = …)` statements were refused as a
+  redefinition since D18 (`tests/testifinit` had regressed). Before D18 the
+  second silently got the first one's variable and type.
+  `Program::StatementHeaderScope` also serves the for-init and range-for
+  scopes.
+
 ### Redeclarations are decided in the front end (REPL arc, decision D18)
 
 The REPL + teaching-IDE arc (`docs/plans/madc-repl-thonny-plan-2026-09-24.md`)

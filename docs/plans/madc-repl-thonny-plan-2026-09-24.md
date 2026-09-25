@@ -1746,6 +1746,54 @@ Phase 0 is engine proof, each piece independently testable:
 
 Gate: the §24 gate, run as a scripted transcript that replays byte-identically (the 2026-09-21 gate).
 
+### 41.1a The input classifier, designed against the code (2026-09-25)
+
+**Verdicts** (an enum, not strings):
+- `Complete`: run it.
+- `CompleteExtendable`: a finished top-level `if` with no `else`. D11 waits one line for it.
+- `Incomplete`: keep reading.
+- `Invalid`: show the diagnostic, drop the entry and return to a clean prompt.
+
+**The precedents agree on one criterion: the first error lies at the end of input.**
+- JuliaSyntax tags an error node that starts past the last byte as `incomplete`.
+- Python's PEG parser raises `_IncompleteInputError` when the failure is at `ENDMARKER`.
+- IPython's `check_complete` and Cling's `InputValidator` check brackets first, then compile.
+
+madc uses the same two stages. Both run on the real lexer and parser; there is no second lexer or parser.
+
+**Stage 1: lexical, in the lexer.** Lex the pending text.
+- End-of-input conditions are *incomplete*: an open block comment, an open conditional group, a trailing `\` splice. The lexer reports them as a cause on the diagnostic, never as a message to match.
+- A literal cut by a new-line is *invalid*: a C string cannot continue on the next line (Julia's strings can; C's cannot, and this is the stated adaptation).
+- Then `DelimDepth` runs over the entry's tokens, with the Program's lookup deciding `<`:
+  - an unclosed `(` `[` `{` is *incomplete*;
+  - a closer that matches nothing is *invalid*.
+
+Balance first keeps stage 2 honest. Once the delimiters balance, the parser can only reach the end of the entry at the entry's outermost level, where few sites fail: the statement dispatch, a declaration's tail, a missing operand, a statement header.
+
+**Stage 2: grammatical, in the parser.** Parse the balanced entry with an *end-of-entry token* appended (Clang-Repl's `annot_repl_input_end`, Python's `ENDMARKER`).
+- The first error decides (Julia). An error that consumed the token, or cites it, means *incomplete*. `x +`, `if (c)`, `do {}`, `template <class T>` and `int x =` all end that way.
+- Any other error means *invalid*. For example, `int x = 5 5` fails at the second `5`, not at the end.
+- A parse with no error is *complete*.
+
+**The optional final `;` (D11)** belongs to the one owner of a statement's terminator (clang's `ExpectAndConsumeSemi`). At the end-of-entry token it accepts the missing `;` only for an entry with a value to show (D10): an expression statement or an object declaration.
+- A function declarator or a bare type definition still needs its `;` or body. Julia's `function f(x)` and Python's `def f(x):` are incomplete without a body.
+- So `int f(int a)` followed by Enter waits for the `{` that Allman / GNU style puts on the next line.
+- Likewise `struct P { … }` waits for its declarators or `;`, which C allows on the next line.
+
+**Prerequisites found by building on the code** (each fixed in its own commit with gcc/clang-oracled tests, `CHANGELOG.md` [Unreleased]):
+- Done:
+  - an unterminated `/*` was accepted;
+  - a literal cut by a new-line was accepted;
+  - three divergent escape decoders held silent wrong values;
+  - multi-character constants were wrong;
+  - a C character constant was typed `char`;
+  - D18 had regressed if/switch init-statement scope;
+  - an unterminated `#if` was accepted.
+- After these the whole JIT suite ran green (1648/0/0, 9 skipped).
+- Next: **statements do not own their `;`**. `{ x = 3 }`, `break }`, `do {} while (0) return 0;`, `g(1));` and a lone `);` are all accepted in every mode, because the expression engine stops at a closer and no statement parser checks its terminator. The optional-`;` relaxation must live in that one terminator owner, so the owner comes first.
+
+**Where the verdict is tested in Phase 0:** a corpus run through `classify_entry` on a fresh `Program` per entry, needing neither persistence nor rollback. The session calls the same function inside the entry transaction once §41.2 and §41.3 land.
+
 First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, `madc -i`). Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
 
 ## 42. Decisions (owner, 2026-09-25)
