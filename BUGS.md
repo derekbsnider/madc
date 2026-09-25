@@ -7,7 +7,8 @@ keeps moving and fixed later in a burndown the owner schedules.
 §41.2 onward), a defect found off the REPL's path is filed here instead of
 being fixed on the spot. A defect that blocks the current REPL step is still
 fixed at once. The `fix-what-you-find.md` rule is unchanged; this pause sets
-it aside for now and lifts when the owner says so.
+it aside for now and lifts when the owner says so. The whole backlog is then
+burned down in a dedicated session.
 
 - One entry per defect: kind, when and during what it was found, the reducer
   inline (`tmp/` is untracked), what gcc, clang and madc do, and the layer
