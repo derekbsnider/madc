@@ -5253,6 +5253,11 @@ public:
 	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr), decl(nullptr), struct_body(false), forest_system(false) {}
     };
     std::vector<TopDecl> top_decls;
+    // Record a file-scope variable's declaration in top_decls, in source order
+    // (the builder's dkGlobalVar pass emits its storage, collect_global_ctors
+    // its dynamic initialization). `decl` carries the initializer, NULL for
+    // none or one linked in later. Returns its index.
+    size_t record_global_top_decl(Variable *var, TokenBase *origin, TokenDecl *decl);
     // Host-callback registrations (libmadc register_function): the embedding
     // host exposes a native function to scripts. _parser_init declares each
     // as an ordinary prototype (add_host_callbacks), and the CIR builder

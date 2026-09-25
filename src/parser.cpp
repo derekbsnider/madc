@@ -72796,21 +72796,27 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 		decl->ctor_arg_keys = object->ctor_arg_keys;
 		decl->ctor_args_braced = object->braced;
 	    }
-	TopDecl td;
-	td.kind = DeclKind::dkGlobalVar;
-	td.name = temp->name;
-	td.var = temp;
-	td.dd = temp->type;
-	td.file = expr->file;
-	td.line = expr->line;
-	td.origin = expr;
-	td.decl = decl;
-	top_decls.push_back(td);
+	record_global_top_decl(temp, expr, decl);
 	return new TokenAddrOf(*temp, ptr_type);
     }
     TokenAddrExpr *addr = new TokenAddrExpr(decl, ptr_type);
     copy_token_location(addr, expr);
     return addr;
+}
+
+size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDecl *decl)
+{
+    TopDecl td;
+    td.kind = DeclKind::dkGlobalVar;
+    td.name = var->name;
+    td.var = var;
+    td.dd = var->type;
+    td.file = origin ? origin->file : NULL;
+    td.line = origin ? origin->line : 0;
+    td.origin = origin;
+    td.decl = decl;
+    top_decls.push_back(td);
+    return top_decls.size() - 1;
 }
 
 // parse either a variable declaration, or a function declaration
@@ -73558,18 +73564,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    // there. Without the entry the initializer was silently dropped
 	    // and the global default-constructed.
 	    if ( var && (code == NULL || code == tkProgram) )
-	    {
-		Program::TopDecl gtd;
-		gtd.kind = Program::DeclKind::dkGlobalVar;
-		gtd.name = var->name;
-		gtd.var = var;
-		gtd.dd = var->type;
-		gtd.file = tb->file;
-		gtd.line = tb->line;
-		gtd.origin = tb;
-		gtd.decl = td;
-		top_decls.push_back(gtd);
-	    }
+		record_global_top_decl(var, tb, td);
 	    return td;
 	}
     }
@@ -74307,18 +74302,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	// initializer) can be linked back into this entry for CIR emission.
 	ssize_t global_top_decl_index = -1;
 	if ( var && (code == NULL || code == tkProgram) )
-	{
-	    Program::TopDecl gtd;
-	    gtd.kind = Program::DeclKind::dkGlobalVar;
-	    gtd.name = var->name;
-	    gtd.var = var;
-	    gtd.dd = var->type;
-	    gtd.file = tb->file;
-	    gtd.line = tb->line;
-	    gtd.origin = tb;
-	    global_top_decl_index = (ssize_t)top_decls.size();
-	    top_decls.push_back(gtd);
-	}
+	    global_top_decl_index = (ssize_t)record_global_top_decl(var, tb, NULL);
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(code, var);
 	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline);
@@ -76329,6 +76313,10 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		td->line = tb->line;
 		td->column = tb->column;
 		td->initialize = assign;
+		// A file-scope `:=` outside script mode declares a global, as
+		// `T name = e;` does there.
+		if ( !code )
+		    record_global_top_decl(var, tb, td);
 		return td;
 	    }
 	// C89 implicit-int function definition: `name(params) { body }`

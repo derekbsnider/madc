@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A file-scope `:=` in an included file gets its storage
+
+Outside script mode, a `:=` at file scope declares a global, as `int
+hdr_count = 5;` does. madc registered the name but never recorded the
+declaration, so no storage was emitted and the program died at link time with
+`import of undefined item hdr_count`. The declaration is now recorded like any
+other, and its initializer runs in declaration order, constant or dynamic. The
+same header spelled with ordinary declarations prints `5 6` under g++ and
+clang++, and so does madc.
+
+A file-scope variable's declaration record now has one owner,
+`Program::record_global_top_decl`. Three parser sites had each built it by
+hand.
+
+Tests: `testcolondeclheader`.
+
 ### The interactive session keeps each entry's definitions for the next
 
 This is the core of the REPL arc (plan §41.2a, slice 1). `InteractiveSession`
