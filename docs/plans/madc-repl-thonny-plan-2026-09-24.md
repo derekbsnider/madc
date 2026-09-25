@@ -1900,7 +1900,7 @@ First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, 
 **The rule:** Julia + IPython behaviour first, then cling, then clang-repl, weighted so the choice makes the most sense for C, C++ and madc language behaviour.
 - When Julia and IPython disagree, **Julia decides language semantics**: binding, redefinition, value display, interrupts.
 - **IPython decides the toolbox**: command names and what they do, history, introspection, numbered I/O.
-- **cling comes third.** It follows IPython's footsteps in C++, so it is often the adaptation to look at. **clang-repl comes fourth.** (Owner, 2026-09-25; cling was added to the order and put ahead of clang-repl.)
+- **cling comes third.** It is closer to IPython than clang-repl is (measured below), so it is often the C++ adaptation to look at. Its heritage is CERN's CINT, not IPython. **clang-repl comes fourth.** (Owner, 2026-09-25; cling was added to the order and put ahead of clang-repl.)
 - madc's REPL is not competing with clang-repl or cling. Those projects have their own purpose, following and expectations. madc takes a behaviour from them only where it makes the most sense in the situation.
 - A precedent that C syntax cannot host is adapted, and the adaptation is stated.
 
@@ -1915,6 +1915,12 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
 - **`.undo` (§41.3).** It crashed cling 1.2 (a segfault in `DeclUnloader`), so its semantics come from the documentation only.
 - **Redefinition (D5, D6).** Accepted, and it shadows: after `f` is redefined, `f()` gives the new body, but `g()`, compiled earlier, still calls the old one. A variable is the same (`v` is 2, the earlier `rv()` still reads 1). D5 and D6 follow Julia instead: earlier code sees the newest binding. A redefined struct is a new type, and an old object keeps the old one (`sizeof` 4 and 8), as D6 decides.
 - **A function declaration as an input.** `int f();` alone was wrapped into the input's run as a block-scope declaration (clang's vexing-parse warning), so a later `f();` was "undeclared". madc keeps a declaration at file scope.
+- **Against clang-repl-18, on IPython-like features** (`tmp/repl/s2b/cmp_core.repl`). cling is the closer of the two:
+  - a value without the final `;`: cling `(int) 6`; clang-repl-18 "Not implement yet.";
+  - redefinition: cling accepts it; clang-repl-18 refuses it ("redefinition of 'f'");
+  - commands: cling has about 30, including `.x`/`.L` (run or load a file, like `%run`), `.class`/`.g`/`.typedef`/`.namespace`/`.files` (introspection), `.undo`, `.>` (redirection) and `.dynamicExtensions` (late binding); clang-repl-18 has 3, `%quit`, `%undo` and `%lib` (which loads a shared library);
+  - undo: clang-repl-18's `%undo` works; cling's `.undo` crashed on our input.
+  - Later LLVM releases than 18 have been adding cling features to clang-repl (value printing among them). That is not measured here.
 
 ### Engine
 
