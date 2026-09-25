@@ -1,0 +1,25 @@
+/* A C enumerator is int while every value of its enum fits int; once any
+   value is past int, gcc gives EVERY enumerator of that enum the enum's type
+   (clang only the ones past int; gcc is canon). madc kept them all int, so
+   sizeof(BA) read 4 for `enum Big { BA = 0x100000000LL }` (gcc 8), and
+   `MB - 2 > 0` computed signed for `enum M { MA = 0xFFFFFFFFu, MB = 1 }`,
+   whose type is unsigned int: silent wrong answers.
+   Oracle: gcc -std=c17 prints "sizes 8 8 4 4 8 8 8 8", "values 1 1 -2" and
+   "small 4 0" (clang: "sizes 8 4 4 4 4 8 4 8", "values 0 0 -2"). */
+#include <stdio.h>
+
+enum Big { BA = 0x100000000LL, BB };
+enum Mix { MX = 1, MY = 0x100000000LL };
+enum M { MA = 0xFFFFFFFFu, MB = 1 };
+enum { AX = 1, AY = 0x100000000LL };
+enum Neg { NA = -1, NB = 0x80000000u };
+enum Small { SA = 1 };
+
+int main(void)
+{
+    printf("sizes %zu %zu %zu %zu %zu %zu %zu %zu\n", sizeof(BA), sizeof(MX),
+	   sizeof(MA), sizeof(MB), sizeof(AX), sizeof(AY), sizeof(NA), sizeof(NB));
+    printf("values %d %d %lld\n", MB - 2 > 0, MX - 2 > 0, (long long)(NA * 2));
+    printf("small %zu %d\n", sizeof(SA), SA - 2 > 0);
+    return 0;
+}

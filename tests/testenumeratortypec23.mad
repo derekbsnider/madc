@@ -1,0 +1,15 @@
+/* C23: an enumerator of an enum with a fixed underlying type has the
+   enumerated type (gcc and clang agree), so `enum F : unsigned char` makes
+   sizeof(FA) 1. madc kept it int (sizeof 4). It still promotes to int in
+   arithmetic.
+   Oracle: gcc -std=c2x and clang -std=c2x print "fixed 1 0 8". */
+#include <stdio.h>
+
+enum F : unsigned char { FA = 1 };
+enum W : unsigned long long { WA = 1 };
+
+int main(void)
+{
+    printf("fixed %zu %d %zu\n", sizeof(FA), FA - 2 > 0, sizeof(WA));
+    return 0;
+}

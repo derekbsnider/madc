@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### A C enumerator past `int` has its enum's type, as gcc gives it
+
+In C an enumerator has type `int` while every value of its enum fits `int`.
+When a value is past `int`, gcc gives every enumerator of that enum the
+enum's own type once the list is complete. clang gives it only to the
+enumerators past `int`; madc follows gcc. In C23 an enumerator of an enum
+with a declared base always has the enum's type (gcc and clang agree). madc
+kept every C enumerator `int`, so `sizeof(BA)` read 4 for
+`enum Big { BA = 0x100000000LL }` where gcc reads 8, and
+`sizeof(FA)` read 4 for `enum F : unsigned char { FA }` where gcc reads 1.
+`MB - 2 > 0` for `enum M { MA = 0xFFFFFFFFu, MB = 1 }` computed signed,
+where gcc computes it as `unsigned int`. These were silent wrong answers.
+The enumerators now take the enum's type at the definition's close
+(`Variable::retype_constant`).
+
+Tests: `testenumeratortypec`, `testenumeratortypec23`.
+
 ### A folded constant reads in its own type, so unsigned constants compute unsigned
 
 madc folds a read of an enumerator or a baked `const` scalar to a literal,

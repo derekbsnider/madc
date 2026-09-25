@@ -54552,8 +54552,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// captured before the definition complete in place (00170); the
 	// underlying-type computation at the definition's close then drives
 	// enum bit-field signedness (00218) and sizeof through the shared
-	// DataDefENUM plumbing. Enumerators still register as plain int
-	// constants below (C11 6.7.2.2p3: an enumerator has type int).
+	// DataDefENUM plumbing. Enumerators register as int constants below
+	// (C11 6.7.2.2p3) and take the enum's type at the close when its base
+	// is fixed or a value is past int (gcc).
 	std::map<std::string, TokenDataType *>::iterator ceti =
 	    pgm.c_enum_tag_map.find(enum_tag);
 	DataDefENUM *def_enum_dd = ceti != pgm.c_enum_tag_map.end()
@@ -54665,6 +54666,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
     }
     int64_t val = 0;
     int64_t enum_min_val = 0, enum_max_val = 0;
+    std::vector<Variable *> c_enumerators;	// C: registered as int, typed at the close
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	if ( tn->id() == TokenID::tkComma ) { pgm.nextToken(); continue; }
@@ -54724,8 +54726,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	}
 	else
 	{
-	    // register as a global constant variable. C: a plain int
-	    // constant (C11 6.7.2.2p3). C++: a TAGGED enum's enumerator has
+	    // register as a global constant variable. C: an int constant
+	    // while the list is read (C11 6.7.2.2p3; the close may retype it,
+	    // c_enumerators). C++: a TAGGED enum's enumerator has
 	    // its enumeration type once the closing brace is seen
 	    // ([dcl.enum]/5) — it binds an enum-typed parameter and picks the
 	    // enum overload (`ui::open(ui::WEB)` against {open(const char*),
@@ -54736,6 +54739,8 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    Variable *evar = pgm.addVariable(NULL, enumerator_type, name, 1, NULL, true);
 	    evar->set(val);
 	    evar->makeconstant();
+	    if ( pgm.is_c_mode() )
+		c_enumerators.push_back(evar);
 	    // v26 forest SAVE state: the constant has no TopDecl and no link
 	    // back to the enum tag, so stamp its origin file here — the one
 	    // live registration — for the freeze's serialization + TU-root
@@ -54817,6 +54822,23 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	pgm.last_anon_enum.computed_base = computed;
 	pgm.last_anon_enum.storage = anon_storage;
 	pgm.last_anon_enum.packed = packed;
+    }
+
+    // A C enumerator's type once the list is complete (gcc, C23 6.7.2.2):
+    // int while every value fits int; otherwise, and whenever the base is
+    // fixed, EVERY enumerator has the enumerated type (clang retypes only the
+    // enumerators past int; gcc is canon). An anonymous enum's type is its
+    // compatible one. They stayed int, so sizeof(B) read 4 for
+    // `enum { B = 0x100000000 }` (gcc 8), and `MB - 2 > 0` computed signed
+    // for `enum { MA = 0xFFFFFFFFu, MB = 1 }` (gcc: unsigned int).
+    if ( pgm.is_c_mode()
+      && (fixed_base || enum_min_val < INT32_MIN || enum_max_val > INT32_MAX) )
+    {
+	DataDef *enumerated = enum_dd ? enum_dd
+			    : fixed_base ? fixed_base : anon_storage;
+	if ( enumerated )
+	    for ( size_t i = 0; i < c_enumerators.size(); ++i )
+		c_enumerators[i]->retype_constant(*enumerated);
     }
 
     // The definition's tail ([dcl.dcl], C11 6.7): its `;`, or a declarator the

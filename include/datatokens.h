@@ -196,6 +196,23 @@ public:
     // `slot_type() == &ddINT` — a qualified int matched no arm, set() stored nothing,
     // and `int arr[N]` folded to `int arr[0]`.
     const DataDef *slot_type() const { return type ? type->unqualified() : type; }
+    // A CONSTANT whose type is settled after its value: a C enumerator is int
+    // while its enum's list is read, and takes the enumerated type at the
+    // close (TokenENUM::parse). The value is kept, so the new slot must fit
+    // in the old block and be one set() can hold; otherwise the constant
+    // keeps its type (false).
+    bool retype_constant(DataDef &t)
+    {
+	int64_t v = get<int64_t>();
+	DataDef *was = type;
+	type = &t;
+	if ( was && slot_size(t) <= slot_size(*was) && set(v)
+	  && get<int64_t>() == v )
+	    return true;
+	type = was;
+	set(v);
+	return false;
+    }
     bool set(int64_t c)
     {
 	if ( !data ) { return false; }
