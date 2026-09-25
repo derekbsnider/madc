@@ -2003,3 +2003,5 @@ These decisions supersede the plan text they name.
 ### Next
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
+
+D18 and the classifier are done. §41.2 is next. Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
