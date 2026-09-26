@@ -660,6 +660,14 @@ A divergent family is a live bug. Consolidating one leaves a gate in
   They should use `consume_gnu_attributes_naming`. No failing reducer yet.
 - `call_argument_loop`: `parseCallFunc` and `parseCallMethod` carry twin
   argument loops.
+- `external_ctor_param_shape` (found 2026-09-26, with L3):
+  - `ctor_call_assemble`'s external-constructor arm declares the extern's
+    parameters by hand: a real as `long long`, a non-char pointer as
+    `char *`. The owner is `native_param_shape`.
+  - The retbuf copy lane had the same copy. It returned a garbage real for
+    `var f() { return 2.5; }`, and L3 moved it onto the owner.
+  - No failing reducer yet for this arm. The carrier's constructor rows get
+    Pass 0.75's typed prototype first.
 
 ## Carried from earlier hand-offs
 

@@ -5727,6 +5727,8 @@ node_t CirBuilder::ptr_type_node(DataDef *dd)
 // previous declaration" — real vector's _Temporary_value::_Storage union).
 node_t CirBuilder::class_tag_ref(DataDef *dd, TokenBase *origin)
 {
+	if (dd == &ddARRAY)
+		return node2(N_STRUCT, id(CARRIER_SLOT_TAG, origin), ignore());
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
 	node_t ref = node2(sdd && sdd->union_layout ? N_UNION : N_STRUCT,
 			   id(dd->name.c_str(), origin), ignore());
@@ -6016,6 +6018,38 @@ node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin,
 {
 	return obj_storage_decl(name, array_obj_words(), "madarray_destruct", origin,
 				alignof(madc::value), storage);
+}
+
+const char *CirBuilder::CARRIER_SLOT_TAG = "__madc_value";
+
+// The member is the carrier member arm's buffer (class_member for a `var`
+// field), so the tag's size and alignment are madc::value's, computed.
+node_t CirBuilder::carrier_slot_struct_def()
+{
+	node_t mspec = list();
+	if (alignof(madc::value) > alignof(long long))
+		append(mspec, node1(N_ALIGNAS,
+			integer((int64_t)alignof(madc::value))));
+	append_i64(mspec);
+	node_t mdecl_list = list();
+	append(mdecl_list, node3(N_ARR, ignore(), list(),
+				 integer((int64_t)array_obj_words())));
+	node_t member = simple(N_MEMBER);
+	append(member, node1(N_SHARE, mspec));
+	append(member, node2(N_DECL, id("_w"), mdecl_list));
+	append(member, ignore());
+	append(member, ignore());
+	append(member, member_layout_contract(0, -1, -1));
+	node_t members = list();
+	append(members, member);
+	node_t spec_decl = simple(N_SPEC_DECL);
+	append(spec_decl, node1(N_LIST, aggregate_def_node(&ddARRAY,
+		id(CARRIER_SLOT_TAG), members)));
+	append(spec_decl, ignore());
+	append(spec_decl, ignore());
+	append(spec_decl, ignore());
+	append(spec_decl, ignore());
+	return spec_decl;
 }
 
 node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
@@ -6801,6 +6835,10 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 	}
 
+	// A by-value carrier result already IS the object it materialized into.
+	if (target == &ddARRAY && carrier_result_operand(arg))
+		return node2(N_CAST, void_ptr_type(),
+			     node1(N_ADDR, translate_expr(arg), arg), arg);
 	if (object_returning_call_class(arg) == target)
 		return object_call_temp_addr(arg, target, arg);
 	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
@@ -7303,6 +7341,13 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent
 							      allow_converted_temp), arg),
 				     arg);
 		}
+	// A carrier VALUE translates to an object lvalue in every form — its
+	// storage, a keyed slot, or the temp a by-value result materialized
+	// into (object_call_temp, the operator lanes) — so the reference binds
+	// that object ([class.temporary]/2). The prvalue spill below would be an
+	// array assignment, which C has no form for.
+	if (arg && is_array_object(arg->datadef()))
+		return node1(N_ADDR, translate_expr(arg), arg);
 	// An AGGREGATE REFERENCE MEMBER's stored value already IS the referent
 	// object's address ([expr.ref]) — the reference parameter binds to the
 	// same object, so pass the pointer through. `&translate_expr` below
@@ -7594,14 +7639,38 @@ void CirBuilder::object_temp_decl(DataDefCLASS *cdd, char *name_buf,
 	m_pending_stmts.push_back(var_decl(tmp, origin));
 }
 
+// The address of a materialized result temp as the hidden result address
+// (retbuf_param's pointee). A class temp's address already has that type; the
+// carrier's temp is its long long[] buffer, whose address is converted to its
+// slot tag (CARRIER_SLOT_TAG).
+node_t CirBuilder::retbuf_slot_addr(DataDefCLASS *retc, const char *tmp,
+				    TokenBase *origin)
+{
+	node_t addr = node1(N_ADDR, id(tmp, origin), origin);
+	if (retc != &ddARRAY)
+		return addr;
+	return node2(N_CAST, class_ptr_type(retc), addr, origin);
+}
+
+// The (void*) address form of object_call_temp.
+node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
+					 TokenBase *origin)
+{
+	node_t lv = object_call_temp(call_tok, cdd, origin);
+	node_t addr = node2(N_CAST, void_ptr_type(), node1(N_ADDR, lv, origin),
+			    origin);
+	CIR_NODE(addr)->synth_from_origin = true;
+	return addr;
+}
+
 // Materialize a NON-TRIVIAL class-returning CALL into a cleanup-tagged temp of
 // that class, via the __retbuf ABI. Declares
 // `struct Cls __t __attribute__((cleanup(Cls___dtor)));` (var_decl attaches the
 // cleanup), emits the void call `f(&__t, <args>)` whose callee copy-constructs
-// the result into *__retbuf, and returns the temp's (void*) address. Pushes the
+// the result into *__retbuf, and returns the temp's object lvalue. Pushes the
 // decl and the call to m_pending_stmts.
-node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
-					 TokenBase *origin)
+node_t CirBuilder::object_call_temp(TokenBase *call_tok, DataDefCLASS *cdd,
+				    TokenBase *origin)
 {
 	// A by-value-returning METHOD call: class_method_call already materializes
 	// its own sret temp and passes the Itanium (sret, this, args) shape with the
@@ -7616,12 +7685,8 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 	if (call_tok && call_tok->type() == TokenType::ttCallMethod) {
 		if (TokenMember *tcm = dynamic_cast<TokenMember *>(call_tok)) {
 			node_t lv = class_method_call(tcm, origin);
-			if (lv) {
-				node_t addr = node2(N_CAST, void_ptr_type(),
-						    node1(N_ADDR, lv, origin), origin);
-				CIR_NODE(addr)->synth_from_origin = true;
-				return addr;
-			}
+			if (lv)
+				return lv;
 		}
 	}
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
@@ -7632,12 +7697,8 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 	if (tcf && format_intrinsic_call(tcf)) {
 		node_t lv = lower_format_call(tcf, call_target_funcdef(tcf),
 					      origin);
-		if (lv) {
-			node_t addr = node2(N_CAST, void_ptr_type(),
-					    node1(N_ADDR, lv, origin), origin);
-			CIR_NODE(addr)->synth_from_origin = true;
-			return addr;
-		}
+		if (lv)
+			return lv;
 	}
 	char name[40];
 	object_temp_decl(cdd, name, sizeof(name), origin);
@@ -7647,7 +7708,7 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 		std::string sym = call_target_emit_name(tcf, &cdf);
 		referenced_funcs.insert(sym);
 		node_t cargs = list();
-		append(cargs, node1(N_ADDR, id(name, origin), origin));   // __retbuf = &__t
+		append(cargs, retbuf_slot_addr(cdd, name, origin));   // __retbuf = &__t
 		build_call_args(tcf, cargs);
 		node_t call = node2(N_CALL, id(sym.c_str(), origin), cargs, origin);
 		CIR_NODE(call)->synth_from_origin = true;
@@ -7671,11 +7732,7 @@ node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 		if (cc) m_pending_stmts.push_back(cc);
 	}
 
-	// The temp's (void*) address — the call's object-lvalue result.
-	node_t addr = node2(N_CAST, void_ptr_type(),
-			    node1(N_ADDR, id(name, origin), origin), origin);
-	CIR_NODE(addr)->synth_from_origin = true;
-	return addr;
+	return id(name, origin);
 }
 
 // Peel array/pointer layers to the DataDefSTRUCT a typedef ultimately names.
@@ -7848,7 +7905,7 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	// call THROUGH a pointer would disagree with the target it points at.
 	DataDefCLASS *retbuf_dd = function_retbuf_class(fd);
 	if (retbuf_dd) {
-		node_t pspec = type_list(retbuf_dd);
+		node_t pspec = retbuf_slot_specs(retbuf_dd);
 		append(pspec, ret_addr_attr());
 		node_t pdecl = list();
 		append(pdecl, pointer());
@@ -8141,9 +8198,19 @@ node_t CirBuilder::ret_addr_attr()
 // returned class/struct spec (bare LIST, like param_decl's pspec) and a DECL
 // carrying the name plus one pointer suffix. `retdd` is the returned type
 // The retbuf type is the returned class/struct type.
+node_t CirBuilder::retbuf_slot_specs(DataDef *retdd)
+{
+	if (is_array_object(retdd)) {
+		node_t lst = list();
+		append(lst, class_tag_ref(&ddARRAY));
+		return lst;
+	}
+	return type_list(retdd ? retdd : &ddVOID);
+}
+
 node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 {
-	node_t pspec = type_list(retdd ? retdd : &ddVOID);
+	node_t pspec = retbuf_slot_specs(retdd);
 	// The marker rides the SPECIFIERS, so the declarator's `*` below puts it
 	// on the pointee — which is where c2mir's ret_addr_param_p reads it.
 	// UNCONDITIONAL, at every emitter: prototype, definition and typed extern
@@ -13020,7 +13087,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			object_temp_decl(pret, ptmp, sizeof(ptmp), origin);
 		node_t args = list();
 		if (pret)
-			append(args, node1(N_ADDR, id(ptmp, origin), origin));
+			append(args, retbuf_slot_addr(pret, ptmp, origin));
 		append(args, this_arg);
 		for (TokenBase *arg : tm->parameters) {
 			node_t n = NULL;
@@ -13101,7 +13168,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	}
 	node_t args = list();
 	if (ret_obj)
-		append(args, node1(N_ADDR, id(ret_tmp, origin), origin));
+		append(args, retbuf_slot_addr(ret_obj, ret_tmp, origin));
 	append(args, this_arg);
 	for (size_t i = 0; i < tm->parameters.size(); i++) {
 		TokenBase *arg = tm->parameters[i];
@@ -14053,9 +14120,17 @@ bool CirBuilder::class_nontrivial_for_calls(DataDefCLASS *cdd)
 // where g++ copy-constructs (+100), and a parameter can never be elided —
 // so the callee constructs into *__retbuf in both cases. A trivially
 // copyable class keeps c2mir's native struct return. Returns NULL otherwise.
+// The carrier is madc::value, whose copy constructor and destructor are
+// user-provided (include/libmadc/value.h), so g++ returns it through the
+// hidden result address too: `var f()` and a host `madc::value g()` share
+// one ABI. It lives outside the user-class universe (as_class_instance), so
+// it is admitted here by name of its one DataDef; its slot pointer is
+// CARRIER_SLOT_TAG (retbuf_slot_specs).
 DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
 {
 	if (!dd || dd->is_pointer()) return NULL;
+	if (is_array_object(dd))
+		return &ddARRAY;
 	DataDefCLASS *cdd = as_class_instance(dd);
 	if (!cdd) return NULL;
 	return class_nontrivial_for_calls(cdd) ? cdd : NULL;
@@ -14214,16 +14289,10 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		if (!copy_ctor->emit_symbol.empty()) {
 			std::vector<ExternParam> eparams;
 			eparams.push_back({ {N_VOID}, true });   // this
-			for (size_t pi = 1; pi < copy_ctor->parameters.size(); pi++) {
-				DataDef *cpt = copy_ctor->parameters[pi];
-				bool crefp = copy_ctor->is_ref_param(pi);
-				if (param_object_class(cpt, crefp) || crefp)
-					eparams.push_back({ {N_VOID}, true });
-				else if (cpt && cpt->is_pointer())
-					eparams.push_back({ {N_CHAR}, true });
-				else
-					eparams.push_back({ {N_LONG, N_LONG}, false });
-			}
+			for (size_t pi = 1; pi < copy_ctor->parameters.size(); pi++)
+				eparams.push_back(native_param_shape(
+					copy_ctor->parameters[pi],
+					copy_ctor->is_ref_param(pi)));
 			if (copy_ctor->ctor_trailing_self)
 				eparams.push_back({ {N_VOID}, true });
 			need_output_extern(sym.c_str(), false, eparams);
@@ -19975,6 +20044,27 @@ bool CirBuilder::carrier_operand_lvalue(TokenBase *t)
 	return is_carrier_keyed_subscript(t);
 }
 
+// A by-value carrier RESULT: a call, method call or operator whose value is a
+// var. Its lowering materializes the result object through the result
+// address (object_call_temp, class_method_call, the operator lanes) and
+// yields that temp's buffer lvalue, so it designates an object as a carrier
+// lvalue does. Not admitted as a conditional's arm (carrier_ternary_needs_
+// temp): the temp's call is hoisted ahead of the condition.
+bool CirBuilder::carrier_result_operand(TokenBase *t)
+{
+	if (!t || !is_array_object(t->datadef()))
+		return false;
+	TokenType ty = t->type();
+	return ty == TokenType::ttCallFunc || ty == TokenType::ttCallMethod
+	    || dynamic_cast<TokenOperator *>(t) != NULL;
+}
+
+// The carrier operand an operator binds: a carrier lvalue or result.
+bool CirBuilder::carrier_operand(TokenBase *t)
+{
+	return carrier_operand_lvalue(t) || carrier_result_operand(t);
+}
+
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 				       const char *opsym_override)
 {
@@ -20013,10 +20103,10 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// lvalue of it here so scalar (re)assignment and the equality rows
 	// resolve through the same operator machinery; operators it lacks
 	// decline in select_operator_overload and fall through unchanged.
-	// carrier_operand_lvalue is the ONE admission rule (a variable or
-	// member, a `value &` variable, a keyed subscript) — the reversed
-	// candidate below reads it for the RIGHT operand too.
-	if (!lcls && carrier_operand_lvalue(top->left))
+	// carrier_operand is the ONE admission rule (a variable or member, a
+	// `value &` variable, a keyed subscript, a by-value result) — the
+	// reversed candidate below reads it for the RIGHT operand too.
+	if (!lcls && carrier_operand(top->left))
 		lcls = &ddARRAY;
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
@@ -20037,7 +20127,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		// Only the two symmetric operators — an ordering operator would
 		// need its mirror (`<` -> `>`), which is the <=> lane's job.
 		if ((top->id() == TokenID::tkEquals || top->id() == TokenID::tkNotEq)
-		    && !opsym_override && carrier_operand_lvalue(top->right)
+		    && !opsym_override && carrier_operand(top->right)
 		    && !operand_object_class(top->left)) {
 			std::swap(top->left, top->right);
 			node_t rev = class_operator_call(top, origin, NULL);
@@ -20144,10 +20234,12 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	// __retbuf ABI (hidden return-slot first param) -> pass &__t as that slot and
 	// the void call writes *__retbuf; a TRIVIAL (native struct) return is assigned
 	// into __t. The expression value is then the temp's object lvalue.
-	DataDefCLASS *retc = as_class_instance(&callee->return_value_type());
+	DataDefCLASS *rbc = function_retbuf_class(callee);
+	DataDefCLASS *retc = rbc ? rbc
+				 : as_class_instance(&callee->return_value_type());
 	bool by_value_object = retc && !callee->returns_reference()
 			       && !callee->return_value_type().is_pointer();
-	bool via_retbuf = function_retbuf_class(callee) != NULL;
+	bool via_retbuf = rbc != NULL;
 	char objtmp[40] = { 0 };
 	if (by_value_object) {
 		snprintf(objtmp, sizeof(objtmp), "__madc_objtmp_%d", m_strtmp_counter++);
@@ -20158,7 +20250,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 
 	node_t args = list();
 	if (via_retbuf)
-		append(args, node1(N_ADDR, id(objtmp, origin), origin));   // __retbuf slot
+		append(args, retbuf_slot_addr(retc, objtmp, origin));   // __retbuf slot
 	append(args, this_arg);
 	// Single explicit RHS argument (operator parameter 1; param 0 = __this).
 	{
@@ -24415,6 +24507,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// call writing into it, and yield the temp as a `struct Cls` lvalue
 			// (`*(struct Cls*)&temp`) — so member access / further use reads it.
 			if (DataDefCLASS *ocls = object_returning_call_class(tcf)) {
+				// The carrier's value IS its buffer lvalue (the
+				// carrier argument convention), never a struct.
+				if (ocls == &ddARRAY)
+					return object_call_temp(tcf, ocls, tb);
 				node_t addr = object_call_temp_addr(tcf, ocls, tb);
 				node_t cp_type = node2(N_TYPE,
 					node1(N_LIST, class_tag_ref(ocls, tb)),
@@ -30781,6 +30877,12 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 	DataDefCLASS *ret_cdd = function_retbuf_class(fd);
 	enum { R_VOID, R_BOOL, R_INT, R_REAL, R_CSTR, R_TEXTOBJ, R_INST } rkind;
 	FuncDef *ret_cstr_fd = NULL, *ret_len_fd = NULL;
+	// A carrier result is a madc::value, which the interchange struct cannot
+	// carry whole (it has no array or object payload), and converting it to
+	// its text would hand the host a string for an integer. No shim, as
+	// before the carrier took the result address.
+	if (ret_cdd == &ddARRAY)
+		return NULL;
 	if (ret_cdd) {
 		// A returned object with the c_str()/size() (or length()) text
 		// protocol converts to a TEXT value; any other class returns as a
@@ -32292,6 +32394,14 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (!cdd) continue;
 		emit_class_struct_with_deps(cdd, top_list, emitted_structs,
 					    emitted_classes, emitting_classes);
+	}
+	// The carrier's slot tag, ahead of every prototype that can name it (a
+	// tag first seen in a parameter list would have prototype scope). Rung 3
+	// drops it from a module that never names it.
+	{
+		node_t cs = carrier_slot_struct_def();
+		append(top_list, cs);
+		cond_mark_type(cs);
 	}
 	// Anchor: the last EARLY struct definition. Late-instantiated struct defs
 	// (Pass 1.97) are spliced in right AFTER this point — i.e. after all early

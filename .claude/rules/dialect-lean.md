@@ -25,8 +25,8 @@
   `const char*`); a function that exists only in std::string shape is a
   gap, not a contract.
 - Ring-lifetime `const char *` (ns_common::ring_slot, the c_str()
-  contract) is the pre-L3 return convention for dialect text returns;
-  `value` returns arrive with L3.
+  contract) is the return convention of the existing dialect text
+  returns; a script function returns a `value` by value (L3).
 - Carrier semantics never vary with which headers a TU parsed (the
   subscript SLOT model is the precedent).
 - Gate: `scripts/check-dialect-lean.sh` (in fulltest) fails the build on

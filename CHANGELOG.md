@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### A `var` can be returned by value
+
+`var f(long n) { var x = n; return x; }` was lowered as a function returning
+`long long` whose `return x;` returned the buffer's address. The Adventure
+plan's L3 recorded it as open. Returning a `var` by value now works wherever
+a function returns: free functions, methods and calls through a function
+pointer. The same holds wherever the result is used: a declaration, an
+argument, a `const var &`, a method receiver and an `==` operand.
+
+`madc::value` has a user-provided copy constructor and destructor, so g++
+and clang return it through a hidden result address. madc now does the
+same (`void _Z1fl(struct __madc_value *__retbuf, long long n)`), so a madc
+function and a host `madc::value g()` share one ABI. The new
+`struct __madc_value` is the carrier's C-visible slot type: its size and
+alignment are madc::value's, and it is emitted once per module that names
+it. The carrier's storage is still its `long long[]` buffer.
+
+Two defects on the way:
+- The retbuf copy constructor declared an external constructor's
+  parameters by hand, with every scalar as `long long`. So
+  `var f() { return 2.5; }` returned a garbage real. It now uses
+  `native_param_shape`.
+- A host call (libmadc `program::call`) to a function returning `var`
+  would have received its text. It is declined, as before, because the
+  interchange struct cannot carry an array or an object.
+
+Test: `testvarreturn` (both oracles are the same program over the real
+`madc::value`, built with g++ and clang++).
+
 ### A shown standard container is written as the expression that builds it
 
 Result capture (D10, plan §41.4a) now covers the standard containers. Each

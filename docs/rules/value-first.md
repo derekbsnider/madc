@@ -42,13 +42,15 @@ compiler, never the script.
 
 ## The L3 caveat
 
-Value-by-value returns from script-visible functions (L3 in the
-Adventure plan) are not landed. Carrier methods that conceptually
-return a NEW value (substr, case transforms) return ring-lifetime
-`const char *` text — the established c_str() contract: safe to pass
-onward or capture into a var immediately (the ctor copies), not to
-store as a raw pointer. When L3 lands these can gain value-returning
-overloads without breaking callers.
+Value-by-value returns from script functions (L3 in the Adventure plan)
+landed on 2026-09-26: `madc::value` is non-trivial for calls, so a `var`
+result is constructed through the hidden result address, the ABI g++
+and clang give it. The carrier methods written before it that
+conceptually return a NEW value (substr, case transforms) still return
+ring-lifetime `const char *` text — the established c_str() contract:
+safe to pass onward or capture into a var immediately (the ctor copies),
+not to store as a raw pointer. They can gain value-returning overloads
+without breaking callers.
 
 ## Why `var`, not `value`, in dialect source (owner rule 2026-08-31)
 

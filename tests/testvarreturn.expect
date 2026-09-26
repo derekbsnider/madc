@@ -1,0 +1,18 @@
+global: 3
+local: 4
+expr: 6
+int: 5
+text: text
+real: 2.5
+obj: 1 two
+list: 3 3
+pick: yes 3
+again: 7
+echo: text
+count: 4
+eq: true
+method: 4
+box: boxed
+fnptr: 9
+loop: 6
+done

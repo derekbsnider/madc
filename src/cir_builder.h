@@ -233,6 +233,12 @@ class CirBuilder {
 	// the returned class/struct type. Always carries ret_addr_attr — being the
 	// result address is what this parameter IS, not a property of the caller.
 	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
+	// The SPECIFIERS of the hidden result address's pointee — the one owner
+	// retbuf_param and fnptr_func_node share. A class or struct is its type
+	// list; the carrier is its slot tag (CARRIER_SLOT_TAG), because its
+	// storage type is a long long[] buffer and c2mir sizes the result block
+	// only through a pointer to an aggregate.
+	node_t retbuf_slot_specs(DataDef *retdd);
 	// THE one spelling of the hidden-result-address marker. A C declaration
 	// cannot say "this pointer is the indirect-result register", and C's own
 	// rule (classify the RETURN by size) is the wrong rule for a non-trivial
@@ -682,13 +688,18 @@ class CirBuilder {
 			      TokenBase *origin);
 	// Materialize an object-returning CALL (non-trivial class) into a
 	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
-	// temp's (void*) address.
+	// temp's object lvalue (object_call_temp) or its (void*) address.
+	node_t object_call_temp(TokenBase *call_tok, DataDefCLASS *cdd,
+				TokenBase *origin);
 	node_t object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
 				     TokenBase *origin);
 	// Allocate a cleanup-tagged object temp (raw storage, no ctor) and push its
 	// decl to m_pending_stmts. Returns the temp's name through name_buf.
 	void object_temp_decl(DataDefCLASS *cdd, char *name_buf, size_t buf_sz,
 			      TokenBase *origin);
+	// The temp `tmp` of class `retc` passed as the hidden result address.
+	node_t retbuf_slot_addr(DataDefCLASS *retc, const char *tmp,
+				TokenBase *origin);
 	// Translate a TokenCallFunc's explicit arguments into `args` (a LIST node),
 	// applying object / numeric-reference parameter coercion. Shared by the
 	// normal call path and by-value object-return temp materialization.
@@ -798,6 +809,14 @@ class CirBuilder {
 	// reference to it (a `value &` parameter) — NULL otherwise.
 	static DataDefCLASS *carrier_behind(DataDef *dd);
 	size_t array_obj_words() const;              // ceil(sizeof(madc::value)/sizeof(long))
+	// The carrier's C-visible aggregate: `struct __madc_value { _Alignas(16)
+	// long long _w[N]; }`, the pointee of a by-value `var` return's result
+	// address. The carrier's storage stays the long long[] buffer
+	// (array_storage_decl); only a slot pointer names this tag
+	// (class_tag_ref). Defined once per module after the class structs,
+	// conditional on a reference to the tag.
+	static const char *CARRIER_SLOT_TAG;
+	node_t carrier_slot_struct_def();
 	node_t array_storage_decl(const char *name, TokenBase *origin,
 				  ObjStorage storage = ObjStorage::Automatic);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
@@ -2068,7 +2087,9 @@ public:
 	// opsym_override substitutes the operator spelling looked up from
 	// top->id() (e.g. strict equality dispatching through "=="); NULL =
 	// derive from binop_overload_symbol(top->id()).
-	bool carrier_operand_lvalue(TokenBase *t);	// the carrier receiver rule
+	bool carrier_operand_lvalue(TokenBase *t);	// a carrier lvalue
+	bool carrier_result_operand(TokenBase *t);	// a by-value carrier result
+	bool carrier_operand(TokenBase *t);		// the carrier receiver rule
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin,
 				   const char *opsym_override = NULL);
 	// C++20 builtin `a <=> b` ([expr.spaceship]): comparison-category temp
