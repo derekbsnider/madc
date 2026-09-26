@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A shown struct, union or array is written as its initializer
+
+Slice 2 of result capture (D10, plan §41.4a). An aggregate's shown value is
+written as C99 designated initializers, and at top level it carries its type:
+- C: `(struct Point){ .x = 1.0, .y = 2.5 }` and `(int[3]){ 4, 5, 6 }`;
+- C++: `Point{ .x = 1.0, .y = 2.5 }` and `{ 4, 5, 6 }`, since C++ has no
+  array compound literal.
+
+A nested member is the braces alone. A `char` array is text when a NUL ends
+it within its bound (`.name = "abc"`) and a brace list of characters
+otherwise. A union shows the first member, the one its initializer sets. A
+struct returned by a call is evaluated once. A member with no display yet
+(a container, a madc `var`) shows its type in angle brackets, in place.
+
+Each shown text re-enters in the session's tests. One exception: madc
+refuses the two-dimensional `(int[2][2]){ … }` entered again, while gcc and
+clang accept it, filed as B28.
+
+Test: `test_repl_session`.
+
 ### An entry without its final `;` shows its value
 
 In the interactive session, an entry whose final statement omits its `;` now
@@ -17,7 +37,6 @@ value:
   enumerator;
 - `(int (*)(int)) nullptr`.
 
-A struct shows its type (`<P>`) until the next slice renders its members.
 `InteractiveSession::shown()` returns the text; the core prints nothing.
 
 Rendering is one more flavor of the one print_r / var_dump walk. Its floats

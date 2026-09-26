@@ -879,6 +879,8 @@ private:
 	// The show's spelling of a pointer or enum TYPE (`int *`, `enum E`,
 	// `struct P *`, `int (*)(int)`), per the entry's language (C or C++).
 	std::string dump_show_type_word(DataDef *dd);
+	// A literal piece of the show's text (a brace, a designator, a separator).
+	node_t dump_show_text(const std::string &text, TokenBase *origin);
 	// An ACCESS FACTORY: builds a fresh access node for the same value each
 	// time it is called. A c2mir node is a tree node, so the same one cannot
 	// be handed to two parents — the walk rebuilds instead of sharing, the

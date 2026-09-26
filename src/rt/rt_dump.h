@@ -200,6 +200,13 @@ void __madc_dump_sh_ptr(void *sink, const char *type, const void *p, int cxx);
  * the number, `(TYPE) v`. */
 void __madc_dump_sh_enum(void *sink, const char *scope, const char *name,
 			 const char *type, long long v);
+/* A char array of extent N: its text as a string literal when a NUL ends it
+ * within N (`.name = "abc"` initializes char[8]), else each char in a brace
+ * list, since a literal would need a NUL the array does not hold. */
+void __madc_dump_sh_chars(void *sink, const char *p, long long n);
+/* An array element's separator: nothing before element 0, `, ` before the
+ * rest (the element loop is a real loop, so the test is at run time). */
+void __madc_dump_sh_sep(void *sink, long long i);
 
 /* --- the C++ half: the madc::value walk (src/rt_dump_value.cpp) --------- */
 /* NOT part of the strict-C11 ledger lane, and it cannot be: a value's `array`

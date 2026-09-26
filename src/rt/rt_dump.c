@@ -861,3 +861,34 @@ void __madc_dump_sh_enum(void *sink, const char *scope, const char *name,
     sink_puts(sink, type ? type : "int");
     sink_printf(sink, ") %lld", v);
 }
+
+void __madc_dump_sh_chars(void *sink, const char *p, long long n)
+{
+    long long len = 0, i;
+
+    if (!p) {
+	sink_puts(sink, "{ }");
+	return;
+    }
+    while (len < n && p[len])
+	len++;
+    if (len < n) {
+	sink_putc(sink, '"');
+	sh_escaped(sink, p, (size_t)len, '"');
+	sink_putc(sink, '"');
+	return;
+    }
+    sink_puts(sink, "{ ");
+    for (i = 0; i < n; ++i) {
+	if (i)
+	    sink_puts(sink, ", ");
+	__madc_dump_sh_char(sink, p[i]);
+    }
+    sink_puts(sink, " }");
+}
+
+void __madc_dump_sh_sep(void *sink, long long i)
+{
+    if (i > 0)
+	sink_puts(sink, ", ");
+}

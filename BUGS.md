@@ -416,6 +416,29 @@ int main()
 - Where: not traced. The cast's operand is read by `parseCastExpression`,
   the one owner. What differs is `<cmath>`'s `std::` overload set.
 
+### B28. A compound literal of a two-dimensional array is refused
+
+- Found 2026-09-26, while re-entering D10's shown values (§41.4a slice 2):
+  the session shows `int grid[2][2]` as `(int[2][2]){ { 1, 2 }, { 3, 4 } }`,
+  and madc refuses that text entered again.
+
+```c
+#include <stdio.h>
+int main(void)
+{
+	int k = (int[2][2]){ { 1, 2 }, { 3, 4 } }[1][0];
+	printf("%d\n", k);
+	return 0;
+}
+```
+
+- gcc, clang `-std=c17 -Wall`: `3`. madc `--std=c17`: `excess elements in
+  scalar initializer` twice (from c2mir), then `cir_compile failed`. A 1-D
+  `(int[3]){ 4, 5, 6 }[2]` works.
+- Where: not traced. The compound literal's type reaches c2mir as a
+  one-dimensional array, which fits madc's flattened array storage, so the
+  inner braces initialize scalars.
+
 ### B25. A declared function returning a function pointer is prototyped `long long`
 
 - Found 2026-09-26, while writing the weak reducer for D27 (B24).

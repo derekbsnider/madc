@@ -986,17 +986,43 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10)")
     check_reenters(s, "int (*v18)(int) = nullptr", "(int (*)(int)) nullptr",
 		   "(@) == v18");
 
-    // A void expression shows nothing; a struct shows its type until slice 2
-    // renders it; a use of an undefined function (D27) stops the run, and the
-    // entry shows nothing.
+    // A void expression shows nothing; a use of an undefined function (D27)
+    // stops the run, and the entry shows nothing.
     REQUIRE(s.submit("void vf() {}"));
     REQUIRE(s.submit("vf()"));
     CHECK(s.shown().empty());
-    REQUIRE(s.submit("P v19 = { 3 }"));
-    CHECK(s.shown() == "<P>");
     REQUIRE(s.submit("int nf();"));
     CHECK_FALSE(s.submit("nf()"));
     CHECK(s.shown().empty());
+
+    // Slice 2: an aggregate shows as designated initializers, with its type
+    // at top level; nested members, a char array (text), an array member, a
+    // pointer and an enum member; a call's result, materialized once.
+    check_reenters(s, "P v19 = { 3 }", "P{ .a = 3 }", "(@).a == v19.a");
+    REQUIRE(s.submit("struct Pt { double x, y; };"));
+    REQUIRE(s.submit("struct Line { Pt a, b; int tag; };"));
+    check_reenters(s, "Line v20 = { { 0.0, 1.0 }, { 2.0, 3.5 }, 7 }",
+		   "Line{ .a = { .x = 0.0, .y = 1.0 }, .b = { .x = 2.0, .y = 3.5 },"
+		   " .tag = 7 }",
+		   "(@).b.y == v20.b.y && (@).tag == v20.tag");
+    REQUIRE(s.submit("struct Named { char name[8]; int id[3]; E e; int *p; };"));
+    check_reenters(s, "Named v21 = { \"abc\", { 1, 2, 3 }, B, nullptr }",
+		   "Named{ .name = \"abc\", .id = { 1, 2, 3 }, .e = E::B,"
+		   " .p = (int *) nullptr }",
+		   "std::strcmp((@).name, v21.name) == 0 && (@).id[2] == 3"
+		   " && (@).e == v21.e");
+    REQUIRE(s.submit("int calls = 0;"));
+    REQUIRE(s.submit("Pt mk() { ++calls; return Pt{ 9.0, 8.5 }; }"));
+    REQUIRE(s.submit("mk()"));
+    CHECK(s.shown() == "Pt{ .x = 9.0, .y = 8.5 }");
+    CHECK(*(int *)s.data("calls") == 1);
+    REQUIRE(s.submit("union U { int i; float f; };"));
+    check_reenters(s, "U v22 = { 5 }", "U{ .i = 5 }", "(@).i == v22.i");
+    // A C++ array shows as its initializer, which is not an expression.
+    REQUIRE(s.submit("int v23[3] = { 4, 5, 6 }"));
+    CHECK(s.shown() == "{ 4, 5, 6 }");
+    REQUIRE(s.submit("char v24[4] = { 'a', 'b', 'c', 'd' }"));
+    CHECK(s.shown() == "{ 'a', 'b', 'c', 'd' }");
 }
 
 TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, C)")
@@ -1021,4 +1047,19 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, C)")
     check_reenters(s, "struct P *v17 = 0", "(struct P *) NULL", "(@) == v17");
     check_reenters(s, "int (*v18)(void) = 0", "(int (*)(void)) NULL",
 		   "(@) == v18");
+
+    // Slice 2: C's compound literals, a struct's and an array's.
+    REQUIRE(s.submit("struct Pt { double x, y; };"));
+    check_reenters(s, "struct Pt v19 = { 1.0, 2.5 }",
+		   "(struct Pt){ .x = 1.0, .y = 2.5 }", "(@).y == v19.y");
+    check_reenters(s, "int v20[3] = { 4, 5, 6 }", "(int[3]){ 4, 5, 6 }",
+		   "(@)[2] == v20[2]");
+    // B28: madc refuses this text entered again (gcc and clang accept it).
+    REQUIRE(s.submit("int v21[2][2] = { { 1, 2 }, { 3, 4 } }"));
+    CHECK(s.shown() == "(int[2][2]){ { 1, 2 }, { 3, 4 } }");
+    REQUIRE(s.submit("union U { int i; float f; };"));
+    check_reenters(s, "union U v22 = { 5 }", "(union U){ .i = 5 }",
+		   "(@).i == v22.i");
+    REQUIRE(s.submit("char v23[6] = \"hello\""));
+    CHECK(s.shown() == "\"hello\"");
 }
