@@ -62,35 +62,32 @@ bool InteractiveSession::submit(const std::string &text)
     // N counts every entry submitted, as Julia's REPL[N] and IPython's
     // In [N] do, so a refused entry's number is never reused.
     std::string name = "REPL[" + std::to_string(++submit_count) + "]";
+    // The entry is one unit (plan §41.3): it is kept once its module links,
+    // and a refusal (its parse, its translation or its link) rolls back
+    // everything it did to the Program, as Julia leaves nothing of an input
+    // that fails to parse. Its diagnostics stay.
+    Program::EntryTransaction entry(*prog);
     if ( !prog->parse_entry(text, name) )
-	return refuse();
+	return false;
     // Running the entry's init is a host-call boundary, like main() in
     // madc_cir_execute: runtime services inherit the Program's policy.
     prog->push_runtime_scope();
-    bool linked = false;
     bool ok = false;
     try
     {
-	linked = jit->append(prog.get(), prog->intern_file(name));
+	bool linked = jit->append(prog.get(), prog->intern_file(name));
+	// Linked, its definitions are live whatever its run does next.
+	if ( linked )
+	    entry.commit();
 	ok = linked && run_entry();
     }
     catch (...)
     {
 	prog->pop_runtime_scope();
-	if ( !linked )
-	    refuse();
 	throw;
     }
     prog->pop_runtime_scope();
-    return linked ? ok : refuse();
-}
-
-// A refused entry (its parse, its translation or its link): none of its
-// definitions is live, and no later module defines one (plan §41.3).
-bool InteractiveSession::refuse()
-{
-    prog->withhold_entry_definitions();
-    return false;
+    return ok;
 }
 
 // The entry's run (D25): its statements, in source order, lowered into the

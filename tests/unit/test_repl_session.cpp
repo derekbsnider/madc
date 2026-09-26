@@ -143,7 +143,7 @@ TEST_CASE("an entry with a statement that does not compile runs none of it")
 // The entry transaction's JIT half (plan §41.3). An entry whose module cannot
 // link is refused before it loads, with the linker's diagnostic, and the live
 // context stays as the earlier entries left it. The refused entry's run and
-// global are not live, and no later module defines them. The failed module
+// global are not live, and its Program half rolls them back. The failed module
 // used to stay loaded, so every later entry was refused, with no diagnostic.
 // Oracle: clang-repl-18 and -20 (tmp/repl/s2b/linkfail.repl) report "Symbols
 // not found: [ _Z1fv ]" and go on; a later `int k = 3;` gives 3, and once f
@@ -204,6 +204,8 @@ TEST_CASE("every submitted entry has its own number, a refused one's included")
 // entry's module defined them itself: a function written before a parse
 // error came alive there, and a C global whose initializer c2mir refuses
 // (gcc: "initializer element is not constant") refused every later entry.
+// The Program rolls the refused entry back, so a corrected h is h's first
+// definition.
 TEST_CASE("a refused entry's definitions never come alive later (§41.3)")
 {
     InteractiveSession s;
@@ -219,7 +221,135 @@ TEST_CASE("a refused entry's definitions never come alive later (§41.3)")
     CHECK(s.function("h") == (void *)NULL);
     CHECK(s.data("r") == (void *)NULL);
     CHECK(s.entries() == 2);
+
+    REQUIRE(s.submit("int h(void) { return 2; }"));
+    REQUIRE(s.submit("int r = 0;\nr = h() + f();"));
+    CHECK(*(int *)s.data("r") == 9);
 }
+
+// A refused entry is one unit (plan §41.3): whatever refused it (its parse,
+// its translation or its link), nothing it declared or defined is left
+// behind. A later entry may declare the same name again, as another kind,
+// and a corrected definition is not a redefinition. Julia leaves nothing of
+// an input that fails to parse, and cling rolls a refused input back whole;
+// cling gives these values (tmp/repl/s4/rb.repl, inplace.repl). clang-repl-20
+// rolls declarations back too, but keeps a refused macro and include guard,
+// leaves a rolled-back namespace's symbol behind ("definition with same
+// mangled name"), drops the earlier declaration a refused definition named,
+// and keeps a refused out-of-line member defined; madc copies none of that.
+namespace {
+
+struct RollbackCase
+{
+    const char *setup;		// an earlier, accepted entry ("" for none)
+    const char *refused;	// declares or defines, then is refused
+    const char *again;		// valid only if the refused entry left nothing
+    const char *check;		// sets the global `k`
+    int want;
+};
+
+void check_rollback(const std::string &std_option, const RollbackCase &c)
+{
+    CAPTURE(std_option);
+    CAPTURE(c.refused);
+    InteractiveSession s;
+    REQUIRE(s.begin(std_option));
+    if ( *c.setup )
+	REQUIRE(s.submit(c.setup));
+    CHECK_FALSE(s.submit(c.refused));
+    CHECK(first_error_diagnostic(s) != (const ::Program::Diagnostic *)NULL);
+    CHECK(s.submit(c.again));
+    CAPTURE(first_error(s));
+    REQUIRE(s.submit(c.check));
+    int *k = (int *)s.data("k");
+    REQUIRE(k != (int *)NULL);
+    CHECK(*k == c.want);
+}
+
+} // namespace
+
+TEST_CASE("a refused entry leaves nothing behind (§41.3)")
+{
+    static const RollbackCase cxx[] = {
+	{ "", "int z = 1; int bad = undeclared_a; int w = 2;",
+	  "double z = 2.5; int w = 3;", "int k = (int)(z * 2) + w;", 8 },
+	{ "", "int h() { return 1; } int bad = undeclared_b;",
+	  "double h = 2.0;", "int k = (int)h;", 2 },
+	{ "", "struct P { int x; }; int bad = undeclared_c;",
+	  "struct P { double y; };", "int k = sizeof(P);", 8 },
+	{ "struct F;", "struct F { int a; }; int bad = undeclared_d;",
+	  "struct F { double a, b; };", "int k = sizeof(F);", 16 },
+	{ "", "namespace Q { int v = 1; } int bad = undeclared_e;",
+	  "namespace Q { double v = 2.5; }", "int k = (int)(Q::v * 2);", 5 },
+	{ "", "template<class T> T id(T x) { return x; } int bad = undeclared_f;",
+	  "int id = 3;", "int k = id;", 3 },
+	{ "", "template<class T> struct Box { T v; }; int bad = undeclared_g;",
+	  "int Box = 4;", "int k = Box;", 4 },
+	{ "", "enum E { A, B }; int bad = undeclared_h;",
+	  "int A = 5;", "int k = A;", 5 },
+	{ "", "typedef int T1; int bad = undeclared_i;",
+	  "double T1 = 1.5;", "int k = (int)(T1 * 2);", 3 },
+	{ "", "using U1 = long; int bad = undeclared_j;",
+	  "double U1 = 1.5;", "int k = (int)(U1 * 2);", 3 },
+	{ "", "#define N 4\nint bad = undeclared_k;",
+	  "int N = 9;", "int k = N;", 9 },
+	{ "", "#include <climits>\nint bad = undeclared_l;",
+	  "#include <climits>\nint lim = INT_MAX > 0;", "int k = lim;", 1 },
+	{ "int decl_only();", "int decl_only() { return 3; } int bad = undeclared_m;",
+	  "int decl_only() { return 4; }", "int k = decl_only();", 4 },
+	{ "struct S { int f(); static int count; };",
+	  "int S::f() { return 2; } int S::count = 1; int bad = undeclared_n;",
+	  "int S::f() { return 5; } int S::count = 6;",
+	  "int k = S().f() + S::count;", 11 },
+	{ "int ov(int a) { return a; }",
+	  "double ov(double a) { return a * 2; } int bad = undeclared_o;",
+	  "double ov(double a) { return a * 3; }", "int k = (int)(ov(1.5) * 2);", 9 },
+	{ "extern int ev;", "int ev = 7; int bad = undeclared_p;",
+	  "int ev = 8;", "int k = ev;", 8 },
+	{ "", "auto lam = [](int a) { return a + 1; }; int bad = undeclared_q;",
+	  "int lam = 6;", "int k = lam;", 6 },
+	// Each instantiation is a class journal of its own, nested in the
+	// entry's: committed into it, then rolled back with it.
+	{ "template<class T> struct Pair { T a; T b; };",
+	  "Pair<int> pa; Pair<double> pb; Pair<char> pc; int bad = undeclared_r;",
+	  "Pair<char> pd; double pa = 1.5;",
+	  "int k = (int)sizeof(Pair<char>) + (int)(pa * 2);", 5 },
+	// Refused at its link: f is declared, never defined.
+	{ "int f(void);", "int lz = 5;\nf();",
+	  "double lz = 1.5;", "int k = (int)(lz * 2);", 3 },
+    };
+    for ( size_t i = 0; i < sizeof(cxx) / sizeof(cxx[0]); ++i )
+	check_rollback("--std=c++17", cxx[i]);
+
+    // C's file-scope initializers are constant: a check that reads a global
+    // assigns it in the entry's run.
+    static const RollbackCase c[] = {
+	{ "", "int z = 1; int bad = undeclared_a; int w = 2;",
+	  "double z = 2.5; int w = 3;", "int k = 0;\nk = (int)(z * 2) + w;", 8 },
+	{ "", "int h(void) { return 1; } int bad = undeclared_b;",
+	  "double h = 2.0;", "int k = 0;\nk = (int)h;", 2 },
+	{ "", "struct P { int x; }; int bad = undeclared_c;",
+	  "struct P { double y; };", "int k = sizeof(struct P);", 8 },
+	{ "struct F;", "struct F { int a; }; int bad = undeclared_d;",
+	  "struct F { double a, b; };", "int k = sizeof(struct F);", 16 },
+	{ "", "enum E { A, B }; int bad = undeclared_h;",
+	  "int A = 5;", "int k = 0;\nk = A;", 5 },
+	{ "", "typedef int T1; int bad = undeclared_i;",
+	  "double T1 = 1.5;", "int k = 0;\nk = (int)(T1 * 2);", 3 },
+	{ "", "#define N 4\nint bad = undeclared_k;",
+	  "int N = 9;", "int k = 0;\nk = N;", 9 },
+	{ "", "#include <limits.h>\nint bad = undeclared_l;",
+	  "#include <limits.h>\nint lim = INT_MAX > 0;", "int k = 0;\nk = lim;", 1 },
+	{ "int decl_only(void);",
+	  "int decl_only(void) { return 3; } int bad = undeclared_m;",
+	  "int decl_only(void) { return 4; }", "int k = 0;\nk = decl_only();", 4 },
+	{ "extern int ev;", "int ev = 7; int bad = undeclared_p;",
+	  "int ev = 8;", "int k = 0;\nk = ev;", 8 },
+    };
+    for ( size_t i = 0; i < sizeof(c) / sizeof(c[0]); ++i )
+	check_rollback("--std=c17", c[i]);
+}
+
 
 // C89's call of an undeclared function is an implicit declaration: the entry
 // is refused at link, as clang-repl-20 -xc -std=c89 refuses it ("Symbols not

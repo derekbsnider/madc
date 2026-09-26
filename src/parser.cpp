@@ -29814,6 +29814,7 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const std::str
     Variable *prior = _inst_depth > 0 ? NULL : same_scope_object(code, id);
     if ( prior )
     {
+	journal_entity(prior);	// a redeclaration may define it in place
 	if ( code && code != tkProgram )
 	{
 	    // A block-scope object without linkage: one declaration per block.
@@ -34138,12 +34139,22 @@ struct Program::ClassRegistrationJournal::State
 };
 
 Program::ClassRegistrationJournal::ClassRegistrationJournal(
-	Program &p, bool isolate_registration_side_effects)
-    : pgm(p), state(NULL), finished(false), outermost(false)
+	Program &p, bool isolate_registration_side_effects, Role r)
+    : pgm(p), state(NULL), finished(false), recording(false), role(r),
+      enclosing(NULL)
 {
-    outermost = pgm.class_registration_journal_depth++ == 0;
-    if ( !outermost )
+    if ( role == Role::Entry )
+    {
+	// An entry's journal is opened between entries, never inside one.
+	assert(!pgm.active_class_registration_journal
+	    && pgm.class_registration_journal_depth == 0);
+	recording = true;
+    }
+    else
+	recording = pgm.class_registration_journal_depth++ == 0;
+    if ( !recording )
 	return;
+    enclosing = pgm.active_class_registration_journal;
     try
     {
 	state = new State(p,
@@ -34151,7 +34162,8 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(
     }
     catch ( ... )
     {
-	--pgm.class_registration_journal_depth;
+	if ( role == Role::Class )
+	    --pgm.class_registration_journal_depth;
 	throw;
     }
     pgm.datatype_map.begin_transaction(state->datatype_map);
@@ -34216,7 +34228,7 @@ Program::ClassRegistrationJournal::~ClassRegistrationJournal()
 void Program::ClassRegistrationJournal::record_type_alias_write(
 	DataDefCLASS *owner, const std::string &name)
 {
-    if ( !outermost || !state || !owner )
+    if ( !recording || !state || !owner )
 	return;
     std::pair<DataDefCLASS *, std::string> key(owner, name);
     if ( !state->touched_type_aliases.insert(key).second )
@@ -34235,7 +34247,7 @@ variable_map_t &Program::ClassRegistrationJournal::namespace_for_write(
     // actually mutates them. A namespace created inside the journal can be
     // removed wholesale, so it needs no inner transaction.
     namespace_map_t::iterator current = pgm.namespace_map.find(name);
-    if ( !outermost || !state )
+    if ( !recording || !state )
 	return current == pgm.namespace_map.end()
 	     ? pgm.namespace_map[name] : current->second;
     if ( current == pgm.namespace_map.end() )
@@ -34250,6 +34262,10 @@ variable_map_t &Program::ClassRegistrationJournal::namespace_for_write(
 	state->namespace_map_transactions.find(name);
     if ( transaction == state->namespace_map_transactions.end() )
     {
+	// The enclosing journal records the namespace first, so this
+	// journal's transaction on its map nests in the enclosing one's.
+	if ( enclosing )
+	    enclosing->namespace_for_write(name);
 	transaction = state->namespace_map_transactions.insert(std::make_pair(
 	    name, variable_map_t::transaction_state())).first;
 	current->second.begin_transaction(transaction->second);
@@ -34263,7 +34279,7 @@ Program::ClassRegistrationJournal::class_template_variants_for_write(
 {
     madc::dis::intern_keyed_map<template_registry_entry_t> &registry =
 	partial ? pgm.partial_spec_map : pgm.template_map;
-    if ( !outermost || !state )
+    if ( !recording || !state )
 	return registry[name_id].for_write(owner);
 
     madc::dis::intern_keyed_map<template_registry_entry_t>::transaction_state
@@ -34316,7 +34332,7 @@ std::vector<Program::TemplateAliasDef> &
 Program::ClassRegistrationJournal::alias_template_variants_for_write(
 	uint32_t name_id, DataDefCLASS *owner)
 {
-    if ( !outermost || !state )
+    if ( !recording || !state )
 	return pgm.template_alias_map[name_id].for_write(owner);
 
     const template_alias_registry_entry_t *existing =
@@ -34393,7 +34409,7 @@ DataDef *Program::ClassRegistrationJournal::find_class_pattern_resolution(
 	uint32_t namespace_id, DataDefCLASS *owner,
 	const std::vector<DataDef *> &arguments) const
 {
-    if ( !outermost || !state )
+    if ( !recording || !state )
 	return NULL;
     for ( size_t i = state->class_pattern_resolutions.size(); i-- > 0; )
     {
@@ -34406,7 +34422,9 @@ DataDef *Program::ClassRegistrationJournal::find_class_pattern_resolution(
 	  && pending.second.arguments == arguments )
 	    return pending.second.result;
     }
-    return NULL;
+    // The entry's journal holds what the entry resolved before this one began.
+    return enclosing ? enclosing->find_class_pattern_resolution(resolution_hash,
+	kind, name_id, namespace_id, owner, arguments) : NULL;
 }
 
 void Program::ClassRegistrationJournal::record_class_pattern_resolution(
@@ -34414,7 +34432,7 @@ void Program::ClassRegistrationJournal::record_class_pattern_resolution(
 	uint32_t namespace_id, DataDefCLASS *owner,
 	const std::vector<DataDef *> &arguments, DataDef *result)
 {
-    if ( !outermost || !state || !result )
+    if ( !recording || !state || !result )
 	return;
     if ( find_class_pattern_resolution(resolution_hash, kind, name_id,
 	    namespace_id, owner, arguments) )
@@ -34426,7 +34444,7 @@ void Program::ClassRegistrationJournal::record_class_pattern_resolution(
 
 void Program::ClassRegistrationJournal::publish_class_pattern_resolutions()
 {
-    if ( !outermost || !state || !finished )
+    if ( !recording || !state || !finished )
 	return;
     for ( size_t i = 0; i < state->class_pattern_resolutions.size(); ++i )
     {
@@ -34508,7 +34526,7 @@ void Program::ClassRegistrationJournal::commit()
 {
     if ( finished )
 	return;
-    if ( !outermost )
+    if ( !recording )
     {
 	--pgm.class_registration_journal_depth;
 	finished = true;
@@ -34574,8 +34592,64 @@ void Program::ClassRegistrationJournal::commit()
 	pgm.forest_arena.strings.commit_transaction(state->forest_strings);
     pgm.class_registration_taps_muted = state->taps_muted;
     pgm.forest_arena_enabled = state->forest_arena_enabled;
-    pgm.active_class_registration_journal = NULL;
-    --pgm.class_registration_journal_depth;
+    if ( enclosing )
+	hand_to_enclosing();
+    finish();
+}
+
+// A committed journal nested in an entry's: the registries' own transactions
+// already handed their first writes on (they nest); what this journal saved
+// itself goes to the entry's journal, which keeps an older save of its own
+// and never restores inside what it will remove whole (a key it inserted).
+void Program::ClassRegistrationJournal::hand_to_enclosing()
+{
+    State &outer = *enclosing->state;
+    for ( size_t i = 0; i < state->class_template_variants.size(); ++i )
+    {
+	const State::SavedClassTemplateVariants &saved =
+	    state->class_template_variants[i];
+	const std::set<uint32_t> &inserted = saved.partial
+	    ? outer.inserted_partial_ids : outer.inserted_template_ids;
+	std::set<std::pair<uint32_t, DataDefCLASS *> > &touched = saved.partial
+	    ? outer.touched_partial_variants : outer.touched_template_variants;
+	if ( !inserted.count(saved.name_id)
+	  && touched.insert(std::make_pair(saved.name_id, saved.owner)).second )
+	    outer.class_template_variants.push_back(saved);
+    }
+    for ( size_t i = 0; i < state->alias_template_variants.size(); ++i )
+    {
+	const State::SavedAliasTemplateVariants &saved =
+	    state->alias_template_variants[i];
+	if ( !outer.inserted_alias_ids.count(saved.name_id)
+	  && outer.touched_alias_variants.insert(
+		std::make_pair(saved.name_id, saved.owner)).second )
+	    outer.alias_template_variants.push_back(saved);
+    }
+    outer.inserted_template_ids.insert(state->inserted_template_ids.begin(),
+				       state->inserted_template_ids.end());
+    outer.inserted_partial_ids.insert(state->inserted_partial_ids.begin(),
+				      state->inserted_partial_ids.end());
+    outer.inserted_alias_ids.insert(state->inserted_alias_ids.begin(),
+				    state->inserted_alias_ids.end());
+    for ( size_t i = 0; i < state->type_aliases.size(); ++i )
+    {
+	const State::SavedTypeAlias &saved = state->type_aliases[i];
+	if ( outer.touched_type_aliases.insert(
+		std::make_pair(saved.owner, saved.name)).second )
+	    outer.type_aliases.push_back(saved);
+    }
+    outer.inserted_namespace_map_keys.insert(
+	state->inserted_namespace_map_keys.begin(),
+	state->inserted_namespace_map_keys.end());
+}
+
+// The journal is done: the entry's journal, if one is open, is the active one
+// again.
+void Program::ClassRegistrationJournal::finish()
+{
+    pgm.active_class_registration_journal = enclosing;
+    if ( role == Role::Class )
+	--pgm.class_registration_journal_depth;
     finished = true;
 }
 
@@ -34583,7 +34657,7 @@ void Program::ClassRegistrationJournal::rollback()
 {
     if ( finished )
 	return;
-    if ( !outermost )
+    if ( !recording )
     {
 	--pgm.class_registration_journal_depth;
 	finished = true;
@@ -34768,9 +34842,7 @@ void Program::ClassRegistrationJournal::rollback()
     vla_dim_capture_counter = state->vla_dim_capture_counter_value;
     anon_tag_counter = state->anon_tag_counter_value;
     lambda_counter = state->lambda_counter_value;
-    pgm.active_class_registration_journal = NULL;
-    --pgm.class_registration_journal_depth;
-    finished = true;
+    finish();
 }
 
 namespace {
@@ -46018,6 +46090,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 							      tag->spelling());
 	if ( prior )
 	{
+	    pgm.journal_entity(prior);	// the definition completes it in place
 	    if ( dds->struct_is_final )
 		prior->struct_is_final = true;
 	    prior->definition_origin = dds->definition_origin;
@@ -49919,6 +49992,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	  && fwd->methods.empty() && fwd->ctors.empty()
 	  && fwd->bases.empty() )
 	{
+	    pgm.journal_entity(fwd);	// the definition completes it in place
 	    ddc = fwd;
 	    completing_forward_decl = true;
 	}
@@ -69572,6 +69646,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	func = fmi->second;
 	func_already_declared = true;
+	journal_entity(func);	// a definition fills the declaration in place
 	// A MACHINE-registered FuncDef (builtin_registry, host embedding,
 	// dlsym namespace mint) is replaced WHOLESALE by an explicit source
 	// (re)declaration — gcc canon: an explicit prototype replaces a
@@ -77823,15 +77898,12 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     entry_end_token = NULL;
     entry_final_semicolon_omitted = false;
     entry_if_extendable = false;
-    size_t decls_before = entry_decls_begin = entry_decls_end = top_decls.size();
-    size_t funcs_before = entry_funcs_begin = entry_funcs_end = pending_funcs.size();
+    size_t decls_before = top_decls.size();
+    size_t funcs_before = pending_funcs.size();
     if ( !lex_entry(text, display_name) )
 	return false;
     register_included_lazy_surfaces();
-    bool parsed = parse_toplevel(tkProgram);
-    entry_decls_end = top_decls.size();
-    entry_funcs_end = pending_funcs.size();
-    if ( !parsed || has_error_diagnostic() )
+    if ( !parse_toplevel(tkProgram) || has_error_diagnostic() )
 	return false;
     for ( size_t i = decls_before; i < top_decls.size(); ++i )
     {
@@ -77864,40 +77936,169 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     {
 	ast.push_back(entry_function);
 	pending_funcs.push_back(entry_function);
-	entry_funcs_end = pending_funcs.size();
 	entry_function_name = entry_function->var.name;
     }
     return true;
 }
 
-// A refused entry's definitions (plan §41.3): the ones written in the entry
-// itself (an included header's stay, as its include does), with external
-// linkage (an internal-linkage copy is any module's own) and not vague (any
-// module may define a linkonce copy). No later module defines them again;
-// session_withheld says why.
-void Program::withhold_entry_definitions()
+// An entry's transaction (plan §41.3). Beside its registration journal it
+// keeps what only a whole unit changes: the two macro tables (large, so
+// journaled like the registries) and the include and lookup bookkeeping (a
+// few entries each, so saved whole).
+struct Program::EntryTransaction::State
 {
-    for ( size_t i = entry_decls_begin; i < entry_decls_end && i < top_decls.size(); ++i )
+    madc::dis::intern_keyed_map<std::string>::transaction_state defines;
+    madc::dis::intern_keyed_map<MacroDef>::transaction_state macros;
+    std::map<std::string, bool> included_files;
+    std::map<std::string, std::string> include_guard_by_file;
+    std::set<std::string> forest_live_tokenized;
+    std::map<std::string, LazyEntry> lazy_map;
+    std::map<std::string, std::stack<std::string> > macro_save_stack;
+    std::vector<std::string> active_using_namespaces;
+    std::map<std::string, std::vector<std::string> > inline_namespace_children;
+    bool include_iostream, include_stdio, include_string, include_ns_madc;
+    // Entities changed in place, each saved (a copy) at its first change.
+    // A saved Variable never owns its storage: the live one does.
+    std::vector<std::pair<Variable *, Variable *> > variables;
+    std::vector<unsigned> variable_alloc;
+    std::vector<std::pair<DataDefSTRUCT *, DataDefSTRUCT *> > aggregates;
+    std::vector<std::pair<FuncDef *, FuncDef *> > functions;
+    std::set<const void *> saved_entities;
+
+    explicit State(const Program &p)
+	: included_files(p.included_files),
+	  include_guard_by_file(p.include_guard_by_file),
+	  forest_live_tokenized(p.forest_live_tokenized),
+	  lazy_map(p.lazy_map), macro_save_stack(p._macro_save_stack),
+	  active_using_namespaces(p.active_using_namespaces),
+	  inline_namespace_children(p.inline_namespace_children),
+	  include_iostream(p._include_iostream), include_stdio(p._include_stdio),
+	  include_string(p._include_string), include_ns_madc(p._include_ns_madc)
     {
-	const TopDecl &td = top_decls[i];
-	if ( td.kind != DeclKind::dkGlobalVar || !td.var
-	  || (td.var->flags & (vfEXTERN | vfSTATIC | vfLINKONCE)) )
-	    continue;
-	// A NULL origin carries its position in file/line.
-	bool in_entry = td.origin ? token_is_tu_origin(td.origin)
-	    : (!td.file || tkProgram->source == td.file);
-	if ( in_entry )
-	    session_withheld.insert(td.var);
     }
-    for ( size_t i = entry_funcs_begin; i < entry_funcs_end && i < pending_funcs.size(); ++i )
+
+    ~State()
     {
-	TokenFunc *tf = pending_funcs[i] ? pending_funcs[i]->as_func_tok() : NULL;
-	FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
-	if ( !tf || !fd || fd->internal_linkage || fd->is_linkonce()
-	  || !token_is_tu_origin(tf) )
-	    continue;
-	session_withheld.insert(&tf->var);
+	for ( size_t i = 0; i < variables.size(); ++i )
+	    delete variables[i].second;
+	for ( size_t i = 0; i < aggregates.size(); ++i )
+	    delete aggregates[i].second;
+	for ( size_t i = 0; i < functions.size(); ++i )
+	    delete functions[i].second;
     }
+
+    // Undo in-place changes, latest first. An aggregate is restored as its
+    // own class: a struct's definition completes a DataDefSTRUCT, a class's
+    // a DataDefCLASS.
+    void restore_entities() const
+    {
+	for ( size_t i = aggregates.size(); i-- > 0; )
+	{
+	    DataDefCLASS *live = dynamic_cast<DataDefCLASS *>(aggregates[i].first);
+	    if ( live )
+		*live = *static_cast<DataDefCLASS *>(aggregates[i].second);
+	    else
+		*aggregates[i].first = *aggregates[i].second;
+	}
+	for ( size_t i = variables.size(); i-- > 0; )
+	{
+	    *variables[i].first = *variables[i].second;
+	    variables[i].first->flags |= variable_alloc[i];
+	}
+	// A FuncDef has no copy-assignment: its return type is a reference,
+	// and a definition never reseats it (another return type gets a fresh
+	// FuncDef). So the saved copy is copy-constructed back in place, onto
+	// the same referent.
+	for ( size_t i = functions.size(); i-- > 0; )
+	{
+	    FuncDef *live = functions[i].first;
+	    assert(&live->returns == &functions[i].second->returns);
+	    live->~FuncDef();
+	    new (live) FuncDef(*functions[i].second);
+	}
+    }
+
+    void restore(Program &p) const
+    {
+	p.included_files = included_files;
+	p.include_guard_by_file = include_guard_by_file;
+	p.forest_live_tokenized = forest_live_tokenized;
+	p.lazy_map = lazy_map;
+	p._macro_save_stack = macro_save_stack;
+	p.active_using_namespaces = active_using_namespaces;
+	p.inline_namespace_children = inline_namespace_children;
+	p._include_iostream = include_iostream;
+	p._include_stdio = include_stdio;
+	p._include_string = include_string;
+	p._include_ns_madc = include_ns_madc;
+    }
+};
+
+Program::EntryTransaction::EntryTransaction(Program &p)
+    : pgm(p), registrations(p, false, ClassRegistrationJournal::Role::Entry),
+      state(new State(p)), finished(false)
+{
+    assert(!pgm.active_entry_transaction);
+    pgm.define_map.begin_transaction(state->defines);
+    pgm.macro_map.begin_transaction(state->macros);
+    pgm.active_entry_transaction = this;
+}
+
+Program::EntryTransaction::~EntryTransaction()
+{
+    if ( !finished )
+	rollback();
+    delete state;
+}
+
+void Program::EntryTransaction::commit()
+{
+    if ( finished )
+	return;
+    registrations.commit();
+    registrations.publish_class_pattern_resolutions();
+    pgm.define_map.commit_transaction(state->defines);
+    pgm.macro_map.commit_transaction(state->macros);
+    pgm.active_entry_transaction = NULL;
+    finished = true;
+}
+
+void Program::EntryTransaction::save_entity(Variable *v)
+{
+    if ( !state->saved_entities.insert(v).second )
+	return;
+    Variable *copy = new Variable(*v);
+    state->variable_alloc.push_back(copy->flags & vfALLOC);
+    copy->flags &= ~vfALLOC;
+    state->variables.push_back(std::make_pair(v, copy));
+}
+
+void Program::EntryTransaction::save_entity(DataDefSTRUCT *agg)
+{
+    if ( !state->saved_entities.insert(agg).second )
+	return;
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(agg);
+    DataDefSTRUCT *copy = cls ? new DataDefCLASS(*cls) : new DataDefSTRUCT(*agg);
+    state->aggregates.push_back(std::make_pair(agg, copy));
+}
+
+void Program::EntryTransaction::save_entity(FuncDef *fd)
+{
+    if ( state->saved_entities.insert(fd).second )
+	state->functions.push_back(std::make_pair(fd, new FuncDef(*fd)));
+}
+
+void Program::EntryTransaction::rollback()
+{
+    if ( finished )
+	return;
+    state->restore_entities();
+    registrations.rollback();
+    pgm.define_map.rollback_transaction(state->defines);
+    pgm.macro_map.rollback_transaction(state->macros);
+    state->restore(pgm);
+    pgm.active_entry_transaction = NULL;
+    finished = true;
 }
 
 TokenBase *Program::parse_expression_unit(TokenProgram *tp)

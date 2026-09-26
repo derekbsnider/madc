@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### A refused entry leaves nothing behind
+
+In the interactive session, an entry that was refused (by its parse, its
+translation or its link) kept everything it had declared. After a refused
+`int h() { return 1; } int x = ;`, `h` was still declared, so a corrected
+`int h() { return 2; }` was a redefinition. The same held for its types,
+macros, includes and namespaces. A refused `#define N 4` still expanded, a
+refused `struct F { int a; };` stayed the definition of an earlier
+`struct F;`, and a refused `int S::count = 1;` left `S::count` defined but
+emitted nowhere, so every later use failed to compile.
+
+Each entry now runs inside a transaction on the Program. It commits once the
+entry's module links and rolls back on any refusal. The rollback covers:
+- the registries (types, functions, templates, overloads, namespaces,
+  aliases);
+- the macro tables and the include bookkeeping, including the include
+  guards;
+- every entity a definition had changed in place (an earlier declaration's
+  object, function or forward-declared aggregate).
+
+The class journals opened inside an entry nest in its transaction, because
+each registry's transactions now nest. This follows Julia, which leaves
+nothing behind for an input that fails to parse. cling gives the same values
+on these inputs (`dv=4`, `ovd=4.5`, `sf=16`, `ev=8`). clang-repl-20 keeps a
+refused macro and include guard, breaks a rolled-back namespace and keeps a
+refused out-of-line member, and madc copies none of that. This replaces the
+scaffolding that kept a refused entry's definitions out of later modules
+(`session_withheld`).
+
+Test: `test_repl_session`, under C++17 and C17.
+
 ### An entry emits an inline body only where it is used
 
 In the interactive session, `struct S { static int count; static int bump()

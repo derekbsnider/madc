@@ -3673,18 +3673,33 @@ public:
     // parser once, so all temporary registrations must roll back as one unit.
     // The implementation journals first writes behind this small RAII handle;
     // B1 activates it around pattern capture.
+    //
+    // In its Entry role it is an interactive entry's journal (plan §41.3,
+    // EntryTransaction): it records like an outermost journal but is not
+    // counted in class_registration_journal_depth, so the class journals
+    // opened inside the entry behave as in a file. The outermost of them
+    // NESTS in it: its registry transactions nest in the entry's, and its
+    // commit hands its first writes to the entry's journal.
     class ClassRegistrationJournal
     {
+    public:
+	enum class Role : unsigned char { Class, Entry };
+    private:
 	struct State;
 	Program &pgm;
 	State *state;
 	bool finished;
-	bool outermost;
+	bool recording;		// the outermost class journal, or an entry's
+	Role role;
+	ClassRegistrationJournal *enclosing;	// the entry's, while one is open
 	ClassRegistrationJournal(const ClassRegistrationJournal &);
 	ClassRegistrationJournal &operator=(const ClassRegistrationJournal &);
+	void hand_to_enclosing();
+	void finish();
     public:
 	explicit ClassRegistrationJournal(Program &p,
-		bool isolate_registration_side_effects = true);
+		bool isolate_registration_side_effects = true,
+		Role role = Role::Class);
 	~ClassRegistrationJournal();
 	void commit();
 	void rollback();
@@ -3706,6 +3721,45 @@ public:
 	void publish_class_pattern_resolutions();
     };
     ClassRegistrationJournal *active_class_registration_journal = NULL;
+    // One interactive entry, as a unit (plan §41.3): what the entry did to
+    // the Program from its lex to its link is kept (commit) or undone
+    // (rollback; the destructor's, for an entry never committed). A refused
+    // entry leaves nothing behind: no symbol, type, overload, macro or
+    // include, and no definition of what an earlier entry declared. The
+    // registries a class body can write are the class journal's, in its
+    // Entry role; the rest is what only a whole unit changes. Used only by
+    // the interactive session (one thread, one entry at a time).
+    class EntryTransaction
+    {
+	struct State;
+	Program &pgm;
+	ClassRegistrationJournal registrations;
+	State *state;
+	bool finished;
+	EntryTransaction(const EntryTransaction &);
+	EntryTransaction &operator=(const EntryTransaction &);
+    public:
+	explicit EntryTransaction(Program &p);
+	~EntryTransaction();
+	void commit();
+	void rollback();
+	void save_entity(Variable *v);
+	void save_entity(DataDefSTRUCT *agg);
+	void save_entity(FuncDef *fd);
+    };
+    EntryTransaction *active_entry_transaction = NULL;
+    // An entity a definition is about to change in place: an earlier
+    // declaration's object (`extern int x;` then `int x = 1;`, a static
+    // member's out-of-line definition), its function (C's `int f(void);`
+    // then its body), or the aggregate a `struct F;` declared, which its
+    // definition completes. In an interactive entry the entry's transaction
+    // saves it at its first change; elsewhere a no-op.
+    void journal_entity(Variable *v)
+    { if ( active_entry_transaction && v ) active_entry_transaction->save_entity(v); }
+    void journal_entity(DataDefSTRUCT *agg)
+    { if ( active_entry_transaction && agg ) active_entry_transaction->save_entity(agg); }
+    void journal_entity(FuncDef *fd)
+    { if ( active_entry_transaction && fd ) active_entry_transaction->save_entity(fd); }
     variable_map_t &namespace_variables_for_write(const std::string &name);
     DataDef *find_class_pattern_resolution(uint64_t resolution_hash,
 	uint8_t kind, uint32_t name_id, uint32_t namespace_id,
@@ -5929,16 +5983,6 @@ public:
     // Unlike mir_cache_exports, where the consumer module wins every overlap,
     // here the earlier module does.
     std::set<std::string> session_defined;
-    // The definitions a REFUSED entry of the session parsed (plan §41.3):
-    // its functions (TokenFunc::var) and file-scope objects, the vague-
-    // linkage ones excepted. No later module defines one: the entry owns it
-    // and is not live, and re-emitting a body that did not compile or link
-    // refuses every later entry for the same reason. A later module declares
-    // it, so a use of it is refused naming it. A linkonce definition is not
-    // withheld: any module may define its own copy.
-    // Scaffolding for §41.3's Program rollback, which deletes it: a rolled-
-    // back entry leaves no definition behind to withhold.
-    std::set<const Variable *> session_withheld;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
@@ -6908,15 +6952,6 @@ public:
     TokenFunc *entry_function = NULL;
     unsigned entry_function_serial = 0;
     std::string entry_function_name;
-    // What the last entry's parse added to top_decls and pending_funcs:
-    // [begin, end) of each, its run included. Translation appends past the
-    // end (instantiations), and those are not the entry's own.
-    size_t entry_decls_begin = 0, entry_decls_end = 0;
-    size_t entry_funcs_begin = 0, entry_funcs_end = 0;
-    // The last entry was refused (by its parse, its translation or its
-    // link): withhold its definitions from every later module
-    // (session_withheld).
-    void withhold_entry_definitions();
     TokenFunc *ensure_entry_function(TokenBase *loc);
     void adopt_entry_statement(TokenBase *ts, TokenBase *head);
     void place_entry_initializers(size_t decls_before);
