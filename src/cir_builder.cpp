@@ -31862,6 +31862,11 @@ bool CirBuilder::session_defines(const std::string &sym) const
 	return m_prog && m_prog->session_defined.count(sym) != 0;
 }
 
+bool CirBuilder::session_awaits(const std::string &sym) const
+{
+	return m_prog && m_prog->session_awaited.count(sym) != 0;
+}
+
 // Plan §42 D27, slice 2: does this interactive entry's code read V through a
 // session cell? V is an object with static storage that an entry declared
 // (`extern int x;`, a class's static data member) and that nothing defines:
@@ -32381,6 +32386,12 @@ node_t CirBuilder::translate_module(Program *prog)
 		// 'S::count'"). A file is whole, so its bodies stay roots.
 		bool on_use = sys || (tfd && tfd->is_linkonce()
 				      && prog->interactive_entry());
+		// Plan §42 D27: an earlier entry calls it through a stub, so the
+		// entry that defines it emits it, and the body replaces the stub.
+		// That is Julia's late binding. clang-repl never emits a body its
+		// own input does not use, so the earlier call fails there.
+		if (on_use && session_awaits(func_emit_name(tf->var, tfd)))
+			on_use = false;
 		if (rs_probe && *rs_probe
 		    && tf->var.name.find(rs_probe) != std::string::npos)
 			fprintf(stderr, "ROOTSPLIT %s file=%s line=%d -> %s\n",

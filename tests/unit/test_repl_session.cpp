@@ -273,6 +273,19 @@ TEST_CASE("a function no entry defines yet is refused at its first use (D27)")
     REQUIRE(s.submit("inline int S::f() { return 3; }"));
     REQUIRE(s.submit("int ko = od(3) * 10 + od(4) + 100 * (S().f() + gs(S()));"));
     CHECK(*(int *)s.data("ko") == 610);
+
+    // An inline body a stub waits for is emitted by the entry that defines
+    // it, used there or not, as Julia's late binding reaches it. clang-repl-20
+    // fails gt(T()) ("Symbols not found: [ _ZN1T1fEv ]",
+    // tmp/repl/s5/d27i.repl): it emits no body its own input does not use.
+    REQUIRE(s.submit("struct T { int f(); };"));
+    REQUIRE(s.submit("int gt(T t) { return t.f(); }"));
+    REQUIRE(s.submit("inline int T::f() { return 4; }"));
+    REQUIRE(s.submit("int h3();"));
+    REQUIRE(s.submit("int c3() { return h3(); }"));
+    REQUIRE(s.submit("inline int h3() { return 8; }"));
+    REQUIRE(s.submit("int kt = gt(T()) + 10 * c3();"));
+    CHECK(*(int *)s.data("kt") == 84);
 }
 
 // D27, slice 2: code that names an object an entry declared and nothing

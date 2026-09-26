@@ -1800,6 +1800,12 @@ void CirJitSession::rebind_late_stubs(MIR_module_t m, Program *prog)
 	++it;
     }
     cir_active_host_regs = NULL;
+    // What the stubs still wait for: the builder emits such a function's
+    // inline body in the entry that defines it (Program::session_awaited).
+    prog->session_awaited.clear();
+    for (std::map<std::string, MIR_item_t>::const_iterator it = late_stubs.begin();
+	 it != late_stubs.end(); ++it)
+	prog->session_awaited.insert(it->first);
 }
 
 // The entry transaction's JIT half (plan §41.3). MIR_load_module and MIR_link

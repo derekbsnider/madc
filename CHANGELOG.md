@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### An inline definition reaches the calls that waited for it
+
+In the interactive session, a function first called through a stub (D27)
+and then defined `inline`, like `inline int T::f() { return 4; }` after
+`int gt(T t) { return t.f(); }`, still failed `gt(T())` with "undefined
+reference to 'T::f()'". An entry emits an inline body only where it uses it,
+and the defining entry did not use it. That entry now emits the body a stub
+waits for, and the body replaces the stub. This is Julia's late binding.
+clang-repl-20 fails `gt(T())` ("Symbols not found: [ _ZN1T1fEv ]") and the
+session does not copy that.
+
+Test: `test_repl_session`.
+
 ### An object no entry defines yet is refused at its first use
 
 In the interactive session, code that named an object an entry had declared

@@ -335,6 +335,10 @@ class CirBuilder {
 	// (Program::session_defined)? Such a definition is declared, never
 	// defined again: this module links to the live one.
 	bool session_defines(const std::string &sym) const;
+	// Plan §42 D27: does a session stub wait for the function `sym`
+	// (Program::session_awaited)? Its vague-linkage body is then emitted in
+	// the entry that defines it, used there or not.
+	bool session_awaits(const std::string &sym) const;
 	// Plan §42 D27, slice 2: code in an interactive entry reads an object that
 	// an entry declared and nothing defines yet through a session CELL, so a
 	// later definition is the object it reaches. late_bound_object is the

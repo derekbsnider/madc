@@ -5986,6 +5986,11 @@ public:
     // Unlike mir_cache_exports, where the consumer module wins every overlap,
     // here the earlier module does.
     std::set<std::string> session_defined;
+    // Plan §42 D27: functions an earlier module calls through a session stub
+    // because nothing defined them yet (by emitted name). The CIR builder
+    // emits such a function's vague-linkage body in the entry that defines
+    // it, whether or not that entry uses it, so the stub's callers reach it.
+    std::set<std::string> session_awaited;
     bool forest_decls_restored = false;	// one-shot decl-record restore (forest-global for now)
     // v13: file-scope globals restored from a bound header. forest_restore_decls
     // runs during lexer #include handling, BEFORE tkProgram exists, so the globals
