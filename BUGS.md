@@ -121,6 +121,32 @@ int f(void) { return 2; }
   loader must let a strong definition replace a weak one (D27 adds that
   rule, adopting the weak definition's address).
 
+### B26. A new-expression skips a class's default member initializers
+
+- Found 2026-09-26, while testing D27's stubs with a virtual function (the
+  session's `mk()->g()` gave 0). It fails in file mode too.
+
+```cpp
+#include <cstdio>
+struct A { int n = 3; };
+int main()
+{
+	A *a = new A;
+	A *b = new A();
+	A *c = new A{};
+	printf("%d %d %d\n", a->n, b->n, c->n);
+	return 0;
+}
+```
+
+- g++, clang++: `3 3 3`. madc `--std=c++17`: `0 0 0`, silently. `A s;` on
+  the stack gives 3, and so does a polymorphic class's stack object.
+- Where: not traced. A class with default member initializers and no
+  user-declared constructor has a non-trivial implicit default constructor
+  ([class.default.ctor]/3), and the new-expression must call it
+  ([expr.new]/22). The stack declaration's path applies the initializers,
+  and the new-expression's does not.
+
 ## Accepts invalid code
 
 ### B2. A stray top-level `}` is accepted
@@ -406,6 +432,30 @@ int call(void) { return get()(); }
   warning). Only a declaration that no definition follows is mistyped.
 - Where: not traced. The front end already mistypes it (the warning is
   parse time), and the builder's prototype follows.
+
+### B27. A function template defined after its first use is called by its bare name
+
+- Found 2026-09-26, while testing D27's stubs with a template declared in
+  one entry and defined in a later one.
+
+```cpp
+#include <cstdio>
+template<class T> T tf(T x);
+int u() { return tf(21); }
+template<class T> T tf(T x) { return x * 2; }
+int main() { printf("%d\n", u()); return 0; }
+```
+
+- g++, clang++: `42`. madc `--std=c++17`: `MIR error: import of undefined
+  item tf`. The call names the template, `tf`, where g++ names the
+  specialization, `_Z2tfIiET_S0_`, and instantiates it at the end of the TU
+  ([temp.point]/7).
+- In a session, clang-repl-18 and -20 fail `u()` at its first use
+  ("Symbols not found: [ _Z2tfIiET_S0_ ]"), because a later input does not
+  instantiate for an earlier one. madc fails at the same point, under the
+  wrong name.
+- Where: not traced. The call's callee is resolved while the template has
+  no definition, and it is never re-resolved to the specialization.
 
 ## Diagnostics
 

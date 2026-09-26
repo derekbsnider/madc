@@ -1924,7 +1924,7 @@ The set is `Program::session_defined`, keyed by emitted symbol. After each link,
 - Not yet, and named:
   - Host-callback trampolines are strong and re-emitted per module, but a session has no `register_function` yet. When it gains one, the trampoline becomes linkonce, as its sibling call shim is.
   - B17 (a template's static data member is never defined), B18 (a file-scope lambda global), B19 (`int N::f()` out of line) and B20 (script mode's twin of the qualified statement) fail in file mode too; they are in `BUGS.md`. B21 and B22 are there too.
-  - **Decided (owner, 2026-09-26; D27):** a strong definition naming an undefined symbol (`int g2() { return later2; }`) is accepted, and the refusal waits for first use, as in Julia and clang-repl. Until D27 is built, the session still refuses it at its entry, as ld would.
+  - **Decided (owner, 2026-09-26; D27):** a strong definition naming an undefined symbol (`int g2() { return later2; }`) is accepted, and the refusal waits for first use, as in Julia and clang-repl. Built 2026-09-26 (§42 D27, "Built").
 
 **Built (2026-09-26), §41.3's Program half: a refused entry leaves nothing behind** (`abd480473`, on the nesting of `b7401343c`). Each entry runs inside `Program::EntryTransaction`, from its lex to its link. The transaction commits once the entry's module links, and rolls back on any refusal: its parse, its translation, or its link.
 - **The rule, from Julia.** An input that fails to parse leaves nothing behind in Julia, and a refused entry is ill-formed C or C++, so it leaves nothing either. A run that fails after the module linked is Julia's run-time error: the definitions stay, and the rollback does not apply.
@@ -2181,7 +2181,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - **What changes:**
     - `int g2() { return later2; }` is accepted, and after `int later2 = 4;`, `g2()` gives 4.
     - `int z = 5; f();` with `f` declared and never defined links. Its run fails at `f`'s call. `z` is kept: the entry linked, and a run-time failure keeps its definitions, as in Julia.
-    - Today both are refused at link by `MIR_module_link_check`, and the entry is rolled back (§41.3).
+    - Before D27 both were refused at link by `MIR_module_link_check`, and the entry was rolled back (§41.3).
   - **Measured (2026-09-26).** clang-repl-18 and -20 agree:
     - `extern int later2; int g2() { return later2; }`, then `int later2 = 4;`, then `g2()`: 4.
     - `int h(); int calls_h() { return h(); }`, then `h` defined: `calls_h()` is 11.
@@ -2203,7 +2203,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
       - In an interactive entry, code may name an object that an entry declared and nothing defines yet (`extern int later2;`, a class's static member). That code reads the object through a session cell: `(*(cell ? cell : __madc_session_unbound(...)))`.
       - The session owns the cell. It binds the cell at link when the object resolves, and after every entry that defines it. Code translated once the object is defined names it directly.
       - Only code is indirected. A static initializer that takes such an object's address (`int *pdv = &dv;`) is refused at its entry, because that entry is the use. clang-repl accepts it only because it links pdv's module at pdv's first read.
-      - Header-declared objects are not indirected: a library provides them, never a later entry.
+      - An object a library provides (`stdout`, `std::cout`) is named directly: no later entry defines it.
     - **The failing use unwinds to the entry's boundary.**
       - The stub and the cell call `__madc_session_unbound`. It records "undefined reference to 'f()'" on the running entry. It then runs the exception runtime's cleanups down to the entry's mark, restores that runtime's state, and returns to the boundary: the session's guarded call around the entry's init and its run.
       - The entry stays linked, with its definitions: `z` is 5.
@@ -2213,16 +2213,42 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
     - **Still refused at the entry:**
       - a strong duplicate definition;
       - a vtable or type_info that nothing emits;
-      - a static initializer naming an undefined object;
-      - a header-declared object that nothing provides.
-    - **Slices:**
-      1. The loader's weak rule, the function stub and the boundary.
-      2. The object cells.
-      3. The §41.3 rollback table's link-refused row, which becomes a run-time failure.
+      - a static initializer naming an undefined object.
+  - **Built (2026-09-26).**
+    - **Slice 1** (`60dc36dd5`): functions.
+      - MIR's loader: `replaced_weak_func`. A function definition that is not weak (strong, or a LINKONCE copy) replaces a WEAK one and takes its thunk. A LINKONCE copy replaces one too, since no valid program has an inline definition and a different weak one. On x86-64 a call to a weak function is never patched into a direct call.
+      - The session:
+        - `admits()` collects the functions nothing defines. `CirBuilder::declares_function` says which imports are functions.
+        - Once every other check passes, `make_function_stubs` loads the weak stubs ahead of the entry.
+        - `rebind_late_stubs` redirects a stub to a library that provides its function later.
+      - The boundary: `__madc_session_unbound` and `cir_run_at_entry_boundary`, around the TU init (`run_entry_init`) and the run.
+        - It unwinds the exception runtime to its mark. For that, `rt_except.h` gains `__madc_cleanup_unwind_to`, its fifth conscious widening.
+        - The entry commits and is counted at its link.
+      - `cir_new_symbol_trap_fn` is the one per-symbol trap shape, shared with `--run-frozen`'s traps and gated by `check-one-symbol-trap.sh`.
+    - **Slice 2** (`7d0e3de9e`): objects.
+      - `CirBuilder::late_bound_object` is the test, and `var_storage_node` the one owner of the storage lvalue in code (eight arms).
+      - The session resolves each cell import to a node-stable slot, and `bind_late_cells` binds it after each entry.
+      - `check-var-emit-name-bypass.sh` gains the storage-lvalue ratchet.
+    - **Slice 2b** (`1da63372e`): an inline body a stub waits for.
+      - `Program::session_awaited` makes such a linkonce function a root in the entry that defines it, as Julia's late binding reaches it.
+      - clang-repl-20 fails it ("Symbols not found: [ _ZN1S1fEv ]", tmp/repl/s5/d27i.repl).
+    - The §41.3 rollback table's link-refused row became a static initializer taking the address of an undefined object (slice 1).
+    - Tests: `test_repl_session`, the D27 function, object and C cases.
+    - **Found on the way** (off the REPL's path, in `BUGS.md`):
+      - B24 (silent): a weak function definition is emitted strong.
+      - B25: a declared function returning a function pointer is prototyped `long long`.
+      - B26 (silent): a new-expression skips default member initializers.
+      - B27: a function template defined after its use is called by its bare name.
+      - Also a `fulltest` ratchet that had been red since `1ad86f0db`, fixed in `df6343266`.
+    - **Residuals (named):**
+      - A template defined after its use stays on its bare name (B27). clang-repl fails the same use.
+      - A block-scope function declaration is not scanned for stubs, so its entry is refused at link.
+      - A reference, an array, a madc carrier or a thread-local object that nothing defines is refused at link.
+      - The unwind destroys only what a `try` body registered. A plain scope's objects are not destroyed, as with `longjmp` and as with madc's uncaught throw.
   - **Order:** before D20. It changes what a refused-at-link entry is, and the §41.3 rollback table's link-refused row.
 
 ### Next
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
 
-D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. Next is D27 (owner, 2026-09-26): an undefined reference is refused at its first use, as in Julia and clang-repl. Then §41.4 result capture (D10), then `madc` / `madc -i` (D20). Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
+D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. D27 is done (2026-09-26): a function or an object no entry defines yet is refused at its first use, as in Julia and clang-repl. A later definition is the one reached, and the failing use returns to the entry's boundary with the entry kept (§42 D27, "Built"). Next is §41.4 result capture (D10), then `madc` / `madc -i` (D20). Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
