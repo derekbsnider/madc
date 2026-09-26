@@ -2301,6 +2301,20 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
       - The unwind destroys only what a `try` body registered. A plain scope's objects are not destroyed, as with `longjmp` and as with madc's uncaught throw.
   - **Order:** before D20. It changes what a refused-at-link entry is, and the §41.3 rollback table's link-refused row.
 
+- **D28. A `var` holding a number takes arithmetic** (owner, 2026-09-26: "of course a var holding a number should support arithmetic ... overloaded operators"; the leanings below agreed).
+  - **Where:** more operator entries in the carrier's table (`Program::add_array_methods()`, beside `==`, `!=`, `+=`), backed by `madarray_*` runtime functions (value-first.md's feeder-gap rule). Not a new mechanism.
+  - **What is missing beyond the entries:**
+    - The result is a new `var`. Check first that the external-operator lowering's by-value return slot, which already serves other non-trivial classes, carries a `var`. If it does not, fix that layer; never a text-returning workaround.
+    - A number on the left (`1 + a`) needs free-operator entries.
+    - `+=` adds for a number and still appends for text. Today `a += 1` is refused as well.
+  - **Semantics:**
+    - An integer with an integer is an integer, wrapping on overflow as Julia does.
+    - An integer with a real is a real.
+    - `/` on two integer-kind `var`s is real (`5 / 2` is `2.5`), as Julia, Python, JS and PHP give it. A plain `int` keeps C's division.
+    - Two strings concatenate, matching `+=`. A string with a number is a run-time error, as `==`'s strict kind rule is.
+    - Also unary `-`, `%`, and `<` `<=` `>` `>=`.
+  - **Order:** before D20, as its own commit with a reducer: the REPL's default dialect (D4) hits it first. Closes BUGS.md B29.
+
 ### Next
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).

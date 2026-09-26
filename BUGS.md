@@ -629,6 +629,9 @@ int main() { return __builtin_types_compatible_p(enum E, int); }
 
 ### B29. Should a `var` holding a number take arithmetic?
 
+- **Decided (owner, 2026-09-26): yes, plan §42 D28.** It is now on the REPL's
+  path and is fixed next, before D20.
+
 - Found 2026-09-26, while trying D10's var display in the madc dialect
   (the REPL's default, D4).
 
