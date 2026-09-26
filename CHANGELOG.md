@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### An entry emits an inline body only where it is used
+
+In the interactive session, `struct S { static int count; static int bump()
+{ return ++count; } };` was refused with "undefined reference to
+'S::count'" before a later entry could define `S::count`. The same happened
+to `inline int f() { return later; }` before `int later = 4;`. The builder
+emitted every user body in each module. In a whole file that is harmless,
+but an entry is not whole. Every C++ TU emits a vague-linkage body (in-class,
+`inline`, an instantiation) only where it is used, and so does clang-repl.
+In an interactive entry such a body is now lowered only when referenced, on
+the same reachability path system-header bodies take. A strong definition is
+still emitted whole, so `int g2() { return later2; }` is still refused.
+clang-repl-18 and -20 accept both entries and give `kc=14` and `r=4`, and so
+does the session.
+
+Test: `test_repl_session`.
+
 ### A qualified expression is a statement at an entry's top level
 
 In the interactive session, `S::count = 3;`, `S::bump();` and

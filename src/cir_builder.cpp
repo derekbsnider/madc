@@ -32284,13 +32284,21 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (session_defines(tf->var, func_emit_name(tf->var, tfd)))
 			continue;
 		bool sys = tfd && prog->is_system_header_path(tf->file);
+		// An interactive entry emits a vague-linkage body (in-class,
+		// `inline`, an instantiation) only where it is used, as every C++
+		// TU does, and as clang-repl does. An unused inline member may
+		// name a static member a LATER entry defines; emitted eagerly,
+		// it refused its own entry ("undefined reference to
+		// 'S::count'"). A file is whole, so its bodies stay roots.
+		bool on_use = sys || (tfd && tfd->is_linkonce()
+				      && prog->interactive_entry());
 		if (rs_probe && *rs_probe
 		    && tf->var.name.find(rs_probe) != std::string::npos)
 			fprintf(stderr, "ROOTSPLIT %s file=%s line=%d -> %s\n",
 				tf->var.name.c_str(),
 				tf->file ? tf->file : "(null)", tf->line,
-				sys ? "lib" : "root");
-		if (sys)
+				on_use ? "lib" : "root");
+		if (on_use)
 			lib_funcs[func_emit_name(tf->var, tfd)] = tf;
 		else
 			roots.push_back(tf);
@@ -33003,8 +33011,10 @@ node_t CirBuilder::translate_module(Program *prog)
 					if (fd) {
 						func_def_nodes.push_back(fd);
 						// Rung 3: lib_funcs holds ONLY
-						// system-header bodies (the roots/
-						// lib split above) — conditional.
+						// system-header bodies and an
+						// interactive entry's vague-linkage
+						// ones (the roots/lib split above)
+						// — conditional.
 						// Mark by the DECLARED name, not
 						// the map key: an emit_symbol-
 						// keyed entry (the C1-keyed vbase

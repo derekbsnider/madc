@@ -562,3 +562,36 @@ TEST_CASE("a qualified expression is a statement at an entry's top level")
 	CHECK(*(int *)s.data("kv") == 6);
     }
 }
+
+// An entry emits a vague-linkage body (in-class, `inline`) only where it is
+// used, as every C++ TU does. Emitted eagerly, an unused inline member that
+// names a static member a later entry defines refused its own entry
+// ("undefined reference to 'S::count'"), and so did an inline function naming
+// an extern defined later. A strong definition is still emitted whole, so it
+// is still refused. Oracle: clang-repl-18 and -20 (tmp/repl/s3/inl.repl,
+// ext.repl) accept both entries and give kc=14 and r=4.
+TEST_CASE("an entry emits an inline body only where it is used")
+{
+    const char *stds[] = { "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("struct S { static int count;"
+			 " static int bump() { return ++count; } };"));
+	REQUIRE(s.submit("int S::count = 0;"));
+	REQUIRE(s.submit("S::count = 3;\nS::bump();\nS::count += 10;"));
+	REQUIRE(s.submit("int kc = S::count;"));
+	CHECK(*(int *)s.data("kc") == 14);
+
+	REQUIRE(s.submit("extern int later;\ninline int f() { return later; }"));
+	REQUIRE(s.submit("int later = 4;"));
+	REQUIRE(s.submit("int r = f();"));
+	CHECK(*(int *)s.data("r") == 4);
+
+	CHECK_FALSE(s.submit("extern int later2;\nint g2() { return later2; }"));
+	CHECK(first_error(s) == "undefined reference to 'later2'");
+    }
+}
