@@ -117,15 +117,26 @@ public:
     // an interactive session's entries. begin_live() initializes the context
     // once. append() translates the Program as it stands into a new module
     // (whatever an earlier module defines is declared, not defined:
-    // Program::session_defined), loads and links it into the context,
-    // records its exports into session_defined and runs its TU init.
+    // Program::session_defined), loads and links it into the context, and
+    // records its exports into session_defined. run_entry_init runs its TU
+    // init.
     // A module the context would refuse (plan §41.3) is refused before it
     // loads, with a diagnostic per failing symbol on the Program, and
     // leaves the context as the earlier entries left it.
     // function_code / data_address then search every appended module, the
     // newest first. The context lives until the session is destroyed.
+    // A function the entry names and nothing defines does not refuse it: the
+    // entry links against a stub, and the use fails when it runs (plan §42
+    // D27). A later definition replaces the stub.
     bool begin_live(const char *session_name);
     bool append(Program *prog, const char *entry_name);
+    // The last appended entry's TU init, then a function of its (the entry's
+    // run), each at the entry's BOUNDARY: a use of a symbol no entry defines
+    // returns there, with its diagnostic on the Program, and the call is
+    // false. The entry stays linked either way (plan §42 D27).
+    bool run_entry_init(Program *prog, const char *entry_name);
+    bool run_entry_function(Program *prog, const char *entry_name,
+			    const char *emitted_name);
 
     // The generated code address for a module function by its EMITTED name
     // (plain madc functions emit under their source name; the eval entry is
@@ -176,8 +187,18 @@ private:
     bool live_mode;
     std::vector<MIR_module_t> live_mods;
     std::vector<CirBuilder *> live_builders;
+    // Plan §42 D27: the admitted entry's function stubs, loaded with it by
+    // load_and_link; the stubs no definition has replaced yet, by name; the
+    // last appended entry's TU init.
+    MIR_module_t stub_mod;
+    size_t stub_modules;
+    std::map<std::string, MIR_item_t> late_stubs;
+    std::string live_init;
     MIR_item_t find_item(const char *name, bool func) const;
-    bool admits(MIR_module_t m, Program *prog, const char *entry_name);
+    bool admits(MIR_module_t m, Program *prog, const char *entry_name,
+		CirBuilder *b);
+    void make_function_stubs(const std::vector<std::string> &names);
+    void rebind_late_stubs(MIR_module_t m, Program *prog);
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);
     void teardown();

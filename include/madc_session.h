@@ -34,9 +34,11 @@ public:
 
     // Submit one complete entry. Its declarations persist, its module is
     // linked into the live context, and its statements run once (D25). False
-    // when the entry is refused; its diagnostics are program().diagnostics.
-    // A refused entry leaves the session as it was, the Program and the
-    // live context alike (plan §41.3).
+    // when the entry is refused, or when its init or its run stops at a use
+    // of a function no entry defines yet (plan §42 D27); its diagnostics are
+    // program().diagnostics. A refused entry leaves the session as it was,
+    // the Program and the live context alike (plan §41.3). A stopped one is
+    // linked (entries() counts it) and keeps its definitions.
     bool submit(const std::string &text);
 
     // The live address of a session function / global, by emitted name.
@@ -51,7 +53,7 @@ public:
     unsigned submitted() const { return submit_count; }
 
 private:
-    bool run_entry();
+    bool run_entry(const char *entry_file);
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;
     unsigned entry_count;

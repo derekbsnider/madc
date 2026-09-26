@@ -2244,13 +2244,38 @@ static int func_labels_taken_p (MIR_module_t m, MIR_item_t func_item) {
   return FALSE;
 }
 
+/* madc fork: ld's rule that a strong definition replaces a weak one, shared by
+   MIR_load_module and MIR_module_link_check.  A func definition that is not
+   itself weak (strong, or a LINKONCE copy) whose name the environment holds as
+   a WEAK func definition replaces it: the loader gives it the weak one's
+   address (its thunk), so every reference already bound -- a call through an
+   import, a function pointer, a vtable slot -- reaches the new definition, and
+   the function keeps one address.  (A LINKONCE copy replaces a weak definition
+   too: ld keeps the first of two weak symbols, but no valid program has an
+   inline definition and a different weak one of the same function, so only
+   the weak one can be a placeholder.)  Returns the weak func item ITEM
+   replaces, NULL otherwise.  Weak data is not replaced: data references hold
+   the object's own storage, which a later object cannot take over. */
+static MIR_item_t replaced_weak_func (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t env_item, weak;
+
+  if (item->item_type != MIR_func_item || !item->export_p || item->binding == MIR_ITEM_BIND_WEAK)
+    return NULL;
+  if ((env_item = item_tab_find (ctx, item->u.func->name, &environment_module)) == NULL
+      || (weak = env_item->ref_def) == NULL || weak == item || weak->item_type != MIR_func_item
+      || weak->binding != MIR_ITEM_BIND_WEAK)
+    return NULL;
+  return weak;
+}
+
 /* madc fork: vague linkage in the loader, shared by MIR_load_module and
    MIR_module_link_check.  A LINKONCE or WEAK definition whose name the
    environment already holds (an earlier module's definition, or an external) is
    not defined again: the first definition is kept, as ld keeps the first
    COMDAT / weak copy.  Returns that environment item for such a definition of
-   module M, NULL otherwise.  A strong definition is not one (it redefines).  A
-   func whose labels M's label-address data takes is kept whole, and so is
+   module M, NULL otherwise.  A strong definition is not one (it redefines), nor
+   is a LINKONCE func that replaces a weak one (replaced_weak_func).  A func
+   whose labels M's label-address data takes is kept whole, and so is
    label-address data itself: both belong to a body that cannot be dropped. */
 static MIR_item_t vague_duplicate_env_item (MIR_context_t ctx, MIR_module_t m, MIR_item_t item) {
   MIR_item_t env_item;
@@ -2268,7 +2293,9 @@ static MIR_item_t vague_duplicate_env_item (MIR_context_t ctx, MIR_module_t m, M
   }
   if ((env_item = item_tab_find (ctx, MIR_item_name (ctx, item), &environment_module)) == NULL)
     return NULL;
-  if (item->item_type == MIR_func_item && func_labels_taken_p (m, item)) return NULL;
+  if (item->item_type == MIR_func_item
+      && (func_labels_taken_p (m, item) || replaced_weak_func (ctx, item) != NULL))
+    return NULL;
   return env_item;
 }
 
@@ -2277,7 +2304,7 @@ void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
   mir_assert (m != NULL);
   for (MIR_item_t item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
        item = DLIST_NEXT (MIR_item_t, item)) {
-    MIR_item_t first_item = item, env_item;
+    MIR_item_t first_item = item, env_item, weak_item = NULL;
 
     if ((env_item = vague_duplicate_env_item (ctx, m, item)) != NULL) {
       /* Bound now, not at MIR_link: the module's forward and export items copy
@@ -2295,6 +2322,7 @@ void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
       if (item->item_type == MIR_lref_data_item) lref_p = TRUE;
       item = load_bss_data_section (ctx, item, FALSE);
     } else if (item->item_type == MIR_func_item) {
+      if ((weak_item = replaced_weak_func (ctx, item)) != NULL) item->addr = weak_item->addr;
       if (item->addr == NULL) {
         item->addr = _MIR_get_thunk (ctx);
 #if defined(MIR_DEBUG)
@@ -2308,7 +2336,7 @@ void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
                   && first_item->item_type != MIR_import_item
                   && first_item->item_type != MIR_forward_item);
       if (setup_global (ctx, MIR_item_name (ctx, first_item), first_item->addr, first_item)
-          && func_redef_prohibited_p (ctx, item))
+          && weak_item == NULL && func_redef_prohibited_p (ctx, item))
         MIR_get_error_func (ctx) (MIR_repeated_decl_error, "func %s is prohibited for redefinition",
                                   item->u.func->name);
     }
@@ -2359,7 +2387,8 @@ size_t MIR_module_link_check (MIR_context_t ctx, MIR_module_t m,
       name = item->u.import_id;
     } else if (item->export_p && func_redef_prohibited_p (ctx, item)
                && item_tab_find (ctx, item->u.func->name, &environment_module) != NULL
-               && vague_duplicate_env_item (ctx, m, item) == NULL) {
+               && vague_duplicate_env_item (ctx, m, item) == NULL
+               && replaced_weak_func (ctx, item) == NULL) {
       error_type = MIR_repeated_decl_error;
       name = item->u.func->name;
     } else {

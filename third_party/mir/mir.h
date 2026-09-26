@@ -583,8 +583,14 @@ extern MIR_item_t MIR_new_forward (MIR_context_t ctx, const char *name);
    already holds (from an earlier module, or an external) is not defined
    again: the loader turns it into an import bound to the definition already
    there, so every module shares one copy (one vtable and type_info address,
-   one static member).  A strong definition after a weak one is still a
-   redefinition (MIR_set_func_redef_permission governs funcs). */
+   one static member).  A func definition that is not weak (strong or
+   LINKONCE) after a WEAK one replaces it, as ld's strong definition replaces
+   a weak one: it takes the weak one's address, so references already bound
+   reach it and the function keeps one address (calls to a weak func are never
+   made direct, as they are never inlined).  A strong func definition after a
+   LINKONCE one is still a redefinition (MIR_set_func_redef_permission governs
+   funcs).  Weak data is not replaced: references already bound keep the weak
+   object. */
 typedef enum {
   MIR_ITEM_BIND_GLOBAL = 0, /* strong definition (the default) */
   MIR_ITEM_BIND_WEAK,       /* interposable weak: STB_WEAK, never inlined */

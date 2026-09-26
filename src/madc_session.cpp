@@ -75,11 +75,19 @@ bool InteractiveSession::submit(const std::string &text)
     bool ok = false;
     try
     {
-	bool linked = jit->append(prog.get(), prog->intern_file(name));
-	// Linked, its definitions are live whatever its run does next.
+	const char *entry_file = prog->intern_file(name);
+	bool linked = jit->append(prog.get(), entry_file);
+	// Linked, its definitions are live whatever its init and its run do
+	// next: a use of a function no entry defines yet fails there, and the
+	// entry is kept, as Julia keeps a failed input's earlier definitions
+	// (plan §42 D27).
 	if ( linked )
+	{
 	    entry.commit();
-	ok = linked && run_entry();
+	    ++entry_count;
+	}
+	ok = linked && jit->run_entry_init(prog.get(), entry_file)
+	    && run_entry(entry_file);
     }
     catch (...)
     {
@@ -92,19 +100,15 @@ bool InteractiveSession::submit(const std::string &text)
 
 // The entry's run (D25): its statements, in source order, lowered into the
 // entry function of its own module. It runs once, after the module links and
-// its init ran. The entry counts from the link: its definitions are live even
-// when its run cannot be generated.
-bool InteractiveSession::run_entry()
+// its init ran, at the entry's boundary (plan §42 D27). The entry counts from
+// the link: its definitions are live even when its run cannot be generated,
+// or stops at a use of a function no entry defines.
+bool InteractiveSession::run_entry(const char *entry_file)
 {
-    ++entry_count;
     const std::string &run = prog->entry_function_name;
     if ( run.empty() )
 	return true;
-    void *code = jit->function_code(run.c_str());
-    if ( !code )
-	return false;
-    ((void (*)(void))code)();
-    return true;
+    return jit->run_entry_function(prog.get(), entry_file, run.c_str());
 }
 
 void *InteractiveSession::function(const char *name)

@@ -99,6 +99,15 @@ unsigned long __madc_except_state_size(void);
 void __madc_except_state_save(void *buf);
 void __madc_except_state_restore(const void *buf);
 
+/* The interactive session's entry boundary (plan §42 D27; the FIFTH conscious
+ * widening): an entry's init or run that reaches a symbol no entry defines yet
+ * returns to the boundary around it. That return is no C++ exception, so no
+ * script `try` sees it, but the objects the run registered are destroyed as a
+ * throw past them would destroy them: the boundary takes __madc_cleanup_top()
+ * and the state (above) when it arms, and on the return unwinds the cleanup
+ * stack to that mark and restores the state. */
+void __madc_cleanup_unwind_to(void *mark);
+
 #ifdef __cplusplus
 }
 #endif

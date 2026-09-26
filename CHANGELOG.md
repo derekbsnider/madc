@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### A function no entry defines yet is refused at its first use
+
+In the interactive session, an entry that named a function no entry had
+defined was refused at its link: `int calls_h() { return h(); }` before `h`
+existed, or `int z = 5; f();` with `f` only declared. The owner decided (plan
+§42 D27) that the refusal waits for the first use, as in Julia and
+clang-repl.
+
+Such an entry now links against a stub, and a later definition replaces the
+stub. A call, a function pointer or a vtable slot bound earlier reaches the
+definition, and the function keeps one address. A use that comes first fails
+when it runs, with "undefined reference to 'f()'", and returns to the entry's
+boundary. The entry stays linked with its definitions, so `z` is 5, as Julia
+keeps it. clang-repl-18 and -20 give `calls_h=11` too, but they fail
+`int z = 5; f();` at its entry and leave `z` unusable, which the session does
+not copy. The failure is no C++ exception: `catch (...)` does not see it, but
+the objects the run built in a `try` are destroyed, as a throw would destroy
+them.
+
+MIR's loader gains ld's rule that a definition replaces a weak one of the same
+function and takes its address, and a call to a weak function is never
+patched into a direct call. An object nothing defines still refuses its
+entry.
+
+Test: `test_repl_session`.
+
 ### A header's statics no longer refuse an entry
 
 In the interactive session under a C++ standard, `#include <string>`,

@@ -130,6 +130,9 @@ class CirBuilder {
 	// Project JIT mode reuses the same shape — the engine plays ld.so's
 	// init_array role and calls each TU's init before main.
 	std::string m_tu_init_name;
+	// Plan §42 D27: every function this module declares or defines, by
+	// emitted name (declares_function). Recorded in an interactive entry only.
+	std::set<std::string> m_function_decl_syms;
 	// True when this TU is one of a --project JIT build: the per-TU init
 	// takes the object-mode shape (TU-unique static, sys-init-once inside)
 	// instead of `__madc_global_init` + the main-prologue call — N TUs
@@ -2473,6 +2476,12 @@ public:
 	void set_project_tu(bool b) { m_project_tu = b; }
 	// The synthesized per-TU init's symbol (object mode; empty = none).
 	const std::string &tu_init_name() const { return m_tu_init_name; }
+	// Plan §42 D27: does this interactive entry's module declare `sym` as a
+	// FUNCTION? MIR's imports do not say whether a name is a function or an
+	// object, and the session gives a stub to a function nothing defines,
+	// never to an object.
+	bool declares_function(const std::string &sym) const
+		{ return m_function_decl_syms.count(sym) != 0; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
 	// madc_cir_freeze with the defective top-level child indices reported
 	// by c2mir_check_tree on a COPY of the pristine translated tree. Drops

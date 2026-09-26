@@ -171,9 +171,9 @@ TEST_CASE("an entry with a statement that does not compile runs none of it")
 // context stays as the earlier entries left it. The refused entry's run and
 // global are not live, and its Program half rolls them back. The failed module
 // used to stay loaded, so every later entry was refused, with no diagnostic.
-// Oracle: clang-repl-18 and -20 (tmp/repl/s2b/linkfail.repl) report "Symbols
-// not found: [ _Z1fv ]" and go on; a later `int k = 3;` gives 3, and once f
-// is defined, `f()` gives 7.
+// A static initializer that takes the address of an object nothing defines is
+// such an entry: its module's data names the object (D27 defers only a use in
+// code). Once nd is defined, the same initializer links.
 TEST_CASE("an entry that cannot link is refused, and the session goes on (§41.3)")
 {
     const char *stds[] = { "--std=c89", "--std=c17", "--std=c++17", "--std=madc" };
@@ -183,13 +183,12 @@ TEST_CASE("an entry that cannot link is refused, and the session goes on (§41.3
 	CAPTURE(std_option);
 	InteractiveSession s;
 	REQUIRE(s.begin(std_option));
-	REQUIRE(s.submit("int f(void);"));
-	CHECK_FALSE(s.submit("int z = 5;\nf();"));
+	REQUIRE(s.submit("extern int nd;"));
+	CHECK_FALSE(s.submit("int z = 5;\nint *pnd = &nd;"));
 	const ::Program::Diagnostic *d = first_error_diagnostic(s);
 	REQUIRE(d != (const ::Program::Diagnostic *)NULL);
-	// ld's words; a C++ symbol demangled, as ld shows it.
-	CHECK(d->message == (i < 2 ? "undefined reference to 'f'"
-				   : "undefined reference to 'f()'"));
+	// ld's words.
+	CHECK(d->message == "undefined reference to 'nd'");
 	CHECK(d->phase == ::Program::DiagnosticPhase::compiler);
 	CHECK(d->file == "REPL[2]");
 	CHECK(s.data("z") == (void *)NULL);	// never loaded
@@ -197,11 +196,98 @@ TEST_CASE("an entry that cannot link is refused, and the session goes on (§41.3
 
 	REQUIRE(s.submit("int k = 3;"));
 	CHECK(*(int *)s.data("k") == 3);
-	REQUIRE(s.submit("int f(void) { return 7; }"));
-	REQUIRE(s.submit("int r = 0;\nr = f();"));
-	CHECK(*(int *)s.data("r") == 7);
+	REQUIRE(s.submit("int nd = 7;"));
+	REQUIRE(s.submit("int *pnd = &nd;"));
+	CHECK(**(int **)s.data("pnd") == 7);
 	CHECK(s.entries() == 4);
     }
+}
+
+// D27 (owner, 2026-09-26): an entry that names a function no entry defines yet
+// is accepted and links, and the refusal waits for the function's first use,
+// as in Julia and clang-repl. The entry links against a stub. A later
+// definition replaces it and takes its address, so a call, a function pointer
+// or a vtable slot bound earlier reaches the definition. A use that comes
+// first fails when it runs, with ld's words, and returns to the entry's
+// boundary. The entry stays linked and keeps its definitions, as Julia keeps
+// `z` after `z = 5; f()`. The failure is no C++ exception: `catch (...)` does
+// not see it, but an object the run constructed in a `try` is destroyed, and
+// the next `try` works. Oracle: clang-repl-18 and -20 (tmp/repl/s5/d27a.repl)
+// give calls_h=11 and f=7. They fail `int z = 5; f();` at its entry with
+// "Symbols not found: [ _Z1fv ]" and leave z unusable, which madc does not
+// copy (plan §42 D27).
+TEST_CASE("a function no entry defines yet is refused at its first use (D27)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("int f();"));
+    CHECK_FALSE(s.submit("int z = 5;\nf();"));
+    const ::Program::Diagnostic *d = first_error_diagnostic(s);
+    REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+    CHECK(d->message == "undefined reference to 'f()'");
+    CHECK(d->phase == ::Program::DiagnosticPhase::runtime);
+    CHECK(d->file == "REPL[2]");
+    CHECK(*(int *)s.data("z") == 5);	// linked: kept
+    CHECK(s.entries() == 2);
+    REQUIRE(s.submit("int f() { return 7; }"));
+    REQUIRE(s.submit("int kf = f();"));
+    CHECK(*(int *)s.data("kf") == 7);
+
+    // A body, a function pointer and a vtable slot bound before the
+    // definition reach it, and the function has one address.
+    REQUIRE(s.submit("int h();"));
+    REQUIRE(s.submit("int calls_h() { return h() + 1; }"));
+    REQUIRE(s.submit("int (*fp)() = h;"));
+    REQUIRE(s.submit("struct V { virtual int g(); int n; };"));
+    REQUIRE(s.submit("V *mk() { V *v = new V; v->n = 3; return v; }"));
+    REQUIRE(s.submit("int h() { return 11; }"));
+    REQUIRE(s.submit("int V::g() { return n * 2; }"));
+    REQUIRE(s.submit("int kh = calls_h() + 100 * (fp == h) + 1000 * mk()->g();"));
+    CHECK(*(int *)s.data("kh") == 6112);
+
+    // A dynamic initializer's use stops the entry's init; the entry is kept.
+    REQUIRE(s.submit("int f2();"));
+    CHECK_FALSE(s.submit("int zz = 5; int bad = f2();"));
+    CHECK(first_error(s) == "undefined reference to 'f2()'");
+    CHECK(*(int *)s.data("zz") == 5);
+    CHECK(*(int *)s.data("bad") == 0);
+
+    // No `catch` sees it; the try's object is destroyed once.
+    REQUIRE(s.submit("int dtor_ran = 0, caught = 0;"));
+    REQUIRE(s.submit("struct D { ~D() { dtor_ran += 1; } };"));
+    REQUIRE(s.submit("int f3();"));
+    CHECK_FALSE(s.submit("try { D d; f3(); } catch (...) { caught = 1; }"));
+    CHECK(*(int *)s.data("caught") == 0);
+    CHECK(*(int *)s.data("dtor_ran") == 1);
+    REQUIRE(s.submit("try { D e; throw 4; } catch (int x) { caught = x; }"));
+    CHECK(*(int *)s.data("caught") == 4);
+    CHECK(*(int *)s.data("dtor_ran") == 2);
+
+    // Mutual recursion across entries, and an inline definition, which the
+    // entry that uses it emits as a linkonce copy, replacing the stub.
+    REQUIRE(s.submit("int ev(int n);"));
+    REQUIRE(s.submit("int od(int n) { return n == 0 ? 0 : ev(n - 1); }"));
+    REQUIRE(s.submit("int ev(int n) { return n == 0 ? 1 : od(n - 1); }"));
+    REQUIRE(s.submit("struct S { int f(); };"));
+    REQUIRE(s.submit("int gs(S s) { return s.f(); }"));
+    REQUIRE(s.submit("inline int S::f() { return 3; }"));
+    REQUIRE(s.submit("int ko = od(3) * 10 + od(4) + 100 * (S().f() + gs(S()));"));
+    CHECK(*(int *)s.data("ko") == 610);
+}
+
+TEST_CASE("a function no entry defines yet is refused at its first use (D27, C)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("int f(void);"));
+    CHECK_FALSE(s.submit("int z = 5;\nf();"));
+    CHECK(first_error(s) == "undefined reference to 'f'");
+    CHECK(*(int *)s.data("z") == 5);
+    REQUIRE(s.submit("int calls(void) { return f() + 1; }"));
+    REQUIRE(s.submit("int (*fp)(void) = f;"));
+    REQUIRE(s.submit("int f(void) { return 7; }"));
+    REQUIRE(s.submit("int kc = 0;\nkc = calls() + 10 * (fp == f) + 100 * fp();"));
+    CHECK(*(int *)s.data("kc") == 718);
 }
 
 // Entry N is REPL[N] for the Nth entry submitted, refused ones counted, as in
@@ -342,8 +428,9 @@ TEST_CASE("a refused entry leaves nothing behind (§41.3)")
 	  "Pair<int> pa; Pair<double> pb; Pair<char> pc; int bad = undeclared_r;",
 	  "Pair<char> pd; double pa = 1.5;",
 	  "int k = (int)sizeof(Pair<char>) + (int)(pa * 2);", 5 },
-	// Refused at its link: f is declared, never defined.
-	{ "int f(void);", "int lz = 5;\nf();",
+	// Refused at its link: its data takes the address of nd, which is
+	// declared, never defined (a use in code waits for its run, D27).
+	{ "extern int nd;", "int lz = 5;\nint *pnd = &nd;",
 	  "double lz = 1.5;", "int k = (int)(lz * 2);", 3 },
     };
     for ( size_t i = 0; i < sizeof(cxx) / sizeof(cxx[0]); ++i )
@@ -380,9 +467,9 @@ TEST_CASE("a refused entry leaves nothing behind (§41.3)")
 
 
 // C89's call of an undeclared function is an implicit declaration: the entry
-// is refused at link, as clang-repl-20 -xc -std=c89 refuses it ("Symbols not
-// found: [ f ]", tmp/repl/s2b/c89.repl), and defining f later lets a call
-// link (g = 7).
+// links, and its run fails at the call (D27), as clang-repl-20 -xc -std=c89
+// fails it ("Symbols not found: [ f ]", tmp/repl/s2b/c89.repl). Defining f
+// later lets a call reach it (g = 7).
 TEST_CASE("an implicitly declared function links once it is defined (c89)")
 {
     InteractiveSession s;

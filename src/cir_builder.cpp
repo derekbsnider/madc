@@ -31796,6 +31796,34 @@ static const char *cir_declared_id(node_t n)
 	return NULL;
 }
 
+// Plan §42 D27: does the top-level node declare (or define) a FUNCTION? A
+// definition always does. A declaration does when its declarator's first
+// derivation is a parameter list: c2mir lists the derivations outermost first
+// (`T *a[N]` is ARR then POINTER), so `int (*get(void))(void)` is FUNC first
+// and `int (*fp)(void)` is POINTER first. A typedef declares a type.
+static bool cir_declares_function(node_t n)
+{
+	if (!n)
+		return false;
+	if (n->code == N_FUNC_DEF)
+		return true;
+	if (n->code != N_SPEC_DECL)
+		return false;
+	node_t share = c2mir_node_first_op(n);
+	node_t decl = share ? c2mir_node_next_op(share) : NULL;
+	if (!decl || decl->code != N_DECL)
+		return false;
+	if (share->code == N_SHARE)
+		for (node_t s = c2mir_node_first_op(c2mir_node_first_op(share)); s;
+		     s = c2mir_node_next_op(s))
+			if (s->code == N_TYPEDEF)
+				return false;
+	node_t idn = c2mir_node_first_op(decl);
+	node_t derivs = idn ? c2mir_node_next_op(idn) : NULL;
+	node_t first = derivs ? c2mir_node_first_op(derivs) : NULL;
+	return first && first->code == N_FUNC;
+}
+
 // Object-mode per-TU init symbol: __madc_init_<stem>_<fnv32(path)> — a
 // deterministic, gdb-readable, TU-unique C identifier (the function is
 // static, so uniqueness is for debuggability, not correctness; locals
@@ -34313,6 +34341,17 @@ node_t CirBuilder::translate_module(Program *prog)
 			      << gremoved << " of " << gpend.size()
 			      << " ctor groups" << std::endl);
 	}
+
+	// Plan §42 D27: which of an interactive entry's names are functions, from
+	// the module's final declarations. The session stubs a function nothing
+	// defines yet; an object it never stubs.
+	m_function_decl_syms.clear();
+	if (prog->interactive_entry())
+		for (node_t n = c2mir_node_first_op(top_list); n;
+		     n = c2mir_node_next_op(n))
+			if (cir_declares_function(n))
+				if (const char *dn = cir_declared_id(n))
+					m_function_decl_syms.insert(dn);
 
 	append(module, top_list);
 	return module;

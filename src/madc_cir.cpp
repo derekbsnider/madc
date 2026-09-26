@@ -41,6 +41,7 @@
 #include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
+#include "rt/rt_except.h"	// the session entry boundary's unwind (plan §42 D27)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
 #include "cir_builder.h"
@@ -310,6 +311,29 @@ static void cir_collect_module_defs(MIR_context_t ctx, MIR_module_t mod,
     }
 }
 
+// The one shape of a per-symbol trap: a function FN_NAME whose body calls
+// HANDLER (through PROTO: no result, one pointer argument) with the name SYM,
+// so a trap that fires NAMES its symbol. --run-frozen's traps and an
+// interactive session's function stubs (plan §42 D27) are both made of it.
+// Call inside the module being built; NM_SEQ numbers its name strings.
+static MIR_item_t cir_new_symbol_trap_fn(MIR_context_t ctx, const char *fn_name,
+					 const std::string &sym, MIR_item_t proto,
+					 MIR_item_t handler, size_t &nm_seq)
+{
+    char nm_item[32];
+    snprintf(nm_item, sizeof(nm_item), "__madc_trapnm_%zu", nm_seq++);
+    MIR_item_t nm_data = MIR_new_string_data( // allowed-exception: the owner
+	ctx, nm_item, MIR_str_t{sym.size() + 1, sym.c_str()});
+    MIR_item_t f = MIR_new_func(ctx, fn_name, 0, NULL, 0);
+    MIR_append_insn(ctx, f,
+		    MIR_new_call_insn(ctx, 3, MIR_new_ref_op(ctx, proto), // allowed-exception: the owner
+				      MIR_new_ref_op(ctx, handler),
+				      MIR_new_ref_op(ctx, nm_data)));
+    MIR_append_insn(ctx, f, MIR_new_ret_insn(ctx, 0));
+    MIR_finish_func(ctx);
+    return f;
+}
+
 // Build + load the per-symbol trap-stub module for `undef` (shared by the
 // --run-frozen whole-module lane and the bind lane's cache module).
 static void cir_bind_trap_module(MIR_context_t ctx,
@@ -323,29 +347,14 @@ static void cir_bind_trap_module(MIR_context_t ctx,
     size_t nm_seq = 0;
     // One trap function per symbol (both callable stubs and vtable slots) so
     // a fired trap NAMES the symbol — the whole point of this diagnostic.
-    auto new_trap_fn = [&](const char *fn_name, const std::string &sym,
-			   MIR_item_t handler) -> MIR_item_t {
-	char nm_item[32];
-	snprintf(nm_item, sizeof(nm_item), "__madc_trapnm_%zu", nm_seq++);
-	MIR_item_t nm_data = MIR_new_string_data(
-	    ctx, nm_item, MIR_str_t{sym.size() + 1, sym.c_str()});
-	MIR_item_t f = MIR_new_func(ctx, fn_name, 0, NULL, 0);
-	MIR_append_insn(ctx, f,
-			MIR_new_call_insn(ctx, 3,
-					  MIR_new_ref_op(ctx, trap_proto),
-					  MIR_new_ref_op(ctx, handler),
-					  MIR_new_ref_op(ctx, nm_data)));
-	MIR_append_insn(ctx, f, MIR_new_ret_insn(ctx, 0));
-	MIR_finish_func(ctx);
-	return f;
-    };
     for (const std::string &nm : undef) {
 	if (itanium_data_symbol(nm)) {
 	    // Data symbol (vtable/typeinfo): a table of pointers to a
 	    // per-symbol trap function, so a virtual dispatch through it
 	    // traps cleanly AND names the class.
-	    MIR_item_t vf = new_trap_fn((nm + ".__vtrap").c_str(), nm,
-					vslot_imp);
+	    MIR_item_t vf = cir_new_symbol_trap_fn(
+		ctx, (nm + ".__vtrap").c_str(), nm, trap_proto, vslot_imp,
+		nm_seq);
 	    MIR_new_export(ctx, nm.c_str());
 	    MIR_new_ref_data(ctx, nm.c_str(), vf, 0);
 	    for (int i = 1; i < 32; ++i)
@@ -353,7 +362,8 @@ static void cir_bind_trap_module(MIR_context_t ctx,
 	    continue;
 	}
 	MIR_new_export(ctx, nm.c_str());
-	new_trap_fn(nm.c_str(), nm, trap_imp);
+	cir_new_symbol_trap_fn(ctx, nm.c_str(), nm, trap_proto, trap_imp,
+			       nm_seq);
     }
     MIR_finish_module(ctx);
     MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
@@ -994,7 +1004,7 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 
 CirJitSession::CirJitSession()
     : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL),
-      cache_mod(NULL), live_mode(false)
+      cache_mod(NULL), live_mode(false), stub_mod(NULL), stub_modules(0)
 {
 }
 
@@ -1039,6 +1049,10 @@ void CirJitSession::teardown()
     live_mode = false;
     live_mods.clear();	// owned by ctx
     live_builders.clear();
+    stub_mod = NULL;	// owned by ctx
+    stub_modules = 0;
+    late_stubs.clear();
+    live_init.clear();
 }
 
 bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
@@ -1199,6 +1213,12 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
     if (cache_mod)
 	MIR_load_module(ctx, cache_mod);
     mc_lap("load(cache_mod)");
+    // Plan §42 D27: a session entry's function stubs load ahead of it, so its
+    // imports of those functions bind to them.
+    if (stub_mod) {
+	MIR_load_module(ctx, stub_mod);
+	stub_mod = NULL;
+    }
     MIR_load_module(ctx, mod);
     mc_lap("load(consumer)");
     if (cache_mod)
@@ -1595,21 +1615,174 @@ struct CirLinkRefusal
 {
     Program *prog;
     const char *entry_name;
+    CirBuilder *builder;		// the entry's: which names are functions
+    std::vector<std::string> late;	// functions nothing defines (D27)
+    size_t refused;
 };
 
 // MIR_module_link_check's report: one diagnostic per failing symbol, recorded
 // and rendered on the entry, in the linker's words (ld's "undefined reference
 // to" / "multiple definition of"). The position is the entry's: MIR items
-// carry no source location.
+// carry no source location. A FUNCTION nothing defines is not refused here:
+// its refusal waits for its first use (plan §42 D27), and the entry links
+// against a stub.
 static void cir_record_link_refusal(MIR_error_type_t error_type,
 				    const char *name, void *arg)
 {
     CirLinkRefusal *r = (CirLinkRefusal *)arg;
+    if (error_type == MIR_undeclared_op_ref_error && r->builder
+	&& r->builder->declares_function(name)) {
+	r->late.push_back(name);
+	return;
+    }
+    ++r->refused;
     std::string msg = error_type == MIR_repeated_decl_error
 	? "multiple definition of '" : "undefined reference to '";
     msg += cir_link_display_name(name) + "'";
     r->prog->record_frontend_error(Program::DiagnosticPhase::compiler, msg,
 				   r->entry_name, 0, 0);
+}
+
+// -----------------------------------------------------------------------
+// An interactive session's late binding (plan §42 D27)
+// -----------------------------------------------------------------------
+//
+// An entry may name a function no entry defines yet. As in Julia and
+// clang-repl, the refusal waits for the first use: the entry links against a
+// stub, a later definition replaces the stub (MIR's loader gives it the
+// stub's address), and a use that comes first fails when it runs. The failing
+// use returns to the entry's BOUNDARY, the guarded call around the entry's
+// init and its run; the entry stays linked, with its definitions.
+
+struct CirEntryBoundary
+{
+    jmp_buf jb;
+    Program *prog;
+    const char *entry_name;
+    void *task;			// the task the entry runs on
+    void *cleanup_mark;		// the exception runtime's cleanup stack, and
+    void *except_state;		// its state, as the boundary armed
+    CirEntryBoundary *outer;
+};
+static thread_local CirEntryBoundary *cir_entry_boundary = NULL;
+
+// The body of every session stub: the use of a function no entry defines. It
+// records ld's words on the running entry and returns to the entry's
+// boundary. It is no C++ exception, so no script `try` sees it. Reached with
+// no boundary to return to (a task the entry spawned, another thread), it
+// aborts with the message, as the frozen trap does.
+extern "C" void __madc_session_unbound(const char *sym)
+{
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || b->task != __madc_task_current()) {
+	fprintf(stderr, "madc: undefined reference to '%s', reached outside"
+		" the entry that ran it\n", cir_link_display_name(sym).c_str());
+	abort();
+    }
+    {
+	// Scoped: its strings are gone before the jump.
+	std::string msg = "undefined reference to '"
+	    + cir_link_display_name(sym) + "'";
+	b->prog->record_frontend_error(Program::DiagnosticPhase::runtime, msg,
+				       b->entry_name, 0, 0);
+    }
+    longjmp(b->jb, 1);
+}
+
+static void cir_call_tu_init(void *code)
+{
+    ((void (*)(int, char **, char **))code)(0, NULL, NULL);
+}
+
+static void cir_call_entry_run(void *code)
+{
+    ((void (*)(void))code)();
+}
+
+// Run an entry's code at the entry's boundary. False when a use of an
+// undefined symbol returned here. The return destroys what the run registered
+// on the exception runtime's cleanup stack, as a throw past it would, and
+// gives that runtime back the state it had when the boundary armed.
+static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
+				      void (*call)(void *), void *code)
+{
+    CirEntryBoundary b;
+    b.prog = prog;
+    b.entry_name = entry_name;
+    b.task = __madc_task_current();
+    b.cleanup_mark = __madc_cleanup_top();
+    b.except_state = malloc(__madc_except_state_size());
+    if (!b.except_state)
+	return false;
+    __madc_except_state_save(b.except_state);
+    b.outer = cir_entry_boundary;
+    if (setjmp(b.jb)) {
+	__madc_cleanup_unwind_to(b.cleanup_mark);
+	__madc_except_state_restore(b.except_state);
+	cir_entry_boundary = b.outer;
+	free(b.except_state);
+	return false;
+    }
+    cir_entry_boundary = &b;
+    try {
+	call(code);
+    } catch (...) {
+	cir_entry_boundary = b.outer;
+	free(b.except_state);
+	throw;
+    }
+    cir_entry_boundary = b.outer;
+    free(b.except_state);
+    return true;
+}
+
+// The stubs for the functions an admitted entry names and nothing defines, in
+// a module of their own that load_and_link loads ahead of the entry's. Each is
+// a WEAK definition, so a later definition replaces it and takes its address
+// (MIR's loader, replaced_weak_func): every reference already bound then
+// reaches the definition. A stub is never in session_defined, so the builder
+// still emits a later definition.
+void CirJitSession::make_function_stubs(const std::vector<std::string> &names)
+{
+    char mod_name[48];
+    snprintf(mod_name, sizeof mod_name, "__madc_session_stubs_%zu",
+	     ++stub_modules);
+    MIR_new_module(ctx, mod_name);
+    MIR_item_t proto = MIR_new_proto(ctx, "__madc_session_unbound__proto",
+				     0, NULL, 1, MIR_T_P, "sym");
+    MIR_item_t unbound = MIR_new_import(ctx, "__madc_session_unbound");
+    size_t nm_seq = 0;
+    for (const std::string &nm : names) {
+	MIR_new_export(ctx, nm.c_str());
+	MIR_item_t f = cir_new_symbol_trap_fn(ctx, nm.c_str(), nm, proto,
+					      unbound, nm_seq);
+	MIR_item_set_binding(ctx, f, MIR_ITEM_BIND_WEAK);
+	late_stubs[nm] = f;
+    }
+    MIR_finish_module(ctx);
+    stub_mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+}
+
+// After an entry links: a stub whose function the entry defined was replaced
+// by the loader, and one that a library now provides (an entry's `import` or
+// `#load`) is redirected to the library's function.
+void CirJitSession::rebind_late_stubs(MIR_module_t m, Program *prog)
+{
+    cir_active_host_regs = &prog->host_callback_regs;
+    for (std::map<std::string, MIR_item_t>::iterator it = late_stubs.begin();
+	 it != late_stubs.end(); ) {
+	if (cir_module_func_item(m, it->first.c_str())) {
+	    late_stubs.erase(it++);
+	    continue;
+	}
+	if (void *addr = cir_import_resolver(it->first.c_str())) {
+	    _MIR_redirect_thunk(ctx, it->second->addr, addr);
+	    late_stubs.erase(it++);
+	    continue;
+	}
+	++it;
+    }
+    cir_active_host_regs = NULL;
 }
 
 // The entry transaction's JIT half (plan §41.3). MIR_load_module and MIR_link
@@ -1618,18 +1791,25 @@ static void cir_record_link_refusal(MIR_error_type_t error_type,
 // later link re-links it. A module either would refuse is refused HERE,
 // before either runs, by MIR's own rules and against the resolver the link
 // uses, so the context stays exactly as the earlier entries left it. (A
-// session is JIT-only: the object lane's resolver never applies.)
-bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name)
+// session is JIT-only: the object lane's resolver never applies.) An admitted
+// module's function stubs (D27) are made only then, so a refused entry loads
+// none.
+bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name,
+			   CirBuilder *b)
 {
     // The link's view of the host (load_and_link's): the stdlib flavor's
     // runtime is open (idempotent), the Program's host callbacks resolve.
     cir_open_stdlib_runtime(prog->active_stdlib_flavor());
     cir_active_host_regs = &prog->host_callback_regs;
-    CirLinkRefusal refusal = { prog, entry_name };
-    size_t failures = MIR_module_link_check(ctx, m, cir_import_resolver,
-					    cir_record_link_refusal, &refusal);
+    CirLinkRefusal refusal = { prog, entry_name, b, {}, 0 };
+    MIR_module_link_check(ctx, m, cir_import_resolver,
+			  cir_record_link_refusal, &refusal);
     cir_active_host_regs = NULL;
-    return failures == 0;
+    if (refusal.refused != 0)
+	return false;
+    if (!refusal.late.empty())
+	make_function_stubs(refusal.late);
+    return true;
 }
 
 bool CirJitSession::begin_live(const char *session_name)
@@ -1667,8 +1847,9 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
     }
     // The builder's node arena backs the module, admitted or not.
     live_builders.push_back(b);
+    live_init.clear();
     // Refused: never loaded, never one of live_mods, never `mod`.
-    if (!admits(m, prog, entry_name))
+    if (!admits(m, prog, entry_name, b))
 	return false;
     live_mods.push_back(m);
     mod = m;
@@ -1697,8 +1878,17 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
 	if (nm && nm[0])
 	    prog->session_defined.insert(nm);
     }
-    const std::string ini = b ? b->tu_init_name() : std::string();
-    if (ini.empty())
+    rebind_late_stubs(m, prog);
+    // Its init runs next (run_entry_init): the entry counts from here.
+    live_init = b ? b->tu_init_name() : std::string();
+    return true;
+}
+
+bool CirJitSession::run_entry_init(Program *prog, const char *entry_name)
+{
+    if (!live_mode || !mod)
+	return false;
+    if (live_init.empty())
 	return true;
     if (setjmp(cir_mir_error_jmp)) {
 	cir_mir_error_armed = false;
@@ -1708,16 +1898,24 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
     }
     cir_mir_error_armed = true;
     void *icode = NULL;
-    if (MIR_item_t it = cir_module_func_item(m, ini.c_str()))
+    if (MIR_item_t it = cir_module_func_item(mod, live_init.c_str()))
 	icode = MIR_gen(ctx, it);
     cir_mir_error_armed = false;
     if (!icode) {
 	fprintf(stderr, "%s: TU init '%s' not found in its module\n",
-		entry_name, ini.c_str());
+		entry_name, live_init.c_str());
 	return false;
     }
-    ((void (*)(int, char **, char **))icode)(0, NULL, NULL);
-    return true;
+    return cir_run_at_entry_boundary(prog, entry_name, cir_call_tu_init, icode);
+}
+
+bool CirJitSession::run_entry_function(Program *prog, const char *entry_name,
+				       const char *emitted_name)
+{
+    void *code = function_code(emitted_name);
+    if (!code)
+	return false;
+    return cir_run_at_entry_boundary(prog, entry_name, cir_call_entry_run, code);
 }
 
 int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
