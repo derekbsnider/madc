@@ -338,6 +338,28 @@ int main() { { J j; } printf("dv=%d\n", dv); return 0; }
   with different bodies. linkonce would be wrong here. It needs a name
   derived from what it marshals, or internal linkage.
 
+### B23. A cast of a `<cmath>` call, then a binary operator, is refused
+
+- Found 2026-09-26, while testing the session's includes. It fails in file
+  mode too, measured at `abd480473`.
+
+```cpp
+#include <cmath>
+int main()
+{
+    int a = (int)std::floor(4.5) + 3;
+    return a - 7;
+}
+```
+
+- g++, clang++: accept, exit 0. madc: `4:34: error: Malformed expression: 2
+  operands with no operator between them`. The same for `std::sqrt`.
+- Passes: `(int)(std::floor(4.5)) + 3`, `(int)sqrt(16.0) + 3`, and a
+  header-free `(int)N::f(4.0) + 3`, where `f` is a plain namespace function
+  or a `using ::g;` redeclaration with an overload.
+- Where: not traced. The cast's operand is read by `parseCastExpression`,
+  the one owner. What differs is `<cmath>`'s `std::` overload set.
+
 ## Diagnostics
 
 ### B7. An undeducible function-template call dies in MIR without a location
