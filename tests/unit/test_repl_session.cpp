@@ -126,6 +126,32 @@ TEST_CASE("an entry the session refuses says so, and the session goes on")
     CHECK(s.entries() == 2);
 }
 
+// An included header's internal-linkage definitions are each module's own
+// copy, as each translation unit has its own (every entry's module is one);
+// only a static the entry itself writes is refused (D6). Before, <string>,
+// <cmath>, <cstdlib> and <algorithm> were refused for glibc's
+// `static __inline` byte swaps, and <iostream> for its
+// `static ios_base::Init __ioinit`. Oracle: clang-repl-18 and -20
+// (tmp/repl/s4/hdr.repl) include all five and give r=7, then r2=9.
+TEST_CASE("an included header's statics do not refuse the entry")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("#include <iostream>"));
+    REQUIRE(s.submit("#include <cmath>"));
+    REQUIRE(s.submit("#include <string>"));
+    REQUIRE(s.submit("#include <cstdlib>"));
+    REQUIRE(s.submit("#include <algorithm>"));
+    REQUIRE(s.submit("double d = std::sqrt(16.0);"));
+    REQUIRE(s.submit("int r = std::abs(-3) + (int)d;"));
+    CHECK(*(int *)s.data("r") == 7);
+    REQUIRE(s.submit("std::string s = \"ab\";"));
+    REQUIRE(s.submit("int r2 = r + (int)(s + \"c\").size() + std::max(1, 2);"));
+    CHECK(*(int *)s.data("r2") == 12);
+    CHECK_FALSE(s.submit("static int mine = 1;"));
+    CHECK(first_error(s).find("internal linkage") != std::string::npos);
+}
+
 TEST_CASE("an entry with a statement that does not compile runs none of it")
 {
     InteractiveSession s;
@@ -295,6 +321,8 @@ TEST_CASE("a refused entry leaves nothing behind (§41.3)")
 	  "int N = 9;", "int k = N;", 9 },
 	{ "", "#include <climits>\nint bad = undeclared_l;",
 	  "#include <climits>\nint lim = INT_MAX > 0;", "int k = lim;", 1 },
+	{ "", "#include <cmath>\nint bad = undeclared_s;",
+	  "#include <cmath>\ndouble sq = std::sqrt(16.0);", "int k = (int)sq;", 4 },
 	{ "int decl_only();", "int decl_only() { return 3; } int bad = undeclared_m;",
 	  "int decl_only() { return 4; }", "int k = decl_only();", 4 },
 	{ "struct S { int f(); static int count; };",

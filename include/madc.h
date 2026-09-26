@@ -5536,6 +5536,9 @@ public:
 	     ? (TokenCpnd *)script_main_tf : NULL;
     }
     bool token_is_tu_origin(TokenBase *tb) const;
+    // A file-scope declaration written in the unit's own text, not an
+    // included header's (a NULL origin carries its position in file).
+    bool top_decl_is_tu_origin(const TopDecl &td) const;
 
     // #pragma pack state, GCC semantics: `pack(N)` sets the current value,
     // `pack()` resets it, `pack(push[, N])` saves the current value (then

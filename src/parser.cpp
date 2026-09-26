@@ -76986,6 +76986,13 @@ bool Program::token_is_tu_origin(TokenBase *tb) const
     return tkProgram->source == tb->file;
 }
 
+bool Program::top_decl_is_tu_origin(const TopDecl &td) const
+{
+    if ( td.origin )
+	return token_is_tu_origin(td.origin);
+    return !td.file || !tkProgram || tkProgram->source == td.file;
+}
+
 // Pre-parse classification: does this file-scope token BEGIN a statement
 // that can never be a declaration? Arming happens only for unambiguous
 // starts; everything else takes the normal path and is classified by its
@@ -77905,11 +77912,15 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     register_included_lazy_surfaces();
     if ( !parse_toplevel(tkProgram) || has_error_diagnostic() )
 	return false;
+    // Only the entry's own statics: an included header's are each module's
+    // own copy, as each translation unit has its own (every entry's module
+    // is one; <iostream>'s `static ios_base::Init __ioinit`, glibc's
+    // `static __inline` byte swaps).
     for ( size_t i = decls_before; i < top_decls.size(); ++i )
     {
 	TopDecl &td = top_decls[i];
 	if ( td.kind == DeclKind::dkGlobalVar && td.var
-	  && (td.var->flags & vfSTATIC) )
+	  && (td.var->flags & vfSTATIC) && top_decl_is_tu_origin(td) )
 	{
 	    record_parse_error("'" + td.var->name + "' has internal linkage:"
 			       " a static declaration in an interactive"
@@ -77922,7 +77933,7 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     {
 	TokenFunc *tf = pending_funcs[i] ? pending_funcs[i]->as_func_tok() : NULL;
 	FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
-	if ( fd && fd->internal_linkage )
+	if ( fd && fd->internal_linkage && token_is_tu_origin(tf) )
 	{
 	    record_parse_error("'" + tf->var.name + "' has internal linkage:"
 			       " a static function in an interactive session"

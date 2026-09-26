@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A header's statics no longer refuse an entry
+
+In the interactive session under a C++ standard, `#include <string>`,
+`<cmath>`, `<cstdlib>` and `<algorithm>` were each refused with
+"'__madc_bswap16' has internal linkage: a static function in an interactive
+session is not supported yet". `#include <iostream>` was refused the same
+way for `__ioinit`. The check meant for a static the entry writes itself
+counted every internal-linkage definition the entry queued, a header's
+included. Each entry's module is a translation unit, so a header's
+`static` definitions are that module's own copy, as in every C++ TU. Only a
+static written in the entry's own text is refused now. clang-repl-18 and -20
+include all five headers and give `r=7 s=abc`, then `r2=9`, and so does the
+session.
+
+Test: `test_repl_session`.
+
 ### A refused entry leaves nothing behind
 
 In the interactive session, an entry that was refused (by its parse, its
