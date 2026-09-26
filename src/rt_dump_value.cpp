@@ -177,9 +177,78 @@ void dump_aggregate(void *sink, const madc::value &v, int flavor, int depth,
 		__madc_dump_pr_tail(sink, col, nested ? 1 : 0);
 }
 
+// D10's show of a value (plan §41.4a): its dialect literal, which re-enters as
+// the value. An array is `{ e0, e1 }` and an object `{ "k": v }`, as the
+// dialect writes them (dialect-literals.md). A string or bytes value is a C
+// literal. A null at top level shows nothing, as Julia shows `nothing` and
+// IPython `None`. The dialect has no literal for null, so a nested one is
+// `null`.
+void show_value(void *sink, const madc::value &v, int depth)
+{
+	switch (v.type()) {
+	case madc::value::kind::null:
+		if (depth > 0)
+			__madc_dump_raw(sink, "null", 4);
+		return;
+	case madc::value::kind::boolean:
+		__madc_dump_sh_bool(sink, v.as_boolean() ? 1 : 0);
+		return;
+	case madc::value::kind::integer:
+		__madc_dump_sh_i64(sink, (long long)v.as_integer(), 0);
+		return;
+	case madc::value::kind::real:
+		__madc_dump_sh_f64(sink, v.as_real(), 0);
+		return;
+	case madc::value::kind::string:
+	case madc::value::kind::bytes:
+		// Exactly the payload's bytes: its count is explicit, so a NUL
+		// inside is escaped, never an end.
+		__madc_dump_sh_text(sink, (const char *)v.data(),
+				    (long long)v.size());
+		return;
+	case madc::value::kind::array:
+	case madc::value::kind::object: {
+		AncestorFrame frame((const void *)&v);
+		if (frame.r <= 0) {
+			dump_failure(sink, frame.r == 0 ? "recursion"
+						       : "ancestor stack exhausted");
+			return;
+		}
+		__madc_dump_raw(sink, "{ ", 2);
+		size_t i = 0;
+		if (v.type() == madc::value::kind::object) {
+			const std::map<std::string, madc::value> &obj = v.as_object();
+			std::map<std::string, madc::value>::const_iterator it;
+			for (it = obj.begin(); it != obj.end(); ++it, ++i) {
+				__madc_dump_sh_sep(sink, (long long)i);
+				__madc_dump_sh_text(sink, it->first.data(),
+						    (long long)it->first.size());
+				__madc_dump_raw(sink, ": ", 2);
+				show_value(sink, it->second, depth + 1);
+			}
+		} else {
+			const std::vector<madc::value> &arr = v.as_array();
+			for (i = 0; i < arr.size(); i++) {
+				__madc_dump_sh_sep(sink, (long long)i);
+				show_value(sink, arr[i], depth + 1);
+			}
+		}
+		__madc_dump_raw(sink, i ? " }" : "}", i ? 2 : 1);
+		return;
+	}
+	case madc::value::kind::instance:
+		__madc_dump_raw(sink, "<instance>", 10);
+		return;
+	}
+}
+
 void dump_value_at(void *sink, const madc::value &v, int flavor, int depth,
 		   bool nested)
 {
+	if (flavor == MADC_DUMP_SHOW) {
+		show_value(sink, v, depth);
+		return;
+	}
 	int col = madc_dump_frame_col(flavor, depth);
 	const char *word = madc::value::kind_name(v.type());
 

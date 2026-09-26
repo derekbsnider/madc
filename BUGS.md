@@ -574,6 +574,24 @@ int main() { return __builtin_types_compatible_p(enum E, int); }
   __builtin_types_compatible_p`.
 - Decide: refuse it in C++, as gcc does, or read C++ enum tags.
 
+### B29. Should a `var` holding a number take arithmetic?
+
+- Found 2026-09-26, while trying D10's var display in the madc dialect
+  (the REPL's default, D4).
+
+```
+var a = 5;
+var b = a + 1;
+```
+
+- madc, in a file and in a session: `no match for 'operator+' (operand types
+  are 'array' and 'int')`. No test does arithmetic on a `var` (the suite's
+  `n = n + 1` counters are `long`). value-first.md says a string-kind value
+  must be usable like a `std::string`, and a missing capability is a
+  feeder gap. Whether a number-kind value must be usable like a number is the
+  owner's call. The REPL's default dialect makes it the first thing a user
+  types after `var a = 5`.
+
 ## Duplication families (divergent, open)
 
 A divergent family is a live bug. Consolidating one leaves a gate in

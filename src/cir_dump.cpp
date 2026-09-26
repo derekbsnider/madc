@@ -2380,10 +2380,10 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		if (DataDefENUM *edd = dynamic_cast<DataDefENUM *>(u))
 			return dump_enum(fl, acc, edd, depth, nested, out, origin,
 					 why);
-		if (is_array_object(dd)) {
-			why = "no show for a madc value yet";
-			return false;
-		}
+		// A madc value's kind is a property of the VALUE, so it takes the
+		// runtime walk, as print_r's does (rt_dump_value.cpp, show_value).
+		if (is_array_object(dd))
+			return dump_value(fl, acc, depth, nested, out, origin);
 		if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(u)) {
 			DataDefCLASS *ccls = is_class_object(dd)
 					   ? dynamic_cast<DataDefCLASS *>(u) : NULL;

@@ -1063,3 +1063,34 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, C)")
     REQUIRE(s.submit("char v23[6] = \"hello\""));
     CHECK(s.shown() == "\"hello\"");
 }
+
+// Slice 3 (a madc var, the REPL's default dialect, D4): a var shows as its
+// dialect literal, `{ 10, 20 }` for an array and `{ "k": 1 }` for an object
+// (dialect-literals.md). A null shows nothing, as Julia shows `nothing`. With
+// no var equality to compare by, re-entry is checked as a round trip: the
+// shown text, entered again, shows the same text.
+TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, madc var)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=madc"));
+    const char *cases[][2] = {
+	{ "var a = 5", "5" },
+	{ "var b = 2.5", "2.5" },
+	{ "var c = \"hi\\n\\\"\"", "\"hi\\n\\\"\"" },
+	{ "var d = true", "true" },
+	{ "var f = { 10, 20, 30 }", "{ 10, 20, 30 }" },
+	{ "var g = { \"k\": 1, \"name\": \"x\" }", "{ \"k\": 1, \"name\": \"x\" }" },
+    };
+    for ( size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i )
+    {
+	CAPTURE(cases[i][0]);
+	REQUIRE(s.submit(cases[i][0]));
+	CHECK(s.shown() == cases[i][1]);
+	std::string again = "var r" + std::to_string(i) + " = " + s.shown();
+	CAPTURE(again);
+	REQUIRE(s.submit(again));
+	CHECK(s.shown() == cases[i][1]);
+    }
+    REQUIRE(s.submit("var e"));
+    CHECK(s.shown().empty());
+}

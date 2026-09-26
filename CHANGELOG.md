@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A shown `var` is written as its dialect literal
+
+Result capture (D10, plan §41.4a) now covers the madc dialect's `var`, the
+REPL's default carrier (D4), which showed as `<madc::value>`. A `var` now
+shows as the literal that builds it again:
+- `5`, `2.5`, `"hi\n"` and `true`;
+- `{ 10, 20, 30 }` for an array;
+- `{ "k": 1, "name": "x" }` for an object.
+
+A null `var` shows nothing, as Julia shows `nothing` and IPython `None`.
+The kind is known only at run time, so the runtime value walk renders it,
+as it does for print_r. Each shown text, entered again, shows the same
+text.
+
+Test: `test_repl_session`.
+
 ### A shown struct, union or array is written as its initializer
 
 Slice 2 of result capture (D10, plan §41.4a). An aggregate's shown value is

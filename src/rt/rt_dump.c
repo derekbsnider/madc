@@ -826,15 +826,21 @@ void __madc_dump_sh_char(void *sink, int c)
     sink_putc(sink, '\'');
 }
 
+void __madc_dump_sh_text(void *sink, const char *p, long long n)
+{
+    sink_putc(sink, '"');
+    if (p && n > 0)
+	sh_escaped(sink, p, (size_t)n, '"');
+    sink_putc(sink, '"');
+}
+
 void __madc_dump_sh_cstr(void *sink, const char *s, int cxx)
 {
     if (!s) {
 	sink_puts(sink, cxx ? "nullptr" : "NULL");
 	return;
     }
-    sink_putc(sink, '"');
-    sh_escaped(sink, s, strlen(s), '"');
-    sink_putc(sink, '"');
+    __madc_dump_sh_text(sink, s, (long long)strlen(s));
 }
 
 void __madc_dump_sh_ptr(void *sink, const char *type, const void *p, int cxx)
@@ -873,9 +879,7 @@ void __madc_dump_sh_chars(void *sink, const char *p, long long n)
     while (len < n && p[len])
 	len++;
     if (len < n) {
-	sink_putc(sink, '"');
-	sh_escaped(sink, p, (size_t)len, '"');
-	sink_putc(sink, '"');
+	__madc_dump_sh_text(sink, p, len);
 	return;
     }
     sink_puts(sink, "{ ");

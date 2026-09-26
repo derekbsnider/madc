@@ -194,6 +194,9 @@ void __madc_dump_sh_ldbl(void *sink, long double v);
 void __madc_dump_sh_bool(void *sink, int v);
 void __madc_dump_sh_char(void *sink, int c);
 void __madc_dump_sh_cstr(void *sink, const char *s, int cxx);
+/* Exactly N bytes as a quoted C literal (a NUL among them is escaped): a
+ * string whose length is explicit, a madc value's text or bytes. */
+void __madc_dump_sh_text(void *sink, const char *p, long long n);
 void __madc_dump_sh_ptr(void *sink, const char *type, const void *p, int cxx);
 /* An enum: NAME is the enumerator the value names, written after SCOPE (C++'s
  * `Tag::`, empty in C), or empty when it names none, which shows as a cast of
