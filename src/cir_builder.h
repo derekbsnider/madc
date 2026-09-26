@@ -643,6 +643,9 @@ class CirBuilder {
 	// for a trivially copyable class (a plain C struct by value) and for
 	// pointers/references. See cir_builder.cpp.
 	DataDefCLASS *class_param_via_invisible_ref(DataDef *dd);
+	// The class of a by-value object formal (a class, or the carrier) — the
+	// one test every call lane's argument arm asks before object_arg_value.
+	DataDefCLASS *by_value_class_formal(DataDef *pt);
 	// True when a NAMED variable is a by-value class PARAMETER passed by
 	// invisible reference: pointer-stored inside the callee (a value read
 	// derefs, member access arrows, its object address is the variable's

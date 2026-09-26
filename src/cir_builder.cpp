@@ -4669,6 +4669,9 @@ CirBuilder::ExternParam CirBuilder::native_param_shape(DataDef *dd, bool refp)
 {
 	if (param_object_class(dd, refp))
 		return { {N_VOID}, true, NULL };
+	// A by-value carrier formal: param_decl's `void *`.
+	if (!refp && CirBuilder::is_array_object(dd))
+		return { {N_VOID}, true, NULL };
 	// A by-value CLASS parameter passed by INVISIBLE REFERENCE (Itanium):
 	// the extern proto declares `struct X *` — the shape param_decl gives
 	// the definition and object_arg_value passes (the caller-constructed
@@ -6835,8 +6838,12 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 	}
 
-	// A by-value carrier result already IS the object it materialized into.
-	if (target == &ddARRAY && carrier_result_operand(arg))
+	// Every other carrier-typed expression translates to its object's
+	// lvalue: a by-value result's materialized temp, the runtime-eval scope
+	// context's ctx local (TokenScopeContext). Bind that object; the
+	// materializing tail would construct a carrier from itself (the
+	// coercion cycle).
+	if (target == &ddARRAY && arg && is_array_object(arg->datadef()))
 		return node2(N_CAST, void_ptr_type(),
 			     node1(N_ADDR, translate_expr(arg), arg), arg);
 	if (object_returning_call_class(arg) == target)
@@ -7088,6 +7095,16 @@ node_t CirBuilder::class_object_temp(TokenBase *arg, DataDefCLASS *target)
 // lifetime model, not this ABI decision.
 node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 {
+	// The carrier's formal is a pointer too (param_decl), so the same two
+	// cases hold: a by-value carrier result IS the parameter object, and
+	// anything else is copy- or converting-constructed into a caller-owned
+	// temp (the carrier's constructor rows).
+	if (target == &ddARRAY) {
+		if (carrier_result_operand(arg))
+			return node2(N_CAST, void_ptr_type(),
+				     node1(N_ADDR, translate_expr(arg), arg), arg);
+		return node1(N_ADDR, class_object_temp(arg, target), arg);
+	}
 	if (!target || !class_param_via_invisible_ref(target))
 		return class_object_value(arg, target);
 	// Pattern-mode pack expansion: keep the marked expression for tsubst
@@ -7341,13 +7358,14 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent
 							      allow_converted_temp), arg),
 				     arg);
 		}
-	// A carrier VALUE translates to an object lvalue in every form — its
-	// storage, a keyed slot, or the temp a by-value result materialized
-	// into (object_call_temp, the operator lanes) — so the reference binds
-	// that object ([class.temporary]/2). The prvalue spill below would be an
-	// array assignment, which C has no form for.
+	// A carrier VALUE designates an object in every form — its storage, a
+	// keyed slot, a by-value formal's pointer, or the temp a by-value result
+	// materialized into — so the reference binds that object
+	// ([class.temporary]/2), at the address object_arg_addr owns. The
+	// prvalue spill below would be an array assignment, which C has no
+	// form for, and `&` of a pointer-stored formal is the formal's address.
 	if (arg && is_array_object(arg->datadef()))
-		return node1(N_ADDR, translate_expr(arg), arg);
+		return object_arg_addr(arg, &ddARRAY);
 	// An AGGREGATE REFERENCE MEMBER's stored value already IS the referent
 	// object's address ([expr.ref]) — the reference parameter binds to the
 	// same object, so pass the pointer through. `&translate_expr` below
@@ -7486,7 +7504,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc,
 				callee && callee->is_nonconst_lref_param(pi)));
-		else if (DataDefCLASS *vc = as_class_instance(pt))
+		else if (DataDefCLASS *vc = by_value_class_formal(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			// Numeric reference parameter (`int &x`): the callee takes a
@@ -12521,7 +12539,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 			eparams.push_back({ {N_VOID}, true });
 			append(args, object_arg_addr(arg, pc,
 				callee->is_nonconst_lref_param(pi)));
-		} else if (DataDefCLASS *vc = as_class_instance(pt)) {
+		} else if (DataDefCLASS *vc = by_value_class_formal(pt)) {
 			eparams.push_back(native_param_shape(pt, false));
 			append(args, object_arg_value(arg, vc));
 		} else if (refp) {
@@ -13179,7 +13197,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(arg, pc,
 				arg_callee && arg_callee->is_nonconst_lref_param(pi)));
-		else if (DataDefCLASS *vc = as_class_instance(pt))
+		else if (DataDefCLASS *vc = by_value_class_formal(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
@@ -14154,6 +14172,19 @@ DataDefCLASS *CirBuilder::class_param_via_invisible_ref(DataDef *dd)
 	return class_nontrivial_for_calls(cdd) ? cdd : NULL;
 }
 
+// The class of a BY-VALUE object formal, which an argument reaches through
+// object_arg_value: a class, or the carrier. The carrier lives outside the
+// user-class universe (as_class_instance), and its formal is already a
+// pointer (param_decl's `void *`), so the argument arms missed it and passed
+// the caller's own buffer: `void g(var v) { v = 9; }` wrote the caller's
+// variable.
+DataDefCLASS *CirBuilder::by_value_class_formal(DataDef *pt)
+{
+	if (DataDefCLASS *c = as_class_instance(pt))
+		return c;
+	return is_array_object(pt) ? &ddARRAY : NULL;
+}
+
 // A by-value class PARAMETER passed by invisible reference is POINTER-STORED
 // in the callee: `struct T *d` holds the caller-constructed parameter object's
 // address, so a value read is `(*d)`, a member access is `d->m`, and the
@@ -14260,7 +14291,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 			if (DataDefCLASS *pc = param_object_class(pt, refp))
 				append(args, object_arg_addr(arg, pc,
 					copy_ctor->is_nonconst_lref_param(pi)));
-			else if (DataDefCLASS *vc = as_class_instance(pt))
+			else if (DataDefCLASS *vc = by_value_class_formal(pt))
 				append(args, object_arg_value(arg, vc));
 			else if (refp)
 				append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
@@ -16797,7 +16828,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			explicit_nodes.push_back(object_arg_addr(arg, pc,
 				ctor && ctor->is_nonconst_lref_param(pi)));
-		else if (DataDefCLASS *vc = as_class_instance(pt))
+		else if (DataDefCLASS *vc = by_value_class_formal(pt))
 			explicit_nodes.push_back(object_arg_value(arg, vc));
 		else if (is_ref_param)
 			explicit_nodes.push_back(ref_param_arg_addr(arg,
@@ -16960,7 +16991,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 		bool is_ref_param = ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(darg, pc));
-		else if (DataDefCLASS *vc = as_class_instance(pt))
+		else if (DataDefCLASS *vc = by_value_class_formal(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(darg, ref_param_referent(pt),
@@ -17902,7 +17933,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param)) {
 			append(args, object_arg_addr(arg, pc,
 				ctor && ctor->is_nonconst_lref_param(pi)));
-		} else if (DataDefCLASS *vc = as_class_instance(pt))
+		} else if (DataDefCLASS *vc = by_value_class_formal(pt))
 			append(args, object_arg_value(arg, vc));
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
@@ -17929,7 +17960,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		bool is_ref_param = ctor->is_ref_param(pi);
 		if (DataDefCLASS *pc = param_object_class(pt, is_ref_param))
 			append(args, object_arg_addr(darg, pc));
-		else if (DataDefCLASS *vc = as_class_instance(pt))
+		else if (DataDefCLASS *vc = by_value_class_formal(pt))
 			append(args, object_arg_value(darg, vc));
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(darg, ref_param_referent(pt),
@@ -19363,7 +19394,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 	if (DataDefCLASS *pc = param_object_class(pt, refp)) {
 		eparams.push_back({ {N_VOID}, true });
 		append(args, object_arg_addr(top->right, pc));
-	} else if (DataDefCLASS *vc = as_class_instance(pt)) {
+	} else if (DataDefCLASS *vc = by_value_class_formal(pt)) {
 		eparams.push_back(native_param_shape(pt, false));
 		append(args, object_arg_value(top->right, vc));
 	} else if (refp) {
@@ -20259,7 +20290,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		bool refp = callee->is_ref_param(1);
 		if (DataDefCLASS *pc = param_object_class(pt, refp))
 			append(args, object_arg_addr(top->right, pc));
-		else if (DataDefCLASS *vc = as_class_instance(pt))
+		else if (DataDefCLASS *vc = by_value_class_formal(pt))
 			append(args, object_arg_value(top->right, vc));
 		else if (refp)
 			append(args, ref_param_arg_addr(top->right,
@@ -21201,7 +21232,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 				    : index_lvalue;
 		if (DataDefCLASS *pc = param_object_class(idx_pt, refp))
 			return object_arg_addr(index, pc);
-		if (DataDefCLASS *vc = as_class_instance(idx_pt))
+		if (DataDefCLASS *vc = by_value_class_formal(idx_pt))
 			return object_arg_value(index, vc);
 		if (refp)
 			// A scalar reference parameter (`operator[](const key_type& k)`):

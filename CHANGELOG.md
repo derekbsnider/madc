@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### A `var` passed by value is the callee's own copy
+
+`void g(var v) { v = 9; }` changed the caller's variable. The caller passed
+its own buffer, because the call lanes test a by-value class argument with
+`as_class_instance`, which does not see the carrier. The caller now builds
+the parameter object and passes its address, as g++ and clang pass a
+`madc::value`:
+- an lvalue argument is copy-constructed into a caller-owned temp;
+- a by-value result (`g(f())`) is already the parameter object;
+- a string, number or boolean is converted, as in `var v = 5;`.
+
+`by_value_class_formal` is now the one test the ten call-lane argument arms
+share. Three defects fixed on the way:
+- A `var &` argument into a `var` formal (`g(r)`) was a c2mir error.
+- A keyed slot argument (`g(o["k"])`) was passed as an integer.
+- Inside the callee, binding the formal to a `const var &` (`k = v;`) took
+  the address of the formal's pointer, and it crashed.
+
+Test: `testvarbyvalue` (oracle: the same program over `madc::value`, built
+with g++ and clang++).
+
 ### A `var` can be returned by value
 
 `var f(long n) { var x = n; return x; }` was lowered as a function returning

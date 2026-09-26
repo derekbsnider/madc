@@ -660,6 +660,13 @@ A divergent family is a live bug. Consolidating one leaves a gate in
   They should use `consume_gnu_attributes_naming`. No failing reducer yet.
 - `call_argument_loop`: `parseCallFunc` and `parseCallMethod` carry twin
   argument loops.
+- `call_argument_shaping` (found 2026-09-26, with the by-value `var` fix):
+  - Ten call lanes each carry the same argument ladder: a reference formal
+    to `object_arg_addr`, a by-value object formal to `object_arg_value`, a
+    scalar reference to `ref_param_arg_addr`, then the scalar arms.
+  - They agree today: the by-value test is `by_value_class_formal` in all
+    ten. The ladder itself is still copied, and some copies carry extra
+    arms (the char-pointer coercion, the complex lowering).
 - `external_ctor_param_shape` (found 2026-09-26, with L3):
   - `ctor_call_assemble`'s external-constructor arm declares the extern's
     parameters by hand: a real as `long long`, a non-char pointer as
