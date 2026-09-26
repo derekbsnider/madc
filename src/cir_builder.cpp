@@ -21139,13 +21139,31 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	// An inherited operator's emitted body is the OWNER's, not the receiver's.
 	std::string sym = call_emit_symbol(callee,
 		(from_base ? towner->name : cls->name) + "__" + mname);
-	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
+	// A by-value NON-TRIVIAL class result takes the hidden result address
+	// FIRST (function_retbuf_class, the one ABI decision): a void call into
+	// a materialized temp, whose lvalue is the value — the binary operator
+	// lanes' and the method lane's shape. Without it `-a` was emitted one
+	// argument short and its value was not addressable.
+	DataDefCLASS *retc = function_retbuf_class(callee);
+	char rtmp[40] = { 0 };
+	if (retc)
+		object_temp_decl(retc, rtmp, sizeof(rtmp), origin);
+	std::vector<ExternParam> eparams;
 	node_t args = list();
+	if (retc) {
+		eparams.push_back({ {}, true, retc, true });
+		append(args, retbuf_slot_addr(retc, rtmp, origin));
+	}
+	eparams.push_back({ {N_VOID}, true });
 	if (!callee->emit_symbol.empty()) {
 		append(args, node2(N_CAST, void_ptr_type(), this_arg, origin));
 		bool ret_ptr = false;
 		std::vector<c2mir_node_code_t> ret_specs =
 			emit_symbol_ret_specs(callee, ret_ptr);
+		if (retc) {
+			ret_ptr = false;
+			ret_specs.clear();	// void sret call; the slot carries it
+		}
 		need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
 	} else {
 		append(args, this_arg);
@@ -21153,6 +21171,10 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	}
 	node_t ocall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(ocall)->synth_from_origin = true;
+	if (retc) {
+		m_pending_stmts.push_back(node2(N_EXPR, list(), ocall, origin));
+		return id(rtmp, origin);
+	}
 	// A T&-returning unary operator returns an address; deref to the lvalue.
 	if (callee->returns_reference())
 		return node1(N_DEREF, ocall, origin);

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A unary operator returning a class by value gets its result slot
+
+`N operator-() const` on a class with a user copy constructor or destructor
+was emitted one argument short ("too few arguments") with an unaddressable
+value. The unary operator lane never asked `function_retbuf_class`. It now
+passes the hidden result address first and yields the materialized temp,
+as the binary operator and method lanes do. This covers madc-compiled
+bodies and external operators alike. Found while adding `var`'s unary minus
+(D28).
+
+Test: `testunaryretbuf` (g++ and clang++ agree).
+
 ### A `var` passed by value is the callee's own copy
 
 `void g(var v) { v = 9; }` changed the caller's variable. The caller passed
