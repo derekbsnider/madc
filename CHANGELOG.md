@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Two more synthesized destructors are linkonce
+
+Two destructors madc synthesizes in every translation unit that needs them
+were emitted as strong definitions. Their siblings were already linkonce:
+- the complete-object destructor of a class with virtual bases, which g++
+  emits weak;
+- the helper that destroys an array of class objects (`E__arr3___dtor`).
+
+So in the interactive session, the next entry that needed one was refused as
+a multiple definition of `J::~J()` or `E__arr3___dtor`. Both are linkonce
+now. clang-repl-18 and -20 give `kj=1 kjd=1 kda=6`, and so does the session.
+
+Test: `test_repl_session`.
+
 ### A linkonce definition loaded twice is one definition
 
 C++ gives vtables, type_info, inline functions, template instantiations and

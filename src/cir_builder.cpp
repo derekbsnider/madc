@@ -14622,7 +14622,12 @@ void CirBuilder::vbase_dtor_stmts(const std::string &objname, bool addr_of,
 // void Cls___dtor_complete(struct Cls *__this) { Cls___dtor(__this); <vbase dtors>; }
 node_t CirBuilder::synth_complete_dtor_def(DataDefCLASS *cdd)
 {
+	// linkonce [S4]: like the synthesized D1 (synth_dtor_def), the complete
+	// dtor re-emits in every TU that destroys the class (g++ emits it weak).
+	// Strong, a later interactive entry's copy refused the entry as a
+	// multiple definition.
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
 	node_t pspec = node1(N_LIST, class_tag_ref(cdd));
 	node_t param = simple(N_SPEC_DECL);
 	append(param, pspec);
@@ -14675,7 +14680,11 @@ std::string CirBuilder::demand_array_dtor(DataDefCLASS *cdd, size_t n)
 node_t CirBuilder::synth_array_dtor_def(DataDefCLASS *cdd, size_t n,
 					const std::string &sym)
 {
+	// linkonce [S4]: one identical body per (class, N), re-emitted by every
+	// TU that destroys such an array. Strong, a later interactive entry's
+	// copy refused the entry as a multiple definition.
 	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	append(ret_type, node2(N_ATTR, id("linkonce"), list()));
 	node_t param = simple(N_SPEC_DECL);
 	append(param, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
 	append(param, node2(N_DECL, id("p"), node1(N_LIST, pointer())));

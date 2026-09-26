@@ -442,3 +442,45 @@ TEST_CASE("a later entry shares the live copy of a vague-linkage definition (sli
 	}
     }
 }
+
+// Two more synthesized destructors a later entry emits again: the complete-
+// object destructor of a class with virtual bases, and the helper that
+// destroys an array of class objects. Both were strong, so the next entry
+// that needed one was refused as a multiple definition of 'J::~J()' or of
+// 'E__arr3___dtor'. They are linkonce now, like the other synthesized
+// destructors (g++ emits J::~J() weak). Oracle: clang-repl-18 and -20
+// (tmp/repl/s3/synth2.repl) give kj=1 kjd=1 kda=6.
+TEST_CASE("a later entry shares a synthesized complete-object or array destructor (slice 3)")
+{
+    const char *stds[] = { "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("int dv = 0;\n"
+			 "struct V { int x; ~V() { dv++; } };\n"
+			 "struct L : virtual V {};\n"
+			 "struct R : virtual V {};\n"
+			 "struct J : L, R {};"));
+	REQUIRE(s.submit("int kj = 0;\nvoid mk() { J j; kj = 1; }"));
+	REQUIRE(s.submit("mk();"));
+	REQUIRE(s.submit("int kjd = dv;"));
+	REQUIRE(s.submit("int da = 0;\nstruct E { int v; ~E() { da++; } };"));
+	REQUIRE(s.submit("void a1() { E e[3]; }"));
+	REQUIRE(s.submit("void a2() { E f[3]; }"));
+	REQUIRE(s.submit("a1();\na2();"));
+	REQUIRE(s.submit("int kda = da;"));
+
+	const char *names[] = { "kj", "kjd", "kda" };
+	const int want[] = { 1, 1, 6 };
+	for ( size_t n = 0; n < sizeof(names) / sizeof(names[0]); ++n )
+	{
+	    CAPTURE(names[n]);
+	    int *v = (int *)s.data(names[n]);
+	    REQUIRE(v != (int *)NULL);
+	    CHECK(*v == want[n]);
+	}
+    }
+}
