@@ -1955,6 +1955,40 @@ The set is `Program::session_defined`, keyed by emitted symbol. After each link,
 
 First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, `madc -i`). Items 7–10 depend on the completion service, the madcide panel, F-keys and a surviving program session, and follow in that order.
 
+### 41.4a Result capture, designed against the code (2026-09-26)
+
+- **Where the value comes from.**
+  - The parser already records an entry whose final statement omitted its `;` (`Program::entry_final_semicolon_omitted`, D11). `parse_entry` then wraps that statement in a show:
+    - a final expression statement becomes `__madc_show(expr)` in the entry's run;
+    - a final object declaration (`int x = 5`) appends `__madc_show(x)` to the run, after the object's initializer.
+  - `__madc_show` is a compiler-implemented intrinsic, as `php::print_r` is (`FuncDef::inline_builtin_kind`). The session declares it under a reserved name, so no user name collides.
+- **One owner of the rendering: the dump walk, with a third flavor.**
+  - `CirBuilder::dfShow` joins print_r and var_dump in `src/cir_dump.cpp`. The walk is shared: the type dispatch, the member census, the access rebuilds.
+  - Its primitives, `__madc_dump_sh_*` in `src/rt/rt_dump.c`, write D10's re-enterable spellings into the same sink.
+  - A floating value takes `rt_format.c`'s shortest round-trip digits, the `std::format` `{}` engine. A `.0` is added when the digits alone would read as an integer.
+- **The spellings (D10: the text, entered again, yields the value):**
+  - an integer: decimal (`30`, `-9`);
+  - `bool`: `true`, `false`;
+  - `char` (the walk's one byte kind, as print_r's): `'a'`, with C's escapes (`'\n'`, `'\''`, `'\\'`, `'\0'`, `'\x7f'`);
+  - floating: `1.0`, `0.3333333333333333`, `1e+100`, `2.5f` for a float, an `L` suffix for a long double, and `INFINITY`, `-INFINITY`, `NAN`;
+  - `char *`: `"a\"b\n"`, with C's escapes; a null one is `NULL` in C and `nullptr` in C++;
+  - any other pointer: `(int *) 0x7ffd5c1a2b3c`, or `(int *) NULL` / `(int *) nullptr`, and it is never dereferenced (§6.4);
+  - an enum: its enumerator (`B`; `Color::Red` when scoped), or `(enum E) 3` in C and `(E) 3` in C++ for a value that names none;
+  - a struct (slice 2): `(struct Point){ .x = 1.0, .y = 2.5 }` in C and `Point{ .x = 1.0, .y = 2.5 }` in C++, nesting inline;
+  - an array (slice 2): `(int[3]){ 1, 2, 3 }` in C and `{ 1, 2, 3 }` in C++;
+  - a madc `var` (slice 3): its dialect literal;
+  - `void`: nothing.
+- **Where the text goes.**
+  - The show walks into a capture sink and hands the sink to the session (`__madc_session_show`). The session records the text on the running entry.
+  - `InteractiveSession::shown()` returns it, and is empty when the entry shows nothing. The core still renders nothing: the REPL prints the text, and madcide's panel shows it.
+  - A show that stops at an undefined reference (D27) shows nothing.
+- **Oracle.** The installed clang-repl-18 and -20 print "Not implement yet." for a value, and cling and Julia are not installed. D10's own rule is therefore the oracle: each test enters the shown text again in a later entry and compares it with the original value.
+- **Slices:**
+  1. The intrinsic, its synthesis, the session's capture, and scalars, `char *`, pointers and enums.
+  2. Structs, classes and arrays. A temporary is materialized once, so it is not re-evaluated per member.
+  3. A madc `var`, the containers, and `ans` (D12).
+- **Thread contract:** unchanged. One session is driven by one thread, and a capture belongs to the entry running on it.
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.
