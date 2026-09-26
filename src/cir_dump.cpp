@@ -69,13 +69,16 @@ static CirBuilder::DumpFlavor dump_flavor(FuncDef *fd)
 		return CirBuilder::dfPrintR;
 	if (fd->inline_builtin_kind == "php_var_dump")
 		return CirBuilder::dfVarDump;
+	if (fd->inline_builtin_kind == "madc_show")
+		return CirBuilder::dfShow;
 	return CirBuilder::dfNone;
 }
 
 // The intrinsic's own name, for a diagnostic.
 static const char *dump_flavor_name(CirBuilder::DumpFlavor fl)
 {
-	return fl == CirBuilder::dfVarDump ? "php::var_dump" : "php::print_r";
+	return fl == CirBuilder::dfVarDump ? "php::var_dump"
+	     : fl == CirBuilder::dfShow ? "the value display" : "php::print_r";
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +92,7 @@ static const char *dump_flavor_name(CirBuilder::DumpFlavor fl)
 static int dump_wire_flavor(CirBuilder::DumpFlavor fl)
 {
 	return fl == CirBuilder::dfVarDump ? MADC_DUMP_VAR_DUMP
-					   : MADC_DUMP_PRINT_R;
+	     : fl == CirBuilder::dfShow ? MADC_DUMP_SHOW : MADC_DUMP_PRINT_R;
 }
 
 static int dump_frame_col(CirBuilder::DumpFlavor fl, int depth)
@@ -447,6 +450,72 @@ std::string CirBuilder::dump_class_type_word(DataDefCLASS *cls)
 	return "struct " + cls->name;
 }
 
+// D10's show (plan §41.4a) spells a pointer or enum TYPE the way the entry's
+// language writes it, so `(TYPE) value` re-enters: `enum E` and `struct P *` in
+// C, `E` and `P *` in C++. A function pointer is its structural spelling
+// (`int (*)(int)`, fptr_structural_spelling). cv is the one rule's
+// (cv_qualified_spelling): the base's before it, each inner pointer's after
+// its `*`. The outermost pointer's own cv is not part of a value's type.
+std::string CirBuilder::dump_show_type_word(DataDef *dd)
+{
+	if (!dd)
+		return "void *";
+	const bool cxx = m_prog && m_prog->is_cpp_mode();
+	// A function pointer, through any pointer layers above it, spelled from
+	// its target's signature: `int (*)(void)`. (fptr_structural_spelling is
+	// the MANGLER's spelling, `int32_t (*)()`, which C does not read back.)
+	{
+		int extra = 0;
+		DataDef *b = dd;
+		for (DataDefPTR *pp; b && !b->as_fptr_dd()
+				     && (pp = b->as_pointer_dd()) != NULL;
+		     b = pp->base_type)
+			++extra;
+		DataDefFPTR *fp = b ? b->as_fptr_dd() : NULL;
+		if (fp && fp->target) {
+			FuncDef *fd = fp->target;
+			std::string params;
+			for (size_t i = 0; i < fd->parameters.size(); ++i)
+				params += (i ? ", " : "")
+					  + dump_show_type_word(fd->parameters[i]);
+			if (fd->is_varargs)
+				params += params.empty() ? "..." : ", ...";
+			else if (params.empty() && !cxx)
+				params = "void";
+			int stars = extra + (fp->ptr_syntax ? 1 : 0);
+			return dump_show_type_word(&fd->returns) + " ("
+			     + std::string(stars ? stars : 1, '*') + ")(" + params
+			     + ")";
+		}
+	}
+	std::vector<unsigned> level_cv;
+	DataDef *base = dd;
+	int levels = dd_peel_pointers(base, &level_cv);
+	DataDef *ub = base ? base->unqualified() : NULL;
+	std::string word;
+	if (!ub || ub->is_void())
+		word = "void";
+	else if (DataDefENUM *e = dynamic_cast<DataDefENUM *>(ub)) {
+		const std::string &canon = e->canonical_cpp_spelling();
+		word = cxx ? (canon.empty() ? e->name : canon) : "enum " + e->name;
+	} else if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(ub))
+		word = cxx ? dump_class_type_word(c)
+			   : (c->union_layout ? "union " : "struct ") + c->name;
+	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub))
+		word = cxx ? s->name
+			   : (s->union_layout ? "union " : "struct ") + s->name;
+	else
+		word = dump_scalar_type_word(ub);
+	if (!level_cv.empty())
+		word = cv_qualified_spelling(word, level_cv.back(), false);
+	for (int i = levels - 1; i >= 0; --i) {
+		word += " *";
+		if (i > 0 && i < (int)level_cv.size())
+			word = cv_qualified_spelling(word, level_cv[i], true);
+	}
+	return word;
+}
+
 // An INLINE namespace is transparent to qualified lookup, so it is not part of
 // the name anybody WRITES. std::list<int> is canonically
 // std::__cxx11::list<int,std::allocator<int>> — the libstdc++ ABI inline
@@ -767,6 +836,60 @@ bool CirBuilder::dump_scalar(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 	else {
 		why = std::string("no dumper for type '") + dd->name + "' yet";
 		return false;
+	}
+
+	// D10's show (plan §41.4a): one call, the value's re-enterable spelling.
+	// A floating value keeps its own type, since its digits and its suffix are
+	// the type's (print_r narrows a long double to double).
+	if (fl == dfShow) {
+		const bool cxx = m_prog && m_prog->is_cpp_mode();
+		const char *sym = NULL;
+		std::vector<ExternParam> params;
+		node_t a = list();
+		DataType rt = dd->rawtype();
+		switch (kind) {
+		case skCstr:
+			sym = "__madc_dump_sh_cstr";
+			params.push_back({ {N_CONST, N_CHAR}, true });
+			params.push_back({ {N_INT}, false });
+			append(a, acc());
+			append(a, integer(cxx ? 1 : 0, origin));
+			break;
+		case skBool:
+			sym = "__madc_dump_sh_bool";
+			params.push_back({ {N_INT}, false });
+			append(a, acc());
+			break;
+		case skChar:
+			sym = "__madc_dump_sh_char";
+			params.push_back({ {N_INT}, false });
+			append(a, acc());
+			break;
+		case skReal:
+			if (rt == DataType::dtLDOUBLE) {
+				sym = "__madc_dump_sh_ldbl";
+				params.push_back({ {N_LONG, N_DOUBLE}, false });
+				append(a, acc());
+			} else {
+				sym = "__madc_dump_sh_f64";
+				params.push_back({ {N_DOUBLE}, false });
+				params.push_back({ {N_INT}, false });
+				append(a, acc());
+				append(a, integer(rt == DataType::dtFLOAT ? 1 : 0,
+						  origin));
+			}
+			break;
+		case skInt:
+			sym = "__madc_dump_sh_i64";
+			params.push_back({ {N_LONG, N_LONG}, false });
+			params.push_back({ {N_INT}, false });
+			append(a, acc());
+			append(a, integer(dd->is_unsigned() ? 1 : 0, origin));
+			break;
+		}
+		need_dump_extern(sym, params);
+		out.push_back(dump_call_stmt(sym, a, origin));
+		return true;
 	}
 
 	static const char *pr_syms[] = { "__madc_dump_pr_cstr",
@@ -1556,6 +1679,31 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 	const std::string &canon = edd->canonical_cpp_spelling();
 	std::string tag = canon.empty() ? edd->name : canon;
 
+	// D10's show: the enumerator, which re-enters as the value. In C++ it is
+	// qualified by its tag (`Color::Red`): a scoped enum needs that, and an
+	// unscoped one accepts it (C++11). An anonymous enum has no tag to write.
+	// A value that names none shows as a cast of the number.
+	if (fl == dfShow) {
+		const bool cxx = m_prog && m_prog->is_cpp_mode();
+		const bool named = !edd->enum_name.empty()
+				   && edd->enum_name.compare(0, 2, "__") != 0;
+		std::string scope = (cxx && named) ? tag + "::" : std::string();
+		std::string ty = named ? dump_show_type_word(edd)
+				       : dump_show_type_word(under);
+		need_dump_extern("__madc_dump_sh_enum",
+				 { { {N_CHAR}, true }, { {N_CHAR}, true },
+				   { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } });
+		node_t nargs = list();
+		append(nargs, acc());
+		node_t a = list();
+		append(a, str(scope.c_str(), scope.size() + 1, origin));
+		append(a, node2(N_CALL, id(fn.c_str(), origin), nargs, origin));
+		append(a, str(ty.c_str(), ty.size() + 1, origin));
+		append(a, acc());
+		out.push_back(dump_call_stmt("__madc_dump_sh_enum", a, origin));
+		return true;
+	}
+
 	if (fl == dfVarDump) {
 		need_dump_extern("__madc_dump_vd_enum",
 				 { { {N_INT}, false }, { {N_CHAR}, true },
@@ -1635,6 +1783,29 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 // The owner's other standard method, a "visited" flag ON each element, is not
 // available: these are the user's own structs (a SMAUG CHAR_DATA), there is
 // nowhere to put a flag, and a dump must never write to the data it reads.
+
+// D10's show of a pointer (plan §41.4a): `(int *) 0x7ffd5c1a2b3c`, or its
+// language's null. Never the pointee (§6.4): a REPL must not dereference a
+// value by surprise. A function designator decays to its pointer.
+bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
+				   std::vector<node_t> &out, TokenBase *origin)
+{
+	const bool cxx = m_prog && m_prog->is_cpp_mode();
+	// A function DESIGNATOR (as_funcdef_dd; bare is_function() is also true
+	// of a function pointer) decays to its pointer.
+	DataDef *pdd = (dd->as_funcdef_dd() && m_prog) ? m_prog->getPointerType(dd)
+							: dd;
+	std::string word = dump_show_type_word(pdd);
+	need_dump_extern("__madc_dump_sh_ptr",
+			 { { {N_CHAR}, true }, { {N_VOID}, true },
+			   { {N_INT}, false } });
+	node_t a = list();
+	append(a, str(word.c_str(), word.size() + 1, origin));
+	append(a, node2(N_CAST, void_ptr_type(), acc(), origin));
+	append(a, integer(cxx ? 1 : 0, origin));
+	out.push_back(dump_call_stmt("__madc_dump_sh_ptr", a, origin));
+	return true;
+}
 
 // The pointee's declared spec list — its SHAPE, void included. ONE owner,
 // because the generated function's PARAMETER type and the cast at its call site
@@ -2102,6 +2273,30 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		why = "unresolved type";
 		return false;
 	}
+	// D10's show (plan §41.4a), slice 1: a scalar, text, a pointer (never
+	// followed, §6.4) and an enum. A reference shows its referent, which the
+	// access already reads. An aggregate, an array, a container and a madc
+	// value come with slices 2 and 3; until then the show names their type.
+	if (fl == dfShow) {
+		if (DataDefREF *rd = dd->as_reference_dd())
+			if (rd->base_type)
+				dd = rd->base_type;
+		if (dims && !dims->empty()) {
+			why = "no show for an array yet";
+			return false;
+		}
+		DataDef *u = dd->unqualified();
+		if (DataDefENUM *edd = dynamic_cast<DataDefENUM *>(u))
+			return dump_enum(fl, acc, edd, depth, nested, out, origin,
+					 why);
+		if (is_array_object(dd) || dynamic_cast<DataDefSTRUCT *>(u)) {
+			why = "no show for '" + dump_type_word(dd) + "' yet";
+			return false;
+		}
+		if (dd->is_function() || (dd->is_pointer() && !dd->is_cstr()))
+			return dump_show_pointer(acc, dd, out, origin);
+		return dump_scalar(fl, acc, dd, depth, out, origin, why);
+	}
 	if (dims && !dims->empty())
 		return dump_array(fl, acc, dd, *dims, 0, depth, nested, out,
 				  origin, why);
@@ -2419,6 +2614,81 @@ node_t CirBuilder::dump_sink_close(const std::string &sink_var,
 }
 
 // ---------------------------------------------------------------------------
+// D10's show: an interactive entry's value (plan §41.4a)
+// ---------------------------------------------------------------------------
+// `__madc_show(value)`, which the parser wraps around an entry's final
+// statement when it omits its `;`. The value is walked ONCE into a capture
+// sink, and the text goes to the session, which records it on the running
+// entry (InteractiveSession::shown). A void expression has nothing to show and
+// just runs. A type with no show yet still runs, and shows its type word in
+// angle brackets: a display is never a reason to refuse the entry.
+node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin)
+{
+	if (tcf->parameters.size() != 1)
+		return error_node("the value display takes one value", origin);
+	TokenBase *arg = tcf->parameters[0];
+	DataDef *dd = arg ? arg->datadef() : NULL;
+	if (!dd || dd->is_void())
+		return arg ? translate_expr(arg) : integer(0, origin);
+
+	char sname[40];
+	snprintf(sname, sizeof sname, "__madc_showsink_%d", m_strtmp_counter++);
+	std::vector<node_t> stmts;
+	// void *<sink> = __madc_dump_sink_open();
+	need_output_extern("__madc_dump_sink_open", true, {});
+	node_t sspec = list();
+	append(sspec, simple(N_VOID, origin));
+	node_t sdeclr = list();
+	append(sdeclr, pointer());
+	node_t sdecl = simple(N_SPEC_DECL, origin);
+	append(sdecl, node1(N_SHARE, sspec));
+	append(sdecl, node2(N_DECL, id(sname, origin), sdeclr));
+	append(sdecl, ignore());
+	append(sdecl, ignore());
+	append(sdecl, node2(N_CALL, id("__madc_dump_sink_open", origin), list(),
+			    origin));
+	stmts.push_back(sdecl);
+
+	std::string saved_sink = m_dump_sink_var;
+	m_dump_sink_var = sname;
+	std::vector<node_t> walk;
+	std::string why;
+	if (dump_argument(dfShow, arg, walk, origin, why))
+		stmts.insert(stmts.end(), walk.begin(), walk.end());
+	else {
+		stmts.push_back(node2(N_EXPR, list(), translate_expr(arg), origin));
+		std::string word = "<" + dump_type_word(dd);
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
+			if (tv->var.is_fixed_array() && tv->var.total_elements() > 0)
+				word += "[" + std::to_string(tv->var.total_elements())
+					+ "]";
+		word += ">";
+		need_dump_extern("__madc_dump_raw",
+				 { { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } });
+		node_t ra = list();
+		append(ra, str(word.c_str(), word.size() + 1, origin));
+		append(ra, integer((int64_t)word.size(), origin));
+		stmts.push_back(dump_call_stmt("__madc_dump_raw", ra, origin));
+	}
+	m_dump_sink_var = saved_sink;
+
+	// __madc_session_show(sink); then the sink closes.
+	need_output_extern("__madc_session_show", false, { { {N_VOID}, true } });
+	node_t ha = list();
+	append(ha, id(sname, origin));
+	stmts.push_back(node2(N_EXPR, list(),
+			      node2(N_CALL, id("__madc_session_show", origin), ha,
+				    origin), origin));
+	stmts.push_back(dump_sink_close(sname, origin));
+
+	node_t items = list();
+	for (size_t i = 0; i < stmts.size(); i++)
+		append(items, stmts[i]);
+	append(items, node2(N_EXPR, list(), integer(0, origin), origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+// ---------------------------------------------------------------------------
 // Returns NULL when the callee is not a dump intrinsic, so translate_expr's
 // ordinary call path continues untouched.
 node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
@@ -2436,6 +2706,8 @@ node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
 		fl = dump_flavor(dynamic_cast<FuncDef *>(tcf->var.type));
 	if (fl == dfNone)
 		return NULL;
+	if (fl == dfShow)
+		return lower_show_call(tcf, origin);
 
 	// PHP: print_r(mixed $value, bool $return = false): string|true — ONE
 	// function with a DEFAULT second parameter, so one or two arguments.

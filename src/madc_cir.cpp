@@ -42,6 +42,7 @@
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
 #include "rt/rt_except.h"	// the session entry boundary's unwind (plan §42 D27)
+#include "rt/rt_dump.h"	// the shown value's capture sink (plan §41.4a, D10)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
 #include "cir_builder.h"
@@ -1704,6 +1705,19 @@ extern "C" void *__madc_session_unbound(const char *sym)
 				       b->entry_name, 0, 0);
     }
     longjmp(b->jb, 1);
+}
+
+// D10 (plan §41.4a): the show's hand-off. The value text the generated walk
+// captured in SINK is recorded on the running entry's Program
+// (Program::entry_shown), which the session reads (InteractiveSession::shown).
+// A show outside an entry's boundary has no entry to record on.
+extern "C" void __madc_session_show(void *sink)
+{
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || !b->prog)
+	return;
+    b->prog->entry_shown.assign(__madc_dump_sink_text(sink),
+				__madc_dump_sink_length(sink));
 }
 
 static void cir_call_tu_init(void *code)

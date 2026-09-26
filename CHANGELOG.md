@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### An entry without its final `;` shows its value
+
+In the interactive session, an entry whose final statement omits its `;` now
+shows that statement's value (D10, plan §41.4a), as Julia does. A declaration
+counts too, so `int x = 15` shows `15`. With the `;`, the entry shows
+nothing. The value is spelled so that the text, entered again, yields the
+value:
+- `30`, `18446744073709551615u`, `0.3333333333333333`, `0.8333333f`, `1.5L`,
+  `1e+100`, `-0.0`, `INFINITY`;
+- `true`, `'\n'`, `"a\"b\n"`;
+- `(int *) 0x7ffd…`, `(int *) nullptr` in C++, `(int *) NULL` in C;
+- `E::B` in C++ and `B` in C, and `(E) 3` for a value that names no
+  enumerator;
+- `(int (*)(int)) nullptr`.
+
+A struct shows its type (`<P>`) until the next slice renders its members.
+`InteractiveSession::shown()` returns the text; the core prints nothing.
+
+Rendering is one more flavor of the one print_r / var_dump walk. Its floats
+use the same shortest round-trip digits as `std::format`. The C-literal
+escape rule moved into the runtime (`__madc_c_escape`), so a shown `"a\n"` and
+a compiled literal cannot disagree, and `check-one-c-escape.sh` gates it.
+
+Test: `test_repl_session`. Every shown text is entered again and compared
+with the original value.
+
 ### An inline definition reaches the calls that waited for it
 
 In the interactive session, a function first called through a stub (D27)

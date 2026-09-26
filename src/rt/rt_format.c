@@ -430,25 +430,64 @@ static void fmt_f64_emit(void *sink, const madc_fmt_spec *s,
  * "0.001" stay fixed, "1e+05"/"1e-04" go scientific). The shortest digit
  * string comes from the classic portable loop — %.{p-1}e at rising p until
  * strtod round-trips bit-exactly — which equals to_chars output BY SPEC
- * (to_chars general is defined in terms of %g at shortest precision). */
-static void fmt_f64_shortest(void *sink, const madc_fmt_spec *s, double v)
+ * (to_chars general is defined in terms of %g at shortest precision).
+ *
+ * Three pieces, because a REPL's value display (plan §41.4a, D10) needs the
+ * same digits and the same presentation without a format spec: the search
+ * (one per floating type), the fixed twin, and the choice between them. */
+
+/* The shortest scientific rendering of V that round-trips bit-exactly:
+ * [-]d[.ddd]e±XX. AS_FLOAT searches at float precision (strtof), so a float
+ * gets its OWN shortest digits, not those of the double it widened to. */
+static void fmt_shortest_sci(double v, int as_float, char *sci, size_t cap)
 {
-	char sci[64];
-	char fixed[384];
-	char digits[24];
-	long long dn = 0, fn = 0;
-	long long exp10 = 0;
-	int p, neg = 0;
-	const char *c;
+	int p;
+	float fv = (float)v;
 
 	for ( p = 1; p <= 17; ++p )
 	{
-		double back;
-		snprintf(sci, sizeof sci, "%.*e", p - 1, v);
-		back = strtod(sci, 0);
-		if ( memcmp(&back, &v, sizeof v) == 0 )
-			break;
+		snprintf(sci, cap, "%.*e", p - 1, v);
+		if ( as_float )
+		{
+			float fback = strtof(sci, 0);
+			if ( memcmp(&fback, &fv, sizeof fv) == 0 )
+				return;
+		}
+		else
+		{
+			double back = strtod(sci, 0);
+			if ( memcmp(&back, &v, sizeof v) == 0 )
+				return;
+		}
 	}
+}
+
+/* The long double twin of the search: up to 21 significant digits (an x87
+ * extended value's round-trip bound; a double-sized long double stops early). */
+static void fmt_shortest_sci_ld(long double v, char *sci, size_t cap)
+{
+	int p;
+
+	for ( p = 1; p <= 21; ++p )
+	{
+		long double back;
+		snprintf(sci, cap, "%.*Le", p - 1, v);
+		back = strtold(sci, 0);
+		if ( back == v )
+			return;
+	}
+}
+
+/* The fixed twin of SCI, built from the SAME digits (never %f: its exact
+ * decimal expansion differs from shortest-digits-plus-zeros). Returns its
+ * length; FIXED must hold 384 bytes and is not NUL-terminated. */
+static long long fmt_fixed_from_sci(const char *sci, char *fixed)
+{
+	char digits[24];
+	long long dn = 0, fn = 0;
+	long long exp10 = 0;
+	int neg = 0;
+	const char *c;
 
 	/* pick the sci body apart: [-]d[.ddd]e±XX */
 	c = sci;
@@ -458,13 +497,19 @@ static void fmt_f64_shortest(void *sink, const madc_fmt_spec *s, double v)
 		++c;
 	}
 	for ( ; *c && *c != 'e'; ++c )
-		if ( *c != '.' )
+		if ( *c != '.' && dn < (long long)sizeof digits )
 			digits[dn++] = *c;
 	if ( *c == 'e' )
 		exp10 = strtoll(c + 1, 0, 10);
 
-	/* build the fixed twin from the SAME digits (never %f: its exact
-	 * decimal expansion differs from shortest-digits-plus-zeros) */
+	/* A fixed form that cannot fit is longer than the scientific one anyway
+	 * (a long double's exponent reaches 4932): report it too long to win. */
+	{
+		long long need = neg + (exp10 >= dn - 1 ? exp10 + 1
+				       : exp10 >= 0 ? dn + 1 : 1 - exp10 + dn);
+		if ( need > 380 )
+			return need;
+	}
 	if ( neg )
 		fixed[fn++] = '-';
 	if ( exp10 >= dn - 1 )
@@ -494,6 +539,61 @@ static void fmt_f64_shortest(void *sink, const madc_fmt_spec *s, double v)
 		memcpy(fixed + fn, digits, (size_t)dn);
 		fn += dn;
 	}
+	return fn;
+}
+
+/* The `{}` choice: the fixed twin unless the scientific body is shorter
+ * (fixed wins ties). Copies the winner into OUT (NUL-terminated, at most
+ * CAP - 1 bytes) and returns its length. */
+static long long fmt_shortest_choose(const char *sci, const char *fixed,
+				     long long fn, char *out, long long cap)
+{
+	long long sn = (long long)strlen(sci);
+	const char *sel = fn <= sn ? fixed : sci;
+	long long n = fn <= sn ? fn : sn;
+
+	if ( cap <= 0 )
+		return 0;
+	if ( n > cap - 1 )
+		n = cap - 1;
+	memcpy(out, sel, (size_t)n);
+	out[n] = '\0';
+	return n;
+}
+
+long long __madc_fmt_shortest_text(char *out, long long cap, double v,
+				   int as_float)
+{
+	char sci[64];
+	char fixed[384];
+	long long fn;
+
+	fmt_shortest_sci(v, as_float, sci, sizeof sci);
+	fn = fmt_fixed_from_sci(sci, fixed);
+	return fmt_shortest_choose(sci, fixed, fn, out, cap);
+}
+
+long long __madc_fmt_shortest_text_ld(char *out, long long cap, long double v)
+{
+	char sci[64];
+	char fixed[384];
+	long long fn;
+
+	fmt_shortest_sci_ld(v, sci, sizeof sci);
+	fn = fmt_fixed_from_sci(sci, fixed);
+	return fmt_shortest_choose(sci, fixed, fn, out, cap);
+}
+
+static void fmt_f64_shortest(void *sink, const madc_fmt_spec *s, double v)
+{
+	char sci[64];
+	char fixed[384];
+	long long fn;
+	int neg;
+
+	fmt_shortest_sci(v, 0, sci, sizeof sci);
+	fn = fmt_fixed_from_sci(sci, fixed);
+	neg = sci[0] == '-';
 
 	/* an explicit '+'/' ' sign applies to either presentation */
 	if ( !neg && s->sign )

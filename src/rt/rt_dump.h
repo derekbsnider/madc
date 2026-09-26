@@ -39,7 +39,8 @@ extern "C" {
  * the one boundary (enum-over-strings: convert at the edge, once). */
 enum madc_dump_flavor {
 	MADC_DUMP_PRINT_R  = 0,
-	MADC_DUMP_VAR_DUMP = 1
+	MADC_DUMP_VAR_DUMP = 1,
+	MADC_DUMP_SHOW     = 2	/* the REPL's value (plan §41.4a, D10) */
 };
 
 /* The column of an aggregate's own frame — print_r's "(" and ")" lines,
@@ -168,6 +169,37 @@ void __madc_dump_vd_text_open(void *sink, int col, const char *ty,
 void __madc_dump_vd_enum(void *sink, int col, const char *tag,
 			 const char *name, long long v);
 void __madc_dump_vd_text_close(void *sink);
+
+/* --- THE C-literal escape rule ------------------------------------------ */
+/* dupaudit family c_string_literal_escape. The BODY of a C literal quoted with
+ * QUOTE ('"' or '\'') holding the bytes S[0..N): canonical escapes (\\, \n,
+ * \t, \r, the quote itself) and octal for any other non-printable byte (octal
+ * caps at three digits; a hex escape is maximal-munch and would swallow a hex
+ * digit after it). Writes at most CAP - 1 bytes plus a NUL into OUT (OUT may
+ * be NULL when CAP is 0) and returns the FULL length, as snprintf does. The
+ * runtime's value display (below) and the compiler's literal spellings
+ * (madc_c_escape_string, lexer.cpp) both read it, so a REPL's `"a\n"` and an
+ * emitted C literal cannot disagree. */
+size_t __madc_c_escape(const char *s, size_t n, int quote, char *out,
+		       size_t cap);
+
+/* --- show: the REPL's value (plan §41.4a, D10) ------------------------- */
+/* Re-enterable spellings: the text, entered again, yields the value. One line,
+ * no framing, no newline. A pointer is never followed (§6.4); CXX picks C++'s
+ * null (`nullptr`) over C's (`NULL`). TYPE is the compile-time spelling of the
+ * pointer or enum type (`int *`, `enum E`). */
+void __madc_dump_sh_i64(void *sink, long long v, int is_unsigned);
+void __madc_dump_sh_f64(void *sink, double v, int is_float);
+void __madc_dump_sh_ldbl(void *sink, long double v);
+void __madc_dump_sh_bool(void *sink, int v);
+void __madc_dump_sh_char(void *sink, int c);
+void __madc_dump_sh_cstr(void *sink, const char *s, int cxx);
+void __madc_dump_sh_ptr(void *sink, const char *type, const void *p, int cxx);
+/* An enum: NAME is the enumerator the value names, written after SCOPE (C++'s
+ * `Tag::`, empty in C), or empty when it names none, which shows as a cast of
+ * the number, `(TYPE) v`. */
+void __madc_dump_sh_enum(void *sink, const char *scope, const char *name,
+			 const char *type, long long v);
 
 /* --- the C++ half: the madc::value walk (src/rt_dump_value.cpp) --------- */
 /* NOT part of the strict-C11 ledger lane, and it cannot be: a value's `array`

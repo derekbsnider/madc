@@ -47,6 +47,11 @@ public:
     void *data(const char *name);
 
     Program &program() { return *prog; }
+    // The last entry's shown value (D10, plan §41.4a): an entry whose final
+    // statement omits its `;` shows it, in re-enterable syntax (`30`,
+    // `"abc"`, `(int *) 0x7ffd...`). Empty when the entry showed nothing. The
+    // core renders nothing: a client prints it.
+    const std::string &shown() const;
     // The entries linked into the live context.
     unsigned entries() const { return entry_count; }
     // The entries submitted, refused ones included: entry N is REPL[N].

@@ -32,10 +32,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>	/* uintptr_t: a shown pointer's address */
+#include <float.h>	/* DBL_MAX / LDBL_MAX: a shown infinity */
 
 // Every prototype below is CHECKED against its definition here. The header is
 // the one dump contract, shared with the generated walk and the C++ value walk.
 #include "rt_dump.h"
+// A shown float's digits are std::format's (the one shortest round-trip rule).
+#include "rt_format.h"
 
 // stdout, unbuffered-order-wise, is shared with the C++ iostreams the rest of
 // the runtime prints through (std::cout is sync_with_stdio by default), so a
@@ -683,4 +687,177 @@ void __madc_dump_vd_cstr_n(void *sink, int col, const char *ty, const char *s,
     sink_printf(sink, "(%lld) \"", len);
     sink_write(sink, s, (size_t)len);
     sink_puts(sink, "\"\n");
+}
+
+// ---------------------------------------------------------------------------
+// THE C-literal escape rule
+// ---------------------------------------------------------------------------
+size_t __madc_c_escape(const char *s, size_t n, int quote, char *out,
+		       size_t cap)
+{
+    size_t k = 0, i;
+
+    for (i = 0; s && i < n; ++i) {
+	unsigned char c = (unsigned char)s[i];
+	char buf[8];
+	size_t bn = 0, j;
+
+	if (c == (unsigned char)quote || c == '\\') {
+	    buf[bn++] = '\\';
+	    buf[bn++] = (char)c;
+	} else if (c == '\n' || c == '\t' || c == '\r') {
+	    buf[bn++] = '\\';
+	    buf[bn++] = c == '\n' ? 'n' : c == '\t' ? 't' : 'r';
+	} else if (c >= 0x20 && c <= 0x7e) {
+	    buf[bn++] = (char)c;
+	} else {
+	    buf[bn++] = '\\';
+	    buf[bn++] = (char)('0' + ((c >> 6) & 7)); // allowed-exception: the owner
+	    buf[bn++] = (char)('0' + ((c >> 3) & 7));
+	    buf[bn++] = (char)('0' + (c & 7));
+	}
+	for (j = 0; j < bn; ++j, ++k)
+	    if (out && k + 1 < cap)
+		out[k] = buf[j];
+    }
+    if (out && cap)
+	out[k < cap ? k : cap - 1] = '\0';
+    return k;
+}
+
+// ---------------------------------------------------------------------------
+// show: the REPL's value (plan §41.4a, D10)
+// ---------------------------------------------------------------------------
+// Every spelling here re-enters as the value it shows. There is no oracle to
+// copy bytes from (the installed clang-repls print "Not implement yet."), so
+// D10's rule is the oracle, and test_repl_session enters each shown text again.
+
+// The escaped body of s[0..n), written in bounded chunks.
+static void sh_escaped(void *sink, const char *s, size_t n, int quote)
+{
+    char buf[256];
+    size_t i = 0;
+
+    while (i < n) {
+	size_t step = n - i < 48 ? n - i : 48;	// <= 4 bytes each, 192 < 256
+	size_t len = __madc_c_escape(s + i, step, quote, buf, sizeof buf);
+	sink_write(sink, buf, len);
+	i += step;
+    }
+}
+
+void __madc_dump_sh_i64(void *sink, long long v, int is_unsigned)
+{
+    // Decimal. An unsigned value past LLONG_MAX keeps its `u`: without it the
+    // literal is too large for any signed type.
+    if (is_unsigned && (unsigned long long)v > 0x7fffffffffffffffull)
+	sink_printf(sink, "%lluu", (unsigned long long)v);
+    else if (is_unsigned)
+	sink_printf(sink, "%llu", (unsigned long long)v);
+    else
+	sink_printf(sink, "%lld", v);
+}
+
+// Shortest round-trip digits, with a `.0` when they alone would read as an
+// integer, then the type's suffix.
+static void sh_real_text(void *sink, const char *t, long long n,
+			 const char *suffix)
+{
+    long long i;
+    int real = 0;
+
+    for (i = 0; i < n; ++i)
+	if (t[i] == '.' || t[i] == 'e' || t[i] == 'E')
+	    real = 1;
+    sink_write(sink, t, (size_t)n);
+    if (!real)
+	sink_puts(sink, ".0");
+    sink_puts(sink, suffix);
+}
+
+// C has no literal for an infinity or a NaN; <math.h>'s macros re-enter as
+// them (a NaN's sign and payload are not kept).
+static int sh_nonfinite(void *sink, int is_nan, int is_inf, int negative)
+{
+    if (is_nan) {
+	sink_puts(sink, "NAN");
+	return 1;
+    }
+    if (is_inf) {
+	sink_puts(sink, negative ? "-INFINITY" : "INFINITY");
+	return 1;
+    }
+    return 0;
+}
+
+void __madc_dump_sh_f64(void *sink, double v, int is_float)
+{
+    char buf[400];
+    long long n;
+
+    if (sh_nonfinite(sink, v != v, v > DBL_MAX || v < -DBL_MAX, v < 0))
+	return;
+    n = __madc_fmt_shortest_text(buf, (long long)sizeof buf, v, is_float);
+    sh_real_text(sink, buf, n, is_float ? "f" : "");
+}
+
+void __madc_dump_sh_ldbl(void *sink, long double v)
+{
+    char buf[400];
+    long long n;
+
+    if (sh_nonfinite(sink, v != v, v > LDBL_MAX || v < -LDBL_MAX, v < 0))
+	return;
+    n = __madc_fmt_shortest_text_ld(buf, (long long)sizeof buf, v);
+    sh_real_text(sink, buf, n, "L");
+}
+
+void __madc_dump_sh_bool(void *sink, int v)
+{
+    sink_puts(sink, v ? "true" : "false");
+}
+
+void __madc_dump_sh_char(void *sink, int c)
+{
+    char ch = (char)c;
+
+    sink_putc(sink, '\'');
+    sh_escaped(sink, &ch, 1, '\'');
+    sink_putc(sink, '\'');
+}
+
+void __madc_dump_sh_cstr(void *sink, const char *s, int cxx)
+{
+    if (!s) {
+	sink_puts(sink, cxx ? "nullptr" : "NULL");
+	return;
+    }
+    sink_putc(sink, '"');
+    sh_escaped(sink, s, strlen(s), '"');
+    sink_putc(sink, '"');
+}
+
+void __madc_dump_sh_ptr(void *sink, const char *type, const void *p, int cxx)
+{
+    sink_putc(sink, '(');
+    sink_puts(sink, type ? type : "void *");
+    sink_puts(sink, ") ");
+    // Never %p: its spelling is implementation-defined (no 0x on win64).
+    if (!p)
+	sink_puts(sink, cxx ? "nullptr" : "NULL");
+    else
+	sink_printf(sink, "0x%llx", (unsigned long long)(uintptr_t)p);
+}
+
+void __madc_dump_sh_enum(void *sink, const char *scope, const char *name,
+			 const char *type, long long v)
+{
+    if (name && *name) {
+	sink_puts(sink, scope);
+	sink_puts(sink, name);
+	return;
+    }
+    sink_putc(sink, '(');
+    sink_puts(sink, type ? type : "int");
+    sink_printf(sink, ") %lld", v);
 }

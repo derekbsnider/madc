@@ -865,15 +865,28 @@ class CirBuilder {
 // this region is private) so cir_dump.cpp's file-static framing helpers can name
 // it without becoming members.
 public:
-	enum DumpFlavor { dfNone, dfPrintR, dfVarDump };
+	// dfShow: an interactive entry's value in D10's re-enterable spelling
+	// (plan §41.4a), the third renderer of the same walk.
+	enum DumpFlavor { dfNone, dfPrintR, dfVarDump, dfShow };
 private:
 	node_t lower_dump_call(class TokenCallFunc *tcf, FuncDef *fd,
 			       TokenBase *origin);
+	// D10: `__madc_show(value)` walks the value into a capture sink and hands
+	// the text to the session (__madc_session_show), which records it on the
+	// running entry. A type with no show yet shows its type word in angle
+	// brackets instead of refusing the entry: the entry's statement still runs.
+	node_t lower_show_call(class TokenCallFunc *tcf, TokenBase *origin);
+	// The show's spelling of a pointer or enum TYPE (`int *`, `enum E`,
+	// `struct P *`, `int (*)(int)`), per the entry's language (C or C++).
+	std::string dump_show_type_word(DataDef *dd);
 	// An ACCESS FACTORY: builds a fresh access node for the same value each
 	// time it is called. A c2mir node is a tree node, so the same one cannot
 	// be handed to two parents — the walk rebuilds instead of sharing, the
 	// same discipline aggregate_member_init_stmts follows for `path`.
 	typedef std::function<node_t()> DumpAccess;
+	// dfShow's pointer: its type and address, never its pointee (§6.4).
+	bool dump_show_pointer(const DumpAccess &acc, DataDef *dd,
+			       std::vector<node_t> &out, TokenBase *origin);
 	// The walk. Each returns false with `why` set when the type has no dumper
 	// yet — a refusal, never a guess. `depth` is a COMPILE-TIME nesting level:
 	// the walk is EXPANDED per level, so every column is a literal and no

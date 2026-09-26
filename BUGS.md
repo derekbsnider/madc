@@ -410,6 +410,9 @@ int main()
 - Passes: `(int)(std::floor(4.5)) + 3`, `(int)sqrt(16.0) + 3`, and a
   header-free `(int)N::f(4.0) + 3`, where `f` is a plain namespace function
   or a `using ::g;` redeclaration with an overload.
+- The same family, found 2026-09-26 while writing D10's tests: `int k =
+  std::signbit(-0.0) && (-0.0) == 0;` after `#include <cmath>` gives
+  `expected label name after '&&'` (it reads GNU's `&&label`). g++ gives 1.
 - Where: not traced. The cast's operand is read by `parseCastExpression`,
   the one owner. What differs is `<cmath>`'s `std::` overload set.
 

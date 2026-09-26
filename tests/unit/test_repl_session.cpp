@@ -916,3 +916,109 @@ TEST_CASE("an entry emits an inline body only where it is used")
 	CHECK(*(int *)s.data("r2") == 5);
     }
 }
+
+// §41.4 result capture (D10, plan §41.4a): an entry whose final statement
+// omits its `;` shows its value, and with the `;` it shows nothing. The value
+// is spelled so that the text, entered again, yields the value. That rule is
+// the oracle: the installed clang-repl-18 and -20 print "Not implement yet."
+// for a value, and cling and Julia are not installed. So each shown text is
+// entered again below, in `same`, where every `@` stands for it, and the
+// comparison must hold.
+namespace {
+
+void check_reenters(InteractiveSession &s, const std::string &decl,
+		    const char *want, std::string same)
+{
+    CAPTURE(decl);
+    REQUIRE(s.submit(decl));
+    const std::string shown = s.shown();
+    CAPTURE(shown);
+    REQUIRE(!shown.empty());
+    if ( want )
+	CHECK(shown == want);
+    for ( size_t at = same.find('@'); at != std::string::npos;
+	  at = same.find('@', at + shown.size()) )
+	same.replace(at, 1, shown);
+    CAPTURE(same);
+    REQUIRE(s.submit("k = " + same + ";"));
+    CHECK(*(int *)s.data("k") == 1);
+}
+
+} // namespace
+
+TEST_CASE("an entry without its final ; shows its value, re-enterably (D10)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("#include <cstring>\n#include <cmath>\nint k = 0;"));
+    CHECK(s.shown().empty());
+    REQUIRE(s.submit("int x = 15"));
+    CHECK(s.shown() == "15");
+    REQUIRE(s.submit("x * 2"));
+    CHECK(s.shown() == "30");
+    REQUIRE(s.submit("x * 2;"));
+    CHECK(s.shown().empty());
+
+    check_reenters(s, "unsigned long long v1 = 18446744073709551615ull",
+		   "18446744073709551615u", "(@) == v1");
+    check_reenters(s, "double v2 = 1.0 / 3", "0.3333333333333333", "(@) == v2");
+    check_reenters(s, "float v3 = 2.5f / 3", "0.8333333f", "(@) == v3");
+    check_reenters(s, "long double v4 = 1.0L / 3", NULL, "(@) == v4");
+    check_reenters(s, "double v5 = 1e100", "1e+100", "(@) == v5");
+    // -0.0's sign, without std::signbit (B23's family misreads the `&&`
+    // after a <cmath> call).
+    check_reenters(s, "double v6 = -0.0", "-0.0", "1 / (@) < 0 && (@) == 0");
+    check_reenters(s, "double v7 = 1.0 / 0.0", "INFINITY", "(@) == v7");
+    check_reenters(s, "bool v8 = true", "true", "(@) == v8");
+    check_reenters(s, "char v9 = '\\''", "'\\''", "(@) == v9");
+    check_reenters(s, "char v10 = '\\x01'", "'\\001'", "(@) == v10");
+    check_reenters(s, "const char *v11 = \"a\\\"b\\n\\t\\\\\"",
+		   "\"a\\\"b\\n\\t\\\\\"", "std::strcmp(@, v11) == 0");
+    check_reenters(s, "int *v12 = &x", NULL, "(@) == v12");
+    check_reenters(s, "int *v13 = nullptr", "(int *) nullptr", "(@) == v13");
+    REQUIRE(s.submit("enum E { A, B = 5 };"));
+    check_reenters(s, "E v14 = B", "E::B", "(@) == v14");
+    check_reenters(s, "E v15 = (E)3", "(E) 3", "(@) == v15");
+    REQUIRE(s.submit("enum class Color { Red, Green };"));
+    check_reenters(s, "Color v16 = Color::Green", "Color::Green", "(@) == v16");
+    REQUIRE(s.submit("struct P { int a; };"));
+    check_reenters(s, "P *v17 = nullptr", "(P *) nullptr", "(@) == v17");
+    check_reenters(s, "int (*v18)(int) = nullptr", "(int (*)(int)) nullptr",
+		   "(@) == v18");
+
+    // A void expression shows nothing; a struct shows its type until slice 2
+    // renders it; a use of an undefined function (D27) stops the run, and the
+    // entry shows nothing.
+    REQUIRE(s.submit("void vf() {}"));
+    REQUIRE(s.submit("vf()"));
+    CHECK(s.shown().empty());
+    REQUIRE(s.submit("P v19 = { 3 }"));
+    CHECK(s.shown() == "<P>");
+    REQUIRE(s.submit("int nf();"));
+    CHECK_FALSE(s.submit("nf()"));
+    CHECK(s.shown().empty());
+}
+
+TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, C)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("#include <string.h>\n#include <math.h>\nint k = 0;"));
+    REQUIRE(s.submit("int x = 15"));
+    CHECK(s.shown() == "15");
+    check_reenters(s, "double v2 = 1.0 / 3", "0.3333333333333333", "(@) == v2");
+    check_reenters(s, "double v7 = -1.0 / 0.0", "-INFINITY", "(@) == v7");
+    check_reenters(s, "_Bool v8 = 1", "true", "(@) == v8");
+    check_reenters(s, "char *v11 = 0", "NULL", "(@) == v11");
+    check_reenters(s, "const char *v12 = \"hi\\t\"", "\"hi\\t\"",
+		   "strcmp(@, v12) == 0");
+    check_reenters(s, "int *v13 = 0", "(int *) NULL", "(@) == v13");
+    check_reenters(s, "int *v14 = &x", NULL, "(@) == v14");
+    REQUIRE(s.submit("enum E { A, B = 5 };"));
+    check_reenters(s, "enum E v15 = B", "B", "(@) == v15");
+    check_reenters(s, "enum E v16 = (enum E)3", "(enum E) 3", "(@) == v16");
+    REQUIRE(s.submit("struct P { int a; };"));
+    check_reenters(s, "struct P *v17 = 0", "(struct P *) NULL", "(@) == v17");
+    check_reenters(s, "int (*v18)(void) = 0", "(int (*)(void)) NULL",
+		   "(@) == v18");
+}

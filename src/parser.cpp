@@ -75663,6 +75663,7 @@ void Program::require_statement_terminator(StatementTerminator owed)
        || owed == StatementTerminator::Declaration) )
     {
 	entry_final_semicolon_omitted = true;
+	entry_final_owed = owed;
 	return;
     }
     const char *want = (owed == StatementTerminator::Declaration
@@ -77904,7 +77905,9 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     entry_function_name.clear();
     entry_end_token = NULL;
     entry_final_semicolon_omitted = false;
+    entry_final_owed = StatementTerminator::None;
     entry_if_extendable = false;
+    entry_shown.clear();
     size_t decls_before = top_decls.size();
     size_t funcs_before = pending_funcs.size();
     if ( !lex_entry(text, display_name) )
@@ -77941,6 +77944,9 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
 	    return false;
 	}
     }
+    // D10: a final statement written without its `;` shows its value.
+    if ( entry_final_semicolon_omitted )
+	show_entry_value(decls_before);
     // The run joins the queues a parsed definition uses (finalize_script_main's
     // shape), after the entry's own functions.
     if ( entry_function )
@@ -77950,6 +77956,60 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
 	entry_function_name = entry_function->var.name;
     }
     return true;
+}
+
+// D10 (plan §41.4a): the value an entry's final statement shows. A final
+// expression statement (the run's last statement: nothing joins the run after
+// it) becomes `__madc_show(expr)`. A final object declaration (`int x = 5`,
+// Julia's `x = 5`) appends `__madc_show(x)` to the run, which runs after the
+// object's initializer: in the module init, or at its TokenGlobalInit when the
+// run already existed. `__madc_show` is compiler-implemented, and its one
+// Variable is the session's own, in no user scope.
+void Program::show_entry_value(size_t decls_before)
+{
+    TokenBase *value = NULL;
+    TokenBase *loc = NULL;
+    if ( entry_final_owed == StatementTerminator::Expression )
+    {
+	if ( !entry_function || entry_function->statements.empty() )
+	    return;
+	value = entry_function->statements.back();
+	entry_function->statements.pop_back();
+	loc = value;
+    }
+    else if ( entry_final_owed == StatementTerminator::Declaration )
+    {
+	for ( size_t i = top_decls.size(); i-- > decls_before; )
+	{
+	    const TopDecl &td = top_decls[i];
+	    if ( td.kind != DeclKind::dkGlobalVar || !td.var )
+		continue;
+	    TokenVar *tv = new TokenVar(*td.var);
+	    loc = td.origin ? td.origin : entry_end_token;
+	    if ( loc )
+		copy_token_location(tv, loc);
+	    value = tv;
+	    break;
+	}
+	if ( !value || !loc )
+	    return;
+    }
+    else
+	return;
+    if ( !entry_show_var )
+    {
+	FuncDef *fd = new FuncDef(returnDecl(ddVOID, false));
+	fd->inline_builtin_kind = "madc_show";
+	fd->declaration_only = true;
+	entry_show_var = new Variable("__madc_show", *fd, 1, NULL, false);
+    }
+    TokenCallFunc *show = new TokenCallFunc(*entry_show_var);
+    copy_token_location(show, loc);
+    show->parameters.push_back(value);
+    // A statement slot holds the TokenBase subobject: TokenVar reaches its
+    // base virtually, so the call is converted to it before the slot's cast.
+    TokenBase *show_tb = show;
+    ensure_entry_function(loc)->statements.push_back((TokenStmt *)show_tb);
 }
 
 // An entry's transaction (plan §41.3). Beside its registration journal it

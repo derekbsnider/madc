@@ -111,6 +111,11 @@ bool InteractiveSession::run_entry(const char *entry_file)
     return jit->run_entry_function(prog.get(), entry_file, run.c_str());
 }
 
+const std::string &InteractiveSession::shown() const
+{
+    return prog->entry_shown;
+}
+
 void *InteractiveSession::function(const char *name)
 {
     return jit->function_code(name);

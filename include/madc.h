@@ -6921,6 +6921,18 @@ public:
     { return interactive_entry() && token_is_tu_origin(tb); }
     TokenBase *entry_end_token = NULL;		// the appended end-of-entry token
     bool entry_final_semicolon_omitted = false;	// D10: the entry shows its value
+    // Which statement omitted it: an expression statement or an object
+    // declaration (D11); show_entry_value wraps that one.
+    StatementTerminator entry_final_owed = StatementTerminator::None;
+    // D10 (plan §41.4a): wrap an entry's final value in `__madc_show`, the
+    // compiler-implemented display (the dump walk's show flavor). The one
+    // Variable naming it is the session's own and never in any user scope.
+    Variable *entry_show_var = NULL;
+    void show_entry_value(size_t decls_before);
+    // The last entry's shown value, in D10's re-enterable spelling. Set while
+    // the entry runs (the session's __madc_session_show), cleared when an
+    // entry parses; empty when the entry showed nothing.
+    std::string entry_shown;
     bool entry_if_extendable = false;		// an if ended at the entry's end
     // The classifier's verdict on one entry (plan §41.1a): run it; run it
     // unless the next line starts with `else` (D11); keep reading; or show

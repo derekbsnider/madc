@@ -48,6 +48,7 @@ void madcdis_mapwrite_trap_hit(const char *key)
 } }
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 #include "rt/rt_task.h"	// MT-3b: the token pumps honor task cancellation
+#include "rt/rt_dump.h"	// __madc_c_escape: THE C-literal escape rule
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
 // power of two — the pump check is one mask-and-compare). ~1k tokens is
@@ -10242,36 +10243,17 @@ HighlightClass madc_token_highlight_class(TokenBase *tb)
     return HighlightClass::hcNone;
 }
 
-// THE C-string-literal escape rule (declared in madc.h; dupaudit family
-// c_string_literal_escape): the cooked bytes as a double-quoted literal's
-// BODY. Canonical escapes; octal for non-printables (octal caps at 3
-// digits — hex is maximal-munch and would swallow following hex digits).
+// The cooked bytes as a double-quoted C literal's BODY (declared in madc.h).
 // The token-spelling owner above and cir_emit_c's N_STR case both read it.
+// The rule itself (dupaudit family c_string_literal_escape) is the runtime's
+// __madc_c_escape (rt/rt_dump.c), which the REPL's value display reads too, so
+// a compiled literal and a shown one cannot disagree.
 std::string madc_c_escape_string(const char *s, size_t len)
 {
-    std::string out;
-    for ( size_t i = 0; s && i < len; ++i )
-    {
-	unsigned char c = (unsigned char)s[i];
-	switch ( c )
-	{
-	    case '"':  out += "\\\""; break;
-	    case '\\': out += "\\\\"; break;
-	    case '\n': out += "\\n"; break;
-	    case '\t': out += "\\t"; break;
-	    case '\r': out += "\\r"; break;
-	    default:
-		if ( c >= 0x20 && c <= 0x7e )
-		    out += (char)c;
-		else
-		{
-		    char buf[8];
-		    snprintf(buf, sizeof(buf), "\\%03o", c);
-		    out += buf;
-		}
-	}
-    }
-    return out;
+    size_t n = __madc_c_escape(s, len, '"', NULL, 0);
+    std::vector<char> buf(n + 1);
+    __madc_c_escape(s, len, '"', &buf[0], buf.size());
+    return std::string(&buf[0], n);
 }
 
 // Reconstruct source text from the token stream (full-fidelity mode): each
