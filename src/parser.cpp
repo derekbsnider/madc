@@ -77985,7 +77985,12 @@ void Program::show_entry_value(size_t decls_before)
 	    if ( td.kind != DeclKind::dkGlobalVar || !td.var )
 		continue;
 	    TokenVar *tv = new TokenVar(*td.var);
-	    loc = td.origin ? td.origin : entry_end_token;
+	    // The run, and so its position, belongs to the entry's own text: a
+	    // declaration's origin may be a header's token (`std::string s`'s
+	    // type), and a run placed there reads as a library function, which
+	    // is emitted only when referenced.
+	    loc = (td.origin && token_is_tu_origin(td.origin)) ? td.origin
+							       : entry_end_token;
 	    if ( loc )
 		copy_token_location(tv, loc);
 	    value = tv;

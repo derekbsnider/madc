@@ -498,9 +498,21 @@ std::string CirBuilder::dump_show_type_word(DataDef *dd)
 	else if (DataDefENUM *e = dynamic_cast<DataDefENUM *>(ub)) {
 		const std::string &canon = e->canonical_cpp_spelling();
 		word = cxx ? (canon.empty() ? e->name : canon) : "enum " + e->name;
-	} else if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(ub))
-		word = cxx ? dump_class_type_word(c)
-			   : (c->union_layout ? "union " : "struct ") + c->name;
+	} else if (DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(ub)) {
+		if (cxx) {
+			// dump_class_type_word falls back to C's `struct P` /
+			// `union U` for a class with no canonical spelling; C++
+			// names the class alone.
+			word = dump_class_type_word(c);
+			static const char *const tags[] = { "struct ", "union " };
+			for (size_t t = 0; t < 2; t++)
+				if (word.compare(0, strlen(tags[t]), tags[t]) == 0) {
+					word = word.substr(strlen(tags[t]));
+					break;
+				}
+		} else
+			word = (c->union_layout ? "union " : "struct ") + c->name;
+	}
 	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub))
 		word = cxx ? s->name
 			   : (s->union_layout ? "union " : "struct ") + s->name;
@@ -1314,9 +1326,42 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	std::string word = fl == dfVarDump
 			 ? dump_sequence_type_word(cls, elem)
 			 : (is_text ? std::string() : std::string("Array"));
+	// D10's show (plan §41.4a): text is its quoted characters (a std::string
+	// re-enters as its literal); any other sequence is a brace list, with its
+	// type at top level (`std::vector<int>{ 1, 2 }`, a C++ expression). An
+	// element with no show yet shows its type in place.
+	const bool show = fl == dfShow;
 
 	std::vector<node_t> body;
-	if (is_text) {
+	if (show) {
+		if (is_text) {
+			out.push_back(dump_show_text("\"", origin));
+			need_dump_extern("__madc_dump_sh_textchar",
+					 { { {N_INT}, false } });
+			node_t ca = list();
+			append(ca, eacc());
+			body.push_back(dump_call_stmt("__madc_dump_sh_textchar", ca,
+						      origin));
+		} else {
+			out.push_back(dump_show_text(nested ? std::string("{ ")
+						     : dump_container_type_word(cls)
+						       + "{ ", origin));
+			need_dump_extern("__madc_dump_sh_sep",
+					 { { {N_LONG, N_LONG}, false } });
+			node_t sa = list();
+			append(sa, id(idxname.c_str(), origin));
+			body.push_back(dump_call_stmt("__madc_dump_sh_sep", sa, origin));
+			std::vector<node_t> eo;
+			std::string ewhy;
+			if (!dump_any(fl, eacc, elem, NULL, depth + 1, true, eo, origin,
+				      ewhy)) {
+				eo.clear();
+				eo.push_back(dump_show_text("<" + dump_type_word(elem)
+							    + ">", origin));
+			}
+			body.insert(body.end(), eo.begin(), eo.end());
+		}
+	} else if (is_text) {
 		// Text: the characters, in order, with no per-element framing.
 		// var_dump still states the type and the length first.
 		if (fl == dfVarDump)
@@ -1357,7 +1402,15 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	out.push_back(node5(N_FOR, list(), init, cond, incr,
 			    node2(N_BLOCK, list(), items, origin), origin));
 
-	if (is_text) {
+	if (show && is_text) {
+		out.push_back(dump_show_text("\"", origin));
+	} else if (show) {
+		need_dump_extern("__madc_dump_sh_close",
+				 { { {N_LONG, N_LONG}, false } });
+		node_t ca = list();
+		append(ca, id(nname.c_str(), origin));
+		out.push_back(dump_call_stmt("__madc_dump_sh_close", ca, origin));
+	} else if (is_text) {
 		if (fl == dfVarDump)
 			out.push_back(dump_vd_text_close(origin));
 		else if (node_t nl = dump_pr_end_entry(fl, depth, origin))
@@ -1511,34 +1564,69 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	} else {
 		wargs.push_back(elem);
 	}
-	std::string word = fl == dfVarDump ? dump_template_word(cls, wargs)
-					   : std::string("Array");
-	out.push_back(dump_head_node(fl, depth, word, id(nname.c_str(), origin),
-				     origin));
+	// A keyed element's two halves, rebuilt per use.
+	DumpAccess kacc = [this, eacc, kname, origin]() -> node_t {
+		return node2(N_FIELD, eacc(), id(kname.c_str(), origin), origin);
+	};
+	DumpAccess vacc = [this, eacc, vname, origin]() -> node_t {
+		return node2(N_FIELD, eacc(), id(vname.c_str(), origin), origin);
+	};
 
+	// D10's show (plan §41.4a): a brace list with the type at top level, a
+	// keyed element as `{ key, value }` (`std::map<int, int>{ { 1, 2 } }`, a
+	// C++ expression). An element with no show yet shows its type in place.
 	std::vector<node_t> body;
-	if (keyed) {
-		DumpAccess kacc = [this, eacc, kname, origin]() -> node_t {
-			return node2(N_FIELD, eacc(), id(kname.c_str(), origin),
-				     origin);
+	const bool show = fl == dfShow;
+	if (show) {
+		out.push_back(dump_show_text(nested ? std::string("{ ")
+					     : dump_container_type_word(cls) + "{ ",
+					     origin));
+		need_dump_extern("__madc_dump_sh_sep",
+				 { { {N_LONG, N_LONG}, false } });
+		node_t sa = list();
+		append(sa, id(idxname.c_str(), origin));
+		body.push_back(dump_call_stmt("__madc_dump_sh_sep", sa, origin));
+		// One show of A (type DD) into body, or its type in place.
+		auto show_one = [&](const DumpAccess &a, DataDef *dd) {
+			std::vector<node_t> eo;
+			std::string ewhy;
+			if (!dump_any(fl, a, dd, NULL, depth + 1, true, eo, origin,
+				      ewhy)) {
+				eo.clear();
+				eo.push_back(dump_show_text("<" + dump_type_word(dd)
+							    + ">", origin));
+			}
+			body.insert(body.end(), eo.begin(), eo.end());
 		};
-		DumpAccess vacc = [this, eacc, vname, origin]() -> node_t {
-			return node2(N_FIELD, eacc(), id(vname.c_str(), origin),
-				     origin);
-		};
-		if (!dump_key_value(fl, kacc, kdd, depth, body, origin, why))
-			return false;
-		if (!dump_any(fl, vacc, vdd, NULL, depth + 1, true, body, origin,
-			      why))
-			return false;
+		if (keyed) {
+			body.push_back(dump_show_text("{ ", origin));
+			show_one(kacc, kdd);
+			body.push_back(dump_show_text(", ", origin));
+			show_one(vacc, vdd);
+			body.push_back(dump_show_text(" }", origin));
+		} else
+			show_one(eacc, elem);
 	} else {
-		// No key to print, so the POSITION is the key — the same rendering
-		// a vector gets, and the k the loop already counts.
-		body.push_back(dump_key_idx(fl, depth,
-					    id(idxname.c_str(), origin), origin));
-		if (!dump_any(fl, eacc, elem, NULL, depth + 1, true, body, origin,
-			      why))
-			return false;
+		std::string word = fl == dfVarDump ? dump_template_word(cls, wargs)
+						   : std::string("Array");
+		out.push_back(dump_head_node(fl, depth, word,
+					     id(nname.c_str(), origin), origin));
+		if (keyed) {
+			if (!dump_key_value(fl, kacc, kdd, depth, body, origin, why))
+				return false;
+			if (!dump_any(fl, vacc, vdd, NULL, depth + 1, true, body,
+				      origin, why))
+				return false;
+		} else {
+			// No key to print, so the POSITION is the key — the same
+			// rendering a vector gets, and the k the loop already counts.
+			body.push_back(dump_key_idx(fl, depth,
+						    id(idxname.c_str(), origin),
+						    origin));
+			if (!dump_any(fl, eacc, elem, NULL, depth + 1, true, body,
+				      origin, why))
+				return false;
+		}
 	}
 
 	// The advance. For a class iterator, `++it` — the PREFIX operator++,
@@ -1584,7 +1672,14 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 		append(items, body[i]);
 	out.push_back(node5(N_FOR, list(), init, cond, incr,
 			    node2(N_BLOCK, list(), items, origin), origin));
-	out.push_back(dump_tail(fl, depth, nested, origin));
+	if (show) {
+		need_dump_extern("__madc_dump_sh_close",
+				 { { {N_LONG, N_LONG}, false } });
+		node_t ca = list();
+		append(ca, id(nname.c_str(), origin));
+		out.push_back(dump_call_stmt("__madc_dump_sh_close", ca, origin));
+	} else
+		out.push_back(dump_tail(fl, depth, nested, origin));
 	return true;
 }
 
@@ -2385,17 +2480,27 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 		if (is_array_object(dd))
 			return dump_value(fl, acc, depth, nested, out, origin);
 		if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(u)) {
+			// A container shows its elements, as print_r's walk does:
+			// positional first, then by iterator. Built into a local, so a
+			// walk that turns out not to apply leaves `out` untouched.
 			DataDefCLASS *ccls = is_class_object(dd)
 					   ? dynamic_cast<DataDefCLASS *>(u) : NULL;
-			Variable *szmv = NULL, *opmv = NULL;
-			IterProtocol ip;
-			if (ccls && (class_index_iteration_protocol(ccls, szmv, opmv)
-				     || class_iterator_iteration_protocol(ccls, ip,
-									 NULL, this)
-				     || container_needs_iterator_walk(ccls))) {
-				why = "no show for container '"
-				    + dump_class_type_word(ccls) + "' yet";
-				return false;
+			if (ccls) {
+				std::vector<node_t> cw;
+				std::string cwhy;
+				if (dump_sequence(fl, acc, ccls, depth, nested, cw, origin,
+						  cwhy)
+				    || (cw.clear(),
+					dump_iterator(fl, acc, ccls, depth, nested, cw,
+						      origin, cwhy))) {
+					out.insert(out.end(), cw.begin(), cw.end());
+					return true;
+				}
+				if (container_needs_iterator_walk(ccls)) {
+					why = "no show for container '"
+					    + dump_class_type_word(ccls) + "' yet";
+					return false;
+				}
 			}
 			return dump_struct(fl, acc, sdd, depth, nested, out, origin,
 					   why);

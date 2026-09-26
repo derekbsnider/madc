@@ -896,3 +896,14 @@ void __madc_dump_sh_sep(void *sink, long long i)
     if (i > 0)
 	sink_puts(sink, ", ");
 }
+
+void __madc_dump_sh_textchar(void *sink, int c)
+{
+    char ch = (char)c;
+    sh_escaped(sink, &ch, 1, '"');
+}
+
+void __madc_dump_sh_close(void *sink, long long n)
+{
+    sink_puts(sink, n > 0 ? " }" : "}");
+}

@@ -439,6 +439,59 @@ int main(void)
   one-dimensional array, which fits madc's flattened array storage, so the
   inner braces initialize scalars.
 
+### B30. Two initializer-list constructions of standard containers are refused
+
+- Found 2026-09-26, while testing D10's container display.
+
+```cpp
+#include <cstdio>
+#include <map>
+#include <string>
+#include <vector>
+int main()
+{
+	std::map<int, int> m = { { 1, 10 }, { 2, 20 } };
+	std::vector<std::string> vs = { "x", "y" };
+	printf("%zu %zu\n", m.size(), vs.size());
+	return 0;
+}
+```
+
+- g++: `2 2`. madc `--std=c++17`, one error per line:
+  - line 7: `constructor argument coercion cycle (no viable converting
+    constructor)`;
+  - line 8: `no matching constructor for call to 'vector_std____cxx11__…'`,
+    naming the vector's constructor with one `char*` argument.
+- `std::vector<int> v = { 1, 2, 3 }` works, and a map filled by assignment
+  shows fine.
+- Where: not traced. Both are the initializer-list constructor over an
+  element that needs its own conversion: a pair from a braced pair, and a
+  string from a literal.
+
+### B31. `std::vector`'s `operator==` is refused
+
+- Found 2026-09-26, while re-entering D10's shown containers.
+
+```cpp
+#include <cstdio>
+#include <vector>
+int main()
+{
+	std::vector<int> v = { 1, 2, 3 };
+	std::vector<int> w = std::vector<int>{ 1, 2, 3 };
+	int a = w == v;
+	int b = (std::vector<int>{ 1, 2, 3 }) == v;
+	printf("%d %d\n", a, b);
+	return 0;
+}
+```
+
+- g++: `1 1`. madc `--std=c++17`: `tsubst: skipped body with no tsubst
+  coverage (re-parse fallback deleted) @.../bits/stl_algobase.h:1167`.
+- Where: the parse-once spine (parse-once.md) has no KIND coverage for the
+  body `operator==` reaches through `std::equal`. That is a loud refusal by
+  design, never a wrong answer.
+
 ### B25. A declared function returning a function pointer is prototyped `long long`
 
 - Found 2026-09-26, while writing the weak reducer for D27 (B24).

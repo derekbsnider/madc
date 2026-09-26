@@ -1025,6 +1025,38 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10)")
     CHECK(s.shown() == "{ 'a', 'b', 'c', 'd' }");
 }
 
+// Slice 3 (the containers): a standard container shows its elements as a
+// C++ expression that builds it again, `std::vector<int>{ 1, 2, 3 }` and
+// `std::map<int,int>{ { 1, 10 } }`. A std::string shows as its text. A class
+// is named without C's `struct` (`H{ .name = "hh" }`). A declaration whose
+// type comes from a header still shows: its run is the entry's own.
+TEST_CASE("an entry without its final ; shows a standard container (D10)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("#include <string>\n#include <vector>\n#include <map>\n"
+		     "#include <set>\nint k = 0;"));
+    check_reenters(s, "std::string v1 = \"ab\\\"c\"", "\"ab\\\"c\"", "v1 == @");
+    // Compared element by element: std::vector's operator== is refused
+    // (B31), and a container's equality reaches the same algorithm.
+    check_reenters(s, "std::vector<int> v2 = { 1, 2, 3 }",
+		   "std::vector<int>{ 1, 2, 3 }",
+		   "(@).size() == 3 && (@)[0] == v2[0] && (@)[2] == v2[2]");
+    check_reenters(s, "std::vector<int> v3", "std::vector<int>{ }",
+		   "(@).size() == v3.size()");
+    REQUIRE(s.submit("std::map<int, int> v4;"));
+    REQUIRE(s.submit("v4[1] = 10; v4[2] = 20;"));
+    REQUIRE(s.submit("v4"));
+    CHECK(s.shown() == "std::map<int,int>{ { 1, 10 }, { 2, 20 } }");
+    REQUIRE(s.submit("std::set<int> v5;"));
+    REQUIRE(s.submit("v5.insert(3); v5.insert(1);"));
+    REQUIRE(s.submit("v5"));
+    CHECK(s.shown() == "std::set<int>{ 1, 3 }");
+    REQUIRE(s.submit("struct H { std::string name; int n; };"));
+    REQUIRE(s.submit("H v6 = { \"hh\", 3 }"));
+    CHECK(s.shown() == "H{ .name = \"hh\", .n = 3 }");
+}
+
 TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, C)")
 {
     InteractiveSession s;

@@ -210,6 +210,12 @@ void __madc_dump_sh_chars(void *sink, const char *p, long long n);
 /* An array element's separator: nothing before element 0, `, ` before the
  * rest (the element loop is a real loop, so the test is at run time). */
 void __madc_dump_sh_sep(void *sink, long long i);
+/* One character of a quoted text, escaped, with no quotes (a container whose
+ * characters are reached one at a time, a std::string). */
+void __madc_dump_sh_textchar(void *sink, int c);
+/* A container's close after N elements: ` }`, or `}` when it had none, so an
+ * empty one reads `{ }`. */
+void __madc_dump_sh_close(void *sink, long long n);
 
 /* --- the C++ half: the madc::value walk (src/rt_dump_value.cpp) --------- */
 /* NOT part of the strict-C11 ledger lane, and it cannot be: a value's `array`

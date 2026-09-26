@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A shown standard container is written as the expression that builds it
+
+Result capture (D10, plan §41.4a) now covers the standard containers. Each
+shows as a C++ expression that builds it again:
+- `std::vector<int>{ 1, 2, 3 }`, or `std::vector<int>{ }` when empty;
+- `std::map<int,int>{ { 1, 10 }, { 2, 20 } }`;
+- `std::set<int>{ 1, 3 }`.
+
+A `std::string` shows as its text (`"ab\"c"`). A C++ class is named without
+C's `struct` (`H{ .name = "hh", .n = 3 }`). Two fixes found on the way:
+- A declaration whose type comes from a header (`std::string s = "ab"`) was
+  refused with no diagnostic. The entry's run was placed at the header's
+  token and so dropped as an unused library function. It is now placed in
+  the entry's own text.
+- madc refuses `std::vector`'s `operator==` (B31) and two initializer-list
+  constructions (B30), so the tests compare containers element by element.
+
+Test: `test_repl_session`.
+
 ### A shown `var` is written as its dialect literal
 
 Result capture (D10, plan §41.4a) now covers the madc dialect's `var`, the
