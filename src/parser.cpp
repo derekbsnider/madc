@@ -33917,26 +33917,33 @@ void StructRegistry::restore(const datadef_map_t &entries)
     gen_stamp_ = 0;
 }
 
+// Nested like every registry transaction (registration_map says how).
 void StructRegistry::begin_transaction(transaction_state &state)
 {
-    assert(!transaction_);
+    assert(transaction_ != &state);
     state.saved.clear();
     state.touched.clear();
+    state.enclosing = transaction_;
     transaction_ = &state;
 }
 
 void StructRegistry::commit_transaction(transaction_state &state)
 {
     assert(transaction_ == &state);
-    transaction_ = NULL;
+    transaction_ = state.enclosing;
+    if ( transaction_ )
+	for ( size_t i = 0; i < state.saved.size(); ++i )
+	    if ( transaction_->touched.insert(state.saved[i].key).second )
+		transaction_->saved.push_back(state.saved[i]);
     state.saved.clear();
     state.touched.clear();
+    state.enclosing = NULL;
 }
 
 void StructRegistry::rollback_transaction(transaction_state &state)
 {
     assert(transaction_ == &state);
-    transaction_ = NULL;
+    transaction_ = state.enclosing;
     for ( size_t i = state.saved.size(); i-- > 0; )
     {
 	const transaction_state::SavedValue &saved = state.saved[i];
@@ -33947,6 +33954,7 @@ void StructRegistry::rollback_transaction(transaction_state &state)
     }
     state.saved.clear();
     state.touched.clear();
+    state.enclosing = NULL;
     index_.clear();
     seen_.clear();
     size_stamp_ = 0;

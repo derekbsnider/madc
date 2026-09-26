@@ -67,7 +67,8 @@ public:
 	size_t original_size;
 	std::vector<SavedSlot> saved;
 	std::set<size_t> touched;
-	transaction_state() : original_size(0) {}
+	transaction_state *enclosing;	// the transaction this one nests in
+	transaction_state() : original_size(0), enclosing(0) {}
     };
 
 private:
@@ -148,28 +149,38 @@ public:
 	return true;
     }
 
+    // Transactions nest: an inner one records against the table at ITS
+    // begin; its commit hands the enclosing transaction each saved slot that
+    // predates the enclosing one's begin and that it has not saved itself.
     void begin_transaction(transaction_state &state)
     {
-	assert(!_transaction);
+	assert(_transaction != &state);
 	state.original_size = _objs.size();
 	state.saved.clear();
 	state.touched.clear();
+	state.enclosing = _transaction;
 	_transaction = &state;
     }
 
     void commit_transaction(transaction_state &state)
     {
 	assert(_transaction == &state);
-	_transaction = (transaction_state *)0;
+	_transaction = state.enclosing;
+	if ( _transaction )
+	    for ( size_t i = 0; i < state.saved.size(); ++i )
+		if ( state.saved[i].index < _transaction->original_size
+		  && _transaction->touched.insert(state.saved[i].index).second )
+		    _transaction->saved.push_back(state.saved[i]);
 	state.original_size = 0;
 	state.saved.clear();
 	state.touched.clear();
+	state.enclosing = (transaction_state *)0;
     }
 
     void rollback_transaction(transaction_state &state)
     {
 	assert(_transaction == &state);
-	_transaction = (transaction_state *)0;
+	_transaction = state.enclosing;
 	for ( size_t i = state.saved.size(); i-- > 0; )
 	{
 	    const typename transaction_state::SavedSlot &saved = state.saved[i];
@@ -179,6 +190,7 @@ public:
 	state.original_size = 0;
 	state.saved.clear();
 	state.touched.clear();
+	state.enclosing = (transaction_state *)0;
     }
 
     uint32_t base() const { return _base; }

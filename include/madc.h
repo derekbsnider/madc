@@ -1523,6 +1523,12 @@ typedef madc::dis::intern_keyed_map<TokenDataType *> flat_datatype_map_t;
 typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
 
+// The registries' transactions NEST (an interactive entry's transaction holds
+// the class journals opened inside it, plan §41.3): a transaction begun while
+// another is open records against the value at ITS begin, and its commit
+// hands each first write it saved to the enclosing transaction, which keeps
+// its own older save for a key it touched first. Rolling back the inner one
+// restores only what it changed. Every registry type below follows this.
 template<class Key, class Value>
 class registration_map : public std::map<Key, Value>
 {
@@ -1538,6 +1544,8 @@ public:
     struct transaction_state {
 	std::vector<SavedValue> saved;
 	std::set<Key> touched;
+	transaction_state *enclosing;
+	transaction_state() : enclosing(NULL) {}
     };
 private:
     transaction_state *transaction;
@@ -1610,22 +1618,28 @@ public:
     }
     void begin_transaction(transaction_state &state)
     {
-	assert(!transaction);
+	assert(transaction != &state);
 	state.saved.clear();
 	state.touched.clear();
+	state.enclosing = transaction;
 	transaction = &state;
     }
     void commit_transaction(transaction_state &state)
     {
 	assert(transaction == &state);
-	transaction = NULL;
+	transaction = state.enclosing;
+	if ( transaction )
+	    for ( size_t i = 0; i < state.saved.size(); ++i )
+		if ( transaction->touched.insert(state.saved[i].key).second )
+		    transaction->saved.push_back(state.saved[i]);
 	state.saved.clear();
 	state.touched.clear();
+	state.enclosing = NULL;
     }
     void rollback_transaction(transaction_state &state)
     {
 	assert(transaction == &state);
-	transaction = NULL;
+	transaction = state.enclosing;
 	for ( size_t i = state.saved.size(); i-- > 0; )
 	{
 	    const SavedValue &saved = state.saved[i];
@@ -1636,6 +1650,7 @@ public:
 	}
 	state.saved.clear();
 	state.touched.clear();
+	state.enclosing = NULL;
     }
     bool transaction_active() const { return transaction != NULL; }
 };
@@ -1649,6 +1664,8 @@ public:
 	std::vector<Key> changed;
 	std::set<Key> existed;
 	std::set<Key> touched;
+	transaction_state *enclosing;
+	transaction_state() : enclosing(NULL) {}
     };
 private:
     transaction_state *transaction;
@@ -1769,24 +1786,34 @@ public:
     }
     void begin_transaction(transaction_state &state)
     {
-	assert(!transaction);
+	assert(transaction != &state);
 	state.changed.clear();
 	state.existed.clear();
 	state.touched.clear();
+	state.enclosing = transaction;
 	transaction = &state;
     }
     void commit_transaction(transaction_state &state)
     {
 	assert(transaction == &state);
-	transaction = NULL;
+	transaction = state.enclosing;
+	if ( transaction )
+	    for ( size_t i = 0; i < state.changed.size(); ++i )
+		if ( transaction->touched.insert(state.changed[i]).second )
+		{
+		    transaction->changed.push_back(state.changed[i]);
+		    if ( state.existed.count(state.changed[i]) )
+			transaction->existed.insert(state.changed[i]);
+		}
 	state.changed.clear();
 	state.existed.clear();
 	state.touched.clear();
+	state.enclosing = NULL;
     }
     void rollback_transaction(transaction_state &state)
     {
 	assert(transaction == &state);
-	transaction = NULL;
+	transaction = state.enclosing;
 	for ( size_t i = state.changed.size(); i-- > 0; )
 	    if ( state.existed.count(state.changed[i]) )
 		base_type::insert(state.changed[i]);
@@ -1795,6 +1822,7 @@ public:
 	state.changed.clear();
 	state.existed.clear();
 	state.touched.clear();
+	state.enclosing = NULL;
     }
 };
 
@@ -1845,6 +1873,8 @@ public:
 	};
 	std::vector<SavedValue> saved;
 	std::set<std::string> touched;
+	transaction_state *enclosing;
+	transaction_state() : enclosing(NULL) {}
     };
     ~StructRegistry();				// MADC_DESPACE_PROBE counter dump
     const_iterator begin() const { return map_.begin(); }

@@ -314,7 +314,16 @@ public:
 	size_t live;
 	std::vector<saved_value> saved;
 	std::vector<uint32_t> inserted;
-	transaction_state() : slot_size(0), vals_size(0), live(0) {}
+	transaction_state *enclosing;	// the transaction this one nests in
+	transaction_state()
+	    : slot_size(0), vals_size(0), live(0), enclosing(nullptr) {}
+	bool saved_id(uint32_t id) const
+	{
+	    for ( size_t i = 0; i < saved.size(); ++i )
+		if ( saved[i].id == id )
+		    return true;
+	    return false;
+	}
     };
 private:
     transaction_state   *_transaction = nullptr;
@@ -322,11 +331,9 @@ private:
     void save_transaction_value(uint32_t id)
     {
 	if ( !_transaction || id >= _slot.size() || _slot[id] < 0
-	  || (size_t)_slot[id] >= _transaction->vals_size )
+	  || (size_t)_slot[id] >= _transaction->vals_size
+	  || _transaction->saved_id(id) )
 	    return;
-	for ( size_t i = 0; i < _transaction->saved.size(); ++i )
-	    if ( _transaction->saved[i].id == id )
-		return;
 	_transaction->saved.push_back(typename transaction_state::saved_value(
 	    id, _slot[id], _vals[(size_t)_slot[id]]));
     }
@@ -350,21 +357,38 @@ public:
     }
     void set_pool(intern_table *p) { _pool = p; }
 
+    // Transactions nest: an inner one records against the map at ITS begin.
+    // Its commit hands the enclosing transaction every key it inserted and
+    // each saved value that predates the enclosing one's begin, unless the
+    // enclosing one saved that key itself (its save is older).
     void begin_transaction(transaction_state &state)
     {
-	assert(!_transaction);
+	assert(_transaction != &state);
 	state.slot_size = _slot.size();
 	state.vals_size = _vals.size();
 	state.live = _live;
 	state.saved.clear();
 	state.inserted.clear();
+	state.enclosing = _transaction;
 	_transaction = &state;
     }
 
     void commit_transaction(transaction_state &state)
     {
 	assert(_transaction == &state);
-	_transaction = nullptr;
+	_transaction = state.enclosing;
+	if ( _transaction )
+	{
+	    for ( size_t i = 0; i < state.saved.size(); ++i )
+		if ( (size_t)state.saved[i].slot < _transaction->vals_size
+		  && !_transaction->saved_id(state.saved[i].id) )
+		    _transaction->saved.push_back(state.saved[i]);
+	    _transaction->inserted.insert(_transaction->inserted.end(),
+		state.inserted.begin(), state.inserted.end());
+	}
+	state.saved.clear();
+	state.inserted.clear();
+	state.enclosing = nullptr;
     }
 
     void rollback_transaction(transaction_state &state)
@@ -382,7 +406,10 @@ public:
 	    _slot[saved.id] = saved.slot;
 	}
 	_live = state.live;
-	_transaction = nullptr;
+	_transaction = state.enclosing;
+	state.saved.clear();
+	state.inserted.clear();
+	state.enclosing = nullptr;
     }
 
     // Pre-size the dense storage. Reserving the value pool up front means it
