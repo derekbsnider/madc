@@ -2182,11 +2182,43 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
     - `int g2() { return later2; }` is accepted, and after `int later2 = 4;`, `g2()` gives 4.
     - `int z = 5; f();` with `f` declared and never defined links. Its run fails at `f`'s call. `z` is kept: the entry linked, and a run-time failure keeps its definitions, as in Julia.
     - Today both are refused at link by `MIR_module_link_check`, and the entry is rolled back (§41.3).
-  - **To design:**
-    - How a reference to a not-yet-defined symbol binds so that a later definition is the one reached. For a function, a call stub resolved at call time. For data, an indirection the builder emits.
-    - Whether the failing use unwinds to the entry's boundary, the point the proposed `exit()` handling returns to.
-    - Measure clang-repl-18 and -20, and Julia's documented behaviour, on both sequences first. Also measure whether a failing statement keeps the entry's earlier declarations.
-    - A strong DUPLICATE definition is still refused at its entry: the link check keeps that half.
+  - **Measured (2026-09-26).** clang-repl-18 and -20 agree:
+    - `extern int later2; int g2() { return later2; }`, then `int later2 = 4;`, then `g2()`: 4.
+    - `int h(); int calls_h() { return h(); }`, then `h` defined: `calls_h()` is 11.
+    - `extern int dv; int *pdv = &dv;`, then `int dv = 3;`: `*pdv` is 3. ORC links pdv's module only when pdv is first read.
+    - `int f(); int z = 5; f();`: "Symbols not found: [ _Z1fv ]", and `z` cannot be used after it ("Failed to materialize symbols: z"). The same for `int z2 = 6; int bad = f();`.
+    - Julia keeps `z`. madc follows Julia here.
+    - madc before D27 refuses all of these at link.
+  - **Designed (2026-09-26).**
+    - **A function gets a stub, and its definition replaces the stub.**
+      - An entry's module may link except for functions that nothing defines. The session then gives each such function a stub: a weak definition, in a module of its own, whose body reports the undefined reference (below). The entry links against the stubs.
+      - A later entry's definition replaces the stub. This is ld's rule, added to MIR's loader: a strong function definition loaded after a weak one adopts the weak one's address.
+        - Every reference already bound reaches the definition: a call, a function pointer, a vtable slot. A session vtable is a linkonce copy per module (slice 3), so its slot for a virtual function defined later is a function import like any other.
+        - The function keeps one address.
+        - MIR already never inlines a weak function.
+      - A library loaded later (`import`, `#load`) may provide the function. After each entry, the session redirects every stub that the resolver now finds.
+      - A stub is never in `session_defined`, so a later definition is still emitted.
+      - MIR's imports do not say whether they are functions, so the builder does: `CirBuilder::declares_function`. The stubs are made only after every other link check passes, so a refused entry loads nothing.
+    - **An object is reached through a cell the builder emits.**
+      - In an interactive entry, code may name an object that an entry declared and nothing defines yet (`extern int later2;`, a class's static member). That code reads the object through a session cell: `(*(cell ? cell : __madc_session_unbound(...)))`.
+      - The session owns the cell. It binds the cell at link when the object resolves, and after every entry that defines it. Code translated once the object is defined names it directly.
+      - Only code is indirected. A static initializer that takes such an object's address (`int *pdv = &dv;`) is refused at its entry, because that entry is the use. clang-repl accepts it only because it links pdv's module at pdv's first read.
+      - Header-declared objects are not indirected: a library provides them, never a later entry.
+    - **The failing use unwinds to the entry's boundary.**
+      - The stub and the cell call `__madc_session_unbound`. It records "undefined reference to 'f()'" on the running entry. It then runs the exception runtime's cleanups down to the entry's mark, restores that runtime's state, and returns to the boundary: the session's guarded call around the entry's init and its run.
+      - The entry stays linked, with its definitions: `z` is 5.
+      - It is not a C++ exception, so `catch (...)` does not see it. Neither ld's failure nor clang-repl's is an exception.
+      - Reached from a task other than the one the entry runs on, it aborts with the message, as the frozen trap does.
+      - This is the boundary the proposed `exit()` handling returns to (D25).
+    - **Still refused at the entry:**
+      - a strong duplicate definition;
+      - a vtable or type_info that nothing emits;
+      - a static initializer naming an undefined object;
+      - a header-declared object that nothing provides.
+    - **Slices:**
+      1. The loader's weak rule, the function stub and the boundary.
+      2. The object cells.
+      3. The §41.3 rollback table's link-refused row, which becomes a run-time failure.
   - **Order:** before D20. It changes what a refused-at-link entry is, and the §41.3 rollback table's link-refused row.
 
 ### Next

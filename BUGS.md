@@ -94,6 +94,33 @@ int main() { int(step(3)); printf("%d\n", log_v); }
   function (an earlier line calling `step` failed with "called object is
   not a function").
 
+### B24. A weak function definition is emitted strong
+
+- Found 2026-09-26, while measuring ld's weak and strong rule for D27. It
+  is not on the REPL's path: D27's session stubs set their binding in MIR
+  directly.
+
+```c
+/* w1.c */
+#include <stdio.h>
+__attribute__((weak)) int f(void) { return 1; }
+int main(void) { printf("%d\n", f()); return 0; }
+/* w2.c */
+int f(void) { return 2; }
+```
+
+- gcc, clang (`w1.c w2.c`): `2`. madc `--project` over both TUs, in
+  either order: `1`, silently. With a third function `int (*get(void))(void)
+  { return f; }` in w2.c and `fa == get()` in w1.c, gcc says `1` and madc
+  `0`: two addresses for one function.
+- Where: the MIR dump has no `weak f` line, so the builder drops the
+  attribute on a function definition (`var_decl` carries `linkonce` for a
+  C++ inline variable only). `--project` then keeps both copies, since it
+  permits func redefinition (last copy wins), and each TU's own calls bind to
+  its own copy. Two layers: the builder must emit the binding, and MIR's
+  loader must let a strong definition replace a weak one (D27 adds that
+  rule, adopting the weak definition's address).
+
 ## Accepts invalid code
 
 ### B2. A stray top-level `}` is accepted
@@ -359,6 +386,26 @@ int main()
   or a `using ::g;` redeclaration with an overload.
 - Where: not traced. The cast's operand is read by `parseCastExpression`,
   the one owner. What differs is `<cmath>`'s `std::` overload set.
+
+### B25. A declared function returning a function pointer is prototyped `long long`
+
+- Found 2026-09-26, while writing the weak reducer for D27 (B24).
+
+```c
+int (*get(void))(void);
+int one(void);
+int same(void) { return one == get(); }
+int call(void) { return get()(); }
+```
+
+- gcc, clang `-c -Wall -Wextra`: clean. madc `--std=c17`: `3:30: warning --
+  comparison of integer with a pointer`. `--emit=c11` prints `extern long
+  long get(void);`, and `get()()` is then a call of a `long long`. The MIR
+  proto is `i64`, which happens to work on x86-64.
+- With the definition later in the same TU, madc is right (`1 1`, no
+  warning). Only a declaration that no definition follows is mistyped.
+- Where: not traced. The front end already mistypes it (the warning is
+  parse time), and the builder's prototype follows.
 
 ## Diagnostics
 
