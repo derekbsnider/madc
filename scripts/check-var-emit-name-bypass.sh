@@ -68,4 +68,20 @@ if [ "$m" -gt "$BASELINE" ]; then
   grep -nE '\b(id|array_ctor_call|array_storage_decl)\([a-zA-Z_]+->name\.c_str\(\)' src/cir_builder.cpp | sed 's/^/  /'
   exit 1
 fi
+
+# --- 3. ratchet: storage lvalues built outside var_storage_node ---
+# Code names a variable's storage through CirBuilder::var_storage_node, which
+# reads an interactive session's late-bound object through its cell (plan §42
+# D27). The arms still spelling `id(var_emit_name(v))` handle kinds it never
+# late-binds (a reference, a capture, a madc carrier, a temporary, the eval
+# scope's reads), and the owner itself is one of them. A new one is a bypass:
+# route it through var_storage_node.
+SBASE=15
+s=$(grep -cE '\bid\(var_emit_name\(' src/cir_builder.cpp)
+echo "storage-lvalue ratchet: $s site(s) spelling id(var_emit_name(...)) (baseline $SBASE, growth forbidden)"
+if [ "$s" -gt "$SBASE" ]; then
+  echo "  -> a NEW storage lvalue bypasses var_storage_node; route it through the owner."
+  grep -nE '\bid\(var_emit_name\(' src/cir_builder.cpp | sed 's/^/  /'
+  exit 1
+fi
 echo "GREEN — Variable emission names derive only via var_emit_name."

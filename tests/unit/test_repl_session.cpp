@@ -275,6 +275,54 @@ TEST_CASE("a function no entry defines yet is refused at its first use (D27)")
     CHECK(*(int *)s.data("ko") == 610);
 }
 
+// D27, slice 2: code that names an object an entry declared and nothing
+// defines yet reads it through a session cell, so the later definition is the
+// object it reaches, by value, by write and by address. A read that comes
+// first fails when it runs. A static initializer that takes the object's
+// address is that entry's own use, so its link still refuses it. Oracle:
+// clang-repl-18 and -20 (tmp/repl/s5/d27a.repl) give g2=4 for the same
+// entries. They accept `int *pdv = &dv;` too, but only because ORC links that
+// module at pdv's first read (plan §42 D27).
+TEST_CASE("an object no entry defines yet is refused at its first use (D27)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("extern int later2;"));
+    REQUIRE(s.submit("int g2() { return later2; }"));
+    REQUIRE(s.submit("void set2(int v) { later2 = v; }"));
+    REQUIRE(s.submit("int *addr2() { return &later2; }"));
+    CHECK_FALSE(s.submit("int k1 = g2();"));
+    const ::Program::Diagnostic *d = first_error_diagnostic(s);
+    REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+    CHECK(d->message == "undefined reference to 'later2'");
+    CHECK(d->phase == ::Program::DiagnosticPhase::runtime);
+    CHECK(*(int *)s.data("k1") == 0);	// linked: kept
+    REQUIRE(s.submit("int later2 = 4;"));
+    REQUIRE(s.submit("int k2 = g2();"));
+    CHECK(*(int *)s.data("k2") == 4);
+    REQUIRE(s.submit("set2(9);"));
+    CHECK(*(int *)s.data("later2") == 9);
+    REQUIRE(s.submit("int same = (addr2() == &later2) + 10 * *addr2();"));
+    CHECK(*(int *)s.data("same") == 91);
+
+    // A class's static data member, defined after a member function that
+    // reads it.
+    REQUIRE(s.submit("struct S { static int count; int f(); };"));
+    REQUIRE(s.submit("int S::f() { return count + 1; }"));
+    CHECK_FALSE(s.submit("int ks0 = S().f();"));
+    CHECK(first_error(s) == "undefined reference to 'S::count'");
+    REQUIRE(s.submit("int S::count = 5;"));
+    REQUIRE(s.submit("int ks = S().f();"));
+    CHECK(*(int *)s.data("ks") == 6);
+
+    REQUIRE(s.submit("extern int nd;"));
+    CHECK_FALSE(s.submit("int *pnd = &nd;"));
+    d = first_error_diagnostic(s);
+    REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+    CHECK(d->message == "undefined reference to 'nd'");
+    CHECK(d->phase == ::Program::DiagnosticPhase::compiler);
+}
+
 TEST_CASE("a function no entry defines yet is refused at its first use (D27, C)")
 {
     InteractiveSession s;
@@ -288,6 +336,18 @@ TEST_CASE("a function no entry defines yet is refused at its first use (D27, C)"
     REQUIRE(s.submit("int f(void) { return 7; }"));
     REQUIRE(s.submit("int kc = 0;\nkc = calls() + 10 * (fp == f) + 100 * fp();"));
     CHECK(*(int *)s.data("kc") == 718);
+
+    // The object half (slice 2), a struct's member access included.
+    REQUIRE(s.submit("extern int later2;"));
+    REQUIRE(s.submit("int g2(void) { return later2; }"));
+    CHECK_FALSE(s.submit("int k1;\nk1 = g2();"));
+    CHECK(first_error(s) == "undefined reference to 'later2'");
+    REQUIRE(s.submit("int later2 = 4;"));
+    REQUIRE(s.submit("struct P { int a, b; };\nextern struct P pp;"));
+    REQUIRE(s.submit("int sum(void) { return pp.a + pp.b; }"));
+    REQUIRE(s.submit("struct P pp = { 2, 3 };"));
+    REQUIRE(s.submit("int k2;\nk2 = g2() + 10 * sum();"));
+    CHECK(*(int *)s.data("k2") == 54);
 }
 
 // Entry N is REPL[N] for the Nth entry submitted, refused ones counted, as in
@@ -812,8 +872,9 @@ TEST_CASE("a qualified expression is a statement at an entry's top level")
 // used, as every C++ TU does. Emitted eagerly, an unused inline member that
 // names a static member a later entry defines refused its own entry
 // ("undefined reference to 'S::count'"), and so did an inline function naming
-// an extern defined later. A strong definition is still emitted whole, so it
-// is still refused. Oracle: clang-repl-18 and -20 (tmp/repl/s3/inl.repl,
+// an extern defined later. A strong definition is still emitted whole; since
+// D27 its read of an object defined later goes through a session cell, so it
+// is accepted too. Oracle: clang-repl-18 and -20 (tmp/repl/s3/inl.repl,
 // ext.repl) accept both entries and give kc=14 and r=4.
 TEST_CASE("an entry emits an inline body only where it is used")
 {
@@ -836,7 +897,9 @@ TEST_CASE("an entry emits an inline body only where it is used")
 	REQUIRE(s.submit("int r = f();"));
 	CHECK(*(int *)s.data("r") == 4);
 
-	CHECK_FALSE(s.submit("extern int later2;\nint g2() { return later2; }"));
-	CHECK(first_error(s) == "undefined reference to 'later2'");
+	REQUIRE(s.submit("extern int later2;\nint g2() { return later2; }"));
+	REQUIRE(s.submit("int later2 = 5;"));
+	REQUIRE(s.submit("int r2 = g2();"));
+	CHECK(*(int *)s.data("r2") == 5);
     }
 }

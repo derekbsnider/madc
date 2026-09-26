@@ -194,6 +194,12 @@ private:
     size_t stub_modules;
     std::map<std::string, MIR_item_t> late_stubs;
     std::string live_init;
+    // Slice 2: the cells late-bound objects are read through, by cell symbol
+    // (a node-stable map: an import binds to a value's address), and the
+    // object each unbound cell waits for.
+    std::map<std::string, void *> late_cell_slots;
+    std::map<std::string, std::string> late_cell_waits;
+    void bind_late_cells(Program *prog);
     MIR_item_t find_item(const char *name, bool func) const;
     bool admits(MIR_module_t m, Program *prog, const char *entry_name,
 		CirBuilder *b);

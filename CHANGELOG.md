@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### An object no entry defines yet is refused at its first use
+
+In the interactive session, code that named an object an entry had declared
+but none had defined refused its entry at link. That covered
+`extern int later2; int g2() { return later2; }` and a member function
+reading a static data member that a later entry defines. Following D27, such
+code now reads the object through a cell the session owns. The session binds
+the cell once an entry defines the object, so `g2()` gives 4 after
+`int later2 = 4;`. A write through the cell and the address `&later2` reach
+the same object. A read that comes first fails when it runs, with
+"undefined reference to 'later2'", and the entry is kept. clang-repl-18 and
+-20 give `g2=4` too.
+
+A static initializer such as `int *p = &nd;` is still refused at its entry,
+because that entry is the use. clang-repl accepts it only because it links
+the module at `p`'s first read. A reference, an array, a madc carrier and a
+thread-local object are also still refused at link.
+
+Test: `test_repl_session`.
+
 ### A function no entry defines yet is refused at its first use
 
 In the interactive session, an entry that named a function no entry had
@@ -23,8 +43,7 @@ them.
 
 MIR's loader gains ld's rule that a definition replaces a weak one of the same
 function and takes its address, and a call to a weak function is never
-patched into a direct call. An object nothing defines still refuses its
-entry.
+patched into a direct call.
 
 Test: `test_repl_session`.
 

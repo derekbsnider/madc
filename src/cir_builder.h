@@ -335,6 +335,16 @@ class CirBuilder {
 	// (Program::session_defined)? Such a definition is declared, never
 	// defined again: this module links to the live one.
 	bool session_defines(const std::string &sym) const;
+	// Plan §42 D27, slice 2: code in an interactive entry reads an object that
+	// an entry declared and nothing defines yet through a session CELL, so a
+	// later definition is the object it reaches. late_bound_object is the
+	// test. var_storage_node is the one owner of the lvalue that names a
+	// variable's storage in code. m_late_cells holds the cells this module
+	// names (cell symbol -> object symbol), which the session binds
+	// (late_cells()).
+	bool late_bound_object(const class Variable &v) const;
+	node_t var_storage_node(const class Variable &v, TokenBase *origin);
+	std::map<std::string, std::string> m_late_cells;
 	// Wide string literals (parser addWideLiteral): the sanitized module
 	// symbol (__wlit_<n>) each synthetic __wliteral__ Variable emits under.
 	// The Variable's own name embeds the raw UTF-32 payload (binary-safe for
@@ -2482,6 +2492,10 @@ public:
 	// never to an object.
 	bool declares_function(const std::string &sym) const
 		{ return m_function_decl_syms.count(sym) != 0; }
+	// Plan §42 D27, slice 2: the session cells this module's code reads its
+	// late-bound objects through, cell symbol -> object symbol.
+	const std::map<std::string, std::string> &late_cells() const
+		{ return m_late_cells; }
 	// Pack-side c2mir check gate, drop arm (rung 1, layer 4): called by
 	// madc_cir_freeze with the defective top-level child indices reported
 	// by c2mir_check_tree on a COPY of the pristine translated tree. Drops

@@ -12308,7 +12308,7 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 		return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
 	}
 	recv_type = tm->object.type;
-	recv_node = id(var_emit_name(tm->object).c_str(), origin);
+	recv_node = var_storage_node(tm->object, origin);
 	from_var = true;
 	recv_class = class_behind(recv_type);
 	// madc-array receiver as a named variable (`a.count()`) or a value&
@@ -21184,7 +21184,7 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 		// var_emit_name like the emit_symbol branch above (which routes
 		// through object_var_addr): the receiver can be an aliased global.
 		bool recv_is_ptr = tsub->object.type && tsub->object.type->is_pointer();
-		node_t recv = id(var_emit_name(tsub->object).c_str(), origin);
+		node_t recv = var_storage_node(tsub->object, origin);
 		recv_addr = recv_is_ptr ? recv : node1(N_ADDR, recv, origin);
 	}
 	return class_subscript_addr_on(cls, recv_addr, tsub->index, origin);
@@ -22657,7 +22657,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						id(tv->var.name.c_str(), tb), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 				return id(tv->var.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 			}
-			return id(var_emit_name(tv->var).c_str(), tb);
+			return var_storage_node(tv->var, tb);
 		}
 	}
 
@@ -22942,7 +22942,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// the address.
 			if (is_array_object(ta->var.type))
 				return id(var_emit_name(ta->var).c_str(), tb);
-			return node1(N_ADDR, id(var_emit_name(ta->var).c_str(), tb), tb);
+			return node1(N_ADDR, var_storage_node(ta->var, tb), tb);
 		}
 	}
 
@@ -23030,7 +23030,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// operand the same way (`*arg` -> *"text").
 			if (node_t baked = baked_cstr_constant(td->var, tb))
 				return node1(N_DEREF, baked, tb);
-			return node1(N_DEREF, id(var_emit_name(td->var).c_str(), tb), tb);
+			return node1(N_DEREF, var_storage_node(td->var, tb), tb);
 		}
 	}
 
@@ -23062,7 +23062,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			else if (mode == FuncDef::CaptureMode::ByValue)
 				target = id(tds->var.name.c_str(), tb);	// allowed-exception: captured LOCAL by value (note_capture)
 			else
-				target = id(var_emit_name(tds->var).c_str(), tb);
+				target = var_storage_node(tds->var, tb);
 			node_t step = node1(tds->increment ? N_POST_INC : N_POST_DEC, target, tb);
 			return node1(N_DEREF, step, tb);
 		}
@@ -23114,7 +23114,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 									     idxs, tb))
 						return flat;
 				}
-				base = id(var_emit_name(tsub->object).c_str(), tb);
+				base = var_storage_node(tsub->object, tb);
 				// A REFERENCE to a pointer subscripts its REFERENT
 				// ([expr.sub]: `int *&rp; rp[1]` is `(*rp)[1]`): the
 				// reference is stored as a pointer to it — the TokenVar
@@ -23284,7 +23284,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// var_emit_name resolves a namespace extern's Itanium
 				// storage alias (madc::sys -> _ZN4madc3sysE), matching
 				// the subscript path and the extern decl's own id.
-					obj = id(var_emit_name(tm->object).c_str(), tb);
+					obj = var_storage_node(tm->object, tb);
 				}
 			}
 			node_t member = id(tm->var.name.c_str(), tb);	// allowed-exception: member SELECTOR, not storage
@@ -31858,6 +31858,66 @@ static std::string tu_init_symbol(const std::string &tu)
 bool CirBuilder::session_defines(const std::string &sym) const
 {
 	return m_prog && m_prog->session_defined.count(sym) != 0;
+}
+
+// Plan §42 D27, slice 2: does this interactive entry's code read V through a
+// session cell? V is an object with static storage that an entry declared
+// (`extern int x;`, a class's static data member) and that nothing defines:
+// no definition so far (vfDEFINED, session_defined), and no library provides
+// it. A file-scope initializer names it directly: that entry is its use, and
+// its link refuses it. A reference, an array, a madc carrier and a
+// thread-local object keep the direct name too, and their link refuses them,
+// as before D27.
+bool CirBuilder::late_bound_object(const Variable &v) const
+{
+	if (!m_prog || !m_prog->interactive_entry() || m_file_scope_decl)
+		return false;
+	if (!(v.flags & vfEXTERN)
+	    || (v.flags & (vfLOCAL | vfPARAM | vfDEFINED | vfTHREADLOCAL)))
+		return false;
+	if (!v.type || v.type->is_function() || v.is_reference()
+	    || v.is_fixed_array() || !v.dims.empty() || is_array_object(v.type))
+		return false;
+	const std::string sym = var_emit_name(v);
+	return !session_defines(sym) && !external_symbol_available(sym);
+}
+
+// The lvalue that names V's storage in code: its emitted name, or, for a
+// late-bound object, `(*(T *)(cell ? cell : __madc_session_unbound("sym")))`
+// over the session's cell for it (`extern void *__madc_cell_<sym>;`). The
+// session binds the cell once the object is defined; a read before that
+// fails when it runs, with ld's words, and returns to the entry's boundary.
+node_t CirBuilder::var_storage_node(const Variable &v, TokenBase *origin)
+{
+	if (!late_bound_object(v))
+		return id(var_emit_name(v).c_str(), origin);
+	const std::string sym = var_emit_name(v);
+	const std::string cell = "__madc_cell_" + sym;
+	if (m_late_cells.insert(std::make_pair(cell, sym)).second) {
+		node_t spec = list();
+		append(spec, simple(N_EXTERN));
+		append(spec, simple(N_VOID));
+		node_t dl = list();
+		append(dl, pointer());
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, node1(N_SHARE, spec));
+		append(sd, node2(N_DECL, id(cell.c_str()), dl));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		m_output_externs[cell] = sd;
+		need_output_extern("__madc_session_unbound", /*ret_ptr*/true,
+				   { { {N_CHAR}, true } });
+	}
+	node_t args = list();
+	append(args, str(sym.c_str(), sym.size() + 1, origin));
+	node_t unbound = node2(N_CALL, id("__madc_session_unbound", origin),
+			       args, origin);
+	node_t addr = node3(N_COND, id(cell.c_str(), origin),
+			    id(cell.c_str(), origin), unbound, origin);
+	node_t typed = node2(N_CAST, ptr_type_node(m_prog->getPointerType(v.type)),
+			     addr, origin);
+	return node1(N_DEREF, typed, origin);
 }
 
 node_t CirBuilder::translate_module(Program *prog)

@@ -128,6 +128,11 @@ static void cir_register_source_debug(MIR_context_t ctx)
 // discipline as the fatal-containment state below).
 static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host_regs = NULL;
 
+// An interactive session's object cells (plan §42 D27, slice 2), by cell
+// symbol: a cell import binds to its slot's address. Set around the link check
+// and the link of a session entry, like the host callbacks above.
+static thread_local std::map<std::string, void *> *cir_active_cells = NULL;
+
 // The ACTIVE stdlib flavor's C++ runtime, in the process's global symbol scope.
 //
 // A mangled-direct import names a symbol the selected stdlib really exports
@@ -199,6 +204,11 @@ static void *cir_import_resolver(const char *name)
 	for (const Program::HostCallbackReg &r : *cir_active_host_regs)
 	    if (r.entry && r.import_sym == name)
 		return (void *)r.entry;
+    if (cir_active_cells) {
+	std::map<std::string, void *>::iterator ci = cir_active_cells->find(name);
+	if (ci != cir_active_cells->end())
+	    return (void *)&ci->second;
+    }
     void *addr = madcdl_sym_default(name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
@@ -1053,6 +1063,8 @@ void CirJitSession::teardown()
     stub_modules = 0;
     late_stubs.clear();
     live_init.clear();
+    late_cell_slots.clear();
+    late_cell_waits.clear();
 }
 
 bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
@@ -1188,6 +1200,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// them all, untruncated (host-regs still set for accurate resolution).
 	cir_dump_undefined_imports(ctx);
 	cir_active_host_regs = NULL;
+	cir_active_cells = NULL;
 	// A live session's context holds every earlier entry: one refused
 	// module must not end it (its rollback is plan §41.3).
 	if (!live_mode)
@@ -1232,6 +1245,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	cir_ledger_pull(ctx, prog);
     mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
+    cir_active_cells = live_mode ? &late_cell_slots : NULL;
     // Object mode never reads import addresses (cir_object_import_resolver),
     // so it needs no runtime loaded — its DT_NEEDED comes from
     // cir_native_link_env. prog == NULL is the frozen lane, which recreates
@@ -1255,6 +1269,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 		 madc_object_mode ? cir_object_import_resolver
 				  : cir_import_resolver);
     cir_active_host_regs = NULL;
+    cir_active_cells = NULL;
     mc_lap("MIR_link");
     if (madc_debug_info) {
 	// -g: JIT lane registers the GDB-JIT object; object mode attaches
@@ -1666,12 +1681,14 @@ struct CirEntryBoundary
 };
 static thread_local CirEntryBoundary *cir_entry_boundary = NULL;
 
-// The body of every session stub: the use of a function no entry defines. It
-// records ld's words on the running entry and returns to the entry's
-// boundary. It is no C++ exception, so no script `try` sees it. Reached with
-// no boundary to return to (a task the entry spawned, another thread), it
+// The body of every session stub, and the unbound arm of every object cell's
+// read (slice 2): the use of a symbol no entry defines. It records ld's words
+// on the running entry and returns to the entry's boundary, so it never
+// returns to its caller (the pointer it is declared to return is the cell
+// read's type). It is no C++ exception, so no script `try` sees it. Reached
+// with no boundary to return to (a task the entry spawned, another thread), it
 // aborts with the message, as the frozen trap does.
-extern "C" void __madc_session_unbound(const char *sym)
+extern "C" void *__madc_session_unbound(const char *sym)
 {
     CirEntryBoundary *b = cir_entry_boundary;
     if (!b || b->task != __madc_task_current()) {
@@ -1801,15 +1818,47 @@ bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name
     // runtime is open (idempotent), the Program's host callbacks resolve.
     cir_open_stdlib_runtime(prog->active_stdlib_flavor());
     cir_active_host_regs = &prog->host_callback_regs;
+    // Slice 2: the cells the entry's code reads late-bound objects through
+    // resolve to the session's slots. A refused entry's slot is never read.
+    if (b)
+	for (const auto &kv : b->late_cells())
+	    late_cell_slots.insert(std::make_pair(kv.first, (void *)NULL));
+    cir_active_cells = &late_cell_slots;
     CirLinkRefusal refusal = { prog, entry_name, b, {}, 0 };
     MIR_module_link_check(ctx, m, cir_import_resolver,
 			  cir_record_link_refusal, &refusal);
     cir_active_host_regs = NULL;
+    cir_active_cells = NULL;
     if (refusal.refused != 0)
 	return false;
     if (!refusal.late.empty())
 	make_function_stubs(refusal.late);
+    if (b)
+	for (const auto &kv : b->late_cells())
+	    if (!late_cell_slots[kv.first])
+		late_cell_waits[kv.first] = kv.second;
     return true;
+}
+
+// After an entry links: every waiting cell whose object is now defined, by an
+// entry (a data item of a live module) or by a library, is bound to it, so the
+// code reading through it reaches that object.
+void CirJitSession::bind_late_cells(Program *prog)
+{
+    cir_active_host_regs = &prog->host_callback_regs;
+    for (std::map<std::string, std::string>::iterator it = late_cell_waits.begin();
+	 it != late_cell_waits.end(); ) {
+	void *addr = data_address(it->second.c_str());
+	if (!addr)
+	    addr = cir_import_resolver(it->second.c_str());
+	if (addr) {
+	    late_cell_slots[it->first] = addr;
+	    late_cell_waits.erase(it++);
+	    continue;
+	}
+	++it;
+    }
+    cir_active_host_regs = NULL;
 }
 
 bool CirJitSession::begin_live(const char *session_name)
@@ -1879,6 +1928,7 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
 	    prog->session_defined.insert(nm);
     }
     rebind_late_stubs(m, prog);
+    bind_late_cells(prog);
     // Its init runs next (run_entry_init): the entry counts from here.
     live_init = b ? b->tu_init_name() : std::string();
     return true;
