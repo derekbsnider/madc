@@ -236,6 +236,108 @@ y := 1;
   needs the same chain, and `{` needs to arm `parsing_script_statement`
   (`file_scope_statement_starter`) for it to apply.
 
+### B17. A class template's static data member is never defined
+
+- Found 2026-09-26, during plan §41.2a slice 3 (measured at `431ee5ef1`).
+  A session is affected the same way.
+
+```cpp
+#include <stdio.h>
+template <class T> struct K { static int n; };
+template <class T> int K<T>::n = 5;
+int k1 = ++K<int>::n;
+int main() { int k2 = ++K<int>::n; printf("%d %d\n", k1, k2); return 0; }
+```
+
+- g++: `6 7`. madc: `MIR error: import of undefined item _ZN1KIiE1nE`.
+- Where: the out-of-line definition of a template's static data member is
+  never instantiated for `K<int>`. It should be emitted linkonce, since every
+  TU using `K<int>::n` emits it.
+
+### B18. A file-scope lambda global is never defined
+
+- Found 2026-09-26, during slice 3 (measured at `431ee5ef1`). A session is
+  affected the same way.
+
+```cpp
+#include <stdio.h>
+auto inc = [](int x) { return x + 1; };
+int r1 = inc(2);
+int main() { printf("%d %d\n", r1, inc(3)); return 0; }
+```
+
+- g++: `3 4`. madc: `MIR error: import of undefined item inc`.
+
+### B19. An out-of-line definition of a namespace member is refused
+
+- Found 2026-09-26, during slice 3 (measured at `431ee5ef1`). A session is
+  affected the same way.
+
+```cpp
+namespace N { int f(); }
+int N::f() { return 11; }
+int main() { return N::f() - 11; }
+```
+
+- g++, clang++: accept, exit 0. madc: `2:5: error: Unknown C++ declarator
+  scope 'N'`.
+- Where: `parseDeclaration`'s qualified declarator-id resolves its scope with
+  `resolve_qualified_class_owner`, which knows classes only.
+
+### B20. A script's top-level `S::count = 3;` is refused
+
+- Found 2026-09-26, during slice 3. An interactive entry takes it as a
+  statement since `9d71ce881`, which is gated on the REPL's parse mode.
+
+```c
+struct S { static int count; };
+int S::count = 0;
+S::count = 3;
+println(S::count);
+```
+
+- Expected: `3`, as for the same statement inside a written `main`. madc:
+  `3:1: error: Qualified member definition requires a return type`.
+- Where: `parseStatement`'s file-scope `Type ::` branch. For script mode it
+  needs the same route as an entry's (`entry_top_level_statement_at`), gated
+  on the madc dialect's main source.
+
+### B21. `--emit=c11` calls a synthesized base-object destructor before declaring it
+
+- Found 2026-09-26, while checking slice 3's destructor change against the
+  emitted C (measured at `68bd5c327`; the order predates it).
+
+```cpp
+#include <stdio.h>
+int dv = 0;
+struct V { int x; ~V() { dv++; } };
+struct L : virtual V {};
+struct R : virtual V {};
+struct J : L, R {};
+int main() { { J j; } printf("dv=%d\n", dv); return 0; }
+```
+
+- g++: `dv=1`. `madc --emit=c11` then gcc `-std=c11 ... -lstdc++`: `dv=1`,
+  since gcc accepts the implicit declaration. clang `-std=c11`: `error: call
+  to undeclared function '_ZN1RD2Ev'`, and the same for `_ZN1LD2Ev`.
+  `_ZN1JD2Ev`'s body calls both, and Pass 1.6 defines J's first, with no
+  prototype ahead.
+- Where: Pass 1.45 prototypes only a vtable's destructor slots. Every
+  synthesized destructor another synthesized body calls needs one too.
+
+### B22. Two synthesized per-TU definitions collide across modules
+
+- Found 2026-09-26 by reading the code, in slice 3's audit of every
+  `N_FUNC_DEF` the builder synthesizes. Neither is reproduced yet, and
+  neither is on the REPL's path.
+- `__madc_cyg_exit_thunk` (`-finstrument-functions`) is a strong definition
+  with one fixed name in every TU, so two such objects collide at link. It
+  should be linkonce, like its siblings.
+- `__madc_flvmar_<N>` (the flavor-marshalling thunks, libc++ flavor only) is
+  named by a per-builder counter, so two modules can define the same name
+  with different bodies. linkonce would be wrong here. It needs a name
+  derived from what it marshals, or internal linkage.
+
 ## Diagnostics
 
 ### B7. An undeducible function-template call dies in MIR without a location
