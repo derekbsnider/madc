@@ -496,7 +496,7 @@ struct MadcSharedPreludeCache
 	{
 	    const TokenImage &image = entry.tokens[i];
 	    if ( image.type == TokenType::ttDataType
-	      && pgm.datatype_map.find(image.spelling) == pgm.datatype_map.end() )
+	      && pgm.datatype_map.find(image.spelling) == pgm.datatype_map.end() )	// allowed-exception: a recorded type token's type still exists
 		return false;
 	}
 	return true;
@@ -530,7 +530,7 @@ struct MadcSharedPreludeCache
 	    break;
 	case TokenType::ttDataType:
 	{
-	    flat_datatype_map_iter di = pgm.datatype_map.find(image.spelling);
+	    flat_datatype_map_iter di = pgm.datatype_map.find(image.spelling);	// allowed-exception: replays a recorded type token
 	    if ( di == pgm.datatype_map.end() )
 		return NULL;
 	    tb = pgm.make_datatype(image.spelling.c_str(), (*di)->definition);
@@ -6521,7 +6521,7 @@ TokenBase *Program::make_datatype(const char *name, DataDef &dd)
 // parses as that text would at the same place in one file.
 TokenDataType *Program::lexer_type_token(const std::string &word)
 {
-    flat_datatype_map_iter di = datatype_map.find(word);
+    flat_datatype_map_iter di = datatype_map.find(word);	// allowed-exception: the owner
     if ( di == datatype_map.end() || !*di )
 	return NULL;
     if ( interactive_session && !(*di)->builtin )

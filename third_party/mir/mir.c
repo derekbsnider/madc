@@ -2156,7 +2156,7 @@ static void def_item_to_import (MIR_context_t ctx, MIR_item_t item) {
     free_func_payload (ctx, item);
   else
     MIR_free (ctx->alloc, item->u.bss); /* union: frees whichever payload is live */
-  item->item_type = MIR_import_item;
+  item->item_type = MIR_import_item; /* allowed-exception: the owner */
   item->u.import_id = nm;
   item->export_p = FALSE;
   item->ref_def = NULL;
