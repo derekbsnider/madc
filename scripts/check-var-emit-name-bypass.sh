@@ -58,7 +58,9 @@ if [ "$n" -ne 0 ]; then
 fi
 
 # --- 2. ratchet: bare-pointer name emissions (Variable* and non-Variable alike) ---
-BASELINE=17
+# 16 (2026-09-26): a block-scope carrier's constructor call names the storage
+# through var_emit_name, as its declaration does (both of its arms).
+BASELINE=16
 m=$(grep -cE '\b(id|array_ctor_call|array_storage_decl)\([a-zA-Z_]+->name\.c_str\(\)' src/cir_builder.cpp)
 echo "var-emit-name bare-pointer ratchet: $m site(s) (baseline $BASELINE, growth forbidden)"
 if [ "$m" -gt "$BASELINE" ]; then

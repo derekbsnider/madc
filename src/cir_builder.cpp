@@ -27817,13 +27817,15 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// storage with no cleanup).
 			if (!(v->flags & vfEXTERN)) {
 				// A block-scope static one is constructed once.
+				// The storage var_decl just declared, by its name.
+				const std::string vname = var_emit_name(*v);
 				if (v->flags & vfSTATIC) {
 					node_t cons = list();
-					append(cons, array_ctor_call(v->name.c_str(), tc));
+					append(cons, array_ctor_call(vname.c_str(), tc));
 					emit_static_local_once(items, cons, tc,
 						(v->flags & vfTHREADLOCAL) != 0);
 				} else
-					append(items, array_ctor_call(v->name.c_str(), tc));
+					append(items, array_ctor_call(vname.c_str(), tc));
 			}
 		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
 			// `Foo f;` / `string s;` — a class instance declared without an
