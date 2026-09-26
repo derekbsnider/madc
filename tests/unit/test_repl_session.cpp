@@ -531,3 +531,34 @@ TEST_CASE("a later entry defines an earlier entry's members, and may shadow its 
 	}
     }
 }
+
+// At an entry's top level, a qualified expression is a statement, as it is
+// in a body: `S::count = 3;`, `S::bump();`, `S::count += 10;`. The file-scope
+// reader of `Class::` knew only a constructor or destructor definition there
+// and refused the rest ("Qualified member definition requires a return
+// type"), which a file's top level rightly does. Oracle: clang-repl-18 and
+// -20 (tmp/repl/s3/inl.repl) give kc=14 kv=6.
+TEST_CASE("a qualified expression is a statement at an entry's top level")
+{
+    const char *stds[] = { "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("struct S { static int count; static int bump();"
+			 " S(int a); int v; };"));
+	REQUIRE(s.submit("int S::count = 0;"));
+	REQUIRE(s.submit("int S::bump() { return ++count; }"));
+	REQUIRE(s.submit("S::count = 3;"));
+	REQUIRE(s.submit("S::bump();"));
+	REQUIRE(s.submit("S::count += 10;"));
+	REQUIRE(s.submit("S::S(int a) : v(a) {}"));	// still a definition
+	REQUIRE(s.submit("int kc = S::count;"));
+	REQUIRE(s.submit("int kv = 0;\nvoid mk() { S s(6); kv = s.v; }"));
+	REQUIRE(s.submit("mk();"));
+	CHECK(*(int *)s.data("kc") == 14);
+	CHECK(*(int *)s.data("kv") == 6);
+    }
+}

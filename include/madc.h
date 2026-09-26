@@ -6832,6 +6832,11 @@ public:
     enum class ParseMode : unsigned char { TranslationUnit, InteractiveEntry };
     ParseMode parse_mode = ParseMode::TranslationUnit;
     bool interactive_entry() const { return parse_mode == ParseMode::InteractiveEntry; }
+    // Does the top level admit a statement at TB? In an interactive entry's
+    // own text, under every standard (D3); a file's top level (script mode
+    // aside) holds declarations only.
+    bool entry_top_level_statement_at(TokenBase *tb) const
+    { return interactive_entry() && token_is_tu_origin(tb); }
     TokenBase *entry_end_token = NULL;		// the appended end-of-entry token
     bool entry_final_semicolon_omitted = false;	// D10: the entry shows its value
     bool entry_if_extendable = false;		// an if ended at the entry's end

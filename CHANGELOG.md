@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### A qualified expression is a statement at an entry's top level
+
+In the interactive session, `S::count = 3;`, `S::bump();` and
+`S::count += 10;` were refused with "Qualified member definition requires a
+return type". At a file's top level, `Class::` can only begin a constructor
+or destructor definition, and the reader knew nothing else. Inside a body,
+the same text was already an expression statement. In an interactive
+entry's own text, under every standard, a qualified name that is not a
+constructor or destructor now goes back to the statement parser. A file's
+top level still refuses it, and so does g++ ("'count' in 'struct S' does not
+name a type"). clang-repl-18 and -20 give `kc=14 kv=6`, and so does the
+session.
+
+Test: `test_repl_session`.
+
 ### A later entry defines an earlier entry's members
 
 In the interactive session, a class declared in one entry could not have its

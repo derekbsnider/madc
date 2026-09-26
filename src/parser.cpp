@@ -67760,6 +67760,7 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
     if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return false;
 
+    TokenStream::Pos chain_start = tokens.savepos();
     std::vector<std::string> scope_parts;
     scope_parts.push_back(contextual_identifier_name(first_tb));
     std::string member_name;
@@ -67801,7 +67802,16 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
     bool is_ctor = member_name == ctor_name;
     bool is_dtor = member_name == "~" + ctor_name;
     if ( !is_ctor && !is_dtor )
+    {
+	// An entry's top level admits statements (`S::count = 3;`): not a
+	// definition, so hand the tokens back to the statement parser.
+	if ( entry_top_level_statement_at(first_tb) )
+	{
+	    tokens = chain_start;
+	    return false;
+	}
 	Throw(first_tb) << "Qualified member definition requires a return type" << flush;
+    }
 
     TokenBase *open = peekToken();
     if ( !open || open->id() != TokenID::tkOpBrk )
@@ -76155,6 +76165,14 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 				}
 				if ( parse_qualified_special_member_definition(tb) )
 				    return NULL;
+				// Not a ctor/dtor: at an entry's top level a
+				// qualified expression is a statement, as it is
+				// in a body (`S::count = 3;`, `S::f();`).
+				if ( entry_top_level_statement_at(tb) )
+				{
+				    resetPrevToken();
+				    return parseExprStmt(tb);
+				}
 			    }
 			    if ( datatype_statement_starts_functional_expr() )
 			    {
