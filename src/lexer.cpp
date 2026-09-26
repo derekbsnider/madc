@@ -6015,12 +6015,8 @@ static bool push_precompiled_header_tokens(Program &pgm,
 	    keyword_map_iter ki = pgm.keyword_map.find(ident->spelling());
 	    if ( ki != pgm.keyword_map.end() )
 		replacement = (*ki)->clone();
-	    else
-	    {
-		flat_datatype_map_iter di = pgm.datatype_map.find(ident->spelling());
-		if ( di != pgm.datatype_map.end() )
-		    replacement = (*di)->clone();
-	    }
+	    else if ( TokenDataType *lt = pgm.lexer_type_token(ident->spelling()) )
+		replacement = lt->clone();
 	    if ( replacement )
 	    {
 		replacement->line = itb->line;
@@ -6513,6 +6509,26 @@ TokenBase *Program::make_datatype(const char *name, DataDef &dd)
     return t;
 }
 
+// A file lexes its whole text before any of it is parsed, so the only types
+// its lexer knows are madc's own (add_datatypes marks them builtin): a class,
+// typedef or enum the file declares reaches the parser as an identifier, and
+// the parser resolves it by lookup, scope included. An interactive session
+// lexes each entry after the earlier entries' declarations are registered.
+// If the lexer read those, `int T = 3;` shadowing an earlier entry's class T
+// would lex as two types, and `int S::get() const` / `S::S(int)` would open
+// with a type-name where every declarator-id reader expects an identifier.
+// So the entry's lexer knows what a file's lexer knows, and its entry text
+// parses as that text would at the same place in one file.
+TokenDataType *Program::lexer_type_token(const std::string &word)
+{
+    flat_datatype_map_iter di = datatype_map.find(word);
+    if ( di == datatype_map.end() || !*di )
+	return NULL;
+    if ( interactive_session && !(*di)->builtin )
+	return NULL;
+    return *di;
+}
+
 TokenBase *Program::make_rem(const std::string &text)
 {
     return new TokenREM(text);
@@ -6529,7 +6545,6 @@ TokenBase *Program::make_eol(int cnt)   { return new TokenEOL(cnt); }
 TokenBase *Program::_getToken()
 {
     keyword_map_iter kmi;
-    flat_datatype_map_iter bmi = nullptr;
     string word;
     int ch, cnt, row, col;
 
@@ -8794,8 +8809,8 @@ TokenBase *Program::_getToken()
 		    if ( oi != cpp_operator_map.end() )
 			return (*oi)->clone();
 		}
-		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
-		    return (*bmi)->clone();
+		if ( TokenDataType *lt = lexer_type_token(word) )
+		    return lt->clone();
 		if ( auto_include_standard_identifier(word) )
 		    return getToken();
 		TokenIdent *ti = (TokenIdent *)make_ident(word);

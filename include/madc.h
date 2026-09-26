@@ -3074,6 +3074,10 @@ public:
     madc::dis::intern_keyed_map<TokenBase *> cpp_operator_map;
     madc::dis::intern_table type_name_pool;	// dedicated dense pool for flat type-name keys
     flat_datatype_map_t datatype_map;	// TokenDataType map (interned, keyed via type_name_pool)
+    // The type a WORD lexes as, NULL when it lexes as an identifier. The one
+    // answer for the word lexer and PCH replay (lexer.cpp says why a session
+    // entry's lexer knows only madc's own types).
+    TokenDataType *lexer_type_token(const std::string &word);
     // C tag namespace for enums (C11 6.2.3): in C mode `enum TAG` resolves
     // here and the bare TAG never becomes a type name (a variable named like
     // the tag stays legal). C++/madc modes keep registering enum tags as

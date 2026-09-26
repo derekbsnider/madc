@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### A later entry defines an earlier entry's members
+
+In the interactive session, a class declared in one entry could not have its
+members defined in a later one. `int S::get() const { ... }`, `S::S(int a)
+: v(a) {}`, `S::~S() {}` and `int S::count = 5;` were all refused with
+"Expecting identifier after type". So was a local variable shadowing an
+earlier entry's class (`int T = 3;`), and so was `(int)E::B`.
+
+A file lexes its whole text before any of it is parsed, so its lexer knows
+only madc's own types. A class the file declares reaches the parser as an
+identifier, and the parser resolves it by lookup. A session lexes each entry
+after the earlier entries are parsed, and the lexer read their declarations,
+so an earlier class name arrived as a type-name, blind to scope. An entry's
+lexer now knows what a file's lexer knows (`Program::lexer_type_token`, the
+one answer for the word lexer and PCH replay). clang-repl-18 and -20 give
+`kg=40 dc=1 kc=5 ks=4 ke=1` for the sequence, and so does the session.
+
+Test: `test_repl_session`.
+
 ### Two more synthesized destructors are linkonce
 
 Two destructors madc synthesizes in every translation unit that needs them

@@ -484,3 +484,50 @@ TEST_CASE("a later entry shares a synthesized complete-object or array destructo
 	}
     }
 }
+
+// An entry's lexer knows what a file's lexer knows. A file lexes its whole
+// text before any of it is parsed, so a class it declares reaches the parser
+// as an identifier, resolved by lookup. A session lexes each entry after the
+// earlier entries' declarations are registered, and the lexer read those: an
+// earlier entry's class name arrived as a type-name, so every out-of-line
+// member defined in a later entry was refused ("Expecting identifier after
+// type": `int S::get() const`, `S::S(int)`, `S::~S()`, `int S::count = 5;`),
+// and so was a local shadowing the name (`int T = 3;`) and `(int)E::B`.
+// Oracle: clang-repl-18 and -20 (tmp/repl/s3/later.repl) give kg=40 dc=1
+// kc=5 ks=4 ke=1.
+TEST_CASE("a later entry defines an earlier entry's members, and may shadow its names")
+{
+    const char *stds[] = { "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("int dc = 0;"));
+	REQUIRE(s.submit("struct S { int v; static int count; S(int a); ~S();"
+			 " int get() const; };"));
+	REQUIRE(s.submit("int S::get() const { return v * 10; }"));
+	REQUIRE(s.submit("S::S(int a) : v(a) {}"));
+	REQUIRE(s.submit("S::~S() { dc++; }"));
+	REQUIRE(s.submit("int S::count = 5;"));
+	REQUIRE(s.submit("int kg = 0;\nvoid use() { S s(4); kg = s.get(); }"));
+	REQUIRE(s.submit("use();"));
+	REQUIRE(s.submit("int kc = S::count;"));
+	REQUIRE(s.submit("struct T { int a; };"));
+	REQUIRE(s.submit("int shadow() { int T = 3; return T + 1; }"));
+	REQUIRE(s.submit("int ks = shadow();"));
+	REQUIRE(s.submit("enum class E { A, B };"));
+	REQUIRE(s.submit("int ke = (int)E::B;"));
+
+	const char *names[] = { "kg", "dc", "kc", "ks", "ke" };
+	const int want[] = { 40, 1, 5, 4, 1 };
+	for ( size_t n = 0; n < sizeof(names) / sizeof(names[0]); ++n )
+	{
+	    CAPTURE(names[n]);
+	    int *v = (int *)s.data(names[n]);
+	    REQUIRE(v != (int *)NULL);
+	    CHECK(*v == want[n]);
+	}
+    }
+}
