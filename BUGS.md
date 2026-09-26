@@ -147,6 +147,31 @@ int main()
   ([expr.new]/22). The stack declaration's path applies the initializers,
   and the new-expression's does not.
 
+### B32. `php::sort` treats an integer and a real as equal
+
+- Found 2026-09-26, while auditing D28's `value::compare` for sibling
+  ordering rules (`/commit`'s duplication pass).
+
+```cpp
+int main()
+{
+	var a = { 3, 1.5, 2, 0.5, 1 };
+	php::sort(a);
+	php::print_r(a);	// the elements, in order
+	return 0;
+}
+```
+
+- PHP 8.3.6 (`$a = [3, 1.5, 2, 0.5, 1]; sort($a); print_r($a);`):
+  `0.5 1 1.5 2 3`. madc `--std=madc`: `1 2 3 1.5 0.5`, silently.
+- Where: `php_sort_data` (`src/ns_php.cpp`). Its comparator orders two
+  strings or two integers and returns `false` for every other pair, so an
+  integer and a real are equivalent to it. That is not PHP's comparison, and
+  equivalence that is not transitive (`1 ~ 1.5`, `1.5 ~ 2`, `1 < 2`) breaks
+  `std::sort`'s strict weak ordering requirement. The fix is PHP's
+  comparison rule (php-parity), not madc's `value::compare`, which is
+  strict by design (D21, D28).
+
 ## Accepts invalid code
 
 ### B2. A stray top-level `}` is accepted
