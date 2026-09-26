@@ -361,8 +361,7 @@ TEST_CASE("a cast statement runs at an entry's top level, under every standard")
 }
 
 // A delete-expression statement is an expression statement too; it used to
-// be dropped, so the destructor never ran (log 1). The class is defined in
-// the same entry: a later entry re-emits its members (slice 3).
+// be dropped, so the destructor never ran (log 1).
 TEST_CASE("a delete statement runs at an entry's top level")
 {
     const char *stds[] = { "--std=c++17", "--std=madc" };
@@ -375,10 +374,71 @@ TEST_CASE("a delete statement runs at an entry's top level")
 	REQUIRE(s.submit("int log_v = 0;\n"
 			 "int step(int d) { log_v = log_v * 10 + d; return d; }"));
 	REQUIRE(s.submit("struct T { int a; ~T(); };\n"
-			 "T::~T() { step(9); }\n"
-			 "T *tp = new T;\n"
+			 "T::~T() { step(9); }"));
+	REQUIRE(s.submit("T *tp = new T;\n"
 			 "step(1);\n"
 			 "delete tp;"));
 	CHECK(*(int *)s.data("log_v") == 19);
+    }
+}
+
+// Slice 3 (plan §41.2a): C++ vague linkage. Each entry's module is a whole
+// translation unit, so it emits its own copy of every linkonce definition it
+// needs: a class's C2/D2 aliases, its synthesized and deleting destructors,
+// its vtable and type_info. MIR's loader keeps the first copy and binds the
+// rest to it, as ld keeps the first COMDAT copy. Before, a later entry's func
+// copy refused the entry ("multiple definition of 'D::D(int)'"), and its data
+// copy took the name over, so an object built in one entry and a typeid in
+// another saw two type_infos (typeid(*bp) == typeid(C) was false). Oracle:
+// clang-repl-18 and -20 (tmp/repl/s3/vague.repl) give kd=5 kd2=6 kh=1 okc=1
+// same=1 ks=4 kdc=1 okpc=1.
+TEST_CASE("a later entry shares the live copy of a vague-linkage definition (slice 3)")
+{
+    const char *stds[] = { "--std=c++17", "--std=madc" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	std::string std_option = stds[i];
+	CAPTURE(std_option);
+	InteractiveSession s;
+	REQUIRE(s.begin(std_option));
+	REQUIRE(s.submit("#include <typeinfo>"));
+	// A user constructor and destructor: their C2/D2 aliases.
+	REQUIRE(s.submit("struct D { int v; D(int a) : v(a) {} ~D() {} };"));
+	REQUIRE(s.submit("D d(5);\nint kd = d.v;"));
+	REQUIRE(s.submit("int kd2 = d.v + 1;"));
+	// A synthesized destructor.
+	REQUIRE(s.submit("struct M { ~M() {} };\nstruct H { M m; };"));
+	REQUIRE(s.submit("H h;"));
+	REQUIRE(s.submit("int kh = 1;"));
+	// One vtable and one type_info for the whole session.
+	REQUIRE(s.submit("struct B { virtual int f() { return 1; } };\n"
+			 "struct C : B { int f() { return 2; } };"));
+	REQUIRE(s.submit("C c;\nB *bp = &c;"));
+	REQUIRE(s.submit("int okc = dynamic_cast<C *>(bp) != 0;\n"
+			 "int same = typeid(*bp) == typeid(C);"));
+	// A virtual destructor: the deleting destructor.
+	REQUIRE(s.submit("struct PB { virtual ~PB() {} };\n"
+			 "struct PC : PB { int v; };"));
+	REQUIRE(s.submit("PC pc;\nPB *pbp = &pc;"));
+	REQUIRE(s.submit("int okpc = dynamic_cast<PC *>(pbp) != 0;"));
+	// An out-of-line constructor and destructor.
+	REQUIRE(s.submit("int dcount = 0;\n"
+			 "struct S { int v; S(int a); ~S(); };\n"
+			 "S::S(int a) : v(a) {}\n"
+			 "S::~S() { dcount++; }"));
+	REQUIRE(s.submit("int ks = 0;\n"
+			 "void blk() { S s(4); ks = s.v; }"));
+	REQUIRE(s.submit("blk();"));
+	REQUIRE(s.submit("int kdc = dcount;"));
+
+	const char *names[] = { "kd", "kd2", "kh", "okc", "same", "ks", "kdc", "okpc" };
+	const int want[] = { 5, 6, 1, 1, 1, 4, 1, 1 };
+	for ( size_t n = 0; n < sizeof(names) / sizeof(names[0]); ++n )
+	{
+	    CAPTURE(names[n]);
+	    int *v = (int *)s.data(names[n]);
+	    REQUIRE(v != (int *)NULL);
+	    CHECK(*v == want[n]);
+	}
     }
 }

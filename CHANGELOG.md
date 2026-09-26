@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### A linkonce definition loaded twice is one definition
+
+C++ gives vtables, type_info, inline functions, template instantiations and
+synthesized destructors vague linkage: every translation unit that needs one
+emits its own identical copy, and the linker keeps the first. MIR's
+in-process loader ignored that binding. A later module's copy of a function
+was a fatal redefinition, and a later copy of a data item silently took the
+name over while each module kept using its own. So:
+- In the interactive session, every entry after a class with a constructor
+  or destructor was refused ("multiple definition of 'D::D(int)'", from its
+  C2/D2 aliases), and so was every entry after a class that needed a
+  synthesized or deleting destructor.
+- An object built in one entry failed `typeid(*bp) == typeid(C)` in the
+  next. The same happened across the TUs of a `--project` program, where an
+  inline function's static local was also counted twice.
+
+`MIR_load_module` now applies the rule. A linkonce or weak definition whose
+name the context already holds becomes an import bound to the definition
+already there, so every module shares one copy. `MIR_module_link_check`
+agrees, and a strong duplicate is still a redefinition. clang-repl-18 and -20
+give `kd=5 kd2=6 kh=1 okc=1 same=1 ks=4 kdc=1 okpc=1` for the session
+sequence, and so does madc. For the `--project` reducer, g++ and clang++ give
+`same=1 okc=1 c1=1 c2=2`, and so does madc, which gave `same=0` and `c2=1`.
+
+Tests: `test_c2mir`, `test_repl_session`, `testprojectvague`.
+
 ### Every submitted entry has its own number
 
 An interactive entry's diagnostics cite `REPL[N]`. N counted only the entries

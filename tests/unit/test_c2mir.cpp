@@ -313,4 +313,69 @@ TEST_SUITE("c2mir → MIR pipeline") {
 	c2mir_finish(ctx);
 	MIR_finish(ctx);
     }
+
+    // madc fork: vague linkage in the loader. A later module's LINKONCE or
+    // WEAK copy of a func or a datum the context already defines is not
+    // defined again: it binds to the first definition, as ld keeps the first
+    // COMDAT / weak copy. Before, the func copy was a fatal redefinition and
+    // the datum's copy took the name over, so the two modules had two
+    // addresses for one object (a C++ vtable or type_info split in two).
+    TEST_CASE("MIR_load_module: a linkonce or weak copy binds to the definition already there") {
+	MIR_context_t ctx = MIR_init();
+	c2mir_init(ctx);
+	MIR_gen_init(ctx);
+
+	MIR_module_t first = compile_c_module(ctx,
+	    "__attribute__((linkonce)) int shared_n = 5;\n"
+	    "__attribute__((linkonce)) int bump(void) { return ++shared_n; }\n"
+	    "__attribute__((weak)) int which(void) { return 1; }\n"
+	    "int *first_p(void) { return &shared_n; }\n");
+	REQUIRE(first != nullptr);
+	MIR_load_module(ctx, first);
+	MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+
+	// The same linkonce pair again, and a weak copy with another body.
+	MIR_module_t second = compile_c_module(ctx,
+	    "__attribute__((linkonce)) int shared_n = 5;\n"
+	    "__attribute__((linkonce)) int bump(void) { return ++shared_n; }\n"
+	    "__attribute__((weak)) int which(void) { return 2; }\n"
+	    "int *second_p(void) { return &shared_n; }\n"
+	    "int bump_twice(void) { bump(); return bump(); }\n"
+	    "int which_here(void) { return which(); }\n");
+	REQUIRE(second != nullptr);
+	CHECK(MIR_module_link_check(ctx, second, test_import_resolver,
+				    nullptr, nullptr) == 0);
+	MIR_load_module(ctx, second);
+	MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+
+	typedef int *(*ptr_fn_t)(void);
+	typedef int (*fn_t)(void);
+	ptr_fn_t first_p = (ptr_fn_t)module_func_code(ctx, first, "first_p");
+	ptr_fn_t second_p = (ptr_fn_t)module_func_code(ctx, second, "second_p");
+	fn_t bump_twice = (fn_t)module_func_code(ctx, second, "bump_twice");
+	fn_t which_here = (fn_t)module_func_code(ctx, second, "which_here");
+	REQUIRE(first_p != nullptr);
+	REQUIRE(second_p != nullptr);
+	REQUIRE(bump_twice != nullptr);
+	REQUIRE(which_here != nullptr);
+	CHECK(first_p() == second_p());	// one object
+	CHECK(bump_twice() == 7);
+	CHECK(*first_p() == 7);
+	CHECK(which_here() == 1);	// the first weak definition is kept
+
+	// A strong definition of a name the context holds still redefines it.
+	MIR_module_t strong = compile_c_module(ctx,
+	    "int bump(void) { return 0; }\n");
+	REQUIRE(strong != nullptr);
+	LinkRefusals r;
+	CHECK(MIR_module_link_check(ctx, strong, test_import_resolver,
+				    collect_link_refusal, &r) == 1);
+	REQUIRE(r.seen.size() == 1);
+	CHECK(r.seen[0].first == MIR_repeated_decl_error);
+	CHECK(r.seen[0].second == "bump");
+
+	MIR_gen_finish(ctx);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+    }
 }

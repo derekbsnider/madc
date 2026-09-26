@@ -578,8 +578,13 @@ extern MIR_item_t MIR_new_forward (MIR_context_t ctx, const char *name);
    - MIR_ITEM_BIND_LINKONCE is C++ vague linkage (template instantiations,
      inline bodies, vtables): every copy is identical by ODR, so calls inline
      freely.
-   JIT multi-module linking is unaffected (use MIR_set_func_redef_permission
-   for the in-memory analogue). */
+   madc fork: MIR_load_module applies the same rule in memory.  A WEAK or
+   LINKONCE func/data/ref_data/bss/expr_data definition whose name the context
+   already holds (from an earlier module, or an external) is not defined
+   again: the loader turns it into an import bound to the definition already
+   there, so every module shares one copy (one vtable and type_info address,
+   one static member).  A strong definition after a weak one is still a
+   redefinition (MIR_set_func_redef_permission governs funcs). */
 typedef enum {
   MIR_ITEM_BIND_GLOBAL = 0, /* strong definition (the default) */
   MIR_ITEM_BIND_WEAK,       /* interposable weak: STB_WEAK, never inlined */
@@ -757,7 +762,8 @@ extern size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
    export joins the environment; a failed link leaves its module queued).  It
    applies their rules: each import resolves (the environment holds it, or
    IMPORT_RESOLVER returns an address), and no exported func redefines an
-   environment item.  Calls REPORT (when not NULL) once per failing item, with
+   environment item (a WEAK or LINKONCE one does not: the load binds it to the
+   item already there).  Calls REPORT (when not NULL) once per failing item, with
    MIR_undeclared_op_ref_error or MIR_repeated_decl_error and the item's name, and
    returns the number of failures; 0 means the load and the link's resolution
    will succeed.  An incremental host (a REPL) refuses a failing module this way

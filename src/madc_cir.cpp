@@ -6465,12 +6465,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
 	// throwing call sits between MIR_init() and teardown().
 	MIR_context_t ctx = MIR_init();
-	// C++ TUs each emit their own copy of every template instantiation they
-	// use (ODR: the copies are identical). MIR treats a same-named exported
-	// func in a later module as a fatal redefinition; permit it so the last
-	// copy wins — the linkonce/COMDAT analogue for the multi-TU JIT.
-	// (Named DATA duplicates still get per-module addresses — split-state
-	// hazard for template statics; revisit when a corpus actually hits it.)
+	// C++ TUs each emit their own copy of every vague-linkage entity they
+	// use (instantiations, inline bodies, vtables, type_info; ODR: the
+	// copies are identical). MIR_load_module keeps the first LINKONCE copy
+	// and binds a later TU's to it, data included, so every TU shares one
+	// address. The permission covers what is left: a STRONG func defined by
+	// two TUs, which MIR would refuse as a redefinition. The last copy wins
+	// (ld would refuse a genuine one as a multiple definition).
 	MIR_set_func_redef_permission(ctx, TRUE);
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
@@ -6733,7 +6734,7 @@ int madc_project_emit_native(MadcEngine &engine,
 	// madc_project_execute, in object-capture mode, emitting instead of
 	// running. cir_init reads madc_object_mode → native_object_p.
 	MIR_context_t ctx = MIR_init();
-	MIR_set_func_redef_permission(ctx, TRUE);   // C++ ODR linkonce analogue
+	MIR_set_func_redef_permission(ctx, TRUE);   // strong duplicates: see madc_project_execute
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
 	MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
