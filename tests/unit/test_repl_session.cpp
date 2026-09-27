@@ -1318,6 +1318,29 @@ static void check_result_names(const std::string &std_option)
     CHECK(s.shown() == "101");
 }
 
+// A type-headed expression at an entry's top level is a statement, as in a
+// body ([stmt.ambig]): `std::string("short")` is a functional cast, where a
+// file's top level can only read a declaration (plan §41.6a, E). It is
+// placed where the entry writes it, not at the header's typedef.
+TEST_CASE("a functional cast at an entry's top level is an expression (§41.6a)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("#include <string>\n#include <vector>"));
+    REQUIRE(s.submit("std::string(\"short\").size()"));
+    CHECK(s.shown() == "5");
+    REQUIRE(s.submit("std::vector<int>{ 1, 2 }.size()"));
+    CHECK(s.shown() == "2");
+    REQUIRE(s.submit("std::string(\"x\");"));
+    CHECK(s.shown().empty());
+    // A declaration stays one: a direct-initialized object, and the most
+    // vexing parse's function declaration.
+    REQUIRE(s.submit("std::string named(\"named\")"));
+    CHECK(s.shown() == "\"named\"");
+    REQUIRE(s.submit("std::string vexing();"));
+    CHECK(s.shown().empty());
+}
+
 TEST_CASE("an entry's shown value is kept and named ans, _, __, ___ and _N (D12)")
 {
     check_result_names("--std=c17");

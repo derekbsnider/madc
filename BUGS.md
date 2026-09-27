@@ -733,6 +733,56 @@ int main() { std::map<int,int> l = m; printf("%d %d\n", m2[1], l[1]); return 0; 
 - Where: the CIR's constructor choice (`cir error`), not traced. D12 keeps no
   such object until its slice 2.
 
+### B46. `std::move(x) + 0` is refused, and a first `std::move` shows nothing
+
+- Found 2026-09-27, while tracing why an entry's `std::move(v)` showed
+  nothing (plan §41.6a, "Built, slice 1", D).
+
+```cpp
+#include <stdio.h>
+#include <utility>
+int main() { int x = 3; int k = std::move(x) + 0; printf("%d\n", k); return 0; }
+```
+
+- g++ 13: `3`. madc `--std=c++17`: "Malformed expression: 2 operands with
+  no operator between them" at the `+`, at file and block scope.
+  `auto y = std::move(x);`, `sizeof(std::move(x))` and a user function
+  returning `T&&` are right.
+- In a REPL entry, the first use of `std::move(x)` shows nothing, and
+  `std::move(v)` of a vector shows only its type word; a later use shows the
+  value. `std::forward<T>(v)` does the same.
+- Where: not traced. The call's value type around std::move's first
+  instantiation (its return type is `remove_reference<T>::type&&`).
+
+### B47. A C-style cast to a qualified template's reference type is refused
+
+- Found 2026-09-27, while testing casts at an entry's top level (plan §41.6a).
+
+```cpp
+#include <vector>
+int main() { std::vector<int> v = {1}; (std::vector<int>&&)v; return 0; }
+```
+
+- g++ 13: compiles. madc `--std=c++17`: "use of undeclared identifier
+  'std'" at the cast's `std`, at block scope and at an entry's top level.
+
+### B48. `std::vector<int>(3, 7)` fails in the parse-once instantiation
+
+- Found 2026-09-27, while testing functional casts at an entry's top level
+  (plan §41.6a, E).
+
+```cpp
+#include <stdio.h>
+#include <vector>
+int main() { printf("%zu\n", std::vector<int>(3, 7).size()); return 0; }
+```
+
+- g++ 13: `3`. madc `--std=c++17`: "cir error: parse-once internal: tsubst
+  bailed on the covered instantiation ... of std::vector::vector<_InputIterator,
+  __anon_tparam0> [why: tsubst: unresolved dependent member call]" at
+  `stl_vector.h:709`. The error names the iterator-range constructor
+  template, where g++ calls the count-and-value constructor. Not traced.
+
 ## Diagnostics
 
 ### B7. An undeducible function-template call dies in MIR without a location

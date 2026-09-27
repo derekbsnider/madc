@@ -6946,6 +6946,11 @@ public:
     // aside) holds declarations only.
     bool entry_top_level_statement_at(TokenBase *tb) const
     { return interactive_entry() && token_is_tu_origin(tb); }
+    // Can a statement begin at TB: in a body, or at an interactive entry's
+    // own top level? A file's top level has no expression statement, so a
+    // type-headed one there is a declaration ([stmt.ambig] is a statement's).
+    bool statement_position_at(TokenBase *tb) const
+    { return !compounds.empty() || entry_top_level_statement_at(tb); }
     TokenBase *entry_end_token = NULL;		// the appended end-of-entry token
     bool entry_final_semicolon_omitted = false;	// D10: the entry shows its value
     // Which statement omitted it: an expression statement or an object

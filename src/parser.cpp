@@ -76330,11 +76330,15 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 				// brace for `F<int>{5};`) — a `peekToken() == '('`
 				// guard here is a second copy of that rule, and it
 				// hid every braced temporary from it.
-				if ( !compounds.empty()
+				if ( statement_position_at(tb)
 				  && datatype_statement_starts_functional_expr() )
 				{
 				    resetPrevToken();
-				    return parseExprStmt(resolved);
+				    // At the statement's own position: the resolved
+				    // token may be a header's (`std::string` is
+				    // <stringfwd.h>'s typedef), and the statement is
+				    // where it is written.
+				    return parseExprStmt(use_site_type_token(resolved, tb));
 				}
 				DBG(std::cout << "parseStatement() identifier resolves as declared type, calling parseDeclaration" << std::endl);
 				return parseDeclaration(resolved);
@@ -76344,11 +76348,11 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		    if ( TokenDataType *inst = instantiate_template_use(tname, tb) )
 		    {
 			// The classifier owns the head test — see above.
-			if ( !compounds.empty()
+			if ( statement_position_at(tb)
 			  && datatype_statement_starts_functional_expr() )
 			{
 			    resetPrevToken();
-			    return parseExprStmt(inst);
+			    return parseExprStmt(use_site_type_token(inst, tb));
 			}
 			DBG(std::cout << "parseStatement() template instantiation, calling parseDeclaration" << std::endl);
 			return parseDeclaration(inst);

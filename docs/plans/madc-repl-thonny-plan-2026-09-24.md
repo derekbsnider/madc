@@ -2259,7 +2259,7 @@ With no program file, the tail chooses in this order:
   - `g` may be declared or implicit. One such entry is clean, and so is a defined `g`. C++ is clean.
   - Traced (2026-09-27): not D27. `build_tu_module` freed a refused tree's node arena while the session's c2mir context kept its checker symbols, which are keyed by the tree's scope and identifier nodes. A later entry's tree reused the memory, so its `struct P` met the refused entry's symbol. The layout decided which sequences failed. The arena now lives with the session's context, as a compiled module's does.
 
-**Found off the path** (`BUGS.md`): B35–B41 while designing, B42–B45 while building slice 1.
+**Found off the path** (`BUGS.md`): B35–B41 while designing, B42–B48 while building slice 1.
 
 **Gates:**
 - `test_repl_session`, under C, C++ and madc:
@@ -2293,9 +2293,10 @@ With no program file, the tail chooses in this order:
   - The class rule. Keeping a `std::map` refused its whole entry, since its copy constructor does not lower (B45). A type test cannot predict that, and the show must never refuse an entry. So slice 1 keeps only a trivially copyable class and the carrier, and the not-kept reason names no type: the source's spelling of a type is the display's (the CIR's `dump_type_word`), and the entry it cites shows the value.
   - "Code that runs later" is read from the parse: the Method of the innermost open compound, which a nested block inherits and a parameter list has too, an open class body, and a default member initializer's parse (`member_default_init_depth`). `cur_func_name` stays set after a top-level definition, so it cannot say it.
   - `hidden_object_decl` is the reference temporary's own builder, extracted: the reference temporary and the result are one shape.
-- Found on the way, on the REPL's path, to fix next, each in its own commit:
-  - **D.** `std::move(v)` of a class shows nothing.
-  - **E.** A top-level `std::string("short")` is misread as a declaration ("Expecting parameter type in function pointer typedef"); in a function body it is right.
+- Found on the way, on the REPL's path:
+  - **D.** `std::move(v)` of a class shows nothing. Traced: not the REPL's. A file refuses `std::move(x) + 0` too, and an entry's first `std::move` is typed wrong (B46).
+  - **E.** A top-level `std::string("short")` was misread as a declaration ("Expecting parameter type in function pointer typedef"), though in a function body it is right. Fixed in its own commit: the two type-headed arms of `parseStatement` that ask `datatype_statement_starts_functional_expr` in a body ask it at an entry's own top level too (`statement_position_at`). The statement is placed at its use site (`use_site_type_token`), not at the header's typedef.
+  - A class temporary shows only its type word (`std::string("short")` shows `<std::string>`). D10's walk reads a variable or a member, and slice 2's class results, materialized, are what it would read.
 - Found off the path: B42 (`auto` from an array deduces its element), B43 (an error in a default member initializer is swallowed, silently; D12's refusal there waits on it), B44 (a namespace-scope init-capture refused), B45 (`std::map` not copied).
 
 ## 42. Decisions (owner, 2026-09-25)

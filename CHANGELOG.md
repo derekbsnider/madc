@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### A functional cast at a REPL entry's top level is an expression
+
+`std::string("short").size()` typed as an entry read "Expecting parameter
+type in function pointer typedef": the entry's top level read it as a
+declaration, as a file's top level must. Inside a function the same line was
+right. An entry's top level admits statements, so a type-headed statement
+there is now decided as it is in a body: `std::string("short").size()`
+shows 5 and `std::vector<int>{ 1, 2 }.size()` shows 2, while
+`std::string s("x")` and `std::string f();` stay declarations. The statement
+is also cited where the entry writes it, not at the header's typedef.
+
+Tests: the functional-cast case in `test_repl_session`.
+
 ### The REPL names the values it showed: `ans`, `_`, `__`, `___`, `_N` (D12)
 
 An entry that shows a value (no final `;`) keeps it, as IPython keeps
