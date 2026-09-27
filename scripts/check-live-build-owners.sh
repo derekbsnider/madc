@@ -9,8 +9,9 @@
 #    names itself has drifted off the owner.
 # 2. "May this retained tree reach the backend" has ONE owner:
 #    parse_tree_backend_ready. Marker: the inline gate spelling
-#    (tkProgram && !child_has_error_row) appears exactly once (the
-#    owner's body).
+#    (tkProgram && !child.has_error_diagnostic()) appears exactly once
+#    (the owner's body; 213b335aa renamed the error test, and the marker
+#    follows the owner's spelling).
 # 3. Every fork() child in madc_program.cpp RUNS madc code (isolation
 #    eval children + parse_run; there is no fork+exec here), and so does
 #    every Process child_body this file hands the spawn owner (the
@@ -30,7 +31,7 @@ count_kind()
 
 count_gate()
 {
-	grep -c 'tkProgram && !child_has_error_row' "$1"
+	grep -c 'tkProgram && !child.has_error_diagnostic()' "$1"
 }
 
 count_forks()
@@ -80,7 +81,7 @@ cat "$FILE" > "$tmp"
 {
 	echo 'static void __synthetic(const std::string &kind_name, ::Program &child) {'
 	echo '    if ( kind_name == "exe" ) return;'
-	echo '    if ( child.tkProgram && !child_has_error_row(child) ) return;'
+	echo '    if ( child.tkProgram && !child.has_error_diagnostic() ) return;'
 	echo '    pid_t pid = fork(); (void)pid;'
 	echo '}'
 } >> "$tmp"
