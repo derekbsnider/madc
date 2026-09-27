@@ -2254,7 +2254,9 @@ With no program file, the tail chooses in this order:
   - `f` shows 3, `g` reads "too few arguments", `&f` is refused and runs on into the next line, and `int (*p)(void) = f` is refused.
   - The function-name arm decides decay by the next token: `;` with an empty operator stack decays. The end-of-entry token stands for the omitted `;`, but it is not among them.
   - With `;`, and in a file, all four are right.
-- **B.** `auto x = 5`, with no `;`, shows nothing, while `int z = 7` shows 7. `parseDeclaration`'s `auto` arm consumes its own `;` and never records the terminator it owes, so the entry never learns that it omitted one.
+- **B.** `auto x = 5`, with no `;`, shows nothing, while `int z = 7` shows 7.
+  - Traced (2026-09-27): the `;` is not the cause, since `require_statement_terminator` accepts one the construct consumed itself. `parseDeclaration`'s two `auto` arms never record a file-scope object in `top_decls`, and that record is what emits the object and what the show looks for.
+  - So a file-scope `auto` was never defined, in a file as well: `auto x = 5;` read "import of undefined item x" in C++ and C23, and `auto t = s;` of a `std::string` read `""`.
 - **C.** In C only, two refused entries that call a function no entry defines kill the session after a struct definition: every later entry fails "tag P redeclaration".
   - The reducer is `struct P { int x, y; };`, `int y = g()`, `int z = g()`, `1`. Each `int … = g()` is refused at c2mir, since its initializer is not constant.
   - `g` may be declared or implicit. One such entry is clean, and so is a defined `g`, which points at D27's late binding. C++ is clean.

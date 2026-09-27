@@ -1,0 +1,34 @@
+// A file-scope `auto` object is defined, as every declarator is: `auto x = 5;`
+// read "MIR error: import of undefined item x", and `auto t = s;` of a
+// std::string read "" (plan §41.6a, B). parseDeclaration's two `auto` arms
+// built the declaration without recording it in top_decls, which is what
+// emits a file-scope object and carries its initializer.
+// g++ 13 and clang++ 18: `5 4 hi changed abcdefghijklmnopqrstuvwxyz`, then
+// `10 6 4 7 8`.
+#include <stdio.h>
+#include <string>
+
+auto x = 5;
+int k = 3;
+auto y = k + 1;
+std::string s = "hi";
+auto t = s;
+std::string mk() { return "abcdefghijklmnopqrstuvwxyz"; }
+auto u = mk();
+
+int g(int v) { return v * 2; }
+auto fp = g;
+auto l = [](int n) { return n + 1; };
+int m = 3;
+auto &r = m;
+const auto cx = 7;
+static auto sx = 8;
+
+int main()
+{
+	s = "changed";
+	m = 4;
+	printf("%d %d %s %s %s\n", x, y, t.c_str(), s.c_str(), u.c_str());
+	printf("%d %d %d %d %d\n", fp(5), l(5), r, cx, sx);
+	return 0;
+}

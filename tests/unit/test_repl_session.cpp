@@ -1195,6 +1195,36 @@ TEST_CASE("an entry's final function name shows the function, never a call (§41
     check_function_name_shown("--std=madc", "int (*)(void)");
 }
 
+// An entry's `auto` object is a session global like any declaration's, and
+// without its `;` it shows its value (plan §41.6a, B): the `auto` arms now
+// record it where every declarator arm does.
+TEST_CASE("an entry's auto declaration is a session global, and shows its value (§41.6a)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("#include <string>\nint g(int v) { return v * 2; }"));
+    REQUIRE(s.submit("auto x = 5"));
+    CHECK(s.shown() == "5");
+    REQUIRE(s.submit("auto y = x + 1;"));
+    CHECK(s.shown().empty());
+    REQUIRE(s.submit("x + y"));
+    CHECK(s.shown() == "11");
+    REQUIRE(s.submit("std::string str = \"hi\";\nauto t = str;"));
+    REQUIRE(s.submit("str = \"changed\";"));
+    REQUIRE(s.submit("t"));
+    CHECK(s.shown() == "\"hi\"");
+    REQUIRE(s.submit("auto fp = g;\nauto l = [](int n) { return n + 1; };"));
+    REQUIRE(s.submit("fp(5) + l(5)"));
+    CHECK(s.shown() == "16");
+
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c23"));
+    REQUIRE(c.submit("auto x = 5"));
+    CHECK(c.shown() == "5");
+    REQUIRE(c.submit("x * 3"));
+    CHECK(c.shown() == "15");
+}
+
 TEST_CASE("a var holding a number takes arithmetic (D28)")
 {
   {

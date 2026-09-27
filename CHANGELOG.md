@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### A file-scope `auto` object is defined
+
+In C++ and C23, `auto x = 5;` at file scope read "MIR error: import of
+undefined item x", and `auto t = s;` of a `std::string` read `""`. The
+same held for `auto fp = g;`, a lambda, `auto &r = m;`, `const auto` and
+`static auto`. In the REPL, whose entries are file scope, `auto x = 5;`
+then `x` read "undefined reference to 'x'", and `auto x = 5` without a
+`;` showed nothing. All of them are defined now and match g++, clang++
+and gcc.
+
+Tests: `testautofilescope` (C++17), `testautofilescopec23`, and the
+`auto` case in `test_repl_session`.
+
 ### A REPL entry's final function name shows the function
 
 An entry ending in a bare function name called the function. `f` showed

@@ -73119,12 +73119,12 @@ void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
     // A block-scope `thread_local` implies `static` in C++ ([dcl.stc]/3); C
     // requires the `static` spelled (C11 6.7.1p3 — c2mir diagnoses it, as
     // gcc does).
-    const bool block_scope = code != NULL && code != tkProgram;
+    const bool block_scope = !file_scope_compound(code);
     if ( is_static || (is_thread_local && block_scope && presents_as_cpp()) )
 	var->flags |= vfSTATIC;
     if ( is_thread_local )
 	var->flags |= vfTHREADLOCAL;
-    if ( is_inline && !is_static && (code == NULL || code == tkProgram) )
+    if ( is_inline && !is_static && file_scope_compound(code) )
 	var->flags |= vfLINKONCE;
 }
 
@@ -73547,6 +73547,10 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    assign->left = new TokenVar(*var);
 	    assign->right = rhs_node;
 	    td->initialize = assign;
+	    // A file-scope object is emitted from top_decls, which carries its
+	    // initializer, as every declarator arm records it.
+	    if ( file_scope_compound(code) )
+		record_global_top_decl(var, tb, td);
 
 	    DBG(std::cout << "parseDeclaration() auto: " << id << " = " << rhs_var->name << std::endl);
 	    return td;
@@ -73604,6 +73608,10 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	assign->left = new TokenVar(*var);
 	assign->right = auto_init_expr;
 	td->initialize = assign;
+	// A file-scope object is emitted from top_decls, which carries its
+	// initializer, as every declarator arm records it.
+	if ( file_scope_compound(code) )
+	    record_global_top_decl(var, tb, td);
 
 	DBG(std::cout << "parseDeclaration() auto: " << id << " = <expr> deduced "
 		<< deduced->name << std::endl);
@@ -73822,7 +73830,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    // flow does — global_ctor_call recovers the ctor arguments from
 	    // there. Without the entry the initializer was silently dropped
 	    // and the global default-constructed.
-	    if ( var && (code == NULL || code == tkProgram) )
+	    if ( var && file_scope_compound(code) )
 		record_global_top_decl(var, tb, td);
 	    return td;
 	}
@@ -74560,7 +74568,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	// Capture the index so the TokenDecl built later (which carries the
 	// initializer) can be linked back into this entry for CIR emission.
 	ssize_t global_top_decl_index = -1;
-	if ( var && (code == NULL || code == tkProgram) )
+	if ( var && file_scope_compound(code) )
 	    global_top_decl_index = (ssize_t)record_global_top_decl(var, tb, NULL);
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(code, var);

@@ -5367,6 +5367,11 @@ public:
     // its dynamic initialization). `decl` carries the initializer, NULL for
     // none or one linked in later. Returns its index.
     size_t record_global_top_decl(Variable *var, TokenBase *origin, TokenDecl *decl);
+    // Does a declaration in CODE (the innermost open compound, NULL for none)
+    // declare at file scope? Every declarator arm asks this before it records
+    // the object in top_decls.
+    bool file_scope_compound(const TokenCpnd *code) const
+    { return code == NULL || code == tkProgram; }
     // Host-callback registrations (libmadc register_function): the embedding
     // host exposes a native function to scripts. _parser_init declares each
     // as an ordinary prototype (add_host_callbacks), and the CIR builder
