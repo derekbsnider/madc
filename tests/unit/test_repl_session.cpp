@@ -1157,6 +1157,44 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, madc
     CHECK(s.shown().empty());
 }
 
+// An entry's final bare function name (plan §41.6a, A) shows the function's
+// pointer and never calls it: the entry's end stands for the `;` the entry
+// omitted, and a function name before that `;` decays. WORD is the pointer
+// type's spelling under the standard.
+static void check_function_name_shown(const std::string &std_option,
+				      const std::string &word)
+{
+    CAPTURE(std_option);
+    InteractiveSession s;
+    REQUIRE(s.begin(std_option));
+    REQUIRE(s.submit("int k = 0;\nint calls = 0;\n"
+		     "int f(void) { ++calls; return 3; }\n"
+		     "int g(int v) { return v; }"));
+    const std::string prefix = "(" + word + ") 0x";
+    const char *forms[] = { "f", "(f)", "&f", "*f", "1, f" };
+    for ( size_t i = 0; i < sizeof(forms) / sizeof(forms[0]); ++i )
+    {
+	CAPTURE(forms[i]);
+	REQUIRE(s.submit(forms[i]));
+	CHECK(s.shown().compare(0, prefix.size(), prefix) == 0);
+    }
+    CHECK(*(int *)s.data("calls") == 0);
+    // `&g`, not `g`: a function name after `==` is called (BUGS.md B41).
+    check_reenters(s, "g", NULL, "(@) == &g");
+    REQUIRE(s.submit("int (*p)(void) = f"));
+    CHECK(s.shown().compare(0, prefix.size(), prefix) == 0);
+    REQUIRE(s.submit("p()"));
+    CHECK(s.shown() == "3");
+    CHECK(*(int *)s.data("calls") == 1);
+}
+
+TEST_CASE("an entry's final function name shows the function, never a call (§41.6a)")
+{
+    check_function_name_shown("--std=c17", "int (*)(void)");
+    check_function_name_shown("--std=c++17", "int (*)()");
+    check_function_name_shown("--std=madc", "int (*)(void)");
+}
+
 TEST_CASE("a var holding a number takes arithmetic (D28)")
 {
   {

@@ -636,6 +636,26 @@ int main() { auto [x, y] = arr; arr[0] = 9; printf("%d %d\n", x, y); return 0; }
 - D12's slice 2 builds the element-by-element array copy that this binding
   needs.
 
+### B41. A function name after `==` and before `;` is called
+
+- Found 2026-09-27, while gating D12's prerequisite A (plan §41.6a): an
+  entry's shown function pointer compared with the function.
+
+```c
+#include <stdio.h>
+int g(int v) { return v; }
+int main(void) { int (*p)(int) = g; int k = p == g; printf("%d\n", k); return 0; }
+```
+
+- gcc 13 and clang 18: `1`. madc `--std=c17` and `--std=c++17`: `3:51: too
+  few arguments` (c2mir), after "comparison of integer with a pointer".
+  `p == g,` and `(p == g)` are right, and so is `g == p;`.
+- Where: the function-name arm of `parseExpression` decides decay or call by
+  the next token. A `;` decays only with an empty operator stack (so
+  `cout << endl;` keeps its call), and here the stack holds `==`. The rule
+  C gives is not a token rule: a function designator decays unless it is the
+  operand of `&` or `sizeof`, or the callee of a call (C11 6.3.2.1p4).
+
 ## Diagnostics
 
 ### B7. An undeducible function-template call dies in MIR without a location
@@ -781,6 +801,23 @@ int main() { return __builtin_types_compatible_p(enum E, int); }
   `find_c_enum_tag`, so this gives `Invalid first type in
   __builtin_types_compatible_p`.
 - Decide: refuse it in C++, as gcc does, or read C++ enum tags.
+
+### B40. Every function type answers `is_void()`
+
+- Found 2026-09-27, while tracing why an entry's final function name showed
+  nothing (plan §41.6a, A).
+- `FuncDef`'s `DataDef` base is default-constructed, so its type tag is 0,
+  `dtVOID`, and `DataDef::is_void()` (`rawtype() == dtVOID`) is true for
+  every function type. No user-visible effect was found beyond the show: an
+  overload set over two function-pointer parameters resolves right, and
+  `std::is_void<decltype(f)>` is 0.
+- The show now asks of the value it displays, a function's pointer
+  ([conv.func]). The owner (`DataDef::is_void`, gated) is where the fix
+  belongs, and it reaches overload ranking: `score_arg_to_param`'s
+  non-class pointee arm ranks a function-pointer pointee against any other
+  as a `void *` conversion when either answers `is_void()`
+  (`cir_builder.cpp`, the `[conv.ptr]` arm). A focused session: give a
+  function type its own tag, then run the lanes.
 
 ## Duplication families (divergent, open)
 

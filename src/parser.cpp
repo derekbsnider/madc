@@ -41575,6 +41575,11 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			 // built for a void-returning function, yielding an
 			 // empty Operand back into TokenRETURN.
 			 || (peek_id == TokenID::tkSemi && opStack.empty())
+			 // An interactive entry's end stands for the `;` its final
+			 // statement omitted (D11), so it decays as that `;` does:
+			 // an entry's `f` shows the function, never calls it.
+			 || (peek_after && peek_after == entry_end_token
+			     && opStack.empty())
 			 // Binary comparison / logical / bitwise operators: a bare
 			 // function name on either side of these is its address
 			 // (function-to-pointer decay), not a call. Closes patterns

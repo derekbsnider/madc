@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A REPL entry's final function name shows the function
+
+An entry ending in a bare function name called the function. `f` showed
+`3`, `g` read "too few arguments", `&f` was refused and ran on into the
+next line, and `int (*p)(void) = f` was refused. With a `;`, and in a file,
+all four were right. Now `f`, `(f)`, `&f`, `*f` and `1, f` show the
+function's pointer, `(int (*)(void)) 0x…` in C and `(int (*)()) 0x…` in
+C++, as cling shows it, and nothing is called until `p()`.
+
+Tests: the new function-name case in `test_repl_session`, under C, C++ and
+the madc dialect.
+
 ### `madc -i file` runs the file, then the REPL has its names (D20)
 
 As `python -i` does, `madc -i prog.c a b` loads `prog.c` into a REPL

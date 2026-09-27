@@ -2847,7 +2847,13 @@ node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin)
 		return error_node("the value display takes one value", origin);
 	TokenBase *arg = tcf->parameters[0];
 	DataDef *dd = arg ? arg->datadef() : NULL;
-	if (!dd || dd->is_void())
+	// The show displays the entry's VALUE, and a function designator's value
+	// is its pointer ([conv.func], C11 6.3.2.1p4), never void. Asked of the
+	// designator itself, is_void() says yes: a FuncDef's own type tag is
+	// dtVOID (BUGS.md B40).
+	DataDef *vdd = (dd && dd->as_funcdef_dd() && m_prog)
+		     ? m_prog->getPointerType(dd) : dd;
+	if (!vdd || vdd->is_void())
 		return arg ? translate_expr(arg) : integer(0, origin);
 
 	char sname[40];
