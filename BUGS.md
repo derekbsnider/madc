@@ -326,6 +326,26 @@ int main() { std::unique_ptr<int> p(new int(3)); auto q = p; printf("%d\n", *q);
   `__is_constructible` trait. Whether it is set for `unique_ptr`, and whether
   a declaration's initialization reads it, is the first thing to check.
 
+### B52. A namespace's member is found unqualified in C++ (`vector` without `std::`)
+
+- Found 2026-09-27, while building D23's completion (plan §41.7a, slice 3),
+  which must offer only what C++ lets a top-level entry write bare.
+
+```cpp
+#include <vector>
+int main() { vector<int> v; v.push_back(1); return (int)v.size(); }
+```
+
+- g++ 13: `2:14: 'vector' was not declared in this scope`. madc
+  `--std=c++17`: compiles and runs (exit 1). The madc dialect writes std's
+  names bare by design (value-first), and C++ is not the dialect.
+- Where: not traced. madc registers a namespace's objects and functions as
+  globals too (the scratch probe `tmp/repl/d23/names_probe.cpp` lists
+  `std::allocator_arg` as a global `allocator_arg`), and the recorded
+  using-directives include libstdc++'s own `std::__debug`, kept without the
+  scope it was written in (`active_using_namespaces`). Either may be the lookup
+  that finds `vector`.
+
 ## Refuses valid code
 
 ### B3. A declarator after a type definition's `}` may not start with cv or `*`

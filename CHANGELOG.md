@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Tab offers only names you can write at the top level
+
+In a C++ session after `#include <vector>`, Tab listed madc's internal
+names, such as `allocator_char__allocator_char__o2`, and std's names
+without `std::`, such as `vector`, which g++ refuses there. Now it offers a
+namespace's names only once a `using namespace` brings them in. The madc
+dialect still offers std's names bare, because dialect code writes them
+that way. Reserved names (a leading `_` or a `__` anywhere) are offered
+only for a word that starts the same way.
+
+Tests: the C++ lines of `test_repl_session`'s completion case.
+
 ### Tab completes names in the REPL (D23, slice 3)
 
 At the REPL, Tab completes the word before the caret from the session's

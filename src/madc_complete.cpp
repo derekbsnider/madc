@@ -127,22 +127,43 @@ Program::CompletionContext Program::completion_context(const std::string &before
     return ctx;
 }
 
+// A name the implementation reserves (C11 7.1.3, C++ [lex.name]/3): one
+// that begins with `_` or holds `__`. madc's own lowering spells every class
+// member and instantiation it registers as a global that way
+// (`allocator_char__operator=`, `Box__take__o2`).
+static bool reserved_name(const std::string &n)
+{
+    return (!n.empty() && n[0] == '_') || n.find("__") != std::string::npos;
+}
+
+// The namespace a canonical C++ spelling names its entity in ("" for the
+// global one).
+static std::string spelling_namespace(const std::string &spelling)
+{
+    size_t at = spelling.rfind("::");
+    return at == std::string::npos ? std::string() : spelling.substr(0, at);
+}
+
 void Program::completion_names(const std::string &word, CompletionContext ctx,
 			       std::vector<std::string> &out)
 {
     std::set<std::string> names;
-    const bool underscored = !word.empty() && word[0] == '_';
+    // A reserved name completes only a word shaped like one (IPython's rule
+    // for `_`, and C++'s reservation of `__`), so the implementation's names
+    // and madc's lowered ones stay out of the way.
+    const bool reserved_word = reserved_name(word);
     auto offer = [&](const std::string &n) {
 	if ( n.size() < word.size() || n.compare(0, word.size(), word) != 0 )
 	    return;
-	// A qualified or instantiated key is no name written at the top level.
-	if ( n.find_first_of(":<> ") != std::string::npos )
-	    return;
-	// The session's own names never; a reserved one (`__builtin_*`,
-	// `_IO_*`) only for a word that starts with `_` (IPython's rule).
+	// A name is written as an identifier: a qualified key, an instantiation
+	// or an operator is not one.
+	for ( size_t i = 0; i < n.size(); ++i )
+	    if ( !madc::hub::text_buffer::word_byte(n[i]) )
+		return;
+	// The session's own names never.
 	if ( n.compare(0, 7, "__madc_") == 0 )
 	    return;
-	if ( !underscored && !n.empty() && n[0] == '_' )
+	if ( !reserved_word && reserved_name(n) )
 	    return;
 	names.insert(n);
     };
@@ -150,37 +171,90 @@ void Program::completion_names(const std::string &word, CompletionContext ctx,
     if ( ctx == CompletionContext::Tag )
     {
 	for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
-	    offer(it->first);
+	    if ( it->second && spelling_namespace(it->second->canonical_cpp_spelling()).empty() )
+		offer(it->first);
 	out.assign(names.begin(), names.end());
 	return;
     }
-    // Objects and functions: every entry's and every included header's.
+    // The namespaces whose members an unqualified name reaches at the top
+    // level: those a using-directive names, less the implementation's own
+    // (libstdc++'s `std::__debug`, recorded without its scope), and in the
+    // madc dialect std, whose names dialect code writes bare (value-first).
+    // In C++ nothing else: g++ refuses a bare `vector` (BUGS.md B52).
+    std::set<std::string> visible;
+    visible.insert(std::string());
+    for ( size_t i = 0; i < active_using_namespaces.size(); ++i )
+	if ( !reserved_name(active_using_namespaces[i]) )
+	    visible.insert(active_using_namespaces[i]);
+    if ( language_std == STD_MADC )
+	visible.insert("std");
+    // Every namespace's members, by identity: madc registers a namespace's
+    // objects and functions as globals too, so the global scope alone cannot
+    // say whose a Variable is.
+    std::map<const Variable *, const std::string *> member_of;
+    for ( namespace_map_t::iterator ns = namespace_map.begin();
+	  ns != namespace_map.end(); ++ns )
+	for ( variable_map_iter m = ns->second.begin(); m != ns->second.end(); ++m )
+	    if ( m->second )
+		member_of.insert(std::make_pair(m->second, &ns->first));
+    auto reachable = [&](const Variable *v) {
+	std::map<const Variable *, const std::string *>::const_iterator it =
+	    member_of.find(v);
+	return it == member_of.end() || visible.count(*it->second);
+    };
+    auto type_reachable = [&](const DataDef *dd) {
+	if ( !dd )
+	    return false;
+	const std::string &sp = dd->canonical_cpp_spelling();
+	return sp.find('<') == std::string::npos	// an instantiation
+	    && visible.count(spelling_namespace(sp));
+    };
+    // Objects and functions: every entry's and every included header's; an
+    // instantiation's products are no name anyone wrote.
     if ( tkProgram )
 	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
 	    if ( Variable *v = tkProgram->variables[i] )
-		offer(v->name);
+		if ( !(v->flags & vfINSTPRODUCT) && reachable(v) )
+		    offer(v->name);
     for ( funcdef_map_iter it = funcdef_map.begin(); it != funcdef_map.end(); ++it )
-	if ( it->second && it->second->method_display_name.empty() )
-	    offer(it->first);	// a class method completes after its object
+    {
+	FuncDef *fd = it->second;
+	// A class method completes after its object (slice 4).
+	if ( !fd || !fd->method_display_name.empty()
+	     || !visible.count(fd->namespace_name) )
+	    continue;
+	offer(fd->function_display_name.empty() ? it->first
+						: fd->function_display_name);
+    }
     // Types, and in C++ and madc a class's name, which is a type name there.
-    datatype_map.for_each([&](const char *key, TokenDataType *&) -> bool {
-	offer(key);
+    datatype_map.for_each([&](const char *key, TokenDataType *&tdt) -> bool {
+	if ( !tdt || type_reachable(&tdt->definition) )
+	    offer(key);
 	return false;
     });
     if ( presents_as_cpp() )
     {
 	for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
-	    offer(it->first);
+	    if ( type_reachable(it->second) )
+		offer(it->first);
+	// Top-level namespaces (a scoped enum is registered as one, and its
+	// name is a type name).
 	for ( namespace_map_t::const_iterator it = namespace_map.begin();
 	      it != namespace_map.end(); ++it )
 	    offer(it->first);
 	template_map.for_each([&](const char *, template_registry_entry_t &r) -> bool {
 	    for ( size_t i = 0; i < r.namespace_variants.size(); ++i )
-		offer(r.namespace_variants[i].class_name);
+		if ( visible.count(r.namespace_variants[i].defining_namespace) )
+		    offer(r.namespace_variants[i].class_name);
 	    return false;
 	});
-	fn_template_map.for_each([&](const char *key, std::vector<FnTemplateDef> &) -> bool {
-	    offer(key);
+	fn_template_map.for_each([&](const char *key, std::vector<FnTemplateDef> &defs) -> bool {
+	    for ( size_t i = 0; i < defs.size(); ++i )
+		if ( visible.count(defs[i].ns) )
+		{
+		    offer(key);
+		    break;
+		}
 	    return false;
 	});
     }

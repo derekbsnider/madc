@@ -2641,6 +2641,14 @@ With no program file, the tail chooses in this order:
   - `struct Poi` → `Point`, and C's bare `Poi` offers nothing;
   - in madc, `printl` → `println`, `ph` → `php` and `tot` → `total`.
 - **Found off the path:** B51. An unknown directive (`#xylo`) is refused as "unexpected token type 7", where gcc says "invalid preprocessing directive".
+- **Found on the REPL's path, and fixed in its own commit:** in C++, Tab listed names no top-level entry can write. After `#include <vector>`, `alloc` offered `allocator_char__allocator_char__o2` and a bare `allocator` / `vector`.
+  - Measured (`tmp/repl/d23/names_probe.cpp`): madc registers a class's members and an instantiation's products as globals, a namespace's objects as globals too, and an instantiation's class under a bare key. No registry alone says what is written bare.
+  - Now each entity is asked:
+    - a name must be an identifier;
+    - a reserved one (a leading `_`, or `__` anywhere) completes only a word shaped like one;
+    - an instantiation's product (`vfINSTPRODUCT`) is skipped;
+    - a namespace's member, found by identity among `namespace_map`'s values, needs a reachable namespace: the global one, one a using-directive names (not libstdc++'s own `std::__debug`), and std in the madc dialect.
+  - Found off the path: B52 (madc `--std=c++17` accepts a bare `vector<int>`; g++ refuses).
 - **Gates:**
   - `test_repl_session`'s two completion cases: C17 names, keywords, a header's names and macros, the contexts that complete nothing, tags, the underscore rule, the rollback, C++ class and namespace names, madc's words and member row, and the result names;
   - `test_repl_cli`: §37 item 7 at the editor (`xylo⇥` runs as 3, `twi⇥(4)` as 8, and a second Tab lists).

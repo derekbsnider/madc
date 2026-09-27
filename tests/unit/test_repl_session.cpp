@@ -1806,10 +1806,25 @@ TEST_CASE("completion: C++ names, madc's words, and the result names")
     CHECK(has(complete_at_end(p, "geo"), "geometry"));
     CHECK(complete_at_end(p, "geometry::ar").empty());	// a member: slice 4
     CHECK(complete_at_end(p, "Point{}.x").empty());
+    // Only what C++ lets a top-level entry write bare: after <vector>, std's
+    // names and madc's lowered ones (`allocator_char__operator=`, the
+    // instantiations) are not offered, until a using-directive names std.
+    REQUIRE(p.submit("#include <vector>"));
+    CHECK_FALSE(has(complete_at_end(p, "vec"), "vector"));
+    std::vector<std::string> al = complete_at_end(p, "alloc");
+    CHECK_FALSE(has(al, "allocator"));
+    CHECK_FALSE(has(al, "allocator_char"));
+    CHECK_FALSE(has(al, "allocator_arg"));
+    for ( size_t i = 0; i < al.size(); ++i )
+	CHECK(al[i].find("__") == std::string::npos);
+    CHECK(has(complete_at_end(p, "st"), "std"));
+    REQUIRE(p.submit("using namespace std;"));
+    CHECK(has(complete_at_end(p, "vec"), "vector"));
 
     InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     CHECK(has(complete_at_end(m, "printl"), "println"));	// the auto-include table
+    CHECK(has(complete_at_end(m, "vec"), "vector"));	// the dialect writes std bare
     CHECK(has(complete_at_end(m, "ph"), "php"));
     CHECK_FALSE(has(complete_at_end(m, "WE"), "WEB"));	// a member row: qualified only
     REQUIRE(m.submit("var total = 5;"));
