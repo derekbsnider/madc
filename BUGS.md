@@ -657,6 +657,25 @@ int y = x +;
   initializer's position, or the operator being cited is the wrong one.
   Reducer: `tmp/repl/d20/missop.c`.
 
+### B34. A redefinition is cited two columns before its name
+
+- Found 2026-09-27, while measuring loaded-file statics for D20's slice 2
+  (plan §41.5a). File mode does the same.
+
+```c
+int t = 5;
+int t = 6;
+int main(void) { return t; }
+```
+
+- gcc 13: `2:5: redefinition of 't'`, the caret under `t`.
+- madc `--std=c17`: `2:3: redefinition of 't'`, with the caret under the
+  `t` of `int`. The session's `int f(void)` redefinition is cited at `1:6`,
+  on the `f`, so functions are right.
+- Where: `Program::declare_object`'s redefinition refusal (D18,
+  `bd3c56500`) throws at `where`, the token its caller passes, and that
+  token is not the declarator-id. Reducer: `tmp/repl/d20s2/redef.c`.
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++
