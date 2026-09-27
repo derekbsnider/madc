@@ -102,8 +102,9 @@ public:
 
     // The session's commands (plan §41.8a, D13/D24): an entry whose first
     // line starts with `%name` or `:name` is a command, never C. The typed
-    // name becomes one of these codes once, at input.
-    enum class Command : unsigned char { help, type };
+    // name becomes one of these codes once, at input. `?NAME` is %pinfo NAME,
+    // and `?` alone %help (IPython).
+    enum class Command : unsigned char { help, type, pinfo };
     // The entries linked into the live context.
     unsigned entries() const { return entry_count; }
     // The entries submitted, refused ones included: entry N is REPL[N].
@@ -116,6 +117,7 @@ private:
     // it is refused (its diagnostics are the Program's).
     bool run_command(const std::string &text, const std::string &name);
     bool type_command(const std::string &expression, const std::string &name);
+    bool pinfo_command(const std::string &argument, const std::string &name);
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;
     unsigned entry_count;

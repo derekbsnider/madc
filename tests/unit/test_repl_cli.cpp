@@ -393,3 +393,18 @@ TEST_CASE("%type answers off a terminal and at the line editor (§37, D13)")
     CHECK(madc_repl_edit(e, term, eout, "") == 0);
     CHECK(eout.str() == "int\nint (int)\n");	// Tab completed `%type`
 }
+
+// Slice 2 (plan §41.8a): `?name` at the line editor, the name completed by
+// Tab after the `?`.
+TEST_CASE("?name answers at the line editor (§37, D15)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    scripted_terminal term({ "int twice(int a) { return a * 2; }\r",
+			     "?twice\r", "?twi\t\r", "\x04" });
+    std::ostringstream out;
+    CHECK(madc_repl_edit(s, term, out, "") == 0);
+    const std::string twice =
+	"Signature: int twice(int a)  @ REPL[1]:1\nType:      function\n";
+    CHECK(out.str() == twice + twice);
+}

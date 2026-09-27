@@ -1428,6 +1428,16 @@ public:
 		return (i < member_dims.size()) ? &member_dims[i] : NULL;
 	return NULL;
     }
+    // A fixed-array member's extents, outermost first (no recorded shape is
+    // one extent of m_count), as Variable::array_dims gives an object's.
+    std::vector<carray_dim_t> m_array_dims(const std::string &member)
+    {
+	const std::vector<carray_dim_t> *md = m_dims(member);
+	if ( md && !md->empty() )
+	    return *md;
+	std::string name = member;
+	return std::vector<carray_dim_t>(1, m_count(name));
+    }
     bool has_runtime_size() const
     {
 	for ( size_t i = 0; i < member_count_exprs.size(); ++i )

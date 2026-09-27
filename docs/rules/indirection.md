@@ -164,7 +164,14 @@ yet measured.
   member-row subscript. `Program::array_operand_type` (the array with its
   extents; `array_operand_element_type` is its element) is the owner, a
   variable operand goes to the one expression measure, and the fast paths are
-  deleted. Reducer `tests/testsizeofoperand`.
+  deleted. Reducer `tests/testsizeofoperand`. (2026-09-27, `?name`: a NAMED
+  object or member has no operand token, so its array type is
+  `object_array_type` / `member_array_type`, and the one-extent fallback the
+  operand arms each spelled is `Variable::array_dims` /
+  `DataDefSTRUCT::m_array_dims`, which all four read. Two older copies of the
+  member rule remain, recorded as a DupFamily: cir_builder's brace-init layout,
+  which skips a zero count, and the postfix subscript's element type, which
+  has no m_count fallback.)
 - ~~`arithmetic_operand_value_and_promotion`~~ — consolidated 2026-09-23 (the
   handoff's Gap `unary_operator_integer_promotion`, measured at 3x its recon).
   Every operator's parse-side type read its children as `left->datadef()` and

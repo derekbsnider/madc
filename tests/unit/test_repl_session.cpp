@@ -2005,3 +2005,101 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     REQUIRE(m.submit("%type v"));
     CHECK(m.shown() == "var");			// the dialect's carrier
 }
+
+// Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
+// knows of a name, in IPython's fields, each overload with its location
+// (Julia), from the walk completion reads: `?` describes a name exactly
+// when Tab offers it typed whole.
+TEST_CASE("session commands: ?name and %pinfo describe a name")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("#include <sys/stat.h>"));
+    REQUIRE(c.submit("int x = 10;"));
+    REQUIRE(c.submit("int sq(int n) { return n * n; }"));
+    REQUIRE(c.submit("struct Point { int x; int y; };"));
+    REQUIRE(c.submit("typedef struct Point Pt;"));
+    REQUIRE(c.submit("int arr[3];"));
+    REQUIRE(c.submit("#define N 5"));
+    REQUIRE(c.submit("#define SQ(a) ((a) * (a))"));
+    REQUIRE(c.submit("int __hidden = 1;"));
+    struct { const char *entry, *shown; } described[] = {
+	{ "?sq", "Signature: int sq(int n)  @ REPL[3]:1\nType:      function" },
+	{ "%pinfo sq", "Signature: int sq(int n)  @ REPL[3]:1\nType:      function" },
+	{ "  ?x", "Type:      int\nDefined:   @ REPL[2]:1" },
+	{ "?arr", "Type:      int [3]\nDefined:   @ REPL[6]:1" },
+	{ "?Point", "Type:      struct Point\nDefined:   @ REPL[4]:1\n"
+		    "Members:   int x\n           int y" },
+	{ "?Pt", "Typedef:   struct Point\nDefined:   @ REPL[5]:1\n"
+		 "Members:   int x\n           int y" },
+	{ "?N", "Macro:     #define N 5" },
+	{ "?SQ", "Macro:     #define SQ(a) ((a) * (a))" },
+	{ "?while", "while is a keyword of c17" },
+    };
+    for ( size_t i = 0; i < sizeof(described) / sizeof(described[0]); ++i )
+    {
+	CAPTURE(described[i].entry);
+	REQUIRE(c.submit(described[i].entry));
+	CHECK(c.shown() == described[i].shown);
+    }
+    CHECK(c.submitted() == 18u);		// each takes REPL[N]
+    // A C tag and a function of one name: each, the tag first.
+    REQUIRE(c.submit("?stat"));
+    const std::string st = c.shown();
+    CHECK(st.compare(0, 23, "Type:      struct stat\n") == 0);
+    CHECK(st.find("\n\nSignature: int stat(const char *, struct stat *)") != std::string::npos);
+    // `?` alone is %help (Julia, IPython).
+    REQUIRE(c.submit("?"));
+    CHECK(c.shown().find("%pinfo NAME") != std::string::npos);
+    // Refused: an unknown name at the column typed, and what is no name.
+    CHECK_FALSE(c.submit("?nosuchname"));
+    CHECK(err.str().find(":1:2: ") != std::string::npos);
+    CHECK(err.str().find("'nosuchname' is not declared") != std::string::npos);
+    CHECK_FALSE(c.submit("?x+1"));
+    CHECK(err.str().find("%pinfo takes a name") != std::string::npos);
+    // `?` and Tab agree: a reserved name the user declared is offered for a
+    // word shaped like one and described; the session's own never.
+    const char *names[] = { "sq", "x", "__hidden", "__madc_entry_1", "nosuchname" };
+    for ( size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i )
+    {
+	CAPTURE(names[i]);
+	const bool tab = has(complete_at_end(c, names[i]), names[i]);
+	CHECK(tab == c.submit(std::string("?") + names[i]));
+    }
+    // Completion: after `?` the name completes as an entry; %pi is a command.
+    size_t start = 0;
+    CHECK(has(complete_at_end(c, "?s", &start), "sq"));
+    CHECK(start == 1u);
+    CHECK(complete_at_end(c, "%pi") == std::vector<std::string>{ "pinfo" });
+
+    // C++: an overload pair, each with its location; a class's public members
+    // (a const method's qualifier, a static member; the private one not).
+    InteractiveSession p;
+    REQUIRE(p.begin("--std=c++17"));
+    REQUIRE(p.submit("int sq(int n) { return n * n; }"));
+    REQUIRE(p.submit("double sq(double d) { return d * d; }"));
+    REQUIRE(p.submit("struct Box { int w; static int count; "
+		     "int area() const { return w * w; } private: int secret; };"));
+    REQUIRE(p.submit("namespace geometry { int dim = 3; }"));
+    REQUIRE(p.submit("?sq"));
+    CHECK(p.shown() == "Signature: int sq(int n)  @ REPL[1]:1\n"
+		       "Signature: double sq(double d)  @ REPL[2]:1\n"
+		       "Type:      function");
+    REQUIRE(p.submit("?Box"));
+    CHECK(p.shown() == "Type:      Box\nMembers:   int w\n"
+		       "           static int count\n           int area() const");
+    REQUIRE(p.submit("?geometry"));
+    CHECK(p.shown() == "Type:      namespace");
+
+    // madc: the carrier, and a compiler-implemented public, which its
+    // fragment declares as a template (no invented signature).
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    REQUIRE(m.submit("var v = 5;"));
+    REQUIRE(m.submit("?v"));
+    CHECK(m.shown() == "Type:      var\nDefined:   @ REPL[1]:1");
+    REQUIRE(m.submit("?println"));
+    CHECK(m.shown() == "Type:      function template");
+}

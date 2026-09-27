@@ -364,6 +364,20 @@ public:
     // explicit-template-argument prefix match binds a call to the instance.
     std::string overload_spelling;
     std::vector<std::string> overload_template_args;
+    // The identity a function template's PLACEHOLDER carries in
+    // overload_spelling (register_skipped_namespace_template_function, the
+    // forest restore): it is seeded into an overload set so ranking runs,
+    // and is never a callable; its parameters are none the template declares.
+    static const char *template_placeholder_spelling() { return "\x01fn-template-placeholder"; }
+    bool is_template_placeholder() const
+    { return overload_spelling == template_placeholder_spelling(); }
+    // Does this FuncDef stand in for a function TEMPLATE, so that its
+    // parameters are none the template declares? Its placeholder (marked
+    // once an overload set seeds it), or a compiler-implemented public,
+    // which its script header declares as a template (inline_builtin_kind,
+    // cpp-first-api.md).
+    bool stands_for_function_template() const
+    { return is_template_placeholder() || !inline_builtin_kind.empty(); }
     // import (alias form): a member of a namespace bound to a dynamic module
     // by `import name as ns;`. Non-empty dyn_module_member marks the FuncDef;
     // the CIR builder lowers every call to a runtime-resolved indirect call
@@ -6877,6 +6891,8 @@ public:
     // The ARRAY type an operand denotes, with its extents, or NULL — madc
     // stores arrays flattened; this is where the extents are read back.
     DataDef *array_operand_type(TokenBase *e);
+    DataDef *object_array_type(const Variable &v);
+    DataDef *member_array_type(DataDefSTRUCT &sdd, const std::string &member);
     // Its element (the ROW, multi-dimensional) — the type of e[0] — or NULL.
     DataDef *array_operand_element_type(TokenBase *e);
     // The return CLASS of a captured FREE namespace binary operator on class
@@ -7086,11 +7102,49 @@ public:
     CompletionContext completion_context(const std::string &before,
 					 std::vector<std::string> &chain,
 					 std::vector<bool> &arrows);
-    // The names visible at the top level that start with `word`, found by
-    // walking the registries, never through lookup (a lookup materializes,
-    // registers and throws).
+    // A name a top-level entry can write, and what it names (plan §41.8a):
+    // the one walk completion's names and `?name` both read, so `?` never
+    // describes a name Tab would not offer. A field is set where the kind
+    // has it (an object's or a function's Variable, a function's FuncDef, a
+    // type's or a tag's DataDef, an object-like macro's replacement text, a
+    // function-like macro's definition).
+    struct TopLevelName
+    {
+	enum class Kind : unsigned char
+	{
+	    object, function, type, tag, name_space, class_template,
+	    function_template, keyword, macro, header_name, dialect_word, result
+	};
+	Kind kind;
+	std::string name;
+	Variable *var;
+	FuncDef *fd;
+	DataDef *type;
+	const std::string *definition;
+	const MacroDef *macro;
+	TopLevelName(Kind k, const std::string &n)
+	    : kind(k), name(n), var(NULL), fd(NULL), type(NULL), definition(NULL),
+	      macro(NULL) {}
+    };
+    // The walk: the registries are WALKED, never looked up (a lookup
+    // materializes, registers and throws). The visibility rule lives here:
+    // a namespace's member only when its namespace is reachable, no
+    // instantiation's product; the name's shape is the caller's rule.
+    void visit_top_level_names(CompletionContext ctx,
+			       const std::function<void(const TopLevelName &)> &visit);
+    // The names visible at the top level that start with `word`.
     void completion_names(const std::string &word, CompletionContext ctx,
 			  std::vector<std::string> &out);
+    // `?name` (plan §41.8a, slice 2): what the session knows of a name, in
+    // IPython's fields. False when nothing is named so (`out` says so).
+    bool describe_name(const std::string &name, std::string &out);
+    // Where the Program recorded an entity (`@ REPL[2]:1`, `@ file`), empty
+    // when it recorded nothing: an object's latest TopDecl, a type name's
+    // first, a function's latest definition in the tree, else its
+    // prototype's file.
+    std::string object_location(const Variable *v) const;
+    std::string type_location(const std::string &name, const DataDef *dd) const;
+    std::string function_location(const Variable *v, const FuncDef *fd) const;
     // Slice 4: an object's members after its chain, and a scope's (a
     // namespace's or a class's) members after its qualifier.
     void completion_members(const std::vector<std::string> &chain,

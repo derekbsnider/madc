@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### REPL command: `?name` / `%pinfo name` (§37 item 8, slice 2)
+
+`?sq` describes what the session knows of a name, in IPython's fields. For a
+function it prints each overload's signature with where it was defined
+(`Signature: int sq(int n)  @ REPL[3]:1`), then `Type: function`. An object
+gets its type and where it was declared (`int [3]` for an array). A struct
+or class gets its type, where it was defined and its public members with
+their types (`int area() const`), and a typedef the type it names. A macro
+prints its `#define`, and a keyword the standard it belongs to. A name that
+is both a C tag and a function (`stat`) gets both. An unknown name is
+refused with `'nosuchname' is not declared`. `?` describes exactly the
+names Tab offers. `?` alone lists the commands, and the name after `?`
+completes with Tab.
+
+Fixed: `%type printf` printed `int (const char *, long, ...)`. The
+varargs slot madc adds internally was spelled as a parameter. It now prints
+`int (const char *, ...)`.
+
+Tests: the `?name` cases in `test_repl_session` and `test_repl_cli`.
+
 ### REPL commands: `%type`, `%help` (§37 item 8, slice 1)
 
 An entry that starts with `%` or `:` and a name is a session command, as in

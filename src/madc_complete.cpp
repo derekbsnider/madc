@@ -15,6 +15,10 @@
  *     after `::` the scope's registries are read (completion_scope_names),
  *     with the attempt parsed first, since a module's namespace fills only
  *     when its fragment is parsed.
+ * The top-level walk has a second consumer, `?name` (plan §41.8a, slice 2):
+ * visit_top_level_names hands each candidate with its entity, and
+ * describe_name keeps the ones spelled exactly as the name, under the same
+ * name rule, so `?` describes a name exactly when Tab would offer it.
  *
  * Thread contract: a query runs on the session's thread between entries,
  * as every other session verb does (D9); it changes nothing it does not
@@ -42,6 +46,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_type_spelling.h"
 #include "madcdis/text_buffer.h"	// the one word rule (word_byte)
 
 
@@ -234,24 +239,29 @@ class CompletionOffer
 public:
     explicit CompletionOffer(const std::string &word)
 	: word(word), reserved_word(reserved_name(word)) {}
-    void operator()(const std::string &n)
+    // Does the rule offer `n` for the word? `?name` asks it of the exact name
+    // (the word is the name), so it describes only what Tab would offer.
+    bool accepts(const std::string &n) const
     {
 	if ( n.size() < word.size() || n.compare(0, word.size(), word) != 0 )
-	    return;
+	    return false;
 	// A name is written as an identifier: a qualified key, an instantiation
 	// or an operator is not one.
 	for ( size_t i = 0; i < n.size(); ++i )
 	    if ( !madc::hub::text_buffer::word_byte(n[i]) )
-		return;
+		return false;
 	// The session's own names never.
 	if ( n.compare(0, 7, "__madc_") == 0 )
-	    return;
+	    return false;
 	// A reserved name completes only a word shaped like one (IPython's
 	// rule for `_`, and C++'s reservation of `__`), so the implementation's
 	// names and madc's lowered ones stay out of the way.
-	if ( !reserved_word && reserved_name(n) )
-	    return;
-	names.insert(n);
+	return reserved_word || !reserved_name(n);
+    }
+    void operator()(const std::string &n)
+    {
+	if ( accepts(n) )
+	    names.insert(n);
     }
     void take(std::vector<std::string> &out) const
     {
@@ -263,17 +273,23 @@ private:
     std::set<std::string> names;
 };
 
-void Program::completion_names(const std::string &word, CompletionContext ctx,
-			       std::vector<std::string> &out)
+void Program::visit_top_level_names(CompletionContext ctx,
+				    const std::function<void(const TopLevelName &)> &visit)
 {
-    CompletionOffer offer(word);
+    typedef TopLevelName::Kind Kind;
+    auto named = [&](Kind k, const std::string &n) {
+	visit(TopLevelName(k, n));
+    };
     // After struct / union / enum: a tag.
     if ( ctx == CompletionContext::Tag )
     {
 	for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
 	    if ( it->second && spelling_namespace(it->second->canonical_cpp_spelling()).empty() )
-		offer(it->first);
-	offer.take(out);
+	    {
+		TopLevelName n(Kind::tag, it->first);
+		n.type = it->second;
+		visit(n);
+	    }
 	return;
     }
     // The namespaces whose members an unqualified name reaches at the top
@@ -314,7 +330,13 @@ void Program::completion_names(const std::string &word, CompletionContext ctx,
 	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
 	    if ( Variable *v = tkProgram->variables[i] )
 		if ( !(v->flags & vfINSTPRODUCT) && reachable(v) )
-		    offer(v->name);
+		{
+		    FuncDef *fd = v->type ? v->type->as_funcdef_dd() : NULL;
+		    TopLevelName n(fd ? Kind::function : Kind::object, v->name);
+		    n.var = v;
+		    n.fd = fd;
+		    visit(n);
+		}
     for ( funcdef_map_iter it = funcdef_map.begin(); it != funcdef_map.end(); ++it )
     {
 	FuncDef *fd = it->second;
@@ -322,36 +344,46 @@ void Program::completion_names(const std::string &word, CompletionContext ctx,
 	if ( !fd || !fd->method_display_name.empty()
 	     || !visible.count(fd->namespace_name) )
 	    continue;
-	offer(fd->function_display_name.empty() ? it->first
-						: fd->function_display_name);
+	TopLevelName n(Kind::function, fd->function_display_name.empty()
+				       ? it->first : fd->function_display_name);
+	n.fd = fd;
+	visit(n);
     }
     // Types, and in C++ and madc a class's name, which is a type name there.
     datatype_map.for_each_readonly([&](const char *key, TokenDataType *const &tdt) -> bool {
 	if ( !tdt || type_reachable(&tdt->definition) )
-	    offer(key);
+	{
+	    TopLevelName n(Kind::type, key);
+	    n.type = tdt ? &tdt->definition : NULL;
+	    visit(n);
+	}
 	return false;
     });
     if ( presents_as_cpp() )
     {
 	for ( datadef_map_citer it = struct_map.begin(); it != struct_map.end(); ++it )
 	    if ( type_reachable(it->second) )
-		offer(it->first);
+	    {
+		TopLevelName n(Kind::tag, it->first);
+		n.type = it->second;
+		visit(n);
+	    }
 	// Top-level namespaces (a scoped enum is registered as one, and its
 	// name is a type name).
 	for ( namespace_map_t::const_iterator it = namespace_map.begin();
 	      it != namespace_map.end(); ++it )
-	    offer(it->first);
+	    named(Kind::name_space, it->first);
 	template_map.for_each_readonly([&](const char *, const template_registry_entry_t &r) -> bool {
 	    for ( size_t i = 0; i < r.namespace_variants.size(); ++i )
 		if ( visible.count(r.namespace_variants[i].defining_namespace) )
-		    offer(r.namespace_variants[i].class_name);
+		    named(Kind::class_template, r.namespace_variants[i].class_name);
 	    return false;
 	});
 	fn_template_map.for_each_readonly([&](const char *key, const std::vector<FnTemplateDef> &defs) -> bool {
 	    for ( size_t i = 0; i < defs.size(); ++i )
 		if ( visible.count(defs[i].ns) )
 		{
-		    offer(key);
+		    named(Kind::function_template, key);
 		    break;
 		}
 	    return false;
@@ -359,44 +391,332 @@ void Program::completion_names(const std::string &word, CompletionContext ctx,
     }
     // The standard's keywords (keyword_map is gated by --std=), and macros.
     keyword_map.for_each_readonly([&](const char *key, TokenKeyword *const &) -> bool {
-	offer(key);
+	named(Kind::keyword, key);
 	return false;
     });
-    define_map.for_each_readonly([&](const char *key, const std::string &) -> bool {
-	offer(key);
+    define_map.for_each_readonly([&](const char *key, const std::string &body) -> bool {
+	TopLevelName n(Kind::macro, key);
+	n.definition = &body;
+	visit(n);
 	return false;
     });
-    macro_map.for_each_readonly([&](const char *key, const MacroDef &) -> bool {
-	offer(key);
+    macro_map.for_each_readonly([&](const char *key, const MacroDef &m) -> bool {
+	TopLevelName n(Kind::macro, key);
+	n.macro = &m;
+	visit(n);
 	return false;
     });
     // Names an included header registers on first use, and in the madc
     // dialect the words the auto-include scan serves (`println`, `php`).
     for ( std::map<std::string, LazyEntry>::const_iterator it = lazy_map.begin();
 	  it != lazy_map.end(); ++it )
-	offer(it->first);
+	named(Kind::header_name, it->first);
     std::vector<std::string> words;
     auto_include_words(words);
     for ( size_t i = 0; i < words.size(); ++i )
-	offer(words[i]);
+	named(Kind::dialect_word, words[i]);
     // The result names (D12), once a value is kept.
     size_t kept = 0;
     for ( size_t i = 0; i < session_results.size(); ++i )
 	if ( session_results[i].object )
 	{
 	    ++kept;
-	    offer("_" + std::to_string(session_results[i].entry));
+	    named(Kind::result, "_" + std::to_string(session_results[i].entry));
 	}
     if ( kept )
     {
-	offer("ans");
-	offer("_");
+	named(Kind::result, "ans");
+	named(Kind::result, "_");
     }
     if ( kept > 1 )
-	offer("__");
+	named(Kind::result, "__");
     if ( kept > 2 )
-	offer("___");
+	named(Kind::result, "___");
+}
+
+void Program::completion_names(const std::string &word, CompletionContext ctx,
+			       std::vector<std::string> &out)
+{
+    CompletionOffer offer(word);
+    visit_top_level_names(ctx, [&](const TopLevelName &n) { offer(n.name); });
     offer.take(out);
+}
+
+// `?name` (plan §41.8a, slice 2): what the session knows of a name, from the
+// same walk completion reads, so `?` describes exactly the entities Tab
+// would offer for the name typed whole. IPython's fields; a function's
+// overloads each on their own line with their location, Julia's way. A
+// location is the one the Program recorded, never invented: an object's or
+// a type's TopDecl, a function's definition in the session's tree, a
+// header prototype's file.
+namespace {
+
+// A field at IPython's alignment: its value at column 12.
+void describe_field(std::string &out, const std::string &label,
+		    const std::string &value)
+{
+    const std::string l = label.empty() ? std::string() : label + ":";
+    out += (out.empty() || out[out.size() - 1] == '\n' ? "" : "\n")
+	 + l + std::string(l.size() < 11 ? 11 - l.size() : 1, ' ') + value;
+}
+
+std::string where(const char *file, int line)
+{
+    if ( !file || !*file )
+	return std::string();
+    return "@ " + std::string(file)
+	 + (line > 0 ? ":" + std::to_string(line) : std::string());
+}
+
+std::string top_decl_where(const Program::TopDecl &td)
+{
+    return td.origin ? where(td.origin->file, td.origin->line)
+		     : where(td.file, td.line);
+}
+
+} // namespace
+
+// Where an object was declared: its latest TopDecl (a redeclaration's).
+std::string Program::object_location(const Variable *v) const
+{
+    for ( size_t i = top_decls.size(); i-- > 0; )
+	if ( top_decls[i].kind == DeclKind::dkGlobalVar && top_decls[i].var == v )
+	    return top_decl_where(top_decls[i]);
+    return std::string();
+}
+
+// Where a type name was declared: the TopDecl of that name for that type,
+// the tag's (its definition's) or the typedef's. A typedef names its target
+// (`typedef struct P Pt;` records P), so the name tells the two apart.
+std::string Program::type_location(const std::string &name, const DataDef *dd) const
+{
+    for ( size_t i = 0; i < top_decls.size(); ++i )
+    {
+	const TopDecl &td = top_decls[i];
+	if ( td.kind != DeclKind::dkGlobalVar && td.name == name
+	     && (td.kind == DeclKind::dkTypedef
+		 ? td.tdt && &td.tdt->definition == dd : td.dd == dd) )
+	    return top_decl_where(td);
+    }
+    return std::string();
+}
+
+// Where a function was defined: the latest definition in the session's tree
+// (a redefinition replaces the earlier one, D5), else a prototype's file.
+std::string Program::function_location(const Variable *v, const FuncDef *fd) const
+{
+    for ( size_t i = pending_funcs.size(); i-- > 0; )
+    {
+	TokenFunc *tf = pending_funcs[i] ? pending_funcs[i]->as_func_tok() : NULL;
+	if ( tf && ((v && &tf->var == v) || tf->var.type == fd) )
+	    return where(tf->file, tf->line);
+    }
+    return where(fd->decl_file, 0);
+}
+
+bool Program::describe_name(const std::string &name, std::string &out)
+{
+    typedef TopLevelName::Kind Kind;
+    out.clear();
+    // The candidates Tab would offer for the name typed whole, each entity
+    // once (a function is both a global and a funcdef_map entry, a C++
+    // class both a type and a tag).
+    const CompletionOffer rule(name);
+    std::vector<TopLevelName> found;
+    std::set<std::pair<int, const void *> > seen;
+    auto keep = [&](const TopLevelName &visited) {
+	if ( visited.name != name || !rule.accepts(visited.name) )
+	    return;
+	// A function template's placeholder is no function: its parameters
+	// are none the template declares.
+	TopLevelName n = visited;
+	if ( n.kind == Kind::function && n.fd && n.fd->stands_for_function_template() )
+	    n.kind = Kind::function_template;
+	const Kind group = n.kind == Kind::tag ? Kind::type : n.kind;
+	const void *id = n.fd ? (const void *)n.fd
+		       : n.var ? (const void *)n.var
+		       : n.type ? (const void *)n.type
+		       : n.definition ? (const void *)n.definition
+		       : (const void *)n.macro;
+	if ( seen.insert(std::make_pair((int)group, id)).second )
+	    found.push_back(n);
+    };
+    visit_top_level_names(CompletionContext::Name, keep);
+    visit_top_level_names(CompletionContext::Tag, keep);
+    // A function's Variable carries its Method, whose parameters have names;
+    // an overload registered under its own symbol is found by identity.
+    std::map<const FuncDef *, Variable *> fn_var;
+    if ( tkProgram )
+	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+	    if ( Variable *v = tkProgram->variables[i] )
+		if ( FuncDef *fd = v->type ? v->type->as_funcdef_dd() : NULL )
+		    fn_var.insert(std::make_pair(fd, v));
+    TypeSpeller speller(this);
+    std::vector<std::string> sections;
+    auto section_of = [&](Kind k) {
+	std::string s;
+	for ( size_t i = 0; i < found.size(); ++i )
+	{
+	    const TopLevelName &n = found[i];
+	    if ( (n.kind == Kind::tag ? Kind::type : n.kind) != k )
+		continue;
+	    switch ( k )
+	    {
+		case Kind::macro:
+		{
+		    std::string def = "#define " + name;
+		    if ( n.macro )
+		    {
+			def += "(";
+			for ( size_t p = 0; p < n.macro->params.size(); ++p )
+			    def += (p ? ", " : "") + n.macro->params[p];
+			if ( n.macro->variadic )
+			    def += (n.macro->params.empty() ? "" : ", ")
+				 + n.macro->variadic_param + "...";
+			def += ")";
+			if ( !n.macro->body.empty() )
+			    def += " " + n.macro->body;
+		    }
+		    else if ( n.definition && !n.definition->empty() )
+			def += " " + *n.definition;
+		    describe_field(s, "Macro", def);
+		    break;
+		}
+		case Kind::keyword:
+		    s += name + " is a keyword of "
+		       + standard_canonical_name(language_std);
+		    break;
+		case Kind::type:
+		{
+		    // A typedef names another type: `size_t` is unsigned long.
+		    const std::string spelled = speller.shown(n.type);
+		    describe_field(s, n.kind == Kind::type && spelled != name
+				      ? "Typedef" : "Type", spelled);
+		    std::string at = type_location(name, n.type);
+		    if ( !at.empty() )
+			describe_field(s, "Defined", at);
+		    DataDefSTRUCT *st = n.type ? n.type->unqualified()->as_struct_dd() : NULL;
+		    bool first = true;
+		    if ( st )
+			for ( size_t m = 0; m < st->members.size(); ++m )
+			{
+			    const std::string &mn = st->members[m].first;
+			    // What an entry may write: a public member, never one
+			    // of the session's own.
+			    if ( mn.empty() || st->m_access(mn)
+				 || mn.compare(0, 7, "__madc_") == 0 )
+				continue;
+			    DataDef *mt = member_array_type(*st, mn);
+			    describe_field(s, first ? "Members" : "",
+					   speller.declared(mt ? mt : st->m_type(mn), mn));
+			    first = false;
+			}
+		    if ( DataDefCLASS *cls = n.type ? n.type->unqualified()->as_class_dd() : NULL )
+		    {
+			for ( std::map<std::string, DataDef *>::const_iterator t =
+				  cls->static_member_types.begin();
+			      t != cls->static_member_types.end(); ++t )
+			{
+			    describe_field(s, first ? "Members" : "",
+					   "static " + speller.declared(t->second, t->first));
+			    first = false;
+			}
+			for ( std::map<std::string, Variable *>::const_iterator m =
+				  cls->method_map.begin(); m != cls->method_map.end(); ++m )
+			{
+			    Variable *mv = m->second;
+			    FuncDef *mfd = mv && mv->type ? mv->type->as_funcdef_dd() : NULL;
+			    if ( !mfd || (mv->flags & (vfPRIVATE | vfPROTECTED)) )
+				continue;
+			    describe_field(s, first ? "Members" : "",
+					   speller.signature(m->first, mfd,
+							     static_cast<Method *>(mv->data)));
+			    first = false;
+			}
+		    }
+		    break;
+		}
+		case Kind::object:
+		{
+		    DataDef *at = object_array_type(*n.var);
+		    describe_field(s, "Type", speller.shown(at ? at : n.var->type));
+		    std::string where_at = object_location(n.var);
+		    if ( !where_at.empty() )
+			describe_field(s, "Defined", where_at);
+		    break;
+		}
+		case Kind::function:
+		{
+		    std::map<const FuncDef *, Variable *>::const_iterator v = fn_var.find(n.fd);
+		    Variable *fv = n.var ? n.var : v != fn_var.end() ? v->second : NULL;
+		    std::string at = function_location(fv, n.fd);
+		    describe_field(s, "Signature",
+				   speller.signature(name, n.fd,
+						     fv ? static_cast<Method *>(fv->data) : NULL)
+				   + (at.empty() ? "" : "  " + at));
+		    break;
+		}
+		case Kind::name_space:
+		    describe_field(s, "Type", "namespace");
+		    break;
+		case Kind::class_template:
+		    describe_field(s, "Type", "class template");
+		    break;
+		case Kind::function_template:
+		    if ( s.empty() )	// its placeholders and its registry entry
+			describe_field(s, "Type", "function template");
+		    break;
+		case Kind::result:
+		{
+		    const SessionResult *r = session_result_named(name);
+		    if ( !r || !r->object )
+			break;
+		    DataDef *t = r->object->type;
+		    if ( r->alias )
+			t = pointer_dd_of(t) ? pointer_dd_of(t)->base_type : NULL;
+		    describe_field(s, "Type", speller.shown(t));
+		    describe_field(s, "Result", "REPL[" + std::to_string(r->entry) + "]");
+		    break;
+		}
+		case Kind::header_name:
+		    describe_field(s, "Declared", "by an included header, registered at its first use");
+		    break;
+		case Kind::dialect_word:
+		    describe_field(s, "Declared", "by the madc dialect, included at its first use");
+		    break;
+		case Kind::tag:
+		    break;
+	    }
+	}
+	if ( k == Kind::function && !s.empty() )
+	    describe_field(s, "Type", "function");
+	if ( !s.empty() )
+	    sections.push_back(s);
+    };
+    // A macro first (it stands in for the name before any parse), then a
+    // keyword, then the entities in the order a declaration names them: a
+    // type (a C tag before the object of the same name, `struct stat` and
+    // `stat`), a namespace or template, an object, a function; a result
+    // name; last what is only declared so far, to be registered at its use.
+    const Kind order[] = {
+	Kind::macro, Kind::keyword, Kind::type, Kind::name_space,
+	Kind::class_template, Kind::function_template, Kind::object,
+	Kind::function, Kind::result, Kind::header_name, Kind::dialect_word
+    };
+    // What is only declared so far is described when nothing else is: the
+    // parse above registered what a header or the dialect serves.
+    for ( size_t i = 0; i < sizeof(order) / sizeof(order[0]); ++i )
+	if ( sections.empty()
+	     || (order[i] != Kind::header_name && order[i] != Kind::dialect_word) )
+	    section_of(order[i]);
+    for ( size_t i = 0; i < sections.size(); ++i )
+	out += (i ? "\n\n" : "") + sections[i];
+    if ( out.empty() )
+    {
+	out = "'" + name + "' is not declared";
+	return false;
+    }
+    return true;
 }
 
 // The object a value of type `dd` is: a reference its referent, cv peeled.

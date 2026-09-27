@@ -21,6 +21,7 @@ class Program;
 class DataDef;
 class DataDefCLASS;
 class FuncDef;
+class Method;
 
 class TypeSpeller
 {
@@ -38,8 +39,16 @@ public:
     std::string strip_inline_namespaces(const std::string &spelling) const;
     // A scalar's word, from its DataType (var_dump's canonical word).
     static std::string scalar_word(DataDef *dd);
+    // A declaration: the type with `name` where C writes its declarator-id
+    // (`int a[3]`, `int (*fp)(int)`); an empty name spells the type alone.
+    std::string declared(DataDef *dd, const std::string &name) const;
+    // A function's signature, as `?name` prints it (plan §41.8a):
+    // `int sq(int n)`, the parameter names from its Method when given, the
+    // receiver and varargs slots madc adds left out.
+    std::string signature(const std::string &name, FuncDef *fd,
+			  const Method *m) const;
 private:
-    std::string parameter_list(FuncDef *fd) const;
+    std::string parameter_list(FuncDef *fd, const Method *m) const;
     const Program *pgm;
 };
 

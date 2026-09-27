@@ -20837,13 +20837,10 @@ DataDef *Program::array_operand_type(TokenBase *e)
 	if ( tm->is_fixed_array_member() && tm->var.type )
 	{
 	    DataDefSTRUCT *sdd = tm->owner_struct_type();
-	    const std::vector<carray_dim_t> *md =
-		sdd ? sdd->m_dims(tm->var.name) : NULL;
-	    std::string mname = tm->var.name;
-	    if ( md && !md->empty() )
-		dims = *md;
+	    if ( sdd )
+		dims = sdd->m_array_dims(tm->var.name);
 	    else
-		dims.assign(1, sdd ? sdd->m_count(mname) : 0);
+		dims.assign(1, 0);
 	    base = tm->var.type;
 	    array = true;
 	}
@@ -20852,10 +20849,7 @@ DataDef *Program::array_operand_type(TokenBase *e)
     {
 	if ( tv->var.is_fixed_array() && tv->var.type )
 	{
-	    if ( !tv->var.dims.empty() )
-		dims = tv->var.dims;
-	    else
-		dims.assign(1, tv->var.total_elements());
+	    dims = tv->var.array_dims();
 	    base = tv->var.type;
 	    array = true;
 	}
@@ -20866,10 +20860,7 @@ DataDef *Program::array_operand_type(TokenBase *e)
 	// row; a full one (an index per dimension) denotes the element.
 	if ( ts->object.is_fixed_array() && ts->object.type )
 	{
-	    if ( !ts->object.dims.empty() )
-		dims = ts->object.dims;
-	    else
-		dims.assign(1, ts->object.total_elements());
+	    dims = ts->object.array_dims();
 	    base = ts->object.type;
 	    consumed += 1 + ts->extra_indices.size();
 	    array = true;
@@ -20882,6 +20873,23 @@ DataDef *Program::array_operand_type(TokenBase *e)
 	if ( odd->as_carray_dd() )
 	    return odd;
     return NULL;
+}
+
+// The array type an OBJECT is declared with (`int [3]`), from its extents:
+// madc keeps the element in its type, flattened. NULL when it is no fixed
+// array. `?name` reads it for a named object, as array_operand_type does for
+// an operand naming one; member_array_type is a member's.
+DataDef *Program::object_array_type(const Variable &v)
+{
+    return v.is_fixed_array() && v.type
+	? build_fixed_array_query_type(v.type, v.array_dims(), 0) : NULL;
+}
+
+DataDef *Program::member_array_type(DataDefSTRUCT &sdd, const std::string &member)
+{
+    return sdd.m_is_array_decl(member)
+	? build_fixed_array_query_type(sdd.m_type(member), sdd.m_array_dims(member), 0)
+	: NULL;
 }
 
 // The ELEMENT type of an operand that denotes an array — the type of `e[0]`,
@@ -21687,7 +21695,7 @@ static Variable *rank_fn_overload_candidates(
 	// call (`__check_constructible<V,T>()`, explicit template args only) ties
 	// its score and — registered first — would win over the real
 	// instantiation, emitting an undefined `__ns_<fn>` import. Skip it.
-	if ( e.spelling() == "\x01fn-template-placeholder" )
+	if ( e.spelling() == FuncDef::template_placeholder_spelling() )
 	    continue;
 	if ( explicit_template_args && !explicit_template_args->empty() )
 	{
@@ -21869,14 +21877,14 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		fprintf(stderr,
 			"[ovl]   cand %s spell=%s targs=%zu va=%d mt=%d dep=%d ts=%d\n",
 			e.var ? e.var->name.c_str() : "(null)",
-			e.spelling() == "\x01fn-template-placeholder"
+			e.spelling() == FuncDef::template_placeholder_spelling()
 			    ? "PLACEHOLDER" : e.spelling().c_str(),
 			e.template_args().size(),
 			cfd ? (int)cfd->is_varargs : -1,
 			cfd ? (int)cfd->is_member_template : -1,
 			cfd ? (cfd->dependent_pattern != NULL) : -1,
 			cfd ? (cfd->tsubst_source != NULL) : -1);
-	    if ( e.spelling() == "\x01fn-template-placeholder"
+	    if ( e.spelling() == FuncDef::template_placeholder_spelling()
 	      || !e.template_args().empty() )
 	    { strict = false; if ( !ovl_probe ) break; continue; }
 	    if ( !cfd || cfd->is_varargs || cfd->is_member_template
@@ -26779,7 +26787,7 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 		// The placeholder seed's identity, when the frozen declaration
 		// did not carry it (the live seed stamps its FuncDef).
 		if ( tmpl_placeholder && pf.fd->overload_spelling.empty() )
-		    pf.fd->overload_spelling = "\x01fn-template-placeholder";
+		    pf.fd->overload_spelling = FuncDef::template_placeholder_spelling();
 		NamespaceFnOverload e;
 		e.var = fv;
 		ovset.push_back(e);
@@ -59907,7 +59915,7 @@ static void register_skipped_namespace_template_function(
 	{
 	    if ( FuncDef *pfd = dynamic_cast<FuncDef *>(var->type) )
 		if ( pfd->overload_spelling.empty() )
-		    pfd->overload_spelling = "\x01fn-template-placeholder";
+		    pfd->overload_spelling = FuncDef::template_placeholder_spelling();
 	    Program::NamespaceFnOverload e;
 	    e.var = var;
 	    ovset.push_back(e);

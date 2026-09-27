@@ -2813,6 +2813,32 @@ With no program file, the tail chooses in this order:
   - `::x` and a body line `%b; }` stay C.
 - **A divergence, stated:** `%type "abc"` prints `char *`, madc's model of a string literal (AGENTS: literals are `const char *`). g++'s `decltype` gives `const char (&)[4]`, and gcc's `typeof` `char [4]`. `sizeof("abc")` is 4, from its own token-level arm, and `array_operand_type` does not answer for a literal.
 
+**Built, slice 2 (2026-09-27): `?name` / `%pinfo name`.**
+- **Recognition and the registry.** `pinfo` is the registry's third row. `?` at an entry's start is `%pinfo` with the rest as the name, and `?` alone is `%help`, as Julia's and IPython's are. A command's name never completes after `?`: what follows it is the name, and it completes as an entry.
+- **One walk, two consumers.** `completion_names`' body is `Program::visit_top_level_names`. It hands a visitor one `TopLevelName` per candidate, carrying its kind and its entity (Variable, FuncDef, DataDef, macro). Completion's visitor is the `CompletionOffer`. `describe_name` keeps the candidates spelled exactly as the name, under the same `CompletionOffer::accepts` rule, so `?` and Tab agree (a reserved name the user declared is offered for a word shaped like one, and described; the session's own `__madc_` names never).
+- **`%pinfo` parses the name first,** as the session's next entry, in an `EntryTransaction` that rolls back. What a header or the madc dialect registers at a name's first use is then registered, and the description reads it before the rollback. The attempt's diagnostics go with it: a keyword or a type name is no expression, and is still described.
+- **Spelling (`TypeSpeller`).** `declared(type, name)` spells a declaration with its declarator-id inside (`int a[2][3]`, `int (*cb)(int)`, `char *name`). `signature(name, fd, method)` spells a function's, with the parameter names from its `Method`, and a member's cv-qualifier-seq and ref-qualifier (`int area() const`, `int &ref() &`). A reference spells `T &` (madc lowers it as `T *`).
+  - Fixed on the way, in the list both share: `parameter_list` now stops at `fixed_param_count()`, so the varargs slot madc adds is not spelled. `%type printf` printed `int (const char *, long, ...)`; it prints `int (const char *, ...)`.
+- **An object's or a member's array type** is `Program::object_array_type` / `member_array_type`, from the extents `Variable::array_dims` / `DataDefSTRUCT::m_array_dims` give. `array_operand_type`'s three arms now read their extents from the same two accessors.
+- **What each kind prints** (IPython's fields at column 12):
+  - a function: `Signature: int sq(int n)  @ REPL[3]:1` per overload, then `Type:      function`;
+  - an object: `Type:` and `Defined:`;
+  - a type: `Type:` (a C tag's `struct Point`, a C++ class's `Box`) or `Typedef:` (a name for another type: `size_t` is `unsigned long`), `Defined:`, then its public members (data, static, methods with their signatures);
+  - a macro: `Macro:     #define SQ(a) ((a) * (a))`;
+  - a keyword: `while is a keyword of c17` (the prompt's spelling of the standard);
+  - a namespace, a class template, a function template: `Type:` with the kind;
+  - a result name: `Type:` and `Result:    REPL[N]`;
+  - several at once, each, separated by a blank line: macro, keyword, type, namespace, templates, object, function, result (`?stat` gives `struct stat`, then the function);
+  - none: `'nosuchname' is not declared`, an error at the name's column. What is no name is refused: `%pinfo takes a name`.
+- **Locations, only as recorded:** an object's latest `TopDecl`; a type name's `TopDecl` of that name (a typedef records its target, so the name tells `Pt` from `Point`); a function's latest definition in `pending_funcs`, else its prototype's `decl_file`, which has no line.
+- **A function template's stand-in is no function** (`FuncDef::stands_for_function_template`). That covers the placeholder an overload set seeds (the `"\x01fn-template-placeholder"` identity, now one `FuncDef::template_placeholder_spelling()` for its five sites) and a compiler-implemented public, which its fragment declares as a template (`inline_builtin_kind`: madc's `println`). It prints `Type: function template`, never the stand-in's invented `void println(void)`.
+- **Measured** (`tmp/repl/s8/cmd_probe.cpp` over `cmd2.txt`, `cmd3.txt`); oracle `tmp/repl/s8/pinfo_oracle.{c,cpp}`: gcc, clang, g++ and clang++ accept every printed declaration.
+- **Not recorded, so not printed:**
+  - A C++ class's definition site: `TokenCLASS::parse` records no `TopDecl` (Pass 0.5 emits classes from `struct_map`, by design), so `?Box` has no `Defined:` line. Recording it is a class-parse change for its own session.
+  - A header prototype's line: `decl_file` only.
+  - A namespace template whose body is not retained, and that no overload set has seeded, carries no stand-in mark. `?` then prints its placeholder's empty signature. The mark is stamped only where an overload set is seeded (`register_skipped_namespace_template_function`), because stamping it earlier changes overload ranking.
+- **Later, named:** `?ns::name` and `?obj.member` (a qualified name, through the scope and member walks); a template's declaration as written (with `??name`'s `Source:`).
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.

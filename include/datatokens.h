@@ -162,6 +162,11 @@ public:
 	for ( auto d : dims ) n *= d;
 	return n;
     }
+    // A fixed array's extents, outermost first (no recorded shape is one
+    // extent of total_elements()).
+    inline std::vector<carray_dim_t> array_dims() const {
+	return dims.empty() ? std::vector<carray_dim_t>(1, total_elements()) : dims;
+    }
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
     // The ONLY way to change `name` after the variable may have been registered
     // in a scope: zeroing name_sid marks the rename for the scope index, so

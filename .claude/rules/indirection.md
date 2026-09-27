@@ -25,6 +25,8 @@
   `Program::array_operand_type`; its element (the ROW): `array_operand_element_type`
   — never the operand's `datadef()` (flattened). sizeof of an expression
   (`type_query_expression_value`), decay (`array_decay_pointer`), `*a`, `a->m` ask them.
+  A named OBJECT's or MEMBER's array type: `object_array_type` / `member_array_type`;
+  the extents under all of them: `Variable::array_dims` / `DataDefSTRUCT::m_array_dims`.
 - An operand's VALUE (a reference is its referent) and its integer promotions:
   `operand_value_type` / `promoted_operand_type` (tokens.h) — every operator's type
   reads its children through them; `=`/`@=` are the left operand's (`TokenAssign`,

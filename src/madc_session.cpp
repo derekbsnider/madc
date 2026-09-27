@@ -56,6 +56,8 @@ const CommandRow command_rows[] = {
       "list the session's commands" },
     { "type", InteractiveSession::Command::type, "%type EXPR",
       "the type of an expression, which is not run" },
+    { "pinfo", InteractiveSession::Command::pinfo, "%pinfo NAME",
+      "what the session knows of a name (also ?NAME)" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -69,17 +71,23 @@ const CommandRow *command_named(const std::string &name)
 }
 
 // Where a command stands in an entry (D13): its first line, after blanks,
-// starts with `%` or `:` and at once a name. So `::x` and the `%:` digraph
-// stay C, and so does every continuation line.
+// starts with `%` or `:` and at once a name, or with `?` (D15). So `::x` and
+// the `%:` digraph stay C, and so does every continuation line; C starts no
+// statement with `?`.
 struct CommandText
 {
-    size_t prefix;	// the `%` or `:`; npos when the text is no command
-    size_t name_end;	// past the name
+    size_t prefix;	// the `%`, `:` or `?`; npos when the text is no command
+    size_t name_end;	// past the name (past the `?`)
     size_t line_end;	// the first line's end
-    CommandText() : prefix(std::string::npos), name_end(0), line_end(0) {}
+    bool query;		// `?NAME`: IPython's %pinfo NAME; `?` alone its help
+    CommandText()
+	: prefix(std::string::npos), name_end(0), line_end(0), query(false) {}
     bool is_command() const { return prefix != std::string::npos; }
     std::string name(const std::string &text) const
     {
+	if ( query )
+	    return text.find_first_not_of(" \t", name_end) < line_end
+		 ? "pinfo" : "help";
 	return text.substr(prefix + 1, name_end - prefix - 1);
     }
 };
@@ -88,6 +96,16 @@ CommandText command_text(const std::string &text)
 {
     CommandText c;
     size_t i = text.find_first_not_of(" \t");
+    if ( i != std::string::npos && text[i] == '?' )
+    {
+	c.prefix = i;
+	c.name_end = i + 1;
+	c.query = true;
+	c.line_end = text.find('\n', i);
+	if ( c.line_end == std::string::npos )
+	    c.line_end = text.size();
+	return c;
+    }
     if ( i == std::string::npos || i + 1 >= text.size()
 	 || (text[i] != '%' && text[i] != ':') )
 	return c;
@@ -259,8 +277,9 @@ std::vector<std::string> InteractiveSession::complete(const std::string &text,
     CommandText c = command_text(text);
     if ( c.is_command() && caret <= c.line_end )
     {
-	// The command's own name: the registry's names that start with it.
-	if ( caret <= c.name_end )
+	// The command's own name: the registry's names that start with it
+	// (`?` has none: what follows it is the name it asks about).
+	if ( caret <= c.name_end && !c.query )
 	{
 	    std::vector<std::string> out;
 	    start = c.prefix + 1;
@@ -363,6 +382,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	}
 	case Command::type:
 	    return type_command(command_argument(text, c), name);
+	case Command::pinfo:
+	    return pinfo_command(command_argument(text, c), name);
     }
     return false;
 }
@@ -392,6 +413,52 @@ bool InteractiveSession::type_command(const std::string &expression,
 	return false;
     }
     command_output = TypeSpeller(prog.get()).shown(prog->entry_value_type);
+    return true;
+}
+
+// `%pinfo NAME` / `?NAME` (plan §41.8a, slice 2): what the session knows of
+// a name. The name is parsed first as the session's next entry, inside a
+// transaction that rolls back, so what an included header or the madc
+// dialect would register at the name's first use is registered, and the
+// description reads it before the rollback. The attempt's own diagnostics go
+// with it: a keyword or a type name is no expression, and is still described.
+bool InteractiveSession::pinfo_command(const std::string &argument,
+				       const std::string &name)
+{
+    size_t b = argument.find_first_not_of(" \t");
+    size_t e = argument.find_last_not_of(" \t");
+    const std::string word = b == std::string::npos
+			   ? std::string() : argument.substr(b, e - b + 1);
+    bool ok = !word.empty() && !isdigit((unsigned char)word[0]);
+    for ( size_t i = 0; ok && i < word.size(); ++i )
+	ok = madc::hub::text_buffer::word_byte(word[i]);
+    if ( !ok )
+    {
+	prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			     Program::DiagnosticPhase::parser,
+			     "%pinfo takes a name",
+			     prog->intern_file(name), 1,
+			     b == std::string::npos ? 1 : (int)b + 1);
+	return false;
+    }
+    std::string described;
+    bool known;
+    {
+	DiagnosticRenderMute mute;
+	Program::EntryTransaction attempt(*prog);
+	prog->entry_number = submit_count;
+	prog->parse_entry(argument, name);
+	known = prog->describe_name(word, described);
+    }
+    prog->begin_entry();		// the attempt's diagnostics go with it
+    if ( !known )
+    {
+	prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			     Program::DiagnosticPhase::parser, described,
+			     prog->intern_file(name), 1, (int)b + 1);
+	return false;
+    }
+    command_output = described;
     return true;
 }
 

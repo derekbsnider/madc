@@ -154,13 +154,25 @@ std::string TypeSpeller::class_word(DataDefCLASS *cls) const
 // (cv_qualified_spelling): the base's before it, each inner pointer's after
 // its `*`. The outermost pointer's own cv is not part of a value's type.
 // A function type's parameter types, as the entry's language writes the
-// list: `int, ...`; an empty list is `void` in C, empty in C++.
-std::string TypeSpeller::parameter_list(FuncDef *fd) const
+// list: `int, ...`; an empty list is `void` in C, empty in C++. With the
+// function's Method, each parameter carries its name (`int n`). The list is
+// the one the source wrote: a member function's receiver slot (`__this`,
+// which only its name tells from a real parameter) and the varargs slot
+// (past fixed_param_count) are madc's, not the source's.
+std::string TypeSpeller::parameter_list(FuncDef *fd, const Method *m) const
 {
 	const bool cxx = pgm && pgm->is_cpp_mode();
+	size_t first = 0;
+	if (m && !m->parameters.empty() && m->parameters[0]
+	    && m->parameters[0]->name == "__this")
+		first = 1;
 	std::string params;
-	for (size_t i = 0; i < fd->parameters.size(); ++i)
-		params += (i ? ", " : "") + shown(fd->parameters[i]);
+	for (size_t i = first; i < fd->fixed_param_count(); ++i) {
+		const Variable *p = m && i < m->parameters.size()
+				  ? m->parameters[i] : NULL;
+		params += (i > first ? ", " : "")
+			+ declared(fd->parameters[i], p ? p->name : std::string());
+	}
 	if (fd->is_varargs)
 		params += params.empty() ? "..." : ", ...";
 	else if (params.empty() && !cxx)
@@ -168,15 +180,76 @@ std::string TypeSpeller::parameter_list(FuncDef *fd) const
 	return params;
 }
 
+// A declaration's spelling: the type with its declarator-id where C writes
+// it, inside the declarator (`int a[3]`, `int (*fp)(int)`, `char *s`); an
+// empty name is the type's abstract spelling, as shown() writes it.
+std::string TypeSpeller::declared(DataDef *dd, const std::string &name) const
+{
+	if (dd) {
+		if (FuncDef *fd = dd->as_funcdef_dd())
+			return declared(&fd->returns,
+					name + "(" + parameter_list(fd, NULL) + ")");
+		if (DataDefCArray *a = dd->unqualified()->as_carray_dd()) {
+			std::string dims;
+			DataDef *elem = a;
+			for (DataDefCArray *c; elem
+			     && (c = elem->unqualified()->as_carray_dd()) != NULL;
+			     elem = c->element_type)
+				dims += c->count_expr || !c->count
+				      ? std::string("[]")
+				      : "[" + std::to_string(c->count) + "]";
+			return declared(elem, name + dims);
+		}
+		// A function pointer: the name goes with its stars, inside.
+		int extra = 0;
+		DataDef *b = dd;
+		for (DataDefPTR *pp; b && !b->as_fptr_dd()
+				     && (pp = b->as_pointer_dd()) != NULL;
+		     b = pp->base_type)
+			++extra;
+		DataDefFPTR *fp = b ? b->as_fptr_dd() : NULL;
+		if (fp && fp->target) {
+			int stars = extra + (fp->ptr_syntax ? 1 : 0);
+			return declared(&fp->target->returns,
+					"(" + std::string(stars ? stars : 1, '*') + name
+					+ ")(" + parameter_list(fp->target, NULL) + ")");
+		}
+	}
+	std::string word = shown(dd);
+	if (name.empty())
+		return word;
+	const char last = word[word.size() - 1];
+	return word + (last == '*' || last == '&' ? "" : " ") + name;
+}
+
+std::string TypeSpeller::signature(const std::string &name, FuncDef *fd,
+				   const Method *m) const
+{
+	// A member function's cv-qualifier-seq and ref-qualifier follow its
+	// parameters ([dcl.fct]/1): the cv rule's after-the-operand form.
+	std::string d = cv_qualified_spelling(name + "(" + parameter_list(fd, m) + ")",
+					      fd->method_cv(), true);
+	if (fd->ref_qualifier)
+		d += fd->ref_qualifier == 1 ? " &" : " &&";
+	return declared(&fd->returns, d);
+}
+
 std::string TypeSpeller::shown(DataDef *dd) const
 {
 	if (!dd)
 		return "void *";
 	const bool cxx = pgm && pgm->is_cpp_mode();
+	// A reference (a function's return, a parameter, a member): its
+	// referent, then `&`. madc lowers T& as T *, which the arms below
+	// would spell; a value's type (the show's) is never one.
+	if (DataDefREF *r = dd->as_reference_dd()) {
+		const std::string w = shown(r->base_type);
+		return w + (w[w.size() - 1] == '*' ? "&" : " &");
+	}
 	// A function's own type (a designator's, which %type asks for, never
 	// the show): `int (int)`.
 	if (FuncDef *fd = dd->as_funcdef_dd())
-		return shown(&fd->returns) + " (" + parameter_list(fd) + ")";
+		return shown(&fd->returns) + " (" + parameter_list(fd, NULL) + ")";
 	// An array (%type's too): its element's word, then each extent,
 	// outermost first, `int [2][3]`; one no constant sizes is `[]`.
 	if (DataDefCArray *a = dd->unqualified()->as_carray_dd()) {
@@ -206,7 +279,7 @@ std::string TypeSpeller::shown(DataDef *dd) const
 			int stars = extra + (fp->ptr_syntax ? 1 : 0);
 			return shown(&fd->returns) + " ("
 			     + std::string(stars ? stars : 1, '*') + ")("
-			     + parameter_list(fd) + ")";
+			     + parameter_list(fd, NULL) + ")";
 		}
 	}
 	std::vector<unsigned> level_cv;
