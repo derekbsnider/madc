@@ -637,6 +637,26 @@ int main(void) { return r; }
   input to make c2mir refuse a tree. Once the front end refuses it, that
   test needs another input only c2mir refuses.
 
+### B33. A missing right operand is refused at the declaration's `=`
+
+- Found 2026-09-27, while building the REPL's front end (D20, plan §41.5a).
+  The same happens in file mode, so it is not the REPL's.
+
+```c
+int x = 1;
+int y = x +;
+```
+
+- gcc 13: `2:12: expected expression before ';' token`, with the caret
+  under the `;`. clang: `2:12: expected expression`.
+- madc `--std=c17`: `2:7: Missing operand`, with the caret under the `=`.
+  `x + ;`, `(x +)` and `x * ;` are refused at `2:7` too. The refusal is
+  right; its position and wording are not.
+- Where: `popOperator`'s two "Missing operand" throws (`Throw(to)`, where
+  `to` is the operator being popped). Either the popped operator carries the
+  initializer's position, or the operator being cited is the wrong one.
+  Reducer: `tmp/repl/d20/missop.c`.
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++
