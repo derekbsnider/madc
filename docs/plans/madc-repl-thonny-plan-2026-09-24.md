@@ -2349,6 +2349,220 @@ With no program file, the tail chooses in this order:
 - Found off the path: B49 (a file-scope compound literal's address refused), B50 (`&arr` typed as a pointer to the element).
 - **D12 is done**, except its array results, which wait on B50.
 
+### 41.7a The line editor (D23) and completion, designed against the code (2026-09-27)
+
+**Measured first** (`tmp/repl/d23`). `probe.py` runs a REPL on a pty, sends keystrokes, and records every byte it writes back (`jl1`–`jl3`, `py1`):
+
+| | Julia 1.13.0 | IPython 9.17.1 |
+|---|---|---|
+| Enter on a complete entry, caret on an earlier line | runs it | inserts a newline; only the last line runs it |
+| Enter on an incomplete entry | a newline; continuation lines have no prompt and are indented to the prompt's width | a newline, a `...:` prompt, auto-indent |
+| Enter again and again at the end of an incomplete entry | the first two add lines; the third in a row submits it, refused ("premature end of input") | (Python: a blank line closes the block) |
+| Tab, one candidate (`xy_al`) | inserts it | inserts it |
+| Tab, several (`xy_`) | inserts their common prefix; a second Tab in a row lists them under the entry, one per line, and redraws the entry below the list | opens a menu |
+| Tab with no candidate, or after `1 + ` | nothing | |
+| Tab where only whitespace precedes the caret | on a continuation line: four spaces; on an empty first line: nothing | |
+| Up inside a multiline entry | the caret moves up a line, keeping its column | |
+| `x`, then Up, then Up | the last entry starting with `x`, then the one before it | the same |
+| Ctrl-R | a fuzzy-search panel, new in 1.13; Enter puts the match in the prompt, not run | an `I-search backward:` line |
+| Ctrl-C | `^C`; the entry is dropped; a new prompt | |
+| Ctrl-D | on an empty entry, ends the session; otherwise deletes the character under the caret | the same |
+| a bracketed paste of `y1 = 10⏎y2 = 20` | `y1` runs at the pasted line break; `y2 = 20` waits in the prompt | both go into one cell; Enter runs them together |
+| bracketed paste mode | on at every prompt (`ESC[?2004h`), off before an entry runs | handled |
+| the history file | `# time: 2026-09-27 15:38:39Z`, `# mode: julia`, then each line of the entry after a tab; a refused entry is kept; a repeat of the previous entry is not | (SQLite) |
+
+- **Julia's repaint** runs on every keystroke:
+  - It rewrites the whole entry. It climbs to the entry's first row with `ESC[1A`, erasing each row with `ESC[0K` as it passes.
+  - Then it writes the prompt, and each line after `\r ESC[7C`.
+  - It places the caret with `ESC[nA` and `\r ESC[nC`.
+  - It never takes the alternate screen or a scroll region.
+- **madc today** reads cooked lines (`std::getline`), so it has no caret and no history, and Tab inserts a tab.
+
+**The rule: Julia's keyboard loop, read in C's terms.**
+- **Enter** asks the session whether the entry is finished, wherever the caret is (Julia):
+  - Complete: the entry is taken and runs.
+  - Incomplete: a newline at the caret.
+  - Extendable (D11, an `if` with no `else`): a newline, so that an `else` can follow. Enter on the entry's blank last line takes it, as D11's empty line does.
+  - Three Enters in a row at the end of an incomplete entry take it, refused with its end-of-input diagnostic (Julia's rule). This is the way out of an unbalanced `{`.
+  - An entry is what the editor holds when Enter takes it. So `if (c) f();`, Enter, `g();`, Enter runs both lines as one entry, since the editor shows them as one.
+    - Cooked lines (D20) keep D11's split, because a pipe cannot show them as one.
+- **Meta-Enter** (Esc, then Enter) inserts a newline whatever the verdict (§5).
+- **Tab:**
+  - Where only whitespace precedes the caret on its line, Tab indents to the next multiple of four columns.
+    - Julia does this on a continuation line. madc does it on the first line too, where Julia does nothing, so that one rule serves.
+  - Anywhere else, it completes the word before the caret:
+    - one candidate is inserted;
+    - several insert their longest common prefix;
+    - a second Tab in a row lists them under the entry, sorted and in columns, then redraws the entry below the list;
+    - an empty word completes nothing.
+  - Julia printed one candidate per line. Columns are readline's, and they fit the hundreds of names a C header brings.
+- **Up and Down** move the caret between the entry's lines, keeping its display column.
+  - From the first line, Up recalls history: the last entry that starts with the text before the caret, then the one before it (both precedents).
+  - Down walks back toward the newest, and past it restores what was typed.
+- **Ctrl-R and Ctrl-S** search history incrementally, backward and forward.
+  - The form is readline's and IPython's one line: `(reverse-i-search)'text': match`. Julia 1.13's panel is not copied.
+  - Enter leaves the match in the prompt, not run (Julia).
+  - Ctrl-G or Ctrl-C restores the entry.
+  - Any other editing key keeps the match and then applies.
+- **Ctrl-C** prints `^C`, drops the entry and prompts again (Julia). Ctrl-C while an entry runs is D8's.
+- **Ctrl-D** on an empty entry ends the input, as the end of a pipe does (D20). Anywhere else it deletes the character under the caret (both precedents).
+- **A paste is typing, without completion and without indentation.**
+  - Bracketed paste is on at each prompt and off before the entry runs (Julia's bytes).
+  - The pasted text is inserted literally: a tab is a tab, not a completion.
+  - Each pasted line break acts as Enter, without the three-Enter rule. So a pasted run of entries runs entry by entry, as the same text would run piped (D20) and as Julia runs a paste.
+  - The text after the last line break waits in the prompt.
+- **The other keys** are readline's Emacs defaults, which Julia's and IPython's defaults share:
+
+  | Keys | Action |
+  |---|---|
+  | `^A`, `home` / `^E`, `end` | the caret to the start / end of its line |
+  | `^B`, `left` / `^F`, `right` | one character back / forward |
+  | `esc b` / `esc f` | one word back / forward |
+  | `backspace`, `^H` / `del` | delete back / forward |
+  | `^K` / `^U` | kill to the end / start of the line |
+  | `^W` / `esc backspace` / `esc d` | kill back to whitespace / one word back / one word forward |
+  | `^Y` | yank the last kill |
+  | `^T` | transpose two characters |
+  | `^P` / `^N` | as `up` / `down` |
+  | `^_` | undo: one step per edit, where a typed run is one edit (§7.5's coalescing) |
+  | `^L` | clear the screen and redraw the entry at the top |
+
+- **Meta is the Esc prefix,** readline's model.
+  - A terminal's Alt key sends Esc first, and `tui_keyparse` already delivers Esc and then the key.
+  - So `esc b` is a two-key sequence in the bindings table, and no new key kind is needed. D23's recon had listed Alt and Meta as a new engine piece.
+  - madcide's `emacs.keys` leaves its `M-` seats unbound because an Esc there cancels a chord. The editor binds no other meaning to Esc.
+- **The prompt** is D22's. Continuation lines are indented to its width and carry no prompt.
+- **The fallback** (D23) is cooked lines:
+  - when stdin or stdout is not a terminal (no prompt, D20);
+  - when `TERM` is unset or `dumb` (a prompt, but no editing);
+  - when the console has no VT mode (Windows before 10 1809).
+
+**History:**
+- A taken entry joins the ring, a refused one included, as Julia keeps an input that failed. A repeat of the previous entry is not added (measured).
+- The file:
+  - It lives at `$XDG_STATE_HOME/madc/history`, which is `~/.local/state/madc/history` by default, or `%LOCALAPPDATA%\madc\history` on Windows. History is state, not configuration, which is the XDG split `madc.ini`'s own search follows.
+  - `--history-file=no` turns it off, and `--history-file=PATH` moves it, with Julia's flag name.
+- The file's format is Julia's `repl_history.jl`. `# mode:` names the prompt, which is the standard in force (D22), and later `help` and `shell`:
+
+  ```text
+  # time: 2026-09-27 15:38:39Z
+  # mode: c++17
+  	int x = 10;
+  	x * 2
+  ```
+
+  - Every line of an entry follows a tab, so a line of the entry can never start a record.
+- The file is read once, at the start.
+  - Each taken entry is appended at once, in one write, so a crash loses nothing.
+  - Two sessions' records interleave whole (`O_APPEND`). Another live session's entries appear at the next start.
+- Recall and search see the entries of the session's language: C, C++ or madc. Julia's modes each search their own too.
+- The file is unbounded, as Julia's is.
+
+**Completion, the Tab hook's provider:**
+- The session answers `complete(text, caret)` with the start of the word and its candidates. The editor only renders them.
+- **The word** is the identifier characters before the caret. What comes before the word gives its context:
+  - nothing special: a top-level name (slice 3);
+  - an `a.b.` or `p->` chain of names: a member of the chain's type (slice 4);
+  - `ns::` or `C::`: a member of the namespace or the class (slice 4);
+  - inside a string or a comment: nothing. `#include` paths and D25's file names come later.
+- **Top-level names are enumerated by walking the registries,** never through lookup. Lookups materialize forest declarations, register `dlsym` symbols and throw (§8's code check). The names are:
+  - the program scope's variables and functions (`tkProgram`'s `variables`), those of every entry and every included header;
+  - types (`datatype_map`), tags (`struct_map`), namespaces (`namespace_map`) and templates;
+  - the standard's keywords (`keyword_map`, already gated by `--std=`);
+  - macros (`define_map`, `macro_map`);
+  - `ans` and the `_N` names, when a result is kept (D12).
+- **Measured** (`tmp/repl/d23/names.c`, `--dump-registered`, C17): after `#include <stdio.h>`, `printf` and `FILE` are listed.
+  - The dump has no top-level variable (`zq_glob`, `stdout`) and no macro (`EOF`).
+  - So the enumerator is a new owner, as §8 said. `dump_registered_names` stays the oracle it is.
+- **Filtering:**
+  - A name that starts with `_` is offered only for a word that starts with `_` (IPython's rule). So `__builtin_*`, `_IO_*` and the reserved names of a header stay out of the way.
+  - The session's own `__madc_` names are never offered.
+- The candidates are sorted, with duplicates dropped, so an overload set is one name.
+
+**The mechanism:**
+- **The model** is a new engine component, `include/madcdis/line_edit.h`. It is header-only and knows no terminal.
+  - Its state:
+    - the entry's text;
+    - the caret, as a byte offset;
+    - the undo stack and the kill slot;
+    - the history ring and its search state;
+    - the count of Tabs in a row.
+  - Its input is the `tui_event`s of `ui_apply_keys`, over the one key owner and an empty `focus_state`.
+    - The key owner is `key_resolver`. Its bindings are data: a `line_action` enum's codes (enum-over-strings), with the default table built in.
+  - Its output:
+    - a view: the entry's lines, the caret's line and display column, and a line under the entry for the search or the list;
+    - an outcome: editing, taken, dropped or end of input.
+  - Its two hooks:
+    - *finished*: the text in, Taken / Incomplete / Extendable out;
+    - *complete*: the text and the caret in, a start and candidates out.
+- **The painter** builds the bytes for Julia's full refresh of the entry. It lives in `ui_term.cpp`'s shared byte region, beside `vt_paint_bytes`. Each paint:
+  - climbs from the last paint's caret row, erasing each row with `\r` and `ESC[0K`;
+  - writes the prompt, then each line, indented by the prompt's width;
+  - gives a line wider than the terminal as many rows as it wraps to;
+  - places the caret by relative moves.
+
+  It never takes the alternate screen or a scroll region.
+- **Display width.** The painter counts columns per code point, with the C++ standard's estimated width ([format.string.std]: the East Asian Wide and emoji ranges are two columns).
+  - This is a new function beside `utf8_seq_len` in `madcdis/text_utf16.h`, the owner of column arithmetic over one line.
+  - None exists. The searches for `wcwidth`, "display width", "column width" and "east asian" found nothing.
+  - libc's `wcwidth` needs a UTF-8 locale. Switching the host's locale would change what an entry's `printf` sees.
+- **The terminal** (`src/ui_term.cpp`):
+  - `term_target`'s raw mode is split from its grid screen. The inline mode shares:
+    - the termios and console-mode bookkeeping;
+    - the SIGWINCH handler;
+    - `tui_keyparse`.
+
+    Of the screen bytes, it writes only bracketed paste on and off.
+  - The inline mode keeps type-ahead (`TCSADRAIN`), where grid mode flushes it (`TCSAFLUSH`).
+  - It holds the terminal only while an entry is read. The entry runs with the terminal as a program expects it: cooked, with `ISIG` on.
+- **The key parser** (`tui_keyparse`, the one owner) changes in two ways:
+  - Bytes 0x80–0xFF pass as `ch` instead of being dropped (UTF-8 input, D23's named piece).
+    - madcide's editor then receives the bytes it used to drop. Its grid still draws one byte per cell, its named residue.
+  - `CSI 200~` … `CSI 201~`: every byte in between is a literal `ch`, so a pasted tab or line break is text, not a key.
+- **The session.** `offer()` gains a *taken* callback. It is called once the entry is final, before the entry's diagnostics render or its run starts.
+  - The editor finishes its display there and hands the terminal back.
+  - So Enter parses once, as a cooked line does (§41.5a).
+- **The REPL** (`madc_repl_run`):
+  - On a VT terminal, entries come from the editor; otherwise they come from cooked lines, as today.
+  - `run_repl` hands the loop the terminal target. The unit tests hand it a scripted one, with keys in and bytes out, so the tests run the production loop.
+- **Thread contract:**
+  - The editor's state is per instance.
+  - The terminal has one target per process, confined to the thread that opened it (ui_term's contract).
+  - The history file's records are whole appends.
+
+**Slices:**
+1. **The editor.** It covers:
+   - the model, the painter and the inline mode;
+   - UTF-8 and paste input, and the width owner;
+   - `offer`'s callback, and the REPL on the editor;
+   - the editing keys, Enter, Tab's indentation, Ctrl-C, Ctrl-D, Ctrl-L and undo.
+2. **History:** the ring, Up and Down prefix recall, the file, and Ctrl-R / Ctrl-S.
+3. **Completion** of top-level names, and the Tab list (§37 item 7).
+4. **Member and qualified completion,** and the `%` / `:` command names with D24.
+
+**Gates:**
+- `test_line_edit`, a new unit test:
+  - key sequences in, and the text, caret and outcome out, for every action and each Enter verdict;
+  - the painter's bytes for a one-line entry, a two-line entry with the caret on line 1, a wrapped line and a wide character;
+  - the width function at the edges of the standard's ranges.
+- `test_tui_model`: the key parser's battery gains UTF-8 bytes and a bracketed paste holding a tab and a line break.
+- `test_repl_cli`: `madc_repl_run` over a scripted target, under `madc`, `c17` and `c++17`. It covers:
+  - §37's transcript typed as keys (items 1–6 again, through the editor);
+  - a paste of three entries;
+  - Ctrl-C and Ctrl-D;
+  - from slice 3, `x` completed by Tab.
+- A pty transcript of `bin/madc` on the build box (`probe.py`), read beside Julia's.
+
+**Not in D23's slices, and named:**
+- a `.keys` profile for the REPL. madcide's parser is dialect code, so one owner moves into the engine first;
+- vi mode;
+- syntax colour (§26);
+- a pager for a long candidate list;
+- auto-indent;
+- stripping `c11> ` prompts from a pasted transcript (§5.3);
+- madcide's `:` prompt and vised's find prompt adopting the model;
+- Ctrl-C during a run (D8).
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.
@@ -2503,6 +2717,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - madcide's `:` prompt and vised's find prompt, which are append-only today, adopt it.
   - Graceful fallback: piped stdin has no prompt (D20); a dumb terminal gets cooked lines (madcide LINE mode's level); a terminal gets the editor.
   - Thread contract: per-instance state.
+  - Designed against the code in §41.7a (2026-09-27), measured against Julia and IPython. Meta turned out to be data (the Esc prefix), not a new key kind.
 - **D24. One command registry, and ed/ex buffer commands at the prompt.**
   - Every command, for the REPL and madcide alike, resolves by name to an enum ONCE, at input (D13, enum-over-strings).
   - madcide's `colon_command` is a chain of string compares today, which enum-over-strings forbids. It moves onto the registry. lined's `.madv` verbs, already in the engine's verb registry, register there too.
@@ -2667,4 +2882,4 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
 
-D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. D27 is done (2026-09-26): a function or an object no entry defines yet is refused at its first use, as in Julia and clang-repl. A later definition is the one reached, and the failing use returns to the entry's boundary with the entry kept (§42 D27, "Built"). §41.4's result capture is done (2026-09-26): an entry without its final `;` shows its value in re-enterable syntax. That covers scalars, text, pointers, enums, structs, arrays, a madc `var` and the standard containers (§41.4a, "Built"). D28 is done (2026-09-27): a `var` holding a number takes arithmetic, with one rule in `madc::value` (§42 D28, "Built"). D20 is done (2026-09-27): `madc` with no program file is the REPL on a terminal, `-i` forces it, piped stdin is the program, and `madc -i file` runs the file, then the prompt has its names. The file and the session are one unit (§41.5a, "Built, slice 1" and "Built, slice 2"). D12 is done (2026-09-27): an entry's shown value is kept and named `ans`, `_`, `__`, `___` and `_N`, a scalar as a copy and an aggregate as the object, as Julia and IPython keep them. Its array results wait on B50 (§41.6a, "Built, slice 1" and "Built, slice 2"). G is fixed (a reference to an array shows its elements). Next: plan §37's completion and the line editor (D23); D12's arrays after B50. Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
+D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. D27 is done (2026-09-26): a function or an object no entry defines yet is refused at its first use, as in Julia and clang-repl. A later definition is the one reached, and the failing use returns to the entry's boundary with the entry kept (§42 D27, "Built"). §41.4's result capture is done (2026-09-26): an entry without its final `;` shows its value in re-enterable syntax. That covers scalars, text, pointers, enums, structs, arrays, a madc `var` and the standard containers (§41.4a, "Built"). D28 is done (2026-09-27): a `var` holding a number takes arithmetic, with one rule in `madc::value` (§42 D28, "Built"). D20 is done (2026-09-27): `madc` with no program file is the REPL on a terminal, `-i` forces it, piped stdin is the program, and `madc -i file` runs the file, then the prompt has its names. The file and the session are one unit (§41.5a, "Built, slice 1" and "Built, slice 2"). D12 is done (2026-09-27): an entry's shown value is kept and named `ans`, `_`, `__`, `___` and `_N`, a scalar as a copy and an aggregate as the object, as Julia and IPython keep them. Its array results wait on B50 (§41.6a, "Built, slice 1" and "Built, slice 2"). G is fixed (a reference to an array shows its elements). The line editor (D23) and completion are designed (2026-09-27, §41.7a). Next: §41.7a's slice 1, the editor; then its history, completion (§37 item 7) and member completion. D12's arrays follow B50. Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
