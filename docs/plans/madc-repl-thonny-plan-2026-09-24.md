@@ -2119,7 +2119,40 @@ With no program file, the tail chooses in this order:
   - `exit(4)` in an entry exits 4;
   - `scanf` in an entry reads the transcript's next line.
 - Found off the path: B33 (a missing right operand refused at the declaration's `=`, in file mode too).
-- **Open for slice 2, found building slice 1:** the entry path refuses a file-scope `static`, because a later entry's module cannot import it (D6), and most C files have statics. A loaded file's statics are its own module's, as another translation unit's are in C. So slice 2 decides what a later entry that names one gets. The candidates are C's answer (undeclared outside its unit) and cling's (one unit, visible). It is measured against both before building.
+**Slice 2, designed against the code (2026-09-27):**
+- **The file and the session are one unit** (owner, 2026-09-27).
+  - Measured, `tmp/repl/d20s2`: cling 1.2 (`.L` and `#include`) and clang-repl-20 (`#include`) agree.
+    - Once `a.c` is loaded, an entry calls its `static` function and reads its `static` object (`helper=10 count=1`).
+    - A second file defining its own `static int count` is refused whole ("redefinition of 'count'"). Its `use_b` is undeclared afterwards, and `a.c` is unchanged.
+    - A `static` typed as an entry is accepted by both. Its redefinition is shadowed by cling (`s=4`) and refused by clang-repl (`s=3`).
+  - Julia's `include` and python's `-i` agree, since neither has a unit-local name.
+  - So a unit's own file-scope statics, an entry's or a loaded file's, become session names. A second definition is a redefinition, refused today as any redefinition is (`int t = 5;` then `int t = 6;`). D5/D6 then decide redefinition for every name at once.
+- **The mechanism: the session gives a unit's statics external linkage, where the unit is finished.**
+  - `finish_entry` is the one place that finds the unit's own statics (`vfSTATIC` objects and `internal_linkage` functions from the unit's own text, never a header's). Today it refuses them. Instead it journals each one (`journal_entity`, so a refused unit restores it) and clears its internal linkage.
+  - Every later consumer then sees an ordinary external entity:
+    - the defining module exports it, and `session_defined` records it;
+    - a later module declares it `extern` (a global) or prototypes it (a function), as for any earlier definition.
+  - Without this, a later module would define the object afresh, which is a silent second copy. That is why the refusal existed.
+  - A C++ static function keeps the `_ZL` name it was minted with at its declaration (`emit_symbol`), so the definition and every import agree.
+  - Nothing at an emission site knows about the session.
+  - A header's statics stay each module's own copy, as now.
+  - `static inline` is measured before it is admitted this way: a C99 inline definition with external linkage emits no external symbol.
+- **Loading a file** (`InteractiveSession::load`, the core of `%load`, D25):
+  - The file is read whole. It is lexed and parsed on the session's Program in `ParseMode::TranslationUnit`, so it gets its own grammar, with no entry relaxations and script mode's `main` as script mode makes it. `lex_entry` appends the end-of-entry token only in entry mode.
+  - Then `finish_entry` promotes its statics, and the unit links as its own module inside an entry transaction.
+  - The CIR also runs in TranslationUnit mode. A file's bodies stay roots, and a file's undefined reference is refused at its link, as gcc's link refuses it, not late-bound (D27 is an entry's relaxation).
+  - Its diagnostics cite its path. It takes no `REPL[N]`, as Julia's `include` takes none.
+- **Running it** (`InteractiveSession::run_main`, the rest of `%run`):
+  - When the session defines `main`, it is called with the file lane's argv: the path, then the remaining positionals.
+  - It runs at the entry boundary (`cir_run_at_entry_boundary`, through a `main(argc, argv)` shim), so a use of an undefined name returns to the prompt. Then the task join, as `run_main` does.
+  - Its status is not the process's: the prompt follows, as python's does. `exit(n)` ends the process.
+  - A file without `main` just loads: `madc -i lib.c` is a session over lib.c's names.
+- **When the file fails** (python `-i`, measured): a refused file keeps nothing, and the REPL starts anyway. A `main` that stops keeps the file's definitions, as python keeps the names defined before the failing line.
+- **Gates:**
+  - Runner tests, with no runner change: `tests/testrepl_*.mad` + `.flags` (`-i`) + `.input` (the entries) + `.expect` + `.exe_skip` (the REPL is JIT-only, D19). One under `--std=madc`, one C file with statics, one refused file.
+  - `test_repl_session`:
+    - an entry's `static` object and function reached by a later entry, with their redefinition refused;
+    - a loaded unit's statics reached, and a second unit's clash refused whole.
 
 **Not in D20, and named:** the line editor (D23), commands (D13, D24), Ctrl-C (D8), help and shell modes (D14, D15).
 
