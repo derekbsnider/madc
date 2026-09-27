@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A REPL entry's reference to an array shows the array
+
+`int (&ra)[2] = arr;`, then `ra`, showed `<int32_t>` with a stray backend
+warning, and `ans` held a meaningless number. Now `ra` shows `{ 4, 5 }`, as
+the array does, and `ans` says an array is not kept yet.
+
+Tests: the reference-to-array lines in `test_repl_session`'s aggregate case.
+
 ### A REPL result names the object an entry showed (D12, slice 2)
 
 `ans` of a struct, union or class is now the object itself, as it is in

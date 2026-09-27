@@ -2666,15 +2666,16 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 						tv->var.total_elements());
 		}
 	bool is_arr = !adims.empty();
-	// An array reached through a pointer (`*pa`) or a struct (an array
-	// member): its extents from the array type it denotes, the one owner's
-	// answer, down to the element the walk steps. Read as its element, it
-	// showed `<int32_t>`. A named variable's array is the branch above; a
-	// reference to an array lowers as its flattened element, so the walk's
-	// access could not index it, and it keeps the type word.
-	if (!is_arr && m_prog
-	    && (arg->is_indirection() || arg->as_member_tok())) {
+	// Any other operand that denotes an array (`*pa`, an array member, a
+	// reference to an array, whose value is its referent): its extents from
+	// the array type it denotes, the one owner's answer, down to the element
+	// the walk steps. Read as its element, it showed `<int32_t>`.
+	if (!is_arr && m_prog) {
 		DataDef *at = m_prog->array_operand_type(arg);
+		if (!at)
+			if (DataDef *vt = operand_value_type(arg))
+				if (vt->as_carray_dd())
+					at = vt;
 		std::vector<carray_dim_t> odims;
 		DataDef *elem = NULL;
 		for (DataDefCArray *ca = at ? at->as_carray_dd() : NULL; ca;

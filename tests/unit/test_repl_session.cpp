@@ -1406,6 +1406,15 @@ TEST_CASE("an aggregate result is the object it showed (D12, slice 2)")
     REQUIRE(s.submit("mkh()"));
     REQUIRE(s.submit("ans.name"));
     CHECK(s.shown() == "\"hh\"");
+    // A reference to an array denotes the array (plan §41.6a, G): shown as
+    // its elements, and, as an array, not kept yet.
+    REQUIRE(s.submit("int arr[2] = { 4, 5 };\nint (&ra)[2] = arr;"));
+    REQUIRE(s.submit("ra"));
+    CHECK(s.shown() == "{ 4, 5 }");
+    check_refused(s, "ans", "an array is kept once its address has the array's type");
+    REQUIRE(s.submit("const int (&cr)[3] = { 1, 2, 3 };"));
+    REQUIRE(s.submit("cr"));
+    CHECK(s.shown() == "{ 1, 2, 3 }");
 }
 
 TEST_CASE("a madc var is kept as the dialect's value (D12)")

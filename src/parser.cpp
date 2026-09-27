@@ -78366,8 +78366,9 @@ TokenBase *Program::keep_entry_value(TokenBase *value, TokenBase *loc)
 	vt = getPointerType(vt);
     if ( !vt || vt->is_void() )
 	return value;
-    // An array is kept once `&arr` has the array's pointer type (B50).
-    if ( array_operand_type(value) )
+    // An array is kept once `&arr` has the array's pointer type (B50). A
+    // reference to one denotes it too: its value type is the array.
+    if ( array_operand_type(value) || vt->unqualified()->as_carray_dd() )
     {
 	entry_result_not_kept = "an array is kept once its address has the"
 	    " array's type (BUGS.md B50)";
