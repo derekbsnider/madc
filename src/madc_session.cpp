@@ -157,7 +157,16 @@ InteractiveSession::~InteractiveSession()
 bool InteractiveSession::begin(const std::string &std_option)
 {
     if ( !std_option.empty() && !prog->set_language_standard_option(std_option) )
+    {
+	// Its refusal is said, as the CLI says it (the host may have no
+	// terminal: a backend's client reads the Program's error stream).
+	const std::string prefix("--std=");
+	prog->error() << "Unknown --std target: "
+		      << (std_option.compare(0, prefix.size(), prefix) == 0
+			  ? std_option.substr(prefix.size()) : std_option)
+		      << std::endl;
 	return false;
+    }
     if ( !prog->begin_interactive_session("REPL") )
 	return false;
     return jit->begin_live("REPL");

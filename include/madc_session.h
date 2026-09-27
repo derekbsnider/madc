@@ -34,7 +34,8 @@ public:
     ~InteractiveSession();
 
     // Start the session. `std_option` is a `--std=` spelling; empty keeps
-    // the Program's default standard. False when the session cannot start.
+    // the Program's default standard. False when the session cannot start;
+    // an unknown standard is said on the Program's error stream.
     bool begin(const std::string &std_option = std::string());
 
     // Submit one complete entry. Its declarations persist, its module is

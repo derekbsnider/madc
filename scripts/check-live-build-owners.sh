@@ -19,10 +19,13 @@
 #    the owner, polish P3b-1), so every one must reset the cooperative
 #    scheduler: the fork-site count (fork() sites + child_body sites) and
 #    the __madc_task_atfork_child() call count must match. A new fork
-#    lane without the reset can schedule parent task contexts.
+#    lane without the reset can schedule parent task contexts. The session
+#    backend (src/madc_session_client.cpp, plan §41.9a) forks the same way
+#    and is counted with this file.
 set -u
 
 FILE="$(dirname "$0")/../src/madc_program.cpp"
+FORK_FILES="$FILE $(dirname "$0")/../src/madc_session_client.cpp"
 
 count_kind()
 {
@@ -37,14 +40,14 @@ count_gate()
 count_forks()
 {
 	local direct bodies
-	direct=$(grep -c 'pid_t pid = fork();' "$1")
-	bodies=$(grep -c 'options.child_body = ' "$1")
+	direct=$(cat "$@" | grep -c 'pid_t pid = fork();')
+	bodies=$(cat "$@" | grep -c 'options.child_body = ')
 	echo $((direct + bodies))
 }
 
 count_resets()
 {
-	grep -c '__madc_task_atfork_child();' "$1"
+	cat "$@" | grep -c '__madc_task_atfork_child();'
 }
 
 fail=0
@@ -64,11 +67,14 @@ if [ "$n" -ne 1 ]; then
 	fail=1
 fi
 
-nf=$(count_forks "$FILE")
-nr=$(count_resets "$FILE")
+nf_file=$(count_forks "$FILE")
+# shellcheck disable=SC2086	# FORK_FILES is a word list of paths
+nf=$(count_forks $FORK_FILES)
+# shellcheck disable=SC2086
+nr=$(count_resets $FORK_FILES)
 if [ "$nf" -ne "$nr" ]; then
 	echo "check-live-build-owners: FAIL — $nf fork() children but $nr" \
-	     "__madc_task_atfork_child() resets in src/madc_program.cpp." \
+	     "__madc_task_atfork_child() resets in $FORK_FILES." \
 	     "Every forked child that runs madc code resets the scheduler" \
 	     "(rt_task.h fork discipline); a fork+exec lane here would be" \
 	     "new — decide its discipline explicitly." >&2
@@ -87,7 +93,7 @@ cat "$FILE" > "$tmp"
 } >> "$tmp"
 if [ "$(count_kind "$tmp")" -ne 2 ] \
 || [ "$(count_gate "$tmp")" -ne 2 ] \
-|| [ "$(count_forks "$tmp")" -ne $((nf + 1)) ]; then
+|| [ "$(count_forks "$tmp")" -ne $((nf_file + 1)) ]; then
 	rm -f "$tmp"
 	echo "check-live-build-owners: FAIL — a negative control did not" \
 	     "detect its synthetic violation (a marker went blind)." >&2

@@ -4647,7 +4647,8 @@ static void compile_source_child_frontend(::Program &self, ::Program &child,
 // persistent parse handles (AST-1): one rendering of the compiler's
 // structured data, whether the child lives for one call or for a
 // handle's lifetime.
-static void diagnostic_rows_from_child(::Program &child, madc::value &out)
+// Also the session backend's (src/madc_session_client.cpp): an entry's rows.
+void diagnostic_rows_from_child(::Program &child, madc::value &out)
 {
     std::vector<madc::value> rows;
     for ( size_t i = 0; i < child.diagnostics.size(); ++i )
@@ -5021,12 +5022,14 @@ run_channel_policy &run_policy()
     return p;
 }
 
+} // namespace
+
 #ifndef _WIN32
 // The child's first steps before the program runs (after the body's own
 // __madc_task_atfork_child() — every child that runs madc code resets the
 // cooperative scheduler at its fork site, the discipline the live-build
 // owners gate counts): CLI-parity signal dispositions, stderr onto the
-// stream.
+// stream. Also the session backend's (src/madc_session_client.cpp).
 void run_child_prologue()
 {
     signal(SIGINT, SIG_DFL);
@@ -5034,6 +5037,8 @@ void run_child_prologue()
     ::dup2(STDOUT_FILENO, STDERR_FILENO);
 }
 #endif
+
+namespace {
 
 // `madcrun://<handle>?pty` / `madcproj://<manifest>?pty`: the child on a
 // pseudo-terminal (the embedded Terminal — a console program gets its

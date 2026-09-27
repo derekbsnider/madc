@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### The session in its own process (§37 item 9, slice 1)
+
+`SessionClient` (`include/madc_session_client.h`) runs an interactive
+session in a backend process: the running madc forks, with no exec, and the
+child serves one session until the client closes the channel. Requests and
+replies are JSON lines on a socketpair, in Jupyter's message shape. An
+entry's printed output reaches the client before its result. A reply carries
+the verdict, the shown value, the rendered diagnostics and their rows, or a
+completion's names. The client writes the program's stdin, so a `scanf` in
+an entry reads it. A crash in an entry ends the backend, not the client:
+the client reports the exit status (139 for a segfault), and `restart()`
+begins a new, empty session. This is the backend madcide's REPL pane and the
+CLI will both use (plan §41.9a). It is POSIX-only for now.
+
+`InteractiveSession::begin` now says why it refuses a standard
+(`Unknown --std target: …`, as the CLI does), on the Program's error stream.
+
+Tests: `test_session_backend` covers output order, stdin, a refused entry's
+diagnostics, completion, a crash and restart, and an unknown standard.
+
 ### `?while` says where a keyword comes from
 
 `?while` printed "while is a keyword of madc" in the madc dialect: it named
