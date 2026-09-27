@@ -172,6 +172,47 @@ int main()
   comparison rule (php-parity), not madc's `value::compare`, which is
   strict by design (D21, D28).
 
+### B35. An array compound literal is typed as a pointer
+
+- Found 2026-09-27, while measuring what an entry shows for D12 (plan
+  §41.6a). File mode does the same.
+
+```c
+#include <stdio.h>
+int main(void)
+{
+	printf("%zu %zu\n", sizeof((int[]){7,8}), sizeof((int[3]){0}));
+	return 0;
+}
+```
+
+- gcc 13: `8 12`. madc `--std=c17`: `8 8`, silently. `(int[3]){0}` has the
+  type `int[3]` (C11 6.5.2.5p4), and madc gives it a pointer's.
+- An entry's `(int[]){7,8}` shows `(int *) 0x7ffd...` under every standard,
+  where an `int a[2]` shows its elements.
+- Where: not traced. The compound literal's token reports the decayed type.
+
+### B36. A file-scope `std::unique_ptr` is not initialized
+
+- Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).
+
+```cpp
+#include <memory>
+#include <stdio.h>
+std::unique_ptr<int> p(new int(3));
+int main() { printf("%d\n", p ? *p : -1); return 0; }
+```
+
+- g++ 13: `3`. madc `--std=c++17`: `-1`, silently. The same global written
+  `std::unique_ptr<int> q = std::make_unique<int>(5);` crashes (SIGSEGV)
+  before `main`'s first statement, where g++ prints 5.
+- An entry's `std::unique_ptr<int> p(new int(3));` then `p` shows
+  `std::unique_ptr<int32_t,std::default_delete<int32_t>>{ ._M_t = { ._M_t =
+  { ._M_head_impl = (int *) nullptr } } }`. The spelling is wrong too: the
+  source's is `std::unique_ptr<int>`, without the default argument.
+- Where: not traced. The constructor's argument never reaches the global's
+  construction.
+
 ## Accepts invalid code
 
 ### B2. A stray top-level `}` is accepted
@@ -225,6 +266,23 @@ int main(void) { int s = 0; for (int i = 0; i < 3; i++) s += i; return s; }
   declaration under every standard. C99 6.8.5.3 added it; before C99 the
   clause is an expression. The gate is `language_std` below `STD_C99` in the
   C range (C78 to C95).
+
+### B37. Copying a `std::unique_ptr` is accepted, and crashes
+
+- Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).
+
+```cpp
+#include <memory>
+#include <stdio.h>
+int main() { std::unique_ptr<int> p(new int(3)); auto q = p; printf("%d\n", *q); return 0; }
+```
+
+- g++ 13: "use of deleted function 'std::unique_ptr<...>::unique_ptr(const
+  std::unique_ptr<...>&)'". madc `--std=c++17`: compiles, then SIGSEGV.
+- Where: not traced. A deleted copy constructor is dropped from the class's
+  constructors, and `has_deleted_copy_ctor` records it for the
+  `__is_constructible` trait. Whether it is set for `unique_ptr`, and whether
+  a declaration's initialization reads it, is the first thing to check.
 
 ## Refuses valid code
 
@@ -561,6 +619,23 @@ int main() { printf("%d\n", u()); return 0; }
 - Where: not traced. The call's callee is resolved while the template has
   no definition, and it is never re-resolved to the specialization.
 
+### B38. A structured binding of an array is refused
+
+- Found 2026-09-27, while looking for an array copy for D12 to reuse (plan
+  §41.6a).
+
+```cpp
+#include <stdio.h>
+int arr[2] = {1, 2};
+int main() { auto [x, y] = arr; arr[0] = 9; printf("%d %d\n", x, y); return 0; }
+```
+
+- g++ 13: `1 2` ([dcl.struct.bind]/1: the array is copied element by
+  element). madc `--std=c++17`: "Expecting integer constant expression" at
+  `3:20`.
+- D12's slice 2 builds the element-by-element array copy that this binding
+  needs.
+
 ## Diagnostics
 
 ### B7. An undeducible function-template call dies in MIR without a location
@@ -675,6 +750,22 @@ int main(void) { return t; }
 - Where: `Program::declare_object`'s redefinition refusal (D18,
   `bd3c56500`) throws at `where`, the token its caller passes, and that
   token is not the declarator-id. Reducer: `tmp/repl/d20s2/redef.c`.
+
+### B39. A missing `;` after an `auto` declaration is cited inside the next line
+
+- Found 2026-09-27, while tracing why an entry's `auto x = 5` shows nothing
+  (plan §41.6a, B there).
+
+```cpp
+auto x = 5
+int main() { return x; }
+```
+
+- g++ 13: `2:1: expected ',' or ';' before 'int'`. madc `--std=c++17`: `2:8:
+  Malformed expression: 2 operands with no operator between them`.
+- Where: the `auto` arm of `parseDeclaration` parses its initializer with
+  the expression engine, which reads on into `int main`. A declarator's
+  initializer ends where the next token cannot continue it.
 
 ## Open questions
 

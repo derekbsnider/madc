@@ -2168,6 +2168,115 @@ With no program file, the tail chooses in this order:
 
 **Not in D20, and named:** the line editor (D23), commands (D13, D24), Ctrl-C (D8), help and shell modes (D14, D15).
 
+### 41.6a Result names (D12), designed against the code (2026-09-27)
+
+**Measured first** (`tmp/repl/d12`). Julia 1.13.0 and IPython 9.17.1 were installed on the build box for this and run on a pty (`script -qfec`), since piped stdin gives Julia no REPL:
+
+| | Julia `ans` | IPython `_`, `__`, `___`, `_N` |
+|---|---|---|
+| a shown value | kept | kept |
+| a value hidden by `;` (`3+4;`) | kept: `ans` is 7 | not kept: `_` unchanged |
+| no value (`println("hi")`; Python's `x = 5`) | `ans` becomes `nothing` | unchanged |
+| an error | unchanged | unchanged, and the input number advances |
+| read in a function body (`f() = ans + 1`, `100`, `f()`) | at the call: 101 | at the call: 101 |
+| the user assigns the name (`ans = 10`) | the user's name wins from then on | the user's name wins from then on |
+| `_N` for an input with no output | (none) | `NameError` |
+| a mutable object changed after it was shown | seen: the result is the object | seen: the result is the object |
+
+- IPython's `__` and `___` count shown values, not inputs: after outputs 2, 42, 2, `__` is 42.
+- madc today: `ans`, `_` and `_1` are "use of undeclared identifier".
+
+**The rule: a result is the value an entry showed, kept as a copy.**
+- An entry that shows a value keeps it (D10: its final statement has no `;`), and only such an entry. This is IPython's rule, and one rule serves all five names.
+  - Julia also keeps a value hidden by `;`. In C, though, `;` is how a statement is written for its effect. `ans` would become the count `printf` returned, or the value of `x += 1;`.
+  - D10 already made the missing `;` the mark of a value.
+- These keep nothing, and `ans` stays what it was (both precedents; C has no `nothing`):
+  - a void value;
+  - a refused entry;
+  - an entry whose run stops before its show.
+
+  The entry number still advances, as IPython's does.
+- The kept value is a new object, initialized once from the entry's value.
+  - Its type is the one `auto r = value;` would give (C23 6.7.10, C++ [dcl.type.auto.deduct]): top-level cv and references are dropped, and a function designator becomes its pointer.
+  - So after `x`, then `x = 7;`, `_N` is still 5, as both precedents keep an immutable value.
+  - They alias a mutable object; C and C++ copy it, and so does madc.
+  - An array is kept as an array, not decayed as `auto` would decay it. It is copied element by element, as a structured binding or a lambda capture copies one (slice 2).
+- A class value is kept when it can be copied, that is, when the `__is_constructible(T, const T&)` owner (`trait_is_constructible`) answers 1.
+  - An xvalue (`std::move(v)`) is copied from, never moved from: showing a value must not change it.
+  - The copy runs the copy constructor, as `auto r = v;` would.
+  - A class that cannot be copied (`std::unique_ptr`), or whose copy madc cannot decide (-1), is shown but not kept. A name that means it is refused, with the reason.
+- A result is an ordinary object. It can be changed, as IPython's `_` can be mutated. `ans + 1` makes a new result.
+
+**The names:**
+- `ans` and `_` are the last kept result.
+  - `__` is the one before it, and `___` the one before that.
+  - `_N` is the result REPL[N] kept. `N` is decimal with no leading zero, as the diagnostics number entries.
+- They are found only where ordinary lookup finds nothing, so a user's name always wins, as in both precedents. Examples: a declared `ans`, a local `_`, `std::placeholders::_1` through a using-directive.
+- They resolve only in an interactive entry (`interactive_entry()`), under every standard, like every entry relaxation (D3).
+  - A loaded file (§41.5a) is a translation unit and has none.
+  - They become rows of D3's registry when it lands.
+- `ans`, `_`, `__` and `___` move with every kept result. So they are refused in code that runs after the entry: a function or lambda body, a default argument, a default member initializer.
+  - Julia and IPython read them at the call, but a body madc compiles once would keep this entry's result silently.
+  - The refusal names the stable spelling (`_4`).
+  - D6's recompilation of dependents is what will let them follow.
+  - `_N` never moves and works everywhere.
+
+**Refusals**, each at the name, in the entry's position:
+- `'ans' names the last value an entry showed, and none has been shown yet`
+- `'__' names the value shown before the last one, and only 1 value has been shown`
+- `'_5' names the value REPL[5] showed, and it showed none`
+- `'_9' names the value REPL[9] showed, and there is no REPL[9] yet`
+- `'ans' names the value REPL[4] showed, which was not kept: 'std::unique_ptr<int>' cannot be copied`
+- `'ans' changes with each value shown, so code that runs later cannot use it; name the value REPL[4] showed as '_4'`
+
+**The mechanism: a result is a session global, made where the value is shown.**
+- `show_entry_value` (parse) already moves the entry's final value into `__madc_show`. It declares the result object there.
+  - The object is a Variable `__madc_result_K`, with its own serial that is never reused, like `__madc_entry_K`. It is declared through `declare_object`.
+  - Its `TokenDecl` initializer is `TokenAssign(result, value)`, the `auto` declaration's own shape (`parseDeclaration`'s `auto` arm). It is recorded with `record_global_top_decl`.
+  - The run gets its `TokenGlobalInit`, then `__madc_show(result)`. The value is evaluated once, into the result, and the show reads the result, so the display is unchanged.
+  - A value that is not kept is shown as today, and the reason is recorded.
+- Every later module declares the object `extern`, and the defining module exports it (`session_defined`), as for any entry's global.
+  - A class result constructs at its place in the run and destructs at exit, as entry globals do.
+  - A refused entry rolls the object back with its transaction.
+  - No emission site learns about results, except the one gate below.
+- **C.** The CIR routes a non-constant file-scope initializer to dynamic initialization only in C++ modes (`presents_as_cpp()`). So C's static-initializer rule would refuse `__madc_result_K = x + 1`.
+  - The result object is the implementation's, not a declaration of the program, so the gate also routes the session's result objects (`Program::is_session_result`).
+  - A C session's own `int y = f()` stays refused, as C and clang-repl's C mode refuse it. madc cites c2mir's words there today.
+- **The table.** The Program keeps `session_results`, mapping an entry number to its object, or to the reason it was not kept.
+  - After the run, if the show ran (`entry_shown` is set), the session records the entry: `keep_entry_result(N)`.
+  - The parser reads it at the lookup miss, through `resolve_expression_context_identifier`, the one owner of "a name the host context supplies". Every miss path already calls it: the expression's identifier arm, `parsePostfixChain` and `parse_complex_component_operand`. The session's results sit there beside the eval API's context root.
+  - An identifier's spelling becomes a result reference (the last one, k back, or entry N) once, at that boundary.
+- **Thread contract.** The table and the result objects are session state. Only the submit verb changes them, and D9 serializes it; lookups happen inside that verb's parse. The result objects follow the stdlib convention.
+- **Lifetime.** Every kept result lives until the session ends, like IPython's output cache. `%reset` (D6, D17) will free them.
+
+**Found while designing, on the REPL's path, and fixed first** (each in its own commit, with a reducer and both oracles):
+- **A.** An entry's final bare function name is called.
+  - `f` shows 3, `g` reads "too few arguments", `&f` is refused and runs on into the next line, and `int (*p)(void) = f` is refused.
+  - The function-name arm decides decay by the next token: `;` with an empty operator stack decays. The end-of-entry token stands for the omitted `;`, but it is not among them.
+  - With `;`, and in a file, all four are right.
+- **B.** `auto x = 5`, with no `;`, shows nothing, while `int z = 7` shows 7. `parseDeclaration`'s `auto` arm consumes its own `;` and never records the terminator it owes, so the entry never learns that it omitted one.
+- **C.** In C only, two refused entries that call a function no entry defines kill the session after a struct definition: every later entry fails "tag P redeclaration".
+  - The reducer is `struct P { int x, y; };`, `int y = g()`, `int z = g()`, `1`. Each `int … = g()` is refused at c2mir, since its initializer is not constant.
+  - `g` may be declared or implicit. One such entry is clean, and so is a defined `g`, which points at D27's late binding. C++ is clean.
+
+**Found off the path** (`BUGS.md`): B35–B39.
+
+**Gates:**
+- `test_repl_session`, under C, C++ and madc:
+  - every row of the table above;
+  - `x`, then `x = 7;`: `_N` is still 5;
+  - `std::move(v)` shown, then `v.size()` is still 3;
+  - a `unique_ptr` shown and not kept, with its name refused;
+  - the user's `ans` wins;
+  - the refusal in a function body;
+  - a refused entry keeps nothing;
+  - `__` and `___` after three results.
+- A runner test, `tests/testrepl_ans.mad` (with `.flags` `-i`, `.input`, `.expect` and `.exe_skip`). Its transcript is IPython's on the same values.
+
+**Slices:**
+1. The table, the names and their refusals, and results of every non-array kind, under C, C++ and madc: scalars, pointers, enums, C structs and unions, classes that can be copied, and a madc `var`. An array result is shown and not kept ("an array is kept from slice 2").
+2. Array results, copied element by element: one `memcpy` for trivially copyable elements, the copy constructor per element otherwise.
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.
@@ -2251,6 +2360,7 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - `ans` (Julia).
   - `_`, `__`, `___`, `_N` (IPython). These are reserved to the implementation at file scope in C (C11 7.1.3) and in the global namespace in C++ ([lex.name]), so no legal user name collides.
   - `ans` is a registered relaxation (D3).
+  - Designed against the code in §41.6a (2026-09-27). A result is the value an entry showed, kept as a copy. A value hidden by `;` keeps nothing, as in IPython. A user's name always wins. The four moving names are refused in code that runs later.
 - **D13. Command prefix.**
   - `%` is primary: IPython and Clang-Repl agree, and Julia has none. `:` is an accepted alias.
   - A command is recognized only when `%` or `:` plus a name starts a new entry, so the `%:` digraph and a continuation line like `% b;` stay C.
@@ -2485,4 +2595,4 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
 
-D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. D27 is done (2026-09-26): a function or an object no entry defines yet is refused at its first use, as in Julia and clang-repl. A later definition is the one reached, and the failing use returns to the entry's boundary with the entry kept (§42 D27, "Built"). §41.4's result capture is done (2026-09-26): an entry without its final `;` shows its value in re-enterable syntax. That covers scalars, text, pointers, enums, structs, arrays, a madc `var` and the standard containers (§41.4a, "Built"). D28 is done (2026-09-27): a `var` holding a number takes arithmetic, with one rule in `madc::value` (§42 D28, "Built"). D20 is done (2026-09-27): `madc` with no program file is the REPL on a terminal, `-i` forces it, piped stdin is the program, and `madc -i file` runs the file, then the prompt has its names. The file and the session are one unit (§41.5a, "Built, slice 1" and "Built, slice 2"). Next is `ans` (D12). Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
+D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. D27 is done (2026-09-26): a function or an object no entry defines yet is refused at its first use, as in Julia and clang-repl. A later definition is the one reached, and the failing use returns to the entry's boundary with the entry kept (§42 D27, "Built"). §41.4's result capture is done (2026-09-26): an entry without its final `;` shows its value in re-enterable syntax. That covers scalars, text, pointers, enums, structs, arrays, a madc `var` and the standard containers (§41.4a, "Built"). D28 is done (2026-09-27): a `var` holding a number takes arithmetic, with one rule in `madc::value` (§42 D28, "Built"). D20 is done (2026-09-27): `madc` with no program file is the REPL on a terminal, `-i` forces it, piped stdin is the program, and `madc -i file` runs the file, then the prompt has its names. The file and the session are one unit (§41.5a, "Built, slice 1" and "Built, slice 2"). `ans` (D12) is designed against the code (§41.6a, 2026-09-27). Next come the three REPL-path defects found while designing it (A, B and C there), each in its own commit, then its slice 1. Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
