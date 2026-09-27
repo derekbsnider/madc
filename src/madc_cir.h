@@ -137,6 +137,12 @@ public:
     bool run_entry_init(Program *prog, const char *entry_name);
     bool run_entry_function(Program *prog, const char *entry_name,
 			    const char *emitted_name);
+    // The session's main(argc, argv) (plan §41.5a, slice 2: `madc -i file`),
+    // at the same boundary, then main's root-scope join as run_main's. False
+    // when there is no main or a use of an undefined symbol returned; its
+    // return value goes to *status.
+    bool run_session_main(Program *prog, const char *unit_name, int argc,
+			  char **argv, int *status);
 
     // The generated code address for a module function by its EMITTED name
     // (plain madc functions emit under their source name; the eval entry is

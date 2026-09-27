@@ -85,21 +85,18 @@ TEST_CASE("on a terminal the prompt names the standard and continuation lines ar
     std::istringstream in("int x = 3\nint f(int a)\n{ return a; }\n");
     std::ostringstream out;
     CHECK(madc_repl_run(s, in, out, true) == 0);
-    const std::string o = out.str();
-    CAPTURE(o);
-    CHECK(o.compare(0, 5, "madc ") == 0);	// the banner
-    CHECK(o.find("\nc++17> 3\n") != std::string::npos);
     // The function's second line is typed after a continuation indent as
-    // wide as the prompt; the end of input ends the line.
-    CHECK(o.find("\nc++17> " + std::string(7, ' ') + "c++17> \n")
-	  != std::string::npos);
+    // wide as the prompt; the end of input ends the line. A greeting is the
+    // host's, not the loop's.
+    CHECK(out.str() == "c++17> 3\nc++17> " + std::string(7, ' ')
+			+ "c++17> \n");
 
     InteractiveSession m;
     REQUIRE(m.begin("--std=madc"));
     std::istringstream none("");
     std::ostringstream mout;
     CHECK(madc_repl_run(m, none, mout, true) == 0);
-    CHECK(mout.str().find("\nmadc> \n") != std::string::npos);
+    CHECK(mout.str() == "madc> \n");
 }
 
 TEST_CASE("a finished if waits one line for its else (D11)")

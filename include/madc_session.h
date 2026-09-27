@@ -59,6 +59,19 @@ public:
     };
     Offered offer(const std::string &text);
 
+    // Load a program file into the session (plan §41.5a, slice 2; the core
+    // of %load, D25): one unit in its own grammar (a file is read as gcc
+    // reads it), on everything the session declared. The file and the
+    // session are one unit, so its statics are session names. Its
+    // diagnostics cite its path; it takes no REPL[N]. False when it is
+    // refused, and then it leaves nothing (plan §41.3).
+    bool load(const std::string &path);
+    // Call the session's main(argc, argv) at the entry boundary (the rest of
+    // %run, D16/D25; `madc -i file`, python -i). False when there is no main,
+    // or a use of an undefined name returned; its return value goes to
+    // *status. It does not end the session.
+    bool run_main(int argc, char **argv, int *status);
+
     // The live address of a session function / global, by emitted name.
     // NULL when no linked entry defines it.
     void *function(const char *name);
@@ -77,7 +90,7 @@ public:
 
 private:
     Offered enter(const std::string &text, bool final);
-    bool run_entry(const char *entry_file);
+    void render_parse_diagnostics();
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;
     unsigned entry_count;

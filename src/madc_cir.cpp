@@ -1730,6 +1730,21 @@ static void cir_call_entry_run(void *code)
     ((void (*)(void))code)();
 }
 
+// main(argc, argv) through the boundary's one-pointer call.
+struct CirMainCall
+{
+    void *code;
+    int argc;
+    char **argv;
+    int status;
+};
+
+static void cir_call_main(void *call)
+{
+    CirMainCall *mc = (CirMainCall *)call;
+    mc->status = ((int (*)(int, char **))mc->code)(mc->argc, mc->argv);
+}
+
 // Run an entry's code at the entry's boundary. False when a use of an
 // undefined symbol returned here. The return destroys what the run registered
 // on the exception runtime's cleanup stack, as a throw past it would, and
@@ -1986,6 +2001,24 @@ bool CirJitSession::run_entry_function(Program *prog, const char *entry_name,
     if (!code)
 	return false;
     return cir_run_at_entry_boundary(prog, entry_name, cir_call_entry_run, code);
+}
+
+bool CirJitSession::run_session_main(Program *prog, const char *unit_name,
+				     int argc, char **argv, int *status)
+{
+    CirMainCall mc;
+    mc.code = function_code("main");
+    if (!mc.code)
+	return false;
+    mc.argc = argc;
+    mc.argv = argv;
+    mc.status = 0;
+    bool ok = cir_run_at_entry_boundary(prog, unit_name, cir_call_main, &mc);
+    // main's return waits for every live task (run_main's root-scope join).
+    __madc_task_join_all();
+    if (ok && status)
+	*status = mc.status;
+    return ok;
 }
 
 int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)

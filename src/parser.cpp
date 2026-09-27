@@ -77276,7 +77276,7 @@ Variable *Program::script_param_lookup(const std::string &id)
     // An interactive entry has no main to take them from (D25: `%run`
     // passes a program's argv to its main).
     if ( !parsing_script_statement || language_std != STD_MADC
-      || interactive_session )
+      || interactive_entry() )
 	return NULL;
     return script_param_var(id);
 }
@@ -77344,7 +77344,7 @@ TokenCpnd *Program::script_statement_scope(TokenBase *loc)
 {
     if ( !compounds.empty() )
 	return compounds.top();
-    if ( interactive_session )
+    if ( interactive_entry() )
 	return token_is_tu_origin(loc) ? ensure_entry_function(loc) : NULL;
     if ( language_std != STD_MADC || !token_is_tu_origin(loc) )
 	return NULL;
@@ -77354,7 +77354,7 @@ TokenCpnd *Program::script_statement_scope(TokenBase *loc)
 
 TokenCpnd *Program::short_declaration_scope(TokenBase *loc)
 {
-    if ( interactive_session && compounds.empty() )
+    if ( interactive_entry() && compounds.empty() )
 	return NULL;
     return script_statement_scope(loc);
 }
@@ -77741,13 +77741,14 @@ bool Program::parse_toplevel(TokenProgram *tp)
 		Throw(loop_head) << "Unexpected '"
 		    << overload_token_spelling(loop_head)
 		    << "' at file scope (parser made no progress)" << flush;
-	    if ( interactive_session )
+	    if ( interactive_entry() )
 		place_entry_initializers(decls_before);
 	    if ( ts )
 	    {
 		// A session entry's statement joins the entry's run (D25),
-		// never script mode's main.
-		if ( interactive_session
+		// never script mode's main; a file the session loads keeps
+		// script mode's (plan §41.5a).
+		if ( interactive_entry()
 		  && (script_stmt || script_statement_result(ts)) )
 		    adopt_entry_statement(ts, tb);
 		else if ( (script_stmt || script_statement_result(ts))
@@ -78011,12 +78012,8 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
 	    + overload_token_spelling(balance.where) + "'");
 	return r;
     }
-    if ( session && !finish_entry(decls_before, funcs_before) )
-    {
-	if ( const Diagnostic *d = first_error_diagnostic() )
-	    r.diagnostic = *d;
-	return r;
-    }
+    if ( session )
+	finish_entry(decls_before, funcs_before);
     r.verdict = entry_if_extendable ? EntryVerdict::CompleteExtendable
 				    : EntryVerdict::Complete;
     r.shows_value = entry_final_semicolon_omitted;
@@ -78064,6 +78061,43 @@ Program::EntryVerdict Program::parse_entry(const std::string &text,
     return classify_entry(text, display_name).verdict;
 }
 
+// A program file loaded into the interactive session (plan §41.5a, slice 2):
+// one unit of its own, read in its own grammar. The caller holds
+// ParseMode::TranslationUnit for the unit's whole life, its translation
+// included, so no entry relaxation applies and script mode synthesizes its
+// main as it does for any file. It is lexed and parsed on everything the
+// session declared, then finished as the session's (its statics become
+// session names). False when it is refused; its diagnostics are recorded,
+// not rendered.
+bool Program::parse_file_unit(const std::string &text, const std::string &path)
+{
+    if ( !interactive_session || !tkProgram )
+    {
+	set_error(DiagnosticPhase::parser, "no interactive session has begun");
+	return false;
+    }
+    DiagnosticRenderMute mute;
+    begin_entry();
+    size_t decls_before = top_decls.size();
+    size_t funcs_before = pending_funcs.size();
+    bool ok = lex_entry(text, path);
+    if ( ok )
+    {
+	register_included_lazy_surfaces();
+	ok = parse_toplevel(tkProgram) && !has_error_diagnostic();
+    }
+    // Script mode's main belongs to this unit alone: sealed by its parse, it
+    // must not be queued again by a later unit's, nor make a later `main` a
+    // conflict with this file's statements.
+    script_main_tf = NULL;
+    script_main_method = NULL;
+    script_argc_var = NULL;
+    script_argv_var = NULL;
+    if ( ok )
+	finish_entry(decls_before, funcs_before);
+    return ok;
+}
+
 // Does LINE continue an if that ended an entry (D11)? Its first word is
 // this standard's `else` keyword, found through the lexer's own keyword
 // table: the input's text becomes a TokenID once, at the boundary.
@@ -78106,27 +78140,31 @@ void Program::begin_entry()
     entry_shown.clear();
 }
 
-// A parsed entry becomes one: its file-scope statics are refused (internal
-// linkage: a later entry's module cannot import it; its rule is D6's), its
-// final value is shown (D10), and its run joins the queues. False, with the
-// diagnostic recorded, when it is refused.
-bool Program::finish_entry(size_t decls_before, size_t funcs_before)
+// A parsed unit becomes one of the session's: its file-scope statics become
+// session names, an entry's final value is shown (D10), and an entry's run
+// joins the queues.
+void Program::finish_entry(size_t decls_before, size_t funcs_before)
 {
-    // Only the entry's own statics: an included header's are each module's
-    // own copy, as each translation unit has its own (every entry's module
-    // is one; <iostream>'s `static ios_base::Init __ioinit`, glibc's
-    // `static __inline` byte swaps).
+    // One unit (plan §41.5a, owner 2026-09-27): the session and every unit
+    // it takes, an entry or a loaded file, are one program, as cling's and
+    // clang-repl's are, so a unit's own file-scope statics are session
+    // names. Each unit's module is a translation unit, where internal
+    // linkage would hide them from the next module, which would then define
+    // the object afresh. So the session gives them external linkage here,
+    // where the unit's own statics are found, and every later consumer sees
+    // an ordinary external entity: the defining module exports it, a later
+    // one declares it. The journal restores them if the unit is refused.
+    // An included header's statics stay each module's own copy, as each
+    // translation unit has its own (<iostream>'s `static ios_base::Init
+    // __ioinit`, glibc's `static __inline` byte swaps).
     for ( size_t i = decls_before; i < top_decls.size(); ++i )
     {
 	TopDecl &td = top_decls[i];
 	if ( td.kind == DeclKind::dkGlobalVar && td.var
 	  && (td.var->flags & vfSTATIC) && top_decl_is_tu_origin(td) )
 	{
-	    record_parse_error("'" + td.var->name + "' has internal linkage:"
-			       " a static declaration in an interactive"
-			       " session is not supported yet",
-			       td.origin, tkProgram);
-	    return false;
+	    journal_entity(td.var);
+	    td.var->flags &= ~vfSTATIC;
 	}
     }
     for ( size_t i = funcs_before; i < pending_funcs.size(); ++i )
@@ -78135,10 +78173,8 @@ bool Program::finish_entry(size_t decls_before, size_t funcs_before)
 	FuncDef *fd = tf ? dynamic_cast<FuncDef *>(tf->var.type) : NULL;
 	if ( fd && fd->internal_linkage && token_is_tu_origin(tf) )
 	{
-	    record_parse_error("'" + tf->var.name + "' has internal linkage:"
-			       " a static function in an interactive session"
-			       " is not supported yet", tf, tkProgram);
-	    return false;
+	    journal_entity(fd);
+	    fd->internal_linkage = false;
 	}
     }
     // D10: a final statement written without its `;` shows its value.
@@ -78152,7 +78188,6 @@ bool Program::finish_entry(size_t decls_before, size_t funcs_before)
 	pending_funcs.push_back(entry_function);
 	entry_function_name = entry_function->var.name;
     }
-    return true;
 }
 
 // D10 (plan §41.4a): the value an entry's final statement shows. A final

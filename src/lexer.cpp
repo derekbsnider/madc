@@ -10787,11 +10787,12 @@ bool Program::lex_unit_text(const char *fname, const std::string &text)
     return lex_main_unit(fname);
 }
 
-// Lex one interactive entry into THIS Program (plan §41.2a): the unit lex
-// tokenize_buffer runs, WITHOUT _tokenizer_init — the session's macros,
-// include guards, auto-include state and tkProgram carry over from the
-// entries before. The entry is whole lines, and lex_main_unit appends the
-// end-of-entry token (ParseMode::InteractiveEntry).
+// Lex one unit of the interactive session into THIS Program (plan §41.2a):
+// the unit lex tokenize_buffer runs, WITHOUT _tokenizer_init — the session's
+// macros, include guards, auto-include state and tkProgram carry over from
+// the units before. The unit is whole lines. An entry's lex (ParseMode::
+// InteractiveEntry) ends in the end-of-entry token lex_main_unit appends; a
+// loaded file's (TranslationUnit, plan §41.5a) ends where its text does.
 bool Program::lex_entry(const std::string &text, const std::string &display_name)
 {
     std::string entry = text;

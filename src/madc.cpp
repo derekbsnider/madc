@@ -265,7 +265,8 @@ static void print_usage(const char *prog)
 "  (no file)               the REPL when stdin is a terminal; otherwise\n"
 "                          compile and run stdin, as if named -\n"
 "  -                       read the program from stdin (gcc, python)\n"
-"  -i, --interactive       the REPL, even when stdin is not a terminal\n"
+"  -i, --interactive       the REPL, even when stdin is not a terminal; with\n"
+"                          a <file>, run it first and keep its names (python -i)\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
 "                          translation unit, link the modules, run the entry.\n"
 "                          Two shapes by top-level JSON kind: an OBJECT is the\n"
@@ -473,8 +474,13 @@ static TokenProgram *tokenize_input(Program &prog, const char *path)
 
 // The REPL (D20): the session adopts the Program the command line and
 // madc.ini configured, and the loop runs over stdin and stdout, prompting
-// when stdin is a terminal.
-static int run_repl(std::unique_ptr<Program> prog, bool terminal)
+// when stdin is a terminal. With a program file (`-i file`, python -i; plan
+// §41.5a, slice 2) the file loads into the session first and its main, when
+// it has one, runs with the file lane's argv (the path, then the program's
+// arguments). The prompt follows whatever they did, as python's does: a
+// refused file leaves nothing, a stopped main leaves the file's names.
+static int run_repl(std::unique_ptr<Program> prog, bool terminal,
+		    int file_argc = 0, char **file_argv = NULL)
 {
 #ifdef MADC_CROSS_TARGET
     return cross_refuse_run("run the REPL");
@@ -485,6 +491,15 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal)
 	session.program().print_last_diagnostic(std::cerr);
 	return 1;
     }
+    if ( file_argc > 0 )
+    {
+	int status = 0;
+	if ( session.load(file_argv[0]) && session.function("main") )
+	    session.run_main(file_argc, file_argv, &status);
+    }
+    else if ( terminal )
+	std::cout << "madc " << MADC_VERSION_STR << ". Ctrl-D exits."
+		  << std::endl;
     return madc_repl_run(session, std::cin, std::cout, terminal);
 }
 
@@ -1340,19 +1355,25 @@ int main(int argc, char **argv)
 	}
 	++filearg;
     }
+    bool terminal = isatty(0) != 0;
+    bool artifact_request = emit_native || do_emit || emit_pch
+	|| emit_function_name || dump_source || dump_macro_table
+	|| dump_cir || dump_nodes || dump_checked || dump_registered
+	|| freeze_path || freeze_run;
+    if ( interactive && artifact_request )
+    {
+	std::cerr << "madc: -i runs the REPL; it cannot also write an artifact"
+		     " or a dump" << std::endl;
+	return 1;
+    }
     if ( filearg >= argc )
     {
-	bool artifact_request = emit_native || do_emit || emit_pch
-	    || emit_function_name || dump_source || dump_macro_table
-	    || dump_cir || dump_nodes || dump_checked || dump_registered
-	    || freeze_path || freeze_run;
 	if ( artifact_request )
 	{
 	    std::cerr << "madc: fatal error: no input files" << std::endl
 		      << "compilation terminated." << std::endl;
 	    return 1;
 	}
-	bool terminal = isatty(0) != 0;
 	if ( interactive || terminal )
 	    return run_repl(std::move(prog), terminal);
 	static char stdin_path[] = "-";
@@ -1363,12 +1384,8 @@ int main(int argc, char **argv)
 	filearg = argc++;
     }
     else if ( interactive )
-    {
-	// Slice 2 of plan §41.5a: run the file, then the REPL (python -i).
-	std::cerr << "madc: -i with a program file is not supported yet"
-		  << std::endl;
-	return 1;
-    }
+	return run_repl(std::move(prog), terminal, argc - filearg,
+			argv + filearg);
 
     if ( argc >= 2 && filearg < argc )
     {

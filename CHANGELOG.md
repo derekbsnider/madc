@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### `madc -i file` runs the file, then the REPL has its names (D20)
+
+As `python -i` does, `madc -i prog.c a b` loads `prog.c` into a REPL
+session and runs its `main` with `prog.c a b` as its arguments. The prompt
+follows, with every name the file defined. The file is read in its own
+grammar, as `madc prog.c` reads it. A `--std=madc` script's top-level
+statements are its `main`, as always. `main`'s return value does not end
+the session, and `exit(n)` still ends the process. A file without `main`
+just loads, so `madc -i lib.c` is a session over `lib.c`'s functions. A
+file that is refused leaves nothing behind, and the prompt starts anyway.
+
+The file and the session are one unit, as they are in cling and clang-repl:
+a `static` in the file is visible to later entries. A second file that
+defines the same `static` is refused whole ("redefinition of 'count'"),
+which both of them do too. A `static` typed as an entry is accepted now as
+well. Before, it was refused as "not supported yet". The banner is printed
+only when the REPL starts without a file.
+
+Tests: `testrepl_cfile` (cling 1.2 gives the same four lines),
+`testrepl_script`, and the load, `main` and statics cases in
+`test_repl_session`.
+
 ### A later REPL entry that names an auto-included header runs
 
 After a first entry, an entry that used `format`, `println`, `php::` or any
@@ -33,7 +55,7 @@ and `-` names stdin as a file argument (`madc - a b < prog.c`), as in gcc
 and python. An artifact request with no input (`-o`, `-c`, `-E`,
 `--emit=`, ...) is gcc's `fatal error: no input files`. The command line's
 options (`--std=`, `-I`, `-D`, `-l`, `madc.ini`) hold in the session as in
-a file. `-i file` is not supported yet.
+a file.
 
 An entry is classified on the live session, inside its entry transaction,
 so a name an earlier entry declared counts (`x +` waits for its operand).

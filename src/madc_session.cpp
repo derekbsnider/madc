@@ -74,6 +74,48 @@ InteractiveSession::Offered InteractiveSession::offer(const std::string &text)
 
 // The one entry path. A FINAL entry is taken whatever its verdict: an
 // extendable if runs, an incomplete entry is refused at its end.
+// The half every unit shares once its parse is final (plan §41.2a): its
+// module links into the live context, then its TU init runs, then an entry's
+// run (D25: its statements, in source order, lowered into the entry function
+// of its own module), each at the unit's boundary. Linked, the unit is kept
+// whatever its init and its run do next: a use of a function no unit defines
+// yet fails there, and the unit's definitions stay, as Julia keeps a failed
+// input's earlier definitions (plan §42 D27). Running its init is a host-call
+// boundary, like main() in madc_cir_execute: runtime services inherit the
+// Program's policy.
+static bool link_and_run(Program &prog, CirJitSession &jit,
+			 Program::EntryTransaction &unit, const char *unit_file,
+			 bool &linked)
+{
+    prog.push_runtime_scope();
+    bool ok = false;
+    try
+    {
+	linked = jit.append(&prog, unit_file);
+	if ( linked )
+	    unit.commit();
+	const std::string &run = prog.entry_function_name;
+	ok = linked && jit.run_entry_init(&prog, unit_file)
+	    && (run.empty()
+		|| jit.run_entry_function(&prog, unit_file, run.c_str()));
+    }
+    catch (...)
+    {
+	prog.pop_runtime_scope();
+	throw;
+    }
+    prog.pop_runtime_scope();
+    return ok;
+}
+
+// A unit's parse recorded its diagnostics without rendering them (an attempt
+// still being typed must say nothing); the unit is final now.
+void InteractiveSession::render_parse_diagnostics()
+{
+    for ( const Program::Diagnostic &d : prog->diagnostics )
+	prog->print_diagnostic(prog->error(), d);
+}
+
 InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 						      bool final)
 {
@@ -95,32 +137,50 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     if ( !final && verdict == Program::EntryVerdict::CompleteExtendable )
 	return Offered{ OfferState::Extendable, false };
     ++submit_count;
-    // The parse recorded its diagnostics without rendering them (an
-    // incomplete attempt must say nothing); the entry is final now.
-    for ( const Program::Diagnostic &d : prog->diagnostics )
-	prog->print_diagnostic(prog->error(), d);
+    render_parse_diagnostics();
     if ( verdict != Program::EntryVerdict::Complete
       && verdict != Program::EntryVerdict::CompleteExtendable )
 	return Offered{ OfferState::Taken, false };
-    // Running the entry's init is a host-call boundary, like main() in
-    // madc_cir_execute: runtime services inherit the Program's policy.
+    bool linked = false;
+    bool ok = link_and_run(*prog, *jit, entry, prog->intern_file(name), linked);
+    if ( linked )
+	++entry_count;
+    return Offered{ OfferState::Taken, ok };
+}
+
+bool InteractiveSession::load(const std::string &path)
+{
+    std::ifstream file(path.c_str(), std::ios::binary);
+    if ( !file )
+    {
+	prog->record_frontend_error(Program::DiagnosticPhase::lexer,
+				    "Failed to open file", path.c_str(), 0, 0);
+	return false;
+    }
+    std::ostringstream text;
+    text << file.rdbuf();
+    // A file is read as gcc reads it, through its translation too: no entry
+    // relaxation, bodies kept as roots, and an undefined reference refused
+    // at its link (late binding, D27, is an entry's).
+    Program::ParseModeScope mode(*prog, Program::ParseMode::TranslationUnit);
+    Program::EntryTransaction unit(*prog);
+    bool parsed = prog->parse_file_unit(text.str(), path);
+    render_parse_diagnostics();
+    if ( !parsed )
+	return false;
+    bool linked = false;
+    return link_and_run(*prog, *jit, unit, prog->intern_file(path), linked);
+}
+
+bool InteractiveSession::run_main(int argc, char **argv, int *status)
+{
+    const char *unit = prog->intern_file(argc > 0 && argv[0] ? argv[0] : "main");
+    // main() is a host-call boundary, as in madc_cir_execute.
     prog->push_runtime_scope();
     bool ok = false;
     try
     {
-	const char *entry_file = prog->intern_file(name);
-	bool linked = jit->append(prog.get(), entry_file);
-	// Linked, its definitions are live whatever its init and its run do
-	// next: a use of a function no entry defines yet fails there, and the
-	// entry is kept, as Julia keeps a failed input's earlier definitions
-	// (plan §42 D27).
-	if ( linked )
-	{
-	    entry.commit();
-	    ++entry_count;
-	}
-	ok = linked && jit->run_entry_init(prog.get(), entry_file)
-	    && run_entry(entry_file);
+	ok = jit->run_session_main(prog.get(), unit, argc, argv, status);
     }
     catch (...)
     {
@@ -128,20 +188,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 	throw;
     }
     prog->pop_runtime_scope();
-    return Offered{ OfferState::Taken, ok };
-}
-
-// The entry's run (D25): its statements, in source order, lowered into the
-// entry function of its own module. It runs once, after the module links and
-// its init ran, at the entry's boundary (plan §42 D27). The entry counts from
-// the link: its definitions are live even when its run cannot be generated,
-// or stops at a use of a function no entry defines.
-bool InteractiveSession::run_entry(const char *entry_file)
-{
-    const std::string &run = prog->entry_function_name;
-    if ( run.empty() )
-	return true;
-    return jit->run_entry_function(prog.get(), entry_file, run.c_str());
+    return ok;
 }
 
 const std::string &InteractiveSession::shown() const

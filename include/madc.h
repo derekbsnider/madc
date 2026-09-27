@@ -6920,6 +6920,18 @@ public:
     enum class ParseMode : unsigned char { TranslationUnit, InteractiveEntry };
     ParseMode parse_mode = ParseMode::TranslationUnit;
     bool interactive_entry() const { return parse_mode == ParseMode::InteractiveEntry; }
+    // Hold a parse mode for a scope: the session's loaded file keeps
+    // TranslationUnit through its parse and its translation (plan §41.5a).
+    struct ParseModeScope
+    {
+	Program &pgm;
+	ParseMode saved;
+	ParseModeScope(Program &p, ParseMode m) : pgm(p), saved(p.parse_mode)
+	{ p.parse_mode = m; }
+	~ParseModeScope() { pgm.parse_mode = saved; }
+	ParseModeScope(const ParseModeScope &) = delete;
+	ParseModeScope &operator=(const ParseModeScope &) = delete;
+    };
     // Does the top level admit a statement at TB? In an interactive entry's
     // own text, under every standard (D3); a file's top level (script mode
     // aside) holds declarations only.
@@ -6983,14 +6995,18 @@ public:
     void place_entry_initializers(size_t decls_before);
     bool begin_interactive_session(const std::string &display_name);
     EntryVerdict parse_entry(const std::string &text, const std::string &display_name);
+    // A program file loaded into the session, a unit in its own grammar
+    // (the caller holds ParseMode::TranslationUnit; plan §41.5a, slice 2).
+    bool parse_file_unit(const std::string &text, const std::string &path);
     // Does a line typed after an extendable if continue it (D11)? Its first
     // word is the `else` keyword.
     bool entry_line_continues_if(const std::string &line);
-    // classify_entry's session lane, around the entry's parse: begin_entry
-    // clears the last entry's state and its unread tokens; finish_entry
-    // refuses the entry's statics, shows its value and queues its run.
+    // Around a session unit's parse (an entry's, or a loaded file's):
+    // begin_entry clears the last unit's state and its unread tokens;
+    // finish_entry makes the unit's own statics session names (one unit,
+    // plan §41.5a), shows an entry's value and queues its run.
     void begin_entry();
-    bool finish_entry(size_t decls_before, size_t funcs_before);
+    void finish_entry(size_t decls_before, size_t funcs_before);
     bool lex_entry(const std::string &text, const std::string &display_name);
     bool lex_unit_text(const char *fname, const std::string &text);
     // The top-level parse loop parse() and parse_entry() share: statements

@@ -54,8 +54,6 @@ int madc_repl_run(InteractiveSession &session, std::istream &in,
     const std::string prompt =
 	std::string(Program::standard_canonical_name(prog.language_std)) + "> ";
     const std::string continuation(prompt.size(), ' ');
-    if ( terminal )
-	out << "madc " << MADC_VERSION_STR << ". Ctrl-D exits." << std::endl;
     std::string pending;		// the entry typed so far
     bool extendable = false;		// pending is an if waiting for else
     std::string line;

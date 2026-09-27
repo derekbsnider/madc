@@ -20,8 +20,9 @@ class InteractiveSession;
 // Read entries from `in` to its end and run each in `session`, a session
 // that has begun. Shown values (D10) go to `out`; diagnostics go to the
 // Program's error stream, as their renderers put them. `terminal` asks for
-// the banner and the prompts (D22); off a terminal there are neither (D23),
-// so a transcript's output is its values and diagnostics. A pending entry
+// the prompts (D22); off a terminal there are none (D23), so a transcript's
+// output is its values and diagnostics. A greeting is the host's (the CLI
+// prints one when it starts a session with no file). A pending entry
 // is submitted at the end of input. Returns the exit status: 0, as
 // python -i exits at the end of its input.
 int madc_repl_run(InteractiveSession &session, std::istream &in,

@@ -28,6 +28,11 @@ thread_local bool madc_verbose = false;
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_session.h"
+#include "../../src/madc_posix_io.h"
+
+#include <cstdio>
+#include <cstring>
+#include <unistd.h>
 
 namespace {
 
@@ -114,10 +119,9 @@ TEST_CASE("an entry the session refuses says so, and the session goes on")
     REQUIRE(s.begin("--std=c17"));
     REQUIRE(s.submit("int g = 5;\nint f(int a) { return a + g; }"));
 
-    // A file-scope static has internal linkage: a later entry's module
-    // cannot import it, and its REPL rule is D6's.
-    CHECK_FALSE(s.submit("static int hidden(void) { return 1; }"));
-    CHECK(first_error(s).find("internal linkage") != std::string::npos);
+    // A second definition is refused, as any redefinition is until D5/D6.
+    CHECK_FALSE(s.submit("int g = 6;"));
+    CHECK(first_error(s) == "redefinition of 'g'");
 
     REQUIRE(s.submit("int k(void) { return f(3); }"));
     int_fn k = (int_fn)s.function("k");
@@ -128,7 +132,8 @@ TEST_CASE("an entry the session refuses says so, and the session goes on")
 
 // An included header's internal-linkage definitions are each module's own
 // copy, as each translation unit has its own (every entry's module is one);
-// only a static the entry itself writes is refused (D6). Before, <string>,
+// only a static the entry itself writes is a session name (one unit, plan
+// §41.5a). Before, <string>,
 // <cmath>, <cstdlib> and <algorithm> were refused for glibc's
 // `static __inline` byte swaps, and <iostream> for its
 // `static ios_base::Init __ioinit`. Oracle: clang-repl-18 and -20
@@ -148,8 +153,9 @@ TEST_CASE("an included header's statics do not refuse the entry")
     REQUIRE(s.submit("std::string s = \"ab\";"));
     REQUIRE(s.submit("int r2 = r + (int)(s + \"c\").size() + std::max(1, 2);"));
     CHECK(*(int *)s.data("r2") == 12);
-    CHECK_FALSE(s.submit("static int mine = 1;"));
-    CHECK(first_error(s).find("internal linkage") != std::string::npos);
+    REQUIRE(s.submit("static int mine = r + 1;"));
+    REQUIRE(s.submit("mine"));
+    CHECK(s.shown() == "8");
 }
 
 TEST_CASE("an entry with a statement that does not compile runs none of it")
@@ -1302,4 +1308,132 @@ TEST_CASE("an entry refused before its end leaves no tokens for the next")
 	REQUIRE(s.submit("x"));
 	CHECK(s.shown() == "10");
     }
+}
+
+// A unit's own file-scope statics are session names (plan §41.5a, owner
+// 2026-09-27): the session and every unit it takes are one program, as
+// cling's and clang-repl's are (tmp/repl/d20s2). There is one object, and a
+// second definition is a redefinition, refused as any is today.
+static void check_entry_statics(const std::string &std_option)
+{
+    CAPTURE(std_option);
+    InteractiveSession s;
+    REQUIRE(s.begin(std_option));
+    REQUIRE(s.submit("static int s = 3;"));
+    REQUIRE(s.submit("static int twice_s(void) { return s * 2; }"));
+    REQUIRE(s.submit("twice_s() + s"));
+    CHECK(s.shown() == "9");
+    // An entry's write is what the static function reads.
+    REQUIRE(s.submit("s = 4;"));
+    REQUIRE(s.submit("twice_s()"));
+    CHECK(s.shown() == "8");
+    CHECK_FALSE(s.submit("static int s = 5;"));
+    CHECK(first_error(s) == "redefinition of 's'");
+    REQUIRE(s.submit("s"));
+    CHECK(s.shown() == "4");
+}
+
+TEST_CASE("an entry's statics are session names (§41.5a)")
+{
+    check_entry_statics("--std=c17");
+    check_entry_statics("--std=c++17");
+    check_entry_statics("--std=madc");
+}
+
+// TEXT in a fresh temporary file (the temp-file owner places it); its path.
+static std::string temp_source(const char *text, const char *prefix)
+{
+    std::string path;
+    int fd = madc::detail::make_temp_file(prefix, path);
+    REQUIRE(fd >= 0);
+    size_t n = strlen(text);
+    CHECK(madc::detail::write_fd_without_sigpipe(fd, text, n) == (ssize_t)n);
+    ::close(fd);
+    return path;
+}
+
+// The measured shapes (cling 1.2 .L / #include, clang-repl-20 #include):
+// helper=10 count=1 once a.c is loaded; b.c's clashing static refused whole,
+// use_b undeclared afterwards, a.c unchanged.
+TEST_CASE("a loaded file and the session are one unit (§41.5a)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::string a = temp_source(
+	"static int count = 1;\n"
+	"static int helper(void) { return count * 10; }\n"
+	"int use_a(void) { return helper() + count; }\n", "madc_repl_a");
+    std::string b = temp_source(
+	"static int count = 2;\n"
+	"int use_b(void) { return count; }\n", "madc_repl_b");
+    REQUIRE(s.load(a));
+    CHECK(s.submitted() == 0);		// a file takes no REPL[N]
+    REQUIRE(s.submit("helper()"));
+    CHECK(s.shown() == "10");
+    REQUIRE(s.submit("count"));
+    CHECK(s.shown() == "1");
+    CHECK_FALSE(s.load(b));
+    CHECK(first_error(s) == "redefinition of 'count'");
+    CHECK_FALSE(s.submit("use_b()"));
+    REQUIRE(s.submit("use_a()"));
+    CHECK(s.shown() == "11");
+    CHECK_FALSE(s.load("/nonexistent/madc_repl_no_such_file.c"));
+    CHECK(first_error(s) == "Failed to open file");
+    std::remove(a.c_str());
+    std::remove(b.c_str());
+}
+
+// python -i: the file runs, then the prompt has its names (plan §41.5a). Its
+// main's status is not the session's end.
+TEST_CASE("a loaded file's main runs with its argv, and the session goes on (§41.5a)")
+{
+    char a0[] = "prog", a1[] = "x", a2[] = "y";
+    char *argv[] = { a0, a1, a2, NULL };
+    int status = 0;
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::string p = temp_source(
+	"int ran = 0;\n"
+	"int main(int argc, char **argv) { ran = argc; return 7; }\n",
+	"madc_repl_main");
+    REQUIRE(s.load(p));
+    REQUIRE(s.function("main") != (void *)NULL);
+    REQUIRE(s.run_main(3, argv, &status));
+    CHECK(status == 7);
+    REQUIRE(s.submit("ran"));
+    CHECK(s.shown() == "3");
+    std::remove(p.c_str());
+
+    // A script's statements are its main, as script mode makes it: loading
+    // runs nothing, main runs them, and a later entry's statements are the
+    // entry's own run.
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    std::string sp = temp_source(
+	"int total = 0;\n"
+	"for (int i = 1; i <= 4; ++i)\n"
+	"\ttotal += i;\n", "madc_repl_script");
+    REQUIRE(m.load(sp));
+    REQUIRE(m.submit("total"));
+    CHECK(m.shown() == "0");
+    REQUIRE(m.run_main(1, argv, &status));
+    REQUIRE(m.submit("total"));
+    CHECK(m.shown() == "10");
+    REQUIRE(m.submit("total += 1;"));
+    REQUIRE(m.submit("total"));
+    CHECK(m.shown() == "11");
+    std::remove(sp.c_str());
+
+    // A file without main just loads.
+    InteractiveSession l;
+    REQUIRE(l.begin("--std=c17"));
+    std::string lp = temp_source("int sq(int v) { return v * v; }\n",
+				 "madc_repl_lib");
+    REQUIRE(l.load(lp));
+    CHECK(l.function("main") == (void *)NULL);
+    CHECK_FALSE(l.run_main(1, argv, &status));
+    REQUIRE(l.submit("sq(9)"));
+    CHECK(l.shown() == "81");
+    std::remove(lp.c_str());
 }
