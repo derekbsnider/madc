@@ -399,4 +399,12 @@ TEST_CASE("piece table — word motion: JOE ^Z/^X duals over [A-Za-z0-9_]")
     b.replace(4, 5, "qux");		// "int qux = bar(2);\n"
     CHECK(b.word_right(3) == 7u);
     CHECK(b.word_left(10) == 4u);
+
+    // A letter outside ASCII is part of its word (plan §41.7a): "été" is
+    // one word, and no stop falls inside a code point.
+    text_buffer u;
+    u.load("x \xc3\xa9t\xc3\xa9 y");	// "x été y"
+    CHECK(u.word_right(1) == 7u);
+    CHECK(u.word_left(7) == 2u);
+    CHECK(text_buffer::word_right_in("\xc3\xa9t", 0) == 3u);
 }

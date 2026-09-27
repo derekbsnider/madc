@@ -41,6 +41,7 @@
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
+#include "madcdis/tui_provider.h"	// create_line_target: the editor's terminal (D23)
 
 // Supplied by the build as -DMADC_VERSION_STR='"x.y.z"' from ../VERSION (the
 // version-consuming objects depend on that file — src/Makefile). The fallback
@@ -500,6 +501,19 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
     else if ( terminal )
 	std::cout << "madc " << MADC_VERSION_STR << ". Ctrl-D exits."
 		  << std::endl;
+    // A VT terminal edits each entry (D23); anything else reads cooked
+    // lines (a pipe, a dumb terminal, a console without VT mode).
+    if ( terminal )
+    {
+	std::unique_ptr<madc::hub::line_target> term(
+	    madc::hub::create_line_target());
+	if ( term )
+	{
+	    int rc = madc_repl_edit(session, *term, std::cout);
+	    if ( rc >= 0 )
+		return rc;
+	}
+    }
     return madc_repl_run(session, std::cin, std::cout, terminal);
 }
 

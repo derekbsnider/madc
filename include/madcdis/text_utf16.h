@@ -2,7 +2,8 @@
 #define __MADCDIS_TEXT_UTF16_H 1
 
 // madcdis/text_utf16.h — THE owner of UTF-16 ↔ UTF-8 column arithmetic over
-// one line of text.
+// one line of text, and of a code point's DISPLAY width (the line editor's
+// caret, plan §41.7a).
 //
 // Two consumers ask the same question from opposite directions:
 //   - the web model (V3c): a page's hit test reports a JavaScript string
@@ -20,6 +21,7 @@
 // their arguments.
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace madc {
@@ -74,6 +76,56 @@ inline long col16_of_byte(const std::string &t, std::size_t bytecol)
 		i += n;
 	}
 	return units;
+}
+
+// The code point at byte `i` of `t`, and the number of bytes it spans. A
+// malformed or truncated sequence is one byte whose code point is that byte
+// (utf8_seq_len's stray-byte rule), so a scan always advances.
+inline std::size_t utf8_decode_at(const std::string &t, std::size_t i,
+				  uint32_t &cp)
+{
+	unsigned char b = (unsigned char)t[i];
+	std::size_t n = utf8_seq_len(b);
+	if ( n == 1 || i + n > t.size() )
+	{
+		cp = b;
+		return 1;
+	}
+	uint32_t v = n == 2 ? (b & 0x1Fu) : n == 3 ? (b & 0x0Fu) : (b & 0x07u);
+	for ( std::size_t k = 1; k < n; ++k )
+	{
+		unsigned char c = (unsigned char)t[i + k];
+		if ( (c & 0xC0) != 0x80 )
+		{
+			cp = b;
+			return 1;
+		}
+		v = (v << 6) | (c & 0x3Fu);
+	}
+	cp = v;
+	return n;
+}
+
+// A code point's display width in columns: the C++20 standard's estimated
+// width, the rule std::format's fill and alignment use ([format.string.std]
+// /11, P1868). The East Asian wide and fullwidth blocks and the emoji ranges
+// it lists are 2 columns; every other code point is 1. It is an estimate in
+// the standard's own words: there is no grapheme clustering, so a combining
+// mark counts one column. C++23 names the Unicode East_Asian_Width property
+// instead, whose table this list approximates.
+inline unsigned codepoint_columns(uint32_t cp)
+{
+	static const uint32_t wide[][2] = {
+		{ 0x1100, 0x115F },   { 0x2329, 0x232A },   { 0x2E80, 0x303E },
+		{ 0x3040, 0xA4CF },   { 0xAC00, 0xD7A3 },   { 0xF900, 0xFAFF },
+		{ 0xFE10, 0xFE19 },   { 0xFE30, 0xFE6F },   { 0xFF00, 0xFF60 },
+		{ 0xFFE0, 0xFFE6 },   { 0x1F300, 0x1F64F }, { 0x1F900, 0x1F9FF },
+		{ 0x20000, 0x2FFFD }, { 0x30000, 0x3FFFD },
+	};
+	for ( std::size_t i = 0; i < sizeof(wide) / sizeof(wide[0]); ++i )
+		if ( cp >= wide[i][0] && cp <= wide[i][1] )
+			return 2;
+	return 1;
 }
 
 } // namespace madc

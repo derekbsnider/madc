@@ -16,6 +16,7 @@
 #ifndef __MADC_SESSION_H
 #define __MADC_SESSION_H 1
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -42,7 +43,12 @@ public:
     // program().diagnostics. A refused entry leaves the session as it was,
     // the Program and the live context alike (plan §41.3). A stopped one is
     // linked (entries() counts it) and keeps its definitions.
-    bool submit(const std::string &text);
+    //
+    // `taken`, when given, is called once the entry is final, before its
+    // diagnostics render and before it runs: a line editor finishes its
+    // display there and hands the terminal back (plan §41.7a).
+    typedef std::function<void()> TakenHook;
+    bool submit(const std::string &text, const TakenHook &taken = TakenHook());
 
     // Offer the text typed so far (plan §41.5a): the classifier runs inside
     // the entry transaction (§41.1a), so there is one parse per line.
@@ -51,13 +57,14 @@ public:
     //   Incomplete: keep reading; nothing is kept, numbered or rendered;
     //   Extendable: a finished if with no else; D11 waits one line (the
     //     client submits it, or offers it again with the line).
+    // `taken` is submit()'s, called only when the entry is Taken.
     enum class OfferState : unsigned char { Taken, Incomplete, Extendable };
     struct Offered
     {
 	OfferState state;
 	bool ok;
     };
-    Offered offer(const std::string &text);
+    Offered offer(const std::string &text, const TakenHook &taken = TakenHook());
 
     // Load a program file into the session (plan §41.5a, slice 2; the core
     // of %load, D25): one unit in its own grammar (a file is read as gcc
@@ -89,7 +96,7 @@ public:
     unsigned submitted() const { return submit_count; }
 
 private:
-    Offered enter(const std::string &text, bool final);
+    Offered enter(const std::string &text, bool final, const TakenHook &taken);
     void render_parse_diagnostics();
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;

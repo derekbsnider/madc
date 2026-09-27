@@ -62,14 +62,15 @@ bool InteractiveSession::begin(const std::string &std_option)
     return jit->begin_live("REPL");
 }
 
-bool InteractiveSession::submit(const std::string &text)
+bool InteractiveSession::submit(const std::string &text, const TakenHook &taken)
 {
-    return enter(text, true).ok;
+    return enter(text, true, taken).ok;
 }
 
-InteractiveSession::Offered InteractiveSession::offer(const std::string &text)
+InteractiveSession::Offered InteractiveSession::offer(const std::string &text,
+						      const TakenHook &taken)
 {
-    return enter(text, false);
+    return enter(text, false, taken);
 }
 
 // The one entry path. A FINAL entry is taken whatever its verdict: an
@@ -117,7 +118,8 @@ void InteractiveSession::render_parse_diagnostics()
 }
 
 InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
-						      bool final)
+						      bool final,
+						      const TakenHook &taken)
 {
     // Julia's spelling: the entry's diagnostics cite REPL[N]:line:column.
     // N counts every entry taken, refused ones too, as Julia's REPL[N] and
@@ -137,6 +139,8 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 	return Offered{ OfferState::Incomplete, false };
     if ( !final && verdict == Program::EntryVerdict::CompleteExtendable )
 	return Offered{ OfferState::Extendable, false };
+    if ( taken )
+	taken();
     ++submit_count;
     render_parse_diagnostics();
     if ( verdict != Program::EntryVerdict::Complete

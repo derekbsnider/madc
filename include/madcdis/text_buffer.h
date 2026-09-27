@@ -268,15 +268,19 @@ public:
 	return hit == std::string::npos ? npos : hit;
     }
 
-    // Word motion (JOE ^Z/^X semantics; a word byte is [A-Za-z0-9_] —
-    // identifier-shaped, madcide edits source). word_right: from `from`,
-    // skip non-word bytes then word bytes — the offset just PAST the end
-    // of the next word (clamped to the document end). word_left: the
-    // mirror — the offset of the FIRST byte of the previous word
-    // (clamped to 0). Materializes, like find — the linear-scan contract.
-    size_t word_right(size_t from) const
+    // Word motion (JOE ^Z/^X semantics, readline's M-f/M-b): a word byte
+    // is [A-Za-z0-9_] or any byte of a UTF-8 sequence, so a word is
+    // identifier-shaped (madcide edits source) and a letter outside ASCII
+    // is part of one (C23's identifiers, readline in a UTF-8 locale); no
+    // stop falls inside a code point. word_right: from `from`, skip
+    // non-word bytes then word bytes — the offset just PAST the end of
+    // the next word (clamped to the text's end). word_left: the mirror —
+    // the offset of the FIRST byte of the previous word (clamped to 0).
+    // The ONE word rule: the buffer's methods materialize, like find (the
+    // linear-scan contract); the line editor (madcdis/line_edit.h) calls
+    // the string forms on its entry.
+    static size_t word_right_in(const std::string &t, size_t from)
     {
-	std::string t = text();
 	size_t i = from > t.size() ? t.size() : from;
 	while ( i < t.size() && !word_byte(t[i]) )
 	    ++i;
@@ -284,9 +288,8 @@ public:
 	    ++i;
 	return i;
     }
-    size_t word_left(size_t from) const
+    static size_t word_left_in(const std::string &t, size_t from)
     {
-	std::string t = text();
 	size_t i = from > t.size() ? t.size() : from;
 	while ( i > 0 && !word_byte(t[i - 1]) )
 	    --i;
@@ -294,6 +297,8 @@ public:
 	    --i;
 	return i;
     }
+    size_t word_right(size_t from) const { return word_right_in(text(), from); }
+    size_t word_left(size_t from) const { return word_left_in(text(), from); }
 
     size_t piece_count() const { return _pieces.size(); }	// unit-test view
 
@@ -385,7 +390,8 @@ private:
     static bool word_byte(char c)
     {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-	    || (c >= '0' && c <= '9') || c == '_';
+	    || (c >= '0' && c <= '9') || c == '_'
+	    || (unsigned char)c >= 0x80;
     }
 
     // The newline index: offsets of every '\n' in document order, rebuilt

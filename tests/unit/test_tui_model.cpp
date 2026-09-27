@@ -132,6 +132,54 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     CHECK(out[0].ch == 'x');
 }
 
+TEST_CASE("keyparse — UTF-8 bytes are text; a bracketed paste is literal text")
+{
+    // UTF-8 (plan §41.7a): each byte a `ch`, one text event for the run.
+    std::vector<tui_keyev> k = parse("a\xc3\xa9");
+    REQUIRE(k.size() == 3u);
+    CHECK(k[1].kind == tui_key::ch);
+    CHECK((unsigned char)k[1].ch == 0xc3);
+    CHECK((unsigned char)k[2].ch == 0xa9);
+    madc::hub::key_resolver keys;
+    madc::hub::focus_state focus;
+    std::vector<tui_event> ev = madc::hub::ui_apply_keys(keys, focus, k);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    CHECK(ev[0].text == "a\xc3\xa9");
+
+    // A paste: a tab and a line break are text; CR LF is one '\n'; the
+    // markers are not keys.
+    k = parse("\x1b[200~a\tb\r\nc\rd\x1b[201~\t");
+    REQUIRE(k.size() == 8u);
+    for ( size_t i = 0; i < 7; ++i )
+	CHECK(k[i].kind == tui_key::ch);
+    CHECK(k[1].ch == '\t');
+    CHECK(k[3].ch == '\n');
+    CHECK(k[5].ch == '\n');
+    CHECK(k[7].kind == tui_key::tab);		// after the paste: a key again
+
+    // A pause inside a paste keeps pasting; a broken end marker was text.
+    tui_keyparse p;
+    std::vector<tui_keyev> out;
+    p.feed("\x1b[200~x", 7, out);
+    CHECK_FALSE(p.pending());
+    p.flush(out);
+    p.feed("\x1b[2y\x1b[20", 8, out);
+    p.flush(out);
+    p.feed("1~", 2, out);
+    std::string text;
+    for ( size_t i = 0; i < out.size(); ++i )
+    {
+	CHECK(out[i].kind == tui_key::ch);
+	text += out[i].ch;
+    }
+    CHECK(text == "x\x1b[2y");
+    out.clear();
+    p.feed("\x1b[A", 3, out);
+    REQUIRE(out.size() == 1u);
+    CHECK(out[0].kind == tui_key::up);
+}
+
 // A world exists only to intern the role/action vocabulary.
 static uinode option(world &w, const char *text, const char *action)
 {

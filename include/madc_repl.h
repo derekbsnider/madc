@@ -28,4 +28,16 @@ class InteractiveSession;
 int madc_repl_run(InteractiveSession &session, std::istream &in,
 		  std::ostream &out, bool terminal);
 
+namespace madc { namespace hub { class line_target; } }
+
+// The REPL on a terminal (plan §41.7a, D23): each entry is read by the line
+// editor on `term`, which holds the terminal only while it reads. Enter
+// asks the session (offer) and the entry runs as a cooked line's would;
+// shown values go to `out`. Returns the exit status at the end of input
+// (Ctrl-D on an empty entry), or -1 when `term` cannot begin the first
+// entry, which is the host's cue for cooked lines. The unit tests give it
+// a scripted target.
+int madc_repl_edit(InteractiveSession &session, madc::hub::line_target &term,
+		   std::ostream &out);
+
 #endif

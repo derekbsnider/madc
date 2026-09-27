@@ -362,11 +362,21 @@ inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
 // its read times out after an ESC, resolving it to the esc key. Modifier
 // parameters on arrows ("1;2A") resolve to the unmodified key in this
 // pilot.
+//
+// A byte of 0x80 and above is a `ch`: UTF-8 input arrives as the bytes of
+// its code points, and a printable run coalesces them into one text event
+// (plan §41.7a). A BRACKETED PASTE (xterm's mode 2004: CSI 200~ ... CSI
+// 201~, which a target turns on only where it wants it) is text, not keys:
+// every byte between the markers is a literal `ch`, a tab and a line break
+// included, and a CR or CR LF becomes one '\n'. A paste spans reads; only
+// its end marker ends it.
 class tui_keyparse
 {
-    enum class state : unsigned char { normal, esc, csi, ss3 };
+    enum class state : unsigned char { normal, esc, csi, ss3, paste };
     state _st;
     std::string _params;
+    std::string _paste_end;	// the part of the end marker matched so far
+    bool _paste_cr;		// the last pasted byte was CR (CR LF is one)
 
     static void emit(std::vector<tui_keyev> &out, tui_key k, char c = 0)
     {
@@ -397,10 +407,47 @@ class tui_keyparse
 	    default: return;		// unrecognized final: dropped
 	}
     }
+    // One pasted byte as text: a line break is '\n' whatever the terminal
+    // sent for it.
+    void paste_byte(unsigned char b, std::vector<tui_keyev> &out)
+    {
+	bool cr = _paste_cr;
+	_paste_cr = b == '\r';
+	if ( b == '\n' && cr )
+	    return;			// the LF of a CR LF
+	emit(out, tui_key::ch, b == '\r' ? '\n' : (char)b);
+    }
     void feed_byte(unsigned char b, std::vector<tui_keyev> &out)
     {
 	switch ( _st )
 	{
+	    case state::paste:
+	    {
+		static const char end_marker[] = "\x1b[201~";
+		if ( b == (unsigned char)end_marker[_paste_end.size()] )
+		{
+		    _paste_end += (char)b;
+		    if ( _paste_end.size() == sizeof(end_marker) - 1 )
+		    {
+			_paste_end.clear();
+			_st = state::normal;
+		    }
+		    return;
+		}
+		// A partial marker that went no further was pasted text; the
+		// byte that broke it may begin a marker itself.
+		if ( !_paste_end.empty() )
+		{
+		    std::string held;
+		    held.swap(_paste_end);
+		    for ( size_t i = 0; i < held.size(); ++i )
+			paste_byte((unsigned char)held[i], out);
+		    feed_byte(b, out);
+		    return;
+		}
+		paste_byte(b, out);
+		return;
+	    }
 	    case state::esc:
 		if ( b == '[' )
 		{
@@ -423,6 +470,13 @@ class tui_keyparse
 	    case state::csi:
 		if ( b >= 0x40 && b <= 0x7e )
 		{
+		    if ( b == '~' && _params == "200" )
+		    {
+			_st = state::paste;	// a bracketed paste begins
+			_paste_end.clear();
+			_paste_cr = false;
+			return;
+		    }
 		    resolve_csi(_params, (char)b, out);
 		    _st = state::normal;
 		}
@@ -460,14 +514,14 @@ class tui_keyparse
 	    emit(out, tui_key::ctrl, (char)('a' + b - 1));
 	else if ( b >= 0x1c && b <= 0x1f )
 	    emit(out, tui_key::ctrl, (char)(b + 0x40));	// ^\ ^] ^^ ^_
-	else if ( b >= 0x20 && b <= 0x7e )
-	    emit(out, tui_key::ch, (char)b);
-	// 0x00, >=0x80: dropped (byte-oriented pilot; UTF-8 glyph
-	// handling is the named residue).
+	else if ( b >= 0x20 )
+	    emit(out, tui_key::ch, (char)b);	// ASCII, and UTF-8's bytes
+	// 0x00: dropped. A grid still draws one byte per cell, so a
+	// multibyte glyph there is the grid's named residue.
     }
 
 public:
-    tui_keyparse() : _st(state::normal) {}
+    tui_keyparse() : _st(state::normal), _paste_cr(false) {}
 
     void feed(const char *bytes, size_t n, std::vector<tui_keyev> &out)
     {
@@ -475,12 +529,16 @@ public:
 	    feed_byte((unsigned char)bytes[i], out);
     }
     // Mid-sequence? The target polls briefly only then — an unambiguous
-    // batch pays zero added latency.
-    bool pending() const { return _st != state::normal; }
+    // batch pays zero added latency. A paste is not pending: it spans
+    // reads, and a pause inside it waits for no grace read.
+    bool pending() const
+	{ return _st != state::normal && _st != state::paste; }
     // The input paused: a pending bare ESC is the esc key; a partial
-    // CSI/SS3 is line noise and drops.
+    // CSI/SS3 is line noise and drops. A paste keeps going.
     void flush(std::vector<tui_keyev> &out)
     {
+	if ( _st == state::paste )
+	    return;
 	if ( _st == state::esc )
 	    emit(out, tui_key::esc);
 	_st = state::normal;

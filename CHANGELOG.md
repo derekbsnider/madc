@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### The REPL edits each entry on a terminal (D23, slice 1)
+
+On a terminal, `madc` now edits each entry the way Julia's REPL and readline
+do. The caret moves over the whole entry, lines included, with the arrows
+and Emacs keys: `^A`/`^E`, `esc b`/`esc f`, `^K`/`^U`/`^W`/`^Y`, `^T` and
+`^_` to undo. Enter runs the entry when it is complete, wherever the caret
+is, and otherwise starts a new line indented to the prompt's width. The
+third Enter in a row submits an unfinished entry, and Esc then Enter always
+starts a new line. Tab at the start of a line indents. Ctrl-C drops the
+entry and Ctrl-D on an empty one ends the session. A paste is typed text:
+each pasted line runs as it completes, and a pasted tab stays a tab. UTF-8
+input works. Output with no final newline no longer hides the next prompt.
+Piped input and `TERM=dumb` still read plain lines. History, and Tab
+completing names, are the next slices.
+
+Tests: `test_line_edit` (new), the editor cases in `test_repl_cli`, and the
+UTF-8 and paste cases of `test_tui_model`'s key parser.
+
 ### A REPL entry's reference to an array shows the array
 
 `int (&ra)[2] = arr;`, then `ra`, showed `<int32_t>` with a stray backend

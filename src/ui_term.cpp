@@ -54,6 +54,10 @@ using madc::hub::tui_diff_plan;
 // cursor hidden / SGR reset, cursor shown, primary screen.
 const char VT_ENTER_GRID[] = "\x1b[?1049h\x1b[2J\x1b[H\x1b[?25l";
 const char VT_LEAVE_GRID[] = "\x1b[0m\x1b[?25h\x1b[?1049l";
+// Line-mode entry/exit (plan §41.7a): the normal screen stays; only
+// bracketed paste (xterm mode 2004) turns on and off, as Julia's prompt does.
+const char VT_ENTER_LINE[] = "\x1b[?2004h";
+const char VT_LEAVE_LINE[] = "\x1b[?2004l";
 
 void cup(std::string &out, size_t row, size_t col)
 {
@@ -225,12 +229,14 @@ pid_t g_live_pid = 0;		// the OPENING process: a fork child that
 				// inherited atexit recovery (fork-Run)
 void close_live_target();
 
-class term_target : public madc::hub::tui_target
+class term_target : public madc::hub::tui_target,
+		    public madc::hub::line_target
 {
     struct termios   _saved;
     struct sigaction _saved_winch;
     bool	     _open;
     bool	     _suspended;
+    bool	     _line;	// the line mode holds the terminal
     size_t	     _rows, _cols;
     tui_keyparse     _parse;
 
@@ -248,7 +254,7 @@ class term_target : public madc::hub::tui_target
 	size_t off = 0;
 	while ( off < s.size() )
 	{
-	    ssize_t n = write(STDOUT_FILENO, s.data() + off, s.size() - off);
+	    ssize_t n = ::write(STDOUT_FILENO, s.data() + off, s.size() - off);
 	    if ( n <= 0 )
 	    {
 		if ( n < 0 && errno == EINTR )
@@ -275,12 +281,14 @@ class term_target : public madc::hub::tui_target
     }
 
 public:
-    term_target() : _open(false), _suspended(false), _rows(24), _cols(80) {}
+    term_target() : _open(false), _suspended(false), _line(false),
+		    _rows(24), _cols(80) {}
     ~term_target() { close(); }
 
-    // Grid-mode entry/exit, shared by open/close and suspend/resume
-    // (one implementation — the two pairs differ only in bookkeeping).
-    bool enter_grid_mode()
+    // Raw keys and the resize signal: the half both screen modes share.
+    // `when` is tcsetattr's: the grid flushes type-ahead (TCSAFLUSH), the
+    // line mode keeps it (TCSADRAIN), as a line editor must.
+    bool enter_raw(int when)
     {
 	struct termios raw = _saved;
 	// Raw mode by explicit flags (termios(3)); IXON off is the point
@@ -294,7 +302,7 @@ public:
 	raw.c_cflag |= CS8;
 	raw.c_cc[VMIN] = 1;
 	raw.c_cc[VTIME] = 0;
-	if ( tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0 )
+	if ( tcsetattr(STDIN_FILENO, when, &raw) != 0 )
 	{
 	    fprintf(stderr, "ui: tcsetattr failed\n");
 	    return false;
@@ -304,6 +312,21 @@ public:
 	sa.sa_handler = winch_handler;
 	sigaction(SIGWINCH, &sa, &_saved_winch);
 	query_size(_rows, _cols);
+	return true;
+    }
+
+    void leave_raw(int when)
+    {
+	tcsetattr(STDIN_FILENO, when, &_saved);
+	sigaction(SIGWINCH, &_saved_winch, (struct sigaction *)0);
+    }
+
+    // Grid-mode entry/exit, shared by open/close and suspend/resume
+    // (one implementation — the two pairs differ only in bookkeeping).
+    bool enter_grid_mode()
+    {
+	if ( !enter_raw(TCSAFLUSH) )
+	    return false;
 	emit(VT_ENTER_GRID);
 	return true;
     }
@@ -311,9 +334,51 @@ public:
     void leave_grid_mode()
     {
 	emit(VT_LEAVE_GRID);
-	tcsetattr(STDIN_FILENO, TCSAFLUSH, &_saved);
-	sigaction(SIGWINCH, &_saved_winch, (struct sigaction *)0);
+	leave_raw(TCSAFLUSH);
     }
+
+    // The line mode (plan §41.7a): raw keys on the normal screen, held
+    // while one entry is read.
+    virtual bool begin(size_t &cols)
+    {
+	if ( g_live )
+	{
+	    fprintf(stderr, "ui: a terminal target is already open\n");
+	    return false;
+	}
+	if ( tcgetattr(STDIN_FILENO, &_saved) != 0 )
+	{
+	    fprintf(stderr, "ui: tcgetattr failed\n");
+	    return false;
+	}
+	if ( !enter_raw(TCSADRAIN) )
+	    return false;
+	emit(VT_ENTER_LINE);
+	_line = true;
+	g_live = this;
+	g_live_pid = getpid();
+	static bool exit_hooked = false;
+	if ( !exit_hooked )
+	{
+	    exit_hooked = true;
+	    atexit(close_live_target);
+	}
+	cols = _cols;
+	return true;
+    }
+
+    virtual void end()
+    {
+	if ( !_line )
+	    return;
+	emit(VT_LEAVE_LINE);
+	leave_raw(TCSADRAIN);
+	_line = false;
+	g_live = 0;
+    }
+
+    virtual void write(const std::string &bytes) { emit(bytes); }
+    virtual size_t columns() { return _cols; }
 
     virtual bool open(size_t &rows, size_t &cols)
     {
@@ -351,6 +416,7 @@ public:
 
     virtual void close()
     {
+	end();
 	if ( !_open )
 	    return;
 	if ( !_suspended )		// suspended: already restored
@@ -393,7 +459,7 @@ public:
 
     virtual bool read_keys(std::vector<tui_keyev> &out)
     {
-	if ( !_open || _suspended )
+	if ( (!_open || _suspended) && !_line )
 	    return false;
 	for (;;)
 	{
@@ -502,6 +568,18 @@ madc::hub::tui_target *make_term_target()
     return new term_target();
 }
 
+// The line mode edits on a VT terminal only: both ends a tty, and a TERM
+// that names one (readline's and Julia's dumb-terminal rule).
+madc::hub::line_target *make_line_target()
+{
+    if ( !isatty(STDIN_FILENO) || !isatty(STDOUT_FILENO) )
+	return 0;
+    const char *term = getenv("TERM");
+    if ( !term || !*term || strcmp(term, "dumb") == 0 )
+	return 0;
+    return new term_target();
+}
+
 } // namespace
 
 #else // _WIN32 — the Win10+ VT console twin (owner direction 2026-08-27)
@@ -528,12 +606,14 @@ term_target *g_live = 0;	// the one open target, for atexit recovery
 void close_live_target();	// no fork on Windows — the POSIX pid guard
 				// holds trivially (recon item 5)
 
-class term_target : public madc::hub::tui_target
+class term_target : public madc::hub::tui_target,
+		    public madc::hub::line_target
 {
     HANDLE _hin, _hout;
     DWORD  _saved_in, _saved_out;
     UINT   _saved_cp_in, _saved_cp_out;
     bool   _open, _suspended;
+    bool   _line;		// the line mode holds the console
     size_t _rows, _cols;
     tui_keyparse _parse;
 
@@ -596,16 +676,18 @@ public:
     term_target() : _hin(INVALID_HANDLE_VALUE), _hout(INVALID_HANDLE_VALUE),
 		    _saved_in(0), _saved_out(0),
 		    _saved_cp_in(0), _saved_cp_out(0),
-		    _open(false), _suspended(false), _rows(24), _cols(80) {}
+		    _open(false), _suspended(false), _line(false),
+		    _rows(24), _cols(80) {}
     ~term_target() { close(); }
 
-    // Grid-mode entry/exit, shared by open/close and suspend/resume —
-    // the termios twins (recon item 1). Raw mode: line/echo/processed
-    // off, VT INPUT on (the console then DELIVERS VT byte sequences, so
-    // the shared tui_keyparse consumes them unchanged — recon item 2);
-    // output: VT processing on + newline auto-return off (the OPOST-off
-    // twin). SetConsoleMode failing = no VT console (pre-Win10-1809).
-    bool enter_grid_mode()
+    // Raw console modes: the half both screen modes share — the termios
+    // twins (recon item 1). Raw mode: line/echo/processed off, VT INPUT
+    // on (the console then DELIVERS VT byte sequences, so the shared
+    // tui_keyparse consumes them unchanged — recon item 2); output: VT
+    // processing on + newline auto-return off (the OPOST-off twin).
+    // SetConsoleMode failing = no VT console (pre-Win10-1809). A mode
+    // change leaves type-ahead in the input buffer.
+    bool enter_raw()
     {
 	DWORD rawin = _saved_in, rawout = _saved_out;
 	rawin &= ~(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT
@@ -629,13 +711,11 @@ public:
 	SetConsoleCP(CP_UTF8);
 	SetConsoleOutputCP(CP_UTF8);
 	query_size(_rows, _cols);
-	emit(VT_ENTER_GRID);
 	return true;
     }
 
-    void leave_grid_mode()
+    void leave_raw()
     {
-	emit(VT_LEAVE_GRID);
 	SetConsoleMode(_hin, _saved_in);
 	SetConsoleMode(_hout, _saved_out);
 	if ( _saved_cp_in )
@@ -643,6 +723,68 @@ public:
 	if ( _saved_cp_out )
 	    SetConsoleOutputCP(_saved_cp_out);
     }
+
+    // Grid-mode entry/exit, shared by open/close and suspend/resume.
+    bool enter_grid_mode()
+    {
+	if ( !enter_raw() )
+	    return false;
+	emit(VT_ENTER_GRID);
+	return true;
+    }
+
+    void leave_grid_mode()
+    {
+	emit(VT_LEAVE_GRID);
+	leave_raw();
+    }
+
+    // The line mode (plan §41.7a): raw keys on the normal screen, held
+    // while one entry is read.
+    virtual bool begin(size_t &cols)
+    {
+	if ( g_live )
+	{
+	    fprintf(stderr, "ui: a terminal target is already open\n");
+	    return false;
+	}
+	_hin = GetStdHandle(STD_INPUT_HANDLE);
+	_hout = GetStdHandle(STD_OUTPUT_HANDLE);
+	if ( _hin == INVALID_HANDLE_VALUE || _hout == INVALID_HANDLE_VALUE
+	     || !GetConsoleMode(_hin, &_saved_in)
+	     || !GetConsoleMode(_hout, &_saved_out) )
+	{
+	    fprintf(stderr, "ui: the line editor needs a console on"
+			    " stdin/stdout\n");
+	    return false;
+	}
+	if ( !enter_raw() )
+	    return false;
+	emit(VT_ENTER_LINE);
+	_line = true;
+	g_live = this;
+	static bool exit_hooked = false;
+	if ( !exit_hooked )
+	{
+	    exit_hooked = true;
+	    atexit(close_live_target);
+	}
+	cols = _cols;
+	return true;
+    }
+
+    virtual void end()
+    {
+	if ( !_line )
+	    return;
+	emit(VT_LEAVE_LINE);
+	leave_raw();
+	_line = false;
+	g_live = 0;
+    }
+
+    virtual void write(const std::string &bytes) { emit(bytes); }
+    virtual size_t columns() { return _cols; }
 
     virtual bool open(size_t &rows, size_t &cols)
     {
@@ -680,6 +822,7 @@ public:
 
     virtual void close()
     {
+	end();
 	if ( !_open )
 	    return;
 	if ( !_suspended )		// suspended: already restored
@@ -721,7 +864,7 @@ public:
 
     virtual bool read_keys(std::vector<tui_keyev> &out)
     {
-	if ( !_open || _suspended )
+	if ( (!_open || _suspended) && !_line )
 	    return false;
 	for (;;)
 	{
@@ -820,6 +963,19 @@ madc::hub::tui_target *make_term_target()
     return new term_target();
 }
 
+// The line mode edits on a console only (GetConsoleMode succeeding is the
+// isatty twin); a console without VT mode refuses at begin().
+madc::hub::line_target *make_line_target()
+{
+    DWORD mode = 0;
+    HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+    if ( hin == INVALID_HANDLE_VALUE || hout == INVALID_HANDLE_VALUE
+	 || !GetConsoleMode(hin, &mode) || !GetConsoleMode(hout, &mode) )
+	return 0;
+    return new term_target();
+}
+
 } // namespace
 
 #endif // _WIN32
@@ -834,6 +990,11 @@ void register_builtin_tui_targets()
 	return;
     done = true;
     register_tui_target("term", make_term_target);
+}
+
+line_target *create_line_target()
+{
+    return make_line_target();
 }
 
 } // namespace hub
