@@ -27539,8 +27539,7 @@ void CirBuilder::emit_static_local_once(node_t items, node_t init_items,
 	// static long long G;	(zero: static storage)
 	node_t gspec = list();
 	append(gspec, simple(N_STATIC, origin));
-	append(gspec, simple(N_LONG, origin));
-	append(gspec, simple(N_LONG, origin));
+	append_i64(gspec, origin);
 	node_t gdecl = simple(N_SPEC_DECL, origin);
 	append(gdecl, node1(N_SHARE, gspec));
 	append(gdecl, node2(N_DECL, id(guard, origin), list()));
