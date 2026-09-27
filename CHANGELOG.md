@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### REPL commands: `%type`, `%help` (§37 item 8, slice 1)
+
+An entry that starts with `%` or `:` and a name is a session command, as in
+IPython. `%type EXPR` (or `:type EXPR`) prints the expression's type without
+running it, for example `int (int)` for a function, `int [3]` for an array,
+`std::string` in C++ and `var` in the madc dialect. `%help` lists the
+commands, and an unknown one is refused. Tab completes a command's name, and
+then names in its argument. `::x` and a continued line such as `%b; }` stay
+C.
+
+Tests: the command cases in `test_repl_session` and `test_repl_cli`.
+
 ### Tab completes members after `.`, `->` and `::` (D23, slice 4)
 
 After `p.` or `pp->`, Tab lists the object's fields, public methods and

@@ -2798,6 +2798,21 @@ With no program file, the tail chooses in this order:
   - command-name completion.
 - `test_repl_cli`: `?sq` and `%type` at the editor.
 
+**Built, slice 1 (2026-09-27): the command front and `%type`.**
+- As designed. `InteractiveSession::enter` recognizes a command before the parse (`command_text`), and `run_command` dispatches on the code the registry gives (`command_rows`, `InteractiveSession::Command`).
+  - A command is taken at once and numbered. Its output is `shown()`, so both REPL loops print it with no change.
+  - The name follows the REPL's one word rule (`text_buffer::word_byte`), and cannot start with a digit.
+- **`%type`:** `type_command` parses the blanked argument inside an `EntryTransaction`. `keep_entry_value` records `entry_value_type`, and it is spelled before the rollback.
+  - An array's type comes from `array_operand_type`, since an operand's `datadef()` is madc's flattened element: `int [3]`.
+- **The type spelling** is `TypeSpeller` (`include/madc_type_spelling.h`, `src/madc_type_spelling.cpp`), moved whole from `cir_dump.cpp`. `CirBuilder`'s five words are one-line forwards, so its call sites are unchanged. The alias walk is read-only.
+  - It gained a function type (`int (int)`), an array (`int [3]`), and the madc carrier spelled `var` in the dialect.
+- **Measured** (`tmp/repl/s8/cmd_probe.cpp`, `cmd1.txt`; on a pty `mc_cmd.json`):
+  - `%type`: `x` → `int`, `x * 2.5` → `double`, `&p` → `struct Point *`, `sq` → `int (int)`, `arr` → `int [3]`, `fp` → `int (*)(int)`, `s` → `std::string`, `x == 2` → `bool` in C++, `v` → `var` in madc;
+  - `%type bump()` leaves `calls` at 0;
+  - `%ty` Tab → `%type`;
+  - `::x` and a body line `%b; }` stay C.
+- **A divergence, stated:** `%type "abc"` prints `char *`, madc's model of a string literal (AGENTS: literals are `const char *`). g++'s `decltype` gives `const char (&)[4]`, and gcc's `typeof` `char [4]`. `sizeof("abc")` is 4, from its own token-level arm, and `array_operand_type` does not answer for a literal.
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.

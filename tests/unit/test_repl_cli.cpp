@@ -369,3 +369,27 @@ TEST_CASE("Tab lists a struct's fields after `.` at the line editor (D23)")
     CHECK(out.str() == "2\n");
     CHECK(term.painted.find("x  y\r\n") != std::string::npos);
 }
+
+// §37 item 8 (plan §41.8a, slice 1): a command reads the same off a terminal
+// and at the line editor, and a continuation line is never one.
+TEST_CASE("%type answers off a terminal and at the line editor (§37, D13)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    std::istringstream in("int x = 10;\n%type x * 2.5\n:type &x\n"
+			  "int g(int a, int b)\n{ return a\n%b; }\ng(7, 4)\n");
+    std::ostringstream out;
+    CHECK(madc_repl_run(s, in, out, false) == 0);
+    CHECK(out.str() == "double\nint *\n3\n");	// `%b` continuing g's body is C
+    CHECK(err.str().empty());
+
+    InteractiveSession e;
+    REQUIRE(e.begin("--std=c17"));
+    scripted_terminal term({ "int sq(int n) { return n * n; }\r",
+			     "%type sq(2)\r", "%ty\t sq\r", "\x04" });
+    std::ostringstream eout;
+    CHECK(madc_repl_edit(e, term, eout, "") == 0);
+    CHECK(eout.str() == "int\nint (int)\n");	// Tab completed `%type`
+}

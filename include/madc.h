@@ -6988,6 +6988,10 @@ public:
     std::vector<SessionResult> session_results;
     unsigned entry_number = 0;		// the entry being parsed: REPL[N]
     Variable *entry_result_object = NULL;	// its result, while it parses and runs
+    // The final expression's value type, recorded before any rule about
+    // keeping the value (an array's, a function designator's too): what
+    // `%type` prints (plan §41.8a). NULL when no final expression shows.
+    DataDef *entry_value_type = NULL;
     bool entry_result_alias = false;	// that result points at the value
     std::string entry_result_not_kept;	// or why its value is not kept
     unsigned entry_result_serial = 0;	// __madc_result_K, never reused

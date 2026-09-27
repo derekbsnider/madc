@@ -78181,6 +78181,7 @@ void Program::begin_entry()
     entry_result_object = NULL;
     entry_result_alias = false;
     entry_result_not_kept.clear();
+    entry_value_type = NULL;
 }
 
 // A parsed unit becomes one of the session's: its file-scope statics become
@@ -78360,6 +78361,10 @@ static EntryValueRoot entry_value_root(TokenBase *e)
 TokenBase *Program::keep_entry_value(TokenBase *value, TokenBase *loc)
 {
     DataDef *vt = operand_value_datadef(value);
+    // What `%type` prints: the value's type, an array's with its extents
+    // (the operand's datadef() is madc's flattened element).
+    DataDef *at = array_operand_type(value);
+    entry_value_type = at ? at : vt;
     // A function designator's value is its pointer ([conv.func]); asked of
     // the designator, is_void() says yes (BUGS.md B40).
     if ( vt && vt->as_funcdef_dd() )
@@ -78368,7 +78373,7 @@ TokenBase *Program::keep_entry_value(TokenBase *value, TokenBase *loc)
 	return value;
     // An array is kept once `&arr` has the array's pointer type (B50). A
     // reference to one denotes it too: its value type is the array.
-    if ( array_operand_type(value) || vt->unqualified()->as_carray_dd() )
+    if ( at || vt->unqualified()->as_carray_dd() )
     {
 	entry_result_not_kept = "an array is kept once its address has the"
 	    " array's type (BUGS.md B50)";

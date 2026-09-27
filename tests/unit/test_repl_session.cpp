@@ -1916,3 +1916,92 @@ TEST_CASE("completion: members after . and ->, and a scope's after ::")
     REQUIRE(m.submit("total.count()"));
     CHECK(m.shown() == "1");
 }
+
+// §37 item 8 (plan §41.8a, slice 1): the command front and `%type`. A
+// command is recognized at an entry's start, taken and numbered like any
+// input, and `%type` parses its argument as an attempt that rolls back and
+// never runs.
+TEST_CASE("session commands: %help, %type, an unknown command, and what stays C")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("int x = 10;"));
+    REQUIRE(c.submit("int sq(int n) { return n * n; }"));
+    REQUIRE(c.submit("int calls = 0;"));
+    REQUIRE(c.submit("int bump(void) { return ++calls; }"));
+    REQUIRE(c.submit("struct Point { int x; int y; };"));
+    REQUIRE(c.submit("struct Point p = { 1, 2 };"));
+    REQUIRE(c.submit("int arr[3];"));
+    REQUIRE(c.submit("%help"));
+    CHECK(c.shown().find("%type EXPR") != std::string::npos);
+    CHECK(c.submitted() == 8u);			// a command takes REPL[N]
+    struct { const char *entry, *type; } types[] = {
+	{ "%type x", "int" },
+	{ ":type x * 2.5", "double" },		// `:` is the alias (D13)
+	{ "  %type sq(x)", "int" },		// blanks before it
+	{ "%type &x", "int *" },
+	{ "%type p", "struct Point" },
+	{ "%type &p", "struct Point *" },
+	{ "%type sq", "int (int)" },		// a function designator
+	{ "%type arr", "int [3]" },
+	{ "%type bump()", "int" },
+    };
+    for ( size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i )
+    {
+	CAPTURE(types[i].entry);
+	REQUIRE(c.submit(types[i].entry));
+	CHECK(c.shown() == types[i].type);
+    }
+    // Never run: bump's side effect is absent, and the next entry shows.
+    REQUIRE(c.submit("calls"));
+    CHECK(c.shown() == "0");
+    // Refused: an undeclared name at the column typed, a statement, an
+    // unknown command.
+    CHECK_FALSE(c.submit("%type nope + 1"));
+    CHECK(err.str().find(":1:10: ") != std::string::npos);
+    CHECK_FALSE(c.submit("%type x;"));
+    CHECK(err.str().find("%type takes an expression") != std::string::npos);
+    CHECK_FALSE(c.submit("%nosuch"));
+    CHECK(err.str().find("unknown command '%nosuch'") != std::string::npos);
+    // An attempt leaves nothing: a declaration it parses is gone (a
+    // declaration without its `;` shows its value, D10).
+    REQUIRE(c.submit("%type int y = 5"));
+    CHECK(c.shown() == "int");
+    CHECK_FALSE(c.submit("y"));
+    // What stays C: a global qualifier, and a continuation that starts
+    // with `%name` (the entry's first line decides).
+    REQUIRE(c.submit("int g(int a, int b)\n{ return a\n%b; }"));
+    REQUIRE(c.submit("g(7, 4)"));
+    CHECK(c.shown() == "3");
+
+    // Completion: the command names, then the argument as an entry.
+    size_t start = 0;
+    CHECK(complete_at_end(c, "%ty", &start) == std::vector<std::string>{ "type" });
+    CHECK(start == 1u);
+    CHECK(complete_at_end(c, ":he") == std::vector<std::string>{ "help" });
+    CHECK(complete_at_end(c, "%type bu", &start) == std::vector<std::string>{ "bump" });
+    CHECK(start == 6u);
+
+    InteractiveSession p;
+    REQUIRE(p.begin("--std=c++17"));
+    REQUIRE(p.submit("#include <string>"));
+    REQUIRE(p.submit("std::string s = \"abc\";"));
+    REQUIRE(p.submit("int (*fp)(int) = nullptr;"));
+    REQUIRE(p.submit("int x = 1;"));
+    REQUIRE(p.submit("%type s"));
+    CHECK(p.shown() == "std::string");		// the source's name
+    REQUIRE(p.submit("%type fp"));
+    CHECK(p.shown() == "int (*)(int)");
+    REQUIRE(p.submit("%type x == 2"));
+    CHECK(p.shown() == "bool");
+    REQUIRE(p.submit("::x"));			// C++'s global qualifier
+    CHECK(p.shown() == "1");
+
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    REQUIRE(m.submit("var v = 5;"));
+    REQUIRE(m.submit("%type v"));
+    CHECK(m.shown() == "var");			// the dialect's carrier
+}

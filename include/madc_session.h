@@ -95,9 +95,15 @@ public:
     Program &program() { return *prog; }
     // The last entry's shown value (D10, plan §41.4a): an entry whose final
     // statement omits its `;` shows it, in re-enterable syntax (`30`,
-    // `"abc"`, `(int *) 0x7ffd...`). Empty when the entry showed nothing. The
-    // core renders nothing: a client prints it.
+    // `"abc"`, `(int *) 0x7ffd...`). After a command (plan §41.8a), the
+    // command's output. Empty when the entry showed nothing. The core
+    // renders nothing: a client prints it.
     const std::string &shown() const;
+
+    // The session's commands (plan §41.8a, D13/D24): an entry whose first
+    // line starts with `%name` or `:name` is a command, never C. The typed
+    // name becomes one of these codes once, at input.
+    enum class Command : unsigned char { help, type };
     // The entries linked into the live context.
     unsigned entries() const { return entry_count; }
     // The entries submitted, refused ones included: entry N is REPL[N].
@@ -106,10 +112,16 @@ public:
 private:
     Offered enter(const std::string &text, bool final, const TakenHook &taken);
     void render_parse_diagnostics();
+    // A command entry's run: its output goes to command_output. False when
+    // it is refused (its diagnostics are the Program's).
+    bool run_command(const std::string &text, const std::string &name);
+    bool type_command(const std::string &expression, const std::string &name);
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;
     unsigned entry_count;
     unsigned submit_count;
+    std::string command_output;		// the last command's output
+    bool showed_command;		// the last entry was a command
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };

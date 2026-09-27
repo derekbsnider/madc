@@ -10,6 +10,8 @@
  *     (CirJitSession::begin_live / append).
  */
 
+#include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -33,16 +35,97 @@
 #include "madc.h"
 #include "madc_cir.h"
 #include "madc_session.h"
+#include "madc_type_spelling.h"
+#include "madcdis/text_buffer.h"	// the one word rule (word_byte)
+
+// The command registry (plan §41.8a, D13/D24): one row per command. A typed
+// name becomes its code once, at input (command_named); what follows
+// dispatches on the code.
+namespace {
+
+struct CommandRow
+{
+    const char *name;
+    InteractiveSession::Command code;
+    const char *usage;		// as %help prints it
+    const char *summary;
+};
+
+const CommandRow command_rows[] = {
+    { "help", InteractiveSession::Command::help, "%help",
+      "list the session's commands" },
+    { "type", InteractiveSession::Command::type, "%type EXPR",
+      "the type of an expression, which is not run" },
+};
+
+const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
+
+const CommandRow *command_named(const std::string &name)
+{
+    for ( size_t i = 0; i < command_count; ++i )
+	if ( name == command_rows[i].name )
+	    return &command_rows[i];
+    return NULL;
+}
+
+// Where a command stands in an entry (D13): its first line, after blanks,
+// starts with `%` or `:` and at once a name. So `::x` and the `%:` digraph
+// stay C, and so does every continuation line.
+struct CommandText
+{
+    size_t prefix;	// the `%` or `:`; npos when the text is no command
+    size_t name_end;	// past the name
+    size_t line_end;	// the first line's end
+    CommandText() : prefix(std::string::npos), name_end(0), line_end(0) {}
+    bool is_command() const { return prefix != std::string::npos; }
+    std::string name(const std::string &text) const
+    {
+	return text.substr(prefix + 1, name_end - prefix - 1);
+    }
+};
+
+CommandText command_text(const std::string &text)
+{
+    CommandText c;
+    size_t i = text.find_first_not_of(" \t");
+    if ( i == std::string::npos || i + 1 >= text.size()
+	 || (text[i] != '%' && text[i] != ':') )
+	return c;
+    // The name is the REPL's one word rule's run (text_buffer::word_byte,
+    // as completion and word motion read a word), not starting with a digit.
+    size_t e = i + 1;
+    if ( !madc::hub::text_buffer::word_byte(text[e])
+	 || isdigit((unsigned char)text[e]) )
+	return c;
+    while ( e < text.size() && madc::hub::text_buffer::word_byte(text[e]) )
+	++e;
+    c.prefix = i;
+    c.name_end = e;
+    c.line_end = text.find('\n', e);
+    if ( c.line_end == std::string::npos )
+	c.line_end = text.size();
+    return c;
+}
+
+// A command's argument, everything before it blanked, so a diagnostic cites
+// the column the user typed.
+std::string command_argument(const std::string &text, const CommandText &c)
+{
+    return std::string(c.name_end, ' ')
+	 + text.substr(c.name_end, c.line_end - c.name_end);
+}
+
+} // namespace
 
 InteractiveSession::InteractiveSession()
     : prog(new Program()), jit(new CirJitSession()), entry_count(0),
-      submit_count(0)
+      submit_count(0), showed_command(false)
 {
 }
 
 InteractiveSession::InteractiveSession(std::unique_ptr<Program> configured)
     : prog(std::move(configured)), jit(new CirJitSession()), entry_count(0),
-      submit_count(0)
+      submit_count(0), showed_command(false)
 {
 }
 
@@ -132,6 +215,19 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     // everything it did to the Program, as Julia leaves nothing of an input
     // that fails to parse. Its diagnostics stay. An attempt the client goes
     // on typing rolls back the same way.
+    showed_command = false;
+    if ( command_text(text).is_command() )
+    {
+	// A command is one line, complete at its end (plan §41.8a): taken at
+	// once, numbered and kept in history like any input (IPython's
+	// magics), and it keeps no result (D12).
+	if ( taken )
+	    taken();
+	++submit_count;
+	bool ok = run_command(text, name);
+	render_parse_diagnostics();
+	return Offered{ OfferState::Taken, ok };
+    }
     Program::EntryTransaction entry(*prog);
     prog->entry_number = submit_count + 1;
     Program::EntryVerdict verdict = prog->parse_entry(text, name);
@@ -160,6 +256,26 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 std::vector<std::string> InteractiveSession::complete(const std::string &text,
 						      size_t caret, size_t &start)
 {
+    CommandText c = command_text(text);
+    if ( c.is_command() && caret <= c.line_end )
+    {
+	// The command's own name: the registry's names that start with it.
+	if ( caret <= c.name_end )
+	{
+	    std::vector<std::string> out;
+	    start = c.prefix + 1;
+	    if ( caret < start )
+		return out;
+	    const std::string typed = text.substr(start, caret - start);
+	    for ( size_t i = 0; i < command_count; ++i )
+		if ( strncmp(command_rows[i].name, typed.c_str(), typed.size()) == 0 )
+		    out.push_back(command_rows[i].name);
+	    std::sort(out.begin(), out.end());
+	    return out;
+	}
+	// Its argument completes as an entry, the command blanked.
+	return prog->complete_entry(command_argument(text, c), caret, start);
+    }
     return prog->complete_entry(text, caret, start);
 }
 
@@ -208,7 +324,75 @@ bool InteractiveSession::run_main(int argc, char **argv, int *status)
 
 const std::string &InteractiveSession::shown() const
 {
-    return prog->entry_shown;
+    return showed_command ? command_output : prog->entry_shown;
+}
+
+bool InteractiveSession::run_command(const std::string &text,
+				     const std::string &name)
+{
+    CommandText c = command_text(text);
+    command_output.clear();
+    showed_command = true;
+    prog->begin_entry();		// no earlier entry's diagnostics or display
+    const CommandRow *row = command_named(c.name(text));
+    if ( !row )
+    {
+	// IPython: "UsageError: Line magic function `%x` not found."
+	prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			     Program::DiagnosticPhase::parser,
+			     "unknown command '"
+			     + text.substr(c.prefix, c.name_end - c.prefix)
+			     + "' (%help lists them)",
+			     prog->intern_file(name), 1, (int)c.prefix + 1);
+	return false;
+    }
+    switch ( row->code )
+    {
+	case Command::help:
+	{
+	    // Each command's usage and what it does; `:` reaches them too.
+	    size_t width = 0;
+	    for ( size_t i = 0; i < command_count; ++i )
+		width = std::max(width, strlen(command_rows[i].usage));
+	    for ( size_t i = 0; i < command_count; ++i )
+		command_output += std::string(command_rows[i].usage)
+		    + std::string(width + 2 - strlen(command_rows[i].usage), ' ')
+		    + command_rows[i].summary + "\n";
+	    command_output += "Each is also written with `:` (`:type EXPR`).";
+	    return true;
+	}
+	case Command::type:
+	    return type_command(command_argument(text, c), name);
+    }
+    return false;
+}
+
+// `%type EXPR` (plan §41.8a): the expression's type, never run. It is parsed
+// as the session's next entry inside a transaction that rolls back, never
+// translated or linked, and the parse's final-expression capture records its
+// value type, which is spelled before the rollback (the type may be one the
+// attempt made).
+bool InteractiveSession::type_command(const std::string &expression,
+				      const std::string &name)
+{
+    Program::EntryTransaction attempt(*prog);
+    prog->entry_number = submit_count;
+    Program::EntryVerdict verdict = prog->parse_entry(expression, name);
+    if ( verdict != Program::EntryVerdict::Complete
+      && verdict != Program::EntryVerdict::CompleteExtendable )
+	return false;		// its diagnostics say why
+    if ( !prog->entry_final_semicolon_omitted || !prog->entry_value_type )
+    {
+	size_t at = expression.find_first_not_of(' ');
+	prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			     Program::DiagnosticPhase::parser,
+			     "%type takes an expression, without a `;`",
+			     prog->intern_file(name), 1,
+			     at == std::string::npos ? 1 : (int)at + 1);
+	return false;
+    }
+    command_output = TypeSpeller(prog.get()).shown(prog->entry_value_type);
+    return true;
 }
 
 void *InteractiveSession::function(const char *name)
