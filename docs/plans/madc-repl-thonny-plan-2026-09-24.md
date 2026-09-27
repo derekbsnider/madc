@@ -2698,6 +2698,106 @@ With no program file, the tail chooses in this order:
 - **Measured on a pty** (`mc9`): `p.` then Tab Tab lists `x  y`, and `p.y` runs as 4; `geometry::a` then Tab completes `area`, which runs as 2.
 - **Not in this commit:** completing the `%` / `:` command names (slice 4's other half in the slice list). It needs D24's command registry, which comes with §37 item 8.
 
+### 41.8a Session commands, `?name` and `%type` (§37 item 8), designed against the code (2026-09-27)
+
+§37 item 8: `?name` and `:type` work. It needs the command front D13 and D24 describe, so that comes first. The command-name completion left over from §41.7a's slice 4 rides it.
+
+**The precedents, measured on a pty** (`tmp/repl/s8/jl_help.json`, `py_help.json`; notes in `tmp/repl/s8/oracles.md`):
+- **Julia 1.13:**
+  - `?sq` over two methods prints "sq is a Function.", then each method with its location: `[1] sq(n::Float64)` `@ REPL[3]:1`.
+  - `?x` prints "x is of type Int64.".
+  - An unknown name gets "Binding nosuchname does not exist.".
+  - `?` alone at an empty prompt switches the prompt to `help?>`, and Backspace on the empty help prompt switches back.
+- **IPython 9.17:**
+  - `?sq` prints fields: `Signature: sq(n)`, `Docstring:`, `File:`, `Type: function`. `??sq` adds `Source:`, and `%pinfo sq` is the same as `?sq`.
+  - `?x` prints `Type: int` and `String form: 10`.
+  - An unknown name gets "Object `nosuchname` not found.", and an unknown magic "UsageError: Line magic function `%nosuchmagic` not found.".
+  - A magic is an input like any other: it takes an `In [N]` number.
+- **Neither has a type query that does not run the expression:** Julia's `typeof(sq(x))` calls `sq`. `:type` is the plan's (§7.5, GHCi's name). Its C and C++ adaptation is `decltype` and `typeof`, whose operand is never evaluated, so `%type expr` never runs anything.
+
+**What the code has** (recon 2026-09-27):
+- **No command handling anywhere.** Both REPL loops (`madc_repl_edit`, `madc_repl_run`) hand every entry to `InteractiveSession::enter`, which parses it as C. Both print a result through the one `print_shown`, so a command handled in `enter` reaches both loops unchanged.
+- **Registries:**
+  - `verb_table` (`include/madcdis/verbs.h`) is the hub's registry of world MUTATIONS: its bindings take a world and credentials, and the engine ships none. A session command is a query or action over an `InteractiveSession`, a different concept, so it does not register there.
+  - madcide's `colon_command` (`tools/madcide/madcide_core.inc`) is a chain of string compares, which D24 moves onto the command registry. That move is a later slice (below): madcide is dialect code and needs the registry exposed to scripts.
+- **The type's spelling:** `CirBuilder::dump_show_type_word` and its family (`dump_class_type_word`, `type_alias_spelling`, `strip_inline_namespaces`, `dump_scalar_type_word`) spell a type the way the entry's language writes it (`int *`, `struct P`, `std::string`, `int (*)(int)`). Every one reads only Program state. It is the "human-readable type renderer" §8's code check asked for.
+- **The type of an expression without running it:** the parser's final-expression capture, `Program::keep_entry_value`, reads `operand_value_datadef(value)` of the entry's final expression (D10). The `typeof` and `decltype` arms read `parseExpression(...)->datadef()` the same way.
+- **Signatures:** no function spells a function's signature (no "candidate:" or "declared here" diagnostic exists). `Method::parameters` keeps the parameter names; `FuncDef::parameters` holds only types, and hidden slots (`__this`, `__retbuf`) ride in both.
+- **Locations:**
+  - a file-scope object or type records `TopDecl` (`file`, `line`, `origin`), found by identity;
+  - `Variable` and `FuncDef` record none;
+  - a function's definition token (`TokenFunc`) has `file`/`line`, and a header declaration keeps `FuncDef::decl_file`.
+- **Comments:** the lexer drops them (`getRealToken` keeps trivia only under `keep_trivia`, off for the REPL). So doc comments (D15) need their own slice.
+
+**The design:**
+- **Recognition (D13, D15).** An entry is a command when its first line, after blanks, starts with `%` or `:` followed by an identifier character, or with `?`.
+  - C never starts a statement that way. `::x` (`:` then `:`) and the `%:` digraph (`%` then `:`) stay C, as does any continuation line.
+  - Recognized in `InteractiveSession::enter`, before the parse, so both REPL loops and madcide's panel get it.
+  - A command is one line. It is complete at its end, so `offer` takes it at once.
+  - It is an input like any other (IPython): it takes the next `REPL[N]` number, it goes into history, and it keeps no result (D12's `_N` for it says REPL[N] showed nothing).
+- **The registry (D24, enum-over-strings).** One table in `madc_session.cpp`: `{ spelling, InteractiveSession::command code, argument, one-line summary }`.
+  - The typed name becomes the enum code once, at input; dispatch is a `switch` on the code.
+  - `%` and `:` reach the same table (D13). `?name` is `%pinfo name`, IPython's own equivalence.
+  - An unknown name is refused like an entry's error: `unknown command '%nosuch'`, and `%help` lists the commands.
+  - This slice registers `help`, `type` and `pinfo`.
+- **`%type expr` / `:type expr`: the expression's type, never run.**
+  - The argument is parsed as the session's next entry inside an `EntryTransaction` that rolls back, and never linked or run. It is the same attempt completion's qualified query makes (§41.7a slice 4).
+  - The command's own prefix is blanked to spaces, so a diagnostic cites the column the user typed.
+  - `keep_entry_value` records the final expression's value type (a new `entry_value_type`, cleared by `begin_entry`) before any rule about keeping it, so an array or a function designator has its type too.
+  - The output is that type's spelling: `int`, `const char *`, `struct Point`, `std::string`, `int (*)(int)`.
+  - An argument that is no final expression (`%type int y;`, `%type x;`) is refused: "%type takes an expression". A refused expression prints its diagnostics, as a refused entry does.
+- **The type spelling moves to `Program`.** The five functions above become one Program-level owner (behaviour-preserving). `CirBuilder`'s show lowering and `var_dump` call it, and so does the session.
+  - `type_alias_spelling`'s walk becomes `for_each_readonly`, since `%type` spells inside a transaction (§41.7a slice 4: a mutable walk journals every value).
+  - It gains what the show never needed: an array (`int [3]`) and a function type (`int (int)`).
+- **`?name` / `%pinfo name`: what the session knows of a name,** in IPython's fields, with a function's overloads listed Julia's way, each with its location:
+  - a function: `Signature:` once per overload (`int sq(int n)`, parameter names from `Method::parameters`, hidden slots skipped), each with `@ REPL[2]:1` or its header, then `Type: function`;
+  - an object: `Type: int`, then where it was declared (`TopDecl`);
+  - a type: `Type: struct Point`, where it was defined, and its public members with their types;
+  - a macro: `Macro: #define N 5` (`define_map`) or its function-like form (`macro_map`);
+  - a keyword: `while is a keyword of C17` (from `keyword_map`, gated by `--std=`);
+  - several at once (a C tag and an object, `struct stat` and `stat`): each, in that order;
+  - none: `'nosuchname' is not declared`. That is clang's phrasing for C and C++; IPython's "Object … not found" reads as a C object.
+- **One top-level walk, two consumers.** `completion_names`' walk and its visibility rule (identifiers only, reserved names, reachable namespaces, instantiation products skipped) become a visitor over the entities an entry can name: `(name, object | function | type | tag | macro | keyword | result name)`.
+  - Completion's visitor keeps the names that start with the word, and `?`'s the entities spelled exactly so.
+  - The rule then exists once, so `?` never describes a name Tab would not offer.
+- **Locations (the gap §8 named):**
+  - objects and types from `TopDecl` by identity;
+  - a function from its definition's `TokenFunc` in the session's tree, found by identity of its `Method`;
+  - a header declaration from `FuncDef::decl_file`.
+  - A name with no record prints no location. None is invented.
+- **Completion (§41.7a slice 4's other half):**
+  - `%ty` and `:ty` at an entry's start complete from the registry;
+  - `?xy`, and the argument of `%type` and `%pinfo`, complete as an entry, through the same `complete_entry` over the argument's text.
+
+**Not in item 8, and named:**
+- `??name` (IPython's `Source:`, the defining entry's text) and doc comments (D15). The latter needs the REPL lexer to keep trivia and attach a `///` or `/** */` comment to the declaration after it.
+- The prompt modes: `?` or `;` alone on an empty prompt switching to `help?>` or `shell>`, and Backspace switching back (Julia, §7.2, D14).
+- `%whos` (IPython's table of the session's names, types and values).
+- madcide's `colon_command` onto the registry, and the ex buffer commands (D24).
+
+**Thread contract:** a command runs on the session's thread between entries, as every session verb does (D9). `%type` and `?` are reads: what an attempt changed rolls back, and the walks and finds are read-only.
+
+**Slices,** each its own commit, with Tier 1 and Tier 2:
+1. **The command front and `%type`:**
+   - recognition, the registry, `%help`, the unknown-command refusal;
+   - command-name completion;
+   - `entry_value_type`;
+   - the type spelling moved to `Program`, with arrays and function types.
+2. **`?name` / `%pinfo`:** the shared walk, the signature spelling, the locations.
+
+**Gates:**
+- `test_repl_session`:
+  - the three commands under C17, C++17 and madc;
+  - `%type` of an int, a pointer, a struct, `std::string`, a function and an array;
+  - `%type` of a refused expression, citing the typed column, and of a call that is not run (its side effect absent);
+  - `%type` leaving nothing behind;
+  - `%nosuch` refused;
+  - `::x` and a continuation line staying C;
+  - `?` on a C++ overload pair with both locations, an object, a struct, a macro, a keyword, and an unknown name;
+  - `?` and Tab agreeing on a reserved name;
+  - command-name completion.
+- `test_repl_cli`: `?sq` and `%type` at the editor.
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.
@@ -3017,4 +3117,4 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
 
 Phase 0 per §41: D18, then the classifier (§41.1, D11), the persistent-session proof (§41.2, D1), rollback (§41.3) and result capture (§41.4, D10).
 
-D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. D27 is done (2026-09-26): a function or an object no entry defines yet is refused at its first use, as in Julia and clang-repl. A later definition is the one reached, and the failing use returns to the entry's boundary with the entry kept (§42 D27, "Built"). §41.4's result capture is done (2026-09-26): an entry without its final `;` shows its value in re-enterable syntax. That covers scalars, text, pointers, enums, structs, arrays, a madc `var` and the standard containers (§41.4a, "Built"). D28 is done (2026-09-27): a `var` holding a number takes arithmetic, with one rule in `madc::value` (§42 D28, "Built"). D20 is done (2026-09-27): `madc` with no program file is the REPL on a terminal, `-i` forces it, piped stdin is the program, and `madc -i file` runs the file, then the prompt has its names. The file and the session are one unit (§41.5a, "Built, slice 1" and "Built, slice 2"). D12 is done (2026-09-27): an entry's shown value is kept and named `ans`, `_`, `__`, `___` and `_N`, a scalar as a copy and an aggregate as the object, as Julia and IPython keep them. Its array results wait on B50 (§41.6a, "Built, slice 1" and "Built, slice 2"). G is fixed (a reference to an array shows its elements). The line editor (D23) and completion are designed (2026-09-27, §41.7a). Slices 1–4 are done: the editor, its history, Tab completing names, which is §37 item 7, and Tab completing members after `.`, `->` and `::` (§41.7a, "Built, slice 1" to "Built, slice 4"). Slice 4's other half, completing the `%` / `:` command names, comes with D24's commands. Next: §37 item 8 (`?name`, `:type`), with that command-name completion. D12's arrays follow B50. Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
+D18 and the classifier are done. §41.2a slices 1, 2 and 2b are done: entries persist, an entry's statements run once, in source order, and they run under every standard (D3). The entry transaction's JIT half (§41.3) is done: a refused entry, whether its parse, its translation or its link refused it, leaves the live context as it was, with a diagnostic, and its definitions never come alive later. Slice 3 is done (2026-09-26): a class, its members and its instances can be spread over any number of entries, with one vtable, one type_info and one copy of every inline body for the whole session (§41.2a, "Built, slice 3"). §41.3's rollback is done (2026-09-26): a refused entry leaves nothing behind, in the Program or the live context, and `session_withheld` is deleted (§41.2a, "Built, §41.3's Program half"). Its named residuals stay open: a MIR fatal past the link check, and link diagnostics without a position. D27 is done (2026-09-26): a function or an object no entry defines yet is refused at its first use, as in Julia and clang-repl. A later definition is the one reached, and the failing use returns to the entry's boundary with the entry kept (§42 D27, "Built"). §41.4's result capture is done (2026-09-26): an entry without its final `;` shows its value in re-enterable syntax. That covers scalars, text, pointers, enums, structs, arrays, a madc `var` and the standard containers (§41.4a, "Built"). D28 is done (2026-09-27): a `var` holding a number takes arithmetic, with one rule in `madc::value` (§42 D28, "Built"). D20 is done (2026-09-27): `madc` with no program file is the REPL on a terminal, `-i` forces it, piped stdin is the program, and `madc -i file` runs the file, then the prompt has its names. The file and the session are one unit (§41.5a, "Built, slice 1" and "Built, slice 2"). D12 is done (2026-09-27): an entry's shown value is kept and named `ans`, `_`, `__`, `___` and `_N`, a scalar as a copy and an aggregate as the object, as Julia and IPython keep them. Its array results wait on B50 (§41.6a, "Built, slice 1" and "Built, slice 2"). G is fixed (a reference to an array shows its elements). The line editor (D23) and completion are designed (2026-09-27, §41.7a). Slices 1–4 are done: the editor, its history, Tab completing names, which is §37 item 7, and Tab completing members after `.`, `->` and `::` (§41.7a, "Built, slice 1" to "Built, slice 4"). Slice 4's other half, completing the `%` / `:` command names, comes with D24's commands. Next: §37 item 8 (`?name`, `:type`), with that command-name completion, designed against the code (2026-09-27, §41.8a): slice 1, the command front and `%type`, then slice 2, `?name`. D12's arrays follow B50. Owner pause (2026-09-25): until the REPL makes real progress, defects found off its path go into `BUGS.md` instead of being fixed on the spot. The `fix-what-you-find.md` rule itself is unchanged.
