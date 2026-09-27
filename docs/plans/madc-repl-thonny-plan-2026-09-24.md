@@ -2299,6 +2299,39 @@ With no program file, the tail chooses in this order:
   - A class temporary shows only its type word (`std::string("short")` shows `<std::string>`). D10's walk reads a variable or a member, and slice 2's class results, materialized, are what it would read.
 - Found off the path: B42 (`auto` from an array deduces its element), B43 (an error in a default member initializer is swallowed, silently; D12's refusal there waits on it), B44 (a namespace-scope init-capture refused), B45 (`std::map` not copied).
 
+**Slice 2, designed against the code (2026-09-27):**
+- **Measured** (`tmp/repl/d12`, on a pty). Both precedents keep an immutable value and alias a mutable object:
+  - Julia 1.13: `p = P(2)` (a mutable struct), then `ans.b = 9`, then `p.b` is 9. `a = [1, 2, 3]`, then `ans[1] = 9`, then `a` is `[9, 2, 3]`.
+  - IPython 9.17: `p`, then `p.b = 9`, then `_.b` is 9. `a`, then `a[0] = 9`, then `_` is `[9, 2, 3]`. A tuple rebound (`t = (5, 6)`) leaves `_` at `(1, 2)`, as a rebound int does.
+  - madc today: a reference or a pointer to a struct or a class shows as the object (`P &rp = p; rp`, `*pp`). An array reached through one does not: `int (&ra)[3] = arr` and `*pa` show `<int32_t>`, with a stray c2mir warning, though their values are right (`ra[1]` is 2, and follows `arr`). D10's walk takes an array's extents only from a named array Variable.
+- **The rule, revised: a scalar result is a copy, an aggregate result is the object.**
+  - A scalar value (an arithmetic type, a pointer, an enum) is kept as a copy, as slice 1 keeps it.
+  - So is the madc carrier, since its copy is the dialect's own value semantics, and it is deep: `var b = a;`, then `a[0] = 9;`, leaves `b` at `{ 1, 2 }` (measured).
+    - So a `var` holding an array diverges from both precedents, which alias it.
+    - Aliasing the carrier by its type would get a `var` holding a number wrong the other way, since IPython keeps a rebound int.
+    - Whether a `var` array is shared, as a Python list or a JavaScript array is, is a dialect question for the owner, not D12's.
+  - An aggregate (a struct, a union, a class or an array) is the object itself.
+    - For a glvalue, the result refers to the object the entry showed. `p`, then `p.b = 9;`, then `ans.b` is 9, as in both precedents.
+    - For a prvalue (a call's by-value struct or class, `std::vector<int>{ 1, 2 }`, `P{ 1, 2 }`), the result is that object, materialized into the result's storage, which owns it.
+  - This revises slice 1, which copies a C struct and a trivially copyable class. It also retires the copy question for every class (B45, `std::unique_ptr`) and the element-wise array copy (B38 keeps its own).
+- **What the result refers to must outlive it.** The rule reads the root of the glvalue: a `TokenVar`, a `TokenMember`'s `object` through its `parent_expr` chain, or a `TokenSubscript`'s `object`.
+  - A session object, which is every entry's global: the result refers to it.
+  - An object reached through a pointer (`*p`, `p->m`, `p[i]`) is the user's. The result refers to it, as `auto &r = *p;` would, and it dangles if the user frees it. Julia and IPython have a collector; C and C++ have none.
+  - A part of a temporary of the entry's run (its root has automatic storage, or is a call or a literal) dies with the run. A trivially copyable one is copied (slice 1's rule), and any other is shown and not kept ("a temporary's part is not kept").
+- **Mechanism.**
+  - A glvalue aggregate's result is a session pointer, `T *__madc_result_K = &value` (for an array, a pointer to its array type, `array_operand_type`). It is built through the owners: `build_address_of`, and `hidden_object_decl` for the declaration.
+  - The names resolve to `*__madc_result_K` through `build_indirection`, the one dereference builder. So `ans.b`, `ans[1]`, `&ans` and `sizeof ans` mean what they mean on the object. This is plain C, so the same result serves C, C++ and madc, with no reference type.
+  - A prvalue aggregate's result is the object: `hidden_object_decl` as in slice 1 (a class prvalue constructs in place, `TokenObjTemp`'s arguments).
+  - The show reads what the result names: `*__madc_result_K`, or the owned object.
+  - D10's walk takes an array's extents from `array_operand_type`, the owner of "the array an operand denotes", not only from a named array Variable. `*pa` and a reference to an array then show their elements, with no stray warning.
+- **Display.** `_N` of an aggregate shows the object as it is now. The entry itself showed it as it was.
+- **Gates** (`test_repl_session`, C, C++ and madc):
+  - a struct, a class and an array, each changed after its show and seen through `ans`;
+  - a prvalue class result that owns its object (`std::vector<int>{ 1, 2 }`, then `ans.size()`);
+  - a class whose copy constructor is deleted shown and kept by reference;
+  - a temporary's trivially copyable part copied, and a class part not kept;
+  - `*pa` shows its elements.
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.

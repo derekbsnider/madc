@@ -783,6 +783,24 @@ int main() { printf("%zu\n", std::vector<int>(3, 7).size()); return 0; }
   `stl_vector.h:709`. The error names the iterator-range constructor
   template, where g++ calls the count-and-value constructor. Not traced.
 
+### B49. A file-scope compound literal's address is refused as an initializer
+
+- Found 2026-09-27, while checking where an entry's compound literal lives,
+  for D12's slice 2 (plan §41.6a).
+
+```c
+#include <stdio.h>
+int *p = (int[]){ 11, 22 };
+int main(void) { printf("%d\n", p[0] + p[1]); return 0; }
+```
+
+- gcc 13 and clang 18: `33`. A compound literal outside a function body has
+  static storage (C11 6.5.2.5p5), so its address is an address constant.
+  madc `--std=c17`: "initializer of non-auto or thread local object should
+  be a constant expression or address" (c2mir), and the same at an entry's
+  top level under C and C++. Related: B35 (the literal is typed as a
+  pointer).
+
 ## Diagnostics
 
 ### B7. An undeducible function-template call dies in MIR without a location
