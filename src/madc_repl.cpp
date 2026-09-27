@@ -39,6 +39,7 @@
 #include "madc.h"
 #include "madc_session.h"
 #include "madc_repl.h"
+#include "madc_posix_io.h"
 #include "madcdis/line_edit.h"
 #include "madcdis/tui_provider.h"
 #include "madcdis/ui_input.h"
@@ -118,7 +119,7 @@ static void append_record(const std::string &path, const std::string &record)
     int fd = ::open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0600);
     if ( fd < 0 )
 	return;
-    ssize_t n = ::write(fd, record.data(), record.size());
+    ssize_t n = madc::detail::write_fd_without_sigpipe(fd, record.data(), record.size());
     (void)n;
     ::close(fd);
 #endif

@@ -212,6 +212,8 @@ void vt_drain_pending(tui_keyparse &parse, std::vector<tui_keyev> &out,
 #include <termios.h>
 #include <unistd.h>
 
+#include "madc_posix_io.h"	// write_fd_without_sigpipe, the one stream-write owner
+
 #include "rt/rt_task.h"	// stage-2: cooperative wait (runnable probe + yield)
 #include "madc_task_io.h"	// MT-4c: the host wait (stdin joins the one poll)
 
@@ -254,7 +256,8 @@ class term_target : public madc::hub::tui_target,
 	size_t off = 0;
 	while ( off < s.size() )
 	{
-	    ssize_t n = ::write(STDOUT_FILENO, s.data() + off, s.size() - off);
+	    ssize_t n = madc::detail::write_fd_without_sigpipe(STDOUT_FILENO,
+								    s.data() + off, s.size() - off);
 	    if ( n <= 0 )
 	    {
 		if ( n < 0 && errno == EINTR )
