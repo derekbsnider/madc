@@ -10,11 +10,23 @@ cwd=$(echo "$input" | jq -r '.cwd // .workspace.current_dir // empty')
 [ -z "$cwd" ] && cwd=$(pwd)
 used=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
 
-# Extract current total used tokens from context_window
-# input_tokens in current_usage reflects the current context size
-current_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // empty')
-# Fall back to total_input_tokens if current_usage not available
-[ -z "$current_tokens" ] && current_tokens=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
+# The context's size: every input token of the latest request, cached or
+# not (current_usage.input_tokens alone is only the uncached part, a few
+# tokens once the prompt cache is warm).
+current_tokens=$(echo "$input" | jq -r '.context_window.total_input_tokens // empty')
+
+# The context gauge the agent reads (.claude/hooks/context-gauge.sh relays
+# it into the agent's context): Claude Code's own used_percentage, per
+# session, so the agent sees the number this status line shows.
+session=$(echo "$input" | jq -r '.session_id // empty')
+if [ -n "$session" ] && [ -n "$used" ]; then
+    gauge_dir="/workspace/madc/tmp/context-gauge"
+    mkdir -p "$gauge_dir"
+    echo "$input" | jq -c '{used_percentage: .context_window.used_percentage,
+			    tokens: .context_window.total_input_tokens,
+			    window: .context_window.context_window_size}' \
+	> "$gauge_dir/$session.json.tmp" && mv "$gauge_dir/$session.json.tmp" "$gauge_dir/$session.json"
+fi
 
 # Format a raw token count as compact k-suffix string
 tok_fmt() {
