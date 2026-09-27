@@ -354,3 +354,18 @@ TEST_CASE("Tab completes the session's names at the line editor (§37, D23)")
     CHECK(out.str() == "3\n8\n");
     CHECK(term.painted.find("xylophone  xyz1\r\n") != std::string::npos);
 }
+
+// Slice 4 (plan §41.7a): after `.`, Tab Tab lists the object's members at
+// the line editor.
+TEST_CASE("Tab lists a struct's fields after `.` at the line editor (D23)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    scripted_terminal term({ "struct Point { int x; int y; };\r",
+			     "struct Point p = { 1, 2 };\r", "p.\t", "\t",
+			     "\x15" "p.y\r", "\x04" });
+    std::ostringstream out;
+    CHECK(madc_repl_edit(s, term, out, "") == 0);
+    CHECK(out.str() == "2\n");
+    CHECK(term.painted.find("x  y\r\n") != std::string::npos);
+}

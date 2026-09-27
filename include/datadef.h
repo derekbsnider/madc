@@ -1460,7 +1460,7 @@ public:
 	    }
 	return false;
     }
-    DataDef *m_type(std::string &member)
+    DataDef *m_type(const std::string &member)
     {
 	std::vector<memberpair_t>::iterator dvpi;
 	DBG(std::cout << "DataDefSTRUCT::type(" << member << ')' << std::endl);

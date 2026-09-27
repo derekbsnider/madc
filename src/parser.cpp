@@ -78472,6 +78472,22 @@ static SessionResultName session_result_name(const std::string &s)
     return r;
 }
 
+// The result a spelling names, or NULL (none shown that far back, no such
+// entry, or not a result name): the one table walk the resolver below and
+// completion's `ans.` (plan §41.7a) share.
+const Program::SessionResult *Program::session_result_named(const std::string &spelling) const
+{
+    SessionResultName rn = session_result_name(spelling);
+    if ( rn.kind == SessionResultName::Back )
+	return rn.n < session_results.size()
+	    ? &session_results[session_results.size() - 1 - rn.n] : NULL;
+    if ( rn.kind == SessionResultName::Entry )
+	for ( size_t i = 0; i < session_results.size(); ++i )
+	    if ( session_results[i].entry == rn.n )
+		return &session_results[i];
+    return NULL;
+}
+
 // A result name at a lookup miss in an interactive entry (D12): the kept
 // result it names, or a refusal that says why there is none. NULL when the
 // spelling is not a result name. Ordinary lookup ran first, so a user's
@@ -78512,13 +78528,11 @@ TokenBase *Program::resolve_session_result_name(TokenIdent *ident_tb)
 	    Throw(ident_tb) << "'" << name << "' names " << which[rn.n] << ", and "
 			    << shown << flush;
 	}
-	r = &session_results[count - 1 - rn.n];
+	r = session_result_named(name);
     }
     else
     {
-	for ( size_t i = 0; i < session_results.size() && !r; ++i )
-	    if ( session_results[i].entry == rn.n )
-		r = &session_results[i];
+	r = session_result_named(name);
 	if ( !r )
 	    Throw(ident_tb) << "'" << name << "' names the value REPL[" << rn.n
 			    << "] showed, and "

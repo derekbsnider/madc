@@ -515,6 +515,16 @@ public:
 		    return;
 	    }
     }
+    // The same enumeration for a reader: fn(const char *key, const V &value).
+    // Nothing is saved to an open transaction, as with find_readonly.
+    template<class Fn>
+    void for_each_readonly(Fn fn) const
+    {
+	for ( uint32_t id = 0; id < _slot.size(); ++id )
+	    if ( _slot[id] >= 0 )
+		if ( fn(_pool->c_str(id), _vals[(size_t)_slot[id]]) )
+		    return;
+    }
 
     // find() returns NULL for "not found"; end() is provided so legacy
     // `find(x) != m.end()` call sites keep compiling (end() == nullptr).

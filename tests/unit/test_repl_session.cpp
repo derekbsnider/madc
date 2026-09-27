@@ -1804,7 +1804,7 @@ TEST_CASE("completion: C++ names, madc's words, and the result names")
     CHECK(has(complete_at_end(p, "Poi"), "Point"));	// a class name is a type name
     REQUIRE(p.submit("namespace geometry { int area = 2; }"));
     CHECK(has(complete_at_end(p, "geo"), "geometry"));
-    CHECK(complete_at_end(p, "geometry::ar").empty());	// a member: slice 4
+    CHECK(complete_at_end(p, "geometry::ar") == std::vector<std::string>{ "area" });
     CHECK(complete_at_end(p, "Point{}.x").empty());
     // Only what C++ lets a top-level entry write bare: after <vector>, std's
     // names and madc's lowered ones (`allocator_char__operator=`, the
@@ -1835,4 +1835,84 @@ TEST_CASE("completion: C++ names, madc's words, and the result names")
     std::vector<std::string> u = complete_at_end(m, "_");
     CHECK(has(u, "_"));
     CHECK(has(u, ("_" + std::to_string(m.submitted())).c_str()));
+}
+
+// Slice 4 (plan §41.7a): an object's members after `.` and `->`, stepping
+// through the chain's types from a session name; a scope's after `::`.
+TEST_CASE("completion: members after . and ->, and a scope's after ::")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    REQUIRE(c.submit("struct Inner { int depth; double width; };"));
+    REQUIRE(c.submit("struct Point { int x; int y; struct Inner in; struct Point *next; };"));
+    REQUIRE(c.submit("struct Point p = { 1, 2 };"));
+    REQUIRE(c.submit("struct Point *pp = &p;"));
+    size_t start = 0;
+    std::vector<std::string> fields = { "in", "next", "x", "y" };
+    CHECK(complete_at_end(c, "p.", &start) == fields);	// an empty word lists all
+    CHECK(start == 2u);
+    CHECK(complete_at_end(c, "pp->") == fields);
+    CHECK(complete_at_end(c, "p.in.") == std::vector<std::string>{ "depth", "width" });
+    CHECK(complete_at_end(c, "pp->next->in.w") == std::vector<std::string>{ "width" });
+    CHECK(complete_at_end(c, "p->").empty());		// no pointer
+    CHECK(complete_at_end(c, "pp.").empty());		// `.` on a pointer
+    CHECK(complete_at_end(c, "p.nope.").empty());
+    CHECK(complete_at_end(c, "f().").empty());		// an expression: not yet
+    CHECK(complete_at_end(c, "a[0].").empty());
+
+    InteractiveSession p;
+    REQUIRE(p.begin("--std=c++17"));
+    REQUIRE(p.submit("struct Base { int b1; void bm() {} };"));
+    REQUIRE(p.submit("class Box : public Base { public: int w; int get() { return w; }"
+		     " static int count; typedef int unit;"
+		     " private: int secret; void hidden() {} };"));
+    REQUIRE(p.submit("Box bx;"));
+    REQUIRE(p.submit("Box &rb = bx;"));
+    std::vector<std::string> box = { "b1", "bm", "count", "get", "w" };
+    CHECK(complete_at_end(p, "bx.") == box);	// no private member, a base's
+    CHECK(complete_at_end(p, "rb.") == box);	// a reference is its referent
+    // After the class's name: its members too, and its nested types, not
+    // its injected-class-name.
+    std::vector<std::string> scope = { "b1", "bm", "count", "get", "unit", "w" };
+    CHECK(complete_at_end(p, "Box::") == scope);
+    REQUIRE(p.submit("namespace geometry { int area = 2; namespace deep { int z = 1; }"
+		     " struct Shape { int s; }; int perimeter(int a) { return a; } }"));
+    std::vector<std::string> geo = { "Shape", "area", "deep", "perimeter" };
+    CHECK(complete_at_end(p, "geometry::") == geo);
+    CHECK(complete_at_end(p, "geometry::deep::") == std::vector<std::string>{ "z" });
+    REQUIRE(p.submit("enum class Color { Red, Green };"));
+    CHECK(complete_at_end(p, "Color::") == std::vector<std::string>{ "Green", "Red" });
+    REQUIRE(p.submit("#include <string>"));
+    REQUIRE(p.submit("std::string str = \"abc\";"));
+    CHECK(complete_at_end(p, "str.si") == std::vector<std::string>{ "size" });
+    CHECK_FALSE(has(complete_at_end(p, "str."), "_M_dataplus"));	// reserved
+    REQUIRE(p.submit("#include <vector>"));
+    CHECK(complete_at_end(p, "std::vec") == std::vector<std::string>{ "vector" });
+    // A namespace's names are what an entry writes: madc's registered
+    // instantiations (`allocator_char`) are not.
+    std::vector<std::string> st = complete_at_end(p, "std::alloc");
+    CHECK(has(st, "allocator"));
+    CHECK_FALSE(has(st, "allocator_char"));
+    REQUIRE(p.submit("struct Pt { int x; int y; };"));
+    REQUIRE(p.submit("Pt{3, 4}"));
+    CHECK(complete_at_end(p, "ans.") == std::vector<std::string>{ "x", "y" });
+    CHECK(complete_at_end(p, "_.") == std::vector<std::string>{ "x", "y" });
+    // A qualified query parses its attempt, and leaves nothing of it.
+    CHECK(complete_at_end(p, "namespace tmpns { int k; }\ntmpns::")
+	  == std::vector<std::string>{ "k" });
+    CHECK_FALSE(has(complete_at_end(p, "tmp"), "tmpns"));
+
+    // madc: a var's script methods, and a module's namespace in a fresh
+    // session (its fragment fills it when the attempt is parsed).
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    CHECK(complete_at_end(m, "php::strto")
+	  == (std::vector<std::string>{ "strtolower", "strtoupper" }));
+    REQUIRE(m.submit("var total = { \"a\": 1 };"));
+    std::vector<std::string> vm = complete_at_end(m, "total.");
+    CHECK(has(vm, "count"));
+    CHECK(has(vm, "is_string"));
+    CHECK(has(vm, "substr"));
+    REQUIRE(m.submit("total.count()"));
+    CHECK(m.shown() == "1");
 }

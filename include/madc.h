@@ -6997,6 +6997,8 @@ public:
     bool is_entry_result(const Variable *v) const
     { return v && v == entry_result_object; }
     TokenBase *resolve_session_result_name(class TokenIdent *ident_tb);
+    // The result a spelling (`ans`, `__`, `_4`) names, or NULL.
+    const SessionResult *session_result_named(const std::string &spelling) const;
     // Does the code being parsed run as part of the entry, now? Not a
     // function or lambda body, a default argument or a class member's
     // initializer: those run later, when the moving result names mean
@@ -7073,12 +7075,26 @@ public:
     // transaction that rolls back, so a query leaves nothing behind.
     std::vector<std::string> complete_entry(const std::string &text,
 					    size_t caret, size_t &start);
-    CompletionContext completion_context(const std::string &before);
+    // The context, read from the lexed attempt (which the caller's entry
+    // transaction holds). For a member, `chain` gets the names joined by `.`
+    // or `->` back to the root and `arrows` which joins are `->` (the last
+    // join is the word's own); for a qualified name, the qualifier's names.
+    CompletionContext completion_context(const std::string &before,
+					 std::vector<std::string> &chain,
+					 std::vector<bool> &arrows);
     // The names visible at the top level that start with `word`, found by
     // walking the registries, never through lookup (a lookup materializes,
     // registers and throws).
     void completion_names(const std::string &word, CompletionContext ctx,
 			  std::vector<std::string> &out);
+    // Slice 4: an object's members after its chain, and a scope's (a
+    // namespace's or a class's) members after its qualifier.
+    void completion_members(const std::vector<std::string> &chain,
+			    const std::vector<bool> &arrows,
+			    const std::string &word, std::vector<std::string> &out);
+    void completion_scope_names(const std::string &scope, const std::string &word,
+				std::vector<std::string> &out);
+    DataDefCLASS *completion_scope_class(const std::string &scope);
     bool lex_unit_text(const char *fname, const std::string &text);
     // The top-level parse loop parse() and parse_entry() share: statements
     // to the end of the token stream (a TU) or to the end-of-entry token.

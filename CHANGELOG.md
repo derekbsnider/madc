@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### Tab completes members after `.`, `->` and `::` (D23, slice 4)
+
+After `p.` or `pp->`, Tab lists the object's fields, public methods and
+static members, including those of its bases, and follows a chain such as
+`pp->next->in.`. Private and protected members are not offered. `ans.` and
+`_.` list the members of a kept result. After `geometry::` or `std::`, Tab
+lists the namespace's names, types, nested namespaces and templates. After
+`Color::`, it lists a scoped enum's enumerators, and after `Box::`, the
+class's members and nested types. In the madc dialect, `total.` lists a
+`var`'s methods, and `php::` completes in a fresh session before `php` has
+been used. As at the top level, an empty word after `.` or `::` lists
+every candidate. A call or a subscript in the chain (`f().`, `a[0].`)
+completes nothing yet.
+
+Tests: the member case in `test_repl_session` and the `p.` case in
+`test_repl_cli`.
+
 ### Tab offers only names you can write at the top level
 
 In a C++ session after `#include <vector>`, Tab listed madc's internal
