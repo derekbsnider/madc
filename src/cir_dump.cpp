@@ -2666,6 +2666,33 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 						tv->var.total_elements());
 		}
 	bool is_arr = !adims.empty();
+	// An array reached through a pointer (`*pa`) or a struct (an array
+	// member): its extents from the array type it denotes, the one owner's
+	// answer, down to the element the walk steps. Read as its element, it
+	// showed `<int32_t>`. A named variable's array is the branch above; a
+	// reference to an array lowers as its flattened element, so the walk's
+	// access could not index it, and it keeps the type word.
+	if (!is_arr && m_prog
+	    && (arg->is_indirection() || arg->as_member_tok())) {
+		DataDef *at = m_prog->array_operand_type(arg);
+		std::vector<carray_dim_t> odims;
+		DataDef *elem = NULL;
+		for (DataDefCArray *ca = at ? at->as_carray_dd() : NULL; ca;
+		     ca = ca->element_type ? ca->element_type->as_carray_dd()
+					   : NULL) {
+			if (!ca->count || !ca->element_type) {
+				odims.clear();
+				break;
+			}
+			odims.push_back((carray_dim_t)ca->count);
+			elem = ca->element_type;
+		}
+		if (!odims.empty() && elem) {
+			adims = odims;
+			dd = elem;
+			is_arr = true;
+		}
+	}
 
 	// The walk rebuilds the access once PER MEMBER, so an aggregate argument
 	// must be re-evaluable without side effects. A named variable or a member

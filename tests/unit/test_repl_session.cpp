@@ -1348,7 +1348,12 @@ TEST_CASE("an entry's shown value is kept and named ans, _, __, ___ and _N (D12)
     check_result_names("--std=madc");
 }
 
-TEST_CASE("a kept struct is a copy; a class object is kept from slice 2 on (D12)")
+// Slice 2 (plan §41.6a): an aggregate result is the object, as Julia and
+// IPython keep a mutable one. A glvalue's result refers to it, so a change
+// after the show is seen through `ans`; a prvalue's result owns the object; a
+// temporary's part is copied when trivially copyable and otherwise not kept;
+// an array waits on `&arr`'s type (B50).
+TEST_CASE("an aggregate result is the object it showed (D12, slice 2)")
 {
     InteractiveSession c;
     REQUIRE(c.begin("--std=c17"));
@@ -1356,23 +1361,51 @@ TEST_CASE("a kept struct is a copy; a class object is kept from slice 2 on (D12)
     REQUIRE(c.submit("p"));
     REQUIRE(c.submit("p.b = 9;"));
     REQUIRE(c.submit("ans.b"));
-    CHECK(c.shown() == "2");
+    CHECK(c.shown() == "9");
+    REQUIRE(c.submit("int k = 0;\nstruct P mk(void) { struct P r = { 5, 6 }; return r; }"));
+    REQUIRE(c.submit("mk()"));
+    REQUIRE(c.submit("ans.a + ans.b"));
+    CHECK(c.shown() == "11");
+    REQUIRE(c.submit("struct P *pp = &p;"));
+    REQUIRE(c.submit("*pp"));
+    REQUIRE(c.submit("k = &ans == &p;"));
+    CHECK(*(int *)c.data("k") == 1);
+    REQUIRE(c.submit("int arr[3] = { 1, 2, 3 };\nint (*pa)[3] = &arr;"));
+    REQUIRE(c.submit("*pa"));
+    CHECK(c.shown() == "(int[3]){ 1, 2, 3 }");
+    REQUIRE(c.submit("arr"));
+    check_refused(c, "ans", "which was not kept: an array is kept once its"
+		  " address has the array's type (BUGS.md B50)");
 
     InteractiveSession s;
     REQUIRE(s.begin("--std=c++17"));
-    REQUIRE(s.submit("#include <string>\nstruct Q { int a; double d; };\nQ q = { 1, 2.5 };"));
-    REQUIRE(s.submit("q"));
-    REQUIRE(s.submit("q.d = 0;"));
-    REQUIRE(s.submit("ans.d"));
-    CHECK(s.shown() == "2.5");
+    REQUIRE(s.submit("#include <string>\n#include <vector>\n"
+		     "std::vector<int> v = { 1, 2 };"));
+    REQUIRE(s.submit("v"));						// REPL[2]
+    REQUIRE(s.submit("v.push_back(3);"));
+    REQUIRE(s.submit("ans.size()"));
+    CHECK(s.shown() == "3");
+    REQUIRE(s.submit("std::vector<int>{ 7, 8 }"));			// REPL[5]
+    REQUIRE(s.submit("ans.size() + _2.size()"));
+    CHECK(s.shown() == "5");
     REQUIRE(s.submit("std::string str = \"hi\""));
-    CHECK(s.shown() == "\"hi\"");
-    check_refused(s, "ans + \"!\"",
-		  "'ans' names the value REPL[5] showed, which was not kept: a"
-		  " class object that is not trivially copyable is kept from"
-		  " D12's slice 2 on");
-    REQUIRE(s.submit("_4"));
-    CHECK(s.shown() == "2.5");
+    REQUIRE(s.submit("str += \"!\";"));
+    REQUIRE(s.submit("ans + \"?\""));
+    CHECK(s.shown() == "\"hi!?\"");
+    // A class with no copy is kept too: the result refers to it.
+    REQUIRE(s.submit("struct NC { int v = 3; NC() {} NC(const NC &) = delete; };\nNC nc;"));
+    REQUIRE(s.submit("nc"));
+    REQUIRE(s.submit("nc.v = 4;"));
+    REQUIRE(s.submit("ans.v"));
+    CHECK(s.shown() == "4");
+    // A temporary's part: a class one is shown and not kept.
+    REQUIRE(s.submit("struct H { std::string name; };\nH mkh() { return H{ \"hh\" }; }"));
+    REQUIRE(s.submit("mkh().name"));
+    CHECK(s.shown() == "\"hh\"");
+    check_refused(s, "ans", "which was not kept: a part of a temporary is not kept");
+    REQUIRE(s.submit("mkh()"));
+    REQUIRE(s.submit("ans.name"));
+    CHECK(s.shown() == "\"hh\"");
 }
 
 TEST_CASE("a madc var is kept as the dialect's value (D12)")

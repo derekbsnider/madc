@@ -6976,14 +6976,17 @@ public:
     {
 	unsigned entry;		// REPL[N]
 	Variable *object;	// the kept value; NULL when it was not kept
+	bool alias;		// object points at the value (an aggregate glvalue)
 	std::string not_kept;	// why, when object is NULL
     };
     std::vector<SessionResult> session_results;
     unsigned entry_number = 0;		// the entry being parsed: REPL[N]
     Variable *entry_result_object = NULL;	// its result, while it parses and runs
+    bool entry_result_alias = false;	// that result points at the value
     std::string entry_result_not_kept;	// or why its value is not kept
     unsigned entry_result_serial = 0;	// __madc_result_K, never reused
     TokenBase *keep_entry_value(TokenBase *value, TokenBase *loc);
+    TokenBase *session_result_value(Variable *result, bool alias, TokenBase *loc);
     void keep_entry_result(unsigned entry);
     bool is_entry_result(const Variable *v) const
     { return v && v == entry_result_object; }

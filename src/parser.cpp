@@ -78179,6 +78179,7 @@ void Program::begin_entry()
     entry_if_extendable = false;
     entry_shown.clear();
     entry_result_object = NULL;
+    entry_result_alias = false;
     entry_result_not_kept.clear();
 }
 
@@ -78294,13 +78295,68 @@ void Program::show_entry_value(size_t decls_before)
     ensure_entry_function(loc)->statements.push_back((TokenStmt *)show_tb);
 }
 
-// D12 (plan §41.6a): keep the value an entry shows as its result. The result
-// is a session global of the type `auto r = value;` gives (cv and references
-// dropped, a function designator's pointer), initialized from the value once,
-// at its place in the entry's run, and later modules reach it as any entry's
-// global. Returns what the show reads: the result, or the value itself when
-// it is not kept (entry_result_not_kept says why; a void value has nothing to
-// keep).
+// Where the object an aggregate glvalue designates lives, for D12's slice 2
+// (plan §41.6a): a session object (every entry's global), an object reached
+// through a pointer or a reference (the user's, as `auto &r = *p;` refers to
+// it), or a part of a temporary of the entry's run, which dies with it. Read
+// from the glvalue's root: a named variable, a member's object (through its
+// `->` chain), a subscript's object.
+enum class EntryValueRoot : unsigned char { Session, Referenced, Temporary };
+
+static EntryValueRoot entry_variable_root(const Variable &v)
+{
+    if ( v.is_reference() || pointer_dd_of(v.type) )
+	return EntryValueRoot::Referenced;
+    if ( (v.flags & vfLOCAL) && !(v.flags & vfSTATIC) )
+	return EntryValueRoot::Temporary;
+    return EntryValueRoot::Session;
+}
+
+static EntryValueRoot entry_value_root(TokenBase *e)
+{
+    if ( !e )
+	return EntryValueRoot::Temporary;
+    if ( TokenMember *tm = e->as_member_tok() )
+    {
+	if ( tm->parent_expr )
+	{
+	    DataDef *pd = tm->parent_expr->datadef();
+	    return pd && pointer_dd_of(pd) ? EntryValueRoot::Referenced
+					   : entry_value_root(tm->parent_expr);
+	}
+	return entry_variable_root(tm->object);
+    }
+    if ( TokenSubscript *ts = e->as_subscript_tok() )
+	return entry_variable_root(ts->object);
+    if ( e->is_indirection() )
+	return EntryValueRoot::Referenced;
+    if ( TokenCallFunc *tcf = e->as_callfunc_tok() )
+	return tcf->call_returns_reference() ? EntryValueRoot::Referenced
+					     : EntryValueRoot::Temporary;
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(e) )
+    {
+	EntryValueRoot a = entry_value_root(tq->true_expr);
+	EntryValueRoot b = entry_value_root(tq->false_expr);
+	if ( a == EntryValueRoot::Temporary || b == EntryValueRoot::Temporary )
+	    return EntryValueRoot::Temporary;
+	return a == EntryValueRoot::Session && b == EntryValueRoot::Session
+	    ? EntryValueRoot::Session : EntryValueRoot::Referenced;
+    }
+    if ( TokenVar *tv = e->as_var_tok() )
+	return entry_variable_root(tv->var);
+    return EntryValueRoot::Temporary;
+}
+
+// D12 (plan §41.6a): keep the value an entry shows as its result, a session
+// global the later modules reach as any entry's global. A scalar (an
+// arithmetic type, a pointer, an enum) and the madc carrier are kept as a
+// copy of the type `auto r = value;` gives (cv and references dropped, a
+// function designator's pointer). An aggregate is kept as the object, as
+// Julia and IPython keep a mutable one: a glvalue's result is a pointer to it
+// (entry_result_alias; the names mean its referent), a prvalue's result is
+// the object, materialized into the result's storage. Returns what the show
+// reads: the result, or the value itself when it is not kept
+// (entry_result_not_kept says why; a void value has nothing to keep).
 TokenBase *Program::keep_entry_value(TokenBase *value, TokenBase *loc)
 {
     DataDef *vt = operand_value_datadef(value);
@@ -78310,37 +78366,53 @@ TokenBase *Program::keep_entry_value(TokenBase *value, TokenBase *loc)
 	vt = getPointerType(vt);
     if ( !vt || vt->is_void() )
 	return value;
+    // An array is kept once `&arr` has the array's pointer type (B50).
     if ( array_operand_type(value) )
     {
-	entry_result_not_kept = "an array is kept from D12's slice 2 on";
+	entry_result_not_kept = "an array is kept once its address has the"
+	    " array's type (BUGS.md B50)";
 	return value;
     }
     vt = vt->unqualified();
-    // Slice 1 keeps a class that copies as C copies a struct (trivially
-    // copyable, the trait's owner), and the madc carrier, which copies
-    // through its runtime as every `var b = a;` does. Every other class
-    // object is slice 2's, with the arrays: copying it runs its own
-    // constructor, which madc does not lower for every class yet (B45), and
-    // Julia and IPython alias such an object rather than copy it. The reason
-    // names no type: the source's spelling is the display's (the CIR's
-    // dump_type_word), and the entry it cites shows the value.
-    if ( vt->as_class_dd() && !vt->is_madc_array()
-      && !trait_is_trivially_copyable(vt) )
+    bool aggregate = vt->as_struct_dd() && !vt->is_madc_array();
+    // A glvalue denotes an object; anything else is a prvalue (a call's
+    // by-value result, a temporary, a literal).
+    bool glvalue = is_addressable_expression(value)
+	|| (value->as_var_tok() && !value->as_callfunc_tok());
+    bool alias = false;
+    if ( aggregate && glvalue )
     {
-	entry_result_not_kept = "a class object that is not trivially copyable"
-	    " is kept from D12's slice 2 on";
-	return value;
+	if ( entry_value_root(value) != EntryValueRoot::Temporary )
+	    alias = true;
+	// A temporary's part dies with the entry's run: a copy is kept when
+	// it copies as C copies a struct, and otherwise nothing is. The reason
+	// names no type: the source's spelling is the display's (the CIR's
+	// dump_type_word), and the entry it cites shows the value.
+	else if ( !trait_is_trivially_copyable(vt) )
+	{
+	    entry_result_not_kept = "a part of a temporary is not kept";
+	    return value;
+	}
     }
     std::string name = "__madc_result_" + std::to_string(++entry_result_serial);
-    Variable *result = declare_object(NULL, *vt, name, 1, true, true, loc);
-    hidden_object_decl(result, value, true);
+    DataDef *rt = alias ? getPointerType(vt) : vt;
+    Variable *result = declare_object(NULL, *rt, name, 1, true, true, loc);
+    hidden_object_decl(result, alias ? build_address_of(value, loc) : value, true);
     TokenGlobalInit *gi = new TokenGlobalInit(result);
     copy_token_location(gi, loc);
     ensure_entry_function(loc)->statements.push_back((TokenStmt *)gi);
     entry_result_object = result;
-    TokenVar *kept = new TokenVar(*result);
-    copy_token_location(kept, loc);
-    return kept;
+    entry_result_alias = alias;
+    return session_result_value(result, alias, loc);
+}
+
+// What a result's names mean: the kept object, or the object a pointer
+// result refers to (the one dereference builder).
+TokenBase *Program::session_result_value(Variable *result, bool alias, TokenBase *loc)
+{
+    TokenVar *tv = new TokenVar(*result);
+    copy_token_location(tv, loc);
+    return alias ? build_indirection(tv, loc) : tv;
 }
 
 // The function the innermost open compound belongs to (its Method, which a
@@ -78365,6 +78437,7 @@ void Program::keep_entry_result(unsigned entry)
     SessionResult r;
     r.entry = entry;
     r.object = entry_result_object;
+    r.alias = entry_result_object && entry_result_alias;
     r.not_kept = entry_result_object ? std::string() : entry_result_not_kept;
     session_results.push_back(r);
 }
@@ -78455,9 +78528,7 @@ TokenBase *Program::resolve_session_result_name(TokenIdent *ident_tb)
     if ( !r->object )
 	Throw(ident_tb) << "'" << name << "' names the value REPL[" << r->entry
 			<< "] showed, which was not kept: " << r->not_kept << flush;
-    TokenVar *tv = new TokenVar(*r->object);
-    copy_token_location(tv, ident_tb);
-    return tv;
+    return session_result_value(r->object, r->alias, ident_tb);
 }
 
 // An entry's transaction (plan §41.3). Beside its registration journal it

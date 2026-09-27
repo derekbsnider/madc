@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### A REPL result names the object an entry showed (D12, slice 2)
+
+`ans` of a struct, union or class is now the object itself, as it is in
+Julia and IPython. After `p`, then `p.b = 9;`, `ans.b` is 9; after `v`, then
+`v.push_back(3);`, `ans.size()` is 3. Every class object is kept this way,
+including one that cannot be copied. A value an entry computes, such as
+`std::vector<int>{ 7, 8 }` or a function's by-value result, is kept as its
+own object. Numbers, pointers, enums and a madc `var` are still kept as
+copies. A part of a temporary (`mkh().name`) is shown but not kept, and an
+array is not kept yet. Showing `*pa` or a struct's array member now prints
+its elements, where it printed `<int32_t>`.
+
+Tests: the aggregate case in `test_repl_session`.
+
 ### A functional cast at a REPL entry's top level is an expression
 
 `std::string("short").size()` typed as an entry read "Expecting parameter
