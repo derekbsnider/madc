@@ -2838,6 +2838,13 @@ With no program file, the tail chooses in this order:
   - A header prototype's line: `decl_file` only.
   - A namespace template whose body is not retained, and that no overload set has seeded, carries no stand-in mark. `?` then prints its placeholder's empty signature. The mark is stamped only where an overload set is seeded (`register_skipped_namespace_template_function`), because stamping it earlier changes overload ranking.
 - **Later, named:** `?ns::name` and `?obj.member` (a qualified name, through the scope and member walks); a template's declaration as written (with `??name`'s `Source:`).
+- **A keyword's origin (owner, 2026-09-27).** Slice 2 printed the session's standard ("while is a keyword of madc"). A keyword now says where it comes from:
+  - "C" or "C++" for a keyword the language's first standard has (c78, c++98, the first rows of the `--std=` table);
+  - else the standard it first arrived in, among the session's languages. A C session reads C's, and C++'s only for a keyword C lacks. C++ and the madc dialect read both, by the year each standard names (`Program::standard_year`, a column of the `--std=` table): `const` is C89's, `inline` C++'s (C++98 before C99), `constexpr` C++11's;
+  - "madc" (`defer`, `prefer`) or "GNU C" (`__thread`) for an extension.
+  - The facts are one table, the standards' keyword lists (`src/madc_keywords.cpp`, `Program::keyword_origin`). `add_keywords`' C++ reservation and its `_Thread_local` gate read their versions from it. A unit gate checks that every keyword madc reserves under seven standards has a row.
+  - A type keyword (`int`) is registered as its type, not in the keyword map. `?int` finds the type under its own spelling and describes it as a keyword too.
+  - Found on the way, filed as BUGS.md B53: C23's own keywords (`constexpr`, `bool`, `nullptr`, …) are not reserved under `--std=c23`.
 
 ## 42. Decisions (owner, 2026-09-25)
 

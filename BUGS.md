@@ -991,6 +991,25 @@ int main(void) { return 3; }
   of line for unknown directives"), so `#` and the name reach the parser as
   tokens. A null directive (`#` alone) is valid and must stay accepted.
 
+### B53. C23's own keywords are not keywords under `--std=c23`
+
+- Found 2026-09-27, while giving `?name` a keyword's provenance (plan
+  §41.8a): `?constexpr` in a `--std=c23` session is "not declared".
+
+```c
+constexpr int x = 5;
+int main(void) { return x; }
+```
+
+- gcc 13 `-std=c2x`: accepted, exit 5. madc `--std=c23`: `1:9: use of
+  undeclared identifier 'constexpr'`, refused (exit 1).
+- Where: `Program::add_keywords` (lexer.cpp) reserves `constexpr`,
+  `thread_local`, `alignas`, `alignof`, `nullptr`, `static_assert`, `bool`,
+  `true` and `false` only through `cpp_keyword_active` (the madc dialect or
+  C++). C23 has them too: the standards' lists (`src/madc_keywords.cpp`)
+  record each one's C standard (`c_since`), which a C-side gate can read.
+  `typeof`, `typeof_unqual` and `_BitInt` are C23's alone.
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++

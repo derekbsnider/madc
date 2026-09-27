@@ -543,6 +543,20 @@ bool Program::describe_name(const std::string &name, std::string &out)
     };
     visit_top_level_names(CompletionContext::Name, keep);
     visit_top_level_names(CompletionContext::Tag, keep);
+    // A type keyword (`int`, `bool`) is registered as its type, not in the
+    // keyword map: the type found under its own spelling is the keyword too.
+    if ( keyword_origin(name) )
+    {
+	bool keyword = false, type = false;
+	TypeSpeller own(this);
+	for ( size_t i = 0; i < found.size(); ++i )
+	{
+	    keyword |= found[i].kind == Kind::keyword;
+	    type |= found[i].kind == Kind::type && own.shown(found[i].type) == name;
+	}
+	if ( type && !keyword )
+	    found.push_back(TopLevelName(Kind::keyword, name));
+    }
     // A function's Variable carries its Method, whose parameters have names;
     // an overload registered under its own symbol is found by identity.
     std::map<const FuncDef *, Variable *> fn_var;
@@ -583,9 +597,13 @@ bool Program::describe_name(const std::string &name, std::string &out)
 		    break;
 		}
 		case Kind::keyword:
-		    s += name + " is a keyword of "
-		       + standard_canonical_name(language_std);
+		{
+		    // Where it comes from, not the session's standard: `while`
+		    // is C's, `class` C++'s, `constexpr` C++11's.
+		    const std::string from = keyword_provenance(name);
+		    s += name + (from.empty() ? " is a keyword" : " is a keyword of " + from);
 		    break;
+		}
 		case Kind::type:
 		{
 		    // A typedef names another type: `size_t` is unsigned long.

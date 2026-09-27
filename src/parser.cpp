@@ -23560,39 +23560,40 @@ struct LanguageStdRow {
 	Program::LanguageStd std;
 	bool canonical;
 	char family;
+	int year;	// the year the standard names (0 for the dialect)
 };
 const LanguageStdRow kLanguageStdTable[] = {
-	{ "madc",  Program::STD_MADC,  true,  'm' },
-	{ "c78",   Program::STD_C78,   true,  'c' },
-	{ "c86",   Program::STD_C86,   true,  'c' },
-	{ "c88",   Program::STD_C88,   true,  'c' },
-	{ "c89",   Program::STD_C89,   true,  'c' },
-	{ "c90",   Program::STD_C89,   false, 'c' },	// alias of c89
-	{ "c94",   Program::STD_C94,   true,  'c' },
-	{ "c95",   Program::STD_C95,   true,  'c' },
-	{ "c99",   Program::STD_C99,   true,  'c' },
-	{ "c11",   Program::STD_C11,   true,  'c' },
-	{ "c",     Program::STD_C11,   false, 'c' },	// alias of c11
-	{ "c17",   Program::STD_C17,   true,  'c' },
-	{ "c23",   Program::STD_C23,   true,  'c' },
-	{ "c++98", Program::STD_CPP98, true,  'p' },
-	{ "cpp98", Program::STD_CPP98, false, 'p' },
-	{ "c++03", Program::STD_CPP03, true,  'p' },
-	{ "cpp03", Program::STD_CPP03, false, 'p' },
-	{ "c++11", Program::STD_CPP11, true,  'p' },
-	{ "cpp11", Program::STD_CPP11, false, 'p' },
-	{ "c++",   Program::STD_CPP11, false, 'p' },	// alias of c++11
-	{ "cpp",   Program::STD_CPP11, false, 'p' },
-	{ "c++14", Program::STD_CPP14, true,  'p' },
-	{ "cpp14", Program::STD_CPP14, false, 'p' },
-	{ "c++17", Program::STD_CPP17, true,  'p' },
-	{ "cpp17", Program::STD_CPP17, false, 'p' },
-	{ "c++20", Program::STD_CPP20, true,  'p' },
-	{ "cpp20", Program::STD_CPP20, false, 'p' },
-	{ "c++23", Program::STD_CPP23, true,  'p' },
-	{ "cpp23", Program::STD_CPP23, false, 'p' },
-	{ "c++26", Program::STD_CPP26, true,  'p' },
-	{ "cpp26", Program::STD_CPP26, false, 'p' },
+	{ "madc",  Program::STD_MADC,  true,  'm', 0 },
+	{ "c78",   Program::STD_C78,   true,  'c', 1978 },
+	{ "c86",   Program::STD_C86,   true,  'c', 1986 },
+	{ "c88",   Program::STD_C88,   true,  'c', 1988 },
+	{ "c89",   Program::STD_C89,   true,  'c', 1989 },
+	{ "c90",   Program::STD_C89,   false, 'c', 1990 },	// alias of c89
+	{ "c94",   Program::STD_C94,   true,  'c', 1994 },
+	{ "c95",   Program::STD_C95,   true,  'c', 1995 },
+	{ "c99",   Program::STD_C99,   true,  'c', 1999 },
+	{ "c11",   Program::STD_C11,   true,  'c', 2011 },
+	{ "c",     Program::STD_C11,   false, 'c', 2011 },	// alias of c11
+	{ "c17",   Program::STD_C17,   true,  'c', 2017 },
+	{ "c23",   Program::STD_C23,   true,  'c', 2023 },
+	{ "c++98", Program::STD_CPP98, true,  'p', 1998 },
+	{ "cpp98", Program::STD_CPP98, false, 'p', 1998 },
+	{ "c++03", Program::STD_CPP03, true,  'p', 2003 },
+	{ "cpp03", Program::STD_CPP03, false, 'p', 2003 },
+	{ "c++11", Program::STD_CPP11, true,  'p', 2011 },
+	{ "cpp11", Program::STD_CPP11, false, 'p', 2011 },
+	{ "c++",   Program::STD_CPP11, false, 'p', 2011 },	// alias of c++11
+	{ "cpp",   Program::STD_CPP11, false, 'p', 2011 },
+	{ "c++14", Program::STD_CPP14, true,  'p', 2014 },
+	{ "cpp14", Program::STD_CPP14, false, 'p', 2014 },
+	{ "c++17", Program::STD_CPP17, true,  'p', 2017 },
+	{ "cpp17", Program::STD_CPP17, false, 'p', 2017 },
+	{ "c++20", Program::STD_CPP20, true,  'p', 2020 },
+	{ "cpp20", Program::STD_CPP20, false, 'p', 2020 },
+	{ "c++23", Program::STD_CPP23, true,  'p', 2023 },
+	{ "cpp23", Program::STD_CPP23, false, 'p', 2023 },
+	{ "c++26", Program::STD_CPP26, true,  'p', 2026 },
+	{ "cpp26", Program::STD_CPP26, false, 'p', 2026 },
 };
 
 std::vector<std::string> collect_std_names(char family)
@@ -23626,6 +23627,30 @@ const char *Program::standard_canonical_name(LanguageStd std)
 		if ( row.canonical && row.std == std )
 			return row.name;
 	return "";
+}
+
+int Program::standard_year(LanguageStd std)
+{
+	for ( const LanguageStdRow &row : kLanguageStdTable )
+		if ( row.canonical && row.std == std )
+			return row.year;
+	return 0;
+}
+
+Program::LanguageStd Program::lowest_standard(bool cpp)
+{
+	for ( const LanguageStdRow &row : kLanguageStdTable )
+		if ( row.canonical && row.family == (cpp ? 'p' : 'c') )
+			return row.std;
+	return cpp ? STD_CPP98 : STD_C78;
+}
+
+std::string Program::standard_display_name(LanguageStd std)
+{
+	std::string name = standard_canonical_name(std);
+	if ( !name.empty() && name[0] == 'c' )
+		name[0] = 'C';
+	return name;
 }
 
 bool Program::standard_of_canonical_name(const char *name, LanguageStd &out)

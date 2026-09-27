@@ -6135,8 +6135,9 @@ void Program::add_keywords()
     // `constinit` are registered below AFTER being removed from the erase map,
     // and need decl-specifier consume handling; `inline` and `noexcept` keep
     // their erasure in NON-C++ modes only.
-    struct CppReservedKw { const char *kw; LanguageStd min_std; };
-    static const CppReservedKw cpp_reserved[] = {
+    // The version each is reserved from is its C++ standard in the keyword
+    // lists (keyword_origin, src/madc_keywords.cpp): one home for the fact.
+    static const char *const cpp_reserved[] = {
 	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
 	// commented) is validated-but-not-yet-activated: hard-reserving them is a
 	// genuine multi-site de-shim (every direct `type()==ttIdentifier` check
@@ -6165,7 +6166,7 @@ void Program::add_keywords()
 	// labels on declarations go through consume_gnu_asm_label (dynamic_cast
 	// to TokenIdent, works for the keyword token). The GNU spellings
 	// `__asm__`/`__asm` stay contextual (double-underscore impl-reserved).
-	{ "asm",              STD_CPP98 },
+	"asm",
 	// Slice 2 (declaration keywords): access specifiers and member/base
 	// specifiers. Every parse site reads them via
 	// is_contextual_identifier_token / contextual_identifier_name (base-spec
@@ -6175,13 +6176,13 @@ void Program::add_keywords()
 	// handler (export-template was removed in C++11; C++20 module `export`
 	// does not appear in the classic headers madc parses), so it is reserved
 	// for completeness only.
-	{ "explicit",         STD_CPP98 },
-	{ "mutable",          STD_CPP98 },
-	{ "virtual",          STD_CPP98 },
-	{ "export",           STD_CPP98 },
-	{ "public",           STD_CPP98 },
-	{ "private",          STD_CPP98 },
-	{ "protected",        STD_CPP98 },
+	"explicit",
+	"mutable",
+	"virtual",
+	"export",
+	"public",
+	"private",
+	"protected",
 	// Slice 3 (typename) — DEFERRED (staged, NOT reserved). Every direct
 	// parse site already reads contextual_identifier_name / TokenIdent::str
 	// (so `template<typename T>` and `typename X::type{...}` are fine), but
@@ -6198,66 +6199,68 @@ void Program::add_keywords()
 	// ignored decl-specifier it is consumed by TokenCppKeyword::parse (leading
 	// and storage-delegated `static constexpr` / `const constexpr`) and the
 	// member-specifier loop; is_ignored_cpp_specifier_token recognizes it.
-	{ "constexpr",        STD_CPP11 },
+	"constexpr",
 	// Slice 8 (thread_local, C++11 — self-host arc 2026-09-17): a real
 	// storage-class specifier, NOT ignored: TokenCppKeyword::parse records it
 	// (parsing_thread_local_decl, consumed by parseDeclaration exactly like
 	// parsing_static_decl) and the variable carries vfTHREADLOCAL, which the
 	// CIR builder lowers to c2mir's N_THREAD_LOCAL (`_Thread_local`). The C11
 	// spelling `_Thread_local` is registered below, gated on C11.
-	{ "thread_local",     STD_CPP11 },
+	"thread_local",
 	// Slice 6 (consteval/constinit, C++20): ignored decl-specifiers, handled
 	// by the same is_ignored_cpp_specifier_token path as constexpr.
-	{ "consteval",        STD_CPP20 },
-	{ "constinit",        STD_CPP20 },
+	"consteval",
+	"constinit",
 	// inline (un-erased 2026-07-24, ELF-completion S4 follow-through): a
 	// real decl-specifier consumed by TokenCppKeyword::parse (which also
 	// owns `inline namespace`) and the member-specifier loop; it carries
 	// vague linkage — bodied external-linkage functions/variables it
 	// qualifies emit linkonce (STB_WEAK) so per-TU header copies merge at
 	// native links. C modes keep the erasure (see _tokenizer_init).
-	{ "inline",           STD_CPP98 },
+	"inline",
 	// Slice 4 (expression keywords) — validating subset first. The named
 	// casts / typeid / decltype / alignof are recognized by spelling in
 	// parse_constant_primary and the expression parser (de-shimmed), and are
 	// implausible as identifiers. `this`, `sizeof`, `nullptr`, `true`,
 	// `false` are staged separately (SESSION-16 §4 flagged semantic regressions).
-	{ "static_cast",      STD_CPP98 },
-	{ "const_cast",       STD_CPP98 },
-	{ "reinterpret_cast", STD_CPP98 },
-	{ "dynamic_cast",     STD_CPP98 },
-	{ "typeid",           STD_CPP98 },
-	{ "decltype",         STD_CPP11 },
-	{ "alignof",          STD_CPP11 },
+	"static_cast",
+	"const_cast",
+	"reinterpret_cast",
+	"dynamic_cast",
+	"typeid",
+	"decltype",
+	"alignof",
 	// noexcept — BOTH surfaces ([expr.unary.noexcept] operator and the
 	// [except.spec] specifier — un-erased 2026-08-04): the operator folds by
 	// spelling in parse_constant_primary and the expression parser (like
 	// sizeof/alignof); the specifier is captured by parseFunction's
 	// trailing-qualifier walk (NxTrue/NxNone/NxUnknown). Non-C++ modes keep
 	// the getToken() balanced-paren erasure (mirror of inline's C-mode split).
-	{ "noexcept",         STD_CPP11 },
+	"noexcept",
 	// Slice 4b: boolean / pointer literals.
-	{ "true",             STD_CPP98 },
-	{ "false",            STD_CPP98 },
-	{ "nullptr",          STD_CPP11 },
+	"true",
+	"false",
+	"nullptr",
 	// Slice 4c: sizeof (bisecting — SESSION-16 §4 flagged the expr-keyword set).
-	{ "sizeof",           STD_CPP98 },
+	"sizeof",
 	// Slice 4d: this (bisecting — madc models the receiver as __this).
-	{ "this",             STD_CPP98 },
-	{ 0,                  STD_CPP98 }
+	"this",
+	0
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
-	if ( cpp_reserved[i].kw
-	  && cpp_keyword_active(cpp_reserved[i].min_std)
-	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
-	    keyword_map[cpp_reserved[i].kw] =
-		new TokenCppKeyword(cpp_reserved[i].kw);
+    {
+	const KeywordOrigin *k = cpp_reserved[i] ? keyword_origin(cpp_reserved[i]) : NULL;
+	if ( k && k->in_cpp && cpp_keyword_active(k->cpp_since)
+	  && keyword_map.find(cpp_reserved[i]) == keyword_map.end() )
+	    keyword_map[cpp_reserved[i]] = new TokenCppKeyword(cpp_reserved[i]);
+    }
     // C11 `_Thread_local` ([6.7.1]): the C spelling of the same storage-class
     // specifier — one parse arm (TokenCppKeyword::parse, by spelling), one
     // variable flag, one lowering. Reserved from C11 on, and in every C++ /
     // madc mode (an implementation-reserved identifier there; clang++ honours
     // it as an extension). Never in C89/C99, where it is a valid identifier.
-    if ( language_std == STD_MADC || language_std >= STD_C11 )
+    if ( language_std == STD_MADC
+      || language_std >= keyword_origin("_Thread_local")->c_since )
 	if ( keyword_map.find("_Thread_local") == keyword_map.end() )
 	    keyword_map["_Thread_local"] = new TokenCppKeyword("_Thread_local");
     // GNU `__thread`: the same specifier's pre-standard spelling, an

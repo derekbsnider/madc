@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### `?while` says where a keyword comes from
+
+`?while` printed "while is a keyword of madc" in the madc dialect: it named
+the session's standard. It now names the keyword's origin. A keyword the
+language's first standard has is "a keyword of C" (`while`, `for`) or "a
+keyword of C++" (`class`). A later one names the standard it first arrived
+in, among the session's languages: `const` is C89's, `constexpr` C++11's,
+`restrict` C99's. Only the dialect's own words say madc (`defer`). A type
+keyword such as `int` is described as a keyword and as its type. The facts
+come from one table of the standards' keyword lists, `src/madc_keywords.cpp`.
+madc's C++ keyword reservation now reads each keyword's version from that
+table instead of repeating it.
+
+Tests: the keyword case in `test_repl_session`. It also checks that every
+keyword madc reserves, under seven standards, is in the table.
+
 ### REPL command: `?name` / `%pinfo name` (§37 item 8, slice 2)
 
 `?sq` describes what the session knows of a name, in IPython's fields. For a

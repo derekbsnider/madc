@@ -2036,7 +2036,7 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
 		 "Members:   int x\n           int y" },
 	{ "?N", "Macro:     #define N 5" },
 	{ "?SQ", "Macro:     #define SQ(a) ((a) * (a))" },
-	{ "?while", "while is a keyword of c17" },
+	{ "?while", "while is a keyword of C" },
     };
     for ( size_t i = 0; i < sizeof(described) / sizeof(described[0]); ++i )
     {
@@ -2102,4 +2102,55 @@ TEST_CASE("session commands: ?name and %pinfo describe a name")
     CHECK(m.shown() == "Type:      var\nDefined:   @ REPL[1]:1");
     REQUIRE(m.submit("?println"));
     CHECK(m.shown() == "Type:      function template");
+}
+
+// Where a keyword comes from (owner, 2026-09-27): the language whose first
+// standard has it ("C", "C++"), else the standard it first arrived in, among
+// the session's languages; "madc" only for the dialect's own.
+TEST_CASE("?name: where a keyword comes from")
+{
+    struct { const char *std, *name, *shown; } keywords[] = {
+	{ "--std=madc", "while", "while is a keyword of C" },
+	{ "--std=madc", "for", "for is a keyword of C" },
+	{ "--std=madc", "const", "const is a keyword of C89" },	// after K&R C
+	{ "--std=madc", "class", "class is a keyword of C++" },
+	{ "--std=madc", "inline", "inline is a keyword of C++" },	// C++98 before C99
+	{ "--std=madc", "constexpr", "constexpr is a keyword of C++11" },
+	{ "--std=madc", "defer", "defer is a keyword of madc" },
+	{ "--std=c17", "restrict", "restrict is a keyword of C99" },
+	{ "--std=c17", "_Thread_local", "_Thread_local is a keyword of C11" },
+	{ "--std=c17", "operator", "operator is a keyword of C++" },	// one C lacks
+	{ "--std=c++17", "thread_local", "thread_local is a keyword of C++11" },
+	{ "--std=c++17", "while", "while is a keyword of C" },
+    };
+    for ( size_t i = 0; i < sizeof(keywords) / sizeof(keywords[0]); ++i )
+    {
+	CAPTURE(keywords[i].std);
+	CAPTURE(keywords[i].name);
+	InteractiveSession s;
+	REQUIRE(s.begin(keywords[i].std));
+	REQUIRE(s.submit(std::string("?") + keywords[i].name));
+	CHECK(s.shown() == keywords[i].shown);
+    }
+    // A type keyword is its type too.
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    REQUIRE(c.submit("?int"));
+    CHECK(c.shown() == "int is a keyword of C\n\nType:      int");
+    // The gate: every keyword madc reserves, under each language, is in the
+    // standards' lists, so `?` never falls back to saying nothing of it.
+    const char *stds[] = { "--std=madc", "--std=c89", "--std=c17", "--std=c23",
+			   "--std=c++98", "--std=c++17", "--std=c++26" };
+    for ( size_t i = 0; i < sizeof(stds) / sizeof(stds[0]); ++i )
+    {
+	CAPTURE(stds[i]);
+	InteractiveSession k;
+	REQUIRE(k.begin(stds[i]));
+	k.program().keyword_map.for_each_readonly([&](const char *key, TokenKeyword *const &) -> bool {
+	    CAPTURE(key);
+	    const bool listed = Program::keyword_origin(key) != NULL;
+	    CHECK(listed);
+	    return false;
+	});
+    }
 }

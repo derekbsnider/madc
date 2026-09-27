@@ -5804,6 +5804,34 @@ public:
     // conveniences, not file-kind names: "c" is the C FAMILY there).
     static const char *standard_canonical_name(LanguageStd std);
     static bool standard_of_canonical_name(const char *name, LanguageStd &out);
+    // The year a standard names (c99 1999, c++11 2011): the order in which
+    // standards arrived, across C and C++. 0 for the madc dialect.
+    static int standard_year(LanguageStd std);
+    // The first standard of a language (C: c78, C++: c++98), from the table.
+    static LanguageStd lowest_standard(bool cpp);
+    // A standard's name as prose writes it: C99, C++11.
+    static std::string standard_display_name(LanguageStd std);
+    // The standards' keyword lists (src/madc_keywords.cpp): the standard a
+    // keyword first arrived in, in C and in C++, or the extension it is.
+    // Facts about the languages; what madc reserves in a mode is
+    // add_keywords' policy, which reads the version it gates on from here.
+    struct KeywordOrigin
+    {
+	enum class Extension : unsigned char { none, madc, gnu };
+	const char *spelling;
+	bool in_c;
+	LanguageStd c_since;
+	bool in_cpp;
+	LanguageStd cpp_since;
+	Extension ext;
+    };
+    static const KeywordOrigin *keyword_origin(const std::string &spelling);
+    // Where a keyword comes from, as `?name` says it: "C" or "C++" for one
+    // the language's first standard has, else the standard it first arrived
+    // in ("C99", "C++11"), among the session's languages (a C session's are
+    // C's; C++'s is named for a keyword C lacks); "madc" or "GNU C" for an
+    // extension. Empty for a spelling the lists do not know.
+    std::string keyword_provenance(const std::string &spelling) const;
     bool aot_tracking;
     bool aot_skip_eval_shims;	// this build's artifact can never be host-called
 				// through the value ABI (standalone executable; any
