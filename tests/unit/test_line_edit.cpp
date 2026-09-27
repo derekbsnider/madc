@@ -491,3 +491,126 @@ TEST_CASE("the painter: Julia's full refresh, relative to the cursor")
     CHECK(line_painter::list(items, 8) == "abc  xyz\r\nabd\r\n");
     CHECK(line_painter::fresh_row(4) == "    \r\x1b[0K");
 }
+
+TEST_CASE("history: the ring skips blanks and repeats; prefix and search lookups")
+{
+    madc::hub::line_history h;
+    CHECK(h.add("int x = 1;"));
+    CHECK_FALSE(h.add("int x = 1;"));		// a repeat of the newest
+    CHECK_FALSE(h.add("  \n"));			// blank
+    CHECK(h.add("x * 2"));
+    CHECK(h.add("int y = x;"));
+    REQUIRE(h.size() == 3u);
+    CHECK(h.prefix_before("int", h.size()) == 2u);
+    CHECK(h.prefix_before("int", 2) == 0u);
+    CHECK(h.prefix_before("int", 0) == madc::hub::line_history::npos);
+    CHECK(h.prefix_after("int", 0) == 2u);
+    CHECK(h.prefix_after("zz", 0) == madc::hub::line_history::npos);
+    size_t at = 0;
+    CHECK(h.holding_before("x", h.size(), at) == 2u);
+    CHECK(at == 8u);				// the last occurrence
+    CHECK(h.holding_before("x", 1, at) == 1u);
+    CHECK(h.holding_after("x", 0, at) == 0u);
+    CHECK(at == 4u);				// the first occurrence
+}
+
+TEST_CASE("history: Julia's record format, written and read back")
+{
+    std::string r = madc::hub::history_record("2026-09-27 15:38:39Z", "c17",
+					      "int f()\n{\n\n}");
+    CHECK(r == "# time: 2026-09-27 15:38:39Z\n# mode: c17\n"
+	       "\tint f()\n\t{\n\t\n\t}\n");
+    std::string file = r
+	+ madc::hub::history_record("2026-09-27 15:38:40Z", "c++17", "x")
+	+ "garbage line\n"
+	+ "# time: 2026-09-27 15:38:41Z\r\n# mode: madc\r\n\tv + 1\r\n";
+    std::vector<std::pair<std::string, std::string> > recs =
+	madc::hub::history_records(file);
+    REQUIRE(recs.size() == 3u);
+    CHECK(recs[0].first == "c17");
+    CHECK(recs[0].second == "int f()\n{\n\n}");
+    CHECK(recs[1].first == "c++17");
+    CHECK(recs[1].second == "x");
+    CHECK(recs[2].first == "madc");
+    CHECK(recs[2].second == "v + 1");
+}
+
+TEST_CASE("Up on the first line recalls by prefix; Down walks back (Julia)")
+{
+    madc::hub::line_history h;
+    h.add("int apple = 1;");
+    h.add("x * 2");
+    h.add("int banana = 2;");
+    bench t;
+    t.ed.set_history(&h);
+    t.type("\x1b[A");				// empty prefix: the newest
+    CHECK(t.ed.text() == "int banana = 2;");
+    t.type("\x1b[A");
+    CHECK(t.ed.text() == "x * 2");
+    t.type("\x1b[B\x1b[B");			// past the newest: what was typed
+    CHECK(t.ed.text() == "");
+
+    bench p;
+    p.ed.set_history(&h);
+    p.type("int");
+    p.type("\x1b[A");				// the prefix is the text before the caret
+    CHECK(p.ed.text() == "int banana = 2;");
+    CHECK(p.ed.caret() == 3u);			// the caret stays after it
+    p.type("\x1b[A");
+    CHECK(p.ed.text() == "int apple = 1;");
+    p.type("\x1b[A");				// no older one: stays
+    CHECK(p.ed.text() == "int apple = 1;");
+    p.type("\x1b[B\x1b[B");
+    CHECK(p.ed.text() == "int");
+
+    // An edit keeps the recalled entry as typed; Up then starts afresh.
+    bench e;
+    e.ed.set_history(&h);
+    e.type("\x1b[A\x05!");
+    CHECK(e.ed.text() == "int banana = 2;!");
+    e.type("\x1b[B");
+    CHECK(e.ed.text() == "int banana = 2;!");
+}
+
+TEST_CASE("Ctrl-R searches history incrementally; Enter leaves the match unrun")
+{
+    madc::hub::line_history h;
+    h.add("int apple = 1;");
+    h.add("apple * 2");
+    h.add("int banana = 2;");
+    bench t;
+    t.ed.set_history(&h);
+    t.type("typed");
+    t.type("\x12");				// ^R
+    CHECK(t.ed.searching());
+    CHECK(t.ed.view().prompt == "(reverse-i-search)'': ");
+    t.type("apple");
+    CHECK(t.ed.view().prompt == "(reverse-i-search)'apple': ");
+    CHECK(t.ed.view().lines[0] == "apple * 2");
+    t.type("\x12");				// the next older holding it
+    CHECK(t.ed.view().lines[0] == "int apple = 1;");
+    t.type("\x12");				// none older: failed, the match stays
+    CHECK(t.ed.view().prompt == "(failed reverse-i-search)'apple': ");
+    CHECK(t.ed.view().lines[0] == "int apple = 1;");
+    t.type("\r");				// accept: in the entry, not run
+    CHECK_FALSE(t.ed.searching());
+    CHECK(t.ed.text() == "int apple = 1;");
+    CHECK(t.ed.caret() == 4u);
+    CHECK(t.taken.empty());
+
+    // Ctrl-G restores the entry; another key keeps the match and acts.
+    bench g;
+    g.ed.set_history(&h);
+    g.type("mine\x12" "ban\x07");		// ^G
+    CHECK(g.ed.text() == "mine");
+    g.type("\x12" "ban\x05!");			// ^E acts on the match
+    CHECK(g.ed.text() == "int banana = 2;!");
+
+    // A second ^R with an empty query takes the last one.
+    bench q;
+    q.ed.set_history(&h);
+    q.type("\x12" "apple\r");
+    q.type("\x03");
+    q.type("\x12\x12");
+    CHECK(q.ed.view().lines[0] == "apple * 2");
+}

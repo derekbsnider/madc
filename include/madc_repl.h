@@ -14,6 +14,7 @@
 #define __MADC_REPL_H 1
 
 #include <iosfwd>
+#include <string>
 
 class InteractiveSession;
 
@@ -33,11 +34,19 @@ namespace madc { namespace hub { class line_target; } }
 // The REPL on a terminal (plan §41.7a, D23): each entry is read by the line
 // editor on `term`, which holds the terminal only while it reads. Enter
 // asks the session (offer) and the entry runs as a cooked line's would;
-// shown values go to `out`. Returns the exit status at the end of input
-// (Ctrl-D on an empty entry), or -1 when `term` cannot begin the first
-// entry, which is the host's cue for cooked lines. The unit tests give it
-// a scripted target.
+// shown values go to `out`. Up recalls, and Ctrl-R searches, the entries
+// of the history file at `history_path` typed in the session's language,
+// and each entry taken is appended there (Julia's records); an empty path
+// keeps history for the session alone. Returns the exit status at the end
+// of input (Ctrl-D on an empty entry), or -1 when `term` cannot begin the
+// first entry, which is the host's cue for cooked lines. The unit tests
+// give it a scripted target.
 int madc_repl_edit(InteractiveSession &session, madc::hub::line_target &term,
-		   std::ostream &out);
+		   std::ostream &out, const std::string &history_path);
+
+// The history file's default place: $XDG_STATE_HOME/madc/history
+// (~/.local/state/madc/history), or %LOCALAPPDATA%\madc\history on
+// Windows. Empty when there is no home for it.
+std::string madc_repl_history_path();
 
 #endif

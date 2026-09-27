@@ -9,6 +9,9 @@
 thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <iostream>
@@ -25,6 +28,7 @@ thread_local bool madc_verbose = false;
 #include "madc.h"
 #include "madc_session.h"
 #include "madc_repl.h"
+#include "madcdis/line_edit.h"
 #include "madcdis/tui_model.h"
 #include "madcdis/tui_provider.h"
 
@@ -204,7 +208,7 @@ static void check_first_slice_typed(const std::string &std_option,
 			     "}\r", "twice(x)\r", "int y = ;\r", "x\r",
 			     "\x04" });
     std::ostringstream out;
-    CHECK(madc_repl_edit(s, term, out) == 0);
+    CHECK(madc_repl_edit(s, term, out, "") == 0);
     CHECK(out.str() == "20\n20\n10\n");
     CAPTURE(err.str());
     CHECK(occurrences(err.str(), "error:") == 1);
@@ -234,7 +238,7 @@ TEST_CASE("a paste of three entries runs them one by one (D23)")
     scripted_terminal term({ "\x1b[200~int a = 1;\na\nint b = 2;\n\x1b[201~",
 			     "b\r", "\x04" });
     std::ostringstream out;
-    CHECK(madc_repl_edit(s, term, out) == 0);
+    CHECK(madc_repl_edit(s, term, out, "") == 0);
     CHECK(out.str() == "1\n2\n");
     CHECK(s.submitted() == 4);
 }
@@ -247,7 +251,7 @@ TEST_CASE("Ctrl-C drops an entry, and an entry pending at the end runs (D23)")
     s.program().error_stream = &err;
     scripted_terminal term({ "int q = 5", "\x03", "q\r", "int z = 4;\rz" });
     std::ostringstream out;
-    CHECK(madc_repl_edit(s, term, out) == 0);
+    CHECK(madc_repl_edit(s, term, out, "") == 0);
     // The dropped entry never ran, so q is undeclared; z runs at the end.
     CHECK(out.str() == "4\n");
     CAPTURE(err.str());
@@ -267,7 +271,7 @@ TEST_CASE("Enter's verdicts through the session: extendable, and the third Enter
 			     "x\r", "if (x > 5) x = 1;\r", "else x = 2;\r",
 			     "x\r", "\x04" });
     std::ostringstream out;
-    CHECK(madc_repl_edit(s, term, out) == 0);
+    CHECK(madc_repl_edit(s, term, out, "") == 0);
     CHECK(out.str() == "10\n1\n");
 
     // An unbalanced brace: the third Enter in a row takes it, refused.
@@ -277,9 +281,59 @@ TEST_CASE("Enter's verdicts through the session: extendable, and the third Enter
     t.program().error_stream = &err;
     scripted_terminal open({ "int f(int a)\r{\r", "\r", "\r", "\x04" });
     std::ostringstream tout;
-    CHECK(madc_repl_edit(t, open, tout) == 0);
+    CHECK(madc_repl_edit(t, open, tout, "") == 0);
     CAPTURE(err.str());
     CHECK(occurrences(err.str(), "error:") == 1);
     CHECK(err.str().find("'{' is not closed") != std::string::npos);
     CHECK(t.submitted() == 1);
+}
+
+// History (plan §41.7a, slice 2): Up recalls the entries a history file
+// holds in the session's language (a C++ record stays out of a C session),
+// and each entry taken is appended as Julia's record, a repeat of the
+// newest skipped.
+TEST_CASE("history: the file's entries are recalled and taken entries appended (D23)")
+{
+#ifdef _WIN32
+    const char *tmp = getenv("TEMP");
+#else
+    const char *tmp = getenv("TMPDIR");
+#endif
+    std::string path = std::string(tmp && *tmp ? tmp : ".")
+	+ "/madc_test_repl_history_" + std::to_string((long long)time(NULL))
+	+ "_" + std::to_string((long long)(size_t)&path);
+    {
+	std::ofstream f(path.c_str(), std::ios::binary);
+	f << madc::hub::history_record("2026-09-27 10:00:00Z", "c17", "3 * 3")
+	  << madc::hub::history_record("2026-09-27 10:00:01Z", "c++17", "4 * 4")
+	  << madc::hub::history_record("2026-09-27 10:00:02Z", "c11", "5 * 5");
+    }
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    scripted_terminal term({ "\x1b[A\r", "\x1b[A\x1b[A\x1b[A\r", "\x04" });
+    std::ostringstream out;
+    CHECK(madc_repl_edit(s, term, out, path) == 0);
+    // The newest C entry, then the oldest (Up stops there); the C++ one
+    // never shows.
+    CHECK(out.str() == "25\n9\n");
+    std::ifstream in(path.c_str(), std::ios::binary);
+    std::ostringstream text;
+    text << in.rdbuf();
+    std::vector<std::pair<std::string, std::string> > recs =
+	madc::hub::history_records(text.str());
+    REQUIRE(recs.size() == 4u);		// 5 * 5 again was a repeat: no record
+    CHECK(recs[3].first == "c17");
+    CHECK(recs[3].second == "3 * 3");
+    in.close();
+    std::remove(path.c_str());
+
+    // In-session only (no file): the ring still recalls this session's
+    // entries, and Ctrl-R finds one and leaves it for Enter.
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=c17"));
+    scripted_terminal again({ "11 + 0\r", "22 + 0\r", "33 + 0\r",
+			      "\x12" "22", "\r", "\r", "2\x1b[A\r", "\x04" });
+    std::ostringstream mout;
+    CHECK(madc_repl_edit(m, again, mout, "") == 0);
+    CHECK(mout.str() == "11\n22\n33\n22\n22\n");
 }

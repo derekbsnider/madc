@@ -268,6 +268,8 @@ static void print_usage(const char *prog)
 "  -                       read the program from stdin (gcc, python)\n"
 "  -i, --interactive       the REPL, even when stdin is not a terminal; with\n"
 "                          a <file>, run it first and keep its names (python -i)\n"
+"  --history-file=PATH|no  where the REPL keeps its history (default\n"
+"                          $XDG_STATE_HOME/madc/history); no keeps none\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
 "                          translation unit, link the modules, run the entry.\n"
 "                          Two shapes by top-level JSON kind: an OBJECT is the\n"
@@ -480,7 +482,9 @@ static TokenProgram *tokenize_input(Program &prog, const char *path)
 // it has one, runs with the file lane's argv (the path, then the program's
 // arguments). The prompt follows whatever they did, as python's does: a
 // refused file leaves nothing, a stopped main leaves the file's names.
+// `history` is the line editor's history file (D23; empty: none).
 static int run_repl(std::unique_ptr<Program> prog, bool terminal,
+		    const std::string &history,
 		    int file_argc = 0, char **file_argv = NULL)
 {
 #ifdef MADC_CROSS_TARGET
@@ -509,7 +513,7 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
 	    madc::hub::create_line_target());
 	if ( term )
 	{
-	    int rc = madc_repl_edit(session, *term, std::cout);
+	    int rc = madc_repl_edit(session, *term, std::cout, history);
 	    if ( rc >= 0 )
 		return rc;
 	}
@@ -584,6 +588,8 @@ int main(int argc, char **argv)
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
     bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
+    std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
+    bool history_file_given = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -843,6 +849,14 @@ int main(int argc, char **argv)
             // D20: the REPL even on a piped stdin (python -i); with a
             // program file, the file first.
             interactive = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--history-file=", 15) == 0) {
+            // D23 (plan §41.7a): the REPL's history file, Julia's flag;
+            // `no` keeps history for the session alone.
+            history_file = argv[i] + 15;
+            if (history_file == "no")
+                history_file.clear();
+            history_file_given = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0
                 || strcmp(argv[i], "-?") == 0) {
@@ -1389,7 +1403,9 @@ int main(int argc, char **argv)
 	    return 1;
 	}
 	if ( interactive || terminal )
-	    return run_repl(std::move(prog), terminal);
+	    return run_repl(std::move(prog), terminal,
+			    history_file_given ? history_file
+					       : madc_repl_history_path());
 	static char stdin_path[] = "-";
 	stdin_argv.assign(argv, argv + argc);
 	stdin_argv.push_back(stdin_path);
@@ -1398,8 +1414,10 @@ int main(int argc, char **argv)
 	filearg = argc++;
     }
     else if ( interactive )
-	return run_repl(std::move(prog), terminal, argc - filearg,
-			argv + filearg);
+	return run_repl(std::move(prog), terminal,
+			history_file_given ? history_file
+					   : madc_repl_history_path(),
+			argc - filearg, argv + filearg);
 
     if ( argc >= 2 && filearg < argc )
     {

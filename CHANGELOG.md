@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### The REPL keeps a history (D23, slice 2)
+
+On the first line of an entry, Up recalls earlier entries that start with
+what you have typed, and Down walks back to what you had typed. That is
+how Julia and IPython recall. Ctrl-R and Ctrl-S search history as readline
+does; Enter leaves the match to edit or run, and Ctrl-G puts the entry
+back. Every entry the session takes is added, including a refused one, but
+not a repeat of the one before. Entries are saved as they are taken, in
+Julia's format, to `$XDG_STATE_HOME/madc/history`
+(`~/.local/state/madc/history`), or `%LOCALAPPDATA%\madc\history` on
+Windows. A later session recalls the ones typed in its own language: C,
+C++ or madc. `--history-file=PATH` moves the file and `--history-file=no`
+keeps none.
+
+Tests: the history cases in `test_line_edit` and `test_repl_cli`.
+
 ### A shown string keeps its UTF-8 text
 
 A REPL entry that shows a string now writes UTF-8 text as itself, as Julia

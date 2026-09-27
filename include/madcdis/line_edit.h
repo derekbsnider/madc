@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "madcdis/keys.h"
@@ -59,7 +60,8 @@ enum class line_action : unsigned char
     delete_back, delete_forward, delete_or_end,
     kill_to_end, kill_to_start, kill_space_back, kill_word_back,
     kill_word_forward, yank, transpose, undo,
-    cancel, clear_screen
+    cancel, clear_screen,
+    search_back, search_forward, abort	// ^R, ^S, ^G (slice 2)
 };
 
 // The default keys: readline's Emacs set. Built once; a finalize failure
@@ -103,6 +105,9 @@ inline const tui_bindings &line_edit_bindings()
 	    { "^_",	       "undo",		       line_action::undo },
 	    { "^c",	       "interrupt",	       line_action::cancel },
 	    { "^l",	       "clear-screen",	       line_action::clear_screen },
+	    { "^r",	       "reverse-search-history", line_action::search_back },
+	    { "^s",	       "forward-search-history", line_action::search_forward },
+	    { "^g",	       "abort",		       line_action::abort },
 	};
 	tui_bindings b;
 	for ( size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i )
@@ -180,6 +185,144 @@ struct line_view
     line_view() : caret_line(0), caret_byte(0) {}
 };
 
+// ------------------------------------------------------------- the history
+// The entries a session took, oldest first (plan §41.7a): what Up recalls
+// and Ctrl-R searches. The host owns it across entries, fills it from the
+// history file and adds each entry the session takes; the model only reads
+// it. A blank entry and a repeat of the newest are not added (Julia's rule,
+// measured).
+class line_history
+{
+    std::vector<std::string> _entries;
+
+public:
+    enum : size_t { npos = (size_t)-1 };
+
+    // True when the entry joined the ring (the host then writes its record).
+    bool add(const std::string &entry)
+    {
+	if ( entry.find_first_not_of(" \t\n") == std::string::npos )
+	    return false;
+	if ( !_entries.empty() && _entries.back() == entry )
+	    return false;
+	_entries.push_back(entry);
+	return true;
+    }
+    size_t size() const { return _entries.size(); }
+    const std::string &at(size_t i) const { return _entries[i]; }
+
+    // Prefix recall (Up / Down): the newest entry before `from` that starts
+    // with `prefix`, or the oldest after it. npos when there is none.
+    size_t prefix_before(const std::string &prefix, size_t from) const
+    {
+	for ( size_t i = from > _entries.size() ? _entries.size() : from; i > 0; --i )
+	    if ( _entries[i - 1].compare(0, prefix.size(), prefix) == 0 )
+		return i - 1;
+	return npos;
+    }
+    size_t prefix_after(const std::string &prefix, size_t from) const
+    {
+	for ( size_t i = from + 1; i < _entries.size(); ++i )
+	    if ( _entries[i].compare(0, prefix.size(), prefix) == 0 )
+		return i;
+	return npos;
+    }
+
+    // Incremental search (Ctrl-R / Ctrl-S): the newest entry at or before
+    // `from` that holds `needle` (its last occurrence), or the oldest at or
+    // after it (its first). `at` gets the occurrence's byte. npos when none.
+    size_t holding_before(const std::string &needle, size_t from,
+			  size_t &at) const
+    {
+	if ( _entries.empty() )
+	    return npos;
+	for ( size_t i = (from >= _entries.size() ? _entries.size() - 1 : from) + 1;
+	      i > 0; --i )
+	{
+	    size_t p = _entries[i - 1].rfind(needle);
+	    if ( p != std::string::npos )
+	    {
+		at = p;
+		return i - 1;
+	    }
+	}
+	return npos;
+    }
+    size_t holding_after(const std::string &needle, size_t from,
+			 size_t &at) const
+    {
+	for ( size_t i = from; i < _entries.size(); ++i )
+	{
+	    size_t p = _entries[i].find(needle);
+	    if ( p != std::string::npos )
+	    {
+		at = p;
+		return i;
+	    }
+	}
+	return npos;
+    }
+};
+
+// The history FILE's record (Julia's repl_history.jl, measured): a time
+// line, a mode line naming the prompt the entry was typed at (D22's
+// standard name), then every line of the entry after a tab, so a line of an
+// entry can never begin a record.
+inline std::string history_record(const std::string &time_utc,
+				  const std::string &mode,
+				  const std::string &entry)
+{
+    std::string r = "# time: " + time_utc + "\n# mode: " + mode + "\n";
+    size_t begin = 0;
+    for (;;)
+    {
+	size_t nl = entry.find('\n', begin);
+	r += '\t';
+	r.append(entry, begin, (nl == std::string::npos ? entry.size() : nl) - begin);
+	r += '\n';
+	if ( nl == std::string::npos )
+	    break;
+	begin = nl + 1;
+    }
+    return r;
+}
+
+// A history file's records, in file order: (mode, entry) pairs. A record
+// starts at its time line; lines after a tab are its entry's; other lines
+// are skipped, so a damaged record costs only itself.
+inline std::vector<std::pair<std::string, std::string> >
+history_records(const std::string &file)
+{
+    std::vector<std::pair<std::string, std::string> > out;
+    bool open = false, has_line = false;
+    size_t begin = 0;
+    while ( begin < file.size() )
+    {
+	size_t nl = file.find('\n', begin);
+	size_t end = nl == std::string::npos ? file.size() : nl;
+	std::string line = file.substr(begin, end - begin);
+	begin = end + 1;
+	if ( !line.empty() && line[line.size() - 1] == '\r' )
+	    line.erase(line.size() - 1);
+	if ( line.compare(0, 7, "# time:") == 0 )
+	{
+	    out.push_back(std::make_pair(std::string(), std::string()));
+	    open = true;
+	    has_line = false;
+	}
+	else if ( open && line.compare(0, 8, "# mode: ") == 0 )
+	    out.back().first = line.substr(8);
+	else if ( open && !line.empty() && line[0] == '\t' )
+	{
+	    if ( has_line )
+		out.back().second += '\n';
+	    out.back().second += line.substr(1);
+	    has_line = true;
+	}
+    }
+    return out;
+}
+
 // --------------------------------------------------------------- the model
 class line_edit
 {
@@ -204,7 +347,13 @@ public:
     explicit line_edit(const std::string &prompt)
 	: _prompt(prompt), _caret(0), _killing(false), _enters(0),
 	  _extendable(false), _pasted(false), _final(false), _tabs(0),
-	  _goal(npos), _clear(false) {}
+	  _goal(npos), _clear(false), _history(0), _recall(npos),
+	  _searching(false), _search_back(true), _search_failed(false),
+	  _match(npos), _match_at(0), _saved_caret(0) {}
+
+    // The history Up recalls and Ctrl-R searches (slice 2): the host's,
+    // read here and never changed. Null: no history.
+    void set_history(const line_history *h) { _history = h; }
 
     // A new entry: the text empties and its undo history with it. The kill
     // slot stays (readline's), and so does input queued past the last
@@ -223,7 +372,12 @@ public:
 	_goal = npos;
 	_clear = false;
 	_listed.clear();
+	_recall = npos;
+	_searching = false;
     }
+
+    // Is an incremental search (Ctrl-R / Ctrl-S) in progress?
+    bool searching() const { return _searching; }
 
     // Queue one read's events (ui_apply_keys's output).
     void feed(const std::vector<tui_event> &events)
@@ -238,6 +392,12 @@ public:
 	while ( !_queue.empty() )
 	{
 	    tui_event &e = _queue.front();
+	    if ( _searching )
+	    {
+		if ( search_event(e) )
+		    _queue.pop_front();
+		continue;
+	    }
 	    if ( e.kind == tui_event_kind::text )
 	    {
 		// A line break in text is pasted (a typed one is the enter
@@ -319,9 +479,22 @@ public:
     size_t caret() const { return _caret; }
     const std::string &prompt() const { return _prompt; }
 
-    // The painter's view, with the caret where it is or at the end.
-    line_view view() const { return make_view(_caret); }
-    line_view view_at_end() const { return make_view(_text.size()); }
+    // The painter's view, with the caret where it is or at the end. During a
+    // search it is readline's one line: the search prompt with its query,
+    // then the matched entry, the caret at the match.
+    line_view view() const
+    {
+	if ( _searching )
+	    return make_view(search_shown(), search_caret(), search_prompt());
+	return make_view(_text, _caret, _prompt);
+    }
+    line_view view_at_end() const
+    {
+	if ( _searching )
+	    return make_view(search_shown(), search_shown().size(),
+			     search_prompt());
+	return make_view(_text, _text.size(), _prompt);
+    }
 
     // Screen requests since the last take: a clear (Ctrl-L), and the
     // candidates a second Tab listed.
@@ -361,6 +534,15 @@ private:
     bool _clear;
     std::vector<std::string> _listed;
     std::deque<tui_event> _queue;
+    const line_history *_history;
+    size_t _recall;		// the recalled entry (npos: none)
+    std::string _live;		// what was typed before recall or search began
+    std::string _prefix;	// the text before the caret when recall began
+    bool _searching, _search_back, _search_failed;
+    std::string _query, _last_query;
+    size_t _match, _match_at;	// the matched entry, and the match in it
+    std::string _saved;		// the entry as it was when the search began
+    size_t _saved_caret;
 
     static bool space_byte(unsigned char b)
     {
@@ -416,21 +598,22 @@ private:
 	return begin + line.size();
     }
 
-    line_view make_view(size_t caret) const
+    static line_view make_view(const std::string &text, size_t caret,
+			       const std::string &prompt)
     {
 	line_view v;
-	v.prompt = _prompt;
+	v.prompt = prompt;
 	size_t begin = 0;
 	for (;;)
 	{
-	    size_t nl = _text.find('\n', begin);
-	    size_t end = nl == std::string::npos ? _text.size() : nl;
+	    size_t nl = text.find('\n', begin);
+	    size_t end = nl == std::string::npos ? text.size() : nl;
 	    if ( caret >= begin && caret <= end )
 	    {
 		v.caret_line = v.lines.size();
 		v.caret_byte = caret - begin;
 	    }
-	    v.lines.push_back(_text.substr(begin, end - begin));
+	    v.lines.push_back(text.substr(begin, end - begin));
 	    if ( nl == std::string::npos )
 		break;
 	    begin = nl + 1;
@@ -438,9 +621,194 @@ private:
 	return v;
     }
 
-    // Before a change: one undo step.
+    // ---- history recall (Up / Down), plan §41.7a slice 2
+    // Up on the first line: the newest older entry that starts with the
+    // text before the caret (both precedents), the caret staying after
+    // that prefix (Julia). The prefix and what was typed are kept while Up
+    // and Down go on, and Down past the newest restores what was typed.
+    void recall_older()
+    {
+	if ( !_history )
+	    return;
+	if ( _recall == npos )
+	{
+	    _live = _text;
+	    _prefix = _text.substr(0, _caret);
+	}
+	size_t i = _history->prefix_before(_prefix,
+				_recall == npos ? _history->size() : _recall);
+	if ( i == line_history::npos )
+	    return;
+	_recall = i;
+	_text = _history->at(i);
+	_caret = _prefix.size();
+    }
+    void recall_newer()
+    {
+	if ( !_history || _recall == npos )
+	    return;
+	size_t i = _history->prefix_after(_prefix, _recall);
+	if ( i == line_history::npos )
+	{
+	    _text = _live;
+	    _recall = npos;
+	}
+	else
+	{
+	    _recall = i;
+	    _text = _history->at(i);
+	}
+	_caret = _prefix.size() <= _text.size() ? _prefix.size() : _text.size();
+    }
+
+    // ---- incremental search (Ctrl-R / Ctrl-S), plan §41.7a slice 2
+    // readline's one-line form. Typing extends the query and searches on
+    // from the match; Ctrl-R / Ctrl-S step to the next older / newer entry
+    // holding it (an empty query takes the last one); Enter leaves the
+    // match in the entry, unrun (Julia); Ctrl-G or Ctrl-C restores the
+    // entry; any other key keeps the match and then acts.
+    void begin_search(bool back)
+    {
+	_searching = true;
+	_search_back = back;
+	_search_failed = false;
+	_query.clear();
+	_match = npos;
+	_match_at = 0;
+	_saved = _text;
+	_saved_caret = _caret;
+    }
+    // Search from the match (`again`: past it) for the query.
+    void search(bool again)
+    {
+	if ( !_history || _query.empty() )
+	{
+	    _search_failed = false;
+	    return;
+	}
+	size_t at = 0, i;
+	if ( _search_back )
+	{
+	    if ( again && _match == 0 )
+		i = line_history::npos;
+	    else
+		i = _history->holding_before(_query,
+		    _match == npos ? _history->size()
+				   : (again ? _match - 1 : _match), at);
+	}
+	else
+	    i = _match == npos ? line_history::npos
+		: _history->holding_after(_query,
+					  again ? _match + 1 : _match, at);
+	if ( i == line_history::npos )
+	{
+	    _search_failed = true;
+	    return;
+	}
+	_search_failed = false;
+	_match = i;
+	_match_at = at;
+    }
+    // The search ends with the match in the entry, or with the entry as
+    // it was.
+    void end_search(bool keep)
+    {
+	_searching = false;
+	if ( !_query.empty() )
+	    _last_query = _query;
+	if ( keep && _match != npos )
+	{
+	    _live = _saved;
+	    _prefix.clear();
+	    _recall = _match;	// Up and Down go on from the match
+	    _text = _history->at(_match);
+	    _caret = _match_at;
+	}
+	else
+	{
+	    _text = _saved;
+	    _caret = _saved_caret;
+	}
+    }
+    const std::string &search_shown() const
+    {
+	return _match != npos ? _history->at(_match) : _saved;
+    }
+    size_t search_caret() const
+    {
+	return _match != npos ? _match_at : _saved_caret;
+    }
+    std::string search_prompt() const
+    {
+	return std::string(_search_failed ? "(failed " : "(")
+	    + (_search_back ? "reverse-i-search" : "i-search") + ")'"
+	    + _query + "': ";
+    }
+    // One queued event while searching. False when the event stays queued
+    // for the editor (the search ended on it, and it acts next).
+    bool search_event(tui_event &e)
+    {
+	if ( e.kind == tui_event_kind::text )
+	{
+	    // A pasted line break ends the search as Enter does; the rest
+	    // of the paste is typed into the entry.
+	    size_t nl = e.text.find('\n');
+	    _query += e.text.substr(0, nl);
+	    search(false);
+	    if ( nl == std::string::npos )
+		return true;
+	    e.text.erase(0, nl + 1);
+	    end_search(true);
+	    return e.text.empty();
+	}
+	if ( e.kind != tui_event_kind::action || e.action_code == 0 )
+	    return true;
+	switch ( (line_action)e.action_code )
+	{
+	    case line_action::search_back:
+	    case line_action::search_forward:
+		_search_back = (line_action)e.action_code
+			       == line_action::search_back;
+		if ( _query.empty() )
+		{
+		    _query = _last_query;
+		    search(false);
+		}
+		else
+		    search(true);
+		return true;
+	    case line_action::delete_back:
+		if ( !_query.empty() )
+		{
+		    // The shorter query searches again from the newest entry
+		    // (backward) or from the match (forward).
+		    size_t i = _query.size() - 1;
+		    while ( i > 0 && ((unsigned char)_query[i] & 0xC0) == 0x80 )
+			--i;
+		    _query.erase(i);
+		    if ( _search_back )
+			_match = npos;
+		    search(false);
+		}
+		return true;
+	    case line_action::accept:
+		end_search(true);
+		return true;
+	    case line_action::abort:
+	    case line_action::cancel:
+		end_search(false);
+		return true;
+	    default:
+		end_search(true);
+		return false;	// the key acts on the entry
+	}
+    }
+
+    // Before a change: one undo step. A change ends a recall: the
+    // recalled entry is now what is typed.
     void edit()
     {
+	_recall = npos;
 	snapshot s;
 	s.text = _text;
 	s.caret = _caret;
@@ -538,7 +906,10 @@ private:
 	if ( a != line_action::complete )
 	    _tabs = 0;
 	if ( a != line_action::previous_line && a != line_action::next_line )
+	{
 	    _goal = npos;
+	    _recall = npos;	// the recalled entry is now what is typed
+	}
 	if ( kill )
 	    _killing = joins;
 	switch ( a )
@@ -573,7 +944,11 @@ private:
 	    {
 		size_t begin = line_begin(_caret);
 		if ( begin == 0 )
-		    break;	// the first line: history recall is slice 2's
+		{
+		    recall_older();	// the first line: history
+		    _goal = npos;
+		    break;
+		}
 		if ( _goal == npos )
 		    _goal = column_in_line(begin, _caret);
 		_caret = byte_at_column(line_begin(begin - 1), _goal);
@@ -583,7 +958,11 @@ private:
 	    {
 		size_t end = line_finish(_caret);
 		if ( end == _text.size() )
+		{
+		    recall_newer();	// the last line: history
+		    _goal = npos;
 		    break;
+		}
 		if ( _goal == npos )
 		    _goal = column_in_line(line_begin(_caret), _caret);
 		_caret = byte_at_column(end + 1, _goal);
@@ -674,6 +1053,11 @@ private:
 	    case line_action::clear_screen:
 		_clear = true;
 		break;
+	    case line_action::search_back:
+	    case line_action::search_forward:
+		begin_search(a == line_action::search_back);
+		break;
+	    case line_action::abort:	// outside a search: nothing to abort
 	    case line_action::none:
 	    default:
 		break;
