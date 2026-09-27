@@ -2649,6 +2649,34 @@ With no program file, the tail chooses in this order:
     - an instantiation's product (`vfINSTPRODUCT`) is skipped;
     - a namespace's member, found by identity among `namespace_map`'s values, needs a reachable namespace: the global one, one a using-directive names (not libstdc++'s own `std::__debug`), and std in the madc dialect.
   - Found off the path: B52 (madc `--std=c++17` accepts a bare `vector<int>`; g++ refuses).
+
+**Slice 4, designed against the code (2026-09-27): members after `.`, `->` and `::`.**
+- **The precedents:** `x.` Tab lists x's fields in Julia and its attributes in IPython. After `.` or `::`, an empty word lists every candidate. The Name context's "an empty word completes nothing" stays the top level's rule.
+- **Members of an object** (`a.`, `p->`, `a.b.c.`, `p->q.`):
+  - The chain is read from `completion_context`'s tokens: identifiers joined by `.` or `->`, back to its root. A call or a subscript in the chain (`f().`, `a[0].`) completes nothing yet.
+  - The root is a session name, found through the program scope's index (`TokenCpnd::findVariable`: an index probe, which materializes nothing). A result name (`ans.`, `_4.`) goes through the D12 result table, and an aliased result means its referent.
+  - Each link steps through its type:
+    - a reference is its referent;
+    - `->` takes one pointer level (`pointer_dd_of`), and `.` on a pointer completes nothing (clang's own "did you mean `->`" is later);
+    - a struct or class gives its `members`, then its `method_map` and `static_member_types`, then its bases' (`bases`), transitively;
+    - the madc carrier gives its script methods (`ddARRAY`'s `method_map`).
+  - A private or protected member (`member_access`) is not offered: a top-level entry is no member and no friend.
+  - Constructors, destructors and operators are no identifier, so the name rule already drops them.
+- **Members of a scope** (`X::`, `A::B::`):
+  - A namespace gives its members (`namespace_map[X]`), its types (`namespace_datatype_map[X]`), its nested namespaces (a `namespace_map` key `X::N`), its class templates (`defining_namespace == X`) and function templates (`FnTemplateDef::ns`).
+    - A scoped enum is registered as a namespace, so `Color::` lists its enumerators.
+  - A class gives its static members, its methods (for `&C::m`) and its nested types (`type_aliases`).
+  - **A module's namespace fills when its fragment is parsed.** `php::` in a madc session that has not used `php` has no members yet: the auto-include scan pulls `<ns_php>` at lex time, but only its parse registers the members.
+    - So a qualified query parses its attempt (`parse_entry`, not only `lex_entry`), inside the same rolled-back transaction, and reads the scope before the rollback.
+    - The parse stops at the probe, an unknown member, after the fragment's declarations are registered.
+    - A name the parse cannot reach (a later, still-lazy forest declaration) is not offered; measured, `std::` after `<vector>` holds `vector` (a class template in std).
+- **The rules of slice 3 hold:** identifiers only, reserved names only for a reserved-shaped word (so `_M_impl` stays out of `v.`), sorted, no repeats.
+- **Gates:**
+  - `test_repl_session`:
+    - C: a struct's fields through `.`, `->` and a two-link chain;
+    - C++: a class's public members, methods and a base's members, not its private ones; `std::string`'s `size`; `std::` members after `<vector>`; `geometry::` and `Color::`; `ans.` of a struct result;
+    - madc: a `var`'s methods, and `php::` in a fresh session.
+  - `test_repl_cli`: `p.` Tab Tab lists the fields at the editor.
 - **Gates:**
   - `test_repl_session`'s two completion cases: C17 names, keywords, a header's names and macros, the contexts that complete nothing, tags, the underscore rule, the rollback, C++ class and namespace names, madc's words and member row, and the result names;
   - `test_repl_cli`: §37 item 7 at the editor (`xylo⇥` runs as 3, `twi⇥(4)` as 8, and a second Tab lists).
