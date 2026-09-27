@@ -10478,8 +10478,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// pending temps, and let collect_global_ctors queue the full
 		// source assignment into __madc_global_init in declaration
 		// order. C modes keep the standard behavior (constant-only;
-		// c2mir diagnoses).
-		if (m_file_scope_decl && m_prog && m_prog->presents_as_cpp()
+		// c2mir diagnoses), except for an interactive entry's kept result
+		// (D12, plan §41.6a): the implementation's object, not one the
+		// program declares, which holds a value computed at run time.
+		if (m_file_scope_decl && m_prog
+		    && (m_prog->presents_as_cpp() || m_prog->is_entry_result(v))
 		    && init_expr_needs_dynamic_init(init_node, false)) {
 			m_dynamic_global_inits.insert(v);
 			m_pending_stmts.resize(pending_before);

@@ -2201,10 +2201,7 @@ With no program file, the tail chooses in this order:
   - So after `x`, then `x = 7;`, `_N` is still 5, as both precedents keep an immutable value.
   - They alias a mutable object; C and C++ copy it, and so does madc.
   - An array is kept as an array, not decayed as `auto` would decay it. It is copied element by element, as a structured binding or a lambda capture copies one (slice 2).
-- A class value is kept when it can be copied, that is, when the `__is_constructible(T, const T&)` owner (`trait_is_constructible`) answers 1.
-  - An xvalue (`std::move(v)`) is copied from, never moved from: showing a value must not change it.
-  - The copy runs the copy constructor, as `auto r = v;` would.
-  - A class that cannot be copied (`std::unique_ptr`), or whose copy madc cannot decide (-1), is shown but not kept. A name that means it is refused, with the reason.
+- A class value is kept in slice 1 when it copies as C copies a struct (`trait_is_trivially_copyable`), and so is the madc carrier, which copies through its runtime as every `var b = a;` does. Every other class object is slice 2's (revised while building slice 1, see "Built, slice 1").
 - A result is an ordinary object. It can be changed, as IPython's `_` can be mutated. `ans + 1` makes a new result.
 
 **The names:**
@@ -2226,7 +2223,7 @@ With no program file, the tail chooses in this order:
 - `'__' names the value shown before the last one, and only 1 value has been shown`
 - `'_5' names the value REPL[5] showed, and it showed none`
 - `'_9' names the value REPL[9] showed, and there is no REPL[9] yet`
-- `'ans' names the value REPL[4] showed, which was not kept: 'std::unique_ptr<int>' cannot be copied`
+- `'ans' names the value REPL[4] showed, which was not kept: a class object that is not trivially copyable is kept from D12's slice 2 on` (slice 1; no type word, see "Built, slice 1")
 - `'ans' changes with each value shown, so code that runs later cannot use it; name the value REPL[4] showed as '_4'`
 
 **The mechanism: a result is a session global, made where the value is shown.**
@@ -2262,7 +2259,7 @@ With no program file, the tail chooses in this order:
   - `g` may be declared or implicit. One such entry is clean, and so is a defined `g`. C++ is clean.
   - Traced (2026-09-27): not D27. `build_tu_module` freed a refused tree's node arena while the session's c2mir context kept its checker symbols, which are keyed by the tree's scope and identifier nodes. A later entry's tree reused the memory, so its `struct P` met the refused entry's symbol. The layout decided which sequences failed. The arena now lives with the session's context, as a compiled module's does.
 
-**Found off the path** (`BUGS.md`): B35–B39.
+**Found off the path** (`BUGS.md`): B35–B41 while designing, B42–B45 while building slice 1.
 
 **Gates:**
 - `test_repl_session`, under C, C++ and madc:
@@ -2277,8 +2274,29 @@ With no program file, the tail chooses in this order:
 - A runner test, `tests/testrepl_ans.mad` (with `.flags` `-i`, `.input`, `.expect` and `.exe_skip`). Its transcript is IPython's on the same values.
 
 **Slices:**
-1. The table, the names and their refusals, and results of every non-array kind, under C, C++ and madc: scalars, pointers, enums, C structs and unions, classes that can be copied, and a madc `var`. An array result is shown and not kept ("an array is kept from slice 2").
-2. Array results, copied element by element: one `memcpy` for trivially copyable elements, the copy constructor per element otherwise.
+1. The table, the names and their refusals, and results of scalars, pointers, enums, C structs and unions, trivially copyable classes and a madc `var`, under C, C++ and madc. An array or another class object is shown and not kept.
+2. Array results and every other class object, designed against the code first. Measured in slice 1:
+   - copying a class object runs its copy constructor, and madc does not lower one for every class (B45: `std::map`'s);
+   - a class without a copy has none to run (`std::unique_ptr`);
+   - Julia and IPython alias a mutable object rather than copy it.
+
+   So slice 2 decides, by measurement, whether a class result is the object itself or a copy. The object itself would be an alias, as `auto &r = v;` makes one, with a prvalue materialized as `auto &&r = f();` does. Slice 2 also builds the array copy, which a structured binding needs too (B38).
+
+**Built, slice 1 (2026-09-27):**
+- The table, the names and their refusals, and the results above.
+- Measured on `bin/madc`:
+  - `tests/testrepl_ans` gives the lines IPython 9.17.1 gives on the same values: `42 43 430 42 43`, then `42 430`;
+  - the unit table (`check_result_names`) passes under `c17`, `c++17` and `madc`;
+  - in C, a struct result is a copy: `p`, then `p.b = 9;`, then `ans.b` is 2;
+  - a function designator's result is its pointer, and `ans()` calls it.
+- Built as designed except:
+  - The class rule. Keeping a `std::map` refused its whole entry, since its copy constructor does not lower (B45). A type test cannot predict that, and the show must never refuse an entry. So slice 1 keeps only a trivially copyable class and the carrier, and the not-kept reason names no type: the source's spelling of a type is the display's (the CIR's `dump_type_word`), and the entry it cites shows the value.
+  - "Code that runs later" is read from the parse: the Method of the innermost open compound, which a nested block inherits and a parameter list has too, an open class body, and a default member initializer's parse (`member_default_init_depth`). `cur_func_name` stays set after a top-level definition, so it cannot say it.
+  - `hidden_object_decl` is the reference temporary's own builder, extracted: the reference temporary and the result are one shape.
+- Found on the way, on the REPL's path, to fix next, each in its own commit:
+  - **D.** `std::move(v)` of a class shows nothing.
+  - **E.** A top-level `std::string("short")` is misread as a declaration ("Expecting parameter type in function pointer typedef"); in a function body it is right.
+- Found off the path: B42 (`auto` from an array deduces its element), B43 (an error in a default member initializer is swallowed, silently; D12's refusal there waits on it), B44 (a namespace-scope init-capture refused), B45 (`std::map` not copied).
 
 ## 42. Decisions (owner, 2026-09-25)
 

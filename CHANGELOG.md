@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+### The REPL names the values it showed: `ans`, `_`, `__`, `___`, `_N` (D12)
+
+An entry that shows a value (no final `;`) keeps it, as IPython keeps
+`Out[N]`: `ans` and `_` are the last one, `__` and `___` the two before it,
+and `_N` is the value `REPL[N]` showed. `x + 1`, then `ans * 2`, then
+`_2 + _3` works in C, C++ and the madc dialect. A value hidden by `;` keeps
+nothing, and neither does a `void` call or a refused entry. A kept value is
+a copy, so `_N` stays what `REPL[N]` showed. Your own `ans` or `_` wins.
+`ans` and its three neighbours are refused where code runs later (a
+function or lambda body, a default argument), since they move on with every
+entry; `_N` works there. Scalars, pointers, enums, C structs, trivially
+copyable classes and a madc `var` are kept. Other class objects and arrays
+are shown and not kept yet, and naming one says so.
+
+Tests: `testrepl_ans` (IPython gives the same lines), and the D12 cases in
+`test_repl_session`.
+
 ### Entries the backend refuses no longer break the REPL session
 
 In a C session, after two entries the backend refused (a file-scope

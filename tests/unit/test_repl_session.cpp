@@ -1245,6 +1245,125 @@ TEST_CASE("an entry's auto declaration is a session global, and shows its value 
     CHECK(c.shown() == "15");
 }
 
+// D12 (plan §41.6a): a refused entry's first diagnostic contains WANT.
+static void check_refused(InteractiveSession &s, const std::string &entry,
+			  const std::string &want)
+{
+    CAPTURE(entry);
+    CHECK_FALSE(s.submit(entry));
+    CAPTURE(first_error(s));
+    CHECK(first_error(s).find(want) != std::string::npos);
+}
+
+// D12's table (plan §41.6a, measured against Julia 1.13 and IPython 9.17):
+// what keeps a value, what the names mean, and what is refused. The same
+// rows under every standard; STD_OPTION's `int` spelling is the entries'.
+static void check_result_names(const std::string &std_option)
+{
+    CAPTURE(std_option);
+    InteractiveSession s;
+    REQUIRE(s.begin(std_option));
+    REQUIRE(s.submit("int x = 5;\nint k = 0;\nvoid vf(void) { }"));	// REPL[1]
+    // A shown value is kept; `ans` and `_` name it.
+    REQUIRE(s.submit("x + 1"));						// REPL[2]
+    CHECK(s.shown() == "6");
+    REQUIRE(s.submit("ans * 2"));					// REPL[3]
+    CHECK(s.shown() == "12");
+    REQUIRE(s.submit("_ + 1"));						// REPL[4]
+    CHECK(s.shown() == "13");
+    // A value hidden by `;` keeps nothing (IPython), nor does a void one.
+    REQUIRE(s.submit("ans + 100;"));					// REPL[5]
+    REQUIRE(s.submit("vf()"));						// REPL[6]
+    REQUIRE(s.submit("ans"));						// REPL[7]
+    CHECK(s.shown() == "13");
+    // ___ and __ count kept values back from the last, and each shown one
+    // is kept too: 6, 12, 13, 13, then 12.
+    REQUIRE(s.submit("___"));						// REPL[8]
+    CHECK(s.shown() == "12");
+    REQUIRE(s.submit("__"));						// REPL[9]
+    CHECK(s.shown() == "13");
+    // _N is REPL[N]'s value, and keeps it: a later change to x is not seen.
+    REQUIRE(s.submit("x"));						// REPL[10]
+    REQUIRE(s.submit("x = 7;"));					// REPL[11]
+    REQUIRE(s.submit("_10 + _2"));					// REPL[12]
+    CHECK(s.shown() == "11");
+    check_refused(s, "_5", "'_5' names the value REPL[5] showed, and it showed none");
+    check_refused(s, "_99", "'_99' names the value REPL[99] showed, and there is no REPL[99] yet");
+    // A refused entry keeps nothing; the number still advances.
+    check_refused(s, "undeclared_zz + 1", "undeclared_zz");
+    REQUIRE(s.submit("ans"));
+    CHECK(s.shown() == "11");
+    // The moving names are refused in code that runs later; _N is not.
+    check_refused(s, "int later(void) { return ans; }",
+		  "'ans' changes with each value shown, so code that runs later"
+		  " cannot use it; name the value REPL[");
+    check_refused(s, "int later2(int a) { return a; }\nint later3(int v = __) { return v; }",
+		  "'__' changes with each value shown");
+    REQUIRE(s.submit("int stable(void) { return _2 * 3; }"));
+    REQUIRE(s.submit("stable()"));
+    CHECK(s.shown() == "18");
+    // A block of the entry's own statements runs now.
+    REQUIRE(s.submit("{ k = ans + 1; }"));
+    CHECK(*(int *)s.data("k") == 19);
+    // A function designator keeps its pointer.
+    REQUIRE(s.submit("int three(void) { return 3; }"));
+    REQUIRE(s.submit("three"));
+    REQUIRE(s.submit("ans() + _2"));
+    CHECK(s.shown() == "9");
+    // The user's own name wins, as in both precedents.
+    REQUIRE(s.submit("int ans = 100;"));
+    REQUIRE(s.submit("ans + 1"));
+    CHECK(s.shown() == "101");
+    REQUIRE(s.submit("_"));
+    CHECK(s.shown() == "101");
+}
+
+TEST_CASE("an entry's shown value is kept and named ans, _, __, ___ and _N (D12)")
+{
+    check_result_names("--std=c17");
+    check_result_names("--std=c++17");
+    check_result_names("--std=madc");
+}
+
+TEST_CASE("a kept struct is a copy; a class object is kept from slice 2 on (D12)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    REQUIRE(c.submit("struct P { int a, b; };\nstruct P p = { 1, 2 };"));
+    REQUIRE(c.submit("p"));
+    REQUIRE(c.submit("p.b = 9;"));
+    REQUIRE(c.submit("ans.b"));
+    CHECK(c.shown() == "2");
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("#include <string>\nstruct Q { int a; double d; };\nQ q = { 1, 2.5 };"));
+    REQUIRE(s.submit("q"));
+    REQUIRE(s.submit("q.d = 0;"));
+    REQUIRE(s.submit("ans.d"));
+    CHECK(s.shown() == "2.5");
+    REQUIRE(s.submit("std::string str = \"hi\""));
+    CHECK(s.shown() == "\"hi\"");
+    check_refused(s, "ans + \"!\"",
+		  "'ans' names the value REPL[5] showed, which was not kept: a"
+		  " class object that is not trivially copyable is kept from"
+		  " D12's slice 2 on");
+    REQUIRE(s.submit("_4"));
+    CHECK(s.shown() == "2.5");
+}
+
+TEST_CASE("a madc var is kept as the dialect's value (D12)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=madc"));
+    REQUIRE(s.submit("var v = { 10, 20 }"));
+    REQUIRE(s.submit("ans"));
+    CHECK(s.shown() == "{ 10, 20 }");
+    REQUIRE(s.submit("var n = 5"));
+    REQUIRE(s.submit("ans + 1"));
+    CHECK(s.shown() == "6");
+}
+
 TEST_CASE("a var holding a number takes arithmetic (D28)")
 {
   {

@@ -5372,6 +5372,10 @@ public:
     // the object in top_decls.
     bool file_scope_compound(const TokenCpnd *code) const
     { return code == NULL || code == tkProgram; }
+    // A hidden object EXPR initializes, as `T obj = expr;` does (a reference's
+    // lifetime-extended temporary, an entry's kept result): its TokenDecl. At
+    // file scope it is recorded in top_decls.
+    TokenDecl *hidden_object_decl(Variable *obj, TokenBase *expr, bool file_scope);
     // Host-callback registrations (libmadc register_function): the embedding
     // host exposes a native function to scripts. _parser_init declares each
     // as an ordinary prototype (add_host_callbacks), and the CIR builder
@@ -6956,6 +6960,37 @@ public:
     // the entry runs (the session's __madc_session_show), cleared when an
     // entry parses; empty when the entry showed nothing.
     std::string entry_shown;
+    // D12 (plan §41.6a): the values entries showed, kept. An entry's result
+    // is a session global it declares where it shows its value
+    // (keep_entry_value); the session records it once the show ran
+    // (keep_entry_result), and the result names (`ans`, `_`, `__`, `___`,
+    // `_N`) resolve against the table where ordinary lookup found nothing
+    // (resolve_session_result_name). Session state: only the submit verb
+    // changes it (D9).
+    struct SessionResult
+    {
+	unsigned entry;		// REPL[N]
+	Variable *object;	// the kept value; NULL when it was not kept
+	std::string not_kept;	// why, when object is NULL
+    };
+    std::vector<SessionResult> session_results;
+    unsigned entry_number = 0;		// the entry being parsed: REPL[N]
+    Variable *entry_result_object = NULL;	// its result, while it parses and runs
+    std::string entry_result_not_kept;	// or why its value is not kept
+    unsigned entry_result_serial = 0;	// __madc_result_K, never reused
+    TokenBase *keep_entry_value(TokenBase *value, TokenBase *loc);
+    void keep_entry_result(unsigned entry);
+    bool is_entry_result(const Variable *v) const
+    { return v && v == entry_result_object; }
+    TokenBase *resolve_session_result_name(class TokenIdent *ident_tb);
+    // Does the code being parsed run as part of the entry, now? Not a
+    // function or lambda body, a default argument or a class member's
+    // initializer: those run later, when the moving result names mean
+    // another value.
+    bool entry_code_runs_now() const;
+    // >0 while a default member initializer parses (capture_member_default_init):
+    // code each construction runs, later.
+    int member_default_init_depth = 0;
     bool entry_if_extendable = false;		// an if ended at the entry's end
     // The classifier's verdict on one entry (plan §41.1a): run it; run it
     // unless the next line starts with `else` (D11); keep reading; or show

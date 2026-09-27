@@ -131,6 +131,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     // that fails to parse. Its diagnostics stay. An attempt the client goes
     // on typing rolls back the same way.
     Program::EntryTransaction entry(*prog);
+    prog->entry_number = submit_count + 1;
     Program::EntryVerdict verdict = prog->parse_entry(text, name);
     if ( !final && verdict == Program::EntryVerdict::Incomplete )
 	return Offered{ OfferState::Incomplete, false };
@@ -145,6 +146,10 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     bool ok = link_and_run(*prog, *jit, entry, prog->intern_file(name), linked);
     if ( linked )
 	++entry_count;
+    // D12: an entry whose show ran keeps its value as REPL[N]'s result, as
+    // IPython's Out[N] (a run that stopped before its show keeps nothing).
+    if ( linked && !prog->entry_shown.empty() )
+	prog->keep_entry_result(submit_count);
     return Offered{ OfferState::Taken, ok };
 }
 

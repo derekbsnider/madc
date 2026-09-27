@@ -29586,7 +29586,13 @@ bool Program::runtime_eval_expression(const std::string &expression,
 
 TokenBase *Program::resolve_expression_context_identifier(TokenIdent *ident_tb)
 {
-    if ( !ident_tb || !has_expression_context_root() )
+    if ( !ident_tb )
+	return NULL;
+    // An interactive entry's result names (D12, plan §41.6a) are the other
+    // names a host supplies: the session's, beside the eval API's context.
+    if ( interactive_entry() && !has_expression_context_root() )
+	return resolve_session_result_name(ident_tb);
+    if ( !has_expression_context_root() )
 	return NULL;
 
     const std::map<std::string, madc::value> &fields = expression_context_root->as_object();
@@ -45370,11 +45376,22 @@ static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
 // Returns the token following the initializer (the `,`/`;`); returns `tn`
 // unchanged when there is no initializer. Shared by TokenSTRUCT::parse and
 // TokenCLASS::parse.
+// A default member initializer is parsed once and applied by each
+// construction, later (entry_code_runs_now). Exception-safe, as
+// ParseLoopDepthGuard is.
+struct MemberDefaultInitDepthGuard
+{
+    Program &pgm;
+    MemberDefaultInitDepthGuard(Program &p) : pgm(p) { ++pgm.member_default_init_depth; }
+    ~MemberDefaultInitDepthGuard() { --pgm.member_default_init_depth; }
+};
+
 TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
 						const std::string &mname)
 {
     if ( !tn || !dds )
 	return tn;
+    MemberDefaultInitDepthGuard default_init_depth(*this);
     // Brace form (`m{expr}` / `m{}` — [class.mem] brace-or-equal-init,
     // direct-list-init): the single-expression and empty lists map onto the
     // same `recv.member = expr` application the `=` form uses ({expr} = the
@@ -73016,7 +73033,7 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     DataDef *value_type = referent_type ? referent_type : expr->datadef();
     value_type = value_type->unqualified();
     std::string name = "__madc_reftmp_" + binding_name;
-    bool global = compounds.empty() || compounds.top() == tkProgram;
+    bool global = file_scope_compound(compounds.empty() ? NULL : compounds.top());
     auto can_materialize_class = [&]() {
 	if ( !value_type->as_class_dd() )
 	    return true;
@@ -73035,32 +73052,38 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
 			    : new Variable(name, *value_type, 1, NULL, false);
     temp->flags |= global ? vfSTATIC : vfLOCAL;
     temp->flags |= vfADDRTAKEN;
-    TokenDecl *decl = new TokenDecl(*temp);
-    copy_token_location(decl, expr);
-    TokenAssign *init = new TokenAssign();
-    copy_token_location(init, expr);
-    init->left = new TokenVar(*temp);
-    init->right = expr;
-    decl->initialize = init;
+    TokenDecl *decl = hidden_object_decl(temp, expr, global);
     if ( global )
-    {
-	// Construct a class prvalue directly in its static storage. Passing
-	// T(args) as a copy-ctor argument would create a second object inside
-	// __madc_global_init, destroy it there, and leave self-pointers dangling.
-	if ( TokenObjTemp *object = expr->as_objtemp_tok() )
-	    if ( object->obj_class == value_type )
-	    {
-		decl->initialize = NULL;
-		decl->ctor_args = object->ctor_args;
-		decl->ctor_arg_keys = object->ctor_arg_keys;
-		decl->ctor_args_braced = object->braced;
-	    }
-	record_global_top_decl(temp, expr, decl);
 	return new TokenAddrOf(*temp, ptr_type);
-    }
     TokenAddrExpr *addr = new TokenAddrExpr(decl, ptr_type);
     copy_token_location(addr, expr);
     return addr;
+}
+
+TokenDecl *Program::hidden_object_decl(Variable *obj, TokenBase *expr, bool file_scope)
+{
+    TokenDecl *decl = new TokenDecl(*obj);
+    copy_token_location(decl, expr);
+    TokenAssign *init = new TokenAssign();
+    copy_token_location(init, expr);
+    init->left = new TokenVar(*obj);
+    init->right = expr;
+    decl->initialize = init;
+    if ( !file_scope )
+	return decl;
+    // Construct a class prvalue directly in its static storage. Passing
+    // T(args) as a copy-ctor argument would create a second object inside
+    // __madc_global_init, destroy it there, and leave self-pointers dangling.
+    if ( TokenObjTemp *object = expr->as_objtemp_tok() )
+	if ( object->obj_class == obj->type )
+	{
+	    decl->initialize = NULL;
+	    decl->ctor_args = object->ctor_args;
+	    decl->ctor_arg_keys = object->ctor_arg_keys;
+	    decl->ctor_args_braced = object->braced;
+	}
+    record_global_top_decl(obj, expr, decl);
+    return decl;
 }
 
 size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDecl *decl)
@@ -78151,6 +78174,8 @@ void Program::begin_entry()
     entry_final_owed = StatementTerminator::None;
     entry_if_extendable = false;
     entry_shown.clear();
+    entry_result_object = NULL;
+    entry_result_not_kept.clear();
 }
 
 // A parsed unit becomes one of the session's: its file-scope statics become
@@ -78246,6 +78271,9 @@ void Program::show_entry_value(size_t decls_before)
     }
     else
 	return;
+    // D12: the shown value is kept as the entry's result, evaluated once into
+    // it, and the show reads what was kept.
+    value = keep_entry_value(value, loc);
     if ( !entry_show_var )
     {
 	FuncDef *fd = new FuncDef(returnDecl(ddVOID, false));
@@ -78260,6 +78288,172 @@ void Program::show_entry_value(size_t decls_before)
     // base virtually, so the call is converted to it before the slot's cast.
     TokenBase *show_tb = show;
     ensure_entry_function(loc)->statements.push_back((TokenStmt *)show_tb);
+}
+
+// D12 (plan §41.6a): keep the value an entry shows as its result. The result
+// is a session global of the type `auto r = value;` gives (cv and references
+// dropped, a function designator's pointer), initialized from the value once,
+// at its place in the entry's run, and later modules reach it as any entry's
+// global. Returns what the show reads: the result, or the value itself when
+// it is not kept (entry_result_not_kept says why; a void value has nothing to
+// keep).
+TokenBase *Program::keep_entry_value(TokenBase *value, TokenBase *loc)
+{
+    DataDef *vt = operand_value_datadef(value);
+    // A function designator's value is its pointer ([conv.func]); asked of
+    // the designator, is_void() says yes (BUGS.md B40).
+    if ( vt && vt->as_funcdef_dd() )
+	vt = getPointerType(vt);
+    if ( !vt || vt->is_void() )
+	return value;
+    if ( array_operand_type(value) )
+    {
+	entry_result_not_kept = "an array is kept from D12's slice 2 on";
+	return value;
+    }
+    vt = vt->unqualified();
+    // Slice 1 keeps a class that copies as C copies a struct (trivially
+    // copyable, the trait's owner), and the madc carrier, which copies
+    // through its runtime as every `var b = a;` does. Every other class
+    // object is slice 2's, with the arrays: copying it runs its own
+    // constructor, which madc does not lower for every class yet (B45), and
+    // Julia and IPython alias such an object rather than copy it. The reason
+    // names no type: the source's spelling is the display's (the CIR's
+    // dump_type_word), and the entry it cites shows the value.
+    if ( vt->as_class_dd() && !vt->is_madc_array()
+      && !trait_is_trivially_copyable(vt) )
+    {
+	entry_result_not_kept = "a class object that is not trivially copyable"
+	    " is kept from D12's slice 2 on";
+	return value;
+    }
+    std::string name = "__madc_result_" + std::to_string(++entry_result_serial);
+    Variable *result = declare_object(NULL, *vt, name, 1, true, true, loc);
+    hidden_object_decl(result, value, true);
+    TokenGlobalInit *gi = new TokenGlobalInit(result);
+    copy_token_location(gi, loc);
+    ensure_entry_function(loc)->statements.push_back((TokenStmt *)gi);
+    entry_result_object = result;
+    TokenVar *kept = new TokenVar(*result);
+    copy_token_location(kept, loc);
+    return kept;
+}
+
+// The function the innermost open compound belongs to (its Method, which a
+// nested block inherits) is the entry's own run or none (a file-scope
+// initializer, a top-level statement's block), and no class body or default
+// member initializer is being parsed. A function's parameter list, its
+// default arguments included, parses in a compound of its own Method too.
+bool Program::entry_code_runs_now() const
+{
+    if ( !class_scope_stack.empty() || member_default_init_depth > 0 )
+	return false;
+    if ( compounds.empty() )
+	return true;
+    Method *m = compounds.top()->method;
+    return !m || (entry_function && m == entry_function->method);
+}
+
+// After an entry's run showed its value: REPL[ENTRY]'s result joins the
+// table the result names read, kept or with the reason it was not.
+void Program::keep_entry_result(unsigned entry)
+{
+    SessionResult r;
+    r.entry = entry;
+    r.object = entry_result_object;
+    r.not_kept = entry_result_object ? std::string() : entry_result_not_kept;
+    session_results.push_back(r);
+}
+
+// D12's spellings, read once at the lookup boundary: `ans` and `_` name the
+// last kept result, `__` the one before it, `___` the one before that (BACK
+// counts back from the last), and `_N` REPL[N]'s (decimal, no leading zero).
+struct SessionResultName
+{
+    enum Kind { None, Back, Entry } kind;
+    unsigned n;
+};
+
+static SessionResultName session_result_name(const std::string &s)
+{
+    SessionResultName r = { SessionResultName::None, 0 };
+    if ( s == "ans" || s == "_" )
+	r.kind = SessionResultName::Back;
+    else if ( s == "__" || s == "___" )
+    {
+	r.kind = SessionResultName::Back;
+	r.n = (unsigned)s.size() - 1;
+    }
+    else if ( s.size() >= 2 && s.size() <= 10 && s[0] == '_'
+	   && s[1] >= '1' && s[1] <= '9'
+	   && s.find_first_not_of("0123456789", 1) == std::string::npos )
+    {
+	r.kind = SessionResultName::Entry;
+	r.n = (unsigned)strtoul(s.c_str() + 1, NULL, 10);
+    }
+    return r;
+}
+
+// A result name at a lookup miss in an interactive entry (D12): the kept
+// result it names, or a refusal that says why there is none. NULL when the
+// spelling is not a result name. Ordinary lookup ran first, so a user's
+// `ans`, a local `_` and `std::placeholders::_1` win, as a user's name wins
+// in Julia and IPython.
+TokenBase *Program::resolve_session_result_name(TokenIdent *ident_tb)
+{
+    SessionResultName rn = session_result_name(ident_tb->spelling());
+    if ( rn.kind == SessionResultName::None )
+	return NULL;
+    const std::string name = ident_tb->spelling();
+    const SessionResult *r = NULL;
+    if ( rn.kind == SessionResultName::Back )
+    {
+	size_t count = session_results.size();
+	// Code that runs later would keep this entry's value while the name
+	// moves on (Julia and IPython read it at the call); the stable
+	// spelling does not move.
+	if ( !entry_code_runs_now() )
+	{
+	    std::string hint;
+	    if ( rn.n < count )
+	    {
+		std::string n = std::to_string(session_results[count - 1 - rn.n].entry);
+		hint = "; name the value REPL[" + n + "] showed as '_" + n + "'";
+	    }
+	    Throw(ident_tb) << "'" << name << "' changes with each value shown,"
+		" so code that runs later cannot use it" << hint << flush;
+	}
+	if ( rn.n >= count )
+	{
+	    static const char *which[] = { "the last value an entry showed",
+		"the value shown before the last one",
+		"the value shown two before the last one" };
+	    std::string shown = count == 0 ? std::string("none has been shown yet")
+		: "only " + std::to_string(count)
+		  + (count == 1 ? " value has" : " values have") + " been shown";
+	    Throw(ident_tb) << "'" << name << "' names " << which[rn.n] << ", and "
+			    << shown << flush;
+	}
+	r = &session_results[count - 1 - rn.n];
+    }
+    else
+    {
+	for ( size_t i = 0; i < session_results.size() && !r; ++i )
+	    if ( session_results[i].entry == rn.n )
+		r = &session_results[i];
+	if ( !r )
+	    Throw(ident_tb) << "'" << name << "' names the value REPL[" << rn.n
+			    << "] showed, and "
+			    << (rn.n >= entry_number
+				? "there is no REPL[" + std::to_string(rn.n) + "] yet"
+				: std::string("it showed none")) << flush;
+    }
+    if ( !r->object )
+	Throw(ident_tb) << "'" << name << "' names the value REPL[" << r->entry
+			<< "] showed, which was not kept: " << r->not_kept << flush;
+    TokenVar *tv = new TokenVar(*r->object);
+    copy_token_location(tv, ident_tb);
+    return tv;
 }
 
 // An entry's transaction (plan §41.3). Beside its registration journal it

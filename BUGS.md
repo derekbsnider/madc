@@ -213,6 +213,27 @@ int main() { printf("%d\n", p ? *p : -1); return 0; }
 - Where: not traced. The constructor's argument never reaches the global's
   construction.
 
+### B43. An error in a default member initializer is swallowed
+
+- Found 2026-09-27, while gating D12's refusal of `ans` in a default member
+  initializer (plan §41.6a).
+
+```cpp
+#include <stdio.h>
+struct S { int m = nope; };
+int main() { S s; printf("%d\n", s.m); return 0; }
+```
+
+- g++ 13: "'nope' was not declared in this scope". madc `--std=c++17`:
+  compiles and prints garbage (`1169616566`), exit 0.
+- In a REPL entry, `struct S { int m = ans; };` is accepted the same way and
+  `s.m` reads 0: D12's refusal of a moving result name there is raised and
+  lost. `Program::member_default_init_depth` already marks the parse, so the
+  refusal surfaces once this is fixed.
+- Where: `Program::capture_member_default_init` parses the initializer "in an
+  isolated stream", and a refusal inside that parse never reaches the caller.
+  Not traced further.
+
 ## Accepts invalid code
 
 ### B2. A stray top-level `}` is accepted
@@ -655,6 +676,62 @@ int main(void) { int (*p)(int) = g; int k = p == g; printf("%d\n", k); return 0;
   `cout << endl;` keeps its call), and here the stack holds `==`. The rule
   C gives is not a token rule: a function designator decays unless it is the
   operand of `&` or `sizeof`, or the callee of a call (C11 6.3.2.1p4).
+
+### B42. `auto` from an array deduces its element type
+
+- Found 2026-09-27, while measuring the type D12's result would take (plan
+  §41.6a).
+
+```cpp
+#include <stdio.h>
+int a[3] = {1,2,3};
+auto q = a;
+int main() { auto lq = a; printf("%zu %d %d\n", sizeof lq, q[1], lq[2]); return 0; }
+```
+
+- g++ 13: `8 2 3` (`auto` decays an array to a pointer, [temp.deduct.call]/2).
+  madc `--std=c++17`: "assigning pointer without cast to integer", then
+  "subscripted value is neither array nor pointer nor vector" at both uses.
+  Block scope does the same.
+- Where: `deduce_expr_type` answers `operand_value_datadef`, which gives an
+  array variable's element type (madc stores an array flattened, its element
+  in the Variable's type). The array-to-pointer and function-to-pointer
+  conversions of the deduction are missing.
+
+### B44. A namespace-scope lambda's init-capture is refused
+
+- Found 2026-09-27, while testing D12's result names in a lambda capture.
+
+```cpp
+#include <stdio.h>
+auto l = [c = 42] { return c; };
+int main() { printf("%d\n", l()); return 0; }
+```
+
+- g++ 13 and clang++ 18: `42` ([expr.prim.lambda.capture]/6: an init-capture
+  declares its own variable, so it needs no enclosing one). madc
+  `--std=c++17`: "lambda capture 'c' does not name an enclosing variable" at
+  `2:11`.
+
+### B45. A `std::map` is not copied, nor brace-initialized at file scope
+
+- Found 2026-09-27, while keeping a shown `std::map` as D12's result (plan
+  §41.6a).
+
+```cpp
+#include <stdio.h>
+#include <map>
+std::map<int,int> m = { { 1, 10 } };
+std::map<int,int> m2 = m;
+int main() { std::map<int,int> l = m; printf("%d %d\n", m2[1], l[1]); return 0; }
+```
+
+- g++ 13: `10 10`. madc `--std=c++17`: "constructor argument coercion cycle
+  (no viable converting constructor)" at `3:25`, then "no matching
+  constructor for call to 'map_int32_t_int32_t_…(std::map<…>)'" at `4:8` and
+  `5:21`: the copy constructor is not found, at file and block scope.
+- Where: the CIR's constructor choice (`cir error`), not traced. D12 keeps no
+  such object until its slice 2.
 
 ## Diagnostics
 
