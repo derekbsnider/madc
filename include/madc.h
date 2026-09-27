@@ -6290,6 +6290,12 @@ public:
     bool auto_include_standard_identifier(const std::string &word,
 					  bool positional = true,
 					  bool qualified_use = false);
+    // May the scan pull `header` for `word`? The host's include and
+    // namespace policies say (lexer.cpp).
+    bool auto_include_permitted(const std::string &word, const char *header);
+    // The words the scan answers for unqualified, for completion (plan
+    // §41.7a); empty outside the madc dialect.
+    void auto_include_words(std::vector<std::string> &out);
     void inject_pending_auto_includes();
 	void tokenize_synthetic_system_include(const std::string &header,
 					       const char *origin_name);
@@ -7056,6 +7062,23 @@ public:
     void begin_entry();
     void finish_entry(size_t decls_before, size_t funcs_before);
     bool lex_entry(const std::string &text, const std::string &display_name);
+    // Completion (plan §41.7a, slice 3; src/madc_complete.cpp). Where the word
+    // before the caret stands: a name, a tag after struct/union/enum, a
+    // member after `.` or `->`, a member after `::`, or nowhere names are
+    // written (a string, a comment, a directive).
+    enum class CompletionContext : unsigned char { None, Name, Tag, Member, Qualified };
+    // Tab's question for the text typed so far: the word before `caret`
+    // starts at `start`, and these names complete it (sorted, no repeats).
+    // The text is lexed as an attempt still being typed, inside an entry
+    // transaction that rolls back, so a query leaves nothing behind.
+    std::vector<std::string> complete_entry(const std::string &text,
+					    size_t caret, size_t &start);
+    CompletionContext completion_context(const std::string &before);
+    // The names visible at the top level that start with `word`, found by
+    // walking the registries, never through lookup (a lookup materializes,
+    // registers and throws).
+    void completion_names(const std::string &word, CompletionContext ctx,
+			  std::vector<std::string> &out);
     bool lex_unit_text(const char *fname, const std::string &text);
     // The top-level parse loop parse() and parse_entry() share: statements
     // to the end of the token stream (a TU) or to the end-of-entry token.

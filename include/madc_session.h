@@ -19,6 +19,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 class Program;
 class CirJitSession;
@@ -78,6 +79,13 @@ public:
     // or a use of an undefined name returned; its return value goes to
     // *status. It does not end the session.
     bool run_main(int argc, char **argv, int *status);
+
+    // Tab's question (plan §41.7a, slice 3): the names that complete the
+    // word before `caret` in the text typed so far, sorted; the word starts
+    // at `start`. The query leaves the session as it was, and a word in a
+    // string or a comment completes nothing.
+    std::vector<std::string> complete(const std::string &text, size_t caret,
+				      size_t &start);
 
     // The live address of a session function / global, by emitted name.
     // NULL when no linked entry defines it.

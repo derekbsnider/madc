@@ -953,6 +953,24 @@ int main() { return x; }
   the expression engine, which reads on into `int main`. A declarator's
   initializer ends where the next token cannot continue it.
 
+### B51. An unknown directive is refused as "unexpected token type 7"
+
+- Found 2026-09-27, while building D23's completion (plan §41.7a, slice 3),
+  whose probe after `#` the lexer kept as tokens.
+
+```c
+#xylo
+int main(void) { return 3; }
+```
+
+- gcc 13: `1:2: error: invalid preprocessing directive #xylo`. clang 18:
+  `invalid preprocessing directive`. madc `--std=c17`: `1:5: unexpected
+  token type 7`, refused (exit 1).
+- Where: the lexer's directive dispatch has no arm for an unknown name in an
+  active region (only a skipped block consumes the line, lexer.cpp's "rest
+  of line for unknown directives"), so `#` and the name reach the parser as
+  tokens. A null directive (`#` alone) is valid and must stay accepted.
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++

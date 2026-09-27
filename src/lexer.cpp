@@ -1382,7 +1382,10 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
     return saw_any;
 }
 
-static const char *auto_include_header_for_identifier(const std::string &word)
+// THE identifier -> header table of the auto-include scan (madc dialect only;
+// auto_includes_enabled gates the scan). The scan's lookup below and the
+// REPL's completion (Program::auto_include_words, plan §41.7a) read it.
+static const std::map<std::string, std::string> &auto_include_identifier_headers()
 {
     static const std::map<std::string, std::string> identifier_headers = {
 	{"string", "string"},
@@ -1503,11 +1506,24 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"DBL_EPSILON", "float.h"},
 	{"LDBL_EPSILON", "float.h"}
     };
+    return identifier_headers;
+}
 
+static const char *auto_include_header_for_identifier(const std::string &word)
+{
+    const std::map<std::string, std::string> &identifier_headers =
+	auto_include_identifier_headers();
     std::map<std::string, std::string>::const_iterator it = identifier_headers.find(word);
     if ( it == identifier_headers.end() )
 	return NULL;
     return it->second.c_str();
+}
+
+// A dialect fragment's MEMBER row: the word is not the fragment's own head
+// (`WEB` for ns_ui_web), so it answers only QUALIFIED by a dialect head.
+static bool auto_include_member_row(const std::string &word, const char *header)
+{
+    return strncmp(header, "ns_", 3) == 0 && word != header + 3;
 }
 
 static std::vector<std::string> ordered_auto_include_headers(const std::set<std::string> &headers)
@@ -1755,7 +1771,7 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     // own, `madc::getline` never pulls <string>, a user qualifier
     // (`Counter::set`) pulls nothing, as before.
     const bool fragment_row = strncmp(header, "ns_", 3) == 0;
-    const bool member_row = fragment_row && word != header + 3;
+    const bool member_row = auto_include_member_row(word, header);
     if ( member_row && dialect_qualifier.empty() )
 	return false;
     if ( !dialect_qualifier.empty() )
@@ -1779,18 +1795,43 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     // one; the name stays unknown and the parse-time diagnostic ("Unknown
     // namespace or class 'php'") is the host's contract
     // (test_libmadc_program security_policy case).
-    if ( find_embedded_header(header) && !is_embedded_header_allowed(header) )
-	return false;
-    // The namespace-head table entries additionally respect the per-namespace
-    // registration policy (security_policy.allow_*_namespace) — the check
-    // answers true for every non-namespace word, so the std-surface entries
-    // are unaffected.
-    if ( !is_namespace_registration_enabled(word) )
+    if ( !auto_include_permitted(word, header) )
 	return false;
 
     pending_auto_include_headers.insert(header);
     pending_auto_include_identifiers.insert(word);
     return false;
+}
+
+// Host policy is never bypassed by the auto-include convenience: an embedded
+// stub the policy disallows is never queued by an identifier match (the
+// literal include path falls through to the filesystem on purpose, and
+// include/madc/ can exist on disk, so a queued disallowed header would serve
+// anyway), and a namespace-head row also respects the per-namespace
+// registration policy (security_policy.allow_*_namespace; true for every
+// non-namespace word, so the std-surface rows are unaffected).
+bool Program::auto_include_permitted(const std::string &word, const char *header)
+{
+    if ( find_embedded_header(header) && !is_embedded_header_allowed(header) )
+	return false;
+    return is_namespace_registration_enabled(word);
+}
+
+// The words the auto-include scan answers for unqualified, at a use (plan
+// §41.7a, completion): the table's rows, less a fragment's member rows,
+// which answer only qualified, and less what the host's policy disallows.
+// Empty outside the madc dialect, where the scan never runs.
+void Program::auto_include_words(std::vector<std::string> &out)
+{
+    if ( !auto_includes_enabled() )
+	return;
+    const std::map<std::string, std::string> &rows =
+	auto_include_identifier_headers();
+    for ( std::map<std::string, std::string>::const_iterator it = rows.begin();
+	  it != rows.end(); ++it )
+	if ( !auto_include_member_row(it->first, it->second.c_str())
+	     && auto_include_permitted(it->first, it->second.c_str()) )
+	    out.push_back(it->first);
 }
 
 std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string &value,

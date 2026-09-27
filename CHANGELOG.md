@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Tab completes names in the REPL (D23, slice 3)
+
+At the REPL, Tab completes the word before the caret from the session's
+names, as Julia's does. It offers every entry's objects and functions,
+the names an included header declares (`printf`, `stdout`, `EOF`), types,
+the standard's keywords, and macros. In C++ it also offers class and
+namespace names; in madc, the words that need no include (`println`,
+`php`), and `ans` and `_N` once a value is kept. One candidate is inserted.
+With several, the first Tab inserts their common prefix and a second lists
+them. After `struct`, `union` or `enum` Tab completes a tag. A word in a
+string, a comment or a directive completes nothing, and names after `.`,
+`->` or `::` are the next slice.
+
+Tests: the completion cases in `test_repl_session` and `test_repl_cli`.
+
 ### The REPL keeps a history (D23, slice 2)
 
 On the first line of an entry, Up recalls earlier entries that start with

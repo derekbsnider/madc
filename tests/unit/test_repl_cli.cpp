@@ -337,3 +337,20 @@ TEST_CASE("history: the file's entries are recalled and taken entries appended (
     CHECK(madc_repl_edit(m, again, mout, "") == 0);
     CHECK(mout.str() == "11\n22\n33\n22\n22\n");
 }
+
+// §37 item 7 (plan §41.7a, slice 3): Tab completes `x` and function names
+// at the line editor, from the session's names; a second Tab lists the
+// candidates under the entry.
+TEST_CASE("Tab completes the session's names at the line editor (§37, D23)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    scripted_terminal term({ "int xylophone = 3;\r", "xylo\t\r",
+			     "int twice(int a) { return a * 2; }\r",
+			     "twi\t(4)\r", "int xyz1 = 1;\r", "xy\t", "\t",
+			     "\x03", "\x04" });
+    std::ostringstream out;
+    CHECK(madc_repl_edit(s, term, out, "") == 0);
+    CHECK(out.str() == "3\n8\n");
+    CHECK(term.painted.find("xylophone  xyz1\r\n") != std::string::npos);
+}

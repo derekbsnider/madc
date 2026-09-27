@@ -278,7 +278,14 @@ public:
     // the offset of the FIRST byte of the previous word (clamped to 0).
     // The ONE word rule: the buffer's methods materialize, like find (the
     // linear-scan contract); the line editor (madcdis/line_edit.h) calls
-    // the string forms on its entry.
+    // the string forms on its entry, and the REPL's completion reads the
+    // word before the caret by word_byte (src/madc_complete.cpp).
+    static bool word_byte(char c)
+    {
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+	    || (c >= '0' && c <= '9') || c == '_'
+	    || (unsigned char)c >= 0x80;
+    }
     static size_t word_right_in(const std::string &t, size_t from)
     {
 	size_t i = from > t.size() ? t.size() : from;
@@ -385,13 +392,6 @@ private:
 	meta_out = st.back().meta;
 	st.pop_back();
 	return true;
-    }
-
-    static bool word_byte(char c)
-    {
-	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-	    || (c >= '0' && c <= '9') || c == '_'
-	    || (unsigned char)c >= 0x80;
     }
 
     // The newline index: offsets of every '\n' in document order, rebuilt

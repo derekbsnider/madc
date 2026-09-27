@@ -157,6 +157,12 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     return Offered{ OfferState::Taken, ok };
 }
 
+std::vector<std::string> InteractiveSession::complete(const std::string &text,
+						      size_t caret, size_t &start)
+{
+    return prog->complete_entry(text, caret, start);
+}
+
 bool InteractiveSession::load(const std::string &path)
 {
     std::ifstream file(path.c_str(), std::ios::binary);

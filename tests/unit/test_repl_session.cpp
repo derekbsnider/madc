@@ -1718,3 +1718,106 @@ TEST_CASE("a loaded file's main runs with its argv, and the session goes on (§4
     CHECK(l.shown() == "81");
     std::remove(lp.c_str());
 }
+
+// Completion (plan §41.7a, slice 3): the names that complete the word before
+// the caret, walked from the registries; the query lexes the text before the
+// word as an attempt that rolls back, so it leaves nothing.
+namespace {
+
+std::vector<std::string> complete_at_end(InteractiveSession &s,
+					 const std::string &text,
+					 size_t *start_out = NULL)
+{
+    size_t start = 0;
+    std::vector<std::string> c = s.complete(text, text.size(), start);
+    if ( start_out )
+	*start_out = start;
+    return c;
+}
+
+bool has(const std::vector<std::string> &v, const char *name)
+{
+    for ( size_t i = 0; i < v.size(); ++i )
+	if ( v[i] == name )
+	    return true;
+    return false;
+}
+
+} // namespace
+
+TEST_CASE("completion: the session's names, the standard's keywords, a header's names")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("int xylophone = 3;"));
+    REQUIRE(s.submit("int xyz1(int a) { return a; }"));
+    size_t start = 99;
+    std::vector<std::string> c = complete_at_end(s, "1 + xy", &start);
+    CHECK(start == 4u);
+    REQUIRE(c.size() == 2u);			// sorted, the object and the function
+    CHECK(c[0] == "xylophone");
+    CHECK(c[1] == "xyz1");
+    CHECK(has(complete_at_end(s, "whi"), "while"));
+    CHECK_FALSE(has(complete_at_end(s, "cla"), "class"));	// C has no class
+    REQUIRE(s.submit("#include <stdio.h>"));
+    c = complete_at_end(s, "prin");
+    CHECK(has(c, "printf"));
+    CHECK(has(complete_at_end(s, "EO"), "EOF"));	// a macro
+    CHECK(has(complete_at_end(s, "std"), "stdout"));	// a header's object
+
+    // Nowhere a name is written: a string, a comment, a directive, a number.
+    CHECK(complete_at_end(s, "\"xylo").empty());
+    CHECK(complete_at_end(s, "x; // xylo").empty());
+    CHECK(complete_at_end(s, "/* xylo").empty());
+    CHECK(complete_at_end(s, "#xylo").empty());
+    CHECK(complete_at_end(s, "1 + ").empty());	// an empty word
+    CHECK(complete_at_end(s, "12").empty());
+
+    // A tag completes after struct; alone it is no name in C.
+    REQUIRE(s.submit("struct Point { int x; };"));
+    CHECK(complete_at_end(s, "struct Poi") == std::vector<std::string>{ "Point" });
+    CHECK(complete_at_end(s, "Poi").empty());
+
+    // A reserved name completes a word that starts with `_` (IPython's
+    // rule); the session's own names never.
+    CHECK(has(complete_at_end(s, "_B"), "_Bool"));
+    CHECK(complete_at_end(s, "__madc").empty());
+
+    // The query leaves nothing: a macro its text defines is gone after it,
+    // and the next entry is numbered as before.
+    unsigned before = s.submitted();
+    CHECK_FALSE(has(complete_at_end(s, "#define QQ 5\nQ"), "QQ"));
+    CHECK(s.submitted() == before);
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    CHECK_FALSE(s.submit("QQ"));
+    REQUIRE(s.submit("xylophone + 1"));
+    CHECK(s.shown() == "4");
+}
+
+TEST_CASE("completion: C++ names, madc's words, and the result names")
+{
+    InteractiveSession p;
+    REQUIRE(p.begin("--std=c++17"));
+    CHECK(has(complete_at_end(p, "cla"), "class"));
+    REQUIRE(p.submit("struct Point { int x; };"));
+    CHECK(has(complete_at_end(p, "Poi"), "Point"));	// a class name is a type name
+    REQUIRE(p.submit("namespace geometry { int area = 2; }"));
+    CHECK(has(complete_at_end(p, "geo"), "geometry"));
+    CHECK(complete_at_end(p, "geometry::ar").empty());	// a member: slice 4
+    CHECK(complete_at_end(p, "Point{}.x").empty());
+
+    InteractiveSession m;
+    REQUIRE(m.begin("--std=madc"));
+    CHECK(has(complete_at_end(m, "printl"), "println"));	// the auto-include table
+    CHECK(has(complete_at_end(m, "ph"), "php"));
+    CHECK_FALSE(has(complete_at_end(m, "WE"), "WEB"));	// a member row: qualified only
+    REQUIRE(m.submit("var total = 5;"));
+    CHECK(has(complete_at_end(m, "tot"), "total"));
+    CHECK_FALSE(has(complete_at_end(m, "an"), "ans"));	// no result kept yet
+    REQUIRE(m.submit("total * 2"));
+    CHECK(has(complete_at_end(m, "an"), "ans"));
+    std::vector<std::string> u = complete_at_end(m, "_");
+    CHECK(has(u, "_"));
+    CHECK(has(u, ("_" + std::to_string(m.submitted())).c_str()));
+}

@@ -321,9 +321,14 @@ int madc_repl_edit(InteractiveSession &session, line_target &term,
 		    break;
 		}
 		case line_edit::outcome::complete:
-		    // Completion's provider is §41.7a's slice 3.
-		    ed.completed(ed.caret(), std::vector<std::string>());
+		{
+		    // The session answers; the editor inserts or lists.
+		    size_t start = ed.caret();
+		    std::vector<std::string> names =
+			session.complete(ed.text(), ed.caret(), start);
+		    ed.completed(start, names);
 		    break;
+		}
 		case line_edit::outcome::dropped:
 		    release("^C");
 		    over = true;
