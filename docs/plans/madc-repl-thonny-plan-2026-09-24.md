@@ -2259,7 +2259,8 @@ With no program file, the tail chooses in this order:
   - So a file-scope `auto` was never defined, in a file as well: `auto x = 5;` read "import of undefined item x" in C++ and C23, and `auto t = s;` of a `std::string` read `""`.
 - **C.** In C only, two refused entries that call a function no entry defines kill the session after a struct definition: every later entry fails "tag P redeclaration".
   - The reducer is `struct P { int x, y; };`, `int y = g()`, `int z = g()`, `1`. Each `int … = g()` is refused at c2mir, since its initializer is not constant.
-  - `g` may be declared or implicit. One such entry is clean, and so is a defined `g`, which points at D27's late binding. C++ is clean.
+  - `g` may be declared or implicit. One such entry is clean, and so is a defined `g`. C++ is clean.
+  - Traced (2026-09-27): not D27. `build_tu_module` freed a refused tree's node arena while the session's c2mir context kept its checker symbols, which are keyed by the tree's scope and identifier nodes. A later entry's tree reused the memory, so its `struct P` met the refused entry's symbol. The layout decided which sequences failed. The arena now lives with the session's context, as a compiled module's does.
 
 **Found off the path** (`BUGS.md`): B35–B39.
 

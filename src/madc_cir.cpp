@@ -991,16 +991,23 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     if (prog)
 	prog->_c2mir_seconds += std::chrono::duration<double>(
 	    std::chrono::steady_clock::now() - _c2m_t0).count();
+    // Once c2mir has read the tree, its context keeps pointers into the
+    // builder's node arena (the checker's symbol table is keyed by the tree's
+    // scope and identifier nodes), so the arena must outlive the context,
+    // whether the compile succeeded or not: the caller owns it either way. A
+    // session's context outlives every entry; a refused entry's arena freed
+    // here was reused by a later entry's nodes, which then met the refused
+    // one's symbols ("tag P redeclaration", and reads of freed memory).
     if (!_c2m_ok) {
 	fprintf(stderr, "%s: cir_compile failed\n", source_name);
-	delete builder;
+	out_builder = builder;
 	return NULL;
     }
 
     MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
     if (!mod) {
 	fprintf(stderr, "%s: no module produced\n", source_name);
-	delete builder;
+	out_builder = builder;
 	return NULL;
     }
 
@@ -1920,6 +1927,10 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
     MIR_module_t m = build_tu_module(ctx, c2m, prog, entry_name,
 				     dump_tree, false, false, b, stop,
 				     /*project_tu=*/true);
+    // The builder's node arena backs whatever c2mir read of it, for the
+    // session's life: the module, admitted or not, and a tree c2mir refused.
+    if (b)
+	live_builders.push_back(b);
     if (!m) {
 	// build_tu_module rendered why on stderr (c2mir's own messages are
 	// not captured as rows); the entry records that it did not compile.
@@ -1929,8 +1940,6 @@ bool CirJitSession::append(Program *prog, const char *entry_name)
 			    " diagnostic is on stderr)", entry_name, 0, 0);
 	return false;
     }
-    // The builder's node arena backs the module, admitted or not.
-    live_builders.push_back(b);
     live_init.clear();
     // Refused: never loaded, never one of live_mods, never `mod`.
     if (!admits(m, prog, entry_name, b))

@@ -544,6 +544,26 @@ TEST_CASE("a refused entry leaves nothing behind (§41.3)")
 	check_rollback("--std=c17", c[i]);
 }
 
+// An entry c2mir refuses leaves the session able to compile the next one
+// (plan §41.6a, C). c2mir's context keeps what it read of a refused tree, so
+// the tree's node arena lives as long as that context: freed, a later
+// entry's nodes reused it and met the refused entry's symbols. After two such
+// entries, every entry failed "tag P redeclaration".
+TEST_CASE("entries c2mir refuses leave the session compiling (§41.6a)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("struct P { int x, y; };\nint g(void);"));
+    // A file-scope initializer that is not constant: C refuses it.
+    for ( int i = 0; i < 3; ++i )
+	CHECK_FALSE(s.submit("int y" + std::to_string(i) + " = g();"));
+    REQUIRE(s.submit("1"));
+    CHECK(s.shown() == "1");
+    REQUIRE(s.submit("struct P q = { 3, 4 };"));
+    REQUIRE(s.submit("q.x + q.y"));
+    CHECK(s.shown() == "7");
+}
+
 
 // C89's call of an undeclared function is an implicit declaration: the entry
 // links, and its run fails at the call (D27), as clang-repl-20 -xc -std=c89

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Entries the backend refuses no longer break the REPL session
+
+In a C session, after two entries the backend refused (a file-scope
+`int y = g();` whose initializer is not constant, and so refused in C),
+every later entry failed "tag P redeclaration" for a struct an earlier
+entry had defined, and the session could compile nothing more. A refused
+entry's parse tree was freed while the backend's checker still held
+pointers into it, and a later entry's tree reused the memory. The tree
+now lives as long as the session. Nothing changes for a file compile.
+
+Tests: the new refused-entries case in `test_repl_session`.
+
 ### A file-scope `auto` object is defined
 
 In C++ and C23, `auto x = 5;` at file scope read "MIR error: import of
