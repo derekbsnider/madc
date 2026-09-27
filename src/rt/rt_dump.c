@@ -692,6 +692,40 @@ void __madc_dump_vd_cstr_n(void *sink, int col, const char *ty, const char *s,
 // ---------------------------------------------------------------------------
 // THE C-literal escape rule
 // ---------------------------------------------------------------------------
+
+// The length of the well-formed UTF-8 sequence at s[i..n), or 0: Unicode's
+// Table 3-7, so no overlong form, no surrogate and nothing past U+10FFFF.
+static size_t utf8_sequence_at(const unsigned char *s, size_t i, size_t n)
+{
+    unsigned char c = s[i], lo = 0x80, hi = 0xBF;
+    size_t len, k;
+
+    if (c >= 0xC2 && c <= 0xDF)
+	len = 2;
+    else if (c >= 0xE0 && c <= 0xEF) {
+	len = 3;
+	if (c == 0xE0)
+	    lo = 0xA0;
+	else if (c == 0xED)
+	    hi = 0x9F;
+    } else if (c >= 0xF0 && c <= 0xF4) {
+	len = 4;
+	if (c == 0xF0)
+	    lo = 0x90;
+	else if (c == 0xF4)
+	    hi = 0x8F;
+    } else
+	return 0;
+    if (i + len > n)
+	return 0;
+    for (k = 1; k < len; ++k) {
+	unsigned char d = s[i + k];
+	if (k == 1 ? (d < lo || d > hi) : (d < 0x80 || d > 0xBF))
+	    return 0;
+    }
+    return len;
+}
+
 size_t __madc_c_escape(const char *s, size_t n, int quote, char *out,
 		       size_t cap)
 {
@@ -700,7 +734,7 @@ size_t __madc_c_escape(const char *s, size_t n, int quote, char *out,
     for (i = 0; s && i < n; ++i) {
 	unsigned char c = (unsigned char)s[i];
 	char buf[8];
-	size_t bn = 0, j;
+	size_t bn = 0, j, u;
 
 	if (c == (unsigned char)quote || c == '\\') {
 	    buf[bn++] = '\\';
@@ -710,6 +744,15 @@ size_t __madc_c_escape(const char *s, size_t n, int quote, char *out,
 	    buf[bn++] = c == '\n' ? 'n' : c == '\t' ? 't' : 'r';
 	} else if (c >= 0x20 && c <= 0x7e) {
 	    buf[bn++] = (char)c;
+	} else if (c >= 0x80
+		   && (u = utf8_sequence_at((const unsigned char *)s, i, n))) {
+	    // A well-formed UTF-8 sequence is text and is written as itself,
+	    // as Julia and Python show a string: it re-lexes to the same
+	    // bytes, and gcc and clang read it so (a UTF-8 source charset).
+	    // A byte outside one stays an octal escape.
+	    for (j = 0; j < u; ++j)
+		buf[bn++] = s[i + j];
+	    i += u - 1;
 	} else {
 	    buf[bn++] = '\\';
 	    buf[bn++] = (char)('0' + ((c >> 6) & 7)); // allowed-exception: the owner

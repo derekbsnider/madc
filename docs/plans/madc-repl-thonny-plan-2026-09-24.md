@@ -2585,7 +2585,10 @@ With no program file, the tail chooses in this order:
   - `tui_model::expand_line` gives a byte one grid cell and shows a control byte as `?`.
   - `line_layout` counts code points by their width and shows a control byte as `^X`.
   - The grid can hold only one byte per cell, its named UTF-8 residue, so it cannot adopt the editor's rule until it holds a code point per cell.
-- **Found on the REPL's path:** a UTF-8 string shows escaped. `"été"` shows as `"\303\251t\303\251"` (D10's `char *` spelling). It is fixed next, in its own commit.
+- **Found on the REPL's path, and fixed in its own commit:** a UTF-8 string showed escaped. `"été"` showed as `"\303\251t\303\251"` (D10's `char *` spelling).
+  - THE C-literal escape rule (`__madc_c_escape`) escaped every byte above 0x7e.
+  - A well-formed UTF-8 sequence (Unicode's Table 3-7) is now written as itself, as Julia and Python show a string. Any other byte stays octal.
+  - The rule's other readers change with it, since they must agree: `--emit=c11`'s literals, and a string token's spelling. gcc 13 and clang 18 compile the emitted `"été"` to the same five bytes.
 - **Gates:**
   - `test_line_edit`: every action, each Enter verdict, pastes, Tab, the painter's bytes and the width owner;
   - `test_repl_cli`: §37's transcript typed at the editor under `madc`, `c17` and `c++17`, a paste of three entries, Ctrl-C, an entry pending at the end, and D11 and the third Enter through the session;

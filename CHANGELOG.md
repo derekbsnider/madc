@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A shown string keeps its UTF-8 text
+
+A REPL entry that shows a string now writes UTF-8 text as itself, as Julia
+and Python do: `"été"`, where it showed `"\303\251t\303\251"`. A byte that
+is not part of valid UTF-8 is still an octal escape (`"\377"`). The same
+rule spells string literals in `--emit=c11` output, which gcc and clang read
+as the same bytes.
+
+Tests: `testrepl_utf8` (new), and the UTF-8 lines in `test_repl_session`'s
+display case.
+
 ### The REPL edits each entry on a terminal (D23, slice 1)
 
 On a terminal, `madc` now edits each entry the way Julia's REPL and readline

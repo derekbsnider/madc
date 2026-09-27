@@ -1,0 +1,8 @@
+// madc -i: D10's show of a UTF-8 string (plan §41.4a; found building
+// §41.7a's slice 1). The text, entered again, yields the value, and a
+// well-formed UTF-8 sequence is written as itself, as Julia and Python show
+// a string; a byte outside one stays an octal escape. gcc 13 and clang 18
+// read "été" and "\303\251t\303\251" as the same five bytes (strcmp 0,
+// strlen 5 and 5), and so does madc.
+#include <string.h>
+const char *s = "été";

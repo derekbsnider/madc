@@ -1024,6 +1024,15 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10)")
     check_reenters(s, "char v10 = '\\x01'", "'\\001'", "(@) == v10");
     check_reenters(s, "const char *v11 = \"a\\\"b\\n\\t\\\\\"",
 		   "\"a\\\"b\\n\\t\\\\\"", "std::strcmp(@, v11) == 0");
+    // A well-formed UTF-8 sequence is text, written as itself (Julia and
+    // Python show "été"); a byte outside one stays octal: a lone 0xff, a
+    // stray continuation, an overlong '/', a surrogate's encoding.
+    check_reenters(s, "const char *v11u = \"\xc3\xa9t\xc3\xa9 \xe6\x97\xa5 \xf0\x9f\x8c\x80\"",
+		   "\"\xc3\xa9t\xc3\xa9 \xe6\x97\xa5 \xf0\x9f\x8c\x80\"",
+		   "std::strcmp(@, v11u) == 0");
+    check_reenters(s, "const char *v11b = \"\\xff\\x80\\xc0\\xaf\\xed\\xa0\\x80\"",
+		   "\"\\377\\200\\300\\257\\355\\240\\200\"",
+		   "std::strcmp(@, v11b) == 0");
     check_reenters(s, "int *v12 = &x", NULL, "(@) == v12");
     check_reenters(s, "int *v13 = nullptr", "(int *) nullptr", "(@) == v13");
     REQUIRE(s.submit("enum E { A, B = 5 };"));

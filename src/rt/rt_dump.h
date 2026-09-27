@@ -173,9 +173,10 @@ void __madc_dump_vd_text_close(void *sink);
 /* --- THE C-literal escape rule ------------------------------------------ */
 /* dupaudit family c_string_literal_escape. The BODY of a C literal quoted with
  * QUOTE ('"' or '\'') holding the bytes S[0..N): canonical escapes (\\, \n,
- * \t, \r, the quote itself) and octal for any other non-printable byte (octal
- * caps at three digits; a hex escape is maximal-munch and would swallow a hex
- * digit after it). Writes at most CAP - 1 bytes plus a NUL into OUT (OUT may
+ * \t, \r, the quote itself), a well-formed UTF-8 sequence as itself, and
+ * octal for any other non-printable byte (octal caps at three digits; a hex
+ * escape is maximal-munch and would swallow a hex digit after it). Writes at
+ * most CAP - 1 bytes plus a NUL into OUT (OUT may
  * be NULL when CAP is 0) and returns the FULL length, as snprintf does. The
  * runtime's value display (below) and the compiler's literal spellings
  * (madc_c_escape_string, lexer.cpp) both read it, so a REPL's `"a\n"` and an
