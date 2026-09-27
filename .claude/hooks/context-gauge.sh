@@ -25,13 +25,7 @@ tokens=$(jq -r '.tokens // empty' "$gauge" 2>/dev/null)
 window=$(jq -r '.window // empty' "$gauge" 2>/dev/null)
 [ -n "$used" ] || exit 0
 
-used_int=${used%%.*}
-stop="${MADC_CONTEXT_STOP_PCT:-50}"
-
 note="context gauge: ${used}% used (${tokens} of ${window} tokens)."
-if [ -n "$used_int" ] && [ "$used_int" -ge "$stop" ] 2>/dev/null; then
-    note="$note At or past the ${stop}% stop point: finish the current step, bank state (commit, status update), and stop so the owner can compact."
-fi
 
 jq -n --arg note "$note" \
     '{hookSpecificOutput: {hookEventName: "UserPromptSubmit", additionalContext: $note}}'
