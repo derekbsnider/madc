@@ -373,13 +373,13 @@ void Program::visit_top_level_names(CompletionContext ctx,
 	for ( namespace_map_t::const_iterator it = namespace_map.begin();
 	      it != namespace_map.end(); ++it )
 	    named(Kind::name_space, it->first);
-	template_map.for_each_readonly([&](const char *, const template_registry_entry_t &r) -> bool {
+	template_map.for_each_readonly([&](const char *, const template_registry_entry_t &r) -> bool {	/* identity-read: names and namespaces only */
 	    for ( size_t i = 0; i < r.namespace_variants.size(); ++i )
 		if ( visible.count(r.namespace_variants[i].defining_namespace) )
 		    named(Kind::class_template, r.namespace_variants[i].class_name);
 	    return false;
 	});
-	fn_template_map.for_each_readonly([&](const char *key, const std::vector<FnTemplateDef> &defs) -> bool {
+	fn_template_map.for_each_readonly([&](const char *key, const std::vector<FnTemplateDef> &defs) -> bool {	/* identity-read: names and namespaces only */
 	    for ( size_t i = 0; i < defs.size(); ++i )
 		if ( visible.count(defs[i].ns) )
 		{
@@ -886,13 +886,13 @@ void Program::completion_scope_names(const std::string &scope, const std::string
 	  it != namespace_map.end() && it->first.compare(0, inner.size(), inner) == 0;
 	  ++it )
 	offer(it->first.substr(inner.size()));	// a deeper one is no identifier
-    template_map.for_each_readonly([&](const char *, const template_registry_entry_t &r) -> bool {
+    template_map.for_each_readonly([&](const char *, const template_registry_entry_t &r) -> bool {	/* identity-read: names and namespaces only */
 	for ( size_t i = 0; i < r.namespace_variants.size(); ++i )
 	    if ( r.namespace_variants[i].defining_namespace == scope )
 		offer(r.namespace_variants[i].class_name);
 	return false;
     });
-    fn_template_map.for_each_readonly([&](const char *key, const std::vector<FnTemplateDef> &defs) -> bool {
+    fn_template_map.for_each_readonly([&](const char *key, const std::vector<FnTemplateDef> &defs) -> bool {	/* identity-read: names and namespaces only */
 	for ( size_t i = 0; i < defs.size(); ++i )
 	    if ( defs[i].ns == scope )
 	    {
