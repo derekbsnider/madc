@@ -2009,6 +2009,108 @@ First slice: §37 items 1–6 in the CLI interactive session only (D20: `madc`, 
     - Found off the path: B29 (whether a number-kind `var` takes arithmetic, an owner question), B30 (two initializer-list constructions refused), B31 (`std::vector`'s `operator==` refused).
   - **§41.4 is done.** `ans` (D12) changes name binding: a new binding per showing entry, re-typed each time, as Julia rebinds it. So it is its own item, with `_`, `__` and `_N`, and is not part of the display.
 
+### 41.5a The command-line front end (D20), designed against the code (2026-09-27)
+
+**Measured first** (the build box, 2026-09-27):
+- `bin/madc` with no arguments prints a stale one-line usage (`src/madc.cpp:1765`) and exits 0. `bin/madc -` refuses "`-:0:0: error: Failed to open file`", so there is no stdin program today.
+- gcc 13: `gcc`, `gcc -E` and `gcc -o out` with no input print `gcc: fatal error: no input files` / `compilation terminated.` and exit 1.
+- python3 3.12 `-i`, stdin piped:
+  - it prints its banner and every prompt to stderr, values to stdout;
+  - it exits 0 at EOF, even after an error;
+  - `sys.exit(3)` exits 3;
+  - an entry still incomplete at EOF is submitted and refused with its own diagnostic;
+  - `-i -c 'y = 42'` leaves `y` for the prompt.
+
+**Where the decision is made: the tail of `main()`.** Every mode that needs no program file has returned by then: `--version`, `--help`, `--capabilities`, `--run-frozen`, `--dump-forest`, `--project`, `.o` inputs. What reaches the tail is the file lane (`filearg < argc`) and today's usage line. D20 replaces the usage line and adds two options to the loop:
+- `-i` / `--interactive` sets `interactive`. madc matches options exactly, so it cannot collide with `-I` / `-isystem` (D20).
+- A file argument `-` names stdin (gcc, python). It stays a positional, so `madc - a b` hands `a b` to the program.
+
+With no program file, the tail chooses in this order:
+
+| Case | Action |
+|---|---|
+| an artifact or dump request: `-o`, `-c`, `-shared`, `-r`, `--emit-object`, `--emit-executable`, `--emit=`, `--emit-pch`, `--emit-function`, `-E`, `--dump-source`, `-dM`, `--dump-cir*`, `--dump-nodes`, `--dump-registered`, `--freeze*`, `--pack-forest` | `madc: fatal error: no input files` / `compilation terminated.`, exit 1 (gcc) |
+| `-i`, or stdin is a terminal | the REPL |
+| otherwise (stdin piped) | the stdin program: compile and run stdin |
+
+- The artifact test is one predicate over the flags the loop already sets. Each flag names what to do with a translation unit's output, so none applies to a session. Language and configuration options (`--std=`, `-stdlib=`, `-I`, `-D`, `-l`, `-O`, `-g`, `-w`, `--config=`, `--show-stats`, the forest flags) apply to the REPL as they apply to a file (D20).
+- `-i file` (slice 2 below) runs the file first, then the REPL.
+- `-i -` is `-i`: `-` names stdin, and `-i` reads it as entries.
+- A cross build refuses the REPL as it refuses the other run lanes (`cross_refuse_run`, §4.1).
+
+**The stdin program is the file lane with another reader.** The lane's one read of its input is `prog->tokenize(argv[filearg])`. For `-`, it reads stdin whole and calls `tokenize_buffer(text, "<stdin>")`, the buffer lane libmadc already uses. Everything after it is unchanged: parse, `-E`, `--emit=`, `-c` / `-o`, and `madc_cir_execute`. `madc_cir_execute` uses the source name only to name the module, never to reopen the file.
+- Diagnostics cite `<stdin>` (gcc's name). The program's `argv[0]` is `-`, the spelling that named its input.
+- `--emit-pch` and `--emit-function` read their input themselves, so they keep today's "Failed to open file" for `-`.
+
+**The session serves the CLI's own Program.**
+- `InteractiveSession` gains a constructor that adopts a configured `std::unique_ptr<Program>`: the one `engine.create_program()` made and the option loop and `madc.ini` configured. `-D`, `-I`, `-stdlib=`, `--std=` and the registration policy then hold in the session exactly as in the file lane.
+- `-l` libraries are opened by the existing loop before the tail, so they are in scope. The default constructor stays for tests and hosts.
+- `begin()` keeps the `--std=` argument for callers that did not configure the Program.
+
+**One entry path, with the classifier in the entry transaction** (§41.1a: "the session calls the same function inside the entry transaction").
+- Today `classify_entry` runs only on a fresh Program, and `parse_entry` has no balance stage.
+- A fresh Program cannot classify an entry for a live session: `x +` names a session variable, and a `<` is a name question for the session's templates.
+- So `classify_entry` gains the session lane:
+  - under `interactive_session` it lexes with `lex_entry`;
+  - it runs the balance stage over the entry's own tokens;
+  - it parses with `parse_toplevel`;
+  - then it runs `parse_entry`'s tail (the internal-linkage refusals, `show_entry_value`, queueing the run).
+- The verdict logic is the one function's in both lanes.
+- `parse_entry` becomes that lane's accept/refuse wrapper. A close that opens nothing (`1; }`), which the parser took, is now refused as §41.1a says. An unclosed delimiter is refused as "`'(' is not closed`" before the parse.
+- Session verbs:
+  - `offer(text)` classifies inside the entry transaction:
+    - **Incomplete** or **CompleteExtendable**: the transaction rolls back and nothing is numbered, rendered or kept; the client reads another line;
+    - **Invalid**: the entry is numbered and refused;
+    - **Complete**: the same transaction goes on to link and run, as `submit` does. The final Enter's parse is the one that runs, so there is one parse per line.
+  - `submit(text)` is the same path for a client holding a whole entry: CompleteExtendable is Complete, and Incomplete is refused with its end-of-input diagnostic.
+- The entry number is taken when the verdict is final, so an incomplete attempt never uses up `REPL[N]`. The parse cites the number it would take.
+- **Rendering is deferred to the verdict.** The parse runs under `DiagnosticRenderMute`: an incomplete entry's end-of-input error must not print, and neither must its warnings twice. On Complete or Invalid, the session renders the diagnostics that parse recorded, in order, with `print_diagnostic`. Translation, link and run render as they do today.
+- **The token queue starts empty.** A refusal before the end-of-entry token leaves the entry's tokens queued: a lexer refusal, an open delimiter, a parse error the parser does not recover past. The entry path drains them, so the next entry never parses a stale tail.
+
+**The loop** is a new owner, `madc_repl_run(InteractiveSession &, std::istream &in, std::ostream &out, bool terminal)` (`src/madc_repl.cpp`). It takes streams, so the unit tests drive the production loop.
+- Prompts:
+  - **On a terminal:** a one-line banner (`madc <version>`, and that Ctrl-D exits) and the prompt `Program::standard_canonical_name(language_std) + "> "` (D22).
+  - **Continuation lines** get spaces as wide as the prompt (D22, Julia).
+  - **Off a terminal:** no banner and no prompt (D23's fallback). A transcript's output is then its values and diagnostics only. This differs from python, which prints prompts to stderr.
+- Lines are read cooked, with `std::getline`; the line editor is D23's. An empty line at an empty prompt does nothing. Otherwise the pending text plus the line is offered:
+  - **Incomplete:** read on.
+  - **Complete or Invalid:** start a new entry, first printing the shown value (`shown()`, D10) and a new-line to `out`.
+  - **CompleteExtendable** (D11): wait for one more line.
+    - A line whose first word is the keyword `else` continues the entry. It is looked up in the Program's `keyword_map`, so it is the standard's `else` token (`TokenID::tkELSE`), never a spelling compare.
+    - An empty line runs the entry.
+    - Any other line runs it, then starts the next entry.
+- **At EOF:** a pending entry is submitted, so an extendable `if` runs and an incomplete entry is refused with its own end-of-input diagnostic (python and Julia do the same). On a terminal a new-line follows. The exit status is 0 (python `-i`), and a program's `exit(n)` ends the process with `n`.
+- The REPL and a program read one stdin. `std::cin` is synced with stdio (the default, which madc never turns off), so an entry that calls `scanf` or `getline` reads the transcript's next line, as python's `input()` does.
+- Values go to stdout, diagnostics to stderr (their existing renderers), and the prompt to stdout, flushed (Julia).
+
+**Thread contract:** the loop drives one session from one thread (D9), with per-instance state only.
+
+**Gates:**
+- `test_repl_session`:
+  - `offer` over the §41.1a corpus shapes on a live session: `x +` after `int x`, an open brace, an open comment, a stray close, and an extendable `if` followed by `else`, by an empty line, and by another statement;
+  - numbering across an incomplete attempt;
+  - deferred diagnostics;
+  - the drained queue after each refusal kind.
+- `test_repl_cli`: `madc_repl_run` over string streams, with the §37 items 1–6 transcript (`int x = 10;`, `x * 2` shows `20`, `x * 2;` shows nothing, a function over three lines, a refused entry leaving `x`), under `madc`, `c17` and `c++17`, prompt off and on.
+- `bin/madc` itself:
+  - `-i < transcript`;
+  - `< prog.c` and `- args`;
+  - `-o out` alone ("no input files");
+  - no arguments on a terminal. This one is checked by hand over `ssh -t`, since a test has no terminal.
+
+**Slices:**
+1. The tail's dispatch, `-i` / `-` / the stdin program / "no input files", the configured-Program session, `offer`, and the loop. Refused until slice 2: `-i file` ("`-i` with a program file is not supported yet").
+2. `-i file`, `python -i`, the CLI form of D16's F5. The file loads into the session as a translation unit:
+   - its own grammar (`ParseMode::TranslationUnit`: no entry relaxations; REPL mode is a mode);
+   - script mode's synthesized `main` as script mode makes it;
+   - its declarations persist on the session's Program;
+   - its module links into the live context.
+
+   Then `main` runs with the remaining positionals as its argv, and the prompt follows with its names. Its return value does not end the session. Its `exit(n)` ends the process. Runner tests follow the fixture convention with no runner change: `tests/testrepl_*.mad` + `.flags` (`-i`) + `.input` (the transcript) + `.expect`, `.exe_skip` (the REPL is JIT-only, D19).
+3. `ans` (D12), its own item, on the loop slice 1 gives it.
+
+**Not in D20, and named:** the line editor (D23), commands (D13, D24), Ctrl-C (D8), help and shell modes (D14, D15).
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.
