@@ -16,7 +16,12 @@
 #      reference_bind_address_expr, which re-designates a reference CAST's object
 #      (`*addr`) and reads no `*` from the source;
 #   2. every build_indirection call reads its operand with parseCastExpression --
-#      a new hand-rolled reader cannot hide behind the builder;
+#      a new hand-rolled reader cannot hide behind the builder. The named
+#      exceptions read no operand from the source: the REPL's result names
+#      (Program::keep_entry_value takes the address of the value an entry
+#      showed, Program::session_result_value dereferences the pointer it kept),
+#      which build a `*` / `&` over nodes the compiler made, with no `*` / `&`
+#      token behind them (rule 3's build_address_of calls likewise);
 #   3. the `&` twin: an address-of node (TokenAddrOf / TokenAddrExpr) is built
 #      only by build_address_of, by parseAddressOfExpression's two kept arms (a
 #      compound literal; an UNPARENTHESIZED qualified-id, which
@@ -57,6 +62,17 @@ outside_owners() {
 	' "$@"
 }
 
+# Builder calls (build_indirection / build_address_of, per $1) outside the
+# named synthesizers of rule 2, the definition line excluded.
+SYNTH='^TokenBase \*Program::(keep_entry_value|session_result_value)\('
+builder_calls() {
+	awk -v call="$1\\(" -v synth="$SYNTH" -v def="Program::$1" '
+		$0 ~ synth { inside = 1 }
+		!inside && $0 ~ call && index($0, def) == 0 { print FILENAME ":" FNR ": " $0 }
+		inside && /^}/ { inside = 0 }
+	' "${@:2}"
+}
+
 # Negative control: a construction outside the owner and a builder call fed by a
 # hand-rolled reader must both be caught; the same construction inside the
 # owner must not.
@@ -72,11 +88,15 @@ static void arm() {
     exStack.push(build_indirection(parsePostfixChain(first), tb));
     exStack.push(new TokenAddrOf(*var, aptr));
 }
+TokenBase *Program::session_result_value(Variable *result, bool alias, TokenBase *loc)
+{
+    return alias ? build_indirection(tv, loc) : tv;
+}
 CTL
 c1=$(outside_owners "$ctl_dir/ctl.cpp" | grep -c .)
 c3=$(awk '/^TokenBase \*Program::(build_address_of|parseAddressOfExpression|reference_bind_address_expr)\(/ { inside = 1 }
 	!inside && /new TokenAddr(Of|Expr)\(/ { n++ } inside && /^}/ { inside = 0 } END { print n+0 }' "$ctl_dir/ctl.cpp")
-c2=$(grep -E 'build_indirection\(' "$ctl_dir/ctl.cpp" | grep -vE 'Program::build_indirection|build_indirection\(parseCastExpression\(' | grep -c .)
+c2=$(builder_calls build_indirection "$ctl_dir/ctl.cpp" | grep -v 'build_indirection(parseCastExpression(' | grep -c .)
 if [ "$c1" -ne 1 ] || [ "$c2" -ne 1 ] || [ "$c3" -ne 1 ]; then
 	echo "check-one-deref-builder: NEGATIVE CONTROL FAILED -- construction outside"
 	echo "  the owner matched $c1 of 1, a hand-read builder operand $c2 of 1"
@@ -92,7 +112,7 @@ if [ "$n" -ne 0 ]; then
 	exit 1
 fi
 
-calls=$(grep -nE 'build_indirection\(' src/*.cpp | grep -v 'Program::build_indirection')
+calls=$(builder_calls build_indirection src/*.cpp)
 ncalls=$(printf '%s' "$calls" | grep -c . || true)
 hand=$(printf '%s\n' "$calls" | grep -v 'build_indirection(parseCastExpression(' | grep -c . || true)
 echo "build_indirection calls: $ncalls, operand not read by parseCastExpression: $hand (target 0)"
@@ -125,7 +145,7 @@ amp_body() {
 }
 npe=$(amp_body src/parser.cpp | grep -c 'parseExpression(' || true)
 npc=$(amp_body src/parser.cpp | grep -c 'parsePostfixChain(' || true)
-acalls=$(grep -nE 'build_address_of\(' src/*.cpp | grep -v 'Program::build_address_of')
+acalls=$(builder_calls build_address_of src/*.cpp)
 ahand=$(printf '%s\n' "$acalls" | grep -v 'build_address_of(parseCastExpression(' | grep -c . || true)
 echo "& reader: parseExpression $npe (target 1, the compound literal), parsePostfixChain $npc (target 0), hand-fed build_address_of $ahand (target 0)"
 if [ "$npe" -ne 1 ] || [ "$npc" -ne 0 ] || [ "$ahand" -ne 0 ]; then
