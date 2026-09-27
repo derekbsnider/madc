@@ -21069,7 +21069,13 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	// winner falls through to today's behaviour unchanged. Type-predicate
 	// gated (is_madc_array), never name-keyed; user-class rhs operands do
 	// not enter — their arbitration below is untouched.
-	if ( to->right->datadef() && to->right->datadef()->is_madc_array() )
+	// The lhs being the carrier ITSELF is not that case: its member rows DO
+	// take a carrier (`operator+(value)`, `operator==(value)`), so the member
+	// owns `v @ w` like any class with a matching member. Claiming it here
+	// let a free carrier row win through the carrier's text conversion
+	// (D28's `operator+(const char *, var)` bound `v + w` as "5" + w).
+	if ( !lc->is_madc_array()
+	  && to->right->datadef() && to->right->datadef()->is_madc_array() )
 	{
 	    std::vector<const DataDef *> at;
 	    at.push_back(free_operator_arg_datadef(to->left));
@@ -27910,8 +27916,82 @@ void Program::add_madc_namespace()
 // a process-global singleton, so registration is once-guarded and every
 // allocation is process-lifetime (addFunction isMethod=true touches no
 // Program-owned map — nothing dangles across Programs).
+// The carrier's arithmetic and ordering operators (plan §42 D28;
+// madc::value::arithmetic and compare own the rule, the madarray_* entries
+// bind it). ONE table for both registrations: the MEMBER rows (a var on the
+// left) live on the process-global ddARRAY and register once, in
+// add_array_methods; the FREE rows (a number or text on the left) live in
+// each Program's overload set and register for every Program, in
+// add_carrier_free_operators.
+namespace {
+struct CarrierOperator { const char *sym; const char *stem; };
+const CarrierOperator carrier_arith_ops[] = {
+    { "+", "add" }, { "-", "sub" }, { "*", "mul" }, { "/", "div" },
+    { "%", "mod" },
+};
+const CarrierOperator carrier_order_ops[] = {
+    { "<", "lt" }, { "<=", "le" }, { ">", "gt" }, { ">=", "ge" },
+};
+struct CarrierNumber { DataType type; const char *suffix; };
+const CarrierNumber carrier_numbers[] = {
+    { DataType::dtINT64,  "int"  },
+    { DataType::dtDOUBLE, "real" },
+};
+// The carrier reference the rows take and return: a REAL DataDefREF passed
+// plain (add_array_methods' assignment rows say why). Immutable once made.
+DataDefREF *carrier_ref_type()
+{
+    static DataDefREF *r = new DataDefREF(ddARRAY);
+    return r;
+}
+} // namespace
+
+// The carrier's FREE operator rows: a number or text on the left (`1 + v`,
+// `"x" + v`), ranked by the free-operator lowering like a user-written free
+// operator. They live in THIS Program's overload set, so every Program
+// registers them; add_array_methods' once-per-process guard covers only the
+// member rows it puts on the global ddARRAY (a second session, an eval
+// context or a host's second Program lost `1 + v` behind it).
+void Program::add_carrier_free_operators()
+{
+    DataDefREF *carrier_ref = carrier_ref_type();
+    auto add_free_row = [&](const std::string &name, typespec_t ret,
+			    typespec_t lhs, const std::string &sym)
+    {
+	Variable *var = addFunction(name,
+	    datatype_vec_t{ret, lhs, typespec_t(carrier_ref)}, NULL, true);
+	FuncDef *fd = var ? dynamic_cast<FuncDef *>(var->type) : NULL;
+	if ( !fd )
+	    return;
+	fd->declaration_only = true;
+	fd->emit_symbol = sym;
+	fd->function_display_name = name;
+	fd->const_params = { false, true };
+	NamespaceFnOverload e;
+	e.var = var;
+	namespace_fn_overload_sets["::" + name].push_back(e);
+    };
+    for ( const CarrierOperator &op : carrier_arith_ops )
+	for ( const CarrierNumber &k : carrier_numbers )
+	    add_free_row(std::string("operator") + op.sym, typespec_t(ddARRAY),
+			 k.type, std::string("madarray_r") + op.stem + "_"
+				 + k.suffix);
+    add_free_row("operator+", typespec_t(ddARRAY), ptr_of(ddCHAR),
+		 "madarray_radd_cstr");
+    for ( const CarrierOperator &op : carrier_order_ops )
+    {
+	std::string name = std::string("operator") + op.sym;
+	add_free_row(name, DataType::dtBOOL, ptr_of(ddCHAR),
+		     std::string("madarray_r") + op.stem + "_cstr");
+	for ( const CarrierNumber &k : carrier_numbers )
+	    add_free_row(name, DataType::dtBOOL, k.type,
+			 std::string("madarray_r") + op.stem + "_" + k.suffix);
+    }
+}
+
 void Program::add_array_methods()
 {
+    add_carrier_free_operators();
     if ( ddARRAY.method_map.count("count") )
 	return;
     for ( const char *name : { "count", "size" } )
@@ -28035,7 +28115,7 @@ void Program::add_array_methods()
     // addFunction's resolve_data_type, and a by-value ddARRAY return would
     // wrongly take the sret/retbuf path (the runtime returns the receiver
     // pointer; returns_reference() gets the N_DEREF lowering that matches).
-    static DataDefREF *array_ref = new DataDefREF(ddARRAY);
+    DataDefREF *array_ref = carrier_ref_type();
     struct ArrayAssignOp { typespec_t param; const char *sym; };
     const ArrayAssignOp assign_ops[] = {
 	{ ptr_of(ddCHAR),         "madarray_assign_cstr"  },
@@ -28105,10 +28185,10 @@ void Program::add_array_methods()
 	  "madarray_ne_real", true },
 	{ "operator!=", DataType::dtBOOL,     DataType::dtBOOL,
 	  "madarray_ne_bool", true },
+	// `v += "text"` appends. The other `+=` rows are the compound
+	// arithmetic below (D28), where text + text is also concatenation.
 	{ "operator+=", typespec_t(array_ref), ptr_of(ddCHAR),
 	  "madarray_append_cstr", false },
-	{ "operator+=", typespec_t(array_ref), typespec_t(array_ref),
-	  "madarray_append_value", false },
 	// index(needle): Python's list.index / str.find shape — first
 	// position of the needle (element-equal for arrays, substring
 	// for strings), -1 when absent (a question, never a throw).
@@ -28132,27 +28212,85 @@ void Program::add_array_methods()
 	{ "push",       typespec_t(array_ref), typespec_t(array_ref),
 	  "madarray_push_value", false },
     };
-    for ( const ArrayBinOp &op : bin_ops )
+    // One registration for every member row below: a receiver-first
+    // declaration-only method bound to its runtime entry. `params` follow
+    // the receiver (none for a unary operator).
+    auto add_member_row = [&](const std::string &name, typespec_t ret,
+			      const std::vector<typespec_t> &params,
+			      const std::string &sym, bool const_method)
     {
-	Variable *var = addFunction(op.name,
-	    datatype_vec_t{op.ret, ptr_of(ddARRAY), op.param}, NULL, true);
+	datatype_vec_t sig{ret, ptr_of(ddARRAY)};
+	sig.insert(sig.end(), params.begin(), params.end());
+	Variable *var = addFunction(name, sig, NULL, true);
 	if ( !var )
-	    continue;
+	    return;
 	FuncDef *fd = dynamic_cast<FuncDef *>(var->type);
 	if ( fd )
 	{
 	    fd->declaration_only = true;
-	    fd->emit_symbol = op.sym;
-	    fd->method_display_name = op.name;
-	    fd->is_const_method = op.const_method;	// the questions are
-	    if ( op.param.dd == array_ref )
+	    fd->emit_symbol = sym;
+	    fd->method_display_name = name;
+	    fd->is_const_method = const_method;	// the questions are
+	    if ( !params.empty() && params[0].dd == array_ref )
 		fd->const_params = { false, false, true };
 	}
 	Method *md = static_cast<Method *>(var->data);
 	if ( md )
 	    md->owner_class = &ddARRAY;
 	ddARRAY.methods.push_back(var);
-	ddARRAY.method_map[op.name] = var;
+	ddARRAY.method_map[name] = var;
+    };
+    for ( const ArrayBinOp &op : bin_ops )
+	add_member_row(op.name, op.ret, std::vector<typespec_t>{op.param},
+		       op.sym, op.const_method);
+
+    // Arithmetic and ordering (plan §42 D28): the MEMBER rows, a var on the
+    // left, from the shared carrier tables above (the free rows, a number or
+    // text on the left, are add_carrier_free_operators'). The result of an
+    // arithmetic operator is a new var, returned by value (L3); a compound
+    // assignment returns the receiver. Text rows exist where text has a
+    // meaning: `+` (concatenation) and the orderings (bytewise).
+    const typespec_t value_operand(array_ref);
+    const typespec_t text_operand = ptr_of(ddCHAR);
+    for ( const CarrierOperator &op : carrier_arith_ops )
+    {
+	std::string name = std::string("operator") + op.sym;
+	std::string stem = std::string("madarray_") + op.stem;
+	add_member_row(name, typespec_t(ddARRAY),
+		       std::vector<typespec_t>{value_operand},
+		       stem + "_value", true);
+	add_member_row(name + "=", typespec_t(array_ref),
+		       std::vector<typespec_t>{value_operand},
+		       stem + "_assign_value", false);
+	for ( const CarrierNumber &k : carrier_numbers )
+	{
+	    add_member_row(name, typespec_t(ddARRAY),
+			   std::vector<typespec_t>{typespec_t(k.type)},
+			   stem + "_" + k.suffix, true);
+	    add_member_row(name + "=", typespec_t(array_ref),
+			   std::vector<typespec_t>{typespec_t(k.type)},
+			   stem + "_assign_" + k.suffix, false);
+	}
+    }
+    add_member_row("operator+", typespec_t(ddARRAY),
+		   std::vector<typespec_t>{text_operand},
+		   "madarray_add_cstr", true);
+    add_member_row("operator-", typespec_t(ddARRAY),
+		   std::vector<typespec_t>{}, "madarray_neg", true);
+    for ( const CarrierOperator &op : carrier_order_ops )
+    {
+	std::string name = std::string("operator") + op.sym;
+	std::string stem = std::string("madarray_") + op.stem;
+	add_member_row(name, DataType::dtBOOL,
+		       std::vector<typespec_t>{value_operand},
+		       stem + "_value", true);
+	add_member_row(name, DataType::dtBOOL,
+		       std::vector<typespec_t>{text_operand},
+		       stem + "_cstr", true);
+	for ( const CarrierNumber &k : carrier_numbers )
+	    add_member_row(name, DataType::dtBOOL,
+			   std::vector<typespec_t>{typespec_t(k.type)},
+			   stem + "_" + k.suffix, true);
     }
 
     // Placement-construction surface: `value(-7)` temporaries and

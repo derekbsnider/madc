@@ -6168,6 +6168,7 @@ public:
     void add_namespaces();
     void add_madc_namespace();
     void add_array_methods();	// native count()/size() on the builtin array (ddARRAY)
+    void add_carrier_free_operators();	// `1 + v`: per-Program free rows (D28)
     bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_auto_library_loading_enabled() const;

@@ -1126,3 +1126,48 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, madc
     REQUIRE(s.submit("var e"));
     CHECK(s.shown().empty());
 }
+
+TEST_CASE("a var holding a number takes arithmetic (D28)")
+{
+  {
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=madc"));
+    REQUIRE(s.submit("var a = 5;"));
+    REQUIRE(s.submit("var t = \"ab\";"));
+    // Each result is a new var, shown re-enterably (D10's rule).
+    const char *cases[][2] = {
+	{ "a + 1", "6" },
+	{ "1 + a", "6" },
+	{ "a / 2", "2.5" },
+	{ "a % 3", "2" },
+	{ "-a", "-5" },
+	{ "a * 0.5", "2.5" },
+	{ "t + \"c\"", "\"abc\"" },
+	{ "\"x\" + t", "\"xab\"" },
+    };
+    for ( size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i )
+    {
+	CAPTURE(cases[i][0]);
+	REQUIRE(s.submit(cases[i][0]));
+	CHECK(s.shown() == cases[i][1]);
+	std::string again = "var r" + std::to_string(i) + " = " + s.shown();
+	CAPTURE(again);
+	REQUIRE(s.submit(again));
+	CHECK(s.shown() == cases[i][1]);
+    }
+    REQUIRE(s.submit("a < 10"));
+    CHECK(s.shown() == "true");
+    // A compound assignment in one entry is seen by the next.
+    REQUIRE(s.submit("a += 2;"));
+    REQUIRE(s.submit("a"));
+    CHECK(s.shown() == "7");
+  }
+    // A later Program in the same process has the free rows too: they live
+    // in each Program's overload set, while the member rows sit on the
+    // process-global carrier and register once.
+    InteractiveSession s2;
+    REQUIRE(s2.begin("--std=madc"));
+    REQUIRE(s2.submit("var b = 2;"));
+    REQUIRE(s2.submit("10 - b"));
+    CHECK(s2.shown() == "8");
+}

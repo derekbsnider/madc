@@ -2678,7 +2678,14 @@ bool CirBuilder::dump_argument(DumpFlavor fl, TokenBase *arg,
 	// dumper ONCE, by value, and every rebuild of the access happens inside that
 	// function against its own parameter. `php::print_r(list_head())` is
 	// therefore fine where `php::print_r(make_point())` is not.
-	if ((is_arr || dynamic_cast<DataDefSTRUCT *>(dd) != NULL) && !simple_lvalue) {
+	// Nor does the value CARRIER: its walk is ONE runtime call over the
+	// value's address (dump_value reads the access once), and a carrier
+	// result (`a + 1`, `f()`) is already materialized into its temp by the
+	// operator and call lanes. carrier_operand is the one rule for a carrier
+	// expression that designates an object.
+	bool carrier_read_once = is_array_object(dd) && carrier_operand(arg);
+	if ((is_arr || dynamic_cast<DataDefSTRUCT *>(dd) != NULL) && !simple_lvalue
+	    && !carrier_read_once) {
 		why = "an aggregate argument must be a variable or member (a"
 		      " temporary has no address to walk, and would be"
 		      " re-evaluated once per field)";

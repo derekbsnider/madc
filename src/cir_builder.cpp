@@ -21068,7 +21068,13 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	// The operand must be a class OBJECT lvalue. as_class_instance resolves an
 	// object class without unwrapping pointers (so `C* p; -p` stays a built-in
 	// pointer op and never mis-routes). NULL -> not an overloadable unary op.
+	// The value carrier (ddARRAY) lives outside the user-class universe;
+	// carrier_operand is its ONE admission rule, as in class_operator_call,
+	// so `-v` reaches its operator- row (D28) and a carrier without the
+	// operator declines below.
 	DataDefCLASS *cls = as_class_instance(operand->datadef());
+	if (!cls && carrier_operand(operand))
+		cls = &ddARRAY;
 	if (!cls) return NULL;
 
 	std::string mname = std::string("operator") + opsym;

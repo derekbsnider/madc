@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+### A `var` holding a number takes arithmetic (D28)
+
+`var a = 5; a + 1` was refused. A `var` now takes `+ - * / %`, unary `-`,
+`< <= > >=` and the compound assignments, with a number or text on either
+side (`1 + a`, `"x" + t`). The rule is `madc::value::arithmetic` / `negate`
+/ `compare`, shared by the script's operator rows and the C++ operators on
+`madc::value`:
+- an integer with an integer is an integer, wrapping on overflow (Julia);
+- an integer with a real is a real;
+- `/` of two integers is real (`5 / 2` is `2.5`); a plain `int` keeps C's
+  division;
+- `%` truncates (C, PHP, Julia's `rem`); an integer `% 0` is refused;
+- numbers order exactly (`var(INT64_MAX) >= 9223372036854775807.0` is false,
+  as in Python and Julia) and text orders bytewise;
+- text joins text; any other pair, a boolean included, is a catchable
+  error, as `==`'s strict kinds are.
+
+`a += 1` adds, and `t += "x"` still appends. The result of an operator is a
+new `var`, returned by value. `-a` reaches the carrier through the unary
+operator lane's admission, `carrier_operand`. A carrier on the left keeps
+its member rows: the free-operator lane no longer claims `v + w` for a
+free row that only fits through the carrier's text conversion. A session
+shows a `var` result (`a + 1` shows `6`, not `<array>`), and
+`php::print_r(a + 1)` prints it. The bitwise operators, which a `var` does
+not define, are still refused. The free rows (`1 + a`) are registered for
+every Program, so a second session or eval context has them too.
+
+Test: `testvararith` (oracles: python3, php 8.3 and gcc on the distinctive
+lines), unit cases in `test_libmadc_value` and `test_repl_session`. Closes
+BUGS.md B29.
+
 ### A unary operator returning a class by value gets its result slot
 
 `N operator-() const` on a class with a user copy constructor or destructor

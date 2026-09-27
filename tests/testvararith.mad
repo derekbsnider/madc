@@ -1,0 +1,80 @@
+// A var holding a number takes arithmetic (plan §42 D28). One rule,
+// madc::value::arithmetic / compare, behind the member rows (a var on the
+// left), the free rows (a number or text on the left) and the compound
+// assignments. `/` of two integers is real, `%` is truncated (C, Julia's rem,
+// JavaScript, PHP); a plain int keeps C's division.
+
+int main()
+{
+	var a = 5;
+	var b = 2;
+	println("add {} sub {} mul {}", a + b, a - b, a * b);
+	println("div {} mod {}", a / b, a % b);
+	println("neg {} int-real {}", -a, a + 0.5);
+	println("left {} {} {}", 1 + a, 10 - a, 7 / b);
+	println("chain {} group {}", a + 1 + 2, (a + b) * 2);
+	var r = 1.5;
+	println("real {} {}", r * 3, 9 - r);
+	var n = -7;
+	println("rem {} {}", n % 3, 7 % b);
+	var big = 9223372036854775807;
+	println("wrap {}", big + 1);
+	var s = "ab";
+	println("cat {} {} {}", s + "cd", "x" + s, s + s);
+	println("lt {} {} {}", a < 10, a < 5, a <= 5);
+	println("gt {} {} {}", a > 2.5, 3 > a, a >= 5.0);
+	println("text order {} {}", s < "b", "b" < s);
+	println("exact {}", big >= 9223372036854775807.0);
+
+	var c = 1;
+	c += 2;
+	c *= 5;
+	c -= 1;
+	println("compound {}", c);
+	c /= 4;
+	println("compound div {}", c);
+	c %= 2;
+	println("compound mod {}", c);
+	var t = "a";
+	t += "b";
+	t += s;
+	println("text {}", t);
+	var acc;
+	acc += 5;
+	acc += 1;
+	println("acc {}", acc);
+	println("c int {}", 5 / 2);
+
+	try {
+		var bad = s + 1;
+		println("no-throw {}", bad);
+	} catch (const char *m) {
+		println("caught {}", m);
+	}
+	try {
+		var z = a % 0;
+		println("no-throw {}", z);
+	} catch (const char *m) {
+		println("caught {}", m);
+	}
+	try {
+		var q = -s;
+		println("no-throw {}", q);
+	} catch (const char *m) {
+		println("caught {}", m);
+	}
+	try {
+		bool o = s < 1;
+		println("no-throw {}", o);
+	} catch (const char *m) {
+		println("caught {}", m);
+	}
+	try {
+		var flag = true;
+		var x = flag + 1;
+		println("no-throw {}", x);
+	} catch (const char *m) {
+		println("caught {}", m);
+	}
+	return 0;
+}
