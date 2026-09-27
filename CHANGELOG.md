@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A later REPL entry that names an auto-included header runs
+
+After a first entry, an entry that used `format`, `println`, `php::` or any
+other auto-included name went wrong. `int total = 3;` then
+`format("now={}", total)` was refused as "redefinition of 'total'", and
+later entries crashed. `println(...)` printed nothing and reported no
+error. The lexer inserts the header's tokens counting from the start of
+the token stream, but each entry was lexed onto the stream behind the
+earlier entries' tokens. Each entry now starts on a fresh stream, as a file
+does. Test: `test_repl_session`, "a later entry that names an
+auto-included header runs".
+
 ### `madc` with no program file is the REPL (D20)
 
 `madc` alone printed a stale usage line. It now enters the REPL when stdin

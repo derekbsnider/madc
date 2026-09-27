@@ -559,6 +559,30 @@ TEST_CASE("an implicitly declared function links once it is defined (c89)")
 // which runs once, after the entry's module links. The oracle is clang-repl
 // (tmp/repl/s2/order2.repl): the same entries give log=123 y=2,
 // log=12345 w=4, x=30.
+// A later entry that names an auto-included header (`format`, `php::`,
+// `println`): the lexer splices the header's tokens in front of the
+// entry's, counting positions from cursor 0, and a session's stream had the
+// earlier entries' consumed tokens in front of the cursor. The splice moved
+// the entry's own tokens behind it: `format("now={}", total)` after
+// `int total = 3;` read "redefinition of 'total'" (entry 1 re-parsed), and
+// the next entries crashed in the balance stage. The same text as one file
+// prints now=3, AB, now=3 (tmp/repl/d20s2/autoinc.mad), as g++ and clang++
+// -std=c++20 give std::format("now={}", 3) == "now=3".
+TEST_CASE("a later entry that names an auto-included header runs")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=madc"));
+    REQUIRE(s.submit("int total = 3;"));
+    REQUIRE(s.submit("format(\"now={}\", total)"));
+    CHECK(s.shown() == "\"now=3\"");
+    REQUIRE(s.submit("var up = php::strtoupper(\"ab\");"));
+    REQUIRE(s.submit("up"));
+    CHECK(s.shown() == "\"AB\"");
+    REQUIRE(s.submit("println(\"now={}\", total);"));
+    REQUIRE(s.submit("total + 1"));
+    CHECK(s.shown() == "4");
+}
+
 TEST_CASE("an entry's statements run once, on the session's globals")
 {
     InteractiveSession s;

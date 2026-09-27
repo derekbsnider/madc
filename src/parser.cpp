@@ -78082,16 +78082,21 @@ bool Program::entry_line_continues_if(const std::string &line)
     return ki != keyword_map.end() && *ki && (*ki)->id() == TokenID::tkELSE;
 }
 
-// An entry starts clean: no diagnostics, no run, no display, and an empty
-// token queue. A refusal before the end-of-entry token (the lexer's, an open
+// An entry starts clean: no diagnostics, no run, no display, and a fresh
+// token stream. A refusal before the end-of-entry token (the lexer's, an open
 // delimiter, a parse error nothing recovers past) leaves the rest of that
-// entry queued; the next entry never parses it.
+// entry queued; the next entry never parses it. The earlier entries' consumed
+// tokens are gone from the stream too (their TokenBase objects stay, owned by
+// the tree): an entry that names an auto-included header (`println`,
+// `format`, `php::`) had its own tokens spliced behind a cursor the lexer
+// assumed was 0, and they were dropped or scrambled.
 void Program::begin_entry()
 {
     clear_diagnostics();
     clear_error();
-    while ( !tokens.empty() )
-	tokens.pop_front();
+    // A fresh stream, as every translation unit's lex starts on: the lexer's
+    // reorders (the auto-include splice) count positions from cursor 0.
+    tokens.reset();
     entry_function = NULL;
     entry_function_name.clear();
     entry_end_token = NULL;

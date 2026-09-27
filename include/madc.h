@@ -2709,7 +2709,12 @@ public:
     const_reverse_iterator rend()   const { return const_reverse_iterator(begin()); }
 
     // id-level buffer mutation (auto-include reorder; runs at cursor==0, pushback
-    // empty). Replaces the former vector<TokenBase*> swap / erase+insert idiom.
+    // empty: a unit's lex starts on a fresh stream — a TU's, or an interactive
+    // session's next unit after reset()). Replaces the former
+    // vector<TokenBase*> swap / erase+insert idiom.
+    // A fresh stream for the next unit (Program::begin_entry): empty, cursor 0,
+    // nothing pushed back. The tokens themselves live on in the registry.
+    void reset() { _buf.clear(); _cursor = 0; _pushback.clear(); }
     void assign_ids_from(std::vector<TokenBase *> &toks)
     {
 	_buf.clear();
