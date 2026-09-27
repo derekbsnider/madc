@@ -1171,3 +1171,111 @@ TEST_CASE("a var holding a number takes arithmetic (D28)")
     REQUIRE(s2.submit("10 - b"));
     CHECK(s2.shown() == "8");
 }
+
+// The classifier runs inside the entry transaction (plan §41.5a, §41.1a): an
+// entry offered line by line is parsed on the session, so a name an earlier
+// entry declared counts, and it is taken only when it is final. An attempt
+// the client goes on typing keeps nothing and takes no number.
+static void check_offered_lines(const std::string &std_option)
+{
+    CAPTURE(std_option);
+    typedef InteractiveSession::OfferState St;
+    InteractiveSession s;
+    REQUIRE(s.begin(std_option));
+    REQUIRE(s.submit("int x = 10;"));
+    CHECK(s.submitted() == 1);
+
+    // A session variable's operator waits for its operand.
+    CHECK(s.offer("x +\n").state == St::Incomplete);
+    CHECK(s.submitted() == 1);
+    InteractiveSession::Offered r = s.offer("x +\n2\n");
+    CHECK(r.state == St::Taken);
+    CHECK(r.ok);
+    CHECK(s.shown() == "12");
+    CHECK(s.submitted() == 2);
+
+    // A function over lines: the declarator waits for its body, the body
+    // for its close.
+    CHECK(s.offer("int twice(int a)\n").state == St::Incomplete);
+    CHECK(s.offer("int twice(int a)\n{\n").state == St::Incomplete);
+    CHECK(s.offer("int twice(int a)\n{\n\treturn a * 2;\n").state == St::Incomplete);
+    r = s.offer("int twice(int a)\n{\n\treturn a * 2;\n}\n");
+    CHECK(r.state == St::Taken);
+    CHECK(r.ok);
+    CHECK(s.submitted() == 3);
+    REQUIRE(s.submit("twice(x)"));
+    CHECK(s.shown() == "20");
+
+    // An open comment waits for its close.
+    CHECK(s.offer("/* a note\n").state == St::Incomplete);
+    r = s.offer("/* a note\n*/ x\n");
+    CHECK(r.state == St::Taken);
+    CHECK(s.shown() == "10");
+
+    // A close that opens nothing is refused, and takes its number.
+    unsigned before = s.submitted();
+    r = s.offer("x; }\n");
+    CHECK(r.state == St::Taken);
+    CHECK_FALSE(r.ok);
+    CHECK_FALSE(first_error(s).empty());
+    const ::Program::Diagnostic *d = first_error_diagnostic(s);
+    REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+    CHECK(d->file == "REPL[" + std::to_string(before + 1) + "]");
+    CHECK(s.submitted() == before + 1);
+
+    // The number an entry takes skips no incomplete attempt.
+    before = s.submitted();
+    CHECK(s.offer("int y =\n").state == St::Incomplete);
+    r = s.offer("int y =\n;\n");
+    CHECK(r.state == St::Taken);
+    CHECK_FALSE(r.ok);
+    d = first_error_diagnostic(s);
+    REQUIRE(d != (const ::Program::Diagnostic *)NULL);
+    CHECK(d->file == "REPL[" + std::to_string(before + 1) + "]");
+
+    // D11: a finished if with no else waits; its else continues it.
+    CHECK(s.offer("if (x > 5) x = 1;\n").state == St::Extendable);
+    CHECK_FALSE(s.program().entry_line_continues_if("x = 3;"));
+    CHECK_FALSE(s.program().entry_line_continues_if(""));
+    CHECK_FALSE(s.program().entry_line_continues_if("elsewhere = 1;"));
+    CHECK(s.program().entry_line_continues_if("  else x = 2;"));
+    r = s.offer("if (x > 5) x = 1;\nelse x = 2;\n");
+    CHECK(r.state == St::Taken);
+    CHECK(r.ok);
+    REQUIRE(s.submit("x"));
+    CHECK(s.shown() == "1");
+    // Submitted as it is, an extendable if runs.
+    REQUIRE(s.submit("if (x < 5) x = 7;"));
+    REQUIRE(s.submit("x"));
+    CHECK(s.shown() == "7");
+}
+
+TEST_CASE("an entry offered line by line is taken once it is final (§41.5a)")
+{
+    check_offered_lines("--std=madc");
+    check_offered_lines("--std=c17");
+    check_offered_lines("--std=c++17");
+}
+
+// A refusal before an entry's end leaves the rest of it unread; the next
+// entry starts clean (plan §41.5a).
+TEST_CASE("an entry refused before its end leaves no tokens for the next")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c++17"));
+    REQUIRE(s.submit("int x = 10;"));
+    const char *refused[] = {
+	"/* never closed",	// the lexer's refusal, at the end of input
+	"f(",			// an open delimiter, before the parse
+	"x + (1",		// the same, inside an expression
+	"int = 3; int z = 4;",	// a parse error ahead of more text
+	"\"cut",		// a literal cut by the new-line
+    };
+    for ( size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); ++i )
+    {
+	CAPTURE(refused[i]);
+	CHECK_FALSE(s.submit(refused[i]));
+	REQUIRE(s.submit("x"));
+	CHECK(s.shown() == "10");
+    }
+}

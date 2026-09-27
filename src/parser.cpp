@@ -77936,31 +77936,46 @@ Program::EntryBalance Program::entry_delimiter_balance(const char *entry_file)
 //     Complete — CompleteExtendable when an if ended at the entry's end
 //     (D11). The deciding diagnostic rides along; shows_value says the
 //     final statement omitted its `;` (D10).
-// The entry parses on THIS Program in ParseMode::InteractiveEntry. A Program
-// is not resettable, so it is called on a fresh one (the §41.2 session will
-// call it inside the entry transaction). Nothing renders: the verdict is
-// data, and the REPL decides what to show.
+// Two lanes, one verdict. On a fresh Program the entry is a unit of its own
+// (the corpus: tokenize_buffer + parse). In an interactive session it is the
+// session's next entry (plan §41.5a): lexed and parsed on everything the
+// earlier entries declared (lex_entry + parse_toplevel), then finished as an
+// entry (finish_entry); the session runs it inside the entry transaction,
+// which keeps or rolls back what it did. Nothing renders: the verdict is
+// data, and the caller decides what to show.
 Program::EntryClassification Program::classify_entry(const std::string &text,
 						     const std::string &display_name)
 {
     EntryClassification r;
     parse_mode = ParseMode::InteractiveEntry;
     DiagnosticRenderMute mute;
-    auto synthesized = [](TokenBase *t, const std::string &message) {
-	Diagnostic d;
-	d.phase = DiagnosticPhase::parser;
-	d.message = message;
-	d.file = t && t->file ? t->file : "";
-	d.line = t ? t->line : 0;
-	d.column = t ? t->column : 0;
-	return d;
+    // A balance refusal is recorded like any other, so the session renders it
+    // when the entry is final.
+    auto refusal = [this](TokenBase *t, const std::string &message) {
+	add_diagnostic(DiagnosticSeverity::error, DiagnosticPhase::parser,
+		       message, t && t->file ? t->file : NULL,
+		       t ? t->line : 0, t ? t->column : 0);
+	return diagnostics.back();
     };
+    const bool session = interactive_session;
     // An entry is whole lines: the last one ends in its new-line.
     std::string entry = text;
     if ( entry.empty() || entry[entry.size() - 1] != '\n' )
 	entry += '\n';
-    TokenProgram *tp = tokenize_buffer(entry, display_name);
-    if ( !tp )
+    TokenProgram *tp = NULL;
+    size_t decls_before = top_decls.size();
+    size_t funcs_before = pending_funcs.size();
+    bool lexed;
+    if ( session )
+    {
+	begin_entry();
+	lexed = lex_entry(entry, display_name);
+	if ( lexed )
+	    register_included_lazy_surfaces();
+    }
+    else
+	lexed = (tp = tokenize_buffer(entry, display_name)) != NULL;
+    if ( !lexed )
     {
 	if ( const Diagnostic *d = first_error_diagnostic() )
 	{
@@ -77974,11 +77989,11 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
     if ( balance.kind == EntryBalance::Open )
     {
 	r.verdict = EntryVerdict::Incomplete;
-	r.diagnostic = synthesized(balance.where, "'"
+	r.diagnostic = refusal(balance.where, "'"
 	    + overload_token_spelling(balance.where) + "' is not closed");
 	return r;
     }
-    parse(tp);
+    bool parsed = session ? parse_toplevel(tkProgram) : parse(tp);
     if ( const Diagnostic *d = first_error_diagnostic() )
     {
 	r.diagnostic = *d;
@@ -77987,11 +78002,19 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
 	    r.verdict = EntryVerdict::Incomplete;
 	return r;
     }
+    if ( !parsed )
+	return r;
     if ( balance.kind == EntryBalance::Stray )
     {
 	// The parser took a close that opens nothing: still no C program.
-	r.diagnostic = synthesized(balance.where, "unmatched '"
+	r.diagnostic = refusal(balance.where, "unmatched '"
 	    + overload_token_spelling(balance.where) + "'");
+	return r;
+    }
+    if ( session && !finish_entry(decls_before, funcs_before) )
+    {
+	if ( const Diagnostic *d = first_error_diagnostic() )
+	    r.diagnostic = *d;
 	return r;
     }
     r.verdict = entry_if_extendable ? EntryVerdict::CompleteExtendable
@@ -78026,19 +78049,49 @@ bool Program::begin_interactive_session(const std::string &display_name)
 
 // One entry of the interactive session (plan §41.2a): lexed into this
 // Program and parsed to its end token, on everything the earlier entries
-// declared. False when the entry is refused; its diagnostics are recorded.
-// Its declarations persist (slice 1) and its statements form its run
-// (slice 2, D25). A file-scope static (internal linkage: a later entry's
-// module cannot import it; its rule is D6's) is refused out loud.
-bool Program::parse_entry(const std::string &text, const std::string &display_name)
+// declared — classify_entry's session lane. Its verdict decides what the
+// session does with it (plan §41.5a); its diagnostics are recorded, not
+// rendered. Its declarations persist (slice 1) and its statements form its
+// run (slice 2, D25). Invalid, out loud, before a session has begun.
+Program::EntryVerdict Program::parse_entry(const std::string &text,
+					   const std::string &display_name)
 {
     if ( !interactive_session || !tkProgram )
     {
 	set_error(DiagnosticPhase::parser, "no interactive session has begun");
-	return false;
+	return EntryVerdict::Invalid;
     }
+    return classify_entry(text, display_name).verdict;
+}
+
+// Does LINE continue an if that ended an entry (D11)? Its first word is
+// this standard's `else` keyword, found through the lexer's own keyword
+// table: the input's text becomes a TokenID once, at the boundary.
+bool Program::entry_line_continues_if(const std::string &line)
+{
+    size_t b = line.find_first_not_of(" \t\r\f\v");
+    if ( b == std::string::npos )
+	return false;
+    size_t e = b;
+    while ( e < line.size()
+	 && (isalnum((unsigned char)line[e]) || line[e] == '_') )
+	++e;
+    if ( e == b )
+	return false;
+    keyword_map_iter ki = keyword_map.find(line.substr(b, e - b));
+    return ki != keyword_map.end() && *ki && (*ki)->id() == TokenID::tkELSE;
+}
+
+// An entry starts clean: no diagnostics, no run, no display, and an empty
+// token queue. A refusal before the end-of-entry token (the lexer's, an open
+// delimiter, a parse error nothing recovers past) leaves the rest of that
+// entry queued; the next entry never parses it.
+void Program::begin_entry()
+{
     clear_diagnostics();
     clear_error();
+    while ( !tokens.empty() )
+	tokens.pop_front();
     entry_function = NULL;
     entry_function_name.clear();
     entry_end_token = NULL;
@@ -78046,13 +78099,14 @@ bool Program::parse_entry(const std::string &text, const std::string &display_na
     entry_final_owed = StatementTerminator::None;
     entry_if_extendable = false;
     entry_shown.clear();
-    size_t decls_before = top_decls.size();
-    size_t funcs_before = pending_funcs.size();
-    if ( !lex_entry(text, display_name) )
-	return false;
-    register_included_lazy_surfaces();
-    if ( !parse_toplevel(tkProgram) || has_error_diagnostic() )
-	return false;
+}
+
+// A parsed entry becomes one: its file-scope statics are refused (internal
+// linkage: a later entry's module cannot import it; its rule is D6's), its
+// final value is shown (D10), and its run joins the queues. False, with the
+// diagnostic recorded, when it is refused.
+bool Program::finish_entry(size_t decls_before, size_t funcs_before)
+{
     // Only the entry's own statics: an included header's are each module's
     // own copy, as each translation unit has its own (every entry's module
     // is one; <iostream>'s `static ios_base::Init __ioinit`, glibc's

@@ -26,6 +26,9 @@ class InteractiveSession
 {
 public:
     InteractiveSession();
+    // Adopt a Program its host configured: the command line's options and
+    // madc.ini hold in the session as in a file (plan §41.5a, D20).
+    explicit InteractiveSession(std::unique_ptr<Program> configured);
     ~InteractiveSession();
 
     // Start the session. `std_option` is a `--std=` spelling; empty keeps
@@ -40,6 +43,21 @@ public:
     // the Program and the live context alike (plan §41.3). A stopped one is
     // linked (entries() counts it) and keeps its definitions.
     bool submit(const std::string &text);
+
+    // Offer the text typed so far (plan §41.5a): the classifier runs inside
+    // the entry transaction (§41.1a), so there is one parse per line.
+    //   Taken: the entry is final — numbered, its parse's diagnostics
+    //     rendered, and submitted as submit() would (ok is its result);
+    //   Incomplete: keep reading; nothing is kept, numbered or rendered;
+    //   Extendable: a finished if with no else; D11 waits one line (the
+    //     client submits it, or offers it again with the line).
+    enum class OfferState : unsigned char { Taken, Incomplete, Extendable };
+    struct Offered
+    {
+	OfferState state;
+	bool ok;
+    };
+    Offered offer(const std::string &text);
 
     // The live address of a session function / global, by emitted name.
     // NULL when no linked entry defines it.
@@ -58,6 +76,7 @@ public:
     unsigned submitted() const { return submit_count; }
 
 private:
+    Offered enter(const std::string &text, bool final);
     bool run_entry(const char *entry_file);
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;

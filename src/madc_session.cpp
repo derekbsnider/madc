@@ -40,6 +40,12 @@ InteractiveSession::InteractiveSession()
 {
 }
 
+InteractiveSession::InteractiveSession(std::unique_ptr<Program> configured)
+    : prog(std::move(configured)), jit(new CirJitSession()), entry_count(0),
+      submit_count(0)
+{
+}
+
 // The JIT goes first: its modules reference the Program's token tree.
 InteractiveSession::~InteractiveSession()
 {
@@ -58,17 +64,44 @@ bool InteractiveSession::begin(const std::string &std_option)
 
 bool InteractiveSession::submit(const std::string &text)
 {
+    return enter(text, true).ok;
+}
+
+InteractiveSession::Offered InteractiveSession::offer(const std::string &text)
+{
+    return enter(text, false);
+}
+
+// The one entry path. A FINAL entry is taken whatever its verdict: an
+// extendable if runs, an incomplete entry is refused at its end.
+InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
+						      bool final)
+{
     // Julia's spelling: the entry's diagnostics cite REPL[N]:line:column.
-    // N counts every entry submitted, as Julia's REPL[N] and IPython's
-    // In [N] do, so a refused entry's number is never reused.
-    std::string name = "REPL[" + std::to_string(++submit_count) + "]";
+    // N counts every entry taken, refused ones too, as Julia's REPL[N] and
+    // IPython's In [N] do, so a refused entry's number is never reused. An
+    // attempt still being typed is not an entry: it cites the number it
+    // would take, and takes it only when it is final.
+    std::string name = "REPL[" + std::to_string(submit_count + 1) + "]";
     // The entry is one unit (plan §41.3): it is kept once its module links,
     // and a refusal (its parse, its translation or its link) rolls back
     // everything it did to the Program, as Julia leaves nothing of an input
-    // that fails to parse. Its diagnostics stay.
+    // that fails to parse. Its diagnostics stay. An attempt the client goes
+    // on typing rolls back the same way.
     Program::EntryTransaction entry(*prog);
-    if ( !prog->parse_entry(text, name) )
-	return false;
+    Program::EntryVerdict verdict = prog->parse_entry(text, name);
+    if ( !final && verdict == Program::EntryVerdict::Incomplete )
+	return Offered{ OfferState::Incomplete, false };
+    if ( !final && verdict == Program::EntryVerdict::CompleteExtendable )
+	return Offered{ OfferState::Extendable, false };
+    ++submit_count;
+    // The parse recorded its diagnostics without rendering them (an
+    // incomplete attempt must say nothing); the entry is final now.
+    for ( const Program::Diagnostic &d : prog->diagnostics )
+	prog->print_diagnostic(prog->error(), d);
+    if ( verdict != Program::EntryVerdict::Complete
+      && verdict != Program::EntryVerdict::CompleteExtendable )
+	return Offered{ OfferState::Taken, false };
     // Running the entry's init is a host-call boundary, like main() in
     // madc_cir_execute: runtime services inherit the Program's policy.
     prog->push_runtime_scope();
@@ -95,7 +128,7 @@ bool InteractiveSession::submit(const std::string &text)
 	throw;
     }
     prog->pop_runtime_scope();
-    return ok;
+    return Offered{ OfferState::Taken, ok };
 }
 
 // The entry's run (D25): its statements, in source order, lowered into the

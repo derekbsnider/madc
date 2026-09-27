@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### `madc` with no program file is the REPL (D20)
+
+`madc` alone printed a stale usage line. It now enters the REPL when stdin
+is a terminal, as Julia, Python, Node and Lua do. There is no `--repl`
+flag:
+- the prompt names the standard in force (`madc> `, `c17> `, `c++17> `);
+- continuation lines are indented to its width;
+- an entry runs as soon as it is complete, with the final `;` optional, and
+  shows its value when the `;` is omitted;
+- a finished `if` waits one line for an `else`;
+- Ctrl-D exits.
+
+`-i` / `--interactive` enters the REPL even on a piped stdin, with no
+banner and no prompt, so a transcript's output is its values and
+diagnostics. With no file and a piped stdin, madc compiles and runs stdin,
+and `-` names stdin as a file argument (`madc - a b < prog.c`), as in gcc
+and python. An artifact request with no input (`-o`, `-c`, `-E`,
+`--emit=`, ...) is gcc's `fatal error: no input files`. The command line's
+options (`--std=`, `-I`, `-D`, `-l`, `madc.ini`) hold in the session as in
+a file. `-i file` is not supported yet.
+
+An entry is classified on the live session, inside its entry transaction,
+so a name an earlier entry declared counts (`x +` waits for its operand).
+An attempt still being typed keeps nothing, takes no entry number and
+prints nothing. A close that opens nothing is refused. Each entry starts
+from an empty token queue, whatever refused the one before.
+
+Tests: `test_repl_cli`, the `madc_repl_run` loop over string streams;
+`test_repl_session`'s offer cases.
+
 ### A `var` holding a number takes arithmetic (D28)
 
 `var a = 5; a + 1` was refused. A `var` now takes `+ - * / %`, unary `-`,

@@ -6977,7 +6977,15 @@ public:
     void adopt_entry_statement(TokenBase *ts, TokenBase *head);
     void place_entry_initializers(size_t decls_before);
     bool begin_interactive_session(const std::string &display_name);
-    bool parse_entry(const std::string &text, const std::string &display_name);
+    EntryVerdict parse_entry(const std::string &text, const std::string &display_name);
+    // Does a line typed after an extendable if continue it (D11)? Its first
+    // word is the `else` keyword.
+    bool entry_line_continues_if(const std::string &line);
+    // classify_entry's session lane, around the entry's parse: begin_entry
+    // clears the last entry's state and its unread tokens; finish_entry
+    // refuses the entry's statics, shows its value and queues its run.
+    void begin_entry();
+    bool finish_entry(size_t decls_before, size_t funcs_before);
     bool lex_entry(const std::string &text, const std::string &display_name);
     bool lex_unit_text(const char *fname, const std::string &text);
     // The top-level parse loop parse() and parse_entry() share: statements

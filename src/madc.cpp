@@ -39,6 +39,8 @@
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
+#include "madc_session.h" // InteractiveSession: the REPL's session (D20)
+#include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
 
 // Supplied by the build as -DMADC_VERSION_STR='"x.y.z"' from ../VERSION (the
 // version-consuming objects depend on that file — src/Makefile). The fallback
@@ -260,6 +262,10 @@ static void print_usage(const char *prog)
 "\n"
 "Input / mode:\n"
 "  <file>                  compile and JIT-run a single source file\n"
+"  (no file)               the REPL when stdin is a terminal; otherwise\n"
+"                          compile and run stdin, as if named -\n"
+"  -                       read the program from stdin (gcc, python)\n"
+"  -i, --interactive       the REPL, even when stdin is not a terminal\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
 "                          translation unit, link the modules, run the entry.\n"
 "                          Two shapes by top-level JSON kind: an OBJECT is the\n"
@@ -453,6 +459,35 @@ static int cross_refuse_run(const char *lane)
 }
 #endif
 
+// The file lane's one read of its input (plan §41.5a): `-` names stdin, as
+// in gcc and python, read whole into the buffer lane; any other argument
+// names a file.
+static TokenProgram *tokenize_input(Program &prog, const char *path)
+{
+    if ( strcmp(path, "-") != 0 )
+	return prog.tokenize(path);
+    std::string text((std::istreambuf_iterator<char>(std::cin)),
+		     std::istreambuf_iterator<char>());
+    return prog.tokenize_buffer(text, "<stdin>");
+}
+
+// The REPL (D20): the session adopts the Program the command line and
+// madc.ini configured, and the loop runs over stdin and stdout, prompting
+// when stdin is a terminal.
+static int run_repl(std::unique_ptr<Program> prog, bool terminal)
+{
+#ifdef MADC_CROSS_TARGET
+    return cross_refuse_run("run the REPL");
+#endif
+    InteractiveSession session(std::move(prog));
+    if ( !session.begin() )
+    {
+	session.program().print_last_diagnostic(std::cerr);
+	return 1;
+    }
+    return madc_repl_run(session, std::cin, std::cout, terminal);
+}
+
 int main(int argc, char **argv)
 {
     // --show-stats: earliest in-process timestamp, so the phase breakdown can
@@ -519,6 +554,7 @@ int main(int argc, char **argv)
     const char *config_path = NULL;       // --config=<file>: this madc.ini instead of the lookup chain
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
+    bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -772,6 +808,12 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
             project_manifest = argv[++i];
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-i") == 0
+                   || strcmp(argv[i], "--interactive") == 0) {
+            // D20: the REPL even on a piped stdin (python -i); with a
+            // program file, the file first.
+            interactive = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0
                 || strcmp(argv[i], "-?") == 0) {
@@ -1282,6 +1324,52 @@ int main(int argc, char **argv)
 	return (rc < 0) ? 1 : rc;
     }
 
+    // No program file (D20, plan §41.5a). An artifact or dump request names
+    // what to do with a translation unit, so it has nothing to work on
+    // (gcc); otherwise -i or a terminal stdin is the REPL, and a piped stdin
+    // is the program, as if named `-`.
+    std::vector<char *> stdin_argv;
+    if ( interactive && filearg < argc && strcmp(argv[filearg], "-") == 0 )
+    {
+	// `-i -` is `-i`: `-` names stdin, which -i reads as entries.
+	if ( filearg + 1 < argc )
+	{
+	    std::cerr << "madc: -i -: the REPL takes no program arguments"
+		      << std::endl;
+	    return 1;
+	}
+	++filearg;
+    }
+    if ( filearg >= argc )
+    {
+	bool artifact_request = emit_native || do_emit || emit_pch
+	    || emit_function_name || dump_source || dump_macro_table
+	    || dump_cir || dump_nodes || dump_checked || dump_registered
+	    || freeze_path || freeze_run;
+	if ( artifact_request )
+	{
+	    std::cerr << "madc: fatal error: no input files" << std::endl
+		      << "compilation terminated." << std::endl;
+	    return 1;
+	}
+	bool terminal = isatty(0) != 0;
+	if ( interactive || terminal )
+	    return run_repl(std::move(prog), terminal);
+	static char stdin_path[] = "-";
+	stdin_argv.assign(argv, argv + argc);
+	stdin_argv.push_back(stdin_path);
+	stdin_argv.push_back(NULL);
+	argv = stdin_argv.data();
+	filearg = argc++;
+    }
+    else if ( interactive )
+    {
+	// Slice 2 of plan §41.5a: run the file, then the REPL (python -i).
+	std::cerr << "madc: -i with a program file is not supported yet"
+		  << std::endl;
+	return 1;
+    }
+
     if ( argc >= 2 && filearg < argc )
     {
 	if ( dump_source )
@@ -1302,7 +1390,7 @@ int main(int argc, char **argv)
 	// A NULL TokenProgram means a lexer-phase diagnostic already printed
 	// (failed #include, unterminated literal, bad PP directive) and
 	// compilation aborted — exit nonzero like every later phase does.
-	if ( !(tp=prog->tokenize(argv[filearg])) )
+	if ( !(tp=tokenize_input(*prog, argv[filearg])) )
 	    return 1;
 	gettimeofday(&_tk1, NULL);
 	double _fw_tk1 = prog->_forest_work_seconds;
@@ -1762,7 +1850,7 @@ int main(int argc, char **argv)
 	// `./prog; echo $?`). Negative = infrastructure failure → 1.
 	return (result < 0) ? 1 : result;
     }
-    std::cout << "Usage: madc [-v|--verbose] [-E] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;
-
+    // Not reached: with no program file the D20 dispatch above ran the REPL
+    // or named stdin as the program.
     return 0;
 }
