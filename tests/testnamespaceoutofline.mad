@@ -1,0 +1,37 @@
+/* A qualified declarator-id naming a NAMESPACE member defines it outside the
+   namespace (C++17 [dcl.meaning]/1): a function, a variable declared
+   `extern` in the namespace, a nested namespace's function, a function
+   returning the namespace's own class, a qualifier found through a
+   using-directive, and a member of an inline namespace defined through its
+   enclosing one (`int Q::g()` defines Q::V1::g, `_ZN1Q2V11gEv`). The definition's body looks names up in the namespace
+   (`helper`, `x`, `f`, `S` unqualified), and its symbol is the namespace
+   member's (`_ZN1N1fEv`), so another translation unit declaring N::f links
+   to it.
+   madc refused every one ("Unknown C++ declarator scope 'N'"): the
+   qualifier was resolved as a class only.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the two lines below. */
+#include <cstdio>
+namespace N {
+	int f();
+	extern int x;
+	int helper() { return 5; }
+	namespace M { int g(int); }
+	struct S { int v; };
+	S make(int);
+}
+int N::x = 30;
+int N::f() { return helper() + x; }
+int N::M::g(int k) { return k * f(); }
+N::S N::make(int v) { S s; s.v = v; return s; }
+namespace L { namespace P { int h(); } }
+using namespace L;
+int P::h() { return 7; }
+namespace Q { inline namespace V1 { extern int i; int g(); } }
+int Q::i = 1;
+int Q::g() { return i + 41; }
+int main()
+{
+	printf("ns: %d %d %d %d %d\n", N::f(), N::x, N::M::g(2), N::make(9).v, L::P::h());
+	printf("inline: %d %d\n", Q::g(), Q::V1::g());
+	return 0;
+}

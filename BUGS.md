@@ -162,22 +162,6 @@ int main() { printf("%d %d\n", r1, inc(3)); return 0; }
 
 - g++: `3 4`. madc: `MIR error: import of undefined item inc`.
 
-### B19. An out-of-line definition of a namespace member is refused
-
-- Found 2026-09-26, during slice 3 (measured at `431ee5ef1`). A session is
-  affected the same way.
-
-```cpp
-namespace N { int f(); }
-int N::f() { return 11; }
-int main() { return N::f() - 11; }
-```
-
-- g++, clang++: accept, exit 0. madc: `2:5: error: Unknown C++ declarator
-  scope 'N'`.
-- Where: `parseDeclaration`'s qualified declarator-id resolves its scope with
-  `resolve_qualified_class_owner`, which knows classes only.
-
 ### B20. A script's top-level `S::count = 3;` is refused
 
 - Found 2026-09-26, during slice 3. An interactive entry takes it as a

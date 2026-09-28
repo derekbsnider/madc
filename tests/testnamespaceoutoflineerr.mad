@@ -1,0 +1,9 @@
+/* A qualified definition must name a member the namespace already declares
+   ([dcl.meaning]/1): N declares only f, so `N::nope` and `N::y` are
+   refused, as g++ refuses them ("'int N::nope()' should have been declared
+   inside 'N'") and clang++ ("does not match any declaration in namespace
+   'N'"). */
+namespace N { int f(); }
+int N::nope() { return 1; }
+int N::y = 2;
+int main() { return 0; }

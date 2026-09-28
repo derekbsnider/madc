@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A namespace member can be defined outside its namespace
+
+`int N::f() { ... }` and `int N::x = 30;` define the members N declares, as in
+g++. That includes a nested namespace's member (`int N::M::g(int)`), a
+qualifier found through a using-directive, and an inline namespace's member
+defined through its enclosing one (`int Q::f()` defines `Q::V1::f`). The body
+finds N's members unqualified, and the symbols are the namespace members'
+(`_ZN1N1fEv`). A qualified definition of a name N never declared is refused
+("'N::nope' should have been declared inside 'N'"). Before, every such
+definition was refused as an "Unknown C++ declarator scope". Two g++.dg tests
+now pass (attributes-namespace5.C, inline-ns1.C).
+
 ### A member function can return a pointer to an array or a function
 
 `int (*rows())[3] { ... }` and `int (*get())(int) { ... }` inside a class,

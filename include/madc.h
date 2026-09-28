@@ -6348,6 +6348,11 @@ public:
 				    TokenBase *diag);
     std::string canonical_nested_namespace(const std::string &parent, const std::string &comp);
     std::vector<std::string> inline_namespace_descendants(const std::string &ns) const;
+    // The element of NS's inline namespace set ({NS} + its inline
+    // descendants) that DECLARES `name` — where a qualified definition
+    // `T NS::name` defines it ([dcl.meaning]/1). Empty when none does.
+    std::string declaring_inline_set_namespace(const std::string &ns,
+					       const std::string &name) const;
     std::string canonical_namespace_path(const std::string &base, const std::string &dotted);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
     bool class_scope_hides_unqualified_name(class TokenCpnd *code, const std::string &name);

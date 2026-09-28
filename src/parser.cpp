@@ -29233,6 +29233,26 @@ std::vector<std::string> Program::inline_namespace_descendants(
     return pending;
 }
 
+// A closed inline namespace's members are mirrored into its parent's map
+// (mirror_inline_namespace_into_parent), so a name declared in `Q::V1` is
+// also in `Q`'s: the DEEPEST element of the set holding the name is the one
+// that declares it. A function counts through its overload set's key too.
+std::string Program::declaring_inline_set_namespace(const std::string &ns,
+						    const std::string &name) const
+{
+    auto declares = [&](const std::string &cand) -> bool {
+	namespace_map_t::const_iterator nsi = namespace_map.find(cand);
+	if ( nsi != namespace_map.end() && nsi->second.find(name) != nsi->second.end() )
+	    return true;
+	return namespace_fn_overload_sets.count(cand + "::" + name) != 0;
+    };
+    std::vector<std::string> set = inline_namespace_descendants(ns);
+    for ( size_t i = set.size(); i-- > 0; )
+	if ( declares(set[i]) )
+	    return set[i];
+    return declares(ns) ? ns : std::string();
+}
+
 Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name,
 					 TokenBase *diag)
 {
@@ -73678,6 +73698,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     string id;
     DataDefCLASS *qualified_owner_class = NULL;
     std::string qualified_member_name;
+    // A qualified declarator-id naming a NAMESPACE member (`int N::f() {}`):
+    // the rest of the declaration is in N's scope ([dcl.meaning]/1), as if
+    // written inside `namespace N { }` — open until this declaration ends.
+    std::unique_ptr<NamespaceScope> qualified_namespace_scope;
+    TokenBase *qualified_name_tok = NULL;	// the qualified declarator-id's last name
     std::vector<carray_dim_t> arr_dims;
     std::vector<TokenBase *> arr_dim_exprs;
     TokenBase *vla_size_expr = NULL;
@@ -73927,24 +73952,57 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    continue;
 		}
 		qualified_member_name = part_name;
+		qualified_name_tok = part_tb;
 		break;
 	    }
 	    qualified_owner_class = resolve_qualified_class_owner(scope_parts);
-	    if ( !qualified_owner_class )
+	    std::string qualified_ns = qualified_owner_class ? std::string()
+		: resolve_namespace_name_in_scope(
+		      join_scope_parts(scope_parts, scope_parts.size()));
+	    if ( !qualified_owner_class && qualified_ns.empty() )
 		Throw(nt) << "Unknown C++ declarator scope '"
 			  << join_scope_parts(scope_parts, scope_parts.size())
 			  << "'" << flush;
-	    // Prefer the overload whose SIGNATURE this definition declares.
-	    // findMethod answers with one arbitrary overload and compares
-	    // nothing, which bound a definition to a member-template varargs
-	    // stub and mistyped its parameters (libc++ condition_variable.h:211).
-	    // A declining probe falls back to the historical behaviour.
-	    Variable *mvar = find_method_definition_target(qualified_owner_class,
-							  qualified_member_name);
-	    if ( !mvar )
-		mvar = qualified_owner_class->findMethod(qualified_member_name);
-	    id = mvar ? mvar->name
-		      : qualified_owner_class->name + "__" + qualified_member_name;
+	    if ( !qualified_owner_class )
+	    {
+		// [dcl.meaning]/1: the qualifier nominates a NAMESPACE (`int
+		// N::f() { ... }`, `int N::x = 3;`) — the declaration is of N's
+		// member, and its parameters, body and initializer are looked
+		// up in N. Open N for the rest of the declaration: it proceeds
+		// exactly as one written inside `namespace N { }`, which binds
+		// it to N's earlier declaration of the name.
+		// The name must already be a member of N or of an element of N's
+		// inline namespace set ([dcl.meaning]/1; g++ "should have been
+		// declared inside 'N'"), and the definition is THAT element's
+		// member: `int Q::f()` over `inline namespace V1 { int f(); }`
+		// defines Q::V1::f (_ZN1Q2V11fEv).
+		find_namespace_member(qualified_ns, qualified_member_name);	// activates a forest family
+		std::string declaring_ns = declaring_inline_set_namespace(
+		    qualified_ns, qualified_member_name);
+		if ( declaring_ns.empty() )
+		{
+		    std::string spelled = join_scope_parts(scope_parts, scope_parts.size());
+		    Throw(qualified_name_tok) << "'" << spelled << "::" << qualified_member_name
+			<< "' should have been declared inside '" << spelled << "'" << flush;
+		}
+		qualified_namespace_scope.reset(new NamespaceScope(*this, declaring_ns));
+		id = qualified_member_name;
+		qualified_member_name.clear();
+	    }
+	    else
+	    {
+		// Prefer the overload whose SIGNATURE this definition declares.
+		// findMethod answers with one arbitrary overload and compares
+		// nothing, which bound a definition to a member-template varargs
+		// stub and mistyped its parameters (libc++ condition_variable.h:211).
+		// A declining probe falls back to the historical behaviour.
+		Variable *mvar = find_method_definition_target(qualified_owner_class,
+							      qualified_member_name);
+		if ( !mvar )
+		    mvar = qualified_owner_class->findMethod(qualified_member_name);
+		id = mvar ? mvar->name
+			  : qualified_owner_class->name + "__" + qualified_member_name;
+	    }
 	    // The dims of a qualified static member definition (`int S::arr[3]
 	    // = {...}`): the reader stopped at the `::` the scope walk above
 	    // consumed, so its own dims follow here — the ONE dimension reader,

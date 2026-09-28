@@ -118,7 +118,6 @@ g++.dg/cpp0x/alignas2.C
 g++.dg/cpp0x/alignas5.C
 g++.dg/cpp0x/alignas7.C
 g++.dg/cpp0x/alignof.C
-g++.dg/cpp0x/attributes-namespace5.C
 g++.dg/cpp0x/auto15.C
 g++.dg/cpp0x/auto19.C
 g++.dg/cpp0x/auto23.C
@@ -320,7 +319,6 @@ g++.dg/cpp0x/initlist67.C
 g++.dg/cpp0x/initlist73.C
 g++.dg/cpp0x/initlist96.C
 g++.dg/cpp0x/initlist98.C
-g++.dg/cpp0x/inline-ns1.C
 g++.dg/cpp0x/keywords2.C
 g++.dg/cpp0x/lambda/lambda-61148.C
 g++.dg/cpp0x/lambda/lambda-80947.C
