@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### A returned temporary is built in place
+
+`return T(args);` now constructs the function's result directly. When no
+constructor matches, `return local;` now moves the local into the result.
+Before, the temporary was copied and then destroyed, which freed what the
+result still held, so `std::make_unique` returned a dangling pointer.
+
 ### The implicit copy and move constructors run each base's own
 
 A class with no copy or move constructor of its own now copies or moves

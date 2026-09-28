@@ -14449,10 +14449,26 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 						  std::vector<node_t> &out,
 						  TokenBase *origin)
 {
+	// A prvalue operand of the returned class initializes the result object
+	// itself ([stmt.return]/2, guaranteed elision — the declaration's
+	// `T b = T(args)` twin). Building a temporary, bit-copying it into
+	// *__retbuf and destroying it freed what the result still held: every
+	// `return std::unique_ptr<T>(p);` (make_unique) handed back a dangling
+	// pointer. An aggregate's braced list keeps the copy path below, whose
+	// construction site owns the aggregate claim.
+	if (TokenObjTemp *iot = src ? src->as_objtemp_tok() : NULL)
+		if (as_class_instance(iot->obj_class) == cdd && !cdd->is_aggregate())
+			if (node_t cc = class_ctor_call_addr(
+				    id(RETBUF_NAME, origin), cdd, iot->ctor_args,
+				    iot)) {
+				out.push_back(cc);
+				return;
+			}
 	std::vector<TokenBase *> copy_args;
 	if (src) copy_args.push_back(src);
+	bool implicit_move = returned_operand_is_implicitly_movable(cdd, src);
 	FuncDef *copy_ctor = select_or_instantiate_ctor(
-		cdd, copy_args, returned_operand_is_implicitly_movable(cdd, src));
+		cdd, copy_args, implicit_move);
 	if (copy_ctor && src) {
 		std::string sym = ctor_call_symbol(cdd, copy_ctor);
 		node_t args = list();
@@ -14508,6 +14524,20 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		return;
 	}
 
+	// No constructor matched: the class's IMPLICIT copy or move constructor,
+	// its bases' and members' own constructors included — the one owner,
+	// implicit_copy_construct_from_addr. A returned local is moved
+	// ([class.copy.elision]/3), and so is a prvalue.
+	if (src && !class_copy_ctor_def(cdd) && !cdd->has_any_vptr()) {
+		bool move = implicit_move
+			|| ctor_arg_value_category(src) == cacRvalue;
+		if (node_t copy = implicit_copy_construct_from_addr(
+			    node1(N_DEREF, id(RETBUF_NAME, origin), origin),
+			    object_arg_addr(src, cdd), cdd, origin, move)) {
+			out.push_back(copy);
+			return;
+		}
+	}
 	// 1) Bit-copy the source object into *__retbuf (covers scalar members and
 	//    establishes the layout). `*__retbuf = src;` — c2mir struct assignment.
 	node_t retderef = node1(N_DEREF, id(RETBUF_NAME, origin), origin);

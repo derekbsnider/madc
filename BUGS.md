@@ -1113,6 +1113,15 @@ A divergent family is a live bug. Consolidating one leaves a gate in
     `member_constructed_by_base`. They still build each member differently:
     `class_ctor_call_addr` against `complete_object_construct_stmts`, which
     differ on virtual bases. No failing reducer yet.
+- `retbuf_memberwise_copy` (found 2026-09-28, with the returned-prvalue
+  fix):
+  - The owner of the implicit copy/move is
+    `implicit_copy_construct_from_addr`. `class_copy_construct_into_retbuf`
+    keeps a loop of its own for what the owner refuses: a polymorphic
+    class, and a class whose user copy constructor overload selection
+    missed.
+  - That loop copies members only: it runs no base's constructor and never
+    moves. No failing reducer yet.
 
 ## Carried from earlier hand-offs
 
