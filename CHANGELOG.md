@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### F5 runs the buffer in madcide's REPL tab (§37 item 10, slice 3)
+
+In madcide, F5 (Build > Run in REPL, the `replrun` command, bound in every
+profile) runs the current buffer in the REPL tab, as Thonny's F5 and
+IPython's `%run` do. The tab takes the keyboard. The session restarts, so the
+run is clean and a running entry stops. The transcript shows
+`%run <file name>`, then what the program's `main` prints. Lines typed while
+`main` runs are its stdin. After that, the prompt can call the buffer's
+functions, `static` ones included, and read its globals. The buffer's text
+runs as it is in the editor, unsaved edits included, under the tab's
+standard. A buffer that does not compile shows its diagnostics under the
+file's name and leaves a fresh, empty session. A pseudo-buffer (`[build]`,
+`[repl]`) or an empty buffer is refused on the status line.
+
 ### Function keys, and loading a program into a session (§37 item 10, slices 1–2)
 
 Key bindings and events now know F1–F12 (spelled `f1`–`f12` in `.keys`
