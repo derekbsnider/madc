@@ -23,12 +23,19 @@
 // sends the line (Thonny's shell). A crash restarts the session (the
 // verbs' rule) and the transcript says so.
 //
+// F5 (`replrun`, plan §41.10a) runs the editor's buffer into the tab: a
+// fresh session, `%run <name>` in the transcript, the buffer's live text
+// loaded under its path, then its main run (its output in the transcript,
+// the input its stdin), and the prompt left with the buffer's names.
+//
 // State on the bag: replh (the session handle), replstop (the pump's stop
-// channel), repllive, replfocus, replbusy (the seq of the entry offered, 0
-// when none), replrunning (it was taken and runs), replsent (its text),
-// replcseq / replccaret / replctext (a pending completion), replin (the
-// input buffer) with its parked rcaret / rmark / rbend, replhist / replhpos
-// / repldraft (the history), replstd (the `--std=` spelling a new session
+// channel), repllive, replfocus, replbusy (the seq of the entry offered, or
+// of F5's load / run, 0 when none), replrunning (it was taken and runs, or
+// F5's main runs), replsent (its text), replcseq / replccaret / replctext
+// (a pending completion), replloadseq / replrunseq / replrunpath (F5's
+// load and run requests, and the path main runs under), replin (the input
+// buffer) with its parked rcaret / rmark / rbend, replhist / replhpos /
+// repldraft (the history), replstd (the `--std=` spelling a new session
 // takes; "" = the engine's default).
 //
 // Thread contract: session-thread bag state; the pump is a cooperative task
@@ -386,11 +393,50 @@ void repl_reply(long w, long es, var &r)
 	repl_completed(w, es, r);
 	return;
     }
+    if ( r["kind"] == madc::session_reply::load )
+    {
+	// F5's buffer loaded: its main runs, and the lines typed meanwhile
+	// are main's stdin, as for a running entry. Refused: its diagnostics,
+	// and the prompt is the fresh, empty session's.
+	if ( seq != es_int(w, es, "replloadseq", 0) )
+	    return;
+	ui::set(w, es, "replloadseq", 0);
+	var rd = r["rendered"];
+	repl_feed(w, es, rd.c_str());
+	if ( !(r["ok"] == true) )
+	{
+	    ui::set(w, es, "replbusy", 0);
+	    return;
+	}
+	var rp;
+	ui::get(rp, w, es, "replrunpath");
+	var argv = {};
+	argv.push(rp);
+	long rs = madc::session_run(es_int(w, es, "replh", 0), argv);
+	ui::set(w, es, "replrunseq", rs);
+	ui::set(w, es, "replbusy", rs);
+	ui::set(w, es, "replrunning", 1);
+	return;
+    }
+    if ( r["kind"] == madc::session_reply::run )
+    {
+	// F5's main returned: what it printed came before this reply.
+	if ( seq != es_int(w, es, "replrunseq", 0) )
+	    return;
+	ui::set(w, es, "replrunseq", 0);
+	ui::set(w, es, "replbusy", 0);
+	ui::set(w, es, "replrunning", 0);
+	var rd = r["rendered"];
+	repl_feed(w, es, rd.c_str());
+	return;
+    }
     if ( r["kind"] == madc::session_reply::stopped )
     {
 	ui::set(w, es, "replbusy", 0);
 	ui::set(w, es, "replrunning", 0);
 	ui::set(w, es, "replcseq", 0);
+	ui::set(w, es, "replloadseq", 0);
+	ui::set(w, es, "replrunseq", 0);
 	var st = r["exit_status"];
 	if ( r["restarted"] == true )
 	    repl_feed(w, es, format("[the session stopped (exit {}); a new one started]\n", st));
@@ -523,6 +569,57 @@ void repl_show(long w, long es)
     repl_start(w, es);
     ui::set(w, es, "termfocus", 0);
     ui::set(w, es, "replfocus", 1);
+}
+
+// F5, `replrun` (plan §41.10a; Thonny's F5, IPython's %run): the buffer
+// `doc` run into the tab's session. A session that already existed is
+// restarted, so the run is clean and an entry still running stops with the
+// old one. The buffer's live text runs, unsaved edits included, under its
+// path and the tab's standard; its main runs once the load is answered
+// (repl_reply), with argv [path].
+void repl_run(long w, long es, long doc)
+{
+    var p;
+    ui::get(p, w, doc, "path");
+    if ( !path_is_asset(p) )
+    {
+	ui::set(w, es, "msg", format("Not a file: {}", p));
+	return;
+    }
+    var text;
+    ui::text(text, w, doc);
+    if ( strlen(text.c_str()) == 0 )
+    {
+	// session_load's empty text reads the file: the buffer is what runs.
+	ui::set(w, es, "msg", "The buffer is empty.");
+	return;
+    }
+    bool had = es_int(w, es, "replh", 0) != 0;
+    repl_show(w, es);
+    long h = es_int(w, es, "replh", 0);
+    if ( !madc::session_running(h) )
+	return;				// repl_start said why
+    if ( had && !madc::session_restart(h) )
+    {
+	var why = madc::session_error(h);
+	repl_feed(w, es, format("[the session did not start: {}]\n", why));
+	return;
+    }
+    ui::set(w, es, "replbusy", 0);
+    ui::set(w, es, "replrunning", 0);
+    ui::set(w, es, "replcseq", 0);
+    ui::set(w, es, "replrunseq", 0);
+    var name = php::basename(p.c_str());
+    var line = format("%run {}", name);
+    var pr;
+    repl_prompt(pr, w, es);
+    var shown;
+    repl_entry_display(shown, pr.c_str(), line.c_str());
+    repl_feed(w, es, format("{}\n", shown));
+    long seq = madc::session_load(h, p.c_str(), text.c_str());
+    ui::set(w, es, "replloadseq", seq);
+    ui::set(w, es, "replrunpath", p);
+    ui::set(w, es, "replbusy", seq);
 }
 
 // An @repl binding: the REPL's own actions, or a motion the history hands

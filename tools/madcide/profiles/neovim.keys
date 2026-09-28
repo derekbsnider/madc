@@ -39,6 +39,9 @@
 ^k i outline
 ^k a view
 ^k b build
+# F5 runs the buffer into the REPL tab's session: a fresh one, its main
+# run, its names left for the prompt (plan §41.10a).
+f5 replrun
 ^k e editfile
 # vi NORMAL mode — motions
 @normal h left

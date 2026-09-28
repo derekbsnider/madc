@@ -507,6 +507,38 @@ if [ "$(count_validator_calls $VALIDATOR_FILES "$tmp")" -ne 3 ]; then
 fi
 rm -f "$tmp"
 
+# "Is this path a FILE or a pseudo-buffer" has ONE owner: path_is_asset
+# (madcide_core.inc; DupFamily madcide_pseudo_buffer_test, consolidated with
+# F5, plan §41.10a slice 3 — the slice had begun a second copy,
+# path_is_pseudo_buffer, beside the layer owner's). A pseudo-buffer
+# ([build], [terminal], [repl]) is named in brackets. Marker: the bracket
+# test on a name's first byte appears once across tools/madcide +
+# tools/texteditor — inside the owner.
+count_bracket_tests()
+{
+	cat "$@" | grep -cE "\[0\] *[!=]= *'\['"
+}
+
+n=$(count_bracket_tests "$TEXTED"/*.inc "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n pseudo-buffer bracket" \
+	     "test(s) across tools/texteditor + tools/madcide (expected 1:" \
+	     "path_is_asset)." >&2
+	grep -nE "\[0\] *[!=]= *'\['" "$TEXTED"/*.inc "$TOOLS"/*.inc >&2
+	exit 1
+fi
+
+# Negative control for the bracket marker.
+tmp=$(mktemp)
+echo "    if ( pc[0] == '[' ) return;	// synthetic" > "$tmp"
+if [ "$(count_bracket_tests "$TEXTED"/*.inc "$TOOLS"/*.inc "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic bracket test (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \

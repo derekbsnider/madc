@@ -20,3 +20,12 @@ c11> int n = 0; scanf("%d", &n); printf("%d\n", n + 1);
 crash: said=true fresh=true
 compose: ends="\nc11> 1 +" caret at end=true focus=1 subject is input=true
 unfocus: focus=0
+f5: focus=1 busy=0
+c11> %run madc_ide_repl.mad
+main ran: madc_ide_repl.mad
+c11> triple(14)
+c11> int kept = 9;
+f5 again: ran=true fresh=true names again=true
+f5 refused: cites the path=true busy=0
+f5 pseudo: Not a file: [repl]
+f5 empty: The buffer is empty.

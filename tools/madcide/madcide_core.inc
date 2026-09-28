@@ -3708,6 +3708,19 @@ void layout_persist(long w, long es)
     php::file_put_contents(lf.c_str(), txt.c_str());
 }
 
+// An ASSET is a file; a pseudo-buffer ([build], [terminal], [repl]) is
+// named in brackets — a view the IDE writes, bytes only. The one test: the
+// layer owner (asset_layers_of), projadd and F5 (repl_run) read it.
+bool path_is_asset(var &p)
+{
+    if ( p.is_null() )
+	return false;
+    const char *s = p.c_str();
+    if ( strlen(s) == 0 )
+	return false;
+    return s[0] != '[';
+}
+
 // projadd — the argument-taking membership verb (a prompt collects the
 // argument for a human client; a remote client passes it in the
 // command). The SECOND file materializes an implicit project's manifest.
@@ -3716,8 +3729,7 @@ void proj_add(long w, long es, long doc, const char *path0)
     var p = path0;		// ring discipline: own the text
     if ( strlen(p.c_str()) == 0 )
 	return;
-    const char *pc = p.c_str();
-    if ( pc[0] == '[' )
+    if ( !path_is_asset(p) )
     {
 	// [build]-style pseudo-buffers are not files.
 	ui::set(w, es, "msg", format("Not a file: {}", p));
@@ -6743,6 +6755,12 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdREPL:
 	    {
 		repl_show(w, es);
+		return true;
+	    }
+	    case cmdREPLRUN:
+	    {
+		// F5: the stored buffer (never a view of it) into the REPL tab.
+		repl_run(w, es, doc);
 		return true;
 	    }
 	    case cmdBUFSEL:

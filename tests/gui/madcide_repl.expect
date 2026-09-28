@@ -5,4 +5,6 @@ REPL completing: pending=1
 REPL completed: twice_it
 REPL tab=REPL prompt=1 has=twice_it=1
 REPL unfocused: focus=0 input=twice_it
+REPL f5: action=replrun focus=1
+REPL tab=REPL prompt=1 has=main ran: madc_ide_repl_gui.mad=1
 REPL closed

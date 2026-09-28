@@ -35,6 +35,9 @@
 ^x 1 onlywin
 ^x 0 killwin
 ^x o nextw
+# F5 runs the buffer into the REPL tab's session: a fresh one, its main
+# run, its names left for the prompt (plan §41.10a).
+f5 replrun
 # The project window's keys (@project scope — profile data; the baked
 # defaults add esc/backspace).
 @project ins projadd

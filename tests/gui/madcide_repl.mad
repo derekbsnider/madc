@@ -4,8 +4,10 @@
 // posts a keyboard makes), enter offers the entry to the session in its own
 // process, and the transcript shows the entry and its value WITHOUT a
 // further keystroke — the reply arrives on the pump, the engine wakes the
-// application. Tab completes from the session, the same way. Runs under Xvfb
-// through the gui lane.
+// application. Tab completes from the session, the same way. F5 (plan
+// §41.10a), pressed on the page with the joe profile's table installed,
+// runs the editor's buffer into a fresh session: its main's output reaches
+// the tab on the pump's wakes. Runs under Xvfb through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
@@ -38,6 +40,14 @@ void post_text(long t, const char *s)
 void post_key(long t, const char *k)
 {
     ui::eval_page(t, format("window.madc(JSON.stringify({{kind:'key',key:'{}'}}))", k));
+}
+
+// A key as the browser delivers it: a keydown on the page's keyboard
+// element, spelled by the page's own key map ('F5' -> 'f5').
+void press_key(long t, const char *k)
+{
+    ui::eval_page(t, format("document.getElementById('kb').dispatchEvent("
+	"new KeyboardEvent('keydown',{{key:'{}',bubbles:true,cancelable:true}}))", k));
 }
 
 int main()
@@ -103,6 +113,22 @@ int main()
 		post_key(t, "^]");
 	    }
 	    else if ( stage == 11 )
+	    {
+		// F5 through the profile's table, on a buffer with a main.
+		stage = 12;
+		load_profile(w, es, "joe");
+		var kt;
+		S.key_table(kt);
+		ui::bind_keys(t, kt);
+		ui::text_load(w, doc, "#include <stdio.h>\n"
+		    "int main(int argc, char **argv)\n"
+		    "{\n"
+		    "    printf(\"main ran: %s\\n\", argv[0]);\n"
+		    "    return 0;\n"
+		    "}\n");
+		press_key(t, "F5");
+	    }
+	    else if ( stage == 14 )
 		break;
 	}
 	else if ( ev["event"] == "key" || ev["event"] == "text" || ev["event"] == "action"
@@ -110,6 +136,13 @@ int main()
 	{
 	    S.apply_ide_event(doc, ev);
 	    render(S, t, w, doc);
+	    if ( stage == 12 && ev["event"] == "action" )
+	    {
+		stage = 13;			// F5 applied: the replies come on the pump
+		var an;
+		cmd_name(an, ev_code(ev));	// a code-bound chord carries its code
+		println("REPL f5: action={} focus={}", an, es_int(w, es, "replfocus", 0));
+	    }
 	    if ( ev["event"] != "key" )
 		continue;
 	    if ( stage == 2 || stage == 5 )
@@ -152,6 +185,11 @@ int main()
 		ui::text(in, w, repl_input_doc(w, es));
 		println("REPL completed: {}", in);
 		probe_panel(t, "twice_it");
+	    }
+	    else if ( stage == 13 )
+	    {
+		stage = 14;
+		probe_panel(t, "main ran: madc_ide_repl_gui.mad");
 	    }
 	}
     }

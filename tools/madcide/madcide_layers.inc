@@ -33,16 +33,8 @@ bool kind_compiler_range(long k)
     return false;
 }
 
-// An ASSET is a file; a pseudo-buffer ([build], [terminal]) is bytes only.
-bool path_is_asset(var &p)
-{
-    if ( p.is_null() )
-	return false;
-    const char *s = p.c_str();
-    if ( strlen(s) == 0 )
-	return false;
-    return s[0] != '[';
-}
+// An ASSET is a file; a pseudo-buffer is bytes only: path_is_asset, the one
+// test, lives in madcide_core.inc (projadd and F5 read it too).
 
 // The runner THIS node has for a test family ("" = none): the canonical
 // runner for the mad family (bash, under the project root = the cwd; posix

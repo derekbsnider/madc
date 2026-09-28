@@ -11,7 +11,14 @@
 //   4. while an entry runs, a line typed in the input is its stdin;
 //   5. a crash says so and the next entry runs in a new session;
 //   6. ^] hands the keyboard back, and the composed node is the transcript,
-//      the prompt and the input, with the caret in the input.
+//      the prompt and the input, with the caret in the input;
+//   7. F5 (`replrun`, plan §41.10a) from the editor: the tab takes the
+//      keyboard, a fresh session loads the buffer's live text (unsaved: the
+//      file still holds `add`), `%run <name>` and main's output land in the
+//      transcript, and an entry calls the buffer's static; a name from
+//      before a second F5 is gone after it; a refused buffer shows its
+//      diagnostics under its path; a pseudo buffer and an empty one are
+//      refused at the status line.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -207,6 +214,50 @@ int main()
     ev_key(e, "^]");
     S.apply_ide_event(doc, e);
     println("unfocus: focus={}", es_int(w, es, "replfocus", 0));
+
+    // 7. F5: the editor's buffer run into a fresh session.
+    ui::text_load(w, doc, "#include <stdio.h>\n"
+	"static int triple(int v) { return 3 * v; }\n"
+	"int main(int argc, char **argv)\n"
+	"{\n"
+	"    printf(\"main ran: %s\\n\", argv[argc - 1]);\n"
+	"    return 0;\n"
+	"}\n");
+    repl_set_input(w, es, "");
+    mark = transcript_size(w, es);
+    ev_action(e, "replrun", "f5");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    println("f5: focus={} busy={}", es_int(w, es, "replfocus", 0), es_int(w, es, "replbusy", -1));
+    enter_line(S, doc, w, es, "triple(14)");
+    enter_line(S, doc, w, es, "int kept = 9;");
+    transcript_since(got, w, es, mark);
+    print("f5 run:\n{}", got);
+    mark = transcript_size(w, es);
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    enter_line(S, doc, w, es, "kept");
+    enter_line(S, doc, w, es, "triple(2)");
+    transcript_since(got, w, es, mark);
+    println("f5 again: ran={} fresh={} names again={}",
+	    rust::contains(got.c_str(), "main ran: madc_ide_repl.mad") != 0,
+	    rust::contains(got.c_str(), "undeclared") != 0,
+	    rust::contains(got.c_str(), "\n6\n") != 0);
+    ui::text_load(w, doc, "int broken( {\n");
+    mark = transcript_size(w, es);
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    transcript_since(got, w, es, mark);
+    println("f5 refused: cites the path={} busy={}",
+	    rust::contains(got.c_str(), "madc_ide_repl.mad:1:") != 0, es_int(w, es, "replbusy", -1));
+    var msg;
+    S.apply_ide_event(repl_doc(w, es), e);
+    ui::get(msg, w, es, "msg");
+    println("f5 pseudo: {}", msg);
+    ui::text_load(w, doc, "");
+    S.apply_ide_event(doc, e);
+    ui::get(msg, w, es, "msg");
+    println("f5 empty: {}", msg);
     S.close();				// stops the pump and the session
     php::unlink(path);
     return 0;
