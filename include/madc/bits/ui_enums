@@ -28,9 +28,10 @@ namespace ui {
 	up, down, left, right,
 	home, end, pgup, pgdn, del, ins,
 	resize,		// synthesized by the target on a size change
-	wake		// synthesized by the target when cooperative background
+	wake,		// synthesized by the target when cooperative background
 			// tasks drained (stage-2: a spawned parse finished while
 			// the loop was waiting for input — recompose)
+	fkey		// a function key; `ch` = its number, 1..12 (F1..F12)
     };
 
     // What the application receives from ui::event: SEMANTIC units, never

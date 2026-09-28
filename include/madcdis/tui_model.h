@@ -370,9 +370,26 @@ inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
 // every byte between the markers is a literal `ch`, a tab and a line break
 // included, and a CR or CR LF becomes one '\n'. A paste spans reads; only
 // its end marker ends it.
+// The function keys' xterm tilde codes (CSI n ~), F1..F12: ONE table the
+// parser and tui_key_bytes read. F1..F4 also arrive as SS3 P..S (xterm's
+// own spelling for them, which tui_key_bytes writes back), and F1..F5 as
+// the Linux console's CSI [ A..E.
+inline int fkey_tilde_code(int n)
+{
+    static const int codes[13] = { 0, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24 };
+    return n >= 1 && n <= 12 ? codes[n] : 0;
+}
+inline int fkey_of_tilde_code(int code)
+{
+    for ( int n = 1; n <= 12; ++n )
+	if ( fkey_tilde_code(n) == code )
+	    return n;
+    return 0;
+}
+
 class tui_keyparse
 {
-    enum class state : unsigned char { normal, esc, csi, ss3, paste };
+    enum class state : unsigned char { normal, esc, csi, ss3, console_fkey, paste };
     state _st;
     std::string _params;
     std::string _paste_end;	// the part of the end marker matched so far
@@ -402,7 +419,13 @@ class tui_keyparse
 		    case 3: emit(out, tui_key::del); return;
 		    case 5: emit(out, tui_key::pgup); return;
 		    case 6: emit(out, tui_key::pgdn); return;
-		    default: return;	// unrecognized: dropped
+		    default:
+		    {
+			int n = fkey_of_tilde_code(atoi(params.c_str()));
+			if ( n )
+			    emit(out, tui_key::fkey, (char)n);
+			return;		// otherwise unrecognized: dropped
+		    }
 		}
 	    default: return;		// unrecognized final: dropped
 	}
@@ -468,6 +491,11 @@ class tui_keyparse
 		feed_byte(b, out);
 		return;
 	    case state::csi:
+		if ( b == '[' && _params.empty() )
+		{
+		    _st = state::console_fkey;	// the Linux console's F1..F5
+		    return;
+		}
 		if ( b >= 0x40 && b <= 0x7e )
 		{
 		    if ( b == '~' && _params == "200" )
@@ -494,9 +522,17 @@ class tui_keyparse
 		    case 'D': emit(out, tui_key::left); break;
 		    case 'H': emit(out, tui_key::home); break;
 		    case 'F': emit(out, tui_key::end); break;
+		    case 'P': case 'Q': case 'R': case 'S':
+			emit(out, tui_key::fkey, (char)(b - 'P' + 1));
+			break;
 		    default: break;		// unrecognized: dropped
 		}
 		_st = state::normal;
+		return;
+	    case state::console_fkey:
+		if ( b >= 'A' && b <= 'E' )
+		    emit(out, tui_key::fkey, (char)(b - 'A' + 1));
+		_st = state::normal;		// anything else: dropped
 		return;
 	    case state::normal:
 	    default:
@@ -580,6 +616,12 @@ inline std::string tui_key_bytes(const tui_keyev &k)
 	case tui_key::del:	 return std::string("\x1b[3~");
 	case tui_key::pgup:	 return std::string("\x1b[5~");
 	case tui_key::pgdn:	 return std::string("\x1b[6~");
+	case tui_key::fkey:
+	    if ( k.ch >= 1 && k.ch <= 4 )
+		return std::string("\x1bO") + (char)('P' + k.ch - 1);
+	    if ( k.ch >= 5 && k.ch <= 12 )
+		return "\x1b[" + std::to_string(fkey_tilde_code(k.ch)) + "~";
+	    return std::string();
 	default:		 return std::string();
     }
 }

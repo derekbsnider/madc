@@ -132,6 +132,37 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     CHECK(out[0].ch == 'x');
 }
 
+TEST_CASE("keyparse — function keys: xterm's tilde codes and SS3, the Linux console's")
+{
+    // F1..F12 as xterm sends them: SS3 P..S for F1..F4, CSI n ~ above
+    // (15, 17-21, 23, 24); a modifier parameter is dropped, as on arrows.
+    std::vector<tui_keyev> k = parse("\x1bOP\x1bOQ\x1bOR\x1bOS\x1b[15~\x1b[17~"
+				     "\x1b[18~\x1b[19~\x1b[20~\x1b[21~\x1b[23~\x1b[24~");
+    REQUIRE(k.size() == 12u);
+    for ( int n = 1; n <= 12; ++n )
+    {
+	CAPTURE(n);
+	CHECK(k[n - 1].kind == tui_key::fkey);
+	CHECK((int)k[n - 1].ch == n);
+    }
+    k = parse("\x1b[11~\x1b[14~\x1b[15;2~");	// the VT tilde forms of F1/F4; Shift+F5
+    REQUIRE(k.size() == 3u);
+    CHECK((int)k[0].ch == 1);
+    CHECK((int)k[1].ch == 4);
+    CHECK(k[2].kind == tui_key::fkey);
+    CHECK((int)k[2].ch == 5);
+    // The Linux console: CSI [ A..E is F1..F5; another letter is dropped,
+    // and the next byte is itself.
+    k = parse("\x1b[[A\x1b[[E\x1b[[Zx");
+    REQUIRE(k.size() == 3u);
+    CHECK((int)k[0].ch == 1);
+    CHECK((int)k[1].ch == 5);
+    CHECK(k[2].kind == tui_key::ch);
+    CHECK(k[2].ch == 'x');
+    // A tilde code that names no key stays dropped.
+    CHECK(parse("\x1b[16~").empty());
+}
+
 TEST_CASE("keyparse — UTF-8 bytes are text; a bracketed paste is literal text")
 {
     // UTF-8 (plan §41.7a): each byte a `ch`, one text event for the run.
@@ -1085,6 +1116,23 @@ TEST_CASE("keybytes — the inverse of the parser: every key round-trips through
 	REQUIRE(out.size() == 1u);
 	CHECK(out[0].kind == tui_key::ctrl);
 	CHECK(out[0].ch == 'k');
+    }
+    // Function keys: xterm's forms, and each parses back to itself.
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 1)) == std::string("\x1bOP"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 5)) == std::string("\x1b[15~"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 12)) == std::string("\x1b[24~"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 13)).empty());
+    for ( int n = 1; n <= 12; ++n )
+    {
+	CAPTURE(n);
+	std::string b = tui_key_bytes(tui_keyev(tui_key::fkey, (char)n));
+	tui_keyparse p;
+	std::vector<tui_keyev> out;
+	p.feed(b.data(), b.size(), out);
+	p.flush(out);
+	REQUIRE(out.size() == 1u);
+	CHECK(out[0].kind == tui_key::fkey);
+	CHECK((int)out[0].ch == n);
     }
     // A printable is itself; none is nothing.
     CHECK(tui_key_bytes(tui_keyev(tui_key::ch, 'x')) == "x");

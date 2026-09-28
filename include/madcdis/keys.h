@@ -21,6 +21,7 @@
 // distinct objects safe, shared mutation needs synchronization).
 
 #include <cstdint>		// int64_t — a binding's action CODE
+#include <cstdlib>		// atoi — a function key's number
 #include <map>
 #include <set>
 #include <string>
@@ -73,6 +74,9 @@ inline std::string tui_key_name(const tui_keyev &k)
 	case tui_key::pgdn:	 return "pgdn";
 	case tui_key::del:	 return "del";
 	case tui_key::ins:	 return "ins";
+	case tui_key::fkey:
+	    return k.ch >= 1 && k.ch <= 12
+		? std::string("f") + std::to_string((int)k.ch) : std::string();
 	default:		 return "";
     }
 }
@@ -97,6 +101,17 @@ inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
     if ( name.size() == 1 && name[0] >= 0x20 && name[0] <= 0x7e )
     {
 	out = tui_keyev(tui_key::ch, name[0]);
+	return true;
+    }
+    // A function key: "f1".."f12" (a bare "f" is the printable, above).
+    if ( (name.size() == 2 || name.size() == 3) && name[0] == 'f'
+	 && name[1] >= '1' && name[1] <= '9'
+	 && (name.size() == 2 || (name[2] >= '0' && name[2] <= '9')) )
+    {
+	int n = atoi(name.c_str() + 1);
+	if ( n < 1 || n > 12 )
+	    return false;
+	out = tui_keyev(tui_key::fkey, (char)n);
 	return true;
     }
     static const struct { const char *n; tui_key k; } named[] = {

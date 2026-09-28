@@ -782,7 +782,10 @@
     Enter: 'enter', Tab: 'tab', Backspace: 'backspace', Escape: 'esc',
     ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
     Home: 'home', End: 'end', PageUp: 'pgup', PageDown: 'pgdn',
-    Delete: 'del', Insert: 'ins'
+    Delete: 'del', Insert: 'ins',
+    // Function keys (a mapped key's default is prevented: F5 never reloads)
+    F1: 'f1', F2: 'f2', F3: 'f3', F4: 'f4', F5: 'f5', F6: 'f6',
+    F7: 'f7', F8: 'f8', F9: 'f9', F10: 'f10', F11: 'f11', F12: 'f12'
   };
   var ctrlPunct = { '\\': '^\\', ']': '^]', '^': '^^', '_': '^_' };
 

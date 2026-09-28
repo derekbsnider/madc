@@ -552,6 +552,29 @@ TEST_CASE("apply_input — text, keys, chords: the grid's events from the page's
     CHECK(m.pending_chord().empty());
 }
 
+TEST_CASE("apply_input — a function key from the page: bound, it is its action; unbound, a key")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, editor_tree(w, 0));
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"key\",\"key\":\"f6\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::key);
+    CHECK(ev[0].key == tui_key::fkey);
+    CHECK((int)ev[0].ch == 6);
+    tui_bindings b;
+    b.bind("f5", "replrun");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"f5\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "replrun");
+    CHECK(ev[0].seq == "f5");
+}
+
 TEST_CASE("codes — an option's code hint rides the choose event; a posted action name converts to its code at the boundary")
 {
     world w;

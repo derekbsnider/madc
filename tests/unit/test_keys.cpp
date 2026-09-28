@@ -72,6 +72,25 @@ TEST_CASE("key spelling — one owner, both directions")
     CHECK(k.ch == '\\');
     REQUIRE(tui_key_from_name("^]", k));
     CHECK(k.ch == ']');
+
+    // Function keys: "f1".."f12", the number in ch; "f" alone is a printable.
+    CHECK(tui_key_name(tui_keyev(tui_key::fkey, 5)) == "f5");
+    CHECK(tui_key_name(tui_keyev(tui_key::fkey, 12)) == "f12");
+    CHECK(tui_key_name(tui_keyev(tui_key::fkey, 13)).empty());
+    for ( int n = 1; n <= 12; ++n )
+    {
+	CAPTURE(n);
+	std::string name = tui_key_name(tui_keyev(tui_key::fkey, (char)n));
+	REQUIRE(tui_key_from_name(name, k));
+	CHECK(k.kind == tui_key::fkey);
+	CHECK((int)k.ch == n);
+    }
+    REQUIRE(tui_key_from_name("f", k));
+    CHECK(k.kind == tui_key::ch);
+    CHECK(!tui_key_from_name("f0", k));
+    CHECK(!tui_key_from_name("f13", k));
+    CHECK(!tui_key_from_name("f05", k));
+    CHECK(!tui_key_from_name("fx", k));
 }
 
 TEST_CASE("bindings — build validation is loud and whole-table")
