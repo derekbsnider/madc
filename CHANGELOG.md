@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A returned `var` literal is copied into the result again
+
+`var obj() { return { "k": 1 }; }` built the literal and then constructed
+the result through `var(const char *)` with the literal as its text, so the
+first keyed read aborted ("value of this kind has no keyed members"). The
+carrier's copy constructor, copy assignment and value-operand operators had
+their `const var &` parameter recorded one slot too far, so an rvalue could
+not bind them.
+
 ### A defaulted move constructor moves memberwise beside a user copy
 
 A class that provides its own copy constructor and defaults its move

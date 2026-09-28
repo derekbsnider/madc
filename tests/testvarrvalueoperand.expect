@@ -1,0 +1,5 @@
+return-literal: k=1 m=two
+assign-rvalue: 5
+add-rvalues: 7
+compare-rvalues: true
+compound-rvalue: 3

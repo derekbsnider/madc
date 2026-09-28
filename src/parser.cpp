@@ -28285,7 +28285,7 @@ void Program::add_array_methods()
 	    // The copy-assign binds any value lvalue AND conversion
 	    // temporaries: const array& (C++ idiom).
 	    if ( op.param.dd == array_ref )
-		fd->const_params = { false, false, true };
+		fd->const_params = { false, true };
 	}
 	Method *md = static_cast<Method *>(var->data);
 	if ( md )
@@ -28377,7 +28377,7 @@ void Program::add_array_methods()
 	    fd->method_display_name = name;
 	    fd->is_const_method = const_method;	// the questions are
 	    if ( !params.empty() && params[0].dd == array_ref )
-		fd->const_params = { false, false, true };
+		fd->const_params = { false, true };
 	}
 	Method *md = static_cast<Method *>(var->data);
 	if ( md )
@@ -28478,7 +28478,7 @@ void Program::add_array_methods()
 	    // The copy ctor binds any value lvalue AND conversion
 	    // temporaries: const array& (C++ idiom), like the copy-assign.
 	    if ( op.param.dd == array_ref )
-		fd->const_params = { false, false, true };
+		fd->const_params = { false, true };
 	}
 	Method *md = static_cast<Method *>(var->data);
 	if ( md )
