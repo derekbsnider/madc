@@ -491,11 +491,14 @@ std::string stringify_runtime_eval_value(const madc::value &resolved)
 	case madc::value::kind::boolean:
 	    return resolved.as_boolean() ? "true" : "false";
 	case madc::value::kind::integer:
-	    return std::to_string(resolved.as_integer());
 	case madc::value::kind::real:
-	    return std::to_string(resolved.as_real());
 	case madc::value::kind::string:
-	    return resolved.as_string();
+	{
+	    // The carrier's text (a real's is format's `{}`): one owner.
+	    std::string out;
+	    ns_common::value_to_string(resolved, out);
+	    return out;
+	}
 	default:
 	    break;
     }

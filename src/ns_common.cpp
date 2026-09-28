@@ -18,6 +18,7 @@
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include "ns_common.h"
+#include "rt/rt_format.h"	// __madc_fmt_shortest_text: the carrier's real text
 
 namespace ns_common {
 
@@ -111,7 +112,16 @@ bool contains(const std::string &s, const std::string &needle)
 	return s.find(needle) != std::string::npos;
 }
 
-bool value_to_string(const madc::value &v, std::string &out)
+// format's `{}` for a double: the one owner of the carrier's real text
+// (the REPL's value display reads the same digits).
+std::string carrier_real_text(double v)
+{
+	char buf[64];
+	__madc_fmt_shortest_text(buf, (long long)sizeof buf, v, 0);
+	return buf;
+}
+
+bool value_to_string(const madc::value &v, std::string &out, real_text_fn real)
 {
 	if ( v.is_string() )
 	{
@@ -125,7 +135,7 @@ bool value_to_string(const madc::value &v, std::string &out)
 	}
 	if ( v.is_real() )
 	{
-		out = std::to_string(v.as_real());
+		out = real(v.as_real());
 		return true;
 	}
 	return false;
@@ -272,7 +282,7 @@ void split_by_delim(madc::value &out, const std::string &s,
 }
 
 void join_with_sep(std::string &out, const madc::value &arr,
-		   const std::string &sep)
+		   const std::string &sep, real_text_fn real)
 {
 	out.clear();
 	if ( !arr.is_array() )
@@ -282,7 +292,7 @@ void join_with_sep(std::string &out, const madc::value &arr,
 	for ( size_t i = 0; i < data.size(); ++i )
 	{
 		if ( i > 0 ) out += sep;
-		if ( value_to_string(data[i], tmp) )
+		if ( value_to_string(data[i], tmp, real) )
 			out += tmp;
 	}
 }
@@ -310,14 +320,14 @@ const char *ring_text(std::string s)
 	return slot.c_str();
 }
 
-std::string &value_text_slot(const madc::value *v)
+std::string &value_text_slot(const madc::value *v, real_text_fn real)
 {
 	std::string &slot = ring_slot();
 	if ( !v || v->is_null() )
 		slot.clear();
 	else if ( v->is_string() )
 		slot.assign((const char *)v->data(), v->size());
-	else if ( !value_to_string(*v, slot) )
+	else if ( !value_to_string(*v, slot, real) )
 		slot.clear();
 	return slot;
 }
@@ -331,9 +341,9 @@ const char *ring_apply(const char *s, std::string *(*core)(std::string *))
 }
 
 const char *ring_apply(const madc::value *v,
-		       std::string *(*core)(std::string *))
+		       std::string *(*core)(std::string *), real_text_fn real)
 {
-	std::string &slot = value_text_slot(v);
+	std::string &slot = value_text_slot(v, real);
 	core(&slot);
 	return slot.c_str();
 }

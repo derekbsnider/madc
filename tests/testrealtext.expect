@@ -1,0 +1,8 @@
+format: 1.5 0.30000000000000004 1 1e+25
+c_str: 1.5 0.30000000000000004 1 1e+25
+printf: 1.5 0.30000000000000004
+php implode: 1.5 0.3 1 1.0E+25
+php str_repeat: 1.51.5
+php strtoupper: 1.0E+25
+perl uc: 1E+25
+perl substr: 0.3

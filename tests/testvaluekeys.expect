@@ -1,4 +1,4 @@
-name=lamp fuel=6 lit=true weight=2.500000
+name=lamp fuel=6 lit=true weight=2.5
 count=4
 owner=hero via-sub=hero
 state-via-dot=bright

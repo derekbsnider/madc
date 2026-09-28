@@ -46,11 +46,20 @@ bool contains   (const std::string &s, const std::string &needle);
 
 // ---- madc::value stringification --------------------------------------
 
+// A real's text in the caller's language. The carrier's own is format's
+// `{}` (rt_format.c's shortest round-trip digits: 1.5, 0.30000000000000004,
+// 1e+25), and every text helper below defaults to it. A namespace whose
+// language spells reals otherwise (PHP's precision 14, Perl's %.15g) passes
+// its own renderer, which lives in that namespace's file.
+typedef std::string (*real_text_fn)(double v);
+std::string carrier_real_text(double v);
+
 // Stringify a madc::value for join/column-style output. Handles string,
-// integer, and real. Returns true on a recognized kind (out is set);
-// returns false otherwise (out is left untouched). Callers decide
-// whether to clear out or skip the value.
-bool value_to_string(const madc::value &v, std::string &out);
+// integer, and real (through `real`). Returns true on a recognized kind
+// (out is set); returns false otherwise (out is left untouched). Callers
+// decide whether to clear out or skip the value.
+bool value_to_string(const madc::value &v, std::string &out,
+		     real_text_fn real = carrier_real_text);
 
 // String/integer-only variant for the pop/shift/join family, whose
 // historical (MadValue-era, test-pinned) behavior excluded reals.
@@ -123,8 +132,9 @@ const char *ring_text(std::string s);
 // payload; other scalar kinds render via value_to_string; null and
 // containers clear) and return the slot. The value-argument twin of
 // ring_slot() for lean `const char*` returns: transform the slot in
-// place, then return its c_str().
-std::string &value_text_slot(const madc::value *v);
+// place, then return its c_str(). A real renders through `real`.
+std::string &value_text_slot(const madc::value *v,
+			     real_text_fn real = carrier_real_text);
 
 // THE lean-primary adapter pair: copy the subject into the lent ring
 // slot, run an in-place std::string core over it, return the slot's
@@ -133,7 +143,8 @@ std::string &value_text_slot(const madc::value *v);
 // public share that ONE core by construction.
 const char *ring_apply(const char *s, std::string *(*core)(std::string *));
 const char *ring_apply(const madc::value *v,
-		       std::string *(*core)(std::string *));
+		       std::string *(*core)(std::string *),
+		       real_text_fn real = carrier_real_text);
 
 // ---- Element move-out (the value-out return convention) ----------------
 
@@ -149,7 +160,8 @@ bool value_shift_element(madc::value &arr, madc::value &dst, const char *who);
 // Elements that are not string/integer/real are skipped silently
 // (matches the prior php_implode / rust_join shape).
 void join_with_sep(std::string &out, const madc::value &arr,
-		   const std::string &sep);
+		   const std::string &sep,
+		   real_text_fn real = carrier_real_text);
 
 }  // namespace ns_common
 

@@ -41,6 +41,26 @@
 
 using namespace std;
 
+// PHP's (string)$float: precision 14, the one text rt_dump.c owns (print_r's
+// too). Every php:: function that reads a value as text renders a real with
+// it, as PHP converts one (implode, str_repeat, strtoupper, ...).
+static std::string php_real_text(double v)
+{
+	char buf[MADC_PHP_REAL_TEXT_CAP];
+	return __madc_php_real_text(buf, v);
+}
+
+// ns_common's text slot and in-place adapter, with PHP's real text.
+static std::string &php_text_slot(const madc::value *v)
+{
+	return ns_common::value_text_slot(v, php_real_text);
+}
+
+static const char *php_apply(const madc::value *v, std::string *(*core)(std::string *))
+{
+	return ns_common::ring_apply(v, core, php_real_text);
+}
+
 // ---- C++ wrapper functions called by JIT ----
 
 // php::trim — trim whitespace from both ends (no C/C++ equivalent)
@@ -255,7 +275,7 @@ void php_explode(madc::value *arr, const char *delim, const char *str)
 // php::implode — join array elements with glue string
 std::string *php_implode(std::string *result, const char *glue, madc::value *arr)
 {
-	ns_common::join_with_sep(*result, *arr, std::string(glue ? glue : ""));
+	ns_common::join_with_sep(*result, *arr, std::string(glue ? glue : ""), php_real_text);
 	return result;
 }
 
@@ -419,7 +439,7 @@ std::string *php_array_get(std::string *result, madc::value *arr, int64_t index)
 	const std::vector<madc::value> &data = arr->as_array();
 	if ( index < 0 || (size_t)index >= data.size() )
 		return result;
-	ns_common::value_to_string(data[(size_t)index], res);
+	ns_common::value_to_string(data[(size_t)index], res, php_real_text);
 	return result;
 }
 
@@ -462,7 +482,7 @@ const char *php_array_get_cstr(madc::value *arr, int64_t index)
 	std::string &res = ns_common::ring_slot();
 	res.clear();
 	if ( const madc::value *v = php_container_nth(arr, index) )
-		ns_common::value_to_string(*v, res);
+		ns_common::value_to_string(*v, res, php_real_text);
 	return res.c_str();
 }
 
@@ -540,7 +560,7 @@ static const char *php_case_cstr(const char *s, bool up)
 }
 static const char *php_case_value(const madc::value *v, bool up)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_ascii_case_inplace(slot, up);
 	return slot.c_str();
 }
@@ -564,7 +584,7 @@ const char *php_ucfirst_cstr(const char *s)
 }
 const char *php_ucfirst_value(const madc::value *v)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	if ( !slot.empty() && slot[0] >= 'a' && slot[0] <= 'z' )
 		slot[0] = (char)(slot[0] - 32);
 	return slot.c_str();
@@ -698,7 +718,7 @@ int64_t php_file_put_contents_value(const char *path, const madc::value *v)
 					     v->size());
 	if ( !v || v->is_object() || v->is_array() || v->is_instance() )
 		return -1;
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_file_put_contents(path, slot.c_str(), slot.size());
 }
 
@@ -743,17 +763,17 @@ int64_t php_intval_value(const madc::value *v)
 using ns_common::ring_apply;
 
 const char *php_trim_cstr(const char *s)	{ return ring_apply(s, php_trim); }
-const char *php_trim_value(const madc::value *v)	{ return ring_apply(v, php_trim); }
+const char *php_trim_value(const madc::value *v)	{ return php_apply(v, php_trim); }
 const char *php_ltrim_cstr(const char *s)	{ return ring_apply(s, php_ltrim); }
-const char *php_ltrim_value(const madc::value *v)	{ return ring_apply(v, php_ltrim); }
+const char *php_ltrim_value(const madc::value *v)	{ return php_apply(v, php_ltrim); }
 const char *php_rtrim_cstr(const char *s)	{ return ring_apply(s, php_rtrim); }
-const char *php_rtrim_value(const madc::value *v)	{ return ring_apply(v, php_rtrim); }
+const char *php_rtrim_value(const madc::value *v)	{ return php_apply(v, php_rtrim); }
 const char *php_lcfirst_cstr(const char *s)	{ return ring_apply(s, php_lcfirst); }
-const char *php_lcfirst_value(const madc::value *v)	{ return ring_apply(v, php_lcfirst); }
+const char *php_lcfirst_value(const madc::value *v)	{ return php_apply(v, php_lcfirst); }
 const char *php_nl2br_cstr(const char *s)	{ return ring_apply(s, php_nl2br); }
-const char *php_nl2br_value(const madc::value *v)	{ return ring_apply(v, php_nl2br); }
+const char *php_nl2br_value(const madc::value *v)	{ return php_apply(v, php_nl2br); }
 const char *php_str_rot13_cstr(const char *s)	{ return ring_apply(s, php_str_rot13); }
-const char *php_str_rot13_value(const madc::value *v)	{ return ring_apply(v, php_str_rot13); }
+const char *php_str_rot13_value(const madc::value *v)	{ return php_apply(v, php_str_rot13); }
 
 const char *php_str_repeat_cstr(const char *s, int64_t count)
 {
@@ -764,7 +784,7 @@ const char *php_str_repeat_cstr(const char *s, int64_t count)
 }
 const char *php_str_repeat_value(const madc::value *v, int64_t count)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_str_repeat(&slot, count);
 	return slot.c_str();
 }
@@ -782,7 +802,7 @@ const char *php_str_replace_value(const char *search, const char *replace,
 				  const madc::value *subject)
 {
 	std::string se(search ? search : ""), re(replace ? replace : "");
-	std::string &slot = ns_common::value_text_slot(subject);
+	std::string &slot = php_text_slot(subject);
 	php_str_replace(&se, &re, &slot);
 	return slot.c_str();
 }
@@ -799,7 +819,7 @@ const char *php_str_pad_value(const madc::value *v, int64_t length,
 			      const char *pad)
 {
 	std::string p(pad ? pad : "");
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_str_pad(&slot, length, &p);
 	return slot.c_str();
 }
@@ -811,7 +831,7 @@ int64_t php_str_word_count_cstr(const char *s)
 }
 int64_t php_str_word_count_value(const madc::value *v)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_str_word_count(&slot);
 }
 
@@ -828,7 +848,7 @@ const char *php_chunk_split_value(const madc::value *v, int64_t chunklen,
 				  const char *sep)
 {
 	std::string sp(sep ? sep : "");
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_chunk_split(&slot, chunklen, &sp);
 	return slot.c_str();
 }
@@ -853,7 +873,7 @@ const char *php_wordwrap_value(const madc::value *v, int64_t width,
 			       const char *brk)
 {
 	std::string b(brk ? brk : "");
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_wordwrap(&slot, width, &b);
 	return slot.c_str();
 }
@@ -861,7 +881,7 @@ const char *php_wordwrap_value(const madc::value *v, int64_t width,
 const char *php_implode_cstr(const char *glue, madc::value *arr)
 {
 	std::string &slot = ns_common::ring_slot();
-	ns_common::join_with_sep(slot, *arr, std::string(glue ? glue : ""));
+	ns_common::join_with_sep(slot, *arr, std::string(glue ? glue : ""), php_real_text);
 	return slot.c_str();
 }
 
@@ -942,7 +962,7 @@ const char *php_dirname_cstr(const char *path, int64_t levels)
 }
 const char *php_dirname_value(const madc::value *v, int64_t levels)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_dirname_slot(slot, levels);
 }
 
@@ -985,7 +1005,7 @@ const char *php_basename_cstr(const char *path, const char *suffix)
 }
 const char *php_basename_value(const madc::value *v, const char *suffix)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_basename_slot(slot, suffix);
 }
 
@@ -1177,10 +1197,7 @@ static std::string php_text_of(const madc::value &v)
 	if ( v.is_integer() )
 		return std::to_string(v.as_integer());
 	if ( v.is_real() )
-	{
-		char buf[MADC_PHP_REAL_TEXT_CAP];
-		return __madc_php_real_text(buf, v.as_real());
-	}
+		return php_real_text(v.as_real());
 	if ( v.is_string() || v.is_bytes() )
 		return v.as_string();
 	return std::string();
@@ -1359,7 +1376,7 @@ void php_array_column(madc::value *dest, madc::value *src, int64_t column_index)
 		if ( idx >= row_arr.size() )
 			continue;
 		std::string value;
-		if ( ns_common::value_to_string(row_arr[idx], value) )
+		if ( ns_common::value_to_string(row_arr[idx], value, php_real_text) )
 			d.push_back(madc::value(value));
 	}
 }

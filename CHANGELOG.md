@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### A real's text is right everywhere it is read as text
+
+A `var` holding a real used to turn into text with six fixed decimal places
+(`1.500000`, `0.300000`, and 1e25 as `10000000000000000905969664.000000`)
+wherever it was read as text: its `c_str()`, `printf("%s", v)`, a channel
+write, `madc::eval_expression`'s result, and every `php::` and `perl::`
+function given a real. Now:
+
+- madc's own text for a real is what `format("{}", …)` prints (`1.5`,
+  `0.30000000000000004`, `1`, `1e+25`), so `c_str()` and `format` agree.
+- `php::` functions read a real as PHP does (`php::implode` of
+  `{ 1.5, 0.1 + 0.2, 1.0, 1e25 }` is `1.5 0.3 1 1.0E+25`, and
+  `php::str_repeat(1.5, 2)` is `1.51.5`).
+- `perl::` functions read a real as Perl does (`perl::uc(1e25)` is `1E+25`).
+
 ### `php::sort` and `php::rsort` order values as PHP does
 
 `php::sort` and `php::rsort` now use PHP 8's standard comparison, as its
