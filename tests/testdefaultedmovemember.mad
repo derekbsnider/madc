@@ -1,0 +1,53 @@
+/* An explicitly DEFAULTED move constructor moves memberwise
+   ([class.copy.ctor]/14), whatever other copy constructors the class
+   provides. This is libstdc++'s vector shape: a user copy constructor beside
+   `vector(vector &&) = default`, the move reaching `_Vector_base`, whose only
+   copy/move constructor is itself defaulted, and whose member has a user move
+   constructor that empties its source.
+   madc refused the defaulted move ("cannot lower defaulted copy/move
+   constructor"): the memberwise owner rejects any class with a user copy
+   constructor. It then moved the base's member TWICE, the second time from
+   the source the first move had emptied, so the result came back empty.
+   A parameter is moved by `return` and is never NRVO'd, so the copies and
+   moves print identically under every compiler.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the lines below. */
+#include <cstdio>
+
+struct Impl {
+	int *p;
+	Impl() : p(new int(7)) {}
+	Impl(const Impl &o) : p(new int(*o.p)) { printf("impl copy\n"); }
+	Impl(Impl &&o) noexcept : p(o.p) { o.p = nullptr; printf("impl move\n"); }
+	~Impl() { delete p; }
+};
+
+// Only a defaulted move: the copy constructor is deleted, as _Vector_base's.
+struct Base {
+	Impl impl;
+	Base() = default;
+	Base(Base &&) = default;
+	explicit Base(int v) { *impl.p = v; }
+};
+
+struct Vec : Base {
+	Vec() = default;
+	Vec(const Vec &o) : Base(*o.impl.p) { printf("vec copy\n"); }
+	Vec(Vec &&) noexcept = default;
+};
+
+struct S {
+	Vec v;
+	S() {}
+};
+
+static S pass(S s) { return s; }
+
+int main()
+{
+	S a;
+	S b = pass(a);
+	printf("returned v=%d a=%d\n", *b.v.impl.p, *a.v.impl.p);
+	Vec w = static_cast<Vec &&>(b.v);
+	printf("declared w=%d moved-from=%d\n", *w.impl.p, b.v.impl.p == nullptr);
+	return 0;
+}

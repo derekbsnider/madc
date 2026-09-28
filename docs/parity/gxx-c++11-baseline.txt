@@ -182,7 +182,6 @@ g++.dg/cpp0x/constexpr-fnptr.C
 g++.dg/cpp0x/constexpr-fold1.C
 g++.dg/cpp0x/constexpr-fold2.C
 g++.dg/cpp0x/constexpr-fwctor1.C
-g++.dg/cpp0x/constexpr-ice22.C
 g++.dg/cpp0x/constexpr-initlist10.C
 g++.dg/cpp0x/constexpr-initlist2.C
 g++.dg/cpp0x/constexpr-initlist3.C
@@ -201,7 +200,6 @@ g++.dg/cpp0x/constexpr-ptrmem.C
 g++.dg/cpp0x/constexpr-ptrmem5.C
 g++.dg/cpp0x/constexpr-ptrmem6.C
 g++.dg/cpp0x/constexpr-ptrsub.C
-g++.dg/cpp0x/constexpr-recursion2.C
 g++.dg/cpp0x/constexpr-redeclaration3.C
 g++.dg/cpp0x/constexpr-ref1.C
 g++.dg/cpp0x/constexpr-ref11.C

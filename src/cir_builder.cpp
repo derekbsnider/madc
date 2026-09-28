@@ -13674,9 +13674,11 @@ static bool member_owned_by_done_base(const DataDefCLASS *cdd, size_t mi,
 }
 
 // Which classes handle their own members: a class with a user constructor
-// constructs (and initializes) them in its prologue; a class with a user copy
-// or move constructor copies them. A class without one leaves its members to
-// the class it is a base of, into which they were flattened.
+// constructs (and initializes) them in its prologue; a class whose copy (or,
+// for a move, move) constructor the implicit copy's base walk runs —
+// class_copy_ctor_for, user-provided or defaulted — copies them. A class
+// without one leaves its members to the class it is a base of, into which
+// they were flattened.
 typedef bool (*OwnsMembersTest)(const DataDefCLASS *);
 static bool constructs_own_members(const DataDefCLASS *c)
 {
@@ -13684,7 +13686,11 @@ static bool constructs_own_members(const DataDefCLASS *c)
 }
 static bool copies_own_members(const DataDefCLASS *c)
 {
-	return class_copy_ctor_def(const_cast<DataDefCLASS *>(c)) != NULL;
+	return class_copy_ctor_for(const_cast<DataDefCLASS *>(c), false) != NULL;
+}
+static bool moves_own_members(const DataDefCLASS *c)
+{
+	return class_copy_ctor_for(const_cast<DataDefCLASS *>(c), true) != NULL;
 }
 
 // Walk member `mi` of `cdd` down its flattening (member_origin; member_vbase
@@ -13770,13 +13776,15 @@ static bool member_constructed_by_base(const DataDefCLASS *cdd, size_t mi,
 
 // Member `mi` of `cdd` is copied by a base's copy or move constructor, which
 // the implicit copy runs on the base subobject (implicit_copy_member_
-// reconstructs): copying it again would copy it twice.
-static bool member_copied_by_base(const DataDefCLASS *cdd, size_t mi)
+// reconstructs): copying it again would copy it twice — and a second MOVE
+// reads the source the first one emptied. `move` is the walk's own direction.
+static bool member_copied_by_base(const DataDefCLASS *cdd, size_t mi,
+				  bool move)
 {
+	OwnsMembersTest owns = move ? moves_own_members : copies_own_members;
 	size_t j = 0;
-	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j,
-						       copies_own_members);
-	return c && c != cdd && copies_own_members(c);
+	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j, owns);
+	return c && c != cdd && owns(c);
 }
 
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
@@ -14504,7 +14512,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		}
 		if (copy_ctor->defaulted_or_deleted
 		    && copy_ctor->is_copy_or_move_constructor_of(cdd)) {
-			node_t copy = implicit_copy_construct_from_addr(
+			node_t copy = memberwise_copy_construct_from_addr(
 				node1(N_DEREF, id(RETBUF_NAME, origin), origin),
 				object_arg_addr(src, cdd,
 					copy_ctor->is_nonconst_lref_param(1)),
@@ -16814,6 +16822,19 @@ node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
 						     DataDefCLASS *cdd,
 						     TokenBase *origin, bool move)
 {
+	if (cdd && class_copy_ctor_def(cdd)) return NULL;
+	return memberwise_copy_construct_from_addr(dst_lvalue, src_addr, cdd,
+						   origin, move);
+}
+
+// See cir_builder.h: the lowering shared by the implicit and the defaulted
+// copy/move constructor.
+node_t CirBuilder::memberwise_copy_construct_from_addr(node_t dst_lvalue,
+						       node_t src_addr,
+						       DataDefCLASS *cdd,
+						       TokenBase *origin,
+						       bool move)
+{
 	if (!dst_lvalue || !src_addr || !cdd) return NULL;
 	if (class_trivially_copyable(cdd)) {
 		if (trait_is_empty(cdd))
@@ -16822,7 +16843,6 @@ node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
 				    node1(N_DEREF, src_addr, origin), origin);
 		return node2(N_EXPR, list(), asgn, origin);
 	}
-	if (class_copy_ctor_def(cdd)) return NULL;
 	if (cdd->has_any_vptr()) return NULL;
 	// Bind dst/src ONCE into scoped pointer temps: c2mir nodes hold a single
 	// parent link, and re-translating an rvalue src (a cast/call temp) per
@@ -16908,7 +16928,7 @@ void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 	}
 	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
 		const auto &m = cdd->members[mi];
-		if (member_copied_by_base(cdd, mi)) continue;
+		if (member_copied_by_base(cdd, mi, move)) continue;
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
 		path.push_back(m.first);
@@ -17278,7 +17298,7 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 			origin);
 		// Constructor arguments use the call ABI's void* address. The
 		// memberwise copy consumes a pointer to the actual class.
-		node_t copy = implicit_copy_construct_from_addr(dst,
+		node_t copy = memberwise_copy_construct_from_addr(dst,
 			node2(N_CAST, class_ptr_type(cdd), explicit_nodes[0],
 			      origin), cdd, origin,
 			ctor->param_spells_rvalue_reference(1));
@@ -18284,11 +18304,19 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		return error_node(why, origin);
 	if (ctor->defaulted_or_deleted
 	    && ctor->is_copy_or_move_constructor_of(cdd)) {
-		if (node_t cc = try_implicit_copy_construct(
-				id(vname.c_str(), origin), cdd, ctor_args, origin))
-			return cc;
-		return error_node("cannot lower defaulted copy/move constructor",
-				  origin);
+		// The argument binds the selected constructor's parameter as it
+		// would a user-provided one's (object_arg_addr, the retbuf and
+		// ctor_call_assemble twins).
+		node_t cc = ctor_args.size() != 1 ? NULL
+			: memberwise_copy_construct_from_addr(
+				id(vname.c_str(), origin),
+				object_arg_addr(ctor_args[0], cdd,
+					ctor->is_nonconst_lref_param(1)),
+				cdd, origin,
+				ctor->param_spells_rvalue_reference(1));
+		return cc ? cc
+			  : error_node("cannot lower defaulted copy/move constructor",
+				       origin);
 	}
 
 	// INHERITED constructor ([class.inhctor]): the selected ctor belongs to a

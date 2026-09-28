@@ -2005,10 +2005,19 @@ public:
 	// src_addr (`struct cdd *`). ONE owner for try_implicit_copy_construct
 	// and the deferred-construction relower's same-class pack element.
 	// `move`: the source is an rvalue, so each subobject's MOVE
-	// constructor runs where it declares one.
+	// constructor runs where it declares one. NULL for a class with a
+	// user-provided copy or move constructor: it has no implicit one.
 	node_t implicit_copy_construct_from_addr(node_t dst_lvalue, node_t src_addr,
 			       DataDefCLASS *cdd, TokenBase *origin,
 			       bool move = false);
+	// The memberwise copy/move itself ([class.copy.ctor]/14): what the
+	// implicit constructor and an explicitly DEFAULTED one both lower to,
+	// whatever other copy/move constructors the class provides
+	// (libstdc++'s `vector(vector &&) = default` beside its user copy).
+	// NULL for a polymorphic class (vptr re-stamping is not modeled).
+	node_t memberwise_copy_construct_from_addr(node_t dst_lvalue,
+			       node_t src_addr, DataDefCLASS *cdd,
+			       TokenBase *origin, bool move);
 	// Memberwise reconstruction walk for the implicit copy ctor's
 	// NON-trivial arm (task #70): after the whole-object bit-copy,
 	// re-invoke the USER copy ctor of every (possibly nested) class

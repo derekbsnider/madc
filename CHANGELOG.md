@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A defaulted move constructor moves memberwise beside a user copy
+
+A class that provides its own copy constructor and defaults its move
+constructor, as libstdc++'s `std::vector` does, moves again. Returning a
+struct with a `std::vector` member had stopped compiling ("cannot lower
+defaulted copy/move constructor"). Its base's members were also moved twice,
+the second time from the emptied source, so the returned vector came back
+empty.
+
 ### Deleted copy and move constructors stay in overload resolution
 
 Copying a `std::unique_ptr` now reports its deleted copy constructor instead
