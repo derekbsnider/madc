@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### An array compound literal has the extent written in it
+
+`(int[3]){0}` now has three elements, zero-filled, as C requires. Before,
+madc sized it by its initializer list, so it held one element, and a store
+to its third element overwrote whatever came next. An unsized literal,
+`(int[]){...}`, is still sized by its list, a designator included.
+
 ### A nested struct inside a C++ struct may hold C++ members
 
 `struct O { struct In { int v = 4; }; In in; };` now compiles, as in g++

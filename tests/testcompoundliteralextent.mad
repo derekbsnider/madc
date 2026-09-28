@@ -1,0 +1,20 @@
+/* An array compound literal with a written extent has that many elements
+   (C11 6.5.2.5p4: `(int[3]){0}` is an int[3], zero-filled). madc emitted
+   `(int []){ 0 }`, one element, so a store to p[2] overwrote the next object:
+   q[1] read 9 and q[3] garbage. An unsized literal is sized by its list, a
+   designator included.
+   Oracle: gcc and clang -std=c17 print `0 9 2 0 / 0 0 7 / 3`. */
+#include <stdio.h>
+
+int main(void)
+{
+	int *p = (int[3]){0};
+	int *q = (int[4]){1, 2};
+	p[2] = 9;
+	printf("%d %d %d %d\n", p[0], p[2], q[1], q[3]);
+	int *r = (int[]){[2] = 7};
+	printf("%d %d %d\n", r[0], r[1], r[2]);
+	int *s = (int[3]){1, 2, 3};
+	printf("%d\n", s[2]);
+	return 0;
+}

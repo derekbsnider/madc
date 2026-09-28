@@ -1047,6 +1047,9 @@ public:
     // `T name[]` so c2mir sizes the array from the initializer count — the
     // faithful C99 lowering. Holds the ELEMENT type T.
     DataDef *array_elem_dd = nullptr;
+    // The extent WRITTEN in `(T[N]){...}`; 0 for `(T[]){...}`, whose size the
+    // initializer decides (a designator `[5] =` included).
+    int64_t array_extent = 0;
     // Did a `.field =` designator write any slot of THIS list? A union's slots
     // are member indices when it did and plain VALUES when it did not, and the
     // CIR builder cannot tell them apart afterwards: `{.i = 1, .p = 0}` and

@@ -42816,6 +42816,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					else
 					{
 					    slit->array_elem_dd = array_elem_dd;
+					    slit->array_extent = array_explicit_count;
 					    // The element type's typedef alias (e.g. `(S[]){...}`
 					    // where `typedef struct S {...} S`) so the CIR array
 					    // path can emit ID("S") instead of mis-rendering the

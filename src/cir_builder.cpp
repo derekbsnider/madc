@@ -9931,7 +9931,13 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 								  elem_ptr_dims);
 		append_lit_type_spec(aspec, elem_spec_dd, slit->typedef_name);
 		node_t adecl_list = list();
-		append(adecl_list, node3(N_ARR, ignore(), list(), ignore()));
+		// A WRITTEN extent sizes the array (C11 6.5.2.5p4: the type is
+		// `int[3]` for `(int[3]){0}`). Unsized, `T[]` held one element and
+		// a store to p[2] overwrote the next object.
+		append(adecl_list, node3(N_ARR, ignore(), list(),
+					 slit->array_extent > 0
+					 ? integer(slit->array_extent, slit)
+					 : ignore()));
 		if (elem_stars >= 0) {
 			for (int s = 0; s < elem_stars; s++)
 				append(adecl_list, pointer());

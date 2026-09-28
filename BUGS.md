@@ -121,7 +121,15 @@ int main(void)
   type `int[3]` (C11 6.5.2.5p4), and madc gives it a pointer's.
 - An entry's `(int[]){7,8}` shows `(int *) 0x7ffd...` under every standard,
   where an `int a[2]` shows its elements.
-- Where: not traced. The compound literal's token reports the decayed type.
+- Where: the parser wraps the literal in `TokenCast(T *, literal)` when it
+  builds it ("Array compound literals decay to pointer", parser.cpp ~42830),
+  so every reader, sizeof included, sees the pointer. The literal's own type
+  is a synthetic `__compound_array` struct. The faithful shape is the
+  literal typed `T[N]`, decaying where it is used (`array_decay_pointer`).
+  That is a parse-tree change of its own.
+- Its storage sibling is fixed (2026-09-28): `(int[3]){0}` held ONE element,
+  since the literal was emitted unsized, and a store to p[2] overwrote the
+  next object.
 
 ### B36. A file-scope `std::unique_ptr` is not initialized
 
