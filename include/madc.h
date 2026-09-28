@@ -69,7 +69,8 @@ enum class GnuAttributeKind : uint8_t {
     Alias,
     NoInstrumentFunction,
     Optimize,
-    UsingIfExists
+    UsingIfExists,
+    Weak
 };
 
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
@@ -535,7 +536,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -597,6 +598,11 @@ public:
     // __attribute__((optimize("-fno-strict-aliasing"))): the CIR builder forwards
     // this as an N_ATTR in the FUNC_DEF specs; c2mir suppresses TBAA per-function.
     bool no_strict_aliasing;
+    // __attribute__((weak)) on any declaration of this function: the
+    // definition binds WEAK (STB_WEAK), so a strong definition in another TU
+    // replaces it (gcc/clang). The CIR builder forwards it as an N_ATTR in the
+    // FUNC_DEF specs; c2mir binds the MIR item MIR_ITEM_BIND_WEAK.
+    bool weak_binding;
     bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
     // True when DECLARED with no body (prototype ended in ';' / ',' not '{').
     // For a C++ class method whose class carries canonical C++ spelling, this
@@ -8148,6 +8154,9 @@ public:
     // Set by consume_gnu_attributes on optimize("-fno-strict-aliasing") in any
     // position; consumed (and cleared) by the function-declaration parse.
     bool pending_no_strict_aliasing;
+    // Set by consume_gnu_attributes on `weak` in any position; consumed (and
+    // cleared) by the function-declaration parse, reset at each statement.
+    bool pending_weak_binding;
     TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
     // Skip (or lower the recognized `=r`/`+r`/`+m`/... copy shapes of) a GNU
     // asm STATEMENT. `tb` is the asm introducer (identifier or reserved

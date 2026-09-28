@@ -1800,6 +1800,9 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 		if ( !at ) break;
 		if ( attrs && adepth >= 2 && at->type() == TokenType::ttIdentifier )
 		    attrs->insert(((TokenIdent *)at)->spelling());
+		if ( adepth >= 2 && at->type() == TokenType::ttIdentifier
+		  && madc_gnu_attribute_kind(((TokenIdent *)at)->spelling()) == GnuAttributeKind::Weak )
+		    pending_weak_binding = true;
 		if ( at->type() == TokenType::ttIdentifier
 		  && (((TokenIdent *)at)->spelling_is("optimize")
 		   || ((TokenIdent *)at)->spelling_is("__optimize__")) )
@@ -35884,7 +35887,7 @@ class ClassPatternNormalizer
 	}
 	if ( fd->explicit_alignment || fd->has_captures
 	  || !fd->return_types.empty() || fd->no_instrument_function
-	  || fd->no_strict_aliasing || fd->has_large_struct_retbuf
+	  || fd->no_strict_aliasing || fd->weak_binding || fd->has_large_struct_retbuf
 	  || fd->ctor_trailing_self || fd->has_forest_body )
 	{
 	    DBG(std::cout << "ClassPattern normalize method "
@@ -35894,6 +35897,7 @@ class ClassPatternNormalizer
 		<< " multi-ret=" << fd->return_types.size()
 		<< " noinst=" << fd->no_instrument_function
 		<< " noalias=" << fd->no_strict_aliasing
+		<< " weak=" << fd->weak_binding
 		<< " sret=" << fd->has_large_struct_retbuf
 		<< " trailing-self=" << fd->ctor_trailing_self
 		<< " forest-body=" << fd->has_forest_body << std::endl);
@@ -69869,6 +69873,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->is_void_params = src->is_void_params;
     f->no_instrument_function = src->no_instrument_function;
     f->no_strict_aliasing = src->no_strict_aliasing;
+    f->weak_binding = src->weak_binding;
     f->has_large_struct_retbuf = src->has_large_struct_retbuf;
     f->declaration_only = src->declaration_only;
     f->is_explicit = src->is_explicit;
@@ -70244,6 +70249,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->param_template_param_spelled_directly =
 		func->param_template_param_spelled_directly;
 	    fresh->no_instrument_function = func->no_instrument_function;
+	    fresh->weak_binding = func->weak_binding;
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
@@ -70291,6 +70297,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->param_template_param_spelled_directly =
 		func->param_template_param_spelled_directly;
 	    fresh->no_instrument_function = func->no_instrument_function;
+	    fresh->weak_binding = func->weak_binding;
 	    fresh->explicit_alignment = func->explicit_alignment;
 	    fresh->defaulted_or_deleted = func->defaulted_or_deleted;
 	    fresh->is_deleted = func->is_deleted;
@@ -71457,6 +71464,11 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	func->no_strict_aliasing = true;
 	pending_no_strict_aliasing = false;
+    }
+    if ( pending_weak_binding )
+    {
+	func->weak_binding = true;
+	pending_weak_binding = false;
     }
     if ( func_align > 0 )
 	func->explicit_alignment = func_align;
@@ -76344,6 +76356,9 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    return NULL;
     }
     size_t attr_vector_bytes = 0;
+    // A `weak` left pending by the previous declaration (an object, whose
+    // binding is not the function parse's) never reaches this one.
+    pending_weak_binding = false;
     if ( is_attribute_identifier_token(tb) )
     {
 	tb = consume_gnu_attributes(tb, NULL, NULL, NULL, &attr_vector_bytes);

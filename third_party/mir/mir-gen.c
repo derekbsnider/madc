@@ -884,12 +884,16 @@ static int obj_item_sym_eq (obj_item_sym_t el1, obj_item_sym_t el2, void *arg MI
 
 /* Follow export/forward/import indirections to the item that actually defines
    the name in this context; a name with no definition here stays an import
-   (an undefined ELF symbol resolved by the system linker). */
-static MIR_item_t obj_canonical_item (MIR_item_t item) {
+   (an undefined ELF symbol resolved by the system linker).  A weak func that a
+   strong definition replaced is defined by the replacement. */
+static MIR_item_t obj_canonical_item (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t repl;
+
   while ((item->item_type == MIR_export_item || item->item_type == MIR_forward_item
           || item->item_type == MIR_import_item)
          && item->ref_def != NULL && item->ref_def != item)
     item = item->ref_def;
+  if ((repl = _MIR_weak_func_replacement (ctx, item)) != NULL) item = repl;
   return item;
 }
 
@@ -898,7 +902,7 @@ static MIR_item_t obj_canonical_item (MIR_item_t item) {
    a definition via MIR_object_symbol_define. */
 static int gen_obj_item_sym (gen_ctx_t gen_ctx, MIR_item_t item) {
   obj_item_sym_t el, tab_el;
-  item = obj_canonical_item (item);
+  item = obj_canonical_item (gen_ctx->ctx, item);
   el.item = item;
   el.sym = -1;
   if (HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) return tab_el.sym;
@@ -9877,8 +9881,11 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
     if (item->item_type == MIR_func_item) {
       obj_item_sym_t el, tab_el;
       el.item = item;
-      if (!HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)
-          || !MIR_object_symbol_defined_p (gen_object, tab_el.sym))
+      /* a replaced weak func is never generated: its references bind to the
+         replacement (obj_canonical_item) */
+      if (_MIR_weak_func_replacement (ctx, item) == NULL
+          && (!HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)
+              || !MIR_object_symbol_defined_p (gen_object, tab_el.sym)))
         (*MIR_get_error_func (ctx)) (MIR_func_error,
                                      "AOT object mode: function %s was not generated before "
                                      "MIR_gen_object_emit",

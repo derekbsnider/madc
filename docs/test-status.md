@@ -1,5 +1,11 @@
 # Test Status
 
+B24 weak-function binding (2026-09-28): `testprojectweakfn` checks weak
+definitions before and after the decl-specifiers, a weak prototype followed
+by a definition, opposite TU order, cross-TU calls, and function address
+identity. GCC and Clang both produce `f=2 g=3 gb=3 h=6 p=8 same=1`;
+the madc project test passes in JIT, executable, and object modes.
+
 Standard-C regression sweep (2026-09-20, `7488a39cf`): a multi-standard
 coverage measurement run for the documentation found gcc c-torture at
 **1587/1624**, against **1614** at the 2026-08-12 baseline on identical scope.

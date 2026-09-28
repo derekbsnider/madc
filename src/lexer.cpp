@@ -1261,7 +1261,8 @@ GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
 	{ "alias", GnuAttributeKind::Alias },
 	{ "no_instrument_function", GnuAttributeKind::NoInstrumentFunction },
 	{ "optimize", GnuAttributeKind::Optimize },
-	{ "using_if_exists", GnuAttributeKind::UsingIfExists }
+	{ "using_if_exists", GnuAttributeKind::UsingIfExists },
+	{ "weak", GnuAttributeKind::Weak }
     };
     for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
 	if ( identifier_matches_gnu_attribute_name(name, entries[i].name) )
@@ -3271,6 +3272,7 @@ void Program::_tokenizer_init()
     lazy_module_spelling.clear();
     _lazy_module_tokens.clear();
     pending_no_strict_aliasing = false;
+    pending_weak_binding = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();
     _pack_current = 0;

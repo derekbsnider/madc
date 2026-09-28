@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A weak function yields to a strong one
+
+`__attribute__((weak))` on a function now makes its definition weak, as in
+gcc and clang, wherever the attribute appears: before the declaration,
+after the decl-specifiers, or on an earlier prototype. With `--project`, a
+strong definition in another TU replaces the weak one, in either TU order,
+and every call and address reaches the strong copy, in the JIT and in an
+executable or object. Before, madc dropped the attribute, so each TU called
+its own copy and one function had two addresses.
+
 ### A C file-scope declaration without a type declares an int
 
 In C, `y = 4;` or `z = 5, w;` at file scope now declares `int` variables, as

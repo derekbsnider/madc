@@ -810,6 +810,7 @@ extern MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc);
 extern const char *_MIR_uniq_string (MIR_context_t ctx, const char *str);
 extern int _MIR_reserved_ref_name_p (MIR_context_t ctx, const char *name);
 extern int _MIR_reserved_name_p (MIR_context_t ctx, const char *name);
+extern MIR_item_t _MIR_weak_func_replacement (MIR_context_t ctx, MIR_item_t item);
 extern int64_t _MIR_addr_offset (MIR_context_t ctx, MIR_insn_code_t code);
 extern void _MIR_free_insn (MIR_context_t ctx, MIR_insn_t insn);
 extern MIR_reg_t _MIR_new_temp_reg (MIR_context_t ctx, MIR_type_t type,

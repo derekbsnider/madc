@@ -30230,8 +30230,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// STB_WEAK, so identical per-TU copies merge at a multi-.o link (first
 	// wins) instead of colliding as duplicate strong definitions. Calls to
 	// linkonce functions still inline (copies are ODR-identical); main is
-	// never vague.
-	if (fd->is_linkonce() && tf->var.name != "main")
+	// never vague. __attribute__((weak)) is the declared form of the same
+	// binding and wins: c2mir binds the item WEAK, and a strong definition
+	// from another TU replaces it (MIR's replaced_weak_func). Weak requires
+	// external linkage, as for linkonce.
+	if (fd->weak_binding && !fd->internal_linkage)
+		append(ret_type, node2(N_ATTR, id("weak", tf), list(), tf));
+	else if (fd->is_linkonce() && tf->var.name != "main")
 		append(ret_type, node2(N_ATTR, id("linkonce", tf), list(), tf));
 
 	// C internal linkage (`static` file-scope function): N_STATIC makes

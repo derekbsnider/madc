@@ -2268,6 +2268,23 @@ static MIR_item_t replaced_weak_func (MIR_context_t ctx, MIR_item_t item) {
   return weak;
 }
 
+/* madc fork: the strong definition that replaced WEAK func ITEM
+   (replaced_weak_func, at that definition's load), NULL when ITEM is not one.
+   The replacement took over ITEM's address, so the environment names it, not
+   ITEM, and ITEM's body is dead: MIR_link gives it no interface (it links
+   modules in reverse load order, and the weak body would re-point the shared
+   thunk at itself), and the object writer binds ITEM's references to the
+   replacement's symbol. */
+MIR_item_t _MIR_weak_func_replacement (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t env_item;
+
+  if (item->item_type != MIR_func_item || !item->export_p || item->binding != MIR_ITEM_BIND_WEAK)
+    return NULL;
+  env_item = item_tab_find (ctx, item->u.func->name, &environment_module);
+  if (env_item == NULL || env_item->ref_def == NULL || env_item->ref_def == item) return NULL;
+  return env_item->ref_def;
+}
+
 /* madc fork: vague linkage in the loader, shared by MIR_load_module and
    MIR_module_link_check.  A LINKONCE or WEAK definition whose name the
    environment already holds (an earlier module's definition, or an external) is
@@ -2503,7 +2520,7 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
            item = DLIST_NEXT (MIR_item_t, item))
         if (item->item_type == MIR_func_item) {
           finish_func_interpretation (item, ctx->alloc); /* in case if it was used for expr data */
-          set_interface (ctx, item);
+          if (_MIR_weak_func_replacement (ctx, item) == NULL) set_interface (ctx, item);
         }
     }
     set_interface (ctx, NULL); /* finish interface setting */
