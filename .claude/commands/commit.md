@@ -86,6 +86,14 @@ Run this.**
 9. **Report by tier.** Name each tier, what it ran, and its tally. "Tests
    passed" without a tier is the report that let this go wrong.
 
+10. **Close the batch.** When this commit ends a BATCH of fixes (you are about
+   to report the batch done, push, or move to another area), run the batch
+   checkpoint: `bash scripts/remote_build.sh sync build batch`, then record
+   its printed tally with `bash scripts/lane_ledger.sh record tests-jit
+   "<tally>"`. It is the whole tests/ suite, JIT only, about ten minutes,
+   never per fix. `check --commit` prints a BATCH reminder while
+   `tests-jit` is stale (`.claude/rules/testing-fulltest.md`).
+
 ## When NOT to use this
 
 - A merge wave / release boundary: that is Tier 3 — `/test`, the platform

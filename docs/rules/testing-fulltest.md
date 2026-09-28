@@ -149,3 +149,32 @@ stay free, because staleness is measured over `CODE_PATHS`.
 on the working-tree content BEFORE committing, so the gate is satisfied by the
 time the push happens, and a red lane is found while the change is still one
 change.
+
+## Why a BATCH checkpoint runs the tests/ suite (owner, 2026-09-28)
+
+The fast tier is fast because it leaves out the one suite madc's own features
+are tested in: `tests/*.mad`. Its lanes are external conformance corpora
+(c-testsuite, c-torture, c2mir, index-c, the g++.dg subset) plus the GUI
+directory. Between seams, nothing ran `tests/` except each fix's own Tier 1
+selection, and Tier 1 tests only what the author thought to test.
+
+The 2026-09-28 BUGS.md burn-down made the cost visible. About fifty fix
+commits, every one Tier 1 and Tier 2 green, and the first full JIT run of
+`tests/` afterwards found four regressions: a defaulted `vector(vector &&)`
+refused and then moved twice (returned vectors came back empty), a returned
+`var` literal constructed through `var(const char *)`, and a libc++
+`string_view` conversion that c2mir refused. None were in any fix's
+neighbourhood, and all four were in the suite. The run takes under ten
+minutes (557 s on the desktop container, 2026-09-28).
+
+Per fix, ten minutes would turn the burn-down back into the oscillation the
+three tiers exist to stop, which is why the owner drew it at the BATCH: after a
+run of fixes, before the batch is reported done, pushed, or left for another
+area. JIT only: the exe and obj passes double and triple the cost and belong to
+the seam, where the battery runs all three.
+
+The ledger row (`tests-jit`, promote=`batch`) never blocks. A per-commit block
+would make it per fix, and the develop push already requires the battery,
+whose fulltest runs the same suite. What it does is speak: `lane_ledger.sh
+check` prints a BATCH reminder while the row is stale, and `/commit` runs that
+check, so the reminder is in front of whoever is committing.

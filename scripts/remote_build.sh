@@ -21,6 +21,9 @@
 #             MADC_FAST_NO_RECORD=1 — the ledger that gates a push is the
 #             NAS checkout's, so record the printed tallies HERE, never on
 #             the rsync copy where nothing would read them
+#   batch     the BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
+#             JIT only, once per batch of fixes; MADC_BATCH_NO_RECORD=1, so
+#             record its printed tests-jit tally HERE, as for fastlanes
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -273,6 +276,12 @@ for stage in $stages; do
 		# one command from the NAS. No-record on purpose: see the usage
 		# note above — a row written on the rsync copy gates nothing.
 		run_remote "fastlanes" "cd $REMOTE_MADC; MADC_FAST_NO_RECORD=1 bash scripts/fast_lanes.sh"
+		;;
+	batch)
+		# The BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
+		# JIT only, once per batch of fixes. No-record for the fastlanes
+		# reason; record tests-jit on the NAS from its summary line.
+		run_remote "batch" "cd $REMOTE_MADC; MADC_BATCH_NO_RECORD=1 bash scripts/batch_lane.sh"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.

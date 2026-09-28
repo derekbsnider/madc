@@ -13,6 +13,12 @@ and produces exactly the oscillation this rule exists to stop.
           c2mir-tests, gui, index-c, gxx-c++11). It is a RATCHET against
           recorded baselines, it records each green lane in the ledger, and
           `scripts/lane_ledger.sh check --commit` reports its freshness.
+          BATCH CHECKPOINT, per BATCH of fixes, never per fix (owner
+          2026-09-28) — ~10 minutes: `bash scripts/batch_lane.sh` (the whole
+          tests/ suite, JIT only; remote: `remote_build.sh sync build batch`,
+          then record its tests-jit tally). Run it before reporting a batch
+          done, before a push, and before moving to another area. Ledger row
+          `tests-jit` (promote=batch): never blocks, `check` reminds while stale.
   TIER 3  THE SEAM BATTERY, per MERGE WAVE — hours. `make -C src fulltest`
           plus the platform lanes, at the arc's release boundary only.
 

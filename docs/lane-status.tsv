@@ -13,3 +13,4 @@ c2mir-tests	commit	573d47a2c741	2026-09-28	c2mir-tests: 309 passed, 54 failed (0
 gui	commit	573d47a2c741	2026-09-28	gui: 20 passed, 0 failed, 0 timed out, 0 skipped | EXE: 20 passed, 0 failed (of 20 JIT-passing tests) | OBJ: 20 passed, 0 failed (of 20 JIT-passing tests) — fast tier, tmp/logs/poly-fastlanes.log
 gxx-c++11	no	573d47a2c741	2026-09-28	gxx-c++11: 1483 passed, 462 compile-failed, 0 runtime-failed, 1 timed out, 2722 skipped gxx-c++11: 463 failing, 0 outside baseline, 0 baseline tests now passing — fast tier, tmp/logs/poly-fastlanes.log
 index-c	yes	573d47a2c741	2026-09-28	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 85.3227s, 50, 50, 0 — fast tier, tmp/logs/poly-fastlanes.log
+tests-jit	batch	d971c4c0b396	2026-09-28	1758 passed, 0 failed, 0 timed out, 9 skipped — batch tier, the whole tests/ suite JIT (run by hand over the 2026-09-28 fix series, tmp/logs/series-suite.log)
