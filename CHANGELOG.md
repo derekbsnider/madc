@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Function keys, and loading a program into a session (§37 item 10, slices 1–2)
+
+Key bindings and events now know F1–F12 (spelled `f1`–`f12` in `.keys`
+profiles), from a terminal (xterm and the Linux console) and from the window.
+In the window, a bound function key no longer triggers the browser's own
+action (F5 does not reload the page).
+
+A session can now load a program's text, such as an editor buffer with unsaved
+edits, under the file's name, and then run its `main`. Its diagnostics cite
+that name, and its functions stay callable from the entries that follow. From
+the dialect: `madc::session_load(h, path, text)` and `madc::session_run(h,
+argv)`. This is the groundwork for madcide's F5 (run the buffer into the REPL
+tab), which comes next.
+
 ### A crash in a REPL entry no longer ends madc (§37 item 9, slice 4)
 
 `madc` and `madc -i` now run the session in a backend process on your
