@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### The implicit copy and move constructors run each base's own
+
+A class with no copy or move constructor of its own now copies or moves
+each base with that base's constructor, as C++ requires. Moving such a
+class moves its base: `D b(std::move(a));` with `D(D &&) = default;` over a
+base that has a move constructor now leaves `a` empty. Before, madc refused
+it, or the move left `a` still owning its resource. A copy now runs a
+member's copy constructor, never its move constructor, even when the move
+constructor is declared first.
+
 ### A base's constructor keeps the members it built
 
 A class whose base has a user constructor no longer constructs that base's

@@ -1999,8 +1999,11 @@ public:
 	// The node-level implicit copy: dst_lvalue from the object at
 	// src_addr (`struct cdd *`). ONE owner for try_implicit_copy_construct
 	// and the deferred-construction relower's same-class pack element.
+	// `move`: the source is an rvalue, so each subobject's MOVE
+	// constructor runs where it declares one.
 	node_t implicit_copy_construct_from_addr(node_t dst_lvalue, node_t src_addr,
-			       DataDefCLASS *cdd, TokenBase *origin);
+			       DataDefCLASS *cdd, TokenBase *origin,
+			       bool move = false);
 	// Memberwise reconstruction walk for the implicit copy ctor's
 	// NON-trivial arm (task #70): after the whole-object bit-copy,
 	// re-invoke the USER copy ctor of every (possibly nested) class
@@ -2010,7 +2013,16 @@ public:
 	void implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 			       const char *lname, const char *rname,
 			       std::vector<std::string> &path,
-			       std::vector<node_t> &out, TokenBase *origin);
+			       std::vector<node_t> &out, TokenBase *origin,
+			       bool move);
+	// Its base half: each base of `cls` (in object `obj`, at `off0`) with
+	// a copy/move constructor runs it on its subobject. True when one ran.
+	bool implicit_copy_base_reconstructs(DataDefCLASS *obj,
+			       DataDefCLASS *cls, size_t off0,
+			       const std::function<node_t(const char *)> &object_addr,
+			       const char *lname, const char *rname,
+			       std::vector<node_t> &out, TokenBase *origin,
+			       bool move);
 	// Recursive trivial-copyability ([class.prop] subset): no own user
 	// dtor, no user copy ctor, no vtable, members/bases recursively so.
 	bool class_trivially_copyable(DataDefCLASS *cdd);

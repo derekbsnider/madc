@@ -13317,22 +13317,53 @@ static FuncDef *class_default_ctor_def(DataDefCLASS *cdd)
 	return NULL;
 }
 
+// `fd` is one of `cdd`'s copy or move constructors ([class.copy.ctor]/1): its
+// first parameter binds an object of the class itself, and every other one
+// has a default argument. `vector(vector &&, const allocator_type &)` takes
+// the allocator too, so it is neither — called with the one source object,
+// it was "too few arguments".
+static bool is_copy_or_move_ctor(DataDefCLASS *cdd, FuncDef *fd)
+{
+	if (!fd || fd->parameters.size() < 2 || fd->required_param_count() > 2)
+		return false;
+	bool refp = fd->is_ref_param(1);
+	DataDef *p1 = fd->parameters[1];
+	DataDef *bind = p1;
+	if (refp && p1 && p1->is_pointer()) {
+		DataDefPTR *pp = pointer_dd_of(p1);
+		if (pp && pp->base_type) bind = pp->base_type;
+	}
+	return same_object_class(cdd, bind);
+}
+
 static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd)
 {
 	if (!cdd) return NULL;
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
-		if (!fd || fd->parameters.size() < 2) continue;
-		bool refp = fd->is_ref_param(1);
-		DataDef *p1 = fd->parameters[1];
-		DataDef *bind = p1;
-		if (refp && p1 && p1->is_pointer()) {
-			DataDefPTR *pp = pointer_dd_of(p1);
-			if (pp && pp->base_type) bind = pp->base_type;
-		}
-		if (same_object_class(cdd, bind)) return fd;
+		if (is_copy_or_move_ctor(cdd, fd)) return fd;
 	}
 	return NULL;
+}
+
+static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi);	// defined with the ctor selection below
+
+// The constructor that copies (`move` false) or moves an object of `cdd` from
+// another of its class: between T(const T&) and T(T&&), an xvalue binds the
+// rvalue reference and an lvalue the other ([over.ics.rank]/3.2.3). A class
+// declaring only one kind uses it for both (a move-only class's "copy" is its
+// move). NULL when the class declares neither: its copy is implicit.
+static FuncDef *class_copy_ctor_for(DataDefCLASS *cdd, bool move)
+{
+	if (!cdd) return NULL;
+	FuncDef *any = NULL;
+	for (Variable *cv : cdd->ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!is_copy_or_move_ctor(cdd, fd)) continue;
+		if (ctor_param_is_concrete_rvalue_ref(fd, 1) == move) return fd;
+		if (!any) any = fd;
+	}
+	return any;
 }
 
 // Select a zero-argument conversion function whose semantic return class is
@@ -13615,13 +13646,17 @@ static bool member_owned_by_done_base(const DataDefCLASS *cdd, size_t mi,
 }
 
 // Which classes handle their own members: a class with a user constructor
-// constructs (and initializes) them in its prologue. A class without one
-// leaves its members to the class it is a base of, into which they were
-// flattened.
+// constructs (and initializes) them in its prologue; a class with a user copy
+// or move constructor copies them. A class without one leaves its members to
+// the class it is a base of, into which they were flattened.
 typedef bool (*OwnsMembersTest)(const DataDefCLASS *);
 static bool constructs_own_members(const DataDefCLASS *c)
 {
 	return c->has_user_ctor;
+}
+static bool copies_own_members(const DataDefCLASS *c)
+{
+	return class_copy_ctor_def(const_cast<DataDefCLASS *>(c)) != NULL;
 }
 
 // Walk member `mi` of `cdd` down its flattening (member_origin; member_vbase
@@ -13703,6 +13738,17 @@ static bool member_constructed_by_base(const DataDefCLASS *cdd, size_t mi,
 	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j,
 						       constructs_own_members);
 	return c && c != cdd && constructs_own_members(c);
+}
+
+// Member `mi` of `cdd` is copied by a base's copy or move constructor, which
+// the implicit copy runs on the base subobject (implicit_copy_member_
+// reconstructs): copying it again would copy it twice.
+static bool member_copied_by_base(const DataDefCLASS *cdd, size_t mi)
+{
+	size_t j = 0;
+	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j,
+						       copies_own_members);
+	return c && c != cdd && copies_own_members(c);
 }
 
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
@@ -16588,13 +16634,12 @@ bool CirBuilder::class_trivially_copyable(DataDefCLASS *cdd)
 // `Box<T>` with a user ctor + dtor — `Box(T x)` member-init `v(x)` copies a
 // Box<int>) gets the memberwise implicit copy: bind both objects into
 // pointer temps, whole-object bit-copy (scalar bytes at every depth), then
-// re-invoke the user copy ctor of every nested class member that declares
-// one. Deliberate boundaries, kept LOUD (return NULL -> no_ctor_match_error)
-// rather than silently wrong: polymorphic classes (a sliced src's bit-copied
-// vptr would carry the derived vtable — re-stamping is not modeled here) and
-// non-trivially-copyable BASES (base subobject field paths not modeled;
-// matches the retbuf copy fallback's members-only scope). Returns NULL when
-// the fallback does not apply.
+// re-invoke the user copy (or, from an rvalue, move) ctor of every base and
+// nested class member that declares one. A deliberate boundary, kept LOUD
+// (return NULL -> no_ctor_match_error) rather than silently wrong:
+// polymorphic classes (a sliced src's bit-copied vptr would carry the derived
+// vtable — re-stamping is not modeled here). Returns NULL when the fallback
+// does not apply.
 node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 					       DataDefCLASS *cdd,
 					       const std::vector<TokenBase *> &ctor_args,
@@ -16675,22 +16720,25 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
 		return node2(N_EXPR, list(), asgn, origin);
 	}
+	// An rvalue source selects the implicit MOVE constructor: each
+	// subobject's move constructor where it declares one.
 	return implicit_copy_construct_from_addr(dst_lvalue,
-		object_arg_addr(ctor_args[0], cdd), cdd, origin);
+		object_arg_addr(ctor_args[0], cdd), cdd, origin,
+		ctor_arg_value_category(ctor_args[0]) == cacRvalue);
 }
 
 // The implicit copy constructor at the NODE level — dst_lvalue (an object
 // lvalue of cdd) from the object at src_addr (a `struct cdd *` value): the
 // trivially-copyable struct assignment, else the whole-object bit-copy plus
-// the user copy ctors of the nested members (implicit_copy_member_
+// the user copy ctors of the bases and nested members (implicit_copy_member_
 // reconstructs). The same LOUD boundaries as the token-level entry (a user
-// copy ctor, a vptr, a non-trivially-copyable base -> NULL). ONE owner for
+// copy ctor, a vptr -> NULL). ONE owner for
 // try_implicit_copy_construct and the deferred-construction relower
 // (`::new(p) _Up(std::forward<_Args>(args)...)` with _Args = _Up).
 node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
 						     node_t src_addr,
 						     DataDefCLASS *cdd,
-						     TokenBase *origin)
+						     TokenBase *origin, bool move)
 {
 	if (!dst_lvalue || !src_addr || !cdd) return NULL;
 	if (class_trivially_copyable(cdd)) {
@@ -16702,10 +16750,6 @@ node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
 	}
 	if (class_copy_ctor_def(cdd)) return NULL;
 	if (cdd->has_any_vptr()) return NULL;
-	for (const BaseSpec &bs : cdd->bases)
-		if (bs.base && !class_trivially_copyable(bs.base)) return NULL;
-	if (cdd->base_class && !class_trivially_copyable(cdd->base_class))
-		return NULL;
 	// Bind dst/src ONCE into scoped pointer temps: c2mir nodes hold a single
 	// parent link, and re-translating an rvalue src (a cast/call temp) per
 	// member would materialize divergent copies.
@@ -16737,7 +16781,7 @@ node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
 		std::vector<node_t> fixes;
 		std::vector<std::string> path;
 		implicit_copy_member_reconstructs(cdd, lt, rt, path, fixes,
-						  origin);
+						  origin, move);
 		for (node_t f : fixes)
 			append(blk, f);
 	}
@@ -16746,68 +16790,120 @@ node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
 
 // See cir_builder.h: post-bit-copy walk re-invoking nested USER copy ctors
 // (`lname->path` from `rname->path`); copy-ctor-less non-trivial members
-// recurse. Member subobjects cannot be sliced, so a vptr'd member's
-// bit-copied vptr is already the correct vtable — recursion only skips
-// union-layout members (overlap). Mirrors the retbuf copy fallback's call
-// shape (extern decl + void* casts for emit_symbol ctors).
+// recurse. Bases first, then members ([class.copy.ctor]/14): a base with its
+// own copy or move constructor copies its subobject, and the members
+// flattened in from it are then its own (member_copied_by_base). Member
+// subobjects cannot be sliced, so a vptr'd member's bit-copied vptr is
+// already the correct vtable — until a base's constructor stamps its own
+// over it, so the object's vptrs are copied again after one runs. Recursion
+// skips union-layout members (overlap). Mirrors the retbuf copy fallback's
+// call shape (extern decl + void* casts for emit_symbol ctors).
 void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 						   const char *lname,
 						   const char *rname,
 						   std::vector<std::string> &path,
 						   std::vector<node_t> &out,
-						   TokenBase *origin)
+						   TokenBase *origin, bool move)
 {
-	for (const auto &m : cdd->members) {
+	// `base->path...`: the object being copied, a member at any depth.
+	auto field_chain = [&](const char *base) -> node_t {
+		node_t lv = node2(N_DEREF_FIELD, id(base, origin),
+				  id(path[0].c_str(), origin));
+		for (size_t i = 1; i < path.size(); i++)
+			lv = node2(N_FIELD, lv, id(path[i].c_str(), origin));
+		return lv;
+	};
+	auto object_addr = [&](const char *base) -> node_t {
+		return path.empty() ? id(base, origin)
+				    : node1(N_ADDR, field_chain(base), origin);
+	};
+	if (implicit_copy_base_reconstructs(cdd, cdd, 0, object_addr, lname,
+					    rname, out, origin, move)
+	    && cdd->has_any_vptr()) {
+		for (size_t g = 0; g < cdd->vtable_groups.size(); g++) {
+			size_t goff = cdd->vtable_groups[g].this_offset;
+			std::string fld = goff == 0
+				? "__vptr" : ("__vptr_" + std::to_string(goff));
+			node_t lhs = node2(N_DEREF_FIELD, object_addr(lname),
+					   id(fld.c_str(), origin));
+			node_t rhs = node2(N_DEREF_FIELD, object_addr(rname),
+					   id(fld.c_str(), origin));
+			out.push_back(node2(N_EXPR, list(),
+				node2(N_ASSIGN, lhs, rhs, origin), origin));
+		}
+	}
+	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
+		const auto &m = cdd->members[mi];
+		if (member_copied_by_base(cdd, mi)) continue;
 		DataDefCLASS *mc = as_class_instance(m.second);
 		if (!mc) continue;
 		path.push_back(m.first);
-		FuncDef *copy_ctor = class_copy_ctor_def(mc);
+		FuncDef *copy_ctor = class_copy_ctor_for(mc, move);
 		if (copy_ctor) {
-			std::string sym = ctor_call_symbol(mc, copy_ctor);
-			bool external = !copy_ctor->emit_symbol.empty();
-			if (external)
-				need_output_extern(sym.c_str(), false,
-						   { { {N_VOID}, true }, { {N_VOID}, true } });
-			else
-				referenced_funcs.insert(sym);
-			auto field_chain = [&](const char *base) -> node_t {
-				node_t lv = node2(N_DEREF_FIELD,
-						  id(base, origin),
-						  id(path[0].c_str(), origin));
-				for (size_t i = 1; i < path.size(); i++)
-					lv = node2(N_FIELD, lv,
-						   id(path[i].c_str(), origin));
-				return lv;
+			// The member is a complete object of mc: its hidden
+			// __madc_vb args are offsets from its own address.
+			std::function<node_t()> vb_mint = [&]() -> node_t {
+				return node1(N_ADDR, field_chain(lname), origin);
 			};
-			node_t dst = node1(N_ADDR, field_chain(lname), origin);
-			node_t srcp = node1(N_ADDR, field_chain(rname), origin);
-			if (external) {
-				dst = node2(N_CAST, void_ptr_type(), dst, origin);
-				srcp = node2(N_CAST, void_ptr_type(), srcp, origin);
-			}
-			node_t a = list();
-			append(a, dst);
-			append(a, srcp);
-			// Hidden __madc_vb args — the member is a complete
-			// object of mc (no-op for a vbase-less member class).
-			if (!external) {
-				std::function<node_t()> vb_mint = [&]() -> node_t {
-					return node1(N_ADDR, field_chain(lname),
-						     origin);
-				};
-				append_ctor_vbase_static_args(a, mc, vb_mint,
-							      mc, origin);
-			}
-			node_t call = node2(N_CALL, id(sym.c_str(), origin), a,
-					    origin);
-			CIR_NODE(call)->synth_from_origin = true;
-			out.push_back(node2(N_EXPR, list(), call, origin));
+			std::vector<node_t> args(1,
+				node1(N_ADDR, field_chain(rname), origin));
+			if (node_t stmt = ctor_call_assemble(
+				    node1(N_ADDR, field_chain(lname), origin), mc,
+				    copy_ctor, args, origin, false, &vb_mint, mc))
+				out.push_back(stmt);
 		} else if (!class_trivially_copyable(mc) && !mc->union_layout) {
 			implicit_copy_member_reconstructs(mc, lname, rname,
-							  path, out, origin);
+							  path, out, origin, move);
 		}
 		path.pop_back();
 	}
+}
+
+// The base half of that walk: every non-virtual base of `cls` (a base of the
+// object `obj`, at `off0` in it) that declares a copy or move constructor
+// runs it on its subobject, from the source's; a base without one recurses,
+// its members being the object's own. Virtual bases never reach here (a
+// vptr'd class takes no implicit copy at the top level). Returns whether a
+// constructor ran.
+bool CirBuilder::implicit_copy_base_reconstructs(DataDefCLASS *obj,
+		DataDefCLASS *cls, size_t off0,
+		const std::function<node_t(const char *)> &object_addr,
+		const char *lname, const char *rname,
+		std::vector<node_t> &out, TokenBase *origin, bool move)
+{
+	bool ran = false;
+	for (const BaseSpec &bs : cls->bases) {
+		DataDefCLASS *b = bs.base;
+		if (!b || bs.is_virtual) continue;
+		size_t off = off0 + cls->base_offset_of(b);
+		FuncDef *copy_ctor = class_copy_ctor_for(b, move);
+		if (!copy_ctor) {
+			if (!class_trivially_copyable(b))
+				ran |= implicit_copy_base_reconstructs(obj, b, off,
+					object_addr, lname, rname, out, origin,
+					move);
+			continue;
+		}
+		auto subobject = [&](const char *base) -> node_t {
+			node_t addr = object_addr(base);
+			if (off != 0)
+				addr = node2(N_ADD,
+					node2(N_CAST, char_ptr_type(), addr, origin),
+					integer((int64_t)off, origin), origin);
+			return node2(N_CAST, class_ptr_type(b), addr, origin);
+		};
+		std::function<node_t()> vb_mint = [&]() -> node_t {
+			return object_addr(lname);
+		};
+		std::vector<node_t> args(1, subobject(rname));
+		if (node_t stmt = ctor_call_assemble(subobject(lname), b, copy_ctor,
+						     args, origin, false, &vb_mint,
+						     obj)) {
+			out.push_back(stmt);
+			ran = true;
+		}
+	}
+	return ran;
 }
 
 // Finish an object whose constructor did not: stamp its vptr(s), default-
