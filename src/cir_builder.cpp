@@ -18257,11 +18257,19 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		// shapes (aggregate init `SV s = {"hi"}` — served by the
 		// aggregate-init lane) fall through to the default construction
 		// below, as before.
-		if (!ctor_args.empty())
+		if (!ctor_args.empty()) {
 			if (node_t cc = try_implicit_copy_construct(
 					id(vname.c_str(), origin), cdd, ctor_args,
 					origin))
 				return cc;
+			// A COPY the implicit copy refused is an error, as in the
+			// user-ctor tail. Falling through default-constructed the
+			// object and dropped its source: `P p = q;` with a
+			// polymorphic P left p.x garbage, exit 0.
+			if (ctor_args.size() == 1
+			    && initializer_copies_class(ctor_args[0], cdd))
+				return no_ctor_match_error(cdd, ctor_args, origin);
+		}
 		// NO aggregate leg here: the DECLARATION lanes call this with a
 		// PARTIAL argument view (a copy/conversion probe) and own the
 		// full braced list themselves — C initializer emission for

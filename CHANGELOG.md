@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A copy madc cannot lower is an error, not a default construction
+
+For a class with no user constructor, a copy the implicit copy constructor
+could not lower was silently replaced by default construction: the source
+was dropped and the program ran with garbage members. It now reports
+"no matching constructor", as it already did for a class with user
+constructors.
+
 ### Copying a derived object into its base copies non-trivial members
 
 `B b = d;`, where `d` derives from `B` and `B` holds a `std::string`, now
