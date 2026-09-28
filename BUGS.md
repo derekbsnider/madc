@@ -778,6 +778,147 @@ int main() { return __builtin_types_compatible_p(enum E, int); }
 A divergent family is a live bug. Consolidating one leaves a gate in
 `fulltest`.
 
+B58–B61 are one family, filed per delimiter at the owner's request
+(2026-09-28): hand-rolled balanced-delimiter counters that
+`delimiter-tracking.md` forbids and `check-one-delim-tracker.sh` reports
+GREEN over. The gate's two markers are a counter NAME (`*angle*`,
+`*paren*`, `*square*`, `*brace*`) and a raw `'('` character scan, so a
+token scan (`id() == TokenID::tkLT` … `++depth`) with any other counter
+name is invisible to it. Found with a name-independent sweep: an equality
+test on an open delimiter that increments a counter, then a close that
+decrements the same counter. A function that counts several delimiters is
+listed under each. Line numbers are at `3c2c531a7`, in `src/parser.cpp`
+unless stated. The owners already exist: `DelimDepth` with
+`delim_scan_step` (index scans) and `Program::delimStepStream` (stream
+scans), `peek_after_balanced_template_id_from`,
+`capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
+
+### B58. `<`: twelve hand-rolled angle counters
+
+- None of them asks the name question ([temp.names]/3,
+  `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
+- Only `expand_integer_pack_template_args` keeps a separate paren level.
+  `self_template_id_keep_distinct` and `evaluate_requires_expression_constant`
+  fold `(`, `[` and `<` into one counter. In the rest a `>` inside `( )`
+  closes the list.
+- `>>` differs per copy: split into two closes, `-= 2` below zero, or not
+  handled at all. Only `template_id_suffix_end` skips `operator<`.
+- Sites: `template_id_suffix_end` 6225, `self_template_id_keep_distinct`
+  6286, `expand_integer_pack_template_args` 6542,
+  `evaluate_requires_expression_constant` 38159,
+  `template_list_close_index` 49356, `skipped_template_outofline_member`
+  58158 (walks backwards; `DelimDepth` has no backward form),
+  `skipped_template_outofline_nested_class` 58690,
+  `template_class_head_is_qualified` 58732,
+  `instantiate_fn_template_binding` 63772,
+  `instantiate_member_ctor_template_candidate` 66344 (the
+  `member_ctor_param_count` lambda, KG DupFamily
+  `captured_param_list_split`), `resolve_decltype_call_return` 67525,
+  `datatype_statement_starts_qualified_expr` 76338.
+- `member_ctor_param_count` counts only angles, so a `void (*)(int, int)`
+  parameter ends its count at the inner `)`, and two member-template
+  constructors that differ by arity are told apart wrongly:
+
+```cpp
+#include <cstdio>
+static void cb(int a, int b) { printf("cb %d %d\n", a, b); }
+struct S {
+	int v;
+	template<class T> S(void (*f)(int, int), T t) : v(100 + (int)t) { f(1, 2); }
+	template<class T> S(T t) : v((int)t) {}
+};
+struct R {
+	int v;
+	template<class T> R(T t) : v((int)t) {}
+	template<class T> R(void (*f)(int, int), T t) : v(200 + (int)t) { f(3, 4); }
+};
+int main()
+{
+	S a(cb, 7);
+	S b(5);
+	R c(cb, 8);
+	R d(6);
+	printf("mct: %d %d %d %d\n", a.v, b.v, c.v, d.v);
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18 print `cb 1 2`, `cb 3 4`, `mct: 107 5 208 6`.
+  madc refuses it: `tsubst bailed on the covered instantiation 'S__S__o3'
+  of S::S<T> [why: tsubst body calls un-emittable symbol]` and `no
+  matching constructor for call to 'R(<unnamed>, int)'`. The fix's
+  negative control confirms the layer.
+- `A<(3 > 2)>` as a type, in a nested-name-specifier and as a second
+  argument passes (`gt: 1 1 2`, as g++ and clang++ print): the main parse
+  path is on `DelimDepth`, and these copies sit on side paths.
+- Fix order: `template_id_suffix_end` and `template_list_close_index`
+  first, since other code asks them for a template-id's extent.
+
+### B59. `(`: forty-one hand-rolled paren counters
+
+- Most skip to the matching `)`. `DelimDepth` answers that the same way
+  for parens, so few of these diverge today. They are still copies, and a
+  paren skip that also has to step over a `{`, `[` or template-id does not
+  see it.
+- Two are generic helpers that others call, and they are hand-rolled
+  themselves: `paren_close_index` 49551 and
+  `consume_balanced_parenthesized_suffix` 69984. Rebuild those on the owner
+  first, then move the loops onto them. `tsubst_matching_close` 64982
+  takes the open and close ids as parameters, so the literal-token marker
+  misses it. All four of its callers pass `(` `)`.
+- Sites: `consume_gnu_attributes` 1852; `skip_gnu_asm_statement` 1955,
+  1963, 2014, 2052, 2058, 2076, 2078, 2084, 2101 (nine loops in one
+  function); `parse_gnu_vector_size_attribute` 2182;
+  `consume_typedef_gnu_attributes` 2222;
+  `expand_integer_pack_template_args` 6538, 6567;
+  `instantiate_template_use` 11351, 11459;
+  `consume_deferred_static_assert_statement` 17878;
+  `consume_class_static_assert_declaration` 17962;
+  `fold_if_constexpr_condition` 19304; `peek_param_list_spelling` 21664;
+  `next_parenthesized_type_is_compound_literal` 32719;
+  `evaluate_requires_expression_constant` 38143;
+  `struct_body_needs_class_parser_from` 45506; `TokenSTRUCT::parse` 46285,
+  46840, 47343; `consume_anonymous_aggregate_open` 47693;
+  `skipped_friend_operator_definition` 49093;
+  `skipped_friend_defaulted_comparison` 49128; `paren_close_index` 49551;
+  `TokenCLASS::parse` 51068; `skip_constraint_expression` 57285 (the
+  `skip_balanced` lambda, also used for `{`);
+  `skipped_template_body_is_inline_identity_refcast` 60027;
+  `tsubst_matching_close` 64982; `resolve_fn_template_return_by_key`
+  67062; `resolve_decltype_call_return` 67489;
+  `try_parse_implicit_int_function_definition` 69935;
+  `consume_balanced_parenthesized_suffix` 69984; `parseFunction` 71405,
+  71461; `paren_group_is_function_def` 73318.
+- No failing reducer yet. Each migration is behaviour-preserving for
+  parens, and the suite is its oracle.
+
+### B60. `[`: eight hand-rolled square-bracket counters
+
+- Sites: `instantiate_template_use` 11460; `try_parse_vla_row_sizeof`
+  17587; `bracket_dim_uses_runtime_value` 19680;
+  `bracket_dim_has_constant_fold_query` 19718;
+  `evaluate_requires_expression_constant` 38158, 38325;
+  `struct_body_needs_class_parser_from` 45480; `parseFunction` 71407.
+- The two `bracket_dim_*` scanners read an array bound. A bound that
+  subscripts (`int a[b[1]]`) nests `[` inside `[`. Measure them against
+  g++ and clang++ when they move.
+- No failing reducer yet.
+
+### B61. `{`: twelve hand-rolled brace counters
+
+- Sites: `evaluate_requires_expression_constant` 38326, 38354;
+  `parseExpr_operatorArm` 43000; `collect_compound_body_tokens` 48375;
+  `TokenCLASS::parse` 50599; `skip_constraint_expression` 57285;
+  `skip_template_nonclass_declaration` 57379;
+  `materialize_pattern_local_class` 65736; `TokenTEMPLATE::parse` 69128;
+  `parseFunction` 71409; `parse_declaration_body` 74599;
+  `src/madc.cpp` 133 `find_closing_brace`.
+- `find_closing_brace` scans raw source text, with string, character and
+  comment states. Its owner is `SpellingDelimDepth`
+  (`include/spelling_delim.h`), or a stated exclusion like the gate's
+  `validate_expression_source`, decided when it moves.
+- No failing reducer yet.
+
 - `type_definition_declarator_tail`: see B3.
 - `gnu_attribute_spelling_readers`: `TokenSTRUCT`'s `consume_attribute`
   lambda, `consume_nested_attributes`, `consume_anonymous_aggregate_open`
