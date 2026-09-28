@@ -13608,6 +13608,55 @@ static bool member_owned_by_done_base(DataDefCLASS *cdd, size_t mi,
 	return origin >= 0 && done_bases->count(origin) != 0;
 }
 
+// The default member initializer of member `mi` of `cdd`, when constructing
+// `cdd` is what applies it. An own member's lives in cdd's map. A member
+// flattened in from a base (member_origin; member_vbase for a virtual base)
+// keeps its initializer in the class that DECLARED it, so walk down to that
+// class: its members were flattened in order, as one run per source. A class
+// with a user constructor on the way applies its own initializers in its
+// prologue, so the member is not ours: NULL.
+static TokenBase *member_default_init_of(const DataDefCLASS *cdd, size_t mi)
+{
+	const DataDefCLASS *c = cdd;
+	while (c && mi < c->members.size()) {
+		std::map<size_t, DataDefCLASS *>::const_iterator vb =
+			c->member_vbase.find(mi);
+		bool virt = vb != c->member_vbase.end();
+		int origin = mi < c->member_origin.size() ? c->member_origin[mi] : -1;
+		const DataDefCLASS *src = virt ? vb->second
+			: (origin >= 0 && (size_t)origin < c->bases.size())
+				? c->bases[origin].base : NULL;
+		if (!src) {
+			std::map<std::string, TokenBase *>::const_iterator di =
+				c->member_default_inits.find(c->members[mi].first);
+			return di == c->member_default_inits.end() ? NULL : di->second;
+		}
+		if (src->has_user_ctor) return NULL;
+		// `mi` is the k-th member `c` took from `src`, and `src`'s k-th
+		// member outside its own virtual bases is the same member.
+		size_t k = 0;
+		for (size_t x = 0; x < mi; x++) {
+			std::map<size_t, DataDefCLASS *>::const_iterator xv =
+				c->member_vbase.find(x);
+			bool same = virt
+				? xv != c->member_vbase.end() && xv->second == src
+				: xv == c->member_vbase.end()
+				  && x < c->member_origin.size()
+				  && c->member_origin[x] == origin;
+			if (same) k++;
+		}
+		size_t j = 0;
+		for (; j < src->members.size(); j++) {
+			if (src->member_vbase.count(j)) continue;
+			if (k == 0) break;
+			k--;
+		}
+		c = src;
+		mi = j;
+	}
+	return NULL;
+}
+
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 					std::vector<node_t> &out, TokenBase *origin,
 					const std::set<std::string> *skip,
@@ -13965,34 +14014,61 @@ bool CirBuilder::aggregate_member_init_stmts(std::vector<std::string> &path,
 	return any;
 }
 
+TokenBase *CirBuilder::applied_member_default_init(DataDefCLASS *cdd, size_t mi,
+						    const std::set<int> *done_bases)
+{
+	if (!cdd || mi >= cdd->members.size()) return NULL;
+	const auto &m = cdd->members[mi];
+	// Object members value-init through the existing member-construction
+	// path; an NSDMI `= T()` on such a member IS that same value-init, so
+	// it carries no translatable scalar initializer here. A madc `array`
+	// member is such an object too — a scalar assign into its buffer
+	// would corrupt the placement-new'd madc::value.
+	if (as_class_instance(m.second) || is_array_object(m.second))
+		return NULL;
+	if (member_owned_by_done_base(cdd, mi, done_bases)) return NULL;
+	return member_default_init_of(cdd, mi);
+}
+
+bool CirBuilder::class_applies_member_default_inits(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	for (size_t mi = 0; mi < cdd->members.size(); mi++)
+		if (applied_member_default_init(cdd, mi, NULL))
+			return true;
+	return false;
+}
+
 bool CirBuilder::emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
 					   bool arrow, std::vector<node_t> &out,
 					   TokenBase *origin,
-					   const std::set<std::string> *skip)
+					   const std::set<std::string> *skip,
+					   const std::set<int> *done_bases)
 {
-	if (!cdd || cdd->member_default_inits.empty()) return false;
+	if (!cdd) return false;
 	bool any = false;
+	// Only what an initializer's own translation queues goes ahead of its
+	// assignment. A default construction also runs INSIDE an expression (a
+	// temporary `A()`), where the caller's queue holds the temporary's own
+	// declaration — draining that into `out` moved it out of the
+	// consumer's scope ("undeclared identifier __madc_objtmp_N").
+	std::vector<node_t> caller_pending;
+	caller_pending.swap(m_pending_stmts);
 	// Declaration order ([class.base.init]p11): iterate the members, not the map.
-	for (const auto &m : cdd->members) {
-		// Object members value-init through the existing member-construction
-		// path; an NSDMI `= T()` on such a member IS that same value-init, so
-		// it carries no translatable scalar initializer here. A madc `array`
-		// member is such an object too — a scalar assign into its buffer
-		// would corrupt the placement-new'd madc::value.
-		if (as_class_instance(m.second) || is_array_object(m.second))
-			continue;
-		std::map<std::string, TokenBase *>::const_iterator di =
-			cdd->member_default_inits.find(m.first);
-		if (di == cdd->member_default_inits.end() || !di->second) continue;
+	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
+		const std::string &mn = cdd->members[mi].first;
+		TokenBase *init = applied_member_default_init(cdd, mi, done_bases);
+		if (!init) continue;
 		// An explicit ctor member-init / aggregate-init OVERRIDES the NSDMI.
-		if (skip && skip->count(m.first)) continue;
+		if (skip && skip->count(mn)) continue;
 		node_t fld = node2(arrow ? N_DEREF_FIELD : N_FIELD,
-				   id(recv, origin), id(m.first.c_str(), origin));
-		node_t asgn = node2(N_ASSIGN, fld, translate_expr(di->second), origin);
+				   id(recv, origin), id(mn.c_str(), origin));
+		node_t asgn = node2(N_ASSIGN, fld, translate_expr(init), origin);
 		flush_pending_stmts(out);
 		out.push_back(node2(N_EXPR, list(), asgn, origin));
 		any = true;
 	}
+	m_pending_stmts.swap(caller_pending);
 	return any;
 }
 
@@ -15095,8 +15171,8 @@ void CirBuilder::append_base_default_constructs(node_t items,
 // True when the implicit default construction of ctorless `cdd` must emit
 // member statements: some class-type member either has a callable default
 // ctor, or is itself a ctorless class that needs construction (a vtable to
-// stamp, or members of its own — recursion bottoms out on finite member
-// nesting).
+// stamp, members of its own, or default member initializers to apply —
+// recursion bottoms out on finite member nesting).
 bool CirBuilder::class_needs_member_construction(DataDefCLASS *cdd)
 {
 	if (!cdd) return false;
@@ -15109,7 +15185,8 @@ bool CirBuilder::class_needs_member_construction(DataDefCLASS *cdd)
 		if (mc->has_user_ctor
 		    ? class_default_ctor_def(mc) != NULL
 		    : (mc->has_any_vptr() || class_needs_member_construction(mc)
-		       || class_needs_base_construction(mc)))
+		       || class_needs_base_construction(mc)
+		       || class_applies_member_default_inits(mc)))
 			return true;
 	}
 	return false;
@@ -16673,19 +16750,21 @@ void CirBuilder::implicit_copy_member_reconstructs(DataDefCLASS *cdd,
 	}
 }
 
-// Finish an object whose constructor did not: stamp its vptr(s) and default-
-// construct its class-type MEMBERS ([class.default.ctor]) through the bound
-// receiver `recv`. Two callers need exactly this — the implicit default ctor of
-// a ctorless class, and an INHERITED constructor, which initializes only the
-// base subobject and leaves the rest "as if by a defaulted default constructor"
-// ([class.inhctor.init]/1).
+// Finish an object whose constructor did not: stamp its vptr(s), default-
+// construct its class-type MEMBERS ([class.default.ctor]), and initialize each
+// member that has a default member initializer from it ([class.base.init]/9)
+// through the bound receiver `recv`. Two callers need exactly this — the
+// implicit default ctor of a ctorless class, and an INHERITED constructor,
+// which initializes only the base subobject and leaves the rest "as if by a
+// defaulted default constructor" ([class.inhctor.init]/1).
 //
 // A polymorphic member subobject gets its vptr stamped here too, recursively
 // through ctorless layers (task #35: `Mid m;` where Mid{Leaf lf} left lf's
 // vptr garbage).
 void CirBuilder::append_vptr_and_member_inits(node_t blk, const char *recv,
 					      DataDefCLASS *cdd,
-					      TokenBase *origin, bool members)
+					      TokenBase *origin, bool members,
+					      bool member_inits)
 {
 	if (!blk || !recv || !cdd) return;
 	if (cdd->has_any_vptr()) {
@@ -16708,6 +16787,27 @@ void CirBuilder::append_vptr_and_member_inits(node_t blk, const char *recv,
 	}
 	if (members)
 		append_member_default_constructs(blk, recv, cdd, origin);
+	if (member_inits) {
+		// An initializer names `this` as the object under construction:
+		// bind `__this` to the receiver in a block of its own (it shadows
+		// the enclosing method's `__this`, which is the right object only
+		// in that method's own constructor).
+		std::vector<node_t> inits;
+		if (emit_member_default_inits(cdd, "__this", true, inits, origin)) {
+			node_t iblk = list();
+			node_t decl = simple(N_SPEC_DECL);
+			append(decl, node1(N_SHARE, node1(N_LIST, class_tag_ref(cdd))));
+			append(decl, node2(N_DECL, id("__this", origin),
+					   node1(N_LIST, pointer())));
+			append(decl, ignore());
+			append(decl, ignore());
+			append(decl, id(recv, origin));
+			append(iblk, decl);
+			for (node_t s : inits)
+				append(iblk, s);
+			append(blk, node2(N_BLOCK, list(), iblk, origin));
+		}
+	}
 }
 
 // The class that DECLARED a selected constructor. Normally `cdd` itself — but
@@ -16757,7 +16857,15 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		// TokenObjTemp construction sites, which pass the full list.
 		bool members = class_needs_member_construction(cdd);
 		bool bases = class_needs_base_construction(cdd);
-		if (!cdd->has_any_vptr() && !members && !bases) return NULL;
+		// The default member initializers are the implicit default
+		// ctor's ([class.base.init]/9): every default construction
+		// reaches them here (a named object, `new`, an array element, a
+		// member or base subobject, a temporary). Arguments that are not
+		// a copy are an aggregate's, whose owner applies them.
+		bool inits = ctor_args.empty()
+			     && class_applies_member_default_inits(cdd);
+		if (!cdd->has_any_vptr() && !members && !bases && !inits)
+			return NULL;
 		// Bind the receiver ONCE into a scoped temp: c2mir nodes hold a
 		// single parent link, so the incoming this_addr node cannot be
 		// reused across the vptr stores and member constructions — every
@@ -16777,7 +16885,8 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		// [class.base.init] order via the user-ctor prologue model.
 		if (bases)
 			append_base_default_constructs(blk, tmp, cdd, 0, origin);
-		append_vptr_and_member_inits(blk, tmp, cdd, origin, members);
+		append_vptr_and_member_inits(blk, tmp, cdd, origin, members,
+					     inits);
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
@@ -16877,8 +16986,11 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 						 vbase_forward);
 		if (!call) return NULL;
 		append(blk, node2(N_EXPR, list(), call, origin));
+		// The base's own members are its ctor's (member_default_init_of
+		// stops at a class with a user ctor); the rest are ours.
 		append_vptr_and_member_inits(blk, tmp, cdd, origin,
-					     class_needs_member_construction(cdd));
+					     class_needs_member_construction(cdd),
+					     true);
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 	return ctor_call_assemble(this_addr, cdd, ctor, explicit_nodes, origin,
@@ -17666,11 +17778,9 @@ node_t CirBuilder::class_aggregate_init(
 		// Trailing member: NSDMI when present, else value-initialize
 		// ([dcl.init.aggr]p8).
 		{
-			std::map<std::string, TokenBase *>::const_iterator di =
-				cdd->member_default_inits.find(mn);
-			if (di != cdd->member_default_inits.end() && di->second
-			    && !as_class_instance(mt)) {
-				node_t init = translate_expr(di->second);
+			if (TokenBase *dinit = applied_member_default_init(cdd, i,
+									   NULL)) {
+				node_t init = translate_expr(dinit);
 				node_t asgn = node2(N_ASSIGN, member_lvalue(mn),
 						    init, origin);
 				flush_pending_stmts(stmts);
@@ -26164,21 +26274,12 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 		append(items, array_ctor_call(ev->name.c_str(), fe));
 	} else if (DataDefCLASS *edc = as_class_instance(ev->type)) {
 		// class_ctor_call owns implicit default construction end-to-end
-		// (user ctor call, or vptr stores + member construction for a
-		// ctorless class); NULL means nothing to construct.
+		// (user ctor call, or vptr stores + member construction + default
+		// member initializers for a ctorless class); NULL means nothing
+		// to construct.
 		node_t cc = class_ctor_call(ev, edc, std::vector<TokenBase *>(), fe);
 		if (cc)
 			append(items, cc);
-		// C++11 NSDMI on a ctorless instance (a user ctor applies them
-		// in its prologue) — including a polymorphic ctorless class,
-		// where cc is the vptr block.
-		if (!edc->has_user_ctor) {
-			std::vector<node_t> nsdmi_stmts;
-			if (emit_member_default_inits(edc, ev->name.c_str(), false,
-						      nsdmi_stmts, fe, NULL))
-				for (node_t s : nsdmi_stmts)
-					append(items, s);
-		}
 	}
 	append(items, loop);
 	return node2(N_BLOCK, list(), items, fe);
@@ -27859,8 +27960,8 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		append(items, p);
 	m_pending_stmts.clear();
 	// class_ctor_call owns implicit default construction end-to-end (user
-	// ctor call, or vptr stores + member construction for a ctorless
-	// class); NULL means nothing to construct.
+	// ctor call, or vptr stores + member construction + default member
+	// initializers for a ctorless class); NULL means nothing to construct.
 	if (cc) append(items, cc);
 	// No ctor, no object members — a TRIVIAL class/struct with an
 	// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
@@ -27884,20 +27985,6 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 			node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
 			append(items, node2(N_EXPR, list(), asg, sdcl));
 		}
-	}
-	// C++11 default member initializers on a DEFAULT-constructed
-	// no-ctor instance (`S s;` — incl. a scalar-only struct promoted
-	// to a class purely for its NSDMI, and a polymorphic ctorless
-	// class whose cc is the vptr block). A whole-object initializer
-	// (the trivial-copy arm) supplies all members, so skip then; a
-	// user ctor applies NSDMI in its prologue.
-	if (!cdcl->has_user_ctor && ctor_args.empty()) {
-		std::vector<node_t> nsdmi_stmts;
-		if (emit_member_default_inits(cdcl,
-				sdcl->var.name.c_str(), false,
-				nsdmi_stmts, sdcl, NULL))
-			for (node_t ns : nsdmi_stmts)
-				append(items, ns);
 	}
 	// In a try body, also register this object's dtor on the runtime
 	// cleanup stack so it runs on the exception (longjmp) unwind path
@@ -27988,8 +28075,9 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// `Foo f;` / `string s;` — a class instance declared without an
 			// explicit constructor-call (no ctor args). class_ctor_call owns
 			// implicit default construction end-to-end (user ctor call, or
-			// vptr stores + member construction for a ctorless class);
-			// scope-exit destruction is via the cleanup attribute (var_decl).
+			// vptr stores + member construction + default member
+			// initializers for a ctorless class); scope-exit destruction is
+			// via the cleanup attribute (var_decl).
 			// The argful form `Foo f(a,b)` parses to a TokenDecl statement
 			// handled below.
 			// A block-scope static one is constructed once.
@@ -27998,18 +28086,6 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			node_t cc = class_ctor_call(v, cdd,
 						    std::vector<TokenBase *>(), tc);
 			if (cc) append(cons, cc);
-			// C++11 default member initializers on a ctorless instance
-			// (incl. a scalar-only struct promoted to a class purely for
-			// its NSDMI, and a polymorphic ctorless class whose cc is the
-			// vptr block): `recv.member = init` per declaration order. A
-			// user ctor applies NSDMI in its prologue.
-			if (!cdd->has_user_ctor) {
-				std::vector<node_t> nsdmi_stmts;
-				if (emit_member_default_inits(cdd, v->name.c_str(), false,
-							      nsdmi_stmts, tc, NULL))
-					for (node_t s : nsdmi_stmts)
-						append(cons, s);
-			}
 			if (once)
 				emit_static_local_once(items, cons, tc,
 					(v->flags & vfTHREADLOCAL) != 0);
@@ -30326,10 +30402,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
 		// C++11 default member initializers (`int x = 5;`): applied for every
 		// member NOT given an explicit ctor member-init, after the ctor-init
-		// list (which overrides them via explicit_member_inits).
+		// list (which overrides them via explicit_member_inits) — a ctorless
+		// base's flattened members included; a base whose ctor ran above
+		// (done_bases) applied its own.
 		if (is_ctor && !delegating_ci)
 			emit_member_default_inits(ocls, "__this", true, prologue, tf,
-						  &explicit_member_inits);
+						  &explicit_member_inits, &done_bases);
 		// Construct embedded object members at ctor entry (after base ctor),
 		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
 		if (is_ctor && !delegating_ci)
@@ -30791,25 +30869,11 @@ void CirBuilder::collect_global_ctors(Program *prog,
 		std::vector<node_t> grp_stmts(m_pending_stmts.begin(),
 					      m_pending_stmts.end());
 		m_pending_stmts.clear();
+		// A default-constructed ctorless GLOBAL (`Game G;`) gets its
+		// default member initializers inside cc, as every other default
+		// construction does (class_ctor_call_addr's ctorless arm).
 		if (cc)
 			grp_stmts.push_back(cc);
-		// C++11 NSDMI on a DEFAULT-constructed no-ctor class GLOBAL
-		// (`Game G;`) — the same rule as translate_block's local arm: a
-		// whole-object initializer supplies every member (skip), a user
-		// ctor applies NSDMI in its prologue (skip). The local lane has
-		// applied these all along; this lane silently dropped them, so
-		// a file-scope instance read 0 where g++ reads the default.
-		bool bare_decl = !decl
-		    || (!decl->initialize && decl->ctor_args.empty()
-			&& decl->init_list.empty() && !decl->ctor_args_braced);
-		if (!cdd->has_user_ctor && bare_decl) {
-			std::vector<node_t> nsdmi_stmts;
-			if (emit_member_default_inits(cdd,
-					var_emit_name(*v).c_str(), false,
-					nsdmi_stmts, decl, NULL))
-				for (node_t ns : nsdmi_stmts)
-					grp_stmts.push_back(ns);
-		}
 		queue_global_ctor_group(v, grp_stmts, deferred_globals);
 	}
 }

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Default member initializers apply at every default construction
+
+A class's default member initializers (`struct A { int n = 3; };`) now apply
+wherever the object is default-constructed, as in g++ and clang++. That covers
+`new A` (and `new A()`, `new A{}`, `new A[n]`, placement new), a member
+(`struct B { A a; };`), a base class, an inherited constructor's own members,
+a temporary (`A().n`), a braced local or global (`A g{};`), and each element
+of `A la[2];`. Before, only a named object's declaration applied them: `new A`
+read 0, a nested member read garbage, `A().n` read garbage, `A g{};` read 0,
+and `A la[2];` did not compile. Each object gets its initializers exactly
+once.
+
 ### An anonymous C++ enum's enumerators have the enum's type
 
 In C++, an enumerator of an anonymous enum whose values need more than `int`,

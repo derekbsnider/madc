@@ -1,0 +1,16 @@
+new 3 3 3
+new nested 3 5
+stack nested 3 5
+stack deep 3 5
+derived 3 4 3 4
+user ctor derived 3 4 3
+array 3 3
+local array 3 3
+virtual 3
+placement 3
+inherited 1 9
+user ctor member 3 1
+temp 3 3
+braced 3
+globals 3 3
+counter 8 1 2 8

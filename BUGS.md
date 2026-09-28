@@ -103,32 +103,6 @@ int f(void) { return 2; }
   loader must let a strong definition replace a weak one (D27 adds that
   rule, adopting the weak definition's address).
 
-### B26. A new-expression skips a class's default member initializers
-
-- Found 2026-09-26, while testing D27's stubs with a virtual function (the
-  session's `mk()->g()` gave 0). It fails in file mode too.
-
-```cpp
-#include <cstdio>
-struct A { int n = 3; };
-int main()
-{
-	A *a = new A;
-	A *b = new A();
-	A *c = new A{};
-	printf("%d %d %d\n", a->n, b->n, c->n);
-	return 0;
-}
-```
-
-- g++, clang++: `3 3 3`. madc `--std=c++17`: `0 0 0`, silently. `A s;` on
-  the stack gives 3, and so does a polymorphic class's stack object.
-- Where: not traced. A class with default member initializers and no
-  user-declared constructor has a non-trivial implicit default constructor
-  ([class.default.ctor]/3), and the new-expression must call it
-  ([expr.new]/22). The stack declaration's path applies the initializers,
-  and the new-expression's does not.
-
 ### B35. An array compound literal is typed as a pointer
 
 - Found 2026-09-27, while measuring what an entry shows for D12 (plan

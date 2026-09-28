@@ -2212,14 +2212,24 @@ public:
 				    size_t &ai, std::vector<node_t> &out,
 				    TokenBase *origin);
 	// Apply C++11 default member initializers (NSDMI: `int x = 5;`) for any
-	// scalar/pointer member not explicitly initialized (not in `skip`). The
-	// receiver is `recv`, accessed `recv->member` when `arrow` (a ctor body's
-	// `__this`) or `recv.member` otherwise (a named local). Object members are
+	// scalar/pointer member not explicitly initialized (not in `skip`) and not
+	// owned by a base whose constructor this construction ran (`done_bases`).
+	// The receiver is `recv`, accessed `recv->member` when `arrow` (a ctor
+	// body's `__this`) or `recv.member` otherwise. Object members are
 	// value-initialized by the existing member-construction path, not here.
 	bool emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
 				    bool arrow, std::vector<node_t> &out,
 				    TokenBase *origin,
-				    const std::set<std::string> *skip = NULL);
+				    const std::set<std::string> *skip = NULL,
+				    const std::set<int> *done_bases = NULL);
+	// The default member initializer a construction of `cdd` applies to
+	// member `mi` (NULL when none): emit_member_default_inits' filter, read
+	// through the one owner of a flattened member's initializer.
+	TokenBase *applied_member_default_init(DataDefCLASS *cdd, size_t mi,
+					       const std::set<int> *done_bases);
+	// True when ctorless `cdd`'s implicit default constructor applies at
+	// least one default member initializer.
+	bool class_applies_member_default_inits(DataDefCLASS *cdd);
 	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
 				   TokenBase *origin,
 				   const std::set<int> *done_bases = NULL);
@@ -2242,12 +2252,14 @@ public:
 	// member statements (some member has a callable default ctor or is a
 	// ctorless class that itself needs construction).
 	bool class_needs_member_construction(DataDefCLASS *cdd);
-	// Stamp vptr(s) + default-construct class-type members through a bound
-	// receiver: what an implicit default ctor does, and what an INHERITED
-	// ctor must do after the base subobject is constructed.
+	// Stamp vptr(s), default-construct class-type members, and apply the
+	// default member initializers (`member_inits`) through a bound receiver:
+	// what an implicit default ctor does, and what an INHERITED ctor must do
+	// after the base subobject is constructed.
 	void append_vptr_and_member_inits(node_t blk, const char *recv,
 					  DataDefCLASS *cdd,
-					  class TokenBase *origin, bool members);
+					  class TokenBase *origin, bool members,
+					  bool member_inits);
 	// The class that DECLARED a selected ctor — not always `cdd`, because
 	// `using Base::Base;` imports the base's ctors into the derived's set.
 	DataDefCLASS *ctor_declaring_class(DataDefCLASS *cdd, FuncDef *ctor);
