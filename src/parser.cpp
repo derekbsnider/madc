@@ -72089,6 +72089,13 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr,
     // read a reference leaf as its lowered POINTER (`auto a = rl + 2` bound a
     // pointer to 42 and crashed; so did `auto c = rl`) and answered double for
     // any real operand (`auto x = f * 2` on a float measured 8 bytes).
+    // An `auto&` (P a reference) binds the lvalue itself: an array argument
+    // deduces the ARRAY, with its extents (Program::array_operand_type), since
+    // madc stores an array flattened and its value type names the element
+    // (`auto &r = a;` over `int a[2][3]` bound an int&).
+    if ( pgm && p_is_reference )
+	if ( DataDef *at = pgm->array_operand_type(expr) )
+	    return at;
     DataDef *dd = pgm ? pgm->operand_value_datadef(expr) : NULL;
     if ( !dd )
 	dd = expr->datadef();

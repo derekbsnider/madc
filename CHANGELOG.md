@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### `auto&` bound to an array is a reference to the array
+
+`auto &r = a;` over `int a[2][3]` binds `int (&)[2][3]`, as g++ deduces:
+`sizeof r` is 24 and `r[1][0] = 40` writes the array. The same holds for a
+one-dimensional array and a `const auto&` to a row. Before, madc bound an
+`int&` to the first element and refused every subscript of it.
+
 ### A function's return type is spelled the same everywhere
 
 A function returning a pointer to an array (`int (*f(void))[3]`) works: its
