@@ -1046,12 +1046,10 @@ public:
     // a bare `struct Tag` / `union Tag` / builtin element type.
     std::string typedef_name;
     // Non-null for a C99 ARRAY compound literal `(T[]){...}` / `(T[N]){...}`.
-    // The parser models the literal's storage as a synthetic `__compound_array`
-    // struct (datadef()), but that loses array semantics: c2mir would see a
-    // forward-ref struct (incomplete type) that cannot be subscripted. When this
-    // is set the CIR builder instead emits a real array type-name
-    // `T name[]` so c2mir sizes the array from the initializer count — the
-    // faithful C99 lowering. Holds the ELEMENT type T.
+    // The brace reader uses a synthetic `__compound_array` struct only while
+    // collecting initializer slots. The expression's datadef() is the real
+    // array type; CIR emits a real array compound literal and decays it only
+    // in value contexts. Holds the ELEMENT type T.
     DataDef *array_elem_dd = nullptr;
     // The extent WRITTEN in `(T[N]){...}`; 0 for `(T[]){...}`, whose size the
     // initializer decides (a designator `[5] =` included).

@@ -1,5 +1,11 @@
 # Test Status
 
+B35 array compound literal typing (2026-09-28):
+`testarraycompoundtypec` checks sized and inferred bounds, designators,
+`sizeof *&literal`, pointer decay, and pointer-to-array address formation.
+GCC and Clang output `8 12 20 20 12 6 9`; madc matches. Sixteen nearby
+compound-literal tests passed in JIT, EXE, and OBJ modes.
+
 B50 array address typing (2026-09-28): `testarrayaddressofc` and
 `testarrayaddressofcpp` check global, local, member, multidimensional and
 qualified namespace arrays, including `sizeof *&a`, indexing and `&a + 1`

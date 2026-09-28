@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Array compound literals retain their array type
+
+`sizeof((int[3]){0})` now yields 12, and `&(int[3]){...}` has
+pointer-to-array type. An unsized literal takes its bound from its
+initializers, including designators. Value uses still decay to a pointer;
+the CIR builder spells that decay for c2mir through one shared lowering.
+Before, the parser typed every array compound literal as a pointer, so
+`sizeof` silently yielded 8.
+
 ### Taking an array's address preserves its full type
 
 `&array` now has pointer-to-array type, including every dimension. `sizeof

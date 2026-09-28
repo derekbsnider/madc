@@ -9638,6 +9638,11 @@ node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate,
 	if (!elem) return target_is_aggregate ? list() : integer(0);
 	TokenStructLit *sl = dynamic_cast<TokenStructLit *>(elem);
 	if (sl) {
+		// A typed array compound literal is an expression, even when its
+		// destination is an aggregate slot. Its own braces belong to its
+		// storage, not to the destination's initializer list.
+		if (sl->array_elem_dd)
+			return translate_expr(elem);
 		// DEFERRED (CirBuilder-only): an empty brace `{}` produces an empty
 		// LIST() value here. For a flexible-array member (`int z[]; ... .z={}`)
 		// c2m's text front-end emits INIT(LIST(FIELD_ID(z)), LIST()) — the
@@ -9894,15 +9899,10 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 		return error_node("compound literal has no type", slit);
 
 	// C99 ARRAY compound literal `(T[]){...}` / `(T[N]){...}`. The parser
-	// models the literal's storage as a synthetic `__compound_array` struct
-	// (so the brace-init reuses struct-init machinery), but that struct is a
-	// forward-ref tag c2mir sees as an INCOMPLETE type — and a struct cannot
-	// be subscripted, which is why `&(int[]){...}[i]` failed with both
-	// "compound literal of incomplete type" and "subscripted value is neither
-	// array nor pointer". Emit the faithful C99 type-name instead: element
-	// type T with an UNSIZED array declarator `T[]`, so c2mir sizes the array
-	// from the initializer count (N_ARR size = N_IGNORE). The init list reuses
-	// the same INIT(LIST(), value) lowering as any aggregate.
+	// uses a synthetic struct only while collecting brace initializer slots;
+	// the expression itself has the real array type. Emit that C99 type-name:
+	// a written extent stays explicit, while `T[]` is sized from its slots.
+	// The init list shares aggregate_init_list's INIT(LIST(), value) lowering.
 	if (slit->array_elem_dd) {
 		node_t aspec = list();
 		// The element type may be a struct/union/typedef (e.g.
@@ -9971,6 +9971,30 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 
 	node_t cl = node2(N_COMPOUND_LITERAL, type_node, inits, slit);
 	return cl;
+}
+
+node_t CirBuilder::decay_array_compound_literal(node_t literal, DataDef *element,
+						 TokenBase *origin,
+						 const std::string &typedef_name)
+{
+	DataDef *spec_dd = element;
+	std::vector<carray_dim_t> pointee_dims;
+	int stars = explicit_star_count(element, typedef_name);
+	int levels = stars >= 0 ? 0
+		: peel_pointer_declarator(spec_dd, pointee_dims);
+	node_t spec = list();
+	append_lit_type_spec(spec, spec_dd, typedef_name);
+	node_t decl = list();
+	append(decl, pointer());	// array-to-pointer decay adds this level
+	if (stars >= 0) {
+		for (int s = 0; s < stars; s++)
+			append(decl, pointer());
+	} else {
+		append_pointer_declarator(decl, levels, pointee_dims);
+	}
+	return node2(N_CAST,
+		     node2(N_TYPE, spec, node2(N_DECL, ignore(), decl)),
+		     literal, origin);
 }
 
 // File-scope initializer classification for the C++ dynamic-init lowering:
@@ -16484,26 +16508,9 @@ node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 		append(ainits, node2(N_INIT, list(), init_value(elems[i])));
 	node_t arr = node2(N_COMPOUND_LITERAL, atype, ainits, origin);
 
-	// An array compound literal used as a VALUE decays to a pointer, and
-	// c2mir wants that decay spelled: initializing the `const E *` member
-	// from a bare array literal makes its checker read the literal's braces
-	// against the SCALAR member ("braces around scalar initializer" for one
-	// element, "excess elements in scalar initializer" for more). The parser
-	// wraps its own `(E[]){...}` in exactly this cast for the same reason
-	// (parser.cpp: `Array compound literals decay to pointer`) — this is the
-	// node-level twin of that rule, not a second rule.
-	// Searched: "ptr_type(" in cir_builder.h for an existing pointer-type
-	// node builder — void_ptr_type / char_ptr_type / class_ptr_type are all
-	// fixed-target, so the element-typed one is spelled here.
-	{
-		node_t pspec = list();
-		append_lit_type_spec(pspec, elem, std::string());
-		node_t pdecl = list();
-		append(pdecl, pointer());
-		arr = node2(N_CAST,
-			    node2(N_TYPE, pspec, node2(N_DECL, ignore(), pdecl)),
-			    arr, origin);
-	}
+	// c2mir needs the value-context array decay spelled explicitly. Share
+	// that lowering with source array compound literals.
+	arr = decay_array_compound_literal(arr, elem, origin);
 
 	// (std::initializer_list<E>){ <the array>, N } — the two members in
 	// layout order, matching initializer_list_element_type's contract.
@@ -23478,6 +23485,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						     node1(N_ADDR, inner, tb), tb);
 				return inner;
 			}
+			if (TokenStructLit *lit = tae->expr
+				? tae->expr->as_struct_lit_tok() : NULL)
+				if (lit->array_elem_dd)
+					return node1(N_ADDR, translate_struct_lit(lit), tb);
 			return node1(N_ADDR, translate_expr(tae->expr), tb);
 		}
 	}
@@ -24156,8 +24167,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	}
 
 	// C99 compound literal: `(T){ init... }` as a value expression.
-	if (TokenStructLit *slit = (tb ? tb->as_struct_lit_tok() : NULL))
-		return translate_struct_lit(slit);
+	if (TokenStructLit *slit = (tb ? tb->as_struct_lit_tok() : NULL)) {
+		node_t lit = translate_struct_lit(slit);
+		return slit->array_elem_dd
+			? decay_array_compound_literal(lit, slit->array_elem_dd,
+						      tb, slit->typedef_name)
+			: lit;
+	}
 
 	// Operators
 	if (tb->is_operator()) {

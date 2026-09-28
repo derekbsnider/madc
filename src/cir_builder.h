@@ -1666,6 +1666,11 @@ public:
 	node_t int_complex_init_list(long re, long im, TokenBase *origin);
 	// C99 compound literal `(T){ init... }` -> N_COMPOUND_LITERAL(type, list).
 	node_t translate_struct_lit(class TokenStructLit *slit);
+	// Value-context decay for an array compound literal. The parse type stays
+	// an array for sizeof and address-of; c2mir needs an explicit pointer cast.
+	node_t decay_array_compound_literal(node_t literal, DataDef *element,
+					  TokenBase *origin,
+					  const std::string &typedef_name = std::string());
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);
 	node_t param_decl(DataDef *ptype, const char *pname,
 			  const std::string &typedef_alias = std::string());

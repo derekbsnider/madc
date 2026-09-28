@@ -42265,6 +42265,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && (exStack.top()->type() == TokenType::ttMember
 		       || exStack.top()->type() == TokenType::ttSubscript
 		       || exStack.top()->is_indirection()
+		       || array_operand_type(exStack.top())
 		       || top_is_complex_ptr_expr
 		       || top_is_cast_subscriptable) )
 		    {
@@ -42918,29 +42919,30 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
 				    {
 					TokenStructLit *slit = parse_compound_struct_lit(dynamic_cast<DataDefSTRUCT *>(cast_dd), tb);
-					slit->setDataType(cast_dd);
 					if ( !array_elem_dd )
+					{
+					    slit->setDataType(cast_dd);
 					    slit->typedef_name = cast_typedef_name;
+					}
 					else
 					{
 					    slit->array_elem_dd = array_elem_dd;
 					    slit->array_extent = array_explicit_count;
+					    // The synthetic struct only reads the initializer. The
+					    // expression itself is an array lvalue; ordinary value
+					    // contexts decay it through array_decay_pointer.
+					    carray_dim_t bound = array_explicit_count > 0
+						? (carray_dim_t)array_explicit_count
+						: (carray_dim_t)slit->inits.size();
+					    slit->setDataType(build_fixed_array_query_type(
+						array_elem_dd, std::vector<carray_dim_t>(1, bound), 0));
 					    // The element type's typedef alias (e.g. `(S[]){...}`
 					    // where `typedef struct S {...} S`) so the CIR array
 					    // path can emit ID("S") instead of mis-rendering the
 					    // struct as a scalar int (pr98366).
 					    slit->typedef_name = cast_typedef_name;
 					}
-					TokenBase *lit_expr = slit;
-					// Array compound literals decay to pointer.
-					// Wrap in a cast so the expression type is
-					// ptr-to-element for subscript/assign purposes.
-					if ( array_elem_dd )
-					{
-					    DataDef *ptr_dd = getPointerType(array_elem_dd);
-					    lit_expr = new TokenCast(ptr_dd, slit);
-					}
-					exStack.push(lit_expr);
+					exStack.push(slit);
 					return done ? ExprStep::Done : ExprStep::Break;
 				    }
 			    TokenBase *cast_expr_tb = nextToken();
