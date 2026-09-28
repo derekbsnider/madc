@@ -4,8 +4,11 @@
 // refused one comes back with its diagnostics rows, a completion asks the
 // backend's names, and the program's stdin is the caller's to write.
 
+long running_notices = 0;
+
 // The next reply: poll, and park on the session's select case between polls.
-// The program's output printed before the reply is appended to `out`.
+// The program's output printed before the reply is appended to `out`. A
+// running notice (the entry was taken) is counted and passed over.
 long next_reply(var &r, long h, var &out)
 {
     var cases;
@@ -16,6 +19,11 @@ long next_reply(var &r, long h, var &out)
 	var o;
 	madc::session_output(o, h);
 	out = format("{}{}", out, o);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	{
+	    running_notices = running_notices + 1;
+	    continue;
+	}
 	if ( got != 0 )
 	    return got;
 	var fired;
@@ -26,7 +34,7 @@ long next_reply(var &r, long h, var &out)
 int main()
 {
     long h = madc::session_open("c11");
-    println("running: {}", madc::session_running(h));
+    println("running: {} standard: {}", madc::session_running(h), madc::session_standard(h));
     var r;
     var out = "";
     madc::session_offer(h, "#include <stdio.h>", true);
@@ -46,9 +54,11 @@ int main()
     next_reply(r, h, out);
     println("shown: {}", r["shown"]);
 
+    long before = running_notices;
     madc::session_offer(h, "int f(void) {", false);
     next_reply(r, h, out);
-    println("unfinished: incomplete={}", r["state"] == madc::offer_state::incomplete);
+    println("unfinished: incomplete={} running notices={}",
+	    r["state"] == madc::offer_state::incomplete, running_notices - before);
 
     madc::session_offer(h, "int x = ;", true);
     next_reply(r, h, out);
@@ -67,6 +77,7 @@ int main()
     madc::session_offer(h, "int n = 0; scanf(\"%d\", &n); printf(\"%d\\n\", n + 1);", true);
     next_reply(r, h, out);
     print("stdin: {}", out);
+    println("running notices: {}", running_notices);
     madc::session_close(h);
 
     long bad = madc::session_open("c99x");

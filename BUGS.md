@@ -1053,6 +1053,23 @@ int main()
   before closing its endpoint, as `SessionClient::stop()` does; the reducer
   becomes a test.
 
+### B55. Tab inserts nothing in madcide's editor
+
+- Found 2026-09-28, while building item 9 slice 3 (plan §41.9a): the REPL
+  tab's gui case showed tab going to the shared focus owner, which cycles
+  focus. Fixed for fields that ask for tab (the `tabkey` hint, 82108777b:
+  the terminal and the REPL input). The editor's own node does not ask.
+- Reducer: open a file in madcide (any client), put the caret mid-line and
+  press Tab. Expected (JOE, pico, vim's insert mode, VS Code): a tab (or the
+  profile's indent) goes in at the caret. madcide: the buffer is unchanged.
+  With a menu bar or a panel composed, the key becomes an invisible focus
+  cycle. With one focusable it reaches `edit_key`
+  (`tools/texteditor/editor_events.inc`), which has no tab arm.
+- Fix: an insert-tab / indent command in the command table, bound by the
+  profiles (data, never a hard-coded key), and the `tabkey` hint on the
+  editor window's node while it has the keyboard. Pin it in testmadcide
+  and a tests/gui case.
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++

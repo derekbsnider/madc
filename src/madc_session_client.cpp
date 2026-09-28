@@ -59,11 +59,14 @@ void run_child_prologue();
 // (enum-over-strings): the request's op, the offer's verdict.
 namespace {
 
-enum class Op : unsigned char { begin, offer, complete, unknown };
+// `running` is a reply's only: the backend's notice that an offered entry
+// was taken and runs now.
+enum class Op : unsigned char { begin, offer, complete, running, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
     { "begin", Op::begin }, { "offer", Op::offer }, { "complete", Op::complete },
+    { "running", Op::running },
 };
 
 const char *op_name(Op op)
@@ -146,6 +149,8 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
     hello["op"] = op_name(Op::begin);
     hello["ok"] = session.begin(std_option);
     hello["rendered"] = err.str();
+    // The standard in force, by its canonical name (the prompt's, D22).
+    hello["standard"] = Program::standard_canonical_name(session.program().language_std);
     flush_program();
     if ( !write_line(fd, hello.dump()) || !hello["ok"].get<bool>() )
 	return 1;
@@ -179,12 +184,23 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 	    case Op::offer:
 	    {
 		const std::string text = req.value("text", std::string());
+		// Once the entry is final, before it renders or runs, the client
+		// hears it runs (Jupyter's execute_input): what it prints comes
+		// after this line, so a transcript shows the entry first.
+		const unsigned seq = req.value("seq", 0u);
+		InteractiveSession::TakenHook taken = [&]() {
+		    flush_program();
+		    nlohmann::json note;
+		    note["seq"] = seq;
+		    note["op"] = op_name(Op::running);
+		    write_line(fd, note.dump());
+		};
 		InteractiveSession::Offered o;
 		if ( req.value("final", false) )
 		    o = InteractiveSession::Offered{ InteractiveSession::OfferState::taken,
-						     session.submit(text) };
+						     session.submit(text, taken) };
 		else
-		    o = session.offer(text);
+		    o = session.offer(text, taken);
 		rep["state"] = state_name(o.state);
 		rep["ok"] = o.ok;
 		if ( o.state == InteractiveSession::OfferState::taken )
@@ -208,6 +224,7 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 		break;
 	    }
 	    case Op::begin:
+	    case Op::running:
 	    case Op::unknown:
 		rep["ok"] = false;
 		break;
@@ -250,6 +267,7 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
     std_option = std_opt;
     make_program = make;
     error_text.clear();
+    standard_name.clear();
     int sv[2];
     if ( ::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 )
     {
@@ -293,6 +311,8 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 	{
 	    nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
 	    bool ok = !j.is_discarded() && j.value("ok", false);
+	    if ( ok )
+		standard_name = j.value("standard", std::string());
 	    if ( !ok )
 	    {
 		error_text = j.is_discarded() ? std::string("session: no greeting")
@@ -506,8 +526,10 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    return 0;
 	if ( r < 0 )
 	    return stopped(reply, output);
-	if ( out_fd >= 0 && (p[1].revents & (POLLIN | POLLHUP)) )
-	    read_output(output, 0);
+	// The socket first: the backend writes a running notice before the
+	// entry prints, so once a line is whole, its op decides where the
+	// output waiting in the pipe belongs (below). The pipe is drained
+	// only while no line is, so a full pipe never stalls the backend.
 	if ( p[0].revents & (POLLIN | POLLHUP | POLLERR) )
 	{
 	    char chunk[4096];
@@ -517,20 +539,32 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    if ( n <= 0 )
 		return stopped(reply, output);
 	    inbuf.append(chunk, (size_t)n);
+	    if ( inbuf.find('\n') != std::string::npos )
+		continue;
 	}
+	if ( out_fd >= 0 && (p[1].revents & (POLLIN | POLLHUP)) )
+	    read_output(output, 0);
     }
-    // The backend flushed the entry's output before this line: take it
-    // first, so the output comes before the result.
-    read_output(output, 0);
     nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
+    const Op op = j.is_discarded() || !j.is_object()
+	? Op::unknown : op_of(j.value("op", std::string()));
+    // The backend flushed an entry's output before its result: take it
+    // first, so the output comes before the result. A running notice
+    // comes before its entry's output (nothing prints between the last
+    // reply's flush and the notice), so what is there waits for the next.
+    if ( op != Op::running )
+	read_output(output, 0);
     reply = Reply();
     if ( j.is_discarded() || !j.is_object() )
 	return 0;
     reply.seq = j.value("seq", 0u);
     reply.rendered = j.value("rendered", std::string());
     reply.ok = j.value("ok", false);
-    switch ( op_of(j.value("op", std::string())) )
+    switch ( op )
     {
+	case Op::running:
+	    reply.kind = Reply::Kind::running;
+	    break;
 	case Op::offer:
 	    reply.kind = Reply::Kind::offer;
 	    reply.state = state_of(j.value("state", std::string()));
@@ -640,7 +674,7 @@ int SessionClient::offer_wait(const std::string &text, bool final, Reply &reply,
     for (;;)
     {
 	int r = poll(reply, output, timeout_ms);
-	if ( r <= 0 || reply.seq == seq )
+	if ( r <= 0 || (reply.seq == seq && reply.kind != Reply::Kind::running) )
 	    return r;
     }
 }
@@ -655,7 +689,7 @@ int SessionClient::complete_wait(const std::string &text, size_t caret,
     for (;;)
     {
 	int r = poll(reply, output, timeout_ms);
-	if ( r <= 0 || reply.seq == seq )
+	if ( r <= 0 || (reply.seq == seq && reply.kind != Reply::Kind::running) )
 	    return r;
     }
 }

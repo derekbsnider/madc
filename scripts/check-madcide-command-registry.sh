@@ -13,11 +13,13 @@
 #      dispatcher cannot spell is a menu item that does nothing);
 #   3. every table row's enumerator exists in the enum, and every enumerator
 #      has a table row — one vocabulary, two spellings, never drifting;
-#   4. every enumerator is DISPATCHED somewhere in madcide_core.inc — a
+#   4. every enumerator is DISPATCHED somewhere in the dispatcher — a
 #      `case cmdX:` label or a `== cmdX` / `!= cmdX` compare (a hidden
 #      command nothing handles);
-#   5. every `cmd…` spelled in madcide_core.inc is an enumerator (the
+#   5. every `cmd…` spelled in the dispatcher is an enumerator (the
 #      compiler enforces this too; the gate names the drift first).
+# The dispatcher is madcide_core.inc plus the madcide files it #includes (a
+# pane's own commands live beside the pane: madcide_repl.inc).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -46,6 +48,17 @@ enum_ids()
 	grep -o -E 'cmd[A-Z][A-Z0-9_]*' | sort -u
 }
 
+# The dispatcher: the given core plus the sibling madcide files IT #includes
+# (resolved beside the live core; the enums file comes in separately, as the
+# one under test).
+dispatcher_files()
+{
+	echo "$1"
+	grep -o -E '^#include "madcide_[a-z0-9_]+\.inc"' "$1" |
+	sed 's/^#include "//; s/"$//' | grep -v '^madcide_enums\.inc$' |
+	while read -r f; do echo "$ROOT/tools/madcide/$f"; done
+}
+
 # Where a command is dispatched: case labels and compares against an
 # enumerator — in the core AND in the enums file's converters (the motion
 # commands are handled by motion_key_of's switch there).
@@ -56,10 +69,10 @@ dispatch_ids()
 	grep -o -E 'cmd[A-Z][A-Z0-9_]*' | sort -u
 }
 
-# Every enumerator spelled anywhere in the core.
+# Every enumerator spelled anywhere in the dispatcher.
 spelled_ids()
 {
-	grep -o -E 'cmd[A-Z][A-Z0-9_]*' "$1" | sort -u
+	cat "$@" | grep -o -E 'cmd[A-Z][A-Z0-9_]*' | sort -u
 }
 
 # Profile actions: the LAST word of every data line, unscoped or @scoped
@@ -86,8 +99,8 @@ check()
 	awk '{ print $1 }' "$pairs" | sort -u > "$tnames"
 	awk '{ print $2 }' "$pairs" | sort -u > "$tenums"
 	enum_ids "$enums" | grep -v '^cmdNONE$' > "$enumids"
-	dispatch_ids "$core" "$enums" > "$dis"
-	spelled_ids "$core" > "$spelled"
+	dispatch_ids $(dispatcher_files "$core") "$enums" > "$dis"
+	spelled_ids $(dispatcher_files "$core") > "$spelled"
 	profile_ids "$profiles"/*.keys > "$prof"
 	local rc=0
 	if [ ! -s "$reg" ] || [ ! -s "$pairs" ] || [ ! -s "$enumids" ] || [ ! -s "$dis" ]; then
@@ -127,13 +140,13 @@ check()
 	bad=$(missing_from "$enumids" "$dis")
 	if [ -n "$bad" ]; then
 		echo "check-madcide-command-registry: FAIL ($label) — an enumerator is" \
-		     "dispatched nowhere in madcide_core.inc (a hidden command):" $bad >&2
+		     "dispatched nowhere in madcide_core.inc or its includes (a hidden command):" $bad >&2
 		rc=1
 	fi
 	bad=$(missing_from "$spelled" <(sort -u "$enumids" <(echo cmdNONE)))
 	if [ -n "$bad" ]; then
 		echo "check-madcide-command-registry: FAIL ($label) — madcide_core.inc" \
-		     "spells a cmd… that is not an enumerator:" $bad >&2
+		     "or an include spells a cmd… that is not an enumerator:" $bad >&2
 		rc=1
 	fi
 	rm -f "$reg" "$pairs" "$tnames" "$tenums" "$enumids" "$dis" "$spelled" "$prof"
@@ -178,6 +191,16 @@ if check "$tmpcore" "$ENUMS" "$MENU" "$PROFILES" "control" 2>/dev/null; then
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof"
 	echo "check-madcide-command-registry: FAIL — negative control: a cmd… the" \
 	     "enum lacks went undetected (the spelling marker went blind)." >&2
+	exit 1
+fi
+# (e) a pane's commands, its include dropped from the core: the dispatcher
+# must follow the core's includes, so the pane's commands go hidden
+grep -v '^#include "madcide_repl\.inc"' "$CORE" > "$tmpcore"
+if check "$tmpcore" "$ENUMS" "$MENU" "$PROFILES" "control" 2>/dev/null; then
+	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof"
+	echo "check-madcide-command-registry: FAIL — negative control: a dropped" \
+	     "include's commands went undetected (the dispatcher stopped following" \
+	     "the core's includes)." >&2
 	exit 1
 fi
 rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof"

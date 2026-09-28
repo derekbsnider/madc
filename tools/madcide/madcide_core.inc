@@ -365,7 +365,12 @@ const char *modal_default_keys_text()
 	   "@modes enter modesopen\n"
 	   "@modes esc modesclose\n"
 	   "@pane esc paneclose\n"
-	   "@terminal ^] termunfocus\n";
+	   "@terminal ^] termunfocus\n"
+	   "@repl enter replenter\n"
+	   "@repl tab replcomplete\n"
+	   "@repl up replolder\n"
+	   "@repl down replnewer\n"
+	   "@repl ^] replunfocus\n";
 }
 
 // Modal key->action lookup over the bag's "modekeys" (the @scope tables).
@@ -1017,7 +1022,7 @@ const char *default_layout_text()
 	   "@window main\n"
 	   "pane editor tabs views source focus\n"
 	   "pane sidebar left 20% tabs views outline hidden\n"
-	   "pane panel bottom 25% tabs views problems output terminal hidden\n";
+	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
 // Load a named layout from the profile directory onto the bag ("layout");
@@ -4739,6 +4744,10 @@ bool terminal_event(long w, long es, var &ev)
     return false;
 }
 
+// The panel's REPL tab (plan §41.9a): a session in its own process, its
+// transcript and its input field — beside the Terminal it borrows from.
+#include "madcide_repl.inc"
+
 void stop_build(long w, long es)
 {
     if ( es_int(w, es, "buildlive", 0) == 0 )
@@ -5600,9 +5609,19 @@ void IdeSession::pointer_event(long doc, long nav, var &ev)
     if ( tdoc != 0 && tsubj == tdoc )
     {
 	ui::set(w, es, "termfocus", 1);
+	ui::set(w, es, "replfocus", 0);
 	return;
     }
     ui::set(w, es, "termfocus", 0);
+    // The REPL tab likewise: a press on its node (the input buffer is its
+    // subject) gives the input the keyboard.
+    long rin = es_int(w, es, "replin", 0);
+    if ( rin != 0 && tsubj == rin )
+    {
+	ui::set(w, es, "replfocus", 1);
+	return;
+    }
+    ui::set(w, es, "replfocus", 0);
     long idx = -1;
     long tag = ev["tag"].is_null() ? -1 : ev["tag"].as_integer();
     if ( tag >= 0 && tag < window_count(w, es) )
@@ -6356,6 +6375,30 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( modes_active(w, es) )
 	return modes_event(w, es, nav, caret, ev);
 
+    // The REPL tab's input has the keyboard (plan §41.9a): its @repl scope
+    // first, then text and the field's commands edit the input buffer —
+    // the session's own dispatch, on that buffer, under the field's caret
+    // with the editor's parked around it — and every other command keeps
+    // its target (save saves the file). The modals above keep theirs.
+    if ( es_int(w, es, "replfocus", 0) != 0 )
+    {
+	long rin = repl_input_doc(w, es);
+	if ( doc != rin )
+	{
+	    long route = repl_route(w, es, ev);
+	    if ( route == rrHANDLED )
+		return true;
+	    if ( route == rrFIELD )
+	    {
+		var parked;
+		repl_field_enter(parked, w, es);
+		bool fcont = apply_ide_event(rin, ev);
+		repl_field_leave(parked, w, es);
+		return fcont;
+	    }
+	}
+    }
+
     // vi MODES-AS-SCOPES (owner 2026-08-31): while a vi mode is active,
     // this arm routes printable keys through the @normal/@insert scope
     // tables and the count/operator grammar; what it does not consume
@@ -6691,7 +6734,15 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    {
 		show_view(w, es, viewTERMINAL);
 		if ( es_int(w, es, "termlive", 0) != 0 )
+		{
 		    ui::set(w, es, "termfocus", 1);
+		    ui::set(w, es, "replfocus", 0);
+		}
+		return true;
+	    }
+	    case cmdREPL:
+	    {
+		repl_show(w, es);
 		return true;
 	    }
 	    case cmdBUFSEL:
@@ -6998,8 +7049,7 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	long k = t["kind"].as_integer();
 	if ( ti == active )
 	    shown = k;
-	var nm = view_name(k);
-	var title = php::ucfirst(nm);
+	var title = view_title(k);
 	long sc = view_show_cmd(k);
 	var an;
 	cmd_name(an, sc);
@@ -7040,6 +7090,13 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    }
 	    term["hints"] = th;
 	    pkids.push(term);
+	    break;
+	}
+	case viewREPL:
+	{
+	    var rn;
+	    repl_compose(rn, w, es);
+	    pkids.push(rn);
 	    break;
 	}
 	case viewOUTPUT:
@@ -8023,7 +8080,9 @@ void IdeSession::close()
 	    madc::chan_send(stopc, sv);
 	}
     }
+    repl_stop(w, es);
     madc::task_drain();
+    repl_close(w, es);
     // Every buffer's parse handle closes with the session.
     var bufs;
     ui::get(bufs, w, es, "buffers");

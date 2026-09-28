@@ -32,7 +32,7 @@ enum ide_cmd : unsigned short
     cmdINSERTFILE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL, cmdSHRINKW,
+    cmdREFRESH, cmdREPL, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL, cmdSHRINKW,
     cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
     cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
@@ -40,10 +40,11 @@ enum ide_cmd : unsigned short
     // ---- motions: the action name IS the key spelling (edit_key's keys) ----
     cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
     cmdPGUP, cmdPGDN, cmdBACKSPACE, cmdDEL, cmdENTER,
-    // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @insert) ----
+    // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @repl @insert) ----
     cmdPCOMMIT, cmdPCANCEL, cmdPDELCHAR, cmdPYES, cmdPROJCLOSE, cmdPROJDELCHAR,
     cmdPROJADD, cmdPROJDEL, cmdPROJOPEN, cmdMODESOPEN, cmdMODESCLOSE, cmdPANECLOSE,
-    cmdTERMUNFOCUS, cmdVINORMAL,
+    cmdTERMUNFOCUS, cmdREPLENTER, cmdREPLCOMPLETE, cmdREPLOLDER, cmdREPLNEWER,
+    cmdREPLUNFOCUS, cmdVINORMAL,
     // ---- the vi grammar (@normal): operators, the G motion, insert entries ----
     cmdVIDELETE, cmdVICHANGE, cmdVIGOTO, cmdVIINSERT, cmdVIINSERTBOL, cmdVIAPPEND,
     cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
@@ -100,6 +101,7 @@ void cmd_table(var &t)
     rows[] = { "name": "quit", "code": cmdQUIT };
     rows[] = { "name": "redo", "code": cmdREDO };
     rows[] = { "name": "refresh", "code": cmdREFRESH };
+    rows[] = { "name": "repl", "code": cmdREPL };
     rows[] = { "name": "save", "code": cmdSAVE };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
@@ -146,6 +148,11 @@ void cmd_table(var &t)
     rows[] = { "name": "modesclose", "code": cmdMODESCLOSE };
     rows[] = { "name": "paneclose", "code": cmdPANECLOSE };
     rows[] = { "name": "termunfocus", "code": cmdTERMUNFOCUS };
+    rows[] = { "name": "replenter", "code": cmdREPLENTER };
+    rows[] = { "name": "replcomplete", "code": cmdREPLCOMPLETE };
+    rows[] = { "name": "replolder", "code": cmdREPLOLDER };
+    rows[] = { "name": "replnewer", "code": cmdREPLNEWER };
+    rows[] = { "name": "replunfocus", "code": cmdREPLUNFOCUS };
     rows[] = { "name": "vinormal", "code": cmdVINORMAL };
     rows[] = { "name": "videlete", "code": cmdVIDELETE };
     rows[] = { "name": "vichange", "code": cmdVICHANGE };
@@ -460,7 +467,7 @@ long pmode_of(var &name)
 enum ide_view : unsigned char
 {
     viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
-    viewPROJECT, viewOUTLINE, viewHELP
+    viewPROJECT, viewOUTLINE, viewHELP, viewREPL
 };
 const char *view_name(long k)
 {
@@ -474,6 +481,25 @@ const char *view_name(long k)
 	case viewPROJECT: return "project";
 	case viewOUTLINE: return "outline";
 	case viewHELP: return "help";
+	case viewREPL: return "repl";
+    }
+    return "";
+}
+// The view's title on its tab (the display spelling; the name above is the
+// profile's word).
+const char *view_title(long k)
+{
+    switch ( k )
+    {
+	case viewSOURCE: return "Source";
+	case viewCODE: return "Code";
+	case viewPROBLEMS: return "Problems";
+	case viewOUTPUT: return "Output";
+	case viewTERMINAL: return "Terminal";
+	case viewPROJECT: return "Project";
+	case viewOUTLINE: return "Outline";
+	case viewHELP: return "Help";
+	case viewREPL: return "REPL";
     }
     return "";
 }
@@ -481,7 +507,7 @@ long view_of(var &name)
 {
     if ( name.is_null() )
 	return viewNONE;
-    for ( long k = viewSOURCE; k <= viewHELP; k = k + 1 )
+    for ( long k = viewSOURCE; k <= viewREPL; k = k + 1 )
 	if ( name == view_name(k) )
 	    return k;
     return viewNONE;
@@ -500,8 +526,28 @@ long view_show_cmd(long kind)
 	case viewOUTLINE: return cmdOUTLINE;
 	case viewPROJECT: return cmdPROJECT;
 	case viewHELP: return cmdHELP;
+	case viewREPL: return cmdREPL;
     }
     return cmdNONE;
+}
+
+// The commands a text FIELD honours (the REPL pane's input, plan §41.9a):
+// the caret's motions, the deletions and the edit history — what edits one
+// buffer in place. Every other command keeps its own target while a field
+// has the keyboard (save saves the file, build builds it: Thonny's shell
+// does the same). A new editing verb that belongs in a field goes here.
+bool cmd_edits_field(long code)
+{
+    switch ( code )
+    {
+	case cmdLEFT: case cmdRIGHT: case cmdUP: case cmdDOWN:
+	case cmdHOME: case cmdEND: case cmdPGUP: case cmdPGDN:
+	case cmdBACKSPACE: case cmdDEL: case cmdENTER:
+	case cmdWORDLEFT: case cmdWORDRIGHT: case cmdDELLINE: case cmdDELWORD:
+	case cmdTOP: case cmdBOTTOM: case cmdUNDO: case cmdREDO:
+	    return true;
+    }
+    return false;
 }
 
 // A rendered View's GENERATOR — the compiler that produced its text: genNONE

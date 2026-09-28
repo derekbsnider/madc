@@ -97,6 +97,41 @@ TEST_CASE("session backend: an entry's output comes before its result")
     CHECK(out == "42\n");
 }
 
+// The next reply, however many polls it takes.
+int next_reply(SessionClient &c, SessionClient::Reply &r, std::string &out)
+{
+    int got;
+    do
+	got = c.poll(r, out, kWait);
+    while ( got == 0 );
+    return got;
+}
+
+TEST_CASE("session backend: a taken entry's running notice comes before its output")
+{
+    SessionClient c;
+    REQUIRE(c.start("--std=c11"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.offer_wait("#include <stdio.h>", true, r, out, kWait) == 1);
+    out.clear();
+    const unsigned seq = c.offer("printf(\"after\\n\");", true);
+    REQUIRE(next_reply(c, r, out) == 1);
+    CHECK(r.kind == SessionClient::Reply::Kind::running);
+    CHECK(r.seq == seq);
+    CHECK(out.empty());
+    REQUIRE(next_reply(c, r, out) == 1);
+    CHECK(r.kind == SessionClient::Reply::Kind::offer);
+    CHECK(r.seq == seq);
+    CHECK(out == "after\n");
+    // An entry that is not taken runs nothing and sends no notice.
+    const unsigned more = c.offer("int f(void) {", false);
+    REQUIRE(next_reply(c, r, out) == 1);
+    CHECK(r.kind == SessionClient::Reply::Kind::offer);
+    CHECK(r.seq == more);
+    CHECK(r.state == InteractiveSession::OfferState::incomplete);
+}
+
 TEST_CASE("session backend: an offer's verdict, a refused entry's diagnostics")
 {
     SessionClient c;

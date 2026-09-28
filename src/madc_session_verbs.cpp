@@ -69,6 +69,8 @@ madc::value reply_row(const SessionClient::Reply &r)
     f["seq"] = madc::value((int64_t)r.seq);
     switch ( r.kind )
     {
+	case madc::session_reply::running:	// the kind and the seq say it all
+	    break;
 	case madc::session_reply::offer:
 	    f["state"] = madc::value((int64_t)r.state);
 	    f["ok"] = madc::value(r.ok);
@@ -120,6 +122,12 @@ const char *session_error(int64_t handle)
     SessionHandle *s = session_of(handle);
     return ns_common::ring_text(s ? s->client.last_error()
 				  : std::string("session: no such handle"));
+}
+
+const char *session_standard(int64_t handle)
+{
+    SessionHandle *s = session_of(handle);
+    return ns_common::ring_text(s ? s->client.standard() : std::string());
 }
 
 int64_t session_offer(int64_t handle, const char *text, bool final)

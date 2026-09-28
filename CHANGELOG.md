@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### madcide's REPL tab (§37 item 9, slice 3)
+
+madcide's bottom panel has a REPL tab (View > REPL, or the `repl` command).
+It runs an interactive session in its own process: the running madc forks,
+and nothing execs. The prompt shows the standard (`c11> `). The tab shows a
+transcript of each entry after its prompt, what it printed, and its value or
+its diagnostics. Under the transcript is an input field. Typing edits the
+field with the profile's own keys and never touches the editor. Enter offers
+the entry. An unfinished one keeps editing on a new line. Up and down walk
+the history from the field's first and last line. Tab completes from the
+session. ^] hands the keyboard back. While an entry runs, the lines you type
+are its stdin. If an entry crashes, the transcript says so and the next entry
+runs in a fresh session. The REPL keys are the `@repl` scope's defaults, and
+a `.keys` profile can rebind them.
+
+The session protocol gained a `running` notice, sent when an entry is taken
+and before it runs, so the transcript shows the entry before its output. The
+new `madc::session_standard(h)` names the standard in force. Panel tabs now
+take their titles from the view vocabulary ("REPL", not "Repl").
+
+In a window or the terminal UI, tab always moved focus once the screen had
+two focusable parts, so the Terminal tab's shell never got a tab either. An
+edit node's `tabkey` hint now keeps tab for that field while it has focus.
+The Terminal and the REPL input use it.
+
+Tests: `testmadcide_repl` (the pane, headless: JIT, `--exe`, `--obj`) and
+`tests/gui/madcide_repl` (in the window under Xvfb, typed through the page's
+own input path).
+
 ### Sessions from the dialect: `madc::session_*` (§37 item 9, slice 2)
 
 A madc program can now run an interactive session in a backend process and

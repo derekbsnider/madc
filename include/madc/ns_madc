@@ -663,6 +663,8 @@ namespace madc {
     //     spelling, with or without the prefix ("" = the default). A backend
     //     that could not start (a refused standard; Windows, no fork yet) is
     //     the handle's state: session_running false, session_error the text.
+    //     session_standard(h): the backend's standard by its canonical name
+    //     ("c17", "madc"), the prompt's; "" until a backend began.
     //   session_offer(h, text, final) / session_complete(h, text, caret):
     //     the request's seq, 0 when the backend is not running. A completion
     //     is answered once a running entry ends.
@@ -670,7 +672,9 @@ namespace madc {
     //     the backend stopped (reply is its row; the backend is restarted,
     //     its state empty, and the row's `restarted` says whether the new one
     //     started). A reply row: kind (a
-    //     madc::session_reply code) and seq; an offer's state (a
+    //     madc::session_reply code) and seq. An offered entry that is taken
+    //     first sends a `running` row (Jupyter's execute_input): what it
+    //     prints comes after it, then its offer row. An offer's state (a
     //     madc::offer_state code), ok, shown, rendered (the diagnostics as the
     //     CLI prints them), submitted, diagnostics (the rows parse_check
     //     returns); a completion's start and names; a stop's exit_status
@@ -686,6 +690,7 @@ namespace madc {
     int64_t session_open(const char *std);
     bool session_running(int64_t handle);
     const char *session_error(int64_t handle);
+    const char *session_standard(int64_t handle);
     int64_t session_offer(int64_t handle, const char *text, bool final);
     int64_t session_complete(int64_t handle, const char *text, int64_t caret);
     int64_t session_poll(value &reply, int64_t handle);

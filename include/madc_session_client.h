@@ -61,6 +61,8 @@ public:
 	typedef ::madc::session_reply Kind;	// <bits/session_enums>: the dialect's text too
 	Kind kind;
 	unsigned seq;			// the request's
+	// running: an offered entry was taken and runs now; its output
+	// follows (the next polls), then its offer reply.
 	// An offer's: the verdict, and once taken, the result, the shown
 	// value, the entries taken so far (REPL[N]), the rendered diagnostics
 	// (the text the CLI prints) and their rows (diagnostic rows: severity,
@@ -113,6 +115,9 @@ public:
     void take_output(std::string &output);
 
     const std::string &last_error() const { return error_text; }
+    // The backend's standard by its canonical name ("c17", "madc"): the
+    // prompt's (D22). Empty until a backend began.
+    const std::string &standard() const { return standard_name; }
 
 private:
     bool send(const std::string &line);
@@ -129,6 +134,7 @@ private:
     std::string std_option;
     ProgramFactory make_program;
     std::string error_text;
+    std::string standard_name;
     SessionClient(const SessionClient &);
     SessionClient &operator=(const SessionClient &);
 };
@@ -139,6 +145,7 @@ namespace madc {
 int64_t session_open(const char *std);
 bool session_running(int64_t handle);
 const char *session_error(int64_t handle);
+const char *session_standard(int64_t handle);
 int64_t session_offer(int64_t handle, const char *text, bool final);
 int64_t session_complete(int64_t handle, const char *text, int64_t caret);
 int64_t session_poll(value &reply, int64_t handle);

@@ -1,0 +1,22 @@
+show: tab=repl live=1 focus=1 standard=c11
+typed: input=int x = 6 * 7; editor untouched=true editor caret=5 field caret=14
+motion: field caret=13 editor caret=5
+c11> printf("hi %d\n", x);
+hi 42
+unfinished: input="int f(void) {\n"
+c11> int f(void) {
+     return 3; }
+c11> f()
+refused: error shown=true
+older: int y = ;
+older again: f()
+newer: int y = ;
+newer to the draft: []
+completed: twice_it caret=8
+running: 1
+c11> int n = 0; scanf("%d", &n); printf("%d\n", n + 1);
+41
+42
+crash: said=true fresh=true
+compose: ends="\nc11> 1 +" caret at end=true focus=1 subject is input=true
+unfocus: focus=0

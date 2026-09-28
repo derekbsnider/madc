@@ -1,0 +1,213 @@
+// madcide's REPL tab, headless (plan §41.9a slice 3; §37 item 9). The `repl`
+// command shows the tab, starts a session in its own process and gives the
+// input field the keyboard. Pins:
+//   1. typed text edits the input buffer and never the editor's buffer or
+//      caret; enter offers it: a taken entry lands in the transcript after
+//      the prompt, then what it printed, then its shown value;
+//   2. an unfinished entry keeps editing on a new line, and the finished
+//      one shows its continuation indented to the prompt's width;
+//   3. a refused entry shows its diagnostics; up / down walk the history
+//      at the input's first / last line; tab completes from the session;
+//   4. while an entry runs, a line typed in the input is its stdin;
+//   5. a crash says so and the next entry runs in a new session;
+//   6. ^] hands the keyboard back, and the composed node is the transcript,
+//      the prompt and the input, with the caret in the input.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void ev_text(var &e, const char *t)
+{
+    var f = { "event": "text", "event_code": ui::event_kind::text, "text": t };
+    e = f;
+}
+
+void ev_key(var &e, const char *k)
+{
+    var f = { "event": "key", "event_code": ui::event_kind::key, "key": k,
+	      "key_code": ui::key_code(k) };
+    e = f;
+}
+
+void ev_action(var &e, const char *a, const char *seq)
+{
+    var f = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": a, "seq": seq };
+    e = f;
+}
+
+// Let the pump run until nothing is outstanding (or `ms` passed): an offer
+// answered, a completion answered — or, with `running`, until the offered
+// entry has been taken and runs.
+void settle(long w, long es, bool running)
+{
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	if ( running && es_int(w, es, "replrunning", 0) != 0 )
+	    return;
+	if ( !running && es_int(w, es, "replbusy", 0) == 0
+	     && es_int(w, es, "replcseq", 0) == 0 )
+	    return;
+	madc::sleep_ms(10);
+    }
+    println("settle: timed out");
+}
+
+// Type a line into whatever has the keyboard, then press enter and settle.
+void enter_line(IdeSession &S, long doc, long w, long es, const char *text)
+{
+    var e;
+    if ( strlen(text) > 0 )
+    {
+	ev_text(e, text);
+	S.apply_ide_event(doc, e);
+    }
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+}
+
+// The transcript's text after `from` bytes (what the last steps added).
+void transcript_since(var &out, long w, long es, long from)
+{
+    var t = "";
+    long rd = repl_doc_if_any(w, es);
+    if ( rd != 0 )
+	ui::text(t, w, rd);
+    out = t.substr(from, strlen(t.c_str()) - from);
+}
+
+long transcript_size(long w, long es)
+{
+    long rd = repl_doc_if_any(w, es);
+    return rd == 0 ? 0 : ui::text_size(w, rd);
+}
+
+void input_text(var &out, long w, long es)
+{
+    ui::text(out, w, repl_input_doc(w, es));
+}
+
+int main()
+{
+    const char *path = "madc_ide_repl.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    ui::set(w, es, "replstd", "c11");
+    IdeSession S;
+    S.attach(w, es);
+    ui::set(w, es, "caret", 5);
+
+    // 1. The tab, the session, the keyboard.
+    var e;
+    ev_action(e, "repl", "");
+    S.apply_ide_event(doc, e);
+    println("show: tab={} live={} focus={} standard={}",
+	    view_name(slot_shown(w, es, slotPANEL)), es_int(w, es, "repllive", 0),
+	    es_int(w, es, "replfocus", 0), madc::session_standard(es_int(w, es, "replh", 0)));
+    enter_line(S, doc, w, es, "#include <stdio.h>");
+    ev_text(e, "int x = 6 * 7;");
+    S.apply_ide_event(doc, e);
+    var in;
+    input_text(in, w, es);
+    var edtext;
+    ui::text(edtext, w, doc);
+    println("typed: input={} editor untouched={} editor caret={} field caret={}", in,
+	    strcmp(edtext.c_str(), "long add(long a, long b) { return a + b; }\n") == 0,
+	    es_int(w, es, "caret", -1), es_int(w, es, "rcaret", -1));
+    ev_key(e, "left");
+    S.apply_ide_event(doc, e);
+    println("motion: field caret={} editor caret={}", es_int(w, es, "rcaret", -1),
+	    es_int(w, es, "caret", -1));
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    long mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "printf(\"hi %d\\n\", x);");
+    var got;
+    transcript_since(got, w, es, mark);
+    print("printed:\n{}", got);
+
+    // 2. An unfinished entry keeps editing; the finished one is indented.
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "int f(void) {");
+    input_text(in, w, es);
+    println("unfinished: input={}", js::stringify(in));
+    enter_line(S, doc, w, es, "return 3; }");
+    enter_line(S, doc, w, es, "f()");
+    transcript_since(got, w, es, mark);
+    print("multi-line:\n{}", got);
+
+    // 3. A refused entry; the history; completion.
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "int y = ;");
+    transcript_since(got, w, es, mark);
+    println("refused: error shown={}", rust::contains(got.c_str(), "error") != 0);
+    ev_key(e, "up");
+    S.apply_ide_event(doc, e);
+    input_text(in, w, es);
+    println("older: {}", in);
+    S.apply_ide_event(doc, e);
+    input_text(in, w, es);
+    println("older again: {}", in);
+    ev_key(e, "down");
+    S.apply_ide_event(doc, e);
+    input_text(in, w, es);
+    println("newer: {}", in);
+    S.apply_ide_event(doc, e);
+    input_text(in, w, es);
+    println("newer to the draft: [{}]", in);
+    enter_line(S, doc, w, es, "int twice_it(int v) { return 2 * v; }");
+    ev_text(e, "twi");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "tab");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    input_text(in, w, es);
+    println("completed: {} caret={}", in, es_int(w, es, "rcaret", -1));
+    repl_set_input(w, es, "");
+
+    // 4. A running entry's stdin.
+    mark = transcript_size(w, es);
+    ev_text(e, "int n = 0; scanf(\"%d\", &n); printf(\"%d\\n\", n + 1);");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    settle(w, es, true);
+    println("running: {}", es_int(w, es, "replrunning", 0));
+    enter_line(S, doc, w, es, "41");
+    transcript_since(got, w, es, mark);
+    print("stdin:\n{}", got);
+
+    // 5. A crash, and the next entry in a new session.
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "int *p = 0; *p = 1;");
+    enter_line(S, doc, w, es, "x");
+    transcript_since(got, w, es, mark);
+    println("crash: said={} fresh={}",
+	    rust::contains(got.c_str(), "[the session stopped (exit 139); a new one started]") != 0,
+	    rust::contains(got.c_str(), "undeclared") != 0);
+
+    // 6. The composed node, then the keyboard back.
+    ev_text(e, "1 +");
+    S.apply_ide_event(doc, e);
+    var node;
+    repl_compose(node, w, es);
+    var content = node["content"];
+    long clen = strlen(content.c_str());
+    var hints = node["hints"];
+    var tail = content.substr(clen - 9, 9);
+    println("compose: ends={} caret at end={} focus={} subject is input={}",
+	    js::stringify(tail), hints["caret"] == clen,
+	    hints["focus"], node["subject"] == repl_input_doc(w, es));
+    ev_key(e, "^]");
+    S.apply_ide_event(doc, e);
+    println("unfocus: focus={}", es_int(w, es, "replfocus", 0));
+    S.close();				// stops the pump and the session
+    php::unlink(path);
+    return 0;
+}

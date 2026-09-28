@@ -19,6 +19,8 @@ void pump(long h, long stop, long replies)
 	var r;
 	while ( madc::session_poll(r, h) != 0 )
 	{
+	    if ( r["kind"] == madc::session_reply::running )
+		continue;		// the entry runs; its reply follows
 	    var o;
 	    madc::session_output(o, h);
 	    r["output"] = o;
