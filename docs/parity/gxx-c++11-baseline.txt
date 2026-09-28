@@ -93,6 +93,12 @@
 #   members), noexcept62 (B57: __has_nothrow_constructor is undeclared).
 # SHRUNK 2026-09-28 (470 -> 466): a nested aggregate's C++ members route its
 #   struct to the class parser — nsdmi12, pr105256, pr70528, sfinae59.
+# EXPOSED 2026-09-28 (466 -> 467), B36: `using tuple<T, T>::tuple;` inherits
+#   constructors. cpp0x/constexpr-83144 compiled only because madc SKIPPED that
+#   using-declaration and ignored `interval_t<int>{2, argc}`; it now refuses,
+#   honestly, on its own gap: a constructor template declared without a
+#   definition (`template <class U1, class U2> tuple(U1, U2);`) never becomes a
+#   candidate, even for `tuple<int, int>{2, a}` itself. Fixed next.
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -130,6 +136,7 @@ g++.dg/cpp0x/constexpr-69315.C
 g++.dg/cpp0x/constexpr-71537.C
 g++.dg/cpp0x/constexpr-71828.C
 g++.dg/cpp0x/constexpr-77771.C
+g++.dg/cpp0x/constexpr-83144.C
 g++.dg/cpp0x/constexpr-92015.C
 g++.dg/cpp0x/constexpr-__func__2.C
 g++.dg/cpp0x/constexpr-aggr1.C

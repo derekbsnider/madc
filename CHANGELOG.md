@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### `std::unique_ptr` holds its pointer
+
+`using Base<T>::Base;` now inherits the base's constructors, constructor
+templates included, and so does `using B::B;` inside a class template.
+libstdc++'s unique_ptr is built this way. Before, every `std::unique_ptr` built from a pointer held null,
+`std::make_unique`'s included, and a file-scope one initialized from
+`make_unique` crashed before `main`.
+
 ### A returned temporary is built in place
 
 `return T(args);` now constructs the function's result directly. When no

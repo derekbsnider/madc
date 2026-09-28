@@ -3764,13 +3764,91 @@ DataDef *Program::class_member_type(DataDefCLASS *cls, const std::string &name)
     return resolve_class_type_alias(cls, name);
 }
 
+static TokenBase *peek_after_balanced_template_id_from(
+	Program &pgm, size_t lt_index, size_t *follow_index);
+
+// [namespace.udecl]/3 + [class.inhctor]: a using-declaration that names a
+// base's constructors makes them the derived class's own candidates. The ONE
+// import, shared by the live class parse and the ClassPattern replay (a class
+// template's instantiation). Returns whether anything was imported.
+static bool import_inherited_constructors(DataDefCLASS *owner, DataDefCLASS *base)
+{
+    bool imported = false;
+    for ( size_t i = 0; i < base->ctors.size(); ++i )
+    {
+	Variable *bc = base->ctors[i];
+	if ( !bc )
+	    continue;
+	FuncDef *fd = dynamic_cast<FuncDef *>(bc->type);
+	if ( !fd )
+	    continue;
+	// [class.inhctor]/3: the base's DEFAULT, COPY and MOVE constructors
+	// are NOT inherited — the derived class declares its own, and
+	// importing the copy ctor would let `B b2(b1);` select a ctor that
+	// copies only the base subobject (a silent slice).
+	size_t user_params = fd->parameters.empty()
+			   ? 0 : fd->parameters.size() - 1;
+	if ( user_params == 0 )
+	    continue;
+	if ( user_params == 1 && fd->is_ref_param(1) )
+	{
+	    DataDefPTR *pp = pointer_dd_of(fd->parameters[1]);
+	    if ( pp && pp->base_type == base )
+		continue;
+	}
+	bool present = false;
+	for ( size_t j = 0; j < owner->ctors.size(); ++j )
+	    if ( owner->ctors[j] == bc ) { present = true; break; }
+	if ( present )
+	    continue;
+	owner->ctors.push_back(bc);
+	imported = true;
+    }
+    if ( imported )
+	owner->has_user_ctor = true;
+    return imported;
+}
+
+// The direct base a template-id nested-name-specifier `N<args>::` names in a
+// using-declaration ([namespace.udecl]/3 requires a base). A concrete base
+// answers through its injected-class-name ([class.pre]/2); a dependent base of
+// a class template's pattern parse through the template its shell was minted
+// from. Two direct bases from one template leave it to the arguments, which
+// this does not compare: NULL, and the declaration keeps the skip.
+static DataDefCLASS *direct_base_of_template(Program &pgm, DataDefCLASS *ddc,
+					     const std::string &tname)
+{
+    DataDefCLASS *found = NULL;
+    for ( size_t i = 0; i < ddc->bases.size(); ++i )
+    {
+	DataDefCLASS *b = ddc->bases[i].base;
+	if ( !b )
+	    continue;
+	bool named = resolve_class_type_alias(b, tname) == b;
+	if ( !named )
+	{
+	    std::map<DataDef *, Program::DependentShellOrigin>::const_iterator oi =
+		pgm.dependent_shell_origin.find(b);
+	    named = oi != pgm.dependent_shell_origin.end()
+		 && oi->second.tname == tname;
+	}
+	if ( !named )
+	    continue;
+	if ( found )
+	    return NULL;
+	found = b;
+    }
+    return found;
+}
+
 // Class-scope `using <Base>::<member>;` ([namespace.udecl]): import the base
 // class's <member> overload(s) into THIS class's overload set so they compete
 // with the class's own same-name overloads (a using-declaration defeats name
 // hiding). Real `__gnu_cxx::__alloc_traits` does `using _Base_type::construct;`
 // to expose std::allocator_traits<_Alloc>::construct alongside its own
 // custom-pointer construct overload — overload resolution + [temp.func.order]
-// then pick the right one. Handles the single-name-scope, single-member shape;
+// then pick the right one. Handles a single-member declaration whose scope is
+// one name or one template-id (`using IT<T>::IT;`);
 // returns false (caller falls back to skipping the declaration) for any other
 // shape or an unresolved/non-class base. Peeks pgm.tokens; consumes ONLY on a
 // successful import (so unhandled forms reach the existing skip unchanged).
@@ -3779,10 +3857,20 @@ static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
     if ( !ddc )
 	return false;
     // tokens: [0]=using [1]=scope-name [2]=:: [3]=member [4]=;
-    if ( pgm.tokens.size() < 5 )
+    // or a template-id scope, [1]=scope-name [2]=< ... > [ns_at]=:: — the
+    // base named by its template-id, as libstdc++'s __uniq_ptr_data inherits
+    // its constructors (`using __uniq_ptr_impl<_Tp, _Dp>::__uniq_ptr_impl;`).
+    // Skipped, that declaration left std::unique_ptr's `_M_t(__p)` with no
+    // constructor taking the pointer: every unique_ptr held null.
+    size_t ns_at = 2;
+    if ( pgm.tokens.size() > 2 && pgm.tokens[2]
+      && pgm.tokens[2]->id() == TokenID::tkLT
+      && !peek_after_balanced_template_id_from(pgm, 2, &ns_at) )
 	return false;
-    TokenBase *scope_tb = pgm.tokens[1], *ns_tb = pgm.tokens[2];
-    TokenBase *mem_tb = pgm.tokens[3], *semi_tb = pgm.tokens[4];
+    if ( pgm.tokens.size() < ns_at + 3 )
+	return false;
+    TokenBase *scope_tb = pgm.tokens[1], *ns_tb = pgm.tokens[ns_at];
+    TokenBase *mem_tb = pgm.tokens[ns_at + 1], *semi_tb = pgm.tokens[ns_at + 2];
     if ( !scope_tb || !ns_tb || !mem_tb || !semi_tb )
 	return false;
     if ( ns_tb->id() != TokenID::tkNS || semi_tb->id() != TokenID::tkSemi )
@@ -3794,8 +3882,9 @@ static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
     std::string member = contextual_identifier_name(mem_tb);
     if ( scope_name.empty() || member.empty() )
 	return false;
-    DataDefCLASS *base =
-	dynamic_cast<DataDefCLASS *>(resolve_class_type_alias(ddc, scope_name));
+    DataDefCLASS *base = ns_at > 2
+	? direct_base_of_template(pgm, ddc, scope_name)
+	: dynamic_cast<DataDefCLASS *>(resolve_class_type_alias(ddc, scope_name));
     if ( !base )
 	return false;
     bool captured = false;
@@ -3824,42 +3913,13 @@ static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
     // what makes the injected-class-name ([class.pre]/2) and a monomorphized
     // class's short alias both work — its identity `name` can be a full
     // mangled spelling that never equals the source token.
-    if ( dynamic_cast<DataDefCLASS *>(resolve_class_type_alias(ddc, member))
+    // [class.qual]/2: the name after the nested-name-specifier names the
+    // constructors when it is the last component's identifier or template-name
+    // (`using IT<T>::IT;`), or when it finds the base's injected-class-name.
+    if ( member == scope_name
+      || dynamic_cast<DataDefCLASS *>(resolve_class_type_alias(ddc, member))
 	 == base )
-    {
-	for ( size_t i = 0; i < base->ctors.size(); ++i )
-	{
-	    Variable *bc = base->ctors[i];
-	    if ( !bc )
-		continue;
-	    FuncDef *fd = dynamic_cast<FuncDef *>(bc->type);
-	    if ( !fd )
-		continue;
-	    // [class.inhctor]/3: the base's DEFAULT, COPY and MOVE constructors
-	    // are NOT inherited — the derived class declares its own, and
-	    // importing the copy ctor would let `B b2(b1);` select a ctor that
-	    // copies only the base subobject (a silent slice).
-	    size_t user_params = fd->parameters.empty()
-			       ? 0 : fd->parameters.size() - 1;
-	    if ( user_params == 0 )
-		continue;
-	    if ( user_params == 1 && fd->is_ref_param(1) )
-	    {
-		DataDefPTR *pp = pointer_dd_of(fd->parameters[1]);
-		if ( pp && pp->base_type == base )
-		    continue;
-	    }
-	    bool present = false;
-	    for ( size_t j = 0; j < ddc->ctors.size(); ++j )
-		if ( ddc->ctors[j] == bc ) { present = true; break; }
-	    if ( present )
-		continue;
-	    ddc->ctors.push_back(bc);
-	    imported = true;
-	}
-	if ( imported )
-	    ddc->has_user_ctor = true;
-    }
+	imported = import_inherited_constructors(ddc, base);
     for ( size_t i = 0; i < base->methods.size(); ++i )
     {
 	Variable *bm = base->methods[i];
@@ -3884,8 +3944,8 @@ static bool try_import_using_base_member(Program &pgm, DataDefCLASS *ddc)
     }
     if ( !imported && !captured )
 	return false;
-    pgm.nextToken(); pgm.nextToken(); pgm.nextToken();	// using scope ::
-    pgm.nextToken(); pgm.nextToken();			// member ;
+    for ( size_t k = 0; k < ns_at + 3; ++k )	// using scope [<...>] :: member ;
+	pgm.nextToken();
     return true;
 }
 
@@ -9178,6 +9238,10 @@ static void import_basic_class_pattern_using_member(
 {
     if ( !owner || !base )
 	return;
+    // The captured name is the base's injected-class-name when the declaration
+    // named its constructors (`using IT<T>::IT;`): the instance inherits them.
+    if ( resolve_class_type_alias(base, name) == base )
+	import_inherited_constructors(owner, base);
     for ( size_t i = 0; i < base->methods.size(); ++i )
     {
 	Variable *method = base->methods[i];
@@ -65937,6 +66001,28 @@ void Program::instantiate_member_ctor_template_for_construction(
     for ( size_t skip = 0; skip < candidate_limit; ++skip )
 	if ( instantiate_member_ctor_template_candidate(cdd, ctor_args, skip) )
 	    return;
+    // [class.inhctor]: a constructor template inherited from a base (`using
+    // P<T>::P;`) instantiates in the base that declares it, and the instance
+    // is inherited in turn. The candidate scan above takes only the class's
+    // OWN templates, so `Q<int> q{7, 9L}` found no constructor.
+    std::vector<DataDefCLASS *> owners;
+    for ( Variable *cv : cdd->ctors )
+    {
+	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+	DataDefCLASS *owner = cfd && cfd->is_member_template
+	    ? dynamic_cast<DataDefCLASS *>(cfd->member_template_owner) : NULL;
+	if ( owner && owner != cdd && cdd->is_or_derives_from(owner)
+	  && std::find(owners.begin(), owners.end(), owner) == owners.end() )
+	    owners.push_back(owner);
+    }
+    for ( DataDefCLASS *owner : owners )
+    {
+	size_t before = owner->ctors.size();
+	instantiate_member_ctor_template_for_construction(owner, ctor_args,
+							  list_initialization);
+	if ( owner->ctors.size() != before )
+	    import_inherited_constructors(cdd, owner);
+    }
 }
 
 bool Program::instantiate_member_ctor_template_candidate(

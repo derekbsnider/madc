@@ -131,27 +131,6 @@ int main(void)
   since the literal was emitted unsized, and a store to p[2] overwrote the
   next object.
 
-### B36. A file-scope `std::unique_ptr` is not initialized
-
-- Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).
-
-```cpp
-#include <memory>
-#include <stdio.h>
-std::unique_ptr<int> p(new int(3));
-int main() { printf("%d\n", p ? *p : -1); return 0; }
-```
-
-- g++ 13: `3`. madc `--std=c++17`: `-1`, silently. The same global written
-  `std::unique_ptr<int> q = std::make_unique<int>(5);` crashes (SIGSEGV)
-  before `main`'s first statement, where g++ prints 5.
-- An entry's `std::unique_ptr<int> p(new int(3));` then `p` shows
-  `std::unique_ptr<int32_t,std::default_delete<int32_t>>{ ._M_t = { ._M_t =
-  { ._M_head_impl = (int *) nullptr } } }`. The spelling is wrong too: the
-  source's is `std::unique_ptr<int>`, without the default argument.
-- Where: not traced. The constructor's argument never reaches the global's
-  construction.
-
 ### B50. `&arr` is typed as a pointer to the element, not to the array
 
 - Found 2026-09-27, while building D12's slice 2 (plan §41.6a), whose array
@@ -931,6 +910,24 @@ int main(void) { return t; }
 - Where: `Program::declare_object`'s redefinition refusal (D18,
   `bd3c56500`) throws at `where`, the token its caller passes, and that
   token is not the declarator-id. Reducer: `tmp/repl/d20s2/redef.c`.
+
+### B36. An entry spells a class type with its default template arguments
+
+- Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).
+  Its silent half is fixed (2026-09-28): a `std::unique_ptr` built from a
+  pointer held null.
+
+```cpp
+#include <memory>
+std::unique_ptr<int> p(new int(3));
+```
+
+- An entry's `p` shows its type as
+  `std::unique_ptr<int32_t,std::default_delete<int32_t>>`. The source's
+  spelling is `std::unique_ptr<int>`, without the default argument (and
+  `int`, not madc's `int32_t`).
+- Where: not traced. The entry's value display spells the instance's
+  canonical name.
 
 ### B39. A missing `;` after an `auto` declaration is cited inside the next line
 
