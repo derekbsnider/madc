@@ -7,9 +7,9 @@ wine64	yes	fbfd79670e9d	2026-09-24	1560/0/0TO/73skip — seam battery at fbfd796
 headerless-win	yes	fbfd79670e9d	2026-09-24	1559/0/0TO/74skip — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude); pack v4 roots setjmp.h/signal.h
 macos	yes	fbfd79670e9d	2026-09-24	BUILD lane: release-macos rc=0 on BOTH arches + package-macos rc=0 + pull tarballs rc=0 — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
 aarch64-ld	yes	fbfd79670e9d	2026-09-24	scripts/aarch64_ldouble_lane.sh under qemu-aarch64: control OK; GREEN aot + jit on every tests/cross/aarch64_*.c fixture — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
-c-testsuite	commit	71f0505e5416	2026-09-28	220 passed, 0 failed
-c-torture	commit	71f0505e5416	2026-09-28	1613 passed, 11 baseline failing, 0 outside baseline
-c2mir-tests	commit	71f0505e5416	2026-09-28	309 passed, 54 baseline failing, 0 outside baseline
-gui	commit	71f0505e5416	2026-09-28	20/20 JIT, 20/20 EXE, 20/20 OBJ
-gxx-c++11	no	71f0505e5416	2026-09-28	1481 passed, 465 baseline failing, 0 outside baseline
-index-c	yes	71f0505e5416	2026-09-28	50/50 tasks OK
+c-testsuite	commit	e58b978fa2ef	2026-09-28	220 passed, 0 failed
+c-torture	commit	e58b978fa2ef	2026-09-28	1613 passed, 11 baseline failing, 0 outside baseline
+c2mir-tests	commit	e58b978fa2ef	2026-09-28	309 passed, 54 baseline failing, 0 outside baseline
+gui	commit	e58b978fa2ef	2026-09-28	20/20 JIT, 20/20 EXE, 20/20 OBJ
+gxx-c++11	no	e58b978fa2ef	2026-09-28	1481 passed, 465 baseline failing, 0 outside baseline
+index-c	yes	e58b978fa2ef	2026-09-28	50/50 tasks OK
