@@ -42,7 +42,9 @@ if ! command -v perl >/dev/null 2>&1; then
 	exit 1
 fi
 
-BASELINE=0
+# 74 on 2026-09-28, when the token marker below first saw the token scans
+# (BUGS.md B58-B61). Each migration lowers it.
+BASELINE=74
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #
@@ -79,6 +81,108 @@ behavior_hits=$(find src include -type f \( -name '*.cpp' -o -name '*.h' \) -pri
 if [ -n "$behavior_hits" ]; then
 	hits="${hits}${hits:+$'\n'}${behavior_hits}"
 fi
+
+# Name-independent TOKEN form, all four delimiters.  ...and the two markers
+# above still had a hole, the one this whole comment is about: the behavior
+# check matched only a raw `'('` CHARACTER scan, so a TOKEN scan
+# (`id() == TokenID::tkLT` ... `++depth`) with a counter named anything but
+# angle/paren/square/brace was invisible. The gate reported "GREEN, 0" on
+# 2026-09-28 over 73 of them (BUGS.md B58-B61). This marker matches the
+# behavior on tokens and characters alike: an equality test on an OPEN
+# delimiter (or on a bare variable, the `tsubst_matching_close(v, i, open_id,
+# close_id)` shape) that increments a counter, then a test on a CLOSE
+# delimiter (or a variable) that decrements the SAME counter. DelimDepth's own
+# body is the owner and is skipped.
+token_marker='
+  next if $ARGV =~ m{(^|/)(madc_program\.cpp|spelling_delim\.h|doctest\.h|json\.hpp)$};
+  my ($os, $oe) = (-1, -1);
+  if (/^struct DelimDepth \{.*?^\};/ms) { ($os, $oe) = ($-[0], $+[0]); }
+  my $open  = qr/TokenID::tk(?:LT|OpBrk|OpSqr|OpBrc)\b|\x27[(\[{<]\x27|"[(\[{<]"/;
+  my $close = qr/TokenID::tk(?:GT|BSR|ClBrk|ClSqr|ClBrc)\b|\x27[)\]}>]\x27|">>?"|"[)\]}]"/;
+  my $var   = qr/==\s*[A-Za-z_]\w*\s*\)/;
+  # Either delimiter on either side: a BACKWARD walk counts `>` up and `<`
+  # down, and is the same tracker.
+  my $test  = qr/(?:$open|$close|$var)/;
+  my %seen;
+  while (/$test[^;]{0,60}?(?:\+\+\s*([A-Za-z_]\w*)|\b([A-Za-z_]\w*)\s*(?:\+\+|\+=))/sg) {
+      my $nm = defined $1 ? $1 : $2;
+      my ($at, $end) = ($-[0], $+[0]);
+      next if $at >= $os && $at < $oe;
+      next unless substr($_, $end, 1500) =~ /$test[^;]{0,60}?(?:--\s*\Q$nm\E\b|\b\Q$nm\E\s*(?:--|-=))/s;
+      my $line = 1 + (substr($_, 0, $at) =~ tr/\n/\n/);
+      print "$ARGV:$line:token balanced-delimiter counter $nm\n" unless $seen{$line}++;
+  }'
+
+# Negative control: three hand-rolled token counters (one named nothing like a
+# delimiter, one over variable ids, one walking backwards) must be caught;
+# DelimDepth's own update() and a non-delimiter nesting counter (`?` / `:`)
+# must not.
+ctl_dir=$(mktemp -d)
+trap 'rm -rf "$ctl_dir"' EXIT
+cat > "$ctl_dir/ctl.cpp" <<'CTL'
+struct DelimDepth {
+    void update(TokenBase *t)
+    {
+	switch ( t->id() )
+	{
+	    case TokenID::tkOpBrk: ++paren; break;
+	    case TokenID::tkClBrk: if ( paren > 0 )  --paren;  break;
+	}
+    }
+};
+static size_t arity(const std::vector<TokenBase *> &decl)
+{
+    int q = 0;
+    for ( size_t i = 0; i < decl.size(); ++i )
+    {
+	if ( decl[i]->id() == TokenID::tkLT ) ++q;
+	else if ( decl[i]->id() == TokenID::tkGT ) --q;
+    }
+    return q;
+}
+static size_t matching(const std::vector<TokenBase *> &v, TokenID open_id, TokenID close_id)
+{
+    int k = 0;
+    for ( size_t i = 0; i < v.size(); ++i )
+    {
+	if ( v[i]->id() == open_id ) ++k;
+	else if ( v[i]->id() == close_id ) { if ( --k == 0 ) return i; }
+    }
+    return v.size();
+}
+static size_t backward(const std::vector<TokenBase *> &v, size_t k)
+{
+    int b = 0;
+    for ( ;; --k )
+    {
+	if ( v[k]->id() == TokenID::tkGT ) ++b;
+	else if ( v[k]->id() == TokenID::tkLT ) { if ( --b == 0 ) return k; }
+    }
+}
+static int ternaries(const std::vector<TokenBase *> &v)
+{
+    int nested = 0;
+    for ( TokenBase *t : v )
+    {
+	if ( t->id() == TokenID::tkQmark ) ++nested;
+	else if ( t->id() == TokenID::tkColon ) --nested;
+    }
+    return nested;
+}
+CTL
+ctl=$(perl -0777 -ne "$token_marker" "$ctl_dir/ctl.cpp" | grep -c .)
+if [ "$ctl" -ne 3 ]; then
+	echo "check-one-delim-tracker: NEGATIVE CONTROL FAILED -- the token marker matched"
+	echo "  $ctl of the 3 planted counters (DelimDepth and the ?: counter must not match)"
+	exit 1
+fi
+
+token_hits=$(find src include -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
+  | xargs -0 perl -0777 -ne "$token_marker")
+if [ -n "$token_hits" ]; then
+	hits="${hits}${hits:+$'\n'}${token_hits}"
+fi
+hits=$(printf '%s\n' "$hits" | grep . | sort -t: -k1,1 -k2,2n -u)
 n=$(printf '%s' "$hits" | grep -c . )
 
 # --- the Program handle on every STREAM scan ---------------------------------

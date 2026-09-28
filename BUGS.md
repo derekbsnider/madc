@@ -785,15 +785,17 @@ GREEN over. The gate's two markers are a counter NAME (`*angle*`,
 `*paren*`, `*square*`, `*brace*`) and a raw `'('` character scan, so a
 token scan (`id() == TokenID::tkLT` … `++depth`) with any other counter
 name is invisible to it. Found with a name-independent sweep: an equality
-test on an open delimiter that increments a counter, then a close that
-decrements the same counter. A function that counts several delimiters is
-listed under each. Line numbers are at `3c2c531a7`, in `src/parser.cpp`
+test on a delimiter that increments a counter, then a test on a delimiter
+that decrements the same counter (either way round, so a backward walk
+counts). The gate now carries that marker and holds the ratchet at the
+count; each migration lowers it. A function that counts several
+delimiters is listed under each. Line numbers are at `3c2c531a7`, in `src/parser.cpp`
 unless stated. The owners already exist: `DelimDepth` with
 `delim_scan_step` (index scans) and `Program::delimStepStream` (stream
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: twelve hand-rolled angle counters
+### B58. `<`: thirteen hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -810,6 +812,7 @@ scans), `peek_after_balanced_template_id_from`,
   58158 (walks backwards; `DelimDepth` has no backward form),
   `skipped_template_outofline_nested_class` 58690,
   `template_class_head_is_qualified` 58732,
+  `tsubst_elide_empty_pack_expansions` 62566 (walks backwards),
   `instantiate_fn_template_binding` 63772,
   `instantiate_member_ctor_template_candidate` 66344 (the
   `member_ctor_param_count` lambda, KG DupFamily
@@ -854,7 +857,7 @@ int main()
 - Fix order: `template_id_suffix_end` and `template_list_close_index`
   first, since other code asks them for a template-id's extent.
 
-### B59. `(`: forty-one hand-rolled paren counters
+### B59. `(`: forty-two hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -884,6 +887,7 @@ int main()
   `TokenCLASS::parse` 51068; `skip_constraint_expression` 57285 (the
   `skip_balanced` lambda, also used for `{`);
   `skipped_template_body_is_inline_identity_refcast` 60027;
+  `tsubst_elide_empty_pack_expansions` 62546 (walks backwards);
   `tsubst_matching_close` 64982; `resolve_fn_template_return_by_key`
   67062; `resolve_decltype_call_return` 67489;
   `try_parse_implicit_int_function_definition` 69935;
@@ -904,12 +908,13 @@ int main()
   g++ and clang++ when they move.
 - No failing reducer yet.
 
-### B61. `{`: twelve hand-rolled brace counters
+### B61. `{`: thirteen hand-rolled brace counters
 
 - Sites: `evaluate_requires_expression_constant` 38326, 38354;
   `parseExpr_operatorArm` 43000; `collect_compound_body_tokens` 48375;
   `TokenCLASS::parse` 50599; `skip_constraint_expression` 57285;
   `skip_template_nonclass_declaration` 57379;
+  `Program::tsubst_eligible` 65246 (walks backwards);
   `materialize_pattern_local_class` 65736; `TokenTEMPLATE::parse` 69128;
   `parseFunction` 71409; `parse_declaration_body` 74599;
   `src/madc.cpp` 133 `find_closing_brace`.

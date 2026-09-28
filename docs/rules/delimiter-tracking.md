@@ -120,6 +120,8 @@ See `.claude/rules/delimiter-tracking.md` for the bare rules.
 
 ## The family is closed (round 6, 2026-07-27)
 
+(It was not. The gate could not see token scans; see round 8.)
+
 The ratchet baseline is **0**: `DelimDepth` is the only token-delimiter tracker
 in `src/` and `include/`. Thirteen scanners were migrated over six rounds.
 
@@ -229,3 +231,44 @@ type token, so the reducer's shape is covered.
 
 Reducers: `tests/testtplargless.mad`, `tests/testlessthanqualified.mad`
 (g++ == clang++).
+
+## Round 8 (2026-09-28): the gate was blind to token scans
+
+Round 6 closed the family on the gate's word, and the gate was wrong. Its two
+markers were a counter NAME (`int *angle*|*paren*|*square*|*brace* = 0`) and a
+BEHAVIOR check that matched only a raw character scan (`== '('` … `++X` …
+`== ')'` … `--X`). The behavior half was added precisely because a name
+check undercounts, and then it was written for characters only. A token scan,
+`if ( t->id() == TokenID::tkLT ) ++depth;`, matched neither, whatever its
+counter was called. The gate printed "GREEN — DelimDepth is the only delimiter
+tracker" over 74 of them.
+
+It surfaced through a `/dupaudit` finding: `member_ctor_param_count`, the
+member-template constructor arity counter, tracks only `<` `>` `>>`, so a
+`void (*)(int, int)` parameter ends its count at the inner `)`, and two
+member-template constructors that differ only in arity are told apart wrongly.
+madc refused the reducer that g++ and clang++ accept (BUGS.md B58).
+
+What round 8 changes:
+
+- A third marker, the behavior on tokens and characters alike: an equality test
+  on any delimiter (token id, character or string literal, or a bare variable,
+  the `tsubst_matching_close(v, i, open_id, close_id)` shape) that increments a
+  counter, then a test on any delimiter that decrements the same counter.
+  "Any delimiter on either side" is deliberate: three backward walks count `>`
+  up and `<` down and are the same tracker.
+- The marker carries a negative control: three planted counters (one named
+  nothing like a delimiter, one over variable ids, one walking backwards) must
+  match, and `DelimDepth`'s own `update()` and a `?`/`:` nesting counter must
+  not.
+- The baseline is the honest count, 74, and every migration lowers it. The
+  sites are filed one entry per delimiter (BUGS.md B58 `<`, B59 `(`, B60 `[`,
+  B61 `{`), with the fix order: the helpers other code calls
+  (`template_id_suffix_end`, `template_list_close_index`, `paren_close_index`,
+  `consume_balanced_parenthesized_suffix`, `tsubst_matching_close`) first,
+  since each one that moves carries its callers with it.
+
+The lesson is the one the gate's own header already stated: a green gate
+stops you looking. Before a gate's green closes a family, point its marker at
+a planted copy of every shape the family has taken, not just the shape that
+made you write the gate.
