@@ -1,5 +1,8 @@
 # Test Status
 
+B15 for-initializer standard gate (2026-09-28): `testforinitc89` requires
+a diagnostic for a typed initializer; `testforinitc99` keeps the C99 form.
+
 B14 short-declaration standard gate (2026-09-28):
 `testshortdeclstdc` and `testshortdeclstdcpp` require C17 and C++17 to
 reject `:=`, while existing dialect tests such as `testcolon` keep it.

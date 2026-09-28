@@ -22,22 +22,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Accepts invalid code
 
-### B15. A `for`-init declaration is accepted under `--std=c89`
-
-- Found 2026-09-25, in a `--std=c89` session probe for §41.2a slice 2b.
-
-```c
-int main(void) { int s = 0; for (int i = 0; i < 3; i++) s += i; return s; }
-```
-
-- gcc `-std=c89` (with or without `-pedantic-errors`): "'for' loop initial
-  declarations are only allowed in C99 or C11 mode". clang `-std=c89`: a
-  `-Wgcc-compat` warning, and it compiles. madc `--std=c89`: compiles, exit 3.
-- Where: the `for` statement's init clause (`TokenFOR::parse`) takes a
-  declaration under every standard. C99 6.8.5.3 added it; before C99 the
-  clause is an expression. The gate is `language_std` below `STD_C99` in the
-  C range (C78 to C95).
-
 ### B37. Copying a `std::unique_ptr` is accepted, and crashes
 
 - Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).

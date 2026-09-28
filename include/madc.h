@@ -5663,6 +5663,10 @@ public:
     // gate — the declaration-`auto` path and the range-for element deduction
     // both key on it.
     bool auto_deduction_allowed() const { return !is_c_mode() || language_std == STD_C23; }
+    // C99 introduced declarations in a for initializer; every C++ mode and
+    // the madc dialect permits them.
+    bool for_init_declaration_enabled() const
+    { return !(language_std >= STD_C78 && language_std < STD_C99); }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
     // gcc parity for C modes: -std=cNN defines __STRICT_ANSI__, -std=gnuNN
     // (gcc's default dialect) does not — real glibc headers branch on it

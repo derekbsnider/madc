@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### C89 for initializers require an expression
+
+A declaration such as `for (int i = 0; ...)` is now refused in pre-C99
+modes. C99 and later, C++, and the madc dialect continue to accept it.
+Before, madc accepted the declaration under C89 and ran the loop.
+
 ### Short declarations are confined to the madc dialect
 
 `:=` now lexes and parses as a short declaration only under `--std=madc`.

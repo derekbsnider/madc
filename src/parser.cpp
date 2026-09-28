@@ -53046,6 +53046,8 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	// reverse order so the deque front reads `& tn2 ...` again). A consumed
 	// leading `const` is propagated to parseDeclaration via parsing_const_decl
 	// (same channel TokenCONST::parse uses), not pushed back.
+	if ( !pgm.for_init_declaration_enabled() )
+	    pgm.Throw(tn) << "'for' loop initial declarations are only allowed in C99 or later" << flush;
 	DBG(cout << "TokenFOR::parse() traditional for with type declaration" << endl);
 	pgm.pushToken(tn2);
 	if ( amp_tok )
