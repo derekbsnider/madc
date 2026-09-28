@@ -1190,6 +1190,46 @@ int main() {
 EOF
 run_case traitfold "1 0 1"
 
+# --- case: deletedctor — deleted copy/move metadata must survive freeze/bind.
+#     FuncDef keeps the two special-member declarations distinct because its
+#     DataDefREF parameter type intentionally erases `&` versus `&&`. The
+#     consumer exercises both positive and negative constructibility results
+#     after the class declarations are restored from the grove.
+cat > tmp/fbgate_deletedctor.h <<'EOF'
+#ifndef FBGATE_DELETEDCTOR_H
+#define FBGATE_DELETEDCTOR_H
+struct FbgCopyDeleted {
+	int n;
+	FbgCopyDeleted() : n(1) { }
+	FbgCopyDeleted(const FbgCopyDeleted&) = delete;
+	FbgCopyDeleted(FbgCopyDeleted&&) = default;
+};
+struct FbgMoveDeleted {
+	int n;
+	FbgMoveDeleted() : n(2) { }
+	FbgMoveDeleted(const FbgMoveDeleted&) = default;
+	FbgMoveDeleted(FbgMoveDeleted&&) = delete;
+};
+#endif
+EOF
+cat > tmp/fbgate_deletedctor_producer.cpp <<'EOF'
+#include <fbgate_deletedctor.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_deletedctor_consumer.cpp <<'EOF'
+#include <fbgate_deletedctor.h>
+#include <cstdio>
+int main() {
+	printf("%d %d %d %d\n",
+	       (int)__is_constructible(FbgCopyDeleted, FbgCopyDeleted&),
+	       (int)__is_constructible(FbgCopyDeleted, FbgCopyDeleted&&),
+	       (int)__is_constructible(FbgMoveDeleted, FbgMoveDeleted&),
+	       (int)__is_constructible(FbgMoveDeleted, FbgMoveDeleted&&));
+	return 0;
+}
+EOF
+run_case deletedctor "0 1 1 0"
+
 # --- case: subbind (THE OWNER'S BAR: a REAL integration test on the forest) ---
 # tests/testsubscript.mad (string/array subscripting, <string> + <map> whole)
 # freeze+bind == live == its .expect fixture. The last family that flipped it:
@@ -1641,5 +1681,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 29/29 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
+echo "forest_bind_gate: GREEN 30/30 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
 exit 0

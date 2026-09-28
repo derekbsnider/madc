@@ -230,6 +230,7 @@ enum DefFlags : uint32_t {
 						// admitted-set chase (startup R1); it stays
 						// reachable through reference pulls / its owner
 						// body's use.
+	DF_FUNC_DEFAULTED_OR_DELETED = 1u << 28, // DK_FUNC: preserve = default/delete
 	DF_BODY_IN_INSTANTIATION = 1u << 26,	// v27: the captured DEFBODY tokens were parsed
 						// inside a fn-template INSTANTIATION
 						// (fn_template_instantiation_depth > 0 — an
@@ -254,6 +255,7 @@ enum DefFlags : uint32_t {
 						// type; the restore must NOT flat-register it
 						// (LOADED == parsed) — the owner's type_aliases
 						// restore is its whole registration
+	DF_FUNC_IS_DELETED   = 1u << 31,	// DK_FUNC: selected deleted overload is invalid
 	DF_NSBIND_OVERLOAD_MEMBER = 1u << 0,	// DK_NSBIND-scoped: the imported fn is a MEMBER
 						// of ns::name's overload set ([namespace.udecl]
 						// join — the using-arm's second registration);

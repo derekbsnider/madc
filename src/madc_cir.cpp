@@ -3876,6 +3876,10 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
 	if (fd->is_volatile_method) r.flags |= madc::dis::DF_IS_VOLATILE_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
+	if (fd->defaulted_or_deleted)
+		r.flags |= madc::dis::DF_FUNC_DEFAULTED_OR_DELETED;
+	if (fd->is_deleted)
+		r.flags |= madc::dis::DF_FUNC_IS_DELETED;
 	if (fd->noexcept_spec == FuncDef::NxTrue)
 		r.flags |= madc::dis::DF_NOEXCEPT_TRUE;
 	else if (fd->noexcept_spec == FuncDef::NxUnknown)

@@ -16279,6 +16279,7 @@ static int trait_is_constructible(const TraitTypeArg &to,
 // [except.spec]p7). copy_form distinguishes the memberwise-copy walk from the
 // default-init walk.
 static int trait_class_memberwise_ctor(DataDefCLASS *c, bool copy_form,
+					bool move_form, bool source_const,
 					bool need_nothrow, int depth)
 {
     std::vector<DataDefCLASS *> parents;
@@ -16296,8 +16297,9 @@ static int trait_class_memberwise_ctor(DataDefCLASS *c, bool copy_form,
 	{
 	    TraitTypeArg a;
 	    a.dd = parents[i];
-	    a.is_lref = true;
-	    a.referent_const = true;
+	    a.is_lref = !move_form;
+	    a.is_rref = move_form;
+	    a.referent_const = source_const;
 	    pargs.push_back(a);
 	}
 	int s = trait_is_constructible(to, pargs, need_nothrow, depth + 1);
@@ -16331,8 +16333,9 @@ static int trait_class_memberwise_ctor(DataDefCLASS *c, bool copy_form,
 	    {
 		TraitTypeArg a;
 		a.dd = mc;
-		a.is_lref = true;
-		a.referent_const = true;
+		a.is_lref = !move_form;
+		a.is_rref = move_form;
+		a.referent_const = source_const;
 		margs.push_back(a);
 	    }
 	    int s = trait_is_constructible(to, margs, need_nothrow, depth + 1);
@@ -16358,13 +16361,47 @@ static int trait_class_constructible(DataDefCLASS *c,
 {
     bool same_class_arg = args.size() == 1 && args[0].dd
 	&& (args[0].dd == c || args[0].dd->name == c->name);
-    // Deleted special members are dropped from `ctors` at class parse; the
-    // recorded class flags are their only trace ([class.copy.ctor]: a deleted
-    // selected ctor makes the initialization ill-formed).
+    // A deleted copy/move constructor remains in `ctors`: deletion is checked
+    // only AFTER ordinary overload resolution selects it ([dcl.fct.def.delete]).
+    // Defaulted copy/move constructors still use the implicit memberwise walk.
     if ( args.empty() && c->has_deleted_default_ctor )
 	return 0;
-    if ( same_class_arg && c->has_deleted_copy_ctor )
-	return 0;
+    if ( same_class_arg )
+    {
+	FuncDef *selected = NULL;
+	int best_rank = -1;
+	bool arg_rvalue = !args[0].is_lref;
+	for ( size_t ci = 0; ci < c->ctors.size(); ++ci )
+	{
+	    FuncDef *fd = c->ctors[ci]
+		? dynamic_cast<FuncDef *>(c->ctors[ci]->type) : NULL;
+	    if ( !fd || !fd->is_copy_or_move_constructor_of(c) )
+		continue;
+	    int rank = copy_move_ref_binding_rank(
+		fd->param_spells_rvalue_reference(1),
+		fd->param_referent_is_const(1), arg_rvalue,
+		args[0].referent_const);
+	    if ( rank > best_rank )
+	    {
+		best_rank = rank;
+		selected = fd;
+	    }
+	}
+	if ( selected )
+	{
+	    if ( selected->is_deleted )
+		return 0;
+	    if ( selected->defaulted_or_deleted )
+		return trait_class_memberwise_ctor(c, true,
+		    selected->param_spells_rvalue_reference(1),
+		    selected->param_referent_is_const(1),
+		    need_nothrow, depth);
+	    if ( !need_nothrow )
+		return 1;
+	    return selected->noexcept_spec == FuncDef::NxTrue ? 1
+		 : selected->noexcept_spec == FuncDef::NxNone ? 0 : -1;
+	}
+    }
     bool saw_unmodelable = false;
     bool saw_user_ctor = false;
     bool matched_deleted = false;
@@ -16537,12 +16574,14 @@ static int trait_class_constructible(DataDefCLASS *c,
     // so is_move_constructible<allocator<T>> read FALSE and swap's
     // __swap_result_t collapsed to an opaque struct return (wrong ABI).
     if ( same_class_arg )
-	return trait_class_memberwise_ctor(c, true, need_nothrow, depth);
+	return trait_class_memberwise_ctor(c, true, !args[0].is_lref,
+		args[0].referent_const, need_nothrow, depth);
     // VALUE-INIT with a DEFAULTED default ctor: the `= default` member is
     // selected over any 0-arg-viable ctor template by the same non-template
     // preference, so unmodelable templates cannot change this answer either.
     if ( args.empty() && defaulted_default )
-	return trait_class_memberwise_ctor(c, false, need_nothrow, depth);
+	return trait_class_memberwise_ctor(c, false, false, false,
+		need_nothrow, depth);
     if ( saw_unmodelable )
 	return -1;
     // No explicit candidate: the implicit/defaulted special members remain.
@@ -16550,7 +16589,8 @@ static int trait_class_constructible(DataDefCLASS *c,
     // ([class.default.ctor]p1); the implicit copy/move survives.
     if ( args.empty() )
 	return saw_user_ctor
-	     ? 0 : trait_class_memberwise_ctor(c, false, need_nothrow, depth);
+	     ? 0 : trait_class_memberwise_ctor(c, false, false, false,
+		need_nothrow, depth);
     return 0;                        // no converting ctor takes these args
 }
 
@@ -49799,13 +49839,12 @@ void Program::complete_class_aggregate(DataDefCLASS *ddc)
 	forest_arena_record_aggregate(ddc);
 }
 
-// A defaulted/deleted special-member CONSTRUCTOR is dropped from the class's
-// ctor overload set at parse (like every `= default`/`= delete` member) —
-// record what was dropped so __is_constructible answers faithfully: a deleted
-// default/copy ctor makes the class not so-constructible; an explicitly
-// defaulted default ctor keeps it default-constructible beside other user
-// ctors ([class.default.ctor]). The has_deleted_copy_assign twin for ctors.
-static void record_dropped_special_ctor(DataDefCLASS *ddc, FuncDef *fd)
+// A defaulted/deleted DEFAULT constructor is dropped from the class's ctor
+// overload set at parse. Record what was dropped so __is_constructible answers
+// faithfully. Copy/move constructors are different: defaulted and deleted
+// declarations both participate in overload resolution, so their real FuncDefs
+// remain registered in `ctors` and the selected defaulted one lowers memberwise.
+static void record_dropped_default_ctor(DataDefCLASS *ddc, FuncDef *fd)
 {
     if ( !ddc || !fd || !fd->defaulted_or_deleted )
 	return;
@@ -49815,18 +49854,7 @@ static void record_dropped_special_ctor(DataDefCLASS *ddc, FuncDef *fd)
 	    ddc->has_deleted_default_ctor = true;
 	else
 	    ddc->has_defaulted_default_ctor = true;
-	return;
     }
-    if ( !fd->is_deleted || fd->parameters.size() != 2 )
-	return;
-    DataDef *p = fd->parameters[1];
-    if ( DataDefPTR *pr = pointer_dd_of(p) )
-	if ( pr->is_reference() && pr->base_type )
-	    p = pr->base_type;
-    if ( DataDefQUAL *pc = dynamic_cast<DataDefQUAL *>(p) )
-	p = pc->base_type ? pc->base_type : p;
-    if ( p == ddc || (p && p->name == ddc->name) )
-	ddc->has_deleted_copy_ctor = true;
 }
 
 // forms:
@@ -51103,10 +51131,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    FuncDef *cfd = dynamic_cast<FuncDef *>(mvar->type);
 		    if ( cfd )
 		    {
-			record_dropped_special_ctor(ddc, cfd);
+			record_dropped_default_ctor(ddc, cfd);
 			cfd->is_explicit = is_explicit_member;
 		    }
-		    if ( !cfd || !cfd->defaulted_or_deleted )
+		    bool retain_special_copy_move = cfd
+			&& cfd->defaulted_or_deleted
+			&& cfd->is_copy_or_move_constructor_of(ddc);
+		    if ( !cfd || !cfd->defaulted_or_deleted
+		      || retain_special_copy_move )
 		    {
 			Program::ClassMethodRegistration spec;
 			spec.kind = Program::ClassMethodKind::Constructor;
@@ -51643,17 +51675,32 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type);
 		if ( mfd && mfd->defaulted_or_deleted )
 		{
+		    bool retain_special_copy_move = tag
+			&& mname == tag->spelling()
+			&& mfd->is_copy_or_move_constructor_of(ddc);
+		    if ( retain_special_copy_move )
+		    {
+			Program::ClassMethodRegistration spec;
+			spec.kind = Program::ClassMethodKind::Constructor;
+			spec.display_name = mname;
+			spec.access_flags = access_flags;
+			if ( (name_disambiguated && this_is_nullary)
+			  || type_overload_disambiguated )
+			    spec.local_emit_name = mangled;
+			pgm.register_class_method_signature(ddc, mvar, spec);
+			pgm.note_class_decl(Program::ClassDeclKind::Method);
+			continue;
+		    }
 		    // A deleted `operator=` (a binary assignment operator: this +
 		    // one arg) is dropped here; record it so __is_assignable reports
 		    // the class as not copy-assignable.
 		    if ( mfd->is_deleted && is_operator_method
 		      && mname == "operator=" && mfd->parameters.size() >= 2 )
 			ddc->has_deleted_copy_assign = true;
-		    // Same recording for dropped special-member CONSTRUCTORS,
-		    // consumed by __is_constructible (a wrong "true" from the
-		    // memberwise walk would corrupt SFINAE the same way).
+		    // The remaining constructor-shaped declaration is a dropped
+		    // default constructor; its trait state is class metadata.
 		    if ( tag && mname == tag->spelling() )
-			record_dropped_special_ctor(ddc, mfd);
+			record_dropped_default_ctor(ddc, mfd);
 		    // A DEFAULTED member comparison synthesizes its
 		    // namespace-scope definition from the member list at
 		    // class completion ([class.compare.default]); a defaulted
@@ -71529,7 +71576,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // one the memberwise noexcept CONJUNCTION, while a user-written
 	    // ctor's spec is unknown to madc (the lexer erases conditional
 	    // `noexcept(expr)`), so __is_nothrow_constructible must refuse.
-	    // record_dropped_special_ctor owns this flag for every OTHER
+	    // record_dropped_default_ctor owns this flag for every OTHER
 	    // defaulted member, but it keys on defaulted_or_deleted — which
 	    // this path deliberately leaves clear — so it never sees the one
 	    // ctor the flag is named after.

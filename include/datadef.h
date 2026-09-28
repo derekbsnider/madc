@@ -1523,12 +1523,11 @@ public:
     // defaulted/deleted special member). Record the fact so __is_assignable can
     // report the class as NOT copy-assignable (a wrong "true" would corrupt SFINAE).
     bool has_deleted_copy_assign = false;
-    // Same recording for the dropped SPECIAL-MEMBER CONSTRUCTORS, consumed by
-    // __is_constructible: a deleted default/copy(move) ctor makes the class not
-    // so-constructible; an explicitly-defaulted default ctor keeps the class
-    // default-constructible even beside other user ctors ([class.default.ctor]).
+    // Same recording for the dropped DEFAULT constructor, consumed by
+    // __is_constructible: an explicitly-defaulted default ctor keeps the class
+    // default-constructible beside other user ctors ([class.default.ctor]).
+    // Deleted copy/move constructors remain in the real ctor overload set.
     bool has_deleted_default_ctor = false;
-    bool has_deleted_copy_ctor = false;
     bool has_defaulted_default_ctor = false;
     // And for the dropped DESTRUCTOR, consumed by __is_destructible: a class
     // whose `~X() = delete` never registers must still answer 0.

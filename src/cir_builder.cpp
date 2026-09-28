@@ -13341,33 +13341,31 @@ static FuncDef *class_default_ctor_def(DataDefCLASS *cdd)
 	return NULL;
 }
 
-// `fd` is one of `cdd`'s copy or move constructors ([class.copy.ctor]/1): its
-// first parameter binds an object of the class itself, and every other one
-// has a default argument. `vector(vector &&, const allocator_type &)` takes
-// the allocator too, so it is neither — called with the one source object,
-// it was "too few arguments".
-static bool is_copy_or_move_ctor(DataDefCLASS *cdd, FuncDef *fd)
-{
-	if (!fd || fd->parameters.size() < 2 || fd->required_param_count() > 2)
-		return false;
-	bool refp = fd->is_ref_param(1);
-	DataDef *p1 = fd->parameters[1];
-	DataDef *bind = p1;
-	if (refp && p1 && p1->is_pointer()) {
-		DataDefPTR *pp = pointer_dd_of(p1);
-		if (pp && pp->base_type) bind = pp->base_type;
-	}
-	return same_object_class(cdd, bind);
-}
-
+// A user-PROVIDED copy/move constructor. Defaulted special members retain
+// their signatures for overload resolution but lower through the implicit
+// memberwise owner, so they do not block that fallback.
 static FuncDef *class_copy_ctor_def(DataDefCLASS *cdd)
 {
 	if (!cdd) return NULL;
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
-		if (is_copy_or_move_ctor(cdd, fd)) return fd;
+		if (fd && fd->is_copy_or_move_constructor_of(cdd)
+		    && !fd->defaulted_or_deleted)
+			return fd;
 	}
 	return NULL;
+}
+
+static const char *deleted_constructor_reason(DataDefCLASS *cdd, FuncDef *ctor)
+{
+	if (!cdd || !ctor || !ctor->is_deleted)
+		return NULL;
+	if (ctor->is_copy_or_move_constructor_of(cdd)
+	    && ctor->param_spells_rvalue_reference(1))
+		return "use of deleted move constructor";
+	if (ctor->is_copy_or_move_constructor_of(cdd))
+		return "use of deleted copy constructor";
+	return "use of deleted constructor";
 }
 
 static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi);	// defined with the ctor selection below
@@ -13380,14 +13378,20 @@ static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi);	// define
 static FuncDef *class_copy_ctor_for(DataDefCLASS *cdd, bool move)
 {
 	if (!cdd) return NULL;
-	FuncDef *any = NULL;
+	FuncDef *best = NULL;
+	int best_rank = -1;
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
-		if (!is_copy_or_move_ctor(cdd, fd)) continue;
-		if (ctor_param_is_concrete_rvalue_ref(fd, 1) == move) return fd;
-		if (!any) any = fd;
+		if (!fd || !fd->is_copy_or_move_constructor_of(cdd)) continue;
+		int rank = copy_move_ref_binding_rank(
+			fd->param_spells_rvalue_reference(1),
+			fd->param_referent_is_const(1), move, !move);
+		if (rank > best_rank) {
+			best_rank = rank;
+			best = fd;
+		}
 	}
-	return any;
+	return best;
 }
 
 // Select a zero-argument conversion function whose semantic return class is
@@ -14494,6 +14498,23 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 	FuncDef *copy_ctor = select_or_instantiate_ctor(
 		cdd, copy_args, implicit_move);
 	if (copy_ctor && src) {
+		if (const char *why = deleted_constructor_reason(cdd, copy_ctor)) {
+			out.push_back(error_node(why, origin));
+			return;
+		}
+		if (copy_ctor->defaulted_or_deleted
+		    && copy_ctor->is_copy_or_move_constructor_of(cdd)) {
+			node_t copy = implicit_copy_construct_from_addr(
+				node1(N_DEREF, id(RETBUF_NAME, origin), origin),
+				object_arg_addr(src, cdd,
+					copy_ctor->is_nonconst_lref_param(1)),
+				cdd, origin,
+				copy_ctor->param_spells_rvalue_reference(1));
+			out.push_back(copy ? copy
+					    : error_node("cannot lower defaulted copy/move constructor",
+							 origin));
+			return;
+		}
 		std::string sym = ctor_call_symbol(cdd, copy_ctor);
 		node_t args = list();
 		append(args, id(RETBUF_NAME, origin));   // __retbuf is already T*
@@ -16050,6 +16071,8 @@ CirBuilder::CtorArgCategory CirBuilder::ctor_arg_value_category(TokenBase *arg)
 			return cacRvalue;
 		return tc->to_rvalue_ref ? cacRvalue : cacLvalue;
 	}
+	if (arg->as_objtemp_tok())
+		return cacRvalue;
 	if (dynamic_cast<TokenVar *>(arg) || dynamic_cast<TokenMember *>(arg))
 		return cacLvalue;
 	return cacUnknown;
@@ -16067,7 +16090,7 @@ CirBuilder::CtorArgCategory CirBuilder::ctor_arg_value_category(TokenBase *arg)
 // std::map / vector<T>::push_back with no viable constructor.
 static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi)
 {
-	if (!fd || pi >= fd->param_cpp_spellings.size())
+	if (!fd || !fd->param_spells_rvalue_reference(pi))
 		return false;
 	// An INSTANCE of a member-template constructor (tsubst_source links it
 	// to its pattern) has no parameter left to judge: deduction against
@@ -16087,8 +16110,6 @@ static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi)
 		while (!sp.empty() && sp[sp.size() - 1] == ' ')
 			sp.erase(sp.size() - 1);
 	}
-	if (sp.size() < 2 || sp.compare(sp.size() - 2, 2, "&&") != 0)
-		return false;
 	if (fd->is_member_template || !fd->template_param_names.empty()) {
 		std::string base = sp.substr(0, sp.size() - 2);
 		while (!base.empty() && base[base.size() - 1] == ' ')
@@ -16176,6 +16197,22 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			int s = score_arg_to_param(adc, pt, refp, true,
 					is_zero_integer_literal(ctor_args[i]),
 					fd->is_nonconst_lref_param(pi));
+			bool ranked_special_copy_move = false;
+			if (s >= 0 && refp && i == 0 && ctor_args.size() == 1
+			    && fd->is_copy_or_move_constructor_of(cdd)
+			    && same_object_class(adc, cdd)) {
+				CtorArgCategory cat = implicit_move
+					? cacRvalue : ctor_arg_value_category(ctor_args[i]);
+				if (cat != cacUnknown) {
+					int rank = copy_move_ref_binding_rank(
+						fd->param_spells_rvalue_reference(pi),
+						fd->param_referent_is_const(pi),
+						cat == cacRvalue,
+						adc && adc->is_const());
+					s = rank < 0 ? -1 : s + rank;
+					ranked_special_copy_move = true;
+				}
+			}
 			// [over.ics.rank]/3.2.3 on a `T&&` parameter: an rvalue
 			// argument prefers it over `const T&` (the move ctor
 			// wins for std::move(x) — before this the copy ctor,
@@ -16184,7 +16221,7 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			// silent wrong answer); an LVALUE argument cannot bind
 			// it at all ([dcl.init.ref]/5). An argument whose
 			// category the tree cannot state keeps today's ranking.
-			if (s >= 0 && refp
+			if (s >= 0 && refp && !ranked_special_copy_move
 			    && ctor_param_is_concrete_rvalue_ref(fd, pi)) {
 				// [class.copy.elision]/3: the operand of a
 				// `return` that names a local or a parameter
@@ -17229,6 +17266,26 @@ node_t CirBuilder::ctor_call_assemble(node_t this_addr, DataDefCLASS *cdd,
 				      DataDefCLASS *vbase_complete_cls)
 {
 	if (!this_addr || !cdd || !ctor) return NULL;
+	if (const char *why = deleted_constructor_reason(cdd, ctor))
+		return error_node(why, origin);
+	if (ctor->defaulted_or_deleted
+	    && ctor->is_copy_or_move_constructor_of(cdd)) {
+		if (explicit_nodes.size() != 1)
+			return error_node("invalid defaulted copy/move constructor call",
+					  origin);
+		node_t dst = node1(N_DEREF,
+			node2(N_CAST, class_ptr_type(cdd), this_addr, origin),
+			origin);
+		// Constructor arguments use the call ABI's void* address. The
+		// memberwise copy consumes a pointer to the actual class.
+		node_t copy = implicit_copy_construct_from_addr(dst,
+			node2(N_CAST, class_ptr_type(cdd), explicit_nodes[0],
+			      origin), cdd, origin,
+			ctor->param_spells_rvalue_reference(1));
+		return copy ? copy
+			    : error_node("cannot lower defaulted copy/move constructor",
+					 origin);
+	}
 	std::string sym = ctor_call_symbol(cdd, ctor);
 
 	// An externally-bound (emit_symbol) ctor is declared with a void* this
@@ -18223,6 +18280,16 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	}
 	if (!ctor)
 		return no_ctor_match_error(cdd, ctor_args, origin);
+	if (const char *why = deleted_constructor_reason(cdd, ctor))
+		return error_node(why, origin);
+	if (ctor->defaulted_or_deleted
+	    && ctor->is_copy_or_move_constructor_of(cdd)) {
+		if (node_t cc = try_implicit_copy_construct(
+				id(vname.c_str(), origin), cdd, ctor_args, origin))
+			return cc;
+		return error_node("cannot lower defaulted copy/move constructor",
+				  origin);
+	}
 
 	// INHERITED constructor ([class.inhctor]): the selected ctor belongs to a
 	// BASE, so it must run on the base subobject with the derived object
@@ -31389,12 +31456,6 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		if (params[i].kind != ShimSlot::K_CLASS_INST
 		    || !class_param_via_invisible_ref(params[i].cdd))
 			continue;
-		// A move-only class (copy constructor deleted) cannot be COPIED
-		// out of the host's cell — the host keeps its object, so a move
-		// is not on offer either: no shim (the K_CLASS_INST bit copy that
-		// stood here before was a silent wrong answer for such a class).
-		if (params[i].cdd->has_deleted_copy_ctor)
-			return NULL;
 		char tname[40], sname[40];
 		snprintf(tname, sizeof(tname), "__madc_shim_p%u", (unsigned)i);
 		snprintf(sname, sizeof(sname), "__madc_shim_s%u", (unsigned)i);
@@ -31419,6 +31480,13 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 					    1, NULL, false);
 		sv->flags |= vfLOCAL;
 		std::vector<TokenBase *> copy_arg(1, new TokenVar(*sv));
+		// The host retains its instance, so this is necessarily an lvalue
+		// COPY. A deleted overload means this function has no host-call shim;
+		// use the real selector so cv-overloaded copy ctors rank correctly.
+		FuncDef *host_copy = select_or_instantiate_ctor(params[i].cdd,
+							 copy_arg);
+		if (host_copy && host_copy->is_deleted)
+			return NULL;
 		node_t cc = class_ctor_call(tv, params[i].cdd, copy_arg, NULL);
 		if (!cc) return NULL;
 		for (node_t pstmt : m_pending_stmts)

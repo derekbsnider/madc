@@ -1,5 +1,13 @@
 # Test Status
 
+B37 deleted copy/move constructors (2026-09-28):
+`testdeletedcopyunique`, `testdeletedcopyreturn`, and `testdeletedmovector`
+require the same rejection as g++ and clang++ under C++17. Eleven focused
+construction tests pass in JIT, with eight positive cases also passing EXE
+and OBJ. The forest bind gate adds a deleted/defaulted copy/move case and
+passes 30/30 on the build target; `test_cir_freeze` passes 36 cases and 773
+assertions. Six Tier 2 fast lanes remain at their recorded baselines.
+
 B54 channel-close wakeup (2026-09-28): `testchanclosewake` parks a selector
 on a loopback listener and closes it from the owner task. The pre-fix Linux
 build timed out after five seconds; the fixed build prints

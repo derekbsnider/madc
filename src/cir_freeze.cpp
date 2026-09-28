@@ -3211,6 +3211,10 @@ void CirFrozenForest::materialize_pass()
 					(fr.flags & madc::dis::DF_IS_VOLATILE_METHOD) != 0;
 				fd->pure_virtual =
 					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
+				fd->defaulted_or_deleted =
+					(fr.flags & madc::dis::DF_FUNC_DEFAULTED_OR_DELETED) != 0;
+				fd->is_deleted =
+					(fr.flags & madc::dis::DF_FUNC_IS_DELETED) != 0;
 				fd->noexcept_spec =
 					(fr.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
 					: (fr.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown
@@ -3759,6 +3763,9 @@ void CirFrozenForest::materialize_pass()
 			if (const char *es = a.c_str(r.emit_symbol_id))
 				fd->emit_symbol = es;
 		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
+		fd->defaulted_or_deleted =
+			(r.flags & madc::dis::DF_FUNC_DEFAULTED_OR_DELETED) != 0;
+		fd->is_deleted = (r.flags & madc::dis::DF_FUNC_IS_DELETED) != 0;
 		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
 		fd->c_linkage        = (r.flags & madc::dis::DF_FUNC_C_LINKAGE) != 0;
 		fd->noexcept_spec    = (r.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue

@@ -22,23 +22,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Accepts invalid code
 
-### B37. Copying a `std::unique_ptr` is accepted, and crashes
-
-- Found 2026-09-27, while measuring which values D12 can copy (plan §41.6a).
-
-```cpp
-#include <memory>
-#include <stdio.h>
-int main() { std::unique_ptr<int> p(new int(3)); auto q = p; printf("%d\n", *q); return 0; }
-```
-
-- g++ 13: "use of deleted function 'std::unique_ptr<...>::unique_ptr(const
-  std::unique_ptr<...>&)'". madc `--std=c++17`: compiles, then SIGSEGV.
-- Where: not traced. A deleted copy constructor is dropped from the class's
-  constructors, and `has_deleted_copy_ctor` records it for the
-  `__is_constructible` trait. Whether it is set for `unique_ptr`, and whether
-  a declaration's initialization reads it, is the first thing to check.
-
 ### B52. A namespace's member is found unqualified in C++ (`vector` without `std::`)
 
 - Found 2026-09-27, while building D23's completion (plan §41.7a, slice 3),

@@ -94,6 +94,26 @@ struct CirFrozenMemberTmpl {
 };
 void madc_thaw_member_template(FuncDef *fd);	// defined in parser.cpp beside the stamps
 
+// [over.ics.rank]/3.2.3 for a same-class copy/move constructor's one
+// reference parameter. Higher is better; -1 means the parameter cannot bind.
+// The parser's type-trait evaluator and CIR constructor selector share this
+// owner so a deleted overload is selected identically in both layers.
+inline int copy_move_ref_binding_rank(bool param_rvalue, bool param_const,
+				      bool arg_rvalue, bool arg_const)
+{
+    if ( !arg_rvalue )
+    {
+	if ( param_rvalue || (arg_const && !param_const) )
+	    return -1;
+	return param_const ? 1 : 2;
+    }
+    if ( !param_rvalue )
+	return param_const ? 1 : -1;
+    if ( arg_const && !param_const )
+	return -1;
+    return param_const ? 2 : 3;
+}
+
 class MadcTeeBuf : public std::streambuf
 {
 public:
@@ -210,29 +230,57 @@ public:
     // the Itanium mangler so a header-declared C++ method binds to its real
     // external symbol.
     std::vector<std::string> param_cpp_spellings;
-    // Parameter i is a NON-CONST LVALUE reference (`T&`): it binds only a
-    // same-type (or derived) lvalue, never the temporary a conversion
-    // materializes ([dcl.init.ref]p5). `T&&` params — which DO bind conversion
-    // temporaries — are recognized by their captured spelling: DataDefREF
-    // spells '&' for both `&` and `&&`, so the spelling is the only carrier
-    // (same discipline as the Itanium mangler above). A ref param with no
-    // recorded spelling counts as an lvalue reference.
-    bool is_nonconst_lref_param(size_t i) const {
+    // DataDefREF spells '&' for both `&` and `&&`, so the captured spelling is
+    // the only carrier that can distinguish an rvalue-reference parameter.
+    bool param_spells_rvalue_reference(size_t i) const {
+	if ( !is_ref_param(i) || i >= param_cpp_spellings.size() )
+	    return false;
+	const std::string &sp = param_cpp_spellings[i];
+	size_t n = sp.size();
+	while ( n > 0 && sp[n - 1] == ' ' )
+	    --n;
+	if ( n >= 3 && sp.compare(n - 3, 3, "...") == 0 )
+	{
+	    n -= 3;
+	    while ( n > 0 && sp[n - 1] == ' ' )
+		--n;
+	}
+	return n >= 2 && sp[n - 1] == '&' && sp[n - 2] == '&';
+    }
+    bool param_referent_is_const(size_t i) const {
 	if ( !is_ref_param(i) )
 	    return false;
 	if ( i < const_params.size() && const_params[i] )
+	    return true;
+	const DataDefPTR *rp = pointer_dd_of(parameters[i]);
+	return rp && rp->base_type && rp->base_type->is_const();
+    }
+    // A constructor whose first user parameter is a reference to its own class
+    // (and whose remaining parameters, if any, are defaulted) is a copy/move
+    // constructor. This is the one owner used by parser traits and CIR lowering.
+    bool is_copy_or_move_constructor_of(const DataDef *owner) const {
+	if ( !owner || is_member_template || tsubst_source
+	  || parameters.size() < 2 || required_param_count() > 2
+	  || !is_ref_param(1) )
 	    return false;
-	// A typedef'd const ref (`const_reference __x` — libc++ spells
-	// push_back this way) has NO leading const token, so const_params
-	// stays false; when the resolved type graph carries it (DataDefREF
-	// whose referent is const-qualified), read it from there.
-	if ( parameters[i]->is_reference() )
-	{
-	    const DataDefPTR *rp =
-		pointer_dd_of(parameters[i]);
-	    if ( rp && rp->base_type && rp->base_type->is_const() )
-		return false;
-	}
+	DataDef *p = parameters[1];
+	if ( DataDefPTR *pr = pointer_dd_of(p) )
+	    if ( pr->base_type )
+		p = pr->base_type;
+	if ( DataDefQUAL *pq = dynamic_cast<DataDefQUAL *>(p) )
+	    if ( pq->base_type )
+		p = pq->base_type;
+	return p == owner || (p && p->name == owner->name);
+    }
+    // Parameter i is a NON-CONST LVALUE reference (`T&`): it binds only a
+    // same-type (or derived) lvalue, never the temporary a conversion
+    // materializes ([dcl.init.ref]p5). A ref param with no recorded spelling
+    // counts as an lvalue reference.
+    bool is_nonconst_lref_param(size_t i) const {
+	if ( !is_ref_param(i) )
+	    return false;
+	if ( param_referent_is_const(i) )
+	    return false;
 	// POSITIVE-evidence rule: claim a non-const lvalue reference ONLY
 	// when the captured spelling explicitly shows one — a single-'&'
 	// tail with no const qualifier. While the const-qualified-type
@@ -247,7 +295,7 @@ public:
 	size_t n = sp.size();
 	if ( n < 1 || sp[n - 1] != '&' )
 	    return false;                      // no explicit '&' tail: unknown
-	if ( n >= 2 && sp[n - 2] == '&' )
+	if ( param_spells_rvalue_reference(i) )
 	    return false;                      // rvalue reference
 	if ( sp.compare(0, 6, "const ") == 0
 	  || sp.find(" const") != std::string::npos )

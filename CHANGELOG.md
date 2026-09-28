@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Deleted copy and move constructors stay in overload resolution
+
+Copying a `std::unique_ptr` now reports its deleted copy constructor instead
+of compiling and crashing. A deleted move constructor likewise blocks an
+rvalue even when a copy overload exists. Defaulted constructors continue to
+copy or move members, including when their declarations come from a frozen
+header. Forest snapshots advance to format 50 to preserve these declarations.
+
 ### Closing a byte channel wakes parked selectors
 
 `madc::channel::close()` now wakes tasks parked on its read handle before
