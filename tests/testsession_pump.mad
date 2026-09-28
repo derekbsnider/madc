@@ -1,0 +1,73 @@
+// A session pumped by a task (plan §41.9a slice 2), the shape madcide's REPL
+// pane uses: one task selects over a stop channel and the session's case and
+// forwards every reply; the caller offers entries and receives the replies.
+// A crash ends the backend, never the caller: the pump's poll restarts it,
+// with its state gone. A restart the caller makes while the pump is parked
+// wakes the pump onto the new backend's streams.
+
+// Forward each reply (with the output printed before it) until `stop` fires.
+void pump(long h, long stop, long replies)
+{
+    var cases;
+    cases[0] = stop;
+    cases[1] = madc::session_readable(h);
+    for ( ;; )
+    {
+	var fired;
+	if ( madc::chan_select(fired, cases) == 0 )
+	    return;
+	var r;
+	while ( madc::session_poll(r, h) != 0 )
+	{
+	    var o;
+	    madc::session_output(o, h);
+	    r["output"] = o;
+	    madc::chan_send(replies, r);
+	}
+    }
+}
+
+int main()
+{
+    long h = madc::session_open("c11");
+    long stop = madc::chan_make(1);
+    long replies = madc::chan_make(8);
+    go pump(h, stop, replies);
+    var r;
+
+    madc::session_offer(h, "int kept = 5;", true);
+    madc::chan_recv(r, replies);
+    println("kept: ok={}", r["ok"]);
+
+    madc::session_offer(h, "int *p = 0; *p = 1;", true);
+    madc::chan_recv(r, replies);
+    println("crash: stopped={} exit_status={} restarted={}",
+	    r["kind"] == madc::session_reply::stopped, r["exit_status"], r["restarted"]);
+    println("running after the crash: {}", madc::session_running(h));
+
+    madc::session_offer(h, "int again = kept;", true);
+    madc::chan_recv(r, replies);
+    println("state gone: ok={}", r["ok"]);
+
+    madc::session_offer(h, "int later = 6;", true);
+    madc::chan_recv(r, replies);
+    println("after the crash: ok={} submitted={}", r["ok"], r["submitted"]);
+
+    // The pump is parked on the old streams when this restart replaces them.
+    madc::session_restart(h);
+    madc::session_offer(h, "int fresh = later;", true);
+    madc::chan_recv(r, replies);
+    println("restart: ok={}", r["ok"]);
+    madc::session_offer(h, "#include <stdio.h>", true);
+    madc::chan_recv(r, replies);
+    madc::session_offer(h, "printf(\"%d\\n\", 7 * 6);", true);
+    madc::chan_recv(r, replies);
+    print("restart output: {}", r["output"]);
+
+    var one = 1;
+    madc::chan_send(stop, one);
+    madc::task_drain();
+    madc::session_close(h);
+    println("done");
+    return 0;
+}

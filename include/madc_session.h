@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "madc/bits/session_enums"	// offer_state: the verdict's one enum text
+
 class Program;
 class CirJitSession;
 
@@ -54,13 +56,14 @@ public:
 
     // Offer the text typed so far (plan §41.5a): the classifier runs inside
     // the entry transaction (§41.1a), so there is one parse per line.
-    //   Taken: the entry is final — numbered, its parse's diagnostics
+    //   taken: the entry is final — numbered, its parse's diagnostics
     //     rendered, and submitted as submit() would (ok is its result);
-    //   Incomplete: keep reading; nothing is kept, numbered or rendered;
-    //   Extendable: a finished if with no else; D11 waits one line (the
+    //   incomplete: keep reading; nothing is kept, numbered or rendered;
+    //   extendable: a finished if with no else; D11 waits one line (the
     //     client submits it, or offers it again with the line).
-    // `taken` is submit()'s, called only when the entry is Taken.
-    enum class OfferState : unsigned char { Taken, Incomplete, Extendable };
+    // `taken` is submit()'s, called only when the entry is taken. The enum's
+    // one text is <bits/session_enums>, the dialect's too.
+    typedef ::madc::offer_state OfferState;
     struct Offered
     {
 	OfferState state;

@@ -43,6 +43,7 @@
 #include "madcdis/process.h"
 #include "madcdis/world_text.h"	// wt_value_to_json / wt_json_to_value
 #include "rt/rt_task.h"		// __madc_task_atfork_child
+#include "madc_task_io.h"	// taskio::handle_closing
 
 namespace madc {
 // src/madc_program.cpp: the one diagnostic-row builder, and the fork child's
@@ -83,9 +84,9 @@ Op op_of(const std::string &name)
 
 struct StateRow { const char *name; InteractiveSession::OfferState state; };
 const StateRow state_rows[] = {
-    { "taken", InteractiveSession::OfferState::Taken },
-    { "incomplete", InteractiveSession::OfferState::Incomplete },
-    { "extendable", InteractiveSession::OfferState::Extendable },
+    { "taken", InteractiveSession::OfferState::taken },
+    { "incomplete", InteractiveSession::OfferState::incomplete },
+    { "extendable", InteractiveSession::OfferState::extendable },
 };
 
 const char *state_name(InteractiveSession::OfferState s)
@@ -101,7 +102,7 @@ InteractiveSession::OfferState state_of(const std::string &name)
     for ( const StateRow &r : state_rows )
 	if ( name == r.name )
 	    return r.state;
-    return InteractiveSession::OfferState::Taken;
+    return InteractiveSession::OfferState::taken;
 }
 
 // One line out, whole; a peer that went away is an error, never a SIGPIPE
@@ -180,13 +181,13 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 		const std::string text = req.value("text", std::string());
 		InteractiveSession::Offered o;
 		if ( req.value("final", false) )
-		    o = InteractiveSession::Offered{ InteractiveSession::OfferState::Taken,
+		    o = InteractiveSession::Offered{ InteractiveSession::OfferState::taken,
 						     session.submit(text) };
 		else
 		    o = session.offer(text);
 		rep["state"] = state_name(o.state);
 		rep["ok"] = o.ok;
-		if ( o.state == InteractiveSession::OfferState::Taken )
+		if ( o.state == InteractiveSession::OfferState::taken )
 		{
 		    rep["shown"] = session.shown();
 		    rep["submitted"] = session.submitted();
@@ -222,12 +223,12 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 #endif
 
 SessionClient::Reply::Reply()
-    : kind(Kind::offer), seq(0), state(InteractiveSession::OfferState::Taken),
+    : kind(Kind::offer), seq(0), state(InteractiveSession::OfferState::taken),
       ok(false), submitted(0), start(0), exit_status(-1)
 {
 }
 
-SessionClient::SessionClient() : fd(-1), next_seq(1)
+SessionClient::SessionClient() : fd(-1), output_done(false), next_seq(1)
 {
 }
 
@@ -280,6 +281,7 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
     ::close(child_end);
     fd = parent_end;
     inbuf.clear();
+    output_done = false;
     next_seq = 1;
     // The backend's first line says whether its session began.
     Reply hello;
@@ -295,6 +297,8 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 	    {
 		error_text = j.is_discarded() ? std::string("session: no greeting")
 					      : j.value("rendered", std::string());
+		while ( !error_text.empty() && error_text[error_text.size() - 1] == '\n' )
+		    error_text.erase(error_text.size() - 1);	// a message, not a rendered block
 		stop();
 	    }
 	    return ok;
@@ -315,8 +319,19 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
     }
 }
 
+// A task parked on the streams (a select on the session's case) wakes and
+// re-reads them: a restart replaces both, and epoll forgets a closed one.
+void SessionClient::release_waiters() const
+{
+    std::vector<madc::poll_handle> hs;
+    wait_handles(hs);
+    for ( const madc::poll_handle &h : hs )
+	madc::taskio::handle_closing(h.value, h.kind);
+}
+
 void SessionClient::stop()
 {
+    release_waiters();
     if ( fd >= 0 )
     {
 	::close(fd);			// the backend's read sees EOF and returns
@@ -348,7 +363,7 @@ bool SessionClient::take_line(std::string &line)
 // What the program printed, waiting up to timeout_ms for the first byte.
 void SessionClient::read_output(std::string &output, int timeout_ms)
 {
-    if ( !process )
+    if ( !process || output_done )
 	return;
     madc::DataChannel &out = process->stdout_channel();
     madc::PollableDataChannel *pc = madc::pollable_surface(&out);
@@ -366,7 +381,10 @@ void SessionClient::read_output(std::string &output, int timeout_ms)
 	char chunk[4096];
 	size_t got = 0;
 	if ( !out.read(chunk, sizeof(chunk), got) || got == 0 )
+	{
+	    output_done = true;		// its end: never readable again
 	    return;
+	}
 	output.append(chunk, got);
 	timeout_ms = 0;			// then only what is already there
     }
@@ -376,6 +394,7 @@ void SessionClient::read_output(std::string &output, int timeout_ms)
 int SessionClient::stopped(Reply &reply, std::string &output)
 {
     read_output(output, 0);
+    release_waiters();
     if ( fd >= 0 )
     {
 	::close(fd);
@@ -431,12 +450,50 @@ bool SessionClient::input(const std::string &text)
     return true;
 }
 
+void SessionClient::take_output(std::string &output)
+{
+    read_output(output, 0);
+}
+
+void SessionClient::wait_handles(std::vector<madc::poll_handle> &out) const
+{
+    out.clear();
+    if ( fd < 0 )
+	return;
+    madc::poll_handle socket_end = { fd, madc::poll_handle_kind::descriptor };
+    out.push_back(socket_end);
+    madc::PollableDataChannel *pc =
+	process && !output_done ? madc::pollable_surface(&process->stdout_channel()) : NULL;
+    if ( pc && pc->read_poll_handle() >= 0 )
+    {
+	madc::poll_handle pipe_end = { pc->read_poll_handle(), pc->read_poll_kind() };
+	out.push_back(pipe_end);
+    }
+}
+
+int SessionClient::pending() const
+{
+    if ( fd < 0 )
+	return -1;
+    if ( inbuf.find('\n') != std::string::npos )
+	return 1;
+    std::vector<madc::poll_handle> hs;
+    wait_handles(hs);
+    for ( const madc::poll_handle &h : hs )
+    {
+	struct pollfd p = { (int)h.value, POLLIN, 0 };
+	if ( ::poll(&p, 1, 0) > 0 )
+	    return 1;
+    }
+    return 0;
+}
+
 int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 {
     if ( fd < 0 )
 	return stopped(reply, output);
     madc::PollableDataChannel *pc =
-	process ? madc::pollable_surface(&process->stdout_channel()) : NULL;
+	process && !output_done ? madc::pollable_surface(&process->stdout_channel()) : NULL;
     const int out_fd = pc ? (int)pc->read_poll_handle() : -1;
     std::string line;
     while ( !take_line(line) )
@@ -522,6 +579,10 @@ void SessionClient::read_output(std::string &, int)
 {
 }
 
+void SessionClient::release_waiters() const
+{
+}
+
 int SessionClient::stopped(Reply &reply, std::string &)
 {
     reply = Reply();
@@ -537,6 +598,20 @@ unsigned SessionClient::offer(const std::string &, bool)
 bool SessionClient::input(const std::string &)
 {
     return false;
+}
+
+void SessionClient::take_output(std::string &)
+{
+}
+
+void SessionClient::wait_handles(std::vector<madc::poll_handle> &out) const
+{
+    out.clear();
+}
+
+int SessionClient::pending() const
+{
+    return -1;
 }
 
 unsigned SessionClient::complete(const std::string &, size_t)

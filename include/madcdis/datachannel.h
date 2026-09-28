@@ -123,6 +123,14 @@ enum class poll_handle_kind : unsigned char
 	socket		// a socket (a SOCKET on Windows; a descriptor elsewhere)
 };
 
+// A poll handle with its space, carried together wherever a list of handles
+// travels (a select case over several streams: taskio::readiness_source).
+struct poll_handle
+{
+	intptr_t value;
+	poll_handle_kind kind;
+};
+
 // Optional extension for channels an event loop can WAIT on: the READ
 // side's poll handle plus its kind. -1 = not currently waitable (closed, or
 // the read side is gone). The handle is only valid while the channel stays

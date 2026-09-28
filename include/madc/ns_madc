@@ -19,6 +19,7 @@
 
 #include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
 #include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
+#include <bits/session_enums>	// session_reply / offer_state: a session reply's enum codes
 
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
@@ -653,4 +654,44 @@ namespace madc {
     // outlive it. Throws when the channel has no waitable read side
     // (memory/file reads never block, so there is nothing to wait on).
     int64_t chan_readable(channel &c);
+
+    // Interactive sessions in a backend process (plan §41.9a): the running
+    // madc forks (nothing execs) and the child serves one session, so a
+    // crash in an entry loses that session's state, never the caller. Every
+    // verb returns at once; replies come through session_poll.
+    //   session_open(std): a handle (>= 1), always. `std` is a --std=
+    //     spelling, with or without the prefix ("" = the default). A backend
+    //     that could not start (a refused standard; Windows, no fork yet) is
+    //     the handle's state: session_running false, session_error the text.
+    //   session_offer(h, text, final) / session_complete(h, text, caret):
+    //     the request's seq, 0 when the backend is not running. A completion
+    //     is answered once a running entry ends.
+    //   session_poll(reply, h): 1 with a reply, 0 when none waits, -1 when
+    //     the backend stopped (reply is its row; the backend is restarted,
+    //     its state empty, and the row's `restarted` says whether the new one
+    //     started). A reply row: kind (a
+    //     madc::session_reply code) and seq; an offer's state (a
+    //     madc::offer_state code), ok, shown, rendered (the diagnostics as the
+    //     CLI prints them), submitted, diagnostics (the rows parse_check
+    //     returns); a completion's start and names; a stop's exit_status
+    //     (128 + signal for a signal).
+    //   session_output(out, h): what the program printed since the last call.
+    //   session_input(h, text): text for the program's stdin.
+    //   session_restart(h): a new backend; its state starts empty.
+    //   session_readable(h): a chan_select case that fires when a reply or
+    //     output waits. Made once per handle and reused; it follows restarts,
+    //     and a closed session's case is dead.
+    //   session_close(h): stop the backend and free the handle.
+    // Thread contract: a handle is confined to the thread that opened it.
+    int64_t session_open(const char *std);
+    bool session_running(int64_t handle);
+    const char *session_error(int64_t handle);
+    int64_t session_offer(int64_t handle, const char *text, bool final);
+    int64_t session_complete(int64_t handle, const char *text, int64_t caret);
+    int64_t session_poll(value &reply, int64_t handle);
+    value &session_output(value &out, int64_t handle);
+    bool session_input(int64_t handle, const char *text);
+    bool session_restart(int64_t handle);
+    int64_t session_readable(int64_t handle);
+    bool session_close(int64_t handle);
 }

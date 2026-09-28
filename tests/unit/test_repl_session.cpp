@@ -1497,36 +1497,36 @@ static void check_offered_lines(const std::string &std_option)
     CHECK(s.submitted() == 1);
 
     // A session variable's operator waits for its operand.
-    CHECK(s.offer("x +\n").state == St::Incomplete);
+    CHECK(s.offer("x +\n").state == St::incomplete);
     CHECK(s.submitted() == 1);
     InteractiveSession::Offered r = s.offer("x +\n2\n");
-    CHECK(r.state == St::Taken);
+    CHECK(r.state == St::taken);
     CHECK(r.ok);
     CHECK(s.shown() == "12");
     CHECK(s.submitted() == 2);
 
     // A function over lines: the declarator waits for its body, the body
     // for its close.
-    CHECK(s.offer("int twice(int a)\n").state == St::Incomplete);
-    CHECK(s.offer("int twice(int a)\n{\n").state == St::Incomplete);
-    CHECK(s.offer("int twice(int a)\n{\n\treturn a * 2;\n").state == St::Incomplete);
+    CHECK(s.offer("int twice(int a)\n").state == St::incomplete);
+    CHECK(s.offer("int twice(int a)\n{\n").state == St::incomplete);
+    CHECK(s.offer("int twice(int a)\n{\n\treturn a * 2;\n").state == St::incomplete);
     r = s.offer("int twice(int a)\n{\n\treturn a * 2;\n}\n");
-    CHECK(r.state == St::Taken);
+    CHECK(r.state == St::taken);
     CHECK(r.ok);
     CHECK(s.submitted() == 3);
     REQUIRE(s.submit("twice(x)"));
     CHECK(s.shown() == "20");
 
     // An open comment waits for its close.
-    CHECK(s.offer("/* a note\n").state == St::Incomplete);
+    CHECK(s.offer("/* a note\n").state == St::incomplete);
     r = s.offer("/* a note\n*/ x\n");
-    CHECK(r.state == St::Taken);
+    CHECK(r.state == St::taken);
     CHECK(s.shown() == "10");
 
     // A close that opens nothing is refused, and takes its number.
     unsigned before = s.submitted();
     r = s.offer("x; }\n");
-    CHECK(r.state == St::Taken);
+    CHECK(r.state == St::taken);
     CHECK_FALSE(r.ok);
     CHECK_FALSE(first_error(s).empty());
     const ::Program::Diagnostic *d = first_error_diagnostic(s);
@@ -1536,22 +1536,22 @@ static void check_offered_lines(const std::string &std_option)
 
     // The number an entry takes skips no incomplete attempt.
     before = s.submitted();
-    CHECK(s.offer("int y =\n").state == St::Incomplete);
+    CHECK(s.offer("int y =\n").state == St::incomplete);
     r = s.offer("int y =\n;\n");
-    CHECK(r.state == St::Taken);
+    CHECK(r.state == St::taken);
     CHECK_FALSE(r.ok);
     d = first_error_diagnostic(s);
     REQUIRE(d != (const ::Program::Diagnostic *)NULL);
     CHECK(d->file == "REPL[" + std::to_string(before + 1) + "]");
 
     // D11: a finished if with no else waits; its else continues it.
-    CHECK(s.offer("if (x > 5) x = 1;\n").state == St::Extendable);
+    CHECK(s.offer("if (x > 5) x = 1;\n").state == St::extendable);
     CHECK_FALSE(s.program().entry_line_continues_if("x = 3;"));
     CHECK_FALSE(s.program().entry_line_continues_if(""));
     CHECK_FALSE(s.program().entry_line_continues_if("elsewhere = 1;"));
     CHECK(s.program().entry_line_continues_if("  else x = 2;"));
     r = s.offer("if (x > 5) x = 1;\nelse x = 2;\n");
-    CHECK(r.state == St::Taken);
+    CHECK(r.state == St::taken);
     CHECK(r.ok);
     REQUIRE(s.submit("x"));
     CHECK(s.shown() == "1");

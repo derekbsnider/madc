@@ -1,0 +1,24 @@
+// madc embedded <bits/session_enums> — an interactive session's reply
+// vocabularies as ENUMS, the ONE text for two readers: the engine
+// (InteractiveSession::OfferState and SessionClient::Reply::Kind alias these)
+// and the dialect (<ns_madc> includes it, so a pane switches on
+// `r["kind"] == madc::session_reply::complete` — an enumerator the compiler
+// checks — instead of comparing a word).
+// Plain C++11 enums, nothing else (dialect-lean). The wire's words are the
+// backend's own table (src/madc_session_client.cpp), never re-typed here.
+//
+// Thread contract: constants.
+#ifndef __MADC_BITS_SESSION_ENUMS
+#define __MADC_BITS_SESSION_ENUMS 1
+
+namespace madc {
+    // An offered entry's verdict (plan §41.5a): taken (final — it ran or was
+    // refused), incomplete (keep reading), extendable (a finished if with no
+    // else; D11 waits one line).
+    enum class offer_state : unsigned char { taken, incomplete, extendable };
+    // What a session reply answers (plan §41.9a): an offer, a completion, or
+    // the backend's end (a crash; the session's state went with it).
+    enum class session_reply : unsigned char { offer, complete, stopped };
+}
+
+#endif // __MADC_BITS_SESSION_ENUMS

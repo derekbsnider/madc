@@ -253,22 +253,22 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 	++submit_count;
 	bool ok = run_command(text, name);
 	render_parse_diagnostics();
-	return Offered{ OfferState::Taken, ok };
+	return Offered{ OfferState::taken, ok };
     }
     Program::EntryTransaction entry(*prog);
     prog->entry_number = submit_count + 1;
     Program::EntryVerdict verdict = prog->parse_entry(text, name);
     if ( !final && verdict == Program::EntryVerdict::Incomplete )
-	return Offered{ OfferState::Incomplete, false };
+	return Offered{ OfferState::incomplete, false };
     if ( !final && verdict == Program::EntryVerdict::CompleteExtendable )
-	return Offered{ OfferState::Extendable, false };
+	return Offered{ OfferState::extendable, false };
     if ( taken )
 	taken();
     ++submit_count;
     render_parse_diagnostics();
     if ( verdict != Program::EntryVerdict::Complete
       && verdict != Program::EntryVerdict::CompleteExtendable )
-	return Offered{ OfferState::Taken, false };
+	return Offered{ OfferState::taken, false };
     bool linked = false;
     bool ok = link_and_run(*prog, *jit, entry, prog->intern_file(name), linked);
     if ( linked )
@@ -277,7 +277,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     // IPython's Out[N] (a run that stopped before its show keeps nothing).
     if ( linked && !prog->entry_shown.empty() )
 	prog->keep_entry_result(submit_count);
-    return Offered{ OfferState::Taken, ok };
+    return Offered{ OfferState::taken, ok };
 }
 
 std::vector<std::string> InteractiveSession::complete(const std::string &text,

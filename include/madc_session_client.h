@@ -21,6 +21,7 @@
 #ifndef __MADC_SESSION_CLIENT_H
 #define __MADC_SESSION_CLIENT_H 1
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
@@ -28,6 +29,7 @@
 
 #include "madc_session.h"
 #include "libmadc/value.h"
+#include "madcdis/datachannel.h"	// poll_handle
 
 class Program;
 namespace madc { class Process; }
@@ -56,10 +58,10 @@ public:
 
     struct Reply
     {
-	enum class Kind : unsigned char { offer, complete, stopped };
+	typedef ::madc::session_reply Kind;	// <bits/session_enums>: the dialect's text too
 	Kind kind;
 	unsigned seq;			// the request's
-	// An offer's: the verdict, and once Taken, the result, the shown
+	// An offer's: the verdict, and once taken, the result, the shown
 	// value, the entries taken so far (REPL[N]), the rendered diagnostics
 	// (the text the CLI prints) and their rows (diagnostic rows: severity,
 	// phase, message, file, line, column).
@@ -92,11 +94,23 @@ public:
     // stopped (reply.kind is stopped, with its exit status).
     int poll(Reply &reply, std::string &output, int timeout_ms);
     // Offer or complete and wait for its reply: poll() until the reply with
-    // that seq, or the backend stopped (-1).
+    // that seq, or the backend stopped (-1). A synchronous caller's (the
+    // CLI's): replies to earlier requests that arrive meanwhile are dropped,
+    // their output kept.
     int offer_wait(const std::string &text, bool final, Reply &reply,
 		   std::string &output, int timeout_ms = -1);
     int complete_wait(const std::string &text, size_t caret, Reply &reply,
 		      int timeout_ms = -1);
+
+    // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
+    // reply or output waits (or the backend's end, which poll() reports), 0
+    // when neither does, -1 when the backend is not running; never waits.
+    // wait_handles(): the handles whose readability changes it, the reply
+    // socket and the output pipe (until its end), replaced at a restart.
+    int pending() const;
+    void wait_handles(std::vector<madc::poll_handle> &out) const;
+    // What the program printed so far; never waits.
+    void take_output(std::string &output);
 
     const std::string &last_error() const { return error_text; }
 
@@ -105,10 +119,12 @@ private:
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
+    void release_waiters() const;	// before the streams close
 
     std::unique_ptr<madc::Process> process;
     int fd;				// the parent's end of the socketpair
     std::string inbuf;			// reply bytes not yet a whole line
+    bool output_done;			// the output pipe reached its end
     unsigned next_seq;
     std::string std_option;
     ProgramFactory make_program;
@@ -116,5 +132,21 @@ private:
     SessionClient(const SessionClient &);
     SessionClient &operator=(const SessionClient &);
 };
+
+// The script surface (<ns_madc>'s session_* verbs, src/madc_session_verbs.cpp),
+// declared here for C++ hosts and tests; the contract is <ns_madc>'s.
+namespace madc {
+int64_t session_open(const char *std);
+bool session_running(int64_t handle);
+const char *session_error(int64_t handle);
+int64_t session_offer(int64_t handle, const char *text, bool final);
+int64_t session_complete(int64_t handle, const char *text, int64_t caret);
+int64_t session_poll(value &reply, int64_t handle);
+value &session_output(value &out, int64_t handle);
+bool session_input(int64_t handle, const char *text);
+bool session_restart(int64_t handle);
+int64_t session_readable(int64_t handle);
+bool session_close(int64_t handle);
+}
 
 #endif

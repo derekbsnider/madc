@@ -74,7 +74,7 @@ TEST_CASE("session backend: an entry's output comes before its result")
     CHECK(r.ok);
     REQUIRE(c.offer_wait("int twice(int v) { return 2 * v; }", true, r, out, kWait) == 1);
     CHECK(r.kind == SessionClient::Reply::Kind::offer);
-    CHECK(r.state == InteractiveSession::OfferState::Taken);
+    CHECK(r.state == InteractiveSession::OfferState::taken);
     CHECK(r.ok);
     out.clear();
     REQUIRE(c.offer_wait("printf(\"first\\n\"); printf(\"%d\\n\", twice(21));",
@@ -105,9 +105,9 @@ TEST_CASE("session backend: an offer's verdict, a refused entry's diagnostics")
     std::string out;
     // Not final: an unfinished entry is Incomplete, and nothing is kept.
     REQUIRE(c.offer_wait("int f(void) {", false, r, out, kWait) == 1);
-    CHECK(r.state == InteractiveSession::OfferState::Incomplete);
+    CHECK(r.state == InteractiveSession::OfferState::incomplete);
     REQUIRE(c.offer_wait("int x = ;", true, r, out, kWait) == 1);
-    CHECK(r.state == InteractiveSession::OfferState::Taken);
+    CHECK(r.state == InteractiveSession::OfferState::taken);
     CHECK_FALSE(r.ok);
     CHECK(r.rendered.find("error") != std::string::npos);
     CHECK_FALSE(first_error_row(r.diagnostics).empty());

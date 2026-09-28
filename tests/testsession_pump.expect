@@ -1,0 +1,8 @@
+kept: ok=true
+crash: stopped=true exit_status=139 restarted=true
+running after the crash: true
+state gone: ok=false
+after the crash: ok=true submitted=2
+restart: ok=false
+restart output: 42
+done

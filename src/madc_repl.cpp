@@ -306,16 +306,16 @@ int madc_repl_edit(InteractiveSession &session, line_target &term,
 		    InteractiveSession::Offered r = session.offer(text, taken);
 		    switch ( r.state )
 		    {
-			case InteractiveSession::OfferState::Taken:
+			case InteractiveSession::OfferState::taken:
 			    remember(history_text(text));
 			    ed.entered(line_edit::verdict::taken);
 			    print_shown(session, out);
 			    over = true;
 			    break;
-			case InteractiveSession::OfferState::Incomplete:
+			case InteractiveSession::OfferState::incomplete:
 			    ed.entered(line_edit::verdict::incomplete);
 			    break;
-			case InteractiveSession::OfferState::Extendable:
+			case InteractiveSession::OfferState::extendable:
 			    ed.entered(line_edit::verdict::extendable);
 			    break;
 		    }
@@ -382,12 +382,12 @@ int madc_repl_run(InteractiveSession &session, std::istream &in,
 	InteractiveSession::Offered r = session.offer(pending);
 	switch ( r.state )
 	{
-	    case InteractiveSession::OfferState::Incomplete:
+	    case InteractiveSession::OfferState::incomplete:
 		break;
-	    case InteractiveSession::OfferState::Extendable:
+	    case InteractiveSession::OfferState::extendable:
 		extendable = true;
 		break;
-	    case InteractiveSession::OfferState::Taken:
+	    case InteractiveSession::OfferState::taken:
 		print_shown(session, out);
 		pending.clear();
 		break;

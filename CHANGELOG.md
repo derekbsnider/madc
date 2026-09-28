@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+### Sessions from the dialect: `madc::session_*` (§37 item 9, slice 2)
+
+A madc program can now run an interactive session in a backend process and
+drive it, which is what madcide's REPL pane will do. `madc::session_open("c17")`
+returns a handle. `session_offer(h, text, final)` sends an entry and
+`session_complete(h, text, caret)` asks for completions; both return at once.
+`session_poll(reply, h)` hands back each reply as a row with named fields:
+its `kind` and the entry's `state` are enum codes
+(`madc::session_reply::offer`, `madc::offer_state::taken`) a handler can
+compare against, never words. `session_output` returns what the program
+printed, `session_input` feeds its stdin, and `session_restart` and
+`session_close` do what they say. If an entry crashes the backend,
+`session_poll` reports it (exit status 139 for a segfault) and restarts the
+backend with an empty state. The caller keeps running.
+
+`session_readable(h)` is a `chan_select` case, so a task can wait on a
+session beside its other channels. The select machinery now takes any
+readiness source with several wait handles (a session has two: its replies
+and the program's output), resolved by id at every select, so a closed or
+restarted session never leaves a stale entry. A new scheduler call,
+`taskio::handle_closing`, wakes a task parked on a handle that is about to
+close. The epoll path used to forget such a task, so restarting a session
+under a waiting pump hung it.
+
+Tests: `testsession_entries` (entries, output order, verdicts, diagnostics
+rows, completion, stdin, a refused standard) and `testsession_pump` (a task
+pumping replies through `chan_select`, a crash and its restart, a restart
+while the pump waits), under JIT, `--exe` and `--obj`.
+
 ### The session in its own process (§37 item 9, slice 1)
 
 `SessionClient` (`include/madc_session_client.h`) runs an interactive
