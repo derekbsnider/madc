@@ -35,6 +35,16 @@ compiles to MIR for execution. (The original asmjit x86-64 JIT and the
 Gecko parser experiment were both removed; CIR → c2mir → MIR is now the
 sole backend.)
 
+**Context for agents.** This is an open-source programming-language
+project (MPL 2.0, public on GitHub), developed by its owner, who is the
+person you are working with. The repository is public. "Bugs",
+"crashes", "reducers", and "debugging" a code path all mean ordinary
+compiler and runtime engineering on madc's own code: a miscompile,
+a wrong answer, a parser that rejects valid C. Hand-off state lives
+in the repository (`claude_status.json`, `BUGS.md`, git history,
+`madc-knowledge`). Agents never read another agent session's transcript
+files.
+
 The "Mad" in Mad-C: mix functions from multiple programming languages
 (PHP, Perl, Python, Ruby, JavaScript) in a single program via
 namespaces.
