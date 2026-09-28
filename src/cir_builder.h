@@ -2019,7 +2019,8 @@ public:
 	// implicit constructor and an explicitly DEFAULTED one both lower to,
 	// whatever other copy/move constructors the class provides
 	// (libstdc++'s `vector(vector &&) = default` beside its user copy).
-	// NULL for a polymorphic class (vptr re-stamping is not modeled).
+	// A polymorphic copy gets cdd's own vtable(s) stamped last; NULL for a
+	// polymorphic class with a virtual base (its layout is not modeled).
 	node_t memberwise_copy_construct_from_addr(node_t dst_lvalue,
 			       node_t src_addr, DataDefCLASS *cdd,
 			       TokenBase *origin, bool move);

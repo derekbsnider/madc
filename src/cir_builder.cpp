@@ -14581,7 +14581,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 	// its bases' and members' own constructors included — the one owner,
 	// implicit_copy_construct_from_addr. A returned local is moved
 	// ([class.copy.elision]/3), and so is a prvalue.
-	if (src && !class_copy_ctor_def(cdd) && !cdd->has_any_vptr()) {
+	if (src && !class_copy_ctor_def(cdd)) {
 		bool move = implicit_move
 			|| ctor_arg_value_category(src) == cacRvalue;
 		if (node_t copy = implicit_copy_construct_from_addr(
@@ -16717,11 +16717,11 @@ bool CirBuilder::class_trivially_copyable(DataDefCLASS *cdd)
 // Box<int>) gets the memberwise implicit copy: bind both objects into
 // pointer temps, whole-object bit-copy (scalar bytes at every depth), then
 // re-invoke the user copy (or, from an rvalue, move) ctor of every base and
-// nested class member that declares one. A deliberate boundary, kept LOUD
-// (return NULL -> no_ctor_match_error) rather than silently wrong:
-// polymorphic classes (a sliced src's bit-copied vptr would carry the derived
-// vtable — re-stamping is not modeled here). Returns NULL when the fallback
-// does not apply.
+// nested class member that declares one; a polymorphic class then gets its
+// own vtable(s) stamped. A deliberate boundary, kept LOUD (return NULL ->
+// no_ctor_match_error) rather than silently wrong: a polymorphic class with
+// a virtual base (its layout is not modeled). Returns NULL when the
+// fallback does not apply.
 node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 					       DataDefCLASS *cdd,
 					       const std::vector<TokenBase *> &ctor_args,
@@ -16822,7 +16822,7 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 // trivially-copyable struct assignment, else the whole-object bit-copy plus
 // the user copy ctors of the bases and nested members (implicit_copy_member_
 // reconstructs). The same LOUD boundaries as the token-level entry (a user
-// copy ctor, a vptr -> NULL). ONE owner for
+// copy ctor, a polymorphic class with a virtual base -> NULL). ONE owner for
 // try_implicit_copy_construct and the deferred-construction relower
 // (`::new(p) _Up(std::forward<_Args>(args)...)` with _Args = _Up).
 node_t CirBuilder::implicit_copy_construct_from_addr(node_t dst_lvalue,
@@ -16851,7 +16851,18 @@ node_t CirBuilder::memberwise_copy_construct_from_addr(node_t dst_lvalue,
 				    node1(N_DEREF, src_addr, origin), origin);
 		return node2(N_EXPR, list(), asgn, origin);
 	}
-	if (cdd->has_any_vptr()) return NULL;
+	// A polymorphic copy is a complete cdd whatever the source's dynamic type:
+	// a sliced source's bit-copied vptr is the DERIVED vtable, and a base's
+	// copy constructor stamps its own, so cdd's are stamped last (the
+	// complete-object stamp, append_vptr_and_member_inits). A polymorphic
+	// class with a virtual base stays refused: its layout is not modeled here.
+	bool polymorphic = cdd->has_any_vptr();
+	if (polymorphic) {
+		std::vector<DataDefCLASS *> vbs;
+		std::set<DataDefCLASS *> seen;
+		cdd->collect_vbases(vbs, seen);
+		if (!vbs.empty()) return NULL;
+	}
 	// Bind dst/src ONCE into scoped pointer temps: c2mir nodes hold a single
 	// parent link, and re-translating an rvalue src (a cast/call temp) per
 	// member would materialize divergent copies.
@@ -16887,6 +16898,8 @@ node_t CirBuilder::memberwise_copy_construct_from_addr(node_t dst_lvalue,
 		for (node_t f : fixes)
 			append(blk, f);
 	}
+	if (polymorphic)
+		append_vptr_and_member_inits(blk, lt, cdd, origin, false, false);
 	return node2(N_BLOCK, list(), blk, origin);
 }
 

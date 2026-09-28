@@ -4,8 +4,8 @@
    type, so p.f() is P's.
    madc's memberwise copy refused a polymorphic class, and the no-user-ctor
    declaration path then fell through to P's implicit default constructor,
-   dropping q: p.x printed garbage and the program exited 0. The refusal is
-   now an error.
+   dropping q: p.x printed garbage and the program exited 0. The copy now
+   stamps P's own vtable after the memberwise copy.
    Oracle: g++ 13 and clang++ 18 -std=c++17 print `1 9`. */
 #include <cstdio>
 

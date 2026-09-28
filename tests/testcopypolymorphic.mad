@@ -1,0 +1,56 @@
+/* Copying an object of a polymorphic class, by its implicit copy
+   constructor and by a defaulted one, into a declaration, a by-value
+   parameter and a return, from the class itself and from a derived object.
+   The copy is a complete object of its own class whatever the source's
+   dynamic type: its virtual calls are its own class's, and the source keeps
+   its own.
+   madc refused every one of these ("no matching constructor for call to
+   'P(Q)'", and 'P(P)' for the by-value parameter), because the memberwise
+   copy did not stamp the copy's vtable.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the three lines below. */
+#include <cstdio>
+
+struct P {
+	int x = 5;
+	P() {}
+	virtual int f() const { return 1; }
+	virtual ~P() {}
+};
+
+struct Q : P {
+	int f() const override { return 2; }
+};
+
+struct D {
+	int x = 7;
+	D() {}
+	D(const D &) = default;
+	virtual int f() const { return 3; }
+	virtual ~D() {}
+};
+
+struct E : D {
+	int f() const override { return 4; }
+};
+
+static P pass(P p) { return p; }
+static P sliced(const Q &q) { return q; }
+static D dpass(D d) { return d; }
+
+int main()
+{
+	Q q;
+	q.x = 9;
+	P p = q;
+	P r = pass(p);
+	P s = sliced(q);
+	printf("implicit: %d %d %d %d %d %d\n", p.f(), p.x, r.f(), r.x, s.f(), s.x);
+	E e;
+	e.x = 8;
+	D d = e;
+	D t = dpass(d);
+	printf("defaulted: %d %d %d %d\n", d.f(), d.x, t.f(), t.x);
+	P *bp = &q;
+	printf("source: %d\n", bp->f());
+	return 0;
+}

@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Polymorphic classes copy by value
+
+An object of a class with virtual functions can be copied again: into a
+declaration, a by-value parameter and a return, through the implicit copy
+constructor or a defaulted one, and from a derived object. The copy's
+virtual calls are its own class's. Before, madc refused all of these
+("no matching constructor for call to 'P(Q)'", and 'P(P)' for a by-value
+parameter). A polymorphic class with a virtual base is still refused.
+
 ### A copy madc cannot lower is an error, not a default construction
 
 For a class with no user constructor, a copy the implicit copy constructor
