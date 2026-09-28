@@ -155,6 +155,27 @@ int64_t session_complete(int64_t handle, const char *text, int64_t caret)
     return (int64_t)s->client.complete(text ? text : "", (size_t)caret);
 }
 
+int64_t session_load(int64_t handle, const char *path, const char *text)
+{
+    SessionHandle *s = session_of(handle);
+    if ( !s || !path )
+	return 0;
+    if ( text && *text )
+	return (int64_t)s->client.load_text(text, path);
+    return (int64_t)s->client.load(path);
+}
+
+int64_t session_run(int64_t handle, value &argv)
+{
+    SessionHandle *s = session_of(handle);
+    if ( !s || !argv.is_array() )
+	return 0;
+    std::vector<std::string> args;
+    for ( const value &a : argv.as_array() )
+	args.push_back(a.is_string() ? a.as_string() : std::string());
+    return (int64_t)s->client.run(args);
+}
+
 int64_t session_poll(value &reply, int64_t handle)
 {
     SessionHandle *s = session_of(handle);

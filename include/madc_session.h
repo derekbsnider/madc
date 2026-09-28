@@ -110,6 +110,10 @@ public:
     // diagnostics cite its path; it takes no REPL[N]. False when it is
     // refused, and then it leaves nothing (plan §41.3).
     bool load(const std::string &path);
+    // The same for a file's text, named `path` (an editor's buffer, unsaved
+    // edits included: madcide's F5, plan §41.10a). load() reads the file and
+    // calls this.
+    bool load_text(const std::string &text, const std::string &path);
     // Call the session's main(argc, argv) at the entry boundary (the rest of
     // %run, D16/D25; `madc -i file`, python -i). False when there is no main,
     // or a use of an undefined name returned; its return value goes to

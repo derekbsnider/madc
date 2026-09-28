@@ -229,7 +229,13 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 		break;
 	    }
 	    case Op::load:
-		rep["ok"] = session.load(req.value("path", std::string()));
+		// With text, the text is the unit and path names it (an
+		// editor's buffer); without, the file at path.
+		if ( req.contains("text") )
+		    rep["ok"] = session.load_text(req.value("text", std::string()),
+						  req.value("path", std::string()));
+		else
+		    rep["ok"] = session.load(req.value("path", std::string()));
 		break;
 	    case Op::continues:
 		rep["continues"] = session.continues_if(req.value("text", std::string()));
@@ -507,6 +513,17 @@ unsigned SessionClient::load(const std::string &path)
     return send(req.dump()) ? seq : 0;
 }
 
+unsigned SessionClient::load_text(const std::string &text, const std::string &path)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::load);
+    req["path"] = path;
+    req["text"] = text;
+    return send(req.dump()) ? seq : 0;
+}
+
 unsigned SessionClient::continues(const std::string &line)
 {
     nlohmann::json req;
@@ -742,6 +759,11 @@ unsigned SessionClient::load(const std::string &)
     return 0;
 }
 
+unsigned SessionClient::load_text(const std::string &, const std::string &)
+{
+    return 0;
+}
+
 unsigned SessionClient::run(const std::vector<std::string> &)
 {
     return 0;
@@ -952,6 +974,13 @@ int SessionClient::load_wait(const std::string &path, Reply &reply,
 			     std::string &output)
 {
     return wait_reply(load(path), reply, output, -1, InteractiveSession::TakenHook());
+}
+
+int SessionClient::load_wait_text(const std::string &text, const std::string &path,
+				  Reply &reply, std::string &output)
+{
+    return wait_reply(load_text(text, path), reply, output, -1,
+		      InteractiveSession::TakenHook());
 }
 
 int SessionClient::run_wait(const std::vector<std::string> &argv, Reply &reply,

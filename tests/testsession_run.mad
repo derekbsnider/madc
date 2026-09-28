@@ -1,0 +1,69 @@
+// A program's text loaded into a session and its main run (plan §41.10a
+// slice 2; the cores of %load and %run, D25): the text is one unit named by
+// its path, main runs with the argv given and prints before its reply, and
+// the entries that follow call its functions. A refused text cites its path
+// and leaves the session as it was.
+
+// The next reply, passing over running notices; the program's output
+// printed before it is appended to `out`.
+long next_reply(var &r, long h, var &out)
+{
+    var cases;
+    cases[0] = madc::session_readable(h);
+    for ( ;; )
+    {
+	long got = madc::session_poll(r, h);
+	var o;
+	madc::session_output(o, h);
+	out = format("{}{}", out, o);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	    continue;
+	if ( got != 0 )
+	    return got;
+	var fired;
+	madc::chan_select(fired, cases);
+    }
+}
+
+int main()
+{
+    long h = madc::session_open("c17");
+    var r;
+    var out = "";
+    madc::session_offer(h, "int before = 1;", true);
+    next_reply(r, h, out);
+
+    madc::session_load(h, "buffer.c", "int broken( { return 0; }\n");
+    next_reply(r, h, out);
+    var rendered = r["rendered"];
+    println("refused: load={} ok={} cites the path={}",
+	    r["kind"] == madc::session_reply::load, r["ok"],
+	    rust::contains(rendered.c_str(), "buffer.c:1:") != 0);
+
+    madc::session_load(h, "buffer.c",
+	"#include <stdio.h>\n"
+	"static int triple(int v) { return 3 * v; }\n"
+	"int main(int argc, char **argv)\n"
+	"{\n"
+	"    printf(\"main ran: argc=%d last=%s\\n\", argc, argv[argc - 1]);\n"
+	"    return 5;\n"
+	"}\n");
+    next_reply(r, h, out);
+    println("loaded: ok={}", r["ok"]);
+
+    var argv = {};
+    argv.push("buffer.c");
+    argv.push("extra");
+    out = "";
+    madc::session_run(h, argv);
+    next_reply(r, h, out);
+    print("output: {}", out);
+    println("ran: run={} ok={} status={}", r["kind"] == madc::session_reply::run,
+	    r["ok"], r["status"]);
+
+    madc::session_offer(h, "triple(14) + before", true);
+    next_reply(r, h, out);
+    println("entry: {}", r["shown"]);
+    madc::session_close(h);
+    return 0;
+}

@@ -107,6 +107,8 @@ public:
     // (the path, then the program's arguments): the cores of %load and
     // %run (D25), and `madc -i file`. Neither waits.
     unsigned load(const std::string &path);
+    // The same for a file's text, named `path` (an editor's buffer).
+    unsigned load_text(const std::string &text, const std::string &path);
     unsigned run(const std::vector<std::string> &argv);
     // D11's question, asked of the session's standard: does `line` continue
     // an if that ended an entry (its first word is `else`)?
@@ -132,6 +134,8 @@ public:
     int complete_wait(const std::string &text, size_t caret, Reply &reply,
 		      int timeout_ms = -1);
     int load_wait(const std::string &path, Reply &reply, std::string &output);
+    int load_wait_text(const std::string &text, const std::string &path,
+		       Reply &reply, std::string &output);
     int run_wait(const std::vector<std::string> &argv, Reply &reply,
 		 std::string &output);
     int continues_wait(const std::string &line, Reply &reply);
@@ -217,6 +221,8 @@ const char *session_error(int64_t handle);
 const char *session_standard(int64_t handle);
 int64_t session_offer(int64_t handle, const char *text, bool final);
 int64_t session_complete(int64_t handle, const char *text, int64_t caret);
+int64_t session_load(int64_t handle, const char *path, const char *text);
+int64_t session_run(int64_t handle, value &argv);
 int64_t session_poll(value &reply, int64_t handle);
 value &session_output(value &out, int64_t handle);
 bool session_input(int64_t handle, const char *text);

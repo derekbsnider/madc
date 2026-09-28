@@ -318,12 +318,17 @@ bool InteractiveSession::load(const std::string &path)
     }
     std::ostringstream text;
     text << file.rdbuf();
+    return load_text(text.str(), path);
+}
+
+bool InteractiveSession::load_text(const std::string &text, const std::string &path)
+{
     // A file is read as gcc reads it, through its translation too: no entry
     // relaxation, bodies kept as roots, and an undefined reference refused
     // at its link (late binding, D27, is an entry's).
     Program::ParseModeScope mode(*prog, Program::ParseMode::TranslationUnit);
     Program::EntryTransaction unit(*prog);
-    bool parsed = prog->parse_file_unit(text.str(), path);
+    bool parsed = prog->parse_file_unit(text, path);
     render_parse_diagnostics();
     if ( !parsed )
 	return false;

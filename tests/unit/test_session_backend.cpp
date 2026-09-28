@@ -258,6 +258,27 @@ TEST_CASE("session backend: load a program file, then run its main")
     std::remove(path);
 }
 
+TEST_CASE("session backend: load an editor buffer's text under its name")
+{
+    // madcide's F5 (plan §41.10a): the buffer's text, unsaved, is the unit;
+    // its path names it. A refused text cites that path and leaves nothing.
+    SessionClient c;
+    REQUIRE(c.start("--std=c17"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.offer_wait("int keep = 1;", true, r, out, kWait) == 1);
+    REQUIRE(c.load_wait_text("int broken( { return 0; }\n", "buffer_one.c", r, out) == 1);
+    CHECK(r.kind == SessionClient::Reply::Kind::load);
+    CHECK_FALSE(r.ok);
+    CAPTURE(r.rendered);
+    CHECK(r.rendered.find("buffer_one.c:1:") != std::string::npos);
+    REQUIRE(c.load_wait_text("static int triple(int v) { return 3 * v; }\n"
+			     "int shown = 14;\n", "buffer_two.c", r, out) == 1);
+    CHECK(r.ok);
+    REQUIRE(c.offer_wait("triple(shown) + keep", true, r, out, kWait) == 1);
+    CHECK(r.shown == "43");
+}
+
 TEST_CASE("session backend: the CLI loop drives a BackendSession")
 {
     // madc_repl_run over string streams, the backend piped: its output goes

@@ -668,6 +668,14 @@ namespace madc {
     //   session_offer(h, text, final) / session_complete(h, text, caret):
     //     the request's seq, 0 when the backend is not running. A completion
     //     is answered once a running entry ends.
+    //   session_load(h, path, text): load a program file into the session
+    //     as one unit (its statics are session names); with text, the text
+    //     is the unit and path names it (an editor's buffer), with "" the
+    //     file at path. session_run(h, argv): call its main with argv (an
+    //     array of strings: the path, then the arguments). Each returns its
+    //     seq; the replies are `load` (ok, rendered) and `run` (ok, rendered,
+    //     status: main's return value) rows. The cores of %load and %run
+    //     (D25), and madcide's F5 (plan §41.10a).
     //   session_poll(reply, h): 1 with a reply, 0 when none waits, -1 when
     //     the backend stopped (reply is its row; the backend is restarted,
     //     its state empty, and the row's `restarted` says whether the new one
@@ -693,6 +701,8 @@ namespace madc {
     const char *session_standard(int64_t handle);
     int64_t session_offer(int64_t handle, const char *text, bool final);
     int64_t session_complete(int64_t handle, const char *text, int64_t caret);
+    int64_t session_load(int64_t handle, const char *path, const char *text);
+    int64_t session_run(int64_t handle, value &argv);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);
     bool session_input(int64_t handle, const char *text);
