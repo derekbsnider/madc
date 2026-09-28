@@ -180,5 +180,7 @@ int main()
 	    when_holds(ctx, e1) ? 1 : 0, when_holds(ctx, e2) ? 1 : 0,
 	    when_holds(ctx, e3) ? 1 : 0, when_holds(ctx, e4) ? 1 : 0,
 	    when_holds(ctx, e5) ? 1 : 0, when_holds(ctx, e6) ? 1 : 0);
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

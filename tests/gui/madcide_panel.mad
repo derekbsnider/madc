@@ -87,5 +87,7 @@ int main()
     ui::close(t);
     ui::world_close(w);
     println("PNL closed");
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

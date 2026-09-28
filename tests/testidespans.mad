@@ -33,5 +33,7 @@ int main()
     for ( var sp : hs )
 	println("span s={} e={} c={}", sp["s"], sp["e"], sp["c"]);
     println("spans={}", php::count(hs));
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

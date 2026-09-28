@@ -105,5 +105,9 @@ int main()
     S.dialog_fallback(frq);
     ui::get(pr, w, es, "prompt");
     println("fallback: prompt={} mode={}", pr, prompt_name(cur_pmode(w, es)));
+    // a test leaves nothing in its working directory
+    remove(path);
+    remove("madc_ide_dialog_other.mad");
+    remove("madc_ide_dialog_copy.mad");
     return 0;
 }

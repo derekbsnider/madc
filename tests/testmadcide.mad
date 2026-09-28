@@ -2207,5 +2207,14 @@ int main()
     remove(vlay);
 
     ui::world_close(w);
+    // a test leaves nothing in its working directory
+    remove(path);
+    remove("madc_ide_test.prj.events");
+    remove("madc_ide_build.mad");
+    remove("madc_ide_build");
+    remove("madc_ide_second.mad");
+    remove("madc_ide_frag.txt");
+    remove("madc_ide_view.cpp");
+    remove("madc_ide_vi.txt");
     return 0;
 }

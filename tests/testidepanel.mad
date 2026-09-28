@@ -77,5 +77,7 @@ int main()
     var t3;
     S.compose_ide_tree(t3, doc);
     println("hidden: panel-index={}", find_panel(t3));
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

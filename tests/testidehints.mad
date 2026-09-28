@@ -188,5 +188,7 @@ int main()
     ea["action"] = "pcancel";
     S.apply_ide_event(doc, ea);
     println("confirm-button: prompt-off={}", prompt_active(w, es) ? 0 : 1);
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

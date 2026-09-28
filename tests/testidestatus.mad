@@ -54,5 +54,7 @@ int main()
     for ( var sg : left )
 	lseats = format("{}{}", lseats, sg["seat"]);
     println("chord+modified-seats={}", lseats);
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

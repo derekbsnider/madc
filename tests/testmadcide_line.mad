@@ -52,5 +52,8 @@ int main()
     php::file_get_contents(fa, path);
     php::file_get_contents(fb, twin);
     println("line-twin: doc-equal={} cont={}", fa == fb ? 1 : 0, cont ? 1 : 0);
+    // a test leaves nothing in its working directory
+    remove(path);
+    remove(twin);
     return 0;
 }

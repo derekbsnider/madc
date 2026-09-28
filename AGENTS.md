@@ -355,7 +355,7 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
 | [knowledge-graph.md](.claude/rules/knowledge-graph.md) |   14 | KG as authoritative project memory, mirrored back into repo files |
-| [scratch-files.md](.claude/rules/scratch-files.md) |     8 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root |
+| [scratch-files.md](.claude/rules/scratch-files.md) |    10 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root; a test removes what it creates (gated by `run_tests.sh`) |
 | [rule-trailers.md](.claude/rules/rule-trailers.md) |    28 | **Show the Top 5 work, don't assert it.** Every `src/`/`include/` commit carries `Hypothesis:` / `Layer:` / `Searched:` / `Oracle:`; gated by `check-rule-trailers.sh`. Can't write `Layer:`? You're shimming |
 
 Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
@@ -416,7 +416,7 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **36 rules, 1190 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1192 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~459 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
 - **Grand total loaded by Claude Code per turn: ~1600 lines.**

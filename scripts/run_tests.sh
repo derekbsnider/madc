@@ -322,6 +322,12 @@ for t in "$TEST_DIR"/*.mad; do
     tmo=10
     [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
 
+    # A test leaves nothing behind in the directory it runs in
+    # (.claude/rules/scratch-files.md): a name the JIT run adds to the working
+    # directory fails the test. The native passes run the same program, so the
+    # JIT run is the one that answers. Snapshot the entries now.
+    cwd_before=$(LC_ALL=C ls -A)
+
     t0=$SECONDS
     if [ -f "$expect_err_file" ]; then
         # Compile-error test: capture stderr — the diagnostics ARE the
@@ -389,6 +395,14 @@ for t in "$TEST_DIR"/*.mad; do
         err=""
         [ "$MADC_FAIL_DETAIL" -gt 0 ] && [ -s "$errf" ] && err=$(head -n "$MADC_FAIL_DETAIL" "$errf")
         rm -f "$errf"
+    fi
+    if [ $ok -eq 1 ]; then
+        leaked=$(LC_ALL=C comm -13 <(printf '%s\n' "$cwd_before") <(LC_ALL=C ls -A) | tr '\n' ' ')
+        if [ -n "$leaked" ]; then
+            [ "$REPORT" = json ] || echo "LEAK(files): $t left ${leaked% } in $PWD"
+            unmet="left in the working directory: ${leaked% }"
+            ok=0
+        fi
     fi
 
     secs=$((SECONDS - t0))
