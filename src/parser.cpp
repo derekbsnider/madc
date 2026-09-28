@@ -3103,6 +3103,29 @@ static std::string namespace_cpp_function_symbol(const std::string &ns_name,
 				     fd ? fd->internal_linkage : false);
 }
 
+// [dcl.meaning]/1: a qualified definition `T N::f(P) {...}` defines one of
+// N's declared functions, the one whose Itanium signature (the ABI's type
+// identity, fold_same_signature_overload's) it encodes. It never adds an
+// overload. The textual pre-parse identity cannot decide this: `int f(int);`
+// defined as `int N::f(int k)` spells differently.
+static bool qualified_definition_declared(
+	const std::vector<Program::NamespaceFnOverload> &ovset,
+	Variable *fresh_var, FuncDef *fresh_fd,
+	const std::string &ns_name, const std::string &source_id)
+{
+    std::string fresh_sig = namespace_cpp_function_symbol(ns_name, source_id, fresh_fd);
+    for ( size_t i = 0; i < ovset.size(); ++i )
+    {
+	Variable *pv = ovset[i].var;
+	if ( !pv || pv == fresh_var || !pv->type )
+	    continue;
+	if ( FuncDef *pfd = pv->type->as_funcdef_dd() )
+	    if ( namespace_cpp_function_symbol(ns_name, source_id, pfd) == fresh_sig )
+		return true;
+    }
+    return false;
+}
+
 // C++ SYMBOL MANGLING phase 1 — the overload set's identity TRUTH.
 //
 // The pre-parse identity (peek_param_list_spelling) is TEXTUAL: parameter
@@ -73703,6 +73726,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     // written inside `namespace N { }` — open until this declaration ends.
     std::unique_ptr<NamespaceScope> qualified_namespace_scope;
     TokenBase *qualified_name_tok = NULL;	// the qualified declarator-id's last name
+    std::string qualified_scope_spelling;	// its qualifier as written (`N::M`)
     std::vector<carray_dim_t> arr_dims;
     std::vector<TokenBase *> arr_dim_exprs;
     TokenBase *vla_size_expr = NULL;
@@ -73979,12 +74003,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		find_namespace_member(qualified_ns, qualified_member_name);	// activates a forest family
 		std::string declaring_ns = declaring_inline_set_namespace(
 		    qualified_ns, qualified_member_name);
+		qualified_scope_spelling = join_scope_parts(scope_parts, scope_parts.size());
 		if ( declaring_ns.empty() )
-		{
-		    std::string spelled = join_scope_parts(scope_parts, scope_parts.size());
-		    Throw(qualified_name_tok) << "'" << spelled << "::" << qualified_member_name
-			<< "' should have been declared inside '" << spelled << "'" << flush;
-		}
+		    Throw(qualified_name_tok) << "'" << qualified_scope_spelling << "::"
+			<< qualified_member_name << "' should have been declared inside '"
+			<< qualified_scope_spelling << "'" << flush;
 		qualified_namespace_scope.reset(new NamespaceScope(*this, declaring_ns));
 		id = qualified_member_name;
 		qualified_member_name.clear();
@@ -75607,6 +75630,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     bool namespace_function = !qualified_owner_class && !current_namespace().empty();
     std::string ns_overload_spelling;
     bool ns_overload_tracked = false;
+    bool ns_reuses_declaration = false;	// the textual identity matched a declared member
     if ( namespace_function )
     {
 	parse_id = namespace_function_symbol(current_namespace(), source_id);
@@ -75637,6 +75661,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    for ( size_t i = 0; i < ovset.size(); ++i )
 		if ( ovset[i].spelling() == ns_overload_spelling )
 		    same = ovset[i].var;
+	    ns_reuses_declaration = same != NULL;
 	    if ( same )
 		parse_id = same->name;
 	    else if ( fn_template_instantiation_depth > 0 )
@@ -75965,6 +75990,16 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    fold_same_signature_overload(*this, ovset, ns_var, fd,
 						 current_namespace(), source_id,
 						 curToken());
+		// A qualified definition (`int N::f(int) {...}`) must define a
+		// function N declares; one matching no declared signature is
+		// refused, as g++ refuses it.
+		if ( qualified_namespace_scope && fn_template_instantiation_depth == 0
+		  && !ns_reuses_declaration
+		  && !qualified_definition_declared(ovset, ns_var, fd,
+						    current_namespace(), source_id) )
+		    Throw(qualified_name_tok) << "'" << qualified_scope_spelling << "::"
+			<< source_id << "' should have been declared inside '"
+			<< qualified_scope_spelling << "'" << flush;
 		// Once a name has 2+ overloads, every member's call symbol is
 		// its OWN binding, so a call resolved through the shared
 		// namespace-map entry still emits the ranked winner's symbol.

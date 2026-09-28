@@ -10,7 +10,9 @@ qualifier found through a using-directive, and an inline namespace's member
 defined through its enclosing one (`int Q::f()` defines `Q::V1::f`). The body
 finds N's members unqualified, and the symbols are the namespace members'
 (`_ZN1N1fEv`). A qualified definition of a name N never declared is refused
-("'N::nope' should have been declared inside 'N'"). Before, every such
+("'N::nope' should have been declared inside 'N'"), and so is one whose
+signature matches none of N's declarations (`int N::f(int)` over
+`int f();`). Before, every such
 definition was refused as an "Unknown C++ declarator scope". Two g++.dg tests
 now pass (attributes-namespace5.C, inline-ns1.C).
 

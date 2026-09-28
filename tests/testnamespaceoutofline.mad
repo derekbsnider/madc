@@ -3,13 +3,15 @@
    `extern` in the namespace, a nested namespace's function, a function
    returning the namespace's own class, a qualifier found through a
    using-directive, and a member of an inline namespace defined through its
-   enclosing one (`int Q::g()` defines Q::V1::g, `_ZN1Q2V11gEv`). The definition's body looks names up in the namespace
+   enclosing one (`int Q::g()` defines Q::V1::g, `_ZN1Q2V11gEv`), and two
+   declared overloads each defined by its signature (parameter names differ
+   from the declarations'). The definition's body looks names up in the namespace
    (`helper`, `x`, `f`, `S` unqualified), and its symbol is the namespace
    member's (`_ZN1N1fEv`), so another translation unit declaring N::f links
    to it.
    madc refused every one ("Unknown C++ declarator scope 'N'"): the
    qualifier was resolved as a class only.
-   Oracle: g++ 13 and clang++ 18 -std=c++17 print the two lines below. */
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the three lines below. */
 #include <cstdio>
 namespace N {
 	int f();
@@ -26,6 +28,9 @@ N::S N::make(int v) { S s; s.v = v; return s; }
 namespace L { namespace P { int h(); } }
 using namespace L;
 int P::h() { return 7; }
+namespace O { int h(int); int h(double); }
+int O::h(double d) { return d > 0 ? 2 : 0; }
+int O::h(int k) { return k; }
 namespace Q { inline namespace V1 { extern int i; int g(); } }
 int Q::i = 1;
 int Q::g() { return i + 41; }
@@ -33,5 +38,6 @@ int main()
 {
 	printf("ns: %d %d %d %d %d\n", N::f(), N::x, N::M::g(2), N::make(9).v, L::P::h());
 	printf("inline: %d %d\n", Q::g(), Q::V1::g());
+	printf("overload: %d %d\n", O::h(1), O::h(1.5));
 	return 0;
 }
