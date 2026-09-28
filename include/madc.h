@@ -8286,6 +8286,9 @@ public:
     bool paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack);
     Variable *resolve_c_identifier(TokenIdent *ident_tb, bool expression_head);
     bool datatype_statement_starts_functional_expr();
+    // Can `tb` open a parameter-declaration-clause? False only when it
+    // provably cannot: a literal, an operator, a non-type name.
+    bool token_begins_parameter_declaration(TokenBase *tb);
     bool datatype_statement_starts_qualified_expr();
     bool is_shared_global_extern_reference(TokenCpnd *code, Variable *var);
     bool next_parenthesized_type_is_compound_literal();

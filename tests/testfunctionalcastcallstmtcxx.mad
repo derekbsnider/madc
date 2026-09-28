@@ -1,0 +1,27 @@
+/* A type-headed statement whose parenthesized group is `name(args)` is a
+   declaration only when `args` could be a parameter-declaration-clause
+   ([dcl.ambig.res], [dcl.fct]): `int(g(int));` declares a function g. A
+   literal, a variable or an operator cannot begin a parameter declaration,
+   so `int(step(3));` is a functional cast of a call. madc read it as the
+   declaration `int step(3)` — a variable named step, initialized to 3 — so
+   the call never ran and `step` was shadowed (B13).
+   Oracle: g++ and clang++ -std=c++17 print `34541`. */
+#include <cstdio>
+
+int log_v = 0;
+int step(int d) { log_v = log_v * 10 + d; return d; }
+struct S { int v; S(int x) : v(x) {} };
+
+int main()
+{
+	int x = 4;
+	int(step(3));
+	int(step(x));
+	S(step(-5 + 10));
+	int(step(*&x));
+	int (f)(int);
+	int(g(int));
+	step(1);	// still the function, not a shadowing variable
+	printf("%d\n", log_v);
+	return 0;
+}

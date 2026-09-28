@@ -32547,6 +32547,45 @@ bool Program::token_starts_type_name(TokenBase *tb)
     return false;
 }
 
+// Can `tb` be the first token of a parameter-declaration-clause ([dcl.fct])?
+// A clause is empty (`)`), `...`, or parameter-declarations, which open with
+// an attribute or a decl-specifier: never a literal, never an operator, never
+// a name that denotes a variable, function or enumerator rather than a type.
+// Anything this cannot rule out counts as a possible parameter.
+bool Program::token_begins_parameter_declaration(TokenBase *tb)
+{
+    if ( !tb )
+	return true;
+    switch ( tb->type() )
+    {
+	case TokenType::ttInteger:
+	case TokenType::ttReal:
+	case TokenType::ttChar:
+	case TokenType::ttString:
+	    return false;
+	default:
+	    break;
+    }
+    switch ( tb->id() )
+    {
+	case TokenID::tkPlus: case TokenID::tkSub: case TokenID::tkMul:
+	case TokenID::tkBand: case TokenID::tkLand: case TokenID::tkNot:
+	case TokenID::tkBnot: case TokenID::tkLnot: case TokenID::tkNeg:
+	case TokenID::tkInc: case TokenID::tkDec: case TokenID::tkOpBrk:
+	case TokenID::tkNEW: case TokenID::tkDELETE:
+	    return false;
+	default:
+	    break;
+    }
+    if ( tb->type() == TokenType::ttIdentifier && !token_starts_type_name(tb) )
+    {
+	std::string name = ((TokenIdent *)tb)->spelling();
+	if ( findVariable(name) )
+	    return false;
+    }
+    return true;
+}
+
 bool Program::next_parenthesized_type_is_compound_literal()
 {
     std::vector<TokenBase *> saved;
@@ -75894,6 +75933,10 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 //     declarator begins with one either, so a braced type-headed statement is
 //     always a temporary. (C's compound literal is `(T){...}`, whose statement
 //     never opens with the type token, so C never reaches this arm.)
+// (f) C++ only: the group opens with `name (`, and what follows that `(`
+//     cannot begin a parameter-declaration-clause — `int(step(3));`,
+//     `S(f(x));` with x a variable. `name(...)` is then no function
+//     declarator ([dcl.fct]), so the group holds a call, not a declarator.
 // The head type token is already consumed by the caller; an optional
 // balanced `<...>` template-id suffix may precede the paren group (C++).
 bool Program::datatype_statement_starts_functional_expr()
@@ -75926,6 +75969,13 @@ bool Program::datatype_statement_starts_functional_expr()
 	       || first_in->type() == TokenType::ttReal
 	       || first_in->type() == TokenType::ttChar
 	       || first_in->type() == TokenType::ttString) )
+		return true;
+	    // (f): `name (` whose list cannot be parameters.
+	    if ( !is_c_mode() && first_in
+	      && first_in->type() == TokenType::ttIdentifier
+	      && i + 3 < tokens.size() && tokens[i + 2]
+	      && tokens[i + 2]->id() == TokenID::tkOpBrk
+	      && !token_begins_parameter_declaration(tokens[i + 3]) )
 		return true;
 	}
 	else if ( t && !in_group && i > 0 && d.top() )

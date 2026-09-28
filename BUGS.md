@@ -51,31 +51,6 @@ int main(void) { printf("%d\n", y); return 0; }
   redeclaration. The implicit-int reading is for file mode, and for an
   undeclared name.
 
-### B13. `int(f(3));` in a function body is read as a declaration
-
-- Found 2026-09-25, while probing top-level cast statements for §41.2a
-  slice 2b. The same happens at an interactive entry's top level.
-
-```cpp
-#include <cstdio>
-int log_v = 0;
-int step(int d) { log_v = log_v * 10 + d; return d; }
-int main() { int(step(3)); printf("%d\n", log_v); }
-```
-
-- g++, clang++: `3`. madc: `0`, silently. The call never runs.
-- `int(step(3))` cannot be a declaration: a parenthesized declarator is
-  `( declarator )`, and `step(3)` is not one, since `3` is no
-  parameter-declaration ([stmt.ambig], [dcl.ambig.res]). So it is a
-  functional cast whose operand is the call.
-- Where: `datatype_statement_starts_functional_expr` (parser.cpp) decides
-  a type-headed statement is an expression only for its cases (a)–(e). A
-  group whose first declarator-id is followed by a non-declarator `(` list
-  falls through to parseDeclaration. As a declaration, madc reads
-  `int step(3)`, a variable `step` initialized to 3, which shadows the
-  function (an earlier line calling `step` failed with "called object is
-  not a function").
-
 ### B24. A weak function definition is emitted strong
 
 - Found 2026-09-26, while measuring ld's weak and strong rule for D27. It

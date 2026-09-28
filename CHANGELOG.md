@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### `int(f(3));` calls f
+
+A statement such as `int(step(3));` or `S(f(x));`, with `x` a variable, is
+now a functional cast of the call, as in g++ and clang++. `step(3)` cannot
+be a function declarator, since `3` cannot begin a parameter. Before, madc
+read it as the declaration `int step(3)`, a variable initialized to 3, so
+the call never ran and the variable hid the function. `int(g(int));` is
+still a declaration of a function `g`.
+
 ### `std::unique_ptr` holds its pointer
 
 `using Base<T>::Base;` now inherits the base's constructors, constructor
