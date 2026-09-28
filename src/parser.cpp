@@ -45208,23 +45208,39 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	return true;
     if ( after_tag->id() != TokenID::tkOpBrc )
 	return false;
+    return struct_body_needs_class_parser_from(0, false);
+}
 
+// A nested aggregate DEFINITION (`struct In { ... };`, `union { ... } u;`) is
+// read by the struct parser's inline nested-body reader, which reads C members
+// only: a C++ member inside it — a default member initializer, a method, a
+// nested `class` — was "Expecting ';' after anonymous struct member". So the
+// nested body is scanned too (`nested`), and whatever it needs, the enclosing
+// body needs: the class parser reads a nested aggregate through the struct and
+// class parsers themselves.
+bool Program::struct_body_needs_class_parser_from(size_t start, bool nested)
+{
     int depth = 0;
     int sqdepth = 0;             // '[' nesting at member level — array dimensions
     bool member_start = false;
     bool member_seen_eq = false; // inside a default member initializer → ignore '('
-    for ( size_t i = 0; i < tokens.size(); ++i )
+    bool member_aggregate_head = false; // the member began struct/union/enum
+    for ( size_t i = start; i < tokens.size(); ++i )
     {
 	TokenBase *t = tokens[i];
 	if ( !t )
 	    continue;
 	if ( t->id() == TokenID::tkOpBrc )
 	{
+	    // `int v{4};` — a member's brace-form default initializer.
+	    if ( nested && depth == 1 && !member_seen_eq && !member_aggregate_head )
+		return true;
 	    ++depth;
 	    if ( depth == 1 )
 	    {
 		member_start = true;
 		member_seen_eq = false;
+		member_aggregate_head = false;
 		sqdepth = 0;
 	    }
 	    continue;
@@ -45243,6 +45259,7 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	{
 	    member_start = true;
 	    member_seen_eq = false;
+	    member_aggregate_head = false;
 	    sqdepth = 0;
 	    continue;
 	}
@@ -45291,6 +45308,8 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	// identifier-then-'(' is a call in the initializer, NOT a method.
 	if ( t->id() == TokenID::tkAssign )
 	{
+	    if ( nested )
+		return true;	// the inline nested reader has no initializer
 	    member_seen_eq = true;
 	    member_start = false;
 	    continue;
@@ -45335,6 +45354,34 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 	  || t->id() == TokenID::tkSTATIC || t->id() == TokenID::tkTEMPLATE
 	  || t->id() == TokenID::tkTYPEDEF || t->id() == TokenID::tkUSING )
 	    return true;
+	// A `class` member (a nested class, or `class T *p;`): the inline nested
+	// reader has no class-key.
+	if ( t->id() == TokenID::tkCLASS )
+	    return true;
+	// A nested struct/union: its own body, when it defines one here — a
+	// base clause there is class-only too.
+	if ( t->id() == TokenID::tkSTRUCT || t->id() == TokenID::tkUNION )
+	{
+	    member_aggregate_head = true;
+	    for ( size_t j = i + 1; j < tokens.size(); ++j )
+	    {
+		TokenBase *u = tokens[j];
+		if ( !u )
+		    continue;
+		if ( u->id() == TokenID::tkOpBrc )
+		{
+		    if ( struct_body_needs_class_parser_from(j, true) )
+			return true;
+		    break;
+		}
+		if ( u->id() == TokenID::tkColon )
+		    return true;
+		if ( !is_contextual_identifier_token(u) )
+		    break;
+	    }
+	}
+	if ( t->id() == TokenID::tkENUM )
+	    member_aggregate_head = true;
 	// An enum DEFINITION member (`enum [class] [tag] { ... };`) needs the
 	// class body parser — the struct member loop only handles a bare
 	// enum-typed member (`enum Color c;`). Distinguish by a '{' appearing

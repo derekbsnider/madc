@@ -1,0 +1,14 @@
+/* A nested aggregate defined inside a C++ struct may hold C++ members: a
+   default member initializer (`=` or braces), a member function, a nested
+   `class`. The struct parser read such a body with its C-only nested reader
+   and refused it ("Expecting ';' after anonymous struct member", "Expecting
+   type in struct definition"); the same body inside a `class` worked. A
+   C-only nested body (the anonymous union) keeps the struct parser.
+   Oracle: g++ and clang++ -std=c++17 print `4 5 6 7 8 9 3`. */
+#include <cstdio>
+struct O1 { struct In { int v = 4; }; In in; };
+class O2 { public: struct In { int v = 5; }; In in; };
+struct O3 { class In { public: int v = 6; }; In in; };
+struct O4 { struct In { int v = 7; } in; };
+struct O5 { struct In { int v{8}; int f() { return v + 1; } } in; union { int a; float b; }; };
+int main() { O1 a; O2 b; O3 c; O4 d; O5 e; e.a = 3; printf("%d %d %d %d %d %d %d\n", a.in.v, b.in.v, c.in.v, d.in.v, e.in.v, e.in.f(), e.a); return 0; }

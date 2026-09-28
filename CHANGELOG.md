@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A nested struct inside a C++ struct may hold C++ members
+
+`struct O { struct In { int v = 4; }; In in; };` now compiles, as in g++
+and clang++. The same goes for a nested struct with a brace initializer
+(`int v{8};`) or a member function, and for a nested `class` inside a
+struct. Before, these were refused ("Expecting ';' after anonymous struct
+member", "Expecting type in struct definition"), though the same nesting
+inside a `class` worked.
+
 ### An error in a default member initializer is reported
 
 `struct S { int m = nope; };` is now refused with "use of undeclared

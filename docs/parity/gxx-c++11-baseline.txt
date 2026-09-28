@@ -91,6 +91,8 @@
 #   honestly, until their own gaps are fixed — lambda/lambda-nsdmi2 and
 #   lambda/lambda-nsdmi5 (B56: a lambda inside a member cannot name the class's
 #   members), noexcept62 (B57: __has_nothrow_constructor is undeclared).
+# SHRUNK 2026-09-28 (470 -> 466): a nested aggregate's C++ members route its
+#   struct to the class parser — nsdmi12, pr105256, pr70528, sfinae59.
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -359,7 +361,6 @@ g++.dg/cpp0x/nsdmi-defer3.C
 g++.dg/cpp0x/nsdmi-list10.C
 g++.dg/cpp0x/nsdmi-list3.C
 g++.dg/cpp0x/nsdmi-template7.C
-g++.dg/cpp0x/nsdmi12.C
 g++.dg/cpp0x/nsdmi13.C
 g++.dg/cpp0x/nsdmi14.C
 g++.dg/cpp0x/nsdmi2.C
@@ -367,7 +368,6 @@ g++.dg/cpp0x/nullptr12.C
 g++.dg/cpp0x/nullptr29.C
 g++.dg/cpp0x/nullptr39.C
 g++.dg/cpp0x/pr102305.C
-g++.dg/cpp0x/pr105256.C
 g++.dg/cpp0x/pr112365.C
 g++.dg/cpp0x/pr118390.C
 g++.dg/cpp0x/pr118532.C
@@ -382,7 +382,6 @@ g++.dg/cpp0x/pr63904.C
 g++.dg/cpp0x/pr65398-2.C
 g++.dg/cpp0x/pr67625.C
 g++.dg/cpp0x/pr68116.C
-g++.dg/cpp0x/pr70528.C
 g++.dg/cpp0x/pr70887.C
 g++.dg/cpp0x/pr71054.C
 g++.dg/cpp0x/pr79457.C
@@ -429,7 +428,6 @@ g++.dg/cpp0x/sfinae48.C
 g++.dg/cpp0x/sfinae50.C
 g++.dg/cpp0x/sfinae51.C
 g++.dg/cpp0x/sfinae53.C
-g++.dg/cpp0x/sfinae59.C
 g++.dg/cpp0x/sfinae60.C
 g++.dg/cpp0x/sfinae61.C
 g++.dg/cpp0x/sfinae63.C

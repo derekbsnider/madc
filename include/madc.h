@@ -7994,6 +7994,10 @@ public:
     // body's tokens and parse them later, and promote a struct base to a class.
     bool cpp_struct_body_needs_class_parser(const std::string &tag_name,
 					    TokenBase *after_tag);
+    // Its body scan, from the `{` at or after tokens[start]. `nested`: the
+    // body is a nested aggregate's, which the struct parser's inline nested
+    // reader would take — and that reader has no default member initializer.
+    bool struct_body_needs_class_parser_from(size_t start, bool nested);
     // The struct parser has consumed the tag and tokens[0] is the `::` after
     // it: does the rest of the nested-name-specifier — `(:: name
     // [<template-args>])+` — lead into a class-specifier (`{`, a base-clause
