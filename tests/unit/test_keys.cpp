@@ -437,3 +437,42 @@ TEST_CASE("focus_state — tab cycles, arrows select, enter chooses, keys ride t
     CHECK(e.kind == tui_event_kind::key);
     CHECK(e.choice_focused);
 }
+
+TEST_CASE("focus_state — a focused field that takes tab gets it as a key")
+{
+    // A menu, an editor and a REPL input (the `tabkey` hint): tab cycles
+    // from the menu and the editor, and on the REPL input it is the
+    // application's key (the completion key); the field's own binding
+    // hands the keyboard back.
+    focus_state f;
+    f.begin_compose();
+    focusable menu;
+    menu.k = focusable::kind::choice;
+    menu.option_count = 2;
+    menu.option_actions.assign(2, (name_id)0);
+    f.add(menu);
+    focusable ed;
+    ed.k = focusable::kind::edit;
+    f.add(ed);
+    focusable repl;
+    repl.k = focusable::kind::edit;
+    repl.takes_tab = true;
+    f.set_focus(f.count());
+    f.add(repl);
+    f.end_compose();
+    REQUIRE(f.focus() == 2u);
+    CHECK(f.on_tab_field());
+    tui_event e;
+    CHECK(!f.navigate(tui_keyev(tui_key::tab), e));
+    CHECK(e.kind == tui_event_kind::key);
+    CHECK(e.key == tui_key::tab);
+    CHECK(f.focus() == 2u);			// focus stayed on the field
+    // Off the field, tab cycles as before.
+    f.set_focus(1);
+    CHECK(!f.on_tab_field());
+    e = tui_event();
+    CHECK(f.navigate(tui_keyev(tui_key::tab), e));
+    CHECK(e.kind == tui_event_kind::focus);
+    CHECK(f.focus() == 2u);
+    CHECK(!ed.takes_tab);			// the default: tab is a cycle
+}

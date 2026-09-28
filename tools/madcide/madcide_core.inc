@@ -7034,7 +7034,10 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    var th = { "terminal": 1 };
 	    th["caret"] = tsz;
 	    if ( es_int(w, es, "termfocus", 0) != 0 )
+	    {
 		th["focus"] = 1;
+		th["tabkey"] = 1;	// the shell's tab; ^] hands the keyboard back
+	    }
 	    term["hints"] = th;
 	    pkids.push(term);
 	    break;

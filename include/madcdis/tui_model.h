@@ -950,6 +950,7 @@ private:
 	    fl.order.push_back(ei);
 	    focusable f;
 	    f.k = focusable::kind::edit;
+	    f.takes_tab = hint_of(n.hints, "tabkey", 0) != 0;	// the field's tab
 	    _focus_st.add(f);
 	}
 	else if ( n.role == r.list && !n.label.is_null() )

@@ -895,12 +895,13 @@ class web_model
 	{
 	    // The editable region: the SAME hints the grid model reads
 	    // (caret / sel_start / sel_end byte offsets, tabwidth, rows,
-	    // focus, spans rows {s, e, c}) — rendered as the line-DOM.
+	    // focus, tabkey, spans rows {s, e, c}) — rendered as the line-DOM.
 	    size_t slot = _focus.count();
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus.set_focus(slot);
 	    focusable f;
 	    f.k = focusable::kind::edit;
+	    f.takes_tab = hint_of(n.hints, "tabkey", 0) != 0;
 	    _focus.add(f);
 	    const std::string text = prose::text_of(n.content);
 	    long caret = hint_of(n.hints, "caret", 0);

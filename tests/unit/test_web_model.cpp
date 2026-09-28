@@ -649,6 +649,42 @@ TEST_CASE("apply_input — navigation through the focus owner; viewport facts; s
     CHECK(m.last_snapshot() == "Ln 1");
 }
 
+TEST_CASE("apply_input — a focused edit with the tabkey hint takes tab; without it tab cycles")
+{
+    world w;
+    roles r = roles::standard(w);
+    // A REPL-shaped tree: a choice, then an input field with the keyboard.
+    uinode root(r.group);
+    uinode menu(r.choice);
+    menu.add(option(w, "Save", "w"));
+    menu.add(option(w, "Quit", "q"));
+    root.add(menu);
+    uinode field(r.edit);
+    field.content = madc::value(std::string("c11> twi"));
+    std::map<std::string, madc::value> h;
+    h["caret"] = madc::value((int64_t)8);
+    h["focus"] = madc::value((int64_t)1);
+    h["tabkey"] = madc::value((int64_t)1);
+    field.hints = madc::value::make_object(h);
+    root.add(field);
+    web_model m;
+    m.compose(r, root);
+    REQUIRE(m.focus_slot() == 1u);
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"key\",\"key\":\"tab\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::key);	// the completion key reaches the app
+    CHECK(ev[0].key == tui_key::tab);
+    CHECK(m.focus_slot() == 1u);
+    // The same field without the hint: tab is a focus cycle.
+    h.erase("tabkey");
+    root.children[1].hints = madc::value::make_object(h);
+    m.compose(r, root);
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"tab\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(m.focus_slot() == 0u);
+}
+
 TEST_CASE("apply_input — malformed or unknown input yields no events and never throws")
 {
     web_model m;
