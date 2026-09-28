@@ -1,5 +1,9 @@
 # Test Status
 
+B2 stray closing brace (2026-09-28): `teststrayclosec` requires a source
+diagnostic for a top-level `}`. GCC and Clang reject the reducer; madc had
+accepted it.
+
 B35 array compound literal typing (2026-09-28):
 `testarraycompoundtypec` checks sized and inferred bounds, designators,
 `sizeof *&literal`, pointer decay, and pointer-to-array address formation.

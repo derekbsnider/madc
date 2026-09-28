@@ -76445,6 +76445,8 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    }
 	    if ( tb->id() == TokenID::tkClBrc )
 	    {
+		if ( compounds.empty() )
+		    Throw(tb) << "extraneous closing brace ('}')" << flush;
 		popCompound();
 		return tb;
 	    }

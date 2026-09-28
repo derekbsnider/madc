@@ -22,21 +22,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Accepts invalid code
 
-### B2. A stray top-level `}` is accepted
-
-- Found 2026-09-25, while building the REPL input classifier.
-
-```c
-int main(void) { return 0; }
-}
-```
-
-- gcc: `expected identifier or '(' before '}' token`. clang: `extraneous
-  closing brace ('}')`. madc: compiles, and the program exits 0.
-- Where: the `tkClBrc` arm of `parseStatementBody`. When `compounds` is
-  empty it should throw clang's wording. `extern "C"` blocks and namespace
-  bodies consume their own `}`, so they are unaffected as far as checked.
-
 ### B14. `:=` is accepted under every C and C++ standard
 
 - Found 2026-09-25, while checking which of the statement starters matter to

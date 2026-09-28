@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### A stray closing brace is a syntax error
+
+A top-level `}` now reports an extraneous closing brace at its source
+location. Before, madc silently accepted it and decremented the compound
+depth below zero.
+
 ### Array compound literals retain their array type
 
 `sizeof((int[3]){0})` now yields 12, and `&(int[3]){...}` has
