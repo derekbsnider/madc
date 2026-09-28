@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A member template defined out of class keeps its declared defaults
+
+`struct E { template<class T, int N = 5> int h(); };` defined as
+`template<class U, int M> int E::h() { return M; }` makes `e.h<int>()`
+return 5, as in g++: the default template arguments are those of every
+declaration together, including when the definition renames the parameters.
+Before, the definition's head replaced the in-class defaults with none. A
+defaulted call then either failed to link (`E__h`) or, beside a call that
+spelled the arguments (`e.h<char, 9>()`), silently ran that other
+instantiation.
+
 ### An explicit specialization of a class template's member is used
 
 `template<> int S<true>::f() { return 7; }` defines `S<true>::f`, and the

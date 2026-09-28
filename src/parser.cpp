@@ -58325,9 +58325,40 @@ static bool attach_outofclass_member_template_def(
     for ( size_t i = 0; i < tokens.size(); ++i )
 	if ( i < qual_start || i >= ni )
 	    stripped.push_back(tokens[i]);
+    // [temp.param]/10: the default template-arguments available are the MERGE
+    // of every declaration's. The definition's head usually repeats none
+    // (`template<class T, int N> int E::h()` after the in-class `int N =
+    // sizeof(T) + 1`), so a slot it leaves bare keeps the declaration's
+    // default, respelled in the definition's parameter names: a default names
+    // the parameters before it, and the definition may rename them.
+    std::vector<std::vector<TokenBase *> > merged_defaults = typeparam_defaults;
+    merged_defaults.resize(typeparams.size());
+    if ( mfd->member_template_param_defaults.size() == typeparams.size()
+      && mfd->template_param_names.size() == typeparams.size() )
+	for ( size_t i = 0; i < typeparams.size(); ++i )
+	{
+	    if ( !merged_defaults[i].empty()
+	      || mfd->member_template_param_defaults[i].empty() )
+		continue;
+	    for ( TokenBase *t : mfd->member_template_param_defaults[i] )
+	    {
+		TokenBase *d = t;
+		if ( t && t->type() == TokenType::ttIdentifier )
+		    for ( size_t k = 0; k < typeparams.size(); ++k )
+			if ( ((TokenIdent *)t)->spelling() == mfd->template_param_names[k]
+			  && typeparams[k] != mfd->template_param_names[k] )
+			{
+			    TokenIdent *renamed = (TokenIdent *)t->clone_origin();
+			    pgm.set_token_spelling(renamed, typeparams[k]);
+			    d = renamed;
+			    break;
+			}
+		merged_defaults[i].push_back(d);
+	    }
+	}
     stamp_member_template_pattern(owner, mfd, stripped, typeparams,
 				  typeparam_is_pack, typeparam_is_type,
-				  member, typeparam_defaults,
+				  member, merged_defaults,
 				  typeparam_constraints);
     return true;
 }
