@@ -1,0 +1,31 @@
+/* An explicit specialization of a member of a class template
+   ([temp.expl.spec]) defines that one instantiation's member, and the
+   primary's definition defines the rest: bool, int and type slots, a
+   specialization declared after the class was instantiated (W<long>), a
+   const member, and one overload of an overloaded member (O<int>::f(double)).
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     spec: 7 2 33 4 30 4 99 9 40 50 41 */
+#include <cstdio>
+template<bool B> struct S { int f(); };
+template<bool B> int S<B>::f() { return B ? 1 : 2; }
+template<> int S<true>::f() { return 7; }
+template<int N> struct I { int k(); };
+template<int N> int I<N>::k() { return N; }
+template<> int I<3>::k() { return 33; }
+template<class T> struct W { int g(); int h() const; };
+template<class T> int W<T>::g() { return (int)sizeof(T); }
+template<class T> int W<T>::h() const { return 9; }
+W<long> wl;
+template<> int W<char>::g() { return 30; }
+template<> int W<long>::h() const { return 99; }
+template<class T> struct O { int f(int); int f(double); };
+template<class T> int O<T>::f(int) { return 40; }
+template<class T> int O<T>::f(double) { return 41; }
+template<> int O<int>::f(double) { return 50; }
+int main()
+{
+	printf("spec: %d %d %d %d %d %d %d %d %d %d %d\n", S<true>().f(), S<false>().f(),
+	       I<3>().k(), I<4>().k(), W<char>().g(), W<int>().g(), wl.h(),
+	       W<int>().h(), O<int>().f(1), O<int>().f(1.0), O<char>().f(1.0));
+	return 0;
+}

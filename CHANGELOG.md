@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### An explicit specialization of a class template's member is used
+
+`template<> int S<true>::f() { return 7; }` defines `S<true>::f`, and the
+primary template's definition defines `f` for every other `S`, as in g++.
+That includes int and type arguments, a const member, one overload of an
+overloaded member, and a specialization declared after the class was
+instantiated but before the member was used. Before, madc ignored every such
+specialization and called the primary template's body, with no diagnostic.
+A specialization whose argument is an expression (`S<(1 == 1)>`) still does
+not match `S<true>`, because madc does not yet identify a non-type argument
+by its value.
+
 ### A `>` in parentheses no longer ends a template-argument list
 
 Inside its own body, a class template can name another specialization of

@@ -58867,9 +58867,31 @@ void Program::register_outofline_member_instantiations(
     if ( dbg_ool ) fprintf(stderr, "[ool] class=%s::%s ndefs=%zu\n",
 	defining_namespace.c_str(), class_name.c_str(), it->second.size());
 #endif
-    for ( size_t di = 0; di < it->second.size(); ++di )
+    // EXPLICIT specializations bind first (`template<> RET S<true>::f()`,
+    // [temp.expl.spec]): when the primary's definition reaches the member of
+    // the instantiation a specialization names, it is already bound and the
+    // primary's is skipped, the rule an already-bound overload follows below.
+    std::vector<size_t> def_order;
+    for ( int pass = 0; pass < 2; ++pass )
+	for ( size_t di = 0; di < it->second.size(); ++di )
+	    if ( it->second[di].typeparams.empty() == (pass == 0) )
+		def_order.push_back(di);
+    for ( size_t oi = 0; oi < def_order.size(); ++oi )
     {
+	size_t di = def_order[oi];
 	OutOfLineMemberDef &def = it->second[di];
+	// No template parameters: the definition is an explicit specialization.
+	const bool explicit_spec = def.typeparams.empty();
+	// Is the member already bound? For an explicit specialization, only by
+	// another one: a primary's body bound before the specialization was
+	// declared is replaced (bodies materialize on first use, after parsing).
+	auto body_bound = [&](const std::string &sym) -> bool {
+	    auto b = deferred_lazy_bodies.find(sym);
+	    if ( b == deferred_lazy_bodies.end() )
+		return false;
+	    return !explicit_spec || b->second.explicit_specialization;
+	};
+	(void)di;
 #if MADC_DEBUG_FNTPL
 	bool dbg_def = false;
 	{
@@ -58941,9 +58963,13 @@ void Program::register_outofline_member_instantiations(
 	    // A definition with only parameter slots is the PRIMARY's: it
 	    // defines no instantiation a partial specialization produced (the
 	    // specialization has its own members — `slot[]` vs `bits`); one with
-	    // a concrete slot is a specialization's and never defines a
-	    // primary instantiation.
-	    if ( def_has_concrete_slot != from_partial_specialization )
+	    // a concrete slot is a PARTIAL specialization's and never defines a
+	    // primary instantiation. An explicit specialization defines the
+	    // member of whichever instantiation its arguments name, from the
+	    // primary or a partial specialization alike ([temp.expl.spec]/1);
+	    // the head match below decides.
+	    if ( !explicit_spec
+	      && def_has_concrete_slot != from_partial_specialization )
 		continue;
 	    for ( size_t i = 0; i < def.head_args.size()
 			     && i < arg_types_by_slot.size(); ++i )
@@ -58985,7 +59011,11 @@ void Program::register_outofline_member_instantiations(
 		    for ( size_t t = 0; t < arg_tokens_by_slot[i].size(); ++t )
 			if ( arg_tokens_by_slot[i][t] )
 			    have += template_token_fragment(arg_tokens_by_slot[i][t]);
-		    if ( have != want )
+		    // A non-type slot matches by value (`true` names the same
+		    // argument as `1`), the partial-specialization matcher's rule.
+		    int value_score = 0;
+		    if ( !non_type_partial_spec_arg_matches(*this, run,
+			    arg_tokens_by_slot[i], want, have, value_score) )
 			{ head_matches = false; break; }
 		}
 	    }
@@ -59196,7 +59226,7 @@ void Program::register_outofline_member_instantiations(
 		if ( def_sigs_ok && !function_explicit_params_match(cfd, def_sigs) )
 		    continue;
 	    }
-	    if ( deferred_lazy_bodies.count(cand->name) ) continue;
+	    if ( body_bound(cand->name) ) continue;
 	    mvar = cand; break;
 	}
 	// When the def's signature RESOLVED and matched no overload, DECLINE:
@@ -59230,7 +59260,7 @@ void Program::register_outofline_member_instantiations(
 	if ( !mvar || !mvar->data )
 	    continue;	// no in-class declaration to attach the body to
 	// Already materialized (a re-instantiation, or an overload already bound)?
-	if ( deferred_lazy_bodies.count(mvar->name) )
+	if ( body_bound(mvar->name) )
 	    continue;
 
 	// An out-of-line member TEMPLATE (two-level head): attach its body to the
@@ -59328,6 +59358,7 @@ void Program::register_outofline_member_instantiations(
 			body.definition_tokens.size());
 	}
 	body.full_definition = true;
+	body.explicit_specialization = explicit_spec;
 	body.file = def.decl.empty() || !def.decl[0] ? NULL : def.decl[0]->file;
 	body.line = def.decl.empty() || !def.decl[0] ? 0 : def.decl[0]->line;
 	body.column = def.decl.empty() || !def.decl[0] ? 0 : def.decl[0]->column;

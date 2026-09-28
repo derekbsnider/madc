@@ -5243,10 +5243,14 @@ public:
 	// member declared after the constructor.
 	std::vector<TokenBase *> ctor_init_tokens;
 	bool full_definition;
+	// The body is an EXPLICIT specialization's (`template<> RET S<true>::f()`,
+	// [temp.expl.spec]): the primary's definition never replaces it, and it
+	// replaces the primary's body bound before it was declared.
+	bool explicit_specialization;
 	const char *file;
 	int line;
 	int column;
-	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), file(NULL), line(0), column(0) {}
+	DeferredFunctionBody() : var(NULL), method(NULL), full_definition(false), explicit_specialization(false), file(NULL), line(0), column(0) {}
     };
     std::map<DataDefCLASS *, std::vector<DeferredFunctionBody> >
 	*class_pattern_body_capture = NULL;
