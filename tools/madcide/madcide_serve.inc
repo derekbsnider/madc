@@ -212,6 +212,9 @@ long run_tui(const char *path, bool ro, ui::level lvl, const char *addr)
     {
 	if ( listen_handle != 0 )
 	    go serve_accept_task(&S, doc, listen_handle, w, es);
+	// The session's pumps (a REPL tab's, a build's, a Terminal's) are
+	// spawned inside this scope, so its join waits on them: run_ide
+	// stops every client's before it returns, never close() after it.
 	run_ide(S, doc, lvl);
 	if ( listen_handle != 0 )
 	    serve_accept_stop(w, es, endpoint);
@@ -453,6 +456,9 @@ long run_lsp(const char *path, bool ro, const char *serve)
 	if ( listen_handle != 0 )
 	    go serve_accept_task(&S, doc, listen_handle, w, es);
 	lsp_stdio_loop(S, doc, io, w, es);
+	// A command the client ran (madcide.repl, a build) spawned its pump
+	// inside this scope: stop it before the join, as run_ide does.
+	S.stop_tasks();
 	if ( listen_handle != 0 )
 	    serve_accept_stop(w, es, endpoint);
     }

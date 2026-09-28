@@ -539,6 +539,36 @@ if [ "$(count_bracket_tests "$TEXTED"/*.inc "$TOOLS"/*.inc "$tmp")" -ne 2 ]; the
 fi
 rm -f "$tmp"
 
+# STOPPING a build has ONE owner: stop_build (both kinds: the exec pump's
+# sent stop, the in-process build's scope_cancel). IdeSession::close() had
+# its own copy of the first branch only, so an in-process build was never
+# cancelled at the session's end (consolidated into IdeSession::stop_tasks
+# with the quit-hang fix, 2026-09-28). Marker: the build's stop handle is
+# READ once across tools/madcide — inside the owner.
+count_buildstop_reads()
+{
+	cat "$@" | grep -c 'es_int(w, es, "buildstop"'
+}
+
+n=$(count_buildstop_reads "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n reads of the build stop" \
+	     "handle across tools/madcide (expected 1: stop_build)." >&2
+	grep -n 'es_int(w, es, "buildstop"' "$TOOLS"/*.inc >&2
+	exit 1
+fi
+
+# Negative control for the build-stop marker.
+tmp=$(mktemp)
+echo '    long stopc = es_int(w, es, "buildstop", 0);	// synthetic' > "$tmp"
+if [ "$(count_buildstop_reads "$TOOLS"/*.inc "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic build-stop read (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \

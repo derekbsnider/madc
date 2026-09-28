@@ -541,8 +541,9 @@ void repl_complete(long w, long es)
     ui::set(w, es, "replctext", text);
 }
 
-// The session's end with the IDE's: the pump stops (before the session's
-// task drain) and then the session (after it).
+// The session's end with the IDE's (IdeSession::stop_tasks): the pump stops
+// before any join of it, and the session after (repl_close). Sent once: the
+// handle is spent (a second send into the one-slot channel would park).
 void repl_stop(long w, long es)
 {
     long stopc = es_int(w, es, "replstop", 0);
@@ -550,6 +551,7 @@ void repl_stop(long w, long es)
     {
 	var sv = 1;
 	madc::chan_send(stopc, sv);
+	ui::set(w, es, "replstop", 0);
     }
 }
 

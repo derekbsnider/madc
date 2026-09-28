@@ -242,11 +242,17 @@ void run_ide(IdeSession &S, long doc, ui::level lvl)
     // caller (run_tui), AFTER it has joined any serve task it spawned — a task
     // parked in accept would hang IdeSession::close()'s task_drain. A frontend
     // is not something a serve task touches, so handing the terminal back
-    // first is safe, and prompter. Per-spawned-es parse-handle close + a live
-    // build's stop on a non-attached client ride the window-close hardening
-    // follow-up (the process exits here, so the OS reclaims them; task_drain
-    // is the safety).
+    // first is safe, and prompter. Per-spawned-es parse-handle close rides the
+    // window-close hardening follow-up (the process exits here, so the OS
+    // reclaims them).
+    // Each client's background tasks (its REPL tab's pump, its build, its
+    // Terminal's program) stop HERE: they were spawned inside the caller's
+    // scope, whose join comes before IdeSession::close() (run_tui).
     long nc = php::count(clients);
     for ( long i = 0; i < nc; i = i + 1 )
+    {
+	S.attach(w, clients[i]["es"].as_integer());
+	S.stop_tasks();
 	ui::close(clients[i]["t"].as_integer());
+    }
 }

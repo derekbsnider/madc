@@ -134,7 +134,9 @@ class IdeSession
 					// false = none
 	void term_exec(var &req);	// run the guest between the
 					// client's suspend and resume
-	void close();			// stop builds, drain tasks, close
+	void stop_tasks();		// tell the session's pumps to stop
+					// (a host joins them before close)
+	void close();			// stop_tasks, drain tasks, close
 					// parse handles, close the world
 };
 
@@ -4700,6 +4702,19 @@ void start_terminal(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
 }
 
+// The Terminal's program stopped with the session (IdeSession::stop_tasks):
+// the pump cancels its channel, so the close SIGTERMs the child and SIGKILLs
+// it after the grace. Sent once: the handle is spent.
+void term_stop(long w, long es)
+{
+    long stopc = es_int(w, es, "termstop", 0);
+    if ( es_int(w, es, "termlive", 0) == 0 || stopc == 0 )
+	return;
+    var sv = 1;
+    madc::chan_send(stopc, sv);
+    ui::set(w, es, "termstop", 0);
+}
+
 // Send bytes to the running program (the pump writes them to the pty).
 void term_send(long w, long es, var &bytes)
 {
@@ -8086,19 +8101,23 @@ void IdeSession::term_exec(var &req)
 // it writes to. A live build pump gets its stop FIRST (IDE-10b): the
 // send fires its select case, it SIGTERMs the child and exits — the
 // drain never hangs on it.
-void IdeSession::close()
+// The session's background tasks told to stop: a build (stop_build, both
+// kinds), the REPL tab's pump, the Terminal tab's program. ONE owner, for
+// close() and for a host that ends a `scope` around the session's loop
+// before close() (run_tui): a pump spawned inside that scope is a member of
+// it, so the join waits on it, and only a stop sent here ends it. Each stop
+// is sent once.
+void IdeSession::stop_tasks()
 {
     if ( es_int(w, es, "buildlive", 0) != 0 )
-    {
-	long stopc = es_int(w, es, "buildstop", 0);
-	if ( stopc != 0 )
-	{
-	    var sv;
-	    sv = 1;
-	    madc::chan_send(stopc, sv);
-	}
-    }
+	stop_build(w, es);
     repl_stop(w, es);
+    term_stop(w, es);
+}
+
+void IdeSession::close()
+{
+    stop_tasks();
     madc::task_drain();
     repl_close(w, es);
     // Every buffer's parse handle closes with the session.

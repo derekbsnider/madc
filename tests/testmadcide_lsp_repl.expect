@@ -1,0 +1,5 @@
+open: 1
+framed: 1
+repl-ok: true
+shutdown-result-null: 1
+exit-status: 0
