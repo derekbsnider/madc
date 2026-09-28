@@ -6199,6 +6199,68 @@ static std::string template_tokens_spelling(
     return spelling;
 }
 
+// A template-argument list over stored tokens ([temp.arg], [temp.names]/3):
+// where it closes, its top-level arguments, and what a closing `>>` did.
+struct TemplateArgumentList {
+    size_t close = 0;		// the closing `>` / `>>`; == the `<` when it never closes
+    std::vector<std::pair<size_t, size_t> > args;	// [begin, end) per top-level argument
+    bool split_gt = false;	// the `>>` closed only this list and leaves a `>` for
+				// an ENCLOSING template-id (`Outer<Inner<_Up>>`)
+    bool nested_close = false;	// the `>>` also closed the last argument's own
+				// template-id (`<A<int>>`): its `>` is the close's first half
+};
+
+// The one scan of a stored template-argument list opening at tokens[lt_index].
+// Where it closes is DelimDepth's answer (delimiter-tracking.md): a `>` inside
+// `( )` opened within the list is greater-than (`S<(3 > 2)>`), a `<` after `)`
+// or a literal is less-than, `>>` closes two levels, and an operator-function-id
+// is a name. A comma splits only outside every delimiter the list itself opened
+// (`<(a, b)>` and `<A<x, y>>` are one argument each). With pgm, a `<` inside the
+// list is read by name lookup as in a stream scan; without it, the token-only
+// reading. Returns false when tokens[lt_index] is not a `<` or the list never
+// closes (out.close is then lt_index).
+template<typename Seq>	// std::vector and the TokenStream queue, like delim_scan_step
+static bool scan_template_argument_list(const Seq &tokens, size_t lt_index,
+					TemplateArgumentList &out,
+					Program *pgm = NULL)
+{
+    out = TemplateArgumentList();
+    out.close = lt_index;
+    if ( lt_index >= tokens.size() || !tokens[lt_index]
+      || tokens[lt_index]->id() != TokenID::tkLT )
+	return false;
+    DelimDepth d(pgm);
+    size_t i = lt_index + delim_scan_step(tokens, lt_index, d);	// the `<` (NULL prev: opens)
+    size_t arg_begin = i;
+    while ( i < tokens.size() )
+    {
+	TokenBase *t = tokens[i];
+	if ( t && t->id() == TokenID::tkComma && d.angle == 1
+	  && !d.paren && !d.square && !d.brace )
+	{
+	    out.args.push_back(std::make_pair(arg_begin, i));
+	    arg_begin = i + 1;
+	}
+	const int open_before = d.angle;
+	size_t n = delim_scan_step(tokens, i, d);
+	if ( !d.angle )
+	{
+	    if ( t && t->id() == TokenID::tkBSR )
+	    {
+		out.split_gt = open_before == 1;
+		out.nested_close = open_before >= 2;
+	    }
+	    if ( arg_begin < i || !out.args.empty() || out.nested_close )
+		out.args.push_back(std::make_pair(arg_begin, i));
+	    out.close = i;
+	    return true;
+	}
+	i += n ? n : 1;
+    }
+    out.args.clear();
+    return false;
+}
+
 template<typename Seq>	// std::vector and the TokenStream queue, like delim_scan_step
 static size_t template_id_suffix_end(
 	const Seq &tokens, size_t lt_index,
@@ -6210,43 +6272,11 @@ static size_t template_id_suffix_end(
     // this `<...>`. The caller that swallows the suffix must then re-emit a
     // single `>` so the enclosing template-id's close is not lost (the source
     // `Outer<Inner<_Up>>` lexes the trailing pair as one `>>`).
+    TemplateArgumentList list;
+    scan_template_argument_list(tokens, lt_index, list);
     if ( split_gt )
-	*split_gt = false;
-    int depth = 0;
-    for ( size_t i = lt_index; i < tokens.size(); ++i )
-    {
-	// operator-function-id: skip `operator` + its symbol token(s) so e.g.
-	// `operator<` is not counted as opening a nested template-id.
-	if ( size_t n = operator_id_token_span(tokens, i) )
-	{
-	    i += n - 1;
-	    continue;
-	}
-	if ( tokens[i]->id() == TokenID::tkLT )
-	    ++depth;
-	else if ( tokens[i]->id() == TokenID::tkGT )
-	{
-	    --depth;
-	    if ( depth <= 0 )
-		return i;
-	}
-	else if ( tokens[i]->id() == TokenID::tkBSR )
-	{
-	    if ( depth > 1 )
-		depth -= 2;
-	    else
-	    {
-		// `>>` closes this `<...>` (depth 1 -> 0) AND leaves a `>` for
-		// the enclosing template-id.
-		if ( split_gt && depth == 1 )
-		    *split_gt = true;
-		depth = 0;
-	    }
-	    if ( depth <= 0 )
-		return i;
-	}
-    }
-    return lt_index;
+	*split_gt = list.split_gt;
+    return list.close;
 }
 
 // Should the self-name template-id at `tokens[lt_index]` (== `<`), appearing in a
@@ -6275,26 +6305,17 @@ static bool self_template_id_keep_distinct(
 {
     if ( lt_index >= tokens.size() || tokens[lt_index]->id() != TokenID::tkLT )
 	return false;
+    TemplateArgumentList list;
+    if ( !scan_template_argument_list(tokens, lt_index, list) )
+	return false;
     std::vector<std::vector<TokenBase *> > slots;
-    std::vector<TokenBase *> cur;
-    int depth = 0;
-    for ( size_t i = lt_index + 1; i < tokens.size(); ++i )
+    for ( const std::pair<size_t, size_t> &a : list.args )
     {
-	TokenID id = tokens[i]->id();
-	if ( depth == 0 && (id == TokenID::tkGT || id == TokenID::tkBSR) )
-	    break;   // close of this `<...>`
-	if ( id == TokenID::tkLT || id == TokenID::tkOpBrk || id == TokenID::tkOpSqr )
-	    ++depth;
-	else if ( id == TokenID::tkGT || id == TokenID::tkClBrk || id == TokenID::tkClSqr )
-	    --depth;
-	else if ( id == TokenID::tkBSR )
-	    depth -= 2;
-	if ( depth == 0 && id == TokenID::tkComma )
-	{ slots.push_back(cur); cur.clear(); continue; }
-	cur.push_back(tokens[i]);
+	slots.push_back(std::vector<TokenBase *>());
+	for ( size_t k = a.first; k < a.second; ++k )
+	    if ( tokens[k] )
+		slots.back().push_back(tokens[k]);
     }
-    if ( !cur.empty() )
-	slots.push_back(cur);
     if ( slots.empty() )
 	return false;   // `Self<>` — nothing to instantiate distinctly
     std::set<std::string> params(td.typeparams.begin(), td.typeparams.end());

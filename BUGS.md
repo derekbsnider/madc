@@ -795,18 +795,30 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: thirteen hand-rolled angle counters
+### B58. `<`: eleven hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
 - Only `expand_integer_pack_template_args` keeps a separate paren level.
-  `self_template_id_keep_distinct` and `evaluate_requires_expression_constant`
-  fold `(`, `[` and `<` into one counter. In the rest a `>` inside `( )`
-  closes the list.
+  `evaluate_requires_expression_constant` folds `(`, `[` and `<` into one
+  counter. In the rest a `>` inside `( )` closes the list.
 - `>>` differs per copy: split into two closes, `-= 2` below zero, or not
-  handled at all. Only `template_id_suffix_end` skips `operator<`.
-- Sites: `template_id_suffix_end` 6225, `self_template_id_keep_distinct`
-  6286, `expand_integer_pack_template_args` 6542,
+  handled at all. None skips `operator<`.
+- Done: `template_id_suffix_end`, the template-id extent that other code
+  asks for, and `self_template_id_keep_distinct`, whose argument split is
+  now the new owner `scan_template_argument_list` (tests/testtemplateidparengt:
+  `C<(N > 1) + 5>()` inside C was refused). The extent alone turned that
+  refusal into a wrong answer (`C<3>`), because the split still folded `(`
+  and `>` into one counter.
+- Five more readers split a stored template-argument list by hand on
+  `DelimDepth` (KG DupFamily `template_argument_list_split`): the twins
+  `instantiate_make_integer_seq` and `instantiate_type_pack_element`, the
+  alias-pattern reader and the class-type pattern normalizer, and
+  `skipped_template_outofline_member`'s head arguments. That last one splits
+  on `angle == 1` without the paren test, so a comma inside `( )` splits an
+  argument. Each moves onto `scan_template_argument_list`, the last with
+  that function's backward walk.
+- Sites: `expand_integer_pack_template_args` 6542,
   `evaluate_requires_expression_constant` 38159,
   `template_list_close_index` 49356, `skipped_template_outofline_member`
   58158 (walks backwards; `DelimDepth` has no backward form),
@@ -854,8 +866,8 @@ int main()
 - `A<(3 > 2)>` as a type, in a nested-name-specifier and as a second
   argument passes (`gt: 1 1 2`, as g++ and clang++ print): the main parse
   path is on `DelimDepth`, and these copies sit on side paths.
-- Fix order: `template_id_suffix_end` and `template_list_close_index`
-  first, since other code asks them for a template-id's extent.
+- Next: `template_list_close_index`, a second template-id extent helper.
+  It goes, and its caller asks `template_id_suffix_end`.
 
 ### B59. `(`: forty-two hand-rolled paren counters
 

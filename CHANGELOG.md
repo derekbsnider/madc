@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A `>` in parentheses no longer ends a template-argument list
+
+Inside its own body, a class template can name another specialization of
+itself with a parenthesized `>` or `>>` in the argument: `C<(N > 1) + 5>()`
+and `C<(N >> 1)>()` are `C<6>` and `C<1>` when N is 3, as in g++. Before,
+madc ended the argument list at the inner `>` and refused the expression
+("use of undeclared identifier 'C_3'").
+
 ### A qualified name can sit inside a parenthesized declarator
 
 `int (*C::get())(int) { ... }`, `int (*N::pick(int r))[3] { ... }` and a
