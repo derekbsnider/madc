@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### An error in a default member initializer is reported
+
+`struct S { int m = nope; };` is now refused with "use of undeclared
+identifier 'nope'", as g++ refuses it. Before, madc compiled it and `s.m`
+read garbage. In a REPL entry, `struct Later { int m = ans; };` is refused
+too, since `ans` moves on before the initializer runs. The initializer of a
+member whose type is a class, an array or a C aggregate still fails quietly
+(a system header's `= PTHREAD_MUTEX_INITIALIZER`). Three g++ testsuite cases
+that compiled only because madc dropped their initializers are now honest
+refusals: `lambda-nsdmi2.C`, `lambda-nsdmi5.C` (B56) and `noexcept62.C` (B57).
+
 ### A default member initializer may name `this`, members and later member functions
 
 A default member initializer now parses once its class is complete, as

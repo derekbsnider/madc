@@ -1308,6 +1308,10 @@ static void check_result_names(const std::string &std_option)
 		  " cannot use it; name the value REPL[");
     check_refused(s, "int later2(int a) { return a; }\nint later3(int v = __) { return v; }",
 		  "'__' changes with each value shown");
+    // A default member initializer runs at each construction, later too: its
+    // refusal used to be swallowed with the initializer (B43).
+    check_refused(s, "struct Later { int m = ans; };",
+		  "'ans' changes with each value shown");
     REQUIRE(s.submit("int stable(void) { return _2 * 3; }"));
     REQUIRE(s.submit("stable()"));
     CHECK(s.shown() == "18");

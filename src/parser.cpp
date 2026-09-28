@@ -45381,15 +45381,42 @@ static void queue_member_default_init(Program &pgm, DataDefSTRUCT *dds,
     pgm.pending_member_default_inits.push_back(pending);
 }
 
+// Is member `mname` of `owner` one whose default member initializer is
+// applied as a scalar store (`recv.member = expr`): a single arithmetic,
+// enumeration or pointer object — not an array, a reference, an aggregate or a
+// class object, whose initializers take other paths or none.
+static bool member_takes_scalar_default_init(const DataDefSTRUCT *owner,
+					     const std::string &mname)
+{
+    for ( size_t i = 0; i < owner->members.size(); ++i )
+    {
+	if ( owner->members[i].first != mname )
+	    continue;
+	const DataDef *mt = owner->members[i].second;
+	bool array = (i < owner->member_counts.size()
+		      && owner->member_counts[i] != 1)
+	    || (i < owner->member_array_flags.size()
+		&& owner->member_array_flags[i]);
+	return mt && !array && !mt->is_reference() && mt->is_numeric();
+    }
+    return false;
+}
+
 // Parse one queued NSDMI into an expression in an ISOLATED token stream (the
 // class's own parse does not desync) and record it under member name `mname`
 // of `owner`. A scalar/pointer initializer is applied at default construction
-// as `recv.member = expr`; an expression that does not parse (a dependent
-// object value-init in a system header) is left unstored — object members
-// then take the existing value-init construction.
+// as `recv.member = expr`, so an error in it is the program's error, as g++'s
+// (B43: `int m = nope;` compiled and read garbage). Any other member's
+// initializer that does not parse (a brace-macro aggregate `=
+// PTHREAD_MUTEX_INITIALIZER`, a dependent object value-init in a system
+// header) is left unstored — object members then take the existing value-init
+// construction — and so is a class-template pattern's, whose dependent names
+// resolve at instantiation.
 static void parse_member_default_init(Program &pgm, DataDefSTRUCT *owner,
 	const std::string &mname, const std::vector<TokenBase *> &init_toks)
 {
+    bool strict = member_takes_scalar_default_init(owner, mname)
+	&& !pgm.class_pattern_capture_in_progress;
     std::vector<TokenBase *> seq;
     for ( TokenBase *t : init_toks )
 	seq.push_back(t->clone_origin());
@@ -45403,16 +45430,28 @@ static void parse_member_default_init(Program &pgm, DataDefSTRUCT *owner,
     TokenBase *saved_prv = pgm.prevToken();
     pgm.setTokenContext(NULL, NULL);
     TokenBase *parsed = NULL;
-    // Failure here is BY DESIGN benign (unstored member -> value-init), so
-    // the attempt must not RENDER: throwbuf::sync prints before the catch
-    // sees the throw, and the forest pack gate counts rendered errors — the
-    // parseExpression '{'-head belt pushed the pack count over baseline on
-    // concurrence.h's `= PTHREAD_MUTEX_INITIALIZER` NSDMIs (a brace-macro
-    // `=` form this scalar applier never stores anyway; re-spelling it
-    // against the MEMBER's type is the named future seat).
-    DiagnosticRenderMute mute;
+    // A benign failure (unstored member -> value-init) must not RENDER:
+    // throwbuf::sync prints before the catch sees the throw, and the forest
+    // pack gate counts rendered errors — the parseExpression '{'-head belt
+    // pushed the pack count over baseline on concurrence.h's
+    // `= PTHREAD_MUTEX_INITIALIZER` NSDMIs (a brace-macro `=` form this scalar
+    // applier never stores anyway; re-spelling it against the MEMBER's type is
+    // the named future seat). A strict one renders and propagates, after the
+    // live stream is restored.
+    std::unique_ptr<DiagnosticRenderMute> mute;
+    if ( !strict )
+	mute.reset(new DiagnosticRenderMute);
     try { parsed = pgm.parseExpression(pgm.nextToken(), true); }
-    catch ( ... ) { parsed = NULL; }
+    catch ( ... )
+    {
+	parsed = NULL;
+	if ( strict )
+	{
+	    pgm.setTokenContext(saved_cur, saved_prv);
+	    pgm.tokens.swap_back(std::move(saved_stream));
+	    throw;
+	}
+    }
     pgm.setTokenContext(saved_cur, saved_prv);
     pgm.tokens.swap_back(std::move(saved_stream));
     if ( parsed )

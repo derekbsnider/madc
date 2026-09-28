@@ -83,6 +83,14 @@
 #   guards 10 more lane tests; placement-new and template-call operands remain.
 #   1406 passed, 542 compile-failed, 0 runtime-failed, 2 timed out
 #   => 1406/1950 (72.1%).
+# SHRUNK 2026-09-28 (469 -> 467): a default member initializer parses in its
+#   class's complete context — lambda/lambda-ice14, lambda/lambda-ice26.
+# EXPOSED 2026-09-28 (467 -> 470), B43: an error in a default member
+#   initializer is an error. These three compiled only because madc DROPPED the
+#   initializer it could not parse (a silent miscompile); they now refuse,
+#   honestly, until their own gaps are fixed — lambda/lambda-nsdmi2 and
+#   lambda/lambda-nsdmi5 (B56: a lambda inside a member cannot name the class's
+#   members), noexcept62 (B57: __has_nothrow_constructor is undeclared).
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -551,3 +559,6 @@ g++.dg/template/typedef38.C
 g++.dg/template/typename21.C
 g++.dg/template/unify1.C
 g++.dg/cpp0x/sfinae-nullptr1.C
+g++.dg/cpp0x/lambda/lambda-nsdmi2.C
+g++.dg/cpp0x/lambda/lambda-nsdmi5.C
+g++.dg/cpp0x/noexcept62.C

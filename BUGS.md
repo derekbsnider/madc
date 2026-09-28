@@ -144,27 +144,6 @@ int main() { printf("%d\n", p ? *p : -1); return 0; }
 - Where: not traced. The constructor's argument never reaches the global's
   construction.
 
-### B43. An error in a default member initializer is swallowed
-
-- Found 2026-09-27, while gating D12's refusal of `ans` in a default member
-  initializer (plan §41.6a).
-
-```cpp
-#include <stdio.h>
-struct S { int m = nope; };
-int main() { S s; printf("%d\n", s.m); return 0; }
-```
-
-- g++ 13: "'nope' was not declared in this scope". madc `--std=c++17`:
-  compiles and prints garbage (`1169616566`), exit 0.
-- In a REPL entry, `struct S { int m = ans; };` is accepted the same way and
-  `s.m` reads 0: D12's refusal of a moving result name there is raised and
-  lost. `Program::member_default_init_depth` already marks the parse, so the
-  refusal surfaces once this is fixed.
-- Where: `Program::capture_member_default_init` parses the initializer "in an
-  isolated stream", and a refusal inside that parse never reaches the caller.
-  Not traced further.
-
 ### B50. `&arr` is typed as a pointer to the element, not to the array
 
 - Found 2026-09-27, while building D12's slice 2 (plan §41.6a), whose array
@@ -772,6 +751,63 @@ int main(void) { printf("%d\n", p[0] + p[1]); return 0; }
   be a constant expression or address" (c2mir), and the same at an entry's
   top level under C and C++. Related: B35 (the literal is typed as a
   pointer).
+
+### B56. A lambda inside a member cannot name the class's members
+
+- Found 2026-09-28, while making a default member initializer's error an
+  error (B43). g++.dg `lambda-nsdmi2.C` and `lambda-nsdmi5.C` compiled only
+  because madc dropped their initializers. They are in the gxx baseline
+  until this is fixed.
+
+```cpp
+#include <cstdio>
+struct bug {
+	int a = 5;
+	int *f() { return [&]{ return &a; }(); }
+	int g() { return [] { return decltype(a)(); }(); }
+};
+int main() { bug b; printf("%d %d\n", b.f() == &b.a, b.g()); return 0; }
+```
+
+- g++ 13, clang++ 18: `1 0`. madc `--std=c++17`: "use of undeclared
+  identifier 'a'" in both lambdas. `[this]{ return this->a; }` works, since
+  `this` resolves through the compound chain to the method's `__this`.
+- The same happens in a default member initializer (`int *b = [&]{ return
+  &a; }();`).
+- Where: a lambda's body compound carries the lambda's own Method, whose
+  owner class is NULL. About 30 parser sites read the member context as
+  `compounds.top()->method->owner_class` (parseExpr_identifierArm's member
+  arms, parsePostfixChain's head, `class_scope_hides_unqualified_name`,
+  `current_method_class_has_member`...). One owner must walk the compound
+  chain to the enclosing member function, as `access_context_class` does for
+  access checks, and allow it when the lambda can capture `this` (a
+  capture-default or an explicit `this`) or the name is in an unevaluated
+  operand ([expr.prim.id]/2). A lambda that captures nothing and names a
+  member outside an unevaluated operand stays an error. A focused session
+  (owner rule, core parser).
+
+### B57. The GNU legacy trait `__has_nothrow_constructor` is undeclared
+
+- Found 2026-09-28, with B56. g++.dg `noexcept62.C` compiled only because
+  madc dropped its initializer. It is in the gxx baseline until this is
+  fixed.
+
+```cpp
+struct T {
+	template <bool N> struct S { S() noexcept(N) {} };
+	int h() { return __has_nothrow_constructor(S<true>); }
+};
+int main() { T t; return t.h() ? 0 : 1; }
+```
+
+- g++ 13: exits 0. clang++ 18 accepts it with a deprecation warning.
+  madc `--std=c++17`: "use of undeclared identifier
+  '__has_nothrow_constructor'".
+- Where: the type traits are dispatched by name at three sites in
+  parser.cpp (`__is_nothrow_constructible` at ~15550, ~16692, ~37722). The
+  legacy `__has_*` spellings belong in that dispatch, converted once to the
+  trait they mean. The three string ladders should become one enum at the
+  boundary (enum-over-strings.md).
 
 ## Diagnostics
 
