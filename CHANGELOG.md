@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Taking an array's address preserves its full type
+
+`&array` now has pointer-to-array type, including every dimension. `sizeof
+*&array` measures the array, and `&array + 1` advances by its full size for
+global, local, member, and qualified namespace arrays. The address builder
+uses the existing array operand type owner for both named and qualified
+expressions, matching gcc and clang in C17 and C++17.
+
 ### A weak function yields to a strong one
 
 `__attribute__((weak))` on a function now makes its definition weak, as in

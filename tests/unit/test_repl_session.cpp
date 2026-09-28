@@ -1365,7 +1365,7 @@ TEST_CASE("an entry's shown value is kept and named ans, _, __, ___ and _N (D12)
 // IPython keep a mutable one. A glvalue's result refers to it, so a change
 // after the show is seen through `ans`; a prvalue's result owns the object; a
 // temporary's part is copied when trivially copyable and otherwise not kept;
-// an array waits on `&arr`'s type (B50).
+// an array still needs session result retention.
 TEST_CASE("an aggregate result is the object it showed (D12, slice 2)")
 {
     InteractiveSession c;
@@ -1387,8 +1387,7 @@ TEST_CASE("an aggregate result is the object it showed (D12, slice 2)")
     REQUIRE(c.submit("*pa"));
     CHECK(c.shown() == "(int[3]){ 1, 2, 3 }");
     REQUIRE(c.submit("arr"));
-    check_refused(c, "ans", "which was not kept: an array is kept once its"
-		  " address has the array's type (BUGS.md B50)");
+    check_refused(c, "ans", "which was not kept: an array result cannot yet be kept");
 
     InteractiveSession s;
     REQUIRE(s.begin("--std=c++17"));
@@ -1424,7 +1423,7 @@ TEST_CASE("an aggregate result is the object it showed (D12, slice 2)")
     REQUIRE(s.submit("int arr[2] = { 4, 5 };\nint (&ra)[2] = arr;"));
     REQUIRE(s.submit("ra"));
     CHECK(s.shown() == "{ 4, 5 }");
-    check_refused(s, "ans", "an array is kept once its address has the array's type");
+    check_refused(s, "ans", "an array result cannot yet be kept");
     REQUIRE(s.submit("const int (&cr)[3] = { 1, 2, 3 };"));
     REQUIRE(s.submit("cr"));
     CHECK(s.shown() == "{ 1, 2, 3 }");

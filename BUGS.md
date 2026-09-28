@@ -50,27 +50,6 @@ int main(void)
   since the literal was emitted unsized, and a store to p[2] overwrote the
   next object.
 
-### B50. `&arr` is typed as a pointer to the element, not to the array
-
-- Found 2026-09-27, while building D12's slice 2 (plan §41.6a), whose array
-  result is a pointer to the array.
-
-```c
-#include <stdio.h>
-int arr[3] = { 1, 2, 3 };
-int main(void) { printf("%zu %zu %d\n", sizeof *&arr, sizeof &arr, (*&arr)[2]); return 0; }
-```
-
-- gcc 13: `12 8 3`. madc `--std=c17` and `--std=c++17`: `4 8 3`, silently.
-  `&arr` has the type `int (*)[3]` (C11 6.5.3.2p3, [expr.unary.op]/3), so
-  `*&arr` is the array and `&arr + 1` steps 12 bytes.
-- Where: `Program::build_address_of` types a named operand from its
-  Variable's type (`addressof_result_type(tv->var.type)`), and madc stores an
-  array Variable flattened, its element as its type. The array an operand
-  denotes is `array_operand_type`'s answer. The fix changes the type of
-  every `&array`: a focused session, with the lanes (owner rule, core
-  changes). D12's array results wait on it.
-
 ## Accepts invalid code
 
 ### B2. A stray top-level `}` is accepted

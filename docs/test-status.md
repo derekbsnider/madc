@@ -1,5 +1,11 @@
 # Test Status
 
+B50 array address typing (2026-09-28): `testarrayaddressofc` and
+`testarrayaddressofcpp` check global, local, member, multidimensional and
+qualified namespace arrays, including `sizeof *&a`, indexing and `&a + 1`
+stride. GCC/Clang and g++/clang++ match the fixtures; madc's JIT, EXE and
+OBJ modes passed both.
+
 B24 weak-function binding (2026-09-28): `testprojectweakfn` checks weak
 definitions before and after the decl-specifiers, a weak prototype followed
 by a definition, opposite TU order, cross-TU calls, and function address

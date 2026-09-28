@@ -32714,10 +32714,15 @@ TokenBase *Program::build_address_of(TokenBase *operand, TokenBase *amp)
 		 ? operand->as_var_tok() : NULL;
     if ( tv && tv->var.type && tv->var.type->as_funcdef_dd() )
 	return operand;
+    // The named/member array's stored type is its scalar element; the
+    // operand owner reconstructs its extents before pointer minting.
+    DataDef *target_type = array_operand_type(operand);
+    if ( !target_type )
+	target_type = operand->datadef();
     if ( tv )
     {
 	tv->var.flags |= vfADDRTAKEN;
-	return new TokenAddrOf(tv->var, addressof_result_type(tv->var.type));
+	return new TokenAddrOf(tv->var, addressof_result_type(target_type));
     }
     if ( !is_addressable_expression(operand) )
 	Throw(amp) << "expecting addressable expression after '&'" << flush;
@@ -32730,7 +32735,7 @@ TokenBase *Program::build_address_of(TokenBase *operand, TokenBase *amp)
 	if ( TokenVar *fv = dynamic_cast<TokenVar *>(tq->false_expr) )
 	    fv->var.flags |= vfADDRTAKEN;
     }
-    return new TokenAddrExpr(operand, addressof_result_type(operand->datadef()));
+    return new TokenAddrExpr(operand, addressof_result_type(target_type));
 }
 
 TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
@@ -32907,17 +32912,13 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 				 << "' is not a member of namespace '"
 				 << aname << "'" << flush;
 	}
-	// A FUNCTION is its own address; a function-POINTER object is not
-	// (is_function() answers true for both — the designator test is the
-	// FuncDef itself).
+	// The same address builder owns named and qualified variables: a
+	// flattened array's declared type is recovered there, and a function
+	// designator remains its own address.
 	if ( ns_var->type && ns_var->type->as_funcdef_dd()
 	  && peekToken() && peekToken()->id() == TokenID::tkLT )
 	    skip_template_id_suffix();
-	if ( ns_var->type && ns_var->type->as_funcdef_dd() )
-	    return new TokenVar(*ns_var);
-	ns_var->flags |= vfADDRTAKEN;
-	DataDef *aptr = addressof_result_type(ns_var->type);
-	return new TokenAddrOf(*ns_var, aptr);
+	return build_address_of(new TokenVar(*ns_var), ampersand);
     }
     }
     return build_address_of(parseCastExpression(addr_tb), ampersand);
@@ -78798,12 +78799,11 @@ TokenBase *Program::keep_entry_value(TokenBase *value, TokenBase *loc)
 	vt = getPointerType(vt);
     if ( !vt || vt->is_void() )
 	return value;
-    // An array is kept once `&arr` has the array's pointer type (B50). A
+    // Array result retention still needs a session alias/storage path. A
     // reference to one denotes it too: its value type is the array.
     if ( at || vt->unqualified()->as_carray_dd() )
     {
-	entry_result_not_kept = "an array is kept once its address has the"
-	    " array's type (BUGS.md B50)";
+	entry_result_not_kept = "an array result cannot yet be kept";
 	return value;
     }
     vt = vt->unqualified();

@@ -25,7 +25,8 @@
 #   3. the `&` twin: an address-of node (TokenAddrOf / TokenAddrExpr) is built
 #      only by build_address_of, by parseAddressOfExpression's two kept arms (a
 #      compound literal; an UNPARENTHESIZED qualified-id, which
-#      [expr.unary.op]/4 decides on the spelling), and by
+#      [expr.unary.op]/4 decides on the spelling and then delegates its
+#      resolved variable to build_address_of), and by
 #      reference_bind_address_expr (reference binding). The & reader once
 #      hand-read its operand too: `&*p` refused, and `&f` on a function-POINTER
 #      variable returned `f` (tests/testaddrofoperand).
@@ -137,8 +138,8 @@ if [ "$an" -ne 0 ]; then
 fi
 # The & reader reads no operand by hand: its body holds exactly one
 # parseExpression (the compound-literal arm) and no parsePostfixChain, and
-# every build_address_of call is fed by parseCastExpression. (The hand-read
-# reader had four parseExpression calls and one parsePostfixChain.)
+# every other build_address_of call is fed by parseCastExpression. (The
+# hand-read reader had four parseExpression calls and one parsePostfixChain.)
 amp_body() {
 	awk '/^TokenBase \*Program::parseAddressOfExpression\(/ { inside = 1 }
 	     inside { print } inside && /^}/ { exit }' "$@"
@@ -146,9 +147,11 @@ amp_body() {
 npe=$(amp_body src/parser.cpp | grep -c 'parseExpression(' || true)
 npc=$(amp_body src/parser.cpp | grep -c 'parsePostfixChain(' || true)
 acalls=$(builder_calls build_address_of src/*.cpp)
-ahand=$(printf '%s\n' "$acalls" | grep -v 'build_address_of(parseCastExpression(' | grep -c . || true)
-echo "& reader: parseExpression $npe (target 1, the compound literal), parsePostfixChain $npc (target 0), hand-fed build_address_of $ahand (target 0)"
-if [ "$npe" -ne 1 ] || [ "$npc" -ne 0 ] || [ "$ahand" -ne 0 ]; then
+qcall=$(amp_body src/parser.cpp | grep -Fc 'build_address_of(new TokenVar(*ns_var), ampersand)' || true)
+qall=$(printf '%s\n' "$acalls" | grep -Fc 'build_address_of(new TokenVar(*ns_var), ampersand)' || true)
+ahand=$(printf '%s\n' "$acalls" | grep -vF 'build_address_of(parseCastExpression(' | grep -vF 'build_address_of(new TokenVar(*ns_var), ampersand)' | grep -c . || true)
+echo "& reader: parseExpression $npe (target 1, the compound literal), parsePostfixChain $npc (target 0), qualified-id delegation $qcall/$qall (target 1/1), other hand-fed build_address_of $ahand (target 0)"
+if [ "$npe" -ne 1 ] || [ "$npc" -ne 0 ] || [ "$qcall" -ne 1 ] || [ "$qall" -ne 1 ] || [ "$ahand" -ne 0 ]; then
 	echo "  -> the operand of \`&\` is a cast-expression: read it with Program::parseCastExpression."
 	exit 1
 fi
