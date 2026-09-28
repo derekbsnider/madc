@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A default member initializer may name `this`, members and later member functions
+
+A default member initializer now parses once its class is complete, as
+C++ requires ([class.mem]/7), with `this` bound to the object. So
+`int b = a + 1;`, `T *self = this;`, `int i = f();` (with `f` declared later
+in the class), an initializer naming a class enumerator or static member,
+and `int n = sizeof(S);` all work, as in g++ and clang++. Before, each of
+these was silently dropped, and the member was left uninitialized. Two more
+g++ testsuite cases now pass (`lambda-ice14.C`, `lambda-ice26.C`: an
+initializer lambda that reads a member).
+
 ### Default member initializers apply at every default construction
 
 A class's default member initializers (`struct A { int n = 3; };`) now apply

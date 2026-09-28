@@ -314,8 +314,6 @@ g++.dg/cpp0x/lambda/lambda-conv4.C
 g++.dg/cpp0x/lambda/lambda-debug.C
 g++.dg/cpp0x/lambda/lambda-decltype2.C
 g++.dg/cpp0x/lambda/lambda-ice12.C
-g++.dg/cpp0x/lambda/lambda-ice14.C
-g++.dg/cpp0x/lambda/lambda-ice26.C
 g++.dg/cpp0x/lambda/lambda-mangle.C
 g++.dg/cpp0x/lambda/lambda-mangle6.C
 g++.dg/cpp0x/lambda/lambda-qualified.C

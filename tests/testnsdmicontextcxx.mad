@@ -1,0 +1,44 @@
+/* A default member initializer is a complete-class context ([class.mem]/7):
+   it may name `this`, another member, a class enumerator or static, and a
+   member function declared after it, and sizeof the class is its complete
+   size. madc parsed it at its declaration, with no `this` in scope, so each
+   of these failed, was dropped, and left the member uninitialized (`b`
+   garbage, `self` null).
+   Oracle: g++ and clang++ -std=c++17 print every line below. */
+#include <cstdio>
+
+struct M { int a = 2; int b = a + 1; int *self = &a; };
+struct T { T *self = this; int k = 4; };
+struct H { int x = 1; int y = this->x + 1; };
+struct L { int i = f(); static int f() { return 7; } };
+struct G { int i = g(); int g() { return 3; } };
+struct E { enum { BAR = 6 } bar = BAR; };
+struct S { static const int k = 9; int v = k + 1; };
+struct Z { int n = sizeof(Z); char c[12]; };
+struct N { int a = 2; int b = a + 1; N() {} };
+template<class U> struct TT { U a = 2; U b = a * 3; };
+
+int main()
+{
+	M m;
+	M *hm = new M;
+	printf("member %d %d %d\n", m.b, m.self == &m.a, hm->self == &hm->a);
+	T t;
+	printf("this %d %d\n", t.self == &t, t.k);
+	H h;
+	printf("this member %d\n", h.y);
+	L l;
+	G g;
+	printf("later function %d %d\n", l.i, g.i);
+	E e;
+	S s;
+	printf("enumerator %d static %d\n", (int)e.bar, s.v);
+	Z z;
+	printf("sizeof %d\n", z.n);
+	N n;
+	printf("user ctor %d\n", n.b);
+	TT<int> tt;
+	printf("template %d %d\n", tt.a, tt.b);
+	delete hm;
+	return 0;
+}

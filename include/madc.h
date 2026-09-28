@@ -6836,12 +6836,28 @@ public:
     // the storage-size rule. Shared by the struct and class body parsers.
     size_t parse_bitfield_width(TokenBase *loc, DataDef *member_dd, bool named, DataDefSTRUCT &target);
     // Capture a C++11 default member initializer (NSDMI: `= expr` / `{...}`) that
-    // begins at `tn` (the token after a data-member declarator), parse it in an
-    // isolated stream, and record it under member name `mname` on `dds`. Returns
-    // the token following the initializer (the `,`/`;`), or `tn` unchanged if `tn`
-    // does not begin an initializer. Shared by the struct and class body parsers.
+    // begins at `tn` (the token after a data-member declarator) and queue its
+    // tokens under member name `mname` of `dds` (pending_member_default_inits).
+    // Returns the token following the initializer (the `,`/`;`), or `tn`
+    // unchanged if `tn` does not begin an initializer. Shared by the struct and
+    // class body parsers.
     TokenBase *capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dds,
 					   const std::string &mname);
+    // A captured default member initializer, parsed when its class is complete:
+    // the initializer is a complete-class context ([class.mem]/7), so it may
+    // name `this`, any member, and a member function declared after it.
+    struct PendingMemberDefaultInit {
+	DataDefSTRUCT *dds;
+	std::string member;
+	std::vector<TokenBase *> tokens;
+    };
+    std::vector<PendingMemberDefaultInit> pending_member_default_inits;
+    bool has_pending_member_default_inits(const DataDefSTRUCT *dds) const;
+    // Parse the initializers captured for `captured` — now `owner`, the
+    // completed class (a struct promoted to a class is a new object) — in a
+    // member scope whose `this` is an `owner *`, and record them on `owner`.
+    void parse_member_default_inits(DataDefSTRUCT *captured,
+				    DataDefSTRUCT *owner);
     // Array-dimension classification: decide whether the upcoming `[ … ]`
     // dimension is a VLA (needs a runtime value) or a constant fold.
     // `bracket_dim_needs_runtime_value` is the entry; the other three are its
@@ -7057,8 +7073,9 @@ public:
     // initializer: those run later, when the moving result names mean
     // another value.
     bool entry_code_runs_now() const;
-    // >0 while a default member initializer parses (capture_member_default_init):
-    // code each construction runs, later.
+    // >0 while a default member initializer is captured or parses
+    // (capture_member_default_init, parse_member_default_inits): code each
+    // construction runs, later.
     int member_default_init_depth = 0;
     bool entry_if_extendable = false;		// an if ended at the entry's end
     // The classifier's verdict on one entry (plan §41.1a): run it; run it

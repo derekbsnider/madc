@@ -45366,18 +45366,30 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
     return false;
 }
 
-// Parse captured NSDMI initializer tokens into an expression in an ISOLATED
-// token stream (so the member-body parse does not desync) and record it under
-// member name `mname`. A scalar/pointer initializer is applied at default
-// construction as `recv.member = expr`; an expression that does not parse (a
-// dependent object value-init in a system header) is left unstored — object
-// members then take the existing value-init construction. Shared tail of the
-// `=` and brace forms in capture_member_default_init.
-static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
+// Queue captured NSDMI initializer tokens under member name `mname` of `dds`:
+// they parse when the class is complete (parse_member_default_inits). Shared
+// tail of the `=` and brace forms in capture_member_default_init.
+static void queue_member_default_init(Program &pgm, DataDefSTRUCT *dds,
 	const std::string &mname, const std::vector<TokenBase *> &init_toks)
 {
     if ( init_toks.empty() )
 	return;
+    Program::PendingMemberDefaultInit pending;
+    pending.dds = dds;
+    pending.member = mname;
+    pending.tokens = init_toks;
+    pgm.pending_member_default_inits.push_back(pending);
+}
+
+// Parse one queued NSDMI into an expression in an ISOLATED token stream (the
+// class's own parse does not desync) and record it under member name `mname`
+// of `owner`. A scalar/pointer initializer is applied at default construction
+// as `recv.member = expr`; an expression that does not parse (a dependent
+// object value-init in a system header) is left unstored — object members
+// then take the existing value-init construction.
+static void parse_member_default_init(Program &pgm, DataDefSTRUCT *owner,
+	const std::string &mname, const std::vector<TokenBase *> &init_toks)
+{
     std::vector<TokenBase *> seq;
     for ( TokenBase *t : init_toks )
 	seq.push_back(t->clone_origin());
@@ -45404,13 +45416,13 @@ static void store_member_default_init(Program &pgm, DataDefSTRUCT *dds,
     pgm.setTokenContext(saved_cur, saved_prv);
     pgm.tokens.swap_back(std::move(saved_stream));
     if ( parsed )
-	dds->member_default_inits[mname] = parsed;
+	owner->member_default_inits[mname] = parsed;
 }
 
 // C++11 default member initializer (NSDMI): `int x = 5;`, `T m = T();`, or
 // brace-init `T m{...}` / `T m{}`. `tn` is the token following a data-member
 // declarator. If it begins an initializer, capture the balanced init tokens
-// and record the parsed expression via store_member_default_init above.
+// and queue them via queue_member_default_init above.
 // Returns the token following the initializer (the `,`/`;`); returns `tn`
 // unchanged when there is no initializer. Shared by TokenSTRUCT::parse and
 // TokenCLASS::parse.
@@ -45479,7 +45491,7 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
 		      << flush;
 	if ( binit_toks.empty() )
 	    binit_toks.push_back(new TokenInt(0)); // `m{}` — value-init
-	store_member_default_init(*this, dds, mname, binit_toks);
+	queue_member_default_init(*this, dds, mname, binit_toks);
 	tn = nextToken();                    // the ','/';' after the group
 	return tn;
     }
@@ -45523,8 +45535,84 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
     if ( d.angle > 0 && angle_comma )
 	Throw(tn) << "Ambiguous '<' in member default initializer with"
 		     " comma-shared declarators" << flush;
-    store_member_default_init(*this, dds, mname, init_toks);
+    queue_member_default_init(*this, dds, mname, init_toks);
     return tn;
+}
+
+bool Program::has_pending_member_default_inits(const DataDefSTRUCT *dds) const
+{
+    for ( const PendingMemberDefaultInit &p : pending_member_default_inits )
+	if ( p.dds == dds )
+	    return true;
+    return false;
+}
+
+// A default member initializer is a complete-class context ([class.mem]/7):
+// it parses once the class is complete, as an in-class member body does, so
+// it may name `this`, any member, a member declared after it, and a member
+// function. It parses in a member scope — `__this` is an `owner *` — so a
+// member name is `this->member` (the implicit-this arms read the scope's
+// Method), and it runs at each construction, later (member_default_init_depth).
+// Parsed at declaration, with no `this` in scope, such an initializer failed
+// and was dropped: `int b = a + 1;` left b garbage.
+void Program::parse_member_default_inits(DataDefSTRUCT *captured,
+					 DataDefSTRUCT *owner)
+{
+    std::vector<PendingMemberDefaultInit> mine;
+    for ( size_t i = 0; i < pending_member_default_inits.size(); )
+    {
+	if ( pending_member_default_inits[i].dds == captured )
+	{
+	    mine.push_back(pending_member_default_inits[i]);
+	    pending_member_default_inits.erase(
+		pending_member_default_inits.begin() + i);
+	}
+	else
+	    ++i;
+    }
+    if ( mine.empty() || !owner )
+	return;
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(owner);
+    // The scope outlives the parse: a lambda in an initializer may keep its
+    // enclosing Method, and a member access keeps the `__this` Variable.
+    Method *scope_method = NULL;
+    if ( cls )
+    {
+	Variable *scope_fn = new Variable("__nsdmi", ddVOID, 1, NULL, false);
+	scope_method = new Method(*scope_fn);
+	scope_method->owner_class = cls;
+	Variable *scope_this = new Variable("__this", *getPointerType(cls), 1,
+					    NULL, false);
+	scope_this->flags |= vfPARAM | vfLOCAL;
+	scope_method->parameters.push_back(scope_this);
+    }
+    struct MemberScope {
+	Program &pgm;
+	DataDefCLASS *cls;
+	TokenCpnd *scope;
+	MemberScope(Program &p, DataDefCLASS *c, Method *m)
+	    : pgm(p), cls(c), scope(NULL)
+	{
+	    if ( !m )
+		return;
+	    pgm.class_scope_stack.push_back(cls);
+	    pgm.pushCompound();
+	    scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	    if ( scope )
+		scope->method = m;
+	}
+	~MemberScope()
+	{
+	    if ( scope && !pgm.compounds.empty() && pgm.compounds.top() == scope )
+		pgm.popCompound();
+	    if ( cls && scope && !pgm.class_scope_stack.empty()
+	      && pgm.class_scope_stack.back() == cls )
+		pgm.class_scope_stack.pop_back();
+	}
+    } member_scope(*this, cls, scope_method);
+    MemberDefaultInitDepthGuard default_init_depth(*this);
+    for ( const PendingMemberDefaultInit &p : mine )
+	parse_member_default_init(*this, owner, p.member, p.tokens);
 }
 
 // A data-only aggregate nested directly in a C++ class owns its tag from the
@@ -47036,6 +47124,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // ctors/dtors) exactly like a user class with such a member. A struct with NO
     // object members stays a plain DataDefSTRUCT — unchanged, zero cost.
     aggregate_scope.release();	// the body is closed
+    DataDefSTRUCT *captured_dds = dds;	// its initializers were queued on this
     {
 	bool has_object_member = false;
 	for ( auto &m : dds->members )
@@ -47050,7 +47139,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// applies the initializer. As narrow as the object-member criterion (only
 	// structs that actually carry an `= init`), so it keeps trivial C structs
 	// untouched.
-	bool has_default_init = !dds->member_default_inits.empty();
+	bool has_default_init = !dds->member_default_inits.empty()
+	    || pgm.has_pending_member_default_inits(dds);
 	// A nested TYPE is the third such feature. It makes the aggregate a
 	// SCOPE, and a scope is a DataDefCLASS thing — type_aliases and
 	// enclosing_class have no DataDefSTRUCT equivalent, and
@@ -47153,6 +47243,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// at restore — the typedef record is what surfaces it).
 	pgm.forest_arena_record_aggregate(dds);
     }
+    // The aggregate is complete and registered: its default member
+    // initializers parse now, on the (possibly promoted) final object.
+    pgm.parse_member_default_inits(captured_dds, dds);
 
     // NOTE: the struct/union definition is recorded in top_decls only for
     // the *bare* `struct X { ... };` form (below). For `typedef struct X
@@ -51700,6 +51793,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )
 	    pgm.class_scope_stack.pop_back();
 	pgm.deferred_function_body_sink = saved_deferred_sink;
+	pgm.parse_member_default_inits(ddc, NULL);	// discard its captures
 	throw;
     }
     if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )
@@ -51714,6 +51808,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // (vptr@0, base@0, own members after).
     pgm.complete_class_aggregate(ddc);
     DBG(cout << "TokenCLASS::parse() finalized layout, size now " << ddc->size << endl);
+    // The class is complete: its default member initializers parse now.
+    pgm.parse_member_default_inits(ddc, ddc);
 
     if ( pgm.class_pattern_body_capture )
 	(*pgm.class_pattern_body_capture)[ddc] = deferred_method_bodies;
