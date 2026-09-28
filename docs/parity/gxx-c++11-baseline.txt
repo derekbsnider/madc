@@ -5,7 +5,8 @@
 # LOUDLY when a test IN this list passes — so the baseline only ever shrinks.
 #
 # Scope: g++.dg/{cpp0x,template} tests that are `dg-do compile` AND carry no
-# dg-error/dg-bogus/dg-warning/dg-message, i.e. they must compile CLEAN.
+# dg-error/dg-bogus/dg-warning/dg-message/dg-excess-errors, i.e. they must
+# compile CLEAN.
 # Diagnostic tests are a later phase (madc must produce the error, not fail).
 #
 # NOT a gate. Owner ruling 2026-09-04: C++11 parity is a ROADMAP GOAL and
