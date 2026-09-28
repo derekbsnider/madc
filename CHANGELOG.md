@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A qualified name can sit inside a parenthesized declarator
+
+`int (*C::get())(int) { ... }`, `int (*N::pick(int r))[3] { ... }` and a
+class template's `T (*B<T>::first())[3] { ... }` define the members C, N and
+B declare, as in g++. That includes static and const member functions. Before,
+the name in a parenthesized declarator could not be qualified, and a class
+template's member was never attached to its declaration, so it linked as an
+undefined symbol (`_ZN1BIiE5firstEv`).
+
 ### A namespace member can be defined outside its namespace
 
 `int N::f() { ... }` and `int N::x = 30;` define the members N declares, as in

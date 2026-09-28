@@ -57524,6 +57524,76 @@ static DataDef *skipped_template_function_return_type(
 static bool skipped_template_function_is_static(
 	const std::vector<TokenBase *> &tokens);
 
+// The index of a (possibly qualified) id's LAST component, from its first
+// token at k: `::`? name (`<...>`)? (`::` name (`<...>`)?)* — each template-id's
+// extent through the one owner, template_id_suffix_end. An unqualified name
+// answers k itself; a run that is not a qualified-id answers k.
+static size_t qualified_id_last_name_index(
+	const std::vector<TokenBase *> &tokens, size_t k)
+{
+    size_t i = k;
+    if ( i < tokens.size() && tokens[i] && tokens[i]->id() == TokenID::tkNS )
+	++i;
+    size_t last = k;
+    while ( i < tokens.size() && is_skipped_template_function_name(tokens[i]) )
+    {
+	last = i;
+	size_t after = i + 1;
+	if ( after < tokens.size() && tokens[after]
+	  && tokens[after]->id() == TokenID::tkLT )
+	    after = template_id_suffix_end(tokens, after) + 1;
+	if ( after + 1 >= tokens.size() || !tokens[after]
+	  || tokens[after]->id() != TokenID::tkNS )
+	    break;
+	i = after + 1;
+    }
+    return last;
+}
+
+// The tokens a deferred definition re-parses from a captured declaration:
+// everything after the parameter-list `(` at `open`, in the order the ONE
+// declarator reader leaves the live stream. A parenthesized declarator-id's
+// group closes, and the outer suffixes after each (`)[3]` in
+// `T (*B<T>::first())[3] { ... }`), are the RETURN type the declaration
+// already owns, so they drop and the body follows the member's qualifiers.
+// `name` is the declarator-id's index; the groups open there are the ones
+// that close.
+static std::vector<TokenBase *> declarator_definition_tail(
+	const std::vector<TokenBase *> &decl, size_t name, size_t open)
+{
+    DelimDepth at;
+    for ( size_t i = 0; i < name && i < decl.size(); )
+	i += delim_scan_step(decl, i, at);
+    int groups = at.paren;
+    std::vector<TokenBase *> out;
+    DelimDepth d;
+    for ( size_t i = open; i < decl.size(); )
+    {
+	if ( groups > 0 && d.top() && decl[i]
+	  && decl[i]->id() == TokenID::tkClBrk )
+	{
+	    --groups;
+	    ++i;
+	    while ( i < decl.size() && decl[i]
+		 && (decl[i]->id() == TokenID::tkOpSqr
+		  || decl[i]->id() == TokenID::tkOpBrk) )
+	    {
+		DelimDepth suffix;
+		do
+		    i += delim_scan_step(decl, i, suffix);
+		while ( i < decl.size() && !suffix.top() );
+	    }
+	    continue;
+	}
+	size_t n = delim_scan_step(decl, i, d);
+	for ( size_t k = i; k < i + n && k < decl.size(); ++k )
+	    if ( k > open )
+		out.push_back(decl[k]);
+	i += n;
+    }
+    return out;
+}
+
 static size_t skipped_template_function_declarator_name_index(
 	const std::vector<TokenBase *> &tokens, std::string *name_out)
 {
@@ -57622,6 +57692,10 @@ static size_t skipped_template_function_declarator_name_index(
 		  || tokens[k]->id() == TokenID::tkCONST
 		  || tokens[k]->id() == TokenID::tkVOLATILE) )
 		++k;
+	    // The id may be qualified (`T (*B<T>::first())[3]`, an out-of-line
+	    // member of a class template): the NAME is the id's last component.
+	    if ( k > i + 1 )
+		k = qualified_id_last_name_index(tokens, k);
 	    if ( k > i + 1 && k + 1 < tokens.size() && tokens[k] && tokens[k + 1]
 	      && is_skipped_template_function_name(tokens[k])
 	      && tokens[k + 1]->id() == TokenID::tkOpBrk )
@@ -59221,8 +59295,7 @@ void Program::register_outofline_member_instantiations(
 	DeferredFunctionBody body;
 	body.var = mvar;
 	body.method = static_cast<Method *>(mvar->data);
-	for ( size_t i = op + 1; i < sub.size(); ++i )
-	    body.definition_tokens.push_back(sub[i]);
+	body.definition_tokens = declarator_definition_tail(sub, mni, op);
 	if ( body.definition_tokens.empty() )
 	    continue;
 	// Env-gated probe (MADC_OOL_PROBE): a deferred body was created.
@@ -63774,7 +63847,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
     bool static_member_method = !ft.instance_method;
     DataDef *method_ret = &ddVOID;
     std::string method_id;
-    size_t method_params_start = 0;
+    std::vector<TokenBase *> method_tail;
     if ( as_method )
     {
 	std::string nm;
@@ -63786,7 +63859,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    method_id = nm;
 	    method_ret = skipped_template_function_return_type(
 			     pgm, ft.owner_class, inj, method_id, &ft.typeparams);
-	    method_params_start = nidx + 2;
+	    method_tail = declarator_definition_tail(inj, nidx, nidx + 1);
 	}
 	else
 	    as_method = false;	// malformed — fall back to the free-fn parse
@@ -63806,10 +63879,14 @@ static bool instantiate_fn_template_binding(Program &pgm,
     TokenBase *saved_prv_token = pgm.prevToken();
     if ( as_method )
     {
-	for ( size_t k = inj.size(); k-- > method_params_start; )
-	    pgm.pushToken(inj[k]);
-	for ( size_t k = 0; k < method_params_start; ++k )
-	    delete inj[k];	// RET .. name .. `(` — not pushed; free them
+	for ( size_t k = method_tail.size(); k-- > 0; )
+	    pgm.pushToken(method_tail[k]);
+	// RET .. name .. `(` and a nested declarator's return-type tokens are
+	// not pushed; free them.
+	std::set<TokenBase *> pushed(method_tail.begin(), method_tail.end());
+	for ( size_t k = 0; k < inj.size(); ++k )
+	    if ( !pushed.count(inj[k]) )
+		delete inj[k];
     }
     else
 	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
@@ -65446,9 +65523,9 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	++op;
     if ( op >= decl.size() )
 	return NULL;
-    std::vector<TokenBase *> def_tokens;
-    for ( size_t i = op + 1; i < decl.size(); ++i )
-	def_tokens.push_back(decl[i] ? decl[i]->clone_origin() : NULL);
+    std::vector<TokenBase *> def_tokens = declarator_definition_tail(decl, ni, op);
+    for ( size_t i = 0; i < def_tokens.size(); ++i )
+	def_tokens[i] = def_tokens[i] ? def_tokens[i]->clone_origin() : NULL;
     tsubst_drop_pack_decl_ellipsis(fd, def_tokens);
     if ( def_tokens.empty() )
 	return NULL;
@@ -73942,7 +74019,15 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	id = contextual_identifier_name(nt);
     if ( !have_decl_id && nt && nt->id() == TokenID::tkOPEROVER )
 	id = parseOperatorId(nt);
-    if ( !decl_name_in_parens )
+    // A parenthesized declarator's id may be qualified too (`int
+    // (*C::get())(int) { ... }`, `int (*N::rows())[3]`): the reader reads the
+    // OUTER suffix before the nested group, so its result is already the
+    // whole return type, and it stopped at the `::` / template-id `<` after
+    // the id, which the walk below reads exactly as for an unparenthesized
+    // one. A nested group ending at its id (`int (*fp)(int)`) has neither.
+    if ( !decl_name_in_parens
+      || (peekToken() && (peekToken()->id() == TokenID::tkNS
+			|| peekToken()->id() == TokenID::tkLT)) )
     {
 	if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 	{
