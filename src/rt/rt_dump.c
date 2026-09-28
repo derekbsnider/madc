@@ -291,13 +291,14 @@ void __madc_dump_pr_i64(void *sink, long long v, int is_unsigned)
 	sink_printf(sink, "%lld", v);
 }
 
-// print_r of a floating value: PHP's own double->string, which is `%.14G`
-// (precision=14) PLUS a guaranteed decimal point in the mantissa of an
-// exponent form — PHP prints 1.0E+25 where C's %G prints 1E+25.
-void __madc_dump_pr_f64(void *sink, double v)
+// PHP's own double->string, `(string)$f`: `%.14G` (precision=14) PLUS a
+// guaranteed decimal point in the mantissa of an exponent form — PHP prints
+// 1.0E+25 where C's %G prints 1E+25. THE owner of that text: print_r renders
+// it, and php::sort compares a number against a non-numeric string by it.
+// `out` holds at least MADC_PHP_REAL_TEXT_CAP bytes; returns `out`.
+char *__madc_php_real_text(char *out, double v)
 {
     char buf[64];
-    char out[72];
     size_t i, o, n;
     int seen_dot = 0, seen_exp = 0;
 
@@ -310,10 +311,10 @@ void __madc_dump_pr_f64(void *sink, double v)
 	    seen_exp = 1;
     }
     if (!seen_exp || seen_dot) {
-	sink_puts(sink, buf);
-	return;
+	memcpy(out, buf, n + 1);
+	return out;
     }
-    for (i = 0, o = 0; i < n && o + 3 < sizeof(out); i++) {
+    for (i = 0, o = 0; i < n && o + 3 < MADC_PHP_REAL_TEXT_CAP; i++) {
 	if (buf[i] == 'E') {
 	    out[o++] = '.';
 	    out[o++] = '0';
@@ -321,7 +322,15 @@ void __madc_dump_pr_f64(void *sink, double v)
 	out[o++] = buf[i];
     }
     out[o] = '\0';
-    sink_puts(sink, out);
+    return out;
+}
+
+// print_r of a floating value: PHP's text for it.
+void __madc_dump_pr_f64(void *sink, double v)
+{
+    char out[MADC_PHP_REAL_TEXT_CAP];
+
+    sink_puts(sink, __madc_php_real_text(out, v));
 }
 
 // print_r of a bool: PHP renders true as "1" and false as the EMPTY string.

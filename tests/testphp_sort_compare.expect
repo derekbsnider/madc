@@ -1,0 +1,7 @@
+mixed numbers: 0.5 1 1.5 2 3
+numeric strings: 1 2 9 10
+numbers and words: 9.5 10 a b
+word, numeric string, int: 5 10 abc
+rsort: 3 2 1.5
+equal, sorted: 1.0 1 1e0
+equal, rsorted: 1.0 1 1e0

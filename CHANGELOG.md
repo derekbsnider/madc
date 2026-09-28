@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### `php::sort` and `php::rsort` order values as PHP does
+
+`php::sort` and `php::rsort` now use PHP 8's standard comparison, as its
+`sort()` and `rsort()` do. An integer and a real compare numerically (before,
+`{ 3, 1.5, 2, 0.5, 1 }` sorted to `1 2 3 1.5 0.5`). So do numeric strings
+(`"10"` after `"9"`), and a number against a word compares by the number's
+text. Both sorts are stable, so equal elements keep their order, `rsort`
+included.
+
 ### madcide no longer hangs when you quit after using the REPL tab
 
 Quitting madcide's terminal UI after opening the REPL tab (or pressing F5)

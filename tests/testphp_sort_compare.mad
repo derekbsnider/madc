@@ -1,0 +1,45 @@
+// php::sort and php::rsort compare as PHP 8's sort() and rsort() do (the
+// standard comparison, $a <=> $b, and a stable sort): an integer against a
+// real and a numeric string against a number compare numerically, a number
+// against a word compares by the number's text, and equal elements keep their
+// order under both. PHP 8.3.6 is the oracle for every line (B32).
+
+void show(const char *label, var &a)
+{
+	print("{}:", label);
+	for ( var v : a )
+		print(" {}", v);
+	println("");
+}
+
+int main()
+{
+	var a = { 3, 1.5, 2, 0.5, 1 };
+	php::sort(a);
+	show("mixed numbers", a);
+
+	var b = { "10", "9", "2", "1" };
+	php::sort(b);
+	show("numeric strings", b);
+
+	var c = { "b", "a", 10, 9.5 };
+	php::sort(c);
+	show("numbers and words", c);
+
+	var d = { "abc", "10", 5 };
+	php::sort(d);
+	show("word, numeric string, int", d);
+
+	var e = { 3, 1.5, 2 };
+	php::rsort(e);
+	show("rsort", e);
+
+	var f = { "1.0", 1, "1e0" };
+	php::sort(f);
+	show("equal, sorted", f);
+
+	var g = { "1.0", 1, "1e0" };
+	php::rsort(g);
+	show("equal, rsorted", g);
+	return 0;
+}

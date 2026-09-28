@@ -10,6 +10,8 @@
 
 #include <string>
 #include <cstring>
+#include <cerrno>	// php_numeric_text: an overflowing integer's text
+#include <cstdlib>
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -35,6 +37,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "ns_common.h"
+#include "rt/rt_dump.h"	// __madc_php_real_text: PHP's (string)$float
 
 using namespace std;
 
@@ -1050,33 +1053,266 @@ void php_array_unshift(madc::value *arr, const char *str)
 	data.insert(data.begin(), madc::value(std::string(s ? s : "")));
 }
 
-// php::sort / php::rsort — sort array (string comparison). The comparator
-// pass is shared; each entry acquires the container ONCE through
-// value_array_for_write so a frozen array reports a single diagnostic
-// naming the function the script actually called.
-static void php_sort_data(std::vector<madc::value> &data)
+// ---- PHP 8's standard comparison, $a <=> $b -------------------------------
+// The manual's "Comparison with Various Types", which sort() and rsort()
+// apply under their default flags (SORT_REGULAR). Not madc's value::compare,
+// which is strict by design (D21, D28): this is PHP parity.
+
+// A number as PHP compares it: an integer while it is one, else a double.
+struct php_number
 {
-	std::sort(data.begin(), data.end(), [](const madc::value &a, const madc::value &b) {
-		if ( a.is_string() && b.is_string() )
-			return a.as_string() < b.as_string();
-		if ( a.is_integer() && b.is_integer() )
-			return a.as_integer() < b.as_integer();
+	bool is_int;
+	int64_t i;
+	double d;
+};
+
+static bool php_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+static bool php_digit(char c)
+{
+	return c >= '0' && c <= '9';
+}
+
+// PHP 8's numeric string: optional whitespace, a sign, digits with an
+// optional fraction and exponent, optional whitespace. Leading-numeric text
+// ("12abc") is not one. An integer's text that overflows is a double.
+static bool php_numeric_text(const std::string &s, php_number &n)
+{
+	size_t i = 0, len = s.size();
+	while ( i < len && php_space(s[i]) )
+		i++;
+	size_t start = i;
+	if ( i < len && (s[i] == '+' || s[i] == '-') )
+		i++;
+	size_t digits = 0;
+	while ( i < len && php_digit(s[i]) )
+	{
+		i++;
+		digits++;
+	}
+	bool integral = true;
+	if ( i < len && s[i] == '.' )
+	{
+		integral = false;
+		i++;
+		while ( i < len && php_digit(s[i]) )
+		{
+			i++;
+			digits++;
+		}
+	}
+	if ( digits == 0 )
 		return false;
+	if ( i < len && (s[i] == 'e' || s[i] == 'E') )
+	{
+		size_t e = i + 1;
+		if ( e < len && (s[e] == '+' || s[e] == '-') )
+			e++;
+		if ( e < len && php_digit(s[e]) )
+		{
+			while ( e < len && php_digit(s[e]) )
+				e++;
+			i = e;
+			integral = false;
+		}
+	}
+	size_t end = i;
+	while ( i < len && php_space(s[i]) )
+		i++;
+	if ( i != len )
+		return false;
+	std::string t = s.substr(start, end - start);
+	if ( integral )
+	{
+		errno = 0;
+		long long v = strtoll(t.c_str(), NULL, 10);
+		if ( errno != ERANGE )
+		{
+			n.is_int = true;
+			n.i = v;
+			n.d = (double)v;
+			return true;
+		}
+	}
+	n.is_int = false;
+	n.i = 0;
+	n.d = strtod(t.c_str(), NULL);
+	return true;
+}
+
+// An integer, a real or a numeric string, as a number.
+static bool php_number_of(const madc::value &v, php_number &n)
+{
+	if ( v.is_integer() )
+	{
+		n.is_int = true;
+		n.i = v.as_integer();
+		n.d = (double)n.i;
+		return true;
+	}
+	if ( v.is_real() )
+	{
+		n.is_int = false;
+		n.i = 0;
+		n.d = v.as_real();
+		return true;
+	}
+	return v.is_string() && php_numeric_text(v.as_string(), n);
+}
+
+static int php_compare_numbers(const php_number &x, const php_number &y)
+{
+	if ( x.is_int && y.is_int )
+		return x.i == y.i ? 0 : (x.i < y.i ? -1 : 1);
+	// ZEND_THREEWAY_COMPARE: a NaN is neither equal nor less, so it is 1.
+	return x.d == y.d ? 0 : (x.d < y.d ? -1 : 1);
+}
+
+// A scalar's text as PHP converts it for a string comparison.
+static std::string php_text_of(const madc::value &v)
+{
+	if ( v.is_integer() )
+		return std::to_string(v.as_integer());
+	if ( v.is_real() )
+	{
+		char buf[MADC_PHP_REAL_TEXT_CAP];
+		return __madc_php_real_text(buf, v.as_real());
+	}
+	if ( v.is_string() || v.is_bytes() )
+		return v.as_string();
+	return std::string();
+}
+
+// PHP's boolean conversion: "" and "0" are false, an empty array is false.
+static bool php_truthy(const madc::value &v)
+{
+	if ( v.is_boolean() )
+		return v.as_boolean();
+	if ( v.is_integer() )
+		return v.as_integer() != 0;
+	if ( v.is_real() )
+		return v.as_real() != 0.0;
+	if ( v.is_string() )
+	{
+		std::string s = v.as_string();
+		return !s.empty() && s != "0";
+	}
+	if ( v.is_array() )
+		return !v.as_array().empty();
+	if ( v.is_object() )
+		return !v.as_object().empty();
+	return !v.is_null();
+}
+
+static int php_compare(const madc::value &a, const madc::value &b);
+
+// Two arrays (a madc list's keys are its indices, an object's its keys): the
+// one with fewer entries is smaller; else entry by entry, and a key of `a`
+// missing from `b` makes them uncomparable, which PHP answers with 1.
+static int php_compare_arrays(const madc::value &a, const madc::value &b)
+{
+	size_t na = a.is_array() ? a.as_array().size() : a.as_object().size();
+	size_t nb = b.is_array() ? b.as_array().size() : b.as_object().size();
+	if ( na != nb )
+		return na < nb ? -1 : 1;
+	if ( a.is_array() && b.is_array() )
+	{
+		for ( size_t i = 0; i < na; i++ )
+		{
+			int c = php_compare(a.as_array()[i], b.as_array()[i]);
+			if ( c != 0 )
+				return c;
+		}
+		return 0;
+	}
+	// A list against an object, or two objects: `a`'s entries in its order.
+	std::vector<std::pair<std::string, const madc::value *> > entries;
+	if ( a.is_array() )
+		for ( size_t i = 0; i < na; i++ )
+			entries.push_back(std::make_pair(std::to_string(i), &a.as_array()[i]));
+	else
+		for ( auto &kv : a.as_object() )
+			entries.push_back(std::make_pair(kv.first, &kv.second));
+	for ( auto &e : entries )
+	{
+		const madc::value *bv = NULL;
+		if ( b.is_object() )
+		{
+			auto found = b.as_object().find(e.first);
+			if ( found != b.as_object().end() )
+				bv = &found->second;
+		}
+		else
+		{
+			php_number k;
+			if ( php_numeric_text(e.first, k) && k.is_int && k.i >= 0 && (size_t)k.i < nb )
+				bv = &b.as_array()[(size_t)k.i];
+		}
+		if ( !bv )
+			return 1;
+		int c = php_compare(*e.second, *bv);
+		if ( c != 0 )
+			return c;
+	}
+	return 0;
+}
+
+static int php_compare(const madc::value &a, const madc::value &b)
+{
+	// null <=> string: null is "", which no numeric string equals.
+	if ( a.is_null() && b.is_string() )
+		return b.as_string().empty() ? 0 : -1;
+	if ( a.is_string() && b.is_null() )
+		return a.as_string().empty() ? 0 : 1;
+	// bool or null <=> anything: both as booleans.
+	if ( a.is_null() || a.is_boolean() || b.is_null() || b.is_boolean() )
+	{
+		bool x = php_truthy(a), y = php_truthy(b);
+		return x == y ? 0 : (x ? 1 : -1);
+	}
+	bool a_arr = a.is_array() || a.is_object();
+	bool b_arr = b.is_array() || b.is_object();
+	if ( a_arr && b_arr )
+		return php_compare_arrays(a, b);
+	if ( a_arr )
+		return 1;			// an array is greater than anything else
+	if ( b_arr )
+		return -1;
+	// Numbers, and numeric strings, compare numerically; anything else
+	// compares as text (a number by its PHP text).
+	php_number x, y;
+	if ( php_number_of(a, x) && php_number_of(b, y) )
+		return php_compare_numbers(x, y);
+	int c = php_text_of(a).compare(php_text_of(b));
+	return c == 0 ? 0 : (c < 0 ? -1 : 1);
+}
+
+// php::sort / php::rsort — PHP's sort() and rsort(): the standard comparison,
+// and a stable sort (PHP 8), so equal elements keep their order in both.
+// Each entry acquires the container ONCE through value_array_for_write so a
+// frozen array reports a single diagnostic naming the function the script
+// actually called.
+void php_sort(madc::value *arr)
+{
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::sort");
+	std::stable_sort(data.begin(), data.end(), [](const madc::value &a, const madc::value &b) {
+		return php_compare(a, b) < 0;
 	});
 }
 
-void php_sort(madc::value *arr)
-{
-	php_sort_data(ns_common::value_array_for_write(*arr, "php::sort"));
-}
-
-// php::rsort — sort array in reverse
+// php::rsort — the same comparison, arguments swapped (never a reversal,
+// which would turn equal elements around).
 void php_rsort(madc::value *arr)
 {
 	std::vector<madc::value> &data
 		= ns_common::value_array_for_write(*arr, "php::rsort");
-	php_sort_data(data);
-	std::reverse(data.begin(), data.end());
+	std::stable_sort(data.begin(), data.end(), [](const madc::value &a, const madc::value &b) {
+		return php_compare(b, a) < 0;
+	});
 }
 
 // php::array_slice — extract a slice of the array

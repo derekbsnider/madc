@@ -112,6 +112,12 @@ void __madc_dump_anc_pop(void);
  * arc refuses. */
 void __madc_dump_fail(void *sink, const char *what);
 
+/* PHP's `(string)$f` (precision=14, with the mantissa's `.` in an exponent
+ * form): the ONE owner of that text — print_r below renders it, php::sort
+ * compares a number against a non-numeric string by it. */
+#define MADC_PHP_REAL_TEXT_CAP 72
+char *__madc_php_real_text(char *out, double v);
+
 /* --- print_r ----------------------------------------------------------- */
 void __madc_dump_pr_i64(void *sink, long long v, int is_unsigned);
 void __madc_dump_pr_f64(void *sink, double v);
