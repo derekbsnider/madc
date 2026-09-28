@@ -216,12 +216,12 @@ class CirBuilder {
 	int m_defer_tmp_counter = 0;
 	// Inputs to rebuild the current function's C return type at a return site
 	// (a cir node is single-parent, so func_def's spec tree cannot be reused):
-	// type_list(m_cur_func_ret_spec_dd[, m_cur_func_ret_spec_alias]) plus
-	// m_cur_func_ret_stars pointer suffixes. NULL spec_dd = no hoistable
-	// C return value (void / __retbuf / multi-return shapes).
+	// append_return_declarator(m_cur_func_ret_fd, m_cur_func_ret_c_dd, ...).
+	// m_cur_func_ret_spec_dd is the type its specifiers spell; NULL = no
+	// hoistable C return value (void / __retbuf / a function pointer).
 	DataDef *m_cur_func_ret_spec_dd = NULL;
-	std::string m_cur_func_ret_spec_alias;
-	int m_cur_func_ret_stars = 0;
+	class FuncDef *m_cur_func_ret_fd = NULL;
+	DataDef *m_cur_func_ret_c_dd = NULL;
 	// Append every pending deferred statement to `items`: scopes from the
 	// innermost down to m_defer_scopes[from_scope] inclusive, each scope's
 	// list in LIFO order. Flushes per-statement materialized temps.
@@ -1604,6 +1604,14 @@ public:
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);
+	// A function's C RETURN type in its declarator: the specifiers into
+	// `specs`, the pieces into `decl_list` after the caller's N_FUNC. The one
+	// owner for func_def, func_proto, the declared-only extern prototype and
+	// translate_return's temps (return_value_temp). Returns the type the
+	// specifiers spell, NULL for the __retbuf ABI or a function pointer.
+	DataDef *append_return_declarator(class FuncDef *fd, DataDef *ret_dd,
+					  node_t specs, node_t decl_list);
+	node_t return_value_temp(const char *name, node_t init, TokenBase *tr);
 	// A pointer/reference TO a function pointer, or a reference to a function:
 	// the peeled levels + the fn-ptr pieces (param_decl and var_decl share it).
 	bool pointer_to_fnptr_pieces(DataDef *t, node_t spec_list, node_t decl_list);

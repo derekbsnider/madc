@@ -333,26 +333,6 @@ int main()
   body `operator==` reaches through `std::equal`. That is a loud refusal by
   design, never a wrong answer.
 
-### B25. A declared function returning a function pointer is prototyped `long long`
-
-- Found 2026-09-26, while writing the weak reducer for D27.
-
-```c
-int (*get(void))(void);
-int one(void);
-int same(void) { return one == get(); }
-int call(void) { return get()(); }
-```
-
-- gcc, clang `-c -Wall -Wextra`: clean. madc `--std=c17`: `3:30: warning --
-  comparison of integer with a pointer`. `--emit=c11` prints `extern long
-  long get(void);`, and `get()()` is then a call of a `long long`. The MIR
-  proto is `i64`, which happens to work on x86-64.
-- With the definition later in the same TU, madc is right (`1 1`, no
-  warning). Only a declaration that no definition follows is mistyped.
-- Where: not traced. The front end already mistypes it (the warning is
-  parse time), and the builder's prototype follows.
-
 ### B27. A function template defined after its first use is called by its bare name
 
 - Found 2026-09-26, while testing D27's stubs with a template declared in

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### A function's return type is spelled the same everywhere
+
+A function returning a pointer to an array (`int (*f(void))[3]`) works: its
+definition, a prototype, a static one, and a call through a pointer to it.
+An `auto` function or a lambda returning a two-dimensional array's row
+pointer works too. Before, madc emitted such a function as returning `int *`,
+and c2mir refused `f()[1][0]`. A function only declared, never defined in the
+file, whose return type is a function pointer (`void (*signal(int, void
+(*)(int)))(int)`) is prototyped as returning that pointer, not `long long`.
+A call through a pointer to a member function returning `const int *&` now
+compiles. The six places that spelled a return type (a definition, a
+prototype, a declared-only extern, a function pointer's target, a
+pointer-to-member call, a return temp) share one owner, and a gate keeps it
+that way.
+
 ### `auto` from an array or a function deduces a pointer
 
 `auto q = a;` over `int a[3]` declares an `int *`, and over `int a[2][3]` an

@@ -1100,6 +1100,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-slot-dispatch.sh
 	@cd .. && bash scripts/check-one-deref-builder.sh
 	@cd .. && bash scripts/check-one-fptr-predicate.sh
+	@cd .. && bash scripts/check-one-return-declarator.sh
 	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh
 	@cd .. && bash scripts/check-one-lexer-type-token.sh
 	@cd .. && bash scripts/check-one-mir-def-to-import.sh

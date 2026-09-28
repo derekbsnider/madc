@@ -78,6 +78,9 @@
   — its leading/east/after-star cv is the TYPE's; never a hand-rolled `*`/`[]` loop.
 - A type's cv levels in the emitted tree: `dd_peel_pointers(dd, &level_cv)` then
   `pointer(cv)` per level and `append_cv_specs` for the base (cir).
+- A function's RETURN type in an emitted declarator (a definition, a prototype, an
+  extern, a function pointer's target, a return temp): cir's `append_return_declarator`
+  (gated: `check-one-return-declarator.sh`).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
 - A non-type template argument spliced into a cloned body (one operand):
   `splice_nontype_template_arg` (gated: `check-one-nontype-splice.sh`).

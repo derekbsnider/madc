@@ -70,6 +70,28 @@ referent and `deref_type_for_variable` would type `*rp` as the pointer.
   `a[i]`" must go through `build_fixed_array_query_type`, or it answers the
   element where C answers the row.
 
+## Why a function's return type has one declarator owner (2026-09-28)
+
+A function's C return type is spelled in six places: its definition, its
+prototype, the extern for a function only declared, a pointer to it
+(`fnptr_decl_pieces`), a pointer-to-member call's cast, and
+`translate_return`'s temps. They are declarations of one type and must
+agree. Each was a hand-rolled copy: peel the pointer levels, spell the base,
+append one `N_POINTER` per level. The copies diverged three ways. The
+declared-only extern had no function-pointer case, so `int (*get(void))(void);`
+was prototyped `extern long long get(void)` (BUGS.md B25). None of them spelled
+a pointer-to-array return's extent: `int (*g(void))[3]` became `int *g(void)`,
+and `g()[1][0]` subscripted an int. The pointer-to-member cast read a
+`const int *&` return at the wrong depth. `append_return_declarator` builds all
+six from the existing pointer-piece owners (`peel_pointer_declarator`,
+`append_pointer_declarator`, `pointer_to_fnptr_pieces`). A reference return's
+address pointer comes first, before the referent's own levels, because the
+address is the outermost derivation.
+
+The runtime and library-method extern (`need_output_extern`) still spells its
+own return from `ret_ptr` / `ret_specs` / `ret_cls`, with no FuncDef. It is
+marked in the gate and recorded as the family's open member.
+
 ## Symbol counting
 
 Counting `(` `[` `{` `<` is solved by `DelimDepth`. Whether a `<` opens a

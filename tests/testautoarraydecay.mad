@@ -4,13 +4,14 @@
    deduces its pointer). This covers a file-scope and a block-scope
    declaration, a struct member array, a row of a two-dimensional array,
    a parenthesized function name, and the return of an `auto` function and
-   of a lambda.
+   of a lambda, a two-dimensional array's included (a pointer to its row,
+   which the CIR builder's function declarators dropped the extent of).
    madc deduced the array's element type (it stores an array flattened),
    so `auto q = a;` declared an int ("assigning pointer without cast to
    integer", then "subscripted value is neither array nor pointer"), and
    `auto fp = (f);` declared a function ("initialization of incomplete
    type variable").
-   Oracle: g++ 13 and clang++ 18 -std=c++17 print the three lines below. */
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the four lines below. */
 #include <stdio.h>
 
 int one[3] = { 7, 8, 9 };
@@ -20,6 +21,7 @@ int f(int x) { return x + 1; }
 
 auto q = one;
 auto g1() { return one; }
+auto g2() { return two; }
 
 int main()
 {
@@ -29,8 +31,10 @@ int main()
 	auto row = two[1];
 	auto fp = (f);
 	auto l = [] { return one; };
+	auto l2 = [] { return two; };
 	printf("decl: %zu %d %d %zu %d\n", sizeof p, p[2], q[1], sizeof r, r[1][2]);
 	printf("member: %d %d %d\n", m[1], row[2], fp(1));
 	printf("return: %zu %d %d\n", sizeof g1(), g1()[2], l()[1]);
+	printf("rows: %zu %d %d\n", sizeof *g2(), g2()[1][1], l2()[1][0]);
 	return 0;
 }
