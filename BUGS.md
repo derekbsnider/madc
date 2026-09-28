@@ -1104,6 +1104,15 @@ A divergent family is a live bug. Consolidating one leaves a gate in
     `var f() { return 2.5; }`, and L3 moved it onto the owner.
   - No failing reducer yet for this arm. The carrier's constructor rows get
     Pass 0.75's typed prototype first.
+- `member_default_construct_loop` (found 2026-09-28, with the base-owned
+  members fix):
+  - `class_member_construct` (the user-ctor prologue) and
+    `append_member_default_constructs` (the implicit and inherited ctors)
+    each default-construct a class's members.
+  - Both skip a member a base's constructor built, through
+    `member_constructed_by_base`. They still build each member differently:
+    `class_ctor_call_addr` against `complete_object_construct_stmts`, which
+    differ on virtual bases. No failing reducer yet.
 
 ## Carried from earlier hand-offs
 

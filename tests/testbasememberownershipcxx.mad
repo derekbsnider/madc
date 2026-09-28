@@ -1,0 +1,36 @@
+/* A base with a user constructor constructs its own members; the class it is
+   a base of constructs only the rest ([class.base.init]/13). madc flattens a
+   base's members into the derived layout, and the member pass behind an
+   implicit or inherited constructor constructed EVERY flattened member —
+   after the base's constructor had already run:
+     D1  implicit ctor over B1(): B1 set m.v = 5, then M() reset it to 1.
+     D4  inherited A4(6): A4 set m.v = 6, then M() reset it to 1 (the same
+         clobber zeroed every std::unique_ptr's pointer).
+   Two bases the construction never reached:
+     D2  `using A2::A2;` beside a second base B2: B2() never ran.
+     D3  a user ctor over ctorless B3 over G3(): G3() never ran.
+   Oracle: g++ and clang++ -std=c++17 print `5 3 7 9 1 6 1`. */
+#include <cstdio>
+
+struct M { int v; M() : v(1) {} };
+struct B1 { M m; B1() { m.v = 5; } };
+struct D1 : B1 { };
+struct A2 { int a; A2(int x) : a(x) {} };
+struct B2 { int b; B2() : b(7) {} };
+struct D2 : A2, B2 { using A2::A2; };
+struct G3 { int g; G3() : g(9) {} };
+struct B3 : G3 { };
+struct D3 : B3 { int d; D3() : d(1) {} };
+struct A4 { M m; A4(int x) { m.v = x; } };
+struct D4 : A4 { M own; using A4::A4; };
+
+int main()
+{
+	D1 x1;
+	D2 x2(3);
+	D3 x3;
+	D4 x4(6);
+	printf("%d %d %d %d %d %d %d\n", x1.m.v, x2.a, x2.b, x3.g, x3.d,
+	       x4.m.v, x4.own.v);
+	return 0;
+}

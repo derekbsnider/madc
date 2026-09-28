@@ -13606,7 +13606,7 @@ node_t CirBuilder::carrier_slot_call(node_t recv_void, TokenBase *index,
 // The test is "did WE emit a ctor for that base", not "is it inherited": a base
 // with no user ctor gets no call, and its object members are then genuinely
 // ours to construct.
-static bool member_owned_by_done_base(DataDefCLASS *cdd, size_t mi,
+static bool member_owned_by_done_base(const DataDefCLASS *cdd, size_t mi,
 				      const std::set<int> *done_bases)
 {
 	if (!done_bases || done_bases->empty()) return false;
@@ -13614,14 +13614,24 @@ static bool member_owned_by_done_base(DataDefCLASS *cdd, size_t mi,
 	return origin >= 0 && done_bases->count(origin) != 0;
 }
 
-// The default member initializer of member `mi` of `cdd`, when constructing
-// `cdd` is what applies it. An own member's lives in cdd's map. A member
-// flattened in from a base (member_origin; member_vbase for a virtual base)
-// keeps its initializer in the class that DECLARED it, so walk down to that
-// class: its members were flattened in order, as one run per source. A class
-// with a user constructor on the way applies its own initializers in its
-// prologue, so the member is not ours: NULL.
-static TokenBase *member_default_init_of(const DataDefCLASS *cdd, size_t mi)
+// Which classes handle their own members: a class with a user constructor
+// constructs (and initializes) them in its prologue. A class without one
+// leaves its members to the class it is a base of, into which they were
+// flattened.
+typedef bool (*OwnsMembersTest)(const DataDefCLASS *);
+static bool constructs_own_members(const DataDefCLASS *c)
+{
+	return c->has_user_ctor;
+}
+
+// Walk member `mi` of `cdd` down its flattening (member_origin; member_vbase
+// for a virtual base) to the class that DECLARED it: each source's members
+// were flattened in order, as one run per source. The walk stops early at a
+// base that handles its own members (`owns`). Returns the class reached and
+// writes the member's index in it; NULL for an index outside the layout.
+static const DataDefCLASS *member_declaring_class(const DataDefCLASS *cdd,
+						  size_t mi, size_t *index,
+						  OwnsMembersTest owns)
 {
 	const DataDefCLASS *c = cdd;
 	while (c && mi < c->members.size()) {
@@ -13633,11 +13643,9 @@ static TokenBase *member_default_init_of(const DataDefCLASS *cdd, size_t mi)
 			: (origin >= 0 && (size_t)origin < c->bases.size())
 				? c->bases[origin].base : NULL;
 		if (!src) {
-			std::map<std::string, TokenBase *>::const_iterator di =
-				c->member_default_inits.find(c->members[mi].first);
-			return di == c->member_default_inits.end() ? NULL : di->second;
+			*index = mi;
+			return c;
 		}
-		if (src->has_user_ctor) return NULL;
 		// `mi` is the k-th member `c` took from `src`, and `src`'s k-th
 		// member outside its own virtual bases is the same member.
 		size_t k = 0;
@@ -13657,10 +13665,44 @@ static TokenBase *member_default_init_of(const DataDefCLASS *cdd, size_t mi)
 			if (k == 0) break;
 			k--;
 		}
+		if (owns(src)) {
+			*index = j;
+			return src;
+		}
 		c = src;
 		mi = j;
 	}
 	return NULL;
+}
+
+// The default member initializer of member `mi` of `cdd`, when constructing
+// `cdd` is what applies it: the declaring class's, unless a base with a user
+// constructor owns the member (its prologue applies its own initializers).
+static TokenBase *member_default_init_of(const DataDefCLASS *cdd, size_t mi)
+{
+	size_t j = 0;
+	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j,
+						       constructs_own_members);
+	if (!c || (c != cdd && constructs_own_members(c))) return NULL;
+	std::map<std::string, TokenBase *>::const_iterator di =
+		c->member_default_inits.find(c->members[j].first);
+	return di == c->member_default_inits.end() ? NULL : di->second;
+}
+
+// Member `mi` of `cdd` is a base's to construct: the base whose constructor
+// this construction emitted (done_bases), or a user-constructor class it was
+// flattened from, which the base chain constructs — through ctorless layers
+// too (append_base_default_constructs). Constructing it again re-runs a
+// constructor on a live object: an inherited `D4(6)` stored 6 in its base's
+// member, and then the member's default constructor overwrote it with 1.
+static bool member_constructed_by_base(const DataDefCLASS *cdd, size_t mi,
+				       const std::set<int> *done_bases)
+{
+	if (member_owned_by_done_base(cdd, mi, done_bases)) return true;
+	size_t j = 0;
+	const DataDefCLASS *c = member_declaring_class(cdd, mi, &j,
+						       constructs_own_members);
+	return c && c != cdd && constructs_own_members(c);
 }
 
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
@@ -13673,7 +13715,7 @@ bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
 		const auto &m = cdd->members[mi];
 		if (skip && skip->count(m.first)) continue;
-		if (member_owned_by_done_base(cdd, mi, done_bases)) continue;
+		if (member_constructed_by_base(cdd, mi, done_bases)) continue;
 		if (is_array_object(m.second)) {
 			flush_pending_stmts(out);
 			out.push_back(array_member_runtime_call(
@@ -15073,7 +15115,9 @@ bool CirBuilder::append_member_default_constructs(node_t items,
 {
 	if (!cdd) return false;
 	bool any = false;
-	for (const auto &m : cdd->members) {
+	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
+		const auto &m = cdd->members[mi];
+		if (member_constructed_by_base(cdd, mi, NULL)) continue;
 		if (is_array_object(m.second)) {
 			append(items, array_member_runtime_call(
 				"madarray_construct", true, recv_ptr, m.first,
@@ -15136,42 +15180,52 @@ void CirBuilder::append_base_default_constructs(node_t items,
 	if (!cdd) return;
 	if (!complete_cls) complete_cls = cdd;
 	for (const auto &bs : cdd->bases) {
-		if (bs.is_virtual) continue;
-		DataDefCLASS *b = bs.base;
-		if (!b) continue;
-		size_t off = off0 + cdd->base_offset_of(b);
-		if (!b->has_user_ctor) {
-			append_base_default_constructs(items, recv_ptr, b,
-						       off, origin,
-						       complete_cls);
-			continue;
-		}
-		FuncDef *bctor = class_default_ctor_def(b);
-		if (!bctor) continue;
-		node_t self = id(recv_ptr, origin);
-		node_t adj = self;
-		if (off != 0) {
-			node_t charp = node2(N_CAST,
-				node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
-				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
-				self, origin);
-			adj = node2(N_ADD, charp, integer((int64_t)off, origin), origin);
-		}
-		node_t bt = node2(N_TYPE, node1(N_LIST, class_tag_ref(b)),
-				  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
-		node_t baddr = node2(N_CAST, bt, adj, origin);
-		// The receiver is a COMPLETE object of complete_cls, so a
-		// vbase-carrying base's hidden __madc_vb args are static
-		// offsets in complete_cls's layout off recv_ptr — never b's
-		// standalone layout off baddr.
-		std::function<node_t()> vb_mint = [&]() -> node_t {
-			return id(recv_ptr, origin);
-		};
-		node_t stmt = ctor_call_assemble(baddr, b, bctor,
-						 std::vector<node_t>(), origin,
-						 false, &vb_mint, complete_cls);
-		if (stmt) append(items, stmt);
+		if (bs.is_virtual || !bs.base) continue;
+		append_base_default_construct(items, recv_ptr, bs.base,
+					      off0 + cdd->base_offset_of(bs.base),
+					      origin, complete_cls);
 	}
+}
+
+// Default-construct ONE non-virtual base subobject `b`, at offset `off` in
+// the complete object `recv_ptr` points at: its default ctor, or through a
+// ctorless base to the user-ctor bases beneath it.
+void CirBuilder::append_base_default_construct(node_t items,
+					       const char *recv_ptr,
+					       DataDefCLASS *b, size_t off,
+					       TokenBase *origin,
+					       DataDefCLASS *complete_cls)
+{
+	if (!b->has_user_ctor) {
+		append_base_default_constructs(items, recv_ptr, b, off, origin,
+					       complete_cls);
+		return;
+	}
+	FuncDef *bctor = class_default_ctor_def(b);
+	if (!bctor) return;
+	node_t self = id(recv_ptr, origin);
+	node_t adj = self;
+	if (off != 0) {
+		node_t charp = node2(N_CAST,
+			node2(N_TYPE, node1(N_LIST, simple(N_CHAR)),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			self, origin);
+		adj = node2(N_ADD, charp, integer((int64_t)off, origin), origin);
+	}
+	node_t bt = node2(N_TYPE, node1(N_LIST, class_tag_ref(b)),
+			  node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+	node_t baddr = node2(N_CAST, bt, adj, origin);
+	// The receiver is a COMPLETE object of complete_cls, so a
+	// vbase-carrying base's hidden __madc_vb args are static
+	// offsets in complete_cls's layout off recv_ptr — never b's
+	// standalone layout off baddr.
+	std::function<node_t()> vb_mint = [&]() -> node_t {
+		return id(recv_ptr, origin);
+	};
+	node_t stmt = ctor_call_assemble(baddr, b, bctor,
+					 std::vector<node_t>(), origin,
+					 false, &vb_mint, complete_cls);
+	if (stmt) append(items, stmt);
 }
 
 // True when the implicit default construction of ctorless `cdd` must emit
@@ -16985,15 +17039,39 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		append(decl, ignore());
 		append(decl, this_addr);
 		append(blk, decl);
-		node_t base_addr = base_subobject_addr(id(tmp, origin), cdd,
-						       decl_cls, origin);
-		node_t call = ctor_call_assemble(base_addr, decl_cls, ctor,
-						 explicit_nodes, origin,
-						 vbase_forward);
-		if (!call) return NULL;
-		append(blk, node2(N_EXPR, list(), call, origin));
-		// The base's own members are its ctor's (member_default_init_of
-		// stops at a class with a user ctor); the rest are ours.
+		// The inherited ctor initializes the base it came from; every
+		// other base is default-initialized, in declaration order
+		// ([class.base.init]/13) — `struct D : A, B { using A::A; }`
+		// left B unconstructed.
+		bool called = false;
+		for (const auto &bs : cdd->bases) {
+			if (bs.is_virtual || !bs.base) continue;
+			if (!called && bs.base->is_or_derives_from(decl_cls)) {
+				node_t base_addr = base_subobject_addr(
+					id(tmp, origin), cdd, decl_cls, origin);
+				node_t call = ctor_call_assemble(base_addr, decl_cls,
+					ctor, explicit_nodes, origin, vbase_forward);
+				if (!call) return NULL;
+				append(blk, call);
+				called = true;
+				continue;
+			}
+			append_base_default_construct(blk, tmp, bs.base,
+						      cdd->base_offset_of(bs.base),
+						      origin, cdd);
+		}
+		if (!called) {
+			// Inherited from a virtual base: no direct position.
+			node_t base_addr = base_subobject_addr(id(tmp, origin), cdd,
+							       decl_cls, origin);
+			node_t call = ctor_call_assemble(base_addr, decl_cls, ctor,
+							 explicit_nodes, origin,
+							 vbase_forward);
+			if (!call) return NULL;
+			append(blk, call);
+		}
+		// Members a base's ctor constructed are its own
+		// (member_constructed_by_base); the rest are ours.
 		append_vptr_and_member_inits(blk, tmp, cdd, origin,
 					     class_needs_member_construction(cdd),
 					     true);
@@ -30374,6 +30452,16 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 							b->name + "__" + b->name);
 					prologue.push_back(bstmt);
 					done_bases.insert((int)bi);
+				} else if (class_needs_base_construction(b)) {
+					// A ctorless base has no ctor to call,
+					// but the user-ctor bases beneath it do:
+					// its implicit default ctor's chain runs
+					// here (G3 under `D3() : d(1)` never ran).
+					node_t items = list();
+					append_base_default_constructs(items, "__this",
+						b, ocls->base_offset_of(b), tf, ocls);
+					prologue.push_back(node2(N_BLOCK, list(),
+								 items, tf));
 				}
 			}
 		// Set each subobject's vptr to its group's address point in the flat

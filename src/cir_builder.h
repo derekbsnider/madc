@@ -1978,6 +1978,11 @@ public:
 			       DataDefCLASS *cdd, size_t off0,
 			       TokenBase *origin,
 			       DataDefCLASS *complete_cls = NULL);
+	// One base `b` at offset `off` of that complete object: its default
+	// ctor, or through a ctorless `b` to the user-ctor bases beneath it.
+	void append_base_default_construct(node_t items, const char *recv_ptr,
+			       DataDefCLASS *b, size_t off,
+			       TokenBase *origin, DataDefCLASS *complete_cls);
 	// The loud no-match result shared by both ctor-call builders: an
 	// error_node naming the class and the initializer argument types.
 	node_t no_ctor_match_error(DataDefCLASS *cdd,

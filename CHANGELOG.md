@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A base's constructor keeps the members it built
+
+A class whose base has a user constructor no longer constructs that base's
+members a second time. `struct D : B {};` over a `B()` that sets a member,
+and a class that inherits a constructor with `using A::A;`, now keep what
+the base's constructor stored. Before, the member's default constructor
+overwrote it. The other bases of a class that inherits a constructor are
+now default-constructed. A user constructor now also runs the constructor
+of a base that sits under a base with none. Before, both were left
+unconstructed.
+
 ### An array compound literal has the extent written in it
 
 `(int[3]){0}` now has three elements, zero-filled, as C requires. Before,
