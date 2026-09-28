@@ -10457,7 +10457,7 @@ void Source::consume_block_comment(int row, int col, std::string *keep)
     refuse_at_end_of_input("unterminated comment");
 }
 
-void Source::showerror(int row, int col)
+void Source::showerror(int row, int col, std::ostream &os)
 {
 //	std::cout << "showerror(" << row << ", " << col << ')' << std::endl;
 	std::string ln;
@@ -10491,13 +10491,13 @@ void Source::showerror(int row, int col)
 	_gpos = saved_gpos;
 	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
 
-	show_error_source_line(ln, col);
+	show_error_source_line(ln, col, os);
 }
 
 // Shared display tail for a diagnostic source echo: the offending line and a
 // caret under the column, truncated to the terminal width — one formatter for
 // both the live-Source echo and the reread-from-disk echo.
-void show_error_source_line(const std::string &ln, int col)
+void show_error_source_line(const std::string &ln, int col, std::ostream &os)
 {
     char *env_columns = getenv("COLUMNS");
     size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
@@ -10513,14 +10513,14 @@ void show_error_source_line(const std::string &ln, int col)
 	size_t start = (col > 0 && (size_t)col <= ln.length())
 		     ? (size_t)col : ln.length();
 	std::string trunc = "  ..." + ln.substr(start);
-	std::cerr << trunc << std::endl;
-	std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
+	os << trunc << std::endl;
+	os << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
 	return;
     }
-    std::cerr << ln << std::endl;
+    os << ln << std::endl;
     if ( col > 1 )
-	std::cerr << std::setw(col-1) << ' ';
-    std::cerr << "\e[1;32m^\e[m" << std::endl;
+	os << std::setw(col-1) << ' ';
+    os << "\e[1;32m^\e[m" << std::endl;
 }
 
 // Echo line `row` of a file that is NOT the live Source buffer — a token from
@@ -10528,7 +10528,7 @@ void show_error_source_line(const std::string &ln, int col)
 // false (echo skipped) when the file cannot be opened or is shorter than
 // `row` — e.g. an embedded header with no on-disk presence, or stale
 // provenance; skipping beats echoing the wrong file's text.
-bool madc_show_file_error(const char *fname, int row, int col)
+bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os)
 {
     if ( !fname || !*fname || row <= 0 )
 	return false;
@@ -10541,7 +10541,7 @@ bool madc_show_file_error(const char *fname, int row, int col)
 	++i;
     if ( i != row )
 	return false;
-    show_error_source_line(ln, col);
+    show_error_source_line(ln, col, os);
     return true;
 }
 

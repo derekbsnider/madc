@@ -150,6 +150,16 @@ TEST_CASE("session backend: an offer's verdict, a refused entry's diagnostics")
     REQUIRE(c.offer_wait("int x = 7;", true, r, out, kWait) == 1);
     CHECK(r.ok);
     CHECK(first_error_row(r.diagnostics).empty());
+    // A diagnostic renders whole into its reply: the header, the offending
+    // line and its caret. The echo is never the program's output.
+    out.clear();
+    REQUIRE(c.offer_wait("int y = nosuch_name;", true, r, out, kWait) == 1);
+    CHECK_FALSE(r.ok);
+    CAPTURE(r.rendered);
+    CHECK(r.rendered.find("use of undeclared identifier 'nosuch_name'") != std::string::npos);
+    CHECK(r.rendered.find("int y = nosuch_name;\n") != std::string::npos);
+    CHECK(r.rendered.find("^") != std::string::npos);
+    CHECK(out.empty());
 }
 
 TEST_CASE("session backend: completion asks the backend's session")

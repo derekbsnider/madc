@@ -2405,7 +2405,9 @@ public:
 	return !s.empty();
     }
     void setpos(int row, int col) { _lf = _cr = (row-1); _column = col; }
-    void showerror(int row=0, int col=0);
+    // The offending line and a caret, on `os`: the stream its diagnostic's
+    // header went to, so the two never part.
+    void showerror(int row=0, int col=0, std::ostream &os = std::cerr);
     // Consume a block comment through its closing `*/`, the caller having
     // consumed the opening `/*` whose `/` sat at `row`/`col`; the consumed
     // text (the `*/` included) is appended to *keep when given. The ONE
@@ -2431,9 +2433,12 @@ public:
 // Diagnostic source-echo helpers (lexer.cpp). show_error_source_line is the
 // one formatter for the offending-line + caret display; madc_show_file_error
 // rereads a non-live file (an #included header) from disk on the cold
-// diagnostic path and returns false when it cannot echo faithfully.
-void show_error_source_line(const std::string &ln, int col);
-bool madc_show_file_error(const char *fname, int row, int col);
+// diagnostic path and returns false when it cannot echo faithfully. Both
+// write to `os`, the stream the diagnostic's header went to.
+void show_error_source_line(const std::string &ln, int col,
+			    std::ostream &os = std::cerr);
+bool madc_show_file_error(const char *fname, int row, int col,
+			  std::ostream &os = std::cerr);
 
 // Mute diagnostic RENDERING (Program::print_diagnostic's header + source
 // echo AND throwbuf::sync's stderr render) while a compile-only child
