@@ -7001,6 +7001,10 @@ public:
     // decayed `element *` type for a fixed-array variable / array member /
     // array-typed expression, else NULL. See parser.cpp.
     DataDef *array_decay_pointer(TokenBase *operand);
+    // [temp.deduct.call]/2: the type an argument deduces for a parameter that
+    // is NOT a reference (a template's `T`, a declaration's or a return's
+    // `auto`) — decayed, top-level cv dropped. See parser.cpp.
+    DataDef *by_value_deduced_type(DataDef *arg_dd, TokenBase *arg);
     // The ARRAY type an operand denotes, with its extents, or NULL — madc
     // stores arrays flattened; this is where the extents are read back.
     DataDef *array_operand_type(TokenBase *e);

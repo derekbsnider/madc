@@ -414,27 +414,6 @@ int main(void) { int (*p)(int) = g; int k = p == g; printf("%d\n", k); return 0;
   C gives is not a token rule: a function designator decays unless it is the
   operand of `&` or `sizeof`, or the callee of a call (C11 6.3.2.1p4).
 
-### B42. `auto` from an array deduces its element type
-
-- Found 2026-09-27, while measuring the type D12's result would take (plan
-  §41.6a).
-
-```cpp
-#include <stdio.h>
-int a[3] = {1,2,3};
-auto q = a;
-int main() { auto lq = a; printf("%zu %d %d\n", sizeof lq, q[1], lq[2]); return 0; }
-```
-
-- g++ 13: `8 2 3` (`auto` decays an array to a pointer, [temp.deduct.call]/2).
-  madc `--std=c++17`: "assigning pointer without cast to integer", then
-  "subscripted value is neither array nor pointer nor vector" at both uses.
-  Block scope does the same.
-- Where: `deduce_expr_type` answers `operand_value_datadef`, which gives an
-  array variable's element type (madc stores an array flattened, its element
-  in the Variable's type). The array-to-pointer and function-to-pointer
-  conversions of the deduction are missing.
-
 ### B44. A namespace-scope lambda's init-capture is refused
 
 - Found 2026-09-27, while testing D12's result names in a lambda capture.

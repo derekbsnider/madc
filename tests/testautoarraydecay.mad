@@ -1,0 +1,36 @@
+/* `auto` deduced from an array or a function ([temp.deduct.call]/2: P is
+   not a reference, so an array argument deduces the pointer its decay
+   yields, a pointer to its row for a two-dimensional one, and a function
+   deduces its pointer). This covers a file-scope and a block-scope
+   declaration, a struct member array, a row of a two-dimensional array,
+   a parenthesized function name, and the return of an `auto` function and
+   of a lambda.
+   madc deduced the array's element type (it stores an array flattened),
+   so `auto q = a;` declared an int ("assigning pointer without cast to
+   integer", then "subscripted value is neither array nor pointer"), and
+   `auto fp = (f);` declared a function ("initialization of incomplete
+   type variable").
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the three lines below. */
+#include <stdio.h>
+
+int one[3] = { 7, 8, 9 };
+int two[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+struct S { int m[3]; } s = { { 4, 5, 6 } };
+int f(int x) { return x + 1; }
+
+auto q = one;
+auto g1() { return one; }
+
+int main()
+{
+	auto p = one;
+	auto r = two;
+	auto m = s.m;
+	auto row = two[1];
+	auto fp = (f);
+	auto l = [] { return one; };
+	printf("decl: %zu %d %d %zu %d\n", sizeof p, p[2], q[1], sizeof r, r[1][2]);
+	printf("member: %d %d %d\n", m[1], row[2], fp(1));
+	printf("return: %zu %d %d\n", sizeof g1(), g1()[2], l()[1]);
+	return 0;
+}

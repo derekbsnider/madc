@@ -21022,6 +21022,24 @@ DataDef *Program::array_decay_pointer(TokenBase *operand)
     return elem ? getPointerType(elem) : NULL;
 }
 
+// [temp.deduct.call]/2: the type A that the argument `arg` (of type arg_dd)
+// deduces for a parameter P that is NOT a reference — a function template's
+// by-value `T`, a declaration's or a return's `auto`. A function deduces its
+// pointer ([conv.func]); an array the pointer its decay yields ([conv.array],
+// a pointer to its ROW for a multi-dimensional one — madc stores an array
+// flattened, so arg_dd names the ELEMENT); anything else its type without
+// the top-level cv (`const int ci` deduces int). A reference P binds the
+// argument itself, so its callers never ask. ONE owner for every by-value
+// deduction.
+DataDef *Program::by_value_deduced_type(DataDef *arg_dd, TokenBase *arg)
+{
+    if ( arg_dd && arg_dd->as_funcdef_dd() )
+	return getPointerType(arg_dd);
+    if ( DataDef *adp = array_decay_pointer(arg) )
+	return adp;
+    return arg_dd ? arg_dd->unqualified() : arg_dd;
+}
+
 void Program::resolve_object_operator_type(TokenOperator *to)
 {
     if ( !to ) return;
@@ -48359,7 +48377,8 @@ void Program::capture_balanced_group_tokens(TokenID close_id,
 }
 
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret);
-static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt);
+static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt,
+					      bool p_is_reference);
 
 void Program::enqueue_deferred_function_body(Variable *var,
 					   Method *method, TokenBase *open,
@@ -48758,7 +48777,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    {
 		DataDef *deduced = NULL;
 		for ( TokenStmt *s : tf->statements )
-		    if ( (deduced = deduce_return_type_from_stmt(this, s)) )
+		    if ( (deduced = deduce_return_type_from_stmt(this, s,
+							      cur->returns_reference())) )
 			break;
 		if ( deduced && deduced != &cur->return_value_type() )
 		{
@@ -61684,19 +61704,15 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // "cannot dereference non-pointer type". A reference parameter (spelling
     // has `&`) binds directly — no decay (the array/function keeps its type).
     // The same paragraph drops a cv-qualified A's TOP-LEVEL cv for a by-value
-    // P (`const int ci; pick(ci, 2)` deduces T = int from both arguments —
-    // DataDef::unqualified(), the one const peel). ONE owner for both
-    // deduction points below (the already-bound consistency check and the
-    // general deduction).
+    // P (`const int ci; pick(ci, 2)` deduces T = int from both arguments).
+    // Program::by_value_deduced_type is the rule's one owner, shared with
+    // `auto`; this lambda serves both deduction points below (the
+    // already-bound consistency check and the general deduction).
     auto decayed_for_deduction = [&](const std::string &sp_, DataDef *arg_dd_,
 				     size_t ai) -> DataDef * {
 	if ( sp_.find('&') != std::string::npos )
 	    return arg_dd_;
-	if ( FuncDef *afd = dynamic_cast<FuncDef *>(arg_dd_) )
-	    return pgm.getPointerType(afd);
-	if ( DataDef *adp = pgm.array_decay_pointer(tc->parameters[ai]) )
-	    return adp;
-	return arg_dd_ ? arg_dd_->unqualified() : arg_dd_;
+	return pgm.by_value_deduced_type(arg_dd_, tc->parameters[ai]);
     };
     // ONE scalar deduction step — the deducer over the by-value adjusted
     // argument with the argument expression in hand, then the
@@ -72015,7 +72031,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	DataDef *deduced = NULL;
 	for ( TokenStmt *s : tf->statements )
-	    if ( (deduced = deduce_return_type_from_stmt(this, s)) )
+	    if ( (deduced = deduce_return_type_from_stmt(this, s,
+							  func->returns_reference())) )
 		break;
 	if ( deduced && deduced != &func->return_value_type() )
 	{
@@ -72059,7 +72076,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 // operands instead (gcc is canon): if either side is floating, the result is
 // `double`; otherwise fall back to the expression's own `datadef()`. Pointer
 // and non-arithmetic expressions report their declared type directly.
-static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
+static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr,
+				 bool p_is_reference = false)
 {
     if ( !expr )
 	return NULL;
@@ -72071,10 +72089,15 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
     // read a reference leaf as its lowered POINTER (`auto a = rl + 2` bound a
     // pointer to 42 and crashed; so did `auto c = rl`) and answered double for
     // any real operand (`auto x = f * 2` on a float measured 8 bytes).
-    if ( pgm )
-	if ( DataDef *dd = pgm->operand_value_datadef(expr) )
-	    return dd;
-    return expr->datadef();
+    DataDef *dd = pgm ? pgm->operand_value_datadef(expr) : NULL;
+    if ( !dd )
+	dd = expr->datadef();
+    // A non-reference `auto` deduces as a by-value template parameter does
+    // (Program::by_value_deduced_type): an array decays, a function becomes
+    // its pointer, top-level cv drops. `auto q = a;` over `int a[3]` declared
+    // an int, since madc stores an array flattened and dd names the element.
+    // `auto&` (P a reference) binds the lvalue itself and keeps its type.
+    return pgm && !p_is_reference ? pgm->by_value_deduced_type(dd, expr) : dd;
 }
 
 // parse a lambda expression: [](type arg, ...) { body } or [] { body }
@@ -72089,7 +72112,8 @@ static DataDef *deduce_expr_type(Program *pgm, TokenBase *expr)
 // Descends into the common nested-statement forms (compounds, if/else, loops).
 // Returns NULL when the body has no value-bearing return (e.g. only `return;`
 // or none), in which case the caller keeps void.
-static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt)
+static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt,
+					      bool p_is_reference)
 {
     if ( !stmt )
 	return NULL;
@@ -72100,7 +72124,7 @@ static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt)
 	{
 	    TokenRETURN *ret = dynamic_cast<TokenRETURN *>(stmt);
 	    if ( ret && ret->returns )
-		return deduce_expr_type(pgm, ret->returns);
+		return deduce_expr_type(pgm, ret->returns, p_is_reference);
 	    return NULL;
 	}
     case TokenID::tkIF:
@@ -72108,24 +72132,24 @@ static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt)
 	    TokenIF *tif = dynamic_cast<TokenIF *>(stmt);
 	    if ( !tif )
 		return NULL;
-	    if ( DataDef *d = deduce_return_type_from_stmt(pgm, tif->statement) )
+	    if ( DataDef *d = deduce_return_type_from_stmt(pgm, tif->statement, p_is_reference) )
 		return d;
-	    return deduce_return_type_from_stmt(pgm, tif->elsestmt);
+	    return deduce_return_type_from_stmt(pgm, tif->elsestmt, p_is_reference);
 	}
     case TokenID::tkWHILE:
 	{
 	    TokenWHILE *tw = dynamic_cast<TokenWHILE *>(stmt);
-	    return tw ? deduce_return_type_from_stmt(pgm, tw->statement) : NULL;
+	    return tw ? deduce_return_type_from_stmt(pgm, tw->statement, p_is_reference) : NULL;
 	}
     case TokenID::tkFOR:
 	{
 	    TokenFOR *tf = dynamic_cast<TokenFOR *>(stmt);
-	    return tf ? deduce_return_type_from_stmt(pgm, tf->statement) : NULL;
+	    return tf ? deduce_return_type_from_stmt(pgm, tf->statement, p_is_reference) : NULL;
 	}
     case TokenID::tkDO:
 	{
 	    TokenDO *td = dynamic_cast<TokenDO *>(stmt);
-	    return td ? deduce_return_type_from_stmt(pgm, td->statement) : NULL;
+	    return td ? deduce_return_type_from_stmt(pgm, td->statement, p_is_reference) : NULL;
 	}
     default:
 	break;
@@ -72134,7 +72158,7 @@ static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt)
     // bare compound block: { ... }
     if ( TokenCpnd *cpnd = dynamic_cast<TokenCpnd *>(stmt) )
 	for ( TokenStmt *s : cpnd->statements )
-	    if ( DataDef *d = deduce_return_type_from_stmt(pgm, s) )
+	    if ( DataDef *d = deduce_return_type_from_stmt(pgm, s, p_is_reference) )
 		return d;
 
     return NULL;
@@ -74047,7 +74071,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	if ( !init_expr )
 	    Throw(tb) << "Failed to parse 'auto' initializer expression" << flush;
 
-	DataDef *deduced = deduce_expr_type(this, init_expr);
+	DataDef *deduced = deduce_expr_type(this, init_expr, ret_is_ref);
 	if ( !deduced || deduced == &ddVOID )
 	    Throw(tb) << "Cannot deduce 'auto' type from this initializer" << flush;
 

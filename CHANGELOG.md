@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### `auto` from an array or a function deduces a pointer
+
+`auto q = a;` over `int a[3]` declares an `int *`, and over `int a[2][3]` an
+`int (*)[3]`, as g++ and clang++ deduce. The same holds for a member array, a
+row of a two-dimensional array, and the return of an `auto` function or a
+lambda. `auto fp = (f);` declares a pointer to `f`. Before, madc deduced the
+array's element type, then refused every subscript of the result, and
+deduced a parenthesized function name as a function. Template argument
+deduction and `auto` now share one rule.
+
 ### Polymorphic classes copy by value
 
 An object of a class with virtual functions can be copied again: into a
