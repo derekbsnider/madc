@@ -5667,6 +5667,9 @@ public:
     // the madc dialect permits them.
     bool for_init_declaration_enabled() const
     { return !(language_std >= STD_C78 && language_std < STD_C99); }
+    // Range-for arrived in C++11; the madc dialect also provides it.
+    bool range_for_enabled() const
+    { return language_std == STD_MADC || (is_cpp_mode() && language_std >= STD_CPP11); }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
     // gcc parity for C modes: -std=cNN defines __STRICT_ANSI__, -std=gnuNN
     // (gcc's default dialect) does not — real glibc headers branch on it

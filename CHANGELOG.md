@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Range-for requires C++11 or the madc dialect
+
+`for (int x : values)` is now refused in C modes and pre-C++11 modes.
+C++11 and later and the madc dialect continue to accept it. Before, C17
+and C++98 mode ran the loop despite their selected language level.
+
 ### C89 for initializers require an expression
 
 A declaration such as `for (int i = 0; ...)` is now refused in pre-C99

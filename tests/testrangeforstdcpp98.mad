@@ -1,0 +1,2 @@
+// GCC C++98 refuses this form; Clang warns that it is a C++11 extension.
+int main() { int a[2] = {1, 2}; int s = 0; for (int x : a) s += x; return s; }

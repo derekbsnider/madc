@@ -1,5 +1,9 @@
 # Test Status
 
+Range-for standard gate (2026-09-28): `testrangeforstdc` and
+`testrangeforstdcpp98` require diagnostics; `testrangeforstdcpp11`
+keeps the C++11 form, alongside the existing madc-dialect range-for tests.
+
 B15 for-initializer standard gate (2026-09-28): `testforinitc89` requires
 a diagnostic for a typed initializer; `testforinitc99` keeps the C99 form.
 

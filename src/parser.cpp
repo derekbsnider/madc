@@ -52974,6 +52974,8 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	    TokenBase *tn3 = pgm.peekToken();
 	    if ( tn3 && tn3->id() == TokenID::tkTerC )
 	    {
+		if ( !pgm.range_for_enabled() )
+		    pgm.Throw(tn3) << "range-based for requires C++11 or the madc dialect" << flush;
 		pgm.nextToken(); // consume the colon
 
 		TokenFOREACH *fe = new TokenFOREACH();
