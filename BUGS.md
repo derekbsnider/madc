@@ -798,49 +798,6 @@ int main(void) { return x; }
   record each one's C standard (`c_since`), which a C-side gate can read.
   `typeof`, `typeof_unqual` and `_BitInt` are C23's alone.
 
-## Runtime hangs
-
-### B54. A byte channel closed under a parked `chan_select` hangs the waiter on Linux
-
-- Found 2026-09-28, while building item 9 slice 2 (plan §41.9a): the same
-  mechanism hung a pump parked on a session through a restart, fixed there
-  by `taskio::handle_closing`. `madc::channel::close()` does not call it yet.
-
-```c
-long waited = -2;
-void waiter(long c, long done)
-{
-    var cases;
-    cases[0] = c;
-    var v;
-    waited = madc::chan_select(v, cases);
-    var one = 1;
-    madc::chan_send(done, one);
-}
-int main()
-{
-    madc::channel ch("exec://sleep 2");
-    long c = madc::chan_readable(ch);
-    long done = madc::chan_make(1);
-    go waiter(c, done);
-    madc::sleep_ms(100);	// the waiter parks on the pipe
-    ch.close();
-    var got;
-    madc::chan_recv(got, done);
-    println("waiter returned {}", waited);
-    return 0;
-}
-```
-
-- Expected (the poll() path, macOS): the closed descriptor reports POLLNVAL,
-  the waiter rescans, finds its only case dead, and `chan_select` returns -1.
-  madc on Linux: hangs (killed by `timeout 15`, exit 124). The reactor
-  watches every descriptor with epoll, which forgets a closed one silently.
-- Fix: `channel::close()` (`src/madc_channel_object.cpp`) calls
-  `madc::taskio::handle_closing(read_wait_handle(), read_wait_kind())`
-  before closing its endpoint, as `SessionClient::stop()` does; the reducer
-  becomes a test.
-
 ### B55. Tab inserts nothing in madcide's editor
 
 - Found 2026-09-28, while building item 9 slice 3 (plan §41.9a): the REPL

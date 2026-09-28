@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Closing a byte channel wakes parked selectors
+
+`madc::channel::close()` now wakes tasks parked on its read handle before
+releasing it. A `chan_select` waiting on that channel rescans and returns -1
+when every case is dead, including on Linux where epoll otherwise forgets
+the closed descriptor silently. Accepting into a reused channel also closes
+its previous endpoint through this notification path.
+
 ### Range-for requires C++11 or the madc dialect
 
 `for (int x : values)` is now refused in C modes and pre-C++11 modes.

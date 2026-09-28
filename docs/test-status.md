@@ -1,5 +1,11 @@
 # Test Status
 
+B54 channel-close wakeup (2026-09-28): `testchanclosewake` parks a selector
+on a loopback listener and closes it from the owner task. The pre-fix Linux
+build timed out after five seconds; the fixed build prints
+`waiter returned -1` in JIT, EXE, and OBJ. `test_channel_object` also
+exercises replacement of an accepted endpoint through the close path.
+
 Range-for standard gate (2026-09-28): `testrangeforstdc` and
 `testrangeforstdcpp98` require diagnostics; `testrangeforstdcpp11`
 keeps the C++11 form, alongside the existing madc-dialect range-for tests.

@@ -330,8 +330,9 @@ int64_t channel::accept(channel &client)
 		s->failed = true;
 		return -1;
 	}
-	// Hand the accepted byte stream to `client`, replacing whatever it held
-	// (a fresh accept target is empty; a reused one is closed by the move).
+	// Hand the accepted byte stream to `client`, replacing whatever it held.
+	// A reused target closes through the same waiter-notifying path.
+	client.close();
 	ChannelState *cs = state(client.impl_);
 	cs->channel = std::move(accepted);
 	cs->wsc = nullptr;		// a fresh accepted byte stream, not ws yet
@@ -769,6 +770,10 @@ void channel::close()
 	ChannelState *s = state(impl_);
 	if ( s->channel )
 	{
+		const int64_t handle = read_wait_handle();
+		if ( handle >= 0 )
+			taskio::handle_closing(static_cast<intptr_t>(handle),
+					       read_wait_kind());
 		s->channel->close();
 		s->exit_status = s->channel->exit_status();
 		s->channel.reset();
