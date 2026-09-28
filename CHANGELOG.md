@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### madcide no longer hangs when you quit after using the REPL tab
+
+Quitting madcide's terminal UI after opening the REPL tab (or pressing F5)
+used to hang: the tab's background task was never told to stop before
+madcide waited for it. Every background task a session starts (the REPL tab,
+a build, a program in a window's Terminal tab) is now stopped before
+madcide waits for it, so the quit is immediate. A program still running
+in the REPL tab or the Terminal is stopped too (after a 2-second grace if it
+does not end on its own). The same fix covers `madcide --lsp`, whose
+shutdown hung the same way after the client ran `madcide.repl`, and an
+in-process build still running at quit is now cancelled.
+
 ### F5 runs the buffer in madcide's REPL tab (§37 item 10, slice 3)
 
 In madcide, F5 (Build > Run in REPL, the `replrun` command, bound in every

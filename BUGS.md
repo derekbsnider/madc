@@ -3,12 +3,11 @@
 Defects found while working on something else, filed so the current work
 keeps moving and fixed later in a burndown the owner schedules.
 
-**Owner pause, 2026-09-25:** until the REPL arc makes real progress (plan
-§41.2 onward), a defect found off the REPL's path is filed here instead of
-being fixed on the spot. A defect that blocks the current REPL step is still
-fixed at once. The `fix-what-you-find.md` rule is unchanged; this pause sets
-it aside for now and lifts when the owner says so. The whole backlog is then
-burned down in a dedicated session.
+**Owner pause, 2026-09-25, LIFTED 2026-09-28:** while the REPL arc's first
+slice was built (plan §37), a defect found off the REPL's path was filed here
+instead of being fixed on the spot. With §37 complete, the owner lifted the
+pause: a defect found now is fixed in its own commit (`fix-what-you-find.md`),
+never added here, and this backlog is being burned down.
 
 - One entry per defect: kind, when and during what it was found, the reducer
   inline (`tmp/` is untracked), what gcc, clang and madc do, and the layer
