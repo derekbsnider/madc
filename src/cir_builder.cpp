@@ -14512,12 +14512,12 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		}
 		if (copy_ctor->defaulted_or_deleted
 		    && copy_ctor->is_copy_or_move_constructor_of(cdd)) {
-			node_t copy = memberwise_copy_construct_from_addr(
+			// The declaration's twin: the operand binds through
+			// try_implicit_copy_construct (`return str;` into a
+			// string_view converts first).
+			node_t copy = try_implicit_copy_construct(
 				node1(N_DEREF, id(RETBUF_NAME, origin), origin),
-				object_arg_addr(src, cdd,
-					copy_ctor->is_nonconst_lref_param(1)),
-				cdd, origin,
-				copy_ctor->param_spells_rvalue_reference(1));
+				cdd, copy_args, origin, copy_ctor);
 			out.push_back(copy ? copy
 					    : error_node("cannot lower defaulted copy/move constructor",
 							 origin));
@@ -16725,7 +16725,8 @@ bool CirBuilder::class_trivially_copyable(DataDefCLASS *cdd)
 node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 					       DataDefCLASS *cdd,
 					       const std::vector<TokenBase *> &ctor_args,
-					       TokenBase *origin)
+					       TokenBase *origin,
+					       FuncDef *defaulted)
 {
 	if (!dst_lvalue || !cdd) return NULL;
 	if (ctor_args.size() != 1 || !ctor_args[0]) return NULL;
@@ -16803,7 +16804,12 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		return node2(N_EXPR, list(), asgn, origin);
 	}
 	// An rvalue source selects the implicit MOVE constructor: each
-	// subobject's move constructor where it declares one.
+	// subobject's move constructor where it declares one. A selected
+	// defaulted constructor moves exactly when it is the move constructor.
+	if (defaulted)
+		return memberwise_copy_construct_from_addr(dst_lvalue,
+			object_arg_addr(ctor_args[0], cdd), cdd, origin,
+			defaulted->param_spells_rvalue_reference(1));
 	return implicit_copy_construct_from_addr(dst_lvalue,
 		object_arg_addr(ctor_args[0], cdd), cdd, origin,
 		ctor_arg_value_category(ctor_args[0]) == cacRvalue);
@@ -18304,19 +18310,12 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		return error_node(why, origin);
 	if (ctor->defaulted_or_deleted
 	    && ctor->is_copy_or_move_constructor_of(cdd)) {
-		// The argument binds the selected constructor's parameter as it
-		// would a user-provided one's (object_arg_addr, the retbuf and
-		// ctor_call_assemble twins).
-		node_t cc = ctor_args.size() != 1 ? NULL
-			: memberwise_copy_construct_from_addr(
-				id(vname.c_str(), origin),
-				object_arg_addr(ctor_args[0], cdd,
-					ctor->is_nonconst_lref_param(1)),
-				cdd, origin,
-				ctor->param_spells_rvalue_reference(1));
-		return cc ? cc
-			  : error_node("cannot lower defaulted copy/move constructor",
-				       origin);
+		if (node_t cc = try_implicit_copy_construct(
+				id(vname.c_str(), origin), cdd, ctor_args, origin,
+				ctor))
+			return cc;
+		return error_node("cannot lower defaulted copy/move constructor",
+				  origin);
 	}
 
 	// INHERITED constructor ([class.inhctor]): the selected ctor belongs to a

@@ -1998,9 +1998,14 @@ public:
 	// selects the implicitly-declared copy ctor; for a trivially-copyable
 	// class that is a member-wise bit copy — a struct assignment into
 	// `dst_lvalue`. NULL when the fallback does not apply.
+	// `defaulted`: overload resolution selected this explicitly DEFAULTED
+	// copy/move constructor. The argument binds it the same way (one
+	// conversion function, a derived source), and the same-class step
+	// lowers memberwise in the constructor's own direction, whatever other
+	// copy constructors the class provides.
 	node_t try_implicit_copy_construct(node_t dst_lvalue, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
-			       TokenBase *origin);
+			       TokenBase *origin, FuncDef *defaulted = NULL);
 	// The node-level implicit copy: dst_lvalue from the object at
 	// src_addr (`struct cdd *`). ONE owner for try_implicit_copy_construct
 	// and the deferred-construction relower's same-class pack element.

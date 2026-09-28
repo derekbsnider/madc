@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A defaulted copy constructor binds through a conversion again
+
+A `std::string` converts to a `std::string_view` again in a return, in a
+declaration and inside `std::string::compare`, under both libstdc++ and
+libc++. `string_view` defaults its copy constructor, and the defaulted-
+constructor lowering had stopped applying the conversion first, so c2mir
+refused a struct assignment between the two types.
+
 ### A returned `var` literal is copied into the result again
 
 `var obj() { return { "k": 1 }; }` built the literal and then constructed
