@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Short declarations are confined to the madc dialect
+
+`:=` now lexes and parses as a short declaration only under `--std=madc`.
+C and C++ modes reject it as invalid syntax, matching GCC and Clang.
+Before, both modes accepted it and could silently create a variable.
+
 ### A stray closing brace is a syntax error
 
 A top-level `}` now reports an extraneous closing brace at its source

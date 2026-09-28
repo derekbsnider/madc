@@ -1,5 +1,9 @@
 # Test Status
 
+B14 short-declaration standard gate (2026-09-28):
+`testshortdeclstdc` and `testshortdeclstdcpp` require C17 and C++17 to
+reject `:=`, while existing dialect tests such as `testcolon` keep it.
+
 B2 stray closing brace (2026-09-28): `teststrayclosec` requires a source
 diagnostic for a top-level `}`. GCC and Clang reject the reducer; madc had
 accepted it.

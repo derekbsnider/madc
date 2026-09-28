@@ -5733,6 +5733,8 @@ public:
     // strict --std=c*/c++* mode stays byte-identical. Same gating shape as
     // madc_dialect_type_spelling() (parser.cpp), the other STD_MADC feature.
     bool ufcs_enabled() const { return language_std == STD_MADC; }
+    // `:=` is a madc-dialect declaration token, never C or C++ syntax.
+    bool short_declaration_enabled() const { return language_std == STD_MADC; }
     // Cooperative tasks (MT-1): `go <call-expr>;` and `yield;`/`yield();`
     // are madc-DIALECT statement heads, claimed CONTEXTUALLY under the UFCS
     // error-shape rule (they fire only where the statement was otherwise

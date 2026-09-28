@@ -22,27 +22,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Accepts invalid code
 
-### B14. `:=` is accepted under every C and C++ standard
-
-- Found 2026-09-25, while checking which of the statement starters matter to
-  a C session (§41.2a slice 2b).
-
-```c
-int main(void) { x := 3; return x; }
-```
-
-- gcc `-std=c17`: "expected expression before '=' token" and "'x'
-  undeclared". clang: "use of undeclared identifier 'x'" and "expected
-  expression". madc `--std=c17` and `--std=c++17`: compiles, and the program
-  exits 3. madc-dialect syntax is silently accepted (invariant I8).
-- In a `--std=c17` session, `int g = 0;` then `g := 3;` is accepted and
-  leaves `g` at 0. The `:=` declares a global whose initializing statement
-  no one runs, since only madc's statement starter arms `:=`.
-- Where: the lexer makes `tkColEq` under every standard (lexer.cpp, the
-  `':'` arm), and parseStatementBody's `:=` arm has no dialect gate. The gate
-  is the madc dialect (`language_std == STD_MADC`), in one predicate beside
-  `ufcs_enabled()`. Under C and C++, `:` then `=` should lex as two tokens.
-
 ### B15. A `for`-init declaration is accepted under `--std=c89`
 
 - Found 2026-09-25, in a `--std=c89` session probe for §41.2a slice 2b.

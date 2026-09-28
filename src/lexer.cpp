@@ -7493,7 +7493,8 @@ TokenBase *Program::_getToken()
 	case '?': return make_token(TokenID::tkQmark);					// ?
 	case ':':
 	    if (source.peek() == ':') { source.get(); return make_token(TokenID::tkNS); }   // ::
-	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkColEq); } // :=
+	    if (source.peek() == '=' && short_declaration_enabled())
+		{ source.get(); return make_token(TokenID::tkColEq); } // :=
 	    return make_token(TokenID::tkColon);                                               // :
 	case ';': return make_token(TokenID::tkSemi);					// ,
 	case ',': return make_token(TokenID::tkComma);				// .

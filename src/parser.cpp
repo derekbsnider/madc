@@ -76915,7 +76915,8 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    }
 	    // := short declaration: identifier := expression;
 	    // also handles multi-return: a, b := func();
-	    if ( peekToken() && (peekToken()->id() == TokenID::tkColEq
+	    if ( short_declaration_enabled() && peekToken()
+	      && (peekToken()->id() == TokenID::tkColEq
 		|| peekToken()->id() == TokenID::tkComma) )
 	    {
 		std::string first_id = ((TokenIdent *)tb)->spelling();

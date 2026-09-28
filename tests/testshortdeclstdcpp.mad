@@ -1,0 +1,4 @@
+// g++ C++17: expected primary-expression before '=' token.
+// clang++ C++17: expected expression.
+// A prior declaration does not make `:=` an assignment in C++.
+int main() { int x = 0; x := 3; return x; }
