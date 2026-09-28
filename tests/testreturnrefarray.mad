@@ -1,0 +1,27 @@
+/* A function returning a reference to an array: spelled (`int (&f())[3]`),
+   deduced by `auto&` from a one- and a two-dimensional array, and called
+   through a pointer to it. A write through the returned reference reaches
+   the array.
+   madc emitted the function as returning `int *` (the reference's address
+   pointer with the array's extent dropped), so c2mir refused the return
+   ("incompatible return-expr type in function returning a pointer") and
+   `fa()[1][0]` ("subscripted value is neither array nor pointer nor
+   vector"). The array's address is a pointer to the array.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the line below. */
+#include <stdio.h>
+
+int a[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+int one[3] = { 7, 8, 9 };
+
+auto &fa() { return a; }
+auto &fo() { return one; }
+int (&ex())[3] { return one; }
+
+int main()
+{
+	int (&(*fp)())[3] = ex;
+	fa()[1][0] = 40;
+	printf("refret: %zu %d %zu %d %d %zu %d\n", sizeof fa(), a[1][0], sizeof fo(),
+	       fo()[2], ex()[1], sizeof ex(), fp()[0]);
+	return 0;
+}

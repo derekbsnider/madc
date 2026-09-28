@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A function can return a reference to an array
+
+`int (&f())[3]`, and an `auto&` function returning an array, work: the
+reference's `sizeof` is the array's, and a write through it reaches the
+array. A call through a pointer to such a function works too. Before, madc
+emitted the function as returning `int *` and refused the return and every
+subscript of the call.
+
 ### `auto&` bound to an array is a reference to the array
 
 `auto &r = a;` over `int a[2][3]` binds `int (&)[2][3]`, as g++ deduces:

@@ -10626,6 +10626,7 @@ static int peel_pointer_declarator(DataDef *&base_dd,
 // fresh per call: a cir node has one parent.
 //   void, __retbuf ABI     specs `void`, no pieces
 //   T &                    returned by address: POINTER, then T's pieces
+//   T (&)[N]               the array's address: [POINTER, ARR...]
 //   R (*)(A)               fnptr_decl_pieces: specs R, [POINTER, FUNC(A)]
 //   R (**)(A)              pointer_to_fnptr_pieces: [POINTER, POINTER, FUNC(A)]
 //   T (*)[N]               [POINTER..., ARR...] (append_pointer_declarator)
@@ -10665,6 +10666,11 @@ DataDef *CirBuilder::append_return_declarator(FuncDef *fd, DataDef *ret_dd,
 					  std::vector<carray_dim_t>(), &level_cv);
 		return &fd->return_value_type();
 	}
+	// A reference to an ARRAY returns the array's address, a pointer to the
+	// array: `int (&f())[3]` is `int (*f())[3]`, its dims after the address
+	// pointer as a pointer-to-array's follow its levels.
+	if (by_address && levels == 0)
+		base = peel_carray_dims(base, pointee_dims);
 	append_decl_type_specs(specs, base, std::string());
 	append_cv_specs(specs, level_cv.back());	// `volatile int *f(void)`
 	append_pointer_declarator(decl_list, levels, pointee_dims, &level_cv);
