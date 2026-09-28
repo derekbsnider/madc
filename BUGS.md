@@ -22,23 +22,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
-### B1. A C++ anonymous enum's enumerator past `int` is typed `int`
-
-- Found 2026-09-25, while giving C enumerators their enum's type (`ba4b85774`).
-  The gxx lane's `cpp0x/enum17.C` covers it too.
-
-```cpp
-#include <stdio.h>
-enum { BIG = 0x100000000 };
-int main() { printf("%zu %d\n", sizeof(BIG), (int)(BIG >> 32)); return 0; }
-```
-
-- g++, clang++: `8 1`. madc: `4 1`, because the enumerator is typed `int`.
-  The folded value is kept, so only its type is wrong.
-- Where: [dcl.enum]/5 gives an enumerator the enum's type after the closing
-  brace. madc's retype at the `TokenENUM` close runs in C only, and the C++
-  anonymous path keeps `int`.
-
 ### B12. A C file-scope declaration with no type specifier is dropped
 
 - Found 2026-09-25, while measuring C89's implicit-int reading for §41.2a

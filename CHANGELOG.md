@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### An anonymous C++ enum's enumerators have the enum's type
+
+In C++, an enumerator of an anonymous enum whose values need more than `int`,
+or whose base is fixed, now has the enum's type, as in g++ and clang++. For
+`enum { BIG = 0x100000000 };`, `sizeof(BIG)` is 8 (it was 4). For
+`enum : unsigned char { FA = 1 };`, `sizeof(FA)` is 1. The same holds inside
+a class. An anonymous enum whose values fit `int` keeps `int`, as before.
+
 ### A real's text is right everywhere it is read as text
 
 A `var` holding a real used to turn into text with six fixed decimal places

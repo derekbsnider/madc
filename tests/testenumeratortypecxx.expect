@@ -1,0 +1,8 @@
+anon big 8 1
+anon fixed 1
+anon small 4
+named big 8
+class anon big 8
+class anon fixed 2
+trait 4 7
+overloads 2 1

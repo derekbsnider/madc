@@ -55028,7 +55028,13 @@ TokenBase *TokenENUM::parse(Program &pgm)
     }
     int64_t val = 0;
     int64_t enum_min_val = 0, enum_max_val = 0;
-    std::vector<Variable *> c_enumerators;	// C: registered as int, typed at the close
+    // Enumerators registered as int while the list is read, typed at the
+    // close: every C enumerator, and a C++ ANONYMOUS enum's (a tagged C++
+    // enum's are typed with it at registration), at namespace scope as
+    // constants and at class scope by member name.
+    std::vector<Variable *> close_typed_enumerators;
+    std::vector<std::string> close_typed_members;
+    DataDefCLASS *close_typed_owner = NULL;
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	if ( tn->id() == TokenID::tkComma ) { pgm.nextToken(); continue; }
@@ -55067,10 +55073,16 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    // semantic (the bare name does not resolve outside the class).
 	    DataDefCLASS *owner = pgm.class_scope_stack.back();
 	    // A TAGGED enum's enumerator carries the enum type (so it can
-	    // bind an enum-typed parameter); anonymous stays int — the
-	    // libstdc++ `enum { __value = N };` trait idiom depends on it.
+	    // bind an enum-typed parameter); anonymous is int while that is
+	    // its type — the libstdc++ `enum { __value = N };` trait idiom
+	    // depends on it — and the close retypes a wider or fixed-base one.
 	    owner->static_member_types[name] = enum_dd ? enum_dd : &ddINT;
 	    owner->static_member_const_values[name] = val;
+	    if ( !enum_dd )
+	    {
+		close_typed_owner = owner;
+		close_typed_members.push_back(name);
+	    }
 	    if ( scope_ns )
 	    {
 		// [dcl.enum]p11 qualified spelling (`format::auto_format`) —
@@ -55090,19 +55102,20 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	{
 	    // register as a global constant variable. C: an int constant
 	    // while the list is read (C11 6.7.2.2p3; the close may retype it,
-	    // c_enumerators). C++: a TAGGED enum's enumerator has
+	    // close_typed_enumerators). C++: a TAGGED enum's enumerator has
 	    // its enumeration type once the closing brace is seen
 	    // ([dcl.enum]/5) — it binds an enum-typed parameter and picks the
 	    // enum overload (`ui::open(ui::WEB)` against {open(const char*),
-	    // open(level)}); an anonymous enum's enumerator stays int, as in
-	    // the class-scope branch above. Integral promotion still carries
-	    // it into arithmetic and int parameters.
+	    // open(level)}); an anonymous enum's enumerator is int while that is
+	    // its type, as in the class-scope branch above, and the close
+	    // retypes a wider or fixed-base one. Integral promotion still
+	    // carries it into arithmetic and int parameters.
 	    DataDef &enumerator_type = (enum_dd && !pgm.is_c_mode()) ? *enum_dd : ddINT;
 	    Variable *evar = pgm.addVariable(NULL, enumerator_type, name, 1, NULL, true);
 	    evar->set(val);
 	    evar->makeconstant();
-	    if ( pgm.is_c_mode() )
-		c_enumerators.push_back(evar);
+	    if ( pgm.is_c_mode() || !enum_dd )
+		close_typed_enumerators.push_back(evar);
 	    // v26 forest SAVE state: the constant has no TopDecl and no link
 	    // back to the enum tag, so stamp its origin file here — the one
 	    // live registration — for the freeze's serialization + TU-root
@@ -55186,21 +55199,31 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	pgm.last_anon_enum.packed = packed;
     }
 
-    // A C enumerator's type once the list is complete (gcc, C23 6.7.2.2):
+    // An enumerator's type once the list is complete. C (gcc, C23 6.7.2.2):
     // int while every value fits int; otherwise, and whenever the base is
     // fixed, EVERY enumerator has the enumerated type (clang retypes only the
-    // enumerators past int; gcc is canon). An anonymous enum's type is its
+    // enumerators past int; gcc is canon). C++ ([dcl.enum]/5): the type of its
+    // enumeration, which a tagged enum's enumerators already carry; an
+    // ANONYMOUS enum's stay int while that is its type (the libstdc++
+    // `enum { __value = N };` trait idiom), and take the fixed base or the
+    // storage its values need otherwise. An anonymous enum's type is its
     // compatible one. They stayed int, so sizeof(B) read 4 for
-    // `enum { B = 0x100000000 }` (gcc 8), and `MB - 2 > 0` computed signed
-    // for `enum { MA = 0xFFFFFFFFu, MB = 1 }` (gcc: unsigned int).
-    if ( pgm.is_c_mode()
-      && (fixed_base || enum_min_val < INT32_MIN || enum_max_val > INT32_MAX) )
+    // `enum { B = 0x100000000 }` (gcc 8; in C++ too, and inside a class), and
+    // `MB - 2 > 0` computed signed for `enum { MA = 0xFFFFFFFFu, MB = 1 }`
+    // (gcc: unsigned int); `enum : unsigned char { FA = 1 }` read 4 in C++
+    // (g++ 1).
+    if ( fixed_base || enum_min_val < INT32_MIN || enum_max_val > INT32_MAX )
     {
 	DataDef *enumerated = enum_dd ? enum_dd
 			    : fixed_base ? fixed_base : anon_storage;
 	if ( enumerated )
-	    for ( size_t i = 0; i < c_enumerators.size(); ++i )
-		c_enumerators[i]->retype_constant(*enumerated);
+	{
+	    for ( size_t i = 0; i < close_typed_enumerators.size(); ++i )
+		close_typed_enumerators[i]->retype_constant(*enumerated);
+	    for ( size_t i = 0; i < close_typed_members.size(); ++i )
+		close_typed_owner->static_member_types[close_typed_members[i]]
+		    = enumerated;
+	}
     }
 
     // The definition's tail ([dcl.dcl], C11 6.7): its `;`, or a declarator the
