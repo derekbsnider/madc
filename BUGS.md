@@ -22,35 +22,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
-### B12. A C file-scope declaration with no type specifier is dropped
-
-- Found 2026-09-25, while measuring C89's implicit-int reading for §41.2a
-  slice 2b.
-
-```c
-#include <stdio.h>
-int y;
-y = 4;
-int main(void) { printf("%d\n", y); return 0; }
-```
-
-- gcc `-std=c89`: `4`, warning "data definition has no type or storage
-  class". gcc `-std=c17`: `4`, plus "type defaults to 'int'". clang
-  `-std=c89`: `4`. clang `-std=c17`: error, "ISO C99 and later do not support
-  implicit int". madc `--std=c89` and `--std=c17`: `0`, silently.
-- Undeclared, `x = 3;` at file scope is madc's "use of undeclared identifier
-  'x'" where gcc declares `int x = 3`.
-- Where: a file-scope `name = e;` under `knr_supported()` parses as an
-  expression (parseExprStmt), and parse_toplevel sends the result to
-  `tp->statements`, which nothing lowers. The implicit-int reading is a
-  declaration with no declaration-specifiers (C89 6.5; gcc extends it to
-  data definitions). It belongs in parseStatementBody's identifier arm,
-  beside the implicit-int function definition (`name(params) { body }`).
-- Keep the session's reading when fixing it: in an interactive entry, a
-  declared name's `y = 4;` is an assignment statement (D3), never a
-  redeclaration. The implicit-int reading is for file mode, and for an
-  undeclared name.
-
 ### B24. A weak function definition is emitted strong
 
 - Found 2026-09-26, while measuring ld's weak and strong rule for D27. It

@@ -69739,6 +69739,27 @@ bool Program::try_parse_implicit_int_function_definition(TokenBase *tb)
     return true;
 }
 
+// Is the identifier `tb` the head of a file-scope declaration whose type
+// specifier was omitted (C89 6.5.2 — gcc accepts it in every C mode, like the
+// implicit-int function definition above; knr_supported() standards only)?
+// At file scope a C statement can only be a declaration, so a non-type name
+// followed by `=`, `,`, `;` or `[` declares an int. An interactive entry keeps
+// its own reading: a declared name's `y = 4;` there is an assignment (D3).
+bool Program::file_scope_implicit_int_declaration(TokenBase *tb)
+{
+    if ( !is_c_mode() || !knr_supported() || interactive_entry()
+      || !compounds.empty() )
+	return false;
+    if ( !tb || tb->type() != TokenType::ttIdentifier )
+	return false;
+    std::string name = ((TokenIdent *)tb)->spelling();
+    if ( datatype_map.count(name) || struct_map.count(name) )
+	return false;
+    TokenBase *n = peekToken();
+    return n && (n->id() == TokenID::tkAssign || n->id() == TokenID::tkComma
+	      || n->id() == TokenID::tkSemi || n->id() == TokenID::tkOpSqr);
+}
+
 TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
 {
     if ( !open || open->id() != TokenID::tkOpBrk )
@@ -76578,6 +76599,17 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		std::string id = ((TokenIdent *)tb)->spelling();
 		if ( id == "asm" || id == "__asm__" || id == "__asm" )
 		    return skip_gnu_asm_statement(tb);
+	    }
+	    // C89 6.5.2: a file-scope declaration with no type specifier
+	    // declares an int — `y = 4;`, `z = 5, w;` — the data-definition twin
+	    // of the implicit-int function definition. As an expression nothing
+	    // at file scope lowers it, so it vanished (B12).
+	    if ( file_scope_implicit_int_declaration(tb) )
+	    {
+		pushToken(tb);
+		TokenDataType *implied = new TokenDataType("int", ddINT32);
+		copy_token_location(implied, tb);
+		return parseDeclaration(implied);
 	    }
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {

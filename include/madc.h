@@ -7605,6 +7605,8 @@ public:
     bool old_style_parameter_head_has_declaration_suffix();
     bool is_old_style_parameter_head(TokenBase *tb);
     bool try_parse_implicit_int_function_definition(TokenBase *tb);
+    // A file-scope declaration with no type specifier (`y = 4;`): an int.
+    bool file_scope_implicit_int_declaration(TokenBase *tb);
     bool is_old_style_parameter_declaration_start(TokenBase *tb);
     DataDef *parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_cv = NULL);
     void parse_old_style_parameter_declaration(TokenBase *nt,

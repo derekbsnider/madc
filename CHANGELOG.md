@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A C file-scope declaration without a type declares an int
+
+In C, `y = 4;` or `z = 5, w;` at file scope now declares `int` variables, as
+gcc reads it in every C mode (C89 6.5.2). `y = 4;` after `int y;` defines
+the same `y`. Before, madc parsed the line as an expression that nothing at
+file scope runs, so `y` stayed 0 without a word, and an undeclared `z = 5`
+was refused. An interactive entry keeps reading `y = 4;` as an assignment.
+
 ### `int(f(3));` calls f
 
 A statement such as `int(step(3));` or `S(f(x));`, with `x` a variable, is
