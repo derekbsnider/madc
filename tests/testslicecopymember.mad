@@ -1,0 +1,32 @@
+/* Copying a derived object into its base, the SLICING copy
+   ([class.copy.ctor]: the implicit copy constructor's `const B &` binds the
+   derived argument), when the base is not trivially copyable: its
+   std::string member must be copied by string's own copy constructor, and a
+   slicing MOVE moves it.
+   madc handled only a trivially-copyable base. For any other it fell
+   through to the default constructor and dropped the argument, so `B b = d;`
+   produced an empty string and exited 0.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the two lines below. */
+#include <cstdio>
+#include <string>
+
+struct B {
+	std::string s;
+	int n = 1;
+};
+
+struct D : B {
+	int extra = 3;
+};
+
+int main()
+{
+	D d;
+	d.s = "hi";
+	d.n = 7;
+	B b = d;
+	printf("copy: %s %d src=%s\n", b.s.c_str(), b.n, d.s.c_str());
+	B m = static_cast<D &&>(d);
+	printf("move: %s %d\n", m.s.c_str(), m.n);
+	return 0;
+}

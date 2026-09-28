@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Copying a derived object into its base copies non-trivial members
+
+`B b = d;`, where `d` derives from `B` and `B` holds a `std::string`, now
+copies the string and every other member. madc sliced only a trivially
+copyable base. For any other it default-constructed `b`, dropping the
+argument: an empty string and a garbage `int`, exit 0. A slicing move moves
+the members too.
+
 ### A defaulted copy constructor binds through a conversion again
 
 A `std::string` converts to a `std::string_view` again in a return, in a

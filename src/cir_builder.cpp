@@ -16735,6 +16735,20 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 	// resolved callees) — the raw token datadef may be a stale overload-set
 	// binding (move_iterator's `: _M_current(std::move(__i))`).
 	DataDefCLASS *acls = as_class_instance(ctor_arg_datadef(ctor_args[0]));
+	// The copy once the argument's cdd object is addressed, for a same-class
+	// source and a derived one alike. An rvalue source selects the implicit
+	// MOVE constructor: each subobject's move constructor where it declares
+	// one. A selected defaulted constructor moves exactly when it is the
+	// move constructor.
+	auto copy_from_addr = [&](node_t src_addr) -> node_t {
+		if (defaulted)
+			return memberwise_copy_construct_from_addr(dst_lvalue,
+				src_addr, cdd, origin,
+				defaulted->param_spells_rvalue_reference(1));
+		return implicit_copy_construct_from_addr(dst_lvalue, src_addr,
+			cdd, origin,
+			ctor_arg_value_category(ctor_args[0]) == cacRvalue);
+	};
 	if (acls != cdd) {
 		// The target's implicit copy constructor may bind through ONE
 		// conversion function on the source (`View(source)`, libc++
@@ -16780,18 +16794,15 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		// reference ([class.copy.ctor]) — the SLICING copy: copy cdd's
 		// base subobject out of the derived object (libstdc++
 		// basic_string.h:87 constructs input_iterator_tag from a
-		// forward_iterator_tag). Trivially-copyable base only;
-		// object_arg_addr's base walk supplies the adjusted subobject
-		// address.
-		if (!acls || !acls->is_or_derives_from(cdd)
-		    || !class_trivially_copyable(cdd))
+		// forward_iterator_tag). object_arg_addr's base walk supplies the
+		// adjusted subobject address, which is then copied as a same-class
+		// source: a base that is not trivially copyable copies its members
+		// through their own constructors. Refusing it here sent `B b = d;`
+		// to the default constructor with the argument dropped.
+		if (!acls || !acls->is_or_derives_from(cdd))
 			return NULL;
-		node_t src = node1(N_DEREF,
-			node2(N_CAST, class_ptr_type(cdd),
-			      object_arg_addr(ctor_args[0], cdd), origin),
-			origin);
-		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
-		return node2(N_EXPR, list(), asgn, origin);
+		return copy_from_addr(node2(N_CAST, class_ptr_type(cdd),
+			object_arg_addr(ctor_args[0], cdd), origin));
 	}
 	if (class_trivially_copyable(cdd)) {
 		// An empty class has no value-bearing subobject to copy. Its C11
@@ -16803,16 +16814,7 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 		node_t asgn = node2(N_ASSIGN, dst_lvalue, src, origin);
 		return node2(N_EXPR, list(), asgn, origin);
 	}
-	// An rvalue source selects the implicit MOVE constructor: each
-	// subobject's move constructor where it declares one. A selected
-	// defaulted constructor moves exactly when it is the move constructor.
-	if (defaulted)
-		return memberwise_copy_construct_from_addr(dst_lvalue,
-			object_arg_addr(ctor_args[0], cdd), cdd, origin,
-			defaulted->param_spells_rvalue_reference(1));
-	return implicit_copy_construct_from_addr(dst_lvalue,
-		object_arg_addr(ctor_args[0], cdd), cdd, origin,
-		ctor_arg_value_category(ctor_args[0]) == cacRvalue);
+	return copy_from_addr(object_arg_addr(ctor_args[0], cdd));
 }
 
 // The implicit copy constructor at the NODE level — dst_lvalue (an object
