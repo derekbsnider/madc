@@ -1,0 +1,30 @@
+/* A member function whose return type needs a nested declarator: one
+   returning a pointer to an array (`int (*rows())[3]`), one returning a
+   function pointer (`int (*get())(int)`), and a static one, beside data
+   members spelled with the same nesting (`int (*fp)(int)`, `int (*pa)[3]`).
+   madc read a `(` right after a member's type as a data member's nested
+   declarator only, so `int (*rows())[3] { ... }` was refused ("Expecting
+   ';' after function pointer class member"). The member's declarator is
+   read as a declaration, which stops at `rows(` and hands the method path
+   its name and return type.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the line below. */
+#include <cstdio>
+int a[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+static int twice(int x) { return 2 * x; }
+struct C {
+	int k = 1;
+	int (*fp)(int);
+	int (*pa)[3];
+	int (*rows())[3] { return a + k - 1; }
+	int (*get())(int) { return twice; }
+	static int (*srows())[3] { return a; }
+};
+int main()
+{
+	C c;
+	c.fp = twice;
+	c.pa = a + 1;
+	printf("nested: %d %d %zu %d %d %d\n", c.rows()[1][2], c.get()(4), sizeof *c.rows(),
+	       C::srows()[0][1], c.fp(5), c.pa[0][0]);
+	return 0;
+}

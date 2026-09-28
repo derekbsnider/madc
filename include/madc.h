@@ -7516,9 +7516,15 @@ public:
 	TokenBase *count_expr = NULL;
 	bool is_array = false;
 	std::vector<carray_dim_t> dims;
+	bool function_pending = false;	// method_allowed: a member FUNCTION's `name(` (see below)
     };
+    // method_allowed (a class body): the declarator may declare a member
+    // FUNCTION whose return type needs a nested declarator (`int (*rows())[3]`)
+    // — read in Declaration mode, which stops at `name(`, sets function_pending,
+    // and returns the RETURN type with the `(params)` unread for the method path.
     DataDef *member_declarator(DataDef *base, MemberDeclarator &md,
-			       unsigned leading_cv = cvNONE);
+			       unsigned leading_cv = cvNONE,
+			       bool method_allowed = false);
     void push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 				   bool is_thread_local, bool is_volatile);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,

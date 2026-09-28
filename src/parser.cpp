@@ -51538,25 +51538,35 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // A `(` right after the type opens a nested declarator — a data
 	    // member `(*fp)(params)`, `(C::*pm)(params) const`, `(*pa)[N]`,
 	    // `(&r)[N]`, `(*fa[N])(params)` — the ONE reader through the member
-	    // contract. (A method's `(` follows its NAME and is handled below.)
+	    // contract. It may also declare a member FUNCTION whose return type
+	    // needs the nesting (`int (*rows())[3]`, `int (*get())(int)`): the
+	    // reader stops at its `name(` and the method path below reads it, the
+	    // name handed back, over the return type the reader built. (A plain
+	    // method's `(` follows its NAME and is handled below.)
 	    Program::MemberDeclarator gmd;
 	    cmember_dd = pgm.member_declarator(cmember_dd, gmd,
-		member_stars == 0 ? class_member_lead_cv | class_member_east_cv : cvNONE);
-	    if ( gmd.count_expr )
-		pgm.Throw(gmd.name_tok) << "Class member array dimension must be constant" << flush;
-	    ddc->addMember(gmd.name, *cmember_dd, gmd.count, NULL, gmd.is_array,
-			   gmd.is_array ? &gmd.dims : NULL);
-	    if ( access_flags && !ddc->member_access.empty() )
-		ddc->member_access.back() = access_flags;
-	    DBG(cout << "TokenCLASS::parse() added function pointer member " << gmd.name
-		<< " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
-	    tn = pgm.nextToken();
-	    if ( !tn )
-		pgm.Throw(gmd.name_tok) << "Unexpected end of input after function pointer class member" << flush;
-	    if ( tn->id() != TokenID::tkSemi )
-		pgm.Throw(tn) << "Expecting ';' after function pointer class member" << flush;
-	    pgm.note_class_decl(Program::ClassDeclKind::DataMember);
-	    continue;
+		member_stars == 0 ? class_member_lead_cv | class_member_east_cv : cvNONE,
+		true);
+	    if ( gmd.function_pending )
+		pgm.pushToken(gmd.name_tok);	// the method path reads name, `(params)`, body
+	    else
+	    {
+		if ( gmd.count_expr )
+		    pgm.Throw(gmd.name_tok) << "Class member array dimension must be constant" << flush;
+		ddc->addMember(gmd.name, *cmember_dd, gmd.count, NULL, gmd.is_array,
+			       gmd.is_array ? &gmd.dims : NULL);
+		if ( access_flags && !ddc->member_access.empty() )
+		    ddc->member_access.back() = access_flags;
+		DBG(cout << "TokenCLASS::parse() added function pointer member " << gmd.name
+		    << " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
+		tn = pgm.nextToken();
+		if ( !tn )
+		    pgm.Throw(gmd.name_tok) << "Unexpected end of input after function pointer class member" << flush;
+		if ( tn->id() != TokenID::tkSemi )
+		    pgm.Throw(tn) << "Expecting ';' after function pointer class member" << flush;
+		pgm.note_class_decl(Program::ClassDeclKind::DataMember);
+		continue;
+	    }
 	}
 
 	// Expect a member name, an operator-id, or an unnamed bit-field's ':'.
@@ -54299,14 +54309,21 @@ DataDefFPTR *Program::fnptr_twin(DataDefFPTR *fn_type)
 // `[]`), the first runtime dim as count_expr. Six member arms spelled this
 // by hand (stars, two `(` shapes, the `C::*` chain, a dims loop each).
 DataDef *Program::member_declarator(DataDef *base, MemberDeclarator &md,
-				    unsigned leading_cv)
+				    unsigned leading_cv, bool method_allowed)
 {
     DeclaratorResult dr;
-    DataDef *dd = parse_declarator(base, DeclaratorMode::Named, dr, NULL, leading_cv);
+    DataDef *dd = parse_declarator(base, method_allowed ? DeclaratorMode::Declaration
+							: DeclaratorMode::Named,
+				   dr, NULL, leading_cv);
     md.name = dr.name;
     md.name_tok = dr.name_tok;
     md.count_expr = NULL;
     md.dims.clear();
+    md.function_pending = dr.function_pending;
+    if ( dr.function_pending )
+	return dd;			// a member function's return type; no storage
+    if ( method_allowed && dr.name.empty() )
+	Throw(curToken()) << "Expecting identifier in declarator" << flush;
     DataDef *elem = peel_carray_dimensions(dd, md.dims, md.count_expr, base, false);
     // A member has no object flag: its OWN top-level volatile — a leading or
     // after-the-specifier one with no `*` (`volatile int v;`, `int volatile

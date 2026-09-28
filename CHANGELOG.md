@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### A member function can return a pointer to an array or a function
+
+`int (*rows())[3] { ... }` and `int (*get())(int) { ... }` inside a class,
+static or not, are member functions, as in g++. madc read a `(` right after
+a member's type only as a data member's declarator and refused the body.
+
 ### A function can return a reference to an array
 
 `int (&f())[3]`, and an `auto&` function returning an array, work: the
