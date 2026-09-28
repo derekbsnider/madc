@@ -162,7 +162,7 @@ static void load_history(const std::string &path, Program::LanguageStd std,
 
 // An entry the session took: print what it shows (D10). A refused one
 // showed nothing; its diagnostics are already on the error stream.
-static void print_shown(InteractiveSession &session, std::ostream &out)
+static void print_shown(ReplSession &session, std::ostream &out)
 {
     const std::string &shown = session.shown();
     if ( !shown.empty() )
@@ -185,25 +185,25 @@ static std::string history_text(const std::string &entry)
 
 // D22: the language prompt names the standard in force; continuation lines
 // are indented to its width (Julia).
-static std::string entry_prompt(Program &prog)
+static std::string entry_prompt(ReplSession &session)
 {
-    return std::string(Program::standard_canonical_name(prog.language_std))
-	+ "> ";
+    return session.standard_name() + "> ";
 }
 
-int madc_repl_edit(InteractiveSession &session, line_target &term,
+int madc_repl_edit(ReplSession &session, line_target &term,
 		   std::ostream &out, const std::string &history_path)
 {
-    Program &prog = session.program();
-    line_edit ed(entry_prompt(prog));
+    line_edit ed(entry_prompt(session));
     // History (§41.7a slice 2): the file's entries in this language, then
     // each entry the session takes, a refused one included, as Julia keeps
     // an input that failed. A record's mode is the prompt's standard (D22).
     line_history ring;
-    const std::string mode = Program::standard_canonical_name(prog.language_std);
-    if ( !history_path.empty() )
+    const std::string mode = session.standard_name();
+    Program::LanguageStd mode_std = Program::STD_MADC;
+    if ( !history_path.empty()
+	 && Program::standard_of_canonical_name(mode.c_str(), mode_std) )
     {
-	load_history(history_path, prog.language_std, ring);
+	load_history(history_path, mode_std, ring);
 	make_parent_directories(history_path);
     }
     ed.set_history(&ring);
@@ -293,7 +293,7 @@ int madc_repl_edit(InteractiveSession &session, line_target &term,
 			over = true;
 			break;
 		    }
-		    InteractiveSession::TakenHook taken = [&]() { release(""); };
+		    ReplSession::TakenHook taken = [&]() { release(""); };
 		    if ( ed.enter_is_final() )
 		    {
 			session.submit(text, taken);
@@ -303,19 +303,19 @@ int madc_repl_edit(InteractiveSession &session, line_target &term,
 			over = true;
 			break;
 		    }
-		    InteractiveSession::Offered r = session.offer(text, taken);
+		    ReplSession::Offered r = session.offer(text, taken);
 		    switch ( r.state )
 		    {
-			case InteractiveSession::OfferState::taken:
+			case ReplSession::OfferState::taken:
 			    remember(history_text(text));
 			    ed.entered(line_edit::verdict::taken);
 			    print_shown(session, out);
 			    over = true;
 			    break;
-			case InteractiveSession::OfferState::incomplete:
+			case ReplSession::OfferState::incomplete:
 			    ed.entered(line_edit::verdict::incomplete);
 			    break;
-			case InteractiveSession::OfferState::extendable:
+			case ReplSession::OfferState::extendable:
 			    ed.entered(line_edit::verdict::extendable);
 			    break;
 		    }
@@ -342,21 +342,24 @@ int madc_repl_edit(InteractiveSession &session, line_target &term,
 	    }
 	}
 	release("");
+	int status = 0;
+	if ( session.ended(status) )
+	    return status;		// exit(n) in an entry ends the REPL
 	if ( input_ended )
 	    break;
     }
     return 0;
 }
 
-int madc_repl_run(InteractiveSession &session, std::istream &in,
+int madc_repl_run(ReplSession &session, std::istream &in,
 		  std::ostream &out, bool terminal)
 {
-    Program &prog = session.program();
-    const std::string prompt = entry_prompt(prog);
+    const std::string prompt = entry_prompt(session);
     const std::string continuation(prompt.size(), ' ');
     std::string pending;		// the entry typed so far
     bool extendable = false;		// pending is an if waiting for else
     std::string line;
+    int status = 0;			// a backend's exit(n)
     for (;;)
     {
 	if ( terminal )
@@ -368,28 +371,32 @@ int madc_repl_run(InteractiveSession &session, std::istream &in,
 	    // D11: an else continues the if; an empty line runs it; any other
 	    // line runs it and starts the next entry.
 	    extendable = false;
-	    if ( !prog.entry_line_continues_if(line) )
+	    if ( !session.continues_if(line) )
 	    {
 		session.submit(pending);
 		print_shown(session, out);
 		pending.clear();
+		if ( session.ended(status) )
+		    return status;
 	    }
 	}
 	if ( pending.empty() && blank_line(line) )
 	    continue;
 	pending += line;
 	pending += '\n';
-	InteractiveSession::Offered r = session.offer(pending);
+	ReplSession::Offered r = session.offer(pending);
 	switch ( r.state )
 	{
-	    case InteractiveSession::OfferState::incomplete:
+	    case ReplSession::OfferState::incomplete:
 		break;
-	    case InteractiveSession::OfferState::extendable:
+	    case ReplSession::OfferState::extendable:
 		extendable = true;
 		break;
-	    case InteractiveSession::OfferState::taken:
+	    case ReplSession::OfferState::taken:
 		print_shown(session, out);
 		pending.clear();
+		if ( session.ended(status) )
+		    return status;	// exit(n) in an entry ends the REPL
 		break;
 	}
     }
@@ -399,6 +406,8 @@ int madc_repl_run(InteractiveSession &session, std::istream &in,
     {
 	session.submit(pending);
 	print_shown(session, out);
+	if ( session.ended(status) )
+	    return status;
     }
     if ( terminal )
 	out << std::endl;

@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### A crash in a REPL entry no longer ends madc (§37 item 9, slice 4)
+
+`madc` and `madc -i` now run the session in a backend process on your
+terminal, the same backend madcide's REPL tab uses. If an entry crashes, madc
+prints `madc: the session stopped (signal 11, segmentation fault); a new one
+started` and carries on with a fresh session (its state starts empty). Ctrl-C
+while an entry runs stops that entry's session the same way, and the REPL
+stays. `exit(n)` in an entry still exits madc with `n`. An entry that reads
+stdin still reads the next line of a piped transcript. Windows keeps the
+in-process session until it has a backend.
+
+Diagnostics rendered to a stream other than stderr (a session's reply, an
+embedding host) now include the offending line and its caret. Before, those
+two lines always went to stderr, so madcide's REPL tab showed the caret line
+above the error it belongs to.
+
 ### madcide's REPL tab (§37 item 9, slice 3)
 
 madcide's bottom panel has a REPL tab (View > REPL, or the `repl` command).

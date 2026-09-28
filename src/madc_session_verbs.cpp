@@ -90,6 +90,17 @@ madc::value reply_row(const SessionClient::Reply &r)
 	}
 	case madc::session_reply::stopped:
 	    f["exit_status"] = madc::value((int64_t)r.exit_status);
+	    f["signal"] = madc::value((int64_t)r.signal);
+	    break;
+	case madc::session_reply::load:
+	case madc::session_reply::run:
+	    f["ok"] = madc::value(r.ok);
+	    f["rendered"] = madc::value(r.rendered);
+	    if ( r.kind == madc::session_reply::run )
+		f["status"] = madc::value((int64_t)r.status);
+	    break;
+	case madc::session_reply::continues:
+	    f["continues"] = madc::value(r.continues);
 	    break;
     }
     return madc::value::make_object(f);

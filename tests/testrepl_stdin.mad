@@ -1,0 +1,7 @@
+// madc -i, an entry reading stdin (plan §41.5a slice 1, §41.9a slice 4): the
+// transcript's next line is the entry's input, as python -i gives input() the
+// next line of a piped script. The session runs in a backend process that
+// shares madc's stdin; both read it unbuffered, so the entry takes what it
+// parses and the next entry follows.
+#include <stdio.h>
+int main(void) { printf("loaded\n"); return 0; }

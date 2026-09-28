@@ -40,6 +40,7 @@
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
 #include "madc_session.h" // InteractiveSession: the REPL's session (D20)
+#include "madc_session_client.h" // BackendSession: the session in a backend (D2)
 #include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
 #include "madcdis/tui_provider.h"	// create_line_target: the editor's terminal (D23)
 
@@ -483,24 +484,15 @@ static TokenProgram *tokenize_input(Program &prog, const char *path)
 // arguments). The prompt follows whatever they did, as python's does: a
 // refused file leaves nothing, a stopped main leaves the file's names.
 // `history` is the line editor's history file (D23; empty: none).
-static int run_repl(std::unique_ptr<Program> prog, bool terminal,
-		    const std::string &history,
-		    int file_argc = 0, char **file_argv = NULL)
+static int repl_loops(ReplSession &session, bool terminal,
+		      const std::string &history, int file_argc, char **file_argv)
 {
-#ifdef MADC_CROSS_TARGET
-    return cross_refuse_run("run the REPL");
-#endif
-    InteractiveSession session(std::move(prog));
-    if ( !session.begin() )
-    {
-	session.program().print_last_diagnostic(std::cerr);
-	return 1;
-    }
+    int status = 0;
     if ( file_argc > 0 )
     {
-	int status = 0;
-	if ( session.load(file_argv[0]) && session.function("main") )
-	    session.run_main(file_argc, file_argv, &status);
+	session.run_file(file_argc, file_argv);
+	if ( session.ended(status) )
+	    return status;		// the file's exit(n) ends madc
     }
     else if ( terminal )
 	std::cout << "madc " << MADC_VERSION_STR << ". Ctrl-D exits."
@@ -519,6 +511,46 @@ static int run_repl(std::unique_ptr<Program> prog, bool terminal,
 	}
     }
     return madc_repl_run(session, std::cin, std::cout, terminal);
+}
+
+static int run_repl(std::unique_ptr<Program> prog, bool terminal,
+		    const std::string &history,
+		    int file_argc = 0, char **file_argv = NULL)
+{
+#ifdef MADC_CROSS_TARGET
+    return cross_refuse_run("run the REPL");
+#endif
+#ifndef _WIN32
+    // The session runs in a backend process on this terminal (D2, plan
+    // §41.9a slice 4), so a crash in an entry starts a fresh session instead
+    // of ending madc. The backend's Program is the fork's copy of this
+    // configured one (the command line and madc.ini hold there, and each
+    // restart copies it again); this one never begins. One stdin for both:
+    // read unbuffered here, as the backend reads it.
+    Program *configured = prog.get();
+    SessionClient client;
+    client.set_inherit_stdio(true);
+    setvbuf(stdin, NULL, _IONBF, 0);
+    if ( !client.start(std::string(), [configured]() {
+	     return std::unique_ptr<Program>(configured);	// the child's copy
+	 }) )
+    {
+	std::cerr << client.last_error() << std::endl;
+	return 1;
+    }
+    BackendSession session(client, std::cerr, NULL);
+    return repl_loops(session, terminal, history, file_argc, file_argv);
+#else
+    // No fork on Windows: the session runs in this process until the
+    // backend there is a child of self (plan §41.9a, named).
+    InteractiveSession session(std::move(prog));
+    if ( !session.begin() )
+    {
+	session.program().print_last_diagnostic(std::cerr);
+	return 1;
+    }
+    return repl_loops(session, terminal, history, file_argc, file_argv);
+#endif
 }
 
 int main(int argc, char **argv)

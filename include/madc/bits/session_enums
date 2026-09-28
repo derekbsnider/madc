@@ -18,9 +18,10 @@ namespace madc {
     enum class offer_state : unsigned char { taken, incomplete, extendable };
     // What a session reply answers (plan §41.9a): running (an offered entry
     // was taken and runs now — Jupyter's execute_input; its output follows,
-    // then its offer reply), an offer, a completion, or the backend's end (a
-    // crash; the session's state went with it).
-    enum class session_reply : unsigned char { running, offer, complete, stopped };
+    // then its offer reply), an offer, a completion, the backend's end (a
+    // crash; the session's state went with it), a program file loaded, its
+    // main run (the cores of %load and %run), or D11's question answered.
+    enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues };
 }
 
 #endif // __MADC_BITS_SESSION_ENUMS

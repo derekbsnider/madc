@@ -10,6 +10,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -50,7 +51,7 @@ namespace madc {
 // first steps (CLI signal dispositions, stderr onto the output stream).
 void diagnostic_rows_from_child(::Program &child, madc::value &out);
 #ifndef _WIN32
-void run_child_prologue();
+void run_child_prologue(bool merge_stderr);
 #endif
 }
 
@@ -60,13 +61,17 @@ void run_child_prologue();
 namespace {
 
 // `running` is a reply's only: the backend's notice that an offered entry
-// was taken and runs now.
-enum class Op : unsigned char { begin, offer, complete, running, unknown };
+// was taken and runs now. `load` / `run` are the cores of %load / %run (D25):
+// a program file into the session, then its main (`madc -i file`).
+// `continues` is D11's question: does a line continue an if that ended an
+// entry (its first word is the session's `else`).
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
     { "begin", Op::begin }, { "offer", Op::offer }, { "complete", Op::complete },
-    { "running", Op::running },
+    { "running", Op::running }, { "load", Op::load }, { "run", Op::run },
+    { "continues", Op::continues },
 };
 
 const char *op_name(Op op)
@@ -223,6 +228,27 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 		rep["names"] = names;
 		break;
 	    }
+	    case Op::load:
+		rep["ok"] = session.load(req.value("path", std::string()));
+		break;
+	    case Op::continues:
+		rep["continues"] = session.continues_if(req.value("text", std::string()));
+		break;
+	    case Op::run:
+	    {
+		// main(argc, argv) at the entry boundary: the path, then the
+		// program's arguments. Its status is not the backend's.
+		std::vector<std::string> args =
+		    req.value("argv", std::vector<std::string>());
+		std::vector<char *> argv;
+		for ( std::string &a : args )
+		    argv.push_back(&a[0]);
+		argv.push_back(NULL);
+		int status = 0;
+		rep["ok"] = session.run_main((int)args.size(), argv.data(), &status);
+		rep["status"] = status;
+		break;
+	    }
 	    case Op::begin:
 	    case Op::running:
 	    case Op::unknown:
@@ -241,12 +267,19 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 
 SessionClient::Reply::Reply()
     : kind(Kind::offer), seq(0), state(InteractiveSession::OfferState::taken),
-      ok(false), submitted(0), start(0), exit_status(-1)
+      ok(false), submitted(0), start(0), status(0), continues(false),
+      exit_status(-1), signal(0)
 {
 }
 
-SessionClient::SessionClient() : fd(-1), output_done(false), next_seq(1)
+SessionClient::SessionClient()
+    : fd(-1), output_done(false), next_seq(1), inherit_stdio(false)
 {
+}
+
+void SessionClient::set_inherit_stdio(bool on)
+{
+    inherit_stdio = on;
 }
 
 SessionClient::~SessionClient()
@@ -276,12 +309,21 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
     }
     const int parent_end = sv[0], child_end = sv[1];
     madc::ProcessOptions options;
-    options.inherit_stderr = true;	// the prologue moves it onto the output pipe
+    // Piped: stderr joins the output pipe (the prologue moves it). On the
+    // host's terminal: all three are the host's, and stderr stays stderr.
+    options.inherit_stderr = true;
+    options.inherit_stdin = inherit_stdio;
+    options.inherit_stdout = inherit_stdio;
     const std::string opt = std_option;
     const ProgramFactory factory = make_program;
-    options.child_body = [parent_end, child_end, opt, factory]() -> int {
+    const bool on_terminal = inherit_stdio;
+    options.child_body = [parent_end, child_end, opt, factory, on_terminal]() -> int {
 	__madc_task_atfork_child();	// a fork child running madc code
-	madc::run_child_prologue();
+	madc::run_child_prologue(!on_terminal);
+	// The host reads the same stdin unbuffered, so an entry's scanf and
+	// the host's next line split it as one FILE would (41.9a slice 4).
+	if ( on_terminal )
+	    setvbuf(stdin, NULL, _IONBF, 0);
 	::close(parent_end);
 	std::unique_ptr<Program> prog(factory ? factory() : std::unique_ptr<Program>(new Program()));
 	return serve_session(child_end, std::move(prog), opt);
@@ -426,6 +468,7 @@ int SessionClient::stopped(Reply &reply, std::string &output)
     {
 	process->wait();
 	reply.exit_status = process->exit_status();
+	reply.signal = process->term_signal();
 	process.reset();
     }
     inbuf.clear();
@@ -451,6 +494,36 @@ unsigned SessionClient::complete(const std::string &text, size_t caret)
     req["op"] = op_name(Op::complete);
     req["text"] = text;
     req["caret"] = caret;
+    return send(req.dump()) ? seq : 0;
+}
+
+unsigned SessionClient::load(const std::string &path)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::load);
+    req["path"] = path;
+    return send(req.dump()) ? seq : 0;
+}
+
+unsigned SessionClient::continues(const std::string &line)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::continues);
+    req["text"] = line;
+    return send(req.dump()) ? seq : 0;
+}
+
+unsigned SessionClient::run(const std::vector<std::string> &argv)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::run);
+    req["argv"] = argv;
     return send(req.dump()) ? seq : 0;
 }
 
@@ -578,6 +651,17 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    reply.start = j.value("start", (size_t)0);
 	    reply.names = j.value("names", std::vector<std::string>());
 	    break;
+	case Op::load:
+	    reply.kind = Reply::Kind::load;
+	    break;
+	case Op::run:
+	    reply.kind = Reply::Kind::run;
+	    reply.status = j.value("status", 0);
+	    break;
+	case Op::continues:
+	    reply.kind = Reply::Kind::continues;
+	    reply.continues = j.value("continues", false);
+	    break;
 	case Op::begin:
 	case Op::unknown:
 	    break;
@@ -653,6 +737,21 @@ unsigned SessionClient::complete(const std::string &, size_t)
     return 0;
 }
 
+unsigned SessionClient::load(const std::string &)
+{
+    return 0;
+}
+
+unsigned SessionClient::run(const std::vector<std::string> &)
+{
+    return 0;
+}
+
+unsigned SessionClient::continues(const std::string &)
+{
+    return 0;
+}
+
 int SessionClient::poll(Reply &reply, std::string &output, int)
 {
     return stopped(reply, output);
@@ -665,31 +764,205 @@ bool SessionClient::restart()
     return start(std_option, make_program);
 }
 
-int SessionClient::offer_wait(const std::string &text, bool final, Reply &reply,
-			      std::string &output, int timeout_ms)
+BackendSession::BackendSession(SessionClient &c, std::ostream &e, std::ostream *o)
+    : client(c), err(e), out(o), has_ended(false), end_status(0)
 {
-    const unsigned seq = offer(text, final);
+}
+
+std::string BackendSession::standard_name()
+{
+    return client.standard();
+}
+
+// What the signal that ended a backend is called ("segmentation fault").
+static std::string signal_words(int sig)
+{
+#ifndef _WIN32
+    const char *d = strsignal(sig);
+    std::string w = d ? d : "";
+    if ( !w.empty() )
+	w[0] = (char)tolower((unsigned char)w[0]);
+    return w;
+#else
+    (void)sig;
+    return std::string();
+#endif
+}
+
+bool BackendSession::settle(int rc, const SessionClient::Reply &reply,
+			    const std::string &output)
+{
+    if ( out && !output.empty() )
+	*out << output << std::flush;
+    if ( rc >= 0 )
+    {
+	if ( !reply.rendered.empty() )
+	    err << reply.rendered << std::flush;
+	return true;
+    }
+    if ( reply.signal == 0 && reply.exit_status >= 0 )
+    {
+	// exit(n) in an entry ends the process, as in this process (§41.5a).
+	has_ended = true;
+	end_status = reply.exit_status;
+	return false;
+    }
+    err << "madc: the session stopped (signal " << reply.signal;
+    const std::string words = signal_words(reply.signal);
+    if ( !words.empty() )
+	err << ", " << words;
+    err << "); a new one started" << std::endl;
+    if ( !client.restart() )
+    {
+	err << "madc: " << client.last_error() << std::endl;
+	has_ended = true;
+	end_status = 1;
+    }
+    return false;
+}
+
+namespace {
+// While the backend runs an entry, an interrupt is the backend's (D8's
+// interim: it stops, and a fresh one starts); the host ignores it, as a
+// shell leaves the interrupt to its foreground job.
+struct HostIgnoresInterrupt
+{
+#ifndef _WIN32
+    struct sigaction saved;
+    HostIgnoresInterrupt()
+    {
+	struct sigaction ign;
+	memset(&ign, 0, sizeof(ign));
+	ign.sa_handler = SIG_IGN;
+	sigemptyset(&ign.sa_mask);
+	sigaction(SIGINT, &ign, &saved);
+    }
+    ~HostIgnoresInterrupt() { sigaction(SIGINT, &saved, NULL); }
+#endif
+};
+}
+
+bool BackendSession::submit(const std::string &text, const TakenHook &taken)
+{
+    HostIgnoresInterrupt quiet;
+    SessionClient::Reply r;
+    std::string output;
+    int rc = client.offer_wait(text, true, r, output, -1, taken);
+    shown_text = rc > 0 ? r.shown : std::string();
+    return settle(rc, r, output) && r.ok;
+}
+
+ReplSession::Offered BackendSession::offer(const std::string &text,
+					   const TakenHook &taken)
+{
+    HostIgnoresInterrupt quiet;
+    SessionClient::Reply r;
+    std::string output;
+    int rc = client.offer_wait(text, false, r, output, -1, taken);
+    shown_text = rc > 0 ? r.shown : std::string();
+    if ( !settle(rc, r, output) )
+	return Offered{ OfferState::taken, false };	// it ran, and stopped
+    return Offered{ r.state, r.ok };
+}
+
+std::vector<std::string> BackendSession::complete(const std::string &text,
+						  size_t caret, size_t &start)
+{
+    SessionClient::Reply r;
+    int rc = client.complete_wait(text, caret, r);
+    if ( !settle(rc, r, std::string()) )
+    {
+	start = caret;
+	return std::vector<std::string>();
+    }
+    start = r.start;
+    return r.names;
+}
+
+bool BackendSession::continues_if(const std::string &line)
+{
+    SessionClient::Reply r;
+    int rc = client.continues_wait(line, r);
+    return settle(rc, r, std::string()) && r.continues;
+}
+
+bool BackendSession::run_file(int argc, char **argv)
+{
+    if ( argc < 1 )
+	return false;
+    SessionClient::Reply r;
+    std::string output;
+    int rc = client.load_wait(argv[0], r, output);
+    if ( !settle(rc, r, output) || !r.ok )
+	return false;
+    std::vector<std::string> args(argv, argv + argc);
+    output.clear();
+    HostIgnoresInterrupt quiet;
+    rc = client.run_wait(args, r, output);	// no main: ok false, nothing ran
+    settle(rc, r, output);
+    return true;
+}
+
+bool BackendSession::ended(int &status) const
+{
+    if ( has_ended )
+	status = end_status;
+    return has_ended;
+}
+
+// A synchronous caller's wait for request `seq`'s reply: its running notice
+// calls `taken`; replies to earlier requests are dropped, their output kept.
+int SessionClient::wait_reply(unsigned seq, Reply &reply, std::string &output,
+			      int timeout_ms, const InteractiveSession::TakenHook &taken)
+{
     if ( !seq )
 	return stopped(reply, output);
     for (;;)
     {
 	int r = poll(reply, output, timeout_ms);
-	if ( r <= 0 || (reply.seq == seq && reply.kind != Reply::Kind::running) )
+	if ( r <= 0 || reply.seq != seq )
+	{
+	    if ( r <= 0 )
+		return r;
+	    continue;
+	}
+	if ( reply.kind != Reply::Kind::running )
 	    return r;
+	if ( taken )
+	    taken();
     }
+}
+
+int SessionClient::offer_wait(const std::string &text, bool final, Reply &reply,
+			      std::string &output, int timeout_ms,
+			      const InteractiveSession::TakenHook &taken)
+{
+    return wait_reply(offer(text, final), reply, output, timeout_ms, taken);
 }
 
 int SessionClient::complete_wait(const std::string &text, size_t caret,
 				 Reply &reply, int timeout_ms)
 {
     std::string output;
-    const unsigned seq = complete(text, caret);
-    if ( !seq )
-	return stopped(reply, output);
-    for (;;)
-    {
-	int r = poll(reply, output, timeout_ms);
-	if ( r <= 0 || (reply.seq == seq && reply.kind != Reply::Kind::running) )
-	    return r;
-    }
+    return wait_reply(complete(text, caret), reply, output, timeout_ms,
+		      InteractiveSession::TakenHook());
+}
+
+int SessionClient::load_wait(const std::string &path, Reply &reply,
+			     std::string &output)
+{
+    return wait_reply(load(path), reply, output, -1, InteractiveSession::TakenHook());
+}
+
+int SessionClient::run_wait(const std::vector<std::string> &argv, Reply &reply,
+			    std::string &output)
+{
+    return wait_reply(run(argv), reply, output, -1, InteractiveSession::TakenHook());
+}
+
+int SessionClient::continues_wait(const std::string &line, Reply &reply)
+{
+    std::string output;
+    return wait_reply(continues(line), reply, output, -1,
+		      InteractiveSession::TakenHook());
 }

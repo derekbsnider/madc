@@ -350,9 +350,29 @@ bool InteractiveSession::run_main(int argc, char **argv, int *status)
     return ok;
 }
 
+bool InteractiveSession::run_file(int argc, char **argv)
+{
+    if ( argc < 1 || !load(argv[0]) )
+	return false;
+    int status = 0;
+    if ( function("main") )
+	run_main(argc, argv, &status);	// its status is not the session's
+    return true;
+}
+
 const std::string &InteractiveSession::shown() const
 {
     return showed_command ? command_output : prog->entry_shown;
+}
+
+std::string InteractiveSession::standard_name()
+{
+    return Program::standard_canonical_name(prog->language_std);
+}
+
+bool InteractiveSession::continues_if(const std::string &line)
+{
+    return prog->entry_line_continues_if(line);
 }
 
 bool InteractiveSession::run_command(const std::string &text,

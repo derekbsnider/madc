@@ -16,7 +16,7 @@
 #include <iosfwd>
 #include <string>
 
-class InteractiveSession;
+class ReplSession;		// madc_session.h: in this process or a backend
 
 // Read entries from `in` to its end and run each in `session`, a session
 // that has begun. Shown values (D10) go to `out`; diagnostics go to the
@@ -26,7 +26,7 @@ class InteractiveSession;
 // prints one when it starts a session with no file). A pending entry
 // is submitted at the end of input. Returns the exit status: 0, as
 // python -i exits at the end of its input.
-int madc_repl_run(InteractiveSession &session, std::istream &in,
+int madc_repl_run(ReplSession &session, std::istream &in,
 		  std::ostream &out, bool terminal);
 
 namespace madc { namespace hub { class line_target; } }
@@ -41,7 +41,7 @@ namespace madc { namespace hub { class line_target; } }
 // of input (Ctrl-D on an empty entry), or -1 when `term` cannot begin the
 // first entry, which is the host's cue for cooked lines. The unit tests
 // give it a scripted target.
-int madc_repl_edit(InteractiveSession &session, madc::hub::line_target &term,
+int madc_repl_edit(ReplSession &session, madc::hub::line_target &term,
 		   std::ostream &out, const std::string &history_path);
 
 // The history file's default place: $XDG_STATE_HOME/madc/history

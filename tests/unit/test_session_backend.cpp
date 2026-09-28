@@ -25,9 +25,15 @@ thread_local bool madc_verbose = false;
 #include "madc.h"
 #include "madc_session.h"
 #include "madc_session_client.h"
+#include "madc_repl.h"
 
 #ifndef _WIN32
 #include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <cstdio>
+#include <fstream>
+#include <sstream>
 
 namespace {
 
@@ -186,6 +192,7 @@ TEST_CASE("session backend: a crash ends the backend, restart begins afresh")
     CHECK(c.offer_wait("int *p = 0; *p = 1;", true, r, out, kWait) == -1);
     CHECK(r.kind == SessionClient::Reply::Kind::stopped);
     CHECK(r.exit_status == 128 + SIGSEGV);
+    CHECK(r.signal == SIGSEGV);
     CHECK_FALSE(c.running());
     // The client outlived its backend; the new session has no `kept`.
     REQUIRE(c.restart());
@@ -195,6 +202,99 @@ TEST_CASE("session backend: a crash ends the backend, restart begins afresh")
     REQUIRE(c.offer_wait("int again = 6;", true, r, out, kWait) == 1);
     CHECK(r.ok);
     CHECK(r.submitted == 2);
+}
+
+TEST_CASE("session backend: an exit is not a signal")
+{
+    // exit(139) and SIGSEGV share the 128+signal shape; the signal tells
+    // them apart, so a CLI ends on exit(n) and restarts on a crash.
+    SessionClient c;
+    REQUIRE(c.start("--std=c11"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.offer_wait("#include <stdlib.h>", true, r, out, kWait) == 1);
+    CHECK(c.offer_wait("exit(139);", true, r, out, kWait) == -1);
+    CHECK(r.kind == SessionClient::Reply::Kind::stopped);
+    CHECK(r.exit_status == 139);
+    CHECK(r.signal == 0);
+}
+
+TEST_CASE("session backend: load a program file, then run its main")
+{
+    char path[] = "/tmp/madc_session_load_XXXXXX.c";
+    int tfd = mkstemps(path, 2);
+    REQUIRE(tfd >= 0);
+    close(tfd);
+    {
+	std::ofstream f(path);
+	f << "#include <stdio.h>\n"
+	     "static int base = 40;\n"
+	     "int main(int argc, char **argv) {\n"
+	     "    printf(\"main argc=%d last=%s\\n\", argc, argv[argc - 1]);\n"
+	     "    return 7;\n"
+	     "}\n";
+    }
+    SessionClient c;
+    REQUIRE(c.start("--std=c17"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.load_wait(path, r, out) == 1);
+    CHECK(r.kind == SessionClient::Reply::Kind::load);
+    CHECK(r.ok);
+    std::vector<std::string> argv;
+    argv.push_back(path);
+    argv.push_back("extra");
+    REQUIRE(c.run_wait(argv, r, out) == 1);
+    CHECK(r.kind == SessionClient::Reply::Kind::run);
+    CHECK(r.ok);
+    CHECK(r.status == 7);
+    CHECK(out == "main argc=2 last=extra\n");
+    // The file and the session are one unit: its static is a session name.
+    REQUIRE(c.offer_wait("base + 2", true, r, out, kWait) == 1);
+    CHECK(r.shown == "42");
+    // A file that does not open is refused, and nothing is kept.
+    REQUIRE(c.load_wait("/nonexistent/madc_session_missing.c", r, out) == 1);
+    CHECK_FALSE(r.ok);
+    std::remove(path);
+}
+
+TEST_CASE("session backend: the CLI loop drives a BackendSession")
+{
+    // madc_repl_run over string streams, the backend piped: its output goes
+    // to the loop's out between the shown values, a crash says so and a
+    // fresh session follows, and exit(4) ends the loop with status 4 before
+    // the next line is read. The factory runs in the backend: there a crash
+    // is the backend's, not this test's, so doctest's handler (inherited
+    // through the fork) gives way to the default.
+    SessionClient c;
+    REQUIRE(c.start("--std=c17", []() {
+	signal(SIGSEGV, SIG_DFL);
+	return std::unique_ptr<Program>(new Program());
+    }));
+    std::ostringstream err, out;
+    BackendSession session(c, err, &out);
+    CHECK(session.standard_name() == "c17");
+    std::istringstream in(
+	"#include <stdio.h>\n"
+	"#include <stdlib.h>\n"
+	"int x = 5;\n"
+	"printf(\"hi\\n\");\n"
+	"x\n"
+	"if (x) printf(\"then\\n\");\n"
+	"else printf(\"else\\n\");\n"
+	"int *p = 0; *p = 1;\n"
+	"x\n"
+	"exit(4);\n"
+	"99\n");
+    CHECK(madc_repl_run(session, in, out, false) == 4);
+    CAPTURE(err.str());
+    CHECK(out.str() == "hi\n5\nthen\n");
+    CHECK(err.str().find("madc: the session stopped (signal 11") != std::string::npos);
+    CHECK(err.str().find("a new one started") != std::string::npos);
+    CHECK(err.str().find("use of undeclared identifier 'x'") != std::string::npos);
+    int status = 0;
+    CHECK(session.ended(status));
+    CHECK(status == 4);
 }
 
 TEST_CASE("session backend: a standard begin refuses does not start")

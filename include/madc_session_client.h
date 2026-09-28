@@ -11,7 +11,9 @@
  * Two channels: the requests and replies are one JSON object per line on a
  * socketpair (Jupyter's message shape: an offer's reply follows the output
  * the entry printed), and the program's own stdout and stderr, merged, are
- * the backend's output pipe, read with the replies.
+ * the backend's output pipe, read with the replies. A host on a terminal
+ * (the CLI) gives the backend its own stdin, stdout and stderr instead
+ * (set_inherit_stdio): the program writes to the terminal itself.
  *
  * Thread contract: one client is driven by one thread (or one cooperative
  * task). The backend is single-threaded, so its requests are serialized
@@ -23,6 +25,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <iosfwd>
 #include <memory>
 #include <string>
 #include <vector>
@@ -43,6 +46,14 @@ public:
 
     SessionClient();
     ~SessionClient();			// stops the backend
+
+    // Before start(): the backend's stdin, stdout and stderr are the host's
+    // (a CLI on its terminal: isatty holds, the program prints itself)
+    // instead of pipes, so there is no output to take and no input() to
+    // write. Both ends then read stdin unbuffered: an entry's scanf takes
+    // what it parses and the host's next line follows, as one FILE would
+    // split them (plan §41.9a slice 4).
+    void set_inherit_stdio(bool on);
 
     // Start the backend: fork, build the session, begin(std_option) there.
     // False when it cannot start (or begin refuses the standard; the
@@ -76,8 +87,14 @@ public:
 	// A completion's: the word's start and the names.
 	size_t start;
 	std::vector<std::string> names;
-	// stopped: the backend's exit status (128 + signal for a signal).
+	// load: ok. run: ok, and main's return value.
+	int status;
+	// continues: the line continues an if that ended an entry (D11).
+	bool continues;
+	// stopped: the backend's exit status (128 + signal for a signal), and
+	// the signal that ended it, 0 when it exited (exit(n) in an entry).
 	int exit_status;
+	int signal;
 	Reply();
     };
 
@@ -86,6 +103,14 @@ public:
     // running. Neither waits.
     unsigned offer(const std::string &text, bool final);
     unsigned complete(const std::string &text, size_t caret);
+    // Load a program file into the session, and call its main with `argv`
+    // (the path, then the program's arguments): the cores of %load and
+    // %run (D25), and `madc -i file`. Neither waits.
+    unsigned load(const std::string &path);
+    unsigned run(const std::vector<std::string> &argv);
+    // D11's question, asked of the session's standard: does `line` continue
+    // an if that ended an entry (its first word is `else`)?
+    unsigned continues(const std::string &line);
     // Text for the program's stdin: a scanf in an entry reads it. False when
     // the backend is not running. It waits while the pipe is full.
     bool input(const std::string &text);
@@ -95,14 +120,21 @@ public:
     // 0: the time ran out (output may still have grown); -1: the backend
     // stopped (reply.kind is stopped, with its exit status).
     int poll(Reply &reply, std::string &output, int timeout_ms);
-    // Offer or complete and wait for its reply: poll() until the reply with
+    // Send a request and wait for its reply: poll() until the reply with
     // that seq, or the backend stopped (-1). A synchronous caller's (the
     // CLI's): replies to earlier requests that arrive meanwhile are dropped,
-    // their output kept.
+    // their output kept. An offer's running notice calls `taken` (the line
+    // editor hands the terminal back there, as InteractiveSession's hook).
     int offer_wait(const std::string &text, bool final, Reply &reply,
-		   std::string &output, int timeout_ms = -1);
+		   std::string &output, int timeout_ms = -1,
+		   const InteractiveSession::TakenHook &taken =
+		       InteractiveSession::TakenHook());
     int complete_wait(const std::string &text, size_t caret, Reply &reply,
 		      int timeout_ms = -1);
+    int load_wait(const std::string &path, Reply &reply, std::string &output);
+    int run_wait(const std::vector<std::string> &argv, Reply &reply,
+		 std::string &output);
+    int continues_wait(const std::string &line, Reply &reply);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
@@ -124,6 +156,8 @@ private:
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
     int stopped(Reply &reply, std::string &output);
+    int wait_reply(unsigned seq, Reply &reply, std::string &output,
+		   int timeout_ms, const InteractiveSession::TakenHook &taken);
     void release_waiters() const;	// before the streams close
 
     std::unique_ptr<madc::Process> process;
@@ -135,8 +169,43 @@ private:
     ProgramFactory make_program;
     std::string error_text;
     std::string standard_name;
+    bool inherit_stdio;			// the backend's stdio is the host's
     SessionClient(const SessionClient &);
     SessionClient &operator=(const SessionClient &);
+};
+
+// A REPL loop's session in a backend (plan §41.9a slice 4): the CLI drives
+// its loops through this, synchronously. An offer waits for its reply, and
+// its running notice is the taken hook. A refused entry's rendered
+// diagnostics go to `err`; with pipes (no set_inherit_stdio), what the
+// program printed goes to `out`. When the backend ends by a signal (a crash,
+// an interrupt), `err` says so and a fresh session starts, its state empty
+// (D2). When it exits (exit(n) in an entry), ended() says the process ends
+// with that status. Every question, D11's included, is the backend's.
+class BackendSession : public ReplSession
+{
+public:
+    BackendSession(SessionClient &client, std::ostream &err, std::ostream *out);
+    std::string standard_name() override;
+    bool submit(const std::string &text, const TakenHook &taken = TakenHook()) override;
+    Offered offer(const std::string &text, const TakenHook &taken = TakenHook()) override;
+    const std::string &shown() const override { return shown_text; }
+    std::vector<std::string> complete(const std::string &text, size_t caret,
+				      size_t &start) override;
+    bool continues_if(const std::string &line) override;
+    bool run_file(int argc, char **argv) override;
+    bool ended(int &status) const override;
+
+private:
+    // After a wait: the output (piped), the rendered diagnostics, and the
+    // backend's end. False when it stopped.
+    bool settle(int rc, const SessionClient::Reply &reply, const std::string &output);
+    SessionClient &client;
+    std::ostream &err;
+    std::ostream *out;
+    std::string shown_text;
+    bool has_ended;
+    int end_status;
 };
 
 // The script surface (<ns_madc>'s session_* verbs, src/madc_session_verbs.cpp),

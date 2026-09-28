@@ -26,7 +26,46 @@
 class Program;
 class CirJitSession;
 
-class InteractiveSession
+// The session a REPL loop drives (madc_repl_run, madc_repl_edit; plan
+// §41.9a slice 4): in this process (InteractiveSession) or in a backend
+// process (BackendSession, madc_session_client.h). The loop asks only this.
+class ReplSession
+{
+public:
+    // Called once an offered entry is final, before its diagnostics render
+    // and before it runs: a line editor hands the terminal back there.
+    typedef std::function<void()> TakenHook;
+    // The verdict's one text is <bits/session_enums>, the dialect's too.
+    typedef ::madc::offer_state OfferState;
+    struct Offered
+    {
+	OfferState state;
+	bool ok;
+    };
+    virtual ~ReplSession() {}
+    // The standard in force by its canonical name ("c17"): the prompt's
+    // (D22) and the history's mode.
+    virtual std::string standard_name() = 0;
+    virtual bool submit(const std::string &text,
+			const TakenHook &taken = TakenHook()) = 0;
+    virtual Offered offer(const std::string &text,
+			  const TakenHook &taken = TakenHook()) = 0;
+    virtual const std::string &shown() const = 0;
+    virtual std::vector<std::string> complete(const std::string &text,
+					      size_t caret, size_t &start) = 0;
+    // Does LINE continue an if that ended an entry (D11)? Its first word is
+    // the standard's `else`.
+    virtual bool continues_if(const std::string &line) = 0;
+    // Load a program file and call its main when it defines one, with argv
+    // (the path, then the program's arguments): `madc -i file`, the core of
+    // %run (D25). False when the file was refused.
+    virtual bool run_file(int argc, char **argv) = 0;
+    // The session ended the process (an exit(n) in an entry): its status.
+    // An in-process session never says so (the exit already happened).
+    virtual bool ended(int &status) const { (void)status; return false; }
+};
+
+class InteractiveSession : public ReplSession
 {
 public:
     InteractiveSession();
@@ -51,8 +90,7 @@ public:
     // `taken`, when given, is called once the entry is final, before its
     // diagnostics render and before it runs: a line editor finishes its
     // display there and hands the terminal back (plan §41.7a).
-    typedef std::function<void()> TakenHook;
-    bool submit(const std::string &text, const TakenHook &taken = TakenHook());
+    bool submit(const std::string &text, const TakenHook &taken = TakenHook()) override;
 
     // Offer the text typed so far (plan §41.5a): the classifier runs inside
     // the entry transaction (§41.1a), so there is one parse per line.
@@ -62,14 +100,8 @@ public:
     //   extendable: a finished if with no else; D11 waits one line (the
     //     client submits it, or offers it again with the line).
     // `taken` is submit()'s, called only when the entry is taken. The enum's
-    // one text is <bits/session_enums>, the dialect's too.
-    typedef ::madc::offer_state OfferState;
-    struct Offered
-    {
-	OfferState state;
-	bool ok;
-    };
-    Offered offer(const std::string &text, const TakenHook &taken = TakenHook());
+    // one text is <bits/session_enums>, the dialect's too (ReplSession's).
+    Offered offer(const std::string &text, const TakenHook &taken = TakenHook()) override;
 
     // Load a program file into the session (plan §41.5a, slice 2; the core
     // of %load, D25): one unit in its own grammar (a file is read as gcc
@@ -83,13 +115,15 @@ public:
     // or a use of an undefined name returned; its return value goes to
     // *status. It does not end the session.
     bool run_main(int argc, char **argv, int *status);
+    // load(argv[0]), then run_main when the session defines main.
+    bool run_file(int argc, char **argv) override;
 
     // Tab's question (plan §41.7a, slice 3): the names that complete the
     // word before `caret` in the text typed so far, sorted; the word starts
     // at `start`. The query leaves the session as it was, and a word in a
     // string or a comment completes nothing.
     std::vector<std::string> complete(const std::string &text, size_t caret,
-				      size_t &start);
+				      size_t &start) override;
 
     // The live address of a session function / global, by emitted name.
     // NULL when no linked entry defines it.
@@ -102,7 +136,9 @@ public:
     // `"abc"`, `(int *) 0x7ffd...`). After a command (plan §41.8a), the
     // command's output. Empty when the entry showed nothing. The core
     // renders nothing: a client prints it.
-    const std::string &shown() const;
+    const std::string &shown() const override;
+    std::string standard_name() override;
+    bool continues_if(const std::string &line) override;
 
     // The session's commands (plan §41.8a, D13/D24): an entry whose first
     // line starts with `%name` or `:name` is a command, never C. The typed

@@ -5029,12 +5029,15 @@ run_channel_policy &run_policy()
 // __madc_task_atfork_child() — every child that runs madc code resets the
 // cooperative scheduler at its fork site, the discipline the live-build
 // owners gate counts): CLI-parity signal dispositions, stderr onto the
-// stream. Also the session backend's (src/madc_session_client.cpp).
-void run_child_prologue()
+// stream. Also the session backend's (src/madc_session_client.cpp), whose
+// stdio may be the host's terminal: there stderr stays stderr
+// (merge_stderr false).
+void run_child_prologue(bool merge_stderr)
 {
     signal(SIGINT, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
-    ::dup2(STDOUT_FILENO, STDERR_FILENO);
+    if ( merge_stderr )
+	::dup2(STDOUT_FILENO, STDERR_FILENO);
 }
 #endif
 
@@ -5105,7 +5108,7 @@ public:
 	const std::string name = st->display_name;
 	options.child_body = [child, name]() -> int {
 	    __madc_task_atfork_child();		// a fork child running madc code
-	    run_child_prologue();
+	    run_child_prologue(true);
 	    std::string argv0 = name;
 	    char *guest_argv[2];
 	    guest_argv[0] = &argv0[0];
@@ -5166,7 +5169,7 @@ public:
 	options.child_body = [engine, manifest, manifest_path, forest_bind,
 			      forest_bind_path]() -> int {
 	    __madc_task_atfork_child();		// a fork child running madc code
-	    run_child_prologue();
+	    run_child_prologue(true);
 	    std::string argv0 = manifest_path;
 	    char *guest_argv[2];
 	    guest_argv[0] = &argv0[0];

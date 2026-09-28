@@ -678,7 +678,7 @@ namespace madc {
     //     madc::offer_state code), ok, shown, rendered (the diagnostics as the
     //     CLI prints them), submitted, diagnostics (the rows parse_check
     //     returns); a completion's start and names; a stop's exit_status
-    //     (128 + signal for a signal).
+    //     (128 + signal for a signal) and signal (0 when the backend exited).
     //   session_output(out, h): what the program printed since the last call.
     //   session_input(h, text): text for the program's stdin.
     //   session_restart(h): a new backend; its state starts empty.

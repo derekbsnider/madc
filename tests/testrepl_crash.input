@@ -1,0 +1,4 @@
+base * 2
+int *p = 0; *p = 1;
+int base = 1234
+base + 1
