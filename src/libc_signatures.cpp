@@ -311,7 +311,6 @@ const Entry signatures[] = {
 	{ "__madc_builtin_memset_chk", LibcRet::VoidPtr },
 	{ "__madc_jmpbuf_for", LibcRet::VoidPtr },
 	{ "__madc_istream_extract", LibcRet::VoidPtr },
-	{ "__madc_atomic_fetch_add_l", LibcRet::Int64 },
 	{ "__madc_atomic_thread_fence", LibcRet::Void },
 	{ "__madc_atomic_signal_fence", LibcRet::Void },
 	{ "__madc_fd_zero", LibcRet::Void },

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### The GCC `__atomic_*` builtins
+
+Every `__atomic_*` builtin works in C and C++, as in gcc and clang: the `_n`
+value forms (`load_n`, `store_n`, `exchange_n`, `compare_exchange_n`, the
+`fetch_OP` and `OP_fetch` families for add, sub, and, or, xor and nand) at 1,
+2, 4 and 8 bytes, the object forms (`load`, `store`, `exchange`,
+`compare_exchange`) at any size, `test_and_set`, `clear`, `is_lock_free`,
+`always_lock_free` (a constant expression) and both fences. A value form
+yields the object's own type. Operands are checked as gcc checks them, so a
+bad call is an error and, under SFINAE, a substitution failure. madc lowered
+only `__atomic_fetch_add` and the two fences before; the rest were undeclared
+(`std::shared_ptr` was refused on `__atomic_always_lock_free`). Thread-safety:
+sizes 1, 2, 4 and 8 on an aligned object use the host's atomic instructions,
+and any other object takes an address-hashed spin lock.
+
 ### `__alignof` is the alignof operator
 
 GNU `__alignof(T)` and `__alignof(expr)` give the alignment, as in gcc and

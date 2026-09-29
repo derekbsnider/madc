@@ -353,7 +353,7 @@ int main() { std::printf("q: %zu %zu\n", sizeof(S::t), sizeof(M<double>)); retur
 - Found 2026-09-29 while tracing the B65 member regression. Core expression
   parser: a focused session, with B78.
 
-### B74. `std::shared_ptr` does not compile: GCC atomic builtins are undeclared
+### B74. `std::make_shared` does not compile: its tag constructor is not a candidate
 
 ```cpp
 #include <memory>
@@ -367,24 +367,19 @@ int main()
 }
 ```
 
-- Found 2026-09-29 while timing B69 against a libstdc++-heavy TU.
-  g++ 13 = clang++ 18: `sp1: 3`. madc, every C++ mode: `--std=c++11`
-  through `c++17` refuse at `bits/shared_ptr_base.h:322:28: use of
-  undeclared identifier '__atomic_always_lock_free'`; `--std=c++20` at
-  `bits/atomic_wait.h:144:26: ... '__builtin_ia32_pause'`. No test in
-  `tests/` includes a `shared_ptr` use.
-- Where: the GCC builtins libstdc++'s `_Lock_policy` default and
-  `__detail::__thread_relax` spell are unknown to madc.
-  `__atomic_always_lock_free(size, 0)` is a constant (true for 1, 2, 4 and
-  8 bytes on x86-64).
-- Measured 2026-09-29: the path spells the whole GCC `__atomic_*` family
-  (`_n` load/store/exchange/compare_exchange, fetch_op and op_fetch for
-  add/sub/and/or/xor, test_and_set/clear, is/always_lock_free,
-  thread/signal fence; ~25 builtins, size-polymorphic, memory-order
-  arguments). madc lowers two (`__atomic_fetch_add`,
-  `__atomic_thread_fence`, through `__madc_atomic_*` in va_helpers.cpp).
-  This is the atomics feature (a Tier 2 raise in lowering-vs-raising.md),
-  planned as its own arc with a thread-safety contract, not a burn-down fix.
+- g++ 13 = clang++ 18: `sp1: 3`. madc (`--std=c++17`): `cir error: no
+  matching constructor for call to 'shared_ptr_std__vector_...(std::
+  _Sp_alloc_shared_tag<std::allocator<void>>, int32_t*, int32_t*)' @
+  bits/shared_ptr.h:1009:23`. Reducer: `tmp/b74/s1.cpp`.
+- Where: `std::allocate_shared` calls the private constructor template
+  `template<typename _Alloc, typename... _Args> shared_ptr(
+  _Sp_alloc_shared_tag<_Alloc>, _Args&&...)` with the forwarded arguments;
+  that template is not among the candidates. Not yet reduced below
+  libstdc++.
+- The GCC `__atomic_*` builtins it needed first are implemented
+  (include/atomic_builtins.h). `--std=c++20` still stops earlier, at
+  `bits/atomic_wait.h:144:26: use of undeclared identifier
+  '__builtin_ia32_pause'` (the spin-wait hint).
 - Separately, in a TU that also uses `std::function` (tmp/b62/heavy.cpp),
   `p->size()` of an `auto p = std::make_shared<...>` in a `printf` argument
   list is refused at parse, `Malformed expression: 2 operands with no

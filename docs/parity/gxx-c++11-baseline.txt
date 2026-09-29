@@ -100,6 +100,14 @@
 #   honestly, on its own gap: a constructor template declared without a
 #   definition (`template <class U1, class U2> tuple(U1, U2);`) never becomes a
 #   candidate, even for `tuple<int, int>{2, a}` itself. Fixed next.
+# SHRUNK + EXPOSED 2026-09-29 (457 -> 456), B74: the GCC __atomic_* builtins
+#   are declared, validated and lowered — template/builtin-atomic-overloads1 and
+#   cpp0x/pr62024 pass. template/builtin-atomic-overloads7 compiled only because
+#   every __atomic_* name was undeclared, so each SFINAE probe failed for that
+#   reason; it now refuses, honestly, on one probe:
+#   `__atomic_load(int *, const int *, int)` must be refused for its const
+#   output, and madc's C++ types carry no const on a pointee (modeled_cv,
+#   FEATURE_CONST_TYPES).
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -377,7 +385,6 @@ g++.dg/cpp0x/pr52744.C
 g++.dg/cpp0x/pr56868.C
 g++.dg/cpp0x/pr59816.C
 g++.dg/cpp0x/pr60430.C
-g++.dg/cpp0x/pr62024.C
 g++.dg/cpp0x/pr63904.C
 g++.dg/cpp0x/pr65398-2.C
 g++.dg/cpp0x/pr67625.C
@@ -491,7 +498,7 @@ g++.dg/template/array33.C
 g++.dg/template/array34.C
 g++.dg/template/arrow3.C
 g++.dg/template/arrow4.C
-g++.dg/template/builtin-atomic-overloads1.C
+g++.dg/template/builtin-atomic-overloads7.C
 g++.dg/template/builtin-atomic-overloads8.C
 g++.dg/template/builtin-sfinae-check-function-arguments.C
 g++.dg/template/builtin-speculation-overloads1.C

@@ -45,6 +45,7 @@
 #include "madc.h"
 #include "madc_dl.h"
 #include "cir_builder.h"
+#include "atomic_builtins.h"	// the GCC __atomic_* family, as data
 #include "cir_freeze.h"	// CirFrozenForest: load an INLINE method's saved body on use
 #include "madc_mangle.h"
 #include "spelling_delim.h"
@@ -5705,6 +5706,163 @@ node_t CirBuilder::ptr_type_node(DataDef *dd)
 	node_t spec = type_list(base);
 	append_cv_specs(spec, level_cv.back());
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
+}
+
+// The GCC __atomic_* family (include/atomic_builtins.h) lowers to the helper
+// named `__madc` + the builtin's name minus one leading underscore
+// (va_helpers.cpp). A sized form passes the object's size first, as c2mir's
+// own sizeof of `*p`, so a pattern body's copy measures the concrete type. A
+// value operand travels as unsigned long long; an object-yielding result is
+// cast back to the object's type (operand 0's pointee, unqualified). Every
+// address operand is passed as `void *`. __atomic_always_lock_free is an
+// integer constant expression over its size operand: sizes 1, 2, 4 and 8.
+node_t CirBuilder::lower_atomic_builtin(TokenCallFunc *tcf,
+					const AtomicBuiltin &ab, TokenBase *tb)
+{
+	AtomicForm form = ab.form;
+	const std::vector<TokenBase *> &args = tcf->parameters;
+	// The operands as gcc validates them (Program::atomic_builtin_call_error,
+	// the parser's owner) — here over the instantiation's concrete types.
+	// An out-of-range constant memory order was the parser's to warn about.
+	if (m_prog) {
+		Program::AtomicCallCheck check =
+			m_prog->atomic_builtin_call_error(ab, args);
+		if (!check.message.empty() && !check.memory_order_only)
+			return error_node(check.message.c_str(), tb);
+	}
+
+	if (form == AtomicForm::LockFreeConstant) {
+		// ((mask >> (n & 15)) & 1) & (n <= max): atomic_lock_free_size.
+		node_t bits = node2(N_RSH,
+			integer(atomic_lock_free_size_mask, tb),
+			node2(N_AND, translate_expr(args[0]), integer(15, tb), tb), tb);
+		return node2(N_AND, node2(N_AND, bits, integer(1, tb), tb),
+			node2(N_LE, translate_expr(args[0]),
+			      integer(atomic_lock_free_size_max, tb), tb), tb);
+	}
+
+	// The accessed object: operand 0's pointee (a sized form's only; a
+	// flag form's operand 0 may be any pointer).
+	DataDef *obj = NULL;
+	if (atomic_form_is_sized(form)) {
+		DataDefPTR *ptr = pointer_dd_of(m_prog
+			? m_prog->atomic_operand_type(args[0])
+			: args[0]->datadef());
+		if (!ptr || !ptr->base_type)
+			return error_node("argument 1 of an __atomic_ builtin"
+					  " must be a pointer", args[0]);
+		obj = ptr->base_type->unqualified();
+		// A pattern body's object is measured per instantiation; the
+		// runtime helper refuses an unsupported size there.
+		if (atomic_form_is_value(form) && !m_tsubst_pattern_mode
+		    && !template_param_under_type_layers(obj)
+		    && !atomic_lock_free_size(obj->size)) {
+			std::string msg = std::string("'") + ab.name + "' on a "
+				+ std::to_string(obj->size)
+				+ "-byte object is not supported";
+			return error_node(msg.c_str(), args[0]);
+		}
+	}
+
+	auto ull_type = [&]() -> node_t {
+		node_t spec = list();
+		append(spec, simple(N_UNSIGNED));
+		append(spec, simple(N_LONG));
+		append(spec, simple(N_LONG));
+		return node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
+	};
+	auto address = [&](TokenBase *a) -> node_t {
+		return node2(N_CAST, void_ptr_type(), translate_expr(a), tb);
+	};
+	auto value = [&](TokenBase *a) -> node_t {
+		return node2(N_CAST, ull_type(), translate_expr(a), tb);
+	};
+	const std::vector<c2mir_node_code_t> ull = { N_UNSIGNED, N_LONG, N_LONG };
+	const ExternParam size_p = { ull, false };
+	const ExternParam addr_p = { { N_VOID }, true };
+	const ExternParam value_p = { ull, false };
+	const ExternParam int_p = { { N_INT }, false };
+
+	node_t a = list();
+	std::vector<ExternParam> params;
+	if (atomic_form_is_sized(form)) {
+		append(a, node1(N_EXPR_SIZEOF,
+				node1(N_DEREF, translate_expr(args[0]), tb), tb));
+		params.push_back(size_p);
+	}
+	switch (form) {
+	case AtomicForm::ValueRead:	// (p, mo)
+	case AtomicForm::FlagSet:
+	case AtomicForm::FlagClear:
+		append(a, address(args[0]));
+		append(a, translate_expr(args[1]));
+		params.insert(params.end(), { addr_p, int_p });
+		break;
+	case AtomicForm::ValueWrite:	// (p, v, mo)
+	case AtomicForm::ValueExchange:
+	case AtomicForm::ValueArith:
+		append(a, address(args[0]));
+		append(a, value(args[1]));
+		append(a, translate_expr(args[2]));
+		params.insert(params.end(), { addr_p, value_p, int_p });
+		break;
+	case AtomicForm::ValueCompare:	// (p, exp, des, weak, s, f)
+		append(a, address(args[0]));
+		append(a, address(args[1]));
+		append(a, value(args[2]));
+		for (size_t i = 3; i < 6; i++)
+			append(a, translate_expr(args[i]));
+		params.insert(params.end(),
+			      { addr_p, addr_p, value_p, int_p, int_p, int_p });
+		break;
+	case AtomicForm::ObjectRead:	// (p, ret, mo)
+	case AtomicForm::ObjectWrite:	// (p, val, mo)
+		append(a, address(args[0]));
+		append(a, address(args[1]));
+		append(a, translate_expr(args[2]));
+		params.insert(params.end(), { addr_p, addr_p, int_p });
+		break;
+	case AtomicForm::ObjectExchange:	// (p, val, ret, mo)
+		for (size_t i = 0; i < 3; i++)
+			append(a, address(args[i]));
+		append(a, translate_expr(args[3]));
+		params.insert(params.end(), { addr_p, addr_p, addr_p, int_p });
+		break;
+	case AtomicForm::ObjectCompare:	// (p, exp, des, weak, s, f)
+		for (size_t i = 0; i < 3; i++)
+			append(a, address(args[i]));
+		for (size_t i = 3; i < 6; i++)
+			append(a, translate_expr(args[i]));
+		params.insert(params.end(),
+			      { addr_p, addr_p, addr_p, int_p, int_p, int_p });
+		break;
+	case AtomicForm::LockFreeQuery:	// (n, p)
+		append(a, translate_expr(args[0]));
+		append(a, address(args[1]));
+		params.insert(params.end(), { size_p, addr_p });
+		break;
+	case AtomicForm::Fence:		// (mo)
+		append(a, translate_expr(args[0]));
+		params.push_back(int_p);
+		break;
+	case AtomicForm::LockFreeConstant:
+		break;
+	}
+
+	std::vector<c2mir_node_code_t> ret;
+	if (atomic_form_yields_object(form))
+		ret = ull;
+	else if (atomic_form_yields_bool(form))
+		ret = { N_INT };
+	std::string sym = std::string("__madc") + (ab.name + 1);
+	need_output_extern(sym.c_str(), false, params, ret);
+	node_t call = node2(N_CALL, id(sym.c_str(), tb), a, tb);
+	if (!atomic_form_yields_object(form))
+		return call;
+	node_t result_type = obj->as_pointer_dd()
+		? ptr_type_node(obj)
+		: node2(N_TYPE, type_list(obj), node2(N_DECL, ignore(), list()));
+	return node2(N_CAST, result_type, call, tb);
 }
 
 // Tag-REFERENCE node for an aggregate type: N_UNION when the class/struct
@@ -24828,47 +24986,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				return node1(N_BITWISE_NOT,
 					     translate_expr(tcf->parameters[0]), tb);
 			}
-			// __atomic_thread_fence(m) / __atomic_fetch_add(p,v,m): gcc/clang
-			// INLINE these; c2mir emits unresolvable external calls. Lower to
-			// the gcc-compiled madc runtime wrappers (real fence / atomic add).
-			// Tier-1 (madc owns the front end — lowering-vs-raising.md), same
-			// as __builtin_conj above. libstdc++ <ext/atomicity.h> refcount
-			// path (mem barriers + __exchange_and_add) -> the vector chain.
-			if ((tcf->var.name == "__atomic_thread_fence"
-			     || tcf->var.name == "__atomic_signal_fence")
-			    && tcf->parameters.size() == 1) {
-				const char *fsym =
-				    tcf->var.name == "__atomic_signal_fence"
-					? "__madc_atomic_signal_fence"
-					: "__madc_atomic_thread_fence";
-				need_output_extern(fsym, false, { { {N_INT}, false } });
-				node_t a = list();
-				append(a, translate_expr(tcf->parameters[0]));
-				return node2(N_CALL, id(fsym, tb), a, tb);
-			}
-			if (tcf->var.name == "__atomic_fetch_add"
-			    && tcf->parameters.size() == 3) {
-				// Atomic add returning the OLD value. Pick the width-specific
-				// wrapper from the pointee type of `p` (int _Atomic_word is the
-				// common refcount case; long for an 8-byte target).
-				DataDef *pd = tcf->parameters[0]
-					? tcf->parameters[0]->datadef() : NULL;
-				DataDef *pointee = (pd && pd->is_pointer())
-					? static_cast<DataDefPTR *>(pd)->base_type : NULL;
-				bool wide = pointee && pointee->size == 8;
-				const char *sym = wide ? "__madc_atomic_fetch_add_l"
-						       : "__madc_atomic_fetch_add_i";
-				std::vector<c2mir_node_code_t> w = wide
-					? std::vector<c2mir_node_code_t>{N_LONG, N_LONG}
-					: std::vector<c2mir_node_code_t>{N_INT};
-				need_output_extern(sym, false,
-					{ { w, true }, { w, false }, { {N_INT}, false } },
-					w);
-				node_t a = list();
-				for (size_t i = 0; i < 3; i++)
-					append(a, translate_expr(tcf->parameters[i]));
-				return node2(N_CALL, id(sym, tb), a, tb);
-			}
+			// The GCC __atomic_* family: gcc/clang INLINE these and
+			// c2mir would emit unresolvable external calls.
+			if (const AtomicBuiltin *ab =
+				atomic_builtin_lookup(tcf->var.name.c_str()))
+				return lower_atomic_builtin(tcf, *ab, tb);
 			// __destroy(ptr): compiler intrinsic — destruct the pointed-to
 			// object element. Lowers to the ELEMENT TYPE's class destructor
 			// (external C++ symbol or madc-emitted user-class dtor), or to

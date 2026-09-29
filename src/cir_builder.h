@@ -1128,6 +1128,11 @@ public:
 private:
 	node_t lower_format_call(class TokenCallFunc *tcf, FuncDef *fd,
 				 TokenBase *origin);
+	// The GCC __atomic_* family (include/atomic_builtins.h) -> its
+	// gcc-compiled __madc_atomic_* runtime helper (va_helpers.cpp).
+	node_t lower_atomic_builtin(class TokenCallFunc *tcf,
+				    const struct AtomicBuiltin &ab,
+				    TokenBase *origin);
 	// Is this call a format intrinsic? The by-value std::string return
 	// otherwise walks std::format into the class-return ELISION lanes
 	// (object_call_temp_addr, the decl-init same-class arm), which emit

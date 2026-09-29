@@ -51,6 +51,7 @@
 #include "madc_dl.h"
 #include "spelling_delim.h"
 #include "libc_signatures.h"	// what an UNDECLARED libc symbol returns
+#include "atomic_builtins.h"	// the GCC __atomic_* family, as data
 #include "madc_mangle.h"
 #include "ns_common.h"
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest decl records (forest_restore_decls)
@@ -18982,6 +18983,11 @@ ConstValue Program::parse_constant_primary()
 	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
 	  && is_constexpr_function_name(name) )
 	    return evaluate_constexpr_function_call(tb, name);
+	// __atomic_always_lock_free(n, p): an integer constant expression
+	// (static_assert, a constexpr initializer, a non-type argument).
+	if ( const AtomicBuiltin *ab = atomic_builtin_lookup(name.c_str()) )
+	    if ( ab->form == AtomicForm::LockFreeConstant )
+		return evaluate_atomic_always_lock_free(tb);
 	// Unqualified sibling static-const member inside the class body,
 	// e.g. `static const category all = (ctype | numeric);`. Resolves
 	// to the value captured by capture_constant_initializer_value.
@@ -19279,6 +19285,50 @@ ConstValue Program::parse_constant_primary()
     }
     Throw(tb) << "Expecting integer constant expression" << flush;
     return 0;
+}
+
+// `__atomic_always_lock_free ( n , p )` after the name: 1 when an object of n
+// bytes at p is always lock-free — n in atomic_lock_free_size, and p either a
+// null pointer (typical alignment) or a constant aligned to n. A p that is not
+// a constant is the object's own alignment, which a natural-size object has.
+madc_wide_int Program::evaluate_atomic_always_lock_free(TokenBase *tb)
+{
+    TokenBase *open = nextToken();
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	Throw(open ? open : tb) << "Expecting '(' after __atomic_always_lock_free" << flush;
+    madc_wide_int n = parse_constant_integer_expression();
+    TokenBase *comma = nextToken();
+    if ( !comma || comma->id() != TokenID::tkComma )
+	Throw(comma ? comma : tb) << "Expecting ',' in __atomic_always_lock_free" << flush;
+    madc_wide_int p = 0;
+    bool p_const = false;
+    TokenStream::Pos saved = tokens.savepos();
+    TokenBase *saved_cur = curToken();
+    TokenBase *saved_prv = prevToken();
+    {
+	DiagnosticRenderMute mute;
+	try
+	{
+	    p = parse_constant_integer_expression();
+	    p_const = peekToken() && peekToken()->id() == TokenID::tkClBrk;
+	}
+	catch ( ... )
+	{
+	    p_const = false;
+	}
+    }
+    if ( !p_const )
+    {
+	tokens.restore(saved);
+	setTokenContext(saved_cur, saved_prv);
+	parseExpression(nextToken(), false, false, false, 0, true);
+    }
+    TokenBase *close = nextToken();
+    if ( !close || close->id() != TokenID::tkClBrk )
+	Throw(close ? close : tb) << "Expecting ')' after __atomic_always_lock_free(...)" << flush;
+    if ( n <= 0 || !atomic_lock_free_size((unsigned long long)n) )
+	return 0;
+    return (!p_const || ((unsigned long long)p & (unsigned long long)(n - 1)) == 0) ? 1 : 0;
 }
 
 // The type-id run of a constant-context cast, non-consumingly: from tokens[0]
@@ -25225,12 +25275,23 @@ void Program::populate_builtin_registry()
     // return, and the emitted `extern long __madc_builtin_frame_address()` assigns
     // a long to a pointer ("using integer without cast for pointer type parameter").
     builtin_registry.add_core_function("__madc_builtin_frame_address", datatype_vec_t{ptr_of(ddVOID), DataType::dtINT}, (fVOIDFUNC)NULL);
-    builtin_registry.add_core_function("__atomic_fetch_add", datatype_vec_t{DataType::dtINT, ptr_of(ddVOID), DataType::dtINT, DataType::dtINT}, (fVOIDFUNC)NULL);
-    // __atomic_thread_fence(memorder): gcc/clang-inlined memory fence (no real
-    // symbol). Registered so the call parses; cir_builder lowers it (and
-    // __atomic_fetch_add) to the gcc-compiled __madc_atomic_* runtime wrappers.
-    builtin_registry.add_core_function("__atomic_thread_fence", datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)NULL);
-    builtin_registry.add_core_function("__atomic_signal_fence", datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)NULL);
+    // The GCC __atomic_* family (include/atomic_builtins.h): gcc/clang-inlined,
+    // no real symbols. ZERO declared params (variadic convention) so each
+    // operand reaches the CIR call with its own type; an object-yielding call
+    // takes its operand's type (check_atomic_builtin_call), and
+    // cir_builder lowers every one to its __madc_atomic_* runtime helper.
+    {
+	size_t atomic_count = 0;
+	const AtomicBuiltin *atomics = atomic_builtin_table(&atomic_count);
+	for ( size_t i = 0; i < atomic_count; ++i )
+	{
+	    AtomicForm f = atomics[i].form;
+	    DataType ret = atomic_form_yields_bool(f) ? DataType::dtBOOL
+		: atomic_form_yields_object(f) ? DataType::dtINT64
+		: DataType::dtVOID;
+	    builtin_registry.add_core_function(atomics[i].name, datatype_vec_t{ret}, (fVOIDFUNC)NULL);
+	}
+    }
     // __builtin_va_start(ap): c2mir intrinsic (lowered to MIR_VA_START), no real
     // symbol — register with a NULL pointer like __builtin_frame_address so the
     // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
@@ -31783,6 +31844,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     }
 
     apply_template_call_return_inference(tc);
+    check_atomic_builtin_call(tc);
 
     // Free/namespace function template called with EXPLICIT template args: form
     // the return type by substituting those args into the template's declared
@@ -60038,6 +60100,162 @@ void Program::apply_template_call_return_inference(TokenCallFunc *tc)
     tc->return_override = deduced;
     tc->returns_ref_override = fd->template_return_ref;
     tc->setDataType(deduced);
+}
+
+// An __atomic_* operand's type: the value it denotes (a reference is its
+// referent), an array decayed to its element pointer.
+DataDef *Program::atomic_operand_type(TokenBase *arg)
+{
+    if ( !arg )
+	return NULL;
+    if ( DataDef *decayed = array_decay_pointer(arg) )
+	return decayed;
+    return operand_value_type(arg);
+}
+
+// gcc's operand rules for the __atomic_* family (c-common.cc:
+// get_atomic_generic_size for the object forms, sync_resolve_size and
+// sync_resolve_params for the value forms). A dependent operand is not
+// decided here; the CIR lowering asks again over the concrete types.
+Program::AtomicCallCheck Program::atomic_builtin_call_error(
+	const AtomicBuiltin &ab, const std::vector<TokenBase *> &args)
+{
+    AtomicCallCheck out;
+    AtomicForm form = ab.form;
+    const std::string fn = std::string("'") + ab.name + "'";
+    size_t want = atomic_form_arity(form);
+    if ( args.size() != want )
+    {
+	out.message = std::string(args.size() < want ? "too few" : "too many")
+	    + " arguments to function " + fn;
+	return out;
+    }
+    std::vector<DataDef *> types;
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	DataDef *t = atomic_operand_type(args[i]);
+	if ( !t )
+	    return out;
+	if ( template_param_under_type_layers(t) )
+	    return out;		// dependent: decided per instantiation
+	types.push_back(t);
+    }
+    if ( dependent_parse_in_progress )
+	return out;
+    auto refuse = [&](const std::string &m) -> AtomicCallCheck & {
+	out.message = m;
+	return out;
+    };
+    auto nth = [](size_t i) { return std::to_string(i + 1); };
+
+    if ( form == AtomicForm::FlagSet || form == AtomicForm::FlagClear )
+    {
+	if ( !pointer_dd_of(types[0]) )
+	    return refuse("argument 1 of " + fn + " must be a pointer type");
+	return out;
+    }
+    if ( !atomic_form_is_sized(form) )
+	return out;		// a fence or a lock-free query
+
+    DataDefPTR *p0 = pointer_dd_of(types[0]);
+    DataDef *obj = p0 ? p0->base_type : NULL;
+    if ( atomic_form_is_value(form) )
+    {
+	// sync_resolve_size: an integer or pointer of 1, 2, 4, 8 or 16
+	// bytes; a fetch_OP / OP_fetch never on bool.
+	DataDef *uobj = obj ? obj->unqualified() : NULL;
+	size_t sz = uobj ? uobj->size : 0;
+	bool scalar = uobj && (uobj->is_integer() || uobj->as_pointer_dd()
+			       || uobj->as_fptr_dd());
+	if ( !scalar || uobj->is_void()
+	  || (form == AtomicForm::ValueArith
+	   && uobj->rawtype() == DataType::dtBOOL)
+	  || !(atomic_lock_free_size(sz) || sz == 16) )
+	    return refuse("operand type '" + types[0]->name
+		+ "' is incompatible with argument 1 of " + fn);
+	if ( form == AtomicForm::ValueCompare && !pointer_dd_of(types[1]) )
+	    return refuse("argument 2 of " + fn + " must be a pointer type");
+	return out;
+    }
+
+    // get_atomic_generic_size.
+    if ( !p0 )
+	return refuse("argument 1 of " + fn + " must be a pointer type");
+    DataDefSTRUCT *osd = dynamic_cast<DataDefSTRUCT *>(obj->unqualified());
+    if ( obj->is_void() || (osd && !osd->is_complete) )
+	return refuse("argument 1 of " + fn + " must be a pointer to a complete type");
+    size_t size0 = obj->unqualified()->size;
+    if ( size0 == 0 )
+	return refuse("argument 1 of " + fn + " must be a pointer to a nonzero size object");
+    // The pointer operands after the object, the one the builtin writes
+    // through (its output), and where the memory orders start.
+    size_t n_pointers = form == AtomicForm::ObjectExchange ? 3
+		      : form == AtomicForm::ObjectCompare ? 3 : 2;
+    size_t output = form == AtomicForm::ObjectRead ? 1
+		  : form == AtomicForm::ObjectExchange ? 2
+		  : form == AtomicForm::ObjectCompare ? 1 : 0;
+    size_t first_order = form == AtomicForm::ObjectCompare ? 4 : n_pointers;
+    for ( size_t x = 1; x < n_pointers; ++x )
+    {
+	DataDefPTR *px = pointer_dd_of(types[x]);
+	if ( !px || !px->base_type )
+	    return refuse("argument " + nth(x) + " of " + fn + " must be a pointer type");
+	if ( types[x]->as_fptr_dd() || px->base_type->is_function() )
+	    return refuse("argument " + nth(x) + " of " + fn
+		+ " must not be a pointer to a function");
+	if ( px->base_type->unqualified()->size != size0 )
+	    return refuse("size mismatch in argument " + nth(x) + " of " + fn);
+	if ( x == output && px->base_type->is_const() )
+	    return refuse("argument " + nth(x) + " of " + fn
+		+ " must not be a pointer to a 'const' type");
+	if ( px->base_type->is_volatile() )
+	    return refuse("argument " + nth(x) + " of " + fn
+		+ " must not be a pointer to a 'volatile' type");
+    }
+    for ( size_t x = first_order; x < args.size(); ++x )
+    {
+	if ( !types[x]->is_integer() || types[x]->as_pointer_dd() )
+	    return refuse("non-integer memory model argument " + nth(x) + " of " + fn);
+	// memmodel_base: the low 16 bits (the HLE hints ride above them).
+	TokenInt *ti = dynamic_cast<TokenInt *>(args[x]);
+	if ( ti && (ti->ival() & 0xffff) >= 6 )
+	{
+	    refuse("invalid memory model argument " + nth(x) + " of " + fn);
+	    out.memory_order_only = true;
+	    return out;
+	}
+    }
+    return out;
+}
+
+// Validate an __atomic_* call where it is parsed, and type an object-yielding
+// one (load_n, exchange_n, fetch_OP, OP_fetch) as the object it accesses:
+// operand 0's pointee, unqualified, as gcc and clang type it. A refusal
+// throws — a substitution failure under a SFINAE trap. An out-of-range
+// constant memory order fails only there (gcc's `complain` off, which is
+// madc's render mute: the traps, and the IDE's capture child); elsewhere it is
+// gcc's -Winvalid-memory-model warning.
+void Program::check_atomic_builtin_call(TokenCallFunc *tc)
+{
+    const AtomicBuiltin *ab = tc ? atomic_builtin_lookup(tc->var.name.c_str()) : NULL;
+    if ( !ab )
+	return;
+    AtomicCallCheck check = atomic_builtin_call_error(*ab, tc->parameters);
+    if ( !check.message.empty() )
+    {
+	if ( !check.memory_order_only || DiagnosticRenderMute::active )
+	    Throw(tc) << check.message << flush;
+	report_warning(DiagnosticPhase::parser, check.message,
+		       tc->file, tc->line, tc->column);
+    }
+    if ( !atomic_form_yields_object(ab->form) || tc->parameters.empty() )
+	return;
+    DataDefPTR *ptr = pointer_dd_of(atomic_operand_type(tc->parameters[0]));
+    DataDef *obj = ptr && ptr->base_type ? ptr->base_type->unqualified() : NULL;
+    if ( !obj )
+	return;
+    tc->return_override = obj;
+    tc->setDataType(obj);
 }
 
 // Serialize a token range [begin,end) to a C++ type spelling, inserting a single

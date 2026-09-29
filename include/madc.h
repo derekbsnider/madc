@@ -7903,6 +7903,28 @@ public:
 					    std::vector<TokenBase *> *seen = NULL);
     void capture_explicit_template_instantiation(bool extern_declaration);
     void apply_template_call_return_inference(TokenCallFunc *tc);
+    // The GCC __atomic_* family (include/atomic_builtins.h). The operands'
+    // validity is ONE owner, atomic_builtin_call_error — gcc's
+    // get_atomic_generic_size / sync_resolve_size rules — read by the call
+    // parse (a refusal, a substitution failure under a SFINAE trap) and by
+    // the CIR lowering over an instantiation's concrete types. An empty
+    // message is valid, or undecidable over dependent operands.
+    struct AtomicCallCheck
+    {
+	std::string message;
+	// The refusal is an out-of-range constant memory order, which gcc
+	// only warns about outside a substitution context.
+	bool memory_order_only;
+	AtomicCallCheck() : memory_order_only(false) {}
+    };
+    AtomicCallCheck atomic_builtin_call_error(const struct AtomicBuiltin &ab,
+	const std::vector<TokenBase *> &args);
+    // An operand's type as the builtin sees it: its value, an array decayed.
+    DataDef *atomic_operand_type(TokenBase *arg);
+    // Validate an __atomic_* call and give an object-yielding one its
+    // object's type.
+    void check_atomic_builtin_call(TokenCallFunc *tc);
+    madc_wide_int evaluate_atomic_always_lock_free(TokenBase *tb);
     DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc,
 							    bool *ret_ref);
     // Key-based core of the above: resolve a free/namespace function-template
