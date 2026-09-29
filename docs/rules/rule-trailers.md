@@ -79,6 +79,25 @@ only the ordering is wrong. No amount of care at the point of typing catches
 that; a refusal does. `MADC_ALLOW_CONCURRENT=1` overrides it, and the override
 is deliberately loud.
 
+## Phrasing: terse claims, not narration
+
+The gate (`check-rule-trailers.sh`) verifies one thing per field: the label is
+present and followed by a non-whitespace character. It never asked for prose.
+A one-line factual claim per field satisfies it in full.
+
+There is a second, output-side reason to keep them terse. A trailer (or a
+CHANGELOG entry) written as narrated deliberation — first-person "I believed X,
+then I searched for Y and found Z, then I realized the deepest layer was…" —
+reads as a chain-of-thought transcript, and an Anthropic-side "reasoning
+extraction" classifier stops the response that carries it. The stop is not a
+tool or repo error and leaves no log to read; the only signal is the harness
+notice. Observed 2026-09-29: the narrated commit-message form was stopped
+repeatedly; the same four fields as terse claims passed and committed.
+
+So the fields carry the same information either way — the honest, legible
+`Layer:` chain still does its job as a bare arrow chain. Drop the narration,
+keep the claim.
+
 ## Maintenance
 
 `EPOCH` in the script moves **forward only**. Moving it backward, or forward

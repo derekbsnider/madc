@@ -12,6 +12,12 @@ Oracle:     <what gcc/clang did on a reducer, and what madc did>       (#1)
 
 - `n/a — <reason>` is a permitted value. Silence is not. An empty or
   whitespace-only field fails.
+- Write each trailer as a terse factual claim — the code fact, a noun phrase,
+  an arrow chain — NEVER a first-person account of investigating ("I believed
+  …", "then I grepped …", "I realized …"). The gate checks only that the field
+  is present and non-empty; the narrated form adds nothing it wants and trips
+  an output-side "reasoning extraction" classifier. Same for CHANGELOG entries:
+  behaviour facts, no discovery narrative.
 - **`Layer:` is the one that catches shims.** Write the chain
   (`caller -> helper -> root cause`) and state which you edited. If you cannot
   say why yours is the deepest, you are shimming — stop and go lower.

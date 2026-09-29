@@ -73,7 +73,11 @@ Run this.**
    `Searched:` the grep you ran, the CONCEPT (not the identifier already in
    your head), and what came back ·
    `Oracle:` what gcc/clang did on the reducer and what madc did.
-   `n/a — <reason>` is allowed; silence is not. Attribution trailers per the
+   `n/a — <reason>` is allowed; silence is not. Write each field as a terse
+   factual claim, never a first-person investigation narrative — the gate wants
+   the claim, and the narrated form trips an output-side "reasoning extraction"
+   classifier (`.claude/rules/rule-trailers.md`). Same for the CHANGELOG entry:
+   behaviour facts, no discovery narrative. Attribution trailers per the
    session's instructions.
 
 8. **Commit**, then **record the ledger**: `bash scripts/lane_ledger.sh record
