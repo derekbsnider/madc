@@ -325,6 +325,12 @@ int main() { return (int)alignof(S); }
   template's head is re-read after its pack expands (`alignas(alignof(T)...)`
   over two types is `alignas(alignof(A), alignof(B))`). The source form needs
   one operand and an optional `...`.
+- Fix shape (2026-09-29): no token marks a pack expansion's separators
+  (`tfBRACKETED`/`tfOVERLOADED`/`tfSYNTHPOS` only), so the reader cannot
+  tell the source form from the replay. Either the expander marks what it
+  produces, or an alignment specifier's pack expands to one `alignas(...)`
+  per element ([dcl.align]/4 reads it that way); then the reader takes one
+  operand and refuses a comma.
 
 ## Refuses valid code
 
