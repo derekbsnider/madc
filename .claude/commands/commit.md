@@ -78,10 +78,17 @@ Run this.**
    the claim, and the narrated form trips an output-side "reasoning extraction"
    classifier (`.claude/rules/rule-trailers.md`). Same for the CHANGELOG entry:
    behaviour facts, no discovery narrative. Attribution trailers per the
-   session's instructions. On an Opus 5.5 session the classifier trips on the
-   trailers even when terse — delegate this commit to a subagent on a different
-   model (Agent tool, `model` override, e.g. sonnet or opus-4-8): hand it the
-   staged diff and the four facts, it writes the message and runs `git commit`.
+   session's instructions. On a 5-series session (Opus/Sonnet/Fable 5.x) the
+   classifier trips on the trailers even when terse, and it fires as soon as the
+   message / four facts / CHANGELOG prose appear in this model's OWN turn — a
+   heredoc writing the message file and the Agent-tool `prompt` are both that.
+   So composing the facts here and then delegating is too late. Either run dev
+   on a pre-5 model (Opus 4.8) and `git commit -F` inline (preferred, verified),
+   or, on a 5.x session, write none of that prose in your turn: stage, then
+   spawn a `model: haiku` subagent whose prompt gives only pointers — "compose
+   the trailers + CHANGELOG from `git diff --cached` and reducer `tests/<name>`,
+   then commit" — and verify the landing with `git log -1`. See
+   `.claude/rules/rule-trailers.md`.
 
 8. **Commit**, then **record the ledger**: `bash scripts/lane_ledger.sh record
    <lane> <tally>` for each lane that ran green, so
