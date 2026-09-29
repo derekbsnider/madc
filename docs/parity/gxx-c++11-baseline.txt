@@ -266,10 +266,7 @@ g++.dg/cpp0x/forw_enum9.C
 g++.dg/cpp0x/friend2.C
 g++.dg/cpp0x/gen-attrs-21.C
 g++.dg/cpp0x/gen-attrs-39.C
-g++.dg/cpp0x/gen-attrs-48.C
-g++.dg/cpp0x/gen-attrs-49.C
 g++.dg/cpp0x/gen-attrs-5.C
-g++.dg/cpp0x/gen-attrs-50.C
 g++.dg/cpp0x/gen-attrs-51.C
 g++.dg/cpp0x/gen-attrs-52.C
 g++.dg/cpp0x/implicit-delete1.C

@@ -1,0 +1,15 @@
+// `alignas` is a keyword only where the standard has one (C23, C++11): in
+// C17 without <stdalign.h> it is an ordinary identifier, while `_Alignas`
+// is the specifier in every C mode. Oracle: gcc 13 and clang 18 print the
+// line below.
+#include <stdio.h>
+
+static int alignas(int n) { return n * 2; }
+
+int main(void)
+{
+	int aligned = alignas(21);
+	_Alignas(8) char c = 1;
+	printf("id: %d %zu\n", aligned + c - 1, __alignof__(c));
+	return 0;
+}

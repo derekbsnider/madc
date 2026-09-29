@@ -65,6 +65,18 @@ and aggregate attributes (B65); alignments above 16 (B66); a typedef's
 alignment (B64). libstdc++'s aligned members sit in class-parser bodies, so
 their layout changes with B65, not here.
 
+## Status (2026-09-29)
+
+- Slice 2 (members): a825cb684. Slice 3 (variables): 376f4cba1.
+- Slice 1 (the reader) with slice 4's class-template part: a class template's
+  head specifiers stay in its captured body and are read per instantiation;
+  a pack in them expands (`alignas(alignof(T)...)`) through the body clone's
+  expansion-unit lane, which now also takes a type-query operator unit.
+- Open: slice 4's function-template locals (B62, parse-once member
+  templates); found on the way and filed: B68 (dependent `alignof` in a
+  parse-once body), B69 (a variadic class template-id in `sizeof`), B70,
+  B71, B72, B73.
+
 ## Tests and gates
 
 Each slice ships its reducer in `tests/` with the gcc and clang output

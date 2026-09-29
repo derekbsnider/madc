@@ -27,56 +27,100 @@ Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
 
-### B62. `_Alignas` and `alignas` are dropped, and a variable has no alignment
+### B62. A dependent `alignas` on a member function template's local is dropped
 
-```c
-#include <stdio.h>
-#include <stdint.h>
-struct A { char c; _Alignas(16) int x; };
-struct B { char c; _Alignas(double) char d; };
-_Alignas(16) char g1;
-char g2 __attribute__((aligned(16)));
-int main(void)
-{
-	char q0 = 1;
-	_Alignas(16) char l1 = 2;
-	printf("sm: %zu %zu %zu %zu\n", sizeof(struct A), _Alignof(struct A), sizeof(struct B), _Alignof(struct B));
-	printf("va: %zu %zu %zu %d\n", __alignof__(g1), __alignof__(g2), __alignof__(l1),
-	       (int)((uintptr_t)&l1 % 16) + q0 - 1);
-	return 0;
-}
-```
+What remains of B62 after slices 1-3 of
+`docs/plans/2026-09-29-alignment-specifiers.md`, which made `_Alignas`,
+`alignas` and `aligned` align members, variables and class heads.
 
 ```cpp
 #include <cstdio>
-struct A { char c; alignas(16) int x; };
-struct B { char c; alignas(double) char d; };
+#include <cstddef>
+template<class U> struct Box
+{
+	U v;
+	std::size_t f() { char k = 1; alignas(U) char c = 0; return __alignof__(c) + c + k - 1; }
+	template<class V> std::size_t h() { alignas(V) char c = 0; return __alignof__(c) + c; }
+};
+struct alignas(16) W { char c; };
 int main()
 {
-	alignas(16) char l1 = 2;
-	std::printf("cx: %zu %zu %zu %zu %zu\n", sizeof(A), alignof(A), sizeof(B), alignof(B), __alignof__(l1));
+	Box<double> bd; Box<W> bw;
+	std::printf("d4: %zu %zu %zu %zu\n", bd.f(), bw.f(), bd.h<W>(), bw.h<double>());
 	return 0;
 }
 ```
 
-- gcc = clang: `sm: 32 16 16 8` / `va: 16 16 16 0`; g++ = clang++:
-  `cx: 32 16 16 8 16`. madc: `sm: 8 4 2 1` / `va: 1 1 1 0` and
-  `cx: 8 4 2 1 1`. A local `_Alignas(16)` object is not placed on a 16-byte
-  boundary either; the `0` above is luck of the frame (a larger reducer put
-  it at 8 mod 16).
-- Where: the lexer maps `_Alignas` and `alignas` to `__attribute__`
-  (`define_map`, lexer.cpp), and its `__attribute__` arm keeps a group only
-  when `gnu_attribute_text_has_supported_name` finds a name in it. `(16)`
-  and `(double)` name none, so the specifier is gone before the parser.
-  Variables have no alignment slot: the declaration's attribute read
-  (`consume_gnu_attributes` at the variable site, parser.cpp ~74433) passes
-  no `explicit_align`, and nothing emits `_Alignas` on a variable or answers
-  `__alignof__(var)` from one.
-- Fix shape: a parser reader for `alignas ( type-id | constant-expression )`
-  feeding the slots `aligned(N)` feeds, and a variable alignment emitted as
-  `_Alignas(N)` and read by `__alignof__`. The operand is dependent inside
-  templates (libstdc++ `std::atomic`'s `alignas(_S_alignment)`). A planned
-  change with its own session (owner, 2026-09-29).
+- g++ = clang++: `d4: 8 16 16 8`. madc: `d4: 8 16 1 1`.
+- Where: a member function template's body is a parse-once (tsubst)
+  pattern. The pattern's `alignas(V)` operand is dependent, so the reader
+  contributes nothing and the local keeps its type's alignment. Fix shape
+  (plan slice 4): the local keeps the operand's type query and emits
+  `_Alignas(_Alignof(V))`, which the dependent `N_ALIGNOF` fold makes
+  concrete. The same fold answers `alignof(V)` wrongly today (B68).
+
+### B68. `alignof(V)` of a member function template's parameter is 1
+
+```cpp
+#include <cstdio>
+#include <cstddef>
+template<class U> struct Box
+{
+	U v;
+	template<class V> std::size_t al() { return alignof(V); }
+	template<class V> std::size_t al2() { return __alignof__(V); }
+	template<class V> std::size_t sz() { return sizeof(V); }
+};
+struct alignas(16) W { char c; };
+int main()
+{
+	Box<char> b;
+	std::printf("d6: %zu %zu %zu %zu %zu\n", b.al<W>(), b.al<double>(), b.al2<W>(), b.sz<W>(), b.sz<double>());
+	return 0;
+}
+```
+
+- g++ = clang++: `d6: 16 8 16 16 8`. madc: `d6: 1 1 1 16 8`.
+- Found 2026-09-29 during B62. `sizeof(V)` is right and `alignof(V)` is
+  not, in the same parse-once body.
+- Where: `try_parse_dynamic_type_query` builds the deferred query that
+  `copy_cir_subtree` folds per instantiation; the alignof spelling does not
+  reach that deferred form, so the pattern folds it early to 1.
+
+### B69. A variadic class template named first in `sizeof` measures 0
+
+```cpp
+#include <cstdio>
+template<typename... T> struct P1 { char k; double m; };
+template<typename T> struct N1 { char k; double m; };
+int main()
+{
+	std::printf("pc: %zu %zu %zu\n", sizeof(P1<int>), alignof(P1<int>), sizeof(N1<int>));
+	P1<int> p; p.k = 1;
+	std::printf("pd: %zu %zu %zu\n", sizeof(p), sizeof(P1<int>), sizeof(P1<char, int>));
+	return 0;
+}
+```
+
+- g++ = clang++: `pc: 16 8 16` / `pd: 16 16 16`. madc: `pc: 0 1 16` /
+  `pd: 16 16 0`.
+- Found 2026-09-29 during B62; the same output before it.
+- Where: a variadic template-id read as a `sizeof`/`alignof` operand gets
+  the opaque shell, not a real instantiation. Declaring an object of the
+  type first instantiates it, and later queries then answer correctly.
+
+### B70. An in-class `static constexpr` array with an unsized bound measures 8
+
+```cpp
+#include <cstdio>
+struct Y { static constexpr unsigned long s[] = { 1, 2, 3 }; static constexpr unsigned long n = sizeof(s) / sizeof(s[0]); };
+int main() { std::printf("py: %lu %zu\n", Y::n, sizeof(Y::s)); return 0; }
+```
+
+- g++ = clang++: `py: 3 24`. madc: `py: 0 8`.
+- Found 2026-09-29 during B62. Not template-specific.
+- Where: not traced yet. `sizeof(Y::s)` reads 8, a pointer's size, so the
+  bound the initializer gives is not on the member's type.
 
 ### B63. A member's own `packed` is ignored
 
@@ -137,6 +181,9 @@ struct C2 { int f() { return x; } char c; int __attribute__((aligned(16))) x; };
   The class parser's `skip_member_attributes` (~50727) reads a member's
   groups and discards them. It reads no groups after the class's `}`, nor
   a member attribute between the type and the name.
+- Since B62's reader, `TokenCLASS::parse` also reads the attribute and
+  alignment specifiers before a class's name (`class alignas(16) K`), and
+  discards them the same way.
 
 ### B67. `scalar_storage_order` has no effect
 
@@ -181,7 +228,49 @@ int main() { vector<int> v; v.push_back(1); return (int)v.size(); }
   scope it was written in (`active_using_namespaces`). Either may be the lookup
   that finds `vector`.
 
+### B73. `alignas` accepts a comma-separated operand list in C++
+
+```cpp
+struct alignas(8, 16) S { char c; };
+int main() { return (int)alignof(S); }
+```
+
+- Found 2026-09-29 during B62. g++ 13: `expected ')' before ',' token`;
+  clang++ 18: `expected ')'`. madc: compiles, exit 16.
+- Where: `Program::parse_alignment_specifier` reads a list, because a class
+  template's head is re-read after its pack expands (`alignas(alignof(T)...)`
+  over two types is `alignas(alignof(A), alignof(B))`). The source form needs
+  one operand and an optional `...`.
+
 ## Refuses valid code
+
+### B71. A class template whose parameters are a non-type pack has no members
+
+```cpp
+#include <cstdio>
+template<int... N> struct V { char k; };
+int main() { V<2, 16> v2; v2.k = 5; std::printf("p9: %d\n", v2.k); return 0; }
+```
+
+- Found 2026-09-29 during B62. g++ = clang++: `p9: 5`. madc:
+  `3:30: Unidentified member 'k' in 'V_2_16'`; `V<>` the same.
+- Where: not traced. A value-pack instantiation takes the legacy body clone
+  (`instantiate_template_use`), and the class it registers has no members.
+
+### B72. `__alignof` is refused
+
+```c
+#include <stdio.h>
+int main(void) { double d = 0; printf("ga: %zu %zu\n", __alignof(double), __alignof(d)); return (int)d; }
+```
+
+- Found 2026-09-29 during B62. gcc = clang: `ga: 8 8`. madc:
+  `2:72: Expecting identifier`.
+- Where: `is_alignof_identifier` (parser.cpp) knows `alignof`, `_Alignof`
+  and `__alignof__`, not `__alignof`. The spelling set is written again at
+  two other sites, and each differs: the member-declarator specifier list
+  (~45906) has `__alignof`, and `ignored_template_declarator_call_name` (~57669)
+  has only `alignof`. That is the duplication family behind it.
 
 ### B3. A declarator after a type definition's `}` may not start with cv or `*`
 

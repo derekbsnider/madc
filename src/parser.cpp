@@ -1729,12 +1729,27 @@ static bool is_type_qualifier_token(TokenBase *tb)
 	 || tb->id() == TokenID::tkEXTERN);
 }
 
+// The alignment specifier (C11 6.7.5, [dcl.align]): `_Alignas`, and `alignas`,
+// which the lexer spells `_Alignas` in the modes whose standard has it.
+static bool is_alignment_specifier_name(const std::string &name)
+{
+    return name == "_Alignas";
+}
+
+// The attribute-specifier introducers the attribute readers consume: a GNU
+// attribute group and the alignment specifier, which may stand wherever one
+// may.
+static bool is_attribute_specifier_name(const std::string &name)
+{
+    return name == "__attribute__" || name == "__attribute"
+	|| is_alignment_specifier_name(name);
+}
+
 static bool is_attribute_identifier_token(TokenBase *tb)
 {
     if ( !tb || tb->type() != TokenType::ttIdentifier )
 	return false;
-    const std::string &name = ((TokenIdent *)tb)->spelling();
-    return name == "__attribute__" || name == "__attribute";
+    return is_attribute_specifier_name(((TokenIdent *)tb)->spelling());
 }
 
 // Ignored C++ declaration-specifier keywords. constexpr/consteval/constinit
@@ -2012,6 +2027,19 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 {
     while ( nt && is_attribute_identifier_token(nt) )
     {
+	// An alignment specifier stands where an attribute group may. Its
+	// operand is read when the caller takes an alignment (the strictest
+	// wins), and skipped, balanced, like a group's otherwise.
+	if ( explicit_align
+	  && is_alignment_specifier_name(((TokenIdent *)nt)->spelling())
+	  && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    size_t align = parse_alignment_specifier();
+	    if ( align > *explicit_align )
+		*explicit_align = align;
+	    nt = nextToken();
+	    continue;
+	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 	{
 	    DelimDepth ad(this);	// the attribute's `((...))` groups
@@ -2123,6 +2151,24 @@ bool Program::consume_object_attributes(size_t &align)
     if ( after )
 	pushToken(after);
     return true;
+}
+
+void Program::capture_attribute_specifiers(std::vector<TokenBase *> &out)
+{
+    while ( is_attribute_identifier_token(peekToken()) )
+    {
+	out.push_back(nextToken()->clone_origin());
+	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+	    continue;
+	DelimDepth d(this);	// the specifier's `(...)` groups
+	do {
+	    TokenBase *at = nextToken();
+	    if ( !at )
+		break;
+	    out.push_back(at->clone_origin());
+	    delimStepStream(at, d);
+	} while ( d.paren > 0 );
+    }
 }
 
 unsigned Program::consume_cv_and_object_attributes(size_t &align)
@@ -2710,6 +2756,12 @@ static bool is_decltype_identifier(const std::string &name)
 static bool is_alignof_identifier(const std::string &name)
 {
     return name == "alignof" || name == "_Alignof" || name == "__alignof__";
+}
+
+// `sizeof` or an alignof spelling: an operator over a type-id or expression.
+static bool is_type_query_identifier(const std::string &name)
+{
+    return name == "sizeof" || is_alignof_identifier(name);
 }
 
 static bool is_static_assert_identifier(const std::string &name)
@@ -4601,18 +4653,23 @@ bool Program::scan_name_is_template_param(const std::string &name) const
 // placeholder class? A name it qualifies is not a template-name without the
 // `template` keyword ([temp.names]/3). An opaque tag standing for a CONCRETE
 // class whose members madc has not seen is not dependent.
+// A DEPENDENT type: a template parameter's typed placeholder, or a dependent
+// placeholder class (`Box<T>` in a pattern). An opaque tag standing for a
+// CONCRETE class whose members madc has not seen is not dependent.
+static bool datadef_is_dependent_type(const DataDef &dd)
+{
+    if ( dd.is_template_param() )
+	return true;
+    const DataDefCLASS *c = dynamic_cast<const DataDefCLASS *>(&dd);
+    return c && c->is_dependent_placeholder && !c->opaque_concrete_tag;
+}
+
 bool Program::scan_qualifier_is_dependent(TokenBase *tok) const
 {
     if ( !tok )
 	return false;
     if ( tok->type() == TokenType::ttDataType )
-    {
-	const DataDef &dd = ((TokenDataType *)tok)->definition;
-	if ( dd.is_template_param() )
-	    return true;
-	const DataDefCLASS *c = dynamic_cast<const DataDefCLASS *>(&dd);
-	return c && c->is_dependent_placeholder && !c->opaque_concrete_tag;
-    }
+	return datadef_is_dependent_type(((TokenDataType *)tok)->definition);
     return is_contextual_identifier_token(tok)
 	&& scan_name_is_template_param(contextual_identifier_name(tok));
 }
@@ -10975,6 +11032,27 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    vi != token_pack_subst.end(); ++vi )
 	if ( pack_subst.find(vi->first) == pack_subst.end() )
 	    publish_pack_arity(vi->first, vi->second.size());
+    // A pack parameter's elements, NULL for a name that is not one. An ABSENT
+    // trailing pack (`C<int>` against `C<T, A...>`) records NO pack_subst
+    // entry at all (the arg loop's "leave pack_subst without an entry" case)
+    // — it reads as the SAME empty pack as a present-but-empty entry, or the
+    // raw `A ...` tokens survive into the clone (`__is_constructible(T,
+    // A...)` became `__is_constructible(int, A...)` and the trait Threw).
+    static const std::vector<TokenDataType *> absent_pack_elems;
+    auto pack_elements = [&](const std::string &name)
+	-> const std::vector<TokenDataType *> *
+    {
+	std::map<std::string, std::vector<TokenDataType *> >::const_iterator
+	    pki = pack_subst.find(name);
+	if ( pki != pack_subst.end() )
+	    return &pki->second;
+	for ( size_t tp = 0; tp < td.typeparams.size(); ++tp )
+	    if ( td.typeparams[tp] == name
+	      && tp < td.typeparam_is_pack.size() && td.typeparam_is_pack[tp] )
+		return &absent_pack_elems;
+	return NULL;
+    };
+    const bool declares_pack = template_has_parameter_pack(td.typeparam_is_pack);
     for ( size_t bi = 0; bi < td.body.size(); ++bi )
     {
 	if ( pack_pattern_skip_dots.count(bi) )
@@ -11045,7 +11123,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	// were arity 1, where splice and replicate emit the same tokens.
 	// Lanes (a) and (b) filter on token_pack_subst themselves, so widening
 	// the guard leaves them unchanged.
-	if ( bt && (!token_pack_subst.empty() || !pack_subst.empty()) )
+	if ( bt && (declares_pack || !token_pack_subst.empty() || !pack_subst.empty()) )
 	{
 	    if ( bt->id() == TokenID::tkOpBrk )
 	    {
@@ -11139,17 +11217,27 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    // of two would drop `std::` from every element after the first.
 	    size_t tid_qtail = bi;
 	    if ( bt && bt->type() == TokenType::ttIdentifier
-	      && (!pack_subst.empty() || !token_pack_subst.empty()) )
+	      && (declares_pack || !pack_subst.empty() || !token_pack_subst.empty()) )
 		while ( tid_qtail + 2 < td.body.size()
 		  && td.body[tid_qtail+1]
 		  && td.body[tid_qtail+1]->id() == TokenID::tkNS
 		  && td.body[tid_qtail+2]
 		  && td.body[tid_qtail+2]->type() == TokenType::ttIdentifier )
 		    tid_qtail += 2;
-	    if ( bt && bt->type() == TokenType::ttIdentifier
-	      && tid_qtail + 1 < td.body.size() && td.body[tid_qtail+1]
-	      && td.body[tid_qtail+1]->id() == TokenID::tkLT
-	      && (!pack_subst.empty() || !token_pack_subst.empty()) )
+	    // A type-query operator over its parenthesized operand is a unit of
+	    // the same kind: `alignof(Ts)...` in an alignment-specifier,
+	    // `sizeof(Ts)...` in an initializer list. Spliced in place, a pack of
+	    // two read `alignof(A, B)` and an empty one `alignof()`.
+	    const bool type_query_unit = bt && tid_qtail == bi
+		&& is_contextual_identifier_token(bt)
+		&& is_type_query_identifier(contextual_identifier_name(bt))
+		&& bi + 1 < td.body.size() && td.body[bi+1]
+		&& td.body[bi+1]->id() == TokenID::tkOpBrk;
+	    if ( ((bt && bt->type() == TokenType::ttIdentifier
+		   && tid_qtail + 1 < td.body.size() && td.body[tid_qtail+1]
+		   && td.body[tid_qtail+1]->id() == TokenID::tkLT)
+		  || type_query_unit)
+	      && (declares_pack || !pack_subst.empty() || !token_pack_subst.empty()) )
 	    {
 		// ONE tracker for the extent (delimiter-tracking.md): step the
 		// template-id HEAD first so DelimDepth sees a template-id context
@@ -11238,6 +11326,9 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 				::const_iterator vpk = token_pack_subst.find(sp);
 			    if ( vpk != token_pack_subst.end() )
 			    { n = vpk->second.size(); is_pack = true; }
+			    else if ( const std::vector<TokenDataType *> *ape =
+					  pack_elements(sp) )
+			    { n = ape->size(); is_pack = true; }	// an absent pack
 			}
 			if ( !is_pack )
 			    continue;
@@ -11389,11 +11480,18 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    }
 		    // An EMPTY pack drops the construct and balances one separating
 		    // comma, mirroring the elisions above (`: A, B<Ts>...` with an
-		    // empty Ts is `: A`, never `: A,`).
+		    // empty Ts is `: A`, never `: A,`); a unit that leads its list
+		    // takes the comma after it (`(B<Ts>()..., x)` is `(x)`).
+		    bool dropped_comma = false;
 		    if ( arity == 0 && !inj.empty()
 		      && inj.back()->id() == TokenID::tkComma )
-		    { delete inj.back(); inj.pop_back(); }
-		    bi = after + 2 + (param_decl_name ? 1 : 0);	// dots (+ declarator name)
+		    { delete inj.back(); inj.pop_back(); dropped_comma = true; }
+		    const bool skip_next_comma = arity == 0 && !dropped_comma
+			&& !param_decl_name && after + 3 < td.body.size()
+			&& td.body[after+3]
+			&& td.body[after+3]->id() == TokenID::tkComma;
+		    bi = after + 2 + (param_decl_name ? 1 : 0)	// dots (+ declarator name)
+			+ (skip_next_comma ? 1 : 0);
 		    continue;
 		}
 	    }
@@ -11494,26 +11592,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    bi + 1 < td.body.size() ? td.body[bi + 1] : NULL);
 		continue;
 	    }
-	    std::map<std::string, std::vector<TokenDataType *> >::iterator pki =
-		pack_subst.find(s);
-	    // An ABSENT trailing pack (`C<int>` against `C<T, A...>`) records
-	    // NO pack_subst entry at all (the arg loop's "leave pack_subst
-	    // without an entry" case) — route it through the SAME empty-pack
-	    // elision as a present-but-empty entry, or the raw `A ...` tokens
-	    // survive into the clone (`__is_constructible(T, A...)` became
-	    // `__is_constructible(int, A...)` and the trait Threw).
-	    static const std::vector<TokenDataType *> absent_pack_elems;
 	    const std::vector<TokenDataType *> *pack_elems_p =
-		pki != pack_subst.end() ? &pki->second : NULL;
-	    if ( !pack_elems_p )
-		for ( size_t tp = 0; tp < td.typeparams.size(); ++tp )
-		    if ( td.typeparams[tp] == s
-		      && tp < td.typeparam_is_pack.size()
-		      && td.typeparam_is_pack[tp] )
-		    {
-			pack_elems_p = &absent_pack_elems;
-			break;
-		    }
+		pack_elements(s);
 	    if ( pack_elems_p )
 	    {
 		// Pack expansion `_Types...`: emit the absorbed element types
@@ -15727,59 +15807,73 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(op_tb) << "Expecting '(' after " << op_name << flush;
     nextToken();
+    TokenBase *type_tb = peekToken();
+    if ( DataDef *dd = parenthesized_type_id_operand(op_name) )
+    {
+	// [expr.sizeof]/1, [expr.alignof]/3 (C++): the operand shall not be
+	// void or a function type (madc spells a function TYPE as a
+	// DataDefFPTR with ptr_syntax off). Decided HERE, after the type-id's
+	// abstract declarator is folded — `sizeof (void *)` is a pointer, not
+	// void (glibc's struct_FILE.h measures it) — and only in C++ mode: in
+	// C `sizeof(void)` is the GNU extension worth 1. Inside a SFINAE
+	// default (`unsigned = sizeof(T)`) the throw is the substitution
+	// failure (g++.dg sfinae38); madc measured 1 and the constrained
+	// overload won.
+	if ( is_cpp_mode() )
+	{
+	    bool fn_type = dynamic_cast<FuncDef *>(dd) != NULL;
+	    if ( DataDefFPTR *fp = dd->as_fptr_dd() )
+		fn_type = fn_type || (!fp->ptr_syntax && !dd->is_reference());
+	    if ( dd == &ddVOID || fn_type )
+		Throw(type_tb) << op_name << " cannot be applied to "
+			       << (dd == &ddVOID ? "void" : "a function type") << flush;
+	}
+	return query_datadef_measure(dd, want_alignof);
+    }
+
+    // sizeof(expression) — ONE implementation: the operand is no type-id, or
+    // a type-id that does not span it. It consumes the operand's closing `)`
+    // via parseExpression's stop_on_closing_paren.
+    TokenBase *first = nextToken();
+    // sizeof("literal") — C string literals are char arrays. Check the
+    // first token before parseExpression transforms it.
+    if ( first && first->type() == TokenType::ttString )
+    {
+	size_t value = literal_token_sizeof(static_cast<TokenStr *>(first));
+	if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+	    nextToken();
+	return value;
+    }
+    TokenBase *expr = parseExpression(first, true, false, true, 1);
+    if ( !expr || !expr->datadef() )
+	Throw(first) << "Unknown type in " << op_name << flush;
+    return type_query_expression_value(*this, expr, want_alignof);
+}
+
+DataDef *Program::parenthesized_type_id_operand(const std::string &op_name,
+						bool operand_list)
+{
     // [expr.sizeof]/1: the `sizeof ( type-id )` production is chosen ONLY when
     // the type-id is the WHOLE parenthesized operand — otherwise the operand is
     // the parenthesized EXPRESSION. Both readings open with the same tokens
-    // (`sizeof(A{})`, `sizeof(f(0))`, `sizeof(g<void>(0))`), and a reading that
-    // commits on the first token cannot take the second one back: the closing
-    // `)` check below was a diagnostic, so `sizeof(f(0))` measured the FUNCTION
-    // `f` and then died on `(`. Snapshot the operand here so that check can
-    // instead REJECT the type-id reading and re-read the operand as an
-    // expression (TokenStream::savepos/restore is the parser's backtrack owner).
+    // (`sizeof(A{})`, `sizeof(f(0))`, `sizeof(g<void>(0))`, `alignas(T::v)`),
+    // and a reading that commits on the first token cannot take the second one
+    // back: `sizeof(f(0))` measured the FUNCTION `f` and then died on `(`.
+    // Snapshot the operand here so the closing-paren check can REJECT the
+    // type-id reading and leave the operand to be read as an expression
+    // (TokenStream::savepos/restore is the parser's backtrack owner).
     TokenStream::Pos operand_pos = tokens.savepos();
     TokenBase *type_tb = nextToken();
-    DataDef *dd = NULL;
-    size_t value = 0;
     bool have_value = false;
-
-    dd = resolve_type_query_datadef(type_tb, op_name, have_value, value);
+    size_t value = 0;
+    DataDef *dd = type_tb
+	? resolve_type_query_datadef(type_tb, op_name, have_value, value) : NULL;
     // [expr.sizeof]p1 / [expr.alignof]: the operand type must be COMPLETE.
     // A bodyless forward instantiation (libc++ <iosfwd>'s stream typedefs)
     // measured 0 here silently; complete it on demand now that the
     // definition may have registered.
     if ( dd )
 	dd = complete_class_type_on_demand(dd);
-    // sizeof(expression) — ONE implementation, reached two ways: the first
-    // token resolved to no type at all (below), or the type-id reading was
-    // rejected by the closing-paren check and rewound (further below). It
-    // consumes the operand's closing `)` via parseExpression's
-    // stop_on_closing_paren.
-    bool expr_fallback_consumed_paren = false;
-    auto measure_expression_operand = [&](TokenBase *first) -> void
-    {
-	// sizeof("literal") — C string literals are char arrays. Check the
-	// first token before parseExpression transforms it.
-	if ( first && first->type() == TokenType::ttString )
-	{
-	    value = literal_token_sizeof(static_cast<TokenStr *>(first));
-	    have_value = true;
-	    dd = NULL;
-	    return;
-	}
-	TokenBase *expr = parseExpression(first, true, false, true, 1);
-	if ( expr && expr->datadef() )
-	{
-	    value = type_query_expression_value(*this, expr, want_alignof);
-	    have_value = true;
-	    dd = NULL; // have_value is set, skip the pointer/array loop below
-	    expr_fallback_consumed_paren = true;
-	}
-	if ( !have_value )
-	    Throw(first) << "Unknown type in " << op_name << flush;
-    };
-    if ( !have_value && !dd )
-	measure_expression_operand(type_tb);
-
     // The type-id's ABSTRACT declarator (`sizeof(int *)`, `sizeof(int Widget::*)`,
     // `sizeof(void (Widget::*)())`, `sizeof(int (*)[3])`, `sizeof(int (&)[4])`):
     // the ONE declarator reader. It stops at the first token that is not a
@@ -15787,54 +15881,64 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     // which the span check below turns into the rewind. (Its private copy here
     // skipped parameter lists with a hand-rolled depth counter and built a
     // member-function pointer with no signature.)
-    if ( !have_value && dd && peekToken() && peekToken()->id() != TokenID::tkClBrk )
+    if ( dd && peekToken() && peekToken()->id() != TokenID::tkClBrk )
     {
 	DeclaratorResult sz_decl;
 	dd = parse_declarator(dd, DeclaratorMode::TypeIdOperand, sz_decl);
     }
-    // The expression fallback (sizeof(expr)) already consumed the closing
-    // paren via parseExpression's stop_on_closing_paren. Only consume it
-    // here for the type-name / variable-name path.
-    if ( !expr_fallback_consumed_paren )
+    // A type-id that does not span the whole operand was never the operand.
+    // Nothing was diagnosed on the way here — the type-id reading SUCCEEDED,
+    // it just isn't the one the grammar selects — so the rewind needs no
+    // diagnostic snapshot. In an operand list the type-id may also end at
+    // its `,` or at a pack expansion's `...`.
+    TokenBase *end = peekToken();
+    bool spans = end && (end->id() == TokenID::tkClBrk
+	|| (operand_list && (end->id() == TokenID::tkComma || ellipsis_ahead())));
+    if ( !dd || !spans )
     {
-	if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+	tokens.restore(operand_pos);
+	return NULL;
+    }
+    if ( !operand_list )
+	nextToken();
+    return dd;
+}
+
+size_t Program::parse_alignment_specifier()
+{
+    TokenBase *open = nextToken();
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	Throw(open) << "Expecting '(' after _Alignas" << flush;
+    // [dcl.align]/4: `alignas(T...)` is a pack expansion, one specifier per
+    // element. The pattern holds the unexpanded pack, which is dependent;
+    // an instantiation reads the expanded operand list (`alignas(int,
+    // double)`), and the strictest of them wins, as of several specifiers.
+    size_t align = 0;
+    for (;;)
+    {
+	size_t one = 0;
+	// `_Alignas ( type-id )` is `_Alignas ( _Alignof ( type-id ) )` (C11
+	// 6.7.5p3, [dcl.align]/3). A dependent type is read by the
+	// instantiation, with its arguments.
+	if ( DataDef *dd = parenthesized_type_id_operand("_Alignas", true) )
+	    one = datadef_is_dependent_type(*dd) ? 0 : query_datadef_measure(dd, true);
+	else if ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
 	{
-	    // The type-id did not span the whole operand, so it was never the
-	    // operand: rewind and read the parenthesized expression instead
-	    // ([expr.sizeof]/1). Nothing was diagnosed on the way here — the
-	    // type-id reading SUCCEEDED, it just isn't the one the grammar
-	    // selects — so the rewind needs no diagnostic snapshot.
-	    tokens.restore(operand_pos);
-	    dd = NULL;
-	    value = 0;
-	    have_value = false;
-	    measure_expression_operand(nextToken());
+	    int64_t value = parse_constant_integer_expression();
+	    one = value > 0 ? static_cast<size_t>(value) : 0;
 	}
-	else
-	    nextToken();
+	if ( consume_ellipsis() )
+	    one = 0;
+	if ( one > align )
+	    align = one;
+	if ( !peekToken() || peekToken()->id() != TokenID::tkComma )
+	    break;
+	nextToken();
     }
-
-    // [expr.sizeof]/1, [expr.alignof]/3 (C++): the operand shall not be void
-    // or a function type (madc spells a function TYPE as a DataDefFPTR with
-    // ptr_syntax off). Decided HERE, after the type-id's abstract declarator
-    // is folded — `sizeof (void *)` is a pointer, not void (glibc's
-    // struct_FILE.h measures it) — and only in C++ mode: in C `sizeof(void)`
-    // is the GNU extension worth 1. Inside a SFINAE default (`unsigned =
-    // sizeof(T)`) the throw is the substitution failure (g++.dg sfinae38);
-    // madc measured 1 and the constrained overload won.
-    if ( !have_value && dd && is_cpp_mode() )
-    {
-	bool fn_type = dynamic_cast<FuncDef *>(dd) != NULL;
-	if ( DataDefFPTR *fp = dd->as_fptr_dd() )
-	    fn_type = fn_type || (!fp->ptr_syntax && !dd->is_reference());
-	if ( dd == &ddVOID || fn_type )
-	    Throw(type_tb) << op_name << " cannot be applied to "
-			   << (dd == &ddVOID ? "void" : "a function type") << flush;
-    }
-    if ( !have_value && dd )
-	value = query_datadef_measure(dd, want_alignof);
-
-    return value;
+    TokenBase *close = nextToken();
+    if ( !close || close->id() != TokenID::tkClBrk )
+	Throw(close ? close : open) << "Expecting ')' after _Alignas operand" << flush;
+    return align;
 }
 
 // --- Type-trait builtins (__is_class, __is_base_of, …) ------------------------
@@ -18801,7 +18905,7 @@ ConstValue Program::parse_constant_primary()
 	bool bool_value = false;
 	if ( is_bool_literal_identifier(name, bool_value) )
 	    return bool_value ? 1 : 0;
-	if ( name == "sizeof" || is_alignof_identifier(name) )
+	if ( is_type_query_identifier(name) )
 	    return (madc_wide_int)evaluate_type_query(tb, name);
 	// noexcept(expr) — [expr.unary.noexcept] in constant context: the
 	// integral_constant base of libc++'s __libcpp_is_nothrow_constructible
@@ -19748,8 +19852,7 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 	    continue;
 	}
 	bool bool_value = false;
-	bool constant_callable = name == "sizeof"
-			      || is_alignof_identifier(name)
+	bool constant_callable = is_type_query_identifier(name)
 			      || is_type_trait_builtin(name)
 			      || is_bool_literal_identifier(name, bool_value)
 			      || is_nullptr_identifier(name)
@@ -19949,7 +20052,7 @@ bool Program::bracket_dim_has_constant_fold_query()
 	if ( t->type() != TokenType::ttIdentifier )
 	    continue;
 	std::string name = ((TokenIdent *)t)->spelling();
-	if ( name == "sizeof" || is_alignof_identifier(name) )
+	if ( is_type_query_identifier(name) )
 	    return true;
     }
     return false;
@@ -40076,7 +40179,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.
-		if ( ident_tb->spelling_is("sizeof") || is_alignof_identifier(ident_tb->spelling()) )
+		if ( is_type_query_identifier(ident_tb->spelling()) )
 		{
 		    if ( TokenBase *query_tb = try_parse_dynamic_type_query(tb, ident_tb->spelling()) )
 			exStack.push(query_tb);
@@ -50023,6 +50126,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     datadef_map_citer dmi;
 
     DBG(std::cout << std::endl << "TokenCLASS::parse() top" << std::endl);
+    // A class-head's attribute groups and alignment specifier come before its
+    // name (`class alignas(8) Stmt`, [class.pre]/1). The class parser does
+    // not lay them out yet (BUGS.md B65); read here, they no longer stand
+    // for the class name.
+    AggregateAttributes head_attrs;
+    pgm.consume_aggregate_attributes(head_attrs);
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
 
@@ -57557,8 +57666,8 @@ static bool ignored_template_declarator_call_name(const std::string &name)
     // -std=c++17 (tuple's variadic ctors), and reading `explicit (` as the
     // declarator name silently dropped those ctors from registration.
     return name == "decltype" || name == "noexcept" || name == "sizeof"
-	|| name == "alignof" || name == "typeid" || name == "__attribute__"
-	|| name == "__attribute" || name == "explicit";
+	|| name == "alignof" || name == "typeid"
+	|| is_attribute_specifier_name(name) || name == "explicit";
 }
 
 static DataDef *skipped_template_function_return_type(
@@ -69182,6 +69291,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 							&typeparam_constraints);
 	return NULL;
     }
+    // The head's attribute and alignment specifiers (`struct alignas(T) Name`)
+    // stay in the captured body, read by the class parse at instantiation.
+    std::vector<TokenBase *> head_specifiers;
+    pgm.capture_attribute_specifiers(head_specifiers);
     TokenBase *name_tb = pgm.nextToken();
     if ( !is_contextual_identifier_token(name_tb) )
 	pgm.Throw(name_tb) << "Expecting template class name" << flush;
@@ -69258,6 +69371,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     // parse pass moves on, so capturing raw pointers would dangle at instantiation.
     std::vector<TokenBase *> body;
     body.push_back(class_kw->clone_origin());
+    body.insert(body.end(), head_specifiers.begin(), head_specifiers.end());
     body.push_back(name_tb->clone_origin());
     for ( size_t i = 0; i < prefix.size(); ++i )
 	body.push_back(prefix[i]);

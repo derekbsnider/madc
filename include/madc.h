@@ -7790,6 +7790,20 @@ public:
 					const std::string &op_name,
 					bool &have_value, size_t &query_value);
     size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name);
+    // The parenthesized operand of a type query or an alignment specifier,
+    // its `(` consumed, read as a TYPE-ID when the type-id is the whole
+    // operand ([expr.sizeof]/1, [dcl.align]/3): its complete type, the `)`
+    // consumed. In an `operand_list` (an alignment specifier's) the type-id
+    // may also end at a `,` or a pack expansion's `...`, and the terminator
+    // is left unconsumed. NULL, nothing consumed, when the operand is an
+    // expression.
+    DataDef *parenthesized_type_id_operand(const std::string &op_name,
+					   bool operand_list = false);
+    // The operand of `_Alignas ( ... )` / `alignas ( ... )`, the stream past
+    // the specifier: a type-id's alignment or a constant expression's value,
+    // the strictest of an expanded pack's list, the parens consumed. 0 for
+    // `alignas(0)` and for a dependent operand (the instantiation reads it).
+    size_t parse_alignment_specifier();
     // [expr.unary.noexcept]: parse `( expression )` UNEVALUATED (decltype's
     // twin) and fold to 0/1 — the noexcept-spec conjunction over the operand's
     // parsed tree. Throws when the answer cannot be derived faithfully; a
@@ -8304,6 +8318,10 @@ public:
     // decl-specifier sequence interleaves them (`const AL int x;`): the cv
     // mask; the groups' alignment is merged into `align`.
     unsigned consume_cv_and_object_attributes(size_t &align);
+    // The attribute and alignment specifiers NEXT in the stream, consumed
+    // unread and appended to `out` as copies — for a construct whose tokens
+    // are read later (a class template's head, read at instantiation).
+    void capture_attribute_specifiers(std::vector<TokenBase *> &out);
     // The attribute groups NEXT in the stream, among a declaration's
     // specifiers: consumed, their alignment merged into the declaration's
     // (parsing_decl_align). False when none.

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### `_Alignas` and `alignas` align what they declare
+
+`struct A { char c; _Alignas(16) int x; };` is 32 bytes,
+`_Alignas(double) char d;` takes double's alignment, `alignas(16) char
+buf[8];` is placed on a 16-byte boundary and `struct alignas(16) H` is
+16-aligned, as in gcc and clang. Before, madc ignored every alignment
+specifier. The operand is a type or a constant expression, the strictest
+of several wins, and class templates and function templates read it per
+instantiation. A class template may carry `alignas` or `__attribute__`
+before its name (before, the attribute was refused), and a pack expands in
+its body's `sizeof(T)...` and `alignof(T)...` for any number of arguments,
+none included. `alignas` is a keyword in C23, C++11 and the madc dialect;
+in C17 it is an ordinary identifier unless `<stdalign.h>` defines it. The
+members of a class that declares member functions still ignore it.
+
 ### An object's `aligned` attribute aligns it
 
 `char c __attribute__((aligned(16)));` is placed on a 16-byte boundary and
