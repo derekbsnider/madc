@@ -8322,6 +8322,9 @@ public:
     class TokenCallMethod *arrow_operator_call(TokenBase *lhs,
 					       TokenBase *loc_tb);
     TokenBase *consume_balanced_parenthesized_suffix(TokenBase *open);
+    // Consume the stream through the `)` closing `open` groups whose `(` were
+    // already consumed (DelimDepth's paren axis). False at end of input.
+    bool consume_through_open_parens(int open);
     TokenBase *make_expression_context_literal(const madc::value &resolved,
 					       TokenBase *src);
     TokenBase *materialize_runtime_struct_size_captures(TokenCpnd *code,

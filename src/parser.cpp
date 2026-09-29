@@ -1780,6 +1780,205 @@ static bool cpp_keyword_leads_declaration(TokenBase *tb)
 	|| is_thread_local_specifier_token(tb);
 }
 
+static bool is_contextual_identifier_token(TokenBase *tb);	// defined with the identifier readers below
+static std::string contextual_identifier_name(TokenBase *tb);
+
+// Balanced-delimiter depth for token scans: (), [], {}, <>. The hand-rolled
+// "++paren … --angle … >>" if-else chain is copy-pasted across many scanners;
+// this is the single shared bookkeeping (operator-ids consumed opaquely, never
+// counted as a '<'). Callers layer their own logic (comma counts, terminators)
+// on top using `top()` / the individual depths.
+struct DelimDepth {
+    int paren = 0, square = 0, brace = 0, angle = 0;
+    std::vector<int> angle_paren;   // paren depth at each angle open
+    TokenBase *prev = NULL;         // previous token seen by update()
+    // The Program whose NAME LOOKUP the `<` test consults (lt_reads_as_less_than).
+    // A STREAM scan — one that walks the live token stream at a parse position
+    // — constructs with the Program (`DelimDepth d(this)` / `(&pgm)`; the shape
+    // scripts/check-one-delim-tracker.sh enforces) and Program::delimStepStream
+    // sets it too; an INDEX scan over a stored token run may leave it NULL and
+    // keeps the token-only reading (angle_open_context alone). hist[] is the
+    // short token history behind prev (hist[0] == prev) the qualified-name
+    // walk reads.
+    Program *pgm = NULL;
+    // A TYPE-ID scan ([temp.names]/3.4, a type-only context: a declaration's
+    // parameter or return type): every `<` after a name opens a
+    // template-argument list, inside `( )` too — a function type's parameters
+    // (`void(tup<int, int>)`) are type-ids. Off, the expression reading below
+    // applies (no angle inside `( )`/`[ ]`, the name-lookup test).
+    bool type_id_context = false;
+    enum { HIST = 8 };
+    TokenBase *hist[HIST] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
+    DelimDepth() {}
+    explicit DelimDepth(Program *p) : pgm(p) {}
+    bool top() const { return !paren && !square && !brace && !angle; }
+    // [temp.names]/3, decided the way gcc (cp_parser_template_name) and clang
+    // (Sema::isTemplateName) decide it — by NAME LOOKUP, never by token
+    // adjacency: a `<` after a name begins a template-argument-list only when
+    // the name IS a template (lookup finds a template declaration, or the
+    // `template` keyword / a type-only context says so), and a name qualified
+    // by a DEPENDENT nested-name-specifier is not a template-name without the
+    // keyword. angle_open_context is the token-only approximation (any
+    // identifier opens); this narrows it wherever the Program can be asked:
+    //   `K::num < 5`          num a static data member of concrete K -> less-than
+    //   `_R1::num < _R2::num` _R1 a template parameter (<ratio>)     -> less-than
+    //   `n < 5`, `N < 5`      a variable / a type or value parameter -> less-than
+    //   `TT<int>`, `S::tmpl<int>`, `f<int>(...)`, an unknown name  -> opens
+    // A type-only context keeps the opening reading ([temp.names]/3.4; gcc's
+    // tag_type != none_type): `typename T::x<...>`, `class T::x<...>`, a
+    // base-specifier `: T::x<...>` / `, T::x<...>` outside an argument list.
+    // A global-qualified chain (`::a::b <`), a template-id qualifier
+    // (`X<T>::m <`) and a member access (`obj.m <`) are not resolvable from
+    // tokens and keep the opening reading. Before this rule, <ratio>'s
+    // `integral_constant<bool, _R1::num < _R2::num>` opened an angle that never
+    // closed: the class-prefix capture ran through every later header to a
+    // stray `>`, std's namespace stayed open, and <ctime>'s `using ::clock`
+    // failed under <chrono> / <filesystem>.
+    bool lt_reads_as_less_than() const
+    {
+	if ( !pgm || !prev || !is_contextual_identifier_token(prev) )
+	    return false;
+	if ( hist[1] && hist[1]->id() == TokenID::tkTEMPLATE )
+	    return false;			// `T::template name <`
+	std::vector<TokenBase *> quals;		// innermost qualifier first
+	int i = 1;
+	while ( i + 1 < HIST && hist[i] && hist[i]->id() == TokenID::tkNS
+	     && hist[i + 1]
+	     && (is_contextual_identifier_token(hist[i + 1])
+		 || hist[i + 1]->type() == TokenType::ttDataType) )
+	{
+	    quals.push_back(hist[i + 1]);
+	    i += 2;
+	}
+	if ( i < HIST && hist[i] && hist[i]->id() == TokenID::tkNS )
+	    return false;			// `::a::b <`, `X<T>::m <`
+	TokenBase *before = i < HIST ? hist[i] : NULL;
+	const std::string name = contextual_identifier_name(prev);
+	if ( quals.empty() )
+	{
+	    if ( before && (before->id() == TokenID::tkDot
+			 || before->id() == TokenID::tkDeRef) )
+		return false;			// `obj.name <`
+	    return pgm->unqualified_name_lt_reading(name)
+		   == Program::LtReading::LessThan;
+	}
+	if ( before && type_only_context_intro(before) )
+	    return false;
+	for ( size_t k = 0; k < quals.size(); ++k )
+	    if ( pgm->scan_qualifier_is_dependent(quals[k]) )
+		return true;
+	std::vector<TokenBase *> root_first(quals.rbegin(), quals.rend());
+	DataDefCLASS *cls = pgm->scan_resolve_qualifier_chain(root_first);
+	return cls && pgm->class_member_lt_reading(cls, name)
+			== Program::LtReading::LessThan;
+    }
+    // The token before a qualified name that makes it a type-only context: an
+    // elaborated-type keyword, `typename`, an access specifier or `virtual`
+    // (base-specifier heads) and — outside every argument list, where they
+    // cannot be the conditional operator or an argument separator — the
+    // base-clause `:` and `,`.
+    bool type_only_context_intro(TokenBase *t) const
+    {
+	TokenID id = t->id();
+	if ( id == TokenID::tkCLASS || id == TokenID::tkSTRUCT
+	  || id == TokenID::tkUNION )
+	    return true;
+	if ( !angle && (id == TokenID::tkColon || id == TokenID::tkComma) )
+	    return true;
+	if ( !is_contextual_identifier_token(t) )
+	    return false;
+	const std::string s = contextual_identifier_name(t);
+	return s == "typename" || s == "public" || s == "private"
+	    || s == "protected" || s == "virtual";
+    }
+    // A `<` can only BEGIN a template-argument-list after a name (template-id
+    // head: identifier / type name / the `template` keyword). After `)`, `]`,
+    // a literal, etc. it is the less-than OPERATOR — real <type_traits> writes
+    // `integral_constant<bool, _Tp(-1) < _Tp(0)>`, and counting that `<` as an
+    // open desynced the scan by one level for the next ~1300 header lines.
+    // NULL prev (scan starting mid-stream) keeps the legacy always-open rule.
+    static bool angle_open_context(TokenBase *t)
+    {
+	if ( !t )
+	    return true;
+	if ( t->type() == TokenType::ttIdentifier
+	  || t->type() == TokenType::ttDataType )
+	    return true;
+	return t->id() == TokenID::tkTEMPLATE;
+    }
+    // Start INSIDE a template-argument list whose `<` the caller already
+    // consumed from the stream: the state update() leaves after that `<`.
+    void enter_angle()
+    {
+	++angle;
+	angle_paren.push_back(paren);
+    }
+    // Start inside `n` parenthesized groups whose `(` the caller consumed.
+    void enter_parens(int n)
+    {
+	paren += n;
+    }
+    // Pure delimiter bookkeeping for one token (NO operator-id handling — the
+    // callers below own that, differing by index vs stream access).
+    void update(TokenBase *t)
+    {
+	if ( !t )
+	    return;
+	switch ( t->id() )
+	{
+	    case TokenID::tkOpBrk: ++paren; break;
+	    case TokenID::tkClBrk: if ( paren > 0 )  --paren;  break;
+	    case TokenID::tkOpSqr: ++square; break;
+	    case TokenID::tkClSqr: if ( square > 0 ) --square; break;
+	    case TokenID::tkOpBrc: ++brace; break;
+	    case TokenID::tkClBrc: if ( brace > 0 )  --brace;  break;
+	    // Two independent tests, and BOTH are required — each catches a
+	    // shape the other misses:
+	    //   angle_open_context : `declval<T>() < declval<U>()` — prev is
+	    //                        `)`, so this `<` cannot begin a template-id.
+	    //   !paren && !square  : `decltype(a < b)` — prev IS an identifier,
+	    //                        so the context test passes and only the
+	    //                        nesting test rejects it. Without this the
+	    //                        angle opened here never closes (its `>` is
+	    //                        inside the parens too), the depth stays
+	    //                        stuck past the `)`, and a scan looking for
+	    //                        a top-level `;` or body `{` runs to EOF.
+	    // Inside `(...)`/`[...]` the paren balancing alone locates the
+	    // enclosing construct, so angles there are simply not tracked.
+	    case TokenID::tkLT:
+		if ( type_id_context ? angle_open_context(prev)
+		   : (!paren && !square && angle_open_context(prev)
+		      && !lt_reads_as_less_than()) )
+		{
+		    ++angle;
+		    angle_paren.push_back(paren);
+		}
+		break;
+	    // An UNPARENTHESIZED `>` closes the argument list ([temp.names]):
+	    // a `>` inside parens opened WITHIN the list (`A<(B > C)>`) is the
+	    // greater-than operator, not a close.
+	    case TokenID::tkGT:    close_angle(); break;
+	    case TokenID::tkBSR:   close_angle(); close_angle(); break;
+	    default: break;
+	}
+	prev = t;
+	for ( int k = HIST - 1; k > 0; --k )
+	    hist[k] = hist[k - 1];
+	hist[0] = t;
+    }
+private:
+    void close_angle()
+    {
+	if ( angle <= 0 )
+	    return;
+	if ( !angle_paren.empty() && paren > angle_paren.back() )
+	    return;             // operator-> comparison inside parens
+	--angle;
+	if ( !angle_paren.empty() )
+	    angle_paren.pop_back();
+    }
+};
+
 TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 					 std::set<std::string> *attrs,
 					 std::string *alias_target,
@@ -1790,7 +1989,7 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
     {
 	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 	{
-	    int adepth = 0;
+	    DelimDepth ad(this);	// the attribute's `((...))` groups
 	    bool saw_alias = false;
 	    bool saw_aligned = false;
 	    bool saw_vector_size = false;
@@ -1798,9 +1997,9 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 	    do {
 		TokenBase *at = nextToken();
 		if ( !at ) break;
-		if ( attrs && adepth >= 2 && at->type() == TokenType::ttIdentifier )
+		if ( attrs && ad.paren >= 2 && at->type() == TokenType::ttIdentifier )
 		    attrs->insert(((TokenIdent *)at)->spelling());
-		if ( adepth >= 2 && at->type() == TokenType::ttIdentifier
+		if ( ad.paren >= 2 && at->type() == TokenType::ttIdentifier
 		  && madc_gnu_attribute_kind(((TokenIdent *)at)->spelling()) == GnuAttributeKind::Weak )
 		    pending_weak_binding = true;
 		if ( at->type() == TokenType::ttIdentifier
@@ -1849,9 +2048,8 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 		    saw_vector_size = false;
 		    continue; // don't do depth tracking for this paren pair
 		}
-		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
-		else if ( at->id() == TokenID::tkClBrk ) --adepth;
-	    } while ( adepth > 0 );
+		delimStepStream(at, ad);
+	    } while ( ad.paren > 0 );
 	}
 	nt = nextToken();
     }
@@ -1916,6 +2114,19 @@ TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
 // Skip (or lower the recognized copy shapes of) a GNU asm STATEMENT.
 // `tb` is the asm introducer; shared by the ttIdentifier and ttKeyword
 // arms of parseStatement so reserving `asm` as a keyword keeps the skip.
+// A token the asm skipper already consumed while probing a clause: +1 for a
+// `(` it opened, -1 for a `)` it closed, 0 otherwise.
+static int consumed_paren_balance(const TokenBase *t)
+{
+    if ( !t )
+	return 0;
+    if ( t->id() == TokenID::tkOpBrk )
+	return 1;
+    if ( t->id() == TokenID::tkClBrk )
+	return -1;
+    return 0;
+}
+
 TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 {
 	    // optional volatile qualifier
@@ -1947,22 +2158,9 @@ TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 			std::string out_constraint = ((TokenStr *)out_c)->str;
 			if ( out_constraint == "+m" )
 			{
-			    int out_depth = 1;
-			    while ( out_depth > 0 )
-			    {
-				TokenBase *t = nextToken();
-				if ( !t ) break;
-				if ( t->id() == TokenID::tkOpBrk ) ++out_depth;
-				else if ( t->id() == TokenID::tkClBrk ) --out_depth;
-			    }
-			    int asm_depth = 1;
-			    while ( asm_depth > 0 )
-			    {
-				TokenBase *t = nextToken();
-				if ( !t ) break;
-				if ( t->id() == TokenID::tkOpBrk ) ++asm_depth;
-				else if ( t->id() == TokenID::tkClBrk ) --asm_depth;
-			    }
+			    // Through the operand's `)`, then the asm's own.
+			    if ( consume_through_open_parens(1) )
+				consume_through_open_parens(1);
 			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 				return nextToken();
 			    return tb;
@@ -2006,14 +2204,7 @@ TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 			    // remaining tokens up to outer ')'.
 			    if ( close && close->id() == TokenID::tkColon )
 			    {
-				int rem = 1;
-				while ( rem > 0 )
-				{
-				    TokenBase *t = nextToken();
-				    if ( !t ) break;
-				    if ( t->id() == TokenID::tkOpBrk ) ++rem;
-				    else if ( t->id() == TokenID::tkClBrk ) --rem;
-				}
+				consume_through_open_parens(1);
 				close = new TokenClBrk();
 			    }
 			    if ( in_expr
@@ -2048,16 +2239,10 @@ TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 			    // depth starting from `close` (which may be `,`,
 			    // `:`, or a paren itself).
 			    {
-				int rem = 1; // 1 for the outer '(' consumed at asm entry
-				if ( close && close->id() == TokenID::tkOpBrk ) ++rem;
-				else if ( close && close->id() == TokenID::tkClBrk ) --rem;
-				while ( rem > 0 )
-				{
-				    TokenBase *t = nextToken();
-				    if ( !t ) break;
-				    if ( t->id() == TokenID::tkOpBrk ) ++rem;
-				    else if ( t->id() == TokenID::tkClBrk ) --rem;
-				}
+				// 1 for the outer '(' consumed at asm entry,
+				// adjusted by `close` itself.
+				consume_through_open_parens(
+				    1 + consumed_paren_balance(close));
 				parsed_simple_copy = true;
 				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 				    return nextToken();
@@ -2072,18 +2257,10 @@ TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 			// need 1 more ')' to close, adjusted by any parens
 			// in in_c and in_ob.
 			{
-			    int rem = 1; // for the outer '('
-			    if ( in_c && in_c->id() == TokenID::tkOpBrk ) ++rem;
-			    else if ( in_c && in_c->id() == TokenID::tkClBrk ) --rem;
-			    if ( in_ob && in_ob->id() == TokenID::tkOpBrk ) ++rem;
-			    else if ( in_ob && in_ob->id() == TokenID::tkClBrk ) --rem;
-			    while ( rem > 0 )
-			    {
-				TokenBase *t = nextToken();
-				if ( !t ) break;
-				if ( t->id() == TokenID::tkOpBrk ) ++rem;
-				else if ( t->id() == TokenID::tkClBrk ) --rem;
-			    }
+			    // 1 for the outer '(', adjusted by in_c and in_ob.
+			    consume_through_open_parens(
+				1 + consumed_paren_balance(in_c)
+				  + consumed_paren_balance(in_ob));
 			    parsed_simple_copy = true;
 			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 				return nextToken();
@@ -2092,16 +2269,7 @@ TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 		    }
 		}
 		if ( !parsed_simple_copy )
-		{
-		    int depth = 1;
-		    while ( depth > 0 )
-		    {
-			TokenBase *t = nextToken();
-			if ( !t ) break;
-			if ( t->id() == TokenID::tkOpBrk ) ++depth;
-			else if ( t->id() == TokenID::tkClBrk ) --depth;
-		    }
-		}
+		    consume_through_open_parens(1);
 	    }
 	    // Return the semicolon as the statement (no-op).
 	    // If the asm is the body of `if (...) asm(...);`, the
@@ -2163,7 +2331,7 @@ size_t Program::parse_gnu_vector_size_attribute()
     nextToken(); // consume __attribute__
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	return 0;
-    int depth = 0;
+    DelimDepth d(this);	// the attribute's `((...))` groups
     bool saw_vector_size = false;
     size_t vector_bytes = 0;
     do {
@@ -2179,8 +2347,8 @@ size_t Program::parse_gnu_vector_size_attribute()
 		Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
 	    saw_vector_size = false;
 	}
-	else if ( at->id() == TokenID::tkOpBrk ) ++depth;
-	else if ( at->id() == TokenID::tkClBrk ) --depth;
+	else if ( at->id() == TokenID::tkOpBrk || at->id() == TokenID::tkClBrk )
+	    delimStepStream(at, d);
 	else if ( at->type() == TokenType::ttIdentifier
 	       && (((TokenIdent *)at)->spelling_is("vector_size")
 		|| ((TokenIdent *)at)->spelling_is("__vector_size__")) )
@@ -2191,7 +2359,7 @@ size_t Program::parse_gnu_vector_size_attribute()
 	    if ( n > 0 )
 		vector_bytes = (size_t)n;
 	}
-    } while ( depth > 0 );
+    } while ( d.paren > 0 );
     return vector_bytes;
 }
 
@@ -2203,7 +2371,7 @@ void Program::consume_typedef_gnu_attributes(std::string *mode_name,
 	nextToken(); // consume __attribute__
 	if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	    continue;
-	int depth = 0;
+	DelimDepth d(this);	// the attribute's `((...))` groups
 	bool saw_mode = false;
 	bool saw_vector_size = false;
 	do {
@@ -2219,10 +2387,9 @@ void Program::consume_typedef_gnu_attributes(std::string *mode_name,
 		    Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
 		saw_vector_size = false;
 	    }
-	    else if ( at->id() == TokenID::tkOpBrk )
-		++depth;
-	    else if ( at->id() == TokenID::tkClBrk )
-		--depth;
+	    else if ( at->id() == TokenID::tkOpBrk
+		   || at->id() == TokenID::tkClBrk )
+		delimStepStream(at, d);
 	    else if ( at->type() == TokenType::ttIdentifier
 		   && ((TokenIdent *)at)->spelling_is("mode") )
 		saw_mode = true;
@@ -2242,7 +2409,7 @@ void Program::consume_typedef_gnu_attributes(std::string *mode_name,
 		    *vector_bytes = (size_t)n;
 		saw_vector_size = false;
 	    }
-	} while ( depth > 0 );
+	} while ( d.paren > 0 );
     }
 }
 
@@ -4858,196 +5025,6 @@ static size_t operator_id_token_span(const Seq &toks, size_t i)
     return 1 + operator_id_tail_span(toks, i + 1);
 }
 
-// Balanced-delimiter depth for token scans: (), [], {}, <>. The hand-rolled
-// "++paren … --angle … >>" if-else chain is copy-pasted across many scanners;
-// this is the single shared bookkeeping (operator-ids consumed opaquely, never
-// counted as a '<'). Callers layer their own logic (comma counts, terminators)
-// on top using `top()` / the individual depths.
-struct DelimDepth {
-    int paren = 0, square = 0, brace = 0, angle = 0;
-    std::vector<int> angle_paren;   // paren depth at each angle open
-    TokenBase *prev = NULL;         // previous token seen by update()
-    // The Program whose NAME LOOKUP the `<` test consults (lt_reads_as_less_than).
-    // A STREAM scan — one that walks the live token stream at a parse position
-    // — constructs with the Program (`DelimDepth d(this)` / `(&pgm)`; the shape
-    // scripts/check-one-delim-tracker.sh enforces) and Program::delimStepStream
-    // sets it too; an INDEX scan over a stored token run may leave it NULL and
-    // keeps the token-only reading (angle_open_context alone). hist[] is the
-    // short token history behind prev (hist[0] == prev) the qualified-name
-    // walk reads.
-    Program *pgm = NULL;
-    // A TYPE-ID scan ([temp.names]/3.4, a type-only context: a declaration's
-    // parameter or return type): every `<` after a name opens a
-    // template-argument list, inside `( )` too — a function type's parameters
-    // (`void(tup<int, int>)`) are type-ids. Off, the expression reading below
-    // applies (no angle inside `( )`/`[ ]`, the name-lookup test).
-    bool type_id_context = false;
-    enum { HIST = 8 };
-    TokenBase *hist[HIST] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
-    DelimDepth() {}
-    explicit DelimDepth(Program *p) : pgm(p) {}
-    bool top() const { return !paren && !square && !brace && !angle; }
-    // [temp.names]/3, decided the way gcc (cp_parser_template_name) and clang
-    // (Sema::isTemplateName) decide it — by NAME LOOKUP, never by token
-    // adjacency: a `<` after a name begins a template-argument-list only when
-    // the name IS a template (lookup finds a template declaration, or the
-    // `template` keyword / a type-only context says so), and a name qualified
-    // by a DEPENDENT nested-name-specifier is not a template-name without the
-    // keyword. angle_open_context is the token-only approximation (any
-    // identifier opens); this narrows it wherever the Program can be asked:
-    //   `K::num < 5`          num a static data member of concrete K -> less-than
-    //   `_R1::num < _R2::num` _R1 a template parameter (<ratio>)     -> less-than
-    //   `n < 5`, `N < 5`      a variable / a type or value parameter -> less-than
-    //   `TT<int>`, `S::tmpl<int>`, `f<int>(...)`, an unknown name  -> opens
-    // A type-only context keeps the opening reading ([temp.names]/3.4; gcc's
-    // tag_type != none_type): `typename T::x<...>`, `class T::x<...>`, a
-    // base-specifier `: T::x<...>` / `, T::x<...>` outside an argument list.
-    // A global-qualified chain (`::a::b <`), a template-id qualifier
-    // (`X<T>::m <`) and a member access (`obj.m <`) are not resolvable from
-    // tokens and keep the opening reading. Before this rule, <ratio>'s
-    // `integral_constant<bool, _R1::num < _R2::num>` opened an angle that never
-    // closed: the class-prefix capture ran through every later header to a
-    // stray `>`, std's namespace stayed open, and <ctime>'s `using ::clock`
-    // failed under <chrono> / <filesystem>.
-    bool lt_reads_as_less_than() const
-    {
-	if ( !pgm || !prev || !is_contextual_identifier_token(prev) )
-	    return false;
-	if ( hist[1] && hist[1]->id() == TokenID::tkTEMPLATE )
-	    return false;			// `T::template name <`
-	std::vector<TokenBase *> quals;		// innermost qualifier first
-	int i = 1;
-	while ( i + 1 < HIST && hist[i] && hist[i]->id() == TokenID::tkNS
-	     && hist[i + 1]
-	     && (is_contextual_identifier_token(hist[i + 1])
-		 || hist[i + 1]->type() == TokenType::ttDataType) )
-	{
-	    quals.push_back(hist[i + 1]);
-	    i += 2;
-	}
-	if ( i < HIST && hist[i] && hist[i]->id() == TokenID::tkNS )
-	    return false;			// `::a::b <`, `X<T>::m <`
-	TokenBase *before = i < HIST ? hist[i] : NULL;
-	const std::string name = contextual_identifier_name(prev);
-	if ( quals.empty() )
-	{
-	    if ( before && (before->id() == TokenID::tkDot
-			 || before->id() == TokenID::tkDeRef) )
-		return false;			// `obj.name <`
-	    return pgm->unqualified_name_lt_reading(name)
-		   == Program::LtReading::LessThan;
-	}
-	if ( before && type_only_context_intro(before) )
-	    return false;
-	for ( size_t k = 0; k < quals.size(); ++k )
-	    if ( pgm->scan_qualifier_is_dependent(quals[k]) )
-		return true;
-	std::vector<TokenBase *> root_first(quals.rbegin(), quals.rend());
-	DataDefCLASS *cls = pgm->scan_resolve_qualifier_chain(root_first);
-	return cls && pgm->class_member_lt_reading(cls, name)
-			== Program::LtReading::LessThan;
-    }
-    // The token before a qualified name that makes it a type-only context: an
-    // elaborated-type keyword, `typename`, an access specifier or `virtual`
-    // (base-specifier heads) and — outside every argument list, where they
-    // cannot be the conditional operator or an argument separator — the
-    // base-clause `:` and `,`.
-    bool type_only_context_intro(TokenBase *t) const
-    {
-	TokenID id = t->id();
-	if ( id == TokenID::tkCLASS || id == TokenID::tkSTRUCT
-	  || id == TokenID::tkUNION )
-	    return true;
-	if ( !angle && (id == TokenID::tkColon || id == TokenID::tkComma) )
-	    return true;
-	if ( !is_contextual_identifier_token(t) )
-	    return false;
-	const std::string s = contextual_identifier_name(t);
-	return s == "typename" || s == "public" || s == "private"
-	    || s == "protected" || s == "virtual";
-    }
-    // A `<` can only BEGIN a template-argument-list after a name (template-id
-    // head: identifier / type name / the `template` keyword). After `)`, `]`,
-    // a literal, etc. it is the less-than OPERATOR — real <type_traits> writes
-    // `integral_constant<bool, _Tp(-1) < _Tp(0)>`, and counting that `<` as an
-    // open desynced the scan by one level for the next ~1300 header lines.
-    // NULL prev (scan starting mid-stream) keeps the legacy always-open rule.
-    static bool angle_open_context(TokenBase *t)
-    {
-	if ( !t )
-	    return true;
-	if ( t->type() == TokenType::ttIdentifier
-	  || t->type() == TokenType::ttDataType )
-	    return true;
-	return t->id() == TokenID::tkTEMPLATE;
-    }
-    // Start INSIDE a template-argument list whose `<` the caller already
-    // consumed from the stream: the state update() leaves after that `<`.
-    void enter_angle()
-    {
-	++angle;
-	angle_paren.push_back(paren);
-    }
-    // Pure delimiter bookkeeping for one token (NO operator-id handling — the
-    // callers below own that, differing by index vs stream access).
-    void update(TokenBase *t)
-    {
-	if ( !t )
-	    return;
-	switch ( t->id() )
-	{
-	    case TokenID::tkOpBrk: ++paren; break;
-	    case TokenID::tkClBrk: if ( paren > 0 )  --paren;  break;
-	    case TokenID::tkOpSqr: ++square; break;
-	    case TokenID::tkClSqr: if ( square > 0 ) --square; break;
-	    case TokenID::tkOpBrc: ++brace; break;
-	    case TokenID::tkClBrc: if ( brace > 0 )  --brace;  break;
-	    // Two independent tests, and BOTH are required — each catches a
-	    // shape the other misses:
-	    //   angle_open_context : `declval<T>() < declval<U>()` — prev is
-	    //                        `)`, so this `<` cannot begin a template-id.
-	    //   !paren && !square  : `decltype(a < b)` — prev IS an identifier,
-	    //                        so the context test passes and only the
-	    //                        nesting test rejects it. Without this the
-	    //                        angle opened here never closes (its `>` is
-	    //                        inside the parens too), the depth stays
-	    //                        stuck past the `)`, and a scan looking for
-	    //                        a top-level `;` or body `{` runs to EOF.
-	    // Inside `(...)`/`[...]` the paren balancing alone locates the
-	    // enclosing construct, so angles there are simply not tracked.
-	    case TokenID::tkLT:
-		if ( type_id_context ? angle_open_context(prev)
-		   : (!paren && !square && angle_open_context(prev)
-		      && !lt_reads_as_less_than()) )
-		{
-		    ++angle;
-		    angle_paren.push_back(paren);
-		}
-		break;
-	    // An UNPARENTHESIZED `>` closes the argument list ([temp.names]):
-	    // a `>` inside parens opened WITHIN the list (`A<(B > C)>`) is the
-	    // greater-than operator, not a close.
-	    case TokenID::tkGT:    close_angle(); break;
-	    case TokenID::tkBSR:   close_angle(); close_angle(); break;
-	    default: break;
-	}
-	prev = t;
-	for ( int k = HIST - 1; k > 0; --k )
-	    hist[k] = hist[k - 1];
-	hist[0] = t;
-    }
-private:
-    void close_angle()
-    {
-	if ( angle <= 0 )
-	    return;
-	if ( !angle_paren.empty() && paren > angle_paren.back() )
-	    return;             // operator-> comparison inside parens
-	--angle;
-	if ( !angle_paren.empty() )
-	    angle_paren.pop_back();
-    }
-};
 // Index form: update `d` for the token sequence at toks[i]; returns the number
 // of tokens consumed (1, or an operator-id's span). Templated for both
 // std::vector and the std::deque token queue.
@@ -70177,18 +70154,27 @@ TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
 {
     if ( !open || open->id() != TokenID::tkOpBrk )
 	return open;
-    // The `(` is consumed; DelimDepth tracks the group from it (its update()
-    // is bookkeeping only, so feeding the consumed opener is exact).
+    if ( !consume_through_open_parens(1) )
+	Throw(open) << "Unexpected end of input in parenthesized suffix" << flush;
+    return nextToken();
+}
+
+// Consume the live stream through the `)` that closes the `open`
+// parenthesized groups whose `(` the caller already consumed. The depth is
+// DelimDepth's paren axis, stepped on the stream (an operator-id is a name).
+// False at end of input.
+bool Program::consume_through_open_parens(int open)
+{
     DelimDepth d(this);
-    delimStepStream(open, d);
+    d.enter_parens(open);
     while ( d.paren > 0 )
     {
 	TokenBase *t = nextToken();
 	if ( !t )
-	    Throw(open) << "Unexpected end of input in parenthesized suffix" << flush;
+	    return false;
 	delimStepStream(t, d);
     }
-    return nextToken();
+    return true;
 }
 
 // True when `= default` on this class member can be parsed as an EMPTY body:

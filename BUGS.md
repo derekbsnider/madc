@@ -802,7 +802,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B59. `(`: thirty-three hand-rolled paren counters
+### B59. `(`: twenty-one hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -813,11 +813,12 @@ scans), `peek_after_balanced_template_id_from`,
   callers ask `balanced_group_close`. `consume_balanced_parenthesized_suffix`
   tracks its group with `delimStepStream`. The loops below move onto
   `balanced_group_close` (index scans) or `delimStepStream` (stream scans).
-- Sites: `consume_gnu_attributes` 1852; `skip_gnu_asm_statement` 1955,
-  1963, 2014, 2052, 2058, 2076, 2078, 2084, 2101 (nine loops in one
-  function); `parse_gnu_vector_size_attribute` 2182;
-  `consume_typedef_gnu_attributes` 2222;
-  `consume_deferred_static_assert_statement` 17878;
+- Done (2026-09-29): the GNU-extension skippers (`consume_gnu_attributes`,
+  `skip_gnu_asm_statement`'s nine loops, `parse_gnu_vector_size_attribute`,
+  `consume_typedef_gnu_attributes`) track their groups on the stream
+  tracker; the asm skipper's loops are the new
+  `Program::consume_through_open_parens`.
+- Sites: `consume_deferred_static_assert_statement` 17878;
   `consume_class_static_assert_declaration` 17962;
   `fold_if_constexpr_condition` 19304; `peek_param_list_spelling` 21664;
   `next_parenthesized_type_is_compound_literal` 32719;
