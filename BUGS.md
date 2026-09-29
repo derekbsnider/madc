@@ -67,16 +67,23 @@ int main() { H2 h; std::printf("ps: %d %d %d\n", h.q.p.a, h.q.p.b, h.q.n); retur
   `AR{ {61, 62}, 'z' }` reaches CIR as `61, 62, 'z'`. The flattening is lossy
   (`AR{ {61}, 'z' }` and `AR{ 61, 'z' }` arrive identical), so no CIR reading
   can recover the nesting. The parser records the loss
-  (`CtorInitializer::nested_list_flattened`), and `class_subobject_mem_init`
+  (`CtorInitializer::nested_list_flattened`), and `class_direct_init_stmts`
   refuses such a list for a ctor-less class rather than brace-elide over it —
   elision over the flat `61, 62, 'z'` would store `a[2] = 'z'`, silently.
   `class_aggregate_init` walks nested lists as `TokenStructLit` (the
   declaration lanes keep them). Before the B80 fix the whole initializer was
   dropped silently.
-- Fix: the mem-initializer keeps a nested list as a `TokenStructLit`, like a
-  declaration, and the refusal goes; the plain-struct member arm
-  (`aggregate_member_init_stmts`, which walks the flat sequence field by
-  field) then reads the nesting too. A core parser tree-shape
+- A duplication family (KG `DupFamily braced_init_list_reading`): five
+  positions read a braced-init-list. Three keep the nesting —
+  `read_struct_lit` (a lambda local to `parse_declaration_body`),
+  `parse_compound_struct_lit`, the `respell_braced_list_*` owner — and two
+  diverge: this flattener, and `parse_ctor_args_list` (`T{...}`,
+  `new T{...}`), which refuses a nested list ("Nested braced-init-list in a
+  constructor argument list is not supported (yet)").
+- Fix: hoist `read_struct_lit` into one `Program` member, adopt it at the
+  mem-initializer and ctor-args positions, delete `collect_braced_init_args`
+  and the `nested_list_flattened` refusal; the plain-struct member arm
+  (`aggregate_member_init_stmts`) then reads the nesting too. A core parser
   change: its own focused session (owner, 2026-09-13).
 - Found 2026-09-29 while fixing B80.
 

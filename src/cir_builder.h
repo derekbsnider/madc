@@ -1881,7 +1881,7 @@ public:
 	// already serve it. Callers are the FULL-list construction sites (the
 	// TokenObjTemp arms, the class-array elements, the declaration lanes
 	// via decl_aggregate_claim, and a mem-initializer via
-	// class_subobject_mem_init) — never class_ctor_call itself: the
+	// class_direct_init_stmts) — never class_ctor_call itself: the
 	// declaration lanes probe THAT with a PARTIAL argument view. Motivating
 	// defects: the frozen-libc++ __allocate_at_least garbage-pointer trap,
 	// and S{string, int} printing garbage in the plain lane.
@@ -1951,18 +1951,20 @@ public:
 	void zero_init_subobject_stmts(const std::function<node_t()> &mint_addr,
 			       DataDefCLASS *cdd, bool base_subobject,
 			       std::vector<node_t> &out, TokenBase *origin);
-	// The mem-initializer of a class-type subobject — a base (`B{a, b}`,
-	// `B()`) or a member (`m{a, b}`, `m()`), [class.base.init]/7. An empty
-	// list value-initializes ([dcl.init]/8: zero-fill first unless the class
-	// has a user-provided default ctor, then default-initialize); a ctor-less
-	// class's list aggregate-initializes (aggregate_init_claim); every other
-	// shape is the ctor lane — class_ctor_call_addr for a base subobject,
-	// complete_object_construct_stmts (its virtual bases too) for a member,
-	// which is a complete object. A `list_flattened`
+	// DIRECT-initialization of a class object at an address from its FULL
+	// initializer list ([dcl.init]/16): a mem-initializer of a base
+	// (`B{a, b}`, `B()`) or member (`m{a, b}`, `m()`, [class.base.init]/7),
+	// a new-initializer ([expr.new]/23), an aggregate's trailing member
+	// (from `{}`). An empty list value-initializes ([dcl.init]/8: zero-fill
+	// first unless the class has a user-provided default ctor, then
+	// default-initialize); a ctor-less class's list aggregate-initializes
+	// (aggregate_init_claim); every other shape is the ctor lane —
+	// class_ctor_call_addr for a base subobject, complete_object_construct_
+	// stmts (its virtual bases too) for a complete object. A `list_flattened`
 	// list (CtorInitializer::nested_list_flattened) lost its nesting, so a
 	// ctor-less class refuses it LOUDLY rather than guess (BUGS.md B81).
 	// Statements append to `out`; TRUE when any was emitted.
-	bool class_subobject_mem_init(const std::function<node_t()> &mint_addr,
+	bool class_direct_init_stmts(const std::function<node_t()> &mint_addr,
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &args,
 			       bool list_flattened,

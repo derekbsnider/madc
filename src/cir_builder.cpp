@@ -14217,7 +14217,7 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
 				   id(m.first.c_str(), origin));
 		if (DataDefCLASS *mc = as_class_instance(m.second)) {
-			if (class_subobject_mem_init(
+			if (class_direct_init_stmts(
 				[&]() -> node_t {
 					return node1(N_ADDR,
 						node2(N_DEREF_FIELD, id("__this", origin),
@@ -18420,7 +18420,7 @@ bool CirBuilder::aggregate_member_fill(
 			// Copy-initialized from `{}` ([dcl.init.aggr]/5): the
 			// value-initialization owner — zero-fill unless the class
 			// has a user-provided default ctor, then default-init.
-			class_subobject_mem_init(
+			class_direct_init_stmts(
 				[&]() -> node_t {
 					return node1(N_ADDR, member_lvalue(mn),
 						     origin);
@@ -18543,7 +18543,7 @@ void CirBuilder::zero_init_subobject_stmts(const std::function<node_t()> &mint_a
 	}
 }
 
-bool CirBuilder::class_subobject_mem_init(const std::function<node_t()> &mint_addr,
+bool CirBuilder::class_direct_init_stmts(const std::function<node_t()> &mint_addr,
 					  DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &args,
 					  bool list_flattened,
@@ -23106,10 +23106,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				DataDefCLASS *pc = tn->alloc_class;
 				node_t pitems = list();
 				std::vector<node_t> cstmts;
-				complete_object_construct_stmts([&]() -> node_t {
+				// The new-initializer direct-initializes
+				// ([expr.new]/23): `new (p) T()` value-initializes,
+				// a ctor-less T's list aggregate-initializes.
+				class_direct_init_stmts([&]() -> node_t {
 					return node2(N_CAST, class_ptr_type(pc),
 						     addr(), tb);
-				}, pc, tn->ctor_args, tb, cstmts);
+				}, pc, tn->ctor_args, /*list_flattened=*/false,
+				/*base_subobject=*/false, /*vbase_forward=*/false,
+				cstmts, tb);
 				for (node_t cs : cstmts)
 					append(pitems, cs);
 				append(pitems, node2(N_EXPR, list(),
@@ -23337,9 +23342,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// diverge from the stack/array sites.
 		{
 			std::vector<node_t> cstmts;
-			complete_object_construct_stmts([&]() -> node_t {
-				return id(tmp, tb);
-			}, cdd, tn->ctor_args, tb, cstmts);
+			// The new-initializer direct-initializes
+			// ([expr.new]/23); an EMPTY one needs no zero-fill,
+			// calloc's storage already is value-initialization's.
+			if (tn->ctor_args.empty())
+				complete_object_construct_stmts([&]() -> node_t {
+					return id(tmp, tb);
+				}, cdd, tn->ctor_args, tb, cstmts);
+			else
+				class_direct_init_stmts([&]() -> node_t {
+					return id(tmp, tb);
+				}, cdd, tn->ctor_args, /*list_flattened=*/false,
+				/*base_subobject=*/false, /*vbase_forward=*/false,
+				cstmts, tb);
 			for (node_t cs : cstmts)
 				append(items, cs);
 		}
@@ -30966,7 +30981,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				if (const FuncDef::CtorInitializer *ci =
 					find_base_initializer(ocls, b, fd)) {
 					const size_t boff = ocls->base_offset_of(b);
-					if (class_subobject_mem_init(
+					if (class_direct_init_stmts(
 						[&]() -> node_t {
 							return base_addr_at(b, boff);
 						}, b, ci->args, ci->nested_list_flattened,

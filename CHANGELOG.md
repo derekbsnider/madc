@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A new-expression with a braced list aggregate-initializes a ctor-less class
+
+`new T{ a, b }` where `T` is a ctor-less class now aggregate-initializes the
+object on the heap, filling members in order and value-initializing the rest
+(zero-fill, then default member initializers). Placement new
+`new (addr) T{ a, b }` works correctly as well. An empty initializer-list
+`new T()` still value-initializes; an empty new without braces (no list)
+uses the default constructor if one exists. Before, both heap and placement
+new bypassed aggregate initialization and read uninitialized storage.
+
 ### A class-type member's virtual bases are initialized in a mem-initializer
 
 A mem-initializer of a class-type member now properly constructs the member's
