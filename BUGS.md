@@ -795,7 +795,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: three hand-rolled angle counters
+### B58. `<`: two hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -818,8 +818,11 @@ scans), `peek_after_balanced_template_id_from`,
   argument (moved: see above). Each other one moves onto
   `scan_template_argument_list`.
 - Sites: `expand_integer_pack_template_args` 6542,
-  `resolve_decltype_call_return` 67525,
-  `datatype_statement_starts_qualified_expr` 76338.
+  `resolve_decltype_call_return` 67525.
+- Done: `datatype_statement_starts_qualified_expr` skips a component's
+  argument list by `scan_template_argument_list`
+  (tests/testqualifiedstmtparengt: `S::In<(4 > 1) + 1>::f();` read as a
+  declaration, "'f' is not a type member").
 - Done: `instantiate_fn_template_binding`'s return-type SFINAE check
   finds the declarator name by the owner,
   `skipped_template_function_declarator_name_index`, instead of its own

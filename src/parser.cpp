@@ -76658,23 +76658,16 @@ bool Program::datatype_statement_starts_qualified_expr()
 	  || !is_contextual_identifier_token(tokens[i]) )
 	    return false;
 	i++;
+	// A component's template-argument list ends where the one list scan
+	// says: a `>` in `( )` inside it is greater-than (`S::In<(4 > 1) + 1>
+	// ::v = 5;`), never the close (BUGS.md B58).
 	if ( i < tokens.size() && tokens[i]
 	  && tokens[i]->id() == TokenID::tkLT )
 	{
-	    int depth = 1;
-	    i++;
-	    while ( i < tokens.size() && depth > 0 )
-	    {
-		TokenBase *t = tokens[i++];
-		if ( !t )
-		    continue;
-		if ( t->id() == TokenID::tkLT )
-		    ++depth;
-		else if ( t->id() == TokenID::tkGT && depth > 0 )
-		    --depth;
-		else if ( t->id() == TokenID::tkBSR && depth > 0 )
-		    depth = depth > 1 ? depth - 2 : 0;
-	    }
+	    TemplateArgumentList list;
+	    if ( !scan_template_argument_list(tokens, i, list, this) )
+		return false;
+	    i = list.close + 1;
 	}
     }
     if ( i >= tokens.size() || !tokens[i] )

@@ -1,0 +1,26 @@
+/* A statement that starts with a qualified-id whose component carries a
+   template-argument list with a `>` in parentheses, `S::In<(4 > 1) + 1>::f();`,
+   is an expression statement, as in g++: the parenthesized `>` is
+   greater-than, not the list's close ([temp.names]/3). Before, the
+   statement-start check ended the list at that `>`, found `)` after it, and
+   read the statement as a declaration ("'f' is not a type member").
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     dq: 307 15 */
+#include <cstdio>
+int hits = 0;
+struct S {
+	template<bool B> static int g() { hits += B ? 7 : 3; return hits; }
+	template<int N> struct In { static int f() { hits += 100 * N; return hits; } };
+	static int c;
+};
+int S::c = 1;
+int main()
+{
+	S::g<(3 > 2)>();
+	S::In<(4 > 1) + 1>::f();
+	S::In<(2 >> 1)>::f();
+	S::c += 4;
+	S::c *= 3;
+	printf("dq: %d %d\n", hits, S::c);
+	return 0;
+}

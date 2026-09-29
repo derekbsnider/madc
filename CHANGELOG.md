@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### A qualified statement may hold a `>` in parentheses
+
+`S::In<(4 > 1) + 1>::f();` calls `S::In<2>::f`, as in g++. Before, madc
+took the parenthesized `>` as the close of the argument list, read the
+statement as a declaration, and refused it ("'f' is not a type member").
+
 ### A non-type template argument substitutes as its value
 
 `sizeof(decltype(h<4>()))` for `template<int N> Arr<N * 3> h()` is 12, and
