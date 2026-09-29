@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### An aggregate's trailing ctor-less class member is value-initialized
+
+`Out{ 2 }` where `Out` has a trailing member of ctor-less class type `In` now
+value-initializes that member (zero-fill, then any default member initializers).
+The aggregate_member_fill path incorrectly used the default constructor call
+site, which skipped zero-fill. Now it routes through class_subobject_mem_init,
+which implements aggregate initialization ([dcl.init.aggr]/5) correctly.
+
 ### Mem-initializers of ctor-less class bases and members initialize correctly
 
 A mem-initializer for a ctor-less class base or member now initializes correctly

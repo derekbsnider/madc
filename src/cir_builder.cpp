@@ -18417,13 +18417,17 @@ bool CirBuilder::aggregate_member_fill(
 			continue;
 		}
 		if (DataDefCLASS *mc = as_class_instance(mt)) {
-			node_t cc = class_ctor_call_addr(
-				node1(N_ADDR, member_lvalue(mn), origin), mc,
-				std::vector<TokenBase *>(), origin);
-			if (cc) {
-				flush_pending_stmts(stmts);
-				stmts.push_back(cc);
-			}
+			// Copy-initialized from `{}` ([dcl.init.aggr]/5): the
+			// value-initialization owner — zero-fill unless the class
+			// has a user-provided default ctor, then default-init.
+			class_subobject_mem_init(
+				[&]() -> node_t {
+					return node1(N_ADDR, member_lvalue(mn),
+						     origin);
+				}, mc, std::vector<TokenBase *>(),
+				/*list_flattened=*/false,
+				/*base_subobject=*/false, /*vbase_forward=*/false,
+				stmts, origin);
 			continue;
 		}
 		if (mt && (mt->is_numeric() || mt->is_pointer())) {
