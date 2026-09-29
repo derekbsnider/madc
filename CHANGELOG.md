@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A partial specialization's head may end in `>>`
+
+`template<class T> int Z<A<T>>::f()` and `template<class T> struct
+Z<A<T>>::N { ... };` define the member and nested class of the
+specialization `Z<A<T>>`, as in g++. Before, the head's last argument lost
+its `>` to the shared `>>`, the definitions attached to nothing, and
+`Z<A<short>>().f()` failed to link.
+
 ### A requires-expression's parameters need no std::declval
 
 `template<class T> concept R = requires (T b) { b.y; };` holds for a T with

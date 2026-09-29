@@ -6343,8 +6343,11 @@ static size_t template_id_suffix_end(
     return list.close;
 }
 
-// A scanned list's top-level arguments as token runs, one per argument
-// (borrowed pointers).
+// A scanned list's top-level arguments as token runs, one per argument, each
+// a whole argument: when a `>>` closed the list AND the last argument's own
+// template-id (`<A<int>>`, nested_close), that argument's `>` is the `>>`'s
+// first half, so its run gets a synthesized `>` at the close. Borrowed
+// pointers otherwise.
 template<typename Seq>
 static std::vector<std::vector<TokenBase *> > template_argument_runs(
 	const Seq &tokens, const TemplateArgumentList &list)
@@ -6357,6 +6360,8 @@ static std::vector<std::vector<TokenBase *> > template_argument_runs(
 	    if ( tokens[k] )
 		runs.back().push_back(tokens[k]);
     }
+    if ( list.nested_close && !runs.empty() )
+	runs.back().push_back(synthesized_at(new TokenGT(), tokens[list.close]));
     return runs;
 }
 
