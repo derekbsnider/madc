@@ -1354,6 +1354,59 @@ public:
 	    size = 1;
 	size = align_up(size, max_align);
     }
+    // __attribute__((aligned(N))) on the aggregate itself: its tag or its `}`.
+    void apply_tag_alignment(size_t align)
+    {
+	if ( align > max_align ) max_align = align;
+	if ( align > tag_explicit_align ) tag_explicit_align = align;
+    }
+    // Re-run the layout over the members already added, after an attribute that
+    // follows the body (`} __attribute__((packed))`) changed `pack`. Layout is
+    // otherwise computed member by member as each is added; gcc lays a record
+    // out once, at its end (finish_struct). The members replay through the same
+    // add* primitives into a scratch aggregate — an anonymous aggregate as one
+    // unit, a member's own aligned(N) re-applied — and only the layout comes
+    // back: offsets, bit-field placement, size, alignment.
+    void relayout()
+    {
+	DataDefSTRUCT scratch(name, 0);
+	scratch.pack = pack;
+	scratch.union_layout = union_layout;
+	scratch.reverse_scalar_storage = reverse_scalar_storage;
+	size_t next_anon = 0;
+	for ( size_t i = 0; i < members.size(); ++i )
+	{
+	    if ( next_anon < anonymous_aggregates.size()
+	      && anonymous_aggregates[next_anon].first_member == i )
+	    {
+		const AnonymousAggregateInfo &ai = anonymous_aggregates[next_anon++];
+		scratch.addAnonymousAggregate(*ai.aggregate);
+		i += ai.member_count - 1;
+		continue;
+	    }
+	    if ( member_bitfields[i].is_bitfield )
+		scratch.addBitField(members[i].first, *members[i].second,
+				    member_bitfields[i].bit_width);
+	    else
+		scratch.addMember(members[i].first, *members[i].second,
+				  member_counts[i], member_count_exprs[i],
+				  member_array_flags[i], &member_dims[i]);
+	    std::map<size_t, size_t>::const_iterator ea = member_explicit_align.find(i);
+	    if ( ea != member_explicit_align.end() )
+		scratch.apply_member_alignment(ea->second);
+	}
+	member_offsets = scratch.member_offsets;
+	member_bitfields = scratch.member_bitfields;
+	anonymous_aggregates = scratch.anonymous_aggregates;
+	size = scratch.size;
+	max_align = scratch.max_align > tag_explicit_align
+	    ? scratch.max_align : tag_explicit_align;
+	bitfield_active = scratch.bitfield_active;
+	previous_was_nonzero_bitfield = scratch.previous_was_nonzero_bitfield;
+	bitfield_unit_offset = scratch.bitfield_unit_offset;
+	bitfield_unit_size = scratch.bitfield_unit_size;
+	bitfield_next_bit = scratch.bitfield_next_bit;
+    }
     // Apply __attribute__((aligned(N))) to the most recently added member.
     // Updates the member's offset (re-aligns it to N) and the struct's
     // overall alignment requirement.

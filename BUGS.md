@@ -802,7 +802,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B59. `(`: fifteen hand-rolled paren counters
+### B59. `(`: thirteen hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -827,19 +827,25 @@ scans), `peek_after_balanced_template_id_from`,
 - Done: `struct_body_needs_class_parser_from` walks on one tracker (its
   brace axis the member level, its square axis the dimensions, the
   attribute skip `balanced_group_close`), with B60's site there.
-- Sites: `TokenSTRUCT::parse` 46285,
-  46840, 47343; `consume_anonymous_aggregate_open` 47693;
-  `skipped_friend_operator_definition` 49093;
-  `skipped_friend_defaulted_comparison` 49128;
-  `TokenCLASS::parse` 51068; `skip_constraint_expression` 57285 (the
+- Done (2026-09-29): the aggregate attribute readers. The struct parser's
+  `consume_attribute`, the nested arms' `consume_nested_attributes` and
+  `consume_anonymous_aggregate_open` ask `Program::consume_aggregate_attributes`
+  (over `consume_gnu_attributes`); the opener's "does a `{` follow"
+  is `balanced_group_close` on the stored stream. Three copies of the rule
+  had diverged: the nested one knew only `packed`, never read the groups
+  after `}`, and the named arm dropped what it read (SILENT layouts, fixed
+  with tests/testnestedaggregateattrs and testclassanonaggregateattrs).
+- Sites: `TokenSTRUCT::parse` 47447 (a member's own trailing attribute);
+  `skipped_friend_operator_definition` 49145;
+  `skipped_friend_defaulted_comparison` 49180;
+  `TokenCLASS::parse` 51066; `skip_constraint_expression` 57283 (the
   `skip_balanced` lambda, also used for `{`);
-  `skipped_template_body_is_inline_identity_refcast` 60027;
-  `resolve_fn_template_return_by_key` 67062;
-  `try_parse_implicit_int_function_definition` 69935;
-  `parseFunction` 71405,
-  71461; `paren_group_is_function_def` 73318;
-  `parse_optional_init_statement` 52891 (also `[` `{`);
-  `instantiate_fn_template_binding` 63736 (backward).
+  `skipped_template_body_is_inline_identity_refcast` 60141;
+  `resolve_fn_template_return_by_key` 67162;
+  `try_parse_implicit_int_function_definition` 70031;
+  `parseFunction` 71510, 71566; `paren_group_is_function_def` 73423;
+  `parse_optional_init_statement` 52777 (also `[` `{`);
+  `instantiate_fn_template_binding` 63622 (backward).
 - No failing reducer yet. Each migration is behaviour-preserving for
   parens, and the suite is its oracle.
 

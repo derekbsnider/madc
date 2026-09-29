@@ -1994,11 +1994,21 @@ static bool token_names_gnu_attribute(const TokenBase *t, GnuAttributeKind kind)
 	&& madc_gnu_attribute_kind(((const TokenIdent *)t)->spelling()) == kind;
 }
 
+static GnuScalarStorageOrder gnu_scalar_storage_order(const std::string &order)
+{
+    if ( order == "big-endian" )
+	return GnuScalarStorageOrder::BigEndian;
+    if ( order == "little-endian" )
+	return GnuScalarStorageOrder::LittleEndian;
+    return GnuScalarStorageOrder::Unspecified;
+}
+
 TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 					 std::set<std::string> *attrs,
 					 std::string *alias_target,
 					 size_t *explicit_align,
-					 size_t *vector_bytes)
+					 size_t *vector_bytes,
+					 GnuScalarStorageOrder *storage_order)
 {
     while ( nt && is_attribute_identifier_token(nt) )
     {
@@ -2006,7 +2016,6 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 	{
 	    DelimDepth ad(this);	// the attribute's `((...))` groups
 	    bool saw_alias = false;
-	    bool saw_aligned = false;
 	    bool saw_vector_size = false;
 	    bool saw_optimize = false;
 	    do {
@@ -2033,13 +2042,38 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 		    saw_alias = false;
 		}
 		else if ( token_names_gnu_attribute(at, GnuAttributeKind::Aligned) )
-		    saw_aligned = true;
-		else if ( explicit_align && saw_aligned && at->type() == TokenType::ttInteger )
 		{
-		    int64_t aval = static_cast<TokenInt *>(at)->ival();
-		    if ( aval > 0 )
-			*explicit_align = static_cast<size_t>(aval);
-		    saw_aligned = false;
+		    // aligned(N): N is an integer constant expression
+		    // (`aligned(2 * 4)`, `aligned(sizeof(long))`), not its first
+		    // literal. Its parens are consumed here, balanced.
+		    if ( explicit_align && peekToken()
+		      && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			nextToken();
+			if ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
+			{
+			    int64_t aval = parse_constant_integer_expression();
+			    if ( aval > 0 )
+				*explicit_align = static_cast<size_t>(aval);
+			}
+			TokenBase *cl = nextToken();
+			if ( cl && cl->id() != TokenID::tkClBrk )
+			    pushToken(cl);
+		    }
+		}
+		else if ( token_names_gnu_attribute(at, GnuAttributeKind::ScalarStorageOrder) )
+		{
+		    if ( storage_order && peekToken()
+		      && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			nextToken();
+			TokenBase *order = nextToken();
+			if ( order && order->type() == TokenType::ttString )
+			    *storage_order = gnu_scalar_storage_order(((TokenStr *)order)->str);
+			TokenBase *cl = nextToken();
+			if ( cl && cl->id() != TokenID::tkClBrk )
+			    pushToken(cl);
+		    }
 		}
 		else if ( token_names_gnu_attribute(at, GnuAttributeKind::VectorSize) )
 		    saw_vector_size = true;
@@ -2062,6 +2096,22 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 	nt = nextToken();
     }
     return nt;
+}
+
+bool Program::consume_aggregate_attributes(AggregateAttributes &a)
+{
+    if ( !is_attribute_identifier_token(peekToken()) )
+	return false;
+    std::set<std::string> attrs;
+    TokenBase *after = consume_gnu_attributes(nextToken(), &attrs, NULL,
+					      &a.align, NULL, &a.storage_order);
+    if ( after )
+	pushToken(after);
+    for ( std::set<std::string>::const_iterator ai = attrs.begin();
+	  ai != attrs.end(); ++ai )
+	if ( madc_gnu_attribute_kind(*ai) == GnuAttributeKind::Packed )
+	    a.packed = true;
+    return true;
 }
 
 bool Program::consume_gnu_attributes_naming(GnuAttributeKind kind)
@@ -2457,13 +2507,32 @@ static bool host_is_little_endian()
 #endif
 }
 
-static bool reverse_scalar_storage_requested(const std::string &order_name)
+static bool reverse_scalar_storage_requested(GnuScalarStorageOrder order)
 {
-    if ( order_name == "big-endian" )
+    if ( order == GnuScalarStorageOrder::BigEndian )
 	return host_is_little_endian();
-    if ( order_name == "little-endian" )
+    if ( order == GnuScalarStorageOrder::LittleEndian )
 	return !host_is_little_endian();
     return false;
+}
+
+// Lay an aggregate's own GNU attributes into its DataDefSTRUCT. Read before
+// the body, `packed` is the packing its members are laid out with; read after
+// it (`} __attribute__((packed))`), the members already laid out replay
+// (DataDefSTRUCT::relayout).
+static void apply_aggregate_attributes(DataDefSTRUCT *agg,
+				       const AggregateAttributes &a,
+				       bool after_body)
+{
+    if ( a.packed && agg->pack != 1 )
+    {
+	agg->pack = 1;
+	if ( after_body )
+	    agg->relayout();
+    }
+    if ( a.storage_order != GnuScalarStorageOrder::Unspecified )
+	agg->setReverseScalarStorage(reverse_scalar_storage_requested(a.storage_order));
+    agg->apply_tag_alignment(a.align);
 }
 
 static bool is_contextual_identifier_token(TokenBase *tb);
@@ -46339,92 +46408,27 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	return pgm.register_cpp_aggregate_name(name, sdd);
     };
 
-    // check for __attribute__((packed)) before or after tag
-    bool is_packed = false;
+    // The aggregate's own attributes: before the tag and after it (lead), and
+    // after the `}` (trail), read by the one aggregate reader.
+    AggregateAttributes lead_attrs;
     // Seed from a typedef-prefix aligned(N) (`typedef _CRT_ALIGN(16) struct
     // ...` — mingw setjmp.h) and consume it ONCE: nested member structs and
     // later sibling parses must never inherit the outer typedef's alignment.
-    size_t explicit_align = pgm.typedef_prefix_align;
+    lead_attrs.align = pgm.typedef_prefix_align;
     pgm.typedef_prefix_align = 0;
     // `typedef const struct T *P;` / `typedef volatile struct T V;` (C): the
     // alias derives from the cv-qualified aggregate. Read + clear here, like
     // the alignment.
     unsigned typedef_cv = pgm.typedef_prefix_cv;
     pgm.typedef_prefix_cv = cvNONE;
-    bool have_scalar_storage_order = false;
-    bool reverse_scalar_storage = false;
-    auto consume_attribute = [&]()
+    auto consume_attribute = [&](AggregateAttributes &attrs)
     {
-	while ( is_attribute_identifier_token(tn) )
-	{
-	    pgm.nextToken(); // consume __attribute__
-	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-	    {
-		pgm.nextToken(); // consume first (
-		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-		{
-		    pgm.nextToken(); // consume second (
-		    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
-		    {
-			TokenBase *attr = pgm.nextToken();
-			if ( attr->id() == TokenID::tkComma )
-			    continue;
-			if ( token_names_gnu_attribute(attr, GnuAttributeKind::Packed) )
-			    is_packed = true;
-			else if ( token_names_gnu_attribute(attr, GnuAttributeKind::Aligned) )
-			{
-			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-			    {
-				pgm.nextToken();
-				if ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
-				{
-				    int64_t aval = pgm.parse_constant_integer_expression();
-				    if ( aval > 0 )
-					explicit_align = (size_t)aval;
-				}
-				if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
-				    pgm.nextToken();
-			    }
-			}
-			else if ( token_names_gnu_attribute(attr, GnuAttributeKind::ScalarStorageOrder) )
-			{
-			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-			    {
-				pgm.nextToken();
-				TokenBase *order_tb = pgm.nextToken();
-				if ( order_tb && order_tb->type() == TokenType::ttString )
-				{
-				    have_scalar_storage_order = true;
-				    reverse_scalar_storage =
-					reverse_scalar_storage_requested(((TokenStr *)order_tb)->str);
-				}
-				if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
-				    pgm.nextToken();
-			    }
-			}
-			else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-			{
-			    int attr_depth = 0;
-			    do {
-				TokenBase *skip = pgm.nextToken();
-				if ( !skip ) break;
-				if ( skip->id() == TokenID::tkOpBrk ) ++attr_depth;
-				else if ( skip->id() == TokenID::tkClBrk ) --attr_depth;
-			    } while ( attr_depth > 0 );
-			}
-		    }
-		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
-			pgm.nextToken(); // consume first )
-		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
-			pgm.nextToken(); // consume second )
-		}
-	    }
-	    tn = pgm.peekToken();
-	}
+	pgm.consume_aggregate_attributes(attrs);
+	tn = pgm.peekToken();
     };
 
     // __attribute__ can appear before the tag name
-    consume_attribute();
+    consume_attribute(lead_attrs);
 
     // optional struct tag name
     if ( is_contextual_identifier_token(tn) )
@@ -46442,7 +46446,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     }
 
     // __attribute__ can also appear after the tag name
-    consume_attribute();
+    consume_attribute(lead_attrs);
 
     // Optional C++11 `final` after the tag (`struct X final { }` /
     // `struct X final : Base`). Consume it here so `tn` becomes the body brace
@@ -46812,16 +46816,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
     }
     dds->union_layout = is_union;
-    if ( is_packed || pgm.pack_current() == 1 )
-	dds->pack = 1;
-    else if ( pgm.pack_current() > 0 )
+    if ( pgm.pack_current() > 0 )
 	dds->pack = pgm.pack_current();
-    if ( have_scalar_storage_order )
-	dds->setReverseScalarStorage(reverse_scalar_storage);
-    if ( explicit_align > dds->max_align )
-	dds->max_align = explicit_align;
-    if ( explicit_align > dds->tag_explicit_align )
-	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
+    apply_aggregate_attributes(dds, lead_attrs, false);
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
 
     // Nested TYPE declarations seen in this body. A nested type makes the
@@ -46951,28 +46948,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    bool nested_union_kw = tn->id() == TokenID::tkUNION;
 	    pgm.nextToken(); // consume 'struct' / 'union'
-	    auto consume_nested_attributes = [&]() -> bool
-	    {
-		bool packed = false;
-		while ( is_attribute_identifier_token(pgm.peekToken()) )
-		{
-		    pgm.nextToken();
-		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-		    {
-			int depth = 0;
-			do {
-			    TokenBase *at = pgm.nextToken();
-			    if ( !at ) break;
-			    if ( at->id() == TokenID::tkOpBrk ) ++depth;
-			    else if ( at->id() == TokenID::tkClBrk ) --depth;
-			    else if ( token_names_gnu_attribute(at, GnuAttributeKind::Packed) )
-				packed = true;
-			} while ( depth > 0 );
-		    }
-		}
-		return packed;
-	    };
-	    bool nested_packed = consume_nested_attributes();
+	    AggregateAttributes nested_attrs;
+	    pgm.consume_aggregate_attributes(nested_attrs);
 	    TokenBase *stag = pgm.peekToken();
 	    std::function<void(DataDefSTRUCT *, TokenBase *)> parse_nested_aggregate_body;
 	    parse_nested_aggregate_body = [&](DataDefSTRUCT *inner, TokenBase *loc) -> void
@@ -47045,15 +47022,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			bool inner_union_kw = tn->id() == TokenID::tkUNION;
 			pgm.nextToken();
-			bool inner_packed = consume_nested_attributes();
+			AggregateAttributes inner_attrs;
+			pgm.consume_aggregate_attributes(inner_attrs);
 			TokenBase *inner_tag = pgm.peekToken();
 			if ( inner_tag && inner_tag->id() == TokenID::tkOpBrc )
 			{
 			    pgm.nextToken();
 			    DataDefSTRUCT *nested = new_anon_struct();
 			    nested->union_layout = inner_union_kw;
-			    if ( inner_packed )
-				nested->pack = 1;
+			    apply_aggregate_attributes(nested, inner_attrs, false);
 			    parse_nested_aggregate_body(nested, inner_tag);
 			    inner_type = new TokenDataType("anonymous", *nested);
 			}
@@ -47070,8 +47047,6 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				if ( sdmi == pgm.struct_map.end() )
 				{
 				    nested = new DataDefSTRUCT(sname, 0);
-				    if ( inner_packed )
-					nested->pack = 1;
 				    std::string store_key = nested_store_key(nested, sname);
 				    pgm.pack_tap_struct(store_key);	// B4a tap
 				    pgm.struct_map.set(store_key, nested);
@@ -47083,8 +47058,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 					pgm.Throw(inner_tag) << "Struct '" << sname << "' already defined" << flush;
 				}
 				nested->union_layout = inner_union_kw;
-				if ( inner_packed )
-				    nested->pack = 1;
+				apply_aggregate_attributes(nested, inner_attrs, false);
 				pgm.nextToken();
 				parse_nested_aggregate_body(nested, inner_tag);
 				// Named inline-defined nested struct/union — visible at enclosing
@@ -47213,6 +47187,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( !tn || tn->id() != TokenID::tkClBrc )
 		    pgm.Throw(tn ? tn : loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		pgm.nextToken(); // consume '}'
+		// `} __attribute__((packed)) m;`: the groups after the body are the
+		// aggregate's, not the member's (gcc), laid in before it finalizes.
+		AggregateAttributes trail_attrs;
+		if ( pgm.consume_aggregate_attributes(trail_attrs) )
+		    apply_aggregate_attributes(inner, trail_attrs, true);
 		inner->is_complete = true; // a `{ ... }` body was parsed
 		inner->finalize(pgm.presents_as_cpp());
 		// B3 arena write-through: a nested DATA-ONLY aggregate (named
@@ -47230,8 +47209,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.nextToken(); // consume '{'
 		DataDefSTRUCT *inner = new_anon_struct();
 		inner->union_layout = nested_union_kw;
-		if ( nested_packed )
-		    inner->pack = 1;
+		apply_aggregate_attributes(inner, nested_attrs, false);
 		parse_nested_aggregate_body(inner, stag);
 		mtype = new TokenDataType("anonymous", *inner);
 	    }
@@ -47310,6 +47288,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    pgm.Throw(stag) << "Struct '" << sname << "' already defined" << flush;
 			inner->union_layout = nested_union_kw;
 		    }
+		    apply_aggregate_attributes(inner, nested_attrs, false);
 		    pgm.nextToken(); // consume '{'
 		    parse_nested_aggregate_body(inner, stag);
 		    // A named struct/union defined INLINE as a member type has C scope
@@ -47491,50 +47470,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     pgm.nextToken(); // consume '}'
 
     tn = pgm.peekToken();
-    consume_attribute();
-    if ( have_scalar_storage_order )
-	dds->setReverseScalarStorage(reverse_scalar_storage);
-    if ( is_packed )
-	dds->pack = 1;
-
-    bool has_bitfields = false;
-    for ( size_t bi = 0; bi < dds->member_bitfields.size(); ++bi )
-	if ( dds->member_bitfields[bi].is_bitfield )
-	    has_bitfields = true;
-    if ( is_packed && !has_bitfields )
-    {
-	dds->size = 0;
-	dds->max_align = 1;
-	for ( size_t mi = 0; mi < dds->members.size(); ++mi )
-	{
-	    DataDef *mdd = dds->members[mi].second;
-	    size_t cnt = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
-	    TokenBase *count_expr =
-		(mi < dds->member_count_exprs.size()) ? dds->member_count_exprs[mi] : NULL;
-	    size_t fa = dds->field_align(*mdd);
-	    if ( dds->union_layout )
-	    {
-		if ( fa > dds->max_align ) dds->max_align = fa;
-		if ( mi < dds->member_offsets.size() )
-		    dds->member_offsets[mi] = 0;
-		size_t member_size = count_expr ? 0 : (mdd->size * cnt);
-		if ( member_size > dds->size ) dds->size = member_size;
-	    }
-	    else
-	    {
-		dds->size = DataDefSTRUCT::align_up(dds->size, fa);
-		if ( fa > dds->max_align ) dds->max_align = fa;
-		if ( mi < dds->member_offsets.size() )
-		    dds->member_offsets[mi] = dds->size;
-		if ( !count_expr )
-		    dds->size += mdd->size * cnt;
-	    }
-	}
-    }
-    if ( explicit_align > dds->max_align )
-	dds->max_align = explicit_align;
-    if ( explicit_align > dds->tag_explicit_align )
-	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
+    AggregateAttributes trail_attrs;
+    consume_attribute(trail_attrs);
+    apply_aggregate_attributes(dds, trail_attrs, true);
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
     dds->finalize(pgm.presents_as_cpp()); // round up size; C++ empty aggregate => 1
 
@@ -47800,39 +47738,27 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     return NULL;
 }
 
-bool Program::consume_anonymous_aggregate_open(bool &packed)
+bool Program::consume_anonymous_aggregate_open(AggregateAttributes &attrs)
 {
-    std::vector<TokenBase *> consumed;
-    while ( is_attribute_identifier_token(peekToken()) )
+    // Does a `{` follow the attribute groups? Asked on the stored stream first,
+    // so a declaration that opens no anonymous aggregate keeps every token.
+    size_t i = 0;
+    while ( i < tokens.size() && is_attribute_identifier_token(tokens[i]) )
     {
-	TokenBase *attr = nextToken();
-	consumed.push_back(attr);
-	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	++i;
+	if ( i < tokens.size() && tokens[i] && tokens[i]->id() == TokenID::tkOpBrk )
 	{
-	    int depth = 0;
-	    do {
-		TokenBase *at = nextToken();
-		if ( !at )
-		    break;
-		consumed.push_back(at);
-		if ( at->id() == TokenID::tkOpBrk )
-		    ++depth;
-		else if ( at->id() == TokenID::tkClBrk )
-		    --depth;
-		else if ( token_names_gnu_attribute(at, GnuAttributeKind::Packed) )
-		    packed = true;
-	    } while ( depth > 0 );
+	    size_t close = balanced_group_close(tokens, i);
+	    if ( close == i )
+		return false;
+	    i = close + 1;
 	}
     }
-    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
-    {
-	nextToken();
-	return true;
-    }
-    for ( std::vector<TokenBase *>::reverse_iterator it = consumed.rbegin();
-	  it != consumed.rend(); ++it )
-	pushToken(*it);
-    return false;
+    if ( i >= tokens.size() || !tokens[i] || tokens[i]->id() != TokenID::tkOpBrc )
+	return false;
+    consume_aggregate_attributes(attrs);
+    nextToken(); // `{`
+    return true;
 }
 
 void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
@@ -47964,19 +47890,21 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 
 DataDefSTRUCT *Program::parse_class_anonymous_aggregate(TokenBase *kw)
 {
-    bool packed = false;
-    if ( !consume_anonymous_aggregate_open(packed) )
+    AggregateAttributes attrs;
+    if ( !consume_anonymous_aggregate_open(attrs) )
 	return NULL;
     DataDefSTRUCT *agg = new_anon_struct();
     agg->union_layout = kw && kw->id() == TokenID::tkUNION;
     agg->definition_origin = aggregate_definition_origin(
 	*this, kw ? kw->file : NULL);
-    if ( packed )
-	agg->pack = 1;
+    apply_aggregate_attributes(agg, attrs, false);
     parse_class_anonymous_aggregate_members(agg, kw);
     TokenBase *close = nextToken();
     if ( !close || close->id() != TokenID::tkClBrc )
 	Throw(close ? close : kw) << "Expected '}' after anonymous class aggregate" << flush;
+    AggregateAttributes trail_attrs;
+    if ( consume_aggregate_attributes(trail_attrs) )
+	apply_aggregate_attributes(agg, trail_attrs, true);
     agg->is_complete = true;
     agg->finalize(presents_as_cpp());
     return agg;

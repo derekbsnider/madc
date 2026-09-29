@@ -78,6 +78,26 @@ GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
 // two spellings as its name: `word` or `__word__`.
 bool madc_gnu_attribute_word_is(const std::string &id, const char *word);
 
+// scalar_storage_order("big-endian" | "little-endian"): the argument string,
+// converted once where the attribute is read.
+enum class GnuScalarStorageOrder : uint8_t {
+    Unspecified,
+    BigEndian,
+    LittleEndian
+};
+
+// The GNU attributes an aggregate's own groups give it: before its tag, after
+// its tag, or after its `}`. Program::consume_aggregate_attributes reads them;
+// the struct parser lays them into the DataDefSTRUCT.
+struct AggregateAttributes {
+    bool packed;
+    size_t align;			// aligned(N); 0 = none
+    GnuScalarStorageOrder storage_order;
+    AggregateAttributes()
+	: packed(false), align(0),
+	  storage_order(GnuScalarStorageOrder::Unspecified) {}
+};
+
 // Lazy MEMBER-template hydration (task #25 B2, MEMBER arm): one restored
 // CIR_TMPLK_MEMBER record whose payload decode + pattern stamp were DEFERRED at
 // the flush. The thaw (hydrate + token restore + the one stamp derivation) runs
@@ -8132,7 +8152,7 @@ public:
     // optional nested-name-specifier for every class-key and then asks exactly
     // that of the next token (cp_parser_nth_token_starts_class_definition_p).
     bool qualified_class_head_starts_definition();
-    bool consume_anonymous_aggregate_open(bool &packed);
+    bool consume_anonymous_aggregate_open(AggregateAttributes &attrs);
     DataDefSTRUCT *parse_class_anonymous_aggregate(TokenBase *kw);
     void parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 						 TokenBase *loc);
@@ -8262,7 +8282,11 @@ public:
 				      std::set<std::string> *attrs = NULL,
 				      std::string *alias_target = NULL,
 				      size_t *explicit_align = NULL,
-				      size_t *vector_bytes = NULL);
+				      size_t *vector_bytes = NULL,
+				      GnuScalarStorageOrder *storage_order = NULL);
+    // The GNU attribute groups NEXT in the stream, read as an aggregate's own
+    // (packed, aligned, scalar_storage_order) and consumed. False when none.
+    bool consume_aggregate_attributes(AggregateAttributes &attrs);
     // The GNU attribute groups NEXT in the stream, consumed (the stream is
     // left at the token after them): does one of them name `kind`? The kind
     // is compared as the enum (madc_gnu_attribute_kind), never the spelling.

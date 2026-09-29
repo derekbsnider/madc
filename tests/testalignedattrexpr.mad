@@ -1,0 +1,15 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+// aligned(N) takes N as an integer constant expression, in every position
+// the attribute is read: a member's leading attribute, a tag, a nested tag.
+struct L1 { char c; int __attribute__((aligned(2 * 8))) x; };
+struct __attribute__((aligned(sizeof(long) * 2))) L2 { char a; };
+struct L3 { char c; struct __attribute__((aligned(4 + 4))) { char a; } in; };
+
+int main(void)
+{
+	printf("ae: %zu %zu %zu %zu %zu\n", sizeof(struct L1), __alignof__(struct L1),
+	       sizeof(struct L2), sizeof(struct L3), __alignof__(struct L3));
+	return 0;
+}

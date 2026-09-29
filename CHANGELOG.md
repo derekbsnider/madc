@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### A nested aggregate's attributes lay it out, before its tag or after its `}`
+
+`struct O { char c; struct __attribute__((packed)) N { char a; int b; } in; };`
+packs N to 5 bytes, as does `struct N { ... } __attribute__((packed)) in;`,
+and `aligned(16)` on a nested aggregate aligns the type, as in gcc and clang.
+A trailing `} __attribute__((packed))` on any struct now re-lays its members
+with their bit-fields, anonymous members and member alignment. Before, a
+named nested aggregate and any attribute after a nested `}` were silently
+dropped (8 bytes for gcc's 5, alignment 1 for 16), and a trailing `packed`
+over an anonymous member misplaced it: `t2.y` read 0. An anonymous
+aggregate in a C++ class body may now carry attributes after its `}`, and
+the one before its `{` packs it, as in g++.
+
+### `aligned(N)` reads N as a constant expression
+
+`struct L { char c; int __attribute__((aligned(2 * 8))) x; };` is 32 bytes
+with alignment 16, as in gcc and clang, and so is every other position madc
+reads the attribute from (a tag, a nested tag, a typedef prefix). Before, a
+member's leading attribute took N's first literal: 8 bytes, alignment 4.
+
 ### A GNU attribute may be spelled with double underscores
 
 `struct __attribute__((__packed__)) S { char a; int b; }` is 5 bytes,
