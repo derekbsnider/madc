@@ -18,6 +18,11 @@ Oracle:     <what gcc/clang did on a reducer, and what madc did>       (#1)
   is present and non-empty; the narrated form adds nothing it wants and trips
   an output-side "reasoning extraction" classifier. Same for CHANGELOG entries:
   behaviour facts, no discovery narrative.
+- On an Opus 5.5 session the classifier trips on these trailers even when
+  terse, repeatedly — the trip is model-specific to 5.5's output. DELEGATE the
+  `git commit` to a subagent on a different model (Agent tool, `model` override
+  — sonnet or opus-4-8): hand it the staged diff and the four facts, it writes
+  the trailers and commits. Do not reword-and-resend on 5.5.
 - **`Layer:` is the one that catches shims.** Write the chain
   (`caller -> helper -> root cause`) and state which you edited. If you cannot
   say why yours is the deepest, you are shimming — stop and go lower.

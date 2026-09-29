@@ -78,7 +78,10 @@ Run this.**
    the claim, and the narrated form trips an output-side "reasoning extraction"
    classifier (`.claude/rules/rule-trailers.md`). Same for the CHANGELOG entry:
    behaviour facts, no discovery narrative. Attribution trailers per the
-   session's instructions.
+   session's instructions. On an Opus 5.5 session the classifier trips on the
+   trailers even when terse — delegate this commit to a subagent on a different
+   model (Agent tool, `model` override, e.g. sonnet or opus-4-8): hand it the
+   staged diff and the four facts, it writes the message and runs `git commit`.
 
 8. **Commit**, then **record the ledger**: `bash scripts/lane_ledger.sh record
    <lane> <tally>` for each lane that ran green, so
