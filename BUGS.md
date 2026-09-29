@@ -164,21 +164,53 @@ int main(void)
   allocator change. A packed bit-field MEMBER straddles the same way
   (`BF` above); only its alignment is laid out today.
 
-### B64. A typedef-prefix `aligned` rounds the struct's size
+### B64. A typedef's own `aligned(N)` is not modeled
 
 ```c
 #include <stdio.h>
+#include <stddef.h>
 typedef __attribute__((aligned(16))) struct { char a; } L2;
-int main(void) { printf("tp: %zu %zu\n", sizeof(L2), __alignof__(L2)); return 0; }
+typedef int AI __attribute__((aligned(16)));
+typedef __attribute__((aligned(8))) int AJ;
+typedef struct { char a; } __attribute__((aligned(16))) L3;
+typedef struct S4 { char a; } L4 __attribute__((aligned(16)));
+struct H { char c; L2 l; };
+struct HI { char c; AI i; };
+int main(void)
+{
+	printf("tp: %zu %zu %zu %zu %zu %zu\n", sizeof(L2), __alignof__(L2), sizeof(AI), __alignof__(AI), sizeof(AJ), __alignof__(AJ));
+	printf("tq: %zu %zu %zu %zu %zu %zu\n", sizeof(L3), __alignof__(L3), sizeof(L4), __alignof__(L4), sizeof(struct S4), __alignof__(struct S4));
+	printf("tr: %zu %zu %zu %zu\n", sizeof(struct H), offsetof(struct H, l), sizeof(struct HI), offsetof(struct HI, i));
+	return 0;
+}
 ```
 
-- gcc = clang: `tp: 1 16`. madc: `tp: 16 16`.
-- Where: `TokenSTRUCT::parse` seeds the aggregate's tag alignment from
-  `typedef_prefix_align` (set by the typedef parser's prefix reader,
-  parser.cpp ~53695), so the struct itself is aligned and its size rounds
-  up. In gcc and clang the attribute qualifies the typedef, and the
-  struct's size stays 1. (mingw `setjmp.h`'s `typedef _CRT_ALIGN(16)
-  struct ...` is the seed's reason; its struct is already 16 bytes.)
+- gcc = clang: `tp: 1 16 4 16 4 8`, `tq: 16 16 1 16 1 1`,
+  `tr: 32 16 32 16`. madc: `tp: 16 16 4 4 4 4`, `tq: 16 16 1 1 1 1`,
+  `tr: 32 16 8 4`. `L3` (the attribute on the struct itself) is right;
+  every typedef-level alignment is wrong, and an object or member declared
+  through such a typedef is laid out wrong (`struct HI`).
+- Re-measured 2026-09-29 at b6d4a8896. Reducer: `tmp/b64/tp.c`.
+- In gcc and clang the attribute qualifies the TYPEDEF: the alias is a
+  variant of its base with a user alignment (gcc `build_variant_type_copy`
+  + `TYPE_USER_ALIGN`), the base type's size and alignment are unchanged,
+  and on a typedef `aligned` may also LOWER an alignment (`__m128_u`'s
+  `aligned(1)`).
+- Where: the typedef parser's prefix reader (parser.cpp ~53870) collects
+  `prefix_align` and drops it for every non-aggregate typedef; the
+  declarator-trailing `__attribute__((aligned(N)))` on a typedef name is
+  consumed without effect. For an aggregate typedef the prefix is handed to
+  `TokenSTRUCT::parse` as `typedef_prefix_align` and aligns the struct tag
+  itself, so its size rounds to 16. (mingw `setjmp.h`'s `typedef
+  _CRT_ALIGN(16) struct ...` is that seed's reason; its struct is already 16
+  bytes, so the seed hides the gap there.)
+- Fix shape: an aligned variant type, minted once per (base, alignment) like
+  `getQualifiedType`'s one-`DataDefQUAL`-per-(base, cv), which reports the
+  variant's alignment and is the base for everything else. Consumers:
+  `alignof`, member layout (`addMember`), object alignment, `--emit=c11`
+  (renders the typedef's attribute), the forest record (a new record kind).
+  OWNER RULING PENDING: this is a type-system addition, a focused session
+  like B62 and B70.
 
 ### B65. A C++ class body drops or refuses an aggregate's and a member's attributes
 
