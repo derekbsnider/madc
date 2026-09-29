@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### A using-declaration may name a conversion function
+
+`using Base::operator T;` in a class body is a using-declaration, as in g++
+and clang++; madc read the conversion-type-id on to the next `(`, swallowing
+the rest of the class, so `#include <atomic>` was refused ("Expecting variable
+name or ';' after class definition").
+
 ### The GCC `__atomic_*` builtins
 
 Every `__atomic_*` builtin works in C and C++, as in gcc and clang: the `_n`

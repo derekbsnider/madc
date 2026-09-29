@@ -5186,6 +5186,15 @@ static bool token_starts_conversion_type_id(TokenBase *t)
 	|| t->type() == TokenType::ttKeyword;
 }
 
+// The token after a conversion-type-id: the parameter list's `(`, or a
+// declaration's end, which a type-id never contains.
+static bool conversion_type_id_ends_at(TokenBase *t)
+{
+    TokenID id = t->id();
+    return id == TokenID::tkOpBrk || id == TokenID::tkSemi
+	|| id == TokenID::tkOpBrc || id == TokenID::tkClBrc;
+}
+
 // How many tokens FOLLOW the `operator` keyword. ONE decision, shared by the
 // index form below and the stream form (Program::delimStepStream) — the two
 // must never disagree about how far an operator-id reaches.
@@ -5211,11 +5220,14 @@ static size_t operator_id_tail_span(const Seq &toks, size_t sym_idx)
     if ( token_starts_conversion_type_id(sym) )
     {
 	// Multi-token conversion-type-id: `const char *`, `unsigned long`,
-	// `std::size_t`. Runs to the parameter list's `(`.
+	// `std::size_t`. Runs to the parameter list's `(`, or — with no
+	// parameter list, as a using-declaration names it
+	// (`using _Base::operator __integral_type;`, libstdc++ <atomic>) — to
+	// the `;` `{` `}` that no type-id can contain.
 	size_t n = 0;
 	while ( sym_idx + n < toks.size()
 	     && toks[sym_idx + n]
-	     && toks[sym_idx + n]->id() != TokenID::tkOpBrk )
+	     && !conversion_type_id_ends_at(toks[sym_idx + n]) )
 	    ++n;
 	// No `(` in view (truncated / malformed): fall back to one token rather
 	// than swallowing the rest of the sequence.
@@ -32031,9 +32043,9 @@ std::string Program::parseOperatorId(TokenBase *operator_tok,
 	// consumed as op_tok — so the remainder is one fewer.
 	size_t remaining = operator_id_tail_span(tokens, 0);
 	if ( remaining > 0 && !tokens.empty()
-	  && tokens[0]->id() != TokenID::tkOpBrk )
+	  && !conversion_type_id_ends_at(tokens[0]) )
 	    for ( size_t k = 0; k < remaining && peekToken()
-			     && peekToken()->id() != TokenID::tkOpBrk; ++k )
+			     && !conversion_type_id_ends_at(peekToken()); ++k )
 		name += template_token_fragment(take());
 	return name;
     }

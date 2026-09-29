@@ -428,22 +428,6 @@ int main() { Z<1, 2> z; z.k = 4; std::printf("z: %d\n", z.k); return 0; }
   `parse_declarator` and the list to `push_declarator_list_tail`
   (`indirection.md`). It must leave a gate behind.
 
-### B4. `#include <atomic>` is refused
-
-- Found 2026-09-25. The release pack log's 70 `atomic_base.h` errors are the
-  same failure.
-
-```cpp
-#include <atomic>
-int main() { return 0; }
-```
-
-- g++, clang++: accept. madc: `inc2.cpp:2:3: error: Expecting variable name or
-  ';' after class definition`. The position is reported in the including
-  file, not in the header, which is a second defect.
-- Probably B3's family, since it's the same error from the class tail. Check
-  that first.
-
 ### B5. An enum defined inside a parameter, a C struct member, `sizeof` or a cast
 
 - Found 2026-09-25, during the enum family.

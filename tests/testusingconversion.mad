@@ -1,0 +1,31 @@
+// A using-declaration of a conversion function, `using Base::operator T;`
+// (libstdc++ <atomic>'s atomic<char> spells `using __base_type::operator
+// __integral_type;`): the conversion-type-id ends at the `;`, and the class
+// body goes on. Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+template<typename T> struct B {
+	T v;
+	operator T() const { return v; }
+	B &operator=(T n) { v = n; return *this; }
+};
+template<typename T> struct A;
+template<> struct A<char> : B<char> {
+	typedef char __integral_type;
+	typedef B<char> __base_type;
+	using __base_type::operator __integral_type;
+	using __base_type::operator=;
+	int after() const { return 7; }
+};
+struct C : B<long> {
+	using B<long>::operator long;
+	long twice() const { return v * 2; }
+};
+int main()
+{
+	A<char> a;
+	a = 'x';
+	C c;
+	c.v = 21;
+	std::printf("uc: %c %c %d %ld %ld\n", a.v, a.operator char(), a.after(), c.twice(), c.operator long());
+	return 0;
+}
