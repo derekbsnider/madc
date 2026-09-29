@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A requires-expression's parameters need no std::declval
+
+`template<class T> concept R = requires (T b) { b.y; };` holds for a T with
+a member `y` without `<utility>`, as in g++, and so do parameters declared
+`T &`, `T &&` or `const T`. Before, madc rewrote each parameter to
+`std::declval<T&>()`. Without that declaration in scope, every such concept
+was silently unsatisfied.
+
 ### A requires-expression's parameters are split at their own commas
 
 `requires (A<(1 < 2)> a, T b) { a.x; b.y; }` declares two parameters, as in

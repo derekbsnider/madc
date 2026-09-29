@@ -1,0 +1,25 @@
+/* A requires-expression's parameters are lvalues of their declared types
+   ([expr.prim.req.general]) and need no library: with no std::declval
+   declared anywhere, `requires (T b) { b.y; }` holds for a T with a
+   member y, and so do the `T &`, `T &&` and `const T` forms. Before, madc
+   lowered each parameter to `std::declval<T&>()`, which is undeclared
+   here, so every such concept was silently unsatisfied.
+   Oracle (g++ 13 and clang++ 18, -std=c++20):
+     nd: 1 0 1 0 1 0 1 0 */
+#include <cstdio>
+struct S { int y; int f() { return 1; } };
+struct N {};
+template<class T> concept R1 = requires (T b) { b.y; };
+template<class T> concept R2 = requires (T &b) { b.f(); };
+template<class T> concept R3 = requires (T &&b) { b.y; };
+template<class T> concept R4 = requires (const T b) { b.y; };
+template<class T> int r1() { if constexpr (R1<T>) return 1; else return 0; }
+template<class T> int r2() { if constexpr (R2<T>) return 1; else return 0; }
+template<class T> int r3() { if constexpr (R3<T>) return 1; else return 0; }
+template<class T> int r4() { if constexpr (R4<T>) return 1; else return 0; }
+int main()
+{
+	printf("nd: %d %d %d %d %d %d %d %d\n", r1<S>(), r1<N>(), r2<S>(),
+	       r2<N>(), r3<S>(), r3<N>(), r4<S>(), r4<N>());
+	return 0;
+}

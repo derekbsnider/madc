@@ -38326,10 +38326,11 @@ bool Program::constraint_expression_well_formed(
 
 // C++20 requires-expression evaluation (`requires` already consumed). Grammar:
 // `requires [(param-list)] { requirement-seq }`. Returns 1 iff EVERY requirement
-// is satisfied. Each parameter is modeled as a `std::declval<Type&>()` value
-// substituted into the requirement bodies (a named param — by value or by ref —
-// is an lvalue, hence `Type&`); the param/concept type args are already concrete
-// here (the structural concept arm substituted them before folding). Requirement
+// is satisfied. Each parameter is modeled as `(*(Type *)0)` substituted into
+// the requirement bodies (a named param — by value or by ref — is an lvalue of
+// its declared type, and the spelling needs no library declaration); the
+// param/concept type args are already concrete here (the structural concept
+// arm substituted them before folding). Requirement
 // kinds:
 //   simple    `E ;`                     — E must be well-formed.
 //   type      `typename T ;`            — T must name a valid type.
@@ -38378,24 +38379,28 @@ int64_t Program::evaluate_requires_expression_constant()
 	    if ( name_idx < 1 )
 		continue;   // need a type before the name
 	    std::string pname = ((TokenIdent *)p[name_idx])->spelling();
-	    bool has_ref = false;
+	    // A parameter NAME is an lvalue of the declared type, whatever
+	    // reference it is declared with ([expr.prim.req.general]/2: like a
+	    // function parameter; [expr.prim.id.unqual]: a name is an lvalue).
+	    // `(*(TYPE *)0)` is exactly that, unevaluated here, and needs no
+	    // library: std::declval need not be declared, and declval<T&&>
+	    // was an xvalue.
+	    int type_end = name_idx;
+	    if ( p[type_end - 1] && (p[type_end - 1]->id() == TokenID::tkBand
+			       || p[type_end - 1]->id() == TokenID::tkLand) )
+		--type_end;
+	    if ( type_end < 1 )
+		continue;
 	    std::vector<TokenBase *> dv;
-	    dv.push_back(new TokenIdent("std"));
-	    dv.push_back(new TokenNS());
-	    dv.push_back(new TokenIdent("declval"));
-	    dv.push_back(new TokenLT());
-	    for ( int i = 0; i < name_idx; ++i )
-	    {
+	    dv.push_back(synthesized_at(new TokenOpBrk(), p[name_idx]));
+	    dv.push_back(synthesized_at(new TokenMul(), p[name_idx]));
+	    dv.push_back(synthesized_at(new TokenOpBrk(), p[name_idx]));
+	    for ( int i = 0; i < type_end; ++i )
 		dv.push_back(p[i]->clone_origin());
-		if ( p[i]->id() == TokenID::tkBand
-		  || p[i]->id() == TokenID::tkLand )
-		    has_ref = true;
-	    }
-	    if ( !has_ref )
-		dv.push_back(new TokenBand());   // lvalue param -> Type&
-	    dv.push_back(new TokenGT());
-	    dv.push_back(new TokenOpBrk());
-	    dv.push_back(new TokenClBrk());
+	    dv.push_back(synthesized_at(new TokenMul(), p[name_idx]));
+	    dv.push_back(synthesized_at(new TokenClBrk(), p[name_idx]));
+	    dv.push_back(synthesized_at(new TokenInt(0), p[name_idx]));
+	    dv.push_back(synthesized_at(new TokenClBrk(), p[name_idx]));
 	    psubst[pname] = dv;
 	}
     }
