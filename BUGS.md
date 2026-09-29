@@ -56,8 +56,19 @@ int main()
   pattern. The pattern's `alignas(V)` operand is dependent, so the reader
   contributes nothing and the local keeps its type's alignment. Fix shape
   (plan slice 4): the local keeps the operand's type query and emits
-  `_Alignas(_Alignof(V))`, which the dependent `N_ALIGNOF` fold makes
-  concrete (a type-id operand's alignof defers since B68's fix).
+  `_Alignas((int)_Alignof(V))` (c2mir wants a signed constant), which the
+  dependent `N_ALIGNOF` fold makes concrete (a type-id operand's alignof
+  defers since B68's fix); `__alignof__(c)` defers with the constant part as
+  its `measure_floor` (a251fcd0d).
+- Measured 2026-09-29: no libstdc++ 13 or libc++ 18 header has this shape.
+  `<atomic>`'s `alignas(_Tp) unsigned char __buf[sizeof(_Tp)]` sits in
+  non-template members of class templates and in free function templates,
+  both parsed per instantiation and already right (d4's first two columns).
+- The fix carries a dependent operand through the declaration parser's
+  `size_t` alignment plumbing (`parsing_decl_align`, `decl_align` /
+  `object_align`, `consume_gnu_attributes`, `consume_object_attributes`,
+  `apply_declaration_storage`, `push_declarator_list_tail`) and `Variable`.
+  Owner ruling pending: a focused session for that change.
 
 ### B69. A variadic class template named first in `sizeof` measures 0
 

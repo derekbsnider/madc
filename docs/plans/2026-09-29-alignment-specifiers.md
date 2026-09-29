@@ -76,6 +76,17 @@ their layout changes with B65, not here.
   templates); found on the way and filed: B68 (dependent `alignof` in a
   parse-once body), B69 (a variadic class template-id in `sizeof`), B70,
   B71, B72, B73.
+- 2026-09-29, after the batch checkpoint (tests-jit 1802/0/0/9): B68 fixed
+  (6e161895a — type-id operands under any cv/pointer/reference/array layer
+  defer; the second, divergent operand reader deleted), and its expression
+  sibling (a251fcd0d — `sizeof(v)` of a `V v`, arrays, derefs, references;
+  a named object's requested alignment is the deferred query's floor).
+- Slice 4's premise re-measured: `<atomic>`'s aligned buffers are not in
+  member templates, and they are already right. The remaining shape (a
+  member template's local) appears in no measured header. Its fix changes
+  the declaration parser's alignment representation (a dependent operand
+  beside the constant, through every `size_t` alignment site); owner ruling
+  pending on giving it a focused session.
 
 ## Tests and gates
 
