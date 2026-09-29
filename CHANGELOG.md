@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### `#pragma pack` lays out a C++ class
+
+Under `#pragma pack(N)` a class with a member function, a vptr or a base
+has its members, its vptr and its base subobjects aligned to at most N, as
+in g++ and clang++: `#pragma pack(1) struct PP { int f(); char c; int x;
+};` is 5 bytes with alignment 1, where madc ignored the pack (8 and 4).
+Virtual bases are capped as well. A class template is laid out under the
+pack in effect where it is defined, not where it is instantiated: a
+template defined inside `#pragma pack(1)` is packed wherever it is used,
+and one defined outside is not packed by an instantiation inside a pack
+region.
+
 ### A member's own `packed` lays that member out at alignment 1
 
 `struct { char c; int x __attribute__((packed)); }` has `x` at offset 1 and

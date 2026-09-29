@@ -3553,13 +3553,15 @@ public:
 	std::string class_name;
 	std::vector<TokenBase *> body;
 	std::string defining_namespace;
+	int definition_pack;	// TemplateDef::definition_pack, carried through the pattern
 	bool is_partial_specialization;
 	std::vector<std::vector<TokenBase *> > spec_pattern;
 	std::vector<TokenBase *> constraint;
 	std::vector<TokenBase *> target;
 	ClassNestedTemplatePattern()
 	    : kind(ClassNestedTemplateKind::ClassTemplate),
-	      has_non_type_params(false), is_partial_specialization(false) {}
+	      has_non_type_params(false), definition_pack(0),
+	      is_partial_specialization(false) {}
     };
     struct ClassAggregatePatternNode {
 	uint32_t local_id;
@@ -3674,6 +3676,7 @@ public:
 	uint32_t registry_name_id;             // template_name_pool id for class_name
 	    std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
 	std::string defining_namespace;        // current_namespace at capture (e.g. "std")
+	int definition_pack;                   // #pragma pack at capture (0 = default layout); instantiations lay out under it
 	DataDefCLASS *owner_class;             // enclosing class for member templates
 	bool is_partial_specialization;        // template<class T> struct X<T*> {...}
 	// For a partial spec: the pattern token sequence per arg slot (e.g. ["T","*"]
@@ -3713,7 +3716,7 @@ public:
 	CirRestoredTemplate *frozen_src;
 	CirFrozenForest *frozen_src_forest;
 	TemplateDef() : has_non_type_params(false), registry_name_id(0),
-			owner_class(nullptr),
+			definition_pack(0), owner_class(nullptr),
 			is_partial_specialization(false), class_pattern_id(0),
 			class_pattern_reason(ClassParseReason::None),
 			class_pattern_capture_deferred(false),
@@ -5724,6 +5727,20 @@ public:
 	else
 	    _pack_current = val;
     }
+    // A class template lays out under the pack in effect where it was
+    // DEFINED, never where it is instantiated (g++ = clang++): installed
+    // for the instantiation's body parse, restored on every exit.
+    class DefinitionPackScope
+    {
+	Program &pgm;
+	int saved;
+	DefinitionPackScope(const DefinitionPackScope &);
+	DefinitionPackScope &operator=(const DefinitionPackScope &);
+    public:
+	DefinitionPackScope(Program &p, int pack) : pgm(p), saved(p._pack_current)
+	{ pgm._pack_current = pack; }
+	~DefinitionPackScope() { pgm._pack_current = saved; }
+    };
 
     bool colors;
     // The language standard the front end parses under. Its enumerators

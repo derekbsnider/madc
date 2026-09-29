@@ -2591,6 +2591,16 @@ static bool reverse_scalar_storage_requested(GnuScalarStorageOrder order)
     return false;
 }
 
+// An aggregate's packing at its definition: the #pragma pack in effect there
+// (a class template instantiation's is its definition's, installed by
+// Program::DefinitionPackScope). Seeded before any member is laid out, by
+// the struct and the class parser alike.
+static void seed_definition_pack(Program &pgm, DataDefSTRUCT *agg)
+{
+    if ( pgm.pack_current() > 0 )
+	agg->pack = pgm.pack_current();
+}
+
 // Lay an aggregate's own GNU attributes into its DataDefSTRUCT. Read before
 // the body, `packed` is the packing its members are laid out with; read after
 // it (`} __attribute__((packed))`), the members already laid out replay
@@ -9508,6 +9518,7 @@ static void register_basic_class_pattern_nested_templates(
 	    td.registry_name_id = pgm.template_name_pool.intern(td.class_name);
 	    td.body = basic_class_pattern_substitute_tokens(pgm, binding, nested.body);
 	    td.defining_namespace = nested.defining_namespace;
+	    td.definition_pack = nested.definition_pack;
 	    td.owner_class = owner;
 	    td.is_partial_specialization = nested.is_partial_specialization;
 	    td.spec_pattern = basic_class_pattern_substitute_token_runs(pgm,
@@ -11995,6 +12006,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     instantiating_canonical_spelling = canon;
     instantiating_dependent_surface = dependent_surface;
     NamespaceScope ns_scope(*this, td.defining_namespace);
+    DefinitionPackScope pack_scope(*this, td.definition_pack);
 
     bool pushed_owner_scope = false;
     if ( td.owner_class )
@@ -23227,8 +23239,13 @@ void DataDefCLASS::compute_layout()
 	}
     }
     bool own_vptr = needs_vptr && !have_primary;
-    if ( own_vptr )   // __vptr at 0 — a pointer slot, pointer-aligned
-    { cur += ptr_size; if ( ptr_align > maxalign ) maxalign = ptr_align; }
+    // __vptr at 0 — a pointer slot, pointer-aligned up to the pack (#pragma
+    // pack(N) caps the vptr's alignment like any field's).
+    if ( own_vptr )
+    {
+	cur += ptr_size;
+	if ( pack_capped(ptr_align) > maxalign ) maxalign = pack_capped(ptr_align);
+    }
 
     // 2. non-virtual bases in declaration order (primary first, at 0). A base
     //    contributes its NON-VIRTUAL size (nvsize); its vbases are hoisted.
@@ -23238,8 +23255,9 @@ void DataDefCLASS::compute_layout()
 	bool empty_base = trait_is_empty(bs.base);
 	// A base subobject is aligned to the base's OWN alignment (Itanium ABI),
 	// not an assumed pointer alignment — a non-polymorphic POD base aligns to
-	// its strongest member, matching gcc/clang.
-	size_t balign = bs.base->alignment();
+	// its strongest member, matching gcc/clang — up to the pack, which
+	// caps a base subobject's alignment too.
+	size_t balign = pack_capped(bs.base->alignment());
 	if ( !balign ) balign = 1;
 	// Itanium empty-base allocation: an EMPTY non-primary base occupies no
 	// storage and is PLACED AT OFFSET 0 (dsize contributes nothing), bumped
@@ -23324,7 +23342,7 @@ void DataDefCLASS::compute_layout()
     size_t end = cur;
     for ( DataDefCLASS *vb : vbs )
     {
-	size_t vbalign = vb->alignment();
+	size_t vbalign = pack_capped(vb->alignment());
 	if ( !vbalign ) vbalign = 1;
 	end = mi_align_up(end, vbalign);
 	vbase_offset[vb] = end;
@@ -36192,6 +36210,7 @@ class ClassPatternNormalizer
 	out.class_name = source.class_name;
 	out.body = class_pattern_clone_tokens(source.body);
 	out.defining_namespace = source.defining_namespace;
+	out.definition_pack = source.definition_pack;
 	out.is_partial_specialization = source.is_partial_specialization;
 	out.spec_pattern = class_pattern_clone_token_runs(source.spec_pattern);
 	out.constraint = class_pattern_clone_tokens(source.constraint);
@@ -36925,6 +36944,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     ClassRegistrationJournal journal(*this);
     {
 	NamespaceScope namespace_scope(*this, td.defining_namespace);
+	DefinitionPackScope pack_scope(*this, td.definition_pack);
 	TemplateParamScope param_scope(*this, td.typeparams,
 				       &td.typeparam_is_type);
 	if ( td.owner_class )
@@ -46994,8 +47014,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
     }
     dds->union_layout = is_union;
-    if ( pgm.pack_current() > 0 )
-	dds->pack = pgm.pack_current();
+    seed_definition_pack(pgm, dds);
     apply_aggregate_attributes(dds, lead_attrs, false);
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
 
@@ -50825,6 +50844,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( union_class )
 	ddc->union_layout = true;   // members overlap at offset 0 (layout + CIR
 				    // emission both branch on this flag)
+    seed_definition_pack(pgm, ddc);
     // If we are instantiating a template, record its canonical C++ spelling so a
     // bodyless method in this class can be mangled to the real C++ symbol with
     // no class-name test. Non-template namespace classes get the same treatment.
@@ -69385,6 +69405,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    td.has_non_type_params = has_non_type_params;
 	    td.class_name = class_name;
 	    td.defining_namespace = pgm.current_namespace();
+	    td.definition_pack = pgm.pack_current();
 	    td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
 	    if ( !specialized_template_id )
 		pgm.register_template(td, /*only_if_absent=*/true);
@@ -69428,6 +69449,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     td.registry_name_id = pgm.template_name_pool.intern(class_name);
     td.body = body;
     td.defining_namespace = pgm.current_namespace();  // e.g. "std" — for canonical_cpp_spelling()
+    td.definition_pack = pgm.pack_current();
     td.owner_class = pgm.class_scope_stack.empty() ? NULL : pgm.class_scope_stack.back();
     if ( specialized_template_id && !typeparams.empty() )
     {

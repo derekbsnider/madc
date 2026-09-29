@@ -1000,11 +1000,16 @@ public:
     }
 
     // compute alignment for a field: natural alignment capped by pack setting
+    // An alignment under this aggregate's pack: #pragma pack(N) caps every
+    // field's alignment at N — a member's, and a class's vptr and base
+    // subobjects'; 0 is the C ABI default.
+    size_t pack_capped(size_t align) const
+    {
+	return pack != 0 && pack < align ? pack : align;
+    }
     size_t field_align(const DataDef &dd) const
     {
-	size_t natural = natural_field_align(dd);
-	if ( pack == 0 ) return natural;              // C ABI default
-	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
+	return pack_capped(natural_field_align(dd));
     }
 
     size_t field_storage_size(const DataDef &dd) const
