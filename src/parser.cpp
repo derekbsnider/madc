@@ -50945,22 +50945,21 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // ordered member list at class COMPLETION ([class.compare.default]).
     std::vector<std::string> defaulted_comparison_ops;
 
-    // A member-declaration's attribute and alignment specifiers, read by the
-    // one object-attribute reader (as TokenSTRUCT::parse reads them): the
-    // line's — before the type, among its cv, between the type and the
-    // declarator (`AL int a, b;`, `int AL x;`) — go to every data member the
-    // line declares; a declarator's trailing ones to that member alone. Each
-    // aligns (a bit-field takes no alignment) or packs the member just added.
-    size_t line_align = 0;
-    bool line_packed = false;
-    auto apply_member_attributes = [&](bool bitfield)
+    // Consume member-level GNU attributes (`__attribute__((aligned(8)))` etc.)
+    // wherever they may appear on a member — leading and trailing — through
+    // the shared consume_gnu_attributes helper. Their payload is parsed and
+    // skipped: applying a member's alignment evaluates its operand, and a
+    // qualified operand through a nested data-only struct (libstdc++'s
+    // `alignas(__alignof__(_Tp2::_M_t))`) does not resolve yet (BUGS.md
+    // B65, blocked on B77 and B78).
+    auto skip_member_attributes = [&]()
     {
-	size_t declarator_align = 0;
-	bool packed = line_packed;
-	while ( pgm.consume_object_attributes(declarator_align, &packed) )
-	    ;
-	apply_member_layout_attributes(ddc, line_align, false, bitfield);
-	apply_member_layout_attributes(ddc, declarator_align, packed, bitfield);
+	while ( pgm.peekToken() && is_attribute_identifier_token(pgm.peekToken()) )
+	{
+	    TokenBase *after = pgm.consume_gnu_attributes(pgm.nextToken());
+	    if ( after )
+		pgm.pushToken(after);
+	}
     };
 
     // The ONE friend-declaration owner ([class.friend]): record the
@@ -51028,10 +51027,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     try {
 	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 	{
-	line_align = 0;
-	line_packed = false;
-	while ( pgm.consume_object_attributes(line_align, &line_packed) )
-	    ;
+	skip_member_attributes();
 	access_flags &= ~vfMUTABLE; // storage specifiers last one member declaration
 	if ( !(tn=pgm.peekToken()) || tn->id() == TokenID::tkClBrc )
 	    break;
@@ -51512,8 +51508,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// Optional leading cv-qualifiers on a data member / method return type:
 	// `const char *m;`, `volatile int v;` — kept as a mask: the pointee's at
 	// the first `*`, a data member's own when no `*` intervenes (below).
-	unsigned class_member_lead_cv =
-	    pgm.consume_cv_and_object_attributes(line_align, &line_packed);
+	unsigned class_member_lead_cv = pgm.skip_cv_qualifier_tokens();
 
 	if ( pgm.peekToken()
 	  && pgm.peekToken()->id() == TokenID::tkENUM
@@ -51748,8 +51743,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// member-name parse below sees `const` where it expects the name — libstdc++'s
 	// `__concurrence_lock_error::what()` returns `char const*`, blocking the whole
 	// <memory> uninitialized-copy chain (vector reallocation).
-	unsigned class_member_east_cv =
-	    pgm.consume_cv_and_object_attributes(line_align, &line_packed);
+	unsigned class_member_east_cv = pgm.skip_cv_qualifier_tokens();
 
 	// Pointer declarator(s): type * [cv] [*...] member_name — the star+cv
 	// run's ONE owner, consume_declarator_stars: each pointee takes its level's
@@ -52078,7 +52072,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		unsigned long long bitfield_count = 1;
 		if ( access_flags && !ddc->member_access.empty() )
 		    ddc->member_access.back() = access_flags;
-		apply_member_attributes(true); // `int f : 3 __attribute__((packed));`
+		skip_member_attributes(); // `int f : 3 __attribute__((packed));`
 		tn = pgm.nextToken();
 		tn = skip_bitfield_default_init(tn);
 		while ( tn && tn->id() == TokenID::tkComma )
@@ -52101,7 +52095,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    ++bitfield_count;
 		    if ( access_flags && !ddc->member_access.empty() )
 			ddc->member_access.back() = access_flags;
-		    apply_member_attributes(true);
+		    skip_member_attributes();
 		    tn = pgm.nextToken();
 		    tn = skip_bitfield_default_init(tn);
 		}
@@ -52281,7 +52275,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		ddc->member_access.back() = access_flags;
 	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
 		<< " (count " << member_count << ", total " << ddc->size << ')' << endl);
-	    apply_member_attributes(false); // `int x __attribute__((aligned(8)));`
+	    skip_member_attributes(); // `int x __attribute__((aligned(8)));`
 	    tn = pgm.nextToken();
 	    // C++11 default member initializer (NSDMI): `int x = 5;`, `T m = T();`.
 	    tn = pgm.capture_member_default_init(tn, ddc, mname);
@@ -52308,7 +52302,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			pgm.note_class_decl(Program::ClassDeclKind::DataMember);
 			if ( access_flags && !ddc->member_access.empty() )
 				ddc->member_access.back() = access_flags;
-			apply_member_attributes(false);
+			skip_member_attributes();
 			tn = pgm.nextToken();
 			// NSDMI on a comma-shared declarator: `int x = 1, y = 2;`.
 			tn = pgm.capture_member_default_init(tn, ddc, nmname);

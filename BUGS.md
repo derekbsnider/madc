@@ -123,6 +123,58 @@ int main()
   - The system-header blast radius: libstdc++ and libc++ declare many
     in-class-initialized statics that madc skips today.
 
+### B65. A C++ class body drops its members' attributes
+
+One construct per file (each alone), in a struct that needs the class
+parser (it has a member function):
+
+```cpp
+struct C1 { int f() { return x; } char c; int x __attribute__((aligned(16))); };   // c4: sizeof
+struct C2 { int f() { return x; } char c; int __attribute__((aligned(16))) x; };   // c5: sizeof
+struct C3 { int f() { return x; } char c; int x __attribute__((packed)); };        // c6: sizeof
+struct AS { int f() { return x; } char c; alignas(16) int x; };                    // c8: sizeof
+```
+
+- g++ = clang++: `c4: 32`, `c5: 32`, `c6: 5`, `c8: 32`. madc: `c4: 8`,
+  `c6: 8`, `c8: 8` (SILENT); c5 refused, `Failed to find type when parsing
+  function parameters`.
+- The class's own attributes are laid out since 61e6739ab
+  (`tests/testclassattributes`). A member's are not: the class parser's
+  `skip_member_attributes` reads and discards them, and the cv reads before
+  and after the member's type (`skip_cv_qualifier_tokens`) take no
+  attribute group.
+- Blocked on B77 and B78. Applying a member's attributes evaluates their
+  operands, and libstdc++'s `__aligned_membuf` declares
+  `alignas(__alignof__(_Tp2::_M_t)) unsigned char _M_storage[...]`, a
+  qualified name through a nested data-only struct. With B77 open that
+  refuses every `std::list` / node-handle use
+  (`testforeachiter`, `testlateinstproto`, `testphpdumpiter`,
+  `testptrcmpupcast`); with B78 open its alignment would be `int`'s.
+- The fix, once both land: read the member groups with
+  `consume_object_attributes` / `consume_cv_and_object_attributes` into a
+  line alignment and packing, and lay out each data member through
+  `apply_member_layout_attributes`, as `TokenSTRUCT::parse` does.
+  `g++.dg/cpp0x/alignas5.C` then leaves the gxx-c++11 baseline.
+
+### B78. A qualified non-static member in `sizeof` has `int`'s size
+
+```cpp
+#include <cstdio>
+struct C { double t; char a[12]; int f() { return 0; } };
+int main() { std::printf("q: %zu %zu\n", sizeof(C::t), sizeof(C::a)); return 0; }
+```
+
+- g++ = clang++: `q: 8 12`. madc: `q: 4 1` (SILENT). Reducer: `tmp/b65r/v7.cpp`.
+- Where: `resolve_class_qualified_expression`'s no-object arm (a member
+  named without an object, valid only in an unevaluated operand,
+  [expr.prim.id]/2) pushes `TokenInt(0)` "typed as the member", but
+  `TokenInt::setDataType` accepts only an integer or complex type, so a
+  `double`, pointer, struct or array member stays `int`. `alignof` reads it
+  the same way. The operand needs a token that carries any type, with the
+  member's array extents and its own alignment.
+- Found 2026-09-29 while tracing the B65 member regression. Core expression
+  parser: a focused session.
+
 ### B76. A bit-field under packing never straddles its type's window
 
 ```c
@@ -275,6 +327,25 @@ int main() { return (int)alignof(S); }
   one operand and an optional `...`.
 
 ## Refuses valid code
+
+### B77. A data-only struct cannot qualify a name in an expression
+
+```cpp
+#include <cstdio>
+struct S { double t; };
+template<typename T> struct M { struct T2 { T t; }; unsigned char s[sizeof(T2::t)]; int f() { return 0; } };
+int main() { std::printf("q: %zu %zu\n", sizeof(S::t), sizeof(M<double>)); return 0; }
+```
+
+- g++ = clang++: `q: 8 8`. madc: `Unknown namespace or class 'S'` (and
+  `'T2'` for the nested one). Reducers: `tmp/b65r/v6.cpp`, `v2.cpp`.
+- Where: `classify_qualifier_before_scope` asks
+  `resolve_expression_class_scope`, which answers only a `DataDefCLASS`. A
+  C++ struct with no member function, base or object member stays a
+  `DataDefSTRUCT`, so the qualifier classifies as nothing and the
+  namespace arm throws. The same name used as a type resolves.
+- Found 2026-09-29 while tracing the B65 member regression. Core expression
+  parser: a focused session, with B78.
 
 ### B74. `std::shared_ptr` does not compile: GCC atomic builtins are undeclared
 

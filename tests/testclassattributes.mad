@@ -1,9 +1,8 @@
-// A C++ class lays out its own GNU attributes and its members': `packed` and
-// `aligned(N)` before the class name, after it and after the `}`; on a member
-// before its type, between the type and the name and after the declarator;
-// and `alignas(N)` on a member — in a class with a member function, a vptr or
-// a base. The class's own `packed` packs its members and its vptr, never a
-// base; its `aligned(N)` raises the class's alignment and moves no member.
+// A C++ class lays out its own GNU attributes — `packed` and `aligned(N)`
+// before its name, after it and after its `}`, and `alignas(N)` in its head —
+// in a class with a member function, a vptr or a base. Its `packed` packs its
+// own members and its vptr, never a base; its `aligned(N)` raises the class's
+// alignment and moves no member.
 // Oracle: g++ 13 and clang++ 18 print the lines below.
 #include <stdio.h>
 #include <stddef.h>
@@ -13,41 +12,28 @@ struct L { char l; long ll; };
 struct __attribute__((packed)) P1 { int f() { return b; } char a; int b; };
 struct __attribute__((aligned(16))) P2 { int f() { return a; } char a; };
 struct P3 { int f() { return b; } char a; int b; } __attribute__((packed));
-struct C1 { int f() { return x; } char c; int x __attribute__((aligned(16))); };
-struct C2 { int f() { return x; } char c; int __attribute__((aligned(16))) x; };
-struct C3 { int f() { return x; } char c; int x __attribute__((packed)); };
 class alignas(16) K { public: int f() { return a; } char a; };
 struct __attribute__((packed)) V1 { virtual int f() { return x; } char c; int x; };
 struct __attribute__((packed)) E2 : L { char c; int x; };
 struct E3 : L { char c; int x; } __attribute__((packed));
-struct E4 : L { char c; int x __attribute__((packed)); };
 struct __attribute__((aligned(16))) D4 : B { char c; };
 struct __attribute__((aligned(16))) V3 { virtual int f() { return c; } char c; };
-struct V2 { virtual int f() { return x; } int x __attribute__((aligned(16))); char c; };
-struct M { int f() { return a; } __attribute__((aligned(16))) char a, b; };
-struct N { int f() { return a; } char c; int a : 3 __attribute__((packed)); char d; };
 struct __attribute__((packed)) VP : virtual L { char c; };
 class __attribute__((packed)) Q { char c; int x; public: int f() { return x; } };
-struct AS { int f() { return x; } char c; alignas(16) int x; };
 
 int main()
 {
 	printf("ba: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(P1), offsetof(P1, b),
-	       sizeof(P2), alignof(P2), sizeof(P3), sizeof(C1), sizeof(C2));
-	printf("bb: %zu %zu %zu %zu %zu %zu\n", sizeof(C3), offsetof(C3, x),
-	       sizeof(K), alignof(K), sizeof(V1), alignof(V1));
-	printf("bc: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(E2), alignof(E2), offsetof(E2, x),
-	       sizeof(E3), offsetof(E3, x), sizeof(E4), offsetof(E4, x));
-	printf("bd: %zu %zu %zu %zu %zu %zu\n", sizeof(D4), alignof(D4), offsetof(D4, c),
-	       sizeof(V3), alignof(V3), sizeof(V2));
-	printf("be: %zu %zu %zu %zu %zu %zu %zu %zu\n", sizeof(M), offsetof(M, b), sizeof(N),
-	       sizeof(VP), alignof(VP), sizeof(Q), sizeof(AS), offsetof(AS, x));
+	       sizeof(P2), alignof(P2), sizeof(P3), sizeof(K), alignof(K));
+	printf("bb: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(V1), alignof(V1),
+	       sizeof(E2), alignof(E2), offsetof(E2, x), sizeof(E3), offsetof(E3, x));
+	printf("bc: %zu %zu %zu %zu %zu %zu %zu %zu\n", sizeof(D4), alignof(D4),
+	       offsetof(D4, c), sizeof(V3), alignof(V3), sizeof(VP), alignof(VP), sizeof(Q));
 	P1 p; p.a = 1; p.b = 0x11223344;
 	V1 v; v.c = 2; v.x = -5;
 	E3 e; e.l = 3; e.ll = 1L << 40; e.c = 4; e.x = 77;
-	N n; n.c = 5; n.a = -3; n.d = 6;
 	V1 *pv = &v;
-	printf("bv: %d %x %d %d %d %ld %d %d %d %d %d\n", p.a, p.f(), v.c, pv->f(),
-	       e.l, e.ll, e.c, e.x, n.c, n.f(), n.d);
+	printf("bv: %d %x %d %d %d %ld %d %d\n", p.a, p.f(), v.c, pv->f(),
+	       e.l, e.ll, e.c, e.x);
 	return 0;
 }

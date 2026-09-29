@@ -9,7 +9,6 @@
 struct V { virtual int f() { return c; } char c; long double ld; };
 struct NB { int a; char b; NB() {} };
 struct DN : NB { char c; int x; };
-struct V2 { virtual int f() { return x; } char c; int x __attribute__((aligned(16))); };
 struct DB : NB { int f() { return c; } char c; short s; int i : 5; };
 struct DD : DN { char e; };
 struct VV : V { char g; long double m; };
@@ -18,8 +17,7 @@ int main()
 {
 	printf("ca: %zu %zu %zu %zu %zu %zu\n", sizeof(V), offsetof(V, c), offsetof(V, ld),
 	       sizeof(DN), offsetof(DN, c), offsetof(DN, x));
-	printf("cb: %zu %zu %zu %zu %zu\n", sizeof(V2), offsetof(V2, c), offsetof(V2, x),
-	       sizeof(DB), offsetof(DB, s));
+	printf("cb: %zu %zu\n", sizeof(DB), offsetof(DB, s));
 	printf("cc: %zu %zu %zu %zu %zu\n", sizeof(DD), offsetof(DD, e), sizeof(VV),
 	       offsetof(VV, g), offsetof(VV, m));
 	V v; v.c = 1; v.ld = 2.5L;
