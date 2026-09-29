@@ -28478,6 +28478,21 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 		    (ctor_args[0] ? ctor_args[0]->as_objtemp_tok() : NULL))
 			if (as_class_instance(iot->obj_class) == cdcl) {
 				ctor_args = iot->ctor_args;
+				// An elided EMPTY temp (`T x = T();`,
+				// `T x = T{};`) value-initializes ([dcl.init]/8):
+				// the zero-fill first — the twin of `T x{};`'s C
+				// zero initializer — then the construction below
+				// is the default-initialization.
+				if (ctor_args.empty() && class_value_init_zeroes(cdcl)) {
+					const std::string vn = var_emit_name(sdcl->var);
+					std::vector<node_t> zs;
+					zero_init_subobject_stmts([&]() -> node_t {
+						return node1(N_ADDR, id(vn.c_str(), sdcl),
+							     sdcl);
+					}, cdcl, /*base_subobject=*/false, zs, sdcl);
+					for (node_t z : zs)
+						append(items, z);
+				}
 				// The elided temp's braced list is a FULL list
 				// this declaration now owns — the same
 				// aggregate claim as the TokenObjTemp

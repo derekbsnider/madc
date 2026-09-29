@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### An elided empty temp `T x = T()` value-initializes a ctor-less class
+
+`T x = T();` and `T x = T{};` where `T` is a ctor-less class now value-initialize
+the object (zero-fill, then default member initializers), the same as `T x{};`.
+The elided temporary's aggregate claim is now owned by the declaration ([dcl.init]/8),
+so the zero-fill precedes the default-initialization step. Before, value-initialization
+of an elided empty temp skipped the zero-fill and read uninitialized storage.
+
 ### A new-expression with a braced list aggregate-initializes a ctor-less class
 
 `new T{ a, b }` where `T` is a ctor-less class now aggregate-initializes the
