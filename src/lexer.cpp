@@ -1240,10 +1240,13 @@ static bool is_identifier_spelling(const std::string &s)
     return true;
 }
 
-static bool identifier_matches_gnu_attribute_name(const std::string &id,
-						  const std::string &name)
+bool madc_gnu_attribute_word_is(const std::string &id, const char *word)
 {
-    return id == name || id == "__" + name + "__";
+    const size_t n = strlen(word);
+    if ( id.size() == n )
+	return id == word;
+    return id.size() == n + 4 && id.compare(0, 2, "__") == 0
+	&& id.compare(2, n, word) == 0 && id.compare(n + 2, 2, "__") == 0;
 }
 
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
@@ -1265,7 +1268,7 @@ GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
 	{ "weak", GnuAttributeKind::Weak }
     };
     for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
-	if ( identifier_matches_gnu_attribute_name(name, entries[i].name) )
+	if ( madc_gnu_attribute_word_is(name, entries[i].name) )
 	    return entries[i].kind;
     return GnuAttributeKind::Unsupported;
 }

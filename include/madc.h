@@ -74,6 +74,9 @@ enum class GnuAttributeKind : uint8_t {
 };
 
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
+// An attribute's own words (a `mode` argument's QI, HI, ...) take the same
+// two spellings as its name: `word` or `__word__`.
+bool madc_gnu_attribute_word_is(const std::string &id, const char *word);
 
 // Lazy MEMBER-template hydration (task #25 B2, MEMBER arm): one restored
 // CIR_TMPLK_MEMBER record whose payload decode + pattern stamp were DEFERRED at

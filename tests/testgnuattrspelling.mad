@@ -1,0 +1,25 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+// A GNU attribute's name and its own words take either spelling, `packed` or
+// `__packed__`, `QI` or `__QI__` (the form system headers use).
+struct O2 { char c; struct __attribute__((__packed__)) { char a; int b; } in; };
+struct O4 { char c; union __attribute__((__packed__)) { char a; int b; char d[5]; } u; };
+struct __attribute__((__packed__)) S1 { char a; int b; };
+struct S3 { char a; int b; } __attribute__((__packed__));
+typedef struct __attribute__((__packed__)) { char a; int b; } S5;
+struct __attribute__((__aligned__(16))) S6 { char a; };
+typedef int __attribute__((__mode__(QI))) q1;
+typedef int __attribute__((mode(__QI__))) q2;
+typedef unsigned __attribute__((__mode__(__HI__))) q3;
+
+int main(void)
+{
+	struct O2 o2;
+	struct O4 o4;
+	printf("us: %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu\n",
+	       sizeof o2.in, sizeof o2, sizeof o4.u, sizeof o4,
+	       sizeof(struct S1), sizeof(struct S3), sizeof(S5), sizeof(struct S6),
+	       sizeof(q1), sizeof(q2), sizeof(q3));
+	return 0;
+}

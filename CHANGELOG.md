@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A GNU attribute may be spelled with double underscores
+
+`struct __attribute__((__packed__)) S { char a; int b; }` is 5 bytes,
+`__aligned__(16)` aligns to 16, and `__mode__(QI)` / `mode(__QI__)` make a
+one-byte integer, as in gcc and clang, which accept every attribute name and
+its own words in both spellings (system headers use the underscored one).
+Before, madc accepted `__packed__` and then ignored it, so the layout was
+silently wrong (8 bytes for the 5); `__aligned__` and the underscored mode
+words were ignored the same way.
+
 ### `__make_integer_seq` and `__type_pack_element` read a less-than argument
 
 `__make_integer_seq<IS, long, lim < 4 ? 5 : 1>` is the sequence 0..4 and

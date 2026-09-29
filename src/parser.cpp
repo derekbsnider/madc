@@ -1984,6 +1984,16 @@ private:
     }
 };
 
+// Does `t` name the GNU attribute `kind`, in either spelling GCC accepts
+// (`packed` / `__packed__`)? madc_gnu_attribute_kind is the one registry of
+// attribute names; a reader that compares a spelling instead misses the
+// reserved form (`__attribute__((__packed__))` was ignored on a struct).
+static bool token_names_gnu_attribute(const TokenBase *t, GnuAttributeKind kind)
+{
+    return t && t->type() == TokenType::ttIdentifier
+	&& madc_gnu_attribute_kind(((const TokenIdent *)t)->spelling()) == kind;
+}
+
 TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 					 std::set<std::string> *attrs,
 					 std::string *alias_target,
@@ -2007,9 +2017,7 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 		if ( ad.paren >= 2 && at->type() == TokenType::ttIdentifier
 		  && madc_gnu_attribute_kind(((TokenIdent *)at)->spelling()) == GnuAttributeKind::Weak )
 		    pending_weak_binding = true;
-		if ( at->type() == TokenType::ttIdentifier
-		  && (((TokenIdent *)at)->spelling_is("optimize")
-		   || ((TokenIdent *)at)->spelling_is("__optimize__")) )
+		if ( token_names_gnu_attribute(at, GnuAttributeKind::Optimize) )
 		    saw_optimize = true;
 		else if ( saw_optimize && at->type() == TokenType::ttString )
 		{
@@ -2017,17 +2025,14 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 			pending_no_strict_aliasing = true;
 		    saw_optimize = false;
 		}
-		if ( at->type() == TokenType::ttIdentifier
-		  && ((TokenIdent *)at)->spelling_is("alias") )
+		if ( token_names_gnu_attribute(at, GnuAttributeKind::Alias) )
 		    saw_alias = true;
 		else if ( alias_target && saw_alias && at->type() == TokenType::ttString )
 		{
 		    *alias_target = ((TokenStr *)at)->str;
 		    saw_alias = false;
 		}
-		else if ( at->type() == TokenType::ttIdentifier
-		  && (((TokenIdent *)at)->spelling_is("aligned")
-		   || ((TokenIdent *)at)->spelling_is("__aligned__")) )
+		else if ( token_names_gnu_attribute(at, GnuAttributeKind::Aligned) )
 		    saw_aligned = true;
 		else if ( explicit_align && saw_aligned && at->type() == TokenType::ttInteger )
 		{
@@ -2036,9 +2041,7 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 			*explicit_align = static_cast<size_t>(aval);
 		    saw_aligned = false;
 		}
-		else if ( at->type() == TokenType::ttIdentifier
-		  && (((TokenIdent *)at)->spelling_is("vector_size")
-		   || ((TokenIdent *)at)->spelling_is("__vector_size__")) )
+		else if ( token_names_gnu_attribute(at, GnuAttributeKind::VectorSize) )
 		    saw_vector_size = true;
 		else if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
 		{
@@ -2354,9 +2357,7 @@ size_t Program::parse_gnu_vector_size_attribute()
 	}
 	else if ( at->id() == TokenID::tkOpBrk || at->id() == TokenID::tkClBrk )
 	    delimStepStream(at, d);
-	else if ( at->type() == TokenType::ttIdentifier
-	       && (((TokenIdent *)at)->spelling_is("vector_size")
-		|| ((TokenIdent *)at)->spelling_is("__vector_size__")) )
+	else if ( token_names_gnu_attribute(at, GnuAttributeKind::VectorSize) )
 	    saw_vector_size = true;
 	else if ( saw_vector_size && at->type() == TokenType::ttInteger )
 	{
@@ -2395,12 +2396,9 @@ void Program::consume_typedef_gnu_attributes(std::string *mode_name,
 	    else if ( at->id() == TokenID::tkOpBrk
 		   || at->id() == TokenID::tkClBrk )
 		delimStepStream(at, d);
-	    else if ( at->type() == TokenType::ttIdentifier
-		   && ((TokenIdent *)at)->spelling_is("mode") )
+	    else if ( token_names_gnu_attribute(at, GnuAttributeKind::Mode) )
 		saw_mode = true;
-	    else if ( at->type() == TokenType::ttIdentifier
-		   && (((TokenIdent *)at)->spelling_is("vector_size")
-		    || ((TokenIdent *)at)->spelling_is("__vector_size__")) )
+	    else if ( token_names_gnu_attribute(at, GnuAttributeKind::VectorSize) )
 		saw_vector_size = true;
 	    else if ( mode_name && saw_mode && at->type() == TokenType::ttIdentifier )
 	    {
@@ -2437,13 +2435,13 @@ static DataDef *apply_gnu_mode_alias(DataDef *base_dd, const std::string &mode_n
 	    break;
     }
 
-    if ( mode_name == "QI" )
+    if ( madc_gnu_attribute_word_is(mode_name, "QI") )
 	return is_unsigned ? static_cast<DataDef *>(&ddUINT8) : static_cast<DataDef *>(&ddINT8);
-    if ( mode_name == "HI" )
+    if ( madc_gnu_attribute_word_is(mode_name, "HI") )
 	return is_unsigned ? static_cast<DataDef *>(&ddUINT16) : static_cast<DataDef *>(&ddINT16);
-    if ( mode_name == "SI" )
+    if ( madc_gnu_attribute_word_is(mode_name, "SI") )
 	return is_unsigned ? static_cast<DataDef *>(&ddUINT32) : static_cast<DataDef *>(&ddINT32);
-    if ( mode_name == "DI" )
+    if ( madc_gnu_attribute_word_is(mode_name, "DI") )
 	return is_unsigned ? static_cast<DataDef *>(&ddUINT64) : static_cast<DataDef *>(&ddINT64);
 
     return base_dd;
@@ -46371,11 +46369,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			TokenBase *attr = pgm.nextToken();
 			if ( attr->id() == TokenID::tkComma )
 			    continue;
-			if ( attr->type() == TokenType::ttIdentifier
-			  && ((TokenIdent *)attr)->spelling_is("packed") )
+			if ( token_names_gnu_attribute(attr, GnuAttributeKind::Packed) )
 			    is_packed = true;
-			else if ( attr->type() == TokenType::ttIdentifier
-			       && ((TokenIdent *)attr)->spelling_is("aligned") )
+			else if ( token_names_gnu_attribute(attr, GnuAttributeKind::Aligned) )
 			{
 			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
 			    {
@@ -46390,8 +46386,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    pgm.nextToken();
 			    }
 			}
-			else if ( attr->type() == TokenType::ttIdentifier
-			       && ((TokenIdent *)attr)->spelling_is("scalar_storage_order") )
+			else if ( token_names_gnu_attribute(attr, GnuAttributeKind::ScalarStorageOrder) )
 			{
 			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
 			    {
@@ -46970,8 +46965,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    if ( !at ) break;
 			    if ( at->id() == TokenID::tkOpBrk ) ++depth;
 			    else if ( at->id() == TokenID::tkClBrk ) --depth;
-			    else if ( at->type() == TokenType::ttIdentifier
-				   && ((TokenIdent *)at)->spelling_is("packed") )
+			    else if ( token_names_gnu_attribute(at, GnuAttributeKind::Packed) )
 				packed = true;
 			} while ( depth > 0 );
 		    }
@@ -47825,8 +47819,7 @@ bool Program::consume_anonymous_aggregate_open(bool &packed)
 		    ++depth;
 		else if ( at->id() == TokenID::tkClBrk )
 		    --depth;
-		else if ( at->type() == TokenType::ttIdentifier
-		       && ((TokenIdent *)at)->spelling_is("packed") )
+		else if ( token_names_gnu_attribute(at, GnuAttributeKind::Packed) )
 		    packed = true;
 	    } while ( depth > 0 );
 	}
