@@ -800,102 +800,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: one backward angle walk the gate could not see
-
-- No hand-rolled angle COUNTER is left (the last, in
-  `resolve_decltype_call_return`, moved 2026-09-29). Each one asked no name
-  question ([temp.names]/3, `DelimDepth::lt_reads_as_less_than`), closed a
-  list at a `>` inside `( )`, and handled `>>` its own way.
-- What remains: `pack_pattern_start` (~22465), a backward walk counting
-  `>` up and `<` down. The gate's token marker missed it because its
-  decrement follows a `return j + 1;` in the same arm; the marker's window
-  now crosses one statement (round 9), which also surfaced
-  `parse_optional_init_statement` 52891 (B59/B60/B61) and
-  `instantiate_fn_template_binding` 63736 (B59).
-- Done: the two counters in `instantiate_template_use` that folded `<` and
-  `(` into ONE depth (the empty parameter-pack elision's skip, and the
-  single-element pack pattern's `...` search; filed under B59 as
-  11351/11459/11460) are `DelimDepth`'s, stopping at its top level.
-- Done: the class-type pattern normalizer splits on
-  `scan_template_argument_list` + `template_argument_runs` (the
-  synthesized `>` of a nested `>>` is now freed once normalized; the old
-  split leaked it). KG DupFamily `template_argument_list_split` is closed.
-- Done: the transparent-alias reader in `unify_spec_pattern_arg`
-  (g++.dg alias-decl-57's `volatile __has_tuple_size<T>`) splits on the
-  list scan; behaviour-preserving.
-- Done: the builtin twins `instantiate_make_integer_seq` and
-  `instantiate_type_pack_element` split on `scan_template_argument_list`
-  with the Program handle (tests/testbuiltinseqlessthan: their bare
-  `DelimDepth` opened a list at `lim <`, the builtin declined, and the use
-  read 0, exit 0).
-- Done: `template_id_suffix_end`, the template-id extent that other code
-  asks for, and `self_template_id_keep_distinct`, whose argument split is
-  now the new owner `scan_template_argument_list` (tests/testtemplateidparengt:
-  `C<(N > 1) + 5>()` inside C was refused). The extent alone turned that
-  refusal into a wrong answer (`C<3>`), because the split still folded `(`
-  and `>` into one counter.
-- Five more readers split a stored template-argument list by hand on
-  `DelimDepth` (KG DupFamily `template_argument_list_split`): the twins
-  `instantiate_make_integer_seq` and `instantiate_type_pack_element`, the
-  alias-pattern reader and the class-type pattern normalizer, and
-  `skipped_template_outofline_member`'s head arguments. That last one splits
-  on `angle == 1` without the paren test, so a comma inside `( )` splits an
-  argument (moved: see above). Each other one moves onto
-  `scan_template_argument_list`.
-- Done: `resolve_decltype_call_return` matches decltype's `)` by
-  `balanced_group_close` and splits the call's arguments by
-  `scan_template_argument_list` (B59's loop there too). Its `>>` shapes
-  (`make<A<(N > 2)>>(0)`) used to decline to the general decltype lane,
-  which answered them; tests/testdecltypecallparengt guards the lane.
-- Done: `expand_integer_pack_template_args` bounds its region on
-  `DelimDepth` (`enter_angle()`, for a list whose `<` the caller already
-  consumed) and matches `__integer_pack(`'s `)` by `balanced_group_close`
-  (B59's two loops there too). No reducer: `std::make_index_sequence` is
-  refused before this code runs (KG Gap `make_index_sequence_not_declared`);
-  the suite is the oracle.
-- Done: `datatype_statement_starts_qualified_expr` skips a component's
-  argument list by `scan_template_argument_list`
-  (tests/testqualifiedstmtparengt: `S::In<(4 > 1) + 1>::f();` read as a
-  declaration, "'f' is not a type member").
-- Done: `instantiate_fn_template_binding`'s return-type SFINAE check
-  finds the declarator name by the owner,
-  `skipped_template_function_declarator_name_index`, instead of its own
-  angle-only counter (tests/testsfinaeretparengt: in
-  `EI_t<(N > 2) && yes(0), int> f()` the `>` closed the list, `yes` read
-  as the declarator name, and the viable overload was discarded).
-- Done: `evaluate_requires_expression_constant`'s parameter list is read
-  on the stream's `DelimDepth` and split by `parameter_list_ranges`
-  (tests/testrequiresparamsplit: `(A<(1 < 2)> a, T b)` read as one
-  parameter, and the concept was silently unsatisfied).
-- Done: `member_ctor_param_count` counts `parameter_list_ranges`'
-  parameters, the one split `extract_free_signature` and
-  `skipped_template_function_signature_spellings` each wrote out, now
-  shared (KG DupFamily `captured_param_list_split`;
-  tests/testmemberctortemplatearity: a `void (*)(int, int)` parameter
-  ended the count at its inner `)`, and two constructor templates that
-  differ by arity were refused).
-- `A<(3 > 2)>` as a type, in a nested-name-specifier and as a second
-  argument passes (`gt: 1 1 2`, as g++ and clang++ print): the main parse
-  path is on `DelimDepth`, and these copies sit on side paths.
-- Done: the four backward walks (`skipped_template_outofline_member`,
-  the two in `tsubst_elide_empty_pack_expansions`, `tsubst_eligible`) ask
-  `balanced_group_open`, which finds a close's opener forward
-  (tests/testoutoflineheadparen: a partial specialization's out-of-line
-  member with `(3 > 2)` in its head was dropped, and, with the value
-  match of 676749fdf selecting the specialization, the primary's body
-  ran, exit 0). `skipped_template_outofline_member`'s head arguments are
-  `scan_template_argument_list`'s.
-- Done: the out-of-line nested-class head (`skipped_template_outofline_nested_class`,
-  `template_class_head_is_qualified`) is `scan_template_argument_list`'s,
-  and the nested class attaches by the member definitions' head rule
-  (tests/testoutoflinenestedpartialspec: `O<T*>::N` bound T positionally
-  to `char*`, and a `>` in `( )` ended `Q<T, (3 > 2) + 4>::M`'s head).
-- Done: `template_list_close_index`, a second template-id extent helper,
-  deleted; its caller asks `template_id_suffix_end`
-  (tests/testdefaultedctortemplate: a defaulted constructor template's
-  later parameters were lost at a parenthesized `>`).
-
-### B59. `(`: thirty-seven hand-rolled paren counters
+### B59. `(`: thirty-six hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -911,7 +816,6 @@ scans), `peek_after_balanced_template_id_from`,
   1963, 2014, 2052, 2058, 2076, 2078, 2084, 2101 (nine loops in one
   function); `parse_gnu_vector_size_attribute` 2182;
   `consume_typedef_gnu_attributes` 2222;
-  `pack_pattern_start` 22465 (backward, also `<`, B58);
   `consume_deferred_static_assert_statement` 17878;
   `consume_class_static_assert_declaration` 17962;
   `fold_if_constexpr_condition` 19304; `peek_param_list_spelling` 21664;

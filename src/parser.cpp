@@ -4876,6 +4876,12 @@ struct DelimDepth {
     // short token history behind prev (hist[0] == prev) the qualified-name
     // walk reads.
     Program *pgm = NULL;
+    // A TYPE-ID scan ([temp.names]/3.4, a type-only context: a declaration's
+    // parameter or return type): every `<` after a name opens a
+    // template-argument list, inside `( )` too — a function type's parameters
+    // (`void(tup<int, int>)`) are type-ids. Off, the expression reading below
+    // applies (no angle inside `( )`/`[ ]`, the name-lookup test).
+    bool type_id_context = false;
     enum { HIST = 8 };
     TokenBase *hist[HIST] = { NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL };
     DelimDepth() {}
@@ -5010,8 +5016,9 @@ struct DelimDepth {
 	    // Inside `(...)`/`[...]` the paren balancing alone locates the
 	    // enclosing construct, so angles there are simply not tracked.
 	    case TokenID::tkLT:
-		if ( !paren && !square && angle_open_context(prev)
-		  && !lt_reads_as_less_than() )
+		if ( type_id_context ? angle_open_context(prev)
+		   : (!paren && !square && angle_open_context(prev)
+		      && !lt_reads_as_less_than()) )
 		{
 		    ++angle;
 		    angle_paren.push_back(paren);
@@ -22444,35 +22451,40 @@ static TokenBase *binding_token(DataDef *dd)
 }
 
 // Where a pack-expansion PATTERN starts in tokens already emitted: after the
-// nearest top-level `,` or unmatched opener. The backward twin of the forward
-// DelimDepth scan (kept beside it, same alphabet plus `<`): `(` `[` `{` AND
-// `<` open, `)` `]` `}` `>` close, `>>` closes two. The pattern sits in a TYPE
-// position of a declaration (a parameter or return type), where every `<`
-// opens a template-argument list. Without the angle the scan ran back through
-// `tup<` in `tup<E...>` and re-emitted `tup<int32_t, tup<int64_t>` —
-// "Expecting ',' or '>' in tup<...>" on every std::get<I>(tuple<_Elements...>&)
-// instantiation (34 self-host units). Shared by the return-range substitution
-// and the binding-stage expansion; a third copy is a bug.
+// innermost group still open at the end, or after that group's last `,`.
+// The pattern sits in a TYPE position of a declaration (a parameter or return
+// type), so the scan is DelimDepth's in type_id_context, where every `<`
+// after a name opens a template-argument list. Without the angle the scan ran
+// back through `tup<` in `tup<E...>` and re-emitted `tup<int32_t,
+// tup<int64_t>` — "Expecting ',' or '>' in tup<...>" on every
+// std::get<I>(tuple<_Elements...>&) instantiation (34 self-host units). It
+// used to walk backwards with its own counter (BUGS.md B58); forward, each
+// open group keeps where its current element starts. Shared by the
+// return-range substitution and the binding-stage expansion; a third copy is
+// a bug.
 static size_t pack_pattern_start(const std::vector<TokenBase *> &out)
 {
-    int depth = 0;
-    for ( size_t j = out.size(); j-- > 0; )
+    DelimDepth d;
+    d.type_id_context = true;
+    std::vector<size_t> starts(1, 0);	// per open group: its element's start
+    for ( size_t j = 0; j < out.size(); )
     {
-	if ( !out[j] )
-	    continue;
-	TokenID jid = out[j]->id();
-	if ( jid == TokenID::tkClBrk || jid == TokenID::tkClSqr
-	  || jid == TokenID::tkClBrc || jid == TokenID::tkGT )
-	    ++depth;
-	else if ( jid == TokenID::tkBSR )
-	    depth += 2;
-	else if ( jid == TokenID::tkOpBrk || jid == TokenID::tkOpSqr
-	       || jid == TokenID::tkOpBrc || jid == TokenID::tkLT )
-	{ if ( depth <= 0 ) return j + 1; --depth; }
-	else if ( depth == 0 && jid == TokenID::tkComma )
-	    return j + 1;
+	TokenBase *t = out[j];
+	const int before = d.paren + d.square + d.brace + d.angle;
+	size_t n = delim_scan_step(out, j, d);
+	if ( !n )
+	    n = 1;
+	const int after = d.paren + d.square + d.brace + d.angle;
+	if ( after > before )
+	    starts.push_back(j + n);
+	else if ( after < before )
+	    for ( int k = after; k < before && starts.size() > 1; ++k )
+		starts.pop_back();
+	else if ( t && t->id() == TokenID::tkComma )
+	    starts.back() = j + 1;
+	j += n;
     }
-    return 0;
+    return starts.back();
 }
 
 static std::vector<TokenBase *> substitute_return_range_tokens(
