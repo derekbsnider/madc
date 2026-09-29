@@ -8,9 +8,9 @@ headerless-win	yes	fbfd79670e9d	2026-09-24	1559/0/0TO/74skip — seam battery at
 macos	yes	fbfd79670e9d	2026-09-24	BUILD lane: release-macos rc=0 on BOTH arches + package-macos rc=0 + pull tarballs rc=0 — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
 aarch64-ld	yes	fbfd79670e9d	2026-09-24	scripts/aarch64_ldouble_lane.sh under qemu-aarch64: control OK; GREEN aot + jit on every tests/cross/aarch64_*.c fixture — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
 tests-jit	batch	72c54bd1599c	2026-09-29	1808 passed, 0 failed, 0 timed out, 9 skipped (batch: B68, VLA typedef, dependent expr, B69, B75 + fix)
-c-testsuite	commit	72c54bd1599c	2026-09-29	c-testsuite: 220 passed, 0 failed (0 outside baseline)
-c-torture	commit	72c54bd1599c	2026-09-29	c-torture: 1613 passed, 3 compile-failed, 8 runtime-failed, 0 timed out, 61 skipped (--std=c17); 11 failing, 0 outside baseline
-c2mir-tests	commit	72c54bd1599c	2026-09-29	c2mir-tests: 309 passed, 54 failed (0 outside baseline)
-gui	commit	72c54bd1599c	2026-09-29	gui: 20 passed, 0 failed | EXE 20/0 | OBJ 20/0
-gxx-c++11	no	72c54bd1599c	2026-09-29	gxx-c++11: 1490 passed, 455 compile-failed, 0 runtime-failed, 1 timed out, 2722 skipped; 456 failing, 0 outside baseline
-index-c	yes	72c54bd1599c	2026-09-29	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2]
+c-testsuite	commit	bdcddb8e7df0	2026-09-29	220 passed, 0 failed (0 outside baseline)
+c-torture	commit	bdcddb8e7df0	2026-09-29	1613 passed, 11 failing, 0 outside baseline
+c2mir-tests	commit	bdcddb8e7df0	2026-09-29	309 passed, 54 failed (0 outside baseline)
+gui	commit	bdcddb8e7df0	2026-09-29	20 passed, 0 failed | EXE 20/0 | OBJ 20/0
+gxx-c++11	no	bdcddb8e7df0	2026-09-29	1490 passed, 456 failing, 0 outside baseline
+index-c	yes	bdcddb8e7df0	2026-09-29	50/50 tasks OK, 0 failed
