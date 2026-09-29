@@ -7,6 +7,9 @@
   - stream form — `Program::delimStepStream(t, d, extra)`
   - `d.top()` for "outside every delimiter"; `d.paren` / `d.square` /
     `d.brace` / `d.angle` to test one axis
+- A template-argument list's close and its argument split are ONE reader:
+  `scan_template_argument_list` (+ `template_argument_runs` for the runs, a
+  nested `>>`'s `>` included). Never split at `angle == 1` by hand (gated).
 - Layer caller-specific logic (comma counts, terminators, spelling capture)
   ON TOP of `DelimDepth` — never inside it.
 - Whether a `<` opens a template-argument list is a NAME question

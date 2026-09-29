@@ -272,3 +272,28 @@ The lesson is the one the gate's own header already stated: a green gate
 stops you looking. Before a gate's green closes a family, point its marker at
 a planted copy of every shape the family has taken, not just the shape that
 made you write the gate.
+
+## Round 9: the argument split gets its own owner and gate (2026-09-29)
+
+The B58 burndown moved every hand-rolled angle counter onto `DelimDepth`, and
+then found that seven readers which already used `DelimDepth` still split
+their template-argument lists by hand, each deciding for itself what a
+depth-one comma is (KG DupFamily `template_argument_list_split`). They had
+drifted: one split without the paren test, so a comma inside `( )` ended an
+argument, and the two clang builtin arms (`__make_integer_seq`,
+`__type_pack_element`) built a bare tracker over the live stream. Without the
+Program handle a `<` after any name opens a list, so `lim < 4 ? 5 : 1` never
+closed, the builtin declined, and the use read 0 with exit 0
+(tests/testbuiltinseqlessthan).
+
+A tracker shared by every scanner does not stop each scanner from re-deriving
+what to do with its depth. The split is a rule of its own ([temp.arg]: an
+argument ends at a comma outside every delimiter the list opened, and a `>>`
+that closes the last argument's list leaves that argument its `>`), so it has
+one owner, `scan_template_argument_list`, with `template_argument_runs` as the
+run view. The gate's new marker fails on a comma test beside `angle == 1`
+anywhere outside that owner. Its negative control plants the owner's body,
+which must not match, and one hand split, which must. The char-level twin in
+`include/spelling_delim.h` is the spelling alphabet's own owner and is outside
+the marker by design.
+

@@ -228,6 +228,59 @@ if [ -n "$stream_hits" ]; then
 	exit 1
 fi
 
+# --- the ONE template-argument split ----------------------------------------
+# A comma at depth-one angle, outside every delimiter the list opened, is an
+# argument boundary; scan_template_argument_list is the one reader that
+# splits there (template_argument_runs gives the runs, a nested `>>`'s `>`
+# included). KG DupFamily template_argument_list_split was consolidated on
+# 2026-09-29: seven readers had split by hand on DelimDepth, one without the
+# paren test and two without the Program handle, which read `lim <` as a list
+# open and answered 0 (tests/testbuiltinseqlessthan). A tracker without a gate
+# regrows, so any comma test beside `angle == 1` outside the owner fails. The
+# char-level twin in include/spelling_delim.h is the spelling alphabet's own
+# owner (delimiter-tracking.md) and is not this shape.
+split_marker='
+  next if $ARGV =~ m{(^|/)(spelling_delim\.h|doctest\.h|json\.hpp)$};
+  my ($os, $oe) = (-1, -1);
+  if (/^static bool scan_template_argument_list\(.*?^\}/ms) { ($os, $oe) = ($-[0], $+[0]); }
+  my $comma = qr/TokenID::tkComma\b|\x27,\x27/;
+  while (/$comma[^;{}]{0,160}?\bangle\s*==\s*1\b|\bangle\s*==\s*1\b[^;{}]{0,160}?$comma/sg) {
+      my $at = $-[0];
+      next if $at >= $os && $at < $oe;
+      my $line = 1 + (substr($_, 0, $at) =~ tr/\n/\n/);
+      print "$ARGV:$line:hand-split template-argument list\n";
+  }'
+cat > "$ctl_dir/split.cpp" <<'CTL'
+template<typename Seq>
+static bool scan_template_argument_list(const Seq &tokens, size_t lt_index,
+					TemplateArgumentList &out, Program *pgm = NULL)
+{
+	if ( t && t->id() == TokenID::tkComma && d.angle == 1
+	  && !d.paren && !d.square && !d.brace )
+	    out.args.push_back(std::make_pair(arg_begin, i));
+}
+static void hand_split(const std::vector<TokenBase *> &v)
+{
+	if ( v[i]->id() == TokenID::tkComma && d.angle == 1 && !d.paren )
+	    args.push_back(std::vector<TokenBase *>());
+}
+CTL
+split_ctl=$(perl -0777 -ne "$split_marker" "$ctl_dir/split.cpp" | grep -c .)
+if [ "$split_ctl" -ne 1 ]; then
+	echo "check-one-delim-tracker: NEGATIVE CONTROL FAILED -- the argument-split marker"
+	echo "  matched $split_ctl of the 1 planted split (the owner's own body must not match)"
+	exit 1
+fi
+split_hits=$(find src include -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
+  | xargs -0 perl -0777 -ne "$split_marker")
+if [ -n "$split_hits" ]; then
+	echo "REGRESSION — a template-argument list is split by hand."
+	echo "Use scan_template_argument_list (+ template_argument_runs for the argument"
+	echo "runs). See .claude/rules/delimiter-tracking.md"
+	printf '%s\n' "$split_hits" | sed 's/^/  /'
+	exit 1
+fi
+
 echo "one-delim-tracker ratchet: $n hand-rolled delimiter-depth locals (baseline $BASELINE, target 0)"
 
 if [ "$n" -gt "$BASELINE" ]; then
