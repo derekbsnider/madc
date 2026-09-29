@@ -45577,87 +45577,73 @@ bool Program::cpp_struct_body_needs_class_parser(const std::string &tag_name,
 // class parsers themselves.
 bool Program::struct_body_needs_class_parser_from(size_t start, bool nested)
 {
-    int depth = 0;
-    int sqdepth = 0;             // '[' nesting at member level — array dimensions
+    // One tracker for the whole walk (delimiter-tracking.md): its brace axis
+    // is the member level (1 = directly in this body), its square axis the
+    // array-dimension nesting there. Each token is stepped once, first;
+    // `brace_before` is the level the token sits at.
+    DelimDepth d(this);
     bool member_start = false;
     bool member_seen_eq = false; // inside a default member initializer → ignore '('
     bool member_aggregate_head = false; // the member began struct/union/enum
-    for ( size_t i = start; i < tokens.size(); ++i )
+    size_t n = 1;
+    for ( size_t i = start; i < tokens.size(); i += n )
     {
 	TokenBase *t = tokens[i];
+	n = 1;
 	if ( !t )
 	    continue;
+	const int brace_before = d.brace;
+	n = delim_scan_step(tokens, i, d);
+	if ( !n )
+	    n = 1;
 	if ( t->id() == TokenID::tkOpBrc )
 	{
 	    // `int v{4};` — a member's brace-form default initializer.
-	    if ( nested && depth == 1 && !member_seen_eq && !member_aggregate_head )
+	    if ( nested && brace_before == 1 && !member_seen_eq
+	      && !member_aggregate_head )
 		return true;
-	    ++depth;
-	    if ( depth == 1 )
+	    if ( d.brace == 1 )
 	    {
 		member_start = true;
 		member_seen_eq = false;
 		member_aggregate_head = false;
-		sqdepth = 0;
 	    }
 	    continue;
 	}
 	if ( t->id() == TokenID::tkClBrc )
 	{
-	    if ( depth == 1 )
+	    if ( brace_before == 1 )
 		return false;
-	    if ( depth > 0 )
-		--depth;
 	    continue;
 	}
-	if ( depth != 1 )
+	if ( brace_before != 1 )
 	    continue;
 	if ( t->id() == TokenID::tkSemi )
 	{
 	    member_start = true;
 	    member_seen_eq = false;
 	    member_aggregate_head = false;
-	    sqdepth = 0;
 	    continue;
 	}
-	// Track array-dimension nesting so a call inside a dimension
-	// (`char a[sizeof(X) - offsetof(X, m)]`) is not mistaken for a method.
-	if ( t->id() == TokenID::tkOpSqr )
-	{
-	    ++sqdepth;
+	// Array-dimension nesting (the square axis) keeps a call inside a
+	// dimension (`char a[sizeof(X) - offsetof(X, m)]`) from reading as a
+	// method.
+	if ( t->id() == TokenID::tkOpSqr || t->id() == TokenID::tkClSqr )
 	    continue;
-	}
-	if ( t->id() == TokenID::tkClSqr )
-	{
-	    if ( sqdepth > 0 )
-		--sqdepth;
-	    continue;
-	}
 	// Skip a whole `__attribute__((...))` — its contents (`aligned(8)`,
 	// `mode(byte)`, …) contain identifier-'(' patterns that would otherwise
 	// be mistaken for member functions below.
 	if ( is_attribute_identifier_token(t) )
 	{
 	    size_t j = i + 1;
-	    TokenBase *n = next_significant_token(tokens, j);
-	    if ( n && n->id() == TokenID::tkOpBrk )
+	    TokenBase *an = next_significant_token(tokens, j);
+	    if ( an && an->id() == TokenID::tkOpBrk )
 	    {
-		int ad = 0;
-		for ( ; j < tokens.size(); ++j )
-		{
-		    TokenBase *a = tokens[j];
-		    if ( !a )
-			continue;
-		    if ( a->id() == TokenID::tkOpBrk )
-			++ad;
-		    else if ( a->id() == TokenID::tkClBrk )
-		    {
-			--ad;
-			if ( ad == 0 )
-			    break;
-		    }
-		}
-		i = j; // the loop's ++i steps past the matching ')'
+		while ( j < tokens.size() && tokens[j] != an )
+		    ++j;			// the `(` itself
+		const size_t close = balanced_group_close(tokens, j);
+		i = close == j ? tokens.size() : close;
+		n = 1;	// the loop steps past the matching ')'
 	    }
 	    continue;
 	}
@@ -45685,7 +45671,7 @@ bool Program::struct_body_needs_class_parser_from(size_t start, bool nested)
 	// may contain `sizeof(...)`/`offsetof(...)`); function-pointer members
 	// `T (*fp)(...)` are safe because there the '(' follows a type then
 	// '*', not a bare name.
-	if ( !member_seen_eq && sqdepth == 0 && is_contextual_identifier_token(t)
+	if ( !member_seen_eq && d.square == 0 && is_contextual_identifier_token(t)
 	  && !is_attribute_identifier_token(t) )
 	{
 	    // GNU/C specifier keywords that are `name(`-shaped but are NOT member

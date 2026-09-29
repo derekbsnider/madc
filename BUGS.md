@@ -802,7 +802,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B59. `(`: sixteen hand-rolled paren counters
+### B59. `(`: fifteen hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -824,7 +824,10 @@ scans), `peek_after_balanced_template_id_from`,
   `fold_if_constexpr_condition` (collecting an operator-id's tail too).
 - Done: `peek_param_list_spelling` (an operator-id's tail is spelled too)
   and `next_parenthesized_type_is_compound_literal`, on the stream tracker.
-- Sites: `struct_body_needs_class_parser_from` 45506; `TokenSTRUCT::parse` 46285,
+- Done: `struct_body_needs_class_parser_from` walks on one tracker (its
+  brace axis the member level, its square axis the dimensions, the
+  attribute skip `balanced_group_close`), with B60's site there.
+- Sites: `TokenSTRUCT::parse` 46285,
   46840, 47343; `consume_anonymous_aggregate_open` 47693;
   `skipped_friend_operator_definition` 49093;
   `skipped_friend_defaulted_comparison` 49128;
@@ -840,14 +843,14 @@ scans), `peek_after_balanced_template_id_from`,
 - No failing reducer yet. Each migration is behaviour-preserving for
   parens, and the suite is its oracle.
 
-### B60. `[`: two hand-rolled square-bracket counters
+### B60. `[`: one hand-rolled square-bracket counter
 
 - Done: `try_parse_vla_row_sizeof` (`balanced_group_close`) and the two
   bound scanners `bracket_dim_uses_runtime_value` /
   `bracket_dim_has_constant_fold_query` (DelimDepth entered inside the `[`).
 - Done: `evaluate_requires_expression_constant`'s requirement collector
   (with B61's two there).
-- Sites: `struct_body_needs_class_parser_from` 45480; `parseFunction` 71407.
+- Site: `parseFunction` 71407.
 - The two `bracket_dim_*` scanners read an array bound. Measured when
   they moved (2026-09-29): `int a[b[1]]`, `int c[b[b[0]] + 1]` and
   `int[sizeof(int[2])]` size as gcc and clang do (`nd: 20 24 32`).
