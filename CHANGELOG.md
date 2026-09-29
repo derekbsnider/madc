@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A partial specialization's nested template-id pattern matches by identity
+
+`template<class T> struct Z<T, B<int> >` is the specialization `Z<int, B<int>
+>` selects, as in g++, and so are `Z<T, A<true> >`, `Z<T, IC<int, 7> >` and
+`Z<T, IC<bool, false> >` for their own arguments. Before, madc compared each
+argument inside the pattern's template-id by spelling: `int` against the
+canonical `int32_t`, `true` against `1`. Every such specialization was
+silently passed over for the primary.
+
 ### An out-of-line nested class follows its class-head
 
 `template<class T> struct O<T*>::N { ... };` defines the nested class of the

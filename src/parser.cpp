@@ -37257,6 +37257,19 @@ static bool template_outer_names_match(std::string pouter,
 
 static bool datadef_is_nontype_constant(const DataDef *dd);	// defined with the return-type resolver below
 
+// Do two template-argument spellings name the same argument
+// ([temp.type]/1)? The same spelling, or the same canonical form, the one a
+// use site produces: `int` and `int32_t` are one type, `true` and `1` one
+// value.
+static bool same_template_argument(Program &pgm, const std::string &a,
+				   const std::string &b)
+{
+    if ( strip_type_namespace(a) == strip_type_namespace(b) )
+	return true;
+    const std::string ca = pgm.canonical_template_arg_spelling(a);
+    return !ca.empty() && ca == pgm.canonical_template_arg_spelling(b);
+}
+
 bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	const std::vector<std::string> &spec_params,
 	const std::string &concrete_spelling,
@@ -37391,7 +37404,11 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	}
 	else
 	{
-	    if ( strip_type_namespace(pargs[i]) != strip_type_namespace(cargs[i]) )
+	    // A concrete slot names the concrete argument by IDENTITY, not by
+	    // spelling ([temp.type]/1): the pattern's `B<int>` is the
+	    // canonical `B<int32_t>`, and a non-type argument is its value
+	    // (`A<true>` is the canonical `A<1>`).
+	    if ( !same_template_argument(*this, pargs[i], cargs[i]) )
 		return false;
 	    score += 100;                          // exact concrete-literal slot
 	}
@@ -38677,14 +38694,12 @@ std::string Program::canonical_template_arg_spelling(const std::string &spelling
 	    const std::string &cs = dd->canonical_cpp_spelling();
 	    return cv + (cs.empty() ? dd->name : cs) + sfx;
 	}
-	// A pure integer literal (a non-type arg) is already canonical.
+	// A non-type literal is its VALUE, as the instantiation key renders
+	// it (canonical_arg_key_fragment): `true` is `1`, `0x10` is `16`.
 	{
-	    size_t d0 = core[0] == '-' ? 1 : 0;
-	    bool all_digits = d0 < core.size();
-	    for ( size_t i = d0; all_digits && i < core.size(); ++i )
-		all_digits = isdigit((unsigned char)core[i]) != 0;
-	    if ( all_digits )
-		return cv + core + sfx;
+	    int64_t v = 0;
+	    if ( parse_simple_template_non_type_value(core, v) )
+		return cv + std::to_string(v) + sfx;
 	}
 	if ( DataDef *cdd = resolve_named_datadef(core) )
 	{
