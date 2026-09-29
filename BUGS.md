@@ -795,7 +795,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: eight hand-rolled angle counters
+### B58. `<`: six hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -820,8 +820,6 @@ scans), `peek_after_balanced_template_id_from`,
   `scan_template_argument_list`.
 - Sites: `expand_integer_pack_template_args` 6542,
   `evaluate_requires_expression_constant` 38159,
-  `skipped_template_outofline_nested_class` 58690,
-  `template_class_head_is_qualified` 58732,
   `instantiate_fn_template_binding` 63772,
   `instantiate_member_ctor_template_candidate` 66344 (the
   `member_ctor_param_count` lambda, KG DupFamily
@@ -871,6 +869,11 @@ int main()
   match of 676749fdf selecting the specialization, the primary's body
   ran, exit 0). `skipped_template_outofline_member`'s head arguments are
   `scan_template_argument_list`'s.
+- Done: the out-of-line nested-class head (`skipped_template_outofline_nested_class`,
+  `template_class_head_is_qualified`) is `scan_template_argument_list`'s,
+  and the nested class attaches by the member definitions' head rule
+  (tests/testoutoflinenestedpartialspec: `O<T*>::N` bound T positionally
+  to `char*`, and a `>` in `( )` ended `Q<T, (3 > 2) + 4>::M`'s head).
 - Done: `template_list_close_index`, a second template-id extent helper,
   deleted; its caller asks `template_id_suffix_end`
   (tests/testdefaultedctortemplate: a defaulted constructor template's

@@ -1,0 +1,28 @@
+/* An out-of-line nested class of a class template is defined for the
+   instantiations its class-head names ([temp.class.spec.mfunc]/1): the
+   primary's `O<T>::N` for O<short>, the partial specialization's
+   `O<T*>::N` for O<char*> with T bound to char, and `Q<T, (3 > 2) + 4>::M`,
+   whose head holds a parenthesized `>`, for Q<int, 5>. Before, the heads
+   were not read: owner parameters bound positionally (T to char*), a `>`
+   inside `( )` ended the head, and O<char*>::N had no member g.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     on: 2 101 50 7 */
+#include <cstdio>
+template<class T> struct O { struct N; int f(); };
+template<class T> struct O<T*> { struct N; int f(); };
+template<class T> struct O<T>::N { int g() { return (int)sizeof(T); } };
+template<class T> struct O<T*>::N { int g() { return 100 + (int)sizeof(T); } };
+template<class T> int O<T>::f() { return N().g(); }
+template<class T> int O<T*>::f() { return N().g(); }
+template<class T, int K> struct Q { struct M; int f(); };
+template<class T> struct Q<T, (3 > 2) + 4> { struct M; int f(); };
+template<class T, int K> struct Q<T, K>::M { int g() { return K; } };
+template<class T> struct Q<T, (3 > 2) + 4>::M { int g() { return 50; } };
+template<class T, int K> int Q<T, K>::f() { return M().g(); }
+template<class T> int Q<T, (3 > 2) + 4>::f() { return M().g(); }
+int main()
+{
+	printf("on: %d %d %d %d\n", O<short>().f(), O<char *>().f(),
+	       Q<int, 5>().f(), Q<int, 7>().f());
+	return 0;
+}

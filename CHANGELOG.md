@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### An out-of-line nested class follows its class-head
+
+`template<class T> struct O<T*>::N { ... };` defines the nested class of the
+partial specialization `O<T*>`, with T bound to `char` for `O<char*>`, as in
+g++. The primary's `O<T>::N` no longer defines it. A head with a `>` inside
+parentheses (`Q<T, (3 > 2) + 4>::M`) is read whole. Before, madc bound the
+owner's parameters by position and read the head up to the first `>`, and
+refused `O<char*>().f()` ("Unidentified member 'g'").
+
 ### A partial specialization's out-of-line member is defined with its own head
 
 `template<class U> int Z<U*>::f() { return 2; }` defines the member of the

@@ -5377,6 +5377,7 @@ public:
 	std::string nested_name;
 	std::vector<std::string> typeparams;	// owner type-params (positional)
 	std::vector<bool> typeparam_is_pack;
+	std::vector<std::vector<TokenBase *> > head_args;	// Owner<...>'s arguments, owned clones
 	std::vector<TokenBase *> decl;	// full decl incl body, owned clones
     };
     registration_map<std::string, std::vector<OutOfLineNestedClassDef> >
@@ -5384,7 +5385,10 @@ public:
     void instantiate_outofline_nested_classes(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled,
-	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot);
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
+	bool from_partial_specialization = false,
+	const OutOfLineSpecSource *spec_source = NULL);
     bool parsing_cpp_struct_class;
     // Set by TokenSTRUCT::parse when delegating a UNION with class-only syntax
     // to the class parser ([class.union]); TokenCLASS::parse consumes it and

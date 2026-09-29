@@ -6343,6 +6343,37 @@ static size_t template_id_suffix_end(
     return list.close;
 }
 
+// A scanned list's top-level arguments as token runs, one per argument
+// (borrowed pointers).
+template<typename Seq>
+static std::vector<std::vector<TokenBase *> > template_argument_runs(
+	const Seq &tokens, const TemplateArgumentList &list)
+{
+    std::vector<std::vector<TokenBase *> > runs;
+    for ( const std::pair<size_t, size_t> &a : list.args )
+    {
+	runs.push_back(std::vector<TokenBase *>());
+	for ( size_t k = a.first; k < a.second; ++k )
+	    if ( tokens[k] )
+		runs.back().push_back(tokens[k]);
+    }
+    return runs;
+}
+
+// An out-of-line definition's class-head arguments (`Z<T*, (3 > 2)>` before
+// `::`) in the shape the attach matches: one run per argument, and an empty
+// `<>` as one empty run. Borrowed pointers; the caller clones.
+template<typename Seq>
+static std::vector<std::vector<TokenBase *> > class_head_argument_runs(
+	const Seq &tokens, const TemplateArgumentList &list)
+{
+    std::vector<std::vector<TokenBase *> > runs =
+	template_argument_runs(tokens, list);
+    if ( runs.empty() )
+	runs.push_back(std::vector<TokenBase *>());
+    return runs;
+}
+
 // Should the self-name template-id at `tokens[lt_index]` (== `<`), appearing in a
 // class template's BODY, be kept as a DISTINCT specialization (re-instantiated)
 // rather than collapsed to the injected-class-name (the mangled current type)?
@@ -6372,14 +6403,8 @@ static bool self_template_id_keep_distinct(
     TemplateArgumentList list;
     if ( !scan_template_argument_list(tokens, lt_index, list) )
 	return false;
-    std::vector<std::vector<TokenBase *> > slots;
-    for ( const std::pair<size_t, size_t> &a : list.args )
-    {
-	slots.push_back(std::vector<TokenBase *>());
-	for ( size_t k = a.first; k < a.second; ++k )
-	    if ( tokens[k] )
-		slots.back().push_back(tokens[k]);
-    }
+    std::vector<std::vector<TokenBase *> > slots =
+	template_argument_runs(tokens, list);
     if ( slots.empty() )
 	return false;   // `Self<>` — nothing to instantiate distinctly
     std::set<std::string> params(td.typeparams.begin(), td.typeparams.end());
@@ -11903,7 +11928,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	// Out-of-line NESTED-CLASS definitions (basic_istream's sentry) parse
 	// eagerly with the owner — the owner's member bodies name the type.
 	instantiate_outofline_nested_classes(td.class_name,
-	    td.defining_namespace, registered_mangled, arg_tokens_by_slot);
+	    td.defining_namespace, registered_mangled,
+	    arg_types_by_slot, arg_tokens_by_slot,
+	    td.is_partial_specialization,
+	    have_ool_spec_source ? &ool_spec_source : NULL);
     }
 
     // The class is complete: instantiate the template-argument specializations
@@ -58236,14 +58264,7 @@ static bool skipped_template_outofline_member(
 	{
 	    TemplateArgumentList list;
 	    scan_template_argument_list(tokens, k, list);
-	    for ( const std::pair<size_t, size_t> &a : list.args )
-	    {
-		head_args_out->push_back(std::vector<TokenBase *>());
-		for ( size_t ti = a.first; ti < a.second; ++ti )
-		    head_args_out->back().push_back(tokens[ti]);
-	    }
-	    if ( list.args.empty() )
-		head_args_out->push_back(std::vector<TokenBase *>());
+	    *head_args_out = class_head_argument_runs(tokens, list);
 	}
     }
     else if ( is_contextual_identifier_token(tokens[j]) )
@@ -58756,31 +58777,20 @@ static std::string strip_overload_suffix(const std::string &tail);
 // template) falls back to the existing paths.
 static bool skipped_template_outofline_nested_class(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
-	std::string &class_name_out, std::string &nested_name_out)
+	std::string &class_name_out, std::string &nested_name_out,
+	std::vector<std::vector<TokenBase *> > *head_args_out = NULL)
 {
     if ( tokens.size() < 7 || !tokens[0]
       || (tokens[0]->id() != TokenID::tkCLASS && tokens[0]->id() != TokenID::tkSTRUCT)
       || !is_contextual_identifier_token(tokens[1])
       || !tokens[2] || tokens[2]->id() != TokenID::tkLT )
 	return false;
-    int depth = 0;
-    size_t i = 2;
-    for ( ; i < tokens.size(); ++i )
-    {
-	TokenBase *t = tokens[i];
-	if ( !t )
-	    return false;
-	if ( t->id() == TokenID::tkLT )
-	    ++depth;
-	else if ( t->id() == TokenID::tkGT )
-	    --depth;
-	else if ( t->id() == TokenID::tkBSR )
-	    depth -= 2;
-	else if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
-	    return false;
-	if ( depth <= 0 )
-	    break;
-    }
+    // The class-head's list closes where the one list scan says: a `>` in
+    // `( )` is greater-than (BUGS.md B58).
+    TemplateArgumentList list;
+    if ( !scan_template_argument_list(tokens, 2, list) )
+	return false;
+    size_t i = list.close;
     if ( i + 2 >= tokens.size() || !tokens[i + 1]
       || tokens[i + 1]->id() != TokenID::tkNS
       || !is_contextual_identifier_token(tokens[i + 2]) )
@@ -58794,6 +58804,8 @@ static bool skipped_template_outofline_nested_class(
 	return false;
     class_name_out = cls;
     nested_name_out = contextual_identifier_name(tokens[i + 2]);
+    if ( head_args_out )
+	*head_args_out = class_head_argument_runs(tokens, list);
     return true;
 }
 
@@ -58806,25 +58818,12 @@ static bool template_class_head_is_qualified(Program &pgm)
       || !is_contextual_identifier_token(pgm.tokens[0])
       || !pgm.tokens[1] || pgm.tokens[1]->id() != TokenID::tkLT )
 	return false;
-    int depth = 0;
-    for ( size_t i = 1; i < pgm.tokens.size(); ++i )
-    {
-	TokenBase *t = pgm.tokens[i];
-	if ( !t )
-	    return false;
-	if ( t->id() == TokenID::tkLT )
-	    ++depth;
-	else if ( t->id() == TokenID::tkGT )
-	    --depth;
-	else if ( t->id() == TokenID::tkBSR )
-	    depth -= 2;
-	else if ( t->id() == TokenID::tkOpBrc || t->id() == TokenID::tkSemi )
-	    return false;
-	if ( depth <= 0 )
-	    return i + 1 < pgm.tokens.size() && pgm.tokens[i + 1]
-		&& pgm.tokens[i + 1]->id() == TokenID::tkNS;
-    }
-    return false;
+    TemplateArgumentList list;
+    if ( !scan_template_argument_list(pgm.tokens, 1, list, &pgm) )
+	return false;
+    size_t i = list.close;
+    return i + 1 < pgm.tokens.size() && pgm.tokens[i + 1]
+	&& pgm.tokens[i + 1]->id() == TokenID::tkNS;
 }
 
 // On monomorphizing ClassName<Args>, materialize every captured out-of-line
@@ -58881,13 +58880,14 @@ static bool outofline_head_slot_names_arg(Program &pgm,
 // parameter may instead name the instantiation's argument itself (`Z<T, 5>`
 // for `Z<T, (3 > 2) + 4>`).
 static bool outofline_head_names_spec(Program &pgm,
-	const Program::OutOfLineMemberDef &def,
+	const std::vector<std::string> &typeparams,
+	const std::vector<std::vector<TokenBase *> > &head_args,
 	const Program::OutOfLineSpecSource &spec,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
 {
-    if ( spec.has_pack || def.typeparams.size() != spec.typeparams.size()
-      || def.head_args.size() != spec.pattern.size() )
+    if ( spec.has_pack || typeparams.size() != spec.typeparams.size()
+      || head_args.size() != spec.pattern.size() )
 	return false;
     // The position of a template parameter an identifier token names, or npos.
     auto param_index = [](TokenBase *t, const std::vector<std::string> &params) {
@@ -58900,15 +58900,15 @@ static bool outofline_head_names_spec(Program &pgm,
 	}
 	return std::string::npos;
     };
-    for ( size_t i = 0; i < def.head_args.size(); ++i )
+    for ( size_t i = 0; i < head_args.size(); ++i )
     {
-	const std::vector<TokenBase *> &run = def.head_args[i];
+	const std::vector<TokenBase *> &run = head_args[i];
 	const std::vector<TokenBase *> &pat = spec.pattern[i];
 	bool same = run.size() == pat.size();
 	bool names_param = false;
 	for ( size_t t = 0; t < run.size(); ++t )
 	{
-	    size_t dk = param_index(run[t], def.typeparams);
+	    size_t dk = param_index(run[t], typeparams);
 	    if ( dk != std::string::npos )
 		names_param = true;
 	    if ( !same )
@@ -58925,6 +58925,109 @@ static bool outofline_head_names_spec(Program &pgm,
 	if ( names_param
 	  || !outofline_head_slot_names_arg(pgm, run, i, arg_types_by_slot,
 					    arg_tokens_by_slot) )
+	    return false;
+    }
+    return true;
+}
+
+// Does an out-of-line definition of a class template's member or nested class
+// (`template<PARAMS> ... Owner<HEAD>::name`) define this instantiation, and
+// what do its parameters bind to? One rule for both kinds of definition.
+// - The class-head decides WHICH instantiations it defines and HOW its
+//   parameters bind: `vector<bool, _Alloc>::_M_insert_aux` binds _Alloc to
+//   slot 1 and defines only the instantiations whose slot 0 is bool; the
+//   primary's `vector<_Tp, _Alloc>::_M_insert_aux` binds both slots. (Bound
+//   positionally, the partial specialization's body attached to
+//   vector<Entry> and read `_M_finish._M_p` off a plain pointer:
+//   vector.tcc:933, 13 self-host units.)
+// - A head of parameter slots only is the PRIMARY's: it defines no
+//   instantiation a partial specialization produced (that specialization
+//   has its own members, `slot[]` vs `bits`). One with any other slot is a
+//   partial specialization's and never defines a primary instantiation.
+// - A partial specialization's definition: the head must be the
+//   specialization's argument list, and the parameters take what the
+//   specialization deduced, position for position ([temp.class.spec.mfunc]/1;
+//   `Z<T*>` binds T to int for Z<int*>, which no slot of the instantiation
+//   spells alone).
+// - An explicit specialization (no parameters) defines the member of
+//   whichever instantiation its arguments name, from the primary or a
+//   partial specialization alike ([temp.expl.spec]/1).
+static bool outofline_def_binding(Program &pgm,
+	const std::vector<std::string> &typeparams,
+	const std::vector<std::vector<TokenBase *> > &head_args,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
+	bool from_partial_specialization,
+	const Program::OutOfLineSpecSource *spec_source,
+	std::map<std::string, TokenDataType *> &tsubst,
+	std::map<std::string, std::vector<TokenBase *> > &toksubst)
+{
+    if ( head_args.empty() )
+    {
+	for ( size_t i = 0; i < typeparams.size()
+			 && i < arg_types_by_slot.size(); ++i )
+	{
+	    if ( arg_types_by_slot[i] )
+		tsubst[typeparams[i]] = arg_types_by_slot[i];
+	    else if ( i < arg_tokens_by_slot.size() )
+		toksubst[typeparams[i]] = arg_tokens_by_slot[i];
+	}
+	return true;
+    }
+    const bool explicit_spec = typeparams.empty();
+    // The position of a template parameter a bare slot names, or npos.
+    auto bare_param = [&typeparams](const std::vector<TokenBase *> &run) {
+	if ( run.size() == 1 && run[0] && is_contextual_identifier_token(run[0]) )
+	{
+	    const std::string nm = contextual_identifier_name(run[0]);
+	    for ( size_t k = 0; k < typeparams.size(); ++k )
+		if ( typeparams[k] == nm )
+		    return k;
+	}
+	return std::string::npos;
+    };
+    bool has_concrete_slot = false;
+    for ( size_t i = 0; i < head_args.size(); ++i )
+	if ( bare_param(head_args[i]) == std::string::npos )
+	    has_concrete_slot = true;
+    if ( !explicit_spec && has_concrete_slot != from_partial_specialization )
+	return false;
+    if ( spec_source && !explicit_spec )
+    {
+	if ( !outofline_head_names_spec(pgm, typeparams, head_args,
+			*spec_source, arg_types_by_slot, arg_tokens_by_slot) )
+	    return false;
+	for ( size_t k = 0; k < typeparams.size(); ++k )
+	{
+	    const std::string &sp = spec_source->typeparams[k];
+	    std::map<std::string, TokenDataType *>::const_iterator ta =
+		spec_source->type_args.find(sp);
+	    if ( ta != spec_source->type_args.end() && ta->second )
+	    {
+		tsubst[typeparams[k]] = ta->second;
+		continue;
+	    }
+	    std::map<std::string, std::vector<TokenBase *> >::const_iterator na =
+		spec_source->token_args.find(sp);
+	    if ( na != spec_source->token_args.end() )
+		toksubst[typeparams[k]] = na->second;
+	}
+	return true;
+    }
+    for ( size_t i = 0; i < head_args.size() && i < arg_types_by_slot.size(); ++i )
+    {
+	size_t k = bare_param(head_args[i]);
+	if ( k != std::string::npos )
+	{
+	    if ( arg_types_by_slot[i] )
+		tsubst[typeparams[k]] = arg_types_by_slot[i];
+	    else if ( i < arg_tokens_by_slot.size() )
+		toksubst[typeparams[k]] = arg_tokens_by_slot[i];
+	    continue;
+	}
+	// Any other slot: the instantiation's argument must be it.
+	if ( !outofline_head_slot_names_arg(pgm, head_args[i], i,
+			arg_types_by_slot, arg_tokens_by_slot) )
 	    return false;
     }
     return true;
@@ -59103,106 +59206,10 @@ void Program::register_outofline_member_instantiations(
 
 	std::map<std::string, TokenDataType *> tsubst;
 	std::map<std::string, std::vector<TokenBase *> > toksubst;
-	if ( !def.head_args.empty() )
-	{
-	    // The class-head decides WHICH instantiations this definition
-	    // defines and HOW its parameters bind: `vector<bool, _Alloc>::
-	    // _M_insert_aux` binds _Alloc to slot 1 and defines only the
-	    // instantiations whose slot 0 is bool; the primary's
-	    // `vector<_Tp, _Alloc>::_M_insert_aux` binds both slots. Bound
-	    // positionally, the partial specialization's body attached to
-	    // vector<Entry> and read `_M_finish._M_p` off a plain pointer
-	    // (vector.tcc:933, 13 self-host units).
-	    bool head_matches = true;
-	    bool def_has_concrete_slot = false;
-	    for ( size_t i = 0; i < def.head_args.size(); ++i )
-	    {
-		const std::vector<TokenBase *> &run = def.head_args[i];
-		bool is_param = run.size() == 1 && run[0]
-		    && is_contextual_identifier_token(run[0])
-		    && std::find(def.typeparams.begin(), def.typeparams.end(),
-				 contextual_identifier_name(run[0]))
-		       != def.typeparams.end();
-		if ( !is_param )
-		    def_has_concrete_slot = true;
-	    }
-	    // A definition with only parameter slots is the PRIMARY's: it
-	    // defines no instantiation a partial specialization produced (the
-	    // specialization has its own members — `slot[]` vs `bits`); one with
-	    // a concrete slot is a PARTIAL specialization's and never defines a
-	    // primary instantiation. An explicit specialization defines the
-	    // member of whichever instantiation its arguments name, from the
-	    // primary or a partial specialization alike ([temp.expl.spec]/1);
-	    // the head match below decides.
-	    if ( !explicit_spec
-	      && def_has_concrete_slot != from_partial_specialization )
-		continue;
-	    if ( spec_source && !explicit_spec )
-	    {
-		// A partial specialization's member: the head must be the
-		// specialization's argument list, and the definition's
-		// parameters take what the specialization's deduced, position
-		// for position (`Z<T*>` binds T to int for Z<int*>, which no
-		// slot of the instantiation spells alone).
-		if ( !outofline_head_names_spec(*this, def, *spec_source,
-				arg_types_by_slot, arg_tokens_by_slot) )
-		    continue;
-		for ( size_t k = 0; k < def.typeparams.size(); ++k )
-		{
-		    const std::string &sp = spec_source->typeparams[k];
-		    std::map<std::string, TokenDataType *>::const_iterator ta =
-			spec_source->type_args.find(sp);
-		    if ( ta != spec_source->type_args.end() && ta->second )
-		    {
-			tsubst[def.typeparams[k]] = ta->second;
-			continue;
-		    }
-		    std::map<std::string, std::vector<TokenBase *> >::const_iterator
-			na = spec_source->token_args.find(sp);
-		    if ( na != spec_source->token_args.end() )
-			toksubst[def.typeparams[k]] = na->second;
-		}
-	    }
-	    else
-	    {
-		for ( size_t i = 0; i < def.head_args.size()
-				 && i < arg_types_by_slot.size(); ++i )
-		{
-		    const std::vector<TokenBase *> &run = def.head_args[i];
-		    std::string tp;
-		    if ( run.size() == 1 && run[0]
-		      && is_contextual_identifier_token(run[0]) )
-		    {
-			const std::string nm = contextual_identifier_name(run[0]);
-			for ( size_t t = 0; t < def.typeparams.size(); ++t )
-			    if ( def.typeparams[t] == nm ) { tp = nm; break; }
-		    }
-		    if ( !tp.empty() )
-		    {
-			if ( arg_types_by_slot[i] )
-			    tsubst[tp] = arg_types_by_slot[i];
-			else if ( i < arg_tokens_by_slot.size() )
-			    toksubst[tp] = arg_tokens_by_slot[i];
-			continue;
-		    }
-		    // A CONCRETE slot: the instantiation's argument must be it.
-		    if ( !outofline_head_slot_names_arg(*this, run, i,
-				    arg_types_by_slot, arg_tokens_by_slot) )
-			{ head_matches = false; break; }
-		}
-	    }
-	    if ( !head_matches )
-		continue;
-	}
-	else
-	    for ( size_t i = 0; i < def.typeparams.size()
-			     && i < arg_types_by_slot.size(); ++i )
-	    {
-		if ( arg_types_by_slot[i] )
-		    tsubst[def.typeparams[i]] = arg_types_by_slot[i];
-		else if ( i < arg_tokens_by_slot.size() )
-		    toksubst[def.typeparams[i]] = arg_tokens_by_slot[i];
-	    }
+	if ( !outofline_def_binding(*this, def.typeparams, def.head_args,
+			arg_types_by_slot, arg_tokens_by_slot,
+			from_partial_specialization, spec_source, tsubst, toksubst) )
+	    continue;
 
 	std::vector<TokenBase *> sub;
 	for ( size_t bi = 0; bi < def.decl.size(); ++bi )
@@ -59572,7 +59579,10 @@ static bool is_template_type_parameter_name(
 void Program::instantiate_outofline_nested_classes(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled,
-	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
+	bool from_partial_specialization,
+	const OutOfLineSpecSource *spec_source)
 {
     std::map<std::string, std::vector<OutOfLineNestedClassDef> >::iterator it =
 	out_of_line_nested_class_defs.find(defining_namespace + "::" + class_name);
@@ -59581,6 +59591,16 @@ void Program::instantiate_outofline_nested_classes(
     for ( size_t di = 0; di < it->second.size(); ++di )
     {
 	OutOfLineNestedClassDef &def = it->second[di];
+	// Does this definition define the instantiation's nested class, and
+	// what do its parameters bind to? The member definitions' rule: the
+	// primary's `Owner<T>::N` never defines Owner<T*>'s, and the partial
+	// specialization's `Owner<T*>::N` binds T to what it deduced.
+	std::map<std::string, TokenDataType *> tsubst;
+	std::map<std::string, std::vector<TokenBase *> > toksubst;
+	if ( !outofline_def_binding(*this, def.typeparams, def.head_args,
+			arg_types_by_slot, arg_tokens_by_slot,
+			from_partial_specialization, spec_source, tsubst, toksubst) )
+	    continue;
 	// Once-only: the nested class registers as Owner__Nested. The owner
 	// pattern's in-class `class Nested;` FORWARD declaration registers an
 	// empty placeholder under the same name — only a COMPLETED definition
@@ -59604,8 +59624,9 @@ void Program::instantiate_outofline_nested_classes(
 		has_pack = true;
 	if ( has_pack )
 	    continue;
-	// Substitute: typeparam -> use-site arg tokens (positional);
-	// Owner / Owner<...> -> the mangled instantiation tag.
+	// Substitute: typeparam -> what it binds to (a type's token, a
+	// non-type argument's tokens); Owner / Owner<...> -> the mangled
+	// instantiation tag.
 	std::vector<TokenBase *> inj;
 	bool subst_ok = true;
 	for ( size_t bi = 0; bi < def.decl.size() && subst_ok; ++bi )
@@ -59625,15 +59646,22 @@ void Program::instantiate_outofline_nested_classes(
 		    }
 		if ( slot < def.typeparams.size() )
 		{
-		    if ( slot >= arg_tokens_by_slot.size()
-		      || arg_tokens_by_slot[slot].empty() )
+		    std::map<std::string, TokenDataType *>::iterator si =
+			tsubst.find(s);
+		    if ( si != tsubst.end() && si->second )
+		    {
+			inj.push_back(si->second->clone_origin());
+			continue;
+		    }
+		    std::map<std::string, std::vector<TokenBase *> >::iterator
+			ti = toksubst.find(s);
+		    if ( ti == toksubst.end() || ti->second.empty() )
 		    {
 			subst_ok = false;
 			break;
 		    }
-		    for ( size_t ai = 0; ai < arg_tokens_by_slot[slot].size(); ++ai )
-			inj.push_back(arg_tokens_by_slot[slot][ai]
-				      ? arg_tokens_by_slot[slot][ai]->clone_origin() : NULL);
+		    splice_nontype_template_arg(inj, ti->second, bt,
+			bi + 1 < def.decl.size() ? def.decl[bi + 1] : NULL);
 		    continue;
 		}
 		if ( s == class_name )
@@ -69155,8 +69183,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	if ( ool_nested_class_head && !pgm.deferred_function_body_sink )
 	{
 	    std::string oolc_class, oolc_nested;
+	    std::vector<std::vector<TokenBase *> > oolc_head_args;
 	    bool oolc_ok = skipped_template_outofline_nested_class(
-				pgm, skipped_decl, oolc_class, oolc_nested);
+				pgm, skipped_decl, oolc_class, oolc_nested,
+				&oolc_head_args);
 	    DBG(std::cout << "TokenTEMPLATE::parse() out-of-line nested class: "
 		<< (oolc_ok ? oolc_class + "::" + oolc_nested
 			    : std::string("unrecognized shape"))
@@ -69167,6 +69197,12 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		nd.nested_name = oolc_nested;
 		nd.typeparams = typeparams;
 		nd.typeparam_is_pack = typeparam_is_pack;
+		for ( const std::vector<TokenBase *> &run : oolc_head_args )
+		{
+		    nd.head_args.push_back(std::vector<TokenBase *>());
+		    for ( TokenBase *t : run )
+			nd.head_args.back().push_back(t ? t->clone_origin() : NULL);
+		}
 		for ( size_t i = 0; i < skipped_decl.size(); ++i )
 		    nd.decl.push_back(skipped_decl[i] ? skipped_decl[i]->clone_origin() : NULL);
 		const Program::TemplateDef *owner_template =
@@ -69179,9 +69215,15 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		    pgm.out_of_line_member_instantiations.find(oolc_key);
 		if ( ni != pgm.out_of_line_member_instantiations.end() )
 		    for ( size_t ri = 0; ri < ni->second.size(); ++ri )
+		    {
+			const Program::OutOfLineMemberInstantiation &rec =
+			    ni->second[ri];
 			pgm.instantiate_outofline_nested_classes(oolc_class,
-			    owner_ns, ni->second[ri].registered_mangled,
-			    ni->second[ri].arg_tokens_by_slot);
+			    owner_ns, rec.registered_mangled,
+			    rec.arg_types_by_slot, rec.arg_tokens_by_slot,
+			    rec.from_partial_specialization,
+			    rec.has_spec_source ? &rec.spec_source : NULL);
+		    }
 	    }
 	    return NULL;
 	}

@@ -44,7 +44,7 @@ fi
 
 # 74 on 2026-09-28, when the token marker below first saw the token scans
 # (BUGS.md B58-B61). Each migration lowers it.
-BASELINE=65
+BASELINE=63
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #
