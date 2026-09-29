@@ -44,7 +44,9 @@ fi
 
 # 74 on 2026-09-28, when the token marker below first saw the token scans
 # (BUGS.md B58-B61). Each migration lowers it.
-BASELINE=51
+# 55 on 2026-09-29, when the token marker's decrement window learned to cross
+# one statement (four counters it had never seen; round 9).
+BASELINE=55
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #
@@ -108,13 +110,17 @@ token_marker='
       my $nm = defined $1 ? $1 : $2;
       my ($at, $end) = ($-[0], $+[0]);
       next if $at >= $os && $at < $oe;
-      next unless substr($_, $end, 1500) =~ /$test[^;]{0,60}?(?:--\s*\Q$nm\E\b|\b\Q$nm\E\s*(?:--|-=))/s;
+      # The decrement may follow ONE statement in the same arm: the
+      # `{ if ( depth <= 0 ) return j + 1; --depth; }` shape a `[^;]` window
+      # stopped at (pack_pattern_start and three more, 2026-09-29).
+      next unless substr($_, $end, 1500) =~ /$test(?:[^;]{0,60}?|[^;]{0,60};[^;]{0,60}?)(?:--\s*\Q$nm\E\b|\b\Q$nm\E\s*(?:--|-=))/s;
       my $line = 1 + (substr($_, 0, $at) =~ tr/\n/\n/);
       print "$ARGV:$line:token balanced-delimiter counter $nm\n" unless $seen{$line}++;
   }'
 
-# Negative control: three hand-rolled token counters (one named nothing like a
-# delimiter, one over variable ids, one walking backwards) must be caught;
+# Negative control: four hand-rolled token counters (one named nothing like a
+# delimiter, one over variable ids, one walking backwards, one whose decrement
+# follows a `return` in the same arm) must be caught;
 # DelimDepth's own update() and a non-delimiter nesting counter (`?` / `:`)
 # must not.
 ctl_dir=$(mktemp -d)
@@ -159,6 +165,18 @@ static size_t backward(const std::vector<TokenBase *> &v, size_t k)
 	else if ( v[k]->id() == TokenID::tkLT ) { if ( --b == 0 ) return k; }
     }
 }
+static size_t pattern_start(const std::vector<TokenBase *> &v)
+{
+    int w = 0;
+    for ( size_t j = v.size(); j-- > 0; )
+    {
+	if ( v[j]->id() == TokenID::tkGT )
+	    ++w;
+	else if ( v[j]->id() == TokenID::tkLT )
+	{ if ( w <= 0 ) return j + 1; --w; }
+    }
+    return 0;
+}
 static int ternaries(const std::vector<TokenBase *> &v)
 {
     int nested = 0;
@@ -171,9 +189,9 @@ static int ternaries(const std::vector<TokenBase *> &v)
 }
 CTL
 ctl=$(perl -0777 -ne "$token_marker" "$ctl_dir/ctl.cpp" | grep -c .)
-if [ "$ctl" -ne 3 ]; then
+if [ "$ctl" -ne 4 ]; then
 	echo "check-one-delim-tracker: NEGATIVE CONTROL FAILED -- the token marker matched"
-	echo "  $ctl of the 3 planted counters (DelimDepth and the ?: counter must not match)"
+	echo "  $ctl of the 4 planted counters (DelimDepth and the ?: counter must not match)"
 	exit 1
 fi
 

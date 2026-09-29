@@ -297,3 +297,11 @@ which must not match, and one hand split, which must. The char-level twin in
 `include/spelling_delim.h` is the spelling alphabet's own owner and is outside
 the marker by design.
 
+The same round found the token marker's other hole. Its decrement window was
+`[^;]{0,60}`, so a counter whose decrement follows a statement in the same arm
+(`{ if ( depth <= 0 ) return j + 1; --depth; }`) was invisible:
+`pack_pattern_start`, a backward walk over `<` `>` `(` `[` `{`, and three more
+lines. The window now crosses one statement, the control plants that shape,
+and the baseline rose 51 -> 55 to the honest count. The count had not grown;
+the gate had been undercounting.
+

@@ -808,8 +808,10 @@ scans), `peek_after_balanced_template_id_from`,
   list at a `>` inside `( )`, and handled `>>` its own way.
 - What remains: `pack_pattern_start` (~22465), a backward walk counting
   `>` up and `<` down. The gate's token marker missed it because its
-  decrement follows a `return j + 1;` in the same arm (the marker's window
-  stopped at the `;`); widening the marker is the next gate commit.
+  decrement follows a `return j + 1;` in the same arm; the marker's window
+  now crosses one statement (round 9), which also surfaced
+  `parse_optional_init_statement` 52891 (B59/B60/B61) and
+  `instantiate_fn_template_binding` 63736 (B59).
 - Done: the two counters in `instantiate_template_use` that folded `<` and
   `(` into ONE depth (the empty parameter-pack elision's skip, and the
   single-element pack pattern's `...` search; filed under B59 as
@@ -893,7 +895,7 @@ scans), `peek_after_balanced_template_id_from`,
   (tests/testdefaultedctortemplate: a defaulted constructor template's
   later parameters were lost at a parenthesized `>`).
 
-### B59. `(`: thirty-five hand-rolled paren counters
+### B59. `(`: thirty-seven hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -909,6 +911,7 @@ scans), `peek_after_balanced_template_id_from`,
   1963, 2014, 2052, 2058, 2076, 2078, 2084, 2101 (nine loops in one
   function); `parse_gnu_vector_size_attribute` 2182;
   `consume_typedef_gnu_attributes` 2222;
+  `pack_pattern_start` 22465 (backward, also `<`, B58);
   `consume_deferred_static_assert_statement` 17878;
   `consume_class_static_assert_declaration` 17962;
   `fold_if_constexpr_condition` 19304; `peek_param_list_spelling` 21664;
@@ -924,7 +927,9 @@ scans), `peek_after_balanced_template_id_from`,
   67062;
   `try_parse_implicit_int_function_definition` 69935;
   `consume_balanced_parenthesized_suffix` 69984; `parseFunction` 71405,
-  71461; `paren_group_is_function_def` 73318.
+  71461; `paren_group_is_function_def` 73318;
+  `parse_optional_init_statement` 52891 (also `[` `{`);
+  `instantiate_fn_template_binding` 63736 (backward).
 - No failing reducer yet. Each migration is behaviour-preserving for
   parens, and the suite is its oracle.
 
