@@ -27,6 +27,35 @@ Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
 
+### B80. A base-class mem-initializer with aggregate init writes garbage
+
+```cpp
+#include <cstdio>
+struct FB { int i; int j; };
+struct M { FB m; M(int b) : m{ b, b + 1 } { } };   // member: OK
+struct P : FB { P(int b) : FB{ b, 2 } { } };        // base brace-init
+struct Q : FB { Q(int b) : FB() { i = b; } };       // base value-init
+int main()
+{
+	M m(3); P p(4); Q q(5);
+	std::printf("u7: %d %d %d %d %d %d\n", m.m.i, m.m.j, p.i, p.j, q.i, q.j);
+	return 0;
+}
+```
+
+- g++ 13 = clang++ 18: `u7: 3 4 4 2 5 0`. madc (`--std=c++17`): `3 4 <garbage>
+  <garbage> 5 <garbage>` (SILENT). Reducers: `tmp/b74/u6.cpp`, `u7.cpp`.
+- A mem-initializer that BRACE- or PAREN-initializes a BASE subobject
+  (`P(int b) : FB{ b, 2 }`, `Q() : FB()`) does not initialize the base: its
+  members read stack garbage. An aggregate MEMBER's brace-init (`M::m{ b, b+1 }`)
+  and a scalar member's work. So the gap is the base-subobject aggregate
+  mem-initializer specifically — likely the ctor-init emission builds the base
+  init against the base's own layout but writes it at the wrong (own-block)
+  offset, or skips the aggregate element stores entirely.
+- Found 2026-09-29 while reducing the B4 atomic-header path (unrelated). Core
+  ctor-init codegen: a focused session, its own commit + reducer. SILENT wrong
+  answer — high priority.
+
 ### B62. A dependent `alignas` on a member function template's local is dropped
 
 What remains of B62 after slices 1-3 of
