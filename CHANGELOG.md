@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A partial specialization's non-type pattern matches by value
+
+`template<class T> struct W<T, 4 + 4>` is the specialization `W<int, 8>`
+selects, as in g++: a non-type template argument is identified by its value,
+so `(7)` matches 7, `!false` matches true and a `nullptr` member-pointer
+pattern matches a null argument. Before, madc compared only literal
+spellings, silently passed the specialization over and used the primary.
+One more g++.dg test, template/ptrmem33.C, now compiles.
+
 ### A defaulted constructor template's head can hold a `>` in parentheses
 
 `template<class U = int, int N = (3 > 2), class V = short> S() : v(sizeof(V))

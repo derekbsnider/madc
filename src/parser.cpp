@@ -37796,13 +37796,21 @@ static bool non_type_partial_spec_arg_matches(Program &pgm,
 	return true;
     }
 
+    // A non-type argument is identified by its VALUE ([temp.type]/1):
+    // `(3 > 2) + 4` names the same argument as `5`, `!false` the same as
+    // `true`. Both sides sit in a NON-TYPE slot (the caller's template data
+    // says so), so a form the literal reader cannot read folds through the
+    // constant-expression evaluator. A pattern that still names a parameter
+    // does not fold, and matches nothing.
+    auto slot_value = [&pgm](const std::vector<TokenBase *> &toks,
+			     const std::string &spelling, int64_t &out) {
+	return parse_simple_template_non_type_value(spelling, out)
+	    || pgm.fold_nontype_arg_constant(toks, out);
+    };
     int64_t pattern_value = 0;
     int64_t concrete_value = 0;
-    (void)pgm;
-    (void)pattern_tokens;
-    (void)concrete_tokens;
-    if ( parse_simple_template_non_type_value(pattern_spelling, pattern_value)
-      && parse_simple_template_non_type_value(concrete_spelling, concrete_value)
+    if ( slot_value(pattern_tokens, pattern_spelling, pattern_value)
+      && slot_value(concrete_tokens, concrete_spelling, concrete_value)
       && pattern_value == concrete_value )
     {
 	score += 20;
