@@ -473,7 +473,6 @@ g++.dg/cpp0x/variadic141.C
 g++.dg/cpp0x/variadic143.C
 g++.dg/cpp0x/variadic15.C
 g++.dg/cpp0x/variadic157.C
-g++.dg/cpp0x/variadic160.C
 g++.dg/cpp0x/variadic161.C
 g++.dg/cpp0x/variadic18.C
 g++.dg/cpp0x/variadic182.C

@@ -3915,7 +3915,8 @@ public:
 	    const std::string &concrete_spelling,
 	    std::map<std::string, DataDef *> &ded, int &score,
 	    std::map<std::string, std::string> *out_tmpl = NULL,
-	    std::map<std::string, std::vector<std::string> > *out_pack = NULL);
+	    std::map<std::string, std::vector<std::string> > *out_pack = NULL,
+	    std::map<std::string, std::vector<TokenBase *> > *out_nontype = NULL);
     // Evaluate a `__void_t<Args...>` detection-idiom partial-spec slot: matches a
     // concrete void IFF every Arg (a `typename PARAM::member` dependent type) resolves
     // after substituting the already-deduced params. The SFINAE half of the std

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A partial specialization deduces a non-type parameter inside a template-id
+
+`template<class T, int N> struct Z<T, C<N> >` is the specialization
+`Z<int, C<8> >` selects, with N bound to 8 in its body, as in g++, and
+`P<C<N>, C<N> >` matches only when both values agree. Before, madc never
+recorded such a parameter, so the specialization was silently passed over
+for the primary. One more g++.dg test, cpp0x/variadic160.C, now compiles.
+
 ### A partial specialization's nested template-id pattern matches by identity
 
 `template<class T> struct Z<T, B<int> >` is the specialization `Z<int, B<int>

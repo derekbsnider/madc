@@ -37275,7 +37275,8 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	const std::string &concrete_spelling,
 	std::map<std::string, DataDef *> &ded, int &score,
 	std::map<std::string, std::string> *out_tmpl,
-	std::map<std::string, std::vector<std::string> > *out_pack)
+	std::map<std::string, std::vector<std::string> > *out_pack,
+	std::map<std::string, std::vector<TokenBase *> > *out_nontype)
 {
     std::string pouter, couter;
     std::vector<std::string> pargs, cargs;
@@ -37305,7 +37306,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 				  : std::string();
 	    if ( !bs.empty() )
 		return unify_nested_spec_pattern_arg(pat_spelling, spec_params,
-			bs, ded, score, out_tmpl, out_pack);
+			bs, ded, score, out_tmpl, out_pack, out_nontype);
 	    return false;	// no matching base subobject -> deduction fails
 	}
     }
@@ -37387,6 +37388,26 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 		  && datadef_is_nontype_constant(nd->second)
 		  && strtoll(nd->second->name.c_str(), NULL, 10) != cval )
 		    return false;          // inconsistent deduction
+		// A partial specialization deduces the parameter from the value
+		// (`Z<T, C<N> >` against C<8> binds N to 8, [temp.deduct.type]/8);
+		// the matcher reads the binding back like a bare non-type slot's.
+		if ( out_nontype )
+		{
+		    std::map<std::string, std::vector<TokenBase *> >::iterator
+			nb = out_nontype->find(pargs[i]);
+		    int64_t bound = 0;
+		    if ( nb != out_nontype->end() )
+		    {
+			if ( nb->second.size() != 1 || !nb->second[0]
+			  || !parse_simple_template_non_type_value(
+				template_token_fragment(nb->second[0]), bound)
+			  || bound != cval )
+			    return false;  // inconsistent deduction
+		    }
+		    else
+			(*out_nontype)[pargs[i]] =
+			    std::vector<TokenBase *>(1, new TokenInt(cval));
+		}
 		score += 1;
 		continue;
 	    }
@@ -37399,7 +37420,7 @@ bool Program::unify_nested_spec_pattern_arg(const std::string &pat_spelling,
 	}
 	else if ( pargs[i].find('<') != std::string::npos )
 	{
-	    if ( !unify_nested_spec_pattern_arg(pargs[i], spec_params, cargs[i], ded, score, out_tmpl, out_pack) )
+	    if ( !unify_nested_spec_pattern_arg(pargs[i], spec_params, cargs[i], ded, score, out_tmpl, out_pack, out_nontype) )
 		return false;
 	}
 	else
@@ -39033,7 +39054,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 	      && !unify_nested_spec_pattern_arg(
 					 pattern_spelling,
 					 spec.typeparams, nested_concrete, ded, score,
-					 &tmpl_ded, &pack_ded) )
+					 &tmpl_ded, &pack_ded, &nontype_ded) )
 		// A non-deducing DETECTION slot (__void_t / decltype /
 		// substituted-slot resolution) READS deductions, but a
 		// SFINAE'd slot may PRECEDE the slots that deduce its params
