@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### An object's `aligned` attribute aligns it
+
+`char c __attribute__((aligned(16)));` is placed on a 16-byte boundary and
+`__alignof__(c)` is 16, as in gcc and clang, at file scope and in a
+function, static or automatic. The attribute works before or after the
+storage class, after a qualifier, after the type and after the declarator,
+and among the specifiers it aligns every declarator of the list. Before,
+madc ignored it on every object and refused it after `static` or `const`
+and at the start of a `for` initializer.
+
 ### A member's `aligned` attribute before its type aligns it
 
 `struct L { char c; __attribute__((aligned(16))) int x; };` is 32 bytes,

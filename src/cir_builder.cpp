@@ -10179,6 +10179,16 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		tl = new_list;
 	}
 
+	// The alignment the declaration requests (`_Alignas(16) char c;`,
+	// `char c __attribute__((aligned(16)));`) -> _Alignas in its spec, when
+	// it raises the type's: c2mir places the object on that boundary.
+	{
+		size_t object_align = Program::object_alignment(*v);
+		if (object_align > query_datadef_measure(v->type, true))
+			append(tl, node1(N_ALIGNAS,
+				integer((int64_t)object_align, origin)));
+	}
+
 	// C++ `inline` variable (vague linkage): every including TU defines
 	// it — the attr binds the MIR data item LINKONCE (captured STB_WEAK)
 	// so per-TU copies merge at a multi-.o link, and --emit=c11 renders

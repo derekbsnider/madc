@@ -134,6 +134,11 @@ public:
     // "not a recorded fn-ptr-base declarator" -> emitter uses its legacy path.
     int fnptr_explicit_stars = -1;
     std::vector<carray_dim_t> dims; // C fixed-size array shape; empty = scalar
+    // The alignment the declaration requests (`_Alignas`, `alignas`,
+    // `aligned(N)`), 0 when it requests none. It never lowers the type's
+    // alignment: the object's is the larger of the two
+    // (Program::object_alignment); the CIR emits it as `_Alignas`.
+    size_t explicit_align = 0;
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a

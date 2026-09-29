@@ -5620,6 +5620,13 @@ public:
     bool parsing_for_init = false;
     bool parsing_inline_decl = false;	// current declaration carries the C++ `inline` specifier (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vague linkage for external-linkage functions/variables
     bool parsing_thread_local_decl = false;	// current declaration carries `thread_local` / `_Thread_local` (TokenCppKeyword::parse sets it; parseDeclaration consumes it like parsing_static_decl) — vfTHREADLOCAL on the variable
+    // The alignment the current declaration's decl-specifiers request: the
+    // attribute groups at the statement head and after a specifier keyword
+    // (`AL static char g;`, `static AL char g;`) merge into it
+    // (consume_declaration_attributes). parseDeclaration consumes it for
+    // every declarator of its list (push_declarator_list_tail re-sets it for
+    // the tail); a statement that declares nothing clears it.
+    size_t parsing_decl_align = 0;
     // The ANONYMOUS enum definition just parsed: TokenENUM::parse fills it at
     // the body (an unnamed enum has no DataDefENUM of its own — its
     // enumerators register as plain ints), and the typedef-enum arm consumes
@@ -7084,11 +7091,12 @@ public:
     // unless its declarator list continues. The grammar is
     // parse_declaration_body.
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
-    // The declarator's storage class (`static`, `thread_local`, `inline`)
-    // onto the object — one owner for every declaration arm.
+    // The declarator's storage class (`static`, `thread_local`, `inline`) and
+    // the alignment the declaration requests onto the object — one owner for
+    // every declaration arm.
     void apply_declaration_storage(class Variable *var, TokenCpnd *code,
 				   bool is_static, bool is_thread_local,
-				   bool is_inline);
+				   bool is_inline, size_t align);
     TokenBase *parse_declaration_body(TokenDataType *, bool is_static);
     // What the statement being parsed owes at its end: an expression statement
     // and a jump statement their `;`, an object declaration its `,` or `;`
@@ -7597,7 +7605,8 @@ public:
 			       unsigned leading_cv = cvNONE,
 			       bool method_allowed = false);
     void push_declarator_list_tail(TokenBase *type_tb, bool is_static,
-				   bool is_thread_local, bool is_volatile);
+				   bool is_thread_local, bool is_volatile,
+				   size_t specifier_align);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
 				 unsigned leading_cv = cvNONE, bool *out_cv_seen = nullptr,
 				 bool *out_volatile_after_star = nullptr);
@@ -8295,6 +8304,14 @@ public:
     // decl-specifier sequence interleaves them (`const AL int x;`): the cv
     // mask; the groups' alignment is merged into `align`.
     unsigned consume_cv_and_object_attributes(size_t &align);
+    // The attribute groups NEXT in the stream, among a declaration's
+    // specifiers: consumed, their alignment merged into the declaration's
+    // (parsing_decl_align). False when none.
+    bool consume_declaration_attributes()
+	{ return consume_object_attributes(parsing_decl_align); }
+    // The alignment of the object `v` declares: its type's, raised by the
+    // alignment its declaration requests.
+    static size_t object_alignment(const class Variable &v);
     // The GNU attribute groups NEXT in the stream, consumed (the stream is
     // left at the token after them): does one of them name `kind`? The kind
     // is compared as the enum (madc_gnu_attribute_kind), never the spelling.

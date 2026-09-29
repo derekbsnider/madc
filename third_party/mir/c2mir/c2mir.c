@@ -10371,12 +10371,15 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
   /* Exclude decls which will be in regs.  A VOLATILE object never is: every access to it
      must be a real load or store (C11 5.1.2.3p6), and a volatile local modified between
      setjmp and longjmp keeps its last value only in memory (C11 7.13.2.1p3) -- a register
-     is restored to its setjmp-time contents. */
+     is restored to its setjmp-time contents.  Nor is an object whose alignment specifier
+     raises its type's (`_Alignas (16) char c;`): only a frame slot is placed on that
+     boundary, the generator's slot for a register's address is not. */
   for (i = j = 0; i < VARR_LENGTH (decl_t, func_decls_for_allocation); i++) {
     decl = VARR_GET (decl_t, func_decls_for_allocation, i);
     type = decl->decl_spec.type;
     ns = decl->scope->attr;
-    if (scalar_type_p (type) && !int128_type_p (type) && !type->type_qual.volatile_p) {
+    if (scalar_type_p (type) && !int128_type_p (type) && !type->type_qual.volatile_p
+        && decl->decl_spec.align <= (int) var_align (c2m_ctx, type)) {
       decl->reg_p = TRUE;
       continue;
     }
@@ -10410,7 +10413,17 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
         start_offset = 0;
       }
     }
-    ns->offset = round_size (ns->offset, var_align (c2m_ctx, type));
+    {
+      /* An alignment specifier on the object (C11 6.7.5: `_Alignas (16) char c;`)
+         places it on that boundary, not only on its type's.  The frame itself is
+         rounded to MAX_ALIGNMENT, the largest alignment the target admits
+         (invalid_alignment). */
+      mir_size_t align = var_align (c2m_ctx, type);
+
+      if (decl->decl_spec.align > 0 && (mir_size_t) decl->decl_spec.align > align)
+        align = decl->decl_spec.align;
+      ns->offset = round_size (ns->offset, align);
+    }
     decl->offset = ns->offset;
     ns->offset += var_size (c2m_ctx, type);
     ns->size = ns->offset - start_offset;

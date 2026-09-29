@@ -15503,11 +15503,23 @@ static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bo
 // not: a named fixed array measures every element; anything else measures
 // its type-query type (type_query_chain_datadef — dims-aware for a
 // subscript or a deref of a multi-dimensional array). 0 when untyped.
+size_t Program::object_alignment(const Variable &v)
+{
+    size_t type_align = v.type ? query_datadef_measure(v.type, true) : 0;
+    return v.explicit_align > type_align ? v.explicit_align : type_align;
+}
+
 static size_t type_query_expression_value(Program &pgm, TokenBase *expr,
 					  bool want_alignof)
 {
     if ( !expr )
 	return 0;
+    // A named object's alignment is its own: the alignment its declaration
+    // requests raises its type's (`_Alignas(16) char c;`, gcc's __alignof__).
+    if ( want_alignof )
+	if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+	    if ( tv->var.explicit_align )
+		return Program::object_alignment(tv->var);
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
 	if ( tv->var.is_fixed_array() )
 	    if ( size_t v = query_fixed_array_sizeof_value(tv, want_alignof, false) )
@@ -36701,6 +36713,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     bool saved_extern_decl = parsing_extern_decl;
     bool saved_static_decl = parsing_static_decl;
     bool saved_thread_local_decl = parsing_thread_local_decl;
+    size_t saved_decl_align = parsing_decl_align;
     int saved_unnamed_ns_depth = unnamed_namespace_depth;
     bool saved_const_decl = parsing_const_decl;
     bool saved_volatile_decl = parsing_volatile_decl;
@@ -36765,6 +36778,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_extern_decl = false;
     parsing_static_decl = false;
     parsing_thread_local_decl = false;
+    parsing_decl_align = 0;
     unnamed_namespace_depth = 0;
     parsing_const_decl = false;
     parsing_volatile_decl = false;
@@ -36864,6 +36878,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     parsing_extern_decl = saved_extern_decl;
     parsing_static_decl = saved_static_decl;
     parsing_thread_local_decl = saved_thread_local_decl;
+    parsing_decl_align = saved_decl_align;
     unnamed_namespace_depth = saved_unnamed_ns_depth;
     parsing_const_decl = saved_const_decl;
     parsing_volatile_decl = saved_volatile_decl;
@@ -53060,6 +53075,14 @@ TokenBase *TokenFOR::parse(Program &pgm)
     }
 
     tn = pgm.nextToken();
+    // `for (AL int i = 0; ...)`: the init declaration's attribute groups,
+    // whose alignment is its declarators' (parsing_decl_align).
+    if ( is_attribute_identifier_token(tn) )
+    {
+	tn = pgm.consume_gnu_attributes(tn, NULL, NULL, &pgm.parsing_decl_align);
+	if ( !tn )
+	    pgm.Throw(this) << "Unexpected end of input in for" << flush;
+    }
 
     // A leading `const` on the loop-var / init type: `for (const T& v : c)`
     // (const reference — reads). Consume it so the type resolves; for a range-
@@ -53114,6 +53137,9 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		if ( !pgm.range_for_enabled() )
 		    pgm.Throw(tn3) << "range-based for requires C++11 or the madc dialect" << flush;
 		pgm.nextToken(); // consume the colon
+		// The element is not a parseDeclaration object: an alignment its
+		// head requested must not reach the body's first declaration.
+		pgm.parsing_decl_align = 0;
 
 		TokenFOREACH *fe = new TokenFOREACH();
 		fe->file = this->file;
@@ -53480,6 +53506,7 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 TokenBase *TokenREGISTER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenREGISTER::parse()" << std::endl);
+    pgm.consume_declaration_attributes();
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
         pgm.Throw << "Unexpected end of input after 'register'" << flush;
@@ -55715,6 +55742,7 @@ TokenBase *TokenENUM::parse(Program &pgm)
 TokenBase *TokenSTATIC::parse(Program &pgm)
 {
     DBG(std::cout << "TokenSTATIC::parse()" << std::endl);
+    pgm.consume_declaration_attributes();	// `static AL char g;`
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'static'" << flush;
@@ -55818,6 +55846,7 @@ TokenBase *TokenCONST::parse(Program &pgm)
 {
     DBG(std::cout << "TokenCONST::parse() — consuming const" << std::endl);
     pgm.parsing_const_decl = true;
+    pgm.consume_declaration_attributes();	// `const AL int g;`
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'const'" << flush;
@@ -55865,11 +55894,8 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	// libc++ spells _LIBCPP_EXPORTED_FROM_ABI as a GNU attribute between
 	// `extern` and the type (<iostream>:54). Attributes appertain to the
 	// declaration; consume them with the shared helper.
-	while ( is_attribute_identifier_token(tn) )
+	while ( pgm.consume_declaration_attributes() )
 	{
-	    TokenBase *next = pgm.consume_gnu_attributes(pgm.nextToken());
-	    if ( next )
-		pgm.pushToken(next);
 	    tn = pgm.peekToken();
 	    if ( !tn )
 		pgm.Throw << "Unexpected end of input after 'extern'" << flush;
@@ -56034,6 +56060,7 @@ TokenBase *TokenVOLATILE::parse(Program &pgm)
 {
     DBG(std::cout << "TokenVOLATILE::parse() — consuming volatile" << std::endl);
     pgm.parsing_volatile_decl = true;
+    pgm.consume_declaration_attributes();	// `volatile AL int g;`
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'volatile'" << flush;
@@ -69572,7 +69599,7 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 	if ( !tn )
 	    pgm.Throw(this) << "Unexpected end of input after 'inline'" << flush;
 	if ( is_attribute_identifier_token(tn) )
-	    tn = pgm.consume_gnu_attributes(tn);
+	    tn = pgm.consume_gnu_attributes(tn, NULL, NULL, &pgm.parsing_decl_align);
 	if ( !tn )
 	    pgm.Throw(this) << "Unexpected end of input after 'inline'" << flush;
 	return pgm.parseStatement(tn);
@@ -69591,7 +69618,7 @@ TokenBase *TokenCppKeyword::parse(Program &pgm)
 	if ( !tn )
 	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;
 	if ( is_attribute_identifier_token(tn) )
-	    tn = pgm.consume_gnu_attributes(tn);
+	    tn = pgm.consume_gnu_attributes(tn, NULL, NULL, &pgm.parsing_decl_align);
 	if ( !tn )
 	    pgm.Throw(this) << "Unexpected end of input after '" << str << "'" << flush;
 	return pgm.parseStatement(tn);
@@ -73857,9 +73884,13 @@ size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDe
 // qualify EVERY declarator of the list — one owner for both list arms (the
 // constructor-syntax arm and the initializer arm).
 void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
-					bool is_thread_local, bool is_volatile)
+					bool is_thread_local, bool is_volatile,
+					size_t specifier_align)
 {
     declarator_list_continues = true;
+    // The specifiers' alignment, which no pushed token spells: the tail's
+    // parseDeclaration takes it as a specifier run's (`AL int a, b;`).
+    parsing_decl_align = specifier_align;
     pushToken(type_tb->clone_origin());
     if ( is_volatile )
 	pushToken(new TokenVOLATILE());
@@ -73883,10 +73914,12 @@ void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 // guard). `static` wins: internal linkage is never vague.
 void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
 					bool is_static, bool is_thread_local,
-					bool is_inline)
+					bool is_inline, size_t align)
 {
     if ( !var )
 	return;
+    if ( align > var->explicit_align )
+	var->explicit_align = align;
     // A block-scope `thread_local` implies `static` in C++ ([dcl.stc]/3); C
     // requires the `static` spelled (C11 6.7.1p3 — c2mir diagnoses it, as
     // gcc does).
@@ -73946,6 +73979,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     bool gotconstexpr = parsing_constexpr_decl;
     bool gotinline = parsing_inline_decl;
     bool gotthreadlocal = parsing_thread_local_decl;
+    // The alignment the specifiers request, for every declarator of the list;
+    // a declarator's own attribute groups raise its object's (object_align).
+    size_t decl_align = parsing_decl_align;
+    parsing_decl_align = 0;
+    size_t object_align = 0;	// decl_align once the specifiers are read, then the declarator's
     // The flags cover exactly this declaration. Clear so nested declarations
     // (e.g. locals inside a `static void f() { string s = ...; }` body)
     // don't inherit static storage, const-ness, inline-ness, or thread
@@ -74013,15 +74051,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    nextToken();
 	    continue;
 	}
-	if ( is_attribute_identifier_token(pk) )
-	{
-	    TokenBase *after = consume_gnu_attributes(nextToken());
-	    if ( after )
-		pushToken(after);
+	if ( consume_object_attributes(decl_align) )	// `char AL g;`
 	    continue;
-	}
 	break;
     }
+    object_align = decl_align;
 
     // check for pointer declarator(s): type * [*...] identifier.
     // base_type is the declared type without any `*`s — comma-continuations
@@ -74410,7 +74444,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = declare_object(code, *auto_decl_type, id, 1, alloc, true, tb);
-	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline);
+	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
+				  object_align);
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
@@ -74451,7 +74486,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     if ( is_attribute_identifier_token(nt) )
     {
 	TokenBase *attr = nextToken();
-	nt = consume_gnu_attributes(attr, NULL, &decl_alias_target);
+	nt = consume_gnu_attributes(attr, NULL, &decl_alias_target, &object_align);
 	if ( nt )
 	{
 	    pushToken(nt);
@@ -74558,7 +74593,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    var = declare_object(code, *decl_type, id, 1, alloc, true, tb,
 				 NULL, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
-	    apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline);
+	    apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
+				      object_align);
 	    if ( !decl_typedef_alias.empty() )
 		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
@@ -74639,7 +74675,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    comma_continuation_starts_declarator(peek);
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
-		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile);
+		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
+					  decl_align);
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -74831,7 +74868,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 						  true, tb, &arr_dims, decl_object_cv);
 	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
 	    apply_declaration_storage(provisional_decl_var, code, gotstatic,
-				      gotthreadlocal, gotinline);
+				      gotthreadlocal, gotinline, object_align);
 	    if ( parsing_extern_decl )
 		provisional_decl_var->flags |= vfEXTERN;
 	    // Set dims early so self-referencing init expressions like
@@ -75389,7 +75426,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    global_top_decl_index = (ssize_t)record_global_top_decl(var, tb, NULL);
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(code, var);
-	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline);
+	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
+				  object_align);
 	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
 	// read-only-ness (reject assignment to it — P2.4). The variable itself is
 	// const only when const qualifies the VALUE (`const int x`) or is the
@@ -75810,7 +75848,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
-		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile);
+		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
+					  decl_align);
 	    }
 	}
 
@@ -76692,6 +76731,11 @@ TokenBase *Program::parseStatement(TokenBase *tb)
     size_t funcs_before = pending_funcs.size();
     StatementTerminatorScope terminator_scope(*this);
     TokenBase *r = parseStatementBody(tb);
+    // A declaration consumed the alignment its specifiers requested (and a
+    // declarator list's tail re-set it for the next statement); one that
+    // declared nothing (`AL struct S { ... };`, a typedef) leaves it behind.
+    if ( !(r && r->as_decl_tok()) )
+	parsing_decl_align = 0;
     // The statement's own terminator, paid before its extent is stamped so
     // the extent includes it (as an expression statement's always has).
     StatementTerminator owed = terminator_scope.close();
@@ -76756,9 +76800,12 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
     // A `weak` left pending by the previous declaration (an object, whose
     // binding is not the function parse's) never reaches this one.
     pending_weak_binding = false;
+    // Attribute groups at the head are the declaration's: their alignment is
+    // its declarators' (`AL static char g;`).
     if ( is_attribute_identifier_token(tb) )
     {
-	tb = consume_gnu_attributes(tb, NULL, NULL, NULL, &attr_vector_bytes);
+	tb = consume_gnu_attributes(tb, NULL, NULL, &parsing_decl_align,
+				    &attr_vector_bytes);
 	if ( !tb )
 	    return NULL;
     }
