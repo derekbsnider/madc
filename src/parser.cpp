@@ -21761,9 +21761,34 @@ std::string Program::peek_param_list_spelling()
     // then rejected a 1-arg bound call). v26 widened the tap over pushback
     // consumption too, but the rewind stays: it is the honest stream shape.
     TokenStream::Pos peek_saved = tokens.savepos();
-    int depth = 1;
     std::string spelling;
-    while ( depth > 0 )
+    // Overload IDENTITY must be by RESOLVED type, not surface text. A
+    // parameter named through a class-scope typedef (`_Self`, a nested
+    // `iterator`, ...) spells identically across DIFFERENT classes — e.g.
+    // `_Rb_tree_iterator`'s and `_Rb_tree_const_iterator`'s hidden-friend
+    // `operator!=(const _Self&, const _Self&)` both read `_Self`. Comparing
+    // raw spellings then merges the two as one overload (the second reuses
+    // the first's symbol), so the const-iterator's `!=` is lost and
+    // `s.find(x) != s.end()` falls back to a raw struct `!=`. Canonicalize a
+    // current-class-scope alias to its resolved type's unique name so the two
+    // stay DISTINCT overloads. Only inside a class scope (friend/member parse);
+    // the plain namespace-function path is untouched.
+    auto append = [&](TokenBase *t) {
+	if ( !spelling.empty() )
+	    spelling += ' ';
+	std::string tok_sp;
+	if ( !class_scope_stack.empty()
+	  && (t->type() == TokenType::ttIdentifier
+	   || t->type() == TokenType::ttDataType) )
+	    if ( DataDef *al = resolve_current_class_type_alias(((TokenIdent *)t)->spelling()) )
+		tok_sp = al->name;
+	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
+    };
+    // The list's depth is the stream tracker's, from inside its consumed `(`;
+    // an operator-id's tail comes back through `optail` and is spelled too.
+    DelimDepth d(this);
+    d.enter(TokenID::tkOpBrk);
+    while ( d.paren > 0 )
     {
 	// A LOOKAHEAD must not throw at end of input: nextToken() does, and on
 	// a truncated declaration that replaced the parameter-type diagnostic
@@ -21773,30 +21798,14 @@ std::string Program::peek_param_list_spelling()
 	if ( !t )
 	    break;
 	nextToken();
-	if ( t->id() == TokenID::tkOpBrk )
-	    depth++;
-	else if ( t->id() == TokenID::tkClBrk && --depth == 0 )
-	    break;
-	if ( !spelling.empty() )
-	    spelling += ' ';
-	// Overload IDENTITY must be by RESOLVED type, not surface text. A
-	// parameter named through a class-scope typedef (`_Self`, a nested
-	// `iterator`, ...) spells identically across DIFFERENT classes — e.g.
-	// `_Rb_tree_iterator`'s and `_Rb_tree_const_iterator`'s hidden-friend
-	// `operator!=(const _Self&, const _Self&)` both read `_Self`. Comparing
-	// raw spellings then merges the two as one overload (the second reuses
-	// the first's symbol), so the const-iterator's `!=` is lost and
-	// `s.find(x) != s.end()` falls back to a raw struct `!=`. Canonicalize a
-	// current-class-scope alias to its resolved type's unique name so the two
-	// stay DISTINCT overloads. Only inside a class scope (friend/member parse);
-	// the plain namespace-function path is untouched.
-	std::string tok_sp;
-	if ( !class_scope_stack.empty()
-	  && (t->type() == TokenType::ttIdentifier
-	   || t->type() == TokenType::ttDataType) )
-	    if ( DataDef *al = resolve_current_class_type_alias(((TokenIdent *)t)->spelling()) )
-		tok_sp = al->name;
-	spelling += tok_sp.empty() ? overload_token_spelling(t) : tok_sp;
+	std::vector<TokenBase *> optail;
+	delimStepStream(t, d, &optail);
+	if ( !d.paren )
+	    break;			// the list's own `)`
+	append(t);
+	for ( TokenBase *o : optail )
+	    if ( o )
+		append(o);
     }
     tokens.restore(peek_saved);
     return spelling;
@@ -32841,20 +32850,25 @@ bool Program::next_parenthesized_type_is_compound_literal()
     if ( head )
 	saved.push_back(head);
     bool type_head = token_starts_type_name(head);
-    int depth = 1;
-    while ( type_head && depth > 0 )
+    // The type's group from inside its consumed `(`, on the stream tracker
+    // (the head is stepped too, for the `<` reading after it); every token
+    // taken, an operator-id's tail included, is pushed back below.
+    DelimDepth d(this);
+    d.enter(TokenID::tkOpBrk);
+    if ( type_head )
+	delimStepStream(head, d);
+    while ( type_head && d.paren > 0 )
     {
 	TokenBase *t = nextToken();
 	if ( !t )
 	    break;
 	saved.push_back(t);
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --depth;
+	std::vector<TokenBase *> optail;
+	delimStepStream(t, d, &optail);
+	saved.insert(saved.end(), optail.begin(), optail.end());
     }
 
-    bool is_compound_literal = type_head && depth == 0
+    bool is_compound_literal = type_head && d.paren == 0
 	&& peekToken() && peekToken()->id() == TokenID::tkOpBrc;
     for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
 	  it != saved.rend(); ++it )
@@ -38450,21 +38464,21 @@ int64_t Program::evaluate_requires_expression_constant()
     bool satisfied = true;
     while ( peekToken() && peekToken()->id() != TokenID::tkClBrc )
     {
-	// Collect one requirement up to its terminating ';' (depth 0 over ()[]{}).
+	// Collect one requirement up to its terminating ';', outside every
+	// `( )` `[ ]` `{ }` (the stream tracker's; a `;` never sits in `< >`).
 	std::vector<TokenBase *> req;
-	int d = 0;
+	DelimDepth rd(this);
 	while ( peekToken() )
 	{
 	    TokenID id = (TokenID)peekToken()->id();
-	    if ( d == 0 && id == TokenID::tkSemi ) { nextToken(); break; }
-	    if ( d == 0 && id == TokenID::tkClBrc ) break;
-	    if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
-	      || id == TokenID::tkOpBrc )
-		++d;
-	    else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
-		   || id == TokenID::tkClBrc )
-	    { if ( d > 0 ) --d; }
-	    req.push_back(nextToken());
+	    const bool top = !rd.paren && !rd.square && !rd.brace;
+	    if ( top && id == TokenID::tkSemi ) { nextToken(); break; }
+	    if ( top && id == TokenID::tkClBrc ) break;
+	    TokenBase *t = nextToken();
+	    req.push_back(t);
+	    std::vector<TokenBase *> optail;	// an operator-id's tail
+	    delimStepStream(t, rd, &optail);
+	    req.insert(req.end(), optail.begin(), optail.end());
 	}
 	if ( req.empty() )
 	    continue;
@@ -38482,15 +38496,12 @@ int64_t Program::evaluate_requires_expression_constant()
 	    std::vector<TokenBase *> ty(req.begin() + 1, req.end());
 	    holds = type_resolves(subst(ty));
 	}
+	else if ( first->id() == TokenID::tkOpBrc
+	       && balanced_group_close(req, 0) == 0 )
+	    holds = false;	// `{ E` never closes: not a requirement
 	else if ( first->id() == TokenID::tkOpBrc )
 	{
-	    int bd = 0; size_t close = 0;
-	    for ( size_t i = 0; i < req.size(); ++i )
-	    {
-		if ( req[i]->id() == TokenID::tkOpBrc ) ++bd;
-		else if ( req[i]->id() == TokenID::tkClBrc )
-		{ if ( --bd == 0 ) { close = i; break; } }
-	    }
+	    const size_t close = balanced_group_close(req, 0);
 	    std::vector<TokenBase *> expr(req.begin() + 1, req.begin() + close);
 	    DataDef *rt = NULL;
 	    holds = constraint_expression_well_formed(subst(expr), &rt);

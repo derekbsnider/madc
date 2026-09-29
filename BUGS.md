@@ -802,7 +802,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B59. `(`: eighteen hand-rolled paren counters
+### B59. `(`: sixteen hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -822,9 +822,9 @@ scans), `peek_after_balanced_template_id_from`,
   `consume_class_static_assert_declaration`, whose message comma is now
   "directly inside the parens", no other group open) and
   `fold_if_constexpr_condition` (collecting an operator-id's tail too).
-- Sites: `peek_param_list_spelling` 21664;
-  `next_parenthesized_type_is_compound_literal` 32719;
-  `struct_body_needs_class_parser_from` 45506; `TokenSTRUCT::parse` 46285,
+- Done: `peek_param_list_spelling` (an operator-id's tail is spelled too)
+  and `next_parenthesized_type_is_compound_literal`, on the stream tracker.
+- Sites: `struct_body_needs_class_parser_from` 45506; `TokenSTRUCT::parse` 46285,
   46840, 47343; `consume_anonymous_aggregate_open` 47693;
   `skipped_friend_operator_definition` 49093;
   `skipped_friend_defaulted_comparison` 49128;
@@ -840,23 +840,26 @@ scans), `peek_after_balanced_template_id_from`,
 - No failing reducer yet. Each migration is behaviour-preserving for
   parens, and the suite is its oracle.
 
-### B60. `[`: three hand-rolled square-bracket counters
+### B60. `[`: two hand-rolled square-bracket counters
 
 - Done: `try_parse_vla_row_sizeof` (`balanced_group_close`) and the two
   bound scanners `bracket_dim_uses_runtime_value` /
   `bracket_dim_has_constant_fold_query` (DelimDepth entered inside the `[`).
-- Sites: `evaluate_requires_expression_constant` 38325 (the requirement
-  collector);
-  `struct_body_needs_class_parser_from` 45480; `parseFunction` 71407.
+- Done: `evaluate_requires_expression_constant`'s requirement collector
+  (with B61's two there).
+- Sites: `struct_body_needs_class_parser_from` 45480; `parseFunction` 71407.
 - The two `bracket_dim_*` scanners read an array bound. Measured when
   they moved (2026-09-29): `int a[b[1]]`, `int c[b[b[0]] + 1]` and
   `int[sizeof(int[2])]` size as gcc and clang do (`nd: 20 24 32`).
 - No failing reducer yet.
 
-### B61. `{`: twelve hand-rolled brace counters
+### B61. `{`: ten hand-rolled brace counters
 
-- Sites: `evaluate_requires_expression_constant` 38326, 38354;
-  `parseExpr_operatorArm` 43000; `collect_compound_body_tokens` 48375;
+- Done: `evaluate_requires_expression_constant`'s requirement collector
+  and its compound requirement's `{ E }` close (`balanced_group_close`; an
+  unclosed brace is now "not satisfied", where the old walk built an
+  inverted range).
+- Sites: `parseExpr_operatorArm` 43000; `collect_compound_body_tokens` 48375;
   `TokenCLASS::parse` 50599; `skip_constraint_expression` 57285;
   `skip_template_nonclass_declaration` 57379;
   `materialize_pattern_local_class` 65736; `TokenTEMPLATE::parse` 69128;
