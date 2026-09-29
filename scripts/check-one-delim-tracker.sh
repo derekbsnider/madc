@@ -46,7 +46,7 @@ fi
 # (BUGS.md B58-B61). Each migration lowers it.
 # 55 on 2026-09-29, when the token marker's decrement window learned to cross
 # one statement (four counters it had never seen; round 9).
-BASELINE=53
+BASELINE=50
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #

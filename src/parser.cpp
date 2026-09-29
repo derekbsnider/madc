@@ -49658,29 +49658,6 @@ static bool find_defaulted_member_template_ctor_name(
     return false;
 }
 
-static bool paren_close_index(const TokenStream &toks,
-			      size_t open_idx, size_t &close_idx)
-{
-    if ( open_idx >= toks.size() || !toks[open_idx]
-      || toks[open_idx]->id() != TokenID::tkOpBrk )
-	return false;
-    int depth = 0;
-    for ( size_t i = open_idx; i < toks.size(); ++i )
-    {
-	TokenBase *t = toks[i];
-	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk && --depth == 0 )
-	{
-	    close_idx = i;
-	    return true;
-	}
-    }
-    return false;
-}
-
 static bool try_parse_defaulted_member_template_constructor(
 	Program &pgm, DataDefCLASS *ddc, const std::string &class_source_name,
 	const std::string &constructor_source_name, const std::string &class_name,
@@ -49716,8 +49693,11 @@ static bool try_parse_defaulted_member_template_constructor(
 	return false;
 
     size_t open_idx = name_idx + 1;
-    size_t param_close_idx = 0;
-    if ( !paren_close_index(pgm.tokens, open_idx, param_close_idx) )
+    if ( open_idx >= pgm.tokens.size() || !pgm.tokens[open_idx]
+      || pgm.tokens[open_idx]->id() != TokenID::tkOpBrk )
+	return false;
+    const size_t param_close_idx = balanced_group_close(pgm.tokens, open_idx);
+    if ( param_close_idx == open_idx )
 	return false;
     TokenBase *ctor_name_tok = pgm.tokens[name_idx];
     std::string ctor_source_name = contextual_identifier_name(ctor_name_tok);
@@ -65241,28 +65221,6 @@ static bool tsubst_three_dots_at(const std::vector<TokenBase *> &v, size_t i)
 	&& v[i + 2] && v[i + 2]->id() == TokenID::tkDot;
 }
 
-static size_t tsubst_matching_close(const std::vector<TokenBase *> &v,
-				    size_t open, TokenID open_id,
-				    TokenID close_id)
-{
-    int depth = 0;
-    for ( size_t i = open; i < v.size(); ++i )
-    {
-	TokenBase *t = v[i];
-	if ( !t )
-	    continue;
-	if ( t->id() == open_id )
-	    ++depth;
-	else if ( t->id() == close_id )
-	{
-	    --depth;
-	    if ( depth == 0 )
-		return i;
-	}
-    }
-    return v.size();
-}
-
 static bool tsubst_range_has_pack_expansion(
 	const std::vector<TokenBase *> &v, size_t begin, size_t end)
 {
@@ -65288,9 +65246,8 @@ static bool tsubst_has_placement_new_ctor_pack_expansion(FuncDef *fd)
 	if ( placement_open >= d.size() || !d[placement_open]
 	  || d[placement_open]->id() != TokenID::tkOpBrk )
 	    continue;
-	size_t placement_close = tsubst_matching_close(
-	    d, placement_open, TokenID::tkOpBrk, TokenID::tkClBrk);
-	if ( placement_close >= d.size() )
+	size_t placement_close = balanced_group_close(d, placement_open);
+	if ( placement_close == placement_open )
 	    continue;
 	for ( size_t k = placement_close + 1; k < d.size(); ++k )
 	{
@@ -65302,9 +65259,8 @@ static bool tsubst_has_placement_new_ctor_pack_expansion(FuncDef *fd)
 		break;
 	    if ( d[k]->id() != TokenID::tkOpBrk )
 		continue;
-	    size_t args_close = tsubst_matching_close(
-		d, k, TokenID::tkOpBrk, TokenID::tkClBrk);
-	    if ( args_close >= d.size() )
+	    size_t args_close = balanced_group_close(d, k);
+	    if ( args_close == k )
 		break;
 	    if ( tsubst_range_has_pack_expansion(d, k + 1, args_close) )
 		return true;
@@ -65335,9 +65291,8 @@ static bool tsubst_has_member_call_pack_expansion(FuncDef *fd)
 	if ( call_open >= d.size() || !d[call_open]
 	  || d[call_open]->id() != TokenID::tkOpBrk )
 	    continue;
-	size_t call_close = tsubst_matching_close(
-	    d, call_open, TokenID::tkOpBrk, TokenID::tkClBrk);
-	if ( call_close >= d.size() )
+	size_t call_close = balanced_group_close(d, call_open);
+	if ( call_close == call_open )
 	    continue;
 	if ( tsubst_range_has_pack_expansion(d, call_open + 1, call_close) )
 	    return true;
@@ -65364,9 +65319,8 @@ static bool tsubst_has_unqualified_call_pack_expansion(FuncDef *fd)
 	      || d[i - 1]->id() == TokenID::tkNS) )
 	    continue;
 	size_t open = i + 1;
-	size_t close = tsubst_matching_close(d, open, TokenID::tkOpBrk,
-					     TokenID::tkClBrk);
-	if ( close >= d.size() )
+	size_t close = balanced_group_close(d, open);
+	if ( close == open )
 	    continue;
 	if ( tsubst_range_has_pack_expansion(d, open + 1, close) )
 	    return true;
@@ -70223,16 +70177,16 @@ TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
 {
     if ( !open || open->id() != TokenID::tkOpBrk )
 	return open;
-    int depth = 1;
-    while ( depth > 0 )
+    // The `(` is consumed; DelimDepth tracks the group from it (its update()
+    // is bookkeeping only, so feeding the consumed opener is exact).
+    DelimDepth d(this);
+    delimStepStream(open, d);
+    while ( d.paren > 0 )
     {
 	TokenBase *t = nextToken();
 	if ( !t )
 	    Throw(open) << "Unexpected end of input in parenthesized suffix" << flush;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --depth;
+	delimStepStream(t, d);
     }
     return nextToken();
 }

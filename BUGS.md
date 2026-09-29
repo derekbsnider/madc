@@ -802,18 +802,17 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B59. `(`: thirty-six hand-rolled paren counters
+### B59. `(`: thirty-three hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
   paren skip that also has to step over a `{`, `[` or template-id does not
   see it.
-- Two are generic helpers that others call, and they are hand-rolled
-  themselves: `paren_close_index` 49551 and
-  `consume_balanced_parenthesized_suffix` 69984. Rebuild those on the owner
-  first, then move the loops onto them. `tsubst_matching_close` 64982
-  takes the open and close ids as parameters, so the literal-token marker
-  misses it. All four of its callers pass `(` `)`.
+- Done (2026-09-29): the three helpers other code called.
+  `paren_close_index` and `tsubst_matching_close` are deleted; their
+  callers ask `balanced_group_close`. `consume_balanced_parenthesized_suffix`
+  tracks its group with `delimStepStream`. The loops below move onto
+  `balanced_group_close` (index scans) or `delimStepStream` (stream scans).
 - Sites: `consume_gnu_attributes` 1852; `skip_gnu_asm_statement` 1955,
   1963, 2014, 2052, 2058, 2076, 2078, 2084, 2101 (nine loops in one
   function); `parse_gnu_vector_size_attribute` 2182;
@@ -825,14 +824,13 @@ scans), `peek_after_balanced_template_id_from`,
   `struct_body_needs_class_parser_from` 45506; `TokenSTRUCT::parse` 46285,
   46840, 47343; `consume_anonymous_aggregate_open` 47693;
   `skipped_friend_operator_definition` 49093;
-  `skipped_friend_defaulted_comparison` 49128; `paren_close_index` 49551;
+  `skipped_friend_defaulted_comparison` 49128;
   `TokenCLASS::parse` 51068; `skip_constraint_expression` 57285 (the
   `skip_balanced` lambda, also used for `{`);
   `skipped_template_body_is_inline_identity_refcast` 60027;
-  `tsubst_matching_close` 64982; `resolve_fn_template_return_by_key`
-  67062;
+  `resolve_fn_template_return_by_key` 67062;
   `try_parse_implicit_int_function_definition` 69935;
-  `consume_balanced_parenthesized_suffix` 69984; `parseFunction` 71405,
+  `parseFunction` 71405,
   71461; `paren_group_is_function_def` 73318;
   `parse_optional_init_statement` 52891 (also `[` `{`);
   `instantiate_fn_template_binding` 63736 (backward).
