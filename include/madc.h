@@ -599,6 +599,10 @@ public:
 	// `p(other)` copies one value. Nested braces are flattened at parse
 	// time to one scalar sequence, matching the declaration path.
 	bool braced = false;
+	// A nested braced list was flattened into `args`: its nesting is LOST
+	// (`a{ {1}, 2 }` and `a{ 1, 2 }` read alike), so no aggregate walk may
+	// brace-elide over these args. BUGS.md B81 keeps the nesting instead.
+	bool nested_list_flattened = false;
 	// The RAW argument tokens of this mem-initializer, retained only for a
 	// `constexpr` constructor — the twin of FuncDef::constexpr_return_tokens.
 	// The parsed `args` trees cannot be re-evaluated by the constant

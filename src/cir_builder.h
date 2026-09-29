@@ -1879,8 +1879,9 @@ public:
 	// (no vptr/bases/union, servable members); every other shape DECLINES
 	// (NULL, nothing emitted) back to the legacy construction lanes that
 	// already serve it. Callers are the FULL-list construction sites (the
-	// TokenObjTemp arms, class_ctor_call_addr, and the declaration lanes
-	// via decl_aggregate_claim) — never class_ctor_call itself: the
+	// TokenObjTemp arms, the class-array elements, the declaration lanes
+	// via decl_aggregate_claim, and a mem-initializer via
+	// class_subobject_mem_init) — never class_ctor_call itself: the
 	// declaration lanes probe THAT with a PARTIAL argument view. Motivating
 	// defects: the frozen-libc++ __allocate_at_least garbage-pointer trap,
 	// and S{string, int} printing garbage in the plain lane.
@@ -1889,6 +1890,27 @@ public:
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// class_aggregate_init's member walk: each member of `sdd` in
+	// declaration order takes its clauses from args[ai...]
+	// ([dcl.init.aggr]/4). A braced clause is the member's own list; an
+	// unbraced clause for an array or aggregate member starts a brace-
+	// elided run of as many clauses as that member has elements
+	// ([dcl.init.aggr]/16), the rest left to the members after it. Members
+	// past the list value-initialize. FALSE declines the whole list.
+	bool aggregate_member_fill(
+			       const std::function<node_t(const std::string &)> &member_lvalue,
+			       DataDefSTRUCT *sdd, const std::vector<TokenBase *> &args,
+			       size_t &ai, std::vector<node_t> &stmts, TokenBase *origin);
+	// Is an unbraced `clause` the first of a brace-elided run into a member
+	// of aggregate type `member_type` — a value that is not itself a
+	// struct/class object (which would initialize the member whole)?
+	bool clause_elides_into(TokenBase *clause, DataDef *member_type);
+	// Does aggregate_member_fill's scalar-array arm take member `mi` from
+	// args[ai...]: a one-dimensional scalar array whose clauses are scalar
+	// values (a braced list of them, or an elided run), or past the list
+	// with no default member initializer?
+	bool scalar_array_member_takes(DataDefSTRUCT *sdd, size_t mi,
+			       const std::vector<TokenBase *> &args, size_t ai);
 	// TRUE when a braced-init class instance's storage declaration must stay
 	// BARE (no C INIT list from var_decl): an OBJECT member needs
 	// copy-construction — bit-copying its representation is wrong, and a
@@ -1910,6 +1932,40 @@ public:
 			       DataDefCLASS *cdcl,
 			       const std::vector<TokenBase *> &args,
 			       TokenBase *origin);
+	// The same claim over ANY receiver: `member_lvalue` mints a FRESH
+	// member-access lvalue per call (a declared variable, a mem-initializer's
+	// base or member subobject). decl_aggregate_claim is its declaration face.
+	node_t aggregate_init_claim(
+			       const std::function<node_t(const std::string &)> &member_lvalue,
+			       DataDefCLASS *cdcl,
+			       const std::vector<TokenBase *> &args,
+			       TokenBase *origin);
+	// `memset(addr, 0, nbytes);` — the value-initialization zero fill.
+	node_t zero_fill_stmt(node_t addr, node_t nbytes, TokenBase *origin);
+	// Zero-initialization of a class-type SUBOBJECT ([dcl.init]/6) at the
+	// typed address `mint_addr` returns (FRESH per call), field by field as
+	// gcc emits it. A BASE subobject skips the members its virtual bases
+	// host (the complete object's, constructed before it) and never writes
+	// its tail padding or an empty base's byte, which a sibling or derived
+	// subobject may share; a complete object (a member) is filled whole.
+	void zero_init_subobject_stmts(const std::function<node_t()> &mint_addr,
+			       DataDefCLASS *cdd, bool base_subobject,
+			       std::vector<node_t> &out, TokenBase *origin);
+	// The mem-initializer of a class-type subobject — a base (`B{a, b}`,
+	// `B()`) or a member (`m{a, b}`, `m()`), [class.base.init]/7. An empty
+	// list value-initializes ([dcl.init]/8: zero-fill first unless the class
+	// has a user-provided default ctor, then default-initialize); a ctor-less
+	// class's list aggregate-initializes (aggregate_init_claim); every other
+	// shape is the ctor lane (class_ctor_call_addr). A `list_flattened`
+	// list (CtorInitializer::nested_list_flattened) lost its nesting, so a
+	// ctor-less class refuses it LOUDLY rather than guess (BUGS.md B81).
+	// Statements append to `out`; TRUE when any was emitted.
+	bool class_subobject_mem_init(const std::function<node_t()> &mint_addr,
+			       DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &args,
+			       bool list_flattened,
+			       bool base_subobject, bool vbase_forward,
+			       std::vector<node_t> &out, TokenBase *origin);
 	// Complete-object (Itanium C1-flavor) construction at a minted address:
 	// user-ctor virtual bases first (base-most order), then the C2-flavor
 	// construction (class_ctor_call_addr). `mint_addr` returns a FRESH typed

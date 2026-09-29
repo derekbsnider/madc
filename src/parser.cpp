@@ -48911,6 +48911,7 @@ TokenBase *Program::parse_ctor_initializer_list(FuncDef *func)
 	    // "Expecting member or base name".
 	    if ( peekToken()->id() == TokenID::tkOpBrc )
 	    {
+		init.nested_list_flattened = true;
 		collect_braced_init_args(init.args);
 		TokenBase *bsep = peekToken();
 		if ( bsep && bsep->id() == TokenID::tkComma )

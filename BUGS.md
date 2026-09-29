@@ -27,34 +27,58 @@ Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
 
-### B80. A base-class mem-initializer with aggregate init writes garbage
+### B81. A mem-initializer flattens a nested braced list, losing its nesting
 
 ```cpp
 #include <cstdio>
 struct FB { int i; int j; };
-struct M { FB m; M(int b) : m{ b, b + 1 } { } };   // member: OK
-struct P : FB { P(int b) : FB{ b, 2 } { } };        // base brace-init
-struct Q : FB { Q(int b) : FB() { i = b; } };       // base value-init
+struct P : FB { P() : FB{ 1, 2 } { } };        // FB becomes a (ctor-less) class
+struct AR { int a[3]; char c; };
+struct DB : AR { DB() : AR{ { 61, 62 }, 'z' } { } };
+struct O { FB f; int k; };
+struct PO : O { PO() : O{ { 1, 2 }, 3 } { } };
 int main()
 {
-	M m(3); P p(4); Q q(5);
-	std::printf("u7: %d %d %d %d %d %d\n", m.m.i, m.m.j, p.i, p.j, q.i, q.j);
+	DB db; PO po;
+	std::printf("b81: %d %d %d %c | %d %d %d\n", db.a[0], db.a[1], db.a[2], db.c,
+		po.f.i, po.f.j, po.k);
 	return 0;
 }
 ```
 
-- g++ 13 = clang++ 18: `u7: 3 4 4 2 5 0`. madc (`--std=c++17`): `3 4 <garbage>
-  <garbage> 5 <garbage>` (SILENT). Reducers: `tmp/b74/u6.cpp`, `u7.cpp`.
-- A mem-initializer that BRACE- or PAREN-initializes a BASE subobject
-  (`P(int b) : FB{ b, 2 }`, `Q() : FB()`) does not initialize the base: its
-  members read stack garbage. An aggregate MEMBER's brace-init (`M::m{ b, b+1 }`)
-  and a scalar member's work. So the gap is the base-subobject aggregate
-  mem-initializer specifically — likely the ctor-init emission builds the base
-  init against the base's own layout but writes it at the wrong (own-block)
-  offset, or skips the aggregate element stores entirely.
-- Found 2026-09-29 while reducing the B4 atomic-header path (unrelated). Core
-  ctor-init codegen: a focused session, its own commit + reducer. SILENT wrong
-  answer — high priority.
+A plain-struct member takes the flat list field by field (SILENT):
+
+```cpp
+#include <cstdio>
+struct PS2 { int a, b; };
+struct Q2 { PS2 p; int n; };
+struct H2 { Q2 q; H2() : q{ { 1 }, 2 } { } };
+int main() { H2 h; std::printf("ps: %d %d %d\n", h.q.p.a, h.q.p.b, h.q.n); return 0; }
+```
+
+- g++ 13 = clang++ 18: `ps: 1 0 2`. madc (`--std=c++17`): `ps: 1 2 <garbage>`
+  (SILENT). A fully braced inner list (`q{ {1, 2}, 3 }`) comes out right.
+- For a ctor-less CLASS subobject (the first reducer):
+  g++ 13 = clang++ 18: `b81: 61 62 0 z | 1 2 3`. madc (`--std=c++17`):
+  `cir error: nested braced list in a mem-initializer of aggregate 'AR' is
+  not supported` (LOUD).
+- Layer: the mem-initializer parser (`Program::collect_braced_init_args`,
+  src/parser.cpp) flattens a nested braced list into ONE scalar sequence, so
+  `AR{ {61, 62}, 'z' }` reaches CIR as `61, 62, 'z'`. The flattening is lossy
+  (`AR{ {61}, 'z' }` and `AR{ 61, 'z' }` arrive identical), so no CIR reading
+  can recover the nesting. The parser records the loss
+  (`CtorInitializer::nested_list_flattened`), and `class_subobject_mem_init`
+  refuses such a list for a ctor-less class rather than brace-elide over it —
+  elision over the flat `61, 62, 'z'` would store `a[2] = 'z'`, silently.
+  `class_aggregate_init` walks nested lists as `TokenStructLit` (the
+  declaration lanes keep them). Before the B80 fix the whole initializer was
+  dropped silently.
+- Fix: the mem-initializer keeps a nested list as a `TokenStructLit`, like a
+  declaration, and the refusal goes; the plain-struct member arm
+  (`aggregate_member_init_stmts`, which walks the flat sequence field by
+  field) then reads the nesting too. A core parser tree-shape
+  change: its own focused session (owner, 2026-09-13).
+- Found 2026-09-29 while fixing B80.
 
 ### B62. A dependent `alignas` on a member function template's local is dropped
 

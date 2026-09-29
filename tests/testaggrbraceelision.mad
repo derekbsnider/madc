@@ -1,0 +1,25 @@
+// Brace elision into an aggregate member ([dcl.init.aggr]/16): an unbraced
+// clause for an array or aggregate member starts a run of as many clauses as
+// that member has elements — in a declaration (`Y y{7, 8, 9}`), a functional
+// temporary (`array{5, 6}`) and a mem-initializer (`X() : array{1, 2}`, gcc's
+// g++.dg/cpp0x/mem-init-aggr1.C). The stack is dirtied first so a dropped
+// initializer reads 0xA5 bytes. Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+struct array { int data[2]; };
+struct X : array { X() : array{ 1, 2 } { } };   // promotes array to a class
+struct Y { array a; int k; };
+__attribute__((noinline)) void dirty() { volatile unsigned char junk[4096]; for (int k = 0; k < 4096; k++) junk[k] = 0xA5; }
+__attribute__((noinline)) void probe()
+{
+	array a1{ 1, 2 };
+	array a2 = { { 3, 4 } };
+	array a3 = array{ 5, 6 };
+	Y y1{ 7, 8, 9 };
+	Y y2{ { { 10, 11 } }, 12 };
+	X x;
+	std::printf("be1: %d %d | %d %d | %d %d | %d %d %d | %d %d %d | %d %d\n",
+		a1.data[0], a1.data[1], a2.data[0], a2.data[1], a3.data[0], a3.data[1],
+		y1.a.data[0], y1.a.data[1], y1.k, y2.a.data[0], y2.a.data[1], y2.k,
+		x.data[0], x.data[1]);
+}
+int main() { dirty(); probe(); return 0; }

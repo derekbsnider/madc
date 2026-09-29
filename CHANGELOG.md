@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Mem-initializers of ctor-less class bases and members initialize correctly
+
+A mem-initializer for a ctor-less class base or member now initializes correctly
+through an aggregate-init path. Before, `P() : FB{ 1, 2 }` (a base) or `M() :
+m{ a, b }` (a class member) read stack garbage because the initializer was
+dropped entirely or walked the wrong data structure. An empty mem-initializer
+`Base()` or `member()` value-initializes the subobject (zero-fill first, then
+default member initializers and member constructors). A braced mem-initializer
+initializes members one by one; brace elision applies ([dcl.init.aggr]/16), so
+a scalar run can promote into an aggregate member's fields, and a braced sublist
+can fill an array or nested aggregate. A mem-initializer with a nested braced
+list that the parser flattens is now refused with an error (BUGS.md B81);
+recovery needs a parse-once change to retain nesting.
+
 ### A using-declaration may name a conversion function
 
 `using Base::operator T;` in a class body is a using-declaration, as in g++
