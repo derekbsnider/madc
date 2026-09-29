@@ -795,7 +795,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: four hand-rolled angle counters
+### B58. `<`: three hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -818,9 +818,14 @@ scans), `peek_after_balanced_template_id_from`,
   argument (moved: see above). Each other one moves onto
   `scan_template_argument_list`.
 - Sites: `expand_integer_pack_template_args` 6542,
-  `instantiate_fn_template_binding` 63772,
   `resolve_decltype_call_return` 67525,
   `datatype_statement_starts_qualified_expr` 76338.
+- Done: `instantiate_fn_template_binding`'s return-type SFINAE check
+  finds the declarator name by the owner,
+  `skipped_template_function_declarator_name_index`, instead of its own
+  angle-only counter (tests/testsfinaeretparengt: in
+  `EI_t<(N > 2) && yes(0), int> f()` the `>` closed the list, `yes` read
+  as the declarator name, and the viable overload was discarded).
 - Done: `evaluate_requires_expression_constant`'s parameter list is read
   on the stream's `DelimDepth` and split by `parameter_list_ranges`
   (tests/testrequiresparamsplit: `(A<(1 < 2)> a, T b)` read as one

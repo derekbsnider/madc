@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A return type may hold a `>` in parentheses under SFINAE
+
+`template<int N> EI_t<(N > 2) && yes(0), int> f()` and its `(N <= 2)`
+twin select by SFINAE as in g++, as do the `typename EI<...>::type` form
+and a `(N >> 1)` in the argument. Before, the return-type check took the
+parenthesized `>` as the list's close and `yes` as the function's name,
+discarded the viable overload, and `f<5>()` was refused.
+
 ### A partial specialization's head may end in `>>`
 
 `template<class T> int Z<A<T>>::f()` and `template<class T> struct

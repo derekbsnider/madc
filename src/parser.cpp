@@ -64087,25 +64087,19 @@ static bool instantiate_fn_template_binding(Program &pgm,
 #endif
 	if ( is_typename || is_templateid_ret )
 	{
-	    // The return type runs from its first token to the declarator name
-	    // (the identifier directly followed by '(' at angle depth 0).
+	    // The return type runs from its first token to the declarator name,
+	    // which the declarator-name owner finds on DelimDepth: a `>` in
+	    // parentheses inside the argument list (`EI_t<(N > 2) && ok(0),
+	    // int> f()`) is greater-than, never the list's close (BUGS.md B58).
 	    size_t rt_begin = is_typename ? head + 1 : head;
-	    size_t rt_end = rt_begin;
-	    int adepth = 0;
+	    size_t rt_end = skipped_template_function_declarator_name_index(
+				inj, NULL);
+	    if ( rt_end < rt_begin )
+		rt_end = rt_begin;
 	    bool saw_angle = false;
-	    for ( ; rt_end < inj.size(); ++rt_end )
-	    {
-		TokenBase *t = inj[rt_end];
-		if ( !t ) continue;
-		if ( t->id() == TokenID::tkLT ) { ++adepth; saw_angle = true; }
-		else if ( t->id() == TokenID::tkGT && adepth > 0 ) --adepth;
-		else if ( t->id() == TokenID::tkBSR && adepth > 1 ) adepth -= 2;
-		else if ( t->id() == TokenID::tkBSR && adepth == 1 ) adepth = 0;
-		else if ( adepth == 0 && t->type() == TokenType::ttIdentifier
-		       && rt_end + 1 < inj.size() && inj[rt_end+1]
-		       && inj[rt_end+1]->id() == TokenID::tkOpBrk )
-		    break;
-	    }
+	    for ( size_t k = rt_begin; k < rt_end && k < inj.size(); ++k )
+		if ( inj[k] && inj[k]->id() == TokenID::tkLT )
+		    saw_angle = true;
 	    // A template-id return type must actually carry a `<...>`; a plain
 	    // typedef-name return (`MyType foo()`) has no SFINAE risk -> skip it
 	    // (a speculative resolve could fail spuriously).
