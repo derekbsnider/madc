@@ -1906,17 +1906,22 @@ struct DelimDepth {
 	    return true;
 	return t->id() == TokenID::tkTEMPLATE;
     }
-    // Start INSIDE a template-argument list whose `<` the caller already
-    // consumed from the stream: the state update() leaves after that `<`.
-    void enter_angle()
+    // Start INSIDE `n` groups opened by `opener` (`(` `[` `{` `<`) that the
+    // caller already consumed: the state update() leaves after them.
+    void enter(TokenID opener, int n = 1)
     {
-	++angle;
-	angle_paren.push_back(paren);
-    }
-    // Start inside `n` parenthesized groups whose `(` the caller consumed.
-    void enter_parens(int n)
-    {
-	paren += n;
+	for ( ; n > 0; --n )
+	    switch ( opener )
+	    {
+		case TokenID::tkOpBrk: ++paren; break;
+		case TokenID::tkOpSqr: ++square; break;
+		case TokenID::tkOpBrc: ++brace; break;
+		case TokenID::tkLT:
+		    ++angle;
+		    angle_paren.push_back(paren);
+		    break;
+		default: return;
+	    }
     }
     // Pure delimiter bookkeeping for one token (NO operator-id handling — the
     // callers below own that, differing by index vs stream access).
@@ -6671,7 +6676,7 @@ void Program::expand_integer_pack_template_args()
     size_t end = tokens.size();
     {
 	DelimDepth d(this);
-	d.enter_angle();
+	d.enter(TokenID::tkLT);
 	for ( size_t i = 0; i < tokens.size(); )
 	{
 	    size_t n = delim_scan_step(tokens, i, d);
@@ -17693,18 +17698,10 @@ TokenBase *Program::try_parse_vla_row_sizeof(TokenBase *op_tb, Variable *v,
 	while ( scan < tokens.size() && tokens[scan]
 	     && tokens[scan]->id() == TokenID::tkOpSqr )
 	{
-	    int depth = 1;
-	    ++scan;
-	    while ( scan < tokens.size() && tokens[scan] && depth > 0 )
-	    {
-		if ( tokens[scan]->id() == TokenID::tkOpSqr )
-		    ++depth;
-		else if ( tokens[scan]->id() == TokenID::tkClSqr )
-		    --depth;
-		++scan;
-	    }
-	    if ( depth > 0 )
-		return NULL;
+	    const size_t close = balanced_group_close(tokens, scan);
+	    if ( close == scan )
+		return NULL;		// the subscript never closes
+	    scan = close + 1;
 	}
 	if ( scan >= tokens.size() || !tokens[scan]
 	  || tokens[scan]->id() != TokenID::tkClBrk )
@@ -17982,17 +17979,8 @@ void Program::consume_deferred_static_assert_statement(TokenBase *tb)
 	Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->spelling() << flush;
     nextToken();
 
-    int depth = 1;
-    while ( depth > 0 )
-    {
-	TokenBase *t = nextToken();
-	if ( !t )
-	    Throw(tb) << "Unexpected end of input in static assertion" << flush;
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --depth;
-    }
+    if ( !consume_through_open_parens(1) )
+	Throw(tb) << "Unexpected end of input in static assertion" << flush;
     if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	nextToken();
 }
@@ -18048,14 +18036,18 @@ void Program::consume_class_static_assert_declaration(TokenBase *tb)
     size_t top_expr_tokens = 0;
     bool before_message = true;
     std::string message = "static assertion failed";
-    int depth = 1;
-    while ( depth > 0 )
+    // Directly inside the assertion's parens: its own level, no other group
+    // open (a comma inside `A<x, y>` is not the message separator).
+    DelimDepth d(this);
+    d.enter(TokenID::tkOpBrk);
+    while ( d.paren > 0 )
     {
 	TokenBase *t = nextToken();
 	if ( !t )
 	    Throw(tb) << "Unexpected end of input in static assertion" << flush;
 
-	if ( depth == 1 && before_message )
+	const bool top = d.paren == 1 && !d.angle && !d.square && !d.brace;
+	if ( top && before_message )
 	{
 	    if ( t->id() == TokenID::tkComma )
 	    {
@@ -18069,13 +18061,10 @@ void Program::consume_class_static_assert_declaration(TokenBase *tb)
 		++top_expr_tokens;
 	    }
 	}
-	else if ( depth == 1 && !before_message && t->type() == TokenType::ttString )
+	else if ( top && !before_message && t->type() == TokenType::ttString )
 	    message = ((TokenStr *)t)->str;
 
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk )
-	    --depth;
+	delimStepStream(t, d);
     }
     if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 	nextToken();
@@ -19410,20 +19399,19 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     // consuming the matching `)`. Keep them so a non-constant condition can be
     // pushed back for the runtime-`if` fallback.
     std::vector<TokenBase *> cond_toks;
-    int depth = 1;
+    DelimDepth d(this);
+    d.enter(TokenID::tkOpBrk);
     TokenBase *t;
-    while ( depth > 0 && (t = nextToken()) )
+    while ( d.paren > 0 && (t = nextToken()) )
     {
-	if ( t->id() == TokenID::tkOpBrk )
-	    ++depth;
-	else if ( t->id() == TokenID::tkClBrk )
-	{
-	    if ( --depth == 0 )
-		break;                 // the matching ')' — consumed, not collected
-	}
+	std::vector<TokenBase *> optail;	// an operator-id's tail, consumed
+	delimStepStream(t, d, &optail);
+	if ( !d.paren )
+	    break;                     // the matching ')' — consumed, not collected
 	cond_toks.push_back(t);
+	cond_toks.insert(cond_toks.end(), optail.begin(), optail.end());
     }
-    if ( depth != 0 )
+    if ( d.paren != 0 )
     {
 	// Unbalanced — push back what we took and bail to the runtime path.
 	for ( std::vector<TokenBase *>::reverse_iterator it = cond_toks.rbegin();
@@ -19786,12 +19774,17 @@ bool Program::bracket_dim_constant_expression_parses()
 bool Program::bracket_dim_uses_runtime_value(
 					   const std::set<std::string> *runtime_names)
 {
-    int depth = 1;
-    for ( size_t ix = 0; ix < tokens.size() && depth > 0; ++ix )
+    // Inside the bound's consumed `[`, through its `]` (DelimDepth's square
+    // axis; a nested `[ ]` is part of the bound).
+    DelimDepth d(this);
+    d.enter(TokenID::tkOpSqr);
+    for ( size_t ix = 0; ix < tokens.size() && d.square > 0; )
     {
 	TokenBase *t = tokens[ix];
-	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
-	if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
+	size_t n = delim_scan_step(tokens, ix, d);
+	ix += n ? n : 1;
+	if ( t->id() == TokenID::tkOpSqr || t->id() == TokenID::tkClSqr )
+	    continue;
 	if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkOpBrc ) break;
 	// ++ or -- in a dimension expression is inherently runtime
 	if ( t->id() == TokenID::tkInc || t->id() == TokenID::tkDec )
@@ -19824,13 +19817,19 @@ bool Program::bracket_dim_uses_runtime_value(
 
 bool Program::bracket_dim_has_constant_fold_query()
 {
-    int depth = 1;
-    for ( size_t ix = 0; ix < tokens.size() && depth > 0; ++ix )
+    // Inside the bound's consumed `[`: a query directly in it, not in a
+    // nested `[ ]` (DelimDepth's square axis).
+    DelimDepth d(this);
+    d.enter(TokenID::tkOpSqr);
+    for ( size_t ix = 0; ix < tokens.size() && d.square > 0; )
     {
 	TokenBase *t = tokens[ix];
-	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
-	if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
-	if ( depth != 1 )
+	const int square_before = d.square;
+	size_t n = delim_scan_step(tokens, ix, d);
+	ix += n ? n : 1;
+	if ( t->id() == TokenID::tkOpSqr || t->id() == TokenID::tkClSqr )
+	    continue;
+	if ( square_before != 1 )
 	    continue;
 	if ( t->type() != TokenType::ttIdentifier )
 	    continue;
@@ -70166,7 +70165,7 @@ TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
 bool Program::consume_through_open_parens(int open)
 {
     DelimDepth d(this);
-    d.enter_parens(open);
+    d.enter(TokenID::tkOpBrk, open);
     while ( d.paren > 0 )
     {
 	TokenBase *t = nextToken();

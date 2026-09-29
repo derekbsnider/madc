@@ -802,7 +802,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B59. `(`: twenty-one hand-rolled paren counters
+### B59. `(`: eighteen hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -818,9 +818,11 @@ scans), `peek_after_balanced_template_id_from`,
   `consume_typedef_gnu_attributes`) track their groups on the stream
   tracker; the asm skipper's loops are the new
   `Program::consume_through_open_parens`.
-- Sites: `consume_deferred_static_assert_statement` 17878;
-  `consume_class_static_assert_declaration` 17962;
-  `fold_if_constexpr_condition` 19304; `peek_param_list_spelling` 21664;
+- Done: the static_assert consumers (`consume_deferred_static_assert_statement`,
+  `consume_class_static_assert_declaration`, whose message comma is now
+  "directly inside the parens", no other group open) and
+  `fold_if_constexpr_condition` (collecting an operator-id's tail too).
+- Sites: `peek_param_list_spelling` 21664;
   `next_parenthesized_type_is_compound_literal` 32719;
   `struct_body_needs_class_parser_from` 45506; `TokenSTRUCT::parse` 46285,
   46840, 47343; `consume_anonymous_aggregate_open` 47693;
@@ -838,16 +840,17 @@ scans), `peek_after_balanced_template_id_from`,
 - No failing reducer yet. Each migration is behaviour-preserving for
   parens, and the suite is its oracle.
 
-### B60. `[`: six hand-rolled square-bracket counters
+### B60. `[`: three hand-rolled square-bracket counters
 
-- Sites: `try_parse_vla_row_sizeof` 17587; `bracket_dim_uses_runtime_value` 19680;
-  `bracket_dim_has_constant_fold_query` 19718;
-  `evaluate_requires_expression_constant` 38325 (the requirement
+- Done: `try_parse_vla_row_sizeof` (`balanced_group_close`) and the two
+  bound scanners `bracket_dim_uses_runtime_value` /
+  `bracket_dim_has_constant_fold_query` (DelimDepth entered inside the `[`).
+- Sites: `evaluate_requires_expression_constant` 38325 (the requirement
   collector);
   `struct_body_needs_class_parser_from` 45480; `parseFunction` 71407.
-- The two `bracket_dim_*` scanners read an array bound. A bound that
-  subscripts (`int a[b[1]]`) nests `[` inside `[`. Measure them against
-  g++ and clang++ when they move.
+- The two `bracket_dim_*` scanners read an array bound. Measured when
+  they moved (2026-09-29): `int a[b[1]]`, `int c[b[b[0]] + 1]` and
+  `int[sizeof(int[2])]` size as gcc and clang do (`nd: 20 24 32`).
 - No failing reducer yet.
 
 ### B61. `{`: twelve hand-rolled brace counters
