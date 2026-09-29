@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### `sizeof` and `alignof` of a member template's parameter measure the argument
+
+In a member function template, `alignof(V)` and `__alignof__(V)` measure
+the argument each instantiation supplies, as in g++ and clang++; they
+answered 1. The same holds for `V` under a qualifier, a pointer, a
+reference or an array: `sizeof(const V)` was 0 and `alignof(V[2])` was 1.
+`sizeof(V *)` and `sizeof(V[2])` were right before only because their body
+was parsed again for each instantiation; now they are measured with the
+others. In C, `sizeof(c *)` and `sizeof(c[3])` over a variable-length
+array typedef `c` are accepted and measured (8 and three times `c`); they
+were refused with "Expecting ')' after sizeof type".
+
 ### `_Alignas` and `alignas` align what they declare
 
 `struct A { char c; _Alignas(16) int x; };` is 32 bytes,

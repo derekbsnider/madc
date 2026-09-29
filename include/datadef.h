@@ -2429,6 +2429,30 @@ public:
     virtual DataDefTemplateParam *as_template_param_dd() override { return this; }
 };
 
+// The template parameter a type depends on through its cv / reference /
+// pointer / array layers (`T`, `const T`, `T *`, `T &`, `T[2]`), or NULL for
+// a type none of whose layers ends at one. The ONE owner of the question for
+// the parser (a type query in a parse-once pattern defers on it) and the CIR
+// builder (tsubst substitutes what it finds).
+inline DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
+{
+    for ( int guard = 0; dd && guard < 8; ++guard )
+    {
+	if ( DataDefTemplateParam *tp = dd->as_template_param_dd() )
+	    return tp;
+	if ( DataDefQUAL *cd = dd->as_qualified_dd() )
+	    { dd = cd->base_type; continue; }
+	if ( DataDefREF *rd = dd->as_reference_dd() )
+	    { dd = rd->base_type; continue; }
+	if ( DataDefPTR *pd = dd->as_pointer_dd() )
+	    { dd = pd->base_type; continue; }
+	if ( DataDefCArray *ad = dd->as_carray_dd() )
+	    { dd = ad->element_type; continue; }
+	break;
+    }
+    return NULL;
+}
+
 // Type table identity layer — slot <-> global-primitive mapping (the single
 // source of truth; defined in src/parser.cpp next to same_representation).
 DataDef *madc_primitive_for_slot(uint32_t slot);

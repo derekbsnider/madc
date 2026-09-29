@@ -805,25 +805,6 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 			      const std::vector<std::vector<DataDef *> > *packs = NULL,
 			      const std::map<unsigned, DataDef *> *pack_params = NULL);
 
-static DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
-{
-	for (int guard = 0; dd && guard < 8; ++guard) {
-		if (DataDefTemplateParam *tp =
-			    (dd ? dd->as_template_param_dd() : NULL))
-			return tp;
-		if (DataDefQUAL *cd = (dd ? dd->as_qualified_dd() : NULL))
-			{ dd = cd->base_type; continue; }
-		if (DataDefREF *rd = (dd ? dd->as_reference_dd() : NULL))
-			{ dd = rd->base_type; continue; }
-		if (DataDefPTR *pd = (dd ? dd->as_pointer_dd() : NULL))
-			{ dd = pd->base_type; continue; }
-		if (DataDefCArray *ad = (dd ? dd->as_carray_dd() : NULL))
-			{ dd = ad->element_type; continue; }
-		break;
-	}
-	return NULL;
-}
-
 // A dependent placeholder CLASS (directly or under ptr/ref/const/array
 // layers), origin-recorded or not — a type that cannot ground concrete
 // object materialization. NULL otherwise.
@@ -3636,13 +3617,12 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	    && src->origin_id) {
 		TokenTypeQuery *query = dynamic_cast<TokenTypeQuery *>(
 			madc_token_for_slot(src->origin_id));
-		if (query && query->query_type
-		    && query->query_type->is_template_param()) {
+		if (query && template_param_under_type_layers(query->query_type)) {
 			DataDef *concrete_query_type = subst_datadef_active(
 				query->query_type, *subst);
 			if (!concrete_query_type
 			    || concrete_query_type == query->query_type
-			    || concrete_query_type->is_template_param())
+			    || template_param_under_type_layers(concrete_query_type))
 				return CIR_NODE(error_node(
 					"tsubst: unbound template parameter in type query",
 					query));

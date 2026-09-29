@@ -7784,12 +7784,18 @@ public:
     // Type queries: sizeof/alignof/typeof and the runtime type-query operators.
     // resolve_type_query_datadef resolves the operand to a DataDef (+ optional
     // folded value); evaluate_type_query folds sizeof/alignof; parse_typeof_datatype
-    // yields the typeof()'d type; try_parse_dynamic_type_query handles the runtime
-    // form; try_parse_constant_offsetof_address folds offsetof-style addresses.
+    // yields the typeof()'d type; try_parse_constant_offsetof_address folds
+    // offsetof-style addresses.
     DataDef *resolve_type_query_datadef(TokenBase *type_tb,
 					const std::string &op_name,
 					bool &have_value, size_t &query_value);
-    size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name);
+    // With `deferred` (an expression operand position), a type-id operand
+    // whose measure is not knowable at parse time — a VLA type, or a type that
+    // depends on a template parameter in a parse-once pattern — comes back
+    // there as a TokenTypeQuery, and the return value is 0. Without it (a
+    // constant context) every operand folds.
+    size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name,
+			       TokenBase **deferred = NULL);
     // The parenthesized operand of a type query or an alignment specifier,
     // its `(` consumed, read as a TYPE-ID when the type-id is the whole
     // operand ([expr.sizeof]/1, [dcl.align]/3): its complete type, the `)`
@@ -7815,8 +7821,6 @@ public:
     // fold to a bool constant token. See parser.cpp for the supported (faithful)
     // set; unsupported traits are not recognized (clear error, never a wrong bool).
     TokenBase *evaluate_type_trait(TokenBase *op_tb, const std::string &name);
-    TokenBase *try_parse_dynamic_type_query(TokenBase *op_tb,
-					    const std::string &op_name);
     TokenDataType *parse_typeof_datatype(TokenBase *op_tb);
     bool try_parse_constant_offsetof_address(int64_t &out);
     // Named C++ casts (static_cast/reinterpret_cast/const_cast/dynamic_cast):

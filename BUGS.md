@@ -57,35 +57,7 @@ int main()
   contributes nothing and the local keeps its type's alignment. Fix shape
   (plan slice 4): the local keeps the operand's type query and emits
   `_Alignas(_Alignof(V))`, which the dependent `N_ALIGNOF` fold makes
-  concrete. The same fold answers `alignof(V)` wrongly today (B68).
-
-### B68. `alignof(V)` of a member function template's parameter is 1
-
-```cpp
-#include <cstdio>
-#include <cstddef>
-template<class U> struct Box
-{
-	U v;
-	template<class V> std::size_t al() { return alignof(V); }
-	template<class V> std::size_t al2() { return __alignof__(V); }
-	template<class V> std::size_t sz() { return sizeof(V); }
-};
-struct alignas(16) W { char c; };
-int main()
-{
-	Box<char> b;
-	std::printf("d6: %zu %zu %zu %zu %zu\n", b.al<W>(), b.al<double>(), b.al2<W>(), b.sz<W>(), b.sz<double>());
-	return 0;
-}
-```
-
-- g++ = clang++: `d6: 16 8 16 16 8`. madc: `d6: 1 1 1 16 8`.
-- Found 2026-09-29 during B62. `sizeof(V)` is right and `alignof(V)` is
-  not, in the same parse-once body.
-- Where: `try_parse_dynamic_type_query` builds the deferred query that
-  `copy_cir_subtree` folds per instantiation; the alignof spelling does not
-  reach that deferred form, so the pattern folds it early to 1.
+  concrete (a type-id operand's alignof defers since B68's fix).
 
 ### B69. A variadic class template named first in `sizeof` measures 0
 

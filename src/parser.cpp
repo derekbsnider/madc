@@ -15746,7 +15746,11 @@ bool Program::lookup_pack_arity(const std::string &n, size_t &out) const
     return false;
 }
 
-size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name)
+static bool type_query_size_is_deferred(DataDef *dd);
+static TokenBase *make_type_query_token(TokenBase *op_tb, DataDef *dd, bool want_alignof);
+
+size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name,
+				    TokenBase **deferred)
 {
     bool want_alignof = is_alignof_identifier(op_name);
 
@@ -15827,6 +15831,11 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	    if ( dd == &ddVOID || fn_type )
 		Throw(type_tb) << op_name << " cannot be applied to "
 			       << (dd == &ddVOID ? "void" : "a function type") << flush;
+	}
+	if ( deferred && type_query_size_is_deferred(dd) )
+	{
+	    *deferred = make_type_query_token(op_tb, dd, want_alignof);
+	    return 0;
 	}
 	return query_datadef_measure(dd, want_alignof);
     }
@@ -17446,21 +17455,24 @@ static bool is_runtime_sized_type(DataDef *dd)
 }
 
 // A type query whose VALUE is not knowable at parse time: a VLA type (runtime
-// value) or a bare template-parameter placeholder (instantiation-time value —
-// folding it would bake the placeholder's meaningless size 0 into the Tree-1
-// pattern; tsubst expands the deferred TokenTypeQuery's type marker instead).
+// value) or a type that depends on a template parameter through its layers
+// (`T`, `const T`, `T *`, `T[2]` — an instantiation-time value; folding it
+// would bake the placeholder's meaningless measure into the Tree-1 pattern,
+// and tsubst folds the deferred TokenTypeQuery's substituted type instead).
 static bool type_query_size_is_deferred(DataDef *dd)
 {
     if ( !dd )
 	return false;
-    return is_runtime_sized_type(dd) || dd->is_template_param();
+    return is_runtime_sized_type(dd) || template_param_under_type_layers(dd);
 }
 
+// A VLA's alignment is its element's, a constant: only a dependent type's
+// alignof defers.
 static TokenBase *make_type_query_token(TokenBase *op_tb, DataDef *dd, bool want_alignof)
 {
     TokenBase *result = NULL;
     if ( !type_query_size_is_deferred(dd)
-      || (want_alignof && !dd->is_template_param()) )
+      || (want_alignof && !template_param_under_type_layers(dd)) )
     {
 	TokenInt *ti = new TokenInt((int64_t)query_datadef_measure(dd, want_alignof));
 	ti->setDataType(&ddUINT64);
@@ -17803,91 +17815,6 @@ TokenBase *Program::materialize_vla_dim_capture(TokenCpnd *code,
 
     dim_expr = new TokenVar(*cap_var);
     return td;
-}
-
-TokenBase *Program::try_parse_dynamic_type_query(TokenBase *op_tb,
-					       const std::string &op_name)
-{
-    bool want_alignof = is_alignof_identifier(op_name);
-    if ( want_alignof )
-	return NULL;
-
-    auto consume_simple_named_type = [&](DataDef *dd) -> TokenBase * {
-	if ( !type_query_size_is_deferred(dd) )
-	    return NULL;
-	nextToken();
-	return make_type_query_token(op_tb, dd, false);
-    };
-
-    if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
-    {
-	TokenBase *probe = peekToken();
-	if ( is_contextual_identifier_token(probe) )
-	{
-	    std::string name = contextual_identifier_name(probe);
-	    if ( !findVariable(name) )
-	    {
-		DataDef *dd = resolve_template_param(name);
-		if ( !dd )
-		    dd = resolve_named_datadef(name);
-		if ( TokenBase *query = consume_simple_named_type(dd) )
-		    return query;
-	    }
-	}
-	return NULL;
-    }
-
-    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
-	return NULL;
-
-    size_t ix = 0;
-    if ( ix >= tokens.size() || tokens[ix]->id() != TokenID::tkOpBrk )
-	return NULL;
-    ++ix;
-    if ( ix >= tokens.size() )
-	return NULL;
-
-    DataDef *dd = NULL;
-    TokenBase *type_tb = tokens[ix];
-    if ( type_tb->type() == TokenType::ttDataType )
-	dd = &((TokenDataType *)type_tb)->definition;
-    else if ( type_tb->type() == TokenType::ttIdentifier )
-    {
-	std::string name = ((TokenIdent *)type_tb)->spelling();
-	if ( !findVariable(name) )
-	{
-	    dd = resolve_template_param(name);
-	    if ( !dd )
-		dd = resolve_named_datadef(name);
-	}
-    }
-    else if ( type_tb->type() == TokenType::ttKeyword
-	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
-    {
-	++ix;
-	if ( ix >= tokens.size() || !is_contextual_identifier_token(tokens[ix]) )
-	    return NULL;
-	dd = resolve_named_datadef(contextual_identifier_name(tokens[ix]));
-    }
-    if ( !type_query_size_is_deferred(dd) )
-	return NULL;
-
-    TokenBase *open = nextToken();
-    (void)open;
-    TokenBase *consumed = nextToken();
-    if ( !consumed )
-	return NULL;
-    if ( consumed->type() == TokenType::ttKeyword
-      && (consumed->id() == TokenID::tkSTRUCT || consumed->id() == TokenID::tkUNION) )
-    {
-	TokenBase *tag_tb = nextToken();
-	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
-	    Throw(tag_tb ? tag_tb : consumed) << "Expecting struct/union tag in " << op_name << flush;
-    }
-    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
-	Throw(consumed) << "Expecting ')' after " << op_name << " type" << flush;
-    nextToken();
-    return make_type_query_token(op_tb, dd, false);
 }
 
 // Row form of a VLA sizeof: `sizeof a[i]...` / `sizeof *a` where `a` is a
@@ -40181,13 +40108,17 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		// sizeof / alignof — resolve to integer constant at parse time.
 		if ( is_type_query_identifier(ident_tb->spelling()) )
 		{
-		    if ( TokenBase *query_tb = try_parse_dynamic_type_query(tb, ident_tb->spelling()) )
-			exStack.push(query_tb);
-		    else if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(tb, ident_tb->spelling()) )
+		    TokenBase *deferred = NULL;
+		    if ( TokenBase *vla_tb = try_parse_vla_variable_sizeof(tb, ident_tb->spelling()) )
 			exStack.push(vla_tb);
 		    else
 		    {
-			size_t query_value = evaluate_type_query(tb, ident_tb->spelling());
+			size_t query_value = evaluate_type_query(tb, ident_tb->spelling(), &deferred);
+			if ( deferred )
+			{
+			    exStack.push(deferred);
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			TokenInt *ti = new TokenInt((int64_t)query_value);
 			ti->setDataType(&ddUINT64);
 			ti->file = tb->file;
