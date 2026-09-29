@@ -3626,10 +3626,12 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				return CIR_NODE(error_node(
 					"tsubst: unbound template parameter in type query",
 					query));
-			return CIR_NODE(integer_typed(
-				(madc_wide_int)query_datadef_measure(
-					concrete_query_type, query->want_alignof),
-				&ddUINT64, query));
+			size_t measure = query_datadef_measure(
+				concrete_query_type, query->want_alignof);
+			if (query->measure_floor > measure)
+				measure = query->measure_floor;
+			return CIR_NODE(integer_typed((madc_wide_int)measure,
+						      &ddUINT64, query));
 		}
 	}
 	if (subst && src->base.code == N_IGNORE && src->datadef()

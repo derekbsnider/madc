@@ -7789,11 +7789,11 @@ public:
     DataDef *resolve_type_query_datadef(TokenBase *type_tb,
 					const std::string &op_name,
 					bool &have_value, size_t &query_value);
-    // With `deferred` (an expression operand position), a type-id operand
-    // whose measure is not knowable at parse time — a VLA type, or a type that
-    // depends on a template parameter in a parse-once pattern — comes back
-    // there as a TokenTypeQuery, and the return value is 0. Without it (a
-    // constant context) every operand folds.
+    // With `deferred` (an expression operand position), an operand whose
+    // measure is not knowable at parse time — a VLA type-id, or a type-id or
+    // expression whose type depends on a template parameter in a parse-once
+    // pattern — comes back there as a TokenTypeQuery, and the return value
+    // is 0. Without it (a constant context) every operand folds.
     size_t evaluate_type_query(TokenBase *op_tb, const std::string &op_name,
 			       TokenBase **deferred = NULL);
     // The parenthesized operand of a type query or an alignment specifier,

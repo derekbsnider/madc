@@ -1522,6 +1522,10 @@ public:
     // the subscript index expressions of a deferred row sizeof, emitted
     // (values discarded) ahead of the runtime size computation.
     std::vector<TokenBase *> operand_side_effects;
+    // The least value a deferred measure answers: the alignment a named
+    // object's declaration requests (`alignas(8) V x;` then `alignof(x)`),
+    // which its type's alignment only raises. 0 for a type operand.
+    size_t measure_floor = 0;
 
     TokenTypeQuery(DataDef *dd = NULL, bool want_align = false,
 		   bool use_cached_size = true)
@@ -1535,6 +1539,7 @@ public:
 	TokenTypeQuery *c = new TokenTypeQuery(query_type, want_alignof,
 					       use_cached_runtime_size);
 	c->operand_side_effects = operand_side_effects;
+	c->measure_floor = measure_floor;
 	return c;
     }
     virtual TokenID id() const override { return TokenID::tkInt; }

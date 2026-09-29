@@ -15749,6 +15749,26 @@ bool Program::lookup_pack_arity(const std::string &n, size_t &out) const
 static bool type_query_size_is_deferred(DataDef *dd);
 static TokenBase *make_type_query_token(TokenBase *op_tb, DataDef *dd, bool want_alignof);
 
+// An EXPRESSION operand whose type depends on a template parameter
+// (`sizeof(v)` of a `V v`, `V a[3]`, `*p` of a `V *p`, in a parse-once
+// pattern): the deferred query over the type the expression measure reads
+// (type_query_chain_datadef, an array's extents included), which the
+// instantiation substitutes. A named object's requested alignment is the
+// query's floor. NULL when the operand's measure is known now.
+static TokenBase *deferred_expression_type_query(Program &pgm, TokenBase *op_tb,
+						 TokenBase *expr, bool want_alignof)
+{
+    DataDef *dd = expr ? type_query_chain_datadef(pgm, expr) : NULL;
+    if ( !template_param_under_type_layers(dd) )
+	return NULL;
+    TokenBase *query = make_type_query_token(op_tb, dd, want_alignof);
+    if ( want_alignof )
+	if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+	    if ( TokenTypeQuery *q = query->as_typequery_tok() )
+		q->measure_floor = tv->var.explicit_align;
+    return query;
+}
+
 size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name,
 				    TokenBase **deferred)
 {
@@ -15802,6 +15822,9 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	if ( first->type() == TokenType::ttString )
 	    return literal_token_sizeof(static_cast<TokenStr *>(first));
 	TokenBase *expr = parseCastExpression(first);
+	if ( deferred )
+	    if ( (*deferred = deferred_expression_type_query(*this, op_tb, expr, want_alignof)) )
+		return 0;
 	size_t value = type_query_expression_value(*this, expr, want_alignof);
 	if ( !value )
 	    Throw(first) << op_name << ": cannot determine type of expression" << flush;
@@ -15856,6 +15879,9 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
     TokenBase *expr = parseExpression(first, true, false, true, 1);
     if ( !expr || !expr->datadef() )
 	Throw(first) << "Unknown type in " << op_name << flush;
+    if ( deferred )
+	if ( (*deferred = deferred_expression_type_query(*this, op_tb, expr, want_alignof)) )
+	    return 0;
     return type_query_expression_value(*this, expr, want_alignof);
 }
 

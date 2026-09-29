@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### `sizeof` and `alignof` of an expression of a member template's parameter type
+
+In a member function template, `sizeof(v)` and `alignof(v)` of a parameter
+`V v`, of a local `V x`, of an array `V a[3]` and its element, of `*p` for
+`V *p`, and of a `V &` measure the instantiation's type, as in g++ and
+clang++; they answered the size and alignment of nothing (0 and 1). An
+object that also requests an alignment (`alignas(8) V x;`) answers the
+larger of the two. `sizeof x` without parentheses was right only because
+its body was parsed again for each instantiation.
+
 ### A variable-length array typedef's size is fixed where the typedef is reached
 
 After `typedef int c[n + 2];` with `n == 3`, assigning `n = 10` no longer
