@@ -800,15 +800,21 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: four hand-split template-argument lists
+### B58. `<`: two hand-split template-argument lists
 
 - No hand-rolled angle COUNTER is left (the last, in
   `resolve_decltype_call_return`, moved 2026-09-29). Each one asked no name
   question ([temp.names]/3, `DelimDepth::lt_reads_as_less_than`), closed a
   list at a `>` inside `( )`, and handled `>>` its own way.
-- What remains are the four readers below that walk a list on `DelimDepth`
-  but split its arguments by hand; each moves onto
+- What remains are the two readers below that walk a list on `DelimDepth`
+  but split its arguments by hand (the alias-pattern reader and the
+  class-type pattern normalizer); each moves onto
   `scan_template_argument_list` + `template_argument_runs`.
+- Done: the builtin twins `instantiate_make_integer_seq` and
+  `instantiate_type_pack_element` split on `scan_template_argument_list`
+  with the Program handle (tests/testbuiltinseqlessthan: their bare
+  `DelimDepth` opened a list at `lim <`, the builtin declined, and the use
+  read 0, exit 0).
 - Done: `template_id_suffix_end`, the template-id extent that other code
   asks for, and `self_template_id_keep_distinct`, whose argument split is
   now the new owner `scan_template_argument_list` (tests/testtemplateidparengt:

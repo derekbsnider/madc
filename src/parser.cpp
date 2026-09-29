@@ -6792,38 +6792,18 @@ TokenDataType *Program::instantiate_make_integer_seq(TokenBase *tb,
 {
     if ( tokens.empty() || !tokens[0] || tokens[0]->id() != TokenID::tkLT )
 	return NULL;
-    // Bound the argument region with the shared tracker: three top-level args
-    // separated by depth-1 commas, closed by the depth-1 `>`. A BSR (`>>`)
-    // close would mean N ends in a nested template-id sharing the outer
-    // close — not the libc++ shape; leave that to the ordinary path.
-    DelimDepth d;
-    size_t i = delim_scan_step(tokens, 0, d);	// the `<` (NULL prev: opens)
-    size_t arg_start = i;
-    size_t close_idx = 0;
-    std::vector<std::pair<size_t, size_t> > argr;	// [start, end) per arg
-    while ( i < tokens.size() )
-    {
-	TokenBase *t = tokens[i];
-	if ( t && d.angle == 1 && !d.paren && !d.square && !d.brace )
-	{
-	    if ( t->id() == TokenID::tkComma )
-	    {
-		argr.push_back(std::make_pair(arg_start, i));
-		arg_start = i + 1;
-	    }
-	    else if ( t->id() == TokenID::tkGT )
-	    {
-		close_idx = i;
-		break;
-	    }
-	    else if ( t->id() == TokenID::tkBSR )
-		return NULL;
-	}
-	i += delim_scan_step(tokens, i, d);
-    }
-    if ( !close_idx || argr.size() != 2 )
+    // The argument region is the one list scan's: three top-level args,
+    // closed by a plain `>`. A `>>` close would mean N ends in a nested
+    // template-id sharing the outer close — not the libc++ shape; leave that
+    // to the ordinary path.
+    TemplateArgumentList list;
+    if ( !scan_template_argument_list(tokens, 0, list, this)
+      || tokens[list.close]->id() != TokenID::tkGT )
 	return NULL;
-    argr.push_back(std::make_pair(arg_start, close_idx));
+    const size_t close_idx = list.close;
+    const std::vector<std::pair<size_t, size_t> > &argr = list.args;	// [start, end) per arg
+    if ( argr.size() != 3 )
+	return NULL;
     for ( size_t a = 0; a < 3; ++a )
 	if ( argr[a].first >= argr[a].second )
 	    return NULL;
@@ -9856,34 +9836,16 @@ TokenDataType *Program::instantiate_type_pack_element(TokenBase *tb,
     (void)ns_hint;
     if ( tokens.empty() || !tokens[0] || tokens[0]->id() != TokenID::tkLT )
 	return NULL;
-    DelimDepth d;
-    size_t i = delim_scan_step(tokens, 0, d);	// the `<` (NULL prev: opens)
-    size_t arg_start = i;
-    size_t close_idx = 0;
-    std::vector<std::pair<size_t, size_t> > argr;	// [start, end) per arg
-    while ( i < tokens.size() )
-    {
-	TokenBase *t = tokens[i];
-	if ( t && d.angle == 1 && !d.paren && !d.square && !d.brace )
-	{
-	    if ( t->id() == TokenID::tkComma )
-	    {
-		argr.push_back(std::make_pair(arg_start, i));
-		arg_start = i + 1;
-	    }
-	    else if ( t->id() == TokenID::tkGT )
-	    {
-		close_idx = i;
-		break;
-	    }
-	    else if ( t->id() == TokenID::tkBSR )
-		return NULL;	// nested-template shared close: ordinary path
-	}
-	i += delim_scan_step(tokens, i, d);
-    }
-    if ( !close_idx || argr.empty() )
+    // The argument region is the one list scan's, closed by a plain `>` (a
+    // `>>` is a nested template-id's shared close: the ordinary path).
+    TemplateArgumentList list;
+    if ( !scan_template_argument_list(tokens, 0, list, this)
+      || tokens[list.close]->id() != TokenID::tkGT )
 	return NULL;
-    argr.push_back(std::make_pair(arg_start, close_idx));
+    const size_t close_idx = list.close;
+    const std::vector<std::pair<size_t, size_t> > &argr = list.args;	// [start, end) per arg
+    if ( argr.size() < 2 )
+	return NULL;
     for ( size_t a = 0; a < argr.size(); ++a )
 	if ( argr[a].first >= argr[a].second )
 	    return NULL;

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### `__make_integer_seq` and `__type_pack_element` read a less-than argument
+
+`__make_integer_seq<IS, long, lim < 4 ? 5 : 1>` is the sequence 0..4 and
+`__type_pack_element<lim < 4 ? 2 : 0, char, long, short>` is short, as in
+clang, where `lim` is a variable. Before, both builtins took `lim <` as the
+start of a template-argument list, declined, and left an empty class: the
+sequence's sum() read 0 and the type's size read 0, exit 0.
+
 ### A qualified statement may hold a `>` in parentheses
 
 `S::In<(4 > 1) + 1>::f();` calls `S::In<2>::f`, as in g++. Before, madc
