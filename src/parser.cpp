@@ -34153,8 +34153,8 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
 	// An ALIAS TEMPLATE whose target is one of its own parameters is
 	// transparent ([temp.alias]/2): `volatile __has_tuple_size<T>` (`using
 	// __has_tuple_size = T;`, g++.dg alias-decl-57's tuple_size spec)
-	// matches as `volatile T`. The pattern's argument list is split at depth
-	// one by the shared tracker. (The alias's defaulted SFINAE parameters
+	// matches as `volatile T`. The pattern's argument list is split by the
+	// one list scan. (The alias's defaulted SFINAE parameters
 	// are not checked: the spec could not be matched at all before.)
 	if ( i < pat.size() && pat[i]->id() == TokenID::tkLT )
 	    if ( Program::TemplateAliasDef *ad = pgm.find_template_alias(core) )
@@ -34164,32 +34164,21 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
 		    size_t k = 0;
 		    while ( k < ad->typeparams.size() && ad->typeparams[k] != tgt )
 			++k;
-		    DelimDepth d(&pgm);
-		    size_t j = i + delim_scan_step(pat, i, d);	// the opening `<`
-		    std::vector<std::vector<TokenBase *> > args(1);
-		    bool closed = false;
-		    while ( j < pat.size() )
+		    TemplateArgumentList list;
+		    if ( scan_template_argument_list(pat, i, list, &pgm) )
 		    {
-			bool comma = pat[j]->id() == TokenID::tkComma;
-			size_t n = delim_scan_step(pat, j, d);
-			if ( d.angle == 0 && d.top() )
+			std::vector<std::vector<TokenBase *> > args =
+			    template_argument_runs(pat, list);
+			if ( k < ad->typeparams.size() && k < args.size()
+			  && args[k].size() == 1
+			  && is_contextual_identifier_token(args[k][0]) )
 			{
-			    j += n;
-			    closed = true;
-			    break;
+			    core = contextual_identifier_name(args[k][0]);
+			    i = list.close + 1;
 			}
-			if ( comma && d.angle == 1 && d.paren == 0 && d.square == 0 && d.brace == 0 )
-			    args.push_back(std::vector<TokenBase *>());
-			else
-			    for ( size_t m = 0; m < n; ++m )
-				args.back().push_back(pat[j + m]);
-			j += n;
-		    }
-		    if ( closed && k < ad->typeparams.size() && k < args.size()
-		      && args[k].size() == 1 && is_contextual_identifier_token(args[k][0]) )
-		    {
-			core = contextual_identifier_name(args[k][0]);
-			i = j;
+			if ( list.nested_close && !args.empty()
+			  && !args.back().empty() )
+			    delete args.back().back();	// the synthesized `>`
 		    }
 		}
 	while ( i < pat.size() )

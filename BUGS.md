@@ -800,16 +800,18 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: two hand-split template-argument lists
+### B58. `<`: one hand-split template-argument list
 
 - No hand-rolled angle COUNTER is left (the last, in
   `resolve_decltype_call_return`, moved 2026-09-29). Each one asked no name
   question ([temp.names]/3, `DelimDepth::lt_reads_as_less_than`), closed a
   list at a `>` inside `( )`, and handled `>>` its own way.
-- What remains are the two readers below that walk a list on `DelimDepth`
-  but split its arguments by hand (the alias-pattern reader and the
-  class-type pattern normalizer); each moves onto
+- What remains is the class-type pattern normalizer, which walks a list
+  on `DelimDepth` but splits its arguments by hand; it moves onto
   `scan_template_argument_list` + `template_argument_runs`.
+- Done: the transparent-alias reader in `unify_spec_pattern_arg`
+  (g++.dg alias-decl-57's `volatile __has_tuple_size<T>`) splits on the
+  list scan; behaviour-preserving.
 - Done: the builtin twins `instantiate_make_integer_seq` and
   `instantiate_type_pack_element` split on `scan_template_argument_list`
   with the Program handle (tests/testbuiltinseqlessthan: their bare
