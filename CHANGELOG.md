@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### A member's `aligned` attribute after its declarator aligns it
+
+`struct T { char c; int x __attribute__((aligned(16))); };` is 32 bytes
+with `x` at offset 16, as in gcc and clang, and in `int a, b
+__attribute__((aligned(8)));` only `b` is aligned. Before, madc read the
+attribute in that position and dropped it: 8 bytes, `x` at 4.
+
 ### A nested aggregate's attributes lay it out, before its tag or after its `}`
 
 `struct O { char c; struct __attribute__((packed)) N { char a; int b; } in; };`

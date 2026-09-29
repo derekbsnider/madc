@@ -1409,10 +1409,14 @@ public:
     }
     // Apply __attribute__((aligned(N))) to the most recently added member.
     // Updates the member's offset (re-aligns it to N) and the struct's
-    // overall alignment requirement.
+    // overall alignment requirement. aligned never lowers an alignment: a
+    // member aligned both before and after its declarator keeps the larger.
     void apply_member_alignment(size_t align)
     {
 	if ( align == 0 || members.empty() ) return;
+	std::map<size_t, size_t>::const_iterator cur =
+	    member_explicit_align.find(members.size() - 1);
+	if ( cur != member_explicit_align.end() && cur->second >= align ) return;
 	if ( align > max_align ) max_align = align;
 	// Record the requested per-member alignment so the CIR emitter can place
 	// an _Alignas(N) on this member's spec (c2mir lays the field out; this

@@ -802,7 +802,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B59. `(`: thirteen hand-rolled paren counters
+### B59. `(`: twelve hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -835,8 +835,10 @@ scans), `peek_after_balanced_template_id_from`,
   had diverged: the nested one knew only `packed`, never read the groups
   after `}`, and the named arm dropped what it read (SILENT layouts, fixed
   with tests/testnestedaggregateattrs and testclassanonaggregateattrs).
-- Sites: `TokenSTRUCT::parse` 47447 (a member's own trailing attribute);
-  `skipped_friend_operator_definition` 49145;
+- Done (2026-09-29): a member's own trailing attribute is read by
+  `consume_gnu_attributes`, like its leading one. The skip had dropped
+  `aligned(N)` (SILENT layouts, fixed with tests/testmembertrailingattr).
+- Sites: `skipped_friend_operator_definition` 49145;
   `skipped_friend_defaulted_comparison` 49180;
   `TokenCLASS::parse` 51066; `skip_constraint_expression` 57283 (the
   `skip_balanced` lambda, also used for `{`);

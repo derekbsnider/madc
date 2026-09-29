@@ -47405,9 +47405,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    bool member_is_array_decl = md.is_array;
 		    TokenBase *member_count_expr = md.count_expr;
 		    std::vector<carray_dim_t> member_dims = md.dims;
+		    bool declared_bitfield = false;
 
 		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 		    {
+			declared_bitfield = true;
 			pgm.nextToken();
 			if ( member_count != 1 || member_count_expr )
 			    pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
@@ -47435,22 +47437,18 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    tn = pgm.nextToken();
 		    if ( !tn )
 			pgm.Throw << "Unexpected end of input in struct definition" << flush;
-		    // Skip __attribute__((...)) on struct members
+		    // The member's own attributes after its declarator
+		    // (`int x __attribute__((aligned(16)));`) are read by the one
+		    // GNU attribute reader, as the ones before its type are, and
+		    // align this declarator's member only.
 		    if ( is_attribute_identifier_token(tn) )
 		    {
-			if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-			{
-			    int adepth = 0;
-			    do {
-				TokenBase *at = pgm.nextToken();
-				if ( !at ) break;
-				if ( at->id() == TokenID::tkOpBrk ) ++adepth;
-				else if ( at->id() == TokenID::tkClBrk ) --adepth;
-			    } while ( adepth > 0 );
-			}
-			tn = pgm.nextToken();
+			size_t declarator_align = 0;
+			tn = pgm.consume_gnu_attributes(tn, NULL, NULL, &declarator_align);
 			if ( !tn )
 			    pgm.Throw << "Unexpected end after __attribute__ in struct" << flush;
+			if ( !declared_bitfield )
+			    dds->apply_member_alignment(declarator_align);
 		    }
 		    // C++11 default member initializer (NSDMI): `int x = 5;` etc.
 		    // (bit-fields cannot carry one — that path `continue`d above).
