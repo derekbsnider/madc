@@ -62414,24 +62414,24 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 // desync a suspended outer parse). Trailing `*`/`&` declarator suffixes fold via
 // getPointerType/getReferenceType. Returns NULL for a still-dependent /
 // unresolvable default (e.g. an absent `::type` — SFINAE), so the caller bails.
-DataDef *Program::resolve_template_param_default_type(
-		const std::vector<TokenBase *> &default_tokens,
+std::vector<TokenBase *> Program::substitute_template_binding(
+		const std::vector<TokenBase *> &tokens,
 		const std::map<std::string, DataDef *> &binding,
-		DataDefCLASS *owner, bool require_full_parse)
+		bool values_as_literals)
 {
-    if ( default_tokens.empty() )
-	return NULL;
     std::vector<TokenBase *> body;
-    for ( size_t i = 0; i < default_tokens.size(); ++i )
+    for ( size_t i = 0; i < tokens.size(); ++i )
     {
-	TokenBase *bt = default_tokens[i];
+	TokenBase *bt = tokens[i];
+	if ( !bt )
+	    continue;
 	std::string pack_name;
-	if ( sizeof_pack_operand_name(default_tokens, i, pack_name) )
+	if ( sizeof_pack_operand_name(tokens, i, pack_name) )
 	{
 	    // The pack name is an operand, not a type occurrence. Keep it
 	    // spelled so evaluate_type_query can find its published arity.
 	    for ( size_t j = i; j <= i + 6; ++j )
-		body.push_back(default_tokens[j]->clone_origin());
+		body.push_back(tokens[j]->clone_origin());
 	    i += 6;
 	    continue;
 	}
@@ -62442,13 +62442,53 @@ DataDef *Program::resolve_template_param_default_type(
 		binding.find(binding_name);
 	    if ( bi != binding.end() && bi->second )
 	    {
-		body.push_back(new TokenDataType(bi->second->name.c_str(),
-						 *bi->second));
+		if ( values_as_literals
+		  && datadef_is_nontype_constant(bi->second) )
+		    body.push_back(new TokenInt(
+			strtoll(bi->second->name.c_str(), NULL, 10)));
+		else
+		    body.push_back(new TokenDataType(bi->second->name.c_str(),
+						     *bi->second));
 		continue;
 	    }
 	}
 	body.push_back(bt->clone_origin());
     }
+    return body;
+}
+
+bool Program::fold_nontype_default_under_binding(
+		const std::vector<TokenBase *> &default_tokens,
+		const std::map<std::string, DataDef *> &binding,
+		const std::string &defining_ns, int64_t &out)
+{
+    std::vector<TokenBase *> run =
+	substitute_template_binding(default_tokens, binding, true);
+    bool folded = false;
+    if ( !run.empty() )
+    {
+	if ( !defining_ns.empty() )
+	{
+	    Program::NamespaceScope ns_scope(*this, defining_ns);
+	    folded = fold_nontype_arg_constant(run, out);
+	}
+	else
+	    folded = fold_nontype_arg_constant(run, out);
+    }
+    for ( TokenBase *t : run )
+	delete t;
+    return folded;
+}
+
+DataDef *Program::resolve_template_param_default_type(
+		const std::vector<TokenBase *> &default_tokens,
+		const std::map<std::string, DataDef *> &binding,
+		DataDefCLASS *owner, bool require_full_parse)
+{
+    if ( default_tokens.empty() )
+	return NULL;
+    std::vector<TokenBase *> body =
+	substitute_template_binding(default_tokens, binding, false);
     body.push_back(new TokenSemi());
 
     std::string substituted_debug;
@@ -62949,12 +62989,16 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    // `enable_if_t<...>* = nullptr` — TokenNullptr IS a TokenInt):
 	    // fold the run to a VALUE and bind the same decimal-named DataDef
 	    // shape the explicit-arg path mints (capture_call_template_args),
-	    // so substitution emits a TokenInt for it. A default that does not
-	    // fold (references another parameter's value) bails as before.
+	    // so substitution emits a TokenInt for it. A default that names an
+	    // earlier parameter (`int N = sizeof(T) + 1`) folds with the binding
+	    // so far substituted in ([temp.deduct]/5); one that still does not
+	    // fold bails as before.
 	    if ( i < ft.typeparam_is_type.size() && !ft.typeparam_is_type[i] )
 	    {
 		int64_t ntv = 0;
-		if ( pgm.fold_nontype_arg_constant(ft.typeparam_defaults[i], ntv) )
+		if ( pgm.fold_nontype_arg_constant(ft.typeparam_defaults[i], ntv)
+		  || pgm.fold_nontype_default_under_binding(
+			 ft.typeparam_defaults[i], binding, ft.ns, ntv) )
 		{
 		    if ( mtb_on )
 			fprintf(stderr, "MTBPROBE fill %s nontype %s = %lld\n",

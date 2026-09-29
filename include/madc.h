@@ -7424,6 +7424,24 @@ public:
 		const std::vector<TokenBase *> &default_tokens,
 		const std::map<std::string, DataDef *> &binding,
 		DataDefCLASS *owner, bool require_full_parse = false);
+    // A template-parameter default's token run with the already-bound
+    // parameters substituted in ([temp.deduct]/5), as fresh clones the caller
+    // owns: a bound type parameter becomes its type token. A bound NON-type
+    // parameter (the decimal-named value DataDef) becomes its value when
+    // `values_as_literals` (a default that folds to a value, `int M = N + 1`)
+    // and stays a type token otherwise (the type resolver's reading).
+    std::vector<TokenBase *> substitute_template_binding(
+		const std::vector<TokenBase *> &tokens,
+		const std::map<std::string, DataDef *> &binding,
+		bool values_as_literals);
+    // Fold a NON-type parameter's default under the binding of the parameters
+    // before it (`int N = sizeof(T) + 1`, [temp.deduct]/5), in the template's
+    // defining namespace. False when it does not fold (still dependent, or not
+    // a constant expression).
+    bool fold_nontype_default_under_binding(
+		const std::vector<TokenBase *> &default_tokens,
+		const std::map<std::string, DataDef *> &binding,
+		const std::string &defining_ns, int64_t &out);
     // Consume a declarator's pointer-star run: a sequence of `*` interleaved with
     // cv-qualifiers (const/volatile/restrict). Each `*` on a NON-fn-ptr base wraps
     // `dd` via getPointerType (the type reflects the indirection); a DataDefFPTR

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A non-type template default can name an earlier parameter
+
+`template<class T, int N = sizeof(T) + 1> int f()` makes `f<int>()` return
+5, as in g++. That covers free function templates and member templates,
+defaults that read another non-type parameter (`int M = N * 2`), and ones
+that read `T::value`. Before, madc evaluated such a default without the
+arguments bound before it. The call then failed to link or, beside a call
+that spelled every argument (`f<char, 9>()`), silently ran that other
+instantiation.
+
 ### A member template defined out of class keeps its declared defaults
 
 `struct E { template<class T, int N = 5> int h(); };` defined as
