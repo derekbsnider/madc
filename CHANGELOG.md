@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Braced mem-initializers and new-expressions list-initialize with initializer-list constructors
+
+A braced mem-initializer `v{ a, b }` or braced new-expression `new L{ a, b }`
+where the class has an initializer-list constructor now calls that constructor
+with the whole list as its one argument ([dcl.init.list]/4). The parenthesized form
+`v(a, b)` and `new L(a)` remain regular constructor calls. A base subobject's
+braced initializer-list `Base{ 1, 2 }` is also list-initialized. Before, braced
+and parenthesized forms were treated identically, so `v{ 5 }` incorrectly called
+`L(int)` instead of `L(std::initializer_list<int>)`, and some braced bases were
+rejected as having no matching constructor.
+
 ### A value-initialized temporary of a ctor-less class is zero-filled before default member initializers
 
 `T()` or `T{}` temporaries of a ctor-less class type in argument position, as

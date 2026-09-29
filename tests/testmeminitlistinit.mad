@@ -1,0 +1,25 @@
+// A BRACED mem-initializer list-initializes ([dcl.init.list]/4): a class with
+// an initializer-list constructor takes the whole list as its one argument,
+// for a base and for a member; the parenthesized form still calls L(int).
+// Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+#include <initializer_list>
+struct L
+{
+	int n; int first;
+	L(int k) : n(-k), first(-1) { }
+	L(std::initializer_list<int> il) : n((int)il.size()), first(*il.begin()) { }
+};
+struct HM { L v; HM() : v{ 5 } { } };
+struct HP { L v; HP() : v(5) { } };
+struct DB : L { DB() : L{ 7, 8 } { } };
+struct DP : L { DP() : L(7) { } };
+int main()
+{
+	HM hm; HP hp; DB db; DP dp;
+	L *h = new L{ 9 };
+	std::printf("listinit: %d %d | %d %d | %d %d | %d %d | %d %d\n", hm.v.n, hm.v.first,
+		hp.v.n, hp.v.first, db.n, db.first, dp.n, dp.first, h->n, h->first);
+	delete h;
+	return 0;
+}

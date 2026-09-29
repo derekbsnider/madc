@@ -1966,14 +1966,16 @@ public:
 	// default-initialize); a ctor-less class's list aggregate-initializes
 	// (aggregate_init_claim); every other shape is the ctor lane —
 	// class_ctor_call_addr for a base subobject, complete_object_construct_
-	// stmts (its virtual bases too) for a complete object. A `list_flattened`
+	// stmts (its virtual bases too) for a complete object. A `list_init`
+	// (braced) list on a class with an initializer-list constructor is that
+	// constructor's one argument ([dcl.init.list]/4). A `list_flattened`
 	// list (CtorInitializer::nested_list_flattened) lost its nesting, so a
 	// ctor-less class refuses it LOUDLY rather than guess (BUGS.md B81).
 	// Statements append to `out`; TRUE when any was emitted.
 	bool class_direct_init_stmts(const std::function<node_t()> &mint_addr,
 			       DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &args,
-			       bool list_flattened,
+			       bool list_init, bool list_flattened,
 			       bool base_subobject, bool vbase_forward,
 			       std::vector<node_t> &out, TokenBase *origin);
 	// Complete-object (Itanium C1-flavor) construction at a minted address:
@@ -2164,6 +2166,12 @@ public:
 	class FuncDef *initializer_list_ctor(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &elems,
 			       TokenBase *origin, node_t *arg_out);
+	// The rule above as a construction at `this_addr`: the initializer-list
+	// ctor call with the whole `list` as its one argument, or NULL (nothing
+	// consumed) when the class has no initializer-list ctor for it.
+	node_t initializer_list_ctor_call(node_t this_addr, DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &list,
+			       TokenBase *origin, bool vbase_forward);
 	// The SEARCH half of the rule above, without materializing anything:
 	// which initializer-list ctor (if any) would serve this list. The
 	// declaration lanes ask this BEFORE they decide how to thread a braced

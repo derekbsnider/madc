@@ -14229,7 +14229,8 @@ bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 						node2(N_DEREF_FIELD, id("__this", origin),
 						      id(m.first.c_str(), origin)),
 						origin);
-				}, mc, ci->args, ci->nested_list_flattened,
+				}, mc, ci->args, ci->braced,
+				ci->nested_list_flattened,
 				/*base_subobject=*/false,
 				/*vbase_forward=*/false, out, origin))
 				any = true;
@@ -17311,6 +17312,18 @@ DataDefCLASS *CirBuilder::ctor_declaring_class(DataDefCLASS *cdd, FuncDef *ctor)
 	return cdd;
 }
 
+node_t CirBuilder::initializer_list_ctor_call(node_t this_addr, DataDefCLASS *cdd,
+					      const std::vector<TokenBase *> &list,
+					      TokenBase *origin, bool vbase_forward)
+{
+	node_t il_arg = NULL;
+	FuncDef *ilc = initializer_list_ctor(cdd, list, origin, &il_arg);
+	if (!ilc)
+		return NULL;
+	std::vector<node_t> one(1, il_arg);
+	return ctor_call_assemble(this_addr, cdd, ilc, one, origin, vbase_forward);
+}
+
 node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin, bool vbase_forward)
@@ -17373,22 +17386,15 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		return node2(N_BLOCK, list(), blk, origin);
 	}
 
-	// LIST-initialization first ([dcl.init.list]/4): when the braces were
-	// written and the class has an initializer-list ctor, that ctor is the
-	// ONLY candidate and the whole list is its single argument. Falls
-	// through to ordinary overload scoring for every other class, so a
-	// braced list on a class without one still means "these arguments".
-	{
-		node_t il_arg = NULL;
-		if (ctor_args_are_braced(origin))
-			if (FuncDef *ilc = initializer_list_ctor(cdd, ctor_args,
-								 origin, &il_arg)) {
-				std::vector<node_t> one(1, il_arg);
-				return ctor_call_assemble(this_addr, cdd, ilc,
-							  one, origin,
-							  vbase_forward);
-			}
-	}
+	// LIST-initialization first ([dcl.init.list]/4) when the braces were
+	// written; every other class falls through to ordinary overload
+	// scoring, so a braced list on a class without an initializer-list
+	// ctor still means "these arguments".
+	if (ctor_args_are_braced(origin))
+		if (node_t ilcall = initializer_list_ctor_call(this_addr, cdd,
+							       ctor_args, origin,
+							       vbase_forward))
+			return ilcall;
 	FuncDef *ctor = select_or_instantiate_ctor(cdd, ctor_args);
 	if (!ctor) {
 		node_t dst = node1(N_DEREF,
@@ -18431,7 +18437,7 @@ bool CirBuilder::aggregate_member_fill(
 					return node1(N_ADDR, member_lvalue(mn),
 						     origin);
 				}, mc, std::vector<TokenBase *>(),
-				/*list_flattened=*/false,
+				/*list_init=*/false, /*list_flattened=*/false,
 				/*base_subobject=*/false, /*vbase_forward=*/false,
 				stmts, origin);
 			continue;
@@ -18562,7 +18568,7 @@ void CirBuilder::value_init_zero_stmts(const std::function<node_t()> &mint_addr,
 bool CirBuilder::class_direct_init_stmts(const std::function<node_t()> &mint_addr,
 					  DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &args,
-					  bool list_flattened,
+					  bool list_init, bool list_flattened,
 					  bool base_subobject, bool vbase_forward,
 					  std::vector<node_t> &out,
 					  TokenBase *origin)
@@ -18602,6 +18608,15 @@ bool CirBuilder::class_direct_init_stmts(const std::function<node_t()> &mint_add
 		emit(error_node(msg.c_str(), origin));
 		return true;
 	}
+	// A braced list LIST-initializes ([dcl.init.list]/4): an
+	// initializer-list constructor takes the whole list first.
+	if (list_init && cdd->has_user_ctor)
+		if (node_t ilcall = initializer_list_ctor_call(mint_addr(), cdd,
+							       args, origin,
+							       vbase_forward)) {
+			emit(ilcall);
+			return true;
+		}
 	if (!cdd->has_user_ctor)
 		if (node_t agg = aggregate_init_claim(
 			[&](const std::string &m) -> node_t {
@@ -23132,7 +23147,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				class_direct_init_stmts([&]() -> node_t {
 					return node2(N_CAST, class_ptr_type(pc),
 						     addr(), tb);
-				}, pc, tn->ctor_args, /*list_flattened=*/false,
+				}, pc, tn->ctor_args, tn->braced,
+				/*list_flattened=*/false,
 				/*base_subobject=*/false, /*vbase_forward=*/false,
 				cstmts, tb);
 				for (node_t cs : cstmts)
@@ -23372,7 +23388,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			else
 				class_direct_init_stmts([&]() -> node_t {
 					return id(tmp, tb);
-				}, cdd, tn->ctor_args, /*list_flattened=*/false,
+				}, cdd, tn->ctor_args, tn->braced,
+				/*list_flattened=*/false,
 				/*base_subobject=*/false, /*vbase_forward=*/false,
 				cstmts, tb);
 			for (node_t cs : cstmts)
@@ -31019,7 +31036,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					if (class_direct_init_stmts(
 						[&]() -> node_t {
 							return base_addr_at(b, boff);
-						}, b, ci->args, ci->nested_list_flattened,
+						}, b, ci->args, ci->braced,
+						ci->nested_list_flattened,
 						/*base_subobject=*/true,
 						/*vbase_forward=*/true, prologue, tf))
 						done_bases.insert((int)bi);
