@@ -800,15 +800,20 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: one hand-split template-argument list
+### B58. `<`: two mixed angle-and-paren counters
 
 - No hand-rolled angle COUNTER is left (the last, in
   `resolve_decltype_call_return`, moved 2026-09-29). Each one asked no name
   question ([temp.names]/3, `DelimDepth::lt_reads_as_less_than`), closed a
   list at a `>` inside `( )`, and handled `>>` its own way.
-- What remains is the class-type pattern normalizer, which walks a list
-  on `DelimDepth` but splits its arguments by hand; it moves onto
-  `scan_template_argument_list` + `template_argument_runs`.
+- What remains: two counters in `instantiate_template_use` fold `<` and
+  `(` into ONE depth (the empty parameter-pack elision's skip, ~11475, and
+  the single-element pack pattern's `...` search, ~11583). They were filed
+  under B59 as paren counters; they are angle counters too.
+- Done: the class-type pattern normalizer splits on
+  `scan_template_argument_list` + `template_argument_runs` (the
+  synthesized `>` of a nested `>>` is now freed once normalized; the old
+  split leaked it). KG DupFamily `template_argument_list_split` is closed.
 - Done: the transparent-alias reader in `unify_spec_pattern_arg`
   (g++.dg alias-decl-57's `volatile __has_tuple_size<T>`) splits on the
   list scan; behaviour-preserving.

@@ -35673,58 +35673,32 @@ class ClassPatternNormalizer
 		    return base;
 		}
 	    }
-	    // Argument split on the shared tracker (delimiter-tracking.md).
-	    // The hand-rolled ++depth/--depth walk this replaces treated the
-	    // merged '>>' token (tkBSR closes TWO angle levels) as an ordinary
-	    // token: it was pushed INTO the pending argument, the head's close
-	    // was never seen, and `decay2<cond2<T1,T2>>` captured with ZERO
+	    // Argument split on the one list scan (delimiter-tracking.md). The
+	    // hand-rolled ++depth/--depth walk this replaced treated the merged
+	    // '>>' token (tkBSR closes TWO angle levels) as an ordinary token:
+	    // it was pushed INTO the pending argument, the head's close was
+	    // never seen, and `decay2<cond2<T1,T2>>` captured with ZERO
 	    // arguments — the resolver then replayed `decay2<>`. When one of
-	    // tkBSR's closes belongs to a nested argument list, the swallowed
-	    // '>' is materialized back so the recursive normalize sees a
-	    // balanced argument.
-	    DelimDepth ad;
-	    delim_scan_step(tokens, open, ad);	// the head's '<' — ad.angle == 1
-	    std::vector<TokenBase *> arg;
-	    for ( size_t i = open + 1; i < tokens.size(); )
-	    {
-		TokenBase *t = tokens[i];
-		size_t before_angle = ad.angle;
-		size_t n = delim_scan_step(tokens, i, ad);
-		if ( !n )
-		    n = 1;
-		if ( !ad.angle )		// this step closed the head's list
+	    // tkBSR's closes belongs to a nested argument list, the run carries
+	    // a synthesized '>' so the recursive normalize sees a balanced
+	    // argument (template_argument_runs; freed once normalized).
+	    TemplateArgumentList list;
+	    scan_template_argument_list(tokens, open, list);
+	    std::vector<std::vector<TokenBase *> > runs =
+		template_argument_runs(tokens, list);
+	    for ( const std::vector<TokenBase *> &arg : runs )
+		if ( !arg.empty() )
 		{
-		    if ( t->id() == TokenID::tkBSR && before_angle >= 2 )
-			arg.push_back(new TokenGT());
-		    if ( !arg.empty() )
-		    {
-			// normalize_token_type recurses into append_type() and
-			// can REALLOCATE pattern.types — resolve it into a
-			// local BEFORE indexing types[base] (C++11 leaves the
-			// order of the index and the call unspecified).
-			Program::ClassTypePatternId argument =
-			    normalize_token_type(arg);
-			pattern.types[base].arguments.push_back(argument);
-		    }
-		    break;
+		    // normalize_token_type recurses into append_type() and
+		    // can REALLOCATE pattern.types — resolve it into a local
+		    // BEFORE indexing types[base] (C++11 leaves the order of
+		    // the index and the call unspecified).
+		    Program::ClassTypePatternId argument =
+			normalize_token_type(arg);
+		    pattern.types[base].arguments.push_back(argument);
 		}
-		if ( t->id() == TokenID::tkComma && ad.angle == 1
-		  && !ad.paren && !ad.square && !ad.brace )
-		{
-		    if ( !arg.empty() )
-		    {
-			Program::ClassTypePatternId argument =
-			    normalize_token_type(arg);
-			pattern.types[base].arguments.push_back(argument);
-			arg.clear();
-		    }
-		    i += n;
-		    continue;
-		}
-		for ( size_t k = 0; k < n && i + k < tokens.size(); ++k )
-		    arg.push_back(tokens[i + k]);
-		i += n;
-	    }
+	    if ( list.nested_close && !runs.empty() && !runs.back().empty() )
+		delete runs.back().back();	// the synthesized '>'
 	    }
 	}
 
