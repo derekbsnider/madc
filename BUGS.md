@@ -232,6 +232,11 @@ int main(void)
   (`DataDefSTRUCT::setReverseScalarStorage`, frozen as `DF_REVERSE_SCALAR`,
   used for bit-field placement in datadef.h), but nothing in
   `cir_builder.cpp` byte-swaps a scalar member's load or store.
+- Disposition (2026-09-29): out of scope under the owner's clang scope
+  filter (2026-07-19: a GNU-only feature that is hard to support through
+  MIR and that clang does not implement is not required). The bit-field
+  placement stays: it closes the gcc torture tests `20230630-2.c` and
+  `20230630-4.c` (d85af3516). The scalar byte swap is not planned.
 
 ## Accepts invalid code
 
