@@ -6264,7 +6264,71 @@ static bool scan_template_argument_list(const Seq &tokens, size_t lt_index,
 template<typename Seq>	// std::vector and the TokenStream queue, like delim_scan_step
 static size_t template_id_suffix_end(
 	const Seq &tokens, size_t lt_index,
-	bool *split_gt = NULL)
+	bool *split_gt = NULL);
+
+// The close of the balanced group opening at tokens[open_idx], `(` `[` `{` or a
+// template-argument list's `<`, on DelimDepth (delimiter-tracking.md): the
+// token that returns that delimiter's depth to zero. A `<` is the
+// template-argument-list scan's answer. Returns open_idx when the token opens
+// nothing or the group never closes.
+template<typename Seq>
+static size_t balanced_group_close(const Seq &tokens, size_t open_idx)
+{
+    if ( open_idx >= tokens.size() || !tokens[open_idx] )
+	return open_idx;
+    const TokenID id = tokens[open_idx]->id();
+    if ( id == TokenID::tkLT )
+	return template_id_suffix_end(tokens, open_idx);
+    int DelimDepth::*axis = id == TokenID::tkOpBrk ? &DelimDepth::paren
+	: id == TokenID::tkOpSqr ? &DelimDepth::square
+	: id == TokenID::tkOpBrc ? &DelimDepth::brace : NULL;
+    if ( !axis )
+	return open_idx;
+    DelimDepth d;
+    for ( size_t i = open_idx; i < tokens.size(); )
+    {
+	size_t n = delim_scan_step(tokens, i, d);
+	if ( !(d.*axis) )
+	    return i;
+	i += n ? n : 1;
+    }
+    return open_idx;
+}
+
+// The opener that the close at tokens[close_idx] (`)` `]` `}` `>` `>>`)
+// matches, found FORWARD: DelimDepth has no backward form, and a backward walk
+// re-derives the delimiter rule in reverse (BUGS.md B58: it counted every `>`
+// as an open, parenthesized or not). It is the nearest same-kind opener before
+// the close whose balanced_group_close ends there, confirmed from the opener
+// itself, so a template-id inside a parameter list's parentheses still
+// matches. A `>>` closes two template-argument lists; the OUTER `<` is
+// returned. Returns close_idx when nothing matches.
+template<typename Seq>
+static size_t balanced_group_open(const Seq &tokens, size_t close_idx)
+{
+    if ( close_idx >= tokens.size() || !tokens[close_idx] )
+	return close_idx;
+    const TokenID cid = tokens[close_idx]->id();
+    const TokenID oid = cid == TokenID::tkClBrk ? TokenID::tkOpBrk
+	: cid == TokenID::tkClSqr ? TokenID::tkOpSqr
+	: cid == TokenID::tkClBrc ? TokenID::tkOpBrc
+	: (cid == TokenID::tkGT || cid == TokenID::tkBSR) ? TokenID::tkLT
+	: TokenID::tkBase;
+    if ( oid == TokenID::tkBase )
+	return close_idx;
+    int levels = cid == TokenID::tkBSR ? 2 : 1;
+    for ( size_t k = close_idx; k-- > 0; )
+	if ( tokens[k] && tokens[k]->id() == oid
+	  && balanced_group_close(tokens, k) == close_idx
+	  && --levels == 0 )
+	    return k;
+    return close_idx;
+}
+
+template<typename Seq>
+static size_t template_id_suffix_end(
+	const Seq &tokens, size_t lt_index,
+	bool *split_gt)
 {
     // *split_gt (when provided): set true if the closing token was a `>>`
     // (tkBSR) that supplied ONE leftover `>` for an ENCLOSING template-id —
@@ -58141,52 +58205,28 @@ static bool skipped_template_outofline_member(
     if ( tokens[j] && (tokens[j]->id() == TokenID::tkGT
 		    || tokens[j]->id() == TokenID::tkBSR) )
     {
-	// Walk back over the class-template-id's `<...>` to its opening `<`.
-	// Going backwards: `>` (or `>>`) opens, `<` closes the angle nesting.
-	int depth = 0;
-	size_t k = j;
-	for ( ;; )
-	{
-	    TokenBase *t = tokens[k];
-	    if ( t && t->id() == TokenID::tkBSR )
-		depth += 2;
-	    else if ( t && t->id() == TokenID::tkGT )
-		++depth;
-	    else if ( t && t->id() == TokenID::tkLT )
-	    {
-		--depth;
-		if ( depth <= 0 )
-		    break;
-	    }
-	    if ( k == 0 )
-		return false;
-	    --k;
-	}
-	if ( k == 0 || !is_contextual_identifier_token(tokens[k - 1]) )
+	// The class-template-id's opening `<`: balanced_group_open finds the
+	// `<` whose list closes at this `>` (or `>>`), forward, on DelimDepth.
+	size_t k = balanced_group_open(tokens, j);
+	if ( k == j || k == 0 || !is_contextual_identifier_token(tokens[k - 1]) )
 	    return false;
 	cls = contextual_identifier_name(tokens[k - 1]);
-	// The class-head's argument runs, split on the top-level commas of
-	// `<...>` (the shared DelimDepth stepper — a nested `<`/`(` keeps its
-	// commas inside the run). Borrowed pointers; the caller clones.
+	// The class-head's argument runs: the template-argument-list scan's
+	// top-level arguments (a comma inside `( )` or a nested `<...>` stays in
+	// its run). An empty `<>` is one empty run, the slot shape the attach
+	// step matches. Borrowed pointers; the caller clones.
 	if ( head_args_out )
 	{
-	    DelimDepth d;
-	    size_t i = k;
-	    i += delim_scan_step(tokens, i, d);	// the opening `<`
-	    std::vector<TokenBase *> run;
-	    while ( i <= j && d.angle > 0 )
+	    TemplateArgumentList list;
+	    scan_template_argument_list(tokens, k, list);
+	    for ( const std::pair<size_t, size_t> &a : list.args )
 	    {
-		TokenBase *t = tokens[i];
-		if ( d.angle == 1 && t && t->id() == TokenID::tkComma )
-		{
-		    head_args_out->push_back(run);
-		    run.clear();
-		}
-		else if ( !(i == j) )
-		    run.push_back(t);
-		i += delim_scan_step(tokens, i, d);
+		head_args_out->push_back(std::vector<TokenBase *>());
+		for ( size_t ti = a.first; ti < a.second; ++ti )
+		    head_args_out->back().push_back(tokens[ti]);
 	    }
-	    head_args_out->push_back(run);
+	    if ( list.args.empty() )
+		head_args_out->push_back(std::vector<TokenBase *>());
 	}
     }
     else if ( is_contextual_identifier_token(tokens[j]) )
@@ -62635,15 +62675,11 @@ static std::vector<TokenBase *> tsubst_elide_empty_pack_expansions(
 	size_t unit = ej.size();	// empty unit = keep the dots
 	if ( k > 0 && ej[k-1] && ej[k-1]->id() == TokenID::tkClBrk )
 	{
-	    int d = 0; size_t j = k;
-	    while ( j > 0 )
-	    {
-		TokenBase *u = ej[--j];
-		if ( !u ) continue;
-		if ( u->id() == TokenID::tkClBrk ) ++d;
-		else if ( u->id() == TokenID::tkOpBrk && --d == 0 )
-		    break;
-	    }
+	    // The call's `(`: the opener balanced_group_open matches to this `)`
+	    // (an unmatched one leaves the unit at the start, as it always did).
+	    size_t j = balanced_group_open(ej, k - 1);
+	    if ( j == k - 1 )
+		j = 0;
 	    while ( j > 0 && ej[j-1]
 		 && (ej[j-1]->type() == TokenType::ttIdentifier
 		     || ej[j-1]->type() == TokenType::ttDataType
@@ -62655,16 +62691,11 @@ static std::vector<TokenBase *> tsubst_elide_empty_pack_expansions(
 	}
 	else if ( k > 0 && ej[k-1] && ej[k-1]->id() == TokenID::tkGT )
 	{
-	    int d = 0; size_t j = k;
-	    while ( j > 0 )
-	    {
-		TokenBase *u = ej[--j];
-		if ( !u ) continue;
-		if ( u->id() == TokenID::tkGT ) ++d;
-		else if ( u->id() == TokenID::tkBSR ) d += 2;
-		else if ( u->id() == TokenID::tkLT && --d == 0 )
-		{ unit = j > 0 ? j - 1 : 0; break; }
-	    }
+	    // The template-id's `<` (and the name before it): the opener
+	    // balanced_group_open matches to this `>`; unmatched keeps the dots.
+	    size_t j = balanced_group_open(ej, k - 1);
+	    if ( j != k - 1 )
+		unit = j > 0 ? j - 1 : 0;
 	}
 	else if ( k > 0 && ej[k-1]
 	       && (ej[k-1]->type() == TokenType::ttIdentifier
@@ -65339,19 +65370,10 @@ bool Program::tsubst_eligible(FuncDef *fd, const char **why)
 	    --last;
 	if ( last > 0 && dtoks[last - 1]->id() == TokenID::tkClBrc )
 	{
-	    int bdepth = 0;
-	    for ( size_t j = last; j-- > 0; )
-	    {
-		if ( !dtoks[j] )
-		    continue;
-		if ( dtoks[j]->id() == TokenID::tkClBrc )
-		    ++bdepth;
-		else if ( dtoks[j]->id() == TokenID::tkOpBrc && --bdepth == 0 )
-		{
-		    body_open = j;
-		    break;
-		}
-	    }
+	    // The body's `{`: the opener balanced_group_open matches to the last `}`.
+	    size_t open = balanced_group_open(dtoks, last - 1);
+	    if ( open != last - 1 )
+		body_open = open;
 	    if ( body_open < dtoks.size() )
 	    {
 		body_empty = true;

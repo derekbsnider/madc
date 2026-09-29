@@ -795,7 +795,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: ten hand-rolled angle counters
+### B58. `<`: eight hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -816,15 +816,12 @@ scans), `peek_after_balanced_template_id_from`,
   alias-pattern reader and the class-type pattern normalizer, and
   `skipped_template_outofline_member`'s head arguments. That last one splits
   on `angle == 1` without the paren test, so a comma inside `( )` splits an
-  argument. Each moves onto `scan_template_argument_list`, the last with
-  that function's backward walk.
+  argument (moved: see above). Each other one moves onto
+  `scan_template_argument_list`.
 - Sites: `expand_integer_pack_template_args` 6542,
   `evaluate_requires_expression_constant` 38159,
-  `skipped_template_outofline_member`
-  58158 (walks backwards; `DelimDepth` has no backward form),
   `skipped_template_outofline_nested_class` 58690,
   `template_class_head_is_qualified` 58732,
-  `tsubst_elide_empty_pack_expansions` 62566 (walks backwards),
   `instantiate_fn_template_binding` 63772,
   `instantiate_member_ctor_template_candidate` 66344 (the
   `member_ctor_param_count` lambda, KG DupFamily
@@ -866,12 +863,20 @@ int main()
 - `A<(3 > 2)>` as a type, in a nested-name-specifier and as a second
   argument passes (`gt: 1 1 2`, as g++ and clang++ print): the main parse
   path is on `DelimDepth`, and these copies sit on side paths.
+- Done: the four backward walks (`skipped_template_outofline_member`,
+  the two in `tsubst_elide_empty_pack_expansions`, `tsubst_eligible`) ask
+  `balanced_group_open`, which finds a close's opener forward
+  (tests/testoutoflineheadparen: a partial specialization's out-of-line
+  member with `(3 > 2)` in its head was dropped, and, with the value
+  match of 676749fdf selecting the specialization, the primary's body
+  ran, exit 0). `skipped_template_outofline_member`'s head arguments are
+  `scan_template_argument_list`'s.
 - Done: `template_list_close_index`, a second template-id extent helper,
   deleted; its caller asks `template_id_suffix_end`
   (tests/testdefaultedctortemplate: a defaulted constructor template's
   later parameters were lost at a parenthesized `>`).
 
-### B59. `(`: forty-two hand-rolled paren counters
+### B59. `(`: forty-one hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -901,7 +906,6 @@ int main()
   `TokenCLASS::parse` 51068; `skip_constraint_expression` 57285 (the
   `skip_balanced` lambda, also used for `{`);
   `skipped_template_body_is_inline_identity_refcast` 60027;
-  `tsubst_elide_empty_pack_expansions` 62546 (walks backwards);
   `tsubst_matching_close` 64982; `resolve_fn_template_return_by_key`
   67062; `resolve_decltype_call_return` 67489;
   `try_parse_implicit_int_function_definition` 69935;
@@ -922,13 +926,12 @@ int main()
   g++ and clang++ when they move.
 - No failing reducer yet.
 
-### B61. `{`: thirteen hand-rolled brace counters
+### B61. `{`: twelve hand-rolled brace counters
 
 - Sites: `evaluate_requires_expression_constant` 38326, 38354;
   `parseExpr_operatorArm` 43000; `collect_compound_body_tokens` 48375;
   `TokenCLASS::parse` 50599; `skip_constraint_expression` 57285;
   `skip_template_nonclass_declaration` 57379;
-  `Program::tsubst_eligible` 65246 (walks backwards);
   `materialize_pattern_local_class` 65736; `TokenTEMPLATE::parse` 69128;
   `parseFunction` 71409; `parse_declaration_body` 74599;
   `src/madc.cpp` 133 `find_closing_brace`.

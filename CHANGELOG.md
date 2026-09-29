@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### A partial specialization's member can be defined with a `>` in its head
+
+`template<class T> int Z<T, (3 > 2) + 4>::f() { return 50; }` defines the
+member of the partial specialization `Z<T, 5>`, as in g++. Before, madc did
+not recognize the definition, and `Z<int, 5>().f()` silently ran the primary
+template's body.
+
 ### A partial specialization's non-type pattern matches by value
 
 `template<class T> struct W<T, 4 + 4>` is the specialization `W<int, 8>`
