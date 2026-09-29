@@ -945,6 +945,7 @@ public:
     // member_explicit_align map pattern (index-keyed, no parallel-vector burden).
     std::map<size_t, DataDefCLASS *> member_vbase;
     std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
+    std::set<size_t> member_packed; // member index -> __attribute__((packed)) on the member itself
     // C++11 default member initializer (NSDMI): member NAME -> the PARSED init
     // expression (`int x = 5;` -> TokenInt(5)). Applied at default construction as
     // `__this->member = expr` for any member not explicitly initialized. Absent =
@@ -1331,6 +1332,8 @@ public:
 	    member_origin.push_back(i < agg.member_origin.size() ? agg.member_origin[i] : -1);
 	    if ( agg.member_explicit_align.find(i) != agg.member_explicit_align.end() )
 		member_explicit_align[members.size() - 1] = agg.member_explicit_align.at(i);
+	    if ( agg.member_packed.count(i) )
+		member_packed.insert(members.size() - 1);
 	}
 	size_t end = base_offset + agg.size;
 	if ( union_layout )
@@ -1370,12 +1373,13 @@ public:
 	if ( align > tag_explicit_align ) tag_explicit_align = align;
     }
     // Re-run the layout over the members already added, after an attribute that
-    // follows the body (`} __attribute__((packed))`) changed `pack`. Layout is
-    // otherwise computed member by member as each is added; gcc lays a record
-    // out once, at its end (finish_struct). The members replay through the same
-    // add* primitives into a scratch aggregate — an anonymous aggregate as one
-    // unit, a member's own aligned(N) re-applied — and only the layout comes
-    // back: offsets, bit-field placement, size, alignment.
+    // follows the body (`} __attribute__((packed))`) changed `pack`, or one on a
+    // member (apply_member_packing). Layout is otherwise computed member by
+    // member as each is added; gcc lays a record out once, at its end
+    // (finish_struct). The members replay through the same add* primitives
+    // into a scratch aggregate — an anonymous aggregate as one unit, a packed
+    // member under a pack of 1, a member's own aligned(N) re-applied — and only
+    // the layout comes back: offsets, bit-field placement, size, alignment.
     void relayout()
     {
 	DataDefSTRUCT scratch(name, 0);
@@ -1393,6 +1397,9 @@ public:
 		i += ai.member_count - 1;
 		continue;
 	    }
+	    const size_t outer_pack = scratch.pack;
+	    if ( member_packed.count(i) )
+		scratch.pack = 1;
 	    if ( member_bitfields[i].is_bitfield )
 		scratch.addBitField(members[i].first, *members[i].second,
 				    member_bitfields[i].bit_width);
@@ -1400,6 +1407,7 @@ public:
 		scratch.addMember(members[i].first, *members[i].second,
 				  member_counts[i], member_count_exprs[i],
 				  member_array_flags[i], &member_dims[i]);
+	    scratch.pack = outer_pack;
 	    std::map<size_t, size_t>::const_iterator ea = member_explicit_align.find(i);
 	    if ( ea != member_explicit_align.end() )
 		scratch.apply_member_alignment(ea->second);
@@ -1415,6 +1423,17 @@ public:
 	bitfield_unit_offset = scratch.bitfield_unit_offset;
 	bitfield_unit_size = scratch.bitfield_unit_size;
 	bitfield_next_bit = scratch.bitfield_next_bit;
+    }
+    // Apply __attribute__((packed)) to the most recently added member: it is
+    // laid out as if the aggregate were packed for that member alone —
+    // alignment 1 unless its own aligned(N) raises it, and no contribution to
+    // the aggregate's alignment (gcc = clang). Its natural alignment already
+    // placed it and raised the aggregate's, so the layout replays.
+    void apply_member_packing()
+    {
+	if ( members.empty() ) return;
+	if ( !member_packed.insert(members.size() - 1).second ) return;
+	relayout();
     }
     // Apply __attribute__((aligned(N))) to the most recently added member.
     // Updates the member's offset (re-aligns it to N) and the struct's

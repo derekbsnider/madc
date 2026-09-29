@@ -1,0 +1,46 @@
+// A member's own `packed` lays that member out at alignment 1 (or at its own
+// aligned(N)), and it adds nothing to the aggregate's alignment: after its
+// declarator or among the line's specifiers, on a struct-typed or array
+// member, in a union, in an anonymous aggregate, beside a tag's aligned(N).
+// Oracle: gcc 13 and clang 18 print the lines below.
+#include <stdio.h>
+#include <stddef.h>
+
+struct S { int i; };
+struct T5 { char c; int x __attribute__((packed)); };
+struct T7 { char c; int y __attribute__((packed)); char d; int z; };
+struct PA { char c; int x __attribute__((packed, aligned(2))); };
+struct PB { char c; __attribute__((packed)) int x, y; };
+struct PS { char c; struct S s __attribute__((packed)); };
+struct PL { char c; long l[2] __attribute__((packed)); };
+struct PT { char c; double d __attribute__((__packed__)); short s; };
+union PU { char c; int x __attribute__((packed)); };
+struct PN { char c; int x __attribute__((packed)); } __attribute__((aligned(8)));
+struct PQ { char c; struct { char d; int e __attribute__((packed)); } in; char f; };
+struct PR { char c; struct { char d; int e __attribute__((packed)); }; char f; };
+struct PX { char a; int b : 3 __attribute__((packed)); char c; };
+
+int main(void)
+{
+	printf("ma: %zu %zu %zu %zu\n", sizeof(struct T5), offsetof(struct T5, x),
+	       sizeof(struct T7), offsetof(struct T7, z));
+	printf("mb: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(struct PA), offsetof(struct PA, x),
+	       sizeof(struct PB), offsetof(struct PB, x), offsetof(struct PB, y),
+	       sizeof(struct PS), offsetof(struct PS, s));
+	printf("mc: %zu %zu %zu %zu %zu\n", sizeof(struct PL), offsetof(struct PL, l),
+	       sizeof(struct PT), offsetof(struct PT, s), _Alignof(struct PT));
+	printf("md: %zu %zu %zu %zu %zu\n", sizeof(union PU), _Alignof(union PU),
+	       sizeof(struct PN), offsetof(struct PN, x), _Alignof(struct PN));
+	printf("me: %zu %zu %zu %zu %zu %zu\n", sizeof(struct PQ), offsetof(struct PQ, f),
+	       sizeof(struct PR), offsetof(struct PR, e), offsetof(struct PR, f),
+	       sizeof(struct PX));
+	struct T7 t = { 1, 0x11223344, 2, 5 };
+	struct PL l = { 3, { -7, 1L << 40 } };
+	struct PR r = { 4, 5, 0x55667788, 6 };
+	struct PX x = { 8, -3, 9 };
+	t.y += 1;
+	int *py = &t.z;
+	printf("mv: %d %x %d %d %d %ld %ld %d %x %d %d %d %d\n", t.c, t.y, t.d, *py,
+	       l.c, l.l[0], l.l[1], r.d, r.e, r.f, x.a, x.b, x.c);
+	return 0;
+}

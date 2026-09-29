@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A member's own `packed` lays that member out at alignment 1
+
+`struct { char c; int x __attribute__((packed)); }` has `x` at offset 1 and
+size 5, as in gcc and clang; madc placed `x` at 4 (size 8). The member
+takes alignment 1, or its own `aligned(N)` beside `packed`, and adds
+nothing to the aggregate's alignment. This holds after the declarator and
+among a line's specifiers (`__attribute__((packed)) int x, y;` packs both),
+for struct-typed and array members, in a union, in an anonymous aggregate
+and beside a tag's `aligned(N)`. `--emit=c11` renders the member's
+`packed` and `aligned(N)` after its declarator.
+
 ### A zero-width bit-field under packing aligns to its type
 
 `int : 0` moves the next member to a 4-byte boundary under `#pragma pack(N)`

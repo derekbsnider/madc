@@ -712,6 +712,13 @@ void emit(CEmit &e, node_t n, int ctx)
 			e.put(" : ");
 			emit(e, w, P_COND);
 		}
+		// The member's own attributes (`packed`, a packed member's
+		// `aligned(N)`) follow its declarator and a bit-field's width.
+		node_t mattrs = op(n, 2);
+		if (mattrs && mattrs->code == N_LIST && op(mattrs, 0)) {
+			e.put(' ');
+			emit_seq(e, mattrs, 0, " ", P_NONE);
+		}
 		e.put(';');
 		emit_pack_pop(e, pack);
 		break;

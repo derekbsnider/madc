@@ -123,26 +123,6 @@ int main()
   - The system-header blast radius: libstdc++ and libc++ declare many
     in-class-initialized statics that madc skips today.
 
-### B63. A member's own `packed` is ignored
-
-```c
-#include <stdio.h>
-#include <stddef.h>
-struct T5 { char c; int x __attribute__((packed)); };
-struct T7 { char c; int y __attribute__((packed)); char d; int z; };
-int main(void)
-{
-	printf("mp: %zu %zu %zu %zu\n", sizeof(struct T5), offsetof(struct T5, x), sizeof(struct T7), offsetof(struct T7, z));
-	return 0;
-}
-```
-
-- gcc = clang: `mp: 5 1 12 8`. madc: `mp: 8 4 16 12`.
-- Where: a member's attribute groups are read by `consume_gnu_attributes`
-  (before its type and, since 6671bd11a, after its declarator), but only
-  `aligned(N)` is taken from them. `DataDefSTRUCT` has no per-member
-  packing: `apply_member_alignment` only raises an alignment.
-
 ### B76. A bit-field under packing never straddles its type's window
 
 ```c

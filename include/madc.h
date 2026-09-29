@@ -8322,12 +8322,13 @@ public:
     bool consume_aggregate_attributes(AggregateAttributes &attrs);
     // The attribute groups NEXT in the stream, read as a declared object's or
     // member's own and consumed: their alignment is merged into `align` (the
-    // strictest wins). False when none.
-    bool consume_object_attributes(size_t &align);
+    // strictest wins); `*packed` is set when one names `packed` (a member's).
+    // False when none.
+    bool consume_object_attributes(size_t &align, bool *packed = NULL);
     // A run of cv-qualifiers and attribute groups in any order, as a
     // decl-specifier sequence interleaves them (`const AL int x;`): the cv
-    // mask; the groups' alignment is merged into `align`.
-    unsigned consume_cv_and_object_attributes(size_t &align);
+    // mask; the groups' alignment is merged into `align`, `packed` as above.
+    unsigned consume_cv_and_object_attributes(size_t &align, bool *packed = NULL);
     // The attribute and alignment specifiers NEXT in the stream, consumed
     // unread and appended to `out` as copies — for a construct whose tokens
     // are read later (a class template's head, read at instantiation).

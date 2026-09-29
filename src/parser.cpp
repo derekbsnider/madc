@@ -2009,6 +2009,18 @@ static bool token_names_gnu_attribute(const TokenBase *t, GnuAttributeKind kind)
 	&& madc_gnu_attribute_kind(((const TokenIdent *)t)->spelling()) == kind;
 }
 
+// Does a set of attribute names consume_gnu_attributes collected name `kind`,
+// in either spelling (`packed` / `__packed__`)?
+static bool attribute_set_names(const std::set<std::string> &attrs,
+				GnuAttributeKind kind)
+{
+    for ( std::set<std::string>::const_iterator ai = attrs.begin();
+	  ai != attrs.end(); ++ai )
+	if ( madc_gnu_attribute_kind(*ai) == kind )
+	    return true;
+    return false;
+}
+
 static GnuScalarStorageOrder gnu_scalar_storage_order(const std::string &order)
 {
     if ( order == "big-endian" )
@@ -2136,20 +2148,22 @@ bool Program::consume_aggregate_attributes(AggregateAttributes &a)
 					      &a.align, NULL, &a.storage_order);
     if ( after )
 	pushToken(after);
-    for ( std::set<std::string>::const_iterator ai = attrs.begin();
-	  ai != attrs.end(); ++ai )
-	if ( madc_gnu_attribute_kind(*ai) == GnuAttributeKind::Packed )
-	    a.packed = true;
+    if ( attribute_set_names(attrs, GnuAttributeKind::Packed) )
+	a.packed = true;
     return true;
 }
 
-bool Program::consume_object_attributes(size_t &align)
+bool Program::consume_object_attributes(size_t &align, bool *packed)
 {
     if ( !is_attribute_identifier_token(peekToken()) )
 	return false;
-    TokenBase *after = consume_gnu_attributes(nextToken(), NULL, NULL, &align);
+    std::set<std::string> attrs;
+    TokenBase *after = consume_gnu_attributes(nextToken(),
+					      packed ? &attrs : NULL, NULL, &align);
     if ( after )
 	pushToken(after);
+    if ( packed && attribute_set_names(attrs, GnuAttributeKind::Packed) )
+	*packed = true;
     return true;
 }
 
@@ -2171,10 +2185,10 @@ void Program::capture_attribute_specifiers(std::vector<TokenBase *> &out)
     }
 }
 
-unsigned Program::consume_cv_and_object_attributes(size_t &align)
+unsigned Program::consume_cv_and_object_attributes(size_t &align, bool *packed)
 {
     unsigned cv = skip_cv_qualifier_tokens();
-    while ( consume_object_attributes(align) )
+    while ( consume_object_attributes(align, packed) )
 	cv |= skip_cv_qualifier_tokens();
     return cv;
 }
@@ -2187,11 +2201,7 @@ bool Program::consume_gnu_attributes_naming(GnuAttributeKind kind)
     TokenBase *after = consume_gnu_attributes(nextToken(), &attrs);
     if ( after )
 	pushToken(after);
-    for ( std::set<std::string>::const_iterator ai = attrs.begin();
-	  ai != attrs.end(); ++ai )
-	if ( madc_gnu_attribute_kind(*ai) == kind )
-	    return true;
-    return false;
+    return attribute_set_names(attrs, kind);
 }
 
 static bool is_gnu_asm_identifier_token(TokenBase *tb)
@@ -2602,19 +2612,22 @@ static void apply_aggregate_attributes(DataDefSTRUCT *agg,
 
 // A member declarator's own attribute groups after it (`int x AL;`), `tn` the
 // token after the declarator, already consumed: read by the one GNU attribute
-// reader, they align the member just added only (a bit-field takes none), and
-// `tn` becomes the token after them.
+// reader, they align (a bit-field takes no alignment) or pack the member just
+// added only, and `tn` becomes the token after them.
 static void apply_member_trailing_attributes(Program &pgm, TokenBase *&tn,
 					     DataDefSTRUCT *agg, bool bitfield)
 {
     if ( !is_attribute_identifier_token(tn) )
 	return;
     size_t declarator_align = 0;
-    tn = pgm.consume_gnu_attributes(tn, NULL, NULL, &declarator_align);
+    std::set<std::string> attrs;
+    tn = pgm.consume_gnu_attributes(tn, &attrs, NULL, &declarator_align);
     if ( !tn )
 	pgm.Throw << "Unexpected end after __attribute__ in struct" << flush;
     if ( !bitfield )
 	agg->apply_member_alignment(declarator_align);
+    if ( attribute_set_names(attrs, GnuAttributeKind::Packed) )
+	agg->apply_member_packing();
 }
 
 static bool is_contextual_identifier_token(TokenBase *tb);
@@ -47049,12 +47062,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// before and after the type (`AL int x;`, `const AL int x;`,
 	// `int AL x;`), align every declarator on the line.
 	size_t line_align = 0;
+	bool line_packed = false;	// a `packed` group among them packs each
 	for (;;)
 	{
 	    // cv-qualifiers through the ONE owner — which also covers
 	    // `restrict`, where this copy stopped at const/volatile — and the
 	    // attribute groups interleaved with them.
-	    member_cv |= pgm.consume_cv_and_object_attributes(line_align);
+	    member_cv |= pgm.consume_cv_and_object_attributes(line_align,
+							      &line_packed);
 	    tn = pgm.peekToken();
 	    // `mutable` is a storage-class-specifier, not a cv-qualifier
 	    // ([dcl.stc]/9), so it stays here rather than in the owner: a
@@ -47151,7 +47166,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // u;`), and its failure cascaded into 113 "no member named
 		    // 'c2m_ctx'" errors from the members declared after it.
 		    size_t inner_align = 0;
-		    unsigned inner_cv = pgm.consume_cv_and_object_attributes(inner_align);
+		    bool inner_packed = false;
+		    unsigned inner_cv = pgm.consume_cv_and_object_attributes(inner_align,
+									     &inner_packed);
 		    if ( !(tn = pgm.peekToken()) )
 			pgm.Throw(loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		    TokenDataType *inner_type = NULL;
@@ -47256,7 +47273,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // between the type and the declarator. Same owner, same rule
 		    // as the leading run (the class-body twin below has always
 		    // had both).
-		    inner_cv |= pgm.consume_cv_and_object_attributes(inner_align);
+		    inner_cv |= pgm.consume_cv_and_object_attributes(inner_align,
+								     &inner_packed);
 
 		    DataDef *inner_base_dd = &inner_type->definition;
 		    DataDef *inner_member_dd = inner_base_dd;
@@ -47314,6 +47332,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				inner_type->spelling(), inner_base_dd, tn);
 			inner->apply_member_alignment(inner_align);
 		    }
+		    if ( inner_packed )
+			inner->apply_member_packing();
 		    tn = pgm.nextToken();
 		    apply_member_trailing_attributes(pgm, tn, inner, inner_bitfield);
 		    // Handle comma-separated members: `int f1, f2, f3;`
@@ -47349,6 +47369,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    inner_type->spelling(), inner_base_dd, tn);
 			    inner->apply_member_alignment(inner_align);
 			}
+			if ( inner_packed )
+			    inner->apply_member_packing();
 			tn = pgm.nextToken();
 			apply_member_trailing_attributes(pgm, tn, inner, comma_bitfield);
 		    }
@@ -47519,7 +47541,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    member_typedef_alias = mtype->spelling();
 		// the cv and attribute groups between the type and the pointer
 		// stars (`char const *p;`, `int AL a;`) are the line's too
-		member_cv |= pgm.consume_cv_and_object_attributes(line_align);
+		member_cv |= pgm.consume_cv_and_object_attributes(line_align,
+								  &line_packed);
 		bool done_members = false;
 		while ( !done_members )
 		{
@@ -47596,6 +47619,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    << " (size " << member_dd->size << " x " << member_count
 			    << ", total " << dds->size << ')' << endl);
 		    }
+		    if ( line_packed )
+			dds->apply_member_packing();
 
 		    tn = pgm.nextToken();
 		    if ( !tn )

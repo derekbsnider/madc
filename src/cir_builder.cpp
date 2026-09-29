@@ -1078,6 +1078,8 @@ static bool clone_local_aggregate_members(
 			src->member_explicit_align.find(i);
 		if (ai != src->member_explicit_align.end())
 			dst->apply_member_alignment(ai->second);
+		if (src->member_packed.count(i))
+			dst->apply_member_packing();
 		std::map<std::string, TokenBase *>::const_iterator dii =
 			src->member_default_inits.find(m.first);
 		if (dii != src->member_default_inits.end())
@@ -11089,12 +11091,28 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 	// member here too (c2mir derives the aggregate's alignment from its
 	// strictest member): the tag attribute over-aligns the type without moving
 	// any member offset, matching GCC.
+	// A PACKED member (`int x __attribute__((packed, aligned(2)));`) carries
+	// both as attributes instead: _Alignas may not lower an alignment below
+	// the type's (C11 6.7.5p4; c2mir diagnoses it), and a packed member's is
+	// 1 or its own aligned(N). c2mir takes the settled offsets either way;
+	// --emit=c11 renders the attributes for gcc/clang.
+	node_t mattrs = ignore();
 	if (owner && member_index < owner->members.size()) {
 		size_t midx = member_index;
 		size_t want_align = 0;
 		auto ai = owner->member_explicit_align.find(midx);
 		if (ai != owner->member_explicit_align.end())
 			want_align = ai->second;
+		if (owner->member_packed.count(midx)) {
+			mattrs = list();
+			append(mattrs, node2(N_ATTR, id("packed"), list()));
+			if (want_align > 1) {
+				node_t aargs = list();
+				append(aargs, integer((int64_t)want_align, m.origin));
+				append(mattrs, node2(N_ATTR, id("aligned"), aargs));
+			}
+			want_align = 0;
+		}
 		if (midx == 0 && owner->tag_explicit_align > want_align)
 			want_align = owner->tag_explicit_align;
 		if (want_align > 1) {
@@ -11140,7 +11158,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 	node_t member = simple(N_MEMBER, m.origin);
 	append(member, mshare);
 	append(member, mdecl);
-	append(member, ignore());	// attrs
+	append(member, mattrs);
 	// Bit-field width (c2mir N_MEMBER slot 3 = const_expr, or N_IGNORE for a
 	// plain member). The member's `:width` was parsed and recorded on the
 	// owning struct; carry it into the emitted node_t so c2mir lays the field
