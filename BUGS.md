@@ -795,13 +795,12 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: five hand-rolled angle counters
+### B58. `<`: four hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
 - Only `expand_integer_pack_template_args` keeps a separate paren level.
-  `evaluate_requires_expression_constant` folds `(`, `[` and `<` into one
-  counter. In the rest a `>` inside `( )` closes the list.
+  In the rest a `>` inside `( )` closes the list.
 - `>>` differs per copy: split into two closes, `-= 2` below zero, or not
   handled at all. None skips `operator<`.
 - Done: `template_id_suffix_end`, the template-id extent that other code
@@ -819,10 +818,13 @@ scans), `peek_after_balanced_template_id_from`,
   argument (moved: see above). Each other one moves onto
   `scan_template_argument_list`.
 - Sites: `expand_integer_pack_template_args` 6542,
-  `evaluate_requires_expression_constant` 38159,
   `instantiate_fn_template_binding` 63772,
   `resolve_decltype_call_return` 67525,
   `datatype_statement_starts_qualified_expr` 76338.
+- Done: `evaluate_requires_expression_constant`'s parameter list is read
+  on the stream's `DelimDepth` and split by `parameter_list_ranges`
+  (tests/testrequiresparamsplit: `(A<(1 < 2)> a, T b)` read as one
+  parameter, and the concept was silently unsatisfied).
 - Done: `member_ctor_param_count` counts `parameter_list_ranges`'
   parameters, the one split `extract_free_signature` and
   `skipped_template_function_signature_spellings` each wrote out, now
@@ -851,7 +853,7 @@ scans), `peek_after_balanced_template_id_from`,
   (tests/testdefaultedctortemplate: a defaulted constructor template's
   later parameters were lost at a parenthesized `>`).
 
-### B59. `(`: forty-one hand-rolled paren counters
+### B59. `(`: forty hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -873,7 +875,6 @@ scans), `peek_after_balanced_template_id_from`,
   `consume_class_static_assert_declaration` 17962;
   `fold_if_constexpr_condition` 19304; `peek_param_list_spelling` 21664;
   `next_parenthesized_type_is_compound_literal` 32719;
-  `evaluate_requires_expression_constant` 38143;
   `struct_body_needs_class_parser_from` 45506; `TokenSTRUCT::parse` 46285,
   46840, 47343; `consume_anonymous_aggregate_open` 47693;
   `skipped_friend_operator_definition` 49093;
@@ -889,12 +890,13 @@ scans), `peek_after_balanced_template_id_from`,
 - No failing reducer yet. Each migration is behaviour-preserving for
   parens, and the suite is its oracle.
 
-### B60. `[`: eight hand-rolled square-bracket counters
+### B60. `[`: seven hand-rolled square-bracket counters
 
 - Sites: `instantiate_template_use` 11460; `try_parse_vla_row_sizeof`
   17587; `bracket_dim_uses_runtime_value` 19680;
   `bracket_dim_has_constant_fold_query` 19718;
-  `evaluate_requires_expression_constant` 38158, 38325;
+  `evaluate_requires_expression_constant` 38325 (the requirement
+  collector);
   `struct_body_needs_class_parser_from` 45480; `parseFunction` 71407.
 - The two `bracket_dim_*` scanners read an array bound. A bound that
   subscripts (`int a[b[1]]`) nests `[` inside `[`. Measure them against

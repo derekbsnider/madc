@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### A requires-expression's parameters are split at their own commas
+
+`requires (A<(1 < 2)> a, T b) { a.x; b.y; }` declares two parameters, as in
+g++. Before, madc counted `(`, `[` and `<` together, never came back to
+zero at the comma, and read a single parameter. The concept was then
+silently unsatisfied.
+
 ### A member template can call through its own function-pointer parameter or local
 
 `template<class T> int h(void (*f)(int, int), T t) { f(1, 2); ... }` as a

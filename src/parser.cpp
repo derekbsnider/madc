@@ -6360,6 +6360,41 @@ static std::vector<std::vector<TokenBase *> > template_argument_runs(
     return runs;
 }
 
+// A stored parameter list's top-level parameters, [begin, end) each, from
+// the `(` at tokens[lparen]. The scan starts INSIDE the list on DelimDepth,
+// so the list's own level is its top: a `<` there opens (`vector<int, int>`
+// is one parameter), `( )` nests (`void (*)(int, int)` is one), and so do
+// `[ ]`. The last range ends at the list's `)`, whose index is returned;
+// an unclosed list returns tokens.size() and drops its unfinished tail.
+// Every range is reported, empty ones too: the callers decide what an empty
+// or `void` parameter means.
+static size_t parameter_list_ranges(const std::vector<TokenBase *> &tokens,
+		size_t lparen, std::vector<std::pair<size_t, size_t> > &out)
+{
+    out.clear();
+    size_t pstart = lparen + 1;
+    DelimDepth d;
+    for ( size_t i = lparen + 1; i < tokens.size(); )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t ) { ++i; continue; }
+	bool outside = !d.paren && !d.angle && !d.square;
+	if ( outside && t->id() == TokenID::tkClBrk )
+	{
+	    out.push_back(std::make_pair(pstart, i));
+	    return i;
+	}
+	if ( outside && t->id() == TokenID::tkComma )
+	{
+	    out.push_back(std::make_pair(pstart, i));
+	    pstart = i + 1;
+	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+    }
+    return tokens.size();
+}
+
 // An out-of-line definition's class-head arguments (`Z<T*, (3 > 2)>` before
 // `::`) in the shape the attach matches: one run per argument, and an empty
 // `<>` as one empty run. Borrowed pointers; the caller clones.
@@ -38310,37 +38345,29 @@ int64_t Program::evaluate_requires_expression_constant()
 
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
     {
-	nextToken(); // '('
+	// The parameter list `( ... )`, read on the stream's DelimDepth up to
+	// the `)` that closes it.
 	std::vector<TokenBase *> plist;
-	int d = 1;
-	while ( peekToken() )
+	DelimDepth d(this);
+	while ( TokenBase *t = nextToken() )
 	{
-	    TokenID id = (TokenID)peekToken()->id();
-	    if ( id == TokenID::tkOpBrk ) ++d;
-	    else if ( id == TokenID::tkClBrk )
-	    { if ( --d == 0 ) { nextToken(); break; } }
-	    plist.push_back(nextToken());
+	    plist.push_back(t);
+	    std::vector<TokenBase *> optail;
+	    delimStepStream(t, d, &optail);
+	    plist.insert(plist.end(), optail.begin(), optail.end());
+	    if ( d.top() )
+		break;
 	}
-	// Split the param-list by top-level commas, build each declval subst.
+	// Its parameters are parameter_list_ranges' (`A<(1 < 2)> a, T b` is
+	// two); build each declval subst.
 	std::vector<std::vector<TokenBase *> > params;
 	{
-	    std::vector<TokenBase *> cur;
-	    int cd = 0;
-	    for ( TokenBase *t : plist )
-	    {
-		TokenID id = (TokenID)t->id();
-		if ( cd == 0 && id == TokenID::tkComma )
-		{ params.push_back(cur); cur.clear(); continue; }
-		if ( id == TokenID::tkOpBrk || id == TokenID::tkOpSqr
-		  || id == TokenID::tkLT )
-		    ++cd;
-		else if ( id == TokenID::tkClBrk || id == TokenID::tkClSqr
-		       || id == TokenID::tkGT )
-		{ if ( cd > 0 ) --cd; }
-		cur.push_back(t);
-	    }
-	    if ( !cur.empty() )
-		params.push_back(cur);
+	    std::vector<std::pair<size_t, size_t> > ranges;
+	    parameter_list_ranges(plist, 0, ranges);
+	    for ( const std::pair<size_t, size_t> &r : ranges )
+		if ( r.first < r.second )
+		    params.push_back(std::vector<TokenBase *>(
+			plist.begin() + r.first, plist.begin() + r.second));
 	}
 	for ( std::vector<TokenBase *> &p : params )
 	{
@@ -59975,41 +60002,6 @@ static std::string serialize_token_range(const std::vector<TokenBase *> &toks,
 // type (tokens [ret_begin, declarator_start), minus leading specifiers) and the
 // top-level parameter type spellings (from lparen, parameter NAMES dropped),
 // into `out`. Returns false if the return type or parameter list is empty.
-// A stored parameter list's top-level parameters, [begin, end) each, from
-// the `(` at tokens[lparen]. The scan starts INSIDE the list on DelimDepth,
-// so the list's own level is its top: a `<` there opens (`vector<int, int>`
-// is one parameter), `( )` nests (`void (*)(int, int)` is one), and so do
-// `[ ]`. The last range ends at the list's `)`, whose index is returned;
-// an unclosed list returns tokens.size() and drops its unfinished tail.
-// Every range is reported, empty ones too: the callers decide what an empty
-// or `void` parameter means.
-static size_t parameter_list_ranges(const std::vector<TokenBase *> &tokens,
-		size_t lparen, std::vector<std::pair<size_t, size_t> > &out)
-{
-    out.clear();
-    size_t pstart = lparen + 1;
-    DelimDepth d;
-    for ( size_t i = lparen + 1; i < tokens.size(); )
-    {
-	TokenBase *t = tokens[i];
-	if ( !t ) { ++i; continue; }
-	bool outside = !d.paren && !d.angle && !d.square;
-	if ( outside && t->id() == TokenID::tkClBrk )
-	{
-	    out.push_back(std::make_pair(pstart, i));
-	    return i;
-	}
-	if ( outside && t->id() == TokenID::tkComma )
-	{
-	    out.push_back(std::make_pair(pstart, i));
-	    pstart = i + 1;
-	}
-	size_t n = delim_scan_step(tokens, i, d);
-	i += n ? n : 1;
-    }
-    return tokens.size();
-}
-
 static bool extract_free_signature(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams, const std::string &name,
