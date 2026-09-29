@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A class-type member's virtual bases are initialized in a mem-initializer
+
+A mem-initializer of a class-type member now properly constructs the member's
+virtual bases. A class-type member is a complete object (Itanium C1 construction),
+so its virtual bases must be initialized before its own constructor. Before, the
+code treated members like bases, calling only the base-construction path (C2
+construction), which skipped the member's own virtual bases. This caused incorrect
+field values when a class-type member had virtual bases.
+
 ### An aggregate's trailing ctor-less class member is value-initialized
 
 `Out{ 2 }` where `Out` has a trailing member of ctor-less class type `In` now

@@ -18558,12 +18558,26 @@ bool CirBuilder::class_subobject_mem_init(const std::function<node_t()> &mint_ad
 		flush_pending_stmts(out);
 		if (s) out.push_back(s);
 	};
+	// The ctor lane. A base subobject is constructed C2-flavor (its
+	// virtual bases are the complete object's); a member is a COMPLETE
+	// object ([intro.object]/2) whose virtual bases are its own — the
+	// complete-object assembler (Itanium C1).
+	auto construct = [&](const std::vector<TokenBase *> &a) {
+		if (base_subobject) {
+			emit(class_ctor_call_addr(mint_addr(), cdd, a, origin,
+						  vbase_forward));
+			return;
+		}
+		std::vector<node_t> cs;
+		complete_object_construct_stmts(mint_addr, cdd, a, origin, cs);
+		flush_pending_stmts(out);
+		out.insert(out.end(), cs.begin(), cs.end());
+	};
 	if (args.empty()) {
 		if (class_value_init_zeroes(cdd))
 			zero_init_subobject_stmts(mint_addr, cdd, base_subobject,
 						  out, origin);
-		emit(class_ctor_call_addr(mint_addr(), cdd, args, origin,
-					  vbase_forward));
+		construct(args);
 		return out.size() > before;
 	}
 	// A mem-initializer holds its FULL list — the aggregate owner's domain
@@ -18583,7 +18597,7 @@ bool CirBuilder::class_subobject_mem_init(const std::function<node_t()> &mint_ad
 			emit(agg);
 			return true;
 		}
-	emit(class_ctor_call_addr(mint_addr(), cdd, args, origin, vbase_forward));
+	construct(args);
 	return out.size() > before;
 }
 

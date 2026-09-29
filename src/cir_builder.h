@@ -1956,7 +1956,9 @@ public:
 	// list value-initializes ([dcl.init]/8: zero-fill first unless the class
 	// has a user-provided default ctor, then default-initialize); a ctor-less
 	// class's list aggregate-initializes (aggregate_init_claim); every other
-	// shape is the ctor lane (class_ctor_call_addr). A `list_flattened`
+	// shape is the ctor lane — class_ctor_call_addr for a base subobject,
+	// complete_object_construct_stmts (its virtual bases too) for a member,
+	// which is a complete object. A `list_flattened`
 	// list (CtorInitializer::nested_list_flattened) lost its nesting, so a
 	// ctor-less class refuses it LOUDLY rather than guess (BUGS.md B81).
 	// Statements append to `out`; TRUE when any was emitted.
