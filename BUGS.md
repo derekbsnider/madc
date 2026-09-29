@@ -800,16 +800,20 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: two mixed angle-and-paren counters
+### B58. `<`: one backward angle walk the gate could not see
 
 - No hand-rolled angle COUNTER is left (the last, in
   `resolve_decltype_call_return`, moved 2026-09-29). Each one asked no name
   question ([temp.names]/3, `DelimDepth::lt_reads_as_less_than`), closed a
   list at a `>` inside `( )`, and handled `>>` its own way.
-- What remains: two counters in `instantiate_template_use` fold `<` and
-  `(` into ONE depth (the empty parameter-pack elision's skip, ~11475, and
-  the single-element pack pattern's `...` search, ~11583). They were filed
-  under B59 as paren counters; they are angle counters too.
+- What remains: `pack_pattern_start` (~22465), a backward walk counting
+  `>` up and `<` down. The gate's token marker missed it because its
+  decrement follows a `return j + 1;` in the same arm (the marker's window
+  stopped at the `;`); widening the marker is the next gate commit.
+- Done: the two counters in `instantiate_template_use` that folded `<` and
+  `(` into ONE depth (the empty parameter-pack elision's skip, and the
+  single-element pack pattern's `...` search; filed under B59 as
+  11351/11459/11460) are `DelimDepth`'s, stopping at its top level.
 - Done: the class-type pattern normalizer splits on
   `scan_template_argument_list` + `template_argument_runs` (the
   synthesized `>` of a nested `>>` is now freed once normalized; the old
@@ -889,7 +893,7 @@ scans), `peek_after_balanced_template_id_from`,
   (tests/testdefaultedctortemplate: a defaulted constructor template's
   later parameters were lost at a parenthesized `>`).
 
-### B59. `(`: thirty-seven hand-rolled paren counters
+### B59. `(`: thirty-five hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -905,7 +909,6 @@ scans), `peek_after_balanced_template_id_from`,
   1963, 2014, 2052, 2058, 2076, 2078, 2084, 2101 (nine loops in one
   function); `parse_gnu_vector_size_attribute` 2182;
   `consume_typedef_gnu_attributes` 2222;
-  `instantiate_template_use` 11351, 11459;
   `consume_deferred_static_assert_statement` 17878;
   `consume_class_static_assert_declaration` 17962;
   `fold_if_constexpr_condition` 19304; `peek_param_list_spelling` 21664;
@@ -925,10 +928,9 @@ scans), `peek_after_balanced_template_id_from`,
 - No failing reducer yet. Each migration is behaviour-preserving for
   parens, and the suite is its oracle.
 
-### B60. `[`: seven hand-rolled square-bracket counters
+### B60. `[`: six hand-rolled square-bracket counters
 
-- Sites: `instantiate_template_use` 11460; `try_parse_vla_row_sizeof`
-  17587; `bracket_dim_uses_runtime_value` 19680;
+- Sites: `try_parse_vla_row_sizeof` 17587; `bracket_dim_uses_runtime_value` 19680;
   `bracket_dim_has_constant_fold_query` 19718;
   `evaluate_requires_expression_constant` 38325 (the requirement
   collector);

@@ -11467,23 +11467,26 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 			bool popped_comma = false;
 			if ( !inj.empty() && inj.back()->id() == TokenID::tkComma )
 			{ delete inj.back(); inj.pop_back(); popped_comma = true; }
+			// Skip the rest of the elided declaration: up to the next
+			// top-level `,` (consumed when no comma was popped before),
+			// the parameter list's `)`, or a `;`/`}`. Depth is DelimDepth's
+			// (BUGS.md B58/B59: the old counter folded `(` and `<` into
+			// one level and tracked no `[` or `{`).
 			size_t pk = pj + 3;
-			int pdepth = 0;
+			DelimDepth pd;
 			while ( pk < td.body.size() && td.body[pk] )
 			{
 			    TokenID kid = td.body[pk]->id();
-			    if ( kid == TokenID::tkOpBrk || kid == TokenID::tkLT )
-				++pdepth;
-			    else if ( kid == TokenID::tkClBrk )
-			    { if ( pdepth == 0 ) break; --pdepth; }
-			    else if ( kid == TokenID::tkGT && pdepth > 0 )
-				--pdepth;
-			    else if ( pdepth == 0 && kid == TokenID::tkComma )
-			    { if ( !popped_comma ) ++pk; break; }
-			    else if ( pdepth == 0
-			      && (kid == TokenID::tkSemi || kid == TokenID::tkClBrc) )
-				break;
-			    ++pk;
+			    if ( pd.top() )
+			    {
+				if ( kid == TokenID::tkClBrk
+				  || kid == TokenID::tkSemi
+				  || kid == TokenID::tkClBrc )
+				    break;
+				if ( kid == TokenID::tkComma )
+				{ if ( !popped_comma ) ++pk; break; }
+			    }
+			    pk += delim_scan_step(td.body, pk, pd);
 			}
 			bi = pk - 1;   // loop ++bi resumes after the elided param
 			continue;
@@ -11576,33 +11579,31 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		    // pack's own nesting depth, before any `,`/`)`/`;`/`{`) and skip
 		    // it. Single-element only — a multi-arg pack pattern needs the
 		    // pattern REPEATED per element (not yet supported; left to error).
-		    int depth = 0;
-		    for ( size_t j = bi + 1; j + 2 < td.body.size(); ++j )
+		    // Depth is DelimDepth's (BUGS.md B58/B59): outside every group
+		    // opened after the pack name, a close ends the ENCLOSING group
+		    // and a `,` `;` `{` ends the pattern — no `...` there.
+		    DelimDepth pd;
+		    for ( size_t j = bi + 1; j + 2 < td.body.size(); )
 		    {
 			TokenID jid = td.body[j]->id();
-			if ( jid == TokenID::tkLT || jid == TokenID::tkOpBrk
-			  || jid == TokenID::tkOpSqr )
-			    ++depth;
-			else if ( jid == TokenID::tkGT || jid == TokenID::tkClBrk
-			  || jid == TokenID::tkClSqr )
-			    --depth;
-			else if ( jid == TokenID::tkBSR )
-			    depth -= 2;
-			else if ( depth <= 0 && jid == TokenID::tkDot
-			  && td.body[j+1]->id() == TokenID::tkDot
-			  && td.body[j+2]->id() == TokenID::tkDot )
+			if ( pd.top() )
 			{
-			    pack_pattern_skip_dots.insert(j);
-			    pack_pattern_skip_dots.insert(j + 1);
-			    pack_pattern_skip_dots.insert(j + 2);
-			    break;
+			    if ( jid == TokenID::tkDot
+			      && td.body[j+1]->id() == TokenID::tkDot
+			      && td.body[j+2]->id() == TokenID::tkDot )
+			    {
+				pack_pattern_skip_dots.insert(j);
+				pack_pattern_skip_dots.insert(j + 1);
+				pack_pattern_skip_dots.insert(j + 2);
+				break;
+			    }
+			    if ( jid == TokenID::tkComma || jid == TokenID::tkSemi
+			      || jid == TokenID::tkOpBrc || jid == TokenID::tkClBrk
+			      || jid == TokenID::tkGT || jid == TokenID::tkBSR
+			      || jid == TokenID::tkClSqr )
+				break;   // pattern boundary, no `...` found
 			}
-			else if ( depth <= 0
-			  && (jid == TokenID::tkComma || jid == TokenID::tkClBrk
-			   || jid == TokenID::tkSemi || jid == TokenID::tkOpBrc) )
-			    break;   // pattern boundary, no `...` found
-			if ( depth < 0 )
-			    break;
+			j += delim_scan_step(td.body, j, pd);
 		    }
 		}
 		continue;
