@@ -54823,9 +54823,12 @@ DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 	    // pointee's) is captured here, at the declaration point (the VM type's
 	    // size is fixed there); a declarator's OWN runtime dims are the
 	    // declaring arm's VLA logic, and a parameter's are captured at
-	    // function entry.
+	    // function entry. A TYPEDEF's dims, its own and a nested group's, are
+	    // captured where the typedef is reached (C11 6.7.8p3): a later change
+	    // to `n` changes neither `sizeof` of the alias nor an object of it.
 	    parse_array_dimensions(dims, dim_exprs, pk, "array declarator",
-				   mode == DeclaratorMode::Declaration && out.saw_parens,
+				   (mode == DeclaratorMode::Declaration && out.saw_parens)
+				   || mode == DeclaratorMode::Typedef,
 				   runtime_names,
 				   mode == DeclaratorMode::Parameter);
 	    if ( depth == 0 && out.array_dims.empty() )

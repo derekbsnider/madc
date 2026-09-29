@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A variable-length array typedef's size is fixed where the typedef is reached
+
+After `typedef int c[n + 2];` with `n == 3`, assigning `n = 10` no longer
+changes the type: `sizeof(c)` is 20 and `c x;` declares 20 bytes, as in gcc
+and clang (C11 6.7.8p3). Before, madc evaluated the size expression again
+at every use, so both were 48. A size expression with side effects runs
+once, where the typedef is; that holds for each typedef in a list and for a
+pointer-to-array typedef (`typedef int (*p)[n];`), and a typedef inside a
+loop is evaluated again on each iteration.
+
 ### `sizeof` and `alignof` of a member template's parameter measure the argument
 
 In a member function template, `alignof(V)` and `__alignof__(V)` measure
