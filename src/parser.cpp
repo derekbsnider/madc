@@ -23329,9 +23329,17 @@ void DataDefCLASS::compute_layout()
     //    tests add only own members) and `max_align` = strongest own alignment,
     //    raised by the tag's aligned(N). The block begins at the members' own
     //    alignment (own_member_alignment): the tag's moves no member.
+    //    Itanium places each own member at the next offset ITS alignment
+    //    allows after the vptr and bases' data. The block laid out from 0
+    //    lands the same only when `cur` is a multiple of the block's
+    //    alignment; otherwise the own members replay from `cur` (a vptr, a
+    //    `char`, a `long double`: the char at 8, not 16; a non-POD base's
+    //    tail padding holds the next members).
     if ( max_align > maxalign ) maxalign = max_align;
     size_t own_align = own_member_alignment();
-    own_block_off = mi_align_up(cur, own_align ? own_align : 1);
+    if ( own_align > 1 && cur % own_align != 0 )
+	relayout(cur);
+    own_block_off = cur;
     cur = own_block_off + size;   // size = own packed size on entry
 
     // 4. nvsize (Itanium's "base size") excludes tail padding. A derived

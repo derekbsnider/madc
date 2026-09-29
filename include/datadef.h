@@ -1447,26 +1447,36 @@ public:
     // member as each is added; gcc lays a record out once, at its end
     // (finish_struct). Only the own members' layout comes back — offsets,
     // bit-field placement, size, alignment — so a class body, whose size is
-    // its own block's until compute_layout, replays the same way.
-    void relayout()
+    // its own block's until compute_layout, replays the same way. `start` is
+    // where the own members begin (a class's data after its vptr and bases,
+    // DataDefCLASS::compute_layout): they are placed from there and recorded
+    // relative to it.
+    void relayout(size_t start = 0)
     {
 	DataDefSTRUCT scratch(name, 0);
+	scratch.size = start;
 	std::vector<size_t> own;
 	replay_own_members(scratch, own);
 	for ( size_t k = 0; k < own.size(); ++k )
 	{
-	    member_offsets[own[k]] = scratch.member_offsets[k];
+	    member_offsets[own[k]] = scratch.member_offsets[k] - start;
 	    member_bitfields[own[k]] = scratch.member_bitfields[k];
+	    if ( member_bitfields[own[k]].is_bitfield )
+		member_bitfields[own[k]].storage_offset -= start;
 	}
 	anonymous_aggregates = scratch.anonymous_aggregates;
 	for ( size_t j = 0; j < anonymous_aggregates.size(); ++j )
+	{
 	    anonymous_aggregates[j].first_member = own[anonymous_aggregates[j].first_member];
-	size = scratch.size;
+	    anonymous_aggregates[j].offset -= start;
+	}
+	size = scratch.size - start;
 	max_align = scratch.max_align > tag_explicit_align
 	    ? scratch.max_align : tag_explicit_align;
 	bitfield_active = scratch.bitfield_active;
 	previous_was_nonzero_bitfield = scratch.previous_was_nonzero_bitfield;
-	bitfield_unit_offset = scratch.bitfield_unit_offset;
+	bitfield_unit_offset = scratch.bitfield_unit_offset >= start
+	    ? scratch.bitfield_unit_offset - start : 0;
 	bitfield_unit_size = scratch.bitfield_unit_size;
 	bitfield_next_bit = scratch.bitfield_next_bit;
     }

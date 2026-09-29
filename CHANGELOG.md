@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A class's own members follow its vptr and bases one by one
+
+A class's members are placed after its vptr and bases each at the next
+offset its own alignment allows, as in g++ and clang++: `struct V { virtual
+int f(); char c; long double ld; }` has `c` at 8 and size 32, where madc
+placed `c` at 16 (size 48), and a class derived from a base with a
+constructor fills that base's tail padding (`struct NB { int a; char b;
+NB(); }; struct DN : NB { char c; int x; }` is 12 bytes with `c` at 5,
+not 16 with `c` at 8).
+
 ### A C++ class lays out its own and its members' attributes
 
 A class with a member function, a vptr or a base takes `packed` and
