@@ -70,18 +70,58 @@ int main()
   `apply_declaration_storage`, `push_declarator_list_tail`) and `Variable`.
   Owner ruling pending: a focused session for that change.
 
-### B70. An in-class `static constexpr` array with an unsized bound measures 8
+### B70. A class-scope static with an in-class initializer has no storage unless madc folds it to an integer
 
 ```cpp
 #include <cstdio>
-struct Y { static constexpr unsigned long s[] = { 1, 2, 3 }; static constexpr unsigned long n = sizeof(s) / sizeof(s[0]); };
-int main() { std::printf("py: %lu %zu\n", Y::n, sizeof(Y::s)); return 0; }
+struct V { int a; int b; };
+struct Y
+{
+	static constexpr unsigned long s[] = { 1, 2, 3 };
+	static constexpr unsigned long n = sizeof(s) / sizeof(s[0]);
+	static constexpr double d = 1.5;
+	static constexpr const char *p = "hi";
+	static constexpr V v = { 3, 4 };
+	static inline double x = 2.5;
+};
+template<class T> struct A { static constexpr T v = T(3.5); };
+int main()
+{
+	std::printf("py: %lu %zu %g %s %g %g %d\n", Y::n, sizeof(Y::s), Y::d, Y::p, Y::x, A<double>::v, A<int>::v);
+	return 0;
+}
 ```
 
-- g++ = clang++: `py: 3 24`. madc: `py: 0 8`.
-- Found 2026-09-29 during B62. Not template-specific.
-- Where: not traced yet. `sizeof(Y::s)` reads 8, a pointer's size, so the
-  bound the initializer gives is not on the member's type.
+- g++ = clang++: `py: 3 24 1.5 hi 2.5 3.5 3`. madc:
+  `py: 0 8 6.89921e-310 (null) 6.95332e-310 6.21027e-310 0`. Every
+  non-integral member reads garbage or `(null)`, and `A<int>::v` reads 0. `Y::v.b` is refused, and `Y::s[i]` desyncs the parse
+  ("Expecting brace after function declaration").
+- Found 2026-09-29 during B62, filed first as the unsized-array `sizeof`
+  alone. Reducers: `tmp/b62/b70.cpp`, `b70a`–`b70f`.
+- Not affected: out-of-class definitions (`const double Y::d = 1.5;`, the
+  `const int Y::t[4]` array, a struct, a `char *`). All of them match g++
+  (`tmp/b62/b70e.cpp`). An in-class integral constant that
+  `capture_constant_initializer_value` folds (`static const int n = 5;`)
+  also matches g++.
+- Layer: the class body's static data member arm (TokenCLASS::parse,
+  `has_inclass_init`) creates storage only for a member with NO in-class
+  initializer. It folds an integral initializer and structurally skips
+  everything else. `resolve_class_static_member_value` then finds neither
+  storage nor a constant and returns `TokenInt(0)` typed as the member.
+  That fallback is where every read goes wrong silently.
+- The missing feature is C++17 inline variables at class scope. A
+  `constexpr` or `inline` static data member is a definition
+  ([dcl.inline]/1, [class.static.data]/4). It needs storage with its
+  initializer, bound as linkonce (`vfLINKONCE`, which namespace-scope
+  `inline` variables already use through `apply_declaration_storage`), and
+  an unsized array bound deduced from its initializer.
+- Open design points for the focused session:
+  - Where the initializer is parsed: at the declaration, or on first use
+    as g++ emits an inline variable only when it is odr-used.
+  - The class-template path: the member initializer must be substituted per
+    specialization.
+  - The system-header blast radius: libstdc++ and libc++ declare many
+    in-class-initialized statics that madc skips today.
 
 ### B63. A member's own `packed` is ignored
 
