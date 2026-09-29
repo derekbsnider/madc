@@ -800,7 +800,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: two hand-rolled angle counters
+### B58. `<`: one hand-rolled angle counter
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -822,8 +822,13 @@ scans), `peek_after_balanced_template_id_from`,
   on `angle == 1` without the paren test, so a comma inside `( )` splits an
   argument (moved: see above). Each other one moves onto
   `scan_template_argument_list`.
-- Sites: `expand_integer_pack_template_args` 6542,
-  `resolve_decltype_call_return` 67525.
+- Site: `resolve_decltype_call_return` 67525.
+- Done: `expand_integer_pack_template_args` bounds its region on
+  `DelimDepth` (`enter_angle()`, for a list whose `<` the caller already
+  consumed) and matches `__integer_pack(`'s `)` by `balanced_group_close`
+  (B59's two loops there too). No reducer: `std::make_index_sequence` is
+  refused before this code runs (KG Gap `make_index_sequence_not_declared`);
+  the suite is the oracle.
 - Done: `datatype_statement_starts_qualified_expr` skips a component's
   argument list by `scan_template_argument_list`
   (tests/testqualifiedstmtparengt: `S::In<(4 > 1) + 1>::f();` read as a
@@ -866,7 +871,7 @@ scans), `peek_after_balanced_template_id_from`,
   (tests/testdefaultedctortemplate: a defaulted constructor template's
   later parameters were lost at a parenthesized `>`).
 
-### B59. `(`: forty hand-rolled paren counters
+### B59. `(`: thirty-eight hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -882,7 +887,6 @@ scans), `peek_after_balanced_template_id_from`,
   1963, 2014, 2052, 2058, 2076, 2078, 2084, 2101 (nine loops in one
   function); `parse_gnu_vector_size_attribute` 2182;
   `consume_typedef_gnu_attributes` 2222;
-  `expand_integer_pack_template_args` 6538, 6567;
   `instantiate_template_use` 11351, 11459;
   `consume_deferred_static_assert_statement` 17878;
   `consume_class_static_assert_declaration` 17962;

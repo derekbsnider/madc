@@ -4975,6 +4975,13 @@ struct DelimDepth {
 	    return true;
 	return t->id() == TokenID::tkTEMPLATE;
     }
+    // Start INSIDE a template-argument list whose `<` the caller already
+    // consumed from the stream: the state update() leaves after that `<`.
+    void enter_angle()
+    {
+	++angle;
+	angle_paren.push_back(paren);
+    }
     // Pure delimiter bookkeeping for one token (NO operator-id handling — the
     // callers below own that, differing by index vs stream access).
     void update(TokenBase *t)
@@ -6674,25 +6681,22 @@ void Program::consume_trailing_type_arg_qualifiers(std::string &spelling)
 void Program::expand_integer_pack_template_args()
 {
     // Bound the rewrite to THIS template-id's argument region: scan to the
-    // angle-depth-0 close so an __integer_pack belonging to an outer/sibling
-    // construct is never touched. `<` is already consumed, so depth starts at 1.
-    // Track paren depth so a `<`/`>` inside `__integer_pack(...)` can't skew it.
+    // list's close so an __integer_pack belonging to an outer/sibling
+    // construct is never touched. `<` is already consumed, so the scan starts
+    // inside the list; DelimDepth keeps a `<`/`>` inside `( )` from moving it.
     size_t end = tokens.size();
     {
-	int adepth = 1, pdepth = 0;
-	for ( size_t i = 0; i < tokens.size(); ++i )
+	DelimDepth d(this);
+	d.enter_angle();
+	for ( size_t i = 0; i < tokens.size(); )
 	{
-	    TokenBase *t = tokens[i];
-	    if ( !t ) continue;
-	    TokenID id = t->id();
-	    if ( id == TokenID::tkOpBrk ) ++pdepth;
-	    else if ( id == TokenID::tkClBrk ) { if ( pdepth > 0 ) --pdepth; }
-	    else if ( pdepth == 0 )
+	    size_t n = delim_scan_step(tokens, i, d);
+	    if ( !d.angle )
 	    {
-		if ( id == TokenID::tkLT ) ++adepth;
-		else if ( id == TokenID::tkGT ) { if ( --adepth == 0 ) { end = i; break; } }
-		else if ( id == TokenID::tkBSR ) { adepth -= 2; if ( adepth <= 0 ) { end = i; break; } }
+		end = i;
+		break;
 	    }
+	    i += n ? n : 1;
 	}
     }
 
@@ -6708,19 +6712,11 @@ void Program::expand_integer_pack_template_args()
 	  && tokens[j+1]->id() == TokenID::tkOpBrk )
 	{
 	    // Match the parenthesized argument `( E )`.
-	    int pd = 0;
-	    size_t close_p = j + 1;
-	    for ( ; close_p < end; ++close_p )
-	    {
-		if ( !tokens[close_p] ) continue;
-		TokenID pid = tokens[close_p]->id();
-		if ( pid == TokenID::tkOpBrk ) ++pd;
-		else if ( pid == TokenID::tkClBrk ) { if ( --pd == 0 ) break; }
-	    }
+	    size_t close_p = balanced_group_close(tokens, j + 1);
 	    // Require the trailing `...` (three tkDot) within the region; without
 	    // it this is not a pack expansion and is left untouched.
 	    size_t dots = close_p + 1;
-	    bool has_ellipsis = pd == 0 && close_p < end && dots + 2 < end
+	    bool has_ellipsis = close_p != j + 1 && close_p < end && dots + 2 < end
 		&& tokens[dots]   && tokens[dots]->id()   == TokenID::tkDot
 		&& tokens[dots+1] && tokens[dots+1]->id() == TokenID::tkDot
 		&& tokens[dots+2] && tokens[dots+2]->id() == TokenID::tkDot;
