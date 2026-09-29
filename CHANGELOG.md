@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### `sizeof` of a variadic class template-id measures it before any object exists
+
+`sizeof(P<int>)` and `alignof(P<int>)` for `template<typename... T> struct
+P` are the class's size and alignment the first time they are asked, as in
+g++ and clang++; they were 0 and 1 until an object of the type had been
+declared, and `sizeof(P<char, int>)` stayed 0. Every context that requires
+a complete type now completes such a template-id.
+
 ### `sizeof` and `alignof` of an expression of a member template's parameter type
 
 In a member function template, `sizeof(v)` and `alignof(v)` of a parameter

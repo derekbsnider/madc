@@ -1,0 +1,23 @@
+// sizeof and alignof of a variadic class template-id before any object of
+// it is declared ([expr.sizeof]p1: the operand's type is completed), with
+// one, two and three pack elements, and as a base class. A non-variadic
+// template is the neighbour.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+
+template<typename... T> struct P1 { char k; double m; };
+template<typename T> struct N1 { char k; double m; };
+template<typename... T> struct P2 { char k; int v[sizeof...(T)]; };
+template<typename... T> struct P3 { short s; };
+
+struct D : P3<int> { char e; };
+
+int main()
+{
+	std::printf("va: %zu %zu %zu\n", sizeof(P1<int>), alignof(P1<int>), sizeof(N1<int>));
+	std::printf("vb: %zu %zu\n", sizeof(P1<char, int>), alignof(P2<int, int>));
+	std::printf("vc: %zu %zu\n", sizeof(P2<int, char, long>), sizeof(D));
+	P1<int> p; p.k = 1;
+	std::printf("vd: %zu %zu %d\n", sizeof(p), sizeof(P1<int>), p.k);
+	return 0;
+}

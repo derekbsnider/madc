@@ -70,27 +70,35 @@ int main()
   `apply_declaration_storage`, `push_declarator_list_tail`) and `Variable`.
   Owner ruling pending: a focused session for that change.
 
-### B69. A variadic class template named first in `sizeof` measures 0
+### B75. A variadic class template-id as a by-value member is an empty shell
 
 ```cpp
 #include <cstdio>
+template<typename... T> struct P2 { char k; int v[sizeof...(T)]; };
 template<typename... T> struct P1 { char k; double m; };
-template<typename T> struct N1 { char k; double m; };
+struct H { char c; P2<int, char, long> m; };
+struct E { char c; P1<> e; };
 int main()
 {
-	std::printf("pc: %zu %zu %zu\n", sizeof(P1<int>), alignof(P1<int>), sizeof(N1<int>));
-	P1<int> p; p.k = 1;
-	std::printf("pd: %zu %zu %zu\n", sizeof(p), sizeof(P1<int>), sizeof(P1<char, int>));
+	H h; h.m.v[2] = 7;
+	std::printf("vm: %zu %zu %d %zu\n", sizeof(H), sizeof(E), h.m.v[2], sizeof(P1<>));
 	return 0;
 }
 ```
 
-- g++ = clang++: `pc: 16 8 16` / `pd: 16 16 16`. madc: `pc: 0 1 16` /
-  `pd: 16 16 0`.
-- Found 2026-09-29 during B62; the same output before it.
-- Where: a variadic template-id read as a `sizeof`/`alignof` operand gets
-  the opaque shell, not a real instantiation. Declaring an object of the
-  type first instantiates it, and later queries then answer correctly.
+- Found 2026-09-29 while fixing B69 (the `sizeof` context of the same
+  family). g++ 13 = clang++ 18: `vm: 20 24 7 16`. madc: `Unidentified member
+  'v' in 'P2_int32_t_char_int64_t'`; without the member access `sizeof(H)`
+  is 1 and `sizeof(E)` 1 (SILENT). `std::tuple<int, double>` as a member is
+  right (tuple takes the real-instantiation lane).
+- Where: a variadic template-id is minted as an opaque shell unless a
+  context demands the complete type (`allow_variadic_real_inst`, or
+  `complete_class_type_on_demand` since B69's fix). `member_declarator`,
+  the one data-member reader, never demands it for a by-value class member.
+  Fix shape: demand completion there; a genuinely dependent shell in a class
+  pattern must not pay a doomed replay per member (a concreteness test on
+  the origin's argument runs first). `P1<>`: `complete_shell_class_type`
+  refuses an origin with no argument runs, which an empty pack is.
 
 ### B70. An in-class `static constexpr` array with an unsized bound measures 8
 
@@ -226,6 +234,35 @@ int main() { return (int)alignof(S); }
   one operand and an optional `...`.
 
 ## Refuses valid code
+
+### B74. `std::shared_ptr` does not compile: GCC atomic builtins are undeclared
+
+```cpp
+#include <memory>
+#include <vector>
+#include <cstdio>
+int main()
+{
+	std::shared_ptr<std::vector<int>> q = std::make_shared<std::vector<int>>(3, 4);
+	std::printf("sp1: %zu\n", q->size());
+	return 0;
+}
+```
+
+- Found 2026-09-29 while timing B69 against a libstdc++-heavy TU.
+  g++ 13 = clang++ 18: `sp1: 3`. madc, every C++ mode: `--std=c++11`
+  through `c++17` refuse at `bits/shared_ptr_base.h:322:28: use of
+  undeclared identifier '__atomic_always_lock_free'`; `--std=c++20` at
+  `bits/atomic_wait.h:144:26: ... '__builtin_ia32_pause'`. No test in
+  `tests/` includes a `shared_ptr` use.
+- Where: the GCC builtins libstdc++'s `_Lock_policy` default and
+  `__detail::__thread_relax` spell are unknown to madc.
+  `__atomic_always_lock_free(size, 0)` is a constant (true for 1, 2, 4 and
+  8 bytes on x86-64). What follows the first builtin is not yet measured.
+- Separately, in a TU that also uses `std::function` (tmp/b62/heavy.cpp),
+  `p->size()` of an `auto p = std::make_shared<...>` in a `printf` argument
+  list is refused at parse, `Malformed expression: 2 operands with no
+  operator between them`; not yet reduced.
 
 ### B71. A class template whose parameters are a non-type pack has no members
 

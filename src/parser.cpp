@@ -13169,10 +13169,14 @@ bool Program::request_template_instantiation_completion(const std::string &mangl
 // bodyless forward instantiation minted before its template's definition
 // (libc++ <iosfwd>'s stream typedefs — the definitions arrive with
 // <sstream>) completes IN PLACE when the definition has since registered.
-// A no-op for anything else: a complete class, a non-class, a genuinely
-// dependent shell (no pending record exists for those). Returns the
-// possibly-refreshed type; in-place completion means the original pointer
-// heals too — the refresh covers a replaced map entry.
+// An OPAQUE shell of a concrete template-id — a variadic template named
+// where it was not really instantiated (`sizeof(P<int>)`) — has no pending
+// record; its recorded origin replays the real instantiation
+// (complete_shell_class_type, the member-TYPE chain's owner). A no-op for
+// anything else: a complete class, a non-class, a genuinely dependent shell
+// (its replay does not complete). Returns the possibly-refreshed type;
+// in-place completion means the original pointer heals too — the refresh
+// covers a replaced map entry.
 DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 {
     DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
@@ -13180,9 +13184,11 @@ DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 	return dd;
     request_template_instantiation_completion(cls->name);
     flat_datatype_map_iter refreshed = datatype_map.find(cls->name);
-    if ( refreshed != datatype_map.end() )
-	return &(*refreshed)->definition;
-    return dd;
+    DataDef *out = refreshed != datatype_map.end() ? &(*refreshed)->definition : dd;
+    if ( is_incomplete_class_datadef(out) )
+	if ( DataDefCLASS *real = complete_shell_class_type(cls) )
+	    return real;
+    return out;
 }
 
 static std::vector<std::vector<TokenBase *> >
