@@ -397,21 +397,6 @@ int main() { Z<1, 2> z; z.k = 4; std::printf("z: %d\n", z.k); return 0; }
 - Found 2026-09-29 while fixing B71 (a lone non-type pack, fixed by the
   demand replay arming the value-pack gate).
 
-### B72. `__alignof` is refused
-
-```c
-#include <stdio.h>
-int main(void) { double d = 0; printf("ga: %zu %zu\n", __alignof(double), __alignof(d)); return (int)d; }
-```
-
-- Found 2026-09-29 during B62. gcc = clang: `ga: 8 8`. madc:
-  `2:72: Expecting identifier`.
-- Where: `is_alignof_identifier` (parser.cpp) knows `alignof`, `_Alignof`
-  and `__alignof__`, not `__alignof`. The spelling set is written again at
-  two other sites, and each differs: the member-declarator specifier list
-  (~45906) has `__alignof`, and `ignored_template_declarator_call_name` (~57669)
-  has only `alignof`. That is the duplication family behind it.
-
 ### B3. A declarator after a type definition's `}` may not start with cv or `*`
 
 - Found 2026-09-25, during the enum family. This is duplication family

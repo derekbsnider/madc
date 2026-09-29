@@ -2787,9 +2787,18 @@ static bool is_decltype_identifier(const std::string &name)
     return name == "decltype";
 }
 
-static bool is_alignof_identifier(const std::string &name)
+// The ONE owner of the alignof operator's spellings: C++ `alignof`, C11
+// `_Alignof`, GNU `__alignof__` and `__alignof`. Every "does this name spell
+// alignof" question asks it (gated by scripts/check-one-alignof-spelling.sh).
+bool is_alignof_identifier(const std::string &name)
 {
-    return name == "alignof" || name == "_Alignof" || name == "__alignof__";
+    static const char *const spellings[] = {
+	"alignof", "_Alignof", "__alignof__", "__alignof"
+    };
+    for ( size_t i = 0; i < sizeof(spellings) / sizeof(spellings[0]); ++i )
+	if ( name == spellings[i] )
+	    return true;
+    return false;
 }
 
 // `sizeof` or an alignof spelling: an operator over a type-id or expression.
@@ -45974,7 +45983,7 @@ bool Program::struct_body_needs_class_parser_from(size_t start, bool nested)
 	    std::string idn = contextual_identifier_name(t);
 	    bool non_method_specifier =
 		   idn == "__asm__" || idn == "__asm" || idn == "asm"
-		|| idn == "__alignof__" || idn == "__alignof" || idn == "alignof"
+		|| is_alignof_identifier(idn)
 		|| idn == "__typeof__" || idn == "__typeof" || idn == "typeof"
 		|| idn == "sizeof" || idn == "decltype";
 	    if ( !non_method_specifier )
@@ -57751,7 +57760,7 @@ static bool ignored_template_declarator_call_name(const std::string &name)
     // -std=c++17 (tuple's variadic ctors), and reading `explicit (` as the
     // declarator name silently dropped those ctors from registration.
     return name == "decltype" || name == "noexcept" || name == "sizeof"
-	|| name == "alignof" || name == "typeid"
+	|| is_alignof_identifier(name) || name == "typeid"
 	|| is_attribute_specifier_name(name) || name == "explicit";
 }
 

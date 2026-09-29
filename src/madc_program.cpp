@@ -1095,7 +1095,7 @@ bool is_valid_expression_binding_name(const std::string &identifier)
 bool is_expression_keyword_identifier(const std::string &identifier)
 {
     return identifier == "sizeof"
-	|| identifier == "alignof"
+	|| is_alignof_identifier(identifier)
 	|| identifier == "typeof"
 	|| identifier == "typeof_unqual";
 }

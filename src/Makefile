@@ -1131,6 +1131,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-dialect-literals.sh
 	@cd .. && bash scripts/check-embedded-headers-stub.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
+	@cd .. && bash scripts/check-one-alignof-spelling.sh
 	@cd .. && bash scripts/check-one-module-member-owner.sh
 	@cd .. && bash scripts/check-one-key-owner.sh
 	@cd .. && bash scripts/check-one-anchor-owner.sh

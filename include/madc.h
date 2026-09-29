@@ -74,6 +74,8 @@ enum class GnuAttributeKind : uint8_t {
 };
 
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
+// alignof / _Alignof / __alignof__ / __alignof — the one spelling owner.
+bool is_alignof_identifier(const std::string &name);
 // An attribute's own words (a `mode` argument's QI, HI, ...) take the same
 // two spellings as its name: `word` or `__word__`.
 bool madc_gnu_attribute_word_is(const std::string &id, const char *word);

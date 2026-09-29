@@ -117,7 +117,6 @@ g++.dg/cpp0x/alignas1.C
 g++.dg/cpp0x/alignas2.C
 g++.dg/cpp0x/alignas5.C
 g++.dg/cpp0x/alignas7.C
-g++.dg/cpp0x/alignof.C
 g++.dg/cpp0x/auto15.C
 g++.dg/cpp0x/auto19.C
 g++.dg/cpp0x/auto23.C

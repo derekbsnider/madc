@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### `__alignof` is the alignof operator
+
+GNU `__alignof(T)` and `__alignof(expr)` give the alignment, as in gcc and
+clang; madc refused them ("Expecting identifier"). Every alignof spelling
+(`alignof`, `_Alignof`, `__alignof__`, `__alignof`) is now read through one
+predicate.
+
 ### A class template over a non-type pack has its members
 
 `template<int... N> struct V { char k; };` instantiates with its members,
