@@ -800,14 +800,15 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: one hand-rolled angle counter
+### B58. `<`: four hand-split template-argument lists
 
-- None of them asks the name question ([temp.names]/3,
-  `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
-- Only `expand_integer_pack_template_args` keeps a separate paren level.
-  In the rest a `>` inside `( )` closes the list.
-- `>>` differs per copy: split into two closes, `-= 2` below zero, or not
-  handled at all. None skips `operator<`.
+- No hand-rolled angle COUNTER is left (the last, in
+  `resolve_decltype_call_return`, moved 2026-09-29). Each one asked no name
+  question ([temp.names]/3, `DelimDepth::lt_reads_as_less_than`), closed a
+  list at a `>` inside `( )`, and handled `>>` its own way.
+- What remains are the four readers below that walk a list on `DelimDepth`
+  but split its arguments by hand; each moves onto
+  `scan_template_argument_list` + `template_argument_runs`.
 - Done: `template_id_suffix_end`, the template-id extent that other code
   asks for, and `self_template_id_keep_distinct`, whose argument split is
   now the new owner `scan_template_argument_list` (tests/testtemplateidparengt:
@@ -822,7 +823,11 @@ scans), `peek_after_balanced_template_id_from`,
   on `angle == 1` without the paren test, so a comma inside `( )` splits an
   argument (moved: see above). Each other one moves onto
   `scan_template_argument_list`.
-- Site: `resolve_decltype_call_return` 67525.
+- Done: `resolve_decltype_call_return` matches decltype's `)` by
+  `balanced_group_close` and splits the call's arguments by
+  `scan_template_argument_list` (B59's loop there too). Its `>>` shapes
+  (`make<A<(N > 2)>>(0)`) used to decline to the general decltype lane,
+  which answered them; tests/testdecltypecallparengt guards the lane.
 - Done: `expand_integer_pack_template_args` bounds its region on
   `DelimDepth` (`enter_angle()`, for a list whose `<` the caller already
   consumed) and matches `__integer_pack(`'s `)` by `balanced_group_close`
@@ -871,7 +876,7 @@ scans), `peek_after_balanced_template_id_from`,
   (tests/testdefaultedctortemplate: a defaulted constructor template's
   later parameters were lost at a parenthesized `>`).
 
-### B59. `(`: thirty-eight hand-rolled paren counters
+### B59. `(`: thirty-seven hand-rolled paren counters
 
 - Most skip to the matching `)`. `DelimDepth` answers that the same way
   for parens, so few of these diverge today. They are still copies, and a
@@ -900,7 +905,7 @@ scans), `peek_after_balanced_template_id_from`,
   `skip_balanced` lambda, also used for `{`);
   `skipped_template_body_is_inline_identity_refcast` 60027;
   `tsubst_matching_close` 64982; `resolve_fn_template_return_by_key`
-  67062; `resolve_decltype_call_return` 67489;
+  67062;
   `try_parse_implicit_int_function_definition` 69935;
   `consume_balanced_parenthesized_suffix` 69984; `parseFunction` 71405,
   71461; `paren_group_is_function_def` 73318.

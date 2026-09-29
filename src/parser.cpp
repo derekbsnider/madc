@@ -67795,15 +67795,11 @@ DataDef *Program::resolve_decltype_call_return(
 	*ret_ref = false;
     if ( sub.size() < 3 || !sub[1] || sub[1]->id() != TokenID::tkOpBrk )
 	return NULL;
-    // Operand = the content of decltype's parens; find its matching `)`.
-    size_t pd = 0, op_s = 2, op_e = sub.size();
-    for ( size_t i = 1; i < sub.size(); ++i )
-    {
-	if ( !sub[i] ) continue;
-	if ( sub[i]->id() == TokenID::tkOpBrk ) ++pd;
-	else if ( sub[i]->id() == TokenID::tkClBrk && --pd == 0 )
-	    { op_e = i; break; }
-    }
+    // Operand = the content of decltype's parens, up to their balanced close
+    // (the whole tail when they never close).
+    size_t op_s = 2, op_e = balanced_group_close(sub, 1);
+    if ( op_e == 1 )
+	op_e = sub.size();
     if ( op_e <= op_s || !sub[op_s]
       || !is_contextual_identifier_token(sub[op_s]) )
 	return NULL;
@@ -67829,40 +67825,25 @@ DataDef *Program::resolve_decltype_call_return(
     }
     if ( p >= op_e || !sub[p] || sub[p]->id() != TokenID::tkLT )
 	return NULL;
-    // Match the angle brackets; collect comma-separated type-arg segments.
+    // The template-id's type arguments, split by the one list scan (a `>`
+    // in `( )` is greater-than, a `>>` also closes the last argument's own
+    // list — BUGS.md B58). A `>>` that closes an ENCLOSING list too is not
+    // this operand's shape.
+    TemplateArgumentList list;
+    if ( !scan_template_argument_list(sub, p, list, this)
+      || list.close >= op_e || list.split_gt )
+	return NULL;
+    const size_t close_gt = list.close;
+    std::vector<std::vector<TokenBase *> > runs =
+	template_argument_runs(sub, list);
     std::vector<DataDef *> inner_args;
-    size_t ad = 0, seg_s = p + 1, close_gt = op_e;
-    for ( size_t q = p; q < op_e; ++q )
-    {
-	if ( !sub[q] ) continue;
-	TokenID id = sub[q]->id();
-	if ( id == TokenID::tkLT )
-	    ++ad;
-	else if ( id == TokenID::tkComma && ad == 1 )
-	{
-	    if ( q > seg_s )
-	    {
-		std::vector<TokenBase *> seg(sub.begin() + seg_s,
-					     sub.begin() + q);
-		if ( DataDef *d = resolve_type_token_range(seg, 0, seg.size()) )
-		    inner_args.push_back(d);
-	    }
-	    seg_s = q + 1;
-	}
-	else if ( id == TokenID::tkGT && --ad == 0 )
-	{
-	    if ( q > seg_s )
-	    {
-		std::vector<TokenBase *> seg(sub.begin() + seg_s,
-					     sub.begin() + q);
-		if ( DataDef *d = resolve_type_token_range(seg, 0, seg.size()) )
-		    inner_args.push_back(d);
-	    }
-	    close_gt = q;
-	    break;
-	}
-    }
-    if ( inner_args.empty() || close_gt >= op_e )
+    for ( const std::vector<TokenBase *> &run : runs )
+	if ( !run.empty() )
+	    if ( DataDef *d = resolve_type_token_range(run, 0, run.size()) )
+		inner_args.push_back(d);
+    if ( list.nested_close && !runs.empty() && !runs.back().empty() )
+	delete runs.back().back();	// template_argument_runs' synthesized `>`
+    if ( inner_args.empty() )
 	return NULL;
     // The template-id CALL must be the WHOLE operand. This lane answers
     // IDENT<targs>'s declared return and never reads `( args )`, so an operand
