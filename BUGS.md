@@ -147,6 +147,11 @@ int main() { int k2 = ++K<int>::n; printf("%d %d\n", k1, k2); return 0; }
 - Where: the out-of-line definition of a template's static data member is
   never instantiated for `K<int>`. It should be emitted linkonce, since every
   TU using `K<int>::n` emits it.
+- Wider (measured 2026-09-29 at `9c9b96d02`): a non-type parameter's
+  (`template<int N> int B<N>::w = N;`, B<7>::w) and an explicit
+  specialization's (`template<> int A<char>::w = 3;`, a concrete definition
+  that instantiates nothing) are undefined imports too (`_ZN1AIcE1wE`).
+  This blocks the test for KG Gap `qualified_template_id_compound_assign_statement`.
 
 ### B18. A file-scope lambda global is never defined
 
