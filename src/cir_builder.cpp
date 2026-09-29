@@ -7881,6 +7881,12 @@ node_t CirBuilder::object_call_temp(TokenBase *call_tok, DataDefCLASS *cdd,
 		// Aggregate list-init FIRST — same rule and reasoning as the
 		// translate_expr TokenObjTemp arm: a full-list site where the
 		// ctor path's default-construction block DROPS the initializers.
+		// `T()` / `T{}` value-initializes ([dcl.init]/8): the
+		// zero-fill ahead of the default construction below.
+		if (ot->ctor_args.empty())
+			value_init_zero_stmts([&]() -> node_t {
+				return node1(N_ADDR, id(name, origin), origin);
+			}, cdd, /*base_subobject=*/false, m_pending_stmts, origin);
 		node_t cc = ot->ctor_args.empty() ? NULL
 			: class_aggregate_init(
 				[&](const std::string &m) -> node_t {
@@ -18543,6 +18549,16 @@ void CirBuilder::zero_init_subobject_stmts(const std::function<node_t()> &mint_a
 	}
 }
 
+void CirBuilder::value_init_zero_stmts(const std::function<node_t()> &mint_addr,
+				       DataDefCLASS *cdd, bool base_subobject,
+				       std::vector<node_t> &out,
+				       TokenBase *origin)
+{
+	if (cdd && class_value_init_zeroes(cdd))
+		zero_init_subobject_stmts(mint_addr, cdd, base_subobject, out,
+					  origin);
+}
+
 bool CirBuilder::class_direct_init_stmts(const std::function<node_t()> &mint_addr,
 					  DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &args,
@@ -18574,9 +18590,7 @@ bool CirBuilder::class_direct_init_stmts(const std::function<node_t()> &mint_add
 		out.insert(out.end(), cs.begin(), cs.end());
 	};
 	if (args.empty()) {
-		if (class_value_init_zeroes(cdd))
-			zero_init_subobject_stmts(mint_addr, cdd, base_subobject,
-						  out, origin);
+		value_init_zero_stmts(mint_addr, cdd, base_subobject, out, origin);
 		construct(args);
 		return out.size() > before;
 	}
@@ -23065,6 +23079,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		// printed garbage; the frozen libc++ lane returned a garbage
 		// __allocation_result). Copy shapes and every non-aggregate
 		// decline inside the helper and take the ctor path as before.
+		// `T()` / `T{}` value-initializes ([dcl.init]/8): the
+		// zero-fill ahead of the default construction below.
+		if (ot->ctor_args.empty())
+			value_init_zero_stmts([&]() -> node_t {
+				return node1(N_ADDR, id(otname, tb), tb);
+			}, ocdd, /*base_subobject=*/false, m_pending_stmts, tb);
 		node_t occ = ot->ctor_args.empty() ? NULL
 			: class_aggregate_init(
 				[&](const std::string &m) -> node_t {
@@ -28483,10 +28503,10 @@ void CirBuilder::class_decl_construction(TokenDecl *sdcl, DataDefCLASS *cdcl,
 				// the zero-fill first — the twin of `T x{};`'s C
 				// zero initializer — then the construction below
 				// is the default-initialization.
-				if (ctor_args.empty() && class_value_init_zeroes(cdcl)) {
+				if (ctor_args.empty()) {
 					const std::string vn = var_emit_name(sdcl->var);
 					std::vector<node_t> zs;
-					zero_init_subobject_stmts([&]() -> node_t {
+					value_init_zero_stmts([&]() -> node_t {
 						return node1(N_ADDR, id(vn.c_str(), sdcl),
 							     sdcl);
 					}, cdcl, /*base_subobject=*/false, zs, sdcl);

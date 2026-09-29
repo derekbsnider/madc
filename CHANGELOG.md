@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A value-initialized temporary of a ctor-less class is zero-filled before default member initializers
+
+`T()` or `T{}` temporaries of a ctor-less class type in argument position, as
+an operand, or as a return value now zero-fill before default member initializers apply
+([dcl.init]/8). The three code paths (function argument, member operand access, return
+from a temporary-returning function) now consistently use the value_init_zero_stmts helper
+to decide whether zero-fill is needed. A ctor-less class that value-initializes (no
+user-provided default constructor) must zero-fill first, then apply default member
+initializers; before, the temporaries incorrectly read uninitialized stack storage.
+
 ### An elided empty temp `T x = T()` value-initializes a ctor-less class
 
 `T x = T();` and `T x = T{};` where `T` is a ctor-less class now value-initialize

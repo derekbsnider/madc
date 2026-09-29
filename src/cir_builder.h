@@ -1951,6 +1951,12 @@ public:
 	void zero_init_subobject_stmts(const std::function<node_t()> &mint_addr,
 			       DataDefCLASS *cdd, bool base_subobject,
 			       std::vector<node_t> &out, TokenBase *origin);
+	// Value-initialization's zero-fill ([dcl.init]/8): the one above,
+	// unless the class has a user-provided default constructor. The
+	// default-initialization that follows is the caller's construction.
+	void value_init_zero_stmts(const std::function<node_t()> &mint_addr,
+			       DataDefCLASS *cdd, bool base_subobject,
+			       std::vector<node_t> &out, TokenBase *origin);
 	// DIRECT-initialization of a class object at an address from its FULL
 	// initializer list ([dcl.init]/16): a mem-initializer of a base
 	// (`B{a, b}`, `B()`) or member (`m{a, b}`, `m()`, [class.base.init]/7),
