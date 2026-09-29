@@ -991,11 +991,17 @@ public:
 
     static size_t align_up(size_t v, size_t a) { return a ? ((v + a - 1) & ~(a - 1)) : v; }
 
+    // A field type's own alignment, before any packing caps it.
+    static size_t natural_field_align(const DataDef &dd)
+    {
+	size_t natural = dd.alignment();
+	return natural ? natural : 1;
+    }
+
     // compute alignment for a field: natural alignment capped by pack setting
     size_t field_align(const DataDef &dd) const
     {
-	size_t natural = dd.alignment();
-	if ( natural == 0 ) natural = 1;
+	size_t natural = natural_field_align(dd);
 	if ( pack == 0 ) return natural;              // C ABI default
 	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
     }
@@ -1267,11 +1273,14 @@ public:
 	    info.reverse_storage = reverse_scalar_storage;
 	    if ( !union_layout )
 	    {
-		size_t fa = field_align(dd);
 		// SysV uses the zero-width field's declared type as a boundary for
 		// the NEXT member, but it does not raise the aggregate alignment.
-		// Microsoft applies the boundary/alignment only when the preceding
-		// declaration was itself a bit-field (MinGW/MS layout oracle).
+		// The boundary is the type's own alignment even under packing
+		// (`#pragma pack(2)`, `packed`): gcc = clang. Microsoft applies the
+		// boundary/alignment only when the preceding declaration was
+		// itself a bit-field (MinGW/MS layout oracle), capped by the pack.
+		size_t fa = target_microsoft_bitfields()
+		    ? field_align(dd) : natural_field_align(dd);
 		if ( !target_microsoft_bitfields() || previous_was_nonzero_bitfield )
 		{
 		    size = align_up(size, fa);

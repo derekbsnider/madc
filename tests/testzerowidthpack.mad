@@ -1,0 +1,30 @@
+// A zero-width bit-field moves the next member to its declared type's own
+// alignment even under packing (`#pragma pack(2)`, a packed struct), and it
+// does not raise the aggregate's alignment (SysV).
+// Oracle: gcc 13 and clang 18 print the lines below.
+#include <stdio.h>
+#include <stddef.h>
+
+#pragma pack(2)
+struct Z2 { char a : 4; int : 0; char c; };
+#pragma pack()
+struct __attribute__((packed)) Z1 { char a : 4; int : 0; char c; };
+struct Z0 { char a : 4; int : 0; char c; };
+#pragma pack(2)
+struct Z3 { char a; int : 0; char c; int b : 3; };
+#pragma pack()
+#pragma pack(1)
+struct Z4 { char a; long : 0; short s; };
+#pragma pack()
+
+int main(void)
+{
+	printf("zs: %zu %zu %zu %zu %zu\n", sizeof(struct Z2), sizeof(struct Z1),
+	       sizeof(struct Z0), sizeof(struct Z3), sizeof(struct Z4));
+	printf("zo: %zu %zu %zu %zu %zu\n", offsetof(struct Z2, c), offsetof(struct Z1, c),
+	       offsetof(struct Z3, c), offsetof(struct Z4, s), _Alignof(struct Z3));
+	struct Z3 z = { 7, 9, -2 };
+	struct Z4 w = { 5, 1234 };
+	printf("zv: %d %d %d %d %d\n", z.a, z.c, z.b, w.a, w.s);
+	return 0;
+}

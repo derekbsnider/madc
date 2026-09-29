@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A zero-width bit-field under packing aligns to its type
+
+`int : 0` moves the next member to a 4-byte boundary under `#pragma pack(N)`
+and in a packed struct, as in gcc and clang: `struct { char a : 4; int : 0;
+char c; }` has `c` at offset 4 and size 5 under `#pragma pack(2)`, where
+madc put `c` at 2 (and at 1 in a packed struct). The zero-width field still
+adds nothing to the struct's alignment. The Microsoft bit-field layout is
+unchanged.
+
 ### A variadic class template-id as a data member is a complete type
 
 `struct H { char c; P<int, char, long> m; };` for `template<typename... T>
