@@ -1,0 +1,31 @@
+// A class template whose parameters are a non-type pack instantiates with
+// its members: a concrete use lays the class out (sizeof), reads and writes
+// its data members, calls its member functions, and expands the pack's
+// values in its body. An empty pack (`V<>`) is a class too.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <stdio.h>
+
+template<int... N> struct V { char k; int a[sizeof...(N) + 1]; };
+template<int... N> struct W {
+	char k;
+	int f() { return k; }
+	int count() { return (int)sizeof...(N); }
+	int first() { int v[] = { N..., 0 }; return v[0]; }
+	int sum() { int v[] = { N..., 0 }; int s = 0; for (int i = 0; i < (int)sizeof...(N); ++i) s += v[i]; return s; }
+};
+template<unsigned... U> struct X { long l; unsigned last() { unsigned v[] = { 0u, U... }; return v[sizeof...(U)]; } };
+
+int main()
+{
+	V<2, 16> v2; v2.k = 5; v2.a[2] = 9;
+	V<> v0; v0.k = 6; v0.a[0] = 3;
+	W<1> w1; w1.k = 7;
+	W<4, 5, 6> w3; w3.k = 1;
+	X<7u, 8u> x; x.l = -2;
+	printf("na: %d %d %d %d %zu %zu %zu\n", v2.k, v2.a[2], v0.k, v0.a[0],
+	       sizeof(V<3>), sizeof(V<2, 16>), sizeof(V<>));
+	printf("nb: %d %d %d %d %d %d %d\n", w1.f(), w1.count(), w1.first(),
+	       w3.f(), w3.count(), w3.first(), w3.sum());
+	printf("nc: %ld %u %zu\n", x.l, x.last(), sizeof(X<1u>));
+	return 0;
+}

@@ -376,18 +376,26 @@ int main()
   list is refused at parse, `Malformed expression: 2 operands with no
   operator between them`; not yet reduced.
 
-### B71. A class template whose parameters are a non-type pack has no members
+### B79. A class template with a fixed non-type parameter before a pack has no members
 
 ```cpp
 #include <cstdio>
-template<int... N> struct V { char k; };
-int main() { V<2, 16> v2; v2.k = 5; std::printf("p9: %d\n", v2.k); return 0; }
+template<int A, int... N> struct Z { char k; };
+int main() { Z<1, 2> z; z.k = 4; std::printf("z: %d\n", z.k); return 0; }
 ```
 
-- Found 2026-09-29 during B62. g++ = clang++: `p9: 5`. madc:
-  `3:30: Unidentified member 'k' in 'V_2_16'`; `V<>` the same.
-- Where: not traced. A value-pack instantiation takes the legacy body clone
-  (`instantiate_template_use`), and the class it registers has no members.
+- g++ = clang++: `z: 4`. madc: `3:27: Unidentified member 'k' in 'Z_1_2'`.
+  Reducer: `tmp/b71/f.cpp`.
+- Where: `template_pack_real_instantiable` refuses a fixed NON-TYPE
+  parameter unless `nontype_fixed_ok` (the won-partial-spec path), so the
+  concrete demand replay (`instantiate_shell_origin_replay`) leaves the class
+  an opaque shell. Its comment says the arg loop binds only type
+  parameters; the loop does bind a fixed non-type argument (`token_subst`).
+- Blast radius: `std::_Tuple_impl<size_t _Idx, typename... _Elements>` has
+  the same shape, so admitting it changes how every `std::tuple` element
+  instantiates. A focused session with the tuple tests and lanes.
+- Found 2026-09-29 while fixing B71 (a lone non-type pack, fixed by the
+  demand replay arming the value-pack gate).
 
 ### B72. `__alignof` is refused
 

@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A class template over a non-type pack has its members
+
+`template<int... N> struct V { char k; };` instantiates with its members,
+as in g++ and clang++: `V<2, 16> v; v.k = 5;` was refused ("Unidentified
+member 'k'") and `sizeof(V<3>)` was 0. The pack's values expand in the
+class's body (`int v[] = { N... };`, `sizeof...(N)`), and an empty pack
+(`V<>`) is a class too.
+
 ### A class's own members follow its vptr and bases one by one
 
 A class's members are placed after its vptr and bases each at the next

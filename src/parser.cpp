@@ -7402,9 +7402,14 @@ TokenDataType *Program::instantiate_shell_origin_replay(
 	  it != replay.rend(); ++it )
 	pushToken(*it);
 
+    // The args are concrete, so a trailing NON-TYPE pack (`template<int...
+    // N>`) real-instantiates as a type pack does: the value-pack gate is
+    // armed with the variadic one.
     bool saved_vri = allow_variadic_real_inst;
+    bool saved_vpk = allow_valuepack_real_inst;
     bool saved_poisoned = dependent_parse_poisoned;
     allow_variadic_real_inst = true;
+    allow_valuepack_real_inst = true;
     TokenIdent name_tb(org.tname.c_str());
     TokenDataType *real = NULL;
     try
@@ -7415,6 +7420,7 @@ TokenDataType *Program::instantiate_shell_origin_replay(
     }
     catch ( ... ) { real = NULL; }
     allow_variadic_real_inst = saved_vri;
+    allow_valuepack_real_inst = saved_vpk;
     {
 	static const char *shellc_probe = ::getenv("MADC_SHELLC_PROBE");
 	if ( shellc_probe )
