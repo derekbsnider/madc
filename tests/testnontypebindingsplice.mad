@@ -1,0 +1,33 @@
+/* A bound non-type template argument substitutes as its VALUE wherever the
+   parameter's name is replaced in a token run ([temp.arg.nontype]), as in
+   g++: in the return type the explicit-argument resolver reads for
+   decltype/sizeof (`EI_t<(N > 2) && yes(0), char> f()`, `Arr<N * 3> h()`),
+   and in a type default naming it (`class U = Arr<N * 3>`). Before, the
+   argument spliced as a TYPE token, the type never resolved, and the
+   callers answered with a wrong type, exit 0: rk: 1 1 7 8 1, td: 8 8 8 8.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     rk: 1 8 7 12 1
+     td: 12 15 7 5 */
+#include <cstdio>
+template<bool B, class T = void> struct EI {};
+template<class T> struct EI<true, T> { typedef T type; };
+template<bool B, class T = void> using EI_t = typename EI<B, T>::type;
+constexpr bool yes(int) { return true; }
+constexpr int twice(int v) { return 2 * v; }
+template<int K> struct Arr { char c[K]; };
+template<int N> EI_t<(N > 2) && yes(0), char> f() { return 'a'; }
+template<int N> EI_t<(N <= 2) && yes(0), long> f() { return 1; }
+template<int N> Arr<twice(N) + 1> g() { return Arr<twice(N) + 1>(); }
+template<int N> Arr<N * 3> h() { return Arr<N * 3>(); }
+template<int N, class U = Arr<N * 3> > U k() { return U(); }
+template<int N, class U = Arr<twice(N) + 1> > U m() { return U(); }
+int main()
+{
+	using R1 = decltype(f<5>());
+	using R2 = decltype(f<1>());
+	printf("rk: %zu %zu %zu %zu %zu\n", sizeof(R1), sizeof(R2), sizeof(g<3>()),
+	       sizeof(decltype(h<4>())), sizeof(f<7>()));
+	printf("td: %zu %zu %zu %zu\n", sizeof(k<4>()), sizeof(decltype(k<5>())),
+	       sizeof(m<3>()), sizeof(decltype(m<2>())));
+	return 0;
+}

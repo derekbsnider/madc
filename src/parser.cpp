@@ -22467,6 +22467,23 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
 // The ONE implementation, shared by the member-template resolver
 // (resolve_member_template_call_return_type) and the namespace fn-template
 // by-key resolver (resolve_fn_template_return_by_key).
+static bool datadef_is_nontype_constant(const DataDef *dd);	// defined with the return-type resolver below
+
+// THE token a bound template argument splices as, wherever a parameter NAME
+// is replaced by its binding in a token run: a type argument is its type
+// token; a non-type argument, carried as the decimal-named value DataDef, is
+// its integer literal ([temp.arg.nontype]: the parameter names a prvalue
+// constant, in an expression and in a template-argument alike). A type
+// token there made `Arr<N * 3>` read `Arr<[type 4] * 3>` and `(N > 2) &&
+// ok(0)` fold to nothing, so the explicit-argument return resolver and a
+// type default naming N failed, and the callers fell back to a wrong type.
+static TokenBase *binding_token(DataDef *dd)
+{
+    if ( datadef_is_nontype_constant(dd) )
+	return new TokenInt(strtoll(dd->name.c_str(), NULL, 10));
+    return new TokenDataType(dd->name.c_str(), *dd);
+}
+
 // Where a pack-expansion PATTERN starts in tokens already emitted: after the
 // nearest top-level `,` or unmatched opener. The backward twin of the forward
 // DelimDepth scan (kept beside it, same alphabet plus `<`): `(` `[` `{` AND
@@ -22527,8 +22544,7 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 		{
 		    if ( pt && is_contextual_identifier_token(pt)
 		      && contextual_identifier_name(pt) == pack_name )
-			sub.push_back(new TokenDataType(pack_elems[e]->name.c_str(),
-							*pack_elems[e]));
+			sub.push_back(binding_token(pack_elems[e]));
 		    else
 			sub.push_back(pt ? pt->clone_origin() : NULL);
 		}
@@ -22549,8 +22565,7 @@ static std::vector<TokenBase *> substitute_return_range_tokens(
 	    std::map<std::string, DataDef *>::const_iterator bi = binding.find(tn);
 	    if ( bi != binding.end() && bi->second )
 	    {
-		sub.push_back(new TokenDataType(bi->second->name.c_str(),
-						*bi->second));
+		sub.push_back(binding_token(bi->second));
 		continue;
 	    }
 	}
@@ -37294,8 +37309,6 @@ static bool template_outer_names_match(std::string pouter,
 	return true;
     return false;
 }
-
-static bool datadef_is_nontype_constant(const DataDef *dd);	// defined with the return-type resolver below
 
 // Do two template-argument spellings name the same argument
 // ([temp.type]/1)? The same spelling, or the same canonical form, the one a
@@ -62626,8 +62639,7 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 // unresolvable default (e.g. an absent `::type` — SFINAE), so the caller bails.
 std::vector<TokenBase *> Program::substitute_template_binding(
 		const std::vector<TokenBase *> &tokens,
-		const std::map<std::string, DataDef *> &binding,
-		bool values_as_literals)
+		const std::map<std::string, DataDef *> &binding)
 {
     std::vector<TokenBase *> body;
     for ( size_t i = 0; i < tokens.size(); ++i )
@@ -62652,13 +62664,7 @@ std::vector<TokenBase *> Program::substitute_template_binding(
 		binding.find(binding_name);
 	    if ( bi != binding.end() && bi->second )
 	    {
-		if ( values_as_literals
-		  && datadef_is_nontype_constant(bi->second) )
-		    body.push_back(new TokenInt(
-			strtoll(bi->second->name.c_str(), NULL, 10)));
-		else
-		    body.push_back(new TokenDataType(bi->second->name.c_str(),
-						     *bi->second));
+		body.push_back(binding_token(bi->second));
 		continue;
 	    }
 	}
@@ -62673,7 +62679,7 @@ bool Program::fold_nontype_default_under_binding(
 		const std::string &defining_ns, int64_t &out)
 {
     std::vector<TokenBase *> run =
-	substitute_template_binding(default_tokens, binding, true);
+	substitute_template_binding(default_tokens, binding);
     bool folded = false;
     if ( !run.empty() )
     {
@@ -62698,7 +62704,7 @@ DataDef *Program::resolve_template_param_default_type(
     if ( default_tokens.empty() )
 	return NULL;
     std::vector<TokenBase *> body =
-	substitute_template_binding(default_tokens, binding, false);
+	substitute_template_binding(default_tokens, binding);
     body.push_back(new TokenSemi());
 
     std::string substituted_debug;

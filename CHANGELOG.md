@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### A non-type template argument substitutes as its value
+
+`sizeof(decltype(h<4>()))` for `template<int N> Arr<N * 3> h()` is 12, and
+`decltype(f<1>())` picks `EI_t<(N <= 2) && yes(0), long>`'s long, as in
+g++; so does a type default naming a non-type parameter
+(`template<int N, class U = Arr<N * 3> > U k()`). Before, each read a wrong
+type silently: 8 for the 12, 1 for the long, 8 for every defaulted U.
+
 ### A return type may hold a `>` in parentheses under SFINAE
 
 `template<int N> EI_t<(N > 2) && yes(0), int> f()` and its `(N <= 2)`
