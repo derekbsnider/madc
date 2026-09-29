@@ -7,10 +7,10 @@ wine64	yes	fbfd79670e9d	2026-09-24	1560/0/0TO/73skip — seam battery at fbfd796
 headerless-win	yes	fbfd79670e9d	2026-09-24	1559/0/0TO/74skip — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude); pack v4 roots setjmp.h/signal.h
 macos	yes	fbfd79670e9d	2026-09-24	BUILD lane: release-macos rc=0 on BOTH arches + package-macos rc=0 + pull tarballs rc=0 — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
 aarch64-ld	yes	fbfd79670e9d	2026-09-24	scripts/aarch64_ldouble_lane.sh under qemu-aarch64: control OK; GREEN aot + jit on every tests/cross/aarch64_*.c fixture — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
-c-testsuite	commit	099dc64dde54	2026-09-29	220 passed, 0 failed
-c-torture	commit	099dc64dde54	2026-09-29	1613 passed, 3 compile-failed, 8 runtime-failed, 0 timed out, 61 skipped
-c2mir-tests	commit	099dc64dde54	2026-09-29	309 passed, 54 failed
-gui	commit	099dc64dde54	2026-09-29	20 passed, 0 failed
-gxx-c++11	no	099dc64dde54	2026-09-29	1490 passed, 455 compile-failed, 0 runtime-failed, 1 timed out, 2722 skipped
-index-c	yes	099dc64dde54	2026-09-29	50/50 tasks OK, 0 failed
 tests-jit	batch	a0d8789a0733	2026-09-29	1802 passed, 0 failed, 0 timed out, 9 skipped (batch: B62 alignment slices A/B/C)
+c-testsuite	commit	6e161895abf3	2026-09-29	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing)
+c-torture	commit	6e161895abf3	2026-09-29	c-torture: 1613 passed, 3 compile-failed, 8 runtime-failed, 0 timed out, 61 skipped (--std=c17); 11 failing, 0 outside baseline
+c2mir-tests	commit	6e161895abf3	2026-09-29	c2mir-tests: 309 passed, 54 failed (0 outside baseline)
+gui	commit	6e161895abf3	2026-09-29	gui: 20 passed, 0 failed | EXE 20/0 | OBJ 20/0
+gxx-c++11	no	6e161895abf3	2026-09-29	gxx-c++11: 1490 passed, 455 compile-failed, 0 runtime-failed, 1 timed out, 2722 skipped; 456 failing, 0 outside baseline
+index-c	yes	6e161895abf3	2026-09-29	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2]
