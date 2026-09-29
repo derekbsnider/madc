@@ -13210,8 +13210,11 @@ DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 // ([class.mem]: the type is COMPLETE). A concrete-arg variadic template-id
 // named here really instantiates (allow_variadic_real_inst, the storage
 // demand parseStatement's declaration arms make), and one that arrived
-// through an alias (`typedef impl<tag, int> B; B m;`) completes through
-// complete_class_type_on_demand. Neither while a dependent pattern is parsed
+// through an alias (`typedef impl<tag, int> B; B m;`) completes from its
+// shell's recorded origin (complete_shell_class_type) — never through the
+// pending-record completion, which re-enters a class still being defined
+// (`_Rb_tree& _M_t;` in _Rb_tree's own nested helpers names the enclosing,
+// incomplete class). Neither while a dependent pattern is parsed
 // or captured: the arguments name the enclosing template's parameters, and
 // the shell is the answer until the instantiation. The ONE demand of both
 // member arms (the C-style struct body and the class body).
@@ -13231,11 +13234,9 @@ TokenDataType *Program::complete_member_storage_type(TokenDataType *mtype,
 {
     if ( !mtype || dependent_parse_in_progress || class_pattern_capture_in_progress )
 	return mtype;
-    DataDef *dd = &mtype->definition;
-    DataDef *complete = complete_class_type_on_demand(dd);
-    if ( complete == dd )
-	return mtype;
-    return make_alias_type_token(complete->name, complete, type_head);
+    DataDefCLASS *mcls = dynamic_cast<DataDefCLASS *>(&mtype->definition);
+    DataDefCLASS *real = mcls ? complete_shell_class_type(mcls) : NULL;
+    return real ? make_alias_type_token(real->name, real, type_head) : mtype;
 }
 
 static std::vector<std::vector<TokenBase *> >
