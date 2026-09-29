@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A partial specialization's out-of-line member is defined with its own head
+
+`template<class U> int Z<U*>::f() { return 2; }` defines the member of the
+partial specialization `template<class T> struct Z<T*>`, as in g++, and
+likewise heads such as `P<T, const T>` and `P<T, decltype((3 > 2))>`. The
+definition's parameters take what the specialization deduced, so
+`sizeof(T)` in `P<T, const T>::g()` reads `short` for `P<short, const
+short>`. A more specialized `Z<const T*>` keeps its own member. Before, madc
+attached such a definition to nothing, and the call failed to link.
+
 ### A partial specialization's member can be defined with a `>` in its head
 
 `template<class T> int Z<T, (3 > 2) + 4>::f() { return 50; }` defines the

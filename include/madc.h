@@ -5323,6 +5323,18 @@ public:
     };
     registration_map<std::string, std::vector<OutOfLineMemberDef> >
 	out_of_line_member_defs;
+    // The partial specialization an instantiation came from, as its
+    // out-of-line members need it ([temp.class.spec.mfunc]/1): a member
+    // definition belongs to the instantiation iff the definition's class-head
+    // is the specialization's argument list, parameter for parameter, and
+    // the definition's parameters bind to what the specialization's deduced.
+    struct OutOfLineSpecSource {
+	std::vector<std::vector<TokenBase *> > pattern;
+	std::vector<std::string> typeparams;
+	std::map<std::string, TokenDataType *> type_args;
+	std::map<std::string, std::vector<TokenBase *> > token_args;
+	bool has_pack = false;
+    };
     struct OutOfLineMemberInstantiation {
 	std::string registered_mangled;
 	std::vector<TokenDataType *> arg_types_by_slot;
@@ -5331,6 +5343,9 @@ public:
 	// out-of-line definitions do not define it, and only a definition
 	// whose class-head carries concrete slots can.
 	bool from_partial_specialization = false;
+	// Which specialization, when the instantiation recorded it.
+	bool has_spec_source = false;
+	OutOfLineSpecSource spec_source;
     };
     registration_map<std::string, std::vector<OutOfLineMemberInstantiation> >
 	out_of_line_member_instantiations;
@@ -5339,13 +5354,15 @@ public:
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
-	bool from_partial_specialization = false);
+	bool from_partial_specialization = false,
+	const OutOfLineSpecSource *spec_source = NULL);
     void register_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
-	bool from_partial_specialization = false);
+	bool from_partial_specialization = false,
+	const OutOfLineSpecSource *spec_source = NULL);
     // An out-of-line NESTED-CLASS definition of a class template
     // (`template<...> class Owner<T>::Nested { ... };` — basic_istream's
     // `sentry`, [class.nest] + [temp]). NOT a specialization of Owner: the

@@ -7717,6 +7717,8 @@ struct BasicClassPatternBinding
     std::string canonical_spelling;
     bool dependent_surface;
     TokenBase *location;
+    // The partial specialization it comes from, for its out-of-line members.
+    const Program::OutOfLineSpecSource *ool_spec_source;
 };
 
 static std::string basic_class_datadef_spelling(DataDef *dd)
@@ -9690,7 +9692,8 @@ static TokenDataType *instantiate_basic_class_pattern(
 	    binding.definition.defining_namespace,
 	    binding.registered_name, ddc,
 	    binding.arg_types_by_slot, binding.arg_tokens_by_slot,
-	    binding.definition.is_partial_specialization);
+	    binding.definition.is_partial_specialization,
+	    binding.ool_spec_source);
 	resolver.stage_cache();
 	journal.commit();
 	registration_committed = true;
@@ -10003,6 +10006,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	*this, tname, tname_id, td.defining_namespace, td.owner_class);
     std::map<std::string, TokenDataType *> subst;
     std::map<std::string, std::vector<TokenBase *> > token_subst;
+    // The partial specialization this instantiation comes from, for its
+    // out-of-line members (filled when one is selected, below).
+    Program::OutOfLineSpecSource ool_spec_source;
+    bool have_ool_spec_source = false;
     // A trailing-pack param deduced by a partial spec (`_SomeTemplate<_Tp, _Types...>`
     // in __replace_first_arg): name -> the pack's element type tokens (empty for an
     // empty pack). Expanded in the body loop where `_Types...` appears.
@@ -10346,6 +10353,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    td = *spec;
 	    td.owner_class = use_site_owner;
 	    subst = spec_subst;
+	    ool_spec_source.pattern = td.spec_pattern;
+	    ool_spec_source.typeparams = td.typeparams;
+	    ool_spec_source.type_args = spec_subst;
+	    ool_spec_source.token_args = spec_nontype_subst;
+	    for ( size_t k = 0; k < td.typeparam_is_pack.size(); ++k )
+		if ( td.typeparam_is_pack[k] )
+		    ool_spec_source.has_pack = true;
+	    have_ool_spec_source = true;
 	    // The matched SPEC carries the real base clause (the primary that drove
 	    // want_sticky above was a body-less forward decl). Recompute sticky from
 	    // the spec body so a template-id base (`_Tuple_impl<_Idx+1, _Tail...>`,
@@ -10732,7 +10747,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     {
 	BasicClassPatternBinding binding = {
 	    td, *selected_pattern, subst, arg_types_by_slot, arg_tokens_by_slot,
-	    mangled, registered_mangled, canon, dependent_surface, tb
+	    mangled, registered_mangled, canon, dependent_surface, tb,
+	    have_ool_spec_source ? &ool_spec_source : NULL
 	};
 	legacy_reason = basic_class_pattern_eligibility(
 	    *this, binding, token_subst, pack_subst);
@@ -11882,7 +11898,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	attach_outofline_member_instantiations(td.class_name,
 	    td.defining_namespace, registered_mangled, inst_ddc,
 	    arg_types_by_slot, arg_tokens_by_slot,
-	    td.is_partial_specialization);
+	    td.is_partial_specialization,
+	    have_ool_spec_source ? &ool_spec_source : NULL);
 	// Out-of-line NESTED-CLASS definitions (basic_istream's sentry) parse
 	// eagerly with the owner — the owner's member bodies name the type.
 	instantiate_outofline_nested_classes(td.class_name,
@@ -58822,12 +58839,104 @@ static bool template_class_head_is_qualified(Program &pgm)
 static bool vector_contains_variable(const std::vector<Variable *> &vars,
 				     Variable *needle);
 
+// Does a class-head slot that names no template parameter name the
+// instantiation's argument in that slot? A type by its spelling; a non-type
+// argument by value (`true` names the same argument as `1`), the
+// partial-specialization matcher's rule.
+static bool outofline_head_slot_names_arg(Program &pgm,
+	const std::vector<TokenBase *> &run, size_t i,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
+{
+    std::string want;
+    for ( size_t t = 0; t < run.size(); ++t )
+	if ( run[t] )
+	    want += template_token_fragment(run[t]);
+    std::string have;
+    if ( i < arg_types_by_slot.size() && arg_types_by_slot[i] )
+    {
+	DataDef &add = arg_types_by_slot[i]->definition;
+	have = add.canonical_cpp_spelling().empty()
+	     ? add.name : add.canonical_cpp_spelling();
+	return have == want || add.name == want
+	    || arg_types_by_slot[i]->spelling() == want;
+    }
+    if ( i < arg_tokens_by_slot.size() )
+    {
+	for ( size_t t = 0; t < arg_tokens_by_slot[i].size(); ++t )
+	    if ( arg_tokens_by_slot[i][t] )
+		have += template_token_fragment(arg_tokens_by_slot[i][t]);
+	int value_score = 0;
+	return non_type_partial_spec_arg_matches(pgm, run,
+		arg_tokens_by_slot[i], want, have, value_score);
+    }
+    return true;
+}
+
+// Is an out-of-line member definition's class-head the argument list of the
+// partial specialization an instantiation came from ([temp.class.spec.mfunc]/1)?
+// Slot by slot, the same tokens, a definition parameter standing where the
+// specialization's parameter in the same position stands (`template<class U>
+// int Z<U*>::f()` for `template<class T> struct Z<T*>`). A slot that names no
+// parameter may instead name the instantiation's argument itself (`Z<T, 5>`
+// for `Z<T, (3 > 2) + 4>`).
+static bool outofline_head_names_spec(Program &pgm,
+	const Program::OutOfLineMemberDef &def,
+	const Program::OutOfLineSpecSource &spec,
+	const std::vector<TokenDataType *> &arg_types_by_slot,
+	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot)
+{
+    if ( spec.has_pack || def.typeparams.size() != spec.typeparams.size()
+      || def.head_args.size() != spec.pattern.size() )
+	return false;
+    // The position of a template parameter an identifier token names, or npos.
+    auto param_index = [](TokenBase *t, const std::vector<std::string> &params) {
+	if ( t && is_contextual_identifier_token(t) )
+	{
+	    const std::string nm = contextual_identifier_name(t);
+	    for ( size_t k = 0; k < params.size(); ++k )
+		if ( params[k] == nm )
+		    return k;
+	}
+	return std::string::npos;
+    };
+    for ( size_t i = 0; i < def.head_args.size(); ++i )
+    {
+	const std::vector<TokenBase *> &run = def.head_args[i];
+	const std::vector<TokenBase *> &pat = spec.pattern[i];
+	bool same = run.size() == pat.size();
+	bool names_param = false;
+	for ( size_t t = 0; t < run.size(); ++t )
+	{
+	    size_t dk = param_index(run[t], def.typeparams);
+	    if ( dk != std::string::npos )
+		names_param = true;
+	    if ( !same )
+		continue;
+	    size_t sk = param_index(pat[t], spec.typeparams);
+	    if ( dk != std::string::npos || sk != std::string::npos )
+		same = dk == sk;
+	    else
+		same = run[t] && pat[t] && template_token_fragment(run[t])
+				       == template_token_fragment(pat[t]);
+	}
+	if ( same )
+	    continue;
+	if ( names_param
+	  || !outofline_head_slot_names_arg(pgm, run, i, arg_types_by_slot,
+					    arg_tokens_by_slot) )
+	    return false;
+    }
+    return true;
+}
+
 void Program::attach_outofline_member_instantiations(
 	const std::string &class_name, const std::string &defining_namespace,
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
-	bool from_partial_specialization)
+	bool from_partial_specialization,
+	const OutOfLineSpecSource *spec_source)
 {
     std::string key = defining_namespace + "::" + class_name;
     std::vector<OutOfLineMemberInstantiation> &records =
@@ -58843,11 +58952,22 @@ void Program::attach_outofline_member_instantiations(
 	record.from_partial_specialization = from_partial_specialization;
 	record.arg_types_by_slot = arg_types_by_slot;
 	record.arg_tokens_by_slot = arg_tokens_by_slot;
+	if ( spec_source )
+	{
+	    // A definition read later still needs the pattern: keep copies
+	    // of its tokens, not the registry's.
+	    record.has_spec_source = true;
+	    record.spec_source = *spec_source;
+	    for ( std::vector<TokenBase *> &run : record.spec_source.pattern )
+		for ( TokenBase *&t : run )
+		    if ( t )
+			t = t->clone_origin();
+	}
 	records.push_back(record);
     }
     register_outofline_member_instantiations(class_name, defining_namespace,
 	registered_mangled, ddc, arg_types_by_slot, arg_tokens_by_slot,
-					     from_partial_specialization);
+	from_partial_specialization, spec_source);
 }
 
 void Program::register_outofline_member_instantiations(
@@ -58855,7 +58975,8 @@ void Program::register_outofline_member_instantiations(
 	const std::string &registered_mangled, DataDefCLASS *ddc,
 	const std::vector<TokenDataType *> &arg_types_by_slot,
 	const std::vector<std::vector<TokenBase *> > &arg_tokens_by_slot,
-	bool from_partial_specialization)
+	bool from_partial_specialization,
+	const OutOfLineSpecSource *spec_source)
 {
     if ( !ddc )
 	return;
@@ -59016,51 +59137,57 @@ void Program::register_outofline_member_instantiations(
 	    if ( !explicit_spec
 	      && def_has_concrete_slot != from_partial_specialization )
 		continue;
-	    for ( size_t i = 0; i < def.head_args.size()
-			     && i < arg_types_by_slot.size(); ++i )
+	    if ( spec_source && !explicit_spec )
 	    {
-		const std::vector<TokenBase *> &run = def.head_args[i];
-		std::string tp;
-		if ( run.size() == 1 && run[0]
-		  && is_contextual_identifier_token(run[0]) )
-		{
-		    const std::string nm = contextual_identifier_name(run[0]);
-		    for ( size_t t = 0; t < def.typeparams.size(); ++t )
-			if ( def.typeparams[t] == nm ) { tp = nm; break; }
-		}
-		if ( !tp.empty() )
-		{
-		    if ( arg_types_by_slot[i] )
-			tsubst[tp] = arg_types_by_slot[i];
-		    else if ( i < arg_tokens_by_slot.size() )
-			toksubst[tp] = arg_tokens_by_slot[i];
+		// A partial specialization's member: the head must be the
+		// specialization's argument list, and the definition's
+		// parameters take what the specialization's deduced, position
+		// for position (`Z<T*>` binds T to int for Z<int*>, which no
+		// slot of the instantiation spells alone).
+		if ( !outofline_head_names_spec(*this, def, *spec_source,
+				arg_types_by_slot, arg_tokens_by_slot) )
 		    continue;
-		}
-		// A CONCRETE slot: the instantiation's argument must spell it.
-		std::string want;
-		for ( size_t t = 0; t < run.size(); ++t )
-		    if ( run[t] )
-			want += template_token_fragment(run[t]);
-		std::string have;
-		if ( arg_types_by_slot[i] )
+		for ( size_t k = 0; k < def.typeparams.size(); ++k )
 		{
-		    DataDef &add = arg_types_by_slot[i]->definition;
-		    have = add.canonical_cpp_spelling().empty()
-			 ? add.name : add.canonical_cpp_spelling();
-		    if ( have != want && add.name != want
-		      && arg_types_by_slot[i]->spelling() != want )
-			{ head_matches = false; break; }
+		    const std::string &sp = spec_source->typeparams[k];
+		    std::map<std::string, TokenDataType *>::const_iterator ta =
+			spec_source->type_args.find(sp);
+		    if ( ta != spec_source->type_args.end() && ta->second )
+		    {
+			tsubst[def.typeparams[k]] = ta->second;
+			continue;
+		    }
+		    std::map<std::string, std::vector<TokenBase *> >::const_iterator
+			na = spec_source->token_args.find(sp);
+		    if ( na != spec_source->token_args.end() )
+			toksubst[def.typeparams[k]] = na->second;
 		}
-		else if ( i < arg_tokens_by_slot.size() )
+	    }
+	    else
+	    {
+		for ( size_t i = 0; i < def.head_args.size()
+				 && i < arg_types_by_slot.size(); ++i )
 		{
-		    for ( size_t t = 0; t < arg_tokens_by_slot[i].size(); ++t )
-			if ( arg_tokens_by_slot[i][t] )
-			    have += template_token_fragment(arg_tokens_by_slot[i][t]);
-		    // A non-type slot matches by value (`true` names the same
-		    // argument as `1`), the partial-specialization matcher's rule.
-		    int value_score = 0;
-		    if ( !non_type_partial_spec_arg_matches(*this, run,
-			    arg_tokens_by_slot[i], want, have, value_score) )
+		    const std::vector<TokenBase *> &run = def.head_args[i];
+		    std::string tp;
+		    if ( run.size() == 1 && run[0]
+		      && is_contextual_identifier_token(run[0]) )
+		    {
+			const std::string nm = contextual_identifier_name(run[0]);
+			for ( size_t t = 0; t < def.typeparams.size(); ++t )
+			    if ( def.typeparams[t] == nm ) { tp = nm; break; }
+		    }
+		    if ( !tp.empty() )
+		    {
+			if ( arg_types_by_slot[i] )
+			    tsubst[tp] = arg_types_by_slot[i];
+			else if ( i < arg_tokens_by_slot.size() )
+			    toksubst[tp] = arg_tokens_by_slot[i];
+			continue;
+		    }
+		    // A CONCRETE slot: the instantiation's argument must be it.
+		    if ( !outofline_head_slot_names_arg(*this, run, i,
+				    arg_types_by_slot, arg_tokens_by_slot) )
 			{ head_matches = false; break; }
 		}
 	    }
@@ -69137,7 +69264,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 		    pgm.register_outofline_member_instantiations(ool_class,
 			owner_ns, rec.registered_mangled, inst_ddc,
 			rec.arg_types_by_slot, rec.arg_tokens_by_slot,
-			rec.from_partial_specialization);
+			rec.from_partial_specialization,
+			rec.has_spec_source ? &rec.spec_source : NULL);
 		}
 	    }
 	    return NULL;
