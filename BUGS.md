@@ -6,8 +6,9 @@ keeps moving and fixed later in a burndown the owner schedules.
 **Owner pause, 2026-09-25, LIFTED 2026-09-28:** while the REPL arc's first
 slice was built (plan §37), a defect found off the REPL's path was filed here
 instead of being fixed on the spot. With §37 complete, the owner lifted the
-pause: a defect found now is fixed in its own commit (`fix-what-you-find.md`),
-never added here, and this backlog is being burned down.
+pause, and this backlog is being burned down. A defect found now is fixed in
+its own commit when it can be (`fix-what-you-find.md`). One that is not fixed
+on the spot is filed here, so it stays tracked (owner, 2026-09-29).
 
 - One entry per defect: kind, when and during what it was found, the reducer
   inline (`tmp/` is untracked), what gcc, clang and madc do, and the layer
@@ -19,6 +20,144 @@ never added here, and this backlog is being burned down.
 All outputs were measured 2026-09-25 with `bin/madc` at `8ffd42b8a`, gcc 13
 and clang 18. The madc flags are `--std=c17` for `.c` files and
 `--std=c++17` for `.cpp` files.
+
+## Silent wrong answers
+
+Found 2026-09-29 while fixing the aggregate and member attribute readers
+(c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
+gcc 13 and clang 18.
+
+### B62. `_Alignas` and `alignas` are dropped, and a variable has no alignment
+
+```c
+#include <stdio.h>
+#include <stdint.h>
+struct A { char c; _Alignas(16) int x; };
+struct B { char c; _Alignas(double) char d; };
+_Alignas(16) char g1;
+char g2 __attribute__((aligned(16)));
+int main(void)
+{
+	char q0 = 1;
+	_Alignas(16) char l1 = 2;
+	printf("sm: %zu %zu %zu %zu\n", sizeof(struct A), _Alignof(struct A), sizeof(struct B), _Alignof(struct B));
+	printf("va: %zu %zu %zu %d\n", __alignof__(g1), __alignof__(g2), __alignof__(l1),
+	       (int)((uintptr_t)&l1 % 16) + q0 - 1);
+	return 0;
+}
+```
+
+```cpp
+#include <cstdio>
+struct A { char c; alignas(16) int x; };
+struct B { char c; alignas(double) char d; };
+int main()
+{
+	alignas(16) char l1 = 2;
+	std::printf("cx: %zu %zu %zu %zu %zu\n", sizeof(A), alignof(A), sizeof(B), alignof(B), __alignof__(l1));
+	return 0;
+}
+```
+
+- gcc = clang: `sm: 32 16 16 8` / `va: 16 16 16 0`; g++ = clang++:
+  `cx: 32 16 16 8 16`. madc: `sm: 8 4 2 1` / `va: 1 1 1 0` and
+  `cx: 8 4 2 1 1`. A local `_Alignas(16)` object is not placed on a 16-byte
+  boundary either; the `0` above is luck of the frame (a larger reducer put
+  it at 8 mod 16).
+- Where: the lexer maps `_Alignas` and `alignas` to `__attribute__`
+  (`define_map`, lexer.cpp), and its `__attribute__` arm keeps a group only
+  when `gnu_attribute_text_has_supported_name` finds a name in it. `(16)`
+  and `(double)` name none, so the specifier is gone before the parser.
+  Variables have no alignment slot: the declaration's attribute read
+  (`consume_gnu_attributes` at the variable site, parser.cpp ~74433) passes
+  no `explicit_align`, and nothing emits `_Alignas` on a variable or answers
+  `__alignof__(var)` from one.
+- Fix shape: a parser reader for `alignas ( type-id | constant-expression )`
+  feeding the slots `aligned(N)` feeds, and a variable alignment emitted as
+  `_Alignas(N)` and read by `__alignof__`. The operand is dependent inside
+  templates (libstdc++ `std::atomic`'s `alignas(_S_alignment)`). A planned
+  change with its own session (owner, 2026-09-29).
+
+### B63. A member's own `packed` is ignored
+
+```c
+#include <stdio.h>
+#include <stddef.h>
+struct T5 { char c; int x __attribute__((packed)); };
+struct T7 { char c; int y __attribute__((packed)); char d; int z; };
+int main(void)
+{
+	printf("mp: %zu %zu %zu %zu\n", sizeof(struct T5), offsetof(struct T5, x), sizeof(struct T7), offsetof(struct T7, z));
+	return 0;
+}
+```
+
+- gcc = clang: `mp: 5 1 12 8`. madc: `mp: 8 4 16 12`.
+- Where: a member's attribute groups are read by `consume_gnu_attributes`
+  (before its type and, since 6671bd11a, after its declarator), but only
+  `aligned(N)` is taken from them. `DataDefSTRUCT` has no per-member
+  packing: `apply_member_alignment` only raises an alignment.
+
+### B64. A typedef-prefix `aligned` rounds the struct's size
+
+```c
+#include <stdio.h>
+typedef __attribute__((aligned(16))) struct { char a; } L2;
+int main(void) { printf("tp: %zu %zu\n", sizeof(L2), __alignof__(L2)); return 0; }
+```
+
+- gcc = clang: `tp: 1 16`. madc: `tp: 16 16`.
+- Where: `TokenSTRUCT::parse` seeds the aggregate's tag alignment from
+  `typedef_prefix_align` (set by the typedef parser's prefix reader,
+  parser.cpp ~53695), so the struct itself is aligned and its size rounds
+  up. In gcc and clang the attribute qualifies the typedef, and the
+  struct's size stays 1. (mingw `setjmp.h`'s `typedef _CRT_ALIGN(16)
+  struct ...` is the seed's reason; its struct is already 16 bytes.)
+
+### B65. A C++ class body drops or refuses an aggregate's and a member's attributes
+
+One construct per file (each alone), in a struct that needs the class
+parser (it has a member function):
+
+```cpp
+struct __attribute__((packed)) P1 { int f() { return b; } char a; int b; };   // c1: sizeof
+struct __attribute__((aligned(16))) P2 { int f() { return a; } char a; };     // c2: sizeof, alignof
+struct P3 { int f() { return b; } char a; int b; } __attribute__((packed));   // c3: sizeof
+struct C1 { int f() { return x; } char c; int x __attribute__((aligned(16))); };   // c4: sizeof
+struct C2 { int f() { return x; } char c; int __attribute__((aligned(16))) x; };   // c5: sizeof
+```
+
+- g++ = clang++: `c1: 5`, `c2: 16 16`, `c3: 5`, `c4: 32`, `c5: 32`. madc:
+  `c1: 8`, `c2: 1 1`, `c4: 8` (SILENT); c3 refused, `2:85: Expecting
+  identifier after type`; c5 refused, `2:76: Failed to find type when
+  parsing function parameters`.
+- Where: `TokenSTRUCT::parse` reads the tag's attributes into `lead_attrs`
+  and then hands the body to `TokenCLASS::parse`
+  (`cpp_struct_body_needs_class_parser`, parser.cpp ~46478) without them.
+  The class parser's `skip_member_attributes` (~50727) reads a member's
+  groups and discards them. It reads no groups after the class's `}`, nor
+  a member attribute between the type and the name.
+
+### B67. `scalar_storage_order` has no effect
+
+```c
+#include <stdio.h>
+struct __attribute__((scalar_storage_order("big-endian"))) B { unsigned int x; };
+int main(void)
+{
+	struct B b; b.x = 0x01020304u;
+	unsigned char *p = (unsigned char *)&b;
+	printf("sso: %02x %u\n", p[0], b.x);
+	return 0;
+}
+```
+
+- gcc: `sso: 01 16909060`. madc: `sso: 04 16909060`. clang 18 does not
+  implement the attribute (it warns, prints `04`), so this is GNU-only.
+- Where: the attribute is read and recorded
+  (`DataDefSTRUCT::setReverseScalarStorage`, frozen as `DF_REVERSE_SCALAR`,
+  used for bit-field placement in datadef.h), but nothing in
+  `cir_builder.cpp` byte-swaps a scalar member's load or store.
 
 ## Accepts invalid code
 
@@ -542,6 +681,24 @@ int main() { T t; return t.h() ? 0 : 1; }
   legacy `__has_*` spellings belong in that dispatch, converted once to the
   trait they mean. The three string ladders should become one enum at the
   boundary (enum-over-strings.md).
+
+### B66. `_Alignas` above 16 is refused by c2mir
+
+- Found 2026-09-29 with B62-B65; measured with `bin/madc` at 6671bd11a.
+
+```c
+#include <stdio.h>
+struct L { char c; int x __attribute__((aligned(32))); };
+int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L)); return 0; }
+```
+
+- gcc = clang: `a32: 64 32`. madc: `2:24: unsupported alignmnent`,
+  `cir_compile failed` (c2mir's check, on the `_Alignas(32)` madc emits).
+- Where: c2mir's `invalid_alignment`
+  (`third_party/mir/c2mir/<target>/c<target>-code.c`) accepts only 0, 1, 2,
+  4, 8 and 16, on every target. A local aligned to 32 needs a realigned
+  frame in MIR, so this may be a floor change
+  (`lowering-vs-raising.md` Tier 2/3), not only the check.
 
 ## Diagnostics
 
