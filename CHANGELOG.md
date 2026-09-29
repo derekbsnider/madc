@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### A variadic class template-id as a data member is a complete type
+
+`struct H { char c; P<int, char, long> m; };` for `template<typename... T>
+struct P` has `P`'s members and size, as in g++ and clang++: `h.m.v[2]` was
+refused ("Unidentified member") and `sizeof(H)` was 1. The same holds in a
+class template's body with the class's own pack expanded (`P<U...> m;`),
+for a member declared through a typedef of such a template-id, and for an
+empty pack (`P<>`, which `sizeof` also measured as 0). A class template
+instantiated while a C-style struct body is open is no longer registered as
+a type nested inside that struct.
+
 ### `sizeof` of a variadic class template-id measures it before any object exists
 
 `sizeof(P<int>)` and `alignof(P<int>)` for `template<typename... T> struct

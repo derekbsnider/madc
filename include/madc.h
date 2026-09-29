@@ -8043,6 +8043,12 @@ public:
     // :7776-arm's pending record)? Read-only twin of the request above.
     bool has_pending_template_instantiation(const std::string &mangled_name) const;
     DataDef *complete_class_type_on_demand(DataDef *dd);
+    // A non-static data member's type head, read as the storage context it
+    // is ([class.mem]: complete) — see parser.cpp. The second call completes
+    // a type that arrived through an alias.
+    TokenDataType *resolve_member_storage_type(TokenBase *type_head);
+    TokenDataType *complete_member_storage_type(TokenDataType *mtype,
+						TokenBase *type_head);
     bool template_declared_in_namespace(const std::string &name,
 					const std::string &ns_name);
     TokenBase *consume_unresolved_dependent_call(TokenBase *open);

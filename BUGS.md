@@ -70,36 +70,6 @@ int main()
   `apply_declaration_storage`, `push_declarator_list_tail`) and `Variable`.
   Owner ruling pending: a focused session for that change.
 
-### B75. A variadic class template-id as a by-value member is an empty shell
-
-```cpp
-#include <cstdio>
-template<typename... T> struct P2 { char k; int v[sizeof...(T)]; };
-template<typename... T> struct P1 { char k; double m; };
-struct H { char c; P2<int, char, long> m; };
-struct E { char c; P1<> e; };
-int main()
-{
-	H h; h.m.v[2] = 7;
-	std::printf("vm: %zu %zu %d %zu\n", sizeof(H), sizeof(E), h.m.v[2], sizeof(P1<>));
-	return 0;
-}
-```
-
-- Found 2026-09-29 while fixing B69 (the `sizeof` context of the same
-  family). g++ 13 = clang++ 18: `vm: 20 24 7 16`. madc: `Unidentified member
-  'v' in 'P2_int32_t_char_int64_t'`; without the member access `sizeof(H)`
-  is 1 and `sizeof(E)` 1 (SILENT). `std::tuple<int, double>` as a member is
-  right (tuple takes the real-instantiation lane).
-- Where: a variadic template-id is minted as an opaque shell unless a
-  context demands the complete type (`allow_variadic_real_inst`, or
-  `complete_class_type_on_demand` since B69's fix). `member_declarator`,
-  the one data-member reader, never demands it for a by-value class member.
-  Fix shape: demand completion there; a genuinely dependent shell in a class
-  pattern must not pay a doomed replay per member (a concreteness test on
-  the origin's argument runs first). `P1<>`: `complete_shell_class_type`
-  refuses an origin with no argument runs, which an empty pack is.
-
 ### B70. An in-class `static constexpr` array with an unsized bound measures 8
 
 ```cpp

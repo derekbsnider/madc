@@ -7425,10 +7425,12 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
 {
     if ( !cls || !is_incomplete_class_datadef(cls) )
 	return NULL;
+    // An origin with NO argument runs is an empty argument list (`P<>`, an
+    // empty pack): both lanes record one run per argument, defaults filled,
+    // so it replays as `< >` like any other.
     std::map<DataDef *, DependentShellOrigin>::const_iterator oi =
 	dependent_shell_origin.find(cls);
-    if ( oi == dependent_shell_origin.end()
-      || oi->second.raw_arg_tokens.empty() )
+    if ( oi == dependent_shell_origin.end() )
 	return NULL;
     // Speculative: a replay that cannot re-enter cleanly — a still-dependent
     // shell, a spelling-matched-spec template — must leave the caller exactly
@@ -9737,7 +9739,13 @@ public:
 	    std::vector<carray_dim_t> dimensions;
 	    for ( size_t d = 0; d < member.dimensions.size(); ++d )
 		dimensions.push_back((carray_dim_t)member.dimensions[d]);
-	    owner->addMember(member.name, *resolver.resolve(member.type),
+	    // [class.mem]: a data member's type is complete — a substituted
+	    // member (`P<U...> m;` as `P<int, int>`) completes on demand, as a
+	    // base does above.
+	    DataDef *member_dd = resolver.resolve(member.type);
+	    if ( member_dd )
+		member_dd = pgm.complete_class_type_on_demand(member_dd);
+	    owner->addMember(member.name, *member_dd,
 		(size_t)member.count, NULL, member.is_array,
 		member.is_array ? &dimensions : NULL);
 	    if ( !owner->member_access.empty() )
@@ -11944,6 +11952,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     std::swap(block_struct_tag_shadows, saved_struct_tag_shadows);
     std::vector<DataDefCLASS *> saved_class_scope_stack;
     std::swap(class_scope_stack, saved_class_scope_stack);
+    // The use site's open C-style aggregate bodies (`struct T { P<int> m; }`)
+    // are its scope, not the template's: left in place, the instantiated class
+    // named itself `T::P<int>` and the member kept the shell.
+    std::vector<DataDefSTRUCT *> saved_aggregate_scope_stack;
+    std::swap(aggregate_scope_stack, saved_aggregate_scope_stack);
     std::string saved_func = cur_func_name;
     cur_func_name.clear();
     // The instantiated body is a self-contained, fully-terminated class
@@ -12051,6 +12064,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	  && class_scope_stack.back() == td.owner_class )
 	    class_scope_stack.pop_back();
 	std::swap(class_scope_stack, saved_class_scope_stack);
+	std::swap(aggregate_scope_stack, saved_aggregate_scope_stack);
 	std::swap(compounds, saved_compounds);
 	// Unwind the fresh context's frames FIRST (a swallowed throw can leave
 	// them un-popped with their flat entries live), THEN restore the caller's.
@@ -12072,6 +12086,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	class_scope_stack.pop_back();
 
     std::swap(class_scope_stack, saved_class_scope_stack);
+    std::swap(aggregate_scope_stack, saved_aggregate_scope_stack);
     std::swap(compounds, saved_compounds);
     unwind_block_typedef_shadows(0, "A-norm");
     std::swap(block_typedef_shadows, saved_typedef_shadows);
@@ -13189,6 +13204,38 @@ DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 	if ( DataDefCLASS *real = complete_shell_class_type(cls) )
 	    return real;
     return out;
+}
+
+// A non-static data member's declared type, read at the member's type head
+// ([class.mem]: the type is COMPLETE). A concrete-arg variadic template-id
+// named here really instantiates (allow_variadic_real_inst, the storage
+// demand parseStatement's declaration arms make), and one that arrived
+// through an alias (`typedef impl<tag, int> B; B m;`) completes through
+// complete_class_type_on_demand. Neither while a dependent pattern is parsed
+// or captured: the arguments name the enclosing template's parameters, and
+// the shell is the answer until the instantiation. The ONE demand of both
+// member arms (the C-style struct body and the class body).
+TokenDataType *Program::resolve_member_storage_type(TokenBase *type_head)
+{
+    const bool dependent = dependent_parse_in_progress || class_pattern_capture_in_progress;
+    bool saved_vri = allow_variadic_real_inst;
+    if ( !dependent )
+	allow_variadic_real_inst = true;
+    TokenDataType *mtype = resolve_declared_type_token(type_head, true, true);
+    allow_variadic_real_inst = saved_vri;
+    return mtype;
+}
+
+TokenDataType *Program::complete_member_storage_type(TokenDataType *mtype,
+						     TokenBase *type_head)
+{
+    if ( !mtype || dependent_parse_in_progress || class_pattern_capture_in_progress )
+	return mtype;
+    DataDef *dd = &mtype->definition;
+    DataDef *complete = complete_class_type_on_demand(dd);
+    if ( complete == dd )
+	return mtype;
+    return make_alias_type_token(complete->name, complete, type_head);
 }
 
 static std::vector<std::vector<TokenBase *> >
@@ -47022,9 +47069,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 
 	// expect a data type token (or typedef'd identifier, or 'struct Tag')
+	// A data member's type is complete ([class.mem]): the one member
+	// storage demand (resolve_member_storage_type, then
+	// complete_member_storage_type for a type an alias delivered).
 	TokenDataType *mtype = NULL;
 	if ( tn->type() == TokenType::ttDataType )
-	    mtype = (TokenDataType *)pgm.nextToken();
+	    mtype = pgm.complete_member_storage_type((TokenDataType *)pgm.nextToken(), tn);
 	else if ( tn->type() == TokenType::ttIdentifier )
 	{
 	    std::string tname = ((TokenIdent *)tn)->spelling();
@@ -47032,7 +47082,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( tdmi != pgm.datatype_map.end() )
 	    {
 		pgm.nextToken(); // consume the identifier
-		mtype = (*tdmi);
+		mtype = pgm.complete_member_storage_type(*tdmi, tn);
 	    }
 		    else
 		    {
@@ -47044,7 +47094,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			// namespace-scope alias, or a template-id. The one shared
 			// resolver searches all of these; NULL still errors here.
 			pgm.nextToken(); // consume the leading identifier
-			mtype = pgm.resolve_declared_type_token(tn, true, true);
+			mtype = pgm.complete_member_storage_type(
+			    pgm.resolve_member_storage_type(tn), tn);
 			// [class]p2 injected-class-name: inside `struct node
 			// { ... }` the struct's OWN name is a type in C++
 			// without the `struct` keyword — the same in-progress
@@ -51586,19 +51637,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		// really instantiate instead of staying an opaque memberless
 		// shell. Without this the member's type is an EMPTY struct: its
 		// bases, members and constructor all vanish, `m.f()` folds to the
-		// literal 0, and nothing diagnoses it. Same per-demand-site
-		// arming as those two sites — resolve_declared_type_token's own
-		// stmt_scope_demand cannot cover this one, it requires
+		// literal 0, and nothing diagnoses it. resolve_declared_type_token's
+		// own stmt_scope_demand cannot cover this one, it requires
 		// class_scope_stack to be EMPTY.
-		// Not while a dependent pattern is being parsed or captured:
-		// there the arguments still name the enclosing template's
-		// parameters, and the shell is the correct answer.
-		bool saved_member_vri = pgm.allow_variadic_real_inst;
-		if ( !pgm.dependent_parse_in_progress
-		  && !pgm.class_pattern_capture_in_progress )
-		    pgm.allow_variadic_real_inst = true;
-		TokenDataType *mtype = pgm.resolve_declared_type_token(type_head, true, true);
-		pgm.allow_variadic_real_inst = saved_member_vri;
+		TokenDataType *mtype = pgm.resolve_member_storage_type(type_head);
 		if ( !mtype
 		  && (class_allows_opaque_member_type(ddc)
 		   || pgm.is_system_header_path(TokenBase::_parse_file))
@@ -51621,14 +51663,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		// __base_;` over __tuple_impl<__tuple_indices<...>, _Tp...>).
 		// Silent: a shell that cannot replay stays opaque, exactly as
 		// before.
-		if ( mtype && !pgm.dependent_parse_in_progress
-		  && !pgm.class_pattern_capture_in_progress )
-		    if ( DataDefCLASS *mcls =
-			    dynamic_cast<DataDefCLASS *>(&mtype->definition) )
-			if ( DataDefCLASS *real =
-				pgm.complete_shell_class_type(mcls) )
-			    mtype = make_alias_type_token(real->name, real,
-							  type_head);
+		mtype = pgm.complete_member_storage_type(mtype, type_head);
 
 	// East-const / -volatile on the base type (`char const *`, `int const x`):
 	// the cv-qualifier trails the type and precedes the declarator. madc tracks
