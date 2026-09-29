@@ -8287,6 +8287,14 @@ public:
     // The GNU attribute groups NEXT in the stream, read as an aggregate's own
     // (packed, aligned, scalar_storage_order) and consumed. False when none.
     bool consume_aggregate_attributes(AggregateAttributes &attrs);
+    // The attribute groups NEXT in the stream, read as a declared object's or
+    // member's own and consumed: their alignment is merged into `align` (the
+    // strictest wins). False when none.
+    bool consume_object_attributes(size_t &align);
+    // A run of cv-qualifiers and attribute groups in any order, as a
+    // decl-specifier sequence interleaves them (`const AL int x;`): the cv
+    // mask; the groups' alignment is merged into `align`.
+    unsigned consume_cv_and_object_attributes(size_t &align);
     // The GNU attribute groups NEXT in the stream, consumed (the stream is
     // left at the token after them): does one of them name `kind`? The kind
     // is compared as the enum (madc_gnu_attribute_kind), never the spelling.

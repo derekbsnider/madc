@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A member's `aligned` attribute before its type aligns it
+
+`struct L { char c; __attribute__((aligned(16))) int x; };` is 32 bytes,
+as in gcc and clang; it was 8. The attribute also works between a
+qualifier and the type (`const __attribute__((aligned(16))) int x;`, which
+was refused) and in every position inside a nested struct or union's body,
+where it was dropped or refused. Of several `aligned` attributes on one
+member, the strictest now wins.
+
 ### A member's `aligned` attribute after its declarator aligns it
 
 `struct T { char c; int x __attribute__((aligned(16))); };` is 32 bytes

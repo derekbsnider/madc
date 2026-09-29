@@ -2045,7 +2045,8 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 		{
 		    // aligned(N): N is an integer constant expression
 		    // (`aligned(2 * 4)`, `aligned(sizeof(long))`), not its first
-		    // literal. Its parens are consumed here, balanced.
+		    // literal. Its parens are consumed here, balanced. Of several,
+		    // the strictest wins (gcc), so an alignment only rises.
 		    if ( explicit_align && peekToken()
 		      && peekToken()->id() == TokenID::tkOpBrk )
 		    {
@@ -2053,7 +2054,7 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 			if ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
 			{
 			    int64_t aval = parse_constant_integer_expression();
-			    if ( aval > 0 )
+			    if ( aval > 0 && static_cast<size_t>(aval) > *explicit_align )
 				*explicit_align = static_cast<size_t>(aval);
 			}
 			TokenBase *cl = nextToken();
@@ -2112,6 +2113,24 @@ bool Program::consume_aggregate_attributes(AggregateAttributes &a)
 	if ( madc_gnu_attribute_kind(*ai) == GnuAttributeKind::Packed )
 	    a.packed = true;
     return true;
+}
+
+bool Program::consume_object_attributes(size_t &align)
+{
+    if ( !is_attribute_identifier_token(peekToken()) )
+	return false;
+    TokenBase *after = consume_gnu_attributes(nextToken(), NULL, NULL, &align);
+    if ( after )
+	pushToken(after);
+    return true;
+}
+
+unsigned Program::consume_cv_and_object_attributes(size_t &align)
+{
+    unsigned cv = skip_cv_qualifier_tokens();
+    while ( consume_object_attributes(align) )
+	cv |= skip_cv_qualifier_tokens();
+    return cv;
 }
 
 bool Program::consume_gnu_attributes_naming(GnuAttributeKind kind)
@@ -2533,6 +2552,23 @@ static void apply_aggregate_attributes(DataDefSTRUCT *agg,
     if ( a.storage_order != GnuScalarStorageOrder::Unspecified )
 	agg->setReverseScalarStorage(reverse_scalar_storage_requested(a.storage_order));
     agg->apply_tag_alignment(a.align);
+}
+
+// A member declarator's own attribute groups after it (`int x AL;`), `tn` the
+// token after the declarator, already consumed: read by the one GNU attribute
+// reader, they align the member just added only (a bit-field takes none), and
+// `tn` becomes the token after them.
+static void apply_member_trailing_attributes(Program &pgm, TokenBase *&tn,
+					     DataDefSTRUCT *agg, bool bitfield)
+{
+    if ( !is_attribute_identifier_token(tn) )
+	return;
+    size_t declarator_align = 0;
+    tn = pgm.consume_gnu_attributes(tn, NULL, NULL, &declarator_align);
+    if ( !tn )
+	pgm.Throw << "Unexpected end after __attribute__ in struct" << flush;
+    if ( !bitfield )
+	agg->apply_member_alignment(declarator_align);
 }
 
 static bool is_contextual_identifier_token(TokenBase *tb);
@@ -46876,22 +46912,20 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
-	while ( is_attribute_identifier_token(tn) )
-	{
-	    tn = pgm.consume_gnu_attributes(pgm.nextToken());
-	    if ( tn )
-		pgm.pushToken(tn);
-	    tn = pgm.peekToken();
-	}
 	uint32_t member_flags = 0;
 	// The line's cv (before and after the type specifier) — every
 	// declarator on it derives from the cv-qualified base (member_declarator).
 	unsigned member_cv = cvNONE;
+	// The line's alignment: the attribute groups among its specifiers,
+	// before and after the type (`AL int x;`, `const AL int x;`,
+	// `int AL x;`), align every declarator on the line.
+	size_t line_align = 0;
 	for (;;)
 	{
 	    // cv-qualifiers through the ONE owner — which also covers
-	    // `restrict`, where this copy stopped at const/volatile.
-	    member_cv |= pgm.skip_cv_qualifier_tokens();
+	    // `restrict`, where this copy stopped at const/volatile — and the
+	    // attribute groups interleaved with them.
+	    member_cv |= pgm.consume_cv_and_object_attributes(line_align);
 	    tn = pgm.peekToken();
 	    // `mutable` is a storage-class-specifier, not a cv-qualifier
 	    // ([dcl.stc]/9), so it stays here rather than in the owner: a
@@ -46971,15 +47005,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		} inner_scope(pgm, inner);
 		while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 		{
-		    while ( is_attribute_identifier_token(tn) )
-		    {
-			tn = pgm.consume_gnu_attributes(pgm.nextToken());
-			if ( tn )
-			    pgm.pushToken(tn);
-			tn = pgm.peekToken();
-		    }
-		    // Leading cv-qualifiers on the member's type, through the
-		    // ONE owner (skip_cv_qualifier_tokens). This body had NO
+		    // Leading cv-qualifiers on the member's type and the
+		    // attribute groups among them (the line's alignment, as in
+		    // the top-level loop), through the ONE owner
+		    // (skip_cv_qualifier_tokens). This body had NO
 		    // qualifier handling — every arm below reads a type token
 		    // directly — so `union { const char *s; int i; } u;` inside
 		    // a struct was "Expecting type in anonymous struct
@@ -46988,7 +47017,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // member (`union { const char *asm_str; MIR_item_t item; }
 		    // u;`), and its failure cascaded into 113 "no member named
 		    // 'c2m_ctx'" errors from the members declared after it.
-		    unsigned inner_cv = pgm.skip_cv_qualifier_tokens();
+		    size_t inner_align = 0;
+		    unsigned inner_cv = pgm.consume_cv_and_object_attributes(inner_align);
 		    if ( !(tn = pgm.peekToken()) )
 			pgm.Throw(loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		    TokenDataType *inner_type = NULL;
@@ -47089,10 +47119,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    else
 			pgm.Throw(tn) << "Expecting type in anonymous struct definition" << flush;
 
-		    // `T const *p` — a qualifier between the type and the
-		    // declarator. Same owner, same rule as the leading run
-		    // (the class-body twin below has always had both).
-		    inner_cv |= pgm.skip_cv_qualifier_tokens();
+		    // `T const *p` / `T AL m` — a qualifier or an attribute group
+		    // between the type and the declarator. Same owner, same rule
+		    // as the leading run (the class-body twin below has always
+		    // had both).
+		    inner_cv |= pgm.consume_cv_and_object_attributes(inner_align);
 
 		    DataDef *inner_base_dd = &inner_type->definition;
 		    DataDef *inner_member_dd = inner_base_dd;
@@ -47132,8 +47163,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    std::vector<carray_dim_t> inner_dims = imd.dims;
 
 		    // Check for named bitfield: `int x : 4;`
+		    bool inner_bitfield = false;
 		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 		    {
+			inner_bitfield = true;
 			pgm.nextToken();
 			if ( inner_count != 1 || inner_count_expr )
 			    pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
@@ -47146,8 +47179,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    inner_count_expr, inner_is_array_decl, &inner_dims);
 			pgm.note_member_source_spelling(inner,
 				inner_type->spelling(), inner_base_dd, tn);
+			inner->apply_member_alignment(inner_align);
 		    }
 		    tn = pgm.nextToken();
+		    apply_member_trailing_attributes(pgm, tn, inner, inner_bitfield);
 		    // Handle comma-separated members: `int f1, f2, f3;`
 		    while ( tn && tn->id() == TokenID::tkComma )
 		    {
@@ -47163,8 +47198,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			std::string cname = cmd.name;
 			size_t ccount = cmd.count;
 			TokenBase *ccount_expr = cmd.count_expr;
+			bool comma_bitfield = false;
 			if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 			{
+			    comma_bitfield = true;
 			    pgm.nextToken();
 			    if ( ccount_expr )
 				pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
@@ -47177,8 +47214,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				ccount_expr, cmd.is_array, &cmd.dims);
 			    pgm.note_member_source_spelling(inner,
 				    inner_type->spelling(), inner_base_dd, tn);
+			    inner->apply_member_alignment(inner_align);
 			}
 			tn = pgm.nextToken();
+			apply_member_trailing_attributes(pgm, tn, inner, comma_bitfield);
 		    }
 		    if ( !tn || tn->id() != TokenID::tkSemi )
 			pgm.Throw(tn ? tn : loc) << "Expecting ';' after anonymous struct member" << flush;
@@ -47345,18 +47384,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( pgm.typedef_alias_matches_datadef(mtype->spelling(),
 						       base_member_dd) )
 		    member_typedef_alias = mtype->spelling();
-		// the cv between the type and the pointer stars (`char const *p;`)
-		// is the line's too
-		member_cv |= pgm.skip_cv_qualifier_tokens();
-		// consume __attribute__((...)) after type — extract aligned(N)
-		// for struct member alignment (e.g. `int __attribute__((aligned(8))) a;`)
-		size_t member_align = 0;
-		while ( is_attribute_identifier_token(pgm.peekToken()) )
-		{
-		    TokenBase *after = pgm.consume_gnu_attributes(pgm.nextToken(), NULL, NULL, &member_align);
-		    if ( after )
-			pgm.pushToken(after);
-		}
+		// the cv and attribute groups between the type and the pointer
+		// stars (`char const *p;`, `int AL a;`) are the line's too
+		member_cv |= pgm.consume_cv_and_object_attributes(line_align);
 		bool done_members = false;
 		while ( !done_members )
 		{
@@ -47427,8 +47457,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			dds->member_access.back() |= member_flags;
 			pgm.note_member_source_spelling(dds, member_typedef_alias,
 							base_member_dd, member_name_tok);
-			if ( member_align > 0 )
-			    dds->apply_member_alignment(member_align);
+			if ( line_align > 0 )
+			    dds->apply_member_alignment(line_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
 			    << " (size " << member_dd->size << " x " << member_count
 			    << ", total " << dds->size << ')' << endl);
@@ -47438,18 +47468,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( !tn )
 			pgm.Throw << "Unexpected end of input in struct definition" << flush;
 		    // The member's own attributes after its declarator
-		    // (`int x __attribute__((aligned(16)));`) are read by the one
-		    // GNU attribute reader, as the ones before its type are, and
-		    // align this declarator's member only.
-		    if ( is_attribute_identifier_token(tn) )
-		    {
-			size_t declarator_align = 0;
-			tn = pgm.consume_gnu_attributes(tn, NULL, NULL, &declarator_align);
-			if ( !tn )
-			    pgm.Throw << "Unexpected end after __attribute__ in struct" << flush;
-			if ( !declared_bitfield )
-			    dds->apply_member_alignment(declarator_align);
-		    }
+		    // (`int x __attribute__((aligned(16)));`) align this
+		    // declarator's member only.
+		    apply_member_trailing_attributes(pgm, tn, dds, declared_bitfield);
 		    // C++11 default member initializer (NSDMI): `int x = 5;` etc.
 		    // (bit-fields cannot carry one — that path `continue`d above).
 		    if ( !dds->members.empty() )
