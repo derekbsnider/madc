@@ -784,7 +784,9 @@ A divergent family is a live bug. Consolidating one leaves a gate in
 `fulltest`.
 
 B58–B61 are one family, filed per delimiter at the owner's request
-(2026-09-28): hand-rolled balanced-delimiter counters that
+(2026-09-28; B58, `<`, closed 2026-09-29 — every angle counter and
+hand-split argument list is on the owners, and the split has its own gate
+marker): hand-rolled balanced-delimiter counters that
 `delimiter-tracking.md` forbids and `check-one-delim-tracker.sh` reports
 GREEN over. The gate's two markers are a counter NAME (`*angle*`,
 `*paren*`, `*square*`, `*brace*`) and a raw `'('` character scan, so a
