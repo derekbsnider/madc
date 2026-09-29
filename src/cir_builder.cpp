@@ -14550,7 +14550,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 		    && copy_ctor->is_copy_or_move_constructor_of(cdd)) {
 			// The declaration's twin: the operand binds through
 			// try_implicit_copy_construct (`return str;` into a
-			// string_view converts first).
+			// view class converts first).
 			node_t copy = try_implicit_copy_construct(
 				node1(N_DEREF, id(RETBUF_NAME, origin), origin),
 				cdd, copy_args, origin, copy_ctor);
