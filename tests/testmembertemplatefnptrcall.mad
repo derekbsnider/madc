@@ -1,0 +1,36 @@
+/* A member template's body may call through a name it binds itself: a
+   function-pointer parameter (`f(1, 2)`), a local function-pointer object
+   (`g(3, 4)`), also inside a constructor template's body and its mem-init
+   (`v(sq((int)t))`). Such a call is indirect, not a call to a symbol named
+   f or g. Before, the member-template instantiation took `f` for a callee
+   with no definition and bailed ("tsubst body calls un-emittable symbol").
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     cb 1 2
+     cb 3 4
+     cb 5 6
+     fn: 7 8 9 49 */
+#include <cstdio>
+static void cb(int a, int b) { printf("cb %d %d\n", a, b); }
+static int square(int x) { return x * x; }
+struct M {
+	template<class T> int h(void (*f)(int, int), T t) { f(1, 2); return (int)t; }
+	template<class T> int k(T t) { void (*g)(int, int) = cb; g(3, 4); return (int)t; }
+};
+struct K {
+	int v;
+	template<class T> K(void (*f)(int, int), T t) : v((int)t) { f(5, 6); }
+};
+struct Q {
+	int v;
+	template<class T> Q(int (*sq)(int), T t) : v(sq((int)t)) {}
+};
+int main()
+{
+	M m;
+	int a = m.h(cb, 7);
+	int b = m.k(8);
+	K k(cb, 9);
+	Q q(square, 7);
+	printf("fn: %d %d %d %d\n", a, b, k.v, q.v);
+	return 0;
+}

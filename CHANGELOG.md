@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### A member template can call through its own function-pointer parameter or local
+
+`template<class T> int h(void (*f)(int, int), T t) { f(1, 2); ... }` as a
+member, a constructor template that calls `f` in its body or mem-init
+(`: v(sq((int)t))`), and a local `void (*g)(int, int) = cb; g(3, 4);`
+compile and run as in g++. Before, madc took `f` or `g` for the name of a
+function with no definition and refused the instantiation ("tsubst bailed
+... un-emittable symbol").
+
 ### Constructor templates that differ by arity are told apart with a function-pointer parameter
 
 `template<class T> S(void (*f)(int, int), T t)` beside `template<class T>

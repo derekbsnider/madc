@@ -2755,6 +2755,12 @@ void cir_collect_call_callees(node_t tree, std::set<std::string> &out);
 // indirect, not an external symbol to judge.
 void cir_collect_funcdef_param_names(node_t fd, std::set<std::string> &out);
 
+// Names a body binds to OBJECTS: each declaration in the tree that declares
+// no function (`void (*g)(int, int) = cb;` binds g; `void f(int);` declares
+// an external f). A call through one is indirect: the object shadows any
+// function of that name, so it is no external symbol to judge.
+void cir_collect_declared_object_names(node_t tree, std::set<std::string> &out);
+
 // Collect every __attribute__((cleanup(F))) function symbol in the tree.
 // FOREST materialization sites only (a loaded body is pre-built — the live
 // lowering site that registers F as referenced never runs for it).

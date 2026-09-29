@@ -29853,6 +29853,21 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	{
 		std::set<std::string> callees;
 		cir_collect_call_callees(result, callees);
+		// A call through a name the method binds itself, a parameter or a
+		// local object (`f(1, 2)` for a `void (*f)(int, int)` parameter),
+		// is indirect: no symbol to ODR-record or to judge emittable (the
+		// pack cascade's rule, cir_collect_funcdef_param_names).
+		std::set<std::string> bound_params;
+		if (tf && tf->method)
+			for (Variable *pv : tf->method->parameters)
+				if (pv)
+					bound_params.insert(var_emit_name(*pv));
+		{
+			std::set<std::string> bound = bound_params;
+			cir_collect_declared_object_names(result, bound);
+			for (const std::string &b : bound)
+				callees.erase(b);
+		}
 		// Mem-init statements ride at the head of the returned body (below):
 		// their callees (delegated ctor, member ctor calls, arg calls) need
 		// the same ODR-record + emittable gate — but collected SEPARATELY:
@@ -29862,6 +29877,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		if (!meminit_failed)
 			for (node_t s : meminit_stmts)
 				cir_collect_call_callees(s, meminit_callees);
+		for (const std::string &b : bound_params)
+			meminit_callees.erase(b);
 		// Pass 1.6 synthesizes destructors for synth-eligible classes and emits
 		// them DIRECTLY into the module (not as pending_funcs FuncDefs), so the
 		// pending-funcs scan below cannot see them. Pre-collect their base dtor
@@ -35043,6 +35060,18 @@ void cir_collect_call_callees(node_t n, std::set<std::string> &out)
 // libstdc++'s manipulator operator<< / __gnu_cxx::__stoa's __convf) parses
 // as N_CALL(N_ID __pf, ...) — a name the callee harvest must not treat as
 // an external symbol (C scoping: the param shadows any global).
+void cir_collect_declared_object_names(node_t n, std::set<std::string> &out)
+{
+	if (!n) return;
+	if (n->code == N_SPEC_DECL && !cir_declares_function(n))
+		if (const char *nm = cir_declared_id(n))
+			out.insert(nm);
+	if (n->code > N_ID)
+		for (node_t op = c2mir_node_first_op(n); op;
+		     op = c2mir_node_next_op(op))
+			cir_collect_declared_object_names(op, out);
+}
+
 void cir_collect_funcdef_param_names(node_t fd, std::set<std::string> &out)
 {
 	if (!fd || fd->code != N_FUNC_DEF) return;
