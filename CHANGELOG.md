@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### A defaulted constructor template's head can hold a `>` in parentheses
+
+`template<class U = int, int N = (3 > 2), class V = short> S() : v(sizeof(V))
+{}` is a constructor template whose parameters U, N and V all have defaults,
+as in g++. Before, madc ended the head at the `>` inside `(3 > 2)`, lost V,
+and refused the constructor ("use of undeclared identifier 'V'").
+
 ### A non-type template default can name an earlier parameter
 
 `template<class T, int N = sizeof(T) + 1> int f()` makes `f<int>()` return

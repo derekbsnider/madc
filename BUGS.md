@@ -795,7 +795,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: eleven hand-rolled angle counters
+### B58. `<`: ten hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -820,7 +820,7 @@ scans), `peek_after_balanced_template_id_from`,
   that function's backward walk.
 - Sites: `expand_integer_pack_template_args` 6542,
   `evaluate_requires_expression_constant` 38159,
-  `template_list_close_index` 49356, `skipped_template_outofline_member`
+  `skipped_template_outofline_member`
   58158 (walks backwards; `DelimDepth` has no backward form),
   `skipped_template_outofline_nested_class` 58690,
   `template_class_head_is_qualified` 58732,
@@ -866,8 +866,10 @@ int main()
 - `A<(3 > 2)>` as a type, in a nested-name-specifier and as a second
   argument passes (`gt: 1 1 2`, as g++ and clang++ print): the main parse
   path is on `DelimDepth`, and these copies sit on side paths.
-- Next: `template_list_close_index`, a second template-id extent helper.
-  It goes, and its caller asks `template_id_suffix_end`.
+- Done: `template_list_close_index`, a second template-id extent helper,
+  deleted; its caller asks `template_id_suffix_end`
+  (tests/testdefaultedctortemplate: a defaulted constructor template's
+  later parameters were lost at a parenthesized `>`).
 
 ### B59. `(`: forty-two hand-rolled paren counters
 

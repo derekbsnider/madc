@@ -49362,42 +49362,6 @@ static bool member_template_param_intro(TokenBase *t)
     return n == "typename" || n == "class";
 }
 
-static bool template_list_close_index(const TokenStream &toks,
-				      size_t lt_idx, size_t &close_idx)
-{
-    if ( lt_idx >= toks.size() || !toks[lt_idx]
-      || toks[lt_idx]->id() != TokenID::tkLT )
-	return false;
-    int depth = 0;
-    for ( size_t i = lt_idx; i < toks.size(); ++i )
-    {
-	TokenBase *t = toks[i];
-	if ( !t )
-	    continue;
-	if ( t->id() == TokenID::tkLT )
-	    ++depth;
-	else if ( t->id() == TokenID::tkGT && depth > 0 )
-	{
-	    --depth;
-	    if ( depth == 0 )
-	    {
-		close_idx = i;
-		return true;
-	    }
-	}
-	else if ( t->id() == TokenID::tkBSR && depth > 0 )
-	{
-	    if ( depth <= 2 )
-	    {
-		close_idx = i;
-		return true;
-	    }
-	    depth -= 2;
-	}
-    }
-    return false;
-}
-
 static bool template_param_slice_has_default(
 	const TokenStream &toks, size_t begin, size_t end)
 {
@@ -49590,8 +49554,10 @@ static bool try_parse_defaulted_member_template_constructor(
       || !pgm.tokens[1] || pgm.tokens[1]->id() != TokenID::tkLT )
 	return false;
 
-    size_t close_idx = 0;
-    if ( !template_list_close_index(pgm.tokens, 1, close_idx) )
+    // The head's extent is the one template-argument-list scan's answer: a
+    // `>` inside a default's parentheses (`int N = (3 > 2)`) is not its close.
+    size_t close_idx = template_id_suffix_end(pgm.tokens, 1);
+    if ( close_idx == 1 )
 	return false;
 
     std::set<std::string> template_param_names;
