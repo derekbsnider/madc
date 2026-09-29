@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Constructor templates that differ by arity are told apart with a function-pointer parameter
+
+`template<class T> S(void (*f)(int, int), T t)` beside `template<class T>
+S(T t)` makes `S a(cb, 7)` call the two-parameter constructor and `S b(5)`
+the one-parameter one, as in g++, whichever is declared first. Before, madc
+counted parameters up to the first `)`, which here was the function
+pointer's own, and refused the class that declares its one-parameter
+constructor first.
+
 ### A partial specialization deduces a non-type parameter inside a template-id
 
 `template<class T, int N> struct Z<T, C<N> >` is the specialization

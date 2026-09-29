@@ -59975,6 +59975,41 @@ static std::string serialize_token_range(const std::vector<TokenBase *> &toks,
 // type (tokens [ret_begin, declarator_start), minus leading specifiers) and the
 // top-level parameter type spellings (from lparen, parameter NAMES dropped),
 // into `out`. Returns false if the return type or parameter list is empty.
+// A stored parameter list's top-level parameters, [begin, end) each, from
+// the `(` at tokens[lparen]. The scan starts INSIDE the list on DelimDepth,
+// so the list's own level is its top: a `<` there opens (`vector<int, int>`
+// is one parameter), `( )` nests (`void (*)(int, int)` is one), and so do
+// `[ ]`. The last range ends at the list's `)`, whose index is returned;
+// an unclosed list returns tokens.size() and drops its unfinished tail.
+// Every range is reported, empty ones too: the callers decide what an empty
+// or `void` parameter means.
+static size_t parameter_list_ranges(const std::vector<TokenBase *> &tokens,
+		size_t lparen, std::vector<std::pair<size_t, size_t> > &out)
+{
+    out.clear();
+    size_t pstart = lparen + 1;
+    DelimDepth d;
+    for ( size_t i = lparen + 1; i < tokens.size(); )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t ) { ++i; continue; }
+	bool outside = !d.paren && !d.angle && !d.square;
+	if ( outside && t->id() == TokenID::tkClBrk )
+	{
+	    out.push_back(std::make_pair(pstart, i));
+	    return i;
+	}
+	if ( outside && t->id() == TokenID::tkComma )
+	{
+	    out.push_back(std::make_pair(pstart, i));
+	    pstart = i + 1;
+	}
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+    }
+    return tokens.size();
+}
+
 static bool extract_free_signature(
 	Program &pgm, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams, const std::string &name,
@@ -59997,33 +60032,17 @@ static bool extract_free_signature(
     // (...), dropping a trailing parameter NAME. Angle tracking keeps a comma
     // inside `<...>` template args from splitting a parameter.
     std::vector<std::string> params;
-    size_t pstart = lparen + 1;
-    auto flush_param = [&](size_t pend) {
-	size_t real_end = pend;
-	if ( real_end > pstart + 1 && tokens[real_end - 1]
+    std::vector<std::pair<size_t, size_t> > ranges;
+    parameter_list_ranges(tokens, lparen, ranges);
+    for ( const std::pair<size_t, size_t> &r : ranges )
+    {
+	size_t real_end = r.second;
+	if ( real_end > r.first + 1 && tokens[real_end - 1]
 	  && tokens[real_end - 1]->type() == TokenType::ttIdentifier )
 	    --real_end;   // drop the parameter name (type spans > 1 token)
-	std::string sp = serialize_token_range(tokens, pstart, real_end);
+	std::string sp = serialize_token_range(tokens, r.first, real_end);
 	if ( !sp.empty() && sp != "void" )   // `f(void)` == zero params
 	    params.push_back(sp);
-    };
-    DelimDepth d;
-    for ( size_t i = lparen + 1; i < tokens.size(); )
-    {
-	TokenBase *t = tokens[i];
-	if ( !t ) { ++i; continue; }
-	// The scan starts INSIDE the parameter list, so "top" here is the
-	// list's own level: no braces were tracked by the original.
-	bool outside = !d.paren && !d.angle && !d.square;
-	if ( outside && t->id() == TokenID::tkClBrk )
-	    { flush_param(i); break; }
-	if ( outside && t->id() == TokenID::tkComma )
-	{
-	    flush_param(i);
-	    pstart = i + 1;
-	}
-	size_t n = delim_scan_step(tokens, i, d);
-	i += n ? n : 1;
     }
     // A zero-parameter function template (resolved entirely by explicit
     // template arguments — e.g. libstdc++ `__check_constructible<V,T>()`) is
@@ -60058,9 +60077,9 @@ static bool skipped_template_function_signature_spellings(
     auto param_type_end = [&](size_t begin, size_t end) -> size_t {
 	size_t real_end = end;
 	// Its OWN tracker. This lambda used to mutate the enclosing scan's
-	// depth counters by reference — it is called from flush_param, i.e.
-	// from inside that loop, so every default-argument scan corrupted the
-	// outer parameter walk's idea of where it was.
+	// depth counters by reference while that scan was still walking the
+	// list, so every default-argument scan corrupted the outer parameter
+	// walk's idea of where it was.
 	DelimDepth pd;
 	for ( size_t i = begin; i < end && i < tokens.size(); )
 	{
@@ -60092,30 +60111,14 @@ static bool skipped_template_function_signature_spellings(
     };
 
     param_spellings.clear();
-    size_t pstart = lparen + 1;
-    auto flush_param = [&](size_t pend) {
-	size_t real_end = param_type_end(pstart, pend);
-	std::string sp = serialize_token_range(tokens, pstart, real_end);
+    std::vector<std::pair<size_t, size_t> > ranges;
+    parameter_list_ranges(tokens, lparen, ranges);
+    for ( const std::pair<size_t, size_t> &r : ranges )
+    {
+	size_t real_end = param_type_end(r.first, r.second);
+	std::string sp = serialize_token_range(tokens, r.first, real_end);
 	if ( !sp.empty() && sp != "void" )
 	    param_spellings.push_back(sp);
-    };
-    DelimDepth d;
-    for ( size_t i = lparen + 1; i < tokens.size(); )
-    {
-	TokenBase *t = tokens[i];
-	if ( !t ) { ++i; continue; }
-	// The scan starts INSIDE the parameter list, so "top" here is the
-	// list's own level: no braces were tracked by the original.
-	bool outside = !d.paren && !d.angle && !d.square;
-	if ( outside && t->id() == TokenID::tkClBrk )
-	    { flush_param(i); break; }
-	if ( outside && t->id() == TokenID::tkComma )
-	{
-	    flush_param(i);
-	    pstart = i + 1;
-	}
-	size_t n = delim_scan_step(tokens, i, d);
-	i += n ? n : 1;
     }
     return true;
 }
@@ -66649,19 +66652,18 @@ bool Program::instantiate_member_ctor_template_candidate(
 	     && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
 	    ++op;
 	if ( op >= decl.size() ) return -1;
-	int adepth = 0, cnt = 0; bool any = false;
-	for ( size_t i = op + 1; i < decl.size(); ++i )
+	// The parameters are parameter_list_ranges' (a `void (*)(int, int)`
+	// parameter is one); `()` and `(void)` declare none.
+	std::vector<std::pair<size_t, size_t> > ranges;
+	parameter_list_ranges(decl, op, ranges);
+	int cnt = 0;
+	for ( const std::pair<size_t, size_t> &r : ranges )
 	{
-	    TokenBase *t = decl[i]; if ( !t ) continue;
-	    TokenID id = t->id();
-	    if ( id == TokenID::tkClBrk && adepth == 0 ) break;	// end of param list
-	    if ( id == TokenID::tkLT ) { ++adepth; any = true; continue; }
-	    if ( id == TokenID::tkGT ) { if ( adepth > 0 ) --adepth; continue; }
-	    if ( id == TokenID::tkBSR ) { adepth -= 2; if ( adepth < 0 ) adepth = 0; continue; }
-	    if ( adepth == 0 && id == TokenID::tkComma ) { ++cnt; continue; }
-	    any = true;
+	    std::string sp = serialize_token_range(decl, r.first, r.second);
+	    if ( !sp.empty() && sp != "void" )
+		++cnt;
 	}
-	return any ? cnt + 1 : 0;
+	return cnt;
     };
     // Find a member-template CONSTRUCTOR placeholder among the class's ctors
     // (registered with its body retained by register_skipped_class_template_function).

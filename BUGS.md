@@ -795,7 +795,7 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B58. `<`: six hand-rolled angle counters
+### B58. `<`: five hand-rolled angle counters
 
 - None of them asks the name question ([temp.names]/3,
   `DelimDepth::lt_reads_as_less_than`), so every `<` opens a level.
@@ -821,43 +821,15 @@ scans), `peek_after_balanced_template_id_from`,
 - Sites: `expand_integer_pack_template_args` 6542,
   `evaluate_requires_expression_constant` 38159,
   `instantiate_fn_template_binding` 63772,
-  `instantiate_member_ctor_template_candidate` 66344 (the
-  `member_ctor_param_count` lambda, KG DupFamily
-  `captured_param_list_split`), `resolve_decltype_call_return` 67525,
+  `resolve_decltype_call_return` 67525,
   `datatype_statement_starts_qualified_expr` 76338.
-- `member_ctor_param_count` counts only angles, so a `void (*)(int, int)`
-  parameter ends its count at the inner `)`, and two member-template
-  constructors that differ by arity are told apart wrongly:
-
-```cpp
-#include <cstdio>
-static void cb(int a, int b) { printf("cb %d %d\n", a, b); }
-struct S {
-	int v;
-	template<class T> S(void (*f)(int, int), T t) : v(100 + (int)t) { f(1, 2); }
-	template<class T> S(T t) : v((int)t) {}
-};
-struct R {
-	int v;
-	template<class T> R(T t) : v((int)t) {}
-	template<class T> R(void (*f)(int, int), T t) : v(200 + (int)t) { f(3, 4); }
-};
-int main()
-{
-	S a(cb, 7);
-	S b(5);
-	R c(cb, 8);
-	R d(6);
-	printf("mct: %d %d %d %d\n", a.v, b.v, c.v, d.v);
-	return 0;
-}
-```
-
-- g++ 13 and clang++ 18 print `cb 1 2`, `cb 3 4`, `mct: 107 5 208 6`.
-  madc refuses it: `tsubst bailed on the covered instantiation 'S__S__o3'
-  of S::S<T> [why: tsubst body calls un-emittable symbol]` and `no
-  matching constructor for call to 'R(<unnamed>, int)'`. The fix's
-  negative control confirms the layer.
+- Done: `member_ctor_param_count` counts `parameter_list_ranges`'
+  parameters, the one split `extract_free_signature` and
+  `skipped_template_function_signature_spellings` each wrote out, now
+  shared (KG DupFamily `captured_param_list_split`;
+  tests/testmemberctortemplatearity: a `void (*)(int, int)` parameter
+  ended the count at its inner `)`, and two constructor templates that
+  differ by arity were refused).
 - `A<(3 > 2)>` as a type, in a nested-name-specifier and as a second
   argument passes (`gt: 1 1 2`, as g++ and clang++ print): the main parse
   path is on `DelimDepth`, and these copies sit on side paths.
