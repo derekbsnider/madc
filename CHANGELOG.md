@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### A C++ class lays out its own and its members' attributes
+
+A class with a member function, a vptr or a base takes `packed` and
+`aligned(N)` before its name, after it and after its `}`, and on a member
+before its type, between the type and the name and after the declarator,
+plus `alignas(N)` on a member, as g++ and clang++ do. madc dropped all of
+them (`struct __attribute__((packed)) P { int f(); char a; int b; }` was 8
+bytes, not 5) or refused two (`} __attribute__((packed));` and `int
+__attribute__((aligned(16))) x;`). A class's own `packed` packs its members
+and its vptr but never a base subobject, which only `#pragma pack` caps; its
+`aligned(N)` raises the class's alignment without moving a member.
+
 ### `#pragma pack` lays out a C++ class
 
 Under `#pragma pack(N)` a class with a member function, a vptr or a base

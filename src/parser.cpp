@@ -2598,7 +2598,7 @@ static bool reverse_scalar_storage_requested(GnuScalarStorageOrder order)
 static void seed_definition_pack(Program &pgm, DataDefSTRUCT *agg)
 {
     if ( pgm.pack_current() > 0 )
-	agg->pack = pgm.pack_current();
+	agg->pack = agg->pragma_pack = pgm.pack_current();
 }
 
 // Lay an aggregate's own GNU attributes into its DataDefSTRUCT. Read before
@@ -2620,10 +2620,22 @@ static void apply_aggregate_attributes(DataDefSTRUCT *agg,
     agg->apply_tag_alignment(a.align);
 }
 
+// A member's attributes lay out the member just added: aligned(N) aligns it
+// (a bit-field takes no alignment) and `packed` packs it — for the struct and
+// the class parser alike.
+static void apply_member_layout_attributes(DataDefSTRUCT *agg, size_t align,
+					   bool packed, bool bitfield)
+{
+    if ( !bitfield )
+	agg->apply_member_alignment(align);
+    if ( packed )
+	agg->apply_member_packing();
+}
+
 // A member declarator's own attribute groups after it (`int x AL;`), `tn` the
 // token after the declarator, already consumed: read by the one GNU attribute
-// reader, they align (a bit-field takes no alignment) or pack the member just
-// added only, and `tn` becomes the token after them.
+// reader, they lay out the member just added only, and `tn` becomes the token
+// after them.
 static void apply_member_trailing_attributes(Program &pgm, TokenBase *&tn,
 					     DataDefSTRUCT *agg, bool bitfield)
 {
@@ -2634,10 +2646,9 @@ static void apply_member_trailing_attributes(Program &pgm, TokenBase *&tn,
     tn = pgm.consume_gnu_attributes(tn, &attrs, NULL, &declarator_align);
     if ( !tn )
 	pgm.Throw << "Unexpected end after __attribute__ in struct" << flush;
-    if ( !bitfield )
-	agg->apply_member_alignment(declarator_align);
-    if ( attribute_set_names(attrs, GnuAttributeKind::Packed) )
-	agg->apply_member_packing();
+    apply_member_layout_attributes(agg, declarator_align,
+				   attribute_set_names(attrs, GnuAttributeKind::Packed),
+				   bitfield);
 }
 
 static bool is_contextual_identifier_token(TokenBase *tb);
@@ -23255,9 +23266,9 @@ void DataDefCLASS::compute_layout()
 	bool empty_base = trait_is_empty(bs.base);
 	// A base subobject is aligned to the base's OWN alignment (Itanium ABI),
 	// not an assumed pointer alignment — a non-polymorphic POD base aligns to
-	// its strongest member, matching gcc/clang — up to the pack, which
-	// caps a base subobject's alignment too.
-	size_t balign = pack_capped(bs.base->alignment());
+	// its strongest member, matching gcc/clang — up to a #pragma pack,
+	// which caps a base subobject's alignment too.
+	size_t balign = base_capped(bs.base->alignment());
 	if ( !balign ) balign = 1;
 	// Itanium empty-base allocation: an EMPTY non-primary base occupies no
 	// storage and is PLACED AT OFFSET 0 (dsize contributes nothing), bumped
@@ -23315,9 +23326,12 @@ void DataDefCLASS::compute_layout()
     //    only; apply_member_layout() does the member_offsets rewrite (it knows each
     //    member's origin). addMember left `size` = the packed own-members size
     //    (the live flatten resets size to 0 before adding own members; the unit
-    //    tests add only own members) and `max_align` = strongest own alignment.
+    //    tests add only own members) and `max_align` = strongest own alignment,
+    //    raised by the tag's aligned(N). The block begins at the members' own
+    //    alignment (own_member_alignment): the tag's moves no member.
     if ( max_align > maxalign ) maxalign = max_align;
-    own_block_off = mi_align_up(cur, max_align ? max_align : 1);
+    size_t own_align = own_member_alignment();
+    own_block_off = mi_align_up(cur, own_align ? own_align : 1);
     cur = own_block_off + size;   // size = own packed size on entry
 
     // 4. nvsize (Itanium's "base size") excludes tail padding. A derived
@@ -23342,7 +23356,7 @@ void DataDefCLASS::compute_layout()
     size_t end = cur;
     for ( DataDefCLASS *vb : vbs )
     {
-	size_t vbalign = pack_capped(vb->alignment());
+	size_t vbalign = base_capped(vb->alignment());
 	if ( !vbalign ) vbalign = 1;
 	end = mi_align_up(end, vbalign);
 	vbase_offset[vb] = end;
@@ -46688,6 +46702,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	pgm.parsing_cpp_final_class = struct_head_final;
 	TokenCLASS class_parser;
 	TokenBase *result = NULL;
+	pgm.class_head_attributes = lead_attrs;	// the class head consumes them
 	try
 	{
 	    result = class_parser.parse(pgm);
@@ -47349,10 +47364,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    inner_count_expr, inner_is_array_decl, &inner_dims);
 			pgm.note_member_source_spelling(inner,
 				inner_type->spelling(), inner_base_dd, tn);
-			inner->apply_member_alignment(inner_align);
 		    }
-		    if ( inner_packed )
-			inner->apply_member_packing();
+		    apply_member_layout_attributes(inner, inner_align, inner_packed,
+						   inner_bitfield);
 		    tn = pgm.nextToken();
 		    apply_member_trailing_attributes(pgm, tn, inner, inner_bitfield);
 		    // Handle comma-separated members: `int f1, f2, f3;`
@@ -47386,10 +47400,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				ccount_expr, cmd.is_array, &cmd.dims);
 			    pgm.note_member_source_spelling(inner,
 				    inner_type->spelling(), inner_base_dd, tn);
-			    inner->apply_member_alignment(inner_align);
 			}
-			if ( inner_packed )
-			    inner->apply_member_packing();
+			apply_member_layout_attributes(inner, inner_align, inner_packed,
+						       comma_bitfield);
 			tn = pgm.nextToken();
 			apply_member_trailing_attributes(pgm, tn, inner, comma_bitfield);
 		    }
@@ -47461,6 +47474,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    pgm.parsing_cpp_union_class = nested_union_kw;
 		    pgm.class_definition_only = true;
 		    pgm.enclosing_aggregate_spelling = dds->cpp_linkage_spelling();
+		    pgm.class_head_attributes = nested_attrs;	// the class head consumes them
 		    TokenCLASS class_parser;
 		    try { class_parser.parse(pgm); }
 		    catch(...)
@@ -47632,14 +47646,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			dds->member_access.back() |= member_flags;
 			pgm.note_member_source_spelling(dds, member_typedef_alias,
 							base_member_dd, member_name_tok);
-			if ( line_align > 0 )
-			    dds->apply_member_alignment(line_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
 			    << " (size " << member_dd->size << " x " << member_count
 			    << ", total " << dds->size << ')' << endl);
 		    }
-		    if ( line_packed )
-			dds->apply_member_packing();
+		    apply_member_layout_attributes(dds, line_align, line_packed,
+						   declared_bitfield);
 
 		    tn = pgm.nextToken();
 		    if ( !tn )
@@ -50186,10 +50198,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     DBG(std::cout << std::endl << "TokenCLASS::parse() top" << std::endl);
     // A class-head's attribute groups and alignment specifier come before its
-    // name (`class alignas(8) Stmt`, [class.pre]/1). The class parser does
-    // not lay them out yet (BUGS.md B65); read here, they no longer stand
-    // for the class name.
-    AggregateAttributes head_attrs;
+    // name (`class alignas(8) Stmt`, [class.pre]/1), joined by those the
+    // struct parser read before handing a C++ struct body here; laid into
+    // the class before its members.
+    AggregateAttributes head_attrs = pgm.class_head_attributes;
+    pgm.class_head_attributes = AggregateAttributes();
     pgm.consume_aggregate_attributes(head_attrs);
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
@@ -50906,6 +50919,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // the compute_layout call site). size is reset to 0: own members start at 0,
     // and compute_layout assigns the real total.
     pgm.initialize_class_bases(ddc, base_specs);
+    // The class's own head attributes, before any own member is laid out:
+    // `packed` packs its members and its vptr, aligned(N) raises the class.
+    apply_aggregate_attributes(ddc, head_attrs, false);
 
     // C++ defaults: `class` members are private until a public:/protected:
     // label; `struct` members are public. Named C++ structs with class-only
@@ -50921,20 +50937,22 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     // ordered member list at class COMPLETION ([class.compare.default]).
     std::vector<std::string> defaulted_comparison_ops;
 
-    // Consume member-level GNU attributes (`__attribute__((aligned(8)))` etc.)
-    // wherever they may appear on a member — leading and trailing. Reuses the
-    // shared consume_gnu_attributes helper (same as TokenSTRUCT::parse) so the
-    // class body parser does not drop attribute handling for structs routed
-    // here. The attribute payload is parsed-and-skipped (layout effects come
-    // through the struct/class layout path, unchanged).
-    auto skip_member_attributes = [&]()
+    // A member-declaration's attribute and alignment specifiers, read by the
+    // one object-attribute reader (as TokenSTRUCT::parse reads them): the
+    // line's — before the type, among its cv, between the type and the
+    // declarator (`AL int a, b;`, `int AL x;`) — go to every data member the
+    // line declares; a declarator's trailing ones to that member alone. Each
+    // aligns (a bit-field takes no alignment) or packs the member just added.
+    size_t line_align = 0;
+    bool line_packed = false;
+    auto apply_member_attributes = [&](bool bitfield)
     {
-	while ( pgm.peekToken() && is_attribute_identifier_token(pgm.peekToken()) )
-	{
-	    TokenBase *after = pgm.consume_gnu_attributes(pgm.nextToken());
-	    if ( after )
-		pgm.pushToken(after);
-	}
+	size_t declarator_align = 0;
+	bool packed = line_packed;
+	while ( pgm.consume_object_attributes(declarator_align, &packed) )
+	    ;
+	apply_member_layout_attributes(ddc, line_align, false, bitfield);
+	apply_member_layout_attributes(ddc, declarator_align, packed, bitfield);
     };
 
     // The ONE friend-declaration owner ([class.friend]): record the
@@ -51002,7 +51020,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     try {
 	while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 	{
-	skip_member_attributes();
+	line_align = 0;
+	line_packed = false;
+	while ( pgm.consume_object_attributes(line_align, &line_packed) )
+	    ;
 	access_flags &= ~vfMUTABLE; // storage specifiers last one member declaration
 	if ( !(tn=pgm.peekToken()) || tn->id() == TokenID::tkClBrc )
 	    break;
@@ -51483,7 +51504,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// Optional leading cv-qualifiers on a data member / method return type:
 	// `const char *m;`, `volatile int v;` — kept as a mask: the pointee's at
 	// the first `*`, a data member's own when no `*` intervenes (below).
-	unsigned class_member_lead_cv = pgm.skip_cv_qualifier_tokens();
+	unsigned class_member_lead_cv =
+	    pgm.consume_cv_and_object_attributes(line_align, &line_packed);
 
 	if ( pgm.peekToken()
 	  && pgm.peekToken()->id() == TokenID::tkENUM
@@ -51718,7 +51740,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// member-name parse below sees `const` where it expects the name — libstdc++'s
 	// `__concurrence_lock_error::what()` returns `char const*`, blocking the whole
 	// <memory> uninitialized-copy chain (vector reallocation).
-	unsigned class_member_east_cv = pgm.skip_cv_qualifier_tokens();
+	unsigned class_member_east_cv =
+	    pgm.consume_cv_and_object_attributes(line_align, &line_packed);
 
 	// Pointer declarator(s): type * [cv] [*...] member_name — the star+cv
 	// run's ONE owner, consume_declarator_stars: each pointee takes its level's
@@ -52047,7 +52070,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		unsigned long long bitfield_count = 1;
 		if ( access_flags && !ddc->member_access.empty() )
 		    ddc->member_access.back() = access_flags;
-		skip_member_attributes(); // `int f : 3 __attribute__((packed));`
+		apply_member_attributes(true); // `int f : 3 __attribute__((packed));`
 		tn = pgm.nextToken();
 		tn = skip_bitfield_default_init(tn);
 		while ( tn && tn->id() == TokenID::tkComma )
@@ -52070,7 +52093,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		    ++bitfield_count;
 		    if ( access_flags && !ddc->member_access.empty() )
 			ddc->member_access.back() = access_flags;
-		    skip_member_attributes();
+		    apply_member_attributes(true);
 		    tn = pgm.nextToken();
 		    tn = skip_bitfield_default_init(tn);
 		}
@@ -52250,7 +52273,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		ddc->member_access.back() = access_flags;
 	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
 		<< " (count " << member_count << ", total " << ddc->size << ')' << endl);
-	    skip_member_attributes(); // `int x __attribute__((aligned(8)));`
+	    apply_member_attributes(false); // `int x __attribute__((aligned(8)));`
 	    tn = pgm.nextToken();
 	    // C++11 default member initializer (NSDMI): `int x = 5;`, `T m = T();`.
 	    tn = pgm.capture_member_default_init(tn, ddc, mname);
@@ -52277,7 +52300,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			pgm.note_class_decl(Program::ClassDeclKind::DataMember);
 			if ( access_flags && !ddc->member_access.empty() )
 				ddc->member_access.back() = access_flags;
-			skip_member_attributes();
+			apply_member_attributes(false);
 			tn = pgm.nextToken();
 			// NSDMI on a comma-shared declarator: `int x = 1, y = 2;`.
 			tn = pgm.capture_member_default_init(tn, ddc, nmname);
@@ -52290,6 +52313,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input in class definition" << flush;
     pgm.nextToken(); // consume '}'
+    // The class's attributes after its `}` (`} __attribute__((packed));`):
+    // the own members laid out so far replay under them.
+    {
+	AggregateAttributes trail_attrs;
+	if ( pgm.consume_aggregate_attributes(trail_attrs) )
+	    apply_aggregate_attributes(ddc, trail_attrs, true);
+    }
     } catch (...) {
 	// Unwind exactly what the normal path below unwinds, then propagate.
 	if ( !pgm.class_scope_stack.empty() && pgm.class_scope_stack.back() == ddc )

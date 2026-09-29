@@ -212,33 +212,6 @@ int main(void)
   OWNER RULING PENDING: this is a type-system addition, a focused session
   like B62 and B70.
 
-### B65. A C++ class body drops or refuses an aggregate's and a member's attributes
-
-One construct per file (each alone), in a struct that needs the class
-parser (it has a member function):
-
-```cpp
-struct __attribute__((packed)) P1 { int f() { return b; } char a; int b; };   // c1: sizeof
-struct __attribute__((aligned(16))) P2 { int f() { return a; } char a; };     // c2: sizeof, alignof
-struct P3 { int f() { return b; } char a; int b; } __attribute__((packed));   // c3: sizeof
-struct C1 { int f() { return x; } char c; int x __attribute__((aligned(16))); };   // c4: sizeof
-struct C2 { int f() { return x; } char c; int __attribute__((aligned(16))) x; };   // c5: sizeof
-```
-
-- g++ = clang++: `c1: 5`, `c2: 16 16`, `c3: 5`, `c4: 32`, `c5: 32`. madc:
-  `c1: 8`, `c2: 1 1`, `c4: 8` (SILENT); c3 refused, `2:85: Expecting
-  identifier after type`; c5 refused, `2:76: Failed to find type when
-  parsing function parameters`.
-- Where: `TokenSTRUCT::parse` reads the tag's attributes into `lead_attrs`
-  and then hands the body to `TokenCLASS::parse`
-  (`cpp_struct_body_needs_class_parser`, parser.cpp ~46478) without them.
-  The class parser's `skip_member_attributes` (~50727) reads a member's
-  groups and discards them. It reads no groups after the class's `}`, nor
-  a member attribute between the type and the name.
-- Since B62's reader, `TokenCLASS::parse` also reads the attribute and
-  alignment specifiers before a class's name (`class alignas(16) K`), and
-  discards them the same way.
-
 ### B67. `scalar_storage_order` has no effect
 
 ```c

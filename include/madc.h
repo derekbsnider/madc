@@ -5648,6 +5648,11 @@ public:
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
     size_t typedef_prefix_align = 0;	// aligned(N) from a specifier-position __attribute__ between `typedef` and the aggregate keyword (mingw _CRT_ALIGN); TokenSTRUCT::parse consumes it ONCE (read + clear), so nested member structs never inherit it
     unsigned typedef_prefix_cv = cvNONE;	// C: the cv (CvQual) between `typedef` and the aggregate keyword (`typedef const struct T *P;`, `typedef volatile struct T V;`) — the alias's base is the cv-qualified aggregate; TokenSTRUCT::parse consumes it ONCE (read + clear), the typedef_prefix_align model
+    // The aggregate's own attributes TokenSTRUCT::parse read before a C++
+    // struct body it hands to the class parser (`struct __attribute__((packed))
+    // P1 { int f(); ... }`): TokenCLASS::parse consumes them ONCE at its head
+    // (read + clear), the typedef_prefix_align model.
+    AggregateAttributes class_head_attributes;
 
     // ---- Script mode: STD_MADC file-scope statements → synthesized main.
     // Owner plan docs/plans/2026-07-21-script-mode-auto-main.md. The parser

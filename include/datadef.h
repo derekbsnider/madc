@@ -954,6 +954,7 @@ public:
     std::map<std::string, TokenBase *> member_default_inits;
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
+    size_t pragma_pack;	// the #pragma pack(N) part of `pack` (0 = none): a class's base subobjects take only this cap
     size_t max_align;	// largest member alignment (for finalizing struct size)
     size_t tag_explicit_align;	// __attribute__((aligned(N))) on the struct TAG (0 = none)
     bool union_layout;	// true: all members start at offset 0; size is max member size
@@ -1000,12 +1001,23 @@ public:
     }
 
     // compute alignment for a field: natural alignment capped by pack setting
-    // An alignment under this aggregate's pack: #pragma pack(N) caps every
-    // field's alignment at N — a member's, and a class's vptr and base
-    // subobjects'; 0 is the C ABI default.
+    // An alignment under a pack: N caps it at N; 0 is the C ABI default.
+    static size_t cap_alignment(size_t align, size_t cap)
+    {
+	return cap != 0 && cap < align ? cap : align;
+    }
+    // A member's and a class's vptr alignment under this aggregate's pack
+    // (#pragma pack(N), or `packed` on the aggregate).
     size_t pack_capped(size_t align) const
     {
-	return pack != 0 && pack < align ? pack : align;
+	return cap_alignment(align, pack);
+    }
+    // A class's base subobject's alignment: only #pragma pack caps it —
+    // `packed` on a class packs its own members and its vptr, never a base
+    // (g++ = clang++).
+    size_t base_capped(size_t align) const
+    {
+	return cap_alignment(align, pragma_pack);
     }
     size_t field_align(const DataDef &dd) const
     {
@@ -1050,13 +1062,13 @@ public:
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
-	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
+	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
-	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0),
+	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
@@ -1377,32 +1389,42 @@ public:
 	if ( align > max_align ) max_align = align;
 	if ( align > tag_explicit_align ) tag_explicit_align = align;
     }
-    // Re-run the layout over the members already added, after an attribute that
-    // follows the body (`} __attribute__((packed))`) changed `pack`, or one on a
-    // member (apply_member_packing). Layout is otherwise computed member by
-    // member as each is added; gcc lays a record out once, at its end
-    // (finish_struct). The members replay through the same add* primitives
-    // into a scratch aggregate — an anonymous aggregate as one unit, a packed
-    // member under a pack of 1, a member's own aligned(N) re-applied — and only
-    // the layout comes back: offsets, bit-field placement, size, alignment.
-    void relayout()
+    // Is member i inherited — a base's member flattened into a class
+    // (member_origin = its base's index)? A class lays its OWN members out
+    // from 0 as one block, which DataDefCLASS::compute_layout places; an
+    // inherited member keeps its offset within its base.
+    bool member_is_inherited(size_t i) const
     {
-	DataDefSTRUCT scratch(name, 0);
+	return i < member_origin.size() && member_origin[i] >= 0;
+    }
+    // Replay the own members through the same add* primitives into
+    // `scratch` (a fresh aggregate given this one's packing): an anonymous
+    // aggregate as one unit, a packed member under a pack of 1, a member's
+    // own aligned(N) re-applied. `own[k]` is the member scratch's member k
+    // replays.
+    void replay_own_members(DataDefSTRUCT &scratch, std::vector<size_t> &own) const
+    {
 	scratch.pack = pack;
 	scratch.union_layout = union_layout;
 	scratch.reverse_scalar_storage = reverse_scalar_storage;
 	size_t next_anon = 0;
 	for ( size_t i = 0; i < members.size(); ++i )
 	{
+	    if ( member_is_inherited(i) )
+		continue;
+	    while ( next_anon < anonymous_aggregates.size()
+		 && anonymous_aggregates[next_anon].first_member < i )
+		++next_anon;
 	    if ( next_anon < anonymous_aggregates.size()
 	      && anonymous_aggregates[next_anon].first_member == i )
 	    {
 		const AnonymousAggregateInfo &ai = anonymous_aggregates[next_anon++];
 		scratch.addAnonymousAggregate(*ai.aggregate);
+		for ( size_t k = 0; k < ai.member_count; ++k )
+		    own.push_back(i + k);
 		i += ai.member_count - 1;
 		continue;
 	    }
-	    const size_t outer_pack = scratch.pack;
 	    if ( member_packed.count(i) )
 		scratch.pack = 1;
 	    if ( member_bitfields[i].is_bitfield )
@@ -1412,14 +1434,33 @@ public:
 		scratch.addMember(members[i].first, *members[i].second,
 				  member_counts[i], member_count_exprs[i],
 				  member_array_flags[i], &member_dims[i]);
-	    scratch.pack = outer_pack;
+	    scratch.pack = pack;
+	    own.push_back(i);
 	    std::map<size_t, size_t>::const_iterator ea = member_explicit_align.find(i);
 	    if ( ea != member_explicit_align.end() )
 		scratch.apply_member_alignment(ea->second);
 	}
-	member_offsets = scratch.member_offsets;
-	member_bitfields = scratch.member_bitfields;
+    }
+    // Re-run the layout over the members already added, after an attribute that
+    // follows the body (`} __attribute__((packed))`) changed `pack`, or one on a
+    // member (apply_member_packing). Layout is otherwise computed member by
+    // member as each is added; gcc lays a record out once, at its end
+    // (finish_struct). Only the own members' layout comes back — offsets,
+    // bit-field placement, size, alignment — so a class body, whose size is
+    // its own block's until compute_layout, replays the same way.
+    void relayout()
+    {
+	DataDefSTRUCT scratch(name, 0);
+	std::vector<size_t> own;
+	replay_own_members(scratch, own);
+	for ( size_t k = 0; k < own.size(); ++k )
+	{
+	    member_offsets[own[k]] = scratch.member_offsets[k];
+	    member_bitfields[own[k]] = scratch.member_bitfields[k];
+	}
 	anonymous_aggregates = scratch.anonymous_aggregates;
+	for ( size_t j = 0; j < anonymous_aggregates.size(); ++j )
+	    anonymous_aggregates[j].first_member = own[anonymous_aggregates[j].first_member];
 	size = scratch.size;
 	max_align = scratch.max_align > tag_explicit_align
 	    ? scratch.max_align : tag_explicit_align;
@@ -1428,6 +1469,18 @@ public:
 	bitfield_unit_offset = scratch.bitfield_unit_offset;
 	bitfield_unit_size = scratch.bitfield_unit_size;
 	bitfield_next_bit = scratch.bitfield_next_bit;
+    }
+    // The strongest alignment among the own members — `max_align` without the
+    // tag's aligned(N), which raises the aggregate's alignment but places no
+    // member (a class's own block begins at this alignment).
+    size_t own_member_alignment() const
+    {
+	if ( tag_explicit_align < max_align )
+	    return max_align;
+	DataDefSTRUCT scratch(name, 0);
+	std::vector<size_t> own;
+	replay_own_members(scratch, own);
+	return scratch.max_align;
     }
     // Apply __attribute__((packed)) to the most recently added member: it is
     // laid out as if the aggregate were packed for that member alone —
