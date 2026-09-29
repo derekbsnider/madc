@@ -143,6 +143,47 @@ int main(void)
   `aligned(N)` is taken from them. `DataDefSTRUCT` has no per-member
   packing: `apply_member_alignment` only raises an alignment.
 
+### B76. A bit-field under packing never straddles its type's window
+
+```c
+#include <stdio.h>
+#include <string.h>
+#pragma pack(8)
+struct P8 { char a : 4; int b : 30; char c; };
+#pragma pack()
+struct __attribute__((packed)) PK { char a : 4; short s : 14; char c; long l : 40; };
+struct BF { char a : 4; int b : 30 __attribute__((packed)); };
+int main(void)
+{
+	struct P8 p = { 0, 1, 0 };
+	unsigned char raw[sizeof p];
+	memcpy(raw, &p, sizeof p);
+	struct PK k = { 1, -3, 7, 0x123456789aLL };
+	struct BF f = { 2, 123456789 };
+	printf("sb: %zu %zu %zu %d %d %lx %d\n", sizeof(struct P8), sizeof(struct PK), sizeof(struct BF), raw[0], k.s, (unsigned long)k.l, f.b);
+	return 0;
+}
+```
+
+- gcc = clang: `sb: 8 9 5 16 -3 123456789a 123456789`. madc:
+  `sb: 12 13 8 0 -3 123456789a 123456789`. The values survive inside madc;
+  the layout does not match gcc, so sizes, offsets and binary data differ.
+- Found 2026-09-29 while fixing B63 (a member's own `packed`). Reducer:
+  `tmp/b62/b76.c`.
+- gcc's rule (stor-layout `place_field`): a bit-field may not span more
+  windows of its declared type than the type itself, EXCEPT when it is
+  packed or a `#pragma pack` is active. Under any pack (`pack(8)`
+  included), the field starts at the next free bit.
+  `DataDefSTRUCT::allocateBitField`'s SysV path applies the window rule
+  unconditionally.
+- Layer below: c2mir reads and writes a bit-field through one load/store of
+  its declared type at its settled byte offset (`emit_scalar_assign`, the
+  bit-field extract before `gen_unary_op`). A field spanning more bits than
+  that type from its first byte (`int b : 30` at bit 4 spans 34) has no
+  representation. The fix is a c2mir raise for a spanning access, then the
+  allocator change. A packed bit-field MEMBER straddles the same way
+  (`BF` above); only its alignment is laid out today.
+
 ### B64. A typedef-prefix `aligned` rounds the struct's size
 
 ```c
