@@ -1,0 +1,215 @@
+# madcide plugins, written in madc — design (2026-09-30)
+
+**Status:** design. Stage A (bundles) rides the REPL + learning-IDE release (plan `madc-repl-thonny-plan-2026-09-24.md` §41.11a slice 1). Stage B (plugin code) is its own arc, right after that release.
+
+## 1. The owner's direction (2026-09-30)
+
+- **Configuration, not modes.** "Rather than a hardcoded 'learn' mode", the layout, the menu, and "some ways that the editor works" should be configurable, "like a plugin".
+- **Plugins written in madc**, "like how vscode plugins/extensions work". The owner leans towards Neovim's model and asked whether JetBrains/CLion has more to offer, with VS Code as the reference for familiarity.
+- **Precompiled plugins:** "we could allow compilation of madcide plugins into .so/.dll/.dylib files for faster startup."
+
+## 2. Precedents
+
+| | VS Code (TypeScript) | Neovim (Lua) | JetBrains/CLion (Kotlin/Java) |
+|---|---|---|---|
+| Where the code runs | a separate Extension Host process | inside the editor | inside the IDE's JVM |
+| How it plugs in | `package.json` `contributes` (commands, menus, keybindings, views, configuration), plus code | the same API the core uses; config (`init.lua`) is code | `plugin.xml` declares implementations of typed extension points; plugins can declare their own |
+| Loading | lazy, through activation events | at startup, or lazy through lazy.nvim's command/event/filetype triggers; `vim.pack` built in since 0.12 (2026-03) | at startup; dynamic load/unload since 2020.1 |
+| API | a curated, stable, versioned layer | one API (`nvim_*`), reached from Lua in-process and over msgpack-RPC (GUIs, remote plugins) | the platform's internals, whose changes break plugins each release (`sinceBuild` / `untilBuild`) |
+| A crash | the editor survives | Lua is memory-safe | memory-safe |
+
+- **Emacs** is the purest case of an editor written in its own extension language, which is madcide's situation (it is written in madc).
+- **Zed** is the one editor whose plugins are compiled code (Rust). It runs them in a WebAssembly sandbox, because compiled code can crash its host.
+- **JetBrains' split mode** (a frontend process and a backend process, serializable presentation data) is JetBrains moving towards the process boundary that madcide's client-server arc already has.
+- **Native parts built at install:** Neovim plugins that ship them (for example, a `build` step running `make`) compile them when the plugin is installed, not at every launch.
+
+## 3. The model: Neovim's, with one thing borrowed from each of the others
+
+- **From Neovim, the core:**
+  - a plugin uses the same API madcide's own features use;
+  - that API is one API reached two ways: inside madcide, and over the command seat by a plugin in another process;
+  - a plugin is a directory on a search path, and there is no ceremony.
+- **From VS Code, declarative contributions and lazy activation:**
+  - a plugin's keys, menus, toolbar, layout and views are data in its manifest, read without loading its code;
+  - its code loads when an activation event fires.
+  - madc must compile what Lua only loads, so this is how startup stays fast.
+- **From JetBrains, typed extension points that the core uses too:**
+  - every kind of contribution is an enum kind with a declared contract;
+  - madcide's own REPL pane, Problems and Outline register through the same points as a plugin does (one implementation, no parallel path).
+- **Left out of JetBrains:** the XML descriptors, the service/dependency-injection layer, and an API made of internals.
+- **VS Code's familiarity** belongs to the surface users touch: a manifest, the command palette, settings, and installing a plugin. It does not shape the architecture.
+
+## 4. What the code has (recon 2026-09-30, HEAD `5025256cc`)
+
+- **Data profiles, loaded by name** (`tools/madcide/profiles/`):
+  - `*.keys` (the personality, with `@scope` sections), `*.layout`, `*.menu`, `*.theme` and `*.status`;
+  - each has its own line parser, refuses a bad line with its number, and bakes in a rescue default.
+  - `toggle_profile` cycles the `.keys` files found in the directory, with no list of names.
+  - `init_view_es` (`madcide_core.inc:7800-7812`) hard-codes the names `joe` and `default`.
+- **The search path:** `resolve_profile_dir` (`madcide_core.inc:220`) tries three places, and the first that exists wins:
+  1. the source tree;
+  2. `<exedir>/../share/madcide/profiles`;
+  3. `<exedir>/profiles`.
+
+  There is no per-user directory.
+- **Settings:** madcide has none. madc's `madc.ini` reader (`include/madc_config.h`, `src/madc_config.cpp`) is typed to the compiler's own keys (`config_settings`: std, stdlib, forest, include, the limits). It has no sections, an unknown key is an error, and scripts cannot read it. Its search is `./madc.ini`, then `$XDG_CONFIG_HOME/madc/madc.ini` (or `~/.config/madc/`), then the system config directory (`src/madc.cpp:385-395`).
+- **Commands** are a static enum with one name table (`cmd_table`, `madcide_enums.inc:28-110`). `cmd_of` converts a name once at every input boundary (profiles, menus, `-c`, the seat). `check-madcide-command-registry.sh` counts them and follows the core's includes.
+- **Views** are `enum ide_view` (`madcide_enums.inc:468`), and `compose_chrome_pane` (`madcide_core.inc:7073`) switches on the kind. Problems and Outline are the row-list shape: writers set a bag key (`diags`, `outline`), and the composer reads it.
+- **The command seat** (`madcide_api.inc`):
+  - one JSON line per request, `{"cmd", "args", "seq"}`;
+  - the push feed `{"event": …}` (`broadcast_events`) and permission tiers (`grant_tier` / `eff_tier`).
+  - The MCP seat, the LSP face and `--attach` are adapters over it.
+- **Built-in modules** are compiled in by `#include`: `madcide_repl.inc` (its commands, pump and state keys) is already shaped like a module.
+- **Installed madcide is an AOT executable** (`scripts/package_install_gate.sh`: `$bindir/madcide`, `madcide.exe`). A plugin shipped as madc source is compiled by the engine inside madcide, at every launch that activates it.
+- **Shared objects:** `madc -shared` emits an ELF `ET_DYN` shared object (`src/madc.cpp:447`), "dlopen/import-consumable". The Mach-O and PE writers refuse it "by design" (`third_party/mir/mir-macho.c:342`, `third_party/mir/mir-pe.c:935`: no libmadc dylib or DLL exists).
+- **Building in-process:** `madc::parse_build(diags, handle, kind, outpath)` builds from a live parse handle in-process, with kinds `exe` and `obj` (`include/madc/ns_madc:269-292`).
+- **Loading at runtime:** `<dlfcn.h>` is embedded (`include/madc/posix/dlfcn.h`). A library's platform spelling has one owner, `madc_module_library_spelling()` (`src/madc_modules.cpp`).
+- **In-process compilation today:** `madc::eval_*` compiles and runs source (values in, values out, through a context) but cannot call back into the host program. The REPL's `InteractiveSession` links a module per entry into its own live program, not into its host.
+- **Out-of-process isolation:** `Process` + `child_body` forks the running madc. `SessionClient` compiles in the child, restarts it after a crash, and puts its streams in `chan_select` through a readiness source.
+
+## 5. The design
+
+### 5.1 A plugin is a directory with a manifest
+
+```text
+<plugin dir>/<name>/
+  <name>.plugin        the manifest (JSON), read without running anything
+  *.keys *.layout *.menu *.theme *.status    data contributions, in their existing formats
+  <name>.mad           code (Stage B), madc source
+  <name>.so            code built from it (Stage B, optional, explicit)
+```
+
+- **The manifest is JSON,** read through the one value↔JSON bridge (`wt_json_to_value`, which `js::parse` uses). Reading it compiles nothing and costs microseconds, and it is the format VS Code's `package.json` users know.
+  - Its words convert once, at load, to enum codes. An unknown word refuses the plugin with its reason (enum-over-strings: a manifest is an input boundary).
+  - Fields:
+    - `name`, `title`, `version`, and `api` (the plugin API version it targets);
+    - `contributes`: data files by kind, commands (name, title, handler), views (name, title, the bag key its rows live on), and settings with defaults;
+    - `activation`: events, for code;
+    - `code`: the source file and an optional library.
+- **A bundle** is a plugin with no code. `default` and `learn` are bundles madcide ships, and `learn` is no longer a mode:
+
+  ```json
+  { "name": "learn", "title": "Learning", "api": 1,
+    "contributes": { "keys": "pico", "layout": "learn", "menu": "learn",
+                     "settings": { "repl.std": "" } } }
+  ```
+
+- **The search path,** first found by name wins:
+  1. the user's directory, `$XDG_CONFIG_HOME/madcide/plugins` (or `~/.config/madcide/plugins`), or `%APPDATA%\madcide\plugins` on Windows;
+  2. then the directories `resolve_profile_dir` already searches, which gain a `plugins/` beside `profiles/`.
+
+  A plugin dropped in a directory joins with no list edited, as a `.keys` file joins `toggle_profile` today.
+
+### 5.2 Selection and settings
+
+- **Settings are `settings.json`** in madcide's configuration directory: `$XDG_CONFIG_HOME/madcide/` (or `~/.config/madcide/`), or `%APPDATA%\madcide\` on Windows, beside the user's `plugins/`. They are read through the same JSON bridge as the manifests, so values keep their types, and VS Code users know the file.
+  - `madc.ini` stays the compiler's. Its reader is typed to the compiler's keys and refuses an unknown one, and editor settings have a different consumer (separation of concerns).
+  - Precedence: the command line, then `settings.json`, then the active profile's settings, then each plugin's own defaults.
+- **The active profile** is `"profile": "learn"` there, and `madcide --profile NAME` overrides it. The default is `default`, so nothing changes without either.
+- **Other plugins:** `"plugins": ["a", "b"]` enables them in addition to the profile.
+- **A setting's value** is the user's, else the active profile's, else the plugin's own default. `repl.std` gives the REPL's standard (`replstd`) the home it lacks today.
+
+### 5.3 Extension points, typed
+
+One enum, `contribution_kind`, whose contracts are declared in one header, `<madcide/plugin>`:
+
+| Kind | Data or code | Contract |
+|---|---|---|
+| `keys`, `layout`, `menu`, `theme`, `status` | data | the existing file formats and parsers; a menu row's placement (`bar`, `palette`, `toolbar`) is the `menu_place` enum of §41.11a |
+| `settings` | data | a name, a type and a default |
+| `command` | code | `bool handler(long w, long es, long doc, const char *arg)`, invoked by the dispatcher on the session thread; the command id is interned at load, above the built-in enum range |
+| `view` | data + code | a name, a title and a bag key. The view's rows live on that key, and the plugin's code keeps them current (from a command or an event), as `diags` is kept for Problems. `compose_chrome_pane` gains one arm for a contributed view, which renders the key's rows. |
+| `event` | code | `void handler(long w, long es, long doc, var &event)` for a kind of the existing event feed |
+| `filekind`, `runner` | code | Stage B's later points: a file-kind handler (`<bits/file_kinds>`) and a build runner (the `^B` rows) |
+
+- **Composition never calls plugin code.** It renders bag state, which keeps it fast, and a plugin in another process then works through exactly the same path (owner law 2026-08-31: compose renders state, handlers mutate it).
+- **Handlers are resolved once, at load.** The name in the manifest is converted to a function pointer (`dlsym` in a library, or the compiled module's symbol). A missing handler, or one whose declared contract does not match, refuses the plugin at load, never at use.
+- **madcide's own features register through the same points,** compiled in (transport `builtin`). `madcide_repl.inc` is the first to move (Stage B5), which proves the points against a real feature.
+
+### 5.4 One API, two transports
+
+A plugin's code sees one API, declared in `<madcide/plugin>`:
+- `ide::run(code, arg)`: any command, built-in or contributed (the dispatcher);
+- `ide::get` / `ide::set`: bag state on the session or a document, with the key and scope as data;
+- `ide::command_id(name)`: a name interned once, at the plugin's activation;
+- the engine's own verbs (`madc::session_*`, `madc::parse_*`, `php::`, …), as any madc program calls them.
+
+**The transports,** `plugin_transport { builtin, library, source, host }`:
+
+| Transport | What it is | When |
+|---|---|---|
+| `builtin` | compiled into madcide | madcide's own modules |
+| `library` | a `.so` loaded into madcide's process | Stage B2 |
+| `source` | the `.mad` compiled into madcide's process when the plugin activates | Stage B3 |
+| `host` | a forked child of the running madc compiles and runs the plugin, and speaks to madcide over the command seat: API calls become seat requests, and handlers are invoked by `{"event": …}` messages | Stage B4 |
+
+- **The shim:** a plugin's source is the same for every transport. `<madcide/plugin>` has an in-process implementation (a table of function pointers the host passes at activation, SQLite's `sqlite3_api_routines` pattern) and a seat implementation.
+- **The seat gains** `get` / `set` requests under its permission tiers.
+
+**Trust.** `library` and `source` run in madcide's process, so a crash there ends the editor, as a C plugin ends Vim. `host` survives a crash, and the child restarts as the REPL backend does. Two defaults:
+- A plugin under the user's directory, or shipped with madcide, loads in-process.
+- A manifest may ask for `host`, and a setting forces `host` for everything (`plugins.isolate = true`).
+
+### 5.5 Precompiled plugins (the owner's `.so` idea)
+
+- **An explicit build, never a cache.**
+  - The command is `madcide --build-plugin <dir>`, the running madc compiling in-process: `parse_open` + `parse_build`, which gains a `shared` kind, the running madc being the compiler. `madc -shared` works too.
+  - The library lands in the plugin's own directory, as an install artifact. Nothing is ever written automatically, and nothing lands beside user sources: the owner's 2026-08-22 ruling allows persistence only as explicit artifacts.
+- **Versioned:**
+  - The library records the plugin API version it was built against.
+  - At load, a library whose version or platform does not match is refused with the reason, and the plugin's source form loads instead if it has one.
+  - The source is the plugin, and the library is how it ships fast.
+- **Why it matters here:** installed madcide is an AOT executable, so a `source` plugin costs one JIT compile of the plugin on every launch that activates it, while a `library` costs a `dlopen`. Stage B measures both on a real plugin before choosing the defaults.
+- **Platforms:**
+  - Linux ELF works today.
+  - macOS dylib and Windows DLL emission are refused "by design" in the MIR writers, because no libmadc dylib or DLL exists (G2). Until that changes, macOS and Windows plugins use `source` or `host`.
+
+### 5.6 Activation
+
+- Events: `startup`, a contributed command's first invocation, a contributed view's first showing, and a file kind's first opening. Each is an enum code at load (`activation_event`).
+- A bundle has no code, so it never activates; its data loads when it is selected.
+- Before activation, the plugin's menus, keys and toolbar are already present, because they are data. The first use loads the code, then runs the handler (VS Code's model).
+
+## 6. Engine gaps (Stage B), named
+
+- **G1. One engine per process.** Handles (`handle_table`, `thread_local`) belong to the libmadc instance that opened them. So an in-process plugin must bind to madcide's engine, never load a second libmadc, or its `ui::set(w, …)` would reach a different table.
+  - Mechanism: the API table passed at activation (§5.4), or the host exporting its symbols.
+  - Recon first: what a `madc -shared` library's undefined references bind to today.
+- **G2. dylib and DLL emission** are refused by design (`mir-macho.c:342`, `mir-pe.c:935`). Allowing them reverses that ruling, which is the owner's decision (Q2 below).
+- **G3. Compiling a module into the running process** and resolving its handlers, for the `source` transport. `eval_*` compiles in-process but has no path back into the host, and the REPL links into its own session only. The design is its own slice, which starts by reading how `InteractiveSession` links a module.
+- **G4. Command ids at runtime:** `cmd_table` gains a contributed range above its enum. The registry gate learns the range, and the menus and key profiles convert names through the same `cmd_of`.
+- **G5. `parse_build`'s `shared` kind** (today `exe` and `obj`).
+- **G6. The seat's `get` / `set`,** under its permission tiers, for the `host` transport.
+
+## 7. Thread contract
+
+- **In-process plugin code** (`library`, `source`, `builtin`) runs on the session's thread, between events, and never during composition. A plugin that starts a cooperative task follows the task verbs' contract (`madc_task_io.h`). A plugin's own globals are its own: two plugins share state only through the bag.
+- **A `host` plugin's requests** are serialized over the seat, one connection per plugin host, as every seat client's are.
+- **The registries** (contributed commands, views, settings) are built at load, on the session's thread, and are read-only afterwards, until a plugin is loaded or unloaded at runtime, which is later work.
+
+## 8. Staging
+
+- **Stage A, in the REPL + learning-IDE release** (§41.11a slice 1):
+  - the manifest loader, for bundles only (the data kinds and settings);
+  - the plugin search path, including the user's directory;
+  - `settings.json`;
+  - `--profile NAME`;
+  - `default` and `learn` as bundles, and the command line's file becoming optional under Q1 of §41.11a.
+
+  **Gate:** a model test composing each bundle; a manifest with an unknown word refused with its reason; a user-directory bundle overriding a shipped one by name; `"profile": "learn"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting `learn`.
+- **Stage B, the plugin arc, after the release:**
+  1. **Contributed commands and views** (G4), with handlers in `builtin` form only: the extension points exercised by madcide's own code first.
+  2. **The `library` transport** (G1, G5): `--build-plugin`, the API table, versioned refusal. Linux.
+  3. **The `source` transport** (G3), with the activation cost measured against `library`.
+  4. **The `host` transport** (G6): a crash leaves madcide running, and the plugin restarts.
+  5. **The REPL pane as a bundled plugin:** `madcide_repl.inc` registers through the points, so no built-in path remains beside them.
+  6. **dylib and DLL,** if the owner rules for them (G2).
+
+## 9. Open for the owner
+
+1. **The manifest format.**
+
+   Recommendation: JSON. It is read with no compile, it is VS Code's shape, and it has one bridge. The alternative is a madc object literal, which is one language but must be compiled to be read.
+2. **dylib and DLL emission** (G2).
+
+   Recommendation: yes, in Stage B6, after the Linux `library` transport has proved the API table. Until then, macOS and Windows use `source` and `host`.

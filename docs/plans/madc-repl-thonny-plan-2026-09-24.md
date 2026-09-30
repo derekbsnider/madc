@@ -1100,6 +1100,8 @@ A later product decision can make it the default first-run GUI profile.
 > - **Command line:** `madcide` requires the file as argv[1] and parses flags only from argv[2] on (`madcide.mad:64-232`), so `madcide --learn file.cpp` would treat `--learn` as the file. With no arguments it prints usage and exits.
 > - **Profile selection:** needs a flag threaded through `run_tui` → `IdeSession::open` → `init_view_es`, plus `learn.layout` / `learn.menu` files.
 > - **Toolbar:** no face has one.
+>
+> **Amended (owner, 2026-09-30):** the profile is a bundle in madcide's plugin model (`docs/plans/2026-09-30-madcide-plugins.md`), selected by `--profile learn` or `settings.json`, not a `--learn` mode. See §41.11a.
 
 ### 16.1 Initial GUI layout
 
@@ -3015,7 +3017,7 @@ With no program file, the tail chooses in this order:
 ### 41.11a The teaching profile (Phase 5 core, §29), designed against the code (2026-09-30)
 
 The owner (2026-09-30): the next release is the REPL and learning IDE, which means §37 plus Phase 5's core, and then Phase 4. Phase 5's core is:
-- the `--learn` profile and its layout;
+- the `learn` profile and its layout (amended 2026-09-30, the owner: a bundle in the plugin model, `docs/plans/2026-09-30-madcide-plugins.md`, not a hard-coded mode);
 - a toolbar with Run and Stop;
 - the Variables view;
 - clickable diagnostics for F5;
@@ -3070,14 +3072,15 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
   - B8: the caret line is misdrawn on a line with a tab. Beginners' code is tab-indented, and F5's diagnostics show that line.
 
 **The design:**
-- **The workspace profile (`--learn`).**
-  - A workspace is the named set of layout and menu. The personality (keys) and the theme stay separate, as they are today.
-  - `--learn` selects the workspace `learn`. Its name reaches `init_view_es` as a parameter through `run_tui` and `IdeSession::open`, and is kept on the bag as `workspace` (beside `profile_dir`) for a later runtime switch.
-  - `init_view_es` loads `<workspace>.layout` and `<workspace>.menu`. The default workspace is `default`, so nothing changes without the flag.
-  - A missing or refused `learn.*` file falls back to the baked default, and the status line says so, through the rescue-announcement pattern the key profile already uses.
-  - `--learn` selects no face. It composes under the TUI, `--gui` and `--serve` alike, and a desktop launcher passes `--learn --gui`.
-  - **Its keys are `pico.keys`:** single chords (`^S` save, `^Z` undo, `^Q` quit, `^W` find, F5 run), with no `^K` prefixes to teach. A CUA personality (`^C`/`^X`/`^V` clipboard) is a later slice.
-  - **The command line:** the file becomes the first argument that is not a flag, and flags may come anywhere (`madcide --learn f.c` and `madcide f.c --learn`). `ro` stays a positional word. The strings are compared only at this input boundary. The usage text lists `--learn`.
+- **The `learn` profile is a bundle** (amended 2026-09-30; the plugin design's Stage A, `docs/plans/2026-09-30-madcide-plugins.md` §5.1-5.2, §8):
+  - A bundle is a plugin with no code: a `<name>.plugin` manifest (JSON) naming its data contributions (keys, layout, menu, theme, status) and its settings. `default` and `learn` are the two madcide ships. There is no `--learn` and no workspace name in the code.
+  - The active profile comes from the command line (`madcide --profile NAME`), then `settings.json` (`"profile"`), then `default`, so nothing changes without either.
+  - `init_view_es` loads what the active bundle names, in place of the hard-coded `joe` and `default`. The bundle's name is kept on the bag (beside `profile_dir`) for a later runtime switch.
+  - A missing or refused file that a bundle names falls back to the baked default, and the status line says so, through the rescue-announcement pattern the key profile already uses. A refused manifest refuses its bundle, with the reason.
+  - A profile selects no face. It composes under the TUI, `--gui` and `--serve` alike, and a desktop launcher passes `--profile learn --gui`.
+  - **`learn`'s keys are `pico`:** single chords (`^S` save, `^Z` undo, `^Q` quit, `^W` find, F5 run), with no `^K` prefixes to teach. A CUA personality (`^C`/`^X`/`^V` clipboard) is a later bundle.
+  - **`learn`'s settings** give `repl.std` (Q2 below), the REPL standard's first home (`replstd` is read today, but nothing sets it).
+  - **The command line:** the file becomes the first argument that is not a flag, and flags may come anywhere (`madcide --profile learn f.c` and `madcide f.c --profile learn`). `ro` stays a positional word. The strings are compared only at this input boundary. The usage text lists `--profile`.
   - **`learn.layout`:**
     ```text
     @window main
@@ -3086,7 +3089,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
     pane panel bottom 35% tabs views repl problems
     ```
     The REPL is the visible panel's first tab. No project tree, no Outline, no Terminal or Output (F5's output is the REPL's).
-  - **The session starts at open when the layout shows it.** A pane visible at startup whose active view is `viewREPL` starts its session in `init_view_es` (`repl_start`), as Thonny starts its backend. That is layout data, never a test of the workspace's name (Rule #7), and the default layout keeps the REPL hidden, so it forks nothing.
+  - **The session starts at open when the layout shows it.** A pane visible at startup whose active view is `viewREPL` starts its session in `init_view_es` (`repl_start`), as Thonny starts its backend. That is layout data, never a test of the bundle's name (Rule #7), and the default layout keeps the REPL hidden, so it forks nothing.
 - **The beginner menu (`learn.menu`), data only:**
   - File: Open…, Save, Save As…, Quit.
   - Edit: Undo, Redo, Find.
@@ -3139,7 +3142,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
 **Thread contract:** unchanged from §41.9a.
 - The session handle is confined to the thread that opened it, and the backend is single-threaded, so `bindings` runs between entries like every request (D9).
 - The rows are a snapshot. A task the program left running may change a value after it is read, and IPython's `%whos` has the same limit.
-- The workspace name, the toolbar rows and `replvars` are bag state on the session's thread, like every pane's.
+- The active bundle's name, the toolbar rows and `replvars` are bag state on the session's thread, like every pane's. The bundle registry is built at load and read-only afterwards (the plugin design's §7).
 - The shallow walk only reads the program's storage.
 
 **Not in Phase 5's core, and named:**
@@ -3157,14 +3160,20 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
 0. **The release-path bugs, each fixed in its own commit:**
    - B55: an indent command in `cmd_table`, bound by the profiles, and the `tabkey` hint on the editor's node while it has the keyboard. Pinned in testmadcide and a `tests/gui` case.
    - B8: the caret renderer expands tabs and counts screen width, against gcc's `2:19`.
-1. **The workspace:**
-   - the argv parse;
-   - the workspace name threaded to `init_view_es`;
-   - `learn.layout` (without the sidebar) and `learn.menu`;
-   - the pico keys under `--learn`;
+1. **Bundles** (the plugin design's Stage A):
+   - the manifest loader, for the data kinds and settings;
+   - the plugin search path, with the user's directory;
+   - `settings.json`, the argv parse and `--profile`;
+   - `default.plugin`, and `learn.plugin` with `learn.layout` (without the sidebar) and `learn.menu`;
    - the REPL session starting when the layout shows it.
 
-   Gate: `testmadcide_cli` (`--learn f`, `f --learn`, usage), and a new `testmadcide_learn` model test (the composed panel visible with the REPL active, the menu bar's rows, no project or outline pane, a session running at open). `testmadcide_layout`'s pin of `default.layout` is unchanged.
+   Gate:
+   - `testmadcide_cli`: `--profile learn f`, `f --profile learn`, usage.
+   - A new `testmadcide_learn` model test: the composed panel visible with the REPL active, the menu bar's rows, no project or outline pane, a session running at open.
+   - A manifest with an unknown word refused with its reason.
+   - A user-directory bundle overriding a shipped one by name.
+   - `"profile": "learn"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting it.
+   - `testmadcide_layout`'s pin of `default.layout` is unchanged.
 2. **The toolbar and Stop:** `menu_place`, the `toolbar` hint through `web_model`, the page and the TUI, `replstop`, and `repl_restart`.
 
    Gate: `testmadcide_learn` (the hint's rows and codes; Stop while an entry blocks on stdin gives a fresh session and the transcript line), `testmadcide_repl` unchanged, `test_web_model` (the hint and its codes), and `tests/gui/madcide_learn.mad` (a click on Run posts `replrun`, and main's output arrives; a click on Stop). The registry's pinned count moves on purpose.
@@ -3183,12 +3192,12 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
    Gate: `testmadcide_learn` (after F5 on §34's program plus a global, the rows read `count int 3`, `square int (int)`; an entry `int y = 7;` adds a row; Stop empties them; activating `square` moves the caret to its line), and a `tests/gui` case. Then §29's gate, walked by hand in the window: open, type §34's program, Run, `square(12)` gives 144, and the Variables view shows the globals.
 
 **Open for the owner:**
-1. **`madcide --learn` with no file.** Thonny opens an untitled buffer. madcide needs a path today, and a missing one opens empty under that name.
+1. **`madcide --profile learn` with no file.** Thonny opens an untitled buffer. madcide needs a path today, and a missing one opens empty under that name.
 
    Recommendation: an untitled buffer. Save asks for a name (Save As), and F5 runs it under the unit name `untitled`. Slice 1 recons whether a buffer can exist without a path, and falls back to asking for a name at startup if it cannot.
 2. **The learning IDE's language.** F5 runs under `replstd`, the engine default (the madc dialect: `sizeof('a')` is 1), and nothing sets it.
 
-   Recommendation: keep the one rule that `madc file`, `madc -i` and F5 share, and give the learn menu a Run ▸ Language… choice (C17, C++17, madc). It sets `replstd` and restarts the session, and the prompt already names the standard (D22). A course would otherwise teach C from a textbook while getting madc's answers without knowing it.
+   Recommendation: keep the one rule that `madc file`, `madc -i` and F5 share, and give the learn menu a Run ▸ Language… choice (C17, C++17, madc). It sets `repl.std` for the session (the setting's value from the bundle or `settings.json` is where it starts) and restarts the session, and the prompt already names the standard (D22). A course would otherwise teach C from a textbook while getting madc's answers without knowing it.
 
 ## 42. Decisions (owner, 2026-09-25)
 
