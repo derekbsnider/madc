@@ -6496,6 +6496,10 @@ struct decl {
   unsigned addr_p : 1, reg_p : 1, asm_p : 1, used_p : 1;
   /* function carries __attribute__((optimize("-fno-strict-aliasing"))): */
   unsigned no_strict_aliasing_p : 1;
+  /* a bit-field member read and written byte by byte: in a MadC settled layout
+     its bits run past its declared type's unit (a packed field straddles), or
+     that unit runs past the aggregate (set_type_layout) */
+  unsigned bit_field_bytes_p : 1;
   int bit_offset, width; /* for bitfields, -1 bit_offset for non bitfields. */
   mir_size_t offset;     /* var offset in frame or bss */
   node_t scope;          /* declaration scope */
@@ -7340,9 +7344,15 @@ static void set_type_layout (c2m_ctx_t c2m_ctx, struct type *type) {
           if (!settled_member_layout (el, &member_offset, &member_bit_offset, &member_width)) {
             error (c2m_ctx, POS (el), "missing or malformed MadC settled member layout");
           } else {
+            mir_size_t unit = type_size (c2m_ctx, decl->decl_spec.type);
+
             decl->offset = member_offset;
             decl->bit_offset = member_bit_offset;
             decl->width = member_width;
+            decl->bit_field_bytes_p
+              = member_width > 0
+                && ((mir_size_t) member_bit_offset + member_width > unit * MIR_CHAR_BIT
+                    || member_offset + unit > settled_size);
           }
           if (anon_process_p) update_members_offset (decl->decl_spec.type, decl->offset);
         }
@@ -9697,6 +9707,7 @@ static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
   decl->addr_p = FALSE;
   decl->reg_p = decl->asm_p = decl->used_p = FALSE;
   decl->no_strict_aliasing_p = FALSE;
+  decl->bit_field_bytes_p = FALSE;
   decl->offset = 0;
   decl->bit_offset = -1;
   decl->param_args_start = decl->param_args_num = 0;
@@ -13472,10 +13483,44 @@ static op_t mem_to_address (c2m_ctx_t c2m_ctx, op_t mem, int reg_p) {
   return mem;
 }
 
+static MIR_op_t mem_part_op (MIR_context_t ctx, MIR_op_t mem, MIR_type_t type, MIR_disp_t offset);
+
+/* The bits of bit-field OP (bit_field_bytes_p) read byte by byte, from the
+   byte holding its first bit, into a 64-bit temp in which the field starts at
+   bit *BIT_OFFSET (little-endian bit order). */
+static op_t bit_field_bytes_load (c2m_ctx_t c2m_ctx, op_t op, int *bit_offset) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  int first = op.decl->bit_offset / MIR_CHAR_BIT, bo = op.decl->bit_offset % MIR_CHAR_BIT;
+  int nbytes = (bo + op.decl->width + MIR_CHAR_BIT - 1) / MIR_CHAR_BIT;
+  op_t bits = get_new_temp (c2m_ctx, MIR_T_I64), byte = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  assert (nbytes <= 9);
+  for (int k = 0; k < nbytes && k < 8; k++) {
+    MIR_op_t mem = mem_part_op (ctx, op.mir_op, MIR_T_U8, first + k);
+
+    if (k == 0) {
+      emit2 (c2m_ctx, MIR_MOV, bits.mir_op, mem);
+    } else {
+      emit2 (c2m_ctx, MIR_MOV, byte.mir_op, mem);
+      emit3 (c2m_ctx, MIR_LSH, byte.mir_op, byte.mir_op, MIR_new_int_op (ctx, k * MIR_CHAR_BIT));
+      emit3 (c2m_ctx, MIR_OR, bits.mir_op, bits.mir_op, byte.mir_op);
+    }
+  }
+  if (nbytes == 9) { /* a 57..64-bit field starting past bit 0: byte 9 holds its top bits */
+    emit3 (c2m_ctx, MIR_URSH, bits.mir_op, bits.mir_op, MIR_new_int_op (ctx, bo));
+    emit2 (c2m_ctx, MIR_MOV, byte.mir_op, mem_part_op (ctx, op.mir_op, MIR_T_U8, first + 8));
+    emit3 (c2m_ctx, MIR_LSH, byte.mir_op, byte.mir_op, MIR_new_int_op (ctx, 64 - bo));
+    emit3 (c2m_ctx, MIR_OR, bits.mir_op, bits.mir_op, byte.mir_op);
+    bo = 0;
+  }
+  *bit_offset = bo;
+  return bits;
+}
+
 static op_t force_val (c2m_ctx_t c2m_ctx, op_t op, int arr_p) {
   MIR_context_t ctx = c2m_ctx->ctx;
   op_t temp_op;
-  int sh;
+  int sh, bit_offset;
   MIR_type_t t;
 
   if (arr_p && op.mir_op.mode == MIR_OP_MEM) {
@@ -13499,13 +13544,20 @@ static op_t force_val (c2m_ctx_t c2m_ctx, op_t op, int arr_p) {
   }
   if (op.decl == NULL || op.decl->bit_offset < 0) return op;
   assert (op.mir_op.mode == MIR_OP_MEM);
-  temp_op = get_new_temp (c2m_ctx, MIR_T_I64);
-  emit2 (c2m_ctx, MIR_MOV, temp_op.mir_op, op.mir_op); /* ??? */
+  if (op.decl->bit_field_bytes_p) {
+    /* MadC settles a byte-wise bit-field for little-endian targets only */
+    assert (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
+    temp_op = bit_field_bytes_load (c2m_ctx, op, &bit_offset);
+    sh = 64 - bit_offset - op.decl->width;
+  } else {
+    temp_op = get_new_temp (c2m_ctx, MIR_T_I64);
+    emit2 (c2m_ctx, MIR_MOV, temp_op.mir_op, op.mir_op); /* ??? */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  sh = 64 - op.decl->bit_offset - op.decl->width;
+    sh = 64 - op.decl->bit_offset - op.decl->width;
 #else
-  sh = op.decl->bit_offset + (64 - type_size (c2m_ctx, op.decl->decl_spec.type) * MIR_CHAR_BIT);
+    sh = op.decl->bit_offset + (64 - type_size (c2m_ctx, op.decl->decl_spec.type) * MIR_CHAR_BIT);
 #endif
+  }
   if (sh != 0) emit3 (c2m_ctx, MIR_LSH, temp_op.mir_op, temp_op.mir_op, MIR_new_int_op (ctx, sh));
   emit3 (c2m_ctx,
          signed_integer_type_p (op.decl->decl_spec.type)
@@ -16882,10 +16934,62 @@ static void gen_memcpy (c2m_ctx_t c2m_ctx, MIR_disp_t disp, MIR_reg_t base, op_t
   emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 6 /* args + proto + func + res */, args));
 }
 
+/* Store *VAL into bit-field VAR (bit_field_bytes_p) byte by byte, touching
+   only the bytes holding its bits (little-endian bit order): a byte the field
+   fills is written, any other is merged (or, when IGNORE_OTHERS_P, written
+   with its other bits zero).  *VAL becomes the stored value, as in
+   emit_scalar_assign. */
+static void emit_bit_field_bytes_store (c2m_ctx_t c2m_ctx, op_t var, op_t *val,
+                                        int ignore_others_p) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  int first = var.decl->bit_offset / MIR_CHAR_BIT, bo = var.decl->bit_offset % MIR_CHAR_BIT;
+  int width = var.decl->width, nbytes = (bo + width + MIR_CHAR_BIT - 1) / MIR_CHAR_BIT;
+  uint64_t mask = 0xffffffffffffffff >> (64 - width);
+  op_t v = get_new_temp (c2m_ctx, MIR_T_I64), bits = get_new_temp (c2m_ctx, MIR_T_I64);
+  op_t part = get_new_temp (c2m_ctx, MIR_T_I64), old = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  /* MadC settles a byte-wise bit-field for little-endian targets only */
+  assert (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ && nbytes <= 9);
+  if (signed_integer_type_p (var.decl->decl_spec.type)) {
+    emit3 (c2m_ctx, MIR_LSH, v.mir_op, val->mir_op, MIR_new_int_op (ctx, 64 - width));
+    emit3 (c2m_ctx, MIR_RSH, v.mir_op, v.mir_op, MIR_new_int_op (ctx, 64 - width));
+  } else {
+    emit3 (c2m_ctx, MIR_AND, v.mir_op, val->mir_op, MIR_new_uint_op (ctx, mask));
+  }
+  *val = v;
+  emit3 (c2m_ctx, MIR_AND, bits.mir_op, v.mir_op, MIR_new_uint_op (ctx, mask));
+  for (int k = 0; k < nbytes; k++) {
+    /* the field bit at this byte's bit 0 (negative: the field starts inside it) */
+    int lo = k * MIR_CHAR_BIT - bo;
+    uint64_t byte_mask = (lo < 0 ? mask << -lo : mask >> lo) & 0xff;
+    MIR_op_t mem = mem_part_op (ctx, var.mir_op, MIR_T_U8, first + k);
+
+    if (lo < 0)
+      emit3 (c2m_ctx, MIR_LSH, part.mir_op, bits.mir_op, MIR_new_int_op (ctx, -lo));
+    else if (lo > 0)
+      emit3 (c2m_ctx, MIR_URSH, part.mir_op, bits.mir_op, MIR_new_int_op (ctx, lo));
+    else
+      emit2 (c2m_ctx, MIR_MOV, part.mir_op, bits.mir_op);
+    if (byte_mask != 0xff) {
+      emit3 (c2m_ctx, MIR_AND, part.mir_op, part.mir_op, MIR_new_uint_op (ctx, byte_mask));
+      if (!ignore_others_p) {
+        emit2 (c2m_ctx, MIR_MOV, old.mir_op, mem);
+        emit3 (c2m_ctx, MIR_AND, old.mir_op, old.mir_op,
+               MIR_new_uint_op (ctx, ~byte_mask & 0xff));
+        emit3 (c2m_ctx, MIR_OR, part.mir_op, part.mir_op, old.mir_op);
+      }
+    }
+    emit2 (c2m_ctx, MIR_MOV, mem, part.mir_op);
+  }
+}
+
 static void emit_scalar_assign (c2m_ctx_t c2m_ctx, op_t var, op_t *val, MIR_type_t t,
                                 int ignore_others_p) {
   if (var.decl == NULL || var.decl->bit_offset < 0) {
     emit2_noopt (c2m_ctx, tp_mov (t), var.mir_op, val->mir_op);
+  } else if (var.decl->bit_field_bytes_p) {
+    assert (var.mir_op.mode == MIR_OP_MEM);
+    emit_bit_field_bytes_store (c2m_ctx, var, val, ignore_others_p);
   } else {
     MIR_context_t ctx = c2m_ctx->ctx;
     int width = var.decl->width;
@@ -17107,6 +17211,15 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         emit_scalar_assign (c2m_ctx, new_op (init_el.member_decl, mem), &val, t,
                             i == init_start || rel_offset == init_el.offset);
         rel_offset = init_el.offset + _MIR_type_size (ctx, t);
+        if (init_el.member_decl != NULL && init_el.member_decl->bit_field_bytes_p) {
+          /* its bits may run past its type's unit: the gap fill must not reach them */
+          mir_size_t end = init_el.offset
+                           + ((mir_size_t) init_el.member_decl->bit_offset
+                              + init_el.member_decl->width + MIR_CHAR_BIT - 1)
+                               / MIR_CHAR_BIT;
+
+          if (end > rel_offset) rel_offset = end;
+        }
       }
     }
     if (rel_offset < size) /* fill the tail: */

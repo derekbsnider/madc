@@ -1215,13 +1215,22 @@ public:
 	    // SysV/gcc bitfield packing (task #76): a bitfield is placed at the
 	    // next free BIT; the only constraint is that it must not cross a
 	    // sizeof(T)-aligned window of its OWN declared type. Consecutive
-	    // bitfields of DIFFERENT types share bytes when they fit.
+	    // bitfields of DIFFERENT types share bytes when they fit. Under any
+	    // packing (a packed aggregate or member, any #pragma pack) there is
+	    // no window: the field straddles (gcc place_field), and is recorded
+	    // from the byte holding its first bit — its bits then run past its
+	    // type's unit, which c2mir reads and writes byte by byte. Reverse
+	    // scalar storage numbers bits within a unit, so it keeps windows.
 	    size_t next_bit = union_layout ? 0 : bitfield_active
 		? bitfield_unit_offset * 8 + bitfield_next_bit
 		: size * 8;
-	    if ( next_bit % storage_bits + width > storage_bits )
+	    const bool straddle = pack != 0 && !reverse_scalar_storage;
+	    if ( !straddle && next_bit % storage_bits + width > storage_bits )
 		next_bit = align_up(next_bit, storage_bits);
-	    size_t window_offset = next_bit / storage_bits * storage_size;
+	    size_t window_offset = straddle
+		&& next_bit % storage_bits + width > storage_bits
+		? next_bit / 8
+		: next_bit / storage_bits * storage_size;
 	    size_t fa = field_align(dd);
 	    if ( fa > max_align ) max_align = fa;
 	    bitfield_active = true;

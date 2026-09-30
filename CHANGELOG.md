@@ -2,16 +2,16 @@
 
 ## [Unreleased]
 
-### Static bit-field initialization now encodes cross-type-boundary bit patterns correctly
+### Bit-fields under packing can now straddle their declared type's boundary
 
-Static initializers of bit-fields in aggregate literals now emit the correct
-values when fields of different declared types share bytes. Bit-field encoding
-switches from a per-type uint64_t accumulator to byte-by-byte bit-position
-placement, correctly handling both little-endian and big-endian systems and
-preserving field isolation across multi-field bit-field runs. Before, `static
-struct { char a:4; int b:20; } = {1, 0x12345, 7}` produced b=5 (wrong), and
-`struct { char a:4; long b:40; } = {2, 0x123456789aL}` misread the value; now
-both read correctly and match GCC/Clang output.
+Under `#pragma pack` or packed attributes, bit-fields can straddle their declared
+type's byte boundary (gcc place_field rule). Aggregate layout, sizes, offsets, and
+bit-field access (initialization, assignment, increment, read) now match GCC/Clang
+on all operations. Byte-wise read and write replace single-type load/store when a
+bit-field's bits run past its declared type's unit. Before, `#pragma pack(8) struct
+{ char a:4; int b:30; }` produced size 12 (madc); now 8 (GCC). Aggregate layout
+also corrected for packed members and `__attribute__((packed))` aggregates when
+fields straddle.
 
 ### Non-static data members initialize in declaration order
 
