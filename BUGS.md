@@ -1160,35 +1160,6 @@ int main(void) { return x; }
 
 ## madcide (the editor)
 
-### B84. JOE's `^W` deletes the whitespace and the next word
-
-- Found by the owner, 2026-09-30. Oracle: JOE 4.6 on the container
-  (`tmp/rescue/joew.py`, each case a caret position, then `^W`, then `^K X`):
-
-| Text, caret at ‸ | JOE 4.6 (measured) | madcide (`word_right`'s contract) |
-|---|---|---|
-| `foo‸   bar baz` | `foobar baz` | `foo baz` (the owner's report) |
-| `foo ‸  bar baz` | `foo bar baz` | `foo  baz` |
-| `‸foo   bar` | `   bar` | `   bar` |
-| `f‸oo   bar` | `f   bar` | `f   bar` |
-| `a ‸+= b` | `a = b` (one byte) | `a ` |
-| `foo‸` + newline + `bar` | `foobar` (the newline) | `foo` |
-| `foo‸  ` + newline + `bar` | `foobar` | `foo` |
-| `‸` tab `x = 1;` | `x = 1;` | ` = 1;` |
-
-- JOE's rule: the class of the byte at the caret decides. On word bytes it
-  deletes the rest of the word, and on whitespace (space, tab, newline) the
-  run of whitespace. Anything else is one byte.
-- Layer: `cmdDELWORD` → `delete_word` (`tools/madcide/madcide_core.inc:2876`)
-  deletes to `ui::text_word_right`, the word MOTION (`^X`: past the end of
-  the next word), which is Emacs's `kill-word`, not JOE's `delwr`.
-- Fix shape: a class-run extent beside the motion in the text buffer (the
-  motion's owner, `text_buffer::word_right`), which `delword` reads. Bytes
-  of 0x80 and above count as word bytes, so a UTF-8 letter is never split.
-  Emacs's `kill-word` becomes its own command (`killword`) when `emacs.keys`
-  gains Meta.
-- Planned: plan §41.11a slice 0.
-
 ### B86. madcide refuses to start on a file that does not exist
 
 - Found by the owner, 2026-09-30. `madcide new.c`, with no `new.c`, prints

@@ -307,6 +307,41 @@ public:
     size_t word_right(size_t from) const { return word_right_in(text(), from); }
     size_t word_left(size_t from) const { return word_left_in(text(), from); }
 
+    // The one whitespace rule beside the word rule: space, tab, newline
+    // (the line editor's word kills read it too, madcdis/line_edit.h).
+    static bool space_byte(char c)
+    {
+	return c == ' ' || c == '\t' || c == '\n';
+    }
+    // The DELETION extent of JOE's ^W (delwr): the run of the byte class at
+    // `from`. On a word byte (word_byte), to the end of the word; on a
+    // whitespace byte (space_byte), to the end of the whitespace run,
+    // across line ends; on any other byte, that byte alone. The offset
+    // just past the run, clamped (`from` at the end deletes nothing).
+    // Measured against JOE 4.6 (tests/testmadcide_delword.mad). Word
+    // MOTION is word_right, a different question: past the end of the NEXT
+    // word (the ^X motion, readline's M-f, Emacs's kill-word extent).
+    static size_t class_run_right_in(const std::string &t, size_t from)
+    {
+	size_t i = from > t.size() ? t.size() : from;
+	if ( i >= t.size() )
+	    return i;
+	if ( word_byte(t[i]) )
+	{
+	    while ( i < t.size() && word_byte(t[i]) )
+		++i;
+	    return i;
+	}
+	if ( space_byte(t[i]) )
+	{
+	    while ( i < t.size() && space_byte(t[i]) )
+		++i;
+	    return i;
+	}
+	return i + 1;
+    }
+    size_t class_run_right(size_t from) const { return class_run_right_in(text(), from); }
+
     size_t piece_count() const { return _pieces.size(); }	// unit-test view
 
     // ---- history (madcide IDE-2): undo/redo are pieces-vector snapshots

@@ -1531,6 +1531,16 @@ int64_t text_word_right(int64_t w, int64_t entity, int64_t from)
     return (int64_t)b->word_right((size_t)from);
 }
 
+// JOE ^W's deletion extent: a read like the word motions
+// (text_buffer::class_run_right, beside the one word rule).
+int64_t text_class_run_right(int64_t w, int64_t entity, int64_t from)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b || from < 0 )
+	return -1;
+    return (int64_t)b->class_run_right((size_t)from);
+}
+
 // UTF-16 column conversion over one line (V6c-2): the dialect face of the
 // ONE owner in madcdis/text_utf16.h — no byte walking here, or the LSP face
 // and the web hit test would answer differently on the same line. `line` is

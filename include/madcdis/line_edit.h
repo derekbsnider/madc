@@ -544,11 +544,6 @@ private:
     std::string _saved;		// the entry as it was when the search began
     size_t _saved_caret;
 
-    static bool space_byte(unsigned char b)
-    {
-	return b == ' ' || b == '\t' || b == '\n';
-    }
-
     // Code point steps: a caret never stops inside a UTF-8 sequence.
     size_t prev_cp(size_t i) const
     {
@@ -866,7 +861,7 @@ private:
 	bool on_last = _caret >= last;
 	bool last_blank = true;
 	for ( size_t i = last; i < _text.size(); ++i )
-	    if ( !space_byte((unsigned char)_text[i]) )
+	    if ( !text_buffer::space_byte(_text[i]) )
 		last_blank = false;
 	_final = (!pasted && _caret == _text.size() && _enters >= 2)
 	      || (_extendable && on_last && last_blank && last > 0);
@@ -878,7 +873,7 @@ private:
 	size_t begin = line_begin(_caret);
 	bool blank = true;
 	for ( size_t i = begin; i < _caret; ++i )
-	    if ( !space_byte((unsigned char)_text[i]) )
+	    if ( !text_buffer::space_byte(_text[i]) )
 		blank = false;
 	if ( !blank )
 	    return outcome::complete;
@@ -995,9 +990,9 @@ private:
 	    case line_action::kill_space_back:
 	    {
 		size_t i = _caret;
-		while ( i > 0 && space_byte((unsigned char)_text[i - 1]) )
+		while ( i > 0 && text_buffer::space_byte(_text[i - 1]) )
 		    --i;
-		while ( i > 0 && !space_byte((unsigned char)_text[i - 1]) )
+		while ( i > 0 && !text_buffer::space_byte(_text[i - 1]) )
 		    --i;
 		kill_range(i, _caret, true);
 		_killing = true;

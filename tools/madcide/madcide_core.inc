@@ -2886,7 +2886,9 @@ void delete_word(long w, long es, long doc, long caret)
 	refuse_edit(w, es);
 	return;
     }
-    long e = ui::text_word_right(w, doc, caret);
+    // JOE's delwr: the run of the caret byte's class (the whitespace alone
+    // on whitespace), never the ^X motion's extent through the next word.
+    long e = ui::text_class_run_right(w, doc, caret);
     if ( e <= caret )
 	return;
     edit_checkpoint(w, es, doc, caret);

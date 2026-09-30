@@ -1,0 +1,60 @@
+// JOE's ^W (delword, B84): the run of the caret byte's CLASS goes. On word
+// bytes the rest of the word, on whitespace (space, tab, newline) the
+// whitespace run, anything else one byte. Before the fix delword deleted to
+// the end of the NEXT word (the ^X motion: Emacs's kill-word), so on
+// whitespace it took the whitespace and the word after it. Oracle: JOE 4.6
+// on the container, each case its caret then ^W then ^K X, measured
+// 2026-09-30 (the caret is at the offset given; a newline prints as \n, a
+// tab as \t):
+//   "foo   bar baz" @3 -> "foobar baz"     "foo   bar baz" @4 -> "foo bar baz"
+//   "foo   bar baz" @0 -> "   bar baz"     "foo   bar baz" @1 -> "f   bar baz"
+//   "a += b"        @2 -> "a = b"          "a+=b"          @1 -> "a=b"
+//   "foo\nbar"      @3 -> "foobar"         "foo  \nbar"    @3 -> "foobar"
+//   "\tx = 1;"      @0 -> "x = 1;"        "foo\n  bar"    @3 -> "foobar"
+//   "a  \t b"       @1 -> "ab"             "x;  y"         @1 -> "x  y"
+// A caret at the end deletes nothing. A UTF-8 byte is a word byte (the one
+// word rule, text_buffer::word_byte), so a word containing one goes whole.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void one(long w, long es, long doc, const char *text, long caret)
+{
+    ui::text_load(w, doc, text);
+    delete_word(w, es, doc, caret);
+    var t;
+    ui::text(t, w, doc);
+    var s1 = php::str_replace("\n", "\\n", t);
+    var shown = php::str_replace("\t", "\\t", s1);
+    var b1 = php::str_replace("\n", "\\n", text);
+    var before = php::str_replace("\t", "\\t", b1);
+    println("[{}] @{} -> [{}]", before, caret, shown);
+}
+
+int main()
+{
+    const char *path = "madc_ide_delword.txt";
+    php::file_put_contents(path, "\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+
+    one(w, es, doc, "foo   bar baz\n", 3);
+    one(w, es, doc, "foo   bar baz\n", 4);
+    one(w, es, doc, "foo   bar baz\n", 0);
+    one(w, es, doc, "foo   bar baz\n", 1);
+    one(w, es, doc, "a += b\n", 2);
+    one(w, es, doc, "a+=b\n", 1);
+    one(w, es, doc, "foo\nbar\n", 3);
+    one(w, es, doc, "foo  \nbar\n", 3);
+    one(w, es, doc, "\tx = 1;\n", 0);
+    one(w, es, doc, "foo\n  bar\n", 3);
+    one(w, es, doc, "a  \t b\n", 1);
+    one(w, es, doc, "x;  y\n", 1);
+    one(w, es, doc, "end", 3);
+    one(w, es, doc, "na\xc3\xafve rest\n", 0);
+
+    // a test leaves nothing in its working directory
+    php::unlink(path);
+    return 0;
+}

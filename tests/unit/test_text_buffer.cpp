@@ -408,3 +408,26 @@ TEST_CASE("piece table — word motion: JOE ^Z/^X duals over [A-Za-z0-9_]")
     CHECK(u.word_left(7) == 2u);
     CHECK(text_buffer::word_right_in("\xc3\xa9t", 0) == 3u);
 }
+
+TEST_CASE("piece table — JOE ^W's deletion extent: the run of the caret byte's class")
+{
+    // JOE 4.6 (measured; tests/testmadcide_delword.mad): word bytes to the
+    // word's end, whitespace to the run's end across line ends, any other
+    // byte alone — never the next word, which is the MOTION's extent.
+    text_buffer b;
+    b.load("foo   bar baz\n");
+    CHECK(b.class_run_right(3) == 6u);		// the gap only, not "bar"
+    CHECK(b.word_right(3) == 9u);		// the motion takes "bar" too
+    CHECK(b.class_run_right(4) == 6u);		// inside the gap
+    CHECK(b.class_run_right(0) == 3u);		// a word: its end
+    CHECK(b.class_run_right(1) == 3u);		// mid-word: the rest
+    CHECK(b.class_run_right(14) == 14u);	// the end: nothing
+    CHECK(b.class_run_right(99) == 14u);	// past the end clamps
+    CHECK(text_buffer::class_run_right_in("a += b", 2) == 3u);	// one punctuation byte
+    CHECK(text_buffer::class_run_right_in("foo  \n  bar", 3) == 8u);	// across the line end
+    CHECK(text_buffer::class_run_right_in("\tx", 0) == 1u);	// a tab is whitespace
+    CHECK(text_buffer::class_run_right_in("na\xc3\xafve x", 0) == 6u);	// UTF-8 inside the word
+    CHECK(text_buffer::space_byte(' '));
+    CHECK(text_buffer::space_byte('\n'));
+    CHECK(!text_buffer::space_byte('_'));
+}

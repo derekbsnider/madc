@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### madcide's ^W (delete word) now matches JOE's behaviour
+
+The delete-word command (^W) previously deleted from the caret to the end of the
+next word (Emacs's `kill-word` motion), so on whitespace it removed the whitespace
+run and the word after it. JOE's rule is class-based: word bytes delete the rest of
+the word, whitespace (space/tab/newline) deletes the whitespace run, and other bytes
+delete one byte. The deletion now computes a class-run extent in the text buffer
+(`text_buffer::class_run_right()`) based on the byte at the caret, using the existing
+word-byte and space-byte predicates. UTF-8 bytes (0x80 and above) are word bytes, so
+a UTF-8 letter is never split. Oracle: JOE 4.6 on the container.
+
 ### madcide's startup hint names the loaded profile's chords, not JOE's
 
 The startup hint (the line displayed when hint=1 is set) previously hard-coded
