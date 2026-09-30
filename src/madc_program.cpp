@@ -5884,21 +5884,25 @@ static const ::Program::TopDecl *graph_global_resolve(::Program &child, int64_t 
 // A global variable's terse node: { id, kind:"Global", name, line, column? }.
 // A global is not derivable from graph_kind_name (its DataDef is its TYPE, e.g.
 // int) — it is a "Global" by virtue of being a dkGlobalVar decl. Span from the
-// origin token when present, else the TopDecl's recorded line.
-static madc::value graph_global_node_value(const ::Program::TopDecl &td, int64_t id)
+// origin token when present, else the TopDecl's recorded line — the
+// declaration's own place either way (Program::top_decl_position).
+static madc::value graph_global_node_value(const ::Program &child,
+					   const ::Program::TopDecl &td, int64_t id)
 {
     std::map<std::string, madc::value> f;
     f["id"]   = value(id);
     f["kind"] = value(std::string("Global"));
     if ( !td.name.empty() )
 	f["name"] = value(td.name);
+    int line, column;
+    child.top_decl_position(td, line, &column);
     if ( td.origin )
     {
-	f["line"]   = value((int64_t)td.origin->line);
-	f["column"] = value((int64_t)td.origin->column);
+	f["line"]   = value((int64_t)line);
+	f["column"] = value((int64_t)column);
     }
-    else if ( td.line )
-	f["line"] = value((int64_t)td.line);
+    else if ( line )
+	f["line"] = value((int64_t)line);
     return value::make_object(f);
 }
 
@@ -5955,7 +5959,7 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
     {
 	const ::Program::TopDecl *td = graph_global_resolve(*st->child, node_id);
 	if ( td )
-	    out = graph_global_node_value(*td, node_id);
+	    out = graph_global_node_value(*st->child, *td, node_id);
 	else
 	{
 	    std::map<std::string, madc::value> empty;
@@ -6925,7 +6929,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
     if ( ftarget )
 	nodes.push_back(graph_func_node_value(st, ftarget));
     else if ( gtd )
-	nodes.push_back(graph_global_node_value(*gtd, def_id));
+	nodes.push_back(graph_global_node_value(child, *gtd, def_id));
 
     if ( ftarget || gvar )
     {
@@ -7018,7 +7022,7 @@ bool internal_program_graph_search(int64_t handle, const std::string &kind,
 		continue;
 	    if ( nodes.size() >= GRAPH_EDGE_RESULT_CAP )
 	    { truncated = true; break; }
-	    nodes.push_back(graph_global_node_value(td, graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i)));
+	    nodes.push_back(graph_global_node_value(child, td, graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i)));
 	}
     std::map<std::string, madc::value> r;
     r["nodes"] = value::make_array(nodes);
@@ -7058,7 +7062,7 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
     if ( ftarget )
 	nodes.push_back(graph_func_node_value(st, ftarget));
     else if ( gtd )
-	nodes.push_back(graph_global_node_value(*gtd, id));
+	nodes.push_back(graph_global_node_value(child, *gtd, id));
 
     if ( ftarget || gvar )
     {
@@ -7303,7 +7307,7 @@ bool internal_program_graph_span(int64_t handle, int64_t id, madc::value &out)
 	    out = graph_error_result("no extent recorded for this global (no declaration statement was retained for it)");
 	    return true;
 	}
-	out = graph_span_value(graph_global_node_value(*td, id), x);
+	out = graph_span_value(graph_global_node_value(child, *td, id), x);
 	return true;
     }
     case GraphIdSpace::Body:
@@ -7363,7 +7367,7 @@ bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
 	if ( graph_extent_of(td.decl, x) && x.line == line && x.column == column )
 	{
 	    int64_t gid = graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i);
-	    out = graph_span_value(graph_global_node_value(td, gid), x);
+	    out = graph_span_value(graph_global_node_value(child, td, gid), x);
 	    return true;
 	}
     }

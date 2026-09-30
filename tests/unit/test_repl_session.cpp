@@ -2157,3 +2157,21 @@ TEST_CASE("?name: where a keyword comes from")
 	});
     }
 }
+
+// BUGS.md B94: an object whose type is a qualified typedef name
+// (`std::string`) is the unit's that declared it, as an unqualified one's
+// is: `?` cites the entry, and a unit's static is a session name (plan
+// §41.5a), so a later entry changes the one object.
+TEST_CASE("a qualified typedef's object is the entry's own (B94)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c++17"));
+    REQUIRE(c.submit("#include <string>"));
+    REQUIRE(c.submit("std::string s = \"hello\";"));
+    REQUIRE(c.submit("?s"));
+    CHECK(c.shown().find("Defined:   @ REPL[2]:1") != std::string::npos);
+    REQUIRE(c.submit("static std::string t = \"x\";"));
+    REQUIRE(c.submit("t += \"y\";"));
+    REQUIRE(c.submit("t"));
+    CHECK(c.shown() == "\"xy\"");
+}

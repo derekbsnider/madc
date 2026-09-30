@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### A qualified typedef's declaration is the unit's own, not the header's (B94, worked around)
+
+A file-scope object whose type is a qualified typedef name (`std::string s`, `std::size_t n`) is now correctly attributed to the unit's declaration, not the typedef's header. Two SILENT bugs fixed: unreferenced global objects with qualified typedef types now run their dynamic initializers (g++ and clang++ behaviour), and a unit's static with a qualified typedef type is now a session name, so later mutations affect the one object instead of separate copies per entry. The REPL's `?` display now shows the entry's location instead of the header's (a wrong display, not silent). The system-origin verdict and all position readers now call `Program::top_decl_position()` instead of reading `origin->file` directly. TopDecl annotates the parser's position at record time via `parse_file`, `parse_line`, `parse_column`. The parser root (a type token for a qualified name in `parseDeclaration` should yield a use-site token) remains open. Gate: `tests/testglobal_qualified_typedef_init.mad`, `test_repl_session` "a qualified typedef's object is the entry's own (B94)", `scripts/check-one-top-decl-position.sh` (fulltest).
+
 ### madcide's F5 diagnostics populate the Problems pane (plan §41.11a step 3c)
 
 F5's load and run replies now populate madcide's Problems pane with compile-error diagnostics via a new `repl_problems()` helper that writes the reply's diagnostics array into the editor's diags bag key. A user can choose a Problems row to move the caret to its file and line (cmdGOTO); a clean F5 (successful load or run with no errors) empties stale Problems entries, while an entry's own diagnostics (REPL[N] items citing no editor file) stay out. Gate: testmadcide_repl.mad section 7 (f5 problems: rows=true goto line3=true; f5 problems clean: rows=0).

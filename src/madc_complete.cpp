@@ -468,21 +468,27 @@ std::string where(const char *file, int line)
 	 + (line > 0 ? ":" + std::to_string(line) : std::string());
 }
 
-std::string top_decl_where(const Program::TopDecl &td)
-{
-    return td.origin ? where(td.origin->file, td.origin->line)
-		     : where(td.file, td.line);
-}
-
 } // namespace
 
 // Where an object was declared: its latest TopDecl (a redeclaration's).
-std::string Program::object_location(const Variable *v) const
+void Program::object_origin(const Variable *v, const char *&file, int &line) const
 {
+    file = NULL;
+    line = 0;
     for ( size_t i = top_decls.size(); i-- > 0; )
 	if ( top_decls[i].kind == DeclKind::dkGlobalVar && top_decls[i].var == v )
-	    return top_decl_where(top_decls[i]);
-    return std::string();
+	{
+	    file = top_decl_position(top_decls[i], line);
+	    return;
+	}
+}
+
+std::string Program::object_location(const Variable *v) const
+{
+    const char *file;
+    int line;
+    object_origin(v, file, line);
+    return where(file, line);
 }
 
 // Where a type name was declared: the TopDecl of that name for that type,
@@ -496,7 +502,11 @@ std::string Program::type_location(const std::string &name, const DataDef *dd) c
 	if ( td.kind != DeclKind::dkGlobalVar && td.name == name
 	     && (td.kind == DeclKind::dkTypedef
 		 ? td.tdt && &td.tdt->definition == dd : td.dd == dd) )
-	    return top_decl_where(td);
+	{
+	    int line;
+	    const char *file = top_decl_position(td, line);
+	    return where(file, line);
+	}
     }
     return std::string();
 }

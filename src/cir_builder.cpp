@@ -33101,15 +33101,19 @@ node_t CirBuilder::translate_module(Program *prog)
 	auto stamp = [&](node_t n, Program::TopDecl &td) {
 		if (!n) return;
 		cir_node *cn = CIR_NODE(n);
+		int line, column;
+		const char *file = prog->top_decl_position(td, line, &column);
 		if (td.origin) {
-			// The origin token is the position source of truth; the node's
-			// src_*() derive from it. Also feed c2mir's absolute store.
+			// The origin token is the node's +madc origin; the node's
+			// src_*() derive from it. c2mir's absolute store takes the
+			// declaration's own place (top_decl_position: a qualified
+			// typedef name's token is its header's, BUGS.md B94).
 			cn->origin_id = madc_slot_id_for(td.origin);
-			set_pos(cn, td.origin->file, td.origin->line, td.origin->column);
-		} else if (td.file) {
+			set_pos(cn, file, line, column);
+		} else if (file) {
 			// No origin token captured (rare typedef variants): feed c2mir's
 			// store the recorded file/line; node carries no +madc origin.
-			set_pos(cn, td.file, td.line, 0);
+			set_pos(cn, file, line, 0);
 		}
 	};
 	std::set<std::string> emitted_structs;
@@ -33140,7 +33144,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	auto td_system = [&](Program::TopDecl &td) -> bool {
 		if (td.forest_system)
 			return true;
-		const char *f = td.origin ? td.origin->file : td.file;
+		int line;
+		const char *f = prog->top_decl_position(td, line);
 		return f && prog->is_system_header_path(f);
 	};
 

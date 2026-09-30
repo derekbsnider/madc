@@ -74333,6 +74333,9 @@ size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDe
     td.line = origin ? origin->line : 0;
     td.origin = origin;
     td.decl = decl;
+    td.parse_file = TokenBase::_parse_file;	// the declaration's own place
+    td.parse_line = TokenBase::_parse_line;	// (top_decl_position)
+    td.parse_column = TokenBase::_parse_column;
     top_decls.push_back(td);
     return top_decls.size() - 1;
 }
@@ -78503,9 +78506,33 @@ bool Program::token_is_tu_origin(TokenBase *tb) const
 
 bool Program::top_decl_is_tu_origin(const TopDecl &td) const
 {
+    int line;
+    const char *file = top_decl_position(td, line);
+    return !file || !tkProgram || tkProgram->source == file;
+}
+
+const char *Program::top_decl_position(const TopDecl &td, int &line,
+					 int *column) const
+{
+    if ( td.origin && !(td.parse_file && td.origin->file
+			&& td.origin->file != td.parse_file) )
+    {
+	line = td.origin->line;
+	if ( column )
+	    *column = td.origin->column;
+	return td.origin->file;
+    }
     if ( td.origin )
-	return token_is_tu_origin(td.origin);
-    return !td.file || !tkProgram || tkProgram->source == td.file;
+    {
+	line = td.parse_line;
+	if ( column )
+	    *column = td.parse_column;
+	return td.parse_file;
+    }
+    line = td.line;
+    if ( column )
+	*column = 0;
+    return td.file;
 }
 
 // Pre-parse classification: does this file-scope token BEGIN a statement

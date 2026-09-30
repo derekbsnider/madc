@@ -1,0 +1,24 @@
+// A file-scope object whose type is a QUALIFIED system-header typedef name
+// (`std::string`, `std::size_t`) is the unit's own declaration, not the
+// header's: its dynamic initializer runs whether or not the object is
+// referenced. The declaration's origin token was the typedef name's token
+// (its header's, BUGS.md B94), so the emitter's system-origin verdict made
+// `s` and `n` emit-if-referenced and dropped their initializers (exit 0).
+// The verdict reads Program::top_decl_position. `r` (referenced) and `u` (a
+// user-namespace typedef) are the controls.
+// Oracle: g++ 13 and clang++ 18 print "s n r u | main r".
+#include <string>
+#include <cstddef>
+#include <cstdio>
+
+namespace user { typedef int T; }
+
+std::string make(const char *tag) { printf("%s ", tag); return tag; }
+std::size_t count(const char *tag) { printf("%s ", tag); return 1; }
+
+std::string s = make("s");
+std::size_t n = count("n");
+std::string r = make("r");
+user::T u = (int)count("u");
+
+int main() { printf("| main %s\n", r.c_str()); return 0; }
