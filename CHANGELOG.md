@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide's REPL pane commands require editor tier (V6a duplex D3, plan §41.11a)
+
+The REPL pane's three commands — F5 run (`cmdREPLRUN`), typed entry (`cmdREPLENTER`), and the backend (`cmdREPL`) — now require editor tier, gated the same as builds and runs. An observer-tier client that sends replrun, replenter, or repl receives a tier-refused error: `<command> requires editor (you are observer)`. The gate: testmadcide_serve_tiers.mad's new section 1b (observer-run line) sends all three commands from an observer and verifies each is refused with the correct prose.
+
 ### madcide's contributed commands (plugins Stage B1, plan §41.11a step 2)
 
 A madcide plugin module can now register a command in the world's registry via `plugin_command(w, name, title, handler)`, which returns the command's code (or 0 if refused: a built-in name, duplicate, invalid plugin name, or missing handler). The world-aware converters `cmd_table_w`, `cmd_of_w`, and `cmd_name_w` make contributed commands known to every input boundary: key profiles (`parse_keys`), menus (`load_menu`), the `-c` one-shot line (`run_once`), the seat (`api_run`), the MCP tool list (`mcp_tools`), and the LSP server's executeCommand ids (`lsp_command_ids`). The dispatcher routes contributed codes through their handlers in `IdeSession::command` and `apply_ide_event`; the core cannot see what a handler does, so each contributed command is gated at editor tier (`cmd_min_tier_w`). The contributed code range starts at `cmd_contrib_base()` (4096), above every built-in enumerator; `check-madcide-command-registry.sh` now validates that shipped code never contributes a built-in name or duplicate name, and that bundle menus and keys only name commands in the table and contributions. Gates: `tests/testmadcide_contrib` (five pins: registration refusals, world-aware converters, dispatcher, key profile binding with world, seat/MCP/LSP listing); `check-madcide-command-registry.sh` (new controls f–h).

@@ -697,6 +697,11 @@ long cmd_min_tier(long code)
     case cmdBLD_STOP:
     case cmdBLD_PROJ_BUILD:
     case cmdBLD_PROJ_RUN:
+    // editor — the REPL pane: a backend process, and the code it runs (F5's
+    // buffer, a typed entry), as a build's run is
+    case cmdREPL:
+    case cmdREPLRUN:
+    case cmdREPLENTER:
     // editor — the `:` line can mutate/save (its `:!` shell gap is a
     // refinement: gate the parsed sub-verb, not the gateway)
     case cmdCOLON:
