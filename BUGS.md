@@ -10,6 +10,11 @@ pause, and this backlog is being burned down. A defect found now is fixed in
 its own commit when it can be (`fix-what-you-find.md`). One that is not fixed
 on the spot is filed here, so it stays tracked (owner, 2026-09-29).
 
+**Owner, 2026-09-30:** the REPL + learning-IDE release comes first. A defect
+on the release's path, or blocking it, is fixed; one found off that path is
+filed here and the work returns to the release. The burn-down resumes when the
+owner schedules it.
+
 - One entry per defect: kind, when and during what it was found, the reducer
   inline (`tmp/` is untracked), what gcc, clang and madc do, and the layer
   when known.
@@ -26,6 +31,30 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
+
+### B83. c2mir's local initializer skips a member after a bit-field's unit (stock c2m)
+
+```c
+#include <stdio.h>
+struct G { char c; int x : 4; char d; char e[2]; };
+__attribute__((noinline)) void dirty(void) { volatile unsigned char junk[256]; for (int k = 0; k < 256; k++) junk[k] = 0xA5; }
+__attribute__((noinline)) void use(void) { struct G g = { .c = 1, .x = 2, .e = { 3, 4 } }; printf("g: %d %d %d %d %d\n", g.c, g.x, g.d, g.e[0], g.e[1]); }
+int main(void) { dirty(); use(); return 0; }
+```
+
+- gcc = clang: `g: 1 2 0 3 4`. madc: `g: 1 2 0 3 4` (madc's lowering
+  initializes the omitted member itself). The in-tree `c2m` on its own
+  (`obj/mir/host/c2m gap.c -eg`): `g: 1 2 -52 3 4` (SILENT).
+- Layer: c2mir `gen_initializer`, local branch. After a bit-field it sets
+  `rel_offset` to the field's offset plus its type's size, so `x` (an `int`
+  unit at offset 0) moves the cursor to 4. `d` has no initializer element, so
+  nothing writes byte 2, and the gap fill before `e` (offset 3) is skipped
+  because `rel_offset` is already past it. A generic c2mir defect (an upstream
+  `vnmakarov/mir` candidate). madc does not reach it today.
+- Fix shape: advance `rel_offset` to the byte after the field's last bit, not
+  to the end of its type's unit (029a55a0f already does this for a byte-wise
+  field).
+- Found 2026-09-30 while fixing B76. Reducer: `tmp/b76/gap.c`.
 
 ### B81. A mem-initializer flattens a nested braced list, losing its nesting
 
