@@ -49,6 +49,7 @@ void madcdis_mapwrite_trap_hit(const char *key)
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 #include "rt/rt_task.h"	// MT-3b: the token pumps honor task cancellation
 #include "rt/rt_dump.h"	// __madc_c_escape: THE C-literal escape rule
+#include "madcdis/text_utf16.h"	// line_layout: THE screen layout of a line (B8)
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
 // power of two — the pump check is one mask-and-compare). ~1k tokens is
@@ -10507,31 +10508,37 @@ void Source::showerror(int row, int col, std::ostream &os)
 
 // Shared display tail for a diagnostic source echo: the offending line and a
 // caret under the column, truncated to the terminal width — one formatter for
-// both the live-Source echo and the reread-from-disk echo.
+// both the live-Source echo and the reread-from-disk echo. `col` is a 1-based
+// BYTE column; the line echoes laid out by THE screen-layout rule
+// (madc::line_layout: tabs to 8-column stops, code-point widths — gcc's
+// screen columns) and the caret sits under that byte's screen column, as gcc
+// and clang draw it. A raw tab or a byte counted as a column misplaced it (B8).
 void show_error_source_line(const std::string &ln, int col, std::ostream &os)
 {
     char *env_columns = getenv("COLUMNS");
     size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
+    // The column can exceed the fetched line (a token inside a macro
+    // expansion carries post-expansion provenance). A diagnostic must never
+    // throw — the caret's byte is clamped to the line's end instead of
+    // letting substr raise out_of_range mid-print (which surfaced as "tree
+    // build failed (basic_string::substr...)" and MASKED the real error).
+    size_t at = col > 1 ? std::min((size_t)(col - 1), ln.length()) : 0;
+    std::vector<size_t> screen;
+    std::string shown = madc::line_layout(ln, 0, screen);
 
-    if ( ln.length()+5 > term_columns )
+    if ( screen.back() + 5 > term_columns )
     {
-	// The column can exceed the fetched line (a token inside a macro
-	// expansion carries post-expansion provenance). A diagnostic must
-	// never throw — clamp the tail slice to the line's end instead of
-	// letting substr raise out_of_range mid-print (which surfaced as
-	// "tree build failed (basic_string::substr...)" and MASKED the
-	// real error).
-	size_t start = (col > 0 && (size_t)col <= ln.length())
-		     ? (size_t)col : ln.length();
-	std::string trunc = "  ..." + ln.substr(start);
-	os << trunc << std::endl;
-	os << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
+	// Too wide: the tail from the caret's byte, laid out where it prints
+	// (after the 5-column "  ..."), the caret under its first column.
+	const size_t lead = 5;
+	std::vector<size_t> tail_screen;
+	os << "  ..." << madc::line_layout(ln.substr(at), lead, tail_screen)
+	   << std::endl;
+	os << std::string(lead, ' ') << "\e[1;32m^\e[m" << std::endl;
 	return;
     }
-    os << ln << std::endl;
-    if ( col > 1 )
-	os << std::setw(col-1) << ' ';
-    os << "\e[1;32m^\e[m" << std::endl;
+    os << shown << std::endl;
+    os << std::string(screen[at], ' ') << "\e[1;32m^\e[m" << std::endl;
 }
 
 // Echo line `row` of a file that is NOT the live Source buffer — a token from
@@ -10592,35 +10599,6 @@ int throwbuf::sync()
     return -1;
 }
 
-
-#if 0
-void Program::showerror(istream &is)
-{
-    char *env_columns = getenv("COLUMNS");
-    string line;
-    size_t term_columns;
-
-    if ( env_columns )
-	term_columns = atoi(env_columns);
-    else
-	term_columns = 80;
-
-    is.clear();
-    is.seekg(_pos, is.beg);
-    if ( !is.good() )
-	cerr << " seekfail";
-    getline(is, line);
-    if ( line.length()+5 > term_columns )
-    {
-	line = "  ..." + line.substr(_column);
-	cerr << line << endl;
-	cerr << setw(4) << ' ' << "\e[1;32m^\e[m" << endl;
-	return;
-    }
-    cerr << line << endl;
-    cerr << setw(_column-1) << ' ' << "\e[1;32m^\e[m" << endl;
-}
-#endif
 
 #if 0
 // tokenize stream of data TODO -- do all the same as tokenize(file), except set up filename

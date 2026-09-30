@@ -993,6 +993,18 @@ int main(void) {
   With `"éé"` earlier on the line, it lands 2 columns right.
 - Where: the caret renderer. It should expand tabs, count screen width and
   underline the token.
+- Part 1 fixed 2026-09-30 (D26's first step): `show_error_source_line` lays
+  the echoed line out through `madc::line_layout` (tabs to 8-column stops,
+  code-point widths; moved into `madcdis/text_utf16.h`) and places the caret
+  under the cited byte's screen column (`tests/unit/test_diag_caret.cpp`,
+  gcc's columns). The cited byte is still the token's LAST: the reducer's
+  caret is under `foo`'s final `o` and the header says `2:14`.
+- Remaining (part 2, D26): the token's column becomes its START (the lexer
+  records it when it begins the token), the header prints gcc's screen
+  column, and the caret underlines the token (`^~~`). The `column -
+  spelling` compensations go (`src/madc_program.cpp`: the highlighter and
+  the code graph), the frozen-header pack's format version is bumped, and
+  the three fixtures that pin a `line:col` change.
 
 ### B9. madc wording where gcc and clang name the missing token
 

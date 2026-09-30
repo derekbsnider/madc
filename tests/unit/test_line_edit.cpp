@@ -159,12 +159,12 @@ TEST_CASE("the width owner: C++20's estimated width, UTF-8 decoding")
     CHECK(madc::utf8_decode_at("\xa9", 0, cp) == 1);	// a stray one
 
     std::vector<size_t> col;
-    CHECK(madc::hub::line_layout("a\tb", 0, col) == "a       b");
+    CHECK(madc::line_layout("a\tb", 0, col) == "a       b");
     CHECK(col[2] == 8);
-    CHECK(madc::hub::line_layout("a\tb", 5, col) == "a  b");
-    CHECK(madc::hub::line_layout("\x01" "x", 0, col) == "^Ax");
+    CHECK(madc::line_layout("a\tb", 5, col) == "a  b");
+    CHECK(madc::line_layout("\x01" "x", 0, col) == "^Ax");
     CHECK(col[1] == 2);
-    CHECK(madc::hub::line_width("\xe6\x97\xa5\xe6\x9c\xac") == 4);	// 日本
+    CHECK(madc::line_width("\xe6\x97\xa5\xe6\x9c\xac") == 4);	// 日本
 }
 
 TEST_CASE("the bindings are readline's Emacs keys, Meta as the Esc prefix")

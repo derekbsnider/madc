@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Diagnostics expand tabs in source echoes and place the caret by screen column
+
+A diagnostic's source-line echo now expands tabs to 8-column stops and places the caret under the cited byte's display column, matching gcc and clang. Before the fix, the echo printed tabs as raw bytes and counted only bytes when positioning the caret, leaving it misplaced by up to 7 columns under a tab indent and further misplaced by UTF-8 multi-byte characters or East Asian wide characters. The fix unifies the layout rule — `madc::line_layout` (tabs, control bytes as `^X`, code-point widths) — between the line editor's painter (madcide's cursor) and the compiler's diagnostic caret, both reading gcc's screen-column model. The caret's byte column (still the token's LAST byte in part 1) is placed at the correct screen column for that byte. Oracle: gcc 13 -fsyntax-only on reducer with tab indent (2:19), UTF-8 characters (2:35), East Asian wide character (2:31).
+
 ### Tab inserts a tab byte in madcide's editor
 
 Tab now inserts a tab (0x09) at the caret in madcide, matching the behaviour of JOE, pico, vim's insert mode, and other standard editors. Previously, when the editor's edit node had the focus and received a Tab key, the key reached the `edit_key` function which had no tab handler, leaving the buffer unchanged. With a second focusable composed (such as a Problems list after a check or a menu bar), Tab was routed to the shared focus owner and cycled focus invisibly without editing the buffer. The fix adds a tab handler in `edit_key` that types a tab byte, and sets the editor node's `tabkey` hint while the editor has the keyboard (matching the terminal and REPL input's existing precedent). In vi NORMAL mode, Tab is inert, as vim's normal-mode Tab (^I) walks the jump list which madcide does not keep. Oracle: JOE 4.6 on the container for insert-mode Tab; vim for normal-mode behaviour.

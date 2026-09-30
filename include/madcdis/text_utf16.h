@@ -2,8 +2,10 @@
 #define __MADCDIS_TEXT_UTF16_H 1
 
 // madcdis/text_utf16.h — THE owner of UTF-16 ↔ UTF-8 column arithmetic over
-// one line of text, and of a code point's DISPLAY width (the line editor's
-// caret, plan §41.7a).
+// one line of text, of a code point's DISPLAY width (the line editor's
+// caret, plan §41.7a), and of one line's layout on a screen (tab stops,
+// control bytes, code-point widths: the line editor's painter and the
+// compiler's diagnostic caret, gcc's screen columns — B8).
 //
 // Two consumers ask the same question from opposite directions:
 //   - the web model (V3c): a page's hit test reports a JavaScript string
@@ -23,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace madc {
 
@@ -126,6 +129,62 @@ inline unsigned codepoint_columns(uint32_t cp)
 		if ( cp >= wide[i][0] && cp <= wide[i][1] )
 			return 2;
 	return 1;
+}
+
+// ---------------------------------------------------------- one line's layout
+// One line of text as a terminal shows it, from the display column `origin`
+// where the line starts (a prompt's width, D22; 0 for a diagnostic's source
+// echo). `col[i]` is the absolute column byte i begins at, and
+// col[line.size()] is where the line ends. A tab runs to the next multiple of
+// 8 columns, the terminal's own tab stops (gcc's -ftabstop default); any
+// other control byte shows as ^X, two columns; a code point is
+// codepoint_columns() wide, and its continuation bytes share its column.
+// Returns the bytes the painter writes for the line.
+inline std::string line_layout(const std::string &line, std::size_t origin,
+			       std::vector<std::size_t> &col)
+{
+	std::string shown;
+	col.assign(line.size() + 1, 0);
+	std::size_t c = origin;
+	std::size_t i = 0;
+	while ( i < line.size() )
+	{
+		unsigned char b = (unsigned char)line[i];
+		col[i] = c;
+		if ( b == '\t' )
+		{
+			std::size_t next = (c / 8 + 1) * 8;
+			shown.append(next - c, ' ');
+			c = next;
+			++i;
+			continue;
+		}
+		if ( b < 0x20 || b == 0x7f )
+		{
+			shown += '^';
+			shown += (char)(b == 0x7f ? '?' : b + 0x40);
+			c += 2;
+			++i;
+			continue;
+		}
+		uint32_t cp = 0;
+		std::size_t n = utf8_decode_at(line, i, cp);
+		for ( std::size_t k = 1; k < n; ++k )
+			col[i + k] = c;
+		shown.append(line, i, n);
+		c += codepoint_columns(cp);
+		i += n;
+	}
+	col[line.size()] = c;
+	return shown;
+}
+
+// A string's width in columns, laid out from column 0.
+inline std::size_t line_width(const std::string &s)
+{
+	std::vector<std::size_t> col;
+	line_layout(s, 0, col);
+	return col.back();
 }
 
 } // namespace madc

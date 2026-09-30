@@ -120,59 +120,9 @@ inline const tui_bindings &line_edit_bindings()
 }
 
 // -------------------------------------------------------------- the layout
-// One line of an entry as the terminal shows it, from the display column
-// `origin` where the line starts (the prompt's width, D22). `col[i]` is the
-// absolute column byte i begins at, and col[line.size()] is where the line
-// ends. A tab runs to the next multiple of 8 columns, the terminal's own tab
-// stops; any other control byte shows as ^X, two columns; a code point is
-// codepoint_columns() wide, and its continuation bytes share its column.
-// Returns the bytes the painter writes for the line.
-inline std::string line_layout(const std::string &line, size_t origin,
-			       std::vector<size_t> &col)
-{
-    std::string shown;
-    col.assign(line.size() + 1, 0);
-    size_t c = origin;
-    size_t i = 0;
-    while ( i < line.size() )
-    {
-	unsigned char b = (unsigned char)line[i];
-	col[i] = c;
-	if ( b == '\t' )
-	{
-	    size_t next = (c / 8 + 1) * 8;
-	    shown.append(next - c, ' ');
-	    c = next;
-	    ++i;
-	    continue;
-	}
-	if ( b < 0x20 || b == 0x7f )
-	{
-	    shown += '^';
-	    shown += (char)(b == 0x7f ? '?' : b + 0x40);
-	    c += 2;
-	    ++i;
-	    continue;
-	}
-	uint32_t cp = 0;
-	size_t n = utf8_decode_at(line, i, cp);
-	for ( size_t k = 1; k < n; ++k )
-	    col[i + k] = c;
-	shown.append(line, i, n);
-	c += codepoint_columns(cp);
-	i += n;
-    }
-    col[line.size()] = c;
-    return shown;
-}
-
-// A string's width in columns, laid out from column 0.
-inline size_t line_width(const std::string &s)
-{
-    std::vector<size_t> col;
-    line_layout(s, 0, col);
-    return col.back();
-}
+// A line's layout (tab stops, control bytes, code-point widths) is
+// line_layout / line_width, madcdis/text_utf16.h: the one rule this editor's
+// painter and the compiler's diagnostic caret share.
 
 // What the painter shows: the prompt, the entry's lines, and the caret as a
 // line and a byte in it.
