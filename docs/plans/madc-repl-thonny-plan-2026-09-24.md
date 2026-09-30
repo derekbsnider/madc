@@ -3090,7 +3090,10 @@ There is no patch release before it: B85's fix rides this release.
 | Stop (`replstop`), Language (`repllang`), bindings on request (`replbindings`), F5's diagnostics into Problems, the pane's reply events, the session starting when the layout shows the REPL | madcide's REPL pane (core) |
 | The untitled buffer, one open rule (B86), the argv parse | madcide core |
 | Bundles, the manifest, settings, `--profile`, the toolbar placement and its rendering, contributed commands, views and events, the transports | the plugin system (core) |
-| `chthonic.plugin`, `chthonic.layout`, `chthonic.menu` (with its toolbar rows), the `pico` keys, the `repl.std` setting, and the Variables view's code | the `chthonic` plugin |
+| Modifiers on every key and the primary modifier (step 3e) | the engine's key owner (`include/madcdis/keys.h`), the page and the terminal decoder |
+| The choice list, the key-style list, selection and the clipboard, `settings.json`'s writer (steps 3 and 3e) | madcide core |
+| `thonny.keys`, `vscode.keys`, and each `.keys` file's display name (step 3e) | the profiles (data) |
+| `chthonic.plugin`, `chthonic.layout`, `chthonic.menu` (with its toolbar rows), its keys (`pico` until step 3e, then `thonny`), the `repl.std` setting, and the Variables view's code | the `chthonic` plugin |
 
 - **The Variables view is the `chthonic` plugin's code:** its first real code, and the plugin system's first consumer.
   - It is a contributed view (`variables`), not a core view kind.
@@ -3106,7 +3109,7 @@ There is no patch release before it: B85's fix rides this release.
   - `init_view_es` loads what the active bundle names, in place of the hard-coded `joe` and `default`. The bundle's name is kept on the bag (beside `profile_dir`) for a later runtime switch.
   - A missing or refused file that a bundle names falls back to the baked default, and the status line says so, through the rescue-announcement pattern the key profile already uses. A refused manifest refuses its bundle, with the reason.
   - A profile selects no face. It composes under the TUI, `--gui` and `--serve` alike, and a desktop launcher passes `--profile chthonic --gui`.
-  - **`chthonic`'s keys are `pico`:** single chords (`^S` save, `^Z` undo, `^Q` quit, `^W` find, F5 run), with no `^K` prefixes to teach. A CUA personality (`^C`/`^X`/`^V` clipboard) is a later bundle.
+  - **`chthonic`'s keys are `pico` until step 3e:** single chords (`^S` save, `^Z` undo, `^Q` quit, `^W` find, F5 run), with no `^K` prefixes to teach. They clash with Thonny's keys (`^X` is discard, `^V` moves the block, `^O` is Outline, `^F` the project window, `^W` Find where Thonny closes the tab). Step 3e gives chthonic Thonny's keys, with every style a menu choice.
   - **`chthonic`'s settings** give `repl.std` (Q2 below), the REPL standard's first home (`replstd` is read today, but nothing sets it).
   - **The command line:** the file becomes the first argument that is not a flag, and flags may come anywhere (`madcide --profile chthonic f.c` and `madcide f.c --profile chthonic`). `ro` stays a positional word. The strings are compared only at this input boundary. The usage text lists `--profile`.
   - **`chthonic.layout`:**
@@ -3178,7 +3181,6 @@ There is no patch release before it: B85's fix rides this release.
 **Not in Phase 5's core, and named:**
 - Debug and the step buttons (Phase 7).
 - Run/Reload in the current session, and Send Selection (Phase 4).
-- A CUA personality and its clipboard.
 - A runtime "switch to the full workbench" (Thonny's regular-mode link; it needs a layout reload at runtime).
 - An object inspector for a Variables row.
 - Pointer targets read safely (Phase 6's Memory view needs a fault-safe peek, and this view waits for it).
@@ -3218,6 +3220,61 @@ There is no patch release before it: B85's fix rides this release.
 3. **The REPL pane's core pieces:** `replstop`, `repllang` and `repl_restart`; F5's diagnostics into Problems (the rows in the `load` and `run` replies, and `repl_reply` writing `diags`); the bindings owner, `%whos`, the wire op, the verb, and `replbindings`; the pane's reply events.
 
    Gate: `testmadcide_repl` (Stop while an entry blocks on stdin gives a fresh session and the transcript line; F5 on a refused buffer fills Problems, and `cmdGOTO` on its row moves the caret; a clean F5 empties Problems; Language restarts under the chosen standard); `test_session_backend` (a refused text's rows cite its path and line; the bindings rows' kinds, types, values and origins; `char *p = (char *)1;` listed by address with the backend alive, the negative control for the shallow walk); `test_repl_session` (`%whos` under C17, C++17 and madc); `tests/testsession_bindings.mad` (JIT, `--exe`, `--obj`); the refresh's cost measured over 50 bindings. The registry's pinned count moves on purpose.
+
+   Run ▸ Language… is a row list through the one choice list that step 3e's Key bindings… also uses (rows of `{title, command, argument}`, the current row marked; a choose runs the row's command with its argument, `cmd_takes_arg`). No pane is specific to one choice.
+
+   Progress: Stop done (1fdd421d5); `session_restart(handle, standard)` done (e037f60bd).
+
+3e. **The key bindings** (owner, 2026-09-30: chthonic improves on Thonny with a menu that switches the key style). Its own batch, after step 3's pieces and before step 4.
+   - **The key-style list:**
+     - Tools ▸ Key bindings… in `chthonic.menu` (Thonny's Tools menu holds its settings) and a row in `default.menu`, through the choice list above.
+     - Its rows are the `.keys` files `toggle_profile` already reads. One owner lists the profiles there are, for the cycle and the list alike, so a dropped-in `.keys` file joins with no code.
+     - Each `.keys` file gains its display name as data: JOE, Vim, Emacs, Pico, Thonny, VS Code. The current style is marked.
+     - The choice persists. `settings.json` gains its writer beside its reader; madcide only reads it today.
+   - **Modifiers on every key** (the key owner, `include/madcdis/keys.h`, gated by `check-one-key-owner.sh`):
+     - Today a key is Ctrl+letter, F1-F12 or a named key, with no Shift, Alt or Cmd. So Ctrl+Shift+S, Ctrl+F2, Shift+arrows, Ctrl+Space and Ctrl+plus cannot be bound.
+     - Shift, Alt and Ctrl combine with any key. A primary modifier is Ctrl on Linux and Windows and Cmd on macOS, as Thonny binds each command twice (`<Control-…>`, `<Command-…>`).
+     - The page passes the modifiers; today it reads Ctrl+letter only (`page.js`).
+     - The terminal decodes xterm's modified-key sequences where the terminal sends them. A chord a terminal cannot tell apart (Ctrl+Shift+S from Ctrl+S) belongs to the GUI, and the slice lists those chords.
+   - **Selection and the clipboard:**
+     - Shift+motion extends a selection, which is the existing mark..caret block, adopted rather than duplicated.
+     - Cut, Copy, Paste and Select all become commands. They use the system clipboard under `--gui` and an in-process clipboard in the terminal. The IDE has no clipboard today; the REPL line editor's yank is its own.
+   - **Two new profiles,** data once the above exist:
+     - `thonny.keys`, from the table below;
+     - `vscode.keys`, from VS Code's published default keymap, read at the slice's start. Until the debugger (Phase 7), VS Code's F5 and Ctrl+F5 both run.
+     - `chthonic.plugin`'s keys become `thonny`.
+   - **The menus gain Thonny's rows for commands madcide has:** File ▸ New and Close; Edit ▸ Cut, Copy, Paste, Select all, Replace, Go to line and Toggle comment; View ▸ the font size. A row whose command is missing is listed in the slice, not invented.
+   - **Thonny's keys** (its source, `github.com/thonny/thonny` master, each command's `default_sequence`, read 2026-09-30; Cmd for Ctrl on macOS):
+
+     | Menu | Command | Key |
+     |---|---|---|
+     | File | New · Open… · Close · Close all | Ctrl+N · Ctrl+O · Ctrl+W · Ctrl+Shift+W |
+     | File | Save · Save as… · Save All · Exit | Ctrl+S · Ctrl+Shift+S · Ctrl+Alt+S · Ctrl+Q / Alt+F4 |
+     | Edit | Undo · Redo | Ctrl+Z · Ctrl+Y |
+     | Edit | Cut · Copy · Paste · Select all | Ctrl+X · Ctrl+C · Ctrl+V · Ctrl+A |
+     | Edit | Find & Replace · Go to line · Toggle comment · Auto-complete | Ctrl+F · Ctrl+G · Ctrl+3 · Ctrl+Space |
+     | Run | Run current script · Stop/Restart backend | F5 · Ctrl+F2 |
+     | Run | Interrupt · Send EOF | Ctrl+C (in the Shell) · Ctrl+D |
+     | Run | Debug (nicer) · Debug (faster) | Ctrl+F5 · Shift+F5 |
+     | Run | Step over · Step into · Resume · Run to cursor | F6 · F7 · F8 · Ctrl+F8 (Step out has none) |
+     | View | Font size up / down · Full screen | Ctrl+plus / Ctrl+minus · F11 |
+
+   - **Named out:**
+     - Thonny's debugger keys wait for Phase 7's stepper;
+     - Interrupt needs D8's interrupt op (Stop restarts meanwhile);
+     - Auto-complete waits for the editor's completion popup;
+     - VS Code's multi-cursor.
+   - **Thread contract:** a key table and the clipboard belong to the session's thread. `settings.json` is written whole by the session that changed it, and between processes the last write wins.
+
+   Gate:
+   - `test_keys`: modified spellings round-trip, and a primary chord resolves to Ctrl or Cmd by platform.
+   - `test_tui_model`: xterm's modified sequences decode.
+   - `test_web_model` and a `tests/gui` case, under `thonny`:
+     - a Ctrl+Shift+S keydown posts `saveas`;
+     - Shift+Right selects;
+     - Copy then Paste goes through the clipboard.
+   - `testmadcide_chthonic`: Tools ▸ Key bindings… lists the six styles with the current one marked, and choosing VS Code rebinds and persists to a test `settings.json`.
+   - Every existing profile's pins are unchanged.
 4. **The `library` transport** (the plugin design's B2, G1, G5): the API table, `--build-plugin`, versioned refusal. Linux first, then macOS and Windows once `madc -shared` emits `.dylib` and `.dll` (ROADMAP 6.5, its own commits in the Mach-O and PE writers).
 5. **The `source` transport** (B3, G3): a plugin compiled into the running process when it activates, with its cost measured against `library`.
 6. **The `chthonic` plugin's code, the Variables view:** its contributed view and command, its event handler, `chthonic.layout` gaining the sidebar. It ships as source plus a prebuilt library per platform.
@@ -3233,6 +3290,8 @@ Then the seam battery, every platform lane's full suite, and the master release.
 **Decided (owner, 2026-09-30):**
 1. **No file opens an untitled buffer.** Thonny's behaviour. Save asks for a name (Save As), and F5 runs it under the unit name `untitled`. It builds on B86's one open rule (slice 0). Slice 1 recons whether a buffer can exist without a path, and gives it a placeholder name if it cannot, which Save As replaces.
 2. **The learning IDE's language is a Run ▸ Language… choice** (C17, C++17, madc). The one rule that `madc file`, `madc -i` and F5 share stays. It sets `repl.std` for the session (the setting's value from the bundle or `settings.json` is where it starts) and restarts the session, and the prompt already names the standard (D22). A course would otherwise teach C from a textbook while getting madc's answers without knowing it.
+3. **chthonic follows Thonny's look, layout, menus, keys and features, in C/C++ form, GUI first,** so someone who learned Python in Thonny can use it with little relearning. Thonny's documented or source behaviour is the precedent every teaching-IDE command is checked against.
+4. **The key style is a menu choice** (step 3e): JOE, Vim, Emacs, Pico, Thonny and VS Code. chthonic opens with Thonny's keys, and the choice persists.
 
 ## 42. Decisions (owner, 2026-09-25)
 
