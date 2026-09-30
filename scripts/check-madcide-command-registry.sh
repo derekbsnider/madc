@@ -131,9 +131,12 @@ bundle_files()
 
 # Profile actions: the LAST word of every data line, unscoped or @scoped
 # (a scoped line's value is its last word too) — across the given files.
+# The `@title NAME` line is the profile's display name, not a binding
+# (keys_title_line, madcide_core.inc).
 profile_ids()
 {
 	cat "$@" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' |
+	grep -v '^[[:space:]]*@title[[:space:]]' |
 	awk '{ print $NF }' | sort -u
 }
 

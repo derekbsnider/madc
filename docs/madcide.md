@@ -47,7 +47,13 @@ WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
 Every key binding is data in `tools/madcide/profiles/*.keys`: `joe` (the
 default — the full JOE/WordStar set), `pico`, `emacs`, `neovim` (a modal
 personality that starts in normal mode). `^T` opens Options; its Keymap
-row cycles profiles; `^K H` shows the loaded profile's own bindings.
+row cycles profiles for the session; `^K H` shows the loaded profile's own
+bindings. View ▸ Key Bindings… (chthonic's Tools ▸ Key bindings…, the
+`keystyle` command) lists the profiles by their display names and keeps the
+one chosen for the bundle in use, in `settings.json`'s `"keys"` object
+(`"keys": { "chthonic": "emacs" }`), so the next session of that bundle
+opens with it. A profile's display name is its `@title NAME` line; a
+`.keys` file dropped into the profile directory joins the list.
 The JOE defaults most worth knowing:
 
 | Keys | Command |

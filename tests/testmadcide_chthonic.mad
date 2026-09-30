@@ -8,14 +8,20 @@
 //      directory, so nothing overrides it;
 //   2. its keys are pico's, and its layout shows the REPL, with no Outline,
 //      Project or Terminal pane and no sidebar;
-//   3. the menu bar is File, Edit, Run, View, Help: Run's one row is the
-//      replrun command (F5's), and there is no Build or Window menu;
+//   3. the menu bar is File, Edit, Run, View, Tools, Help: Run's rows are
+//      replrun (F5's), replstop and repllang, and there is no Build or
+//      Window menu;
 //   4. a REPL session is running at open, because the layout shows it;
 //   5. the default profile, over the same file, starts none (its layout
 //      keeps the REPL hidden) and keeps its own menu bar;
 //   6. the toolbar (menu_place): chthonic.menu's `toolbar` rows are the
 //      composed root's `toolbar` hint — Open, Save, Run, each carrying its
-//      command's code — and the default menu places none.
+//      command's code — and the default menu places none;
+//   7. Tools ▸ Key bindings… (plan §41.11a step 3e): the styles listed by
+//      their @title names with the current one marked; choosing one rebinds
+//      and keeps it for this bundle in settings.json (this test's
+//      configuration directory, its .env), so the next chthonic session
+//      opens with it while the default bundle keeps its own keys.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -76,6 +82,9 @@ int main()
 {
     const char *path = "madc_ide_chthonic.c";
     php::file_put_contents(path, "int main(void) { return 0; }\n");
+    var cfg0;			// a run that stopped early left its choice
+    madcide_config_dir(cfg0);
+    php::unlink(format("{}/settings.json", cfg0));
 
     // 1-4. The chthonic profile.
     IdeSession S;
@@ -102,7 +111,40 @@ int main()
     var tbr;
     toolbar_rows(tbr, S, doc);
     println("chthonic-toolbar: {}", tbr);
+
+    // 7. Tools ▸ Key bindings….
+    menu_bar(titles, ids, S.w, S.es, "Tools");
+    bool lc = true;
+    S.command(doc, cmdKEYSTYLE, "", lc);
+    var ktree;
+    S.compose_ide_tree(ktree, doc);
+    var ktext;
+    ui::render_tree(ktext, S.w, ktree);
+    const char *kt = ktext.c_str();
+    println("keystyle-list: tools=[{}] listed={} marked={}", ids,
+	    rust::contains(kt, "Key bindings") != 0 && rust::contains(kt, "Emacs") != 0
+	    && rust::contains(kt, "JOE") != 0 && rust::contains(kt, "Vim") != 0,
+	    rust::contains(kt, "Pico  (current)") != 0);
+    var kch = { "event": "choose", "event_code": ui::event_kind::choose,
+		"option": 1, "action": "", "action_code": cmdCHOICE };
+    S.apply_ide_event(doc, kch);
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    ui::get(k, S.w, S.es, "profile");
+    var cfg;
+    madcide_config_dir(cfg);
+    var spath = format("{}/settings.json", cfg);
+    var kept;
+    var why;
+    json_object_read(kept, why, spath);
+    println("keystyle-choose: keys={} msg={} kept={}", k, msg, kept["keys"]["chthonic"]);
     S.close();
+
+    IdeSession S2;
+    S2.open(path, false, "chthonic");
+    ui::get(k, S2.w, S2.es, "profile");
+    println("keystyle-reopen: keys={}", k);
+    S2.close();
 
     // 5. The default profile over the same file.
     IdeSession D;
@@ -115,8 +157,12 @@ int main()
     println("default-menu: [{}]", titles);
     toolbar_rows(tbr, D, D.active(0));
     println("default-toolbar: {}", tbr);
+    ui::get(k, D.w, D.es, "profile");
+    println("keystyle-default: keys={}", k);
     D.close();
 
+    php::unlink(spath.c_str());
+    php::rmdir(cfg.c_str());
     php::unlink(path);
     return 0;
 }

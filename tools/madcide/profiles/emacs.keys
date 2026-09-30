@@ -11,6 +11,9 @@
 # model.
 #
 # File and exit
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title Emacs
+
 ^x ^s save
 ^x ^c quit
 ^x ^f editfile

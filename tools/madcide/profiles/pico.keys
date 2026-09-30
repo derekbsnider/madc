@@ -3,6 +3,9 @@
 # The adapter is data all the way down; a swap is one ui::tui_bind_keys
 # call. (No ^h/^i/^j/^m: those bytes ARE backspace/tab/enter. Arrows,
 # home/end, pgup/pgdn serve motion here — the diamond is JOE's.)
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title Pico
+
 ^s save
 ^q quit
 ^x discard

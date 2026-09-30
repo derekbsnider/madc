@@ -1,8 +1,12 @@
 chthonic-open: doc=1 bundle=chthonic keys=pico
 chthonic-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=0
-chthonic-menu: [File Edit Run View Help] run=[replrun replstop repllang]
+chthonic-menu: [File Edit Run View Tools Help] run=[replrun replstop repllang]
 chthonic-repl: live=1 running=1
 chthonic-toolbar: Open=editfile Save=save Run=replrun Stop=replstop codes=1
+keystyle-list: tools=[keystyle] listed=true marked=true
+keystyle-choose: keys=emacs msg=Keys: Emacs. kept=emacs
+keystyle-reopen: keys=emacs
 default-open: bundle=default repl-shown=0 live=0 replh=0
 default-menu: [File Edit Search View Window Build Help]
 default-toolbar: none
+keystyle-default: keys=joe

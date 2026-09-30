@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide's key bindings selection and persistence (plan §41.11a step 3e, slice 1)
+
+Tools ▸ Key bindings… lists the key profiles by their display names, marks the current one, and accepts a choice. The chosen profile rebinds immediately and is kept per bundle in settings.json, so reopening madcide or chthonic restores that bundle's keys while leaving other bundles unchanged. Every .keys file declares its display name with `@title NAME`; the one reader is the binding parser (which skips the directive during load). A choice list mechanism (`choice_show`, `choice_action`, `cmdCHOICE`) serves both this step and the language selector from step 3b. `dir_ensure` moves from madcide_discover.inc to madcide_plugins.inc as the one owner for creating configuration and session-advertisement directories. The writer `user_settings_save` commits each bundle's choice to disk, sitting beside the existing `user_settings_load` reader. Gate: testmadcide_chthonic section 7 (choice list shown with profiles listed by display name and current marked, choosing emacs rebinds and persists to settings.json, reopening reads it back, default keeps joe). Existing profiles and all command registry validation remain unchanged.
+
 ### madcide's replbindings command and reBINDINGS event (plan §41.11a step 3d)
 
 The REPL pane publishes the session's bindings to the plugin event feed as `reBINDINGS` events when `cmdREPLBINDINGS` is dispatched. `repl_reply` handles bindings-kind session replies and publishes the events with their rows (name, type, value, file, line). Only the newest request's answer is published; older request sequences are dropped as they arrive (the completion-reply pattern). Gate: tests/testmadcide_contrib.mad section 10 (plugin_event subscribed, bindings heard, older seq dropped), tests/testmadcide_repl.mad section 10 (live session answer with rows). B98 (a value literal cannot nest a brace list) is filed as a side finding (the test works around it by spelling the inner array as a named var).

@@ -16,6 +16,9 @@
 # w/b are the shared end-of-word motions (dw is vim's `de` shape).
 #
 # vim's control chords
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title Vim
+
 ^r redo
 ^f pgdn
 ^b pgup

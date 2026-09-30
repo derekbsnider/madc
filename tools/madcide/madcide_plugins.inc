@@ -278,6 +278,116 @@ void user_settings_load(long w, long es)
     ui::set(w, es, "usersettings", s);
 }
 
+// Create the directory and every ancestor. php::mkdir is PHP's ONE level
+// (there is no recursive flag), so walk the components; an already-existing
+// level is not an error. False = it does not exist afterwards. The one
+// owner: the session advertisements' directory (madcide_discover.inc) and
+// the configuration directory (user_settings_save) both make theirs here.
+bool dir_ensure(var &dir)
+{
+    const char *d = dir.c_str();
+    if ( strlen(d) == 0 )
+	return false;
+    if ( php::file_exists(d) )
+	return true;
+    array parts;
+    php::explode(parts, "/", d);
+    long n = php::count(parts);
+    // An absolute path's leading empty component IS the root; a relative one
+    // grows from the working directory.
+    var grown = ".";
+    if ( d[0] == '/' )
+	grown = "";
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	const char *seg = php::array_get_cstr(parts, i);
+	if ( strlen(seg) == 0 )
+	    continue;
+	var next = format("{}/{}", grown, seg);
+	grown = next;
+	if ( !php::file_exists(grown.c_str()) )
+	    php::mkdir(grown.c_str());
+    }
+    return php::file_exists(d);
+}
+
+// settings.json written whole from the bag's usersettings (plan §41.11a
+// step 3e), beside its reader, user_settings_load. The configuration
+// directory is made when missing. False, with the reason on the status line,
+// when there is none or the write fails.
+// Thread contract: the session that changed a setting writes the file;
+// between processes the last write wins.
+bool user_settings_save(long w, long es)
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    if ( strlen(cfg.c_str()) == 0 )
+    {
+	ui::set(w, es, "msg", "No configuration directory: the choice is not kept.");
+	return false;
+    }
+    var path = format("{}/settings.json", cfg);
+    var us;
+    ui::get(us, w, es, "usersettings");
+    if ( !dir_ensure(cfg)
+      || php::file_put_contents(path.c_str(), format("{}\n", js::stringify(us, 2))) < 0 )
+    {
+	ui::set(w, es, "msg", format("{} cannot be written: the choice is not kept.", path));
+	return false;
+    }
+    return true;
+}
+
+// The key style a bundle keeps (plan §41.11a step 3e): settings.json's
+// "keys" object, by bundle name (`"keys": { "chthonic": "vscode" }`), so a
+// choice made in one bundle leaves the others' keys as they ship. "" when
+// the bundle has none.
+void keys_choice(var &out, long w, long es)
+{
+    out = "";
+    var us;
+    ui::get(us, w, es, "usersettings");
+    var ks;
+    keyed_get(ks, us, "keys");
+    if ( ks.is_null() || !ks.is_object() )
+	return;
+    var b;
+    ui::get(b, w, es, "bundle");
+    var v;
+    keyed_get(v, ks, b.c_str());
+    if ( !v.is_null() && v.is_string() )
+	out = v;
+}
+
+// Keep `name` as the bundle's key style, and write settings.json.
+bool keys_choice_save(long w, long es, const char *name0)
+{
+    var name = name0;		// ring discipline: own the text first
+    var us;
+    ui::get(us, w, es, "usersettings");
+    var ks;
+    keyed_get(ks, us, "keys");
+    var b;
+    ui::get(b, w, es, "bundle");
+    if ( ks.is_null() || !ks.is_object() )
+    {
+	var fresh;
+	fresh[b.c_str()] = name;
+	ks = fresh;
+    }
+    else
+	ks[b.c_str()] = name;
+    if ( us.is_null() || !us.is_object() )
+    {
+	var top = { "keys": ks };
+	us = top;
+    }
+    else
+	us["keys"] = ks;
+    ui::set(w, es, "usersettings", us);
+    return user_settings_save(w, es);
+}
+
 void path_sans_ext(var &out, var &p);	// madcide_core.inc: THE {base} rule
 
 // The name the program was invoked by: madc::sys.argv[0]'s last path

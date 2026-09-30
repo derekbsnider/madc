@@ -29,7 +29,7 @@ enum ide_cmd : unsigned short
     cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCOLON, cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
-    cmdINSERTFILE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
+    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
     cmdREFRESH, cmdREPL, cmdREPLBINDINGS, cmdREPLLANG, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS,
@@ -84,6 +84,7 @@ void cmd_table(var &t)
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
+    rows[] = { "name": "keystyle", "code": cmdKEYSTYLE };
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
     rows[] = { "name": "mark", "code": cmdMARK };
     rows[] = { "name": "modes", "code": cmdMODES };
@@ -579,6 +580,7 @@ bool cmd_takes_arg(long code)
 {
     switch ( code )
     {
+	case cmdKEYSTYLE:
 	case cmdREPLLANG:
 	    return true;
     }
@@ -701,6 +703,7 @@ long cmd_min_tier(long code)
     // editor — file writes
     case cmdSAVE:
     case cmdSAVEAS:
+    case cmdKEYSTYLE:	// it writes settings.json, as a save writes
     case cmdSAVEQUIT:
     // editor — project mutation / opening
     case cmdOPENPROJECT:

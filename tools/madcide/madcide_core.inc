@@ -160,6 +160,18 @@ bool profile_line(var &out, array &lines, long i)
     return true;
 }
 
+// A key profile's display name (plan §41.11a step 3e): its `@title NAME`
+// line, which Tools ▸ Key bindings… lists. The one reader of the directive:
+// the binding parser and help pass over it, the style list reads it.
+bool keys_title_line(var &title, var &line)
+{
+    const char *ls = line.c_str();
+    if ( strncmp(ls, "@title ", 7) != 0 )
+	return false;
+    title = php::trim(ls + 7);
+    return true;
+}
+
 // path minus its extension — THE {base} rule (build_subst's substitution,
 // the profile cycle's names, and the manifest default share it).
 void path_sans_ext(var &out, var &p)
@@ -277,6 +289,9 @@ bool parse_keys(var &table, var &scopes, const char *text, var &err, long w = 0)
     {
 	var line;
 	if ( !profile_line(line, lines, i) )
+	    continue;
+	var title;
+	if ( keys_title_line(title, line) )
 	    continue;
 	const char *ls = line.c_str();
 	if ( ls[0] == '@' )
@@ -1913,21 +1928,19 @@ void refresh_outline(long w, long es, long doc)
 // ladder (Rule #7; emacs joined joe/pico, and a user-dropped profile
 // joins the cycle with zero code). An unknown current name lands on
 // the first profile. The status format rides the profile.
-void toggle_profile(long w, long es)
+// The key profiles there are (plan §41.11a step 3e): the .keys files in the
+// profile directory by name, alphabetically. The one list: the cycle below
+// and Tools ▸ Key bindings… both read it.
+void key_profile_names(var &out, long w, long es)
 {
     var dir;
     ui::get(dir, w, es, "profile_dir");
     array g;
     perl::glob(g, format("{}/*.keys", dir));
-    php::sort(g);	// glob answers readdir order — the cycle must be
+    php::sort(g);	// glob answers readdir order — the list must be
 			// deterministic (alphabetical) on every filesystem
-    long n = php::count(g);
-    if ( n == 0 )
-	return;
-    var cur;
-    ui::get(cur, w, es, "profile");
-    long at = -1;
     var names = {};
+    long n = php::count(g);
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var p = php::array_get_cstr(g, i);
@@ -1935,12 +1948,99 @@ void toggle_profile(long w, long es)
 	var base;
 	path_sans_ext(base, nm);
 	names.push(base);
-	if ( base == cur )
-	    at = i;
     }
+    out = names;
+}
+
+void toggle_profile(long w, long es)
+{
+    var names;
+    key_profile_names(names, w, es);
+    long n = php::count(names);
+    if ( n == 0 )
+	return;
+    var cur;
+    ui::get(cur, w, es, "profile");
+    long at = -1;
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( names[i] == cur )
+	    at = i;
     var nx = format("{}", names[(at + 1) % n]);
     load_profile(w, es, nx.c_str());
     load_status(w, es, nx.c_str());	// the format rides the profile
+}
+
+// A key profile's display name: its @title line, else its name.
+void key_profile_title(var &out, long w, long es, const char *name0)
+{
+    var name = name0;		// ring discipline: own the text first
+    out = name;
+    var kpath;
+    bundle_data_path(kpath, w, es, name.c_str(), cbKEYS);
+    var txt;
+    if ( !php::file_get_contents(txt, kpath.c_str()) )
+	return;
+    array lines;
+    php::explode(lines, "\n", txt.c_str());
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	var title;
+	if ( keys_title_line(title, line) )
+	{
+	    out = title;
+	    return;
+	}
+    }
+}
+
+void choice_show(long w, long es, const char *label, var &rows);	// below
+
+// `keystyle`, Tools ▸ Key bindings… (plan §41.11a step 3e): with an
+// argument (a choice row's, the seat's, -c's) the key style becomes that
+// profile and the choice is kept for this bundle (keys_choice_save); without
+// one the choice list opens, a row per profile, the current one marked.
+// The `profile` cycle stays the session's own: it saves nothing.
+void key_style(long w, long es, const char *arg0)
+{
+    var arg = arg0;
+    var names;
+    key_profile_names(names, w, es);
+    if ( strlen(arg.c_str()) > 0 )
+    {
+	bool known = false;
+	for ( var nm : names )
+	    if ( nm == arg )
+		known = true;
+	if ( !known || !load_profile(w, es, arg.c_str()) )
+	{
+	    if ( !known )
+		ui::set(w, es, "msg", format("No key style '{}'.", arg));
+	    return;
+	}
+	load_status(w, es, arg.c_str());
+	var title;
+	key_profile_title(title, w, es, arg.c_str());
+	if ( keys_choice_save(w, es, arg.c_str()) )
+	    ui::set(w, es, "msg", format("Keys: {}.", title));
+	return;
+    }
+    var cur;
+    ui::get(cur, w, es, "profile");
+    var crows = {};
+    for ( var nm : names )
+    {
+	var title;
+	key_profile_title(title, w, es, nm.c_str());
+	long mark = 0;
+	if ( nm == cur )
+	    mark = 1;
+	crows[] = { "title": title, "code": cmdKEYSTYLE, "arg": nm, "current": mark };
+    }
+    choice_show(w, es, "Key bindings", crows);
 }
 
 // A choose on the pane: move the caret to the chosen row's line. The
@@ -7063,6 +7163,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdREPLBINDINGS:
 		repl_bindings(w, es);
 		return true;
+	    case cmdKEYSTYLE:
+	    {
+		// Tools ▸ Key bindings…: its argument (a choice row's, the
+		// seat's, -c's) or the choice list.
+		var ka;
+		keyed_get(ka, ev, "arg");
+		var ks = "";
+		if ( !ka.is_null() )
+		    ks = format("{}", ka);
+		key_style(w, es, ks.c_str());
+		return true;
+	    }
 	    case cmdREPLLANG:
 	    {
 		// Run ▸ Language…: its argument (the seat's, -c's, a choice
@@ -7955,6 +8067,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var line;
 		if ( !profile_line(line, lines, i) )
 		    continue;
+		var title;
+		if ( keys_title_line(title, line) )
+		    continue;
 		items[] = { "role": "item", "content": line };
 		nrows = nrows + 1;
 	    }
@@ -8253,11 +8368,16 @@ bool init_view_es(long w, long es, long doc, const char *path,
     // The keys load LAST of the data loads: a broken layout fails the theme
     // too, and its message must not bury the fallback announcement — the
     // status line has to SAY the fallback is active. THE key fallback chain:
-    // the bundle's keys, then the default bundle's, then the built-in rescue
-    // set.
+    // the style this bundle keeps (Tools ▸ Key bindings…, settings.json),
+    // then the bundle's keys, then the default bundle's, then the built-in
+    // rescue set.
     var kw;
     bundle_word(kw, w, es, cbKEYS);
-    if ( !load_profile(w, es, kw.c_str()) )
+    var kc;
+    keys_choice(kc, w, es);
+    if ( strlen(kc.c_str()) > 0 && kc != kw && load_profile(w, es, kc.c_str()) )
+	load_status(w, es, kc.c_str());	// the format rides the profile
+    else if ( !load_profile(w, es, kw.c_str()) )
     {
 	var why;
 	ui::get(why, w, es, "msg");	// load_profile's refusal

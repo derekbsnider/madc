@@ -5,6 +5,9 @@
 # Lines starting with # and blank lines are ignored.
 #
 # File and exit
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title JOE
+
 ^k x savequit
 ^k d save
 ^k s save
