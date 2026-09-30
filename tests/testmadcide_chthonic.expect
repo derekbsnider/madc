@@ -1,0 +1,6 @@
+chthonic-open: doc=1 bundle=chthonic keys=pico
+chthonic-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=0
+chthonic-menu: [File Edit Run View Help] run=[replrun]
+chthonic-repl: live=1 running=1
+default-open: bundle=default repl-shown=0 live=0 replh=0
+default-menu: [File Edit Search View Window Build Help]

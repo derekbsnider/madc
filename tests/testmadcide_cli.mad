@@ -17,12 +17,35 @@
 //      status line says `New file <path>.`, with nothing written until a
 //      save; a path that exists but cannot be read (a directory) is refused
 //      with the reason — at launch on stderr with verdict 1, at ^K E on the
-//      status line with the buffer table untouched.
+//      status line with the buffer table untouched;
+//   5. the command line is ONE reader (ide_args_parse, madcide_args.inc):
+//      flags anywhere, the first non-flag word the file (`--profile chthonic
+//      f.c` and `f.c --profile chthonic` alike), `--` ending the flags,
+//      --attach's optional address; an unknown flag, a missing value and a
+//      second file refused with the reason; the usage names --profile.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_api.inc"
 #include "../tools/madcide/madcide_once.inc"
+#include "../tools/madcide/madcide_args.inc"
+
+// One command line through THE argv reader (madcide_args.inc): its verdict
+// and the record's words, or the refusal's reason.
+void show_args(const char *label, int argc, const char **argv)
+{
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, argv) )
+    {
+	println("{}: refused: {}", label, why);
+	return;
+    }
+    println("{}: file={} profile={} ro={} lsp={} attach={} addr={} help={}", label,
+	    a.file == NULL ? "-" : a.file, a.profile == NULL ? "-" : a.profile,
+	    a.ro ? 1 : 0, a.lsp ? 1 : 0, a.attach ? 1 : 0,
+	    a.attach_addr == NULL ? "-" : a.attach_addr, a.help ? 1 : 0);
+}
 
 int main()
 {
@@ -116,6 +139,33 @@ int main()
 	    out.index("New file madc_ide_cli_new.mad.") >= 0 ? 1 : 0,
 	    php::file_exists("madc_ide_cli_new.mad") ? 0 : 1);
     php::rmdir("madc_ide_cli_dir");
+
+    // 5. The command line (plan §41.11a step 1): flags come anywhere, the
+    //    first word that is not a flag is the file, a later `ro` opens it
+    //    read-only; an unknown flag, a flag missing its value and a second
+    //    file are refused (main prints the reason and the usage, exit 2).
+    const char *v1[4] = { "madcide", "--profile", "chthonic", "f.c" };
+    show_args("cli-args-profile-first", 4, v1);
+    const char *v2[5] = { "madcide", "f.c", "--profile", "chthonic", "ro" };
+    show_args("cli-args-profile-after", 5, v2);
+    const char *v3[4] = { "madcide", "f.c", "--lsp", "--attach" };
+    show_args("cli-args-attach-discover", 4, v3);
+    const char *v4[5] = { "madcide", "f.c", "--lsp", "--attach", "127.0.0.1:9" };
+    show_args("cli-args-attach-addr", 5, v4);
+    const char *v5[4] = { "madcide", "--lsp", "--attach", "f.c" };
+    show_args("cli-args-attach-file", 4, v5);
+    const char *v6[4] = { "madcide", "--", "-dash.c", "ro" };
+    show_args("cli-args-dashdash", 4, v6);
+    const char *v7[2] = { "madcide", "--help" };
+    show_args("cli-args-help", 2, v7);
+    const char *v8[3] = { "madcide", "f.c", "--bogus" };
+    show_args("cli-args-unknown", 3, v8);
+    const char *v9[3] = { "madcide", "f.c", "--profile" };
+    show_args("cli-args-novalue", 3, v9);
+    const char *v10[3] = { "madcide", "a.c", "b.c" };
+    show_args("cli-args-twofiles", 3, v10);
+    var usage = ide_usage();
+    println("cli-usage: names-profile={}", usage.index("--profile NAME") >= 0 ? 1 : 0);
     remove(path);
     return 0;
 }

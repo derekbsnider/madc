@@ -1,0 +1,13 @@
+{
+  "name": "chthonic",
+  "title": "Learning",
+  "api": 1,
+  "contributes": {
+    "keys": "pico",
+    "layout": "chthonic",
+    "menu": "chthonic",
+    "settings": {
+      "repl.std": ""
+    }
+  }
+}

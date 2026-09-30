@@ -43,3 +43,14 @@ cli-new-once: rc=0 unwritten=1
 cli-dir: rc=1 out-empty=1
 cli-editdir: rc=0 said=1
 cli-editnew: rc=0 said=1 unwritten=1
+cli-args-profile-first: file=f.c profile=chthonic ro=0 lsp=0 attach=0 addr=- help=0
+cli-args-profile-after: file=f.c profile=chthonic ro=1 lsp=0 attach=0 addr=- help=0
+cli-args-attach-discover: file=f.c profile=- ro=0 lsp=1 attach=1 addr=- help=0
+cli-args-attach-addr: file=f.c profile=- ro=0 lsp=1 attach=1 addr=127.0.0.1:9 help=0
+cli-args-attach-file: file=f.c profile=- ro=0 lsp=1 attach=1 addr=- help=0
+cli-args-dashdash: file=-dash.c profile=- ro=1 lsp=0 attach=0 addr=- help=0
+cli-args-help: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=1
+cli-args-unknown: refused: unknown option '--bogus'
+cli-args-novalue: refused: --profile needs a profile NAME
+cli-args-twofiles: refused: unexpected argument 'b.c' (the file is 'a.c')
+cli-usage: names-profile=1

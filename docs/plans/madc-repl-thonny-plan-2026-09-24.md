@@ -3208,7 +3208,7 @@ There is no patch release before it: B85's fix rides this release.
    - A user-directory bundle overriding a shipped one by name.
    - `"profile": "chthonic"` in a test `settings.json` (under a test configuration directory, `MADCIDE_CONFIG_DIR`) selecting it.
 
-   Part 1 done (the loader, the search path, `settings.json`, the key fallback chain; `tests/testmadcide_bundles`; plugin design §8).
+   Part 1 done (the loader, the search path, `settings.json`, the key fallback chain; `tests/testmadcide_bundles`; plugin design §8). Part 2 done (the argv reader and `--profile`, `chthonic.plugin` / `.layout` / `.menu`, the REPL starting when the layout shows it; `tests/testmadcide_chthonic`, `testmadcide_cli`). Next: 1d, an untitled buffer when no file is given.
    - `testmadcide_layout`'s pin of `default.layout` is unchanged.
 2. **The plugin system's contribution points** (the plugin design's B1): contributed commands (ids interned above the built-in range), contributed views (the generic compose arm over a bag key), events (the feed, and `repl_event`), and the toolbar placement: `menu_place`, and the `toolbar` hint through `web_model`, the page and the TUI. All are exercised first by madcide's own code (`builtin`).
 

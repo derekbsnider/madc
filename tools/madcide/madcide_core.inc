@@ -7942,6 +7942,12 @@ bool init_view_es(long w, long es, long doc, const char *path,
     setting_get(rs, w, es, "repl.std");
     if ( !rs.is_null() && rs.is_string() && strlen(rs.c_str()) > 0 )
 	ui::set(w, es, "replstd", rs);
+    // The REPL session starts at open when the layout SHOWS it — a visible
+    // pane whose active View is the REPL, as Thonny starts its backend with
+    // its window (chthonic.layout). Layout data decides, never the bundle's
+    // name; the default layout keeps the REPL hidden, so it forks nothing.
+    if ( view_shown(w, es, viewREPL) )
+	repl_start(w, es);
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).

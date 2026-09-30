@@ -1,0 +1,90 @@
+// The chthonic profile (plan §41.11a step 1; plugins Stage A): the teaching
+// bundle madcide ships, tools/madcide/plugins/chthonic — pico's keys,
+// chthonic.layout (the editor, and below it the REPL as the visible panel's
+// first tab with Problems beside it; no sidebar) and chthonic.menu (the
+// beginner's subset of the command vocabulary). Pins:
+//   1. `open(path, ro, "chthonic")` (the command line's --profile) loads the
+//      shipped bundle: the runner's MADCIDE_CONFIG_DIR names no user
+//      directory, so nothing overrides it;
+//   2. its keys are pico's, and its layout shows the REPL, with no Outline,
+//      Project or Terminal pane and no sidebar;
+//   3. the menu bar is File, Edit, Run, View, Help: Run's one row is the
+//      replrun command (F5's), and there is no Build or Window menu;
+//   4. a REPL session is running at open, because the layout shows it;
+//   5. the default profile, over the same file, starts none (its layout
+//      keeps the REPL hidden) and keeps its own menu bar.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// The menu bar's titles, space-separated, and the named menu's command ids.
+void menu_bar(var &titles, var &ids, long w, long es, const char *menu)
+{
+    var md;
+    ui::get(md, w, es, "menudef");
+    titles = "";
+    ids = "";
+    for ( var m : md )
+    {
+	var t = m["title"];
+	if ( t == "palette" )
+	    continue;
+	if ( strlen(titles.c_str()) == 0 )
+	    titles = t;
+	else
+	    titles = format("{} {}", titles, t);
+	if ( t == menu )
+	    for ( var it : m["items"] )
+	    {
+		var id = it["id"];
+		if ( strlen(ids.c_str()) == 0 )
+		    ids = id;
+		else
+		    ids = format("{} {}", ids, id);
+	    }
+    }
+}
+
+int main()
+{
+    const char *path = "madc_ide_chthonic.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+
+    // 1-4. The chthonic profile.
+    IdeSession S;
+    long doc = S.open(path, false, "chthonic");
+    var b;
+    ui::get(b, S.w, S.es, "bundle");
+    var k;
+    ui::get(k, S.w, S.es, "profile");
+    println("chthonic-open: doc={} bundle={} keys={}", doc > 0 ? 1 : 0, b, k);
+    println("chthonic-views: repl={} problems-tab={} outline={} project={} terminal={} sidebar={}",
+	    view_shown(S.w, S.es, viewREPL) ? 1 : 0,
+	    view_shown(S.w, S.es, viewPROBLEMS) ? 1 : 0,
+	    view_shown(S.w, S.es, viewOUTLINE) ? 1 : 0,
+	    view_shown(S.w, S.es, viewPROJECT) ? 1 : 0,
+	    view_shown(S.w, S.es, viewTERMINAL) ? 1 : 0,
+	    slot_shown(S.w, S.es, slotSIDEBAR) != viewNONE ? 1 : 0);
+    var titles;
+    var ids;
+    menu_bar(titles, ids, S.w, S.es, "Run");
+    println("chthonic-menu: [{}] run=[{}]", titles, ids);
+    long h = es_int(S.w, S.es, "replh", 0);
+    println("chthonic-repl: live={} running={}", es_int(S.w, S.es, "repllive", 0),
+	    h != 0 && madc::session_running(h) ? 1 : 0);
+    S.close();
+
+    // 5. The default profile over the same file.
+    IdeSession D;
+    D.open(path, false);
+    ui::get(b, D.w, D.es, "bundle");
+    menu_bar(titles, ids, D.w, D.es, "Run");
+    println("default-open: bundle={} repl-shown={} live={} replh={}", b,
+	    view_shown(D.w, D.es, viewREPL) ? 1 : 0, es_int(D.w, D.es, "repllive", 0),
+	    es_int(D.w, D.es, "replh", 0));
+    println("default-menu: [{}]", titles);
+    D.close();
+
+    php::unlink(path);
+    return 0;
+}

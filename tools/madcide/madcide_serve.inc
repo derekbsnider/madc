@@ -118,10 +118,11 @@ long serve_listen(IdeSession &S, long doc, const char *addr, var &endpoint, var 
 // for an ephemeral port, reported on the startup line). Returns 1 only when
 // the file or the listener could not open; the serve loop runs until the
 // listener dies (the process is stopped).
-long run_serve(const char *path, bool ro, const char *addr)
+long run_serve(const char *path, bool ro, const char *addr,
+	       const char *profile = "")
 {
     IdeSession S;
-    long doc = S.open(path, ro);
+    long doc = S.open(path, ro, profile);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     S.terminal(false);			// headless: no interactive terminal
@@ -165,10 +166,11 @@ long run_serve(const char *path, bool ro, const char *addr)
 // task must be joined BEFORE IdeSession::close() (which drains every task — a
 // parked accept would hang that drain). The client loop therefore closes its
 // frontends and returns, and the session closes here, after the join.
-long run_tui(const char *path, bool ro, ui::level lvl, const char *addr)
+long run_tui(const char *path, bool ro, ui::level lvl, const char *addr,
+	     const char *profile = "")
 {
     IdeSession S;
-    long doc = S.open(path, ro);
+    long doc = S.open(path, ro, profile);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     long w = S.world();
@@ -402,10 +404,11 @@ long run_attach(const char *addr, bool framed)
     return framed && !down ? 1 : 0;
 }
 
-long run_lsp(const char *path, bool ro, const char *serve)
+long run_lsp(const char *path, bool ro, const char *serve,
+	     const char *profile = "")
 {
     IdeSession S;
-    long doc = S.open(path, ro);
+    long doc = S.open(path, ro, profile);
     if ( doc <= 0 )
 	return 1;
     S.terminal(false);				// headless: no interactive terminal

@@ -25,7 +25,8 @@
 // A command's OWN refusal ("No terminal to suspend.") speaks on the status
 // line inside the projection and reads as 0 until the api seat's per-reply
 // verdicts land (design §2.7, V6).
-long run_once(var &out, const char *path, bool ro, const char *cmdline)
+long run_once(var &out, const char *path, bool ro, const char *cmdline,
+	      const char *profile = "")
 {
     out = "";
     var line = php::trim(cmdline);
@@ -47,7 +48,7 @@ long run_once(var &out, const char *path, bool ro, const char *cmdline)
 	return 2;
     }
     IdeSession S;
-    long doc = S.open(path, ro);
+    long doc = S.open(path, ro, profile);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     S.terminal(false);		// the level says so: nothing to hand over

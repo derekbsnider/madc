@@ -1,10 +1,12 @@
-.TH MADCIDE 1 "2026-09-01" "madc" "User Commands"
+.TH MADCIDE 1 "2026-09-30" "madc" "User Commands"
 .SH NAME
 madcide \- terminal IDE built on the live madc compiler
 .SH SYNOPSIS
 .B madcide
 .I file
 .RI [ ro ]
+.RB [ \-\-profile
+.IR name ]
 .SH DESCRIPTION
 .B madcide
 is a terminal IDE whose core is the running
@@ -37,7 +39,32 @@ files) swap the same way (^K T).
 The file to edit. A path that does not exist opens as a new file.
 .TP
 .I ro
-Any second argument opens the buffer read-only.
+The word
+.B ro
+after the file opens the buffer read-only.
+.PP
+Options may come before or after the file;
+.B \-\-
+ends them (for a file whose name starts with
+.BR \- ).
+An unknown option is refused with the usage (exit status 2).
+.SH OPTIONS
+.TP
+.BI \-\-profile " name"
+The profile to open under: a bundle naming the keybindings, layout,
+menu, colour scheme and status line, and its settings' defaults. The
+default is the
+.I profile
+setting in
+.IR settings.json ,
+else
+.BR default .
+.B chthonic
+is the learning profile: pico's single-chord keys, the editor with the
+REPL below it, and a beginner's menu.
+.TP
+.B \-\-help
+Print the usage and exit.
 .SH KEYS
 Under the default JOE profile,
 .B ^K H
@@ -97,6 +124,35 @@ files are colour schemes;
 .I joe.status
 is the status-line layout. All are plain text \(em copy and edit them
 to make your own.
+.PP
+A profile is a plugin directory,
+.IR name / name .plugin
+(JSON) beside the data files it carries, found first in the user's
+.I plugins
+directory and then in the shipped one (a
+.I plugins
+directory beside
+.I profiles
+above), so a user's profile overrides a shipped one of the same name.
+The user's configuration directory holds
+.I settings.json
+and
+.IR plugins :
+.PP
+.nf
+    $MADCIDE_CONFIG_DIR            (when set)
+    $XDG_CONFIG_HOME/madcide
+    %APPDATA%\emadcide              (Windows)
+    ~/.config/madcide
+.fi
+.PP
+.I settings.json
+is a JSON object:
+.B "profile"
+names the profile, and any other key is a setting, which beats the
+profile's own default (for example
+.BR "repl.std" ,
+the REPL's language standard).
 .SH SEE ALSO
 .BR madc (1)
 .br

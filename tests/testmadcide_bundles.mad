@@ -163,7 +163,7 @@ int main()
 		   " \"contributes\": { \"keys\": \"pico\", \"layout\": \"mine\","
 		   " \"settings\": { \"repl.std\": \"c11\" } } }");
     var ml = format("{}/mine.layout", mine);
-    put(files, ml, "@window mine\npane editor tabs views source focus\npane panel bottom 30% tabs views repl problems\n");
+    put(files, ml, "@window mine\npane editor tabs views source focus\npane panel bottom 30% tabs views problems repl\n");
     var sp = format("{}/settings.json", cfg);
     put(files, sp, "{ \"profile\": \"mine\" }");
     probe(r, path, "");
