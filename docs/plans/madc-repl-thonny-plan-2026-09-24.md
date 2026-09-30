@@ -3068,6 +3068,9 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
   - `enum ide_view` (`madcide_enums.inc:468`), registered through `view_name` / `view_title` / `view_of` / `view_show_cmd`, with the composition switch in `compose_chrome_pane` (MC:7073).
   - Problems and Outline are item rows under a choice (MC:7147-7165), and that is the shape a Variables view takes.
 - **Release-path bugs:**
+  - B85 (SILENT): madcide saves and quits only when started from the repo root. The line editor's verbs load from cwd-relative paths, and the package does not ship them, so the released madcide can neither save nor quit, and a missing key profile leaves the user stuck (measured 2026-09-30, `BUGS.md`).
+  - B84: JOE's `^W` deletes the whitespace and the next word. JOE 4.6 deletes the run of the caret byte's class (owner, 2026-09-30; measured against JOE on the container).
+  - B86: madcide refuses to start on a file that does not exist, where `^K E` and every editor open a new file (owner, 2026-09-30).
   - B55: Tab inserts nothing in madcide's editor. A beginner cannot indent.
   - B8: the caret line is misdrawn on a line with a tab. Beginners' code is tab-indented, and F5's diagnostics show that line.
 
@@ -3093,7 +3096,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
 - **The beginner menu (`learn.menu`), data only:**
   - File: Open…, Save, Save As…, Quit.
   - Edit: Undo, Redo, Find.
-  - Run: Run (`replrun`), Stop (`replstop`).
+  - Run: Run (`replrun`), Stop (`replstop`), Language… (`repllang`: a choice of C17, C++17 and madc that sets `repl.std` and restarts the session; decided 2026-09-30).
   - View: Shell (`repl`), Variables (`variables`), Problems (`problems`).
   - Help: Help.
   - No Build, no Project, no Views/MC11/Nexus rows (§16: the power surface is not advertised).
@@ -3137,7 +3140,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
   - **Activating a row** goes to its declaration when its `file` is the buffer's (`cmdGOTO` over the row's `file` and `line`). `goto_pane_row`'s `bool outline` becomes the `ide_view` of the pane whose rows it reads (Problems, Outline or Variables), so one navigation owner serves all three.
   - **What it shows:** globals only. After F5, `main` has returned, and its locals are gone, as Thonny's Variables view shows `__main__`'s globals outside the debugger.
 
-**Enums added:** `ide_view::viewVARIABLES`; `cmdREPLSTOP` and `cmdVARIABLES` in `cmd_table`; `menu_place`; `madc::name_kind` and `madc::session_reply::bindings` in `<bits/session_enums>`; the wire's `Op::bindings`; `InteractiveSession::Command::whos`.
+**Enums added:** `ide_view::viewVARIABLES`; `cmdREPLSTOP`, `cmdREPLLANG` and `cmdVARIABLES` in `cmd_table`; `menu_place`; `madc::name_kind` and `madc::session_reply::bindings` in `<bits/session_enums>`; the wire's `Op::bindings`; `InteractiveSession::Command::whos`.
 
 **Thread contract:** unchanged from §41.9a.
 - The session handle is confined to the thread that opened it, and the backend is single-threaded, so `bindings` runs between entries like every request (D9).
@@ -3157,7 +3160,10 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
 - A Windows backend.
 
 **Slices,** each its own commit with Tier 1 and Tier 2, and the release battery at the seam after slice 5:
-0. **The release-path bugs, each fixed in its own commit:**
+0. **The release-path bugs, each fixed in its own commit, B85 first (it is silent, and it is in the released package):**
+   - B85: one data-location owner for the profiles, the verbs and the checks (generalizing `resolve_profile_dir`), the package shipping `verbs/` and `checks/`, a key profile that is not found falling back to the default profile's and then to the rescue set, and the startup hint naming the loaded table's own chords. Gates: the install gate's pty probe saves and quits from `/tmp` (the profiles present, then hidden), and the quit gate runs from a foreign cwd.
+   - B84: a class-run extent beside `text_buffer::word_right`, read by `delword`. Gate: a model test with JOE 4.6's measured table (`BUGS.md`).
+   - B86: the launch's document through `open_buffer_doc`, with one rule (a missing path is a new file; an existing path that cannot be read is refused). Gate: `testmadcide_cli` (`madcide new.c` opens, and says `New File`; a directory is refused with the reason).
    - B55: an indent command in `cmd_table`, bound by the profiles, and the `tabkey` hint on the editor's node while it has the keyboard. Pinned in testmadcide and a `tests/gui` case.
    - B8: the caret renderer expands tabs and counts screen width, against gcc's `2:19`.
 1. **Bundles** (the plugin design's Stage A):
@@ -3174,7 +3180,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
    - A user-directory bundle overriding a shipped one by name.
    - `"profile": "learn"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting it.
    - `testmadcide_layout`'s pin of `default.layout` is unchanged.
-2. **The toolbar and Stop:** `menu_place`, the `toolbar` hint through `web_model`, the page and the TUI, `replstop`, and `repl_restart`.
+2. **The toolbar, Stop and Language:** `menu_place`, the `toolbar` hint through `web_model`, the page and the TUI, `replstop`, `repllang`, and `repl_restart`.
 
    Gate: `testmadcide_learn` (the hint's rows and codes; Stop while an entry blocks on stdin gives a fresh session and the transcript line), `testmadcide_repl` unchanged, `test_web_model` (the hint and its codes), and `tests/gui/madcide_learn.mad` (a click on Run posts `replrun`, and main's output arrives; a click on Stop). The registry's pinned count moves on purpose.
 3. **F5's diagnostics into Problems:** the rows in the `load` and `run` replies, and `repl_reply` writing `diags`.
@@ -3191,13 +3197,9 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
 
    Gate: `testmadcide_learn` (after F5 on §34's program plus a global, the rows read `count int 3`, `square int (int)`; an entry `int y = 7;` adds a row; Stop empties them; activating `square` moves the caret to its line), and a `tests/gui` case. Then §29's gate, walked by hand in the window: open, type §34's program, Run, `square(12)` gives 144, and the Variables view shows the globals.
 
-**Open for the owner:**
-1. **`madcide --profile learn` with no file.** Thonny opens an untitled buffer. madcide needs a path today, and a missing one opens empty under that name.
-
-   Recommendation: an untitled buffer. Save asks for a name (Save As), and F5 runs it under the unit name `untitled`. Slice 1 recons whether a buffer can exist without a path, and falls back to asking for a name at startup if it cannot.
-2. **The learning IDE's language.** F5 runs under `replstd`, the engine default (the madc dialect: `sizeof('a')` is 1), and nothing sets it.
-
-   Recommendation: keep the one rule that `madc file`, `madc -i` and F5 share, and give the learn menu a Run ▸ Language… choice (C17, C++17, madc). It sets `repl.std` for the session (the setting's value from the bundle or `settings.json` is where it starts) and restarts the session, and the prompt already names the standard (D22). A course would otherwise teach C from a textbook while getting madc's answers without knowing it.
+**Decided (owner, 2026-09-30):**
+1. **No file opens an untitled buffer.** Thonny's behaviour. Save asks for a name (Save As), and F5 runs it under the unit name `untitled`. It builds on B86's one open rule (slice 0). Slice 1 recons whether a buffer can exist without a path, and gives it a placeholder name if it cannot, which Save As replaces.
+2. **The learning IDE's language is a Run ▸ Language… choice** (C17, C++17, madc). The one rule that `madc file`, `madc -i` and F5 share stays. It sets `repl.std` for the session (the setting's value from the bundle or `settings.json` is where it starts) and restarts the session, and the prompt already names the standard (D22). A course would otherwise teach C from a textbook while getting madc's answers without knowing it.
 
 ## 42. Decisions (owner, 2026-09-25)
 

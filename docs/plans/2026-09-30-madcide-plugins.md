@@ -162,7 +162,7 @@ A plugin's code sees one API, declared in `<madcide/plugin>`:
 - **Why it matters here:** installed madcide is an AOT executable, so a `source` plugin costs one JIT compile of the plugin on every launch that activates it, while a `library` costs a `dlopen`. Stage B measures both on a real plugin before choosing the defaults.
 - **Platforms:**
   - Linux ELF works today.
-  - macOS dylib and Windows DLL emission are refused "by design" in the MIR writers, because no libmadc dylib or DLL exists (G2). Until that changes, macOS and Windows plugins use `source` or `host`.
+  - macOS dylib and Windows DLL emission are refused today in the MIR writers (a scoping decision, §9). The owner decided they are supported as `.so` is (G2, in B2).
 
 ### 5.6 Activation
 
@@ -175,7 +175,7 @@ A plugin's code sees one API, declared in `<madcide/plugin>`:
 - **G1. One engine per process.** Handles (`handle_table`, `thread_local`) belong to the libmadc instance that opened them. So an in-process plugin must bind to madcide's engine, never load a second libmadc, or its `ui::set(w, …)` would reach a different table.
   - Mechanism: the API table passed at activation (§5.4), or the host exporting its symbols.
   - Recon first: what a `madc -shared` library's undefined references bind to today.
-- **G2. dylib and DLL emission** are refused by design (`mir-macho.c:342`, `mir-pe.c:935`). Allowing them reverses that ruling, which is the owner's decision (Q2 below).
+- **G2. dylib and DLL emission** are refused today (`mir-macho.c:342`, `mir-pe.c:935`). The owner decided they are supported as `.so` is (§9): the Mach-O writer emits `MH_DYLIB`, and the PE writer a DLL.
 - **G3. Compiling a module into the running process** and resolving its handlers, for the `source` transport. `eval_*` compiles in-process but has no path back into the host, and the REPL links into its own session only. The design is its own slice, which starts by reading how `InteractiveSession` links a module.
 - **G4. Command ids at runtime:** `cmd_table` gains a contributed range above its enum. The registry gate learns the range, and the menus and key profiles convert names through the same `cmd_of`.
 - **G5. `parse_build`'s `shared` kind** (today `exe` and `obj`).
@@ -199,17 +199,20 @@ A plugin's code sees one API, declared in `<madcide/plugin>`:
   **Gate:** a model test composing each bundle; a manifest with an unknown word refused with its reason; a user-directory bundle overriding a shipped one by name; `"profile": "learn"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting `learn`.
 - **Stage B, the plugin arc, after the release:**
   1. **Contributed commands and views** (G4), with handlers in `builtin` form only: the extension points exercised by madcide's own code first.
-  2. **The `library` transport** (G1, G5): `--build-plugin`, the API table, versioned refusal. Linux.
+  2. **The `library` transport** (G1, G2, G5): `--build-plugin`, the API table, versioned refusal; on Linux first, then macOS (`MH_DYLIB`) and Windows (DLL).
   3. **The `source` transport** (G3), with the activation cost measured against `library`.
   4. **The `host` transport** (G6): a crash leaves madcide running, and the plugin restarts.
   5. **The REPL pane as a bundled plugin:** `madcide_repl.inc` registers through the points, so no built-in path remains beside them.
-  6. **dylib and DLL,** if the owner rules for them (G2).
 
-## 9. Open for the owner
+## 9. Decided (owner, 2026-09-30)
 
-1. **The manifest format.**
-
-   Recommendation: JSON. It is read with no compile, it is VS Code's shape, and it has one bridge. The alternative is a madc object literal, which is one language but must be compiled to be read.
-2. **dylib and DLL emission** (G2).
-
-   Recommendation: yes, in Stage B6, after the Linux `library` transport has proved the API table. Until then, macOS and Windows use `source` and `host`.
+1. **The manifest is JSON.**
+2. **dylib and DLL are supported as `.so` is.**
+   - The refusals were a scoping decision, never an owner ruling. The Mach-O plan (`docs/plans/2026-07-25-macho-arm64-plan.md:297-299`) put dylib emission "deliberately out of scope, there is no libmadc.dylib by design". The PE writer copied that posture (`b3195b005`, 2026-08-15: "the Mach-O writer's posture").
+   - Linux `.so` works today: `madc -shared`, pinned by `tests/unit/test_native_shared.cpp` (dlopen and dlsym of the emitted `ET_DYN`).
+   - G2 is therefore required, not optional, and it is general `madc -shared` parity, not only plugins:
+     - the Mach-O writer emits `MH_DYLIB` (an `LC_ID_DYLIB`, the export trie, the ad-hoc signature it already writes);
+     - the PE writer emits a DLL (an export directory, base relocations);
+     - `madc -shared` gives `.dylib` and `.dll`, spelled by `madc_module_library_spelling()`.
+   - A plugin library needs no libmadc dylib or DLL: it reaches the engine through the API table (G1). A general shared library that uses the value runtime does, and that is the deferred `libmadc.dylib` (`docs/plans/2026-08-07-macos-release-lane-plan.md:128-134`) and a `libmadc.dll`.
+   - Staging: B2's `library` transport lands on Linux, then on macOS and Windows within B2 (the old B6 folds into it), so a plugin library ships on all three platforms before Stage B closes.

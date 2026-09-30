@@ -32,6 +32,42 @@ Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
 
+### B85. madcide saves and quits only when started from the repo root (the shipped package never can)
+
+- Found 2026-09-30, while measuring the owner's report that madcide leaves
+  you stuck when its key profile is not found. Measured with `bin/madc` at
+  `029a55a0f` on the container, with the source-tree madcide copied to
+  `tmp/rescue/tree` and launched on a pty (`tmp/rescue/probe.py`).
+- Save (`^K D`) writes nothing and says nothing; the buffer stays
+  `(Modified)`. Quit (`^K Q`) does nothing. The rescue set's `^S` and `^Q`
+  do nothing either, so a missing profile does leave the user stuck. The
+  start prints `cannot load the subject-document prologue` to stderr, which
+  the TUI's screen hides. SILENT: a save the user asked for is lost.
+- From `/tmp` with `joe.keys` present: typing `x`, then `^K D`, leaves the
+  file unchanged, and `^K Q` does not exit. From the repo root: `Wrote 30
+  bytes.`, and `^K Q` exits. With `joe.keys` removed, the rescue `^Q` exits
+  from the repo root and does not exit from `/tmp`.
+- Layer: `cmdSAVE` and `cmdQUIT` (`tools/madcide/madcide_core.inc:6542-6555`)
+  → `do_verb("w" | "q" | "q!")` → `ui::act`, running the line editor's verbs,
+  which `bind_lineed_verbs` (`tools/texteditor/lined_core.inc:20-45`) reads
+  from the cwd-relative paths `tools/texteditor/verbs/*.madv` and
+  `tools/texteditor/checks/editable.madv`. Outside the repo root no verb
+  binds. The package ships `share/madcide/profiles` only
+  (`scripts/package_release.sh:170-171`), so an installed madcide finds the
+  verbs from no directory. The install gate's pty probe checks the first
+  paint only, and `madcide_quit_gate.sh` runs from the repo root.
+- Also: the startup hint hard-codes JOE's chords (`^K Q exits / ^K H`,
+  `madcide_core.inc:7742`) under every profile, the rescue set included.
+- Fix shape: one data-location owner for madcide's and the line editor's
+  data (profiles, verbs, checks), generalizing `resolve_profile_dir`
+  (`madcide_core.inc:220`: beside `__FILE__`, then `share/madcide`, then
+  beside the executable). The package ships `verbs/` and `checks/`. A key
+  profile that is not found falls back to the default profile's, then to the
+  baked rescue set. The hint names the loaded table's own chords. Gates: the
+  install gate's pty probe saves and quits from `/tmp`, with the profiles
+  present and with them hidden; the quit gate runs from a foreign cwd.
+- Planned: plan §41.11a slice 0 (the release path), first.
+
 ### B83. c2mir's local initializer skips a member after a bit-field's unit (stock c2m)
 
 ```c
@@ -1157,6 +1193,59 @@ int main(void) { return x; }
   profiles (data, never a hard-coded key), and the `tabkey` hint on the
   editor window's node while it has the keyboard. Pin it in testmadcide
   and a tests/gui case.
+
+## madcide (the editor)
+
+### B84. JOE's `^W` deletes the whitespace and the next word
+
+- Found by the owner, 2026-09-30. Oracle: JOE 4.6 on the container
+  (`tmp/rescue/joew.py`, each case a caret position, then `^W`, then `^K X`):
+
+| Text, caret at ‸ | JOE 4.6 (measured) | madcide (`word_right`'s contract) |
+|---|---|---|
+| `foo‸   bar baz` | `foobar baz` | `foo baz` (the owner's report) |
+| `foo ‸  bar baz` | `foo bar baz` | `foo  baz` |
+| `‸foo   bar` | `   bar` | `   bar` |
+| `f‸oo   bar` | `f   bar` | `f   bar` |
+| `a ‸+= b` | `a = b` (one byte) | `a ` |
+| `foo‸` + newline + `bar` | `foobar` (the newline) | `foo` |
+| `foo‸  ` + newline + `bar` | `foobar` | `foo` |
+| `‸` tab `x = 1;` | `x = 1;` | ` = 1;` |
+
+- JOE's rule: the class of the byte at the caret decides. On word bytes it
+  deletes the rest of the word, and on whitespace (space, tab, newline) the
+  run of whitespace. Anything else is one byte.
+- Layer: `cmdDELWORD` → `delete_word` (`tools/madcide/madcide_core.inc:2876`)
+  deletes to `ui::text_word_right`, the word MOTION (`^X`: past the end of
+  the next word), which is Emacs's `kill-word`, not JOE's `delwr`.
+- Fix shape: a class-run extent beside the motion in the text buffer (the
+  motion's owner, `text_buffer::word_right`), which `delword` reads. Bytes
+  of 0x80 and above count as word bytes, so a UTF-8 letter is never split.
+  Emacs's `kill-word` becomes its own command (`killword`) when `emacs.keys`
+  gains Meta.
+- Planned: plan §41.11a slice 0.
+
+### B86. madcide refuses to start on a file that does not exist
+
+- Found by the owner, 2026-09-30. `madcide new.c`, with no `new.c`, prints
+  `madcide: cannot read new.c` and exits 1 (the path below, read from the
+  code). JOE, pico, vim and emacs open an
+  empty buffer ("New File"), and madcide's own `^K E` does the same.
+- Layer: `run_tui` (`tools/madcide/madcide_serve.inc:173`) →
+  `IdeSession::open` (`madcide_core.inc:7907`) → `setup_editor`
+  (`tools/texteditor/editor_events.inc:688`) → `setup_document`
+  (`lined_core.inc:82`), whose 0-on-missing contract the line editors need.
+  `^K E` goes through `open_buffer_doc` (`madcide_core.inc:3071`), which
+  opens a missing path as a new empty file, so the launch and `^K E` follow
+  two rules.
+- Also: `open_buffer_doc` opens ANY unreadable path as a new empty file, so an
+  existing file it cannot read (a directory, no permission) becomes an empty
+  buffer under its name.
+- Fix shape: the launch's document through `open_buffer_doc`, one rule for
+  both paths: a missing path is a new file (`New File` on the message line),
+  and an existing path that cannot be read is refused with the reason. The
+  untitled buffer (no file at all, plan §41.11a) builds on the same owner.
+- Planned: plan §41.11a slice 0.
 
 ## Open questions
 
