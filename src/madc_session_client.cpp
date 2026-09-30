@@ -64,14 +64,15 @@ namespace {
 // was taken and runs now. `load` / `run` are the cores of %load / %run (D25):
 // a program file into the session, then its main (`madc -i file`).
 // `continues` is D11's question: does a line continue an if that ended an
-// entry (its first word is the session's `else`).
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, unknown };
+// entry (its first word is the session's `else`). `bindings`: the names the
+// session defined, as rows (InteractiveSession::bindings, %whos's).
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
     { "begin", Op::begin }, { "offer", Op::offer }, { "complete", Op::complete },
     { "running", Op::running }, { "load", Op::load }, { "run", Op::run },
-    { "continues", Op::continues },
+    { "continues", Op::continues }, { "bindings", Op::bindings },
 };
 
 const char *op_name(Op op)
@@ -249,6 +250,14 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 	    case Op::continues:
 		rep["continues"] = session.continues_if(req.value("text", std::string()));
 		break;
+	    case Op::bindings:
+	    {
+		madc::value rows;
+		session.bindings(rows);
+		rep["rows"] = madc::hub::detail::wt_value_to_json(rows);
+		rep["ok"] = true;
+		break;
+	    }
 	    case Op::run:
 	    {
 		// main(argc, argv) at the entry boundary: the path, then the
@@ -544,6 +553,15 @@ unsigned SessionClient::continues(const std::string &line)
     return send(req.dump()) ? seq : 0;
 }
 
+unsigned SessionClient::bindings()
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::bindings);
+    return send(req.dump()) ? seq : 0;
+}
+
 unsigned SessionClient::run(const std::vector<std::string> &argv)
 {
     nlohmann::json req;
@@ -690,6 +708,11 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    reply.kind = Reply::Kind::continues;
 	    reply.continues = j.value("continues", false);
 	    break;
+	case Op::bindings:
+	    reply.kind = Reply::Kind::bindings;
+	    if ( j.contains("rows") )
+		reply.rows = madc::hub::detail::wt_json_to_value(j["rows"]);
+	    break;
 	case Op::begin:
 	case Op::unknown:
 	    break;
@@ -781,6 +804,11 @@ unsigned SessionClient::run(const std::vector<std::string> &)
 }
 
 unsigned SessionClient::continues(const std::string &)
+{
+    return 0;
+}
+
+unsigned SessionClient::bindings()
 {
     return 0;
 }
@@ -1009,5 +1037,12 @@ int SessionClient::continues_wait(const std::string &line, Reply &reply)
 {
     std::string output;
     return wait_reply(continues(line), reply, output, -1,
+		      InteractiveSession::TakenHook());
+}
+
+int SessionClient::bindings_wait(Reply &reply, int timeout_ms)
+{
+    std::string output;
+    return wait_reply(bindings(), reply, output, timeout_ms,
 		      InteractiveSession::TakenHook());
 }

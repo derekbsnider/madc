@@ -312,6 +312,46 @@ TEST_CASE("session backend: load an editor buffer's text under its name")
     CHECK(r.shown == "43");
 }
 
+// The names the session defined, over the wire (plan §41.11a step 3d): one
+// row each, sorted by name, from the entries and a loaded buffer. A
+// pointer's row shows its address and follows nothing, so `(char *)1` is
+// read as a value, never dereferenced: the backend is still up after it.
+TEST_CASE("session backend: the session's bindings, as rows")
+{
+    SessionClient c;
+    REQUIRE(c.start("--std=c17"));
+    SessionClient::Reply r;
+    std::string out;
+    REQUIRE(c.offer_wait("int count = 3;", true, r, out, kWait) == 1);
+    REQUIRE(c.offer_wait("char *p = (char *)1;", true, r, out, kWait) == 1);
+    REQUIRE(c.offer_wait("int square(int x) { return x * x; }", true, r, out, kWait) == 1);
+    REQUIRE(c.load_wait_text("int loaded = 9;\n", "buffer_rows.c", r, out) == 1);
+    REQUIRE(r.ok);
+    REQUIRE(c.bindings_wait(r, kWait) == 1);
+    CHECK(r.kind == SessionClient::Reply::Kind::bindings);
+    REQUIRE(r.rows.is_array());
+    std::string got;
+    for ( const madc::value &row : r.rows.as_array() )
+    {
+	REQUIRE(row.is_object());
+	const std::map<std::string, madc::value> &f = row.as_object();
+	const int64_t kind = f.at("kind").as_integer();
+	got += f.at("name").as_string()
+	     + (kind == (int64_t)madc::name_kind::object ? " object "
+		: kind == (int64_t)madc::name_kind::function ? " function " : " other ")
+	     + f.at("type").as_string() + " = " + f.at("value").as_string()
+	     + " @ " + f.at("file").as_string() + ":"
+	     + std::to_string(f.at("line").as_integer()) + "\n";
+    }
+    CHECK(got == "count object int = 3 @ REPL[1]:1\n"
+		 "loaded object int = 9 @ buffer_rows.c:1\n"
+		 "p object char * = (char *) 0x1 @ REPL[2]:1\n"
+		 "square function int (int) =  @ REPL[3]:1\n");
+    CHECK(c.running());
+    REQUIRE(c.offer_wait("count + loaded", true, r, out, kWait) == 1);
+    CHECK(r.shown == "12");
+}
+
 TEST_CASE("session backend: the CLI loop drives a BackendSession")
 {
     // madc_repl_run over string streams, the backend piped: its output goes

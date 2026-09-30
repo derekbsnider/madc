@@ -110,6 +110,9 @@ madc::value reply_row(const SessionClient::Reply &r)
 	case madc::session_reply::continues:
 	    f["continues"] = madc::value(r.continues);
 	    break;
+	case madc::session_reply::bindings:
+	    f["rows"] = r.rows.is_array() ? r.rows : madc::value::make_array();
+	    break;
     }
     return madc::value::make_object(f);
 }
@@ -177,6 +180,12 @@ int64_t session_load(int64_t handle, const char *path, const char *text)
     if ( text && *text )
 	return (int64_t)s->client.load_text(text, path);
     return (int64_t)s->client.load(path);
+}
+
+int64_t session_bindings(int64_t handle)
+{
+    SessionHandle *s = session_of(handle);
+    return s ? (int64_t)s->client.bindings() : 0;
 }
 
 int64_t session_run(int64_t handle, value &argv)

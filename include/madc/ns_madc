@@ -676,6 +676,13 @@ namespace madc {
     //     seq; the replies are `load` (ok, rendered) and `run` (ok, rendered,
     //     status: main's return value) rows. The cores of %load and %run
     //     (D25), and madcide's F5 (plan §41.10a).
+    //   session_bindings(h): the names the session defined (%whos's rows;
+    //     madcide's Variables view, plan §41.11a step 3d). Its seq; the
+    //     reply is a `bindings` row whose rows are {name, kind (a
+    //     madc::name_kind code), type (the source's spelling), value (an
+    //     object's: no pointer followed, at most 16 elements, 80 columns),
+    //     file, line (where an entry or a loaded file declared it)}, sorted
+    //     by name. Answered between entries.
     //   session_poll(reply, h): 1 with a reply, 0 when none waits, -1 when
     //     the backend stopped (reply is its row; the backend is restarted,
     //     its state empty, and the row's `restarted` says whether the new one
@@ -688,8 +695,9 @@ namespace madc {
     //     returns); a load's ok, rendered and diagnostics; a run's ok,
     //     rendered, status (main's) and diagnostics (the rows recorded since
     //     the last entry or load began, the run's own included); a
-    //     completion's start and names; a stop's exit_status
-    //     (128 + signal for a signal) and signal (0 when the backend exited).
+    //     completion's start and names; a bindings reply's rows; a stop's
+    //     exit_status (128 + signal for a signal) and signal (0 when the
+    //     backend exited).
     //   session_output(out, h): what the program printed since the last call.
     //   session_input(h, text): text for the program's stdin.
     //   session_restart(h): a new backend; its state starts empty.
@@ -708,6 +716,7 @@ namespace madc {
     int64_t session_complete(int64_t handle, const char *text, int64_t caret);
     int64_t session_load(int64_t handle, const char *path, const char *text);
     int64_t session_run(int64_t handle, value &argv);
+    int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);
     bool session_input(int64_t handle, const char *text);

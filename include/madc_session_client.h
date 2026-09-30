@@ -94,6 +94,9 @@ public:
 	int status;
 	// continues: the line continues an if that ended an entry (D11).
 	bool continues;
+	// bindings: the names the session defined, one row each (name, kind,
+	// type, value, file, line: InteractiveSession::bindings).
+	madc::value rows;
 	// stopped: the backend's exit status (128 + signal for a signal), and
 	// the signal that ended it, 0 when it exited (exit(n) in an entry).
 	int exit_status;
@@ -116,6 +119,9 @@ public:
     // D11's question, asked of the session's standard: does `line` continue
     // an if that ended an entry (its first word is `else`)?
     unsigned continues(const std::string &line);
+    // The names the session defined, as rows (%whos's; madcide's Variables
+    // view, plan §41.11a step 3d). Answered between entries.
+    unsigned bindings();
     // Text for the program's stdin: a scanf in an entry reads it. False when
     // the backend is not running. It waits while the pipe is full.
     bool input(const std::string &text);
@@ -142,6 +148,7 @@ public:
     int run_wait(const std::vector<std::string> &argv, Reply &reply,
 		 std::string &output);
     int continues_wait(const std::string &line, Reply &reply);
+    int bindings_wait(Reply &reply, int timeout_ms = -1);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
