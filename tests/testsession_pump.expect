@@ -5,4 +5,5 @@ state gone: ok=false
 after the crash: ok=true submitted=2
 restart: ok=false
 restart output: 42
+restart as c++17: standard=c++17 ok=true
 done

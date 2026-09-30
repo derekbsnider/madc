@@ -63,6 +63,9 @@ public:
 	       const ProgramFactory &make_program = ProgramFactory());
     // Start again with the same standard and factory (after a stop).
     bool restart();
+    // Start again under another standard (a --std= spelling), the same
+    // factory: the session's language changes, its state starts empty.
+    bool restart(const std::string &std_opt);
     // End the backend (its state goes with it).
     void stop();
     bool running() const;
@@ -227,6 +230,7 @@ int64_t session_poll(value &reply, int64_t handle);
 value &session_output(value &out, int64_t handle);
 bool session_input(int64_t handle, const char *text);
 bool session_restart(int64_t handle);
+bool session_restart(int64_t handle, const char *standard);
 int64_t session_readable(int64_t handle);
 bool session_close(int64_t handle);
 }

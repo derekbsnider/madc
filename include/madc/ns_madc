@@ -690,6 +690,8 @@ namespace madc {
     //   session_output(out, h): what the program printed since the last call.
     //   session_input(h, text): text for the program's stdin.
     //   session_restart(h): a new backend; its state starts empty.
+    //   session_restart(h, std): the same under another standard (`c17` or
+    //     `--std=c17`, as session_open takes it): the language changes.
     //   session_readable(h): a chan_select case that fires when a reply or
     //     output waits. Made once per handle and reused; it follows restarts,
     //     and a closed session's case is dead.
@@ -707,6 +709,7 @@ namespace madc {
     value &session_output(value &out, int64_t handle);
     bool session_input(int64_t handle, const char *text);
     bool session_restart(int64_t handle);
+    bool session_restart(int64_t handle, const char *standard);
     int64_t session_readable(int64_t handle);
     bool session_close(int64_t handle);
 }

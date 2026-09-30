@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Session language switching (plan §41.11a, madcide teaching IDE)
+
+A session can now restart under a different `--std=` standard via `session_restart(handle, standard)`. The handle, its readable channel case, and any parked async pump carry over across the restart, while the backend's state and buffered output go with the old backend. This lets the REPL switch language flavors on demand (e.g., from c11 to c++17), supporting madcide's language selector. A helper `std_option_of(spelling)` extracted from `session_open` normalizes standard spellings (`c17` → `--std=c17`) for reuse by both. Gate: testsession_pump.mad line 74 (restart as c++17: the backend accepts references and `standard` matches the requested flavor).
+
 ### madcide's Stop command (plan §41.11a step 3a)
 
 Stop (`replstop`, plan §41.11a) restarts the REPL's session and clears any in-flight replies. With no session, the command refuses with a message; during a running entry that never ends, the entry stops with its restarting session, and the transcript says `[stopped; a new session started]`. The next entry runs in a fresh backend, as F5 now does before its load (both commands reuse the new `repl_restart()` helper). Stop joins the Build menu (new `cmdREPLSTOP` enum item), chthonic's Run menu, and the toolbar alongside Open, Save, and Run. The `repl_clear_marks()` helper centralizes clearing the seqs (`replbusy`, `replrunning`, `replcseq`, `replloadseq`, `replrunseq`) when a session is owed nothing. Gate: testmadcide_repl.mad pin 8 (stop before message, stop during spin and new session) + testmadcide_toolbar (Stop button), testidemenu (commands=54, items=10), testmadcide_chthonic (Stop in menu and toolbar).

@@ -786,6 +786,11 @@ bool SessionClient::restart()
     return start(std_option, make_program);
 }
 
+bool SessionClient::restart(const std::string &std_opt)
+{
+    return start(std_opt, make_program);
+}
+
 BackendSession::BackendSession(SessionClient &c, std::ostream &e, std::ostream *o)
     : client(c), err(e), out(o), has_ended(false), end_status(0)
 {

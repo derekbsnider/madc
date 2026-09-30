@@ -110,15 +110,21 @@ madc::value reply_row(const SessionClient::Reply &r)
 
 namespace madc {
 
-int64_t session_open(const char *std_spelling)
+// A standard's spelling as the session's option: `c17` or `--std=c17`;
+// empty keeps the default standard.
+static std::string std_option_of(const char *std_spelling)
 {
-    SessionHandle *s = new SessionHandle();
-    // `c17` or `--std=c17`; empty keeps the default standard.
     const std::string prefix("--std=");
     std::string opt = std_spelling ? std_spelling : "";
     if ( !opt.empty() && opt.compare(0, prefix.size(), prefix) != 0 )
 	opt = prefix + opt;
-    s->client.start(opt);		// a refusal is the handle's state
+    return opt;
+}
+
+int64_t session_open(const char *std_spelling)
+{
+    SessionHandle *s = new SessionHandle();
+    s->client.start(std_option_of(std_spelling));	// a refusal is the handle's state
     return session_handles().open(s);
 }
 
@@ -220,13 +226,27 @@ bool session_input(int64_t handle, const char *text)
     return s && s->client.input(text ? text : "");
 }
 
-bool session_restart(int64_t handle)
+// A new backend for a handle: under its standard (std_opt NULL) or under
+// another one. The handle, its readable case and a pump parked on it carry
+// over; the output not yet taken goes with the old backend.
+static bool restart_handle(int64_t handle, const char *std_opt)
 {
     SessionHandle *s = session_of(handle);
     if ( !s )
 	return false;
     s->output.clear();
-    return s->client.restart();
+    return std_opt ? s->client.restart(std_option_of(std_opt))
+		   : s->client.restart();
+}
+
+bool session_restart(int64_t handle)
+{
+    return restart_handle(handle, NULL);
+}
+
+bool session_restart(int64_t handle, const char *std_spelling)
+{
+    return restart_handle(handle, std_spelling ? std_spelling : "");
 }
 
 int64_t session_readable(int64_t handle)

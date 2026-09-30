@@ -66,6 +66,13 @@ int main()
     madc::chan_recv(r, replies);
     print("restart output: {}", r["output"]);
 
+    // A restart under another standard: the handle, its case and the parked
+    // pump carry over, and the new backend reads C++ (a reference is C++).
+    madc::session_restart(h, "c++17");
+    madc::session_offer(h, "int v = 5; int &rv = v;", true);
+    madc::chan_recv(r, replies);
+    println("restart as c++17: standard={} ok={}", madc::session_standard(h), r["ok"]);
+
     var one = 1;
     madc::chan_send(stop, one);
     madc::task_drain();
