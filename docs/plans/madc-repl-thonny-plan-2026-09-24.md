@@ -1098,10 +1098,10 @@ A later product decision can make it the default first-run GUI profile.
 
 > **Code check:**
 > - **Command line:** `madcide` requires the file as argv[1] and parses flags only from argv[2] on (`madcide.mad:64-232`), so `madcide --learn file.cpp` would treat `--learn` as the file. With no arguments it prints usage and exits.
-> - **Profile selection:** needs a flag threaded through `run_tui` → `IdeSession::open` → `init_view_es`, plus `learn.layout` / `learn.menu` files.
+> - **Profile selection:** needs a flag threaded through `run_tui` → `IdeSession::open` → `init_view_es`, plus `chthonic.layout` / `chthonic.menu` files.
 > - **Toolbar:** no face has one.
 >
-> **Amended (owner, 2026-09-30):** the profile is a bundle in madcide's plugin model (`docs/plans/2026-09-30-madcide-plugins.md`), selected by `--profile learn` or `settings.json`, not a `--learn` mode. See §41.11a.
+> **Amended (owner, 2026-09-30):** the profile is a bundle in madcide's plugin model (`docs/plans/2026-09-30-madcide-plugins.md`), selected by `--profile chthonic` or `settings.json`, not a `--learn` mode. See §41.11a.
 
 ### 16.1 Initial GUI layout
 
@@ -1706,7 +1706,7 @@ madc sources cross-referenced:
 | Redefinition / strict redeclaration | **Missing** (and a suspected bug) | §11.6 code check. |
 | `:std` inside a live session | **Unsafe** | Keywords only accumulate (`lexer.cpp:5921`); declarations keep their mode's identity. `:std` must mean reset. |
 | Line editor with history / Ctrl-R / multiline | **Missing** | `tools/texteditor` line editors are ed-style; no readline-class library in `third_party`. |
-| madcide REPL panel, teaching profile | **Clean insertion points** | A panel kind beside Terminal (`compose_chrome_pane`, a `term_pump`-style pump); a profile flag into `init_view_es` plus `learn.*` files. |
+| madcide REPL panel, teaching profile | **Clean insertion points** | A panel kind beside Terminal (`compose_chrome_pane`, a `term_pump`-style pump); a profile flag into `init_view_es` plus `chthonic.*` files. |
 | F5, program state after Run | **Missing** | No function keys; Run is a forked child. |
 
 Other anchors the plan should cite:
@@ -3017,7 +3017,7 @@ With no program file, the tail chooses in this order:
 ### 41.11a The teaching profile (Phase 5 core, §29), designed against the code (2026-09-30)
 
 The owner (2026-09-30): the next release is the REPL and learning IDE, which means §37 plus Phase 5's core, and then Phase 4. Phase 5's core is:
-- the `learn` profile and its layout (amended 2026-09-30, the owner: a bundle in the plugin model, `docs/plans/2026-09-30-madcide-plugins.md`, not a hard-coded mode);
+- the `chthonic` profile and its layout (amended 2026-09-30, the owner: a bundle in the plugin model, `docs/plans/2026-09-30-madcide-plugins.md`, not a hard-coded mode);
 - a toolbar with Run and Stop;
 - the Variables view;
 - clickable diagnostics for F5;
@@ -3074,17 +3074,42 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
   - B55: Tab inserts nothing in madcide's editor. A beginner cannot indent.
   - B8: the caret line is misdrawn on a line with a tab. Beginners' code is tab-indented, and F5's diagnostics show that line.
 
-**The design:**
-- **The `learn` profile is a bundle** (amended 2026-09-30; the plugin design's Stage A, `docs/plans/2026-09-30-madcide-plugins.md` §5.1-5.2, §8):
-  - A bundle is a plugin with no code: a `<name>.plugin` manifest (JSON) naming its data contributions (keys, layout, menu, theme, status) and its settings. `default` and `learn` are the two madcide ships. There is no `--learn` and no workspace name in the code.
+**The release (owner, 2026-09-30, amending the scope above):** the next release carries:
+- the REPL (§37);
+- the bug fixes already on this branch, and slice 0's;
+- madcide plugins: the whole plugin design (`docs/plans/2026-09-30-madcide-plugins.md`), every stage;
+- the Thonny-like teaching IDE as a madcide plugin, `chthonic` (the owner's name, 2026-09-30: C + Thonny, and a real word).
+
+There is no patch release before it: B85's fix rides this release.
+
+**Where each piece lives:** the plugin carries what is specific to teaching. A capability any profile could use lands with its owner.
+
+| Piece | Owner |
+|---|---|
+| The bindings owner, `%whos`, the `bindings` wire op and verb; rows in the `load` and `run` replies | the engine (madc) |
+| Stop (`replstop`), Language (`repllang`), bindings on request (`replbindings`), F5's diagnostics into Problems, the pane's reply events, the session starting when the layout shows the REPL | madcide's REPL pane (core) |
+| The untitled buffer, one open rule (B86), the argv parse | madcide core |
+| Bundles, the manifest, settings, `--profile`, the toolbar placement and its rendering, contributed commands, views and events, the transports | the plugin system (core) |
+| `chthonic.plugin`, `chthonic.layout`, `chthonic.menu` (with its toolbar rows), the `pico` keys, the `repl.std` setting, and the Variables view's code | the `chthonic` plugin |
+
+- **The Variables view is the `chthonic` plugin's code:** its first real code, and the plugin system's first consumer.
+  - It is a contributed view (`variables`), not a core view kind.
+  - Its code asks for the bindings through a command, `replbindings`, and the rows come back in the pane's `bindings` reply event.
+  - It formats them onto its view's bag key, and a row's activation goes through the core's navigation owner.
+  - It never holds the session's handle, which belongs to the REPL pane. So it runs under every transport, the out-of-process host included.
+- **The plugin ships as source plus a prebuilt library per platform** (`.so`, `.dylib`, `.dll`: ROADMAP 6.5). The release exercises the plugin system end to end on every platform lane.
+
+**The design** (the pieces below keep their design; where each lives is the table above):
+- **The `chthonic` profile is a bundle** (amended 2026-09-30; the plugin design's Stage A, `docs/plans/2026-09-30-madcide-plugins.md` §5.1-5.2, §8):
+  - A bundle is a plugin with no code: a `<name>.plugin` manifest (JSON) naming its data contributions (keys, layout, menu, theme, status) and its settings. `default` and `chthonic` are the two madcide ships. There is no `--learn` and no workspace name in the code.
   - The active profile comes from the command line (`madcide --profile NAME`), then `settings.json` (`"profile"`), then `default`, so nothing changes without either.
   - `init_view_es` loads what the active bundle names, in place of the hard-coded `joe` and `default`. The bundle's name is kept on the bag (beside `profile_dir`) for a later runtime switch.
   - A missing or refused file that a bundle names falls back to the baked default, and the status line says so, through the rescue-announcement pattern the key profile already uses. A refused manifest refuses its bundle, with the reason.
-  - A profile selects no face. It composes under the TUI, `--gui` and `--serve` alike, and a desktop launcher passes `--profile learn --gui`.
-  - **`learn`'s keys are `pico`:** single chords (`^S` save, `^Z` undo, `^Q` quit, `^W` find, F5 run), with no `^K` prefixes to teach. A CUA personality (`^C`/`^X`/`^V` clipboard) is a later bundle.
-  - **`learn`'s settings** give `repl.std` (Q2 below), the REPL standard's first home (`replstd` is read today, but nothing sets it).
-  - **The command line:** the file becomes the first argument that is not a flag, and flags may come anywhere (`madcide --profile learn f.c` and `madcide f.c --profile learn`). `ro` stays a positional word. The strings are compared only at this input boundary. The usage text lists `--profile`.
-  - **`learn.layout`:**
+  - A profile selects no face. It composes under the TUI, `--gui` and `--serve` alike, and a desktop launcher passes `--profile chthonic --gui`.
+  - **`chthonic`'s keys are `pico`:** single chords (`^S` save, `^Z` undo, `^Q` quit, `^W` find, F5 run), with no `^K` prefixes to teach. A CUA personality (`^C`/`^X`/`^V` clipboard) is a later bundle.
+  - **`chthonic`'s settings** give `repl.std` (Q2 below), the REPL standard's first home (`replstd` is read today, but nothing sets it).
+  - **The command line:** the file becomes the first argument that is not a flag, and flags may come anywhere (`madcide --profile chthonic f.c` and `madcide f.c --profile chthonic`). `ro` stays a positional word. The strings are compared only at this input boundary. The usage text lists `--profile`.
+  - **`chthonic.layout`:**
     ```text
     @window main
     pane editor tabs views source focus
@@ -3093,7 +3118,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
     ```
     The REPL is the visible panel's first tab. No project tree, no Outline, no Terminal or Output (F5's output is the REPL's).
   - **The session starts at open when the layout shows it.** A pane visible at startup whose active view is `viewREPL` starts its session in `init_view_es` (`repl_start`), as Thonny starts its backend. That is layout data, never a test of the bundle's name (Rule #7), and the default layout keeps the REPL hidden, so it forks nothing.
-- **The beginner menu (`learn.menu`), data only:**
+- **The beginner menu (`chthonic.menu`), data only:**
   - File: Open…, Save, Save As…, Quit.
   - Edit: Undo, Redo, Find.
   - Run: Run (`replrun`), Stop (`replstop`), Language… (`repllang`: a choice of C17, C++17 and madc that sets `repl.std` and restarts the session; decided 2026-09-30).
@@ -3102,7 +3127,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
   - No Build, no Project, no Views/MC11/Nexus rows (§16: the power surface is not advertised).
 - **The toolbar.**
   - **Placement becomes an enum.** A menu row's MENU word keeps naming its menu, and two words are placements: `palette` (already) and `toolbar`. Each converts once, at load, to `menu_place { mpBAR, mpPALETTE, mpTOOLBAR }` on the item. The `m["title"] == "palette"` compare becomes a switch on the code (enum-over-strings, fixed on the way).
-  - `learn.menu` gives the toolbar Open, Save, Run and Stop. `default.menu` gives it nothing, so the default workbench is unchanged.
+  - `chthonic.menu` gives the toolbar Open, Save, Run and Stop. `default.menu` gives it nothing, so the default workbench is unchanged.
   - **The composed form** is a root hint `toolbar`, beside `menu`: an array of `{label, action, code, chord}`. The chord is the one the loaded personality binds, as the menu shows it. This is the shape the tab strip's hint already has.
     - `web_model` passes it with its codes, as it passes a tab strip.
     - The page draws it as a row of `.cf-btn` buttons above the workbench, and a click posts the action through the existing handler.
@@ -3117,7 +3142,7 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
   - `repl_reply`, on the reply to F5's load (and to its run), writes the rows into the bag's `diags`, the key the Problems pane reads. So each row is navigable through `cmdGOTO` / `goto_pane_row`, with no new navigation code, and a clean load clears the stale rows, as check does.
   - An entry's own rows (`REPL[N]:…`) do not go into Problems: they cite no file the editor holds.
   - The transcript keeps the rendered text. A clickable link inside the transcript is §18's later GUI affordance.
-- **The Variables view.**
+- **The Variables view** (the `chthonic` plugin's code; the engine and pane pieces are core).
   - **One engine owner: `InteractiveSession::bindings(rows)`.** It walks `visit_top_level_names` for the names the session defined: an origin from an entry or a loaded unit, never a header or the prelude (IPython's `%whos` hides the startup namespace too).
   - It keeps objects and functions. A row is `{name, kind, type, value, file, line}`:
     - `kind` is a code from `<bits/session_enums>`'s new `madc::name_kind`, which the engine's `TopLevelName::Kind` aliases, as `OfferState` aliases `madc::offer_state`;
@@ -3129,23 +3154,25 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
     - The slice verifies that the walk calls no user code (a conversion, a getter). If some type needs it, that type's row shows its type alone.
   - **`%whos`** is the registry command that prints the same rows as a Name/Type/Value/Origin table (`src/madc_session.cpp:55`). That gives one owner and two renderings, as completion and `?` share one walk.
   - **Getting the rows to madcide:** a wire op `bindings`, the `madc::session_reply::bindings` kind, and the verb `madc::session_bindings(h)`, which returns the request's seq, as its siblings do. The reply carries `rows`.
-  - **The view:**
-    - `viewVARIABLES` (`view_name` "variables", title "Variables"), and a command `variables` that shows it.
-    - `compose_chrome_pane` renders its rows as item rows under a choice, as Problems does: name, type, value and origin, the columns padded to the widest name and type.
-    - The bag key is `replvars`.
+  - **The pane's side (core):**
+    - `replbindings` sends the request.
+    - `repl_reply` publishes its replies as events on the event feed, one kind each: an entry taken, F5's run returned, F5's load refused, the session stopped, the bindings answered. That is the `repl_event` enum, with the reply's row. A plugin subscribes to the kinds it needs.
+  - **The plugin's side (`chthonic`):**
+    - It contributes the view `variables` (title "Variables", bag key `chthonic.vars`) and the command `variables` that shows it.
+    - The generic contributed-view arm of `compose_chrome_pane` renders the key's rows as item rows under a choice, as Problems does: name, type, value and origin, the columns padded to the widest name and type.
   - **Refresh:**
-    - `repl_reply` asks for the bindings after a taken entry, after F5's run reply, and after a load that was refused, but only while a visible pane shows `viewVARIABLES` (a lazy view costs nothing when hidden).
-    - A `stopped` reply or Stop clears the rows.
+    - The plugin's event handler runs `replbindings` after an entry is taken, after F5's run returns, and after F5's load is refused, but only while its view is visible (a hidden view costs nothing).
+    - On the bindings event it writes the rows. A stopped event clears them.
     - A reply for an older seq is dropped, as the completion replies are.
-  - **Activating a row** goes to its declaration when its `file` is the buffer's (`cmdGOTO` over the row's `file` and `line`). `goto_pane_row`'s `bool outline` becomes the `ide_view` of the pane whose rows it reads (Problems, Outline or Variables), so one navigation owner serves all three.
+  - **Activating a row** goes to its declaration when its `file` is the buffer's (`cmdGOTO` over the row's `file` and `line`). `goto_pane_row`'s `bool outline` becomes the view whose rows it reads (Problems, Outline, or a contributed view's key), so one navigation owner serves all three.
   - **What it shows:** globals only. After F5, `main` has returned, and its locals are gone, as Thonny's Variables view shows `__main__`'s globals outside the debugger.
 
-**Enums added:** `ide_view::viewVARIABLES`; `cmdREPLSTOP`, `cmdREPLLANG` and `cmdVARIABLES` in `cmd_table`; `menu_place`; `madc::name_kind` and `madc::session_reply::bindings` in `<bits/session_enums>`; the wire's `Op::bindings`; `InteractiveSession::Command::whos`.
+**Enums added:** `cmdREPLSTOP`, `cmdREPLLANG` and `cmdREPLBINDINGS` in `cmd_table` (`variables` is the plugin's contributed command); `repl_event` (the pane's reply events); `menu_place`; `madc::name_kind` and `madc::session_reply::bindings` in `<bits/session_enums>`; the wire's `Op::bindings`; `InteractiveSession::Command::whos`.
 
 **Thread contract:** unchanged from §41.9a.
 - The session handle is confined to the thread that opened it, and the backend is single-threaded, so `bindings` runs between entries like every request (D9).
 - The rows are a snapshot. A task the program left running may change a value after it is read, and IPython's `%whos` has the same limit.
-- The active bundle's name, the toolbar rows and `replvars` are bag state on the session's thread, like every pane's. The bundle registry is built at load and read-only afterwards (the plugin design's §7).
+- The active bundle's name, the toolbar rows and `chthonic.vars` are bag state on the session's thread, like every pane's. The plugin's handlers run on that thread (in-process) or through the seat (host), per the plugin design's §7. The bundle registry is built at load and read-only afterwards (the plugin design's §7).
 - The shallow walk only reads the program's storage.
 
 **Not in Phase 5's core, and named:**
@@ -3155,11 +3182,11 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
 - A runtime "switch to the full workbench" (Thonny's regular-mode link; it needs a layout reload at runtime).
 - An object inspector for a Variables row.
 - Pointer targets read safely (Phase 6's Memory view needs a fault-safe peek, and this view waits for it).
-- A `learn.status`.
+- A `chthonic.status`.
 - A completion popup.
 - A Windows backend.
 
-**Slices,** each its own commit with Tier 1 and Tier 2, and the release battery at the seam after slice 5:
+**The release order,** each step its own commit with Tier 1 and Tier 2, a batch checkpoint after each batch, and the seam battery with every platform lane after step 8:
 0. **The release-path bugs, each fixed in its own commit, B85 first (it is silent, and it is in the released package):**
    - B85: one data-location owner for the profiles, the verbs and the checks (generalizing `resolve_profile_dir`), the package shipping `verbs/` and `checks/`, a key profile that is not found falling back to the default profile's and then to the rescue set, and the startup hint naming the loaded table's own chords. Gates: the install gate's pty probe saves and quits from `/tmp` (the profiles present, then hidden), and the quit gate runs from a foreign cwd.
    - B84: a class-run extent beside `text_buffer::word_right`, read by `delword`. Gate: a model test with JOE 4.6's measured table (`BUGS.md`).
@@ -3170,32 +3197,31 @@ Held for Phase 4, because each one needs its redefinition model: "Run/Reload in 
    - the manifest loader, for the data kinds and settings;
    - the plugin search path, with the user's directory;
    - `settings.json`, the argv parse and `--profile`;
-   - `default.plugin`, and `learn.plugin` with `learn.layout` (without the sidebar) and `learn.menu`;
+   - `default.plugin`, and `chthonic.plugin` with `chthonic.layout` (without the sidebar) and `chthonic.menu`;
    - the REPL session starting when the layout shows it.
 
    Gate:
-   - `testmadcide_cli`: `--profile learn f`, `f --profile learn`, usage.
-   - A new `testmadcide_learn` model test: the composed panel visible with the REPL active, the menu bar's rows, no project or outline pane, a session running at open.
+   - `testmadcide_cli`: `--profile chthonic f`, `f --profile chthonic`, usage.
+   - A new `testmadcide_chthonic` model test: the composed panel visible with the REPL active, the menu bar's rows, no project or outline pane, a session running at open.
    - A manifest with an unknown word refused with its reason.
    - A user-directory bundle overriding a shipped one by name.
-   - `"profile": "learn"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting it.
+   - `"profile": "chthonic"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting it.
    - `testmadcide_layout`'s pin of `default.layout` is unchanged.
-2. **The toolbar, Stop and Language:** `menu_place`, the `toolbar` hint through `web_model`, the page and the TUI, `replstop`, `repllang`, and `repl_restart`.
+2. **The plugin system's contribution points** (the plugin design's B1): contributed commands (ids interned above the built-in range), contributed views (the generic compose arm over a bag key), events (the feed, and `repl_event`), and the toolbar placement: `menu_place`, and the `toolbar` hint through `web_model`, the page and the TUI. All are exercised first by madcide's own code (`builtin`).
 
-   Gate: `testmadcide_learn` (the hint's rows and codes; Stop while an entry blocks on stdin gives a fresh session and the transcript line), `testmadcide_repl` unchanged, `test_web_model` (the hint and its codes), and `tests/gui/madcide_learn.mad` (a click on Run posts `replrun`, and main's output arrives; a click on Stop). The registry's pinned count moves on purpose.
-3. **F5's diagnostics into Problems:** the rows in the `load` and `run` replies, and `repl_reply` writing `diags`.
+   Gate: `testmadcide_chthonic` (the toolbar hint's rows and codes), `test_web_model` (the hint and its codes), a model test contributing a command and a view from a built-in module, and `check-madcide-command-registry.sh` learning the contributed range.
+3. **The REPL pane's core pieces:** `replstop`, `repllang` and `repl_restart`; F5's diagnostics into Problems (the rows in the `load` and `run` replies, and `repl_reply` writing `diags`); the bindings owner, `%whos`, the wire op, the verb, and `replbindings`; the pane's reply events.
 
-   Gate: `test_session_backend` (a refused text's rows cite its path and line), and `testmadcide_repl` (F5 on a refused buffer fills Problems, `cmdGOTO` on its row moves the caret to the line, and a clean F5 empties Problems).
-4. **The bindings owner:** `InteractiveSession::bindings`, the shallow and capped walk, `%whos`, the wire op and the verb.
+   Gate: `testmadcide_repl` (Stop while an entry blocks on stdin gives a fresh session and the transcript line; F5 on a refused buffer fills Problems, and `cmdGOTO` on its row moves the caret; a clean F5 empties Problems; Language restarts under the chosen standard); `test_session_backend` (a refused text's rows cite its path and line; the bindings rows' kinds, types, values and origins; `char *p = (char *)1;` listed by address with the backend alive, the negative control for the shallow walk); `test_repl_session` (`%whos` under C17, C++17 and madc); `tests/testsession_bindings.mad` (JIT, `--exe`, `--obj`); the refresh's cost measured over 50 bindings. The registry's pinned count moves on purpose.
+4. **The `library` transport** (the plugin design's B2, G1, G5): the API table, `--build-plugin`, versioned refusal. Linux first, then macOS and Windows once `madc -shared` emits `.dylib` and `.dll` (ROADMAP 6.5, its own commits in the Mach-O and PE writers).
+5. **The `source` transport** (B3, G3): a plugin compiled into the running process when it activates, with its cost measured against `library`.
+6. **The `chthonic` plugin's code, the Variables view:** its contributed view and command, its event handler, `chthonic.layout` gaining the sidebar. It ships as source plus a prebuilt library per platform.
 
-   Gate:
-   - `test_repl_session`: `%whos` under C17, C++17 and madc.
-   - `test_session_backend`: the rows' kinds, types, values and origins, and `char *p = (char *)1;` listed by address with the backend alive. That case is the negative control: the walk in its full depth would crash there.
-   - `tests/testsession_bindings.mad`: dialect code under JIT, `--exe` and `--obj`.
-   - The refresh's cost measured over 50 bindings.
-5. **The Variables view:** `viewVARIABLES`, its composition and refresh, `goto_pane_row` over a view kind, and `learn.layout` gaining the sidebar.
+   Gate: `testmadcide_chthonic` under each transport it ships in (after F5 on §34's program plus a global, the rows read `count int 3`, `square int (int)`; an entry `int y = 7;` adds a row; Stop empties them; activating `square` moves the caret to its line), a `tests/gui` case (a click on Run posts `replrun` and main's output arrives; a click on Stop), and §29's gate walked by hand in the window: open, type §34's program, Run, `square(12)` gives 144, and the Variables view shows the globals.
+7. **The `host` transport** (B4, G6): the `chthonic` plugin run in a separate process over the seat, and a plugin crash leaving madcide running.
+8. **The REPL pane on the contribution points** (B5): no built-in path left beside them.
 
-   Gate: `testmadcide_learn` (after F5 on §34's program plus a global, the rows read `count int 3`, `square int (int)`; an entry `int y = 7;` adds a row; Stop empties them; activating `square` moves the caret to its line), and a `tests/gui` case. Then §29's gate, walked by hand in the window: open, type §34's program, Run, `square(12)` gives 144, and the Variables view shows the globals.
+Then the seam battery, every platform lane's full suite, and the release.
 
 **Decided (owner, 2026-09-30):**
 1. **No file opens an untitled buffer.** Thonny's behaviour. Save asks for a name (Save As), and F5 runs it under the unit name `untitled`. It builds on B86's one open rule (slice 0). Slice 1 recons whether a buffer can exist without a path, and gives it a placeholder name if it cannot, which Save As replaces.

@@ -1,6 +1,6 @@
 # madcide plugins, written in madc — design (2026-09-30)
 
-**Status:** design. Stage A (bundles) rides the REPL + learning-IDE release (plan `madc-repl-thonny-plan-2026-09-24.md` §41.11a slice 1). Stage B (plugin code) is its own arc, right after that release.
+**Status:** design. The whole design is in the next release (owner, 2026-09-30), beside the REPL, the bug fixes, and `chthonic`, the Thonny-like teaching IDE as a madcide plugin. The release order is plan `madc-repl-thonny-plan-2026-09-24.md` §41.11a.
 
 ## 1. The owner's direction (2026-09-30)
 
@@ -86,11 +86,11 @@
     - `contributes`: data files by kind, commands (name, title, handler), views (name, title, the bag key its rows live on), and settings with defaults;
     - `activation`: events, for code;
     - `code`: the source file and an optional library.
-- **A bundle** is a plugin with no code. `default` and `learn` are bundles madcide ships, and `learn` is no longer a mode:
+- **A bundle** is a plugin with no code. `default` is the bundle madcide ships. `chthonic` starts as one (Stage A) and gains code, its Variables view, in the release (§41.11a step 6). No profile is a mode:
 
   ```json
-  { "name": "learn", "title": "Learning", "api": 1,
-    "contributes": { "keys": "pico", "layout": "learn", "menu": "learn",
+  { "name": "chthonic", "title": "Learning", "api": 1,
+    "contributes": { "keys": "pico", "layout": "chthonic", "menu": "chthonic",
                      "settings": { "repl.std": "" } } }
   ```
 
@@ -105,7 +105,7 @@
 - **Settings are `settings.json`** in madcide's configuration directory: `$XDG_CONFIG_HOME/madcide/` (or `~/.config/madcide/`), or `%APPDATA%\madcide\` on Windows, beside the user's `plugins/`. They are read through the same JSON bridge as the manifests, so values keep their types, and VS Code users know the file.
   - `madc.ini` stays the compiler's. Its reader is typed to the compiler's keys and refuses an unknown one, and editor settings have a different consumer (separation of concerns).
   - Precedence: the command line, then `settings.json`, then the active profile's settings, then each plugin's own defaults.
-- **The active profile** is `"profile": "learn"` there, and `madcide --profile NAME` overrides it. The default is `default`, so nothing changes without either.
+- **The active profile** is `"profile": "chthonic"` there, and `madcide --profile NAME` overrides it. The default is `default`, so nothing changes without either.
 - **Other plugins:** `"plugins": ["a", "b"]` enables them in addition to the profile.
 - **A setting's value** is the user's, else the active profile's, else the plugin's own default. `repl.std` gives the REPL's standard (`replstd`) the home it lacks today.
 
@@ -132,7 +132,9 @@ A plugin's code sees one API, declared in `<madcide/plugin>`:
 - `ide::run(code, arg)`: any command, built-in or contributed (the dispatcher);
 - `ide::get` / `ide::set`: bag state on the session or a document, with the key and scope as data;
 - `ide::command_id(name)`: a name interned once, at the plugin's activation;
-- the engine's own verbs (`madc::session_*`, `madc::parse_*`, `php::`, …), as any madc program calls them.
+- the engine's own verbs (`madc::session_*`, `madc::parse_*`, `php::`, …), as any madc program calls them, over handles the plugin opened itself.
+
+**A plugin never holds a handle the core owns.** The REPL pane's session, for example, is reached through the pane's commands (`replbindings`) and its events (`repl_event`), never through its handle. A handle lives in the process and on the thread that opened it, so this is what lets the same plugin run under the `host` transport (`chthonic`'s Variables view is the first case, §41.11a).
 
 **The transports,** `plugin_transport { builtin, library, source, host }`:
 
@@ -189,20 +191,22 @@ A plugin's code sees one API, declared in `<madcide/plugin>`:
 
 ## 8. Staging
 
-- **Stage A, in the REPL + learning-IDE release** (§41.11a slice 1):
-  - the manifest loader, for bundles only (the data kinds and settings);
+All of it is in the next release (owner, 2026-09-30). The order, interleaved with the REPL pane's pieces and `chthonic`, is plan §41.11a's release order:
+- **Stage A, bundles** (step 1):
+  - the manifest loader, for the data kinds and settings;
   - the plugin search path, including the user's directory;
   - `settings.json`;
   - `--profile NAME`;
-  - `default` and `learn` as bundles, and the command line's file becoming optional under Q1 of §41.11a.
+  - `default` and `chthonic` as bundles, and the command line's file becoming optional (an untitled buffer, decided 2026-09-30).
 
-  **Gate:** a model test composing each bundle; a manifest with an unknown word refused with its reason; a user-directory bundle overriding a shipped one by name; `"profile": "learn"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting `learn`.
-- **Stage B, the plugin arc, after the release:**
-  1. **Contributed commands and views** (G4), with handlers in `builtin` form only: the extension points exercised by madcide's own code first.
-  2. **The `library` transport** (G1, G2, G5): `--build-plugin`, the API table, versioned refusal; on Linux first, then macOS (`MH_DYLIB`) and Windows (DLL).
-  3. **The `source` transport** (G3), with the activation cost measured against `library`.
-  4. **The `host` transport** (G6): a crash leaves madcide running, and the plugin restarts.
-  5. **The REPL pane as a bundled plugin:** `madcide_repl.inc` registers through the points, so no built-in path remains beside them.
+  **Gate:** a model test composing each bundle; a manifest with an unknown word refused with its reason; a user-directory bundle overriding a shipped one by name; `"profile": "chthonic"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting `chthonic`.
+- **Stage B, plugin code:**
+  1. **Contributed commands, views and events** (G4), and the toolbar placement, with handlers in `builtin` form only: the extension points exercised by madcide's own code first (step 2).
+  2. **The `library` transport** (G1, G2, G5): `--build-plugin`, the API table, versioned refusal; on Linux first, then macOS (`MH_DYLIB`) and Windows (DLL), through ROADMAP 6.5 (step 4).
+  3. **The `source` transport** (G3), with the activation cost measured against `library` (step 5).
+  4. **`chthonic`'s code, the Variables view,** shipped as source plus a prebuilt library per platform (step 6).
+  5. **The `host` transport** (G6): a crash leaves madcide running, and the plugin restarts (step 7).
+  6. **The REPL pane on the points:** `madcide_repl.inc` registers through them, so no built-in path remains beside them (step 8).
 
 ## 9. Decided (owner, 2026-09-30)
 
