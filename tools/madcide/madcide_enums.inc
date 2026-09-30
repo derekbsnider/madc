@@ -32,7 +32,7 @@ enum ide_cmd : unsigned short
     cmdINSERTFILE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdREPL, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL,
+    cmdREFRESH, cmdREPL, cmdREPLLANG, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
     cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
@@ -49,9 +49,9 @@ enum ide_cmd : unsigned short
     cmdVIDELETE, cmdVICHANGE, cmdVIGOTO, cmdVIINSERT, cmdVIINSERTBOL, cmdVIAPPEND,
     cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
     // ---- pane-row verbs: diagnostics/outline goto, the editor menu's w f q,
-    //      the ^T Options rows, the ^B palette's rows ----
+    //      the ^T Options rows, the choice list's rows, the ^B palette's rows ----
     cmdGOTO, cmdGOTODEF, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
-    cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
+    cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdCHOICE, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
     cmdBLD_STOP, cmdBLD_PROJ_CHECK, cmdBLD_PROJ_BUILD, cmdBLD_PROJ_RUN,
     cmdBUILDROW				// a Build MENU row "build-<n>": the
 					// NAME carries the 1-based row (an
@@ -102,6 +102,7 @@ void cmd_table(var &t)
     rows[] = { "name": "redo", "code": cmdREDO };
     rows[] = { "name": "refresh", "code": cmdREFRESH };
     rows[] = { "name": "repl", "code": cmdREPL };
+    rows[] = { "name": "repllang", "code": cmdREPLLANG };
     rows[] = { "name": "replrun", "code": cmdREPLRUN };
     rows[] = { "name": "replstop", "code": cmdREPLSTOP };
     rows[] = { "name": "save", "code": cmdSAVE };
@@ -174,6 +175,7 @@ void cmd_table(var &t)
     rows[] = { "name": "opt-scheme", "code": cmdOPT_SCHEME };
     rows[] = { "name": "opt-keymap", "code": cmdOPT_KEYMAP };
     rows[] = { "name": "opt-projkind", "code": cmdOPT_PROJKIND };
+    rows[] = { "name": "choice", "code": cmdCHOICE };
     rows[] = { "name": "bld-check", "code": cmdBLD_CHECK };
     rows[] = { "name": "bld-native", "code": cmdBLD_NATIVE };
     rows[] = { "name": "bld-run", "code": cmdBLD_RUN };
@@ -274,7 +276,7 @@ ui::key motion_key_of(long code)
 // show_view.
 enum ide_pane : unsigned char
 {
-    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT
+    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT, paneCHOICE
 };
 const char *pane_name(long p)
 {
@@ -285,6 +287,7 @@ const char *pane_name(long p)
 	case paneBUILD: return "build";
 	case paneMODES: return "modes";
 	case panePROJECT: return "project";
+	case paneCHOICE: return "choice";
     }
     return "";
 }
@@ -565,6 +568,21 @@ long view_show_cmd(long kind)
     return cmdNONE;
 }
 
+// The commands that read their ARGUMENT off the action event (the seat's,
+// the -c line's, a choice list row's) instead of answering a prompt they
+// open: IdeSession::command hands them the argument directly, as it hands a
+// contributed command its own. Without an argument they open their own
+// choice list.
+bool cmd_takes_arg(long code)
+{
+    switch ( code )
+    {
+	case cmdREPLLANG:
+	    return true;
+    }
+    return false;
+}
+
 // The commands a text FIELD honours (the REPL pane's input, plan §41.9a):
 // the caret's motions, the deletions and the edit history — what edits one
 // buffer in place. Every other command keeps its own target while a field
@@ -703,6 +721,7 @@ long cmd_min_tier(long code)
     case cmdREPL:
     case cmdREPLRUN:
     case cmdREPLSTOP:
+    case cmdREPLLANG:
     case cmdREPLENTER:
     // editor — the `:` line can mutate/save (its `:!` shell gap is a
     // refinement: gate the parsed sub-verb, not the gateway)

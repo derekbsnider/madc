@@ -592,14 +592,21 @@ void repl_show(long w, long es)
     ui::set(w, es, "replfocus", 1);
 }
 
-// A fresh backend for the tab's session: F5's and Stop's one restart
-// (Thonny's Stop/Restart). The old state is gone, so no reply is owed and
-// the stopped event is published, as when a backend ends (a plugin's rows of
-// the old state clear). False = the restart failed; the transcript says why.
+// A fresh backend for the tab's session: F5's, Stop's and Language's one
+// restart (Thonny's Stop/Restart), under the tab's standard (replstd), so a
+// language change restarts through it too. The old state is gone, so no
+// reply is owed and the stopped event is published, as when a backend ends
+// (a plugin's rows of the old state clear). False = the restart failed; the
+// transcript says why.
 bool repl_restart(long w, long es)
 {
     long h = es_int(w, es, "replh", 0);
-    if ( !madc::session_restart(h) )
+    var sp;
+    ui::get(sp, w, es, "replstd");
+    var spelling = "";
+    if ( !sp.is_null() )
+	spelling = sp;
+    if ( !madc::session_restart(h, spelling.c_str()) )
     {
 	var why = madc::session_error(h);
 	repl_feed(w, es, format("[the session did not start: {}]\n", why));
@@ -623,6 +630,96 @@ void repl_stop_restart(long w, long es)
     }
     if ( repl_restart(w, es) )
 	repl_feed(w, es, "[stopped; a new session started]\n");
+}
+
+// Run ▸ Language… (`repllang`, plan §41.11a; decided 2026-09-30): the
+// standards the tab offers, by the spelling a session takes and the title a
+// row shows — the one table the choice list and an argument read.
+void repl_lang_rows(var &out)
+{
+    var rows = {};
+    rows[] = { "std": "c17", "title": "C17" };
+    rows[] = { "std": "c++17", "title": "C++17" };
+    rows[] = { "std": "madc", "title": "madc" };
+    out = rows;
+}
+
+// The tab's standard now: the running session's (its canonical name), else
+// the one the next session opens under ("" = the engine's default).
+void repl_lang_current(var &out, long w, long es)
+{
+    long h = es_int(w, es, "replh", 0);
+    if ( h != 0 && madc::session_running(h) )
+    {
+	out = madc::session_standard(h);
+	return;
+    }
+    var sp;
+    ui::get(sp, w, es, "replstd");
+    out = "";
+    if ( !sp.is_null() )
+	out = sp;
+}
+
+// The tab's standard becomes `spelling` (one of repl_lang_rows'): a live
+// session restarts under it (its state is lost, as Stop's is) and the
+// transcript says so; without one, the next session opens under it. An
+// unknown spelling is refused with the choices.
+void repl_set_lang(long w, long es, const char *spelling0)
+{
+    var spelling = spelling0;	// ring discipline: own the text first
+    var rows;
+    repl_lang_rows(rows);
+    var names = "";
+    bool known = false;
+    for ( var r : rows )
+    {
+	if ( r["std"] == spelling )
+	    known = true;
+	if ( strlen(names.c_str()) > 0 )
+	    names = format("{}, ", names);
+	names = format("{}{}", names, r["std"]);
+    }
+    if ( !known )
+    {
+	ui::set(w, es, "msg", format("Unknown language '{}' ({}).", spelling, names));
+	return;
+    }
+    ui::set(w, es, "replstd", spelling);
+    if ( es_int(w, es, "replh", 0) == 0 )
+    {
+	ui::set(w, es, "msg", format("The shell's language is {}.", spelling));
+	return;
+    }
+    if ( repl_restart(w, es) )
+	repl_feed(w, es, format("[the language is {}; a new session started]\n", spelling));
+}
+
+// `repllang`: with an argument (the seat's, -c's, a choice row's) the
+// language becomes it; without one the choice list opens, the current
+// standard marked, each row carrying repllang and its standard.
+void repl_lang(long w, long es, const char *arg0)
+{
+    var arg = arg0;
+    if ( strlen(arg.c_str()) > 0 )
+    {
+	repl_set_lang(w, es, arg.c_str());
+	return;
+    }
+    var rows;
+    repl_lang_rows(rows);
+    var cur;
+    repl_lang_current(cur, w, es);
+    var crows = {};
+    for ( var r : rows )
+    {
+	long mark = 0;
+	if ( r["std"] == cur )
+	    mark = 1;
+	crows[] = { "title": r["title"], "code": cmdREPLLANG, "arg": r["std"],
+		    "current": mark };
+    }
+    choice_show(w, es, "Language", crows);
 }
 
 // F5, `replrun` (plan §41.10a; Thonny's F5, IPython's %run): the buffer

@@ -4437,6 +4437,36 @@ bool modes_active(long w, long es)
     return cur_pane(w, es) == paneMODES;
 }
 
+// The choice list (plan §41.11a step 3): one value for a command, picked
+// from rows — Run ▸ Language…'s standards, step 3e's key styles. A row is
+// {title, code, arg, current}: choosing it runs `code` with `arg` as the
+// command's argument (cmd_takes_arg), and the current row is marked. The
+// rows and the label live on the bag; one row verb (cmdCHOICE) serves every
+// list, as cmdGOTO serves Problems, so no pane is specific to one choice.
+void choice_show(long w, long es, const char *label, var &rows)
+{
+    ui::set(w, es, "choicelabel", label);
+    ui::set(w, es, "choicerows", rows);
+    set_pane(w, es, paneCHOICE);
+}
+
+// A choose on the list: the list closes, and `act` becomes the chosen row's
+// command as an action event carrying its argument. False = no such row
+// (the list still closes).
+bool choice_action(var &act, long w, long es, long option)
+{
+    set_pane(w, es, paneNONE);
+    var rows;
+    ui::get(rows, w, es, "choicerows");
+    long i = option - 1;		// 1-based wire
+    if ( rows.is_null() || i < 0 || i >= php::count(rows) )
+	return false;
+    var r = rows[i];
+    act = { "event": "action", "event_code": ui::event_kind::action,
+	    "action": "", "action_code": r["code"], "arg": r["arg"] };
+    return true;
+}
+
 // The editor window has the keyboard: no other owner holds it — the
 // terminal, the REPL input, a prompt, the project window or the modes
 // palette (apply_ide_event's routing order, read as one fact).
@@ -7030,6 +7060,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdREPLSTOP:
 		repl_stop_restart(w, es);
 		return true;
+	    case cmdREPLLANG:
+	    {
+		// Run ▸ Language…: its argument (the seat's, -c's, a choice
+		// row's) or the choice list.
+		var la;
+		keyed_get(la, ev, "arg");
+		var ls = "";
+		if ( !la.is_null() )
+		    ls = format("{}", la);
+		repl_lang(w, es, ls.c_str());
+		return true;
+	    }
 	    case cmdBUFSEL:
 	    {
 		// Switch to a buffer (polish P4): by ring index when the command
@@ -7214,6 +7256,15 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdOPT_PROJKIND:
 		proj_toggle_kind(w, es, doc);
 		return true;
+	    // The choice list's rows (choice_show): the chosen row's command,
+	    // run with its argument.
+	    case cmdCHOICE:
+	    {
+		var act;
+		if ( choice_action(act, w, es, ev["option"].as_integer()) )
+		    return apply_ide_event(doc, act);
+		return true;
+	    }
 	    default:
 		break;
 	}
@@ -7985,6 +8036,31 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "modes", "Select", nofilter);
 	}
+	else if ( pane == paneCHOICE )
+	{
+	    // The choice list (choice_show): its rows as items, the current
+	    // one marked; every row's verb is cmdCHOICE, whose choose arm runs
+	    // the row's command with its argument (choice_action).
+	    var crows;
+	    ui::get(crows, w, es, "choicerows");
+	    var clabel;
+	    ui::get(clabel, w, es, "choicelabel");
+	    box["label"] = clabel;
+	    box["hints"] = { "list": 1, "focus": 1 };
+	    for ( var row : crows )
+	    {
+		var it = { "role": "item" };
+		it["content"] = row["title"];
+		if ( row["current"].as_integer() != 0 )
+		    it["content"] = format("{}  (current)", row["title"]);
+		var gh = { "code": cmdCHOICE };	// the list's one row verb
+		it["hints"] = gh;
+		items[] = it;
+		nrows = nrows + 1;
+	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "Select", nofilter);
+	}
 	else if ( pane == panePROJECT )
 	{
 	    // IDE-10a ^P — the PROJECT window (owner rulings 2026-08-31):
@@ -8578,9 +8654,10 @@ bool IdeSession::vi_exec(long doc, long code, long n)
 bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
 {
     var a = arg;			// ring discipline: own the text first
-    if ( cmd_contributed(code) )
+    if ( cmd_contributed(code) || (cmd_takes_arg(code) && strlen(a.c_str()) > 0) )
     {
-	// A contributed command takes its argument itself: no prompt between.
+	// A contributed command, or one that reads its argument off the event
+	// (cmd_takes_arg), takes its argument itself: no prompt between.
 	var e = { "event": "action", "event_code": ui::event_kind::action,
 		  "action": "", "action_code": code, "arg": a };
 	cont = apply_ide_event(doc, e);

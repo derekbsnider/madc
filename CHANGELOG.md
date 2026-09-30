@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide's Run ▸ Language… command (plan §41.11a step 3b)
+
+Run ▸ Language… (`repllang`) lets the REPL session switch between C17, C++17, and madc on demand; choosing a language restarts the session under that standard via `repl_restart(w, es)` reading the tab's `replstd` field, and the choice list marks the current standard. The command is implemented on a shared choice list mechanism (`choice_show`, `choice_action`, the row verb `cmdCHOICE`, the pane `paneCHOICE`) that also serves step 3e's key bindings. A command can read its argument off the action event (its seat's, -c's, or a choice row's) by declaring `cmd_takes_arg(code) = true`, so Run ▸ Language… opens the choice list without an argument and sets the language directly with one. Unknown language names are refused with the three choices listed. The Run menu (chthonic) and Build menu (default) each carry a Language… row; the Test frame verifies the choice list shows all three standards, restart marks the chosen one current, esc closes it, and arguments work correctly. Gate: testmadcide_repl.mad section 9 (choice list shown, picking C++17 restarts and marks it, arguments work, unknown languages refused); testidemenu (commands=55, Build menu items=11), testmadcide_chthonic (repllang in Run menu).
+
 ### Session language switching (plan §41.11a, madcide teaching IDE)
 
 A session can now restart under a different `--std=` standard via `session_restart(handle, standard)`. The handle, its readable channel case, and any parked async pump carry over across the restart, while the backend's state and buffered output go with the old backend. This lets the REPL switch language flavors on demand (e.g., from c11 to c++17), supporting madcide's language selector. A helper `std_option_of(spelling)` extracted from `session_open` normalizes standard spellings (`c17` → `--std=c17`) for reuse by both. Gate: testsession_pump.mad line 74 (restart as c++17: the backend accepts references and `standard` matches the requested flavor).
