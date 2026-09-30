@@ -95,6 +95,7 @@ high-level" — the answer is both.**
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **Floor LANDED in-tree (v0.98.0)** — MIR `MIR_T_V128` on x86-64 and aarch64 (NEON lane arithmetic, compares, shifts), the c2mir `vector_size` / `ext_vector_type` front-end, and the 128-bit vector CALLING CONVENTION on SysV, AAPCS64, Apple and win64 gated against the host compiler (`scripts/vector_abi_gate.sh`, 28 lines, in fulltest). Open: wider vectors (256/512-bit), upstreaming to vnmakarov/mir (held until the master promotion). History: branch `feature/simd-vector-support-codex` on `/workspace/mir` @`2ffebff`: partial MIR `v128` floor + c2mir `vector_size` / `ext_vector_type` front-end; all 37 GCC c-torture vector-construct execute tests pass under C2MIR `-ei`/`-eg`; no known ≤16-byte SIMD gap remains. Remaining: ≥32-byte (AVX/YMM) vector ABI and the broader generic-vector floor (registers, interpreter, per-target codegen); design for **upstream** | — |
 | 1.7 | **Cold JIT startup toward tinycc latency** | ongoing | **In progress** — packed Adventure has landed positional auto-include filtering, lazy MIR generation, shared forest/prelude state, lazy MEMBER hydration, demand-driven derived restore, and c2mir registry pages (@`ad9be08d`, another −2.06% Ir). Remaining measured work: re-attribute host STL/string allocation after the arena; the zstd spine/arena raw-vs-compressed size trade needs owner direction | [cold-jit-startup.md](2026-08-22-cold-jit-startup.md) |
+| 1.9 | **MIR optimizer toward gcc `-O2` parity (JIT code quality)** | large | **Proposed** (owner 2026-09-30) — measurement first, then passes in measured order. Expected order: (1) inlining of madc's small C++ functions (methods, operators, iterators, the `var` carrier's helpers) plus scalar replacement of the objects that inlining exposes; (2) loop induction-variable strength reduction (MIR has LICM but no loop transforms beyond it); (3) vectorization — loop vectorization before SLP, SLP gated at MIR optimize level 3 — on the Track 1.6 `V128` floor. Every pass is MIR-fork work designed for upstream. Queued after the REPL + learning-IDE release | — |
 | 1.8 | **`import` — the module binding** (owner 2026-09-06: the C++20 module import made whole — interface AND binding; `-l` is the build-system spelling of the same resolver; `#load` STAYS as the low-level verbatim-file directive, owner ruling during the slice). Module map as data (name → interface + per-OS image), ONE platform-spelling owner `src/madc_modules.cpp` (fixed the Windows-less `MADC_DSO_SUFFIX` `-l` mapping), per-TARGET binding policy (JIT open · native link closure · alias-form members runtime-resolved in every lane — closed the `testdlopen.exe_skip` follow-on), recognized in directive position under `--std=c++20`+ / the dialect | 2-3 wk | **MERGED to develop 2026-09-06**; slice 1 found alias statement/cast lookup and namespaced C-linkage gaps, to close before 7.5 slice 2 — [spike findings](2026-09-06-ASTRA-HANDOFF-webview-spike.md#findings) | [design §3.1](2026-09-06-ui-web-target-and-madcide-gui.md) · [docs](../language/import.md) |
 
 **Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
@@ -108,6 +109,16 @@ torture tests). Keep it a **minimal generic-vector core** to fit MIR's
 lightweight ethos. Interim until it lands: madc **scalarizes** for the JIT and
 **emit-C → gcc/clang** for real SIMD (AOT). Feeds Track 6.2 (macOS NEON). See
 the lowering-vs-raising rule (`.claude/rules/`) and ADR 0001.
+
+**Track 1.9 (MIR optimizer) starts with a measurement, not a pass.** Run a
+benchmark set (C kernels and C++ container-heavy code, measured separately)
+under madc's JIT and `gcc -O2`, then under `gcc -O2` with one optimization
+family disabled at a time (`-fno-inline`, `-fno-tree-sra`, `-fno-ivopts`,
+`-fno-tree-vectorize`). Each flag's slowdown estimates that optimization's
+share of the gap; the passes are built in that ranked order. SLP alone gains
+little, because MIR does not unroll loops and SLP only packs straight-line
+code; the AOT path (`--emit=c11` → gcc/clang) already vectorizes. So SLP
+comes last.
 
 Per-checkpoint history for Track 1.6 — one entry per commit with its
 GCC/clang/C2MIR validation evidence — lives in the branch's own git log and
