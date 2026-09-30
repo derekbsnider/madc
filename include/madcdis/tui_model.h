@@ -1386,6 +1386,14 @@ public:
     {
 	_grid.resize(rows, cols);
 	_focus_st.begin_compose();
+	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row;
+	// the bands and the centre lay out in the rows below it. No hint = no
+	// row, byte-identical to before (the negative control).
+	const std::string tbline = toolbar_line(tree);
+	const size_t top = (!tbline.empty() && rows > 1) ? 1 : 0;
+	if ( top )
+	    _grid.put(0, 0, tbline);
+	const size_t body_rows = rows - top;
 	// Column geometry: sidebars carve columns from the full width; the
 	// centre keeps the rest; panels span the centre columns.
 	size_t centre_c0 = 0, centre_w = cols;
@@ -1454,13 +1462,14 @@ public:
 	}
 	_focus_st.end_compose();
 	// Row geometry: panels carve rows from the centre; sidebars are full
-	// height. Paint the panels, the sidebars, then the centre flow.
-	size_t centre_r0 = 0, centre_h = rows;
+	// height (below the toolbar row). Paint the panels, the sidebars, then
+	// the centre flow.
+	size_t centre_r0 = top, centre_h = body_rows;
 	for ( size_t i = 0; i < bands.size(); ++i )
 	{
 	    if ( bands[i].side != ui_side::top && bands[i].side != ui_side::bottom )
 		continue;
-	    size_t ph = (size_t)((long)rows * bands[i].size / 100);
+	    size_t ph = (size_t)((long)body_rows * bands[i].size / 100);
 	    if ( ph < 3 )
 		ph = 3;
 	    if ( centre_h < 2 || ph > centre_h - 1 )
@@ -1478,9 +1487,40 @@ public:
 	}
 	for ( size_t i = 0; i < bands.size(); ++i )
 	    if ( bands[i].side == ui_side::left || bands[i].side == ui_side::right )
-		paint_region(bands[i].content, 0, rows);
+		paint_region(bands[i].content, top, body_rows);
 	paint_region(centre, centre_r0, centre_h);
 	return _grid;
+    }
+
+    // The toolbar's one line (plan §41.11a): each row of the root's
+    // `toolbar` hint as `[Label chord]`, the chord the LOADED profile binds
+    // to the row's code, else to its name (the page's tooltip, the menu's
+    // accelerator: tui_bindings::chord_for). A row with no label or no
+    // action is dropped. "" when the root carries none.
+    std::string toolbar_line(const uinode &tree) const
+    {
+	std::string line;
+	if ( !tree.hints.is_object() )
+	    return line;
+	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator ti = ho.find("toolbar");
+	if ( ti == ho.end() || !ti->second.is_array() )
+	    return line;
+	const std::vector<madc::value> &tbrows = ti->second.as_array();
+	for ( size_t k = 0; k < tbrows.size(); ++k )
+	{
+	    if ( !tbrows[k].is_object() )
+		continue;
+	    const std::string label = hint_str(tbrows[k], "label");
+	    const std::string action = hint_str(tbrows[k], "action");
+	    if ( label.empty() || action.empty() )
+		continue;
+	    const std::string key = _keys.bindings().chord_for(hint_of(tbrows[k], "code", 0), action);
+	    if ( !line.empty() )
+		line += ' ';
+	    line += "[" + label + (key.empty() ? std::string() : " " + key) + "]";
+	}
+	return line;
     }
 
     // Install a finalized bindings table (a profile swap is a new table);

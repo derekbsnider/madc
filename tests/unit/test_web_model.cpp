@@ -1325,6 +1325,67 @@ TEST_CASE("compose — a group's tabs array becomes the strip as data; the integ
     CHECK((*mk)["tabs"] == true);
 }
 
+TEST_CASE("compose — the root's toolbar hint becomes button rows with the bound chords and codes; a malformed row is dropped")
+{
+    // Plan §41.11a: madcide composes {label, action, code?, enabled?} rows on
+    // the root. web_model adds the chord the LOADED profile binds to the
+    // code, else to the name (the menu items' rule), makes `enabled`
+    // explicit, and converts a posted action name to the row's code at the
+    // boundary. A row with no action is dropped; a node without the hint
+    // carries no toolbar (the negative control).
+    world w;
+    roles r = roles::standard(w);
+    tui_bindings b;
+    b.bind("f5", "replrun", 77);
+    b.bind("^s", "save");			// by name: the tools' shape
+    std::string err;
+    REQUIRE(b.finalize(err));
+    web_model m;
+    m.set_bindings(b);
+    uinode root(r.group);
+    uinode body(r.content);
+    body.content = madc::value(std::string("x"));
+    root.add(body);
+    std::vector<madc::value> rows;
+    std::map<std::string, madc::value> run;
+    run["label"] = madc::value(std::string("Run"));
+    run["action"] = madc::value(std::string("replrun"));
+    run["code"] = madc::value((int64_t)77);
+    rows.push_back(madc::value::make_object(run));
+    std::map<std::string, madc::value> save;
+    save["label"] = madc::value(std::string("Save"));
+    save["action"] = madc::value(std::string("save"));
+    save["enabled"] = madc::value((int64_t)0);
+    rows.push_back(madc::value::make_object(save));
+    std::map<std::string, madc::value> open;
+    open["label"] = madc::value(std::string("Open"));
+    open["action"] = madc::value(std::string("editfile"));	// unbound: no key
+    rows.push_back(madc::value::make_object(open));
+    std::map<std::string, madc::value> bad;
+    bad["label"] = madc::value(std::string("Nothing"));	// no action: dropped
+    rows.push_back(madc::value::make_object(bad));
+    std::map<std::string, madc::value> h;
+    h["toolbar"] = madc::value::make_array(rows);
+    root.hints = madc::value::make_object(h);
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *p = node_by_key(ops, "0");
+    REQUIRE(p);
+    CHECK((*p)["toolbar"] == nlohmann::json::parse(
+	"[{\"label\":\"Run\",\"action\":\"replrun\",\"code\":77,\"key\":\"f5\",\"enabled\":true},"
+	"{\"label\":\"Save\",\"action\":\"save\",\"key\":\"^s\",\"enabled\":false},"
+	"{\"label\":\"Open\",\"action\":\"editfile\",\"enabled\":true}]"));
+    const nlohmann::json *c = node_by_key(ops, "0.0");
+    REQUIRE(c);
+    CHECK(c->find("toolbar") == c->end());
+    // A button click posts the NAME; the model converts it to the row's code.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"action\",\"action\":\"replrun\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "replrun");
+    CHECK(ev[0].action_code == 77);
+}
+
 TEST_CASE("compose / apply_input — a tab carries a command ARGUMENT; the action input reports it as the event's text")
 {
     // madcide polish P4: a buffer tab names `bufsel` with its ring index; the

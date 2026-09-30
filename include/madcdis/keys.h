@@ -310,6 +310,17 @@ public:
 	return best;
     }
 
+    // The chord a client SHOWS beside a command (a menu item's accelerator,
+    // a toolbar button's): the shortest sequence bound to its code, else to
+    // its name (a tools-shaped binding). "" = unbound.
+    std::string chord_for(int64_t code, const std::string &action) const
+    {
+	std::string key = seq_for_code(code);
+	if ( key.empty() )
+	    key = seq_for_action(action);
+	return key;
+    }
+
     bool bound(const std::string &canon_seq) const
 	{ return _actions.count(canon_seq) != 0; }
     bool prefix(const std::string &canon_seq) const

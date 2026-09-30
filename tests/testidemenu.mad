@@ -153,7 +153,7 @@ int main()
     bool palette = false;
     for ( var m : def )
     {
-	if ( m["title"] == "palette" )
+	if ( m["place"].as_integer() == mpPALETTE )
 	    palette = true;
 	for ( var it : m["items"] )
 	{

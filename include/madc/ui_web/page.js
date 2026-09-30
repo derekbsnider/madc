@@ -210,6 +210,12 @@
       el.removeChild(el._strip);
       el._strip = null;
     }
+    // The toolbar (plan §41.11a): `toolbar` rows on a node (madcide's root)
+    // are buttons in the workbench's toolbar slot, the top row; a click posts
+    // the row's action by name through the button handler below. No rows:
+    // the slot empties, and an empty slot takes no space.
+    if (Array.isArray(op.toolbar)) toolbar(el, op.toolbar);
+    else if (el._slots && el._slots.get('toolbar')) el._slots.get('toolbar').textContent = '';
     // Slice 3 workbench: a `region` node docks into that region's slot of
     // its parent's grid (the page's own CSS placement, keyed by data-slot),
     // and a parent that holds region'd children becomes the workbench
@@ -300,6 +306,24 @@
       if (tabs[i].action) t.dataset.action = tabs[i].action;
       if (tabs[i].arg != null) t.dataset.arg = String(tabs[i].arg);
       s.appendChild(t);
+    }
+  }
+
+  // The toolbar's buttons (plan §41.11a): one per row, its label shown and
+  // its chord (the loaded profile's, from web_model) as the tooltip; a
+  // disabled row's button is disabled. The slot is the workbench's.
+  function toolbar(el, rows) {
+    var s = slotOf(el, 'toolbar');
+    s.textContent = '';
+    for (var i = 0; i < rows.length; i++) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cf-btn tb-btn';
+      b.dataset.action = rows[i].action || '';
+      b.textContent = rows[i].label || '';
+      if (rows[i].key) b.title = (rows[i].label || '') + ' (' + rows[i].key + ')';
+      if (rows[i].enabled === false) b.disabled = true;
+      s.appendChild(b);
     }
   }
 

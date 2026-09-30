@@ -699,6 +699,50 @@ TEST_CASE("compose — a left sidebar carves a full-height column band")
     CHECK(g.at(1, 12).ch == 'x');			// the editor edit, centre cols
 }
 
+TEST_CASE("compose — a root toolbar hint takes the top row as [Label chord] buttons; the bands lay out below it")
+{
+    // Plan §41.11a: the rows madcide places on the toolbar ride the root's
+    // `toolbar` hint; the grid draws them as one line, each with the chord
+    // the LOADED profile binds to its code (else nothing), and the sidebar
+    // and the centre start on the row after it. The sidebar case above,
+    // with no hint, starts at row 0 (the negative control).
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(status_node(w, "main.mad"));
+    root.add(edit_node(w, "x\ny", 0));
+    uinode content(r.content);
+    content.content = madc::value(std::string("def"));
+    root.add(chrome_pane(w, "sidebar", "left", 25, content, false));
+    std::vector<madc::value> rows;
+    std::map<std::string, madc::value> run;
+    run["label"] = madc::value(std::string("Run"));
+    run["action"] = madc::value(std::string("replrun"));
+    run["code"] = madc::value((int64_t)77);
+    rows.push_back(madc::value::make_object(run));
+    std::map<std::string, madc::value> save;
+    save["label"] = madc::value(std::string("Save"));
+    save["action"] = madc::value(std::string("save"));
+    rows.push_back(madc::value::make_object(save));
+    std::map<std::string, madc::value> bad;
+    bad["label"] = madc::value(std::string("Nothing"));	// no action: dropped
+    rows.push_back(madc::value::make_object(bad));
+    std::map<std::string, madc::value> h;
+    h["toolbar"] = madc::value::make_array(rows);
+    root.hints = madc::value::make_object(h);
+    tui_bindings b;
+    b.bind("f5", "replrun", 77);
+    std::string err;
+    REQUIRE(b.finalize(err));
+    tui_model m;
+    m.set_bindings(b);
+    const tui_grid &g = m.compose(r, root, 6, 40);
+    CHECK(g.row_text(0) == "[Run f5] [Save]");
+    CHECK(g.at(1, 0).ch == 'd');			// the sidebar, one row down
+    CHECK(g.at(1, 13).ch == 'm');			// the centre status " main.mad"
+    CHECK(g.at(2, 12).ch == 'x');			// the editor edit
+}
+
 // One span row { s, e, c } for the hints["spans"] array.
 static madc::value span_row(long s, long e, const char *colour)
 {

@@ -358,6 +358,28 @@ const char *dlg_host_mode(long d)
     return d == dlgSAVE || d == dlgSAVEQUIT ? "save" : "open";
 }
 
+// Where a menu file's rows go (plan §41.11a, the toolbar): a row's MENU word
+// names the bar menu it joins, except the two PLACEMENT words — `palette`
+// (the command palette only, never the bar) and `toolbar` (the toolbar's
+// buttons) — converted once, at load, onto the menu entry.
+enum menu_place : unsigned char { mpBAR = 0, mpPALETTE, mpTOOLBAR, mpLAST };
+const char *menu_place_name(long p)
+{
+    switch ( p )
+    {
+	case mpPALETTE: return "palette";
+	case mpTOOLBAR: return "toolbar";
+    }
+    return "";
+}
+long menu_place_of(var &word)
+{
+    for ( long k = mpPALETTE; k < mpLAST; k = k + 1 )
+	if ( word == menu_place_name(k) )
+	    return k;
+    return mpBAR;
+}
+
 // The project's kind — the manifest's `kind` word (console | gui) converted
 // where the manifest is READ; written back as the file's word.
 enum ide_projkind : unsigned char { pkCONSOLE = 0, pkGUI };

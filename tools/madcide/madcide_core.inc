@@ -1488,7 +1488,8 @@ bool load_menu(long w, long es, const char *name)
 	{
 	    var items = {};
 	    items.push(item);
-	    menus[] = { "title": menu, "items": items };
+	    long place = menu_place_of(menu);	// palette / toolbar, else the bar
+	    menus[] = { "title": menu, "place": place, "items": items };
 	    at[menu.c_str()] = php::count(menus) - 1;
 	}
 	else
@@ -1557,10 +1558,10 @@ bool when_holds(var &ctx, var &when)
 }
 
 // The menu BAR as the composed tree carries it: the bar's menus in order
-// (the "palette" menu is palette-only and stays off the bar), each item
-// { id, title } plus `enabled: 0` when its [when] fails now. Titles and
-// ids only — profile-independent by construction. (compose_menu is the
-// shared editor helpers' vised-style menu LINE — a different node.)
+// (the palette's and the toolbar's rows are placed elsewhere — menu_place),
+// each item { id, title } plus `enabled: 0` when its [when] fails now.
+// Titles and ids only — profile-independent by construction. (compose_menu
+// is the shared editor helpers' vised-style menu LINE — a different node.)
 bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 {
     var def;
@@ -1572,7 +1573,7 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
     var bar = {};
     for ( var m : def )
     {
-	if ( m["title"] == "palette" )
+	if ( m["place"].as_integer() != mpBAR )
 	    continue;
 	var items = {};
 	for ( var it : m["items"] )
@@ -1620,6 +1621,42 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 	bar[] = { "title": m["title"], "items": items };
     }
     out = { "bar": bar };
+    return true;
+}
+
+// The TOOLBAR as the composed tree carries it (plan §41.11a): the rows the
+// menu data places on it (MENU word `toolbar`), in order, each { label,
+// action, code } plus `enabled: 0` when its [when] fails now; a separator
+// row places nothing. Profile-independent like the bar: a renderer shows
+// the chord the loaded profile binds to the code (web_model, tui_model).
+// False = nothing placed on it (the default menu places nothing).
+bool compose_toolbar(var &out, long w, long es, long doc, long nav)
+{
+    var def;
+    ui::get(def, w, es, "menudef");
+    if ( def.is_null() )
+	return false;
+    var rows = {};
+    for ( var m : def )
+    {
+	if ( m["place"].as_integer() != mpTOOLBAR )
+	    continue;
+	var ctx;
+	menu_context(ctx, w, es, doc, nav);
+	for ( var it : m["items"] )
+	{
+	    if ( !it["sep"].is_null() )
+		continue;
+	    var row = { "label": it["title"], "action": it["id"], "code": it["code"] };
+	    var when = it["when"];
+	    if ( !when_holds(ctx, when) )
+		row["enabled"] = 0;
+	    rows.push(row);
+	}
+    }
+    if ( php::count(rows) == 0 )
+	return false;
+    out = rows;
     return true;
 }
 
@@ -7959,6 +7996,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var menu;
     if ( compose_menu_bar(menu, w, es, doc, nav) )
 	rh["menu"] = menu;
+    // The toolbar (plan §41.11a): the rows the menu data places on it, a
+    // root hint beside the menu; the page draws buttons, the grid one line.
+    var tbar;
+    if ( compose_toolbar(tbar, w, es, doc, nav) )
+	rh["toolbar"] = tbar;
     if ( !rh.is_null() )
 	r["hints"] = rh;
     root = r;

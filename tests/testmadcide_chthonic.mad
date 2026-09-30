@@ -12,7 +12,10 @@
 //      replrun command (F5's), and there is no Build or Window menu;
 //   4. a REPL session is running at open, because the layout shows it;
 //   5. the default profile, over the same file, starts none (its layout
-//      keeps the REPL hidden) and keeps its own menu bar.
+//      keeps the REPL hidden) and keeps its own menu bar;
+//   6. the toolbar (menu_place): chthonic.menu's `toolbar` rows are the
+//      composed root's `toolbar` hint — Open, Save, Run, each carrying its
+//      command's code — and the default menu places none.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -27,7 +30,7 @@ void menu_bar(var &titles, var &ids, long w, long es, const char *menu)
     for ( var m : md )
     {
 	var t = m["title"];
-	if ( t == "palette" )
+	if ( m["place"].as_integer() != mpBAR )
 	    continue;
 	if ( strlen(titles.c_str()) == 0 )
 	    titles = t;
@@ -43,6 +46,30 @@ void menu_bar(var &titles, var &ids, long w, long es, const char *menu)
 		    ids = format("{} {}", ids, id);
 	    }
     }
+}
+
+// The composed root's toolbar hint: each row's label=action, and whether
+// every row's code is its action's (cmd_of); "none" without a toolbar.
+void toolbar_rows(var &out, IdeSession &S, long doc)
+{
+    var root;
+    S.compose_ide_tree(root, doc);
+    var tb = root["hints"]["toolbar"];
+    if ( tb.is_null() )
+    {
+	out = "none";
+	return;
+    }
+    out = "";
+    long ok = 1;
+    for ( var r : tb )
+    {
+	out = format("{}{}={} ", out, r["label"], r["action"]);
+	var a = r["action"];
+	if ( r["code"].as_integer() != cmd_of(a.c_str()) )
+	    ok = 0;
+    }
+    out = format("{}codes={}", out, ok);
 }
 
 int main()
@@ -72,6 +99,9 @@ int main()
     long h = es_int(S.w, S.es, "replh", 0);
     println("chthonic-repl: live={} running={}", es_int(S.w, S.es, "repllive", 0),
 	    h != 0 && madc::session_running(h) ? 1 : 0);
+    var tbr;
+    toolbar_rows(tbr, S, doc);
+    println("chthonic-toolbar: {}", tbr);
     S.close();
 
     // 5. The default profile over the same file.
@@ -83,6 +113,8 @@ int main()
 	    view_shown(D.w, D.es, viewREPL) ? 1 : 0, es_int(D.w, D.es, "repllive", 0),
 	    es_int(D.w, D.es, "replh", 0));
     println("default-menu: [{}]", titles);
+    toolbar_rows(tbr, D, D.active(0));
+    println("default-toolbar: {}", tbr);
     D.close();
 
     php::unlink(path);
