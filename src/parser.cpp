@@ -79541,6 +79541,7 @@ void Program::begin_entry()
     entry_final_owed = StatementTerminator::None;
     entry_if_extendable = false;
     entry_shown.clear();
+    entry_rows_shown.clear();
     entry_result_object = NULL;
     entry_result_alias = false;
     entry_result_not_kept.clear();
@@ -79587,6 +79588,9 @@ void Program::finish_entry(size_t decls_before, size_t funcs_before)
     // D10: a final statement written without its `;` shows its value.
     if ( entry_final_semicolon_omitted )
 	show_entry_value(decls_before);
+    // A binding row's values: the session's quiet entry (plan §41.11a).
+    if ( !entry_show_rows.empty() )
+	show_entry_rows();
     // The run joins the queues a parsed definition uses (finalize_script_main's
     // shape), after the entry's own functions.
     if ( entry_function )
@@ -79657,6 +79661,36 @@ void Program::show_entry_value(size_t decls_before)
     // base virtually, so the call is converted to it before the slot's cast.
     TokenBase *show_tb = show;
     ensure_entry_function(loc)->statements.push_back((TokenStmt *)show_tb);
+}
+
+// The session's quiet entry (plan §41.11a step 3d): each object of
+// entry_show_rows is shown through the show's row form, in order, in the
+// entry's run. The position is the entry's own text's (its end), so the run
+// is the unit's own function, as show_entry_value places it. `__madc_show_row`
+// is compiler-implemented, and its one Variable is the session's own.
+void Program::show_entry_rows()
+{
+    TokenBase *loc = entry_end_token;
+    if ( !loc )
+	return;
+    if ( !entry_show_row_var )
+    {
+	FuncDef *fd = new FuncDef(returnDecl(ddVOID, false));
+	fd->inline_builtin_kind = "madc_show_row";
+	fd->declaration_only = true;
+	entry_show_row_var = new Variable("__madc_show_row", *fd, 1, NULL, false);
+    }
+    for ( size_t i = 0; i < entry_show_rows.size(); ++i )
+    {
+	TokenVar *tv = new TokenVar(*entry_show_rows[i]);
+	copy_token_location(tv, loc);
+	TokenCallFunc *show = new TokenCallFunc(*entry_show_row_var);
+	copy_token_location(show, loc);
+	show->parameters.push_back(tv);
+	// A statement slot holds the TokenBase subobject (show_entry_value's).
+	TokenBase *show_tb = show;
+	ensure_entry_function(loc)->statements.push_back((TokenStmt *)show_tb);
+    }
 }
 
 // Where the object an aggregate glvalue designates lives, for D12's slice 2

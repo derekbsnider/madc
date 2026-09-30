@@ -897,7 +897,31 @@ private:
 	// the text to the session (__madc_session_show), which records it on the
 	// running entry. A type with no show yet shows its type word in angle
 	// brackets instead of refusing the entry: the entry's statement still runs.
-	node_t lower_show_call(class TokenCallFunc *tcf, TokenBase *origin);
+	node_t lower_show_call(class TokenCallFunc *tcf, TokenBase *origin,
+			       bool row);
+	// The show's limits (plan §41.11a step 3d). An entry's show follows
+	// text (a `char *` shows its string) and walks every element. A binding
+	// row (`__madc_show_row`: %whos, madcide's Variables view) follows no
+	// pointer, text included, walks at most `elements` of an aggregate and
+	// then `…`, and calls no code the session wrote: a class with a method
+	// a session unit defined walks by its members, never its container
+	// protocol. Set for one show's lowering (lower_show_call).
+	struct ShowLimits
+	{
+		bool row;
+		long elements;		// 0: every element
+	};
+	ShowLimits m_show_limits = { false, 0 };
+	std::map<DataDefCLASS *, bool> m_row_session_class;	// the rule's cache
+	bool row_class_has_session_method(DataDefCLASS *cls);
+	// The row form's element bound: `n` shown of `count` (count when no bound).
+	long show_element_bound(long count) const;
+	// A runtime-counted walk's loop bound, bounded in a row when `bounded`.
+	node_t show_bounded_cond(bool bounded, node_t cond, const std::string &idx,
+				 TokenBase *origin);
+	// `, …` after a bounded walk that stopped short (the runtime count `n`);
+	// NULL when the walk is not bounded.
+	node_t show_bounded_tail(node_t n, TokenBase *origin);
 	// The show's spelling of a pointer or enum TYPE (`int *`, `enum E`,
 	// `struct P *`, `int (*)(int)`), per the entry's language (C or C++).
 	std::string dump_show_type_word(DataDef *dd);

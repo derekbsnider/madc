@@ -2158,6 +2158,137 @@ TEST_CASE("?name: where a keyword comes from")
     }
 }
 
+// Plan §41.11a step 3d: the bindings owner, IPython's %whos and madcide's
+// Variables view. The session's own objects and functions only (an included
+// header's, a reserved name and a result never), sorted by name, each with
+// its type, its value in the show's row form (no pointer followed, text
+// included; at most 16 elements of an aggregate, then `…`) and its origin.
+// The values come from a quiet entry that takes no number.
+namespace {
+
+const madc::value *binding_row(const madc::value &rows, const char *name)
+{
+    if ( !rows.is_array() )
+	return NULL;
+    for ( const madc::value &r : rows.as_array() )
+	if ( r.is_object() && r.as_object().at("name").as_string() == name )
+	    return &r;
+    return NULL;
+}
+
+std::string binding_field(const madc::value &rows, const char *name,
+			  const char *field)
+{
+    const madc::value *r = binding_row(rows, name);
+    if ( !r )
+	return "<no row>";
+    const madc::value &f = r->as_object().at(field);
+    return f.is_string() ? f.as_string() : std::to_string(f.as_integer());
+}
+
+} // namespace
+
+TEST_CASE("session bindings: %whos lists the names the session defined (C17)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    REQUIRE(c.submit("%whos"));
+    CHECK(c.shown() == "Interactive namespace is empty.");
+    REQUIRE(c.submit("#include <stdio.h>"));
+    REQUIRE(c.submit("int count = 3;"));
+    REQUIRE(c.submit("int square(int n) { return n * n; }"));
+    REQUIRE(c.submit("char *p = (char *)1;"));
+    REQUIRE(c.submit("const char *greeting = \"hi\";"));
+    REQUIRE(c.submit("int big[20] = { 1, 2, 3 };"));
+    REQUIRE(c.submit("struct P { int x; int y; } pt = { 1, 2 };"));
+    REQUIRE(c.submit("int __hidden = 1;"));
+    REQUIRE(c.submit("count + 1"));	// a result: never a binding
+    const unsigned before = c.submitted();
+    madc::value rows;
+    c.bindings(rows);
+    CHECK(c.submitted() == before);	// the quiet entry takes no number
+    std::string names;
+    for ( const madc::value &r : rows.as_array() )
+	names += r.as_object().at("name").as_string() + " ";
+    CHECK(names == "big count greeting p pt square ");
+    CHECK(binding_field(rows, "count", "kind") == std::to_string((int)madc::name_kind::object));
+    CHECK(binding_field(rows, "square", "kind") == std::to_string((int)madc::name_kind::function));
+    CHECK(binding_field(rows, "count", "type") == "int");
+    CHECK(binding_field(rows, "count", "value") == "3");
+    CHECK(binding_field(rows, "count", "file") == "REPL[3]");
+    CHECK(binding_field(rows, "count", "line") == "1");
+    CHECK(binding_field(rows, "square", "type") == "int (int)");
+    CHECK(binding_field(rows, "square", "value").empty());
+    CHECK(binding_field(rows, "square", "file") == "REPL[4]");
+    // A pointer shows its address, never its pointee: text included, and a
+    // wild one cannot crash the backend.
+    CHECK(binding_field(rows, "p", "value") == "(char *) 0x1");
+    CHECK(binding_field(rows, "greeting", "value").compare(0, 17, "(const char *) 0x") == 0);
+    // An aggregate: 16 elements, then `…`.
+    CHECK(binding_field(rows, "big", "type") == "int [20]");
+    CHECK(binding_field(rows, "big", "value")
+	  == "(int[20]){ 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, … }");
+    CHECK(binding_field(rows, "pt", "value") == "(struct P){ .x = 1, .y = 2 }");
+    // %whos prints the same rows as a table.
+    REQUIRE(c.submit("%whos"));
+    const std::string table = c.shown();
+    CHECK(table.compare(0, 4, "Name") == 0);
+    CHECK(table.find("Origin") != std::string::npos);
+    CHECK(table.find("\ncount     int           3") != std::string::npos);
+    CHECK(table.find("REPL[4]:1") != std::string::npos);
+    // The session goes on.
+    REQUIRE(c.submit("count * 2"));
+    CHECK(c.shown() == "6");
+}
+
+TEST_CASE("session bindings: C++ containers, a class the session wrote, a qualified typedef")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c++17"));
+    REQUIRE(c.submit("#include <vector>"));
+    REQUIRE(c.submit("#include <string>"));
+    REQUIRE(c.submit("std::vector<int> v = { 1, 2, 3 };"));
+    REQUIRE(c.submit("std::string s = \"hello\";"));
+    REQUIRE(c.submit("struct Box { int a[3]; long size() const { return 3; } "
+		     "int operator[](long i) const { return a[i]; } };"));
+    REQUIRE(c.submit("Box b = { { 7, 8, 9 } };"));
+    REQUIRE(c.submit("std::vector<int> w = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, "
+		     "11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };"));
+    REQUIRE(c.submit("static std::string t = \"x\";"));
+    REQUIRE(c.submit("t += \"y\";"));
+    madc::value rows;
+    c.bindings(rows);
+    CHECK(binding_field(rows, "v", "value") == "std::vector<int>{ 1, 2, 3 }");
+    CHECK(binding_field(rows, "w", "value")
+	  == "std::vector<int>{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, … }");
+    // A class the session wrote a method of walks by its members: a row
+    // calls no code the session wrote.
+    CHECK(binding_field(rows, "b", "value") == "Box{ .a = { 7, 8, 9 } }");
+    // B94: a qualified typedef's object is the entry's, not its header's.
+    CHECK(binding_field(rows, "s", "type") == "std::string");
+    CHECK(binding_field(rows, "s", "value") == "\"hello\"");
+    CHECK(binding_field(rows, "s", "file") == "REPL[4]");
+    CHECK(binding_field(rows, "t", "value") == "\"xy\"");
+    REQUIRE(c.submit("?s"));
+    CHECK(c.shown().find("Defined:   @ REPL[4]:1") != std::string::npos);
+    // B94's silent case: a unit's static is the session's name.
+    REQUIRE(c.submit("t"));
+    CHECK(c.shown() == "\"xy\"");
+}
+
+TEST_CASE("session bindings: a madc var (madc)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=madc"));
+    REQUIRE(c.submit("var cfg = { \"a\": 1, \"b\": 2 };"));
+    REQUIRE(c.submit("long total = 5;"));
+    madc::value rows;
+    c.bindings(rows);
+    CHECK(binding_field(rows, "cfg", "type") == "var");
+    CHECK(binding_field(rows, "cfg", "value") == "{ \"a\": 1, \"b\": 2 }");
+    CHECK(binding_field(rows, "total", "value") == "5");
+}
+
 // BUGS.md B94: an object whose type is a qualified typedef name
 // (`std::string`) is the unit's that declared it, as an unqualified one's
 // is: `?` cites the entry, and a unit's static is a session name (plan

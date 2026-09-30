@@ -513,15 +513,74 @@ std::string Program::type_location(const std::string &name, const DataDef *dd) c
 
 // Where a function was defined: the latest definition in the session's tree
 // (a redefinition replaces the earlier one, D5), else a prototype's file.
-std::string Program::function_location(const Variable *v, const FuncDef *fd) const
+void Program::function_origin(const Variable *v, const FuncDef *fd,
+			      const char *&file, int &line) const
 {
     for ( size_t i = pending_funcs.size(); i-- > 0; )
     {
 	TokenFunc *tf = pending_funcs[i] ? pending_funcs[i]->as_func_tok() : NULL;
 	if ( tf && ((v && &tf->var == v) || tf->var.type == fd) )
-	    return where(tf->file, tf->line);
+	{
+	    file = tf->file;
+	    line = tf->line;
+	    return;
+	}
     }
-    return where(fd->decl_file, 0);
+    file = fd ? fd->decl_file : NULL;
+    line = 0;
+}
+
+std::string Program::function_location(const Variable *v, const FuncDef *fd) const
+{
+    const char *file;
+    int line;
+    function_origin(v, fd, file, line);
+    return where(file, line);
+}
+
+// The session's own names (plan §41.11a step 3d): the walk Tab and `?` read,
+// kept to the objects and functions a session unit defined, each entity once
+// (a function is both a global and a funcdef_map entry, as for `?`).
+void Program::session_bindings(std::vector<SessionBinding> &out)
+{
+    typedef TopLevelName::Kind Kind;
+    out.clear();
+    const CompletionOffer rule((std::string()));
+    TypeSpeller speller(this);
+    std::set<const void *> seen;
+    std::multimap<std::string, SessionBinding> sorted;	// an overload keeps its row
+    visit_top_level_names(CompletionContext::Name, [&](const TopLevelName &n) {
+	if ( (n.kind != Kind::object && n.kind != Kind::function)
+	  || !rule.accepts(n.name) )
+	    return;
+	if ( n.kind == Kind::function
+	  && (!n.fd || n.fd->stands_for_function_template()) )
+	    return;
+	const void *id = n.fd ? (const void *)n.fd : (const void *)n.var;
+	if ( !id || !seen.insert(id).second )
+	    return;
+	SessionBinding b;
+	b.kind = n.kind;
+	b.name = n.name;
+	b.var = n.kind == Kind::object ? n.var : NULL;
+	if ( n.kind == Kind::object )
+	{
+	    object_origin(n.var, b.file, b.line);
+	    DataDef *at = object_array_type(*n.var);
+	    b.type = speller.shown(at ? at : n.var->type);	// `?name`'s
+	}
+	else
+	{
+	    function_origin(n.var, n.fd, b.file, b.line);
+	    b.type = speller.declared(n.fd, std::string());
+	}
+	if ( !b.file || !session_units.count(b.file) )
+	    return;
+	sorted.insert(std::make_pair(b.name, b));
+    });
+    for ( std::multimap<std::string, SessionBinding>::const_iterator it = sorted.begin();
+	  it != sorted.end(); ++it )
+	out.push_back(it->second);
 }
 
 bool Program::describe_name(const std::string &name, std::string &out)

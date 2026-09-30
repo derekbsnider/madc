@@ -29,6 +29,7 @@
 #include "libmadc/value.h"
 #include "madc/bits/diag_enums"	// diag_severity / diag_phase — the shared enum text
 #include "madc/bits/file_kinds"	// madc::file_kind — LanguageStd's values ARE its C/C++/madc ranges
+#include "madc/bits/session_enums"	// madc::name_kind — TopLevelName::Kind's one enum text
 #include "madcdis/intern_table.h"
 #include "madcdis/id_table.h"		// madc::dis::id_table — segmented stable-id registry
 #include "madcdis/value_pool.h"		// madc::dis::value_pool — >64-bit value handles
@@ -7210,6 +7211,17 @@ public:
     // Variable naming it is the session's own and never in any user scope.
     Variable *entry_show_var = NULL;
     void show_entry_value(size_t decls_before);
+    // A binding row's value (plan §41.11a step 3d): while set, the entry's
+    // run shows each of these objects through the show's row form
+    // (`__madc_show_row`: no pointer followed, text included, at most 16
+    // elements of an aggregate), and each text is appended to
+    // entry_rows_shown, in order (__madc_session_bind). The session sets
+    // them for its one quiet entry, which takes no number and keeps no
+    // result.
+    std::vector<Variable *> entry_show_rows;
+    std::vector<std::string> entry_rows_shown;
+    Variable *entry_show_row_var = NULL;
+    void show_entry_rows();
     // The last entry's shown value, in D10's re-enterable spelling. Set while
     // the entry runs (the session's __madc_session_show), cleared when an
     // entry parses; empty when the entry showed nothing.
@@ -7338,11 +7350,9 @@ public:
     // function-like macro's definition).
     struct TopLevelName
     {
-	enum class Kind : unsigned char
-	{
-	    object, function, type, tag, name_space, class_template,
-	    function_template, keyword, macro, header_name, dialect_word, result
-	};
+	// The one text is <bits/session_enums>'s, so a binding row's kind is a
+	// code the dialect switches on.
+	typedef ::madc::name_kind Kind;
 	Kind kind;
 	std::string name;
 	Variable *var;
@@ -7373,9 +7383,30 @@ public:
     std::string object_location(const Variable *v) const;
     std::string type_location(const std::string &name, const DataDef *dd) const;
     std::string function_location(const Variable *v, const FuncDef *fd) const;
-    // An object's record as a file and a line (0 when none): object_location
-    // formats it.
+    // The same records as a file and a line (0 when none): the locations
+    // above format these, and a binding row carries them.
     void object_origin(const Variable *v, const char *&file, int &line) const;
+    void function_origin(const Variable *v, const FuncDef *fd,
+			 const char *&file, int &line) const;
+    // The session's units (plan §41.11a step 3d): the entries and loaded
+    // files it linked, by name. Session state: only the session's submit and
+    // load add to it (D9).
+    std::set<std::string> session_units;
+    // A name the session defined: an object or a function whose origin is
+    // one of session_units, never a header's or the prelude's,
+    // named as an entry writes it (Tab's rule: no result name, no reserved
+    // or session-internal name). Sorted by name, as IPython's %whos lists
+    // them. `type` is the source's spelling (TypeSpeller).
+    struct SessionBinding
+    {
+	TopLevelName::Kind kind;
+	std::string name;
+	Variable *var;		// an object's
+	std::string type;
+	const char *file;
+	int line;
+    };
+    void session_bindings(std::vector<SessionBinding> &out);
     // Slice 4: an object's members after its chain, and a scope's (a
     // namespace's or a class's) members after its qualifier.
     void completion_members(const std::vector<std::string> &chain,

@@ -49,6 +49,7 @@
 #include "cir_emit_c.h"
 #include "cir_freeze.h"
 #include "madc_pch.h"	// v20: template token runs ride the .madh record form
+#include "madcdis/text_utf16.h"	// madc::line_width: a binding row's cut
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -1725,6 +1726,21 @@ extern "C" void __madc_session_show(void *sink)
 	return;
     b->prog->entry_shown.assign(__madc_dump_sink_text(sink),
 				__madc_dump_sink_length(sink));
+}
+
+// A binding row's hand-off (plan §41.11a step 3d): the text a row's walk
+// captured in SINK joins the running entry's rows (Program::entry_rows_shown),
+// in order, cut to 80 columns, the last one then `…`.
+extern "C" void __madc_session_bind(void *sink)
+{
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || !b->prog)
+	return;
+    std::string text(__madc_dump_sink_text(sink), __madc_dump_sink_length(sink));
+    const size_t cap = 80;		// columns: the one layout rule's
+    if (madc::line_width(text) > cap)
+	text = madc::line_columns(text, 0, cap - 1) + "…";
+    b->prog->entry_rows_shown.push_back(text);
 }
 
 static void cir_call_tu_init(void *code)

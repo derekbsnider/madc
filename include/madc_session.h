@@ -22,8 +22,10 @@
 #include <vector>
 
 #include "madc/bits/session_enums"	// offer_state: the verdict's one enum text
+#include "libmadc/value.h"		// madc::value: a bindings row
 
 class Program;
+class Variable;
 class CirJitSession;
 
 // The session a REPL loop drives (madc_repl_run, madc_repl_edit; plan
@@ -148,7 +150,17 @@ public:
     // line starts with `%name` or `:name` is a command, never C. The typed
     // name becomes one of these codes once, at input. `?NAME` is %pinfo NAME,
     // and `?` alone %help (IPython).
-    enum class Command : unsigned char { help, type, pinfo };
+    enum class Command : unsigned char { help, type, pinfo, whos };
+    // The names the session defined (plan §41.11a step 3d): the one owner
+    // %whos and the bindings wire op read. A row per object and function a
+    // session unit (an entry, a loaded file) defined, sorted by name:
+    // {name, kind (a madc::name_kind code), type (the source's spelling),
+    // value (an object's, the show's row form: no pointer followed, text
+    // included, at most 16 elements of an aggregate, 80 columns), file,
+    // line}. The values come from one quiet entry, which takes no number,
+    // keeps no result and says nothing; its module stays loaded, as every
+    // entry's does.
+    void bindings(madc::value &rows);
     // The entries linked into the live context.
     unsigned entries() const { return entry_count; }
     // The entries submitted, refused ones included: entry N is REPL[N].
@@ -162,12 +174,18 @@ private:
     bool run_command(const std::string &text, const std::string &name);
     bool type_command(const std::string &expression, const std::string &name);
     bool pinfo_command(const std::string &argument, const std::string &name);
+    void whos_command();
+    // The quiet entry: each object shown through the row form, the texts in
+    // order. False when it did not run (then the texts are fewer).
+    bool show_rows(const std::vector<Variable *> &objects,
+		   std::vector<std::string> &texts);
     std::unique_ptr<Program> prog;
     std::unique_ptr<CirJitSession> jit;
     unsigned entry_count;
     unsigned submit_count;
     std::string command_output;		// the last command's output
     bool showed_command;		// the last entry was a command
+    unsigned quiet_count;		// the quiet entries' units, each its own
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };

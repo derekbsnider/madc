@@ -37,6 +37,7 @@
 #include "madc_session.h"
 #include "madc_type_spelling.h"
 #include "madcdis/text_buffer.h"	// the one word rule (word_byte)
+#include "madcdis/text_utf16.h"	// madc::line_width: %whos's columns
 
 // The command registry (plan §41.8a, D13/D24): one row per command. A typed
 // name becomes its code once, at input (command_named); what follows
@@ -58,6 +59,8 @@ const CommandRow command_rows[] = {
       "the type of an expression, which is not run" },
     { "pinfo", InteractiveSession::Command::pinfo, "%pinfo NAME",
       "what the session knows of a name (also ?NAME)" },
+    { "whos", InteractiveSession::Command::whos, "%whos",
+      "the names the session defined: their types, values and origins" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -137,13 +140,13 @@ std::string command_argument(const std::string &text, const CommandText &c)
 
 InteractiveSession::InteractiveSession()
     : prog(new Program()), jit(new CirJitSession()), entry_count(0),
-      submit_count(0), showed_command(false)
+      submit_count(0), showed_command(false), quiet_count(0)
 {
 }
 
 InteractiveSession::InteractiveSession(std::unique_ptr<Program> configured)
     : prog(std::move(configured)), jit(new CirJitSession()), entry_count(0),
-      submit_count(0), showed_command(false)
+      submit_count(0), showed_command(false), quiet_count(0)
 {
 }
 
@@ -272,7 +275,10 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     bool linked = false;
     bool ok = link_and_run(*prog, *jit, entry, prog->intern_file(name), linked);
     if ( linked )
+    {
 	++entry_count;
+	prog->session_units.insert(name);	// its names are the session's
+    }
     // D12: an entry whose show ran keeps its value as REPL[N]'s result, as
     // IPython's Out[N] (a run that stopped before its show keeps nothing).
     if ( linked && !prog->entry_shown.empty() )
@@ -333,7 +339,10 @@ bool InteractiveSession::load_text(const std::string &text, const std::string &p
     if ( !parsed )
 	return false;
     bool linked = false;
-    return link_and_run(*prog, *jit, unit, prog->intern_file(path), linked);
+    bool ok = link_and_run(*prog, *jit, unit, prog->intern_file(path), linked);
+    if ( linked )
+	prog->session_units.insert(path);	// its names are the session's
+    return ok;
 }
 
 bool InteractiveSession::run_main(int argc, char **argv, int *status)
@@ -418,6 +427,9 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return type_command(command_argument(text, c), name);
 	case Command::pinfo:
 	    return pinfo_command(command_argument(text, c), name);
+	case Command::whos:
+	    whos_command();
+	    return true;
     }
     return false;
 }
@@ -494,6 +506,121 @@ bool InteractiveSession::pinfo_command(const std::string &argument,
     }
     command_output = described;
     return true;
+}
+
+void InteractiveSession::bindings(madc::value &out)
+{
+    std::vector<Program::SessionBinding> found;
+    prog->session_bindings(found);
+    std::vector<Variable *> objects;
+    for ( size_t i = 0; i < found.size(); ++i )
+	if ( found[i].var )
+	    objects.push_back(found[i].var);
+    std::vector<std::string> values;
+    if ( !objects.empty() )
+	show_rows(objects, values);
+    std::vector<madc::value> rows;
+    size_t shown = 0;		// the next object's text in `values`
+    for ( size_t i = 0; i < found.size(); ++i )
+    {
+	const Program::SessionBinding &b = found[i];
+	std::string value;
+	if ( b.var )
+	{
+	    if ( shown < values.size() )
+		value = values[shown];
+	    ++shown;
+	}
+	std::map<std::string, madc::value> f;
+	f["name"] = madc::value(b.name);
+	f["kind"] = madc::value((int64_t)b.kind);	// madc::name_kind
+	f["type"] = madc::value(b.type);
+	f["value"] = madc::value(value);
+	f["file"] = madc::value(std::string(b.file ? b.file : ""));
+	f["line"] = madc::value((int64_t)b.line);
+	rows.push_back(madc::value::make_object(f));
+    }
+    out = madc::value::make_array(rows);
+}
+
+// The quiet entry (bindings): parsed as the session's next entry, but its
+// unit is its own (`<bindings N>`), never one of session_units, and nothing
+// it says renders; the objects' show is appended to its run (Program::
+// show_entry_rows). Its diagnostics go with it, as `%pinfo`'s attempt's do.
+bool InteractiveSession::show_rows(const std::vector<Variable *> &objects,
+				   std::vector<std::string> &texts)
+{
+    bool ok = false;
+    texts.clear();
+    {
+	DiagnosticRenderMute mute;
+	Program::EntryTransaction quiet(*prog);
+	prog->entry_number = submit_count;
+	prog->entry_show_rows = objects;
+	const std::string unit = "<bindings " + std::to_string(++quiet_count) + ">";
+	Program::EntryVerdict verdict = prog->parse_entry(";", unit);
+	prog->entry_show_rows.clear();
+	if ( verdict == Program::EntryVerdict::Complete
+	  || verdict == Program::EntryVerdict::CompleteExtendable )
+	{
+	    bool linked = false;
+	    ok = link_and_run(*prog, *jit, quiet, prog->intern_file(unit), linked);
+	}
+	texts = prog->entry_rows_shown;
+    }
+    prog->begin_entry();
+    return ok;
+}
+
+// `%whos` (plan §41.11a step 3d; IPython's): the bindings as a Name / Type /
+// Value / Origin table, each column as wide as its widest text in the one
+// layout rule's columns. An empty session says so, in IPython's words.
+void InteractiveSession::whos_command()
+{
+    madc::value rows;
+    bindings(rows);
+    if ( !rows.is_array() || rows.as_array().empty() )
+    {
+	command_output = "Interactive namespace is empty.";
+	return;
+    }
+    const size_t ncol = 4;
+    static const char *const heads[ncol] = { "Name", "Type", "Value", "Origin" };
+    std::vector<std::vector<std::string> > table;
+    table.push_back(std::vector<std::string>(heads, heads + ncol));
+    for ( const madc::value &r : rows.as_array() )
+    {
+	const std::map<std::string, madc::value> &f = r.as_object();
+	std::string origin = f.at("file").as_string();
+	if ( f.at("line").as_integer() > 0 )
+	    origin += ":" + std::to_string(f.at("line").as_integer());
+	std::vector<std::string> cells;
+	cells.push_back(f.at("name").as_string());
+	cells.push_back(f.at("type").as_string());
+	cells.push_back(f.at("value").as_string());
+	cells.push_back(origin);
+	table.push_back(cells);
+    }
+    size_t width[ncol] = { 0, 0, 0, 0 };
+    for ( size_t r = 0; r < table.size(); ++r )
+	for ( size_t c = 0; c < ncol; ++c )
+	    width[c] = std::max(width[c], madc::line_width(table[r][c]));
+    std::string out;
+    for ( size_t r = 0; r < table.size(); ++r )
+    {
+	if ( r )
+	    out += "\n";
+	for ( size_t c = 0; c < ncol; ++c )
+	{
+	    out += table[r][c];
+	    if ( c + 1 < ncol )
+		out += std::string(width[c] + 2 - madc::line_width(table[r][c]), ' ');
+	}
+	if ( r == 0 )
+	    out += "\n" + std::string(width[0] + width[1] + width[2] + width[3]
+				      + 2 * (ncol - 1), '-');
+    }
+    command_output = out;
 }
 
 void *InteractiveSession::function(const char *name)

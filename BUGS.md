@@ -404,6 +404,27 @@ int main(void)
 
 ## Accepts invalid code
 
+### B95. `std::string s = 5;` is accepted, then fails at link without a position
+
+```cpp
+#include <string>
+#include <cstdio>
+std::string s = 5;
+int main() { printf("size=%zu\n", s.size()); return 0; }
+```
+
+- g++: `b95.cpp:3:17: error: conversion from 'int' to non-scalar type
+  'std::string' ... requested`. clang++: `b95.cpp:3:13: error: no viable
+  conversion from 'int' to 'std::string'`. madc (`--std=c++17`): no front-end
+  diagnostic; the link refuses `MIR error: import of undefined item
+  basic_string_char_..._o15` (exit 1), citing no source position.
+- Found 2026-09-30 while filing B94 (the same declaration with a valid
+  initializer is B94's reducer).
+- Layer (suspected, unmeasured): copy-initialization from `int` selects a
+  `basic_string` constructor (`_o15`) that [dcl.init]/17.6.3 does not allow
+  (no converting constructor takes an `int`), and the selected overload has
+  no definition to link.
+
 ### B52. A namespace's member is found unqualified in C++ (`vector` without `std::`)
 
 - Found 2026-09-27, while building D23's completion (plan §41.7a, slice 3),
@@ -445,6 +466,32 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B96. `std::vector<int> v(40, 5);` is refused: the iterator-pair constructor is instantiated
+
+```cpp
+#include <vector>
+#include <cstdio>
+std::vector<int> many(40, 5);
+int main() { std::vector<int> local(3, 9); printf("%zu %d %zu %d\n", many.size(), many[39], local.size(), local[2]); return 0; }
+```
+
+- g++ = clang++ (`-std=c++17`): `40 5 3 9`. madc (`--std=c++17`, a file and
+  the REPL alike): `cir error: parse-once internal: tsubst bailed on the
+  covered instantiation ... of std::vector::vector<_InputIterator,
+  __anon_tparam0> [why: tsubst: unresolved dependent member call]
+  @/usr/include/c++/13/bits/stl_vector.h:709`, and the unit is not compiled.
+- `vector<int> v(n, 0)` is beginner C++'s everyday constructor; the teaching
+  IDE's users meet it at once. Schedule before the release's seam.
+- Found 2026-09-30 while trying `%whos` over a `std::vector` (plan §41.11a
+  step 3d).
+- Layer (suspected): overload resolution keeps the template
+  `vector(_InputIterator, _InputIterator, const allocator_type &)` for two
+  `int` arguments; its `_RequireInputIter<_InputIterator>` default template
+  argument ([temp.deduct]/8, SFINAE) should remove it, leaving
+  `vector(size_type, const value_type &, const allocator_type &)`. A core
+  parser change (template overload resolution): its own focused session
+  (owner, 2026-09-13).
 
 ### B77. A data-only struct cannot qualify a name in an expression
 
@@ -1060,6 +1107,30 @@ std::string s = "hello";
   use-site token (`clone_origin`), as the unqualified one does; then the
   annotation and the fallback go. A core parser change: its own focused
   session (owner, 2026-09-13).
+
+### B97. `%type` and `?` spell a template instantiation canonically (`std::vector<int32_t,std::allocator<int32_t>>`)
+
+```text
+#include <vector>
+std::vector<int> v = { 1, 2, 3 };
+%type v
+v
+```
+
+- madc (`--std=c++17`): `%type v` and `?v` print
+  `std::vector<int32_t,std::allocator<int32_t>>`, while the value's own show
+  prints `std::vector<int>{ 1, 2, 3 }`, and g++'s and clang++'s diagnostics
+  write `std::vector<int>`. The source's name is the rule (owner 2026-08-17:
+  never `std::__cxx11::basic_string<...>`). `%whos` and madcide's Variables
+  view read the same spelling.
+- Found 2026-09-30 while building `%whos` (plan §41.11a step 3d). Fix before
+  step 6, the Variables view.
+- Layer: `TypeSpeller::class_word` (`src/madc_type_spelling.cpp`) falls back
+  to `canonical_cpp_spelling()` when no alias names the instantiation; the
+  show's value word is built by `cir_dump.cpp`'s template word from the
+  instantiation's source arguments. Two spellings of one type: the
+  TypeSpeller header says the show forwards to it, so the fix moves the
+  source-argument spelling into `class_word`, and both read it.
 
 ### B7. An undeducible function-template call dies in MIR without a location
 

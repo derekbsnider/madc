@@ -62,7 +62,9 @@ extern thread_local bool madc_verbose;
 // std::addressof / std::forward / __destroy use, and one the forest already
 // serializes), so this reads a tag rather than a user-facing name, and it is
 // converted to an enum here — at the boundary — per enum-over-strings.
-static CirBuilder::DumpFlavor dump_flavor(FuncDef *fd)
+// `row` says the show's row form (a binding row's, plan §41.11a step 3d):
+// the same walk, bounded (CirBuilder::ShowLimits).
+static CirBuilder::DumpFlavor dump_flavor(FuncDef *fd, bool *row = NULL)
 {
 	if (!fd)
 		return CirBuilder::dfNone;
@@ -72,6 +74,11 @@ static CirBuilder::DumpFlavor dump_flavor(FuncDef *fd)
 		return CirBuilder::dfVarDump;
 	if (fd->inline_builtin_kind == "madc_show")
 		return CirBuilder::dfShow;
+	if (fd->inline_builtin_kind == "madc_show_row") {
+		if (row)
+			*row = true;
+		return CirBuilder::dfShow;
+	}
 	return CirBuilder::dfNone;
 }
 
@@ -1006,8 +1013,10 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	append(init, ignore());
 	append(init, ignore());
 	append(init, integer(0, origin));
+	// A row's bound: at most m_show_limits.elements, then `, …`.
+	const size_t bound = show ? (size_t)show_element_bound((long)count) : count;
 	node_t cond = node2(N_LT, id(idxname.c_str(), origin),
-			    integer((int64_t)count, origin), origin);
+			    integer((int64_t)bound, origin), origin);
 	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
 			    integer(1, origin), origin);
 	node_t items = list();
@@ -1016,6 +1025,8 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	node_t blk = node2(N_BLOCK, list(), items, origin);
 	out.push_back(node5(N_FOR, list(), init, cond, incr, blk, origin));
 
+	if (show && bound < count)
+		out.push_back(dump_show_text(", \u2026", origin));
 	if (show)
 		out.push_back(dump_show_text(" }", origin));
 	else
@@ -1184,8 +1195,11 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 	append(init, ignore());
 	append(init, ignore());
 	append(init, integer(0, origin));
-	node_t cond = node2(N_LT, id(idxname.c_str(), origin),
-			    id(nname.c_str(), origin), origin);
+	// A row's bound (text is never bounded: the row's width cuts it).
+	node_t cond = show_bounded_cond(show && !is_text,
+					node2(N_LT, id(idxname.c_str(), origin),
+					      id(nname.c_str(), origin), origin),
+					idxname, origin);
 	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
 			    integer(1, origin), origin);
 	node_t items = list();
@@ -1193,6 +1207,9 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 		append(items, body[i]);
 	out.push_back(node5(N_FOR, list(), init, cond, incr,
 			    node2(N_BLOCK, list(), items, origin), origin));
+	if (show && !is_text)
+		if (node_t tail = show_bounded_tail(id(nname.c_str(), origin), origin))
+			out.push_back(tail);
 
 	if (show && is_text) {
 		out.push_back(dump_show_text("\"", origin));
@@ -1455,8 +1472,10 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	append(init, ignore());
 	append(init, ignore());
 	append(init, integer(0, origin));
-	node_t cond = node2(N_LT, id(idxname.c_str(), origin),
-			    id(nname.c_str(), origin), origin);
+	node_t cond = show_bounded_cond(show,
+					node2(N_LT, id(idxname.c_str(), origin),
+					      id(nname.c_str(), origin), origin),
+					idxname, origin);
 	node_t incr = node2(N_ADD_ASSIGN, id(idxname.c_str(), origin),
 			    integer(1, origin), origin);
 	node_t items = list();
@@ -1464,6 +1483,9 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 		append(items, body[i]);
 	out.push_back(node5(N_FOR, list(), init, cond, incr,
 			    node2(N_BLOCK, list(), items, origin), origin));
+	if (show)
+		if (node_t tail = show_bounded_tail(id(nname.c_str(), origin), origin))
+			out.push_back(tail);
 	if (show) {
 		need_dump_extern("__madc_dump_sh_close",
 				 { { {N_LONG, N_LONG}, false } });
@@ -1766,6 +1788,68 @@ node_t CirBuilder::dump_show_text(const std::string &text, TokenBase *origin)
 // D10's show of a pointer (plan §41.4a): `(int *) 0x7ffd5c1a2b3c`, or its
 // language's null. Never the pointee (§6.4): a REPL must not dereference a
 // value by surprise. A function designator decays to its pointer.
+// The show's row form (plan §41.11a step 3d, CirBuilder::ShowLimits): a
+// class a session unit wrote a method of walks by its members, so a row runs
+// no code the session wrote. Cached per class for the builder's module.
+bool CirBuilder::row_class_has_session_method(DataDefCLASS *cls)
+{
+	if (!cls || !m_prog || m_prog->session_units.empty())
+		return false;
+	std::map<DataDefCLASS *, bool>::const_iterator hit =
+		m_row_session_class.find(cls);
+	if (hit != m_row_session_class.end())
+		return hit->second;
+	bool found = false;
+	for (std::map<std::string, Variable *>::const_iterator m =
+		     cls->method_map.begin();
+	     !found && m != cls->method_map.end(); ++m) {
+		Variable *mv = m->second;
+		FuncDef *mfd = mv && mv->type ? mv->type->as_funcdef_dd() : NULL;
+		if (!mfd)
+			continue;
+		const char *file = NULL;
+		int line = 0;
+		m_prog->function_origin(mv, mfd, file, line);
+		found = file && m_prog->session_units.count(file);
+	}
+	m_row_session_class[cls] = found;
+	return found;
+}
+
+long CirBuilder::show_element_bound(long count) const
+{
+	long cap = m_show_limits.elements;
+	return cap > 0 && count > cap ? cap : count;
+}
+
+// A runtime-counted walk's loop bound: `i < n`, and in a bounded row also
+// `i < elements`.
+node_t CirBuilder::show_bounded_cond(bool bounded, node_t cond,
+				     const std::string &idx, TokenBase *origin)
+{
+	if (!bounded || m_show_limits.elements <= 0)
+		return cond;
+	return node2(N_ANDAND, cond,
+		     node2(N_LT, id(idx.c_str(), origin),
+			   integer((int64_t)m_show_limits.elements, origin),
+			   origin),
+		     origin);
+}
+
+// `if (n > elements) <, …>`: the mark of a bounded row that stopped short.
+// NULL when the walk is not bounded.
+node_t CirBuilder::show_bounded_tail(node_t n, TokenBase *origin)
+{
+	if (m_show_limits.elements <= 0)
+		return NULL;
+	node_t items = list();
+	append(items, dump_show_text(", \u2026", origin));
+	return node4(N_IF, list(),
+		     node2(N_GT, n, integer((int64_t)m_show_limits.elements,
+					    origin), origin),
+		     node2(N_BLOCK, list(), items, origin), ignore(), origin);
+}
+
 bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 				   std::vector<node_t> &out, TokenBase *origin)
 {
@@ -2230,7 +2314,9 @@ bool CirBuilder::dump_value(DumpFlavor fl, const DumpAccess &acc, int depth,
 			   { {N_INT}, false } });  // nested
 	node_t a = list();
 	append(a, node1(N_ADDR, acc(), origin));
-	append(a, integer(dump_wire_flavor(fl), origin));
+	append(a, integer(fl == dfShow && m_show_limits.row ? MADC_DUMP_SHOW_ROW
+							    : dump_wire_flavor(fl),
+			  origin));
 	append(a, dump_depth_arg(depth, origin));
 	append(a, dump_nested_arg(depth, nested, origin));
 	out.push_back(dump_call_stmt("__madc_dump_value", a, origin));
@@ -2277,6 +2363,11 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			// walk that turns out not to apply leaves `out` untouched.
 			DataDefCLASS *ccls = is_class_object(dd)
 					   ? dynamic_cast<DataDefCLASS *>(u) : NULL;
+			// A row calls no code the session wrote: such a class
+			// walks by its members.
+			if (ccls && m_show_limits.row
+			    && row_class_has_session_method(ccls))
+				ccls = NULL;
 			if (ccls) {
 				std::vector<node_t> cw;
 				std::string cwhy;
@@ -2297,7 +2388,9 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			return dump_struct(fl, acc, sdd, depth, nested, out, origin,
 					   why);
 		}
-		if (dd->is_function() || (dd->is_pointer() && !dd->is_cstr()))
+		// A row follows no pointer, text included.
+		if (dd->is_function()
+		    || (dd->is_pointer() && (!dd->is_cstr() || m_show_limits.row)))
 			return dump_show_pointer(acc, dd, out, origin);
 		return dump_scalar(fl, acc, dd, depth, out, origin, why);
 	}
@@ -2661,7 +2754,8 @@ node_t CirBuilder::dump_sink_close(const std::string &sink_var,
 // entry (InteractiveSession::shown). A void expression has nothing to show and
 // just runs. A type with no show yet still runs, and shows its type word in
 // angle brackets: a display is never a reason to refuse the entry.
-node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin)
+node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin,
+				   bool row)
 {
 	if (tcf->parameters.size() != 1)
 		return error_node("the value display takes one value", origin);
@@ -2696,6 +2790,9 @@ node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin)
 
 	std::string saved_sink = m_dump_sink_var;
 	m_dump_sink_var = sname;
+	ShowLimits saved_limits = m_show_limits;
+	m_show_limits.row = row;
+	m_show_limits.elements = row ? MADC_DUMP_ROW_ELEMENTS : 0;
 	std::vector<node_t> walk;
 	std::string why;
 	bool walked, evaluated = false;
@@ -2738,13 +2835,16 @@ node_t CirBuilder::lower_show_call(TokenCallFunc *tcf, TokenBase *origin)
 		stmts.push_back(dump_show_text(word, origin));
 	}
 	m_dump_sink_var = saved_sink;
+	m_show_limits = saved_limits;
 
-	// __madc_session_show(sink); then the sink closes.
-	need_output_extern("__madc_session_show", false, { { {N_VOID}, true } });
+	// __madc_session_show(sink) (a row's: __madc_session_bind); then the
+	// sink closes.
+	const char *handoff = row ? "__madc_session_bind" : "__madc_session_show";
+	need_output_extern(handoff, false, { { {N_VOID}, true } });
 	node_t ha = list();
 	append(ha, id(sname, origin));
 	stmts.push_back(node2(N_EXPR, list(),
-			      node2(N_CALL, id("__madc_session_show", origin), ha,
+			      node2(N_CALL, id(handoff, origin), ha,
 				    origin), origin));
 	stmts.push_back(dump_sink_close(sname, origin));
 
@@ -2763,18 +2863,19 @@ node_t CirBuilder::lower_dump_call(TokenCallFunc *tcf, FuncDef *fd,
 {
 	if (!tcf)
 		return NULL;
-	DumpFlavor fl = dump_flavor(fd);
+	bool row = false;
+	DumpFlavor fl = dump_flavor(fd, &row);
 	if (fl == dfNone)
 		// The RESOLVED callee may be absent: a declared-only template's
 		// placeholder FuncDef carries no parameters, so overload ranking
 		// can filter it out of a 1-argument call. The intrinsic tag lives
 		// on the DECLARATION the call token is bound to, which is that
 		// placeholder either way.
-		fl = dump_flavor(dynamic_cast<FuncDef *>(tcf->var.type));
+		fl = dump_flavor(dynamic_cast<FuncDef *>(tcf->var.type), &row);
 	if (fl == dfNone)
 		return NULL;
 	if (fl == dfShow)
-		return lower_show_call(tcf, origin);
+		return lower_show_call(tcf, origin, row);
 
 	// PHP: print_r(mixed $value, bool $return = false): string|true — ONE
 	// function with a DEFAULT second parameter, so one or two arguments.

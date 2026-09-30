@@ -40,8 +40,14 @@ extern "C" {
 enum madc_dump_flavor {
 	MADC_DUMP_PRINT_R  = 0,
 	MADC_DUMP_VAR_DUMP = 1,
-	MADC_DUMP_SHOW     = 2	/* the REPL's value (plan §41.4a, D10) */
+	MADC_DUMP_SHOW     = 2,	/* the REPL's value (plan §41.4a, D10) */
+	MADC_DUMP_SHOW_ROW = 3	/* a binding row's: the show, bounded (§41.11a) */
 };
+
+/* A binding row shows at most this many elements of an aggregate, then `…`
+ * (plan §41.11a step 3d). The one number the generated walk and the runtime
+ * walk share. */
+enum { MADC_DUMP_ROW_ELEMENTS = 16 };
 
 /* The column of an aggregate's own frame — print_r's "(" and ")" lines,
  * var_dump's head and tail. print_r steps 8 per level, var_dump 2. */

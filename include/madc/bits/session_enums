@@ -22,6 +22,14 @@ namespace madc {
     // crash; the session's state went with it), a program file loaded, its
     // main run (the cores of %load and %run), or D11's question answered.
     enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues };
+    // What a top-level name names (plan §41.8a; the engine's
+    // Program::TopLevelName::Kind aliases it): a binding row's `kind`
+    // (%whos, madcide's Variables view, plan §41.11a) is one of these codes.
+    enum class name_kind : unsigned char
+    {
+	object, function, type, tag, name_space, class_template,
+	function_template, keyword, macro, header_name, dialect_word, result
+    };
 }
 
 #endif // __MADC_BITS_SESSION_ENUMS

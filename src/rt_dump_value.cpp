@@ -182,8 +182,9 @@ void dump_aggregate(void *sink, const madc::value &v, int flavor, int depth,
 // dialect writes them (dialect-literals.md). A string or bytes value is a C
 // literal. A null at top level shows nothing, as Julia shows `nothing` and
 // IPython `None`. The dialect has no literal for null, so a nested one is
-// `null`.
-void show_value(void *sink, const madc::value &v, int depth)
+// `null`. A binding row's (`elements` > 0) shows at most that many elements
+// of an array or an object, then `…`.
+void show_value(void *sink, const madc::value &v, int depth, long elements)
 {
 	switch (v.type()) {
 	case madc::value::kind::null:
@@ -220,17 +221,25 @@ void show_value(void *sink, const madc::value &v, int depth)
 			const std::map<std::string, madc::value> &obj = v.as_object();
 			std::map<std::string, madc::value>::const_iterator it;
 			for (it = obj.begin(); it != obj.end(); ++it, ++i) {
+				if (elements > 0 && (long)i == elements) {
+					__madc_dump_raw(sink, ", \u2026", 5);
+					break;
+				}
 				__madc_dump_sh_sep(sink, (long long)i);
 				__madc_dump_sh_text(sink, it->first.data(),
 						    (long long)it->first.size());
 				__madc_dump_raw(sink, ": ", 2);
-				show_value(sink, it->second, depth + 1);
+				show_value(sink, it->second, depth + 1, elements);
 			}
 		} else {
 			const std::vector<madc::value> &arr = v.as_array();
 			for (i = 0; i < arr.size(); i++) {
+				if (elements > 0 && (long)i == elements) {
+					__madc_dump_raw(sink, ", \u2026", 5);
+					break;
+				}
 				__madc_dump_sh_sep(sink, (long long)i);
-				show_value(sink, arr[i], depth + 1);
+				show_value(sink, arr[i], depth + 1, elements);
 			}
 		}
 		__madc_dump_raw(sink, i ? " }" : "}", i ? 2 : 1);
@@ -245,8 +254,9 @@ void show_value(void *sink, const madc::value &v, int depth)
 void dump_value_at(void *sink, const madc::value &v, int flavor, int depth,
 		   bool nested)
 {
-	if (flavor == MADC_DUMP_SHOW) {
-		show_value(sink, v, depth);
+	if (flavor == MADC_DUMP_SHOW || flavor == MADC_DUMP_SHOW_ROW) {
+		show_value(sink, v, depth,
+			   flavor == MADC_DUMP_SHOW_ROW ? MADC_DUMP_ROW_ELEMENTS : 0);
 		return;
 	}
 	int col = madc_dump_frame_col(flavor, depth);
