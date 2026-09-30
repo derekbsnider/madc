@@ -7,7 +7,7 @@
 //      command (IdeSession driven directly, typeset by ui::render_tree);
 //   2. the verdict: 0 clean, 1 when the problems projection carries an
 //      error after the command (the check's verdict), 2 for a line the
-//      client refuses — an unknown command (before a session opens; stderr
+//      client refuses — an unknown command (before anything runs; stderr
 //      says why) or an argument for a command that opened no prompt;
 //   3. the argument feeds the prompt the command opens (gotoline, find)
 //      and commits it by CODE — the same commit a key reaches;
@@ -103,7 +103,8 @@ int main()
     rc = run_once(out, path, false, "find add");
     print("--- -c find add ---\n{}--- end rc={} ---\n", out, rc);
 
-    // 2. The refusals: an unknown command (2, nothing on stdout, no session);
+    // 2. The refusals: an unknown command (2, nothing on stdout, nothing run;
+    //    a contributed name is known only to the session's world);
     //    an argument for a command that opened no prompt (2, the status
     //    line says so); a command that needs a terminal this client has not
     //    (the session's own refusal on the status line; the verdict stays

@@ -1,0 +1,7 @@
+contrib-register: above-base=1 again=0 builtin-name=0 bad-name=0 no-handler=0
+contrib-names: of=1 name=greet builtin-table=none
+contrib-command: cont=1 msg=Hello, world.
+contrib-byname: msg=Hello, by name.
+contrib-keys: with-world=1 without=0 why=line 1: unknown action 'greet'
+contrib-seat: ok=1 msg=Hello, seat. tier=editor
+contrib-mcp: listed=1 lsp=1

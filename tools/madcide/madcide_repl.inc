@@ -655,7 +655,7 @@ long repl_command(long w, long es, long code, var &ev)
     // The binding's command, as an action event (the key's own spelling
     // stays in `seq`, the one a scope looks up).
     var an;
-    cmd_name(an, code);
+    cmd_name_w(an, w, code);
     ev["event"] = "action";
     ev["event_code"] = ui::event_kind::action;
     ev["action"] = an;

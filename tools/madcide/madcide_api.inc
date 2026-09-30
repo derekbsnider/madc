@@ -200,7 +200,7 @@ void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, 
 	handle_clienttier(out, self_id, arg);
 	return;
     }
-    long code = cmd_of(name);
+    long code = cmd_of_w(S.world(), name);	// contributed commands too
     if ( code == cmdNONE )
     {
 	var why = format("unknown command '{}'", name);
@@ -210,7 +210,7 @@ void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, 
     // Permission gate (V6a tiers): a command above this caller's tier is
     // refused with prose, never run silently.
     long my_tier = eff_tier(self_id);
-    long need = cmd_min_tier(code);
+    long need = cmd_min_tier_w(S.world(), code);
     if ( my_tier < need )
     {
 	var why = format("'{}' requires {} (you are {})",

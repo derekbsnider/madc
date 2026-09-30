@@ -126,6 +126,13 @@ One enum, `contribution_kind`, whose contracts are declared in one header, `<mad
 - **Handlers are resolved once, at load.** The name in the manifest is converted to a function pointer (`dlsym` in a library, or the compiled module's symbol). A missing handler, or one whose declared contract does not match, refuses the plugin at load, never at use.
 - **madcide's own features register through the same points,** compiled in (transport `builtin`). `madcide_repl.inc` is the first to move (Stage B5), which proves the points against a real feature.
 
+**Where the registry lives (2026-09-30, step 2's design).**
+- One world entity, `plugins`, holds the registry: `commands` rows `{name, code, title, handler}`, `views` rows `{name, kind, title, key}` and `events` rows `{kind, handler}`. It is per world, never a process global (the thread-safety law: no new bare mutable globals), and every client of the world (each `es`) sees the same commands.
+- A handler is its function's ADDRESS, kept as an integer in the row and called through the kind's typedef (`cmd_handler`, `event_handler`). A `builtin` handler's address is `(long)&fn`; a `library` handler's will be `dlsym`'s answer, so step 4 fills the same slot.
+- A contributed command's code is interned at registration, from `cmd_contrib_base()` upward, in registration order. The converters become world-aware: `cmd_of_w(w, name)` and `cmd_name_w(out, w, code)` read the built-in table first, then the registry, and every input boundary (key profiles, menus, `-c`, the seat) converts through them.
+- Registration runs before any profile or menu loads, so a key profile or a menu can name a contributed command: a built-in module registers when the world is made (the first is the REPL pane, step 8), a library plugin when its bundle loads (step 4).
+- The dispatcher hands a code at or above the base to the command's handler, with the command's argument.
+
 ### 5.4 One API, two transports
 
 A plugin's code sees one API, declared in `<madcide/plugin>`:
@@ -219,6 +226,10 @@ All of it is in the next release (owner, 2026-09-30). The order, interleaved wit
   **Built, part 4 (2026-09-30, owner request): the program's name selects a bundle.** `program_name` reads `madc::sys.argv[0]`'s basename without its extension, and `active_profile` uses the bundle of that name when one exists: a binary, a symbolic link or a hard link named `chthonic` opens the `chthonic` bundle with no flag. The order is `--profile`, then the program's name, then `settings.json`'s `"profile"`, then `default`. No name is special: no bundle is named `madcide`, so madcide itself falls through. Gate: `tests/testmadcide_bundles` (`bundles-progname`).
 - **Stage B, plugin code:**
   1. **Contributed commands, views and events** (G4), and the toolbar placement, with handlers in `builtin` form only: the extension points exercised by madcide's own code first (step 2).
+
+     **Built, part 1 (2026-09-30): the toolbar.** A menu file's placement word `toolbar` rows become buttons: `compose_toolbar` carries `{label, action, code, enabled}` rows as the root's `toolbar` hint, the web page draws them as a button row and the terminal as a top line, and each renderer resolves the button's chord through the active key profile (`key_resolver::chord_for`), so the composed tree stays profile-independent. `chthonic.menu` ships Open, Save and Run. Gates: `tests/gui/madcide_toolbar`, `test_web_model`, `test_tui_model`, `testmadcide_chthonic`.
+
+     **Built, part 2 (2026-09-30): contributed commands.** `plugin_command(w, name, title, handler)` registers a command in the world's `plugins` entity and returns its code, or 0 when refused: a built-in's or an earlier contribution's name, a word `plugin_name_ok` refuses, or no handler. `cmd_table_w`, `cmd_of_w` and `cmd_name_w` convert both ranges, and every input boundary reads them: key profiles (`parse_keys` with the world), menus (`load_menu`), `-c` (`run_once`), the seat (`api_run`), the MCP tool list and the LSP server's command ids. The dispatcher and `IdeSession::command` hand a contributed code to its handler with the argument, and the seat gates it at the editor tier (`cmd_min_tier_w`: the core cannot see a handler's effects). Gates: `tests/testmadcide_contrib`; `check-madcide-command-registry.sh` learns the contributed range (shipped code never contributes a built-in's name or one name twice, a bundle's menu and keys may name a contribution, and the enum's codes stay below `cmd_contrib_base()`).
   2. **The `library` transport** (G1, G2, G5): `--build-plugin`, the API table, versioned refusal; on Linux first, then macOS (`MH_DYLIB`) and Windows (DLL), through ROADMAP 6.5 (step 4).
   3. **The `source` transport** (G3), with the activation cost measured against `library` (step 5).
   4. **`chthonic`'s code, the Variables view,** shipped as source plus a prebuilt library per platform (step 6).

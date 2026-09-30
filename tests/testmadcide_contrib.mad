@@ -1,0 +1,105 @@
+// Contributed commands (plugins Stage B1, plan §41.11a step 2; plugin
+// design §5.3, G4): a module registers a command with its handler, and the
+// command runs through every input boundary a built-in does. Here the module
+// is this test, the `builtin` transport (a handler compiled in, its address
+// kept by the registry). Pins:
+//   1. registration interns a code above the built-in range; a taken name
+//      (a built-in's or an earlier contribution's), a name that is not a
+//      plugin name and a missing handler are refused;
+//   2. the world's converters know it (cmd_of_w / cmd_name_w); the built-in
+//      table alone does not;
+//   3. it runs through the one dispatcher: IdeSession::command hands it its
+//      argument (no prompt between), and an action posted by NAME converts
+//      at the session's entry;
+//   4. a key profile line binds it when parsed against the world, and is
+//      refused without it (an unknown action);
+//   5. the seat (api_run) runs it by name, gated at the editor tier (the
+//      core cannot see what a handler does); the MCP tool list and the LSP
+//      server's executeCommand ids offer it.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_lsp.inc"
+
+// The module's handler: it says hello to its argument.
+bool greet(long w, long es, long doc, const char *arg)
+{
+    ui::set(w, es, "msg", format("Hello, {}.", arg));
+    return true;
+}
+
+int main()
+{
+    const char *path = "madc_ide_contrib.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    long w = S.world();
+
+    // 1. Registration.
+    long code = plugin_command(w, "greet", "Greet", (long)&greet);
+    println("contrib-register: above-base={} again={} builtin-name={} bad-name={} no-handler={}",
+	    code >= cmd_contrib_base() ? 1 : 0,
+	    plugin_command(w, "greet", "Greet", (long)&greet),
+	    plugin_command(w, "save", "Save", (long)&greet),
+	    plugin_command(w, "two words", "x", (long)&greet),
+	    plugin_command(w, "other", "x", 0));
+
+    // 2. The converters.
+    var nm;
+    cmd_name_w(nm, w, code);
+    println("contrib-names: of={} name={} builtin-table={}",
+	    cmd_of_w(w, "greet") == code ? 1 : 0, nm, cmd_of("greet") == cmdNONE ? "none" : "set");
+
+    // 3. The dispatcher: with its argument, then posted by name.
+    bool cont = true;
+    S.command(doc, code, "world", cont);
+    var m;
+    ui::get(m, w, S.es, "msg");
+    println("contrib-command: cont={} msg={}", cont ? 1 : 0, m);
+    var ev = { "event": "action", "event_code": ui::event_kind::action,
+	       "action": "greet", "arg": "by name", "seq": "" };
+    S.apply_ide_event(doc, ev);
+    ui::get(m, w, S.es, "msg");
+    println("contrib-byname: msg={}", m);
+
+    // 4. A key profile line.
+    var table;
+    var scopes;
+    var err;
+    bool bound = parse_keys(table, scopes, "^g greet\n", err, w);
+    var t2;
+    var s2;
+    var err2;
+    bool unbound = parse_keys(t2, s2, "^g greet\n", err2);
+    println("contrib-keys: with-world={} without={} why={}", bound ? 1 : 0, unbound ? 1 : 0, err2);
+
+    // 5. The seat and the MCP tool list.
+    var reply;
+    api_run(reply, S, doc, -1, "greet", "seat");
+    ui::get(m, w, S.es, "msg");
+    println("contrib-seat: ok={} msg={} tier={}", reply["ok"].as_boolean() ? 1 : 0, m,
+	    tier_name(cmd_min_tier_w(w, code)));
+    var tools;
+    mcp_tools(tools, w);
+    long listed = 0;
+    for ( var t : tools )
+	if ( t["name"] == "greet" )
+	    listed = 1;
+    var ids;
+    lsp_command_ids(ids, w);
+    var want = format("{}greet", lsp_command_prefix());
+    long offered = 0;
+    for ( var id : ids )
+	if ( id == want )
+	    offered = 1;
+    println("contrib-mcp: listed={} lsp={}", listed, offered);
+
+    S.close();
+    php::unlink(path);
+    return 0;
+}

@@ -264,12 +264,12 @@ bool scope_line_parts(var &line, var &scope, var &name, var &value)
 // scoped tables' values are codes), and an unknown name REFUSES the whole
 // text — false, `err` naming the line and the word — so a misspelt binding
 // is a load-time error the status line reports, never a dead key.
-bool parse_keys(var &table, var &scopes, const char *text, var &err)
+bool parse_keys(var &table, var &scopes, const char *text, var &err, long w = 0)
 {
     var t;
     var sc = scopes;		// accumulate over what the caller seeded
     var ct;
-    cmd_table(ct);
+    cmd_table_w(ct, w);		// the world's names: contributed commands too (0 = built-ins)
     array lines;
     php::explode(lines, "\n", text);
     long n = php::count(lines);
@@ -387,7 +387,7 @@ void modal_keys(var &mk, long w, long es)
     {
 	var t0;
 	var err;
-	if ( !parse_keys(t0, mk, modal_default_keys_text(), err) )
+	if ( !parse_keys(t0, mk, modal_default_keys_text(), err, w) )
 	    ui::set(w, es, "msg", format("Baked modal keys rejected: {}.", err));
 	ui::set(w, es, "modekeys", mk);
     }
@@ -518,8 +518,8 @@ bool load_profile(long w, long es, const char *name)
     var table;
     var scopes;
     var err;
-    parse_keys(table, scopes, modal_default_keys_text(), err);
-    if ( !parse_keys(table, scopes, txt.c_str(), err) )
+    parse_keys(table, scopes, modal_default_keys_text(), err, w);
+    if ( !parse_keys(table, scopes, txt.c_str(), err, w) )
     {
 	ui::set(w, es, "msg", format("Keys '{}' {}.", pname, err));
 	return false;
@@ -578,8 +578,8 @@ bool bind_rescue_keys(long w, long es)
     var table;
     var scopes;
     var err;
-    parse_keys(table, scopes, modal_default_keys_text(), err);
-    if ( !parse_keys(table, scopes, rescue_keys_text(), err) )
+    parse_keys(table, scopes, modal_default_keys_text(), err, w);
+    if ( !parse_keys(table, scopes, rescue_keys_text(), err, w) )
 	return false;
     if ( !ui::tui_validate_keys(table) )
 	return false;
@@ -1430,7 +1430,7 @@ bool load_menu(long w, long es, const char *name)
     var menus = {};
     var at;			// menu title -> index into menus
     var ct;
-    cmd_table(ct);		// ids resolve to codes HERE (the input boundary)
+    cmd_table_w(ct, w);		// ids resolve to codes HERE (the input boundary)
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -2294,7 +2294,7 @@ void confirm_choices(var &out, long w, long es)
 	if ( bound )
 	{
 	    var nm;
-	    cmd_name(nm, want.as_integer());
+	    cmd_name_w(nm, w, want.as_integer());
 	    t["action"] = nm;		// the wire id the page posts back
 	    rows.push(t);
 	}
@@ -2353,7 +2353,7 @@ void dialog_hints(var &box, long w, long es, const char *scope,
 	// The scope's cancel CODE; its name is the wire id the page posts
 	// (the engine converts it back to the code at that boundary).
 	var cname;
-	cmd_name(cname, cancel.as_integer());
+	cmd_name_w(cname, w, cancel.as_integer());
 	var cb = { "label": "Close" };
 	cb["action"] = cname;
 	cb["code"] = cancel;
@@ -4453,7 +4453,7 @@ bool modes_dispatch(long w, long es, long doc, long caret, long a)
 	return true;
     }
     var an;
-    cmd_name(an, a);
+    cmd_name_w(an, w, a);
     ui::set(w, es, "msg", format("Unknown mode action '{}'.", an));
     return true;
 }
@@ -6596,7 +6596,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	{
 	    var an = ev["action"];
 	    if ( !an.is_null() && strlen(an.c_str()) > 0 )
-		ev["action_code"] = cmd_of(an.c_str());
+		ev["action_code"] = cmd_of_w(w, an.c_str());
 	}
     }
     // Stage-2: cooperative background tasks drained — the spawned parse
@@ -6693,6 +6693,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    else
 		ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	    return true;
+	}
+	// A CONTRIBUTED command (plugins Stage B1): its handler runs, with the
+	// argument the event carries (a tab's, the seat's, the -c line's).
+	if ( cmd_contributed(code) )
+	{
+	    var carg;
+	    keyed_get(carg, ev, "arg");
+	    var cs = "";
+	    if ( !carg.is_null() )
+		cs = format("{}", carg);
+	    return run_contributed(w, es, doc, code, cs.c_str());
 	}
 	// Stored-space interaction state (block markers) and history are
 	// meaningless against a displayed view: the one refusal, up front
@@ -7106,14 +7117,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	if ( mk != ui::key::none )
 	{
 	    var kn;
-	    cmd_name(kn, code);
+	    cmd_name_w(kn, w, code);
 	    var ke = { "event": "key", "event_code": ui::event_kind::key,
 		       "key": kn, "key_code": mk };
 	    if ( edit_key(w, es, nav, caret, ke) )
 		return true;
 	}
 	if ( strlen(a.c_str()) == 0 )
-	    cmd_name(a, code);
+	    cmd_name_w(a, w, code);
 	ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	return true;
     }
@@ -7308,7 +7319,7 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	var title = view_title(k);
 	long sc = view_show_cmd(k);
 	var an;
-	cmd_name(an, sc);
+	cmd_name_w(an, w, sc);
 	var tb = { "title": title, "action": an, "code": sc };
 	if ( ti == active )
 	    tb["active"] = 1;
@@ -8488,13 +8499,21 @@ bool IdeSession::vi_exec(long doc, long code, long n)
 bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
 {
     var a = arg;			// ring discipline: own the text first
+    if ( cmd_contributed(code) )
+    {
+	// A contributed command takes its argument itself: no prompt between.
+	var e = { "event": "action", "event_code": ui::event_kind::action,
+		  "action": "", "action_code": code, "arg": a };
+	cont = apply_ide_event(doc, e);
+	return true;
+    }
     cont = post(doc, code);
     if ( !cont || strlen(a.c_str()) == 0 )
 	return true;
     if ( !prompt_active(w, es) )
     {
 	var nm;
-	cmd_name(nm, code);
+	cmd_name_w(nm, w, code);
 	ui::set(w, es, "msg", format("'{}' takes no argument.", nm));
 	return false;
     }

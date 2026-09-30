@@ -487,3 +487,143 @@ void setting_get(var &out, long w, long es, const char *key0)
     }
     out = v;
 }
+
+// ---- contributed commands (Stage B1, step 2; §5.3, G4) ---------------------
+// The registry is one world entity, `plugins` (§5.3's storage note): every
+// client of the world sees the same commands. A command's handler is its
+// function's ADDRESS, kept as an integer and called through cmd_handler — a
+// builtin handler's `(long)&fn` now, a library's dlsym answer at step 4.
+// Codes are interned from cmd_contrib_base() upward, in registration order.
+// Thread contract: registration runs on the session's thread before the
+// profiles and menus load; the rows are read-only afterwards.
+typedef bool (*cmd_handler)(long w, long es, long doc, const char *arg);
+
+// The first contributed code: above every ide_cmd enumerator.
+long cmd_contrib_base()
+{
+    return 4096;
+}
+
+// Is a code a contributed command's (the range above every enumerator)?
+bool cmd_contributed(long code)
+{
+    return code >= cmd_contrib_base();
+}
+
+// The world's registry entity; 0 = nothing registered yet.
+long plugin_registry(long w)
+{
+    return ui::entity_by_name(w, "plugins");
+}
+
+// The contributed commands' rows (an empty array when none).
+void contributed_commands(var &out, long w)
+{
+    var fresh = {};
+    out = fresh;
+    long reg = plugin_registry(w);
+    if ( reg == 0 )
+	return;
+    var rows;
+    ui::get(rows, w, reg, "commands");
+    if ( !rows.is_null() )
+	out = rows;
+}
+
+// The contributed command a code names: its row, or null when none does.
+void contributed_row(var &out, long w, long code)
+{
+    var none;
+    out = none;
+    var rows;
+    contributed_commands(rows, w);
+    for ( var r : rows )
+	if ( r["code"].as_integer() == code )
+	{
+	    out = r;
+	    return;
+	}
+}
+
+// THE name <-> code table of a world: the built-in rows (cmd_table), then
+// the contributed ones. Every input boundary converts through it, so a key
+// profile, a menu, the -c line and the seat accept a contributed name.
+void cmd_table_w(var &t, long w)
+{
+    cmd_table(t);
+    var rows;
+    contributed_commands(rows, w);
+    for ( var r : rows )
+	t[] = { "name": r["name"], "code": r["code"] };
+}
+
+long cmd_of_w(long w, const char *name)
+{
+    var t;
+    cmd_table_w(t, w);
+    return cmd_of_in(t, name);
+}
+
+// A code to the name a wire or a message spells, contributed codes included.
+void cmd_name_w(var &out, long w, long code)
+{
+    if ( !cmd_contributed(code) )
+    {
+	cmd_name(out, code);
+	return;
+    }
+    var r;
+    contributed_row(r, w, code);
+    out = "";
+    if ( !r.is_null() )
+	out = r["name"];
+}
+
+// Register a contributed command. The name must be a plugin name
+// (plugin_name_ok) and new — neither a built-in's nor an earlier
+// contribution's; the handler must be an address. The code it is given; 0 =
+// refused.
+long plugin_command(long w, const char *name0, const char *title0, long handler)
+{
+    var name = name0;		// ring discipline: own the text first
+    var title = title0;
+    if ( handler == 0 || !plugin_name_ok(name.c_str()) )
+	return 0;
+    if ( cmd_of_w(w, name.c_str()) != cmdNONE )
+	return 0;
+    long reg = plugin_registry(w);
+    if ( reg == 0 )
+	reg = ui::create(w, "plugins");
+    var rows;
+    contributed_commands(rows, w);
+    long code = cmd_contrib_base() + php::count(rows);
+    rows[] = { "name": name, "code": code, "title": title, "handler": handler };
+    ui::set(w, reg, "commands", rows);
+    return code;
+}
+
+// Run a contributed command's handler with the command's argument. False =
+// the handler ended the session (the dispatcher's continue / quit verdict).
+bool run_contributed(long w, long es, long doc, long code, const char *arg0)
+{
+    var arg = arg0;		// ring discipline: own the text first
+    var r;
+    contributed_row(r, w, code);
+    if ( r.is_null() )
+    {
+	ui::set(w, es, "msg", format("Unknown command {}.", code));
+	return true;
+    }
+    cmd_handler h = (cmd_handler)r["handler"].as_integer();
+    return h(w, es, doc, arg.c_str());
+}
+
+// The seat tier a command needs (V6a tiers), contributed commands included:
+// a contributed command's effects are its handler's, which the core cannot
+// see, so it is gated as an editor-tier mutation (the fail-safe default).
+long cmd_min_tier_w(long w, long code)
+{
+    if ( cmd_contributed(code) )
+	return tierEDITOR;
+    return cmd_min_tier(code);
+}

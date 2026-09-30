@@ -848,10 +848,10 @@ long lsp_negotiate_encoding(var &params)
 // SAME table the profiles, the menus, the -c one-shot and the MCP tool list
 // load through), each wearing the wire prefix. What is advertised is exactly
 // what dispatch accepts, because both read this one list.
-void lsp_command_ids(var &out)
+void lsp_command_ids(var &out, long w)
 {
     var ct;
-    cmd_table(ct);
+    cmd_table_w(ct, w);		// contributed commands too
     var ids = {};
     for ( var r : ct )
     {
@@ -862,7 +862,7 @@ void lsp_command_ids(var &out)
     out = ids;
 }
 
-void lsp_capabilities(var &out, long enc)
+void lsp_capabilities(var &out, long enc, long w)
 {
     long incremental = lsp_sync_number(lsINCREMENTAL);
     var save = { "includeText": false };
@@ -872,7 +872,7 @@ void lsp_capabilities(var &out, long enc)
     var semantic = { "legend": legend, "full": true };
     var encoding = pos_encoding_name(enc);
     var ids;
-    lsp_command_ids(ids);
+    lsp_command_ids(ids, w);
     var exec = { "commands": ids };
     out = { "positionEncoding": encoding, "textDocumentSync": sync,
 	    "hoverProvider": true, "definitionProvider": true,
@@ -948,7 +948,7 @@ void lsp_initialize(var &out, IdeSession &S, long self_id, var &idv, var &params
     long enc = lsp_negotiate_encoding(params);
     lsp_set_encoding(S.world(), S.es, self_id, enc);
     var caps;
-    lsp_capabilities(caps, enc);
+    lsp_capabilities(caps, enc, S.world());
     var info;
     madcide_self_info(info);
     var result = { "capabilities": caps, "serverInfo": info };
