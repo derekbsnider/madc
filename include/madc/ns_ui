@@ -241,6 +241,11 @@ namespace ui {
     // -1 = no text component, or `line` is not a line of this text.
     int64_t text_bytecol(int64_t w, int64_t entity, int64_t line, int64_t col16);
     int64_t text_col16(int64_t w, int64_t entity, int64_t line, int64_t bytecol);
+    // A text's width in terminal columns, by the terminal target's own
+    // layout rule (madcdis/text_utf16.h line_width: tab stops, code-point
+    // widths, an East Asian wide character two columns). Aligning by strlen
+    // counts a UTF-8 character's bytes as columns (B87).
+    int64_t text_columns(const char *text);
     // History (undo/redo): text_checkpoint snapshots the buffer BEFORE a
     // mutation, carrying an OPAQUE application payload (store the caret
     // there — it rides with the state it belongs to); one semantic edit,

@@ -1565,6 +1565,13 @@ int64_t text_col16(int64_t w, int64_t entity, int64_t line, int64_t bytecol)
     return (int64_t)madc::col16_of_byte(b->slice(off, len), (size_t)bytecol);
 }
 
+// A text's width in columns: the dialect face of the ONE layout rule the
+// terminal target paints with (madc::line_width).
+int64_t text_columns(const char *text)
+{
+    return text ? (int64_t)madc::line_width(text) : 0;
+}
+
 // ---- the view seam's coordinate map (madcide AST-3) --------------------
 // A document lens's display<->stored map rides as DATA ({disp, stored,
 // len} rows — madcdis/doc_lens.h's codec); these publics are the dialect

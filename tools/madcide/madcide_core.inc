@@ -2184,7 +2184,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	    if ( lens_name(vw, w, es) )
 		seat = format("({}) ", vw);
 	}
-	long pad = width - strlen(seat.c_str());
+	long pad = width - ui::text_columns(seat.c_str());	// columns (B87)
 	if ( pad > 0 )
 	    s = format("{}{}", s, php::str_repeat(" ", pad));
 	s = format("{}{}", s, seat);
@@ -2433,7 +2433,8 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 	cols = 80;
     // The renderer's status arm prepends one space — the usable width is
     // cols - 1. A gap that would go negative just joins with one fill.
-    long gap = cols - 1 - strlen(lout.c_str()) - strlen(rout.c_str());
+    long gap = cols - 1 - ui::text_columns(lout.c_str())
+	       - ui::text_columns(rout.c_str());	// columns, not bytes (B87)
     if ( gap < 1 )
 	gap = 1;
     st["content"] = format("{}{}{}", lout, php::str_repeat(fill.c_str(), gap),

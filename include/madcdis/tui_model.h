@@ -41,6 +41,7 @@
 // a plain object confined to the thread that composes and applies keys;
 // two models never share state.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -55,6 +56,7 @@
 #include "madcdis/ui_focus.h"	// focusable, focus_state — the focus/navigation owner
 #include "madcdis/ui_input.h"	// ui_apply_keys — the one keys → events adapter
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
+#include "madcdis/text_utf16.h"	// line_layout / line_columns — the one line layout (B87)
 
 namespace madc {
 namespace hub {
@@ -64,14 +66,28 @@ namespace hub {
 // madcdis/ui_style.h — the one vocabulary the DOM model renders too; this
 // model paints it into cells, the VT100 target spells it as SGR.
 
+// One terminal column. `ch` is the glyph drawn there: one code point's UTF-8
+// bytes packed first-byte-lowest (an ASCII glyph is its own byte, so a cell
+// compares against 'x' directly). A wide glyph (codepoint_columns() == 2)
+// occupies its cell AND the next, which is its `tail`: no glyph of its own,
+// never emitted (the terminal advanced over it drawing the glyph).
 struct tui_cell
 {
-    char     ch;
+    uint32_t ch;
+    bool     tail;
     ui_style attr;
-    tui_cell() : ch(' '), attr(ui_style::normal()) {}
+    tui_cell() : ch(' '), tail(false), attr(ui_style::normal()) {}
     bool operator==(const tui_cell &o) const
-	{ return ch == o.ch && attr == o.attr; }
+	{ return ch == o.ch && tail == o.tail && attr == o.attr; }
     bool operator!=(const tui_cell &o) const { return !(*this == o); }
+    // The glyph's bytes, appended to `out` (nothing for a tail).
+    void append_glyph(std::string &out) const
+    {
+	if ( tail )
+	    return;
+	for ( uint32_t g = ch; g != 0; g >>= 8 )
+	    out += (char)(g & 0xFF);
+    }
 };
 
 struct tui_grid
@@ -96,25 +112,72 @@ struct tui_grid
     const tui_cell &at(size_t r, size_t c) const { return cells[r * cols + c]; }
 
     // Clipped text write; never wraps. THE CELL INVARIANT: a cell holds one
-    // printable byte occupying exactly one terminal column — a control byte
-    // in a cell desynchronizes grid columns from screen columns (a raw tab
-    // MOVES the terminal cursor without erasing the skipped columns: stale
-    // fragments + doubled glyphs while scrolling, the IDE-9c defect). Tab
-    // expansion is the document projection's job (paint_edit's display map);
-    // here every control byte renders as a visible '?'. Bytes >= 0x80 pass
-    // through (UTF-8 renders byte-per-cell today; the multi-column glyph
-    // model is the doc-lens display-map seat).
+    // printable glyph and the grid's columns ARE the screen's — a control
+    // byte in a cell desynchronizes them (a raw tab MOVES the terminal cursor
+    // without erasing the skipped columns: stale fragments + doubled glyphs
+    // while scrolling, the IDE-9c defect), and so does a character's bytes
+    // counted as columns (B87: the caret drifted one column right per extra
+    // byte of a UTF-8 character). Tab expansion is the document projection's
+    // job (paint_edit lays lines out through madc::line_layout); here every
+    // control byte renders as a visible '?', each code point takes
+    // codepoint_columns() cells, and a wide glyph that does not fit before
+    // the right edge shows as a space.
     void put(size_t r, size_t c, const std::string &text,
 	     ui_style attr = ui_style::normal())
     {
 	if ( r >= rows )
 	    return;
-	for ( size_t i = 0; i < text.size() && c + i < cols; ++i )
+	size_t i = 0;
+	while ( i < text.size() && c < cols )
 	{
-	    tui_cell &cell = at(r, c + i);
-	    char b = text[i];
-	    cell.ch = (unsigned char)b < 0x20 || b == 0x7f ? '?' : b;
-	    cell.attr = attr;
+	    uint32_t cp = 0;
+	    size_t n = madc::utf8_decode_at(text, i, cp);
+	    uint32_t glyph = 0;
+	    size_t w = 1;
+	    if ( cp < 0x20 || cp == 0x7f )
+		glyph = '?';
+	    else
+	    {
+		for ( size_t k = n; k > 0; --k )
+		    glyph = (glyph << 8) | (unsigned char)text[i + k - 1];
+		w = madc::codepoint_columns(cp);
+	    }
+	    if ( c + w > cols )
+	    {
+		glyph = ' ';		// a wide glyph cut by the right edge
+		w = 1;
+	    }
+	    set_glyph(r, c, glyph, w, attr);
+	    c += w;
+	    i += n;
+	}
+    }
+    // Place one glyph `w` columns wide at (r, c). A glyph overwriting half of
+    // a wide one leaves the other half a space, so no tail outlives its lead
+    // and no lead loses its tail.
+    void set_glyph(size_t r, size_t c, uint32_t glyph, size_t w, ui_style attr)
+    {
+	if ( at(r, c).tail && c > 0 )
+	{
+	    at(r, c - 1).ch = ' ';
+	    at(r, c - 1).tail = false;
+	}
+	size_t after = c + w;
+	if ( after < cols && at(r, after).tail )
+	{
+	    at(r, after).ch = ' ';
+	    at(r, after).tail = false;
+	}
+	tui_cell &cell = at(r, c);
+	cell.ch = glyph;
+	cell.tail = false;
+	cell.attr = attr;
+	if ( w == 2 )
+	{
+	    tui_cell &t2 = at(r, c + 1);
+	    t2.ch = 0;
+	    t2.tail = true;
+	    t2.attr = attr;
 	}
     }
     void fill_attr(size_t r, size_t c, size_t len, ui_style attr)
@@ -131,7 +194,7 @@ struct tui_grid
 	if ( r >= rows )
 	    return out;
 	for ( size_t c = 0; c < cols; ++c )
-	    out += at(r, c).ch;
+	    at(r, c).append_glyph(out);
 	size_t end = out.find_last_not_of(' ');
 	return end == std::string::npos ? std::string() : out.substr(0, end + 1);
     }
@@ -223,9 +286,13 @@ inline uint64_t tui_row_hash(const tui_grid &g, size_t r)
     for ( size_t c = 0; c < g.cols; ++c )
     {
 	const tui_cell &cell = g.at(r, c);
-	unsigned char bytes[4] = { (unsigned char)cell.ch, cell.attr.fg,
+	unsigned char bytes[8] = { (unsigned char)(cell.ch & 0xFF),
+				   (unsigned char)((cell.ch >> 8) & 0xFF),
+				   (unsigned char)((cell.ch >> 16) & 0xFF),
+				   (unsigned char)(cell.ch >> 24),
+				   (unsigned char)cell.tail, cell.attr.fg,
 				   cell.attr.bg, cell.attr.flags };
-	for ( int i = 0; i < 4; ++i )
+	for ( int i = 0; i < 8; ++i )
 	{
 	    h ^= bytes[i];
 	    h *= 1099511628211ULL;
@@ -832,9 +899,9 @@ private:
 	    std::string left = " " + prose::text_of(n.label);
 	    std::string right = prose::text_of(n.content);
 	    line_out l(left);
-	    if ( !right.empty() && left.size() + right.size() + 2 <= cols )
-		l.text += std::string(cols - left.size() - right.size() - 1,
-				      ' ') + right;
+	    size_t lw = madc::line_width(left), rw = madc::line_width(right);
+	    if ( !right.empty() && lw + rw + 2 <= cols )
+		l.text += std::string(cols - lw - rw - 1, ' ') + right;
 	    span s; s.col = 0; s.len = cols; s.attr = ui_style::reverse();
 	    l.spans.push_back(s);
 	    emit_line(fl, l);
@@ -1052,12 +1119,23 @@ private:
 	return collect_leaf(r, n, c0, width);
     }
 
+    // A composed line through the one layout rule (tabs, code-point
+    // widths). Its styled spans are BYTE positions of the text, placed
+    // through the same map (B87: a span after a UTF-8 character landed a
+    // column right per extra byte). A position past the text's end is a
+    // COLUMN: a full-width bar spans len = cols, the row's width.
     void paint_line(size_t row, size_t col0, const line_out &l)
     {
-	_grid.put(row, col0, l.text);
+	std::vector<size_t> col;
+	_grid.put(row, col0, madc::line_layout(l.text, 0, col));
+	const size_t n = l.text.size();
 	for ( size_t i = 0; i < l.spans.size(); ++i )
-	    _grid.fill_attr(row, col0 + l.spans[i].col, l.spans[i].len,
-		l.spans[i].attr);
+	{
+	    size_t s = l.spans[i].col, e = l.spans[i].col + l.spans[i].len;
+	    size_t cs = s <= n ? col[s] : std::max(col[n], s);
+	    size_t ce = e <= n ? col[e] : std::max(col[n], e);
+	    _grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
+	}
     }
     // A leaf pane's header line: the tab titles, the active one reverse.
     void paint_header(size_t row, size_t col0,
@@ -1080,37 +1158,12 @@ private:
 	paint_line(row, col0, l);
     }
 
-    // THE byte->display-column expansion for one document line (tabs move
-    // to the next 8-column stop, JOE's default). Returns the display form
-    // (what the grid shows); dcol[i] = the display column of byte i, with
-    // the end sentinel dcol[size()] = the display width — the ONE map the
-    // caret, the horizontal shift, the selection, and the highlight spans
-    // all convert through. A control byte other than tab stays one column
-    // wide (the grid's put() renders it '?').
+    // A document line's byte->display-column map is madc::line_layout's
+    // (madcdis/text_utf16.h): tabs to the next `tabw` stop (8, JOE's default;
+    // the ^T option's hint), code-point widths, control bytes as ^X — the ONE
+    // map the caret, the horizontal shift, the selection and the highlight
+    // spans all convert through, and the one the line editor paints with.
     enum { tab_stop = 8 };
-    static std::string expand_line(const std::string &line,
-				   std::vector<size_t> &dcol,
-				   size_t tabw = tab_stop)
-    {
-	std::string disp;
-	if ( tabw < 1 )
-	    tabw = tab_stop;
-	dcol.assign(line.size() + 1, 0);
-	for ( size_t i = 0; i < line.size(); ++i )
-	{
-	    dcol[i] = disp.size();
-	    if ( line[i] == '\t' )
-	    {
-		disp += ' ';
-		while ( disp.size() % tabw )
-		    disp += ' ';
-	    }
-	    else
-		disp += line[i];
-	}
-	dcol[line.size()] = disp.size();
-	return disp;
-    }
 
     // THE byte-range-to-visible-row overlap rule (selection and highlight
     // spans both paint through it): the [s0, e0) document range's overlap
@@ -1164,8 +1217,8 @@ private:
 	size_t caret_end = caret_line + 1 < starts.size()
 			 ? starts[caret_line + 1] - 1 : e.text.size();
 	std::vector<size_t> caret_dcol;
-	expand_line(e.text.substr(caret_begin, caret_end - caret_begin),
-		    caret_dcol, (size_t)e.tabw);
+	madc::line_layout(e.text.substr(caret_begin, caret_end - caret_begin),
+			  0, caret_dcol, (size_t)e.tabw);
 	size_t caret_col = caret_dcol[caret - caret_begin];
 
 	size_t &top = _scroll[e.slot];
@@ -1187,10 +1240,10 @@ private:
 	    size_t end = li + 1 < starts.size() ? starts[li + 1] - 1
 						: e.text.size();
 	    std::vector<size_t> dcol;
-	    std::string disp = expand_line(e.text.substr(begin, end - begin),
-					   dcol, (size_t)e.tabw);
-	    if ( shift < disp.size() )
-		_grid.put(top_row + k, col0, disp.substr(shift, width));
+	    std::string disp = madc::line_layout(e.text.substr(begin, end - begin),
+						 0, dcol, (size_t)e.tabw);
+	    if ( shift < dcol.back() )
+		_grid.put(top_row + k, col0, madc::line_columns(disp, shift, width));
 	    // Highlight spans first, the selection LAST (it wins where
 	    // they overlap) — both are the one range-overlap rule below.
 	    for ( size_t si = 0; si < e.spans.size(); ++si )

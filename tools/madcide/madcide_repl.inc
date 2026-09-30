@@ -87,7 +87,7 @@ void repl_entry_display(var &out, const char *prompt, const char *text)
 {
     var p = prompt;
     var t = text;
-    var pad = php::str_repeat(" ", strlen(p.c_str()));
+    var pad = php::str_repeat(" ", ui::text_columns(p.c_str()));	// columns (B87)
     array lines;
     php::explode(lines, "\n", t.c_str());
     long n = php::count(lines);

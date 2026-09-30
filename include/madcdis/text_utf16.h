@@ -136,13 +136,17 @@ inline unsigned codepoint_columns(uint32_t cp)
 // where the line starts (a prompt's width, D22; 0 for a diagnostic's source
 // echo). `col[i]` is the absolute column byte i begins at, and
 // col[line.size()] is where the line ends. A tab runs to the next multiple of
-// 8 columns, the terminal's own tab stops (gcc's -ftabstop default); any
-// other control byte shows as ^X, two columns; a code point is
-// codepoint_columns() wide, and its continuation bytes share its column.
-// Returns the bytes the painter writes for the line.
+// `tabw` columns — 8 by default, the terminal's own tab stops and gcc's
+// -ftabstop (madcide's ^T option sets another); any other control byte shows
+// as ^X, two columns; a code point is codepoint_columns() wide, and its
+// continuation bytes share its column. Returns the bytes the painter writes
+// for the line: printable glyphs only.
 inline std::string line_layout(const std::string &line, std::size_t origin,
-			       std::vector<std::size_t> &col)
+			       std::vector<std::size_t> &col,
+			       std::size_t tabw = 8)
 {
+	if ( tabw < 1 )
+		tabw = 8;
 	std::string shown;
 	col.assign(line.size() + 1, 0);
 	std::size_t c = origin;
@@ -153,7 +157,7 @@ inline std::string line_layout(const std::string &line, std::size_t origin,
 		col[i] = c;
 		if ( b == '\t' )
 		{
-			std::size_t next = (c / 8 + 1) * 8;
+			std::size_t next = (c / tabw + 1) * tabw;
 			shown.append(next - c, ' ');
 			c = next;
 			++i;
@@ -185,6 +189,34 @@ inline std::size_t line_width(const std::string &s)
 	std::vector<std::size_t> col;
 	line_layout(s, 0, col);
 	return col.back();
+}
+
+// The columns [from, from + width) of a laid-out line (line_layout's
+// result, printable glyphs only, starting at column 0): the glyphs wholly
+// inside the window, a wide glyph cut by either edge shown as a space in the
+// column it keeps — a horizontally scrolled editor row. Byte-slicing the line
+// instead cuts a UTF-8 character in half and counts its bytes as columns.
+inline std::string line_columns(const std::string &shown, std::size_t from,
+				std::size_t width)
+{
+	std::string out;
+	std::size_t c = 0, i = 0;
+	const std::size_t to = from + width;
+	while ( i < shown.size() && c < to )
+	{
+		uint32_t cp = 0;
+		std::size_t n = utf8_decode_at(shown, i, cp);
+		std::size_t w = codepoint_columns(cp);
+		if ( c >= from && c + w <= to )
+			out.append(shown, i, n);
+		else
+			for ( std::size_t k = c; k < c + w; ++k )
+				if ( k >= from && k < to )
+					out += ' ';
+		c += w;
+		i += n;
+	}
+	return out;
 }
 
 } // namespace madc

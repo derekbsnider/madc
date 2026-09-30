@@ -141,22 +141,29 @@ std::string vt_paint_bytes(const tui_grid &prev, const tui_grid &next)
 	for ( size_t i = 0; i < plan.spans.size(); ++i )
 	{
 	    const madc::hub::tui_row_span &s = plan.spans[i];
-	    cup(out, s.row, s.c0);
+	    // A span that starts on a wide glyph's tail starts at its glyph:
+	    // the terminal draws the two columns as one character.
+	    size_t c0 = s.c0;
+	    if ( c0 > 0 && next.at(s.row, c0).tail )
+		--c0;
+	    cup(out, s.row, c0);
 	    // A span whose tail reaches into the row's normal-space run is
 	    // finished by one EL; cells right of the span already match.
 	    size_t pe = next.row_paint_end(s.row);
 	    bool   el = pe <= s.c1;
-	    size_t end = el ? (pe > s.c0 ? pe : s.c0) : s.c1 + 1;
+	    size_t end = el ? (pe > c0 ? pe : c0) : s.c1 + 1;
 	    ui_style cur = ui_style::normal();
-	    for ( size_t c = s.c0; c < end; ++c )
+	    for ( size_t c = c0; c < end; ++c )
 	    {
 		const madc::hub::tui_cell &cell = next.at(s.row, c);
+		if ( cell.tail )
+		    continue;		// drawn with its glyph
 		if ( cell.attr != cur )
 		{
 		    emit_sgr(out, cur, cell.attr);
 		    cur = cell.attr;
 		}
-		out += cell.ch;
+		cell.append_glyph(out);
 	    }
 	    if ( cur != ui_style::normal() )
 		out += "\x1b[0m";

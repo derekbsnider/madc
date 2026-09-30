@@ -1155,27 +1155,6 @@ int main(void) { return x; }
 
 ## madcide (the editor)
 
-### B87. madcide's terminal caret drifts right after a multi-byte character
-
-- Found 2026-09-30, while tracing B8's caret owner. A line holding `é!`,
-  the caret at its end (End): the terminal cursor lands on column 4; on
-  `e!` it lands on column 3, the correct place (é is one column wide).
-  Measured on a pty: each extra byte of a UTF-8
-  character moves the caret, the selection and the highlight spans one
-  column right for the rest of the line.
-- Layer: `tui_model::paint_edit` → `tui_model::expand_line`
-  (`include/madcdis/tui_model.h`), the byte → display-column map, counts a
-  character's bytes as columns, and `put` writes a byte per cell ("UTF-8
-  renders byte-per-cell today", its comment). The terminal draws the
-  character in one column, so the grid and the screen disagree from there on.
-- The same rule already exists, complete, in `line_layout`
-  (`include/madcdis/line_edit.h`: tab stops, control bytes, code-point
-  widths from `codepoint_columns`): two tab-expansion rules, one
-  UTF-8-blind. Fix: one layout owner for the grid and the line editor, and
-  a grid cell that holds a code point (a wide glyph takes two cells).
-- Planned: plan §41.11a step 0, after B8 (which moves the one layout rule
-  where the compiler's caret can read it too).
-
 ### B88. vi NORMAL mode's Enter and Backspace edit the buffer
 
 - Found 2026-09-30, while placing B55's Tab in the vi arm. In NORMAL mode

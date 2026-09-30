@@ -381,6 +381,61 @@ TEST_CASE("compose — tabs expand to 8-column stops; the caret, shift and "
     CHECK(raw.row_text(0) == "a?b?c");
 }
 
+TEST_CASE("compose — a UTF-8 character is one column, a wide one two (B87)")
+{
+    // Before the fix the display map counted a character's bytes as
+    // columns and put() wrote a byte per cell: on "\xc3\xa9!" (é!) with the
+    // caret at the end, the grid cursor sat on column 3 where the terminal
+    // draws column 2 (measured on a pty: the cursor landed one column right
+    // per extra byte). The terminal draws é in one column, 中 in two.
+    world w;
+    roles r = roles::standard(w);
+
+    tui_model m;
+    const tui_grid &g = m.compose(r, editor_tree(w, "\xc3\xa9!", 3), 6, 40);
+    CHECK(g.cursor_col == 2u);
+    CHECK(g.row_text(1) == "\xc3\xa9!");
+    CHECK(g.at(1, 0).ch == 0xA9C3u);		// é's bytes, first byte lowest
+    CHECK(g.at(1, 1).ch == '!');
+
+    // A wide glyph takes its cell and a tail; the caret after it is col 3.
+    tui_model m2;
+    const tui_grid &h = m2.compose(r, editor_tree(w, "\xe4\xb8\xadx", 4), 6, 40);
+    CHECK(h.cursor_col == 3u);
+    CHECK(h.at(1, 1).tail);
+    CHECK(h.at(1, 2).ch == 'x');
+    CHECK(h.row_text(1) == "\xe4\xb8\xadx");
+
+    // A selection after a UTF-8 character lands on its columns: "é!" with
+    // bytes [2, 3) selected reverses column 1 only.
+    tui_model m3;
+    const tui_grid &s = m3.compose(r, editor_tree(w, "\xc3\xa9!", 3, 2, 3), 6, 40);
+    CHECK(s.at(1, 1).attr == ui_style::reverse());
+    CHECK(s.at(1, 0).attr == ui_style::normal());
+
+    // Horizontal scrolling cuts by columns: a wide glyph cut by the left
+    // edge shows as a space, never half a character.
+    tui_model m4;
+    std::string wide_line;
+    for ( int i = 0; i < 12; ++i )
+	wide_line += "\xe4\xb8\xad";		// 12 wide glyphs = 24 columns
+    const tui_grid &sh = m4.compose(r, editor_tree(w, wide_line, 36), 6, 10);
+    CHECK(sh.cursor_col == 9u);
+    std::string row = sh.row_text(1);
+    CHECK(row.find('\xe4') != std::string::npos);
+    CHECK((unsigned char)row[0] != 0xb8);		// no stray continuation byte
+    CHECK((unsigned char)row[0] != 0xad);
+
+    // Overwriting half of a wide glyph clears its other half.
+    tui_grid raw;
+    raw.resize(1, 6);
+    raw.put(0, 0, "\xe4\xb8\xad");
+    raw.put(0, 1, "z");
+    CHECK(raw.at(0, 0).ch == ' ');
+    CHECK(!raw.at(0, 1).tail);
+    CHECK(raw.row_text(0) == " z");
+}
+
 TEST_CASE("compose — the tabwidth hint changes the stops (IDE-9d ^T option)")
 {
     world w;
