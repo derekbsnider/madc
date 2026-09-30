@@ -516,8 +516,18 @@ long plugin_registry(long w)
     return ui::entity_by_name(w, "plugins");
 }
 
-// The contributed commands' rows (an empty array when none).
-void contributed_commands(var &out, long w)
+// The world's registry entity, made on the first registration.
+long plugin_registry_make(long w)
+{
+    long reg = plugin_registry(w);
+    if ( reg == 0 )
+	reg = ui::create(w, "plugins");
+    return reg;
+}
+
+// One of the registry's lists ("commands", "views"): its rows, an empty
+// array when none.
+void registry_rows(var &out, long w, const char *list)
 {
     var fresh = {};
     out = fresh;
@@ -525,24 +535,37 @@ void contributed_commands(var &out, long w)
     if ( reg == 0 )
 	return;
     var rows;
-    ui::get(rows, w, reg, "commands");
+    ui::get(rows, w, reg, list);
     if ( !rows.is_null() )
 	out = rows;
+}
+
+// The row of a registry list whose integer field holds a value, or null.
+void registry_row(var &out, long w, const char *list, const char *field,
+		  long value)
+{
+    var none;
+    out = none;
+    var rows;
+    registry_rows(rows, w, list);
+    for ( var r : rows )
+	if ( r[field].as_integer() == value )
+	{
+	    out = r;
+	    return;
+	}
+}
+
+// The contributed commands' rows (an empty array when none).
+void contributed_commands(var &out, long w)
+{
+    registry_rows(out, w, "commands");
 }
 
 // The contributed command a code names: its row, or null when none does.
 void contributed_row(var &out, long w, long code)
 {
-    var none;
-    out = none;
-    var rows;
-    contributed_commands(rows, w);
-    for ( var r : rows )
-	if ( r["code"].as_integer() == code )
-	{
-	    out = r;
-	    return;
-	}
+    registry_row(out, w, "commands", "code", code);
 }
 
 // THE name <-> code table of a world: the built-in rows (cmd_table), then
@@ -591,9 +614,7 @@ long plugin_command(long w, const char *name0, const char *title0, long handler)
 	return 0;
     if ( cmd_of_w(w, name.c_str()) != cmdNONE )
 	return 0;
-    long reg = plugin_registry(w);
-    if ( reg == 0 )
-	reg = ui::create(w, "plugins");
+    long reg = plugin_registry_make(w);
     var rows;
     contributed_commands(rows, w);
     long code = cmd_contrib_base() + php::count(rows);
@@ -621,9 +642,192 @@ bool run_contributed(long w, long es, long doc, long code, const char *arg0)
 // The seat tier a command needs (V6a tiers), contributed commands included:
 // a contributed command's effects are its handler's, which the core cannot
 // see, so it is gated as an editor-tier mutation (the fail-safe default).
+bool cmd_view_row(long code);	// a contributed view's row verb (below)
 long cmd_min_tier_w(long w, long code)
 {
     if ( cmd_contributed(code) )
 	return tierEDITOR;
+    if ( cmd_view_row(code) )
+	return cmd_min_tier(cmdGOTO);	// a row's activation is navigation
     return cmd_min_tier(code);
+}
+
+// ---- contributed views (Stage B1, step 2; §5.3) -----------------------------
+// A contributed view is DATA: a name (the layout profile's word), a title
+// (its tab), a bag key (its rows, which the plugin's code keeps current, as
+// check keeps `diags` for Problems) and the command that shows it (a tab's
+// click; cmdNONE = none). Composition renders the key's rows and never calls
+// plugin code. Kinds are interned from view_contrib_base() upward, above
+// every ide_view enumerator. Each view's ROW verb (a choose on its rows) is
+// its kind's image in [cmd_view_row_base(), cmd_contrib_base()): the code
+// names the list, as Problems' rows carry cmdGOTO and Outline's cmdGOTODEF.
+// A row is { content, file?, line? }: its activation goes to the line
+// through goto_pane_row, the one navigation owner.
+long view_contrib_base()
+{
+    return 128;
+}
+
+bool view_contributed(long kind)
+{
+    return kind >= view_contrib_base();
+}
+
+long cmd_view_row_base()
+{
+    return 2048;
+}
+
+// Is a code a contributed view's row verb?
+bool cmd_view_row(long code)
+{
+    return code >= cmd_view_row_base() && code < cmd_contrib_base();
+}
+
+// The ROW verb of a list view (a choose on its rows posts it); cmdNONE = a
+// kind whose rows are not a navigable list.
+long view_row_cmd(long kind)
+{
+    if ( kind == viewPROBLEMS )
+	return cmdGOTO;
+    if ( kind == viewOUTLINE )
+	return cmdGOTODEF;
+    if ( view_contributed(kind) )
+	return cmd_view_row_base() + kind - view_contrib_base();
+    return cmdNONE;
+}
+
+// The list view a row verb names (view_row_cmd's inverse); viewNONE = none.
+long view_of_row_cmd(long code)
+{
+    if ( code == cmdGOTO )
+	return viewPROBLEMS;
+    if ( code == cmdGOTODEF )
+	return viewOUTLINE;
+    if ( cmd_view_row(code) )
+	return view_contrib_base() + code - cmd_view_row_base();
+    return viewNONE;
+}
+
+// The contributed views' rows (an empty array when none).
+void contributed_views(var &out, long w)
+{
+    registry_rows(out, w, "views");
+}
+
+// A layout word to its view kind: the built-in names, then the world's
+// contributed views; viewNONE = neither (the layout reader's refusal).
+long view_of_w(long w, var &name)
+{
+    long k = view_of(name);
+    if ( k != viewNONE || name.is_null() )
+	return k;
+    var rows;
+    contributed_views(rows, w);
+    for ( var r : rows )
+	if ( r["name"] == name )
+	    return r["kind"].as_integer();
+    return viewNONE;
+}
+
+// One text field of a view: a built-in's from its enum's converter, a
+// contributed view's from its row ("" when the world has no such view).
+void view_field_w(var &out, long w, long kind, const char *field)
+{
+    if ( !view_contributed(kind) )
+    {
+	if ( strcmp(field, "title") == 0 )
+	    out = view_title(kind);
+	else
+	    out = view_name(kind);
+	return;
+    }
+    var r;
+    registry_row(r, w, "views", "kind", kind);
+    out = "";
+    if ( !r.is_null() )
+	out = r[field];
+}
+
+void view_name_w(var &out, long w, long kind)
+{
+    view_field_w(out, w, kind, "name");
+}
+
+void view_title_w(var &out, long w, long kind)
+{
+    view_field_w(out, w, kind, "title");
+}
+
+// The command that shows a view (a tab's click), contributed views included.
+long view_show_cmd_w(long w, long kind)
+{
+    if ( !view_contributed(kind) )
+	return view_show_cmd(kind);
+    var r;
+    registry_row(r, w, "views", "kind", kind);
+    return r.is_null() ? cmdNONE : r["show"].as_integer();
+}
+
+// The bag key a list view's rows live on ("" = not a list view).
+void view_rows_key(var &out, long w, long kind)
+{
+    out = "";
+    if ( kind == viewPROBLEMS )
+	out = "diags";
+    else if ( kind == viewOUTLINE )
+	out = "outline";
+    else if ( view_contributed(kind) )
+    {
+	var r;
+	registry_row(r, w, "views", "kind", kind);
+	if ( !r.is_null() )
+	    out = r["key"];
+    }
+}
+
+// A contributed view's bag key is the plugin's own: `plugin.name`, a plugin
+// name with a dot inside it, so it never aliases a core key (none has one).
+bool view_key_ok(const char *key)
+{
+    long n = strlen(key);
+    if ( !plugin_name_ok(key) || key[n - 1] == '.' )
+	return false;
+    for ( long i = 1; i < n; i = i + 1 )
+	if ( key[i] == '.' )
+	    return true;
+    return false;
+}
+
+// Register a contributed view. The name must be a plugin name and new
+// (neither a built-in view's nor an earlier contribution's), the key the
+// plugin's own (view_key_ok), and `show` cmdNONE or a contributed command.
+// The kind it is given; viewNONE = refused.
+long plugin_view(long w, const char *name0, const char *title0,
+		 const char *key0, long show)
+{
+    var name = name0;		// ring discipline: own the text first
+    var title = title0;
+    var key = key0;
+    if ( !plugin_name_ok(name.c_str()) || !view_key_ok(key.c_str()) )
+	return viewNONE;
+    if ( view_of_w(w, name) != viewNONE )
+	return viewNONE;
+    if ( show != cmdNONE )
+    {
+	var sr;
+	contributed_row(sr, w, show);
+	if ( sr.is_null() )
+	    return viewNONE;
+    }
+    long reg = plugin_registry_make(w);
+    var rows;
+    contributed_views(rows, w);
+    long kind = view_contrib_base() + php::count(rows);
+    if ( view_row_cmd(kind) >= cmd_contrib_base() )
+	return viewNONE;	// the row verbs' range is full
+    rows[] = { "name": name, "kind": kind, "title": title, "key": key,
+	       "show": show };
+    ui::set(w, reg, "views", rows);
+    return kind;
 }

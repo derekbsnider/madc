@@ -25,9 +25,12 @@
 #   7. every bundle's menu and keys (plugins/*/) names a table name or a
 #      shipped contribution, like the registry and the profiles (which may
 #      name contributions too);
-#   8. the enum's codes stay below cmd_contrib_base(): the enumerators run
-#      from cmdNONE = 0 with no other explicit value, and their count is
-#      under the base — a contributed code never aliases a built-in one.
+#   8. the ranges stay disjoint: the enumerators run from cmdNONE = 0 with
+#      no other explicit value, and their count is under cmd_view_row_base(),
+#      which is under cmd_contrib_base() (built-in commands, then the
+#      contributed views' row verbs, then contributed commands); the ide_view
+#      enumerators' count is under view_contrib_base() — a contributed code
+#      or kind never aliases a built-in one.
 # The dispatcher is madcide_core.inc plus the madcide files it #includes (a
 # pane's own commands live beside the pane: madcide_repl.inc).
 set -u
@@ -96,11 +99,19 @@ contributed_calls()
 	sed 's/.*, "//; s/"$//'
 }
 
-# The contributed range's floor: cmd_contrib_base()'s returned literal.
-contrib_base()
+# A range's floor: the literal a `long <fn>()` returns (cmd_contrib_base,
+# cmd_view_row_base, view_contrib_base).
+range_base()
 {
-	awk '/^long cmd_contrib_base\(\)/ { on = 1 }
+	awk -v fn="$2" '$0 ~ "^long " fn "\\(\\)" { on = 1 }
 	     on && /return [0-9]+;/ { match($0, /[0-9]+/); print substr($0, RSTART, RLENGTH); exit }' "$1"
+}
+
+# The ide_view enumerators (between `enum ide_view` and its `};`).
+view_enum_ids()
+{
+	awk '/^enum ide_view/ { on = 1 } on { print } on && /^};/ { exit }' "$1" |
+	grep -o -E 'view[A-Z][A-Z0-9_]*' | sort -u
 }
 
 # An enumerator given an explicit value, cmdNONE's excepted (the count
@@ -135,7 +146,7 @@ check()
 {
 	local core="$1" enums="$2" menu="$3" profiles="$4" plugins="$5" pinc="$6" label="$7"
 	local reg pairs tnames tenums enumids dis spelled prof bad
-	local calls contrib known breg bprof base count
+	local calls contrib known breg bprof base rowbase vbase count vcount
 	reg=$(mktemp); pairs=$(mktemp); tnames=$(mktemp); tenums=$(mktemp)
 	enumids=$(mktemp); dis=$(mktemp); spelled=$(mktemp); prof=$(mktemp)
 	calls=$(mktemp); contrib=$(mktemp); known=$(mktemp); breg=$(mktemp)
@@ -154,7 +165,9 @@ check()
 	: > "$breg"; : > "$bprof"
 	for f in $(bundle_files "$plugins" menu); do registry_ids "$f"; done | sort -u > "$breg"
 	for f in $(bundle_files "$plugins" keys); do profile_ids "$f"; done | sort -u > "$bprof"
-	base=$(contrib_base "$pinc")
+	base=$(range_base "$pinc" cmd_contrib_base)
+	rowbase=$(range_base "$pinc" cmd_view_row_base)
+	vbase=$(range_base "$pinc" view_contrib_base)
 	local rc=0
 	if [ ! -s "$reg" ] || [ ! -s "$pairs" ] || [ ! -s "$enumids" ] || [ ! -s "$dis" ]; then
 		echo "check-madcide-command-registry: FAIL ($label) — an extractor" \
@@ -217,11 +230,15 @@ check()
 		rc=1
 	fi
 	count=$(enum_ids "$enums" | wc -l)
+	vcount=$(view_enum_ids "$enums" | wc -l)
 	bad=$(enum_explicit "$enums")
-	if [ -z "$base" ] || [ -n "$bad" ] || [ "$count" -ge "$base" ]; then
-		echo "check-madcide-command-registry: FAIL ($label) — the built-in codes" \
-		     "may reach the contributed range (cmd_contrib_base ${base:-unread}," \
-		     "$count enumerators, explicit values: ${bad:-none})." >&2
+	if [ -z "$base" ] || [ -z "$rowbase" ] || [ -z "$vbase" ] || [ -n "$bad" ] ||
+	   [ "$count" -ge "$rowbase" ] || [ "$rowbase" -ge "$base" ] ||
+	   [ "$vcount" -ge "$vbase" ]; then
+		echo "check-madcide-command-registry: FAIL ($label) — the ranges may" \
+		     "overlap (commands $count < cmd_view_row_base ${rowbase:-unread} <" \
+		     "cmd_contrib_base ${base:-unread}; views $vcount < view_contrib_base" \
+		     "${vbase:-unread}; explicit values: ${bad:-none})." >&2
 		rc=1
 	fi
 	rm -f "$reg" "$pairs" "$tnames" "$tenums" "$enumids" "$dis" "$spelled" "$prof"
@@ -308,14 +325,19 @@ if ! check "$tmpcore" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "con
 	     "naming a shipped contribution was refused (the range went unlearned)." >&2
 	exit 1
 fi
-# (h) a contributed range that starts inside the enum's codes
-sed 's/^    return 4096;$/    return 8;/' "$PLUGINSINC" > "$tmpinc"
-if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$PLUGINS" "$tmpinc" "control" 2>/dev/null; then
-	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
-	echo "check-madcide-command-registry: FAIL — negative control: a contributed" \
-	     "base inside the enum went undetected (the range marker went blind)." >&2
-	exit 1
-fi
+# (h) each floor moved into its neighbour's range: the row verbs inside the
+# enum's codes, the contributed commands under the row verbs, the contributed
+# views inside ide_view
+for mv in "cmd_view_row_base 8" "cmd_contrib_base 1024" "view_contrib_base 4"; do
+	set -- $mv
+	sed "/^long $1()/,/^}/ s/return [0-9]*;/return $2;/" "$PLUGINSINC" > "$tmpinc"
+	if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$PLUGINS" "$tmpinc" "control" 2>/dev/null; then
+		rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
+		echo "check-madcide-command-registry: FAIL — negative control: $1" \
+		     "moved to $2 went undetected (the range marker went blind)." >&2
+		exit 1
+	fi
+done
 rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 n=$(registry_ids "$MENU" | wc -l)
 m=$(enum_ids "$ENUMS" | grep -vc '^cmdNONE$')

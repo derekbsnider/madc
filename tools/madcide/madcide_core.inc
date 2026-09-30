@@ -671,7 +671,7 @@ long layout_depth_of(var &raw)
 }
 
 // One `pane` line's words (after the keyword) into a flat row. False + err.
-bool layout_pane_row(var &row, var &words, long lineno, var &err)
+bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 {
     long nw = php::count(words);
     if ( nw < 2 )
@@ -715,7 +715,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err)
 	}
 	if ( collecting )
 	{
-	    long k = view_of(wd);
+	    long k = view_of_w(w, wd);	// contributed views too
 	    if ( k == viewNONE )
 	    {
 		err = format("line {}: unknown view '{}'", lineno, wd);
@@ -849,7 +849,7 @@ void layout_build(var &node, var &rows, long idx)
 }
 
 // The parser: text -> the layout tree. False + err (the line and the word).
-bool parse_layout(var &layout, const char *text, var &err)
+bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 {
     var window = "";
     var rows = {};		// flat: every pane / split with depth + parent
@@ -926,7 +926,7 @@ bool parse_layout(var &layout, const char *text, var &err)
 	var row;
 	if ( ct == ctPANE )
 	{
-	    if ( !layout_pane_row(row, words, lineno, err) )
+	    if ( !layout_pane_row(row, words, lineno, err, w) )
 		return false;
 	    if ( parent >= 0 && row["slot"] != slotEDITOR )
 	    {
@@ -1052,7 +1052,7 @@ bool load_layout(long w, long es, const char *name)
     var err;
     bool ok = php::file_get_contents(txt, lpath.c_str());
     if ( ok )
-	ok = parse_layout(layout, txt.c_str(), err);
+	ok = parse_layout(layout, txt.c_str(), err, w);
     else
 	err = "no such file";
     if ( !ok )
@@ -1093,7 +1093,7 @@ void layout_indent(var &out, long depth)
 // the `views` list stops at a flag), the exact word order parse_layout reads.
 // An editor pane persists as a SOURCE pane (its tabs' Views are session
 // state); a chrome pane persists its tool tabs (fixed kinds).
-void layout_emit_pane(var &out, var &node, long depth)
+void layout_emit_pane(var &out, var &node, long depth, long w)
 {
     var ind;
     layout_indent(ind, depth);
@@ -1110,7 +1110,11 @@ void layout_emit_pane(var &out, var &node, long depth)
 	line = format("{} {}", line, view_name(viewSOURCE));
     else
 	for ( var t : node["tabs"] )
-	    line = format("{} {}", line, view_name(t["kind"].as_integer()));
+	{
+	    var vn;
+	    view_name_w(vn, w, t["kind"].as_integer());
+	    line = format("{} {}", line, vn);
+	}
     if ( node["focus"].as_integer() != 0 )
 	line = format("{} focus", line);
     if ( node["hidden"].as_integer() != 0 )
@@ -1133,7 +1137,7 @@ void layout_emit_split(var &out, var &node, long depth)
 
 // A node (a pane or a split subtree) -> its text, children recursed one level
 // deeper.
-void layout_emit_node(var &out, var &node, long depth)
+void layout_emit_node(var &out, var &node, long depth, long w)
 {
     if ( node["kind"] == ctSPLIT )
     {
@@ -1142,28 +1146,28 @@ void layout_emit_node(var &out, var &node, long depth)
 	for ( var c : node["children"] )
 	{
 	    var cs;
-	    layout_emit_node(cs, c, depth + 1);
+	    layout_emit_node(cs, c, depth + 1, w);
 	    body = format("{}{}", body, cs);
 	}
 	out = body;
 	return;
     }
-    layout_emit_pane(out, node, depth);
+    layout_emit_pane(out, node, depth, w);
 }
 
 // The whole tree -> text: `@window`, the editor region (a top-level pane or
 // split), then the chrome panes (top-level).
-void layout_to_text(var &out, var &lo)
+void layout_to_text(var &out, var &lo, long w = 0)
 {
     var s = "# madcide layout — written by the session; edit or delete freely\n";
     s = format("{}@window {}\n", s, lo["window"]);
     var ed;
-    layout_emit_node(ed, lo["editor"], 0);
+    layout_emit_node(ed, lo["editor"], 0, w);
     s = format("{}{}", s, ed);
     for ( var c : lo["chrome"] )
     {
 	var cs;
-	layout_emit_pane(cs, c, 0);
+	layout_emit_pane(cs, c, 0, w);
 	s = format("{}{}", s, cs);
     }
     out = s;
@@ -1256,8 +1260,10 @@ bool show_view(long w, long es, long kind)
     long ci = chrome_hosting(lo, kind, tab);
     if ( ci < 0 )
     {
+	var vn;
+	view_name_w(vn, w, kind);
 	ui::set(w, es, "msg", format("No pane of the layout hosts the {} view.",
-				     view_name(kind)));
+				     vn));
 	return false;
     }
     var ch = lo["chrome"];
@@ -1946,18 +1952,25 @@ void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 bool save_as_quit(long w, long es, long doc, const char *path0);	// ^K X, untitled
 long active_doc(long w, long es, long fallback);
-void goto_pane_row(long w, long es, long doc, long option, bool outline)
+void goto_pane_row(long w, long es, long doc, long option, long view)
 {
+    var key;
+    view_rows_key(key, w, view);
+    if ( strlen(key.c_str()) == 0 )
+	return;
     var rows;
-    if ( outline )
-	ui::get(rows, w, es, "outline");
-    else
-	ui::get(rows, w, es, "diags");
+    ui::get(rows, w, es, key.c_str());
+    if ( rows.is_null() )
+	return;
     long i = 1;
     for ( var row : rows )
     {
 	if ( i == option )
 	{
+	    var ln;
+	    keyed_get(ln, row, "line");
+	    if ( ln.is_null() )
+		return;		// a row that names no line goes nowhere
 	    long target = doc;
 	    var f = row["file"];
 	    if ( !f.is_null() )
@@ -1972,7 +1985,7 @@ void goto_pane_row(long w, long es, long doc, long option, bool outline)
 		}
 	    }
 	    ui::set(w, es, "caret",
-		    caret_to_line(w, target, row["line"].as_integer(), 0));
+		    caret_to_line(w, target, ln.as_integer(), 0));
 	    return;
 	}
 	i = i + 1;
@@ -3852,7 +3865,7 @@ void layout_persist(long w, long es)
     var lo;
     layout_get(lo, w, es);
     var txt;
-    layout_to_text(txt, lo);
+    layout_to_text(txt, lo, w);
     php::file_put_contents(lf.c_str(), txt.c_str());
 }
 
@@ -4022,7 +4035,7 @@ bool proj_load(long w, long es, var &pf)
 	{
 	    var newlo;
 	    var lerr;
-	    if ( parse_layout(newlo, ltxt.c_str(), lerr) )
+	    if ( parse_layout(newlo, ltxt.c_str(), lerr, w) )
 		ui::set(w, es, "layout", newlo);
 	}
     }
@@ -6464,6 +6477,8 @@ void view_dock(long w, long es, long slot, long side)
 		"Open a pane (a sidebar or a panel view) before docking it.");
 	return;
     }
+    var vn;
+    view_name_w(vn, w, k);
     var lo;
     layout_get(lo, w, es);
     long tab = -1;
@@ -6471,7 +6486,7 @@ void view_dock(long w, long es, long slot, long side)
     if ( ci < 0 )
     {
 	ui::set(w, es, "msg",
-		format("No chrome pane hosts the {} view.", view_name(k)));
+		format("No chrome pane hosts the {} view.", vn));
 	return;
     }
     var ch = lo["chrome"];
@@ -6482,7 +6497,7 @@ void view_dock(long w, long es, long slot, long side)
     lo["chrome"] = ch;
     ui::set(w, es, "layout", lo);
     layout_persist(w, es);
-    ui::set(w, es, "msg", format("Docked {} to the {}.", view_name(k),
+    ui::set(w, es, "msg", format("Docked {} to the {}.", vn,
 				 ui::side_name(side)));
 }
 
@@ -7136,7 +7151,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( kind == ui::event_kind::choose )
     {
 	// The chosen row's verb: its `code` hint (a code-stamped row) or the
-	// name a client posted, converted at the entry above.
+	// name a client posted, converted at the entry above. A contributed
+	// VIEW's row verb is a range, not a case: the same navigation owner
+	// reads that view's rows, as a Problems row's cmdGOTO does.
+	if ( cmd_view_row(ev_code(ev)) )
+	{
+	    if ( viewing )
+		refuse_edit(w, es);
+	    else
+		goto_pane_row(w, es, doc, ev["option"].as_integer(),
+			      view_of_row_cmd(ev_code(ev)));
+	    return true;
+	}
 	switch ( ev_code(ev) )
 	{
 	    // Build-pane rows dispatch by ROW (act + command + mode are the
@@ -7162,7 +7188,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		    refuse_edit(w, es);
 		else
 		    goto_pane_row(w, es, doc, ev["option"].as_integer(),
-				  ev_code(ev) == cmdGOTODEF);
+				  view_of_row_cmd(ev_code(ev)));
 		return true;
 	    // The shared editor menu's rows (compose_menu: Save / Find / Quit).
 	    case cmdW:
@@ -7232,11 +7258,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 // Returns the row count (0 = the caller adds its empty-state line).
 long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 {
+    long view = outline_pane ? viewOUTLINE : viewPROBLEMS;
+    var key;
+    view_rows_key(key, w, view);
     var rows;
-    if ( outline_pane )
-	ui::get(rows, w, es, "outline");
-    else
-	ui::get(rows, w, es, "diags");
+    ui::get(rows, w, es, key.c_str());
     var dpath;
     doc_name(dpath, w, doc);	// the rows name the unit the parse was given
     long nrows = 0;
@@ -7255,7 +7281,7 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 	    it["content"] = format("{}:{} {} {}", row["line"],
 				   row["column"], row["severity"],
 				   row["message"]);
-	long verb = outline_pane ? cmdGOTODEF : cmdGOTO;
+	long verb = view_row_cmd(view);
 	var gh = { "code": verb };	// a navigable row: its verb as a code
 	it["hints"] = gh;
 	items[] = it;
@@ -7294,6 +7320,47 @@ void view_lens_hints(var &eh, long w, long es, var &v)
 	eh["spans"] = vhs;
 }
 
+// A contributed view's projection (§5.3): the rows on its bag key as item
+// rows under a choice, as Problems shows `diags` — each row's `content`, and
+// the view's row verb as its code (a choose goes to the row's line through
+// goto_pane_row). The rows are the plugin's; this renders them and never
+// calls plugin code.
+void contributed_view_node(var &out, long w, long es, long kind, bool focus)
+{
+    var title;
+    view_title_w(title, w, kind);
+    var key;
+    view_rows_key(key, w, kind);
+    var rows;
+    if ( strlen(key.c_str()) > 0 )
+	ui::get(rows, w, es, key.c_str());
+    long verb = view_row_cmd(kind);
+    var items = {};
+    if ( !rows.is_null() )
+	for ( var r : rows )
+	{
+	    var ct;
+	    keyed_get(ct, r, "content");
+	    var it = { "role": "item" };
+	    it["content"] = "";
+	    if ( !ct.is_null() )
+		it["content"] = format("{}", ct);
+	    var gh = { "code": verb };	// a navigable row: the view's verb
+	    it["hints"] = gh;
+	    items[] = it;
+	}
+    if ( php::count(items) == 0 )
+	items[] = { "role": "item", "content": "(empty)" };
+    var cb = { "role": "choice" };
+    cb["label"] = title;
+    cb["children"] = items;
+    var ch = { "list": 1 };
+    if ( focus )
+	ch["focus"] = 1;
+    cb["hints"] = ch;
+    out = cb;
+}
+
 // ---- the chrome panes (V2): composed FROM the layout ----------------------
 // A visible chrome pane is a group docked by its slot (`region`, the wire
 // word), placed by its `side` and `size` (the grid carves a band; the page
@@ -7301,8 +7368,9 @@ void view_lens_hints(var &eh, long w, long es, var &v)
 // than one (each tab posts the command that shows its View — the S1 rule),
 // and holding the active tab's projection: Problems = the diagnostics rows,
 // Outline = the definitions (both through diag_items, the one builder),
-// Output = the [build] text (its tail), Terminal = the [terminal] screen. A
-// kind with no builder yet names itself. The pane's `focus` autofocuses its
+// Output = the [build] text (its tail), Terminal = the [terminal] screen, a
+// contributed view = its rows (contributed_view_node). A kind with no
+// builder yet names itself. The pane's `focus` autofocuses its
 // list; Tab reaches it as ever.
 void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 {
@@ -7316,8 +7384,9 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	long k = t["kind"].as_integer();
 	if ( ti == active )
 	    shown = k;
-	var title = view_title(k);
-	long sc = view_show_cmd(k);
+	var title;
+	view_title_w(title, w, k);
+	long sc = view_show_cmd_w(w, k);
 	var an;
 	cmd_name_w(an, w, sc);
 	var tb = { "title": title, "action": an, "code": sc };
@@ -7399,6 +7468,13 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	}
 	default:
 	{
+	    if ( view_contributed(shown) )
+	    {
+		var cv;
+		contributed_view_node(cv, w, es, shown, focus);
+		pkids.push(cv);
+		break;
+	    }
 	    var nn = { "role": "content" };
 	    nn["content"] = format("({} view)", view_name(shown));
 	    pkids.push(nn);

@@ -1,6 +1,8 @@
-// Contributed commands (plugins Stage B1, plan §41.11a step 2; plugin
-// design §5.3, G4): a module registers a command with its handler, and the
-// command runs through every input boundary a built-in does. Here the module
+// Contributed commands and views (plugins Stage B1, plan §41.11a step 2;
+// plugin design §5.3, G4): a module registers a command with its handler, and
+// the command runs through every input boundary a built-in does; it registers
+// a view by its name, title and bag key, and the view composes, lays out and
+// navigates as a built-in list view does. Here the module
 // is this test, the `builtin` transport (a handler compiled in, its address
 // kept by the registry). Pins:
 //   1. registration interns a code above the built-in range; a taken name
@@ -15,7 +17,17 @@
 //      refused without it (an unknown action);
 //   5. the seat (api_run) runs it by name, gated at the editor tier (the
 //      core cannot see what a handler does); the MCP tool list and the LSP
-//      server's executeCommand ids offer it.
+//      server's executeCommand ids offer it;
+//   6. a view registers above the built-in kinds; a taken name, a key that is
+//      not the plugin's own (`plugin.name`) and a show command that is not a
+//      contributed one are refused;
+//   7. a layout line names it when parsed against the world, and is refused
+//      without it; the layout writer spells it back (a round trip);
+//   8. its show command brings its pane up; the pane composes the key's rows
+//      as a choice, each row carrying the view's row verb, and its tab the
+//      show command; no rows compose as "(empty)";
+//   9. a choose on a row goes to the row's line through the one navigation
+//      owner; a row that names no line goes nowhere.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -32,10 +44,19 @@ bool greet(long w, long es, long doc, const char *arg)
     return true;
 }
 
+// The module's view command: it shows the module's view.
+bool show_vars(long w, long es, long doc, const char *arg)
+{
+    var vn = "variables";
+    show_view(w, es, view_of_w(w, vn));
+    return true;
+}
+
 int main()
 {
     const char *path = "madc_ide_contrib.c";
-    php::file_put_contents(path, "int main(void) { return 0; }\n");
+    php::file_put_contents(path,
+	"int a = 1;\nint b = 2;\nint c = 3;\nint main(void) { return 0; }\n");
     IdeSession S;
     long doc = S.open(path, false);
     long w = S.world();
@@ -98,6 +119,80 @@ int main()
 	if ( id == want )
 	    offered = 1;
     println("contrib-mcp: listed={} lsp={}", listed, offered);
+
+    // 6. A view's registration.
+    long show = plugin_command(w, "variables", "Variables", (long)&show_vars);
+    long kind = plugin_view(w, "variables", "Variables", "test.vars", show);
+    println("contrib-view-register: above-base={} again={} builtin-name={} bad-key={} bad-show={}",
+	    view_contributed(kind) ? 1 : 0,
+	    plugin_view(w, "variables", "V", "test.v", show),
+	    plugin_view(w, "problems", "P", "test.p", cmdNONE),
+	    plugin_view(w, "other", "O", "vars", cmdNONE),
+	    plugin_view(w, "other", "O", "test.o", cmdSAVE));
+
+    // 7. A layout line.
+    const char *ltxt = "@window main\npane editor tabs views source focus\n"
+		       "pane panel bottom 30% tabs views problems variables hidden\n";
+    var lo;
+    var lerr;
+    bool laid = parse_layout(lo, ltxt, lerr, w);
+    var lo2;
+    var lerr2;
+    bool unlaid = parse_layout(lo2, ltxt, lerr2);
+    var back;
+    layout_to_text(back, lo, w);
+    var lo3;
+    var lerr3;
+    parse_layout(lo3, back.c_str(), lerr3, w);
+    var back2;
+    layout_to_text(back2, lo3, w);
+    println("contrib-view-layout: with-world={} without={} why={} round-trip={}",
+	    laid ? 1 : 0, unlaid ? 1 : 0, lerr2, back == back2 ? "same" : "differs");
+
+    // 8. The show command, the pane, its rows.
+    ui::set(w, S.es, "layout", lo);
+    S.command(doc, show, "", cont);
+    var cur;
+    layout_get(cur, w, S.es);
+    long tab = -1;
+    long ci = chrome_hosting(cur, kind, tab);
+    var pane;
+    compose_chrome_pane(pane, w, S.es, doc, cur["chrome"][ci]);
+    var none_row = pane["children"][0]["children"][0]["content"];
+    var rows = {};
+    rows[] = { "content": "a = 1", "line": 1 };
+    rows[] = { "content": "b = 2", "line": 2 };
+    rows[] = { "content": "(no line)" };
+    ui::set(w, S.es, "test.vars", rows);
+    compose_chrome_pane(pane, w, S.es, doc, cur["chrome"][ci]);
+    var choice = pane["children"][0];
+    var shown = "";
+    long verbs = 0;
+    for ( var it : choice["children"] )
+    {
+	shown = format("{}{}|", shown, it["content"]);
+	if ( it["hints"]["code"].as_integer() == view_row_cmd(kind) )
+	    verbs = verbs + 1;
+    }
+    var tabact = "";
+    for ( var tb : pane["hints"]["tabs"] )
+	if ( tb["title"] == "Variables" )
+	    tabact = tb["action"];
+    println("contrib-view-compose: shown={} label={} rows={} verbs={} tab={} empty={}",
+	    view_shown(w, S.es, kind) ? 1 : 0, choice["label"], shown, verbs, tabact,
+	    none_row);
+
+    // 9. A choose on a row: to its line, and nowhere for a row with none.
+    var ch = { "event": "choose", "event_code": ui::event_kind::choose,
+	       "option": 2, "action": "", "action_code": view_row_cmd(kind) };
+    S.apply_ide_event(doc, ch);
+    long at = es_int(w, S.es, "caret", -1);
+    var ch3 = { "event": "choose", "event_code": ui::event_kind::choose,
+		"option": 3, "action": "", "action_code": view_row_cmd(kind) };
+    S.apply_ide_event(doc, ch3);
+    long at3 = es_int(w, S.es, "caret", -1);
+    println("contrib-view-goto: line2={} no-line={}",
+	    at == caret_to_line(w, doc, 2, 0) ? 1 : 0, at3 == at ? "stays" : "moved");
 
     S.close();
     php::unlink(path);
