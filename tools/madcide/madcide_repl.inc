@@ -345,6 +345,13 @@ void repl_completed(long w, long es, var &r)
     repl_field_edit(w, es, start, caret - start, word.c_str());
 }
 
+// The replies a plugin hears (repl_event): published after the pane has
+// taken the reply in, to the buffer the pane is serving.
+void repl_publish(long w, long es, long kind, var &r)
+{
+    publish_event(w, es, active_doc(w, es, 0), kind, r);
+}
+
 void repl_reply(long w, long es, var &r)
 {
     long seq = r["seq"].as_integer();
@@ -383,6 +390,7 @@ void repl_reply(long w, long es, var &r)
 	    repl_feed(w, es, format("{}\n", sv));
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
+	repl_publish(w, es, reTAKEN, r);
 	return;
     }
     if ( r["kind"] == madc::session_reply::complete )
@@ -406,6 +414,7 @@ void repl_reply(long w, long es, var &r)
 	if ( !(r["ok"] == true) )
 	{
 	    ui::set(w, es, "replbusy", 0);
+	    repl_publish(w, es, reREFUSED, r);
 	    return;
 	}
 	var rp;
@@ -428,6 +437,7 @@ void repl_reply(long w, long es, var &r)
 	ui::set(w, es, "replrunning", 0);
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
+	repl_publish(w, es, reRAN, r);
 	return;
     }
     if ( r["kind"] == madc::session_reply::stopped )
@@ -442,6 +452,7 @@ void repl_reply(long w, long es, var &r)
 	    repl_feed(w, es, format("[the session stopped (exit {}); a new one started]\n", st));
 	else
 	    repl_feed(w, es, format("[the session stopped (exit {})]\n", st));
+	repl_publish(w, es, reSTOPPED, r);
     }
 }
 

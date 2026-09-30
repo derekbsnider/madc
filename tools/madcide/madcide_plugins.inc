@@ -652,6 +652,44 @@ long cmd_min_tier_w(long w, long code)
     return cmd_min_tier(code);
 }
 
+// ---- contributed event handlers (Stage B1, step 2; §5.3) -------------------
+// A plugin subscribes a handler to a kind of the REPL pane's reply events
+// (repl_event); the pane publishes each reply it handles, and every handler
+// subscribed to its kind runs, in registration order, with the event
+// { kind, reply } (the reply's row as the session sent it). A handler keeps a
+// view's rows current or posts commands; it never holds the pane's session.
+// Thread contract: handlers run on the session's thread, between events,
+// never during composition.
+typedef void (*event_handler)(long w, long es, long doc, var &event);
+
+// Subscribe a handler to a kind. False = refused: a kind outside repl_event
+// or no handler.
+bool plugin_event(long w, long kind, long handler)
+{
+    if ( handler == 0 || kind <= reNONE || kind >= reLAST )
+	return false;
+    long reg = plugin_registry_make(w);
+    var rows;
+    registry_rows(rows, w, "events");
+    rows[] = { "kind": kind, "handler": handler };
+    ui::set(w, reg, "events", rows);
+    return true;
+}
+
+// Publish an event of a kind to its subscribers (none: nothing runs).
+void publish_event(long w, long es, long doc, long kind, var &reply)
+{
+    var rows;
+    registry_rows(rows, w, "events");
+    var ev = { "kind": kind, "reply": reply };
+    for ( var r : rows )
+	if ( r["kind"].as_integer() == kind )
+	{
+	    event_handler h = (event_handler)r["handler"].as_integer();
+	    h(w, es, doc, ev);
+	}
+}
+
 // ---- contributed views (Stage B1, step 2; §5.3) -----------------------------
 // A contributed view is DATA: a name (the layout profile's word), a title
 // (its tab), a bag key (its rows, which the plugin's code keeps current, as

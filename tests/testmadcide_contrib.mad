@@ -1,8 +1,9 @@
-// Contributed commands and views (plugins Stage B1, plan §41.11a step 2;
-// plugin design §5.3, G4): a module registers a command with its handler, and
-// the command runs through every input boundary a built-in does; it registers
-// a view by its name, title and bag key, and the view composes, lays out and
-// navigates as a built-in list view does. Here the module
+// Contributed commands, views and event handlers (plugins Stage B1, plan
+// §41.11a step 2; plugin design §5.3, G4): a module registers a command with
+// its handler, and the command runs through every input boundary a built-in
+// does; it registers a view by its name, title and bag key, and the view
+// composes, lays out and navigates as a built-in list view does; it
+// subscribes a handler to the REPL pane's reply events. Here the module
 // is this test, the `builtin` transport (a handler compiled in, its address
 // kept by the registry). Pins:
 //   1. registration interns a code above the built-in range; a taken name
@@ -27,7 +28,10 @@
 //      as a choice, each row carrying the view's row verb, and its tab the
 //      show command; no rows compose as "(empty)";
 //   9. a choose on a row goes to the row's line through the one navigation
-//      owner; a row that names no line goes nowhere.
+//      owner; a row that names no line goes nowhere;
+//  10. a handler subscribed to a repl_event kind hears the pane's replies of
+//      that kind, with the reply, and no other; a kind outside repl_event
+//      and a missing handler are refused.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -42,6 +46,24 @@ bool greet(long w, long es, long doc, const char *arg)
 {
     ui::set(w, es, "msg", format("Hello, {}.", arg));
     return true;
+}
+
+// The module's event handler: it logs each event's kind and the reply's
+// exit status (the stopped reply carries one) on a bag key of its own.
+void heard(long w, long es, long doc, var &event)
+{
+    var h;
+    ui::get(h, w, es, "test.heard");
+    var s = "";
+    if ( !h.is_null() )
+	s = h;
+    var rep = event["reply"];
+    var st;
+    keyed_get(st, rep, "exit_status");
+    if ( st.is_null() )
+	ui::set(w, es, "test.heard", format("{}|{}", s, event["kind"]));
+    else
+	ui::set(w, es, "test.heard", format("{}|{}:{}", s, event["kind"], st));
 }
 
 // The module's view command: it shows the module's view.
@@ -193,6 +215,32 @@ int main()
     long at3 = es_int(w, S.es, "caret", -1);
     println("contrib-view-goto: line2={} no-line={}",
 	    at == caret_to_line(w, doc, 2, 0) ? 1 : 0, at3 == at ? "stays" : "moved");
+
+    // 10. The REPL pane's reply events: an entry taken, a run returned (no
+    // subscriber), the session stopped.
+    bool sub1 = plugin_event(w, reTAKEN, (long)&heard);
+    bool sub2 = plugin_event(w, reSTOPPED, (long)&heard);
+    bool badk = plugin_event(w, reLAST, (long)&heard);
+    bool noh = plugin_event(w, reRAN, 0);
+    ui::set(w, S.es, "replbusy", 7);
+    var taken = { "kind": madc::session_reply::offer, "seq": 7,
+		  "state": madc::offer_state::taken, "shown": "", "rendered": "" };
+    repl_reply(w, S.es, taken);
+    ui::set(w, S.es, "replrunseq", 9);
+    var ran = { "kind": madc::session_reply::run, "seq": 9, "rendered": "" };
+    repl_reply(w, S.es, ran);
+    var stopped = { "kind": madc::session_reply::stopped, "seq": 0, "exit_status": 3 };
+    repl_reply(w, S.es, stopped);
+    var log;
+    ui::get(log, w, S.es, "test.heard");
+    long kt = reTAKEN;		// a long: format spells an unsigned-char enum as
+    long ks = reSTOPPED;	// a byte (BUGS.md B93)
+    var expected = format("|{}|{}:3", kt, ks);
+    var verdict = log;
+    if ( log == expected )
+	verdict = "taken,stopped";
+    println("contrib-events: subscribed={} bad-kind={} no-handler={} heard={}",
+	    sub1 && sub2 ? 1 : 0, badk ? 1 : 0, noh ? 1 : 0, verdict);
 
     S.close();
     php::unlink(path);

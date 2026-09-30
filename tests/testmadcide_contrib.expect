@@ -9,3 +9,4 @@ contrib-view-register: above-base=1 again=0 builtin-name=0 bad-key=0 bad-show=0
 contrib-view-layout: with-world=1 without=0 why=line 3: unknown view 'variables' round-trip=same
 contrib-view-compose: shown=1 label=Variables rows=a = 1|b = 2|(no line)| verbs=3 tab=variables empty=(empty)
 contrib-view-goto: line2=1 no-line=stays
+contrib-events: subscribed=1 bad-kind=0 no-handler=0 heard=taken,stopped

@@ -382,6 +382,13 @@ long menu_place_of(var &word)
 
 // The project's kind — the manifest's `kind` word (console | gui) converted
 // where the manifest is READ; written back as the file's word.
+// The REPL pane's reply events (plan §41.11a): what the pane publishes on
+// the plugin event feed as its session answers — an entry taken, F5's run
+// returned, F5's load refused, the session stopped (the bindings answer
+// joins with its reply). A plugin subscribes to the kinds it needs
+// (plugin_event); reLAST bounds the range.
+enum repl_event : unsigned char { reNONE = 0, reTAKEN, reRAN, reREFUSED, reSTOPPED, reLAST };
+
 enum ide_projkind : unsigned char { pkCONSOLE = 0, pkGUI };
 const char *projkind_name(long k)
 {
