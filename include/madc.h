@@ -322,9 +322,15 @@ public:
 	    return false;                      // no explicit '&' tail: unknown
 	if ( param_spells_rvalue_reference(i) )
 	    return false;                      // rvalue reference
-	if ( sp.compare(0, 6, "const ") == 0
-	  || sp.find(" const") != std::string::npos )
-	    return false;                      // west or east const qualifier
+	// The REFERENT's own const: after the last `*` (`char* const&`), or
+	// anywhere when there is none (`const T&`, `T const&`). A const before
+	// a `*` qualifies a pointee — `const char*&` refers to a MUTABLE
+	// pointer and binds no prvalue — so it is no evidence (the declarator's
+	// top-level cv, declarator_written_cv, is const_params' fact above).
+	size_t star = sp.rfind('*');
+	std::string top = star == std::string::npos ? sp : sp.substr(star + 1);
+	if ( top.find("const") != std::string::npos )
+	    return false;                      // the referent is const
 	return true;
     }
     // Source typedef alias used for each parameter, when the declaration named
@@ -7561,7 +7567,6 @@ public:
 	int nested_stars = 0;		// `*`s read inside `( ... )` levels
 	bool const_after_star = false;	// consume_declarator_stars' top-level report
 	bool volatile_after_star = false;	// its volatile twin: `T *volatile p` — the POINTER object is volatile
-	bool cv_seen = false;		// any cv-qualifier among the ptr-operators (const_params)
 	bool base_volatile = false;	// a `volatile` read BEFORE the first top-level `*` (`int volatile x`): with no `*` it qualifies the object
 	bool base_const = false;	// a `const` read BEFORE the first top-level `*` (`char const *p`): qualifies the base exactly like a leading const — the spelling the Itanium mangler reads (PKc) must not depend on which side of the type it was written
 	bool adjusted_array = false;	// Parameter mode: an array THIS declarator built decayed ([dcl.fct]/5)
@@ -7587,6 +7592,13 @@ public:
     // object's). A declaration's variable, a parameter object, a member and a
     // K&R parameter all read it.
     unsigned declarator_object_cv(const DeclaratorResult &r, unsigned leading_cv);
+    // The same top-level cv with EVERY bit the source wrote, before the
+    // modeled_cv() mask (declarator_object_cv is this, masked). C++'s const,
+    // which the type does not model, is read from here as a flag: a declared
+    // object's read-only marking and a reference's REFERENT const — `const T &`
+    // and `char *const &` refer to a const object; `const char *&` does not
+    // (its referent is the pointer, and the const qualifies the char).
+    unsigned declarator_written_cv(const DeclaratorResult &r, unsigned leading_cv);
     // A qualified ARRAY qualifies its elements (C11 6.7.3p9): `arr` rebuilt
     // through nest_carray_dims with its innermost element qualified by `cv`.
     DataDef *qualify_array_elements(DataDef *arr, unsigned cv);
@@ -7636,7 +7648,7 @@ public:
 				   bool is_thread_local, bool is_volatile,
 				   size_t specifier_align);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
-				 unsigned leading_cv = cvNONE, bool *out_cv_seen = nullptr,
+				 unsigned leading_cv = cvNONE,
 				 bool *out_volatile_after_star = nullptr);
     // C99 6.7.5.3p7: qualifiers and `static` inside a PARAMETER's array
     // brackets (`[const 5]`, `[static 5]`, and the VLA-star `[const *]`)

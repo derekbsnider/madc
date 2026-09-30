@@ -1,0 +1,7 @@
+// A `char *const &` parameter refers to a CONST pointer (the const after the
+// last `*`), so assigning through it stays refused — the other half of
+// testconstptrref. g++ 13 and clang++ 18 (-std=c++17): "assignment of
+// read-only reference 'p'" / "cannot assign to variable 'p' with
+// const-qualified type"; madc keeps its read-only wording.
+static void g(char *const &p) { p = 0; }
+int main() { char *s = 0; g(s); return 0; }

@@ -28,6 +28,36 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B92. A prvalue argument binds a non-const lvalue reference in overload ranking
+
+```cpp
+#include <stdio.h>
+static const char *w(int &) { return "int&"; }
+static const char *w(const int &) { return "const int&"; }
+static const char *pw(char *&) { return "char*&"; }
+static const char *pw(char *const &) { return "char*const&"; }
+static char buf[2];
+int main() { int x = 1; printf("%s %s\n", w(x), w(1)); char *p = buf; printf("%s %s\n", pw(p), pw((char *)buf)); return 0; }
+```
+
+- g++ = clang++ (`-std=c++17`): `int& const int&` / `char*& char*const&`.
+  madc: `int& int&` / `char*& char*&` (SILENT: the prvalue takes the `T&`
+  overload, which cannot bind it, [dcl.init.ref]/5).
+- The mirror, same channel: `r(int &&)` / `r(const int &)` called as `r(x)`
+  (an lvalue) and `r(2)`: g++ `const int& int&&`, madc `int&& int&&` (an
+  lvalue takes `T&&`, which cannot bind it).
+- Found 2026-09-30 while fixing B89, with its reducer's prvalue call.
+- Layer: the free-function ranker (`src/parser.cpp` ~22387) scores each
+  candidate through `score_arg_to_param(argtypes[i], …,
+  fd->is_nonconst_lref_param(i))` over argument TYPES only. The flag makes
+  only the user-defined-conversion path non-viable, so a same-type prvalue
+  still binds `T&`. The argument's value category never reaches the ranker
+  (the literal-zero fact rides beside the types as `zero_args`).
+- Fix: the value category (its owner is `fn_template_call_arg_is_lvalue`,
+  the forwarding-reference deduction's) rides beside the types the same way;
+  a non-const lvalue reference refuses a prvalue, an rvalue reference an
+  lvalue. Its own commit, next after B89.
+
 Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
@@ -1225,6 +1255,42 @@ unless stated. The owners already exist: `DelimDepth` with
 `delim_scan_step` (index scans) and `Program::delimStepStream` (stream
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
+
+### B90. A declarator's top-level cv, restated three times
+
+- Found 2026-09-30 while fixing B89 (a `const char *&` parameter refused as
+  read-only). The rule: the leading cv run plus the base's east cv when no
+  `*` intervenes, else the cv after the last `*`. Its owner is
+  `Program::declarator_written_cv` (every bit the source wrote), and
+  `declarator_object_cv` is that owner masked to `modeled_cv()`. B89's fix
+  moved the three C++ const-flag readers onto it: the parameter loop
+  (`FuncDef::const_params`, the read-only marking), the type-trait operand
+  (`TraitTypeArg::referent_const`) and a local declaration's
+  `decl_is_const`.
+- Three copies build a TYPE from the same rule and remain, in
+  `src/parser.cpp` at `068cf83c4` + the B89 fix:
+  - `parse_type_id` (~30887), as `own_cv` and `top_cv`;
+  - the typedef alias's `post_cv` (~54385);
+  - `parse_declarator`'s reference referent `ref_cv` (~54920).
+- Divergent on paper: the typedef and reference copies test `ptr_depth == 0`
+  alone, and the owner tests `ptr_depth == 0 && nested_stars == 0` (a
+  parenthesized `*`). No failing reducer yet.
+- Fix: each asks `declarator_written_cv` and applies its own mask. Then a
+  gate marker (`const_after_star ? cvCONST` outside the owner) at zero.
+
+### B91. Where a user's configuration lives, in two programs
+
+- Found 2026-09-30 in the bundle work's dupaudit. The compiler's
+  `config_file::search_paths` (`src/madc_config_file.cpp`, madc.ini) reads
+  `$XDG_CONFIG_HOME/<app>`, else `~/.config/<app>`. madcide's
+  `madcide_config_dir` (`tools/madcide/madcide_plugins.inc`, settings.json
+  and `plugins/`) reads `MADCIDE_CONFIG_DIR`, then the same two, and
+  `%APPDATA%/madcide` on Windows before `~/.config`.
+- Divergent on Windows: with no `XDG_CONFIG_HOME`, madc.ini is looked for
+  under `$HOME/.config`, and madcide's configuration under `%APPDATA%`.
+- Fix: one engine owner (`madc::user_config_dir(app)`, also served to the
+  dialect), which both read. The Windows rule is the owner's to decide
+  (`%APPDATA%` is the platform's convention).
 
 ### B59. `(`: twelve hand-rolled paren counters
 
