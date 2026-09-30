@@ -4310,6 +4310,17 @@ bool modes_active(long w, long es)
     return cur_pane(w, es) == paneMODES;
 }
 
+// The editor window has the keyboard: no other owner holds it — the
+// terminal, the REPL input, a prompt, the project window or the modes
+// palette (apply_ide_event's routing order, read as one fact).
+bool editor_has_keyboard(long w, long es)
+{
+    return es_int(w, es, "termfocus", 0) == 0
+	&& es_int(w, es, "replfocus", 0) == 0
+	&& !prompt_active(w, es) && !project_active(w, es)
+	&& !modes_active(w, es);
+}
+
 // Enter the mode a palette row (or a @modes key) names. The palette
 // closes first — a mode takes the whole stage. False = quit (none of
 // the current modes quit; the contract rides the dispatch).
@@ -7534,6 +7545,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     long tabw = es_int(w, es, "tabwidth", 0);
     if ( tabw > 0 )
 	eh["tabwidth"] = tabw;
+    // While the editor has the keyboard, tab is the editor's key — it types
+    // a tab (edit_key), never a focus cycle (B55; the terminal's and the
+    // REPL input's `tabkey` precedent).
+    if ( editor_has_keyboard(w, es) )
+	eh["tabkey"] = 1;
 
     // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
     // state read of the buffer's parse handle — stored-space only (a
@@ -8335,6 +8351,10 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     // a pending count/operator (nothing pending: the pane's, or inert).
     if ( kind == ui::event_kind::key )
     {
+	// Tab types text and NORMAL mode types none: vim's normal-mode Tab
+	// (^I) walks the jump list, which madcide does not keep — inert.
+	if ( ev["key_code"] == ui::key::tab )
+	    return true;
 	if ( ev["key_code"] != ui::key::esc || !vi_pending(w, es) )
 	    return false;
 	vi_pending_clear(w, es);

@@ -1141,22 +1141,43 @@ int main(void) { return x; }
   record each one's C standard (`c_since`), which a C-side gate can read.
   `typeof`, `typeof_unqual` and `_BitInt` are C23's alone.
 
-### B55. Tab inserts nothing in madcide's editor
+## madcide (the editor)
 
-- Found 2026-09-28, while building item 9 slice 3 (plan §41.9a): the REPL
-  tab's gui case showed tab going to the shared focus owner, which cycles
-  focus. Fixed for fields that ask for tab (the `tabkey` hint, 82108777b:
-  the terminal and the REPL input). The editor's own node does not ask.
-- Reducer: open a file in madcide (any client), put the caret mid-line and
-  press Tab. Expected (JOE, pico, vim's insert mode, VS Code): a tab (or the
-  profile's indent) goes in at the caret. madcide: the buffer is unchanged.
-  With a menu bar or a panel composed, the key becomes an invisible focus
-  cycle. With one focusable it reaches `edit_key`
-  (`tools/texteditor/editor_events.inc`), which has no tab arm.
-- Fix: an insert-tab / indent command in the command table, bound by the
-  profiles (data, never a hard-coded key), and the `tabkey` hint on the
-  editor window's node while it has the keyboard. Pin it in testmadcide
-  and a tests/gui case.
+### B87. madcide's terminal caret drifts right after a multi-byte character
+
+- Found 2026-09-30, while tracing B8's caret owner. A line holding `é!`,
+  the caret at its end (End): the terminal cursor lands on column 4; on
+  `e!` it lands on column 3, the correct place (é is one column wide).
+  Measured on a pty: each extra byte of a UTF-8
+  character moves the caret, the selection and the highlight spans one
+  column right for the rest of the line.
+- Layer: `tui_model::paint_edit` → `tui_model::expand_line`
+  (`include/madcdis/tui_model.h`), the byte → display-column map, counts a
+  character's bytes as columns, and `put` writes a byte per cell ("UTF-8
+  renders byte-per-cell today", its comment). The terminal draws the
+  character in one column, so the grid and the screen disagree from there on.
+- The same rule already exists, complete, in `line_layout`
+  (`include/madcdis/line_edit.h`: tab stops, control bytes, code-point
+  widths from `codepoint_columns`): two tab-expansion rules, one
+  UTF-8-blind. Fix: one layout owner for the grid and the line editor, and
+  a grid cell that holds a code point (a wide glyph takes two cells).
+- Planned: plan §41.11a step 0, after B8 (which moves the one layout rule
+  where the compiler's caret can read it too).
+
+### B88. vi NORMAL mode's Enter and Backspace edit the buffer
+
+- Found 2026-09-30, while placing B55's Tab in the vi arm. In NORMAL mode
+  the vi arm (`IdeSession::vi_event`) lets every key but a pending esc fall
+  through to the shared `edit_key`, so Enter inserts a line break and
+  Backspace deletes the byte before the caret. vim's NORMAL-mode Enter
+  moves to the first non-blank of the next line and Backspace moves left;
+  neither edits. (Arrows and Del already match vim: Del deletes the
+  character under the cursor, as `x` does.) Measured headless on `ab`,
+  caret 1, NORMAL mode: Enter leaves `a\nb`, Backspace leaves `b`.
+- Fix: NORMAL mode's Enter and Backspace are motions (@normal data, as the
+  printable commands are), never the edit core's text keys.
+- Off the release path (owner 2026-09-30: the neovim personality's key
+  review is an open question to the owner); filed.
 
 ## Open questions
 

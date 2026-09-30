@@ -1,0 +1,96 @@
+// B55: Tab types a tab byte at the caret in madcide's editor. Oracle: JOE
+// 4.6 on the container — "ab", Left, Tab, ^K X writes "a\tb" (measured
+// 2026-09-30; pico and vim's insert mode do the same). Before the fix the
+// key reached edit_key, which had no tab arm, so the buffer stayed
+// unchanged; with a second focusable composed (the panel's lists, the REPL
+// tab) tab was an invisible focus cycle (the window pin:
+// tests/gui/madcide_tab.mad). Pins:
+//   1. tab at the caret inserts "\t", the caret moves one byte, the
+//      document is marked modified;
+//   2. a read-only buffer refuses it (the text unchanged);
+//   3. the editor's edit node asks for tab (`tabkey`) while the editor has
+//      the keyboard, and not while a prompt holds it;
+//   4. vi NORMAL mode types no text: tab is inert there (vim's normal-mode
+//      Tab walks the jump list, which madcide does not keep).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void ev_key(var &e, const char *k)
+{
+    var f = { "event": "key", "event_code": ui::event_kind::key,
+	      "key": k, "key_code": ui::key_code(k) };
+    e = f;
+}
+
+void show(long w, long doc, const char *label, long es)
+{
+    var t;
+    ui::text(t, w, doc);
+    var s1 = php::str_replace("\n", "\\n", t);
+    var shown = php::str_replace("\t", "\\t", s1);
+    var mod;
+    ui::get(mod, w, doc, "modified");
+    println("{}: [{}] caret={} modified={}", label, shown, es_int(w, es, "caret", 0),
+	    !mod.is_null() && mod.as_boolean() ? 1 : 0);
+}
+
+// Does the composed tree's editor node ask for tab? With no panel composed
+// the editor's is the only edit node, so the hint appears once or not at all.
+long asks_tab(IdeSession &S, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var js = js::stringify(tree);
+    return js.index("\"tabkey\":1") >= 0 ? 1 : 0;
+}
+
+int main()
+{
+    const char *path = "madc_ide_tab.txt";
+    php::file_put_contents(path, "ab\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    IdeSession S;
+    S.attach(w, es);
+    var e;
+    ev_key(e, "tab");
+
+    // 1. Mid-line: the JOE oracle's "a\tb".
+    ui::set(w, es, "caret", 1);
+    S.apply_ide_event(doc, e);
+    show(w, doc, "tab", es);
+
+    // 2. Read-only refuses.
+    ui::text_load(w, doc, "ab\n");
+    ui::set(w, doc, "modified", false);
+    ui::set(w, es, "caret", 1);
+    ui::set(w, doc, "read_only", true);
+    derive_access(w, es);
+    S.apply_ide_event(doc, e);
+    show(w, doc, "tab-readonly", es);
+    ui::set(w, doc, "read_only", false);
+    derive_access(w, es);
+
+    // 3. The node asks for tab while the editor has the keyboard.
+    println("tabkey: editor={}", asks_tab(S, doc));
+    start_prompt(w, es, "Find", pmFIND);
+    println("tabkey: prompt={}", asks_tab(S, doc));
+    end_prompt(w, es);
+    println("tabkey: after-prompt={}", asks_tab(S, doc));
+
+    // 4. vi NORMAL mode: inert.
+    ui::text_load(w, doc, "ab\n");
+    ui::set(w, doc, "modified", false);
+    ui::set(w, es, "caret", 1);
+    vi_enter(w, es, viNORMAL);
+    S.apply_ide_event(doc, e);
+    show(w, doc, "tab-vinormal", es);
+    vi_enter(w, es, viOFF);
+
+    // a test leaves nothing in its working directory
+    ui::world_close(w);
+    php::unlink(path);
+    return 0;
+}

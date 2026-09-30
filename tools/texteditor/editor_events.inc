@@ -1170,6 +1170,14 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 	}
 	return true;
     }
+    if ( k == ui::key::tab )
+    {
+	// Tab types a tab byte at the caret (JOE, pico, vim's insert mode):
+	// the one typed-text owner inserts it (B55).
+	var te = { "event": "text", "event_code": ui::event_kind::text, "text": "\t" };
+	edit_text_run(w, es, doc, caret, te);
+	return true;
+    }
     return false;	// not an edit-core key — the dispatcher's business
 }
 

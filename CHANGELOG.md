@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Tab inserts a tab byte in madcide's editor
+
+Tab now inserts a tab (0x09) at the caret in madcide, matching the behaviour of JOE, pico, vim's insert mode, and other standard editors. Previously, when the editor's edit node had the focus and received a Tab key, the key reached the `edit_key` function which had no tab handler, leaving the buffer unchanged. With a second focusable composed (such as a Problems list after a check or a menu bar), Tab was routed to the shared focus owner and cycled focus invisibly without editing the buffer. The fix adds a tab handler in `edit_key` that types a tab byte, and sets the editor node's `tabkey` hint while the editor has the keyboard (matching the terminal and REPL input's existing precedent). In vi NORMAL mode, Tab is inert, as vim's normal-mode Tab (^I) walks the jump list which madcide does not keep. Oracle: JOE 4.6 on the container for insert-mode Tab; vim for normal-mode behaviour.
+
 ### madcide opens missing files and unreadable directories correctly
 
 madcide previously refused to start on a file that does not exist (`madcide new.c`
