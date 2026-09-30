@@ -1,0 +1,35 @@
+// A static initializer's bit-fields: under SysV, fields of different declared
+// types share bytes (a `char a:4` and an `int b:20` share byte 0), so the
+// bytes a run of bit-fields occupies are not one unit of the first field's
+// type. Every field keeps all its bits in static storage, as in automatic
+// storage -- nested in a struct, in an array, and when a later field starts
+// inside an earlier one's bytes. Values only: the layouts differ on win64
+// (tests/testbitfieldunit locks them). Oracle: gcc 13 and clang 18 print the
+// lines below.
+#include <stdio.h>
+
+struct S { char a : 4; int b : 20; char c; };
+struct T { char a : 4; long b : 40; };
+struct U { short a : 12; char b : 3; };
+struct V { char a : 4; int b : 22; char c : 4; };
+struct N { int x; struct S s; struct V v; };
+
+static struct S s = { 1, 0x12345, 7 };
+static struct T t = { 2, 0x123456789aL };
+static struct U u = { 0xabc, 5 };
+static struct V v = { 3, 0x2abcde, 9 };
+static struct N n[2] = { { 10, { 4, 0x54321, 8 }, { 5, 0x1fedcb, 6 } },
+			 { 11, { -5, -0x6789, 9 }, { -6, -0x1234, -7 } } };
+
+int main(void)
+{
+	struct S ls = { 1, 0x12345, 7 };
+	struct V lv = { 3, 0x2abcde, 9 };
+	printf("static: %d %x %d | %d %lx | %x %d | %d %x %d\n", s.a, s.b, s.c,
+	       t.a, (unsigned long)t.b, u.a, u.b, v.a, v.b, v.c);
+	printf("auto: %d %x %d | %d %x %d\n", ls.a, ls.b, ls.c, lv.a, lv.b, lv.c);
+	for (int i = 0; i < 2; i++)
+		printf("nested %d: %d | %d %d %d | %d %d %d\n", i, n[i].x,
+		       n[i].s.a, n[i].s.b, n[i].s.c, n[i].v.a, n[i].v.b, n[i].v.c);
+	return 0;
+}

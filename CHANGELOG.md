@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Static bit-field initialization now encodes cross-type-boundary bit patterns correctly
+
+Static initializers of bit-fields in aggregate literals now emit the correct
+values when fields of different declared types share bytes. Bit-field encoding
+switches from a per-type uint64_t accumulator to byte-by-byte bit-position
+placement, correctly handling both little-endian and big-endian systems and
+preserving field isolation across multi-field bit-field runs. Before, `static
+struct { char a:4; int b:20; } = {1, 0x12345, 7}` produced b=5 (wrong), and
+`struct { char a:4; long b:40; } = {2, 0x123456789aL}` misread the value; now
+both read correctly and match GCC/Clang output.
+
 ### Non-static data members initialize in declaration order
 
 Members now initialize in declaration order ([class.base.init]/13) across all

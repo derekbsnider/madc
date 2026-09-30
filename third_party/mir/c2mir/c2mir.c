@@ -16939,29 +16939,25 @@ static void emit_scalar_assign (c2m_ctx_t c2m_ctx, op_t var, op_t *val, MIR_type
   }
 }
 
-static void add_bit_field (c2m_ctx_t c2m_ctx, uint64_t *u, uint64_t v, decl_t member_decl) {
-  uint64_t mask, mask2;
-  int bit_offset = member_decl->bit_offset, width = member_decl->width;
-  size_t MIR_UNUSED size = type_size (c2m_ctx, member_decl->decl_spec.type) * MIR_CHAR_BIT;
+/* Store the low WIDTH bits of V at bit FIRST_BIT of the byte run BYTES: bit
+   0 is byte 0's least (little endian) or most (big endian) significant bit,
+   the order the target numbers a bit-field's bits in. */
+static void add_bit_field (char *bytes, mir_size_t first_bit, int width, uint64_t v) {
+  for (int j = 0; j < width; j++) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    mir_size_t pos = first_bit + j;
+    int bit = pos % MIR_CHAR_BIT;
+#else
+    mir_size_t pos = first_bit + width - 1 - j;
+    int bit = MIR_CHAR_BIT - 1 - pos % MIR_CHAR_BIT;
+#endif
+    char mask = (char) (1 << bit);
 
-  mask = 0xffffffffffffffff >> (64 - width);
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  mask2 = ~(mask << bit_offset);
-#else
-  mask2 = ~(mask << (size - bit_offset - width));
-#endif
-  *u &= mask2;
-  if (signed_integer_type_p (member_decl->decl_spec.type)) {
-    v <<= (64 - width);
-    v = (int64_t) v >> (64 - width);
+    if ((v >> j) & 1)
+      bytes[pos / MIR_CHAR_BIT] |= mask;
+    else
+      bytes[pos / MIR_CHAR_BIT] &= (char) ~mask;
   }
-  v &= mask;
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  v <<= bit_offset;
-#else
-  v <<= size - bit_offset - width;
-#endif
-  *u |= v;
 }
 
 static MIR_item_t get_mir_str_op_data (c2m_ctx_t c2m_ctx, MIR_str_t str) {
@@ -17003,7 +16999,7 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
   MIR_context_t ctx = c2m_ctx->ctx;
   op_t val;
   size_t str_len;
-  mir_size_t data_size, el_size, offset = 0, rel_offset = 0, start_offset;
+  mir_size_t data_size, offset = 0, rel_offset = 0;
   init_el_t init_el, next_init_el;
   MIR_reg_t base;
   MIR_type_t t;
@@ -17242,6 +17238,52 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
       } else if (val.mir_op.mode == MIR_OP_REF) {
         data = MIR_new_ref_data (ctx, global_name, val.mir_op.u.ref, 0);
         data_size = _MIR_type_size (ctx, t);
+      } else if (init_el.member_decl != NULL && init_el.member_decl->bit_offset >= 0) {
+        /* A run of bit-fields: the next bit-field joins it while its first
+           byte lies inside the run's bytes so far.  Fields of different
+           declared types share bytes, so the run is not one unit of the
+           first field's type; it is emitted byte by byte from the current
+           position through the byte holding its last bit. */
+        mir_size_t run_start = rel_offset > init_el.offset ? rel_offset : init_el.offset;
+        mir_size_t run_end = run_start;
+        VARR (char) * run;
+
+        VARR_CREATE (char, run, alloc, 16);
+        for (;;) {
+          /* the field's unit may begin before the run; its first bit never does */
+          mir_size_t first_bit = init_el.offset * MIR_CHAR_BIT
+                                 + (mir_size_t) init_el.member_decl->bit_offset
+                                 - run_start * MIR_CHAR_BIT;
+          int width = init_el.member_decl->width;
+          mir_size_t end = run_start + (first_bit + width + MIR_CHAR_BIT - 1) / MIR_CHAR_BIT;
+          int joined_p = FALSE;
+
+          assert (val.mir_op.mode == MIR_OP_INT || val.mir_op.mode == MIR_OP_UINT);
+          for (; run_end < end; run_end++) VARR_PUSH (char, run, 0);
+          add_bit_field (VARR_ADDR (char, run), first_bit, width, val.mir_op.u.u);
+          while (i + 1 < VARR_LENGTH (init_el_t, init_els)) {
+            next_init_el = VARR_GET (init_el_t, init_els, i + 1);
+            if (next_init_el.member_decl == NULL || next_init_el.member_decl->bit_offset < 0
+                || (next_init_el.offset
+                      + (mir_size_t) next_init_el.member_decl->bit_offset / MIR_CHAR_BIT
+                    >= run_end))
+              break;
+            i++;
+            if (next_init_el.offset == init_el.offset
+                && next_init_el.member_decl->bit_offset == init_el.member_decl->bit_offset)
+              continue; /* the same bit-field initialized again */
+            init_el = next_init_el;
+            val = val_gen (c2m_ctx, init_el.init);
+            joined_p = TRUE;
+            break;
+          }
+          if (!joined_p) break;
+        }
+        data = MIR_new_data (ctx, global_name, MIR_T_U8, run_end - run_start,
+                             VARR_ADDR (char, run));
+        VARR_DESTROY (char, run);
+        /* rel_offset below is the last field's offset plus data_size */
+        data_size = run_end - init_el.offset;
       } else if (val.mir_op.mode != MIR_OP_STR) {
         union {
           int8_t i8;
@@ -17255,30 +17297,8 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
           float f;
           double d;
           long double ld;
-          uint8_t data[8];
         } u;
-        start_offset = 0;
-        el_size = data_size = _MIR_type_size (ctx, t);
-        if (init_el.member_decl != NULL && init_el.member_decl->bit_offset >= 0) {
-          uint64_t uval = 0;
-
-          assert (val.mir_op.mode == MIR_OP_INT || val.mir_op.mode == MIR_OP_UINT);
-          assert (init_el.member_decl->bit_offset % 8 == 0); /* first in the group of bitfields */
-          start_offset = init_el.member_decl->bit_offset / 8;
-          add_bit_field (c2m_ctx, &uval, val.mir_op.u.u, init_el.member_decl);
-          for (; i + 1 < VARR_LENGTH (init_el_t, init_els); i++, init_el = next_init_el) {
-            next_init_el = VARR_GET (init_el_t, init_els, i + 1);
-            if (next_init_el.offset != init_el.offset) break;
-            if (next_init_el.member_decl->bit_offset == init_el.member_decl->bit_offset) continue;
-            val = val_gen (c2m_ctx, next_init_el.init);
-            assert (val.mir_op.mode == MIR_OP_INT || val.mir_op.mode == MIR_OP_UINT);
-            add_bit_field (c2m_ctx, &uval, val.mir_op.u.u, next_init_el.member_decl);
-          }
-          val.mir_op.u.u = uval;
-          if (i + 1 < VARR_LENGTH (init_el_t, init_els)
-              && next_init_el.offset - init_el.offset < data_size)
-            data_size = next_init_el.offset - init_el.offset;
-        }
+        data_size = _MIR_type_size (ctx, t);
         switch (t) {
         case MIR_T_I8: u.i8 = (int8_t) val.mir_op.u.i; break;
         case MIR_T_U8: u.u8 = (uint8_t) val.mir_op.u.u; break;
@@ -17293,16 +17313,7 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         case MIR_T_LD: u.ld = val.mir_op.u.ld; break;
         default: assert (FALSE);
         }
-        if (start_offset == 0 && data_size == el_size) {
-          data = MIR_new_data (ctx, global_name, t, 1, &u);
-        } else {
-          for (mir_size_t byte_num = start_offset; byte_num < data_size; byte_num++) {
-            if (byte_num == start_offset)
-              data = MIR_new_data (ctx, global_name, MIR_T_U8, 1, &u.data[byte_num]);
-            else
-              MIR_new_data (ctx, NULL, MIR_T_U8, 1, &u.data[byte_num]);
-          }
-        }
+        data = MIR_new_data (ctx, global_name, t, 1, &u);
       } else if (init_el.el_type->mode == TM_ARR) {
         data_size = raw_type_size (c2m_ctx, init_el.el_type);
         str_len = val.mir_op.u.str.len;
