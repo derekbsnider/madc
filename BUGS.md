@@ -1158,30 +1158,6 @@ int main(void) { return x; }
   editor window's node while it has the keyboard. Pin it in testmadcide
   and a tests/gui case.
 
-## madcide (the editor)
-
-### B86. madcide refuses to start on a file that does not exist
-
-- Found by the owner, 2026-09-30. `madcide new.c`, with no `new.c`, prints
-  `madcide: cannot read new.c` and exits 1 (the path below, read from the
-  code). JOE, pico, vim and emacs open an
-  empty buffer ("New File"), and madcide's own `^K E` does the same.
-- Layer: `run_tui` (`tools/madcide/madcide_serve.inc:173`) →
-  `IdeSession::open` (`madcide_core.inc:7907`) → `setup_editor`
-  (`tools/texteditor/editor_events.inc:688`) → `setup_document`
-  (`lined_core.inc:82`), whose 0-on-missing contract the line editors need.
-  `^K E` goes through `open_buffer_doc` (`madcide_core.inc:3071`), which
-  opens a missing path as a new empty file, so the launch and `^K E` follow
-  two rules.
-- Also: `open_buffer_doc` opens ANY unreadable path as a new empty file, so an
-  existing file it cannot read (a directory, no permission) becomes an empty
-  buffer under its name.
-- Fix shape: the launch's document through `open_buffer_doc`, one rule for
-  both paths: a missing path is a new file (`New File` on the message line),
-  and an existing path that cannot be read is refused with the reason. The
-  untitled buffer (no file at all, plan §41.11a) builds on the same owner.
-- Planned: plan §41.11a slice 0.
-
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++

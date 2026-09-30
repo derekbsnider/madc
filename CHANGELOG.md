@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### madcide opens missing files and unreadable directories correctly
+
+madcide previously refused to start on a file that does not exist (`madcide new.c`
+with no `new.c` present exited with "cannot read new.c" and status 1), whereas standard
+editors (JOE, vim, pico, emacs) open an empty buffer ("New File"). Now madcide opens
+a missing path as a new empty buffer with status line "New file <path>.", writing
+nothing to disk until a save. An existing path that cannot be read (a directory,
+no permission) is refused on the launch's stderr or the status line at ^K E, with
+the reason stated. The same rule applies to both the launch and the ^K E (edit file)
+command. Two new PHP parity functions, `is_dir()` and `is_readable()`, distinguish
+directories from files and test read permission; they answer false for missing paths
+and the empty path, never throw. A single document minter, `new_document`, owns all
+entity creation (file loads, new files, view buffers) so they are stamped with a
+consistent initial state and path kind. Oracle: JOE 4.6 on the container; PHP 8.3
+for is_dir and is_readable.
+
 ### madcide's ^W (delete word) now matches JOE's behaviour
 
 The delete-word command (^W) previously deleted from the caret to the end of the

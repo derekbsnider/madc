@@ -682,24 +682,33 @@ void refuse_edit(long w, long es)
     ui::set(w, es, "msg", ro.c_str());
 }
 
-// The editor session every entry (vised, madcide, the headless gates)
-// opens the same way: document + editor-state + the shared verbs/check +
-// the derived access verdict. 0 = the file could not be read; -1 = the
-// shared verbs could not bind (the reason is already on stderr), and an
-// editor that cannot save or quit must not start.
+// The editor-state half of setup_editor, over a document already in the
+// world (madcide's launch opens its document through its own open rule,
+// open_buffer_doc). False = the verbs failed to load (already reported).
+bool setup_editor_state(long w, long doc)
+{
+    long es = ui::create(w, "editor-state");
+    if ( !bind_lineed_verbs(w) )
+	return false;
+    ui::set(w, es, "caret", 0);
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "adoc", doc);	// the subject-document rule's key
+    derive_access(w, es);
+    return true;
+}
+
+// The editor session vised and the headless gates open the same way:
+// document + editor-state + the shared verbs/check + the derived access
+// verdict (madcide's launch runs the state half behind its own open rule).
+// 0 = the file could not be read; -1 = the shared verbs could not bind
+// (the reason is already on stderr), and an editor that cannot save or
+// quit must not start.
 long setup_editor(long w, const char *path, bool ro)
 {
     long doc = setup_document(w, path, ro);
     if ( doc == 0 )
 	return 0;
-    long es = ui::create(w, "editor-state");
-    if ( !bind_lineed_verbs(w) )
-	return -1;
-    ui::set(w, es, "caret", 0);
-    ui::set(w, es, "mark", -1);
-    ui::set(w, es, "adoc", doc);	// the subject-document rule's key
-    derive_access(w, es);
-    return doc;
+    return setup_editor_state(w, doc) ? doc : -1;
 }
 
 // Dispatch a turn-cadence command through the SAME script verb the line

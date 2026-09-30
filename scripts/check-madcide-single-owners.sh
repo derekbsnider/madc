@@ -607,8 +607,41 @@ if [ "$(count_cwd_data_reads "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; th
 fi
 rm -f "$tmp"
 
+# Every DOCUMENT entity has ONE minter: new_document (tools/texteditor/
+# lined_core.inc; B86) — text under a path, unmodified, the path's kind
+# stamped. A file's load (setup_document), a new file and every view buffer
+# ([repl], [build], [terminal]) come through it; a second
+# `ui::create(w, "document")` is the copy that let an unreadable path become
+# an empty buffer under its name and a view buffer read a same-named file.
+count_document_mints()
+{
+	cat "$@" | grep -cE 'ui::create\([^,]*, *"document"\)'
+}
+
+n=$(count_document_mints "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEXTED"/*.mad)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n document mint sites across" \
+	     "tools/madcide + tools/texteditor (expected 1: new_document). Open" \
+	     "a file through open_buffer_doc / setup_document, a view buffer" \
+	     "through new_document." >&2
+	grep -nE 'ui::create\([^,]*, *"document"\)' "$TOOLS"/*.inc "$TOOLS"/*.mad \
+	     "$TEXTED"/*.inc "$TEXTED"/*.mad >&2
+	exit 1
+fi
+
+# Negative control: a synthetic second minter must trip the marker.
+tmp=$(mktemp)
+echo '    long nd = ui::create(w2, "document");	// synthetic' > "$tmp"
+if [ "$(count_document_mints "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEXTED"/*.mad "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic document mint (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one data-location owner: resolve_data_dir;" \
-     "one fresh-row owner: push_buffer_row;" \
+     "one document minter: new_document; one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \
      "validator seat: graph_edit_apply)"

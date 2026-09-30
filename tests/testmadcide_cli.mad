@@ -10,7 +10,14 @@
 //      client refuses — an unknown command (before a session opens; stderr
 //      says why) or an argument for a command that opened no prompt;
 //   3. the argument feeds the prompt the command opens (gotoline, find)
-//      and commits it by CODE — the same commit a key reaches.
+//      and commits it by CODE — the same commit a key reaches;
+//   4. ONE open rule for the launch and ^K E (B86; JOE, vim, pico and
+//      emacs all open a missing path as a new, empty buffer): a missing
+//      path — its directory missing too — opens as a new file and the
+//      status line says `New file <path>.`, with nothing written until a
+//      save; a path that exists but cannot be read (a directory) is refused
+//      with the reason — at launch on stderr with verdict 1, at ^K E on the
+//      status line with the buffer table untouched.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -72,9 +79,43 @@ int main()
     // A quit is a command too: the session ends, the verdict is 0.
     rc = run_once(out, path, false, "quit");
     println("cli-quit: rc={}", rc);
-    // A one-shot on a path nobody can read: 1, the reason on stderr.
-    rc = run_once(out, "no/such/dir/madc_ide_cli_none.mad", false, "check");
-    println("cli-noread: rc={} out-empty={}", rc, strlen(out.c_str()) == 0 ? 1 : 0);
+    // 4. The open rule. A missing path — even under a missing directory —
+    //    is a new file: the session opens and its status line says so (the
+    //    launch's first frame; the message is transient, so a -c command's
+    //    own event clears it), and the disk is untouched (nothing exists
+    //    until a save).
+    IdeSession N;
+    long nd = N.open("madc_ide_cli_new.mad", false);
+    var nmsg;
+    ui::get(nmsg, N.world(), N.es, "msg");
+    N.close();
+    println("cli-new: opened={} said={} unwritten={}", nd > 0 ? 1 : 0,
+	    nmsg.index("New file madc_ide_cli_new.mad.") >= 0 ? 1 : 0,
+	    php::file_exists("madc_ide_cli_new.mad") ? 0 : 1);
+    IdeSession D;
+    nd = D.open("no/such/dir/madc_ide_cli_none.mad", false);
+    ui::get(nmsg, D.world(), D.es, "msg");
+    D.close();
+    println("cli-new-nodir: opened={} said={}", nd > 0 ? 1 : 0,
+	    nmsg.index("New file no/such/dir/madc_ide_cli_none.mad.") >= 0 ? 1 : 0);
+    rc = run_once(out, "madc_ide_cli_new.mad", false, "outline");
+    println("cli-new-once: rc={} unwritten={}", rc,
+	    php::file_exists("madc_ide_cli_new.mad") ? 0 : 1);
+    // A path that exists but cannot be read: refused, 1, nothing on stdout
+    // (the reason on stderr: `madcide: madc_ide_cli_dir is a directory.`).
+    php::mkdir("madc_ide_cli_dir");
+    rc = run_once(out, "madc_ide_cli_dir", false, "check");
+    println("cli-dir: rc={} out-empty={}", rc, strlen(out.c_str()) == 0 ? 1 : 0);
+    // ^K E follows the same rule: a directory is refused on the status line,
+    // a missing path is a new file.
+    rc = run_once(out, path, false, "editfile madc_ide_cli_dir");
+    println("cli-editdir: rc={} said={}", rc,
+	    out.index("madc_ide_cli_dir is a directory.") >= 0 ? 1 : 0);
+    rc = run_once(out, path, false, "editfile madc_ide_cli_new.mad");
+    println("cli-editnew: rc={} said={} unwritten={}", rc,
+	    out.index("New file madc_ide_cli_new.mad.") >= 0 ? 1 : 0,
+	    php::file_exists("madc_ide_cli_new.mad") ? 0 : 1);
+    php::rmdir("madc_ide_cli_dir");
     remove(path);
     return 0;
 }

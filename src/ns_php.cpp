@@ -626,14 +626,59 @@ int64_t php_file_exists(const char *path)
 	struct stat st;
 	return ::stat(path, &st) == 0 ? 1 : 0;
 }
-int64_t php_file_exists_value(const madc::value *v)
+
+// A path-taking php:: function's value form: the string payload as a path.
+// The payload is not NUL-terminated by contract, so it is copied to a
+// bounded C string. False for a null, non-string or empty value — the
+// functions answer false for it, warning-free like PHP. ONE conversion for
+// every path-taking function (file_exists, is_dir, is_readable, unlink).
+static bool php_value_path(const madc::value *v, std::string &path)
 {
 	if ( !v || !v->is_string() || v->size() == 0 )
+		return false;
+	path.assign((const char *)v->data(), v->size());
+	return true;
+}
+
+int64_t php_file_exists_value(const madc::value *v)
+{
+	std::string p;
+	return php_value_path(v, p) ? php_file_exists(p.c_str()) : 0;
+}
+
+// php::is_dir — PHP parity: true iff the path names an existing DIRECTORY
+// (stat, so a symlink to a directory counts, as in PHP). A missing path, a
+// regular file and an empty path answer false.
+int64_t php_is_dir(const char *path)
+{
+	if ( !path || !*path )
 		return 0;
-	// The payload is not NUL-terminated by contract — copy to a bounded
-	// C string for stat.
-	std::string p((const char *)v->data(), v->size());
-	return php_file_exists(p.c_str());
+	struct stat st;
+	return ::stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 1 : 0;
+}
+int64_t php_is_dir_value(const madc::value *v)
+{
+	std::string p;
+	return php_value_path(v, p) ? php_is_dir(p.c_str()) : 0;
+}
+
+// php::is_readable — PHP parity: true iff the file or directory exists and
+// the process may read it, checked against the REAL uid/gid as PHP does
+// (access(2); win64 UCRT spells it _access, mode 4 = read).
+int64_t php_is_readable(const char *path)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	return ::_access(path, 4) == 0 ? 1 : 0;
+#else
+	return ::access(path, R_OK) == 0 ? 1 : 0;
+#endif
+}
+int64_t php_is_readable_value(const madc::value *v)
+{
+	std::string p;
+	return php_value_path(v, p) ? php_is_readable(p.c_str()) : 0;
 }
 
 // php::unlink — PHP parity: delete a FILE (unlink fails on a directory,
@@ -653,12 +698,8 @@ int64_t php_unlink(const char *path)
 }
 int64_t php_unlink_value(const madc::value *v)
 {
-	if ( !v || !v->is_string() || v->size() == 0 )
-		return 0;
-	// The payload is not NUL-terminated by contract — copy to a bounded
-	// C string (as php_file_exists_value does).
-	std::string p((const char *)v->data(), v->size());
-	return php_unlink(p.c_str());
+	std::string p;
+	return php_value_path(v, p) ? php_unlink(p.c_str()) : 0;
 }
 
 // php::file_get_contents — PHP parity: the whole file as a string
@@ -1488,6 +1529,10 @@ int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
 int64_t __php_file_exists(madc::value *a) { return php_file_exists_value(a); }
 int64_t __php_file_exists_cstr(const char *a) { return php_file_exists(a); }
+int64_t __php_is_dir(madc::value *a) { return php_is_dir_value(a); }
+int64_t __php_is_dir_cstr(const char *a) { return php_is_dir(a); }
+int64_t __php_is_readable(madc::value *a) { return php_is_readable_value(a); }
+int64_t __php_is_readable_cstr(const char *a) { return php_is_readable(a); }
 int64_t __php_unlink(madc::value *a) { return php_unlink_value(a); }
 int64_t __php_unlink_cstr(const char *a) { return php_unlink(a); }
 int64_t __php_file_get_contents(madc::value *a, const char *b) { return php_file_get_contents(a, b); }

@@ -122,8 +122,6 @@ long run_serve(const char *path, bool ro, const char *addr)
 {
     IdeSession S;
     long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     S.terminal(false);			// headless: no interactive terminal
@@ -171,8 +169,6 @@ long run_tui(const char *path, bool ro, ui::level lvl, const char *addr)
 {
     IdeSession S;
     long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     long w = S.world();
@@ -410,8 +406,6 @@ long run_lsp(const char *path, bool ro, const char *serve)
 {
     IdeSession S;
     long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
     if ( doc <= 0 )
 	return 1;
     S.terminal(false);				// headless: no interactive terminal

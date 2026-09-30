@@ -41,6 +41,10 @@ extern "C" {
     int64_t __php_ctype_digit_cstr(const char *);
     int64_t __php_file_exists(value *);
     int64_t __php_file_exists_cstr(const char *);
+    int64_t __php_is_dir(value *);
+    int64_t __php_is_dir_cstr(const char *);
+    int64_t __php_is_readable(value *);
+    int64_t __php_is_readable_cstr(const char *);
     int64_t __php_unlink(value *);
     int64_t __php_unlink_cstr(const char *);
     int64_t __php_file_get_contents(value *, const char *);
@@ -140,6 +144,13 @@ namespace php {
     // no stat-cache emulation, madc answers the live filesystem).
     bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
     bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
+    // is_dir — true iff the path names an existing directory; is_readable —
+    // true iff the file or directory exists and may be read (the real
+    // uid/gid, as PHP checks). PHP parity; the live filesystem.
+    bool is_dir(value &filename) { return __php_is_dir(&filename) != 0; }
+    bool is_dir(const char *filename) { return __php_is_dir_cstr(filename) != 0; }
+    bool is_readable(value &filename) { return __php_is_readable(&filename) != 0; }
+    bool is_readable(const char *filename) { return __php_is_readable_cstr(filename) != 0; }
 
     // unlink — delete a FILE (PHP parity: fails on a directory). true on
     // success. A real host-side builtin, so it is win64-portable: the libc

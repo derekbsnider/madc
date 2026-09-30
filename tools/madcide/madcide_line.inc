@@ -28,8 +28,6 @@ void run_line(const char *path, bool ro)
 {
     IdeSession S;
     long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
     if ( doc <= 0 )
 	return;			// -1 already reported on stderr
     long t = ui::open(ui::LINE);

@@ -54,7 +54,7 @@ long repl_doc(long w, long es)
     long existing = repl_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = open_buffer_doc(w, es, "[repl]");
+    long nd = new_document(w, "[repl]", "");
     push_buffer_row(w, es, nd, "[repl]");
     return nd;
 }
@@ -66,7 +66,7 @@ long repl_input_doc(long w, long es)
     long d = es_int(w, es, "replin", 0);
     if ( d != 0 )
 	return d;
-    d = open_buffer_doc(w, es, "[repl-input]");
+    d = new_document(w, "[repl-input]", "");
     ui::set(w, es, "replin", d);
     ui::set(w, es, "rcaret", 0);
     ui::set(w, es, "rmark", -1);

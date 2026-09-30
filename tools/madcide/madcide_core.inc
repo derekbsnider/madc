@@ -61,8 +61,8 @@ class IdeSession
 
 	long open(const char *path0, bool ro);	// full session startup;
 						// > 0 = the launch doc,
-						// 0 = unreadable path,
-						// -1 = reported fatal
+						// -1 = refused or fatal,
+						// reported on stderr
 	void attach(long w0, long es0);	// a session over an EXISTING
 					// world + state entity (the
 					// headless harness, embedders)
@@ -3074,21 +3074,39 @@ long active_doc(long w, long es, long fallback)
     return ad != 0 ? ad : fallback;
 }
 
-// Open a document for the buffer table: an unreadable path is a NEW
-// EMPTY file (JOE's "New File"), not a refusal — setup_document's
-// 0-on-missing contract stays what vised/lined need.
-long open_buffer_doc(long w, long es, const char *path)
+// THE open rule (B86), one for the launch and ^K E: a missing path is a
+// NEW file (JOE's "New File": an empty document under that name); an
+// existing path that cannot be read (a directory, no permission) is
+// REFUSED. `note` is the status-line text: `New file <path>.` for a new
+// file, the refusal's reason when the answer is 0, empty for a plain load.
+// setup_document's 0-on-missing contract stays what vised/lined need.
+long open_buffer_doc(var &note, long w, const char *path0, bool ro)
 {
-    long nd = setup_document(w, path, false);
-    if ( nd != 0 )
+    var p = path0;		// ring discipline: own the text first
+    note = "";
+    if ( !php::file_exists(p) )
     {
-	clog_adopt(w, nd);	// a project member opened later: its restored records attach (Nexus L4c)
-	return nd;
+	long fresh = new_document(w, p.c_str(), "");
+	if ( ro )
+	    ui::set(w, fresh, "read_only", true);
+	note = format("New file {}.", p);
+	return fresh;
     }
-    nd = ui::create(w, "document");
-    ui::text_load(w, nd, "");
-    doc_set_path(w, nd, path);
-    ui::set(w, nd, "modified", false);
+    if ( php::is_dir(p) )
+    {
+	note = format("{} is a directory.", p);
+	return 0;
+    }
+    long nd = setup_document(w, p.c_str(), ro);
+    if ( nd == 0 )
+    {
+	if ( php::is_readable(p) )
+	    note = format("Cannot read {}.", p);
+	else
+	    note = format("{}: permission denied.", p);
+	return 0;
+    }
+    clog_adopt(w, nd);	// a project member opened later: its restored records attach (Nexus L4c)
     return nd;
 }
 
@@ -3213,13 +3231,19 @@ void edit_file(long w, long es, long olddoc, const char *path0)
 	    return;
 	}
     }
-    bool fresh = !php::file_exists(p);
-    long nd = open_buffer_doc(w, es, p.c_str());
+    var note;
+    long nd = open_buffer_doc(note, w, p.c_str(), false);
+    if ( nd == 0 )
+    {
+	ui::set(w, es, "msg", note.c_str());	// the refusal's reason; the
+	return;					// buffer table is untouched
+    }
     push_buffer_row(w, es, nd, p.c_str());
     switch_buffer(w, es, olddoc, n);
-    ui::set(w, es, "msg",
-	    fresh ? format("New file {}.", p)
-		  : format("Editing {}.", p));
+    if ( strlen(note.c_str()) > 0 )
+	ui::set(w, es, "msg", note.c_str());	// New file <path>.
+    else
+	ui::set(w, es, "msg", format("Editing {}.", p));
 }
 
 // ---- IDE-9e: windows (^K O split) --------------------------------------
@@ -3598,6 +3622,19 @@ void clog_persist(long w, long es, long doc)
 // manifest or no file. ONE stream: loading a file over a session that already
 // logged events would drop the other documents' records (and collide their
 // seqs) -- refused with the reason, never silently (Nexus L4c).
+// A note BESIDE the status line's current message, never over it: a
+// startup announcement and a later note both survive.
+void msg_beside(long w, long es, const char *note0)
+{
+    var note = note0;		// ring discipline: own the text first
+    var prior;
+    ui::get(prior, w, es, "msg");
+    if ( prior.is_null() || strlen(prior.c_str()) == 0 )
+	ui::set(w, es, "msg", note.c_str());
+    else
+	ui::set(w, es, "msg", format("{} {}", prior, note));
+}
+
 void clog_restore(long w, long es, long doc)
 {
     var path;
@@ -3609,13 +3646,7 @@ void clog_restore(long w, long es, long doc)
     if ( clog_head(w, doc) > 0 )
     {
 	// Beside the caller's message (the project announcement), never over it.
-	var prior;
-	ui::get(prior, w, es, "msg");
-	var note = "Events not restored: this session already logged events.";
-	if ( prior.is_null() || strlen(prior.c_str()) == 0 )
-	    ui::set(w, es, "msg", note.c_str());
-	else
-	    ui::set(w, es, "msg", format("{} {}", prior, note));
+	msg_beside(w, es, "Events not restored: this session already logged events.");
 	return;
     }
     long le = changelog_of(w, doc);
@@ -4443,7 +4474,7 @@ long build_doc(long w, long es)
     long existing = build_doc_if_any(w, es);	// ONE finder, no duplicate scan
     if ( existing != 0 )
 	return existing;
-    long nd = open_buffer_doc(w, es, "[build]");
+    long nd = new_document(w, "[build]", "");
     push_buffer_row(w, es, nd, "[build]");
     return nd;
 }
@@ -4596,7 +4627,7 @@ long term_doc(long w, long es)
     long existing = term_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = open_buffer_doc(w, es, "[terminal]");
+    long nd = new_document(w, "[terminal]", "");
     push_buffer_row(w, es, nd, "[terminal]");
     return nd;
 }
@@ -7913,18 +7944,29 @@ bool IdeSession::take_spawn(long &doc)
 // (status format, theme, keybinding profile — all validated handle-free),
 // the buffer table, the project read-back, and the first lexical colour.
 // No terminal anywhere: the TUI client opens its own AFTER this and asks
-// for the key table. > 0 = the launch doc; 0 = unreadable path (the
-// caller reports); -1 = fatal, already reported on stderr.
+// for the key table. The launch document comes through THE open rule
+// (open_buffer_doc, the one ^K E uses): a missing path opens as a new
+// file and says so on the status line. > 0 = the launch doc; -1 = refused
+// (a path that exists but cannot be read) or fatal, already reported on
+// stderr.
 long IdeSession::open(const char *path0, bool ro)
 {
     var p = path0;		// ring discipline: own the text first
     w = ui::world_new();
-    long doc = setup_editor(w, p.c_str(), ro);
-    if ( doc <= 0 )
-	return doc;		// 0 unreadable; -1 the verbs (already reported)
+    var note;
+    long doc = open_buffer_doc(note, w, p.c_str(), ro);
+    if ( doc == 0 )
+    {
+	println(stderr, "madcide: {}", note);
+	return -1;
+    }
+    if ( !setup_editor_state(w, doc) )
+	return -1;		// the verbs (already reported)
     es = ui::entity_by_name(w, "editor-state");
     if ( !init_view_es(w, es, doc, p.c_str()) )
 	return -1;		// the profile AND rescue bindings both failed
+    if ( strlen(note.c_str()) > 0 )
+	msg_beside(w, es, note.c_str());	// New file <path>.
     return doc;
 }
 

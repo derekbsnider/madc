@@ -117,18 +117,31 @@ long doc_kind(long w, long doc)
     return k.as_integer();
 }
 
+// THE document entity: `text` under `path`, unmodified — every document
+// either editor holds is minted here. No file is read: a loaded file's
+// text arrives from setup_document; a new file's and a view buffer's
+// ([repl], [build], [terminal]) text is empty, and a view's name is a
+// display path, never looked up on disk (a file named `[build]` in the
+// working directory is not the build pane).
+long new_document(long w, const char *path, const char *text)
+{
+    long doc = ui::create(w, "document");
+    ui::text_load(w, doc, text);
+    doc_set_path(w, doc, path);
+    ui::set(w, doc, "modified", false);
+    return doc;
+}
+
 // Create the document entity and load its file: the setup BOTH editors
 // share (lined's line mode and vised's TUI mode edit the same document
 // shape). 0 = the file could not be read.
 long setup_document(long w, const char *path, bool ro)
 {
-    long doc = ui::create(w, "document");
     var seed;
     if ( !php::file_get_contents(seed, path) )
-	return 0;
-    ui::text_load(w, doc, seed.c_str());
-    doc_set_path(w, doc, path);
-    ui::set(w, doc, "modified", false);
+	return 0;		// read first: a refused read leaves no
+				// orphan document in the world
+    long doc = new_document(w, path, seed.c_str());
     if ( ro )
 	ui::set(w, doc, "read_only", true);
     return doc;

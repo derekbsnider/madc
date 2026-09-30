@@ -37,4 +37,9 @@ cli-unknown: rc=2 out-empty=1
 cli-noarg: rc=2 said=1
 cli-noterm: rc=0 said=1
 cli-quit: rc=0
-cli-noread: rc=1 out-empty=1
+cli-new: opened=1 said=1 unwritten=1
+cli-new-nodir: opened=1 said=1
+cli-new-once: rc=0 unwritten=1
+cli-dir: rc=1 out-empty=1
+cli-editdir: rc=0 said=1
+cli-editnew: rc=0 said=1 unwritten=1

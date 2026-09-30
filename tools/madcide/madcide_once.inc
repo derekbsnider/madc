@@ -48,8 +48,6 @@ long run_once(var &out, const char *path, bool ro, const char *cmdline)
     }
     IdeSession S;
     long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     S.terminal(false);		// the level says so: nothing to hand over
