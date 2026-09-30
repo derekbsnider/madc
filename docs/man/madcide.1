@@ -3,7 +3,7 @@
 madcide \- terminal IDE built on the live madc compiler
 .SH SYNOPSIS
 .B madcide
-.I file
+.RI [ file ]
 .RI [ ro ]
 .RB [ \-\-profile
 .IR name ]
@@ -37,6 +37,17 @@ files) swap the same way (^K T).
 .TP
 .I file
 The file to edit. A path that does not exist opens as a new file.
+Without a file,
+.B madcide
+opens an untitled buffer: saving it asks for a file name, and F5 runs it
+under the name
+.BR untitled .
+The one-shot and server modes
+.RB ( \-c ,
+.BR \-\-mcp ,
+.BR \-\-lsp ,
+.BR \-\-serve )
+need a file.
 .TP
 .I ro
 The word

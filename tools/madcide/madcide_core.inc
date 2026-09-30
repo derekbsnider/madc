@@ -1724,7 +1724,7 @@ void lex_first_spans(long w, long es, long doc)
     var t;
     ui::text(t, w, doc);
     var p;
-    ui::get(p, w, doc, "path");
+    doc_name(p, w, doc);		// the unit's name (`untitled` without a file)
     var rows;
     madc::lex_spans(rows, t.c_str(), p.c_str());
     spans_to_hspans(w, es, doc, rows, es);
@@ -1743,7 +1743,7 @@ long ensure_phandle(long w, long es, long doc)
     var t;
     ui::text(t, w, doc);
     var p;
-    ui::get(p, w, doc, "path");
+    doc_name(p, w, doc);		// the unit's name (`untitled` without a file)
     h = madc::parse_open(t.c_str(), p.c_str());
     // Stage-2: parse_open YIELDS between slices, so two flows can overlap
     // on one doc (the spawned background parse and a synchronous check).
@@ -1902,6 +1902,7 @@ void toggle_profile(long w, long es)
 // owner — then the caret lands in the now-active buffer.
 void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
+bool save_as_quit(long w, long es, long doc, const char *path0);	// ^K X, untitled
 long active_doc(long w, long es, long fallback);
 void goto_pane_row(long w, long es, long doc, long option, bool outline)
 {
@@ -1920,7 +1921,7 @@ void goto_pane_row(long w, long es, long doc, long option, bool outline)
 	    if ( !f.is_null() )
 	    {
 		var cp;
-		ui::get(cp, w, doc, "path");
+		doc_name(cp, w, doc);	// the rows name the unit the parse was given
 		if ( !(f == cp.c_str()) )
 		{
 		    var ff = format("{}", f);
@@ -2135,7 +2136,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	if ( e == 'n' )
 	{
 	    var p;
-	    ui::get(p, w, doc, "path");
+	    doc_name(p, w, doc);
 	    seat = p;
 	}
 	if ( e == 'm' )
@@ -2586,6 +2587,8 @@ bool finish_prompt(long w, long es, long doc, long caret)
     }
     if ( mode == pmSAVEAS )
 	return save_as(w, es, doc, in.c_str());
+    if ( mode == pmSAVEASQUIT )
+	return save_as_quit(w, es, doc, in.c_str());
     if ( mode == pmOPENPROJECT )
     {
 	proj_open(w, es, doc, in.c_str());
@@ -2600,7 +2603,8 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	long nb = php::count(bufs);
 	for ( long i = 0; i < nb; i = i + 1 )
 	{
-	    var bp = format("{}", bufs[i]["path"]);
+	    var bp;
+	    doc_name(bp, w, bufs[i]["doc"].as_integer());	// `untitled` without a file
 	    var bn = php::basename(bp);
 	    if ( bp == in.c_str() || bn == in.c_str() )
 	    {
@@ -2933,7 +2937,7 @@ bool enter_lens(long w, long es, long doc, long lang)
     var t;
     ui::text(t, w, doc);
     var p;
-    ui::get(p, w, doc, "path");
+    doc_name(p, w, doc);
     var emitted;
     var vmap;			// V5: the source↔display coordinate map, beside the text
     if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
@@ -3019,7 +3023,7 @@ long make_code_view(long w, long es, long subject, long lang)
     var t;
     ui::text(t, w, subject);
     var p;
-    ui::get(p, w, subject, "path");
+    doc_name(p, w, subject);
     var emitted;
     var vmap;			// V5: the source↔display coordinate map
     if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
@@ -3085,11 +3089,20 @@ long active_doc(long w, long es, long fallback)
 // existing path that cannot be read (a directory, no permission) is
 // REFUSED. `note` is the status-line text: `New file <path>.` for a new
 // file, the refusal's reason when the answer is 0, empty for a plain load.
-// setup_document's 0-on-missing contract stays what vised/lined need.
+// setup_document's 0-on-missing contract stays what vised/lined need. No
+// path at all (a launch without a file, decided 2026-09-30) is the UNTITLED
+// buffer (new_document's): nothing to announce, Save asks for its name.
 long open_buffer_doc(var &note, long w, const char *path0, bool ro)
 {
     var p = path0;		// ring discipline: own the text first
     note = "";
+    if ( strlen(p.c_str()) == 0 )
+    {
+	long untitled = new_document(w, "", "");
+	if ( ro )
+	    ui::set(w, untitled, "read_only", true);
+	return untitled;
+    }
     if ( !php::file_exists(p) )
     {
 	long fresh = new_document(w, p.c_str(), "");
@@ -3185,8 +3198,10 @@ void push_buffer_row(long w, long es, long nd, const char *path)
     }
     long vid = view_new(w, es, nd, viewSOURCE, doc_kind(w, nd));	// the tab's
 				// View: the source View over its document
-    bufs[] = { "doc": nd, "path": path, "caret": 0,
-	       "mark": -1, "bend": -1, "view": vid };
+    var row = { "doc": nd, "caret": 0, "mark": -1, "bend": -1, "view": vid };
+    if ( strlen(path) > 0 )
+	row["path"] = path;	// an untitled buffer's row has none (doc_name)
+    bufs[] = row;
     ui::set(w, es, "buffers", bufs);
 }
 
@@ -3220,20 +3235,26 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     long n = php::count(bufs);
     // Two spellings of one file are one BUFFER (V6c-2): same_file, or
     // `^K E /abs/path/x.mad` opens a second buffer on the file already open
-    // as `x.mad` and the two then edit past each other.
+    // as `x.mad` and the two then edit past each other. An empty name is the
+    // UNTITLED buffer: the one already open, else a new one.
+    bool untitled = strlen(p.c_str()) == 0;
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
 	var rp = r["path"];
-	if ( same_file(rp.is_null() ? "" : rp.c_str(), p.c_str()) )
+	bool same = untitled ? rp.is_null()
+			     : !rp.is_null() && same_file(rp.c_str(), p.c_str());
+	if ( same )
 	{
+	    var nm;
+	    doc_name(nm, w, r["doc"].as_integer());
 	    if ( i == es_int(w, es, "bufidx", 0) )
 	    {
-		ui::set(w, es, "msg", format("Already editing {}.", p));
+		ui::set(w, es, "msg", format("Already editing {}.", nm));
 		return;
 	    }
 	    switch_buffer(w, es, olddoc, i);
-	    ui::set(w, es, "msg", format("Editing {}.", p));
+	    ui::set(w, es, "msg", format("Editing {}.", nm));
 	    return;
 	}
     }
@@ -3246,10 +3267,12 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     }
     push_buffer_row(w, es, nd, p.c_str());
     switch_buffer(w, es, olddoc, n);
+    var nm;
+    doc_name(nm, w, nd);
     if ( strlen(note.c_str()) > 0 )
 	ui::set(w, es, "msg", note.c_str());	// New file <path>.
     else
-	ui::set(w, es, "msg", format("Editing {}.", p));
+	ui::set(w, es, "msg", format("Editing {}.", nm));
 }
 
 // ---- IDE-9e: windows (^K O split) --------------------------------------
@@ -3535,6 +3558,37 @@ void proj_launch_path(var &out, long w, long es, long doc)
     ui::get(out, w, doc, "path");
 }
 
+// The launch has no file (an untitled launch): nothing anchors the implicit
+// project, and a manifest has no file to sit beside.
+bool launch_untitled(long w, long es, long doc)
+{
+    var lp;
+    proj_launch_path(lp, w, es, doc);
+    return lp.is_null() || strlen(lp.c_str()) == 0;
+}
+
+// A project change on an untitled launch: refused, and the status line says
+// what to do. True = refused.
+bool launch_untitled_refused(long w, long es, long doc)
+{
+    if ( !launch_untitled(w, es, doc) )
+	return false;
+    ui::set(w, es, "msg", "Save the buffer first: a project starts from its file.");
+    return true;
+}
+
+// A command that needs the buffer's FILE (a build writes beside it, a
+// build command's {file} names it), on an untitled buffer: refused, and the
+// status line says so. True = refused. Check and Run need no file (the live
+// parse).
+bool untitled_refused(long w, long es, long doc, const char *what)
+{
+    if ( !doc_untitled(w, doc) )
+	return false;
+    ui::set(w, es, "msg", format("Save the buffer first: {} needs its file.", what));
+    return true;
+}
+
 // The project's TUs as {path, ti} rows (ti = the tus-array index; -1 =
 // the implicit TU). A native TU entry is a bare string or an object
 // carrying "file" — only that field is interpreted here; the rest rides.
@@ -3545,9 +3599,12 @@ void proj_tu_rows(var &out, long w, long es, long doc)
     ui::get(proj, w, es, "proj");
     if ( proj.is_null() )
     {
-	var lp;
-	proj_launch_path(lp, w, es, doc);
-	rows[] = { "path": lp, "ti": -1 };
+	if ( !launch_untitled(w, es, doc) )
+	{
+	    var lp;
+	    proj_launch_path(lp, w, es, doc);
+	    rows[] = { "path": lp, "ti": -1 };
+	}
 	out = rows;
 	return;
     }
@@ -3714,6 +3771,8 @@ bool proj_write(long w, long es, long doc)
     var pf;
     ui::get(pf, w, es, "projfile");
     bool fresh = !proj_has_manifest(w, es);
+    if ( fresh && launch_untitled_refused(w, es, doc) )
+	return false;
     if ( fresh )
     {
 	var lp;
@@ -3791,6 +3850,8 @@ void proj_add(long w, long es, long doc, const char *path0)
     ui::get(proj, w, es, "proj");
     if ( proj.is_null() )
     {
+	if ( launch_untitled_refused(w, es, doc) )
+	    return;
 	var np;
 	var lp;
 	proj_launch_path(lp, w, es, doc);
@@ -3817,10 +3878,10 @@ void proj_add(long w, long es, long doc, const char *path0)
 // projaddcur — add the ACTIVE buffer's file (^K J's proposed joe seat).
 void proj_addcur(long w, long es, long doc)
 {
+    if ( untitled_refused(w, es, doc, "a project member") )
+	return;
     var p;
     ui::get(p, w, doc, "path");
-    if ( p.is_null() || strlen(p.c_str()) == 0 )
-	return;
     proj_add(w, es, doc, p.c_str());
 }
 
@@ -3930,9 +3991,12 @@ bool proj_load(long w, long es, var &pf)
 
 // Startup manifest read (run_ide): a <base>.prj.json beside the launch
 // file IS the project — persistence would be pointless if nothing read
-// it back. No file = the implicit single-file project.
+// it back. No file = the implicit single-file project; an untitled launch
+// has no file to find a manifest beside.
 void proj_startup(long w, long es, long doc)
 {
+    if ( launch_untitled(w, es, doc) )
+	return;
     var lp;
     proj_launch_path(lp, w, es, doc);
     var base;
@@ -4004,6 +4068,8 @@ void project_rows(long w, long es, long doc)
     // [open] — buffers not in the project, dirty-marked.
     for ( var b : bufs )
     {
+	if ( b["path"].is_null() )
+	    continue;			// an untitled buffer is not a file
 	var p = format("{}", b["path"]);
 	var cp;
 	madc::canonical_path(cp, p.c_str());
@@ -4926,6 +4992,8 @@ void native_build_task(long w, long es)
 // ring calls rots (the ring-lifetime contract).
 void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
 {
+    if ( untitled_refused(w, es, doc, "a build") )
+	return;
     if ( es_int(w, es, "buildlive", 0) != 0 )
     {
 	ui::set(w, es, "msg", "A build is already running.");
@@ -4994,6 +5062,33 @@ bool dialog_request(long w, long es, long dlg, const char *title,
     return true;
 }
 
+// Ask for the name a save writes under (Save As…): the native dialog when
+// the client has one, else JOE's prompt. `then_quit` is ^K X on a buffer
+// with no file yet: the answer saves, then quits (the request's own kind
+// carries it, so a cancel leaves nothing behind).
+void save_as_ask(long w, long es, long doc, bool then_quit)
+{
+    var cur = "";
+    if ( !doc_untitled(w, doc) )
+	ui::get(cur, w, doc, "path");
+    if ( !dialog_request(w, es, then_quit ? dlgSAVEQUIT : dlgSAVE, "Save As", cur) )
+	start_prompt(w, es, "Save as", then_quit ? pmSAVEASQUIT : pmSAVEAS);
+}
+
+// The document's name moved (Save As): the caches keyed on the old one go —
+// the parse handle names its unit (the diagnostics rows carry that name) and
+// the git handle answers for the old file's directory. The next need opens
+// both under the new name.
+void doc_forget_name(long w, long doc)
+{
+    long ph = es_int(w, doc, "phandle", 0);
+    if ( ph != 0 )
+	madc::parse_close(ph);
+    ui::set(w, doc, "phandle", 0);
+    ui::set(w, doc, "ghandle", -1);
+    ui::set(w, doc, "grelpath", "");
+}
+
 // Save the buffer under a NEW path (Save As…): the document's path moves,
 // its buffer row follows (the ring addresses buffers by path), then the
 // one write verb runs — the same `w` every save uses.
@@ -5002,7 +5097,9 @@ bool save_as(long w, long es, long doc, const char *path0)
     var p = path0;			// ring discipline: own the text first
     if ( strlen(p.c_str()) == 0 )
 	return true;
+    bool untitled_launch = launch_untitled(w, es, doc);	// before the name moves
     doc_set_path(w, doc, p.c_str());	// the kind follows the new name
+    doc_forget_name(w, doc);
     var bufs;
     ui::get(bufs, w, es, "buffers");
     if ( !bufs.is_null() )
@@ -5015,6 +5112,10 @@ bool save_as(long w, long es, long doc, const char *path0)
 	    {
 		r["path"] = p;
 		bufs[i] = r;
+		// The untitled LAUNCH buffer (row 0) named: it is the launch
+		// file now, the implicit project's anchor.
+		if ( i == 0 && untitled_launch )
+		    ui::set(w, es, "launchpath", p);
 	    }
 	}
 	ui::set(w, es, "buffers", bufs);
@@ -5022,30 +5123,47 @@ bool save_as(long w, long es, long doc, const char *path0)
     return save_and_check(w, es, doc);
 }
 
+// Save As, then quit once the file is written (^K X's answer on a buffer
+// that had no file). False = the session ends.
+bool save_as_quit(long w, long es, long doc, const char *path0)
+{
+    var p = path0;			// ring discipline: own the text first
+    if ( strlen(p.c_str()) == 0 )
+	return true;
+    if ( !save_as(w, es, doc, p.c_str()) )
+	return false;
+    if ( doc_modified(w, doc) )
+	return true;			// the write failed; its message stands
+    return do_verb(w, es, "q");
+}
+
 // A native file dialog answered (the dialog event, S4): open edits the
 // chosen file (the same path editfile's prompt takes), save writes the
-// buffer under it; an empty path is the user's cancel.
-void dialog_result(long w, long es, long doc, var &ev)
+// buffer under it; an empty path is the user's cancel. False = the session
+// ends (a save-and-quit's answer).
+bool dialog_result(long w, long es, long doc, var &ev)
 {
     long dlg = es_int(w, es, "dlgkind", dlgOPEN);	// the request this answers
     var path = ev["path"];
     if ( path.is_null() || strlen(path.c_str()) == 0 )
     {
 	ui::set(w, es, "msg", "Cancelled.");
-	return;
+	return true;
     }
     switch ( dlg )
     {
 	case dlgSAVE:
-	    save_as(w, es, doc, path.c_str());
-	    return;
+	    return save_as(w, es, doc, path.c_str());
+	case dlgSAVEQUIT:
+	    return save_as_quit(w, es, doc, path.c_str());
 	case dlgOPENPROJECT:
 	    proj_open(w, es, doc, path.c_str());
-	    return;
+	    return true;
 	default:
 	    break;
     }
     edit_file(w, es, doc, path.c_str());
+    return true;
 }
 
 // The Run row (owner ruling 2026-08-27: the running madc IS the
@@ -5082,7 +5200,7 @@ void run_buffer(long w, long es, long doc)
 	// window and its stdout/stderr stream into Output. The terminal
 	// below keeps the inherited-stdio handoff.
 	var rp;
-	ui::get(rp, w, doc, "path");
+	doc_name(rp, w, doc);
 	var title = format("Run {}", rp);
 	if ( proj_kind(w, es) == pkGUI )
 	{
@@ -5451,6 +5569,8 @@ void build_choose(long w, long es, long doc, long option)
 	default:
 	    break;			// cmdBLD_RUN_CMD: the row's own command
     }
+    if ( untitled_refused(w, es, doc, "a build command") )
+	return;
     var cmd0 = format("{}", r["cmd"]);
     var cmd;
     build_subst(cmd, cmd0.c_str(), w, es, doc);
@@ -5533,6 +5653,11 @@ void open_shell(long w, long es)
 // the DISPATCHER, zero duplicated verb logic (verbs never re-enter act).
 bool save_quit(long w, long es, long doc)
 {
+    if ( doc_untitled(w, doc) )
+    {
+	save_as_ask(w, es, doc, true);	// the name first; the answer quits
+	return true;
+    }
     if ( !do_verb(w, es, "w") )
 	return false;
     if ( !doc_modified(w, doc) )
@@ -5541,9 +5666,15 @@ bool save_quit(long w, long es, long doc)
 }
 
 // Save + a silent diagnostics refresh (check-on-save): the verb's own
-// answer ("Wrote N bytes." or the refusal) stays the status message.
+// answer ("Wrote N bytes." or the refusal) stays the status message. A
+// buffer with no file yet asks for its name (Save As), as Thonny's does.
 bool save_and_check(long w, long es, long doc)
 {
+    if ( doc_untitled(w, doc) )
+    {
+	save_as_ask(w, es, doc, false);
+	return true;
+    }
     bool run = do_verb(w, es, "w");
     refresh_diags(w, es, doc);
     return run;
@@ -6499,8 +6630,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( kind == ui::event_kind::dialog )
     {
 	// A native file dialog answered (S4): open or save-as by the path.
-	dialog_result(w, es, doc, ev);
-	return true;
+	return dialog_result(w, es, doc, ev);
     }
     if ( kind == ui::event_kind::pointer )
     {
@@ -6780,13 +6910,8 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    }
 	    case cmdSAVEAS:
-	    {
-		var cur;
-		ui::get(cur, w, doc, "path");
-		if ( !dialog_request(w, es, dlgSAVE, "Save As", cur) )
-		    start_prompt(w, es, "Save as", pmSAVEAS);
+		save_as_ask(w, es, doc, false);
 		return true;
-	    }
 	    case cmdOPENPROJECT:
 	    {
 		// File -> Open Project… (polish P2b): the native Open over the
@@ -7060,7 +7185,7 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
     else
 	ui::get(rows, w, es, "diags");
     var dpath;
-    ui::get(dpath, w, doc, "path");
+    doc_name(dpath, w, doc);	// the rows name the unit the parse was given
     long nrows = 0;
     for ( var row : rows )
     {
@@ -7276,7 +7401,8 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 	    for ( long i = 0; i < nb; i = i + 1 )
 	    {
 		var b = bufs[i];
-		var bp = format("{}", b["path"]);
+		var bp;
+		doc_name(bp, w, b["doc"].as_integer());	// `untitled` without a file
 		var bn = php::basename(bp);
 		var title = bn;
 		if ( doc_modified(w, b["doc"].as_integer()) )
@@ -8127,6 +8253,9 @@ void IdeSession::dialog_fallback(var &req)
     {
 	case dlgSAVE:
 	    start_prompt(w, es, "Save as", pmSAVEAS);
+	    return;
+	case dlgSAVEQUIT:
+	    start_prompt(w, es, "Save as", pmSAVEASQUIT);
 	    return;
 	case dlgOPENPROJECT:
 	    start_prompt(w, es, "Project file to open", pmOPENPROJECT);

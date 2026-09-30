@@ -324,9 +324,12 @@ bool session_covers(var &root, var &file)
 }
 
 // The session that covers `file`, best first: a session that HOLDS the file
-// beats one that merely covers its root. False = nothing running matches.
+// beats one that merely covers its root. False = nothing running matches,
+// and for no file at all (an untitled buffer is nobody's document).
 bool session_find(var &out, const char *file)
 {
+    if ( file == 0 || strlen(file) == 0 )
+	return false;
     var want;
     madc::canonical_path(want, file);
     var all;

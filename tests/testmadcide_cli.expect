@@ -53,4 +53,6 @@ cli-args-help: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=1
 cli-args-unknown: refused: unknown option '--bogus'
 cli-args-novalue: refused: --profile needs a profile NAME
 cli-args-twofiles: refused: unexpected argument 'b.c' (the file is 'a.c')
-cli-usage: names-profile=1
+cli-args-nofile: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=0
+cli-needs-file: tui=- gui=- line=- once=-c mcp=--mcp lsp=--lsp serve=--serve
+cli-usage: names-profile=1 file-optional=1

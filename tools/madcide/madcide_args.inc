@@ -3,9 +3,12 @@
 // the file, and a later `ro` opens it read-only. The strings are compared
 // only here, at the input boundary: main reads the parsed record.
 //
-//   madcide <file> [ro] [--profile NAME] [--gui|--line] [-c "<command> [arg]"]
+//   madcide [<file>] [ro] [--profile NAME] [--gui|--line] [-c "<command> [arg]"]
 //           [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
 //           [--no-serve] [--sessions] [--help] [--] [<file>]
+//
+// No file opens the editor on an untitled buffer (decided 2026-09-30); the
+// headless faces (-c, --mcp, --lsp, --serve) act on a file and need one.
 //
 // `--` ends the flags (a file whose name starts with '-'). An unknown flag, a
 // flag missing its value and a second file are refused with the reason and
@@ -36,7 +39,8 @@ struct ide_args
 // The usage text (printed for --help, and after a refusal).
 const char *ide_usage()
 {
-    return "usage: madcide <file> [ro] [--profile NAME] [--gui|--line] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]] [--no-serve]\n"
+    return "usage: madcide [<file>] [ro] [--profile NAME] [--gui|--line] [--no-serve]  (no file = an untitled buffer)\n"
+	   "       madcide <file> [ro] [--profile NAME] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
 	   "       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n"
 	   "       madcide --sessions                                 (what is running, and how to join it)\n"
 	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n";
@@ -143,4 +147,21 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 	}
     }
     return true;
+}
+
+// The face the flags ask for acts on a FILE (a one-shot command's buffer,
+// the document an MCP, LSP or served session holds): that face's flag, for
+// the refusal when none is given. NULL = an editor face (the TUI, --gui,
+// --line), which opens an untitled buffer without one.
+const char *ide_face_needs_file(ide_args &a)
+{
+    if ( a.once != NULL )
+	return "-c";
+    if ( a.mcp )
+	return "--mcp";
+    if ( a.lsp )
+	return "--lsp";
+    if ( a.serve != NULL )
+	return "--serve";
+    return NULL;
 }

@@ -578,12 +578,13 @@ void repl_show(long w, long es)
 // restarted, so the run is clean and an entry still running stops with the
 // old one. The buffer's live text runs, unsaved edits included, under its
 // path and the tab's standard; its main runs once the load is answered
-// (repl_reply), with argv [path].
+// (repl_reply), with argv [path]. An untitled buffer runs under the unit
+// name `untitled` (doc_name), as Thonny's runs its <untitled>.
 void repl_run(long w, long es, long doc)
 {
     var p;
-    ui::get(p, w, doc, "path");
-    if ( !path_is_asset(p) )
+    doc_name(p, w, doc);
+    if ( !doc_untitled(w, doc) && !path_is_asset(p) )
     {
 	ui::set(w, es, "msg", format("Not a file: {}", p));
 	return;

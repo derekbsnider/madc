@@ -194,13 +194,13 @@ file; to use one, copy it to madc.ini next to where you run madc, or
 into %XDG_CONFIG_HOME%\\madc\\madc.ini.
 EOF
 
-# Launch smoke on the STAGED exe: no-args madcide prints its usage line
-# and exits 1 — proving the shipped bytes load, bind libmadc-0.dll by
+# Launch smoke on the STAGED exe: `madcide --help` prints its usage line
+# and exits 0 — proving the shipped bytes load, bind libmadc-0.dll by
 # adjacency from the staged bin/, and run main. (The interactive TUI
 # needs a real console: a wine pty probe would prove wine's console
 # layer, not Windows — the TUI proof stays with the genuine-win lane on
 # owner hardware. The PK4 install gate below re-proves the ZIPPED bytes.)
-smoke_out=$(cd "$STAGE/$ROOT/bin" && timeout 60 wine madcide.exe 2>/dev/null; true)
+smoke_out=$(cd "$STAGE/$ROOT/bin" && timeout 60 wine madcide.exe --help 2>/dev/null; true)
 case "$smoke_out" in
     *"usage: madcide"*) echo "madcide.exe staged smoke: OK" ;;
     *) echo "package_release_windows: staged madcide.exe smoke failed (got: $smoke_out)" >&2

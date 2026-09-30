@@ -39,7 +39,7 @@
 #   winzip   unzip; the zipped madc.exe under wine compiles a
 #            runtime-needing probe with -o INTO bin/ (PE binding is
 #            adjacency) and the emitted exe runs (output asserted);
-#            zipped madcide.exe prints its usage line; bin/verbs and
+#            zipped `madcide.exe --help` prints its usage line; bin/verbs and
 #            bin/checks sit beside it [control: hide bin/libmadc-0.dll =>
 #            both must fail].
 #
@@ -265,8 +265,8 @@ gate_winzip() {
         *) fail winzip "emitted pk4hello.exe did not produce '$MARKER' (got: $out)" ;;
     esac
 
-    # 3. the zipped madcide.exe loads, binds, and runs (usage line)
-    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe ) 2> /dev/null | tr -d '\r' )
+    # 3. the zipped madcide.exe loads, binds, and runs (--help prints the usage line)
+    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe --help ) 2> /dev/null | tr -d '\r' )
     case "$out" in
         *"usage: madcide"*) ok winzip "zipped madcide.exe prints its usage line" ;;
         *) fail winzip "zipped madcide.exe usage smoke failed (got: $out)" ;;
@@ -292,7 +292,7 @@ gate_winzip() {
         *"$MARKER"*) mv "$bindir/libmadc-0.dll.hidden" "$bindir/libmadc-0.dll"
                      fail winzip "negative control broken: emitted exe ran without libmadc-0.dll" ;;
     esac
-    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe ) 2> /dev/null | tr -d '\r' )
+    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe --help ) 2> /dev/null | tr -d '\r' )
     mv "$bindir/libmadc-0.dll.hidden" "$bindir/libmadc-0.dll"
     case "$out" in
         *"usage: madcide"*) fail winzip "negative control broken: madcide.exe ran without libmadc-0.dll" ;;

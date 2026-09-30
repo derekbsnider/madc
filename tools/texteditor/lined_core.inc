@@ -117,17 +117,46 @@ long doc_kind(long w, long doc)
     return k.as_integer();
 }
 
+// An UNTITLED document has no path: the buffer a launch without a file opens
+// (Thonny's <untitled>, JOE's Unnamed). Its text is real and it lexes and
+// parses; a save asks for a name first.
+bool doc_untitled(long w, long doc)
+{
+    var p;
+    ui::get(p, w, doc, "path");
+    return p.is_null() || strlen(p.c_str()) == 0;
+}
+
+// The name a document goes by: its path, or `untitled` for a document that
+// has none. The unit name a parse, a lens and a REPL run give it, the status
+// line's %n and the tab's title; where a FILE is meant, the path is read.
+void doc_name(var &out, long w, long doc)
+{
+    if ( doc_untitled(w, doc) )
+    {
+	out = "untitled";
+	return;
+    }
+    ui::get(out, w, doc, "path");
+}
+
 // THE document entity: `text` under `path`, unmodified — every document
 // either editor holds is minted here. No file is read: a loaded file's
 // text arrives from setup_document; a new file's and a view buffer's
 // ([repl], [build], [terminal]) text is empty, and a view's name is a
 // display path, never looked up on disk (a file named `[build]` in the
-// working directory is not the build pane).
+// working directory is not the build pane). An empty `path` mints the
+// UNTITLED document: no path, and the madc dialect's kind, the language a
+// madc editor's unnamed buffer is written in (Save As stamps the real one).
 long new_document(long w, const char *path, const char *text)
 {
     long doc = ui::create(w, "document");
     ui::text_load(w, doc, text);
-    doc_set_path(w, doc, path);
+    long dialect = madc::fkMADC;	// a long: ui::set's overloads take int64_t or double
+    if ( strlen(path) > 0 )
+	doc_set_path(w, doc, path);
+    else
+	ui::set(w, doc, "kind", dialect);
     ui::set(w, doc, "modified", false);
     return doc;
 }

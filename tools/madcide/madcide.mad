@@ -1,5 +1,5 @@
 // madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer).
-// Usage: madc tools/madcide/madcide.mad <file> [ro] [--profile NAME] [--gui] [-c "<command> [arg]"]
+// Usage: madc tools/madcide/madcide.mad [<file>] [ro] [--profile NAME] [--gui] [-c "<command> [arg]"]
 // Run it from the repository root (verb bodies and keybinding profiles
 // load by relative path). The buffer is the texteditor machinery; the
 // diagnostics pane and outline are projections of live compiler data;
@@ -83,9 +83,12 @@ int main(int argc, char **argv)
     // is the question "what is already running?" (V6c-4).
     if ( a.sessions )
 	return run_sessions();
-    if ( a.file == NULL )
+    // No file: the editor opens an untitled buffer (Thonny's, JOE's
+    // Unnamed); a headless face has nothing to act on without one.
+    if ( a.file == NULL && ide_face_needs_file(a) != NULL )
     {
-	print("{}", ide_usage());	// stdout, as before (the package smokes read it)
+	println(stderr, "madcide: {} needs a file", ide_face_needs_file(a));
+	print(stderr, "{}", ide_usage());
 	return 2;
     }
     // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program
@@ -102,7 +105,7 @@ int main(int argc, char **argv)
     // the terminal ignores; the one-shot typesets the same tree). The
     // profile (--profile NAME; "" = settings.json's, else default) selects
     // no face: every face opens its session under it.
-    const char *file = a.file;
+    const char *file = a.file == NULL ? "" : a.file;	// "" = untitled
     bool ro = a.ro;
     ui::level lvl = a.level;
     const char *once = a.once;

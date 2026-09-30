@@ -292,7 +292,8 @@ const char *pane_name(long p)
 enum ide_prompt : unsigned char
 {
     pmNONE = 0, pmCONFIRM, pmFIND, pmGOTOLINE, pmINSERTFILE, pmEDITFILE,
-    pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON
+    pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON,
+    pmSAVEASQUIT
 };
 const char *prompt_name(long m)
 {
@@ -310,6 +311,7 @@ const char *prompt_name(long m)
 	case pmTABWIDTH: return "tabwidth";
 	case pmTHEME: return "theme";
 	case pmCOLON: return "colon";
+	case pmSAVEASQUIT: return "saveasquit";
     }
     return "";
 }
@@ -349,10 +351,11 @@ const char *req_name(long k)
 // The IDE's own dialog kind: what a native file dialog's answer MEANS. The
 // host speaks only the dialog MODE (ui::dialog_mode's names, open | save) —
 // dlg_host_mode is that wire word; the kind waits on the bag for the answer.
-enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT };
+// dlgSAVEQUIT is a save whose answer then quits (^K X on an untitled buffer).
+enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT, dlgSAVEQUIT };
 const char *dlg_host_mode(long d)
 {
-    return d == dlgSAVE ? "save" : "open";
+    return d == dlgSAVE || d == dlgSAVEQUIT ? "save" : "open";
 }
 
 // The project's kind — the manifest's `kind` word (console | gui) converted

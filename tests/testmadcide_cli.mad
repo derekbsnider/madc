@@ -22,7 +22,10 @@
 //      flags anywhere, the first non-flag word the file (`--profile chthonic
 //      f.c` and `f.c --profile chthonic` alike), `--` ending the flags,
 //      --attach's optional address; an unknown flag, a missing value and a
-//      second file refused with the reason; the usage names --profile.
+//      second file refused with the reason; the usage names --profile;
+//   6. the file is optional for the editor faces (the TUI, --gui, --line
+//      open an untitled buffer); the headless faces (-c, --mcp, --lsp,
+//      --serve) need one, and the usage says so.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -45,6 +48,18 @@ void show_args(const char *label, int argc, const char **argv)
 	    a.file == NULL ? "-" : a.file, a.profile == NULL ? "-" : a.profile,
 	    a.ro ? 1 : 0, a.lsp ? 1 : 0, a.attach ? 1 : 0,
 	    a.attach_addr == NULL ? "-" : a.attach_addr, a.help ? 1 : 0);
+}
+
+// The face a command line with no file asks for needs one: its flag, or "-"
+// for an editor face.
+const char *face_needs(int argc, const char **argv)
+{
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, argv) )
+	return "refused";
+    const char *f = ide_face_needs_file(a);
+    return f == NULL ? "-" : f;
 }
 
 int main()
@@ -164,8 +179,22 @@ int main()
     show_args("cli-args-novalue", 3, v9);
     const char *v10[3] = { "madcide", "a.c", "b.c" };
     show_args("cli-args-twofiles", 3, v10);
+    const char *n1[1] = { "madcide" };
+    show_args("cli-args-nofile", 1, n1);
+    const char *n2[2] = { "madcide", "--gui" };
+    const char *n3[2] = { "madcide", "--line" };
+    const char *n4[3] = { "madcide", "-c", "check" };
+    const char *n5[2] = { "madcide", "--mcp" };
+    const char *n6[2] = { "madcide", "--lsp" };
+    const char *n7[3] = { "madcide", "--serve", "127.0.0.1:0" };
+    println("cli-needs-file: tui={} gui={} line={} once={} mcp={} lsp={} serve={}",
+	    face_needs(1, n1), face_needs(2, n2), face_needs(2, n3),
+	    face_needs(3, n4), face_needs(2, n5), face_needs(2, n6),
+	    face_needs(3, n7));
     var usage = ide_usage();
-    println("cli-usage: names-profile={}", usage.index("--profile NAME") >= 0 ? 1 : 0);
+    println("cli-usage: names-profile={} file-optional={}",
+	    usage.index("--profile NAME") >= 0 ? 1 : 0,
+	    usage.index("usage: madcide [<file>]") >= 0 ? 1 : 0);
     remove(path);
     return 0;
 }
