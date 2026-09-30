@@ -277,6 +277,21 @@ bool repl_history_step(long w, long es, long dir)
 // ---- the session: open, pump, replies ----
 void repl_pump(long w, long es, long h, long stopc);
 
+// F5's rows into Problems (plan §41.11a step 3): the replies to its load
+// and to its run carry the rows the unit recorded, citing the buffer's
+// path, so each is navigable as a check's row is (cmdGOTO), and a clean
+// load or run clears the stale ones. An entry's own rows (REPL[N]) stay
+// out: they cite no file the editor holds.
+void repl_problems(long w, long es, var &r)
+{
+    var rows = {};
+    var got;
+    keyed_get(got, r, "diagnostics");
+    if ( !got.is_null() )
+	rows = got;
+    ui::set(w, es, "diags", rows);
+}
+
 // The in-flight marks: the seqs an entry, a completion, F5's load and its
 // run keep while their replies are owed, and the running flag. A restart or
 // a stopped session owes none of them.
@@ -423,6 +438,7 @@ void repl_reply(long w, long es, var &r)
 	ui::set(w, es, "replloadseq", 0);
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
+	repl_problems(w, es, r);
 	if ( !(r["ok"] == true) )
 	{
 	    ui::set(w, es, "replbusy", 0);
@@ -449,6 +465,7 @@ void repl_reply(long w, long es, var &r)
 	ui::set(w, es, "replrunning", 0);
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
+	repl_problems(w, es, r);
 	repl_publish(w, es, reRAN, r);
 	return;
     }

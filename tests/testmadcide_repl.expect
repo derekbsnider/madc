@@ -27,6 +27,8 @@ c11> triple(14)
 c11> int kept = 9;
 f5 again: ran=true fresh=true names again=true
 f5 refused: cites the path=true busy=0
+f5 problems: rows=true goto line3=true
+f5 problems clean: rows=0
 f5 pseudo: Not a file: [repl]
 f5 empty: The buffer is empty.
 stop before: The shell has no session to stop.

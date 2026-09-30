@@ -17,8 +17,9 @@
 //      file still holds `add`), `%run <name>` and main's output land in the
 //      transcript, and an entry calls the buffer's static; a name from
 //      before a second F5 is gone after it; a refused buffer shows its
-//      diagnostics under its path; a pseudo buffer and an empty one are
-//      refused at the status line;
+//      diagnostics under its path, and they fill Problems, where a choose
+//      moves the caret to the row's line; a clean F5 empties Problems; a
+//      pseudo buffer and an empty one are refused at the status line;
 //   8. Stop (`replstop`, plan §41.11a): with no session there is nothing to
 //      stop; during an entry that never ends, the entry stops with its
 //      session, the transcript says so, and the next entry runs in a new one;
@@ -266,6 +267,23 @@ int main()
     transcript_since(got, w, es, mark);
     println("f5 refused: cites the path={} busy={}",
 	    rust::contains(got.c_str(), "madc_ide_repl.mad:1:") != 0, es_int(w, es, "replbusy", -1));
+    ui::text_load(w, doc, "int fine = 1;\n\nint later = nosuch_name;\n");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    var prows;
+    ui::get(prows, w, es, "diags");
+    long nprob = php::count(prows);
+    var pch = { "event": "choose", "event_code": ui::event_kind::choose,
+		"option": 1, "action": "", "action_code": cmdGOTO };
+    S.apply_ide_event(doc, pch);
+    long pat = es_int(w, es, "caret", -1);
+    println("f5 problems: rows={} goto line3={}", nprob > 0,
+	    pat >= caret_to_line(w, doc, 3, 0) && pat < caret_to_line(w, doc, 4, 0));
+    ui::text_load(w, doc, "int main(void) { return 0; }\n");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    ui::get(prows, w, es, "diags");
+    println("f5 problems clean: rows={}", php::count(prows));
     var msg;
     S.apply_ide_event(repl_doc(w, es), e);
     ui::get(msg, w, es, "msg");

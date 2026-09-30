@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide's F5 diagnostics populate the Problems pane (plan §41.11a step 3c)
+
+F5's load and run replies now populate madcide's Problems pane with compile-error diagnostics via a new `repl_problems()` helper that writes the reply's diagnostics array into the editor's diags bag key. A user can choose a Problems row to move the caret to its file and line (cmdGOTO); a clean F5 (successful load or run with no errors) empties stale Problems entries, while an entry's own diagnostics (REPL[N] items citing no editor file) stay out. Gate: testmadcide_repl.mad section 7 (f5 problems: rows=true goto line3=true; f5 problems clean: rows=0).
+
 ### Session load and run replies carry diagnostic rows (plan §41.11a step 3c, engine)
 
 A `load()` and `run_main()` reply now includes a `diagnostics` array alongside its `ok` and `rendered` fields, allowing a client like madcide to display compile errors in an editor's Problems pane with file and line references without parsing the rendered text. The helpers `attach_diagnostics()` in the backend and `reply_diagnostics()` in the verb layer extract and shape the session's recorded diagnostic rows (from parse_check) into each reply's JSON, using the same row format as an offer's diagnostics. A new test helper `first_error_at()` extracts a diagnostic row's `file:line` location; the test suite verifies that a clean load or run carries an empty diagnostics array, and that a failed load cites the file and line in both the rendered text and the diagnostic rows. Gate: tests/unit/test_session_backend.cpp lines 273–275 and 299–310 (load and run replies carry diagnostics arrays, error locations available to Problems pane).

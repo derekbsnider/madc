@@ -3223,7 +3223,7 @@ There is no patch release before it: B85's fix rides this release.
 
    Run ▸ Language… is a row list through the one choice list that step 3e's Key bindings… also uses (rows of `{title, command, argument}`, the current row marked; a choose runs the row's command with its argument, `cmd_takes_arg`). No pane is specific to one choice.
 
-   Progress: Stop done (1fdd421d5); `session_restart(handle, standard)` done (e037f60bd); Run ▸ Language… done on the choice list (`choice_show` / `choice_action`, the one row verb `cmdCHOICE`, `cmd_takes_arg`; Run ▸ Language… in `chthonic.menu`, Build ▸ REPL Language… in `default.menu`; `testmadcide_repl` section 9).
+   Progress: Stop done (1fdd421d5); `session_restart(handle, standard)` done (e037f60bd); Run ▸ Language… done on the choice list (`choice_show` / `choice_action`, the one row verb `cmdCHOICE`, `cmd_takes_arg`; Run ▸ Language… in `chthonic.menu`, Build ▸ REPL Language… in `default.menu`; `testmadcide_repl` section 9); F5's diagnostics into Problems done (engine 1370ba53a: the `load` and `run` replies carry the rows, `attach_diagnostics` / `reply_diagnostics`; madcide: `repl_problems` writes them to `diags` on F5's load and run replies; `testmadcide_repl` section 7, `test_session_backend`).
 
 3e. **The key bindings** (owner, 2026-09-30: chthonic improves on Thonny with a menu that switches the key style). Its own batch, after step 3's pieces and before step 4.
    - **The key-style list:**
