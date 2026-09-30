@@ -1471,6 +1471,8 @@ Deliver:
 
 **Gate:** a novice can install/open madcide, type a small C/C++ program, run it, inspect variables and call its functions from the REPL without configuring a toolchain or project.
 
+> **Code check (2026-09-30):** the release's core of this phase (the owner: §37 + Phase 5's core, then Phase 4) is designed against the code in §41.11a.
+
 ---
 
 ## 30. Phase 6 — teaching diagnostics and memory
@@ -3009,6 +3011,184 @@ With no program file, the tail chooses in this order:
 - **Gates:** `tests/testmadcide_repl.mad` section 7, under JIT, `--exe` and `--obj`: F5 from the editor takes the keyboard, and the transcript reads `c11> %run madc_ide_repl.mad`, main's line, then `triple(14)` giving 42 from the buffer's `static`. The buffer's text is unsaved (the file on disk has only `add`). A name entered before a second F5 is undeclared after it, while the buffer's names are back. A refused buffer cites `madc_ide_repl.mad:1:` and leaves the pane idle. `[repl]` and an empty buffer are refused. `tests/gui/madcide_repl.mad`: with joe's key table installed through `ui::bind_keys`, an `F5` keydown dispatched on the page's keyboard element arrives as `replrun`, and main's output reaches the tab on the pump's wakes. Pinned counts moved on purpose: the registry has 53 commands, the pico help 48 rows, and the Build menu 9 items (its separator after `Run in REPL`).
 - **Found by the owner after slice 3, fixed in its own commit: quitting after using the REPL tab hung.** `run_tui` runs the client loop inside a `scope` (for the serve face's accept task), and a task spawned by a scope member is a member too, so the scope's end joined the REPL tab's pump, whose stop was sent only by `IdeSession::close()`, afterwards. `IdeSession::stop_tasks()` is now the one owner that stops the session's pumps (a build through `stop_build`, the REPL tab's, and the Terminal's, whose stop had never been sent). `close()`, `run_ide`'s teardown (every client) and `run_lsp` call it before their joins. Gates: `scripts/madcide_quit_gate.sh` (the real TUI on a pty: F5, then `^K q` must exit) and `tests/testmadcide_lsp_repl` (the `--lsp` child exits after `madcide.repl`).
 - **Not in slice 3:** everything item 10 names outside it (the typed `%run` / `%load` / `%reset`, "Run in current session", a manifest standard, key modifiers); a Windows backend.
+
+### 41.11a The teaching profile (Phase 5 core, §29), designed against the code (2026-09-30)
+
+The owner (2026-09-30): the next release is the REPL and learning IDE, which means §37 plus Phase 5's core, and then Phase 4. Phase 5's core is:
+- the `--learn` profile and its layout;
+- a toolbar with Run and Stop;
+- the Variables view;
+- clickable diagnostics for F5;
+- a beginner menu.
+
+Held for Phase 4, because each one needs its redefinition model: "Run/Reload in current session" (§17.3) and Send Selection (§17.4). Held for Phase 7: Debug (the stepper).
+
+**The precedents** (documented behaviour, not measured here):
+- **Thonny's simple mode:**
+  - A row of large buttons (New, Load, Save, Run, Debug, the step buttons, Stop), and no menu bar until the user switches to regular mode.
+  - Run is F5 (`%Run file` in the Shell).
+  - Stop/Restart (Ctrl+F2) restarts the backend whether or not a program runs, and the backend's state is lost.
+  - The Variables view is a Name/Value table of the program's globals, refreshed after every command and run. A function shows as `<function square at 0x…>`.
+  - An error in the Shell carries a link to its line in the editor.
+- **IPython `%whos`:** a Variable/Type/Data table of the interactive namespace. It leaves out the names the startup put there.
+- **The Julia VS Code extension's Workspace view:** the bindings of `Main` with their values and types, refreshed after each evaluation.
+
+**What the code has** (recon 2026-09-30, `develop`-line HEAD `61b7a5615`; MC = `tools/madcide/madcide_core.inc`, MR = `tools/madcide/madcide_repl.inc`, SC = `src/madc_session_client.cpp`):
+- **The command line.**
+  - The file is `argv[1]`, and flags are read only from `argv[2]` on (`madcide.mad:64-145`), so `madcide --learn f.c` would take `--learn` as the file. With no arguments, madcide prints usage and exits 2.
+  - A path that does not exist opens empty, as JOE's "New File" does (MC:3055-3070, 3208).
+  - The TUI path is `run_tui(argv[1], ro, lvl, addr)` (`madcide.mad:232`) → `IdeSession::open(path, ro)` (MC:7907) → `init_view_es` (MC:7789).
+- **The profile set is hard-coded.** `init_view_es` loads `load_status("joe")`, `load_theme("default")`, `load_menu("default")`, `load_layout("default")` and `load_profile("joe")` (MC:7800-7812). Only `toggle_profile` changes one of them at runtime (the keys). `replstd` is read when a session starts (MR:288), but nothing ever sets it.
+- **The layout grammar** (`default.layout`, `parse_layout` MC:841):
+  - A sidebar docks left or right, and a panel docks bottom or top. Neither splits, so a Variables view cannot sit beside the REPL inside the bottom panel. It docks as a sidebar, as Thonny's does.
+  - `repl` is already a legal panel view (`default.layout:24`).
+- **The menu file:**
+  - `MENU COMMAND TITLE [WHEN]` rows go into the root's `menu` hint. `--gui` draws a native menu bar from it (`src/ns_ui.cpp:467`), and the TUI reads none of it.
+  - The palette-only menu is found by a string compare on its title (`m["title"] == "palette"`, MC:1564), which is an enum-over-strings debt.
+- **No toolbar anywhere.**
+  - The UI role vocabulary (`include/madcdis/uinode.h:112-126`) has `action`. The TUI and the page both draw it as inert `[label]` text (`tui_model.h:869`, `page.js:626`), with nothing to click.
+  - The data shape a strip already uses is the pane `tabs` hint: an array of `{title, action, code}`. `web_model` passes it to the page with each action's code (`web_model.h:606-640`), the page draws it (`tabStrip`, `page.js:289`), and a click posts `{kind: action}` (`page.js:905-930`). The TUI reads the same hint as a header line (`read_header`, `tui_model.h:793`).
+  - The page's `.cf-btn` buttons (dialogs, confirms) already post their action.
+- **Stop.**
+  - The REPL tab has no Stop or Restart command.
+  - F5's `repl_run` (MR:582) restarts the session and clears the busy, running, completion and F5 marks inline.
+  - There is no interrupt op (D8's interim: an interrupt stops the backend).
+- **Diagnostics.**
+  - The backend attaches the rows of `diagnostic_rows_from_child` (`src/madc_program.cpp:4651`: `severity`, `severity_code`, `phase`, `phase_code`, `message`, `file`, `line`, `column`) only to a taken `offer` reply (SC:213-218). The `load` and `run` replies carry `ok`, `status` and `rendered` (SC:231-257).
+  - `repl_reply` (MR:348) feeds `rendered` into the transcript and nothing more.
+  - The Problems pane reads the bag's `diags` rows. Its writers are check, save and build (MC:1798, 4855, 5132, 5164, 5220). `diag_items` (MC:6999) gives each row the `cmdGOTO` code, and `goto_pane_row` (MC:1895) opens the row's file when it differs from the buffer's and moves the caret to its line.
+  - F5's diagnostics already cite the buffer's path and line (`testmadcide_repl` section 7).
+- **Bindings.**
+  - `Program::visit_top_level_names` (`src/madc_complete.cpp:276`) is the one walk over what an entry can name, used by completion and `?name` (§41.8a). Its kinds are object, function, type, tag, namespace, templates, keyword, macro, header name, dialect word and result, and the locations come from `object_location` / `function_location` (`REPL[N]:line` or a file's line).
+  - The value text an entry shows is the D10 walk, lowered by the CIR builder and handed off by `__madc_session_show` (`src/madc_cir.cpp:1722`).
+  - `?x` prints the type and the location, not the value. `%whos` was named out of item 8 (§41.8a). The command registry is `src/madc_session.cpp:55-60`.
+- **Views.**
+  - `enum ide_view` (`madcide_enums.inc:468`), registered through `view_name` / `view_title` / `view_of` / `view_show_cmd`, with the composition switch in `compose_chrome_pane` (MC:7073).
+  - Problems and Outline are item rows under a choice (MC:7147-7165), and that is the shape a Variables view takes.
+- **Release-path bugs:**
+  - B55: Tab inserts nothing in madcide's editor. A beginner cannot indent.
+  - B8: the caret line is misdrawn on a line with a tab. Beginners' code is tab-indented, and F5's diagnostics show that line.
+
+**The design:**
+- **The workspace profile (`--learn`).**
+  - A workspace is the named set of layout and menu. The personality (keys) and the theme stay separate, as they are today.
+  - `--learn` selects the workspace `learn`. Its name reaches `init_view_es` as a parameter through `run_tui` and `IdeSession::open`, and is kept on the bag as `workspace` (beside `profile_dir`) for a later runtime switch.
+  - `init_view_es` loads `<workspace>.layout` and `<workspace>.menu`. The default workspace is `default`, so nothing changes without the flag.
+  - A missing or refused `learn.*` file falls back to the baked default, and the status line says so, through the rescue-announcement pattern the key profile already uses.
+  - `--learn` selects no face. It composes under the TUI, `--gui` and `--serve` alike, and a desktop launcher passes `--learn --gui`.
+  - **Its keys are `pico.keys`:** single chords (`^S` save, `^Z` undo, `^Q` quit, `^W` find, F5 run), with no `^K` prefixes to teach. A CUA personality (`^C`/`^X`/`^V` clipboard) is a later slice.
+  - **The command line:** the file becomes the first argument that is not a flag, and flags may come anywhere (`madcide --learn f.c` and `madcide f.c --learn`). `ro` stays a positional word. The strings are compared only at this input boundary. The usage text lists `--learn`.
+  - **`learn.layout`:**
+    ```text
+    @window main
+    pane editor tabs views source focus
+    pane sidebar right 25% tabs views variables
+    pane panel bottom 35% tabs views repl problems
+    ```
+    The REPL is the visible panel's first tab. No project tree, no Outline, no Terminal or Output (F5's output is the REPL's).
+  - **The session starts at open when the layout shows it.** A pane visible at startup whose active view is `viewREPL` starts its session in `init_view_es` (`repl_start`), as Thonny starts its backend. That is layout data, never a test of the workspace's name (Rule #7), and the default layout keeps the REPL hidden, so it forks nothing.
+- **The beginner menu (`learn.menu`), data only:**
+  - File: Open…, Save, Save As…, Quit.
+  - Edit: Undo, Redo, Find.
+  - Run: Run (`replrun`), Stop (`replstop`).
+  - View: Shell (`repl`), Variables (`variables`), Problems (`problems`).
+  - Help: Help.
+  - No Build, no Project, no Views/MC11/Nexus rows (§16: the power surface is not advertised).
+- **The toolbar.**
+  - **Placement becomes an enum.** A menu row's MENU word keeps naming its menu, and two words are placements: `palette` (already) and `toolbar`. Each converts once, at load, to `menu_place { mpBAR, mpPALETTE, mpTOOLBAR }` on the item. The `m["title"] == "palette"` compare becomes a switch on the code (enum-over-strings, fixed on the way).
+  - `learn.menu` gives the toolbar Open, Save, Run and Stop. `default.menu` gives it nothing, so the default workbench is unchanged.
+  - **The composed form** is a root hint `toolbar`, beside `menu`: an array of `{label, action, code, chord}`. The chord is the one the loaded personality binds, as the menu shows it. This is the shape the tab strip's hint already has.
+    - `web_model` passes it with its codes, as it passes a tab strip.
+    - The page draws it as a row of `.cf-btn` buttons above the workbench, and a click posts the action through the existing handler.
+    - The TUI draws one line, `[Run F5] [Stop]`.
+    - The `action` role stays what it is.
+  - **Stop: `replstop` (`cmdREPLSTOP`).** It restarts the session whether or not an entry runs (Thonny's Stop/Restart: a fresh backend, the state lost). The transcript reads `[stopped; a new session started]`, and the Variables rows clear.
+    - F5's restart and Stop share one helper, `repl_restart`, lifted out of `repl_run`, so the marks it clears live in one place.
+    - No key this release: Thonny's Ctrl+F2 needs modifiers on function keys, which §41.10a named out.
+- **F5's diagnostics into Problems.**
+  - The backend attaches the same rows builder's rows to the `load` and `run` replies. A run's runtime rows exist (an undefined reference is recorded with phase `runtime`).
+  - The verb row already carries `diagnostics`.
+  - `repl_reply`, on the reply to F5's load (and to its run), writes the rows into the bag's `diags`, the key the Problems pane reads. So each row is navigable through `cmdGOTO` / `goto_pane_row`, with no new navigation code, and a clean load clears the stale rows, as check does.
+  - An entry's own rows (`REPL[N]:…`) do not go into Problems: they cite no file the editor holds.
+  - The transcript keeps the rendered text. A clickable link inside the transcript is §18's later GUI affordance.
+- **The Variables view.**
+  - **One engine owner: `InteractiveSession::bindings(rows)`.** It walks `visit_top_level_names` for the names the session defined: an origin from an entry or a loaded unit, never a header or the prelude (IPython's `%whos` hides the startup namespace too).
+  - It keeps objects and functions. A row is `{name, kind, type, value, file, line}`:
+    - `kind` is a code from `<bits/session_enums>`'s new `madc::name_kind`, which the engine's `TopLevelName::Kind` aliases, as `OfferState` aliases `madc::offer_state`;
+    - `type` is the Program-level type spelling §41.8a moved (`int`, `int (int)`);
+    - `value`, for an object only, is the D10 walk's text.
+  - **The values come from one quiet entry.** The request compiles one internal entry whose body shows each object through the D10 walk. It takes no `REPL[N]` number, no history and no result name, and its module stays loaded, as every entry's does.
+  - **The walk runs shallow here.** A pointer, at any depth, prints its address and is never dereferenced, so a dangling or wild pointer can never crash the backend from a refresh nobody asked for. Typing `p` at the prompt still shows the string, as an entry the user asked for. An aggregate prints at most 16 elements, then `…`, and a row's text is capped at 80 characters.
+    - Both limits are parameters of the D10 walk, not a second walk.
+    - The slice verifies that the walk calls no user code (a conversion, a getter). If some type needs it, that type's row shows its type alone.
+  - **`%whos`** is the registry command that prints the same rows as a Name/Type/Value/Origin table (`src/madc_session.cpp:55`). That gives one owner and two renderings, as completion and `?` share one walk.
+  - **Getting the rows to madcide:** a wire op `bindings`, the `madc::session_reply::bindings` kind, and the verb `madc::session_bindings(h)`, which returns the request's seq, as its siblings do. The reply carries `rows`.
+  - **The view:**
+    - `viewVARIABLES` (`view_name` "variables", title "Variables"), and a command `variables` that shows it.
+    - `compose_chrome_pane` renders its rows as item rows under a choice, as Problems does: name, type, value and origin, the columns padded to the widest name and type.
+    - The bag key is `replvars`.
+  - **Refresh:**
+    - `repl_reply` asks for the bindings after a taken entry, after F5's run reply, and after a load that was refused, but only while a visible pane shows `viewVARIABLES` (a lazy view costs nothing when hidden).
+    - A `stopped` reply or Stop clears the rows.
+    - A reply for an older seq is dropped, as the completion replies are.
+  - **Activating a row** goes to its declaration when its `file` is the buffer's (`cmdGOTO` over the row's `file` and `line`). `goto_pane_row`'s `bool outline` becomes the `ide_view` of the pane whose rows it reads (Problems, Outline or Variables), so one navigation owner serves all three.
+  - **What it shows:** globals only. After F5, `main` has returned, and its locals are gone, as Thonny's Variables view shows `__main__`'s globals outside the debugger.
+
+**Enums added:** `ide_view::viewVARIABLES`; `cmdREPLSTOP` and `cmdVARIABLES` in `cmd_table`; `menu_place`; `madc::name_kind` and `madc::session_reply::bindings` in `<bits/session_enums>`; the wire's `Op::bindings`; `InteractiveSession::Command::whos`.
+
+**Thread contract:** unchanged from §41.9a.
+- The session handle is confined to the thread that opened it, and the backend is single-threaded, so `bindings` runs between entries like every request (D9).
+- The rows are a snapshot. A task the program left running may change a value after it is read, and IPython's `%whos` has the same limit.
+- The workspace name, the toolbar rows and `replvars` are bag state on the session's thread, like every pane's.
+- The shallow walk only reads the program's storage.
+
+**Not in Phase 5's core, and named:**
+- Debug and the step buttons (Phase 7).
+- Run/Reload in the current session, and Send Selection (Phase 4).
+- A CUA personality and its clipboard.
+- A runtime "switch to the full workbench" (Thonny's regular-mode link; it needs a layout reload at runtime).
+- An object inspector for a Variables row.
+- Pointer targets read safely (Phase 6's Memory view needs a fault-safe peek, and this view waits for it).
+- A `learn.status`.
+- A completion popup.
+- A Windows backend.
+
+**Slices,** each its own commit with Tier 1 and Tier 2, and the release battery at the seam after slice 5:
+0. **The release-path bugs, each fixed in its own commit:**
+   - B55: an indent command in `cmd_table`, bound by the profiles, and the `tabkey` hint on the editor's node while it has the keyboard. Pinned in testmadcide and a `tests/gui` case.
+   - B8: the caret renderer expands tabs and counts screen width, against gcc's `2:19`.
+1. **The workspace:**
+   - the argv parse;
+   - the workspace name threaded to `init_view_es`;
+   - `learn.layout` (without the sidebar) and `learn.menu`;
+   - the pico keys under `--learn`;
+   - the REPL session starting when the layout shows it.
+
+   Gate: `testmadcide_cli` (`--learn f`, `f --learn`, usage), and a new `testmadcide_learn` model test (the composed panel visible with the REPL active, the menu bar's rows, no project or outline pane, a session running at open). `testmadcide_layout`'s pin of `default.layout` is unchanged.
+2. **The toolbar and Stop:** `menu_place`, the `toolbar` hint through `web_model`, the page and the TUI, `replstop`, and `repl_restart`.
+
+   Gate: `testmadcide_learn` (the hint's rows and codes; Stop while an entry blocks on stdin gives a fresh session and the transcript line), `testmadcide_repl` unchanged, `test_web_model` (the hint and its codes), and `tests/gui/madcide_learn.mad` (a click on Run posts `replrun`, and main's output arrives; a click on Stop). The registry's pinned count moves on purpose.
+3. **F5's diagnostics into Problems:** the rows in the `load` and `run` replies, and `repl_reply` writing `diags`.
+
+   Gate: `test_session_backend` (a refused text's rows cite its path and line), and `testmadcide_repl` (F5 on a refused buffer fills Problems, `cmdGOTO` on its row moves the caret to the line, and a clean F5 empties Problems).
+4. **The bindings owner:** `InteractiveSession::bindings`, the shallow and capped walk, `%whos`, the wire op and the verb.
+
+   Gate:
+   - `test_repl_session`: `%whos` under C17, C++17 and madc.
+   - `test_session_backend`: the rows' kinds, types, values and origins, and `char *p = (char *)1;` listed by address with the backend alive. That case is the negative control: the walk in its full depth would crash there.
+   - `tests/testsession_bindings.mad`: dialect code under JIT, `--exe` and `--obj`.
+   - The refresh's cost measured over 50 bindings.
+5. **The Variables view:** `viewVARIABLES`, its composition and refresh, `goto_pane_row` over a view kind, and `learn.layout` gaining the sidebar.
+
+   Gate: `testmadcide_learn` (after F5 on §34's program plus a global, the rows read `count int 3`, `square int (int)`; an entry `int y = 7;` adds a row; Stop empties them; activating `square` moves the caret to its line), and a `tests/gui` case. Then §29's gate, walked by hand in the window: open, type §34's program, Run, `square(12)` gives 144, and the Variables view shows the globals.
+
+**Open for the owner:**
+1. **`madcide --learn` with no file.** Thonny opens an untitled buffer. madcide needs a path today, and a missing one opens empty under that name.
+
+   Recommendation: an untitled buffer. Save asks for a name (Save As), and F5 runs it under the unit name `untitled`. Slice 1 recons whether a buffer can exist without a path, and falls back to asking for a name at startup if it cannot.
+2. **The learning IDE's language.** F5 runs under `replstd`, the engine default (the madc dialect: `sizeof('a')` is 1), and nothing sets it.
+
+   Recommendation: keep the one rule that `madc file`, `madc -i` and F5 share, and give the learn menu a Run ▸ Language… choice (C17, C++17, madc). It sets `replstd` and restarts the session, and the prompt already names the standard (D22). A course would otherwise teach C from a textbook while getting madc's answers without knowing it.
 
 ## 42. Decisions (owner, 2026-09-25)
 
