@@ -1905,6 +1905,22 @@ bool validate_keys(madc::value &table)
     return table_to_bindings(table, b, err);
 }
 
+// The sequence a table binds to a command code: the same converter as
+// bind_keys, then the accelerator's own ranking (tui_bindings::
+// seq_for_code, which the web model's menu bar reads), so a hint and a
+// menu name the same chord for a command.
+bool key_sequence_for(madc::value &out, madc::value &table, int64_t code)
+{
+    out = madc::value(std::string());
+    madc::hub::tui_bindings b;
+    std::string err;
+    if ( !table_to_bindings(table, b, err) )
+	return false;
+    const std::string seq = b.seq_for_code(code);
+    out = madc::value(seq);
+    return !seq.empty();
+}
+
 // The next SEMANTIC event as a value object (the shapes ui_event_value
 // documents). Blocks until input arrives; false = the input source ended
 // (out is a null value). Events are interpreted against the LAST render's

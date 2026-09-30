@@ -375,6 +375,12 @@ namespace ui {
     void    render(int64_t t, int64_t w, value &tree);
     bool    bind_keys(int64_t t, value &table);
     bool    validate_keys(value &table);
+    // The sequence a keybinding table binds to a command CODE, as the table
+    // spells it ("^k q"), chosen by the ONE rule a menu accelerator uses
+    // (fewest keys, then shortest, then first). False with out "" when the
+    // code is unbound or the table is invalid. Handle-free, as
+    // validate_keys; a pure read of the table.
+    bool    key_sequence_for(value &out, value &table, int64_t code);
     bool    event(value &out, int64_t t, int64_t w);
     // The multi-client blocking decision (V3b): the next event from ANY of
     // `targets` (an array of ui handles), tagged with out["target"] = the

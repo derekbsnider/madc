@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### madcide's startup hint names the loaded profile's chords, not JOE's
+
+The startup hint (the line displayed when hint=1 is set) previously hard-coded
+JOE's chords ("^K Q exits / ^K H shows the loaded profile's help") under every
+profile, so users in the rescue set or an alternate profile (pico, emacs, neovim)
+were shown commands that were not bound in their loaded table. The hint now
+calls `ui::key_sequence_for()` to look up the actual chords the loaded bindings
+table assigns to the quit and help commands. The same ranking rule is used as
+the menu bar's accelerators (fewest keys, shortest). If the loaded table does
+not bind both commands, the hint is shortened or omitted.
+
 ### madcide saves and quits when started from any directory
 
 The line editor's verb and check file paths were previously resolved as cwd-relative

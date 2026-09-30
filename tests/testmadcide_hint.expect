@@ -1,0 +1,8 @@
+joe: loaded=1 [ madcide ** ^k q exits / ^k h shows the loaded profile's help **]
+pico: loaded=1 [ madcide ** ^q exits / ^g shows the loaded profile's help **]
+emacs: loaded=1 [ madcide ** ^x c exits **]
+neovim: loaded=1 [ madcide ** ^k h shows the loaded profile's help **]
+rescue: [ madcide ** ^q exits / ^g shows the loaded profile's help **]
+unbound: bound=0 seq=[]
+save: seq=[^k d]
+none: hint-line=0

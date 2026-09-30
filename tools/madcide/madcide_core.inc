@@ -468,6 +468,28 @@ void vi_enter(long w, long es, long mode);
 // client rebinds when the generation moves). The raw profile text stays
 // on the bag — the help pane (^K H) composes FROM it. False + a status
 // message on failure (the previous table and its data stay).
+// The startup hint (IDE-9b, JOE's -xmsg) names the chords the LOADED
+// table binds to quit and help, chosen by the engine's accelerator rule
+// (ui::key_sequence_for: the chord a menu bar shows for the command), so a
+// profile or the rescue set is never told JOE's chords. Every key-table
+// store calls it; the composer only reads `hinttext`. Empty when the table
+// binds neither (a modal personality quits through its colon line).
+void store_key_hint(long w, long es, var &table)
+{
+    var q;
+    var h;
+    bool hq = ui::key_sequence_for(q, table, cmdQUIT);
+    bool hh = ui::key_sequence_for(h, table, cmdHELP);
+    var text = "";
+    if ( hq && hh )
+	text = format(" madcide ** {} exits / {} shows the loaded profile's help **", q, h);
+    else if ( hq )
+	text = format(" madcide ** {} exits **", q);
+    else if ( hh )
+	text = format(" madcide ** {} shows the loaded profile's help **", h);
+    ui::set(w, es, "hinttext", text);
+}
+
 bool load_profile(long w, long es, const char *name)
 {
     // Ring discipline: `name` may lend a ring slot (a caller's .c_str());
@@ -503,6 +525,7 @@ bool load_profile(long w, long es, const char *name)
 	return false;
     }
     ui::set(w, es, "keytable", table);
+    store_key_hint(w, es, table);
     ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);
     // The selection MODEL rides the profile's own vocabulary (owner
@@ -556,6 +579,7 @@ bool bind_rescue_keys(long w, long es)
     if ( !ui::tui_validate_keys(table) )
 	return false;
     ui::set(w, es, "keytable", table);
+    store_key_hint(w, es, table);
     ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);	// prompts stay usable in rescue
     ui::set(w, es, "selblock", false);	// no bend in the rescue set
@@ -7720,10 +7744,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(ovl);
     else if ( es_int(w, es, "hint", 0) != 0 )
     {
-	var hn = { "role": "content" };
-	hn["content"] =
-	    " madcide ** ^K Q exits / ^K H shows the loaded profile's help **";
-	kids.push(hn);
+	var ht;
+	ui::get(ht, w, es, "hinttext");
+	if ( !ht.is_null() && strlen(ht.c_str()) > 0 )
+	{
+	    var hn = { "role": "content", "content": ht };
+	    kids.push(hn);
+	}
     }
     r["children"] = kids;
     // The @gui theme (slice 3): the loaded scheme's CSS custom properties

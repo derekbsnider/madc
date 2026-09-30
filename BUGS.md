@@ -32,20 +32,6 @@ Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
 
-### B85 (remaining). madcide's startup hint names JOE's chords under every profile
-
-- The save/quit half of B85 is fixed (the line editor's data found through
-  `resolve_data_dir`, the package shipping its verbs and checks, madcide
-  refusing to start without them; `scripts/madcide_save_quit_gate.sh`).
-- What remains: the startup hint hard-codes JOE's `^K Q exits / ^K H`
-  (`tools/madcide/madcide_core.inc`, the bottom message line) under every
-  profile, the rescue set included, so a user in the rescue set is told to
-  press chords that are not bound.
-- Fix shape: the hint names the chords the LOADED table binds to quit and
-  help, through the engine's one ranking (`key_resolver::seq_for_code`,
-  `include/madcdis/keys.h`) surfaced as a `ui::` verb over a table.
-- Planned: plan §41.11a step 0, the commit after this one.
-
 ### B83. c2mir's local initializer skips a member after a bit-field's unit (stock c2m)
 
 ```c
