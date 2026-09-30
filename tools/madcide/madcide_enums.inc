@@ -32,7 +32,7 @@ enum ide_cmd : unsigned short
     cmdINSERTFILE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdREPL, cmdREPLRUN, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL,
+    cmdREFRESH, cmdREPL, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
     cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
@@ -103,6 +103,7 @@ void cmd_table(var &t)
     rows[] = { "name": "refresh", "code": cmdREFRESH };
     rows[] = { "name": "repl", "code": cmdREPL };
     rows[] = { "name": "replrun", "code": cmdREPLRUN };
+    rows[] = { "name": "replstop", "code": cmdREPLSTOP };
     rows[] = { "name": "save", "code": cmdSAVE };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
@@ -701,6 +702,7 @@ long cmd_min_tier(long code)
     // buffer, a typed entry), as a build's run is
     case cmdREPL:
     case cmdREPLRUN:
+    case cmdREPLSTOP:
     case cmdREPLENTER:
     // editor — the `:` line can mutate/save (its `:!` shell gap is a
     // refinement: gate the parsed sub-verb, not the gateway)

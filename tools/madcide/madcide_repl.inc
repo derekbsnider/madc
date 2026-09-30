@@ -277,6 +277,18 @@ bool repl_history_step(long w, long es, long dir)
 // ---- the session: open, pump, replies ----
 void repl_pump(long w, long es, long h, long stopc);
 
+// The in-flight marks: the seqs an entry, a completion, F5's load and its
+// run keep while their replies are owed, and the running flag. A restart or
+// a stopped session owes none of them.
+void repl_clear_marks(long w, long es)
+{
+    ui::set(w, es, "replbusy", 0);
+    ui::set(w, es, "replrunning", 0);
+    ui::set(w, es, "replcseq", 0);
+    ui::set(w, es, "replloadseq", 0);
+    ui::set(w, es, "replrunseq", 0);
+}
+
 void repl_start(long w, long es)
 {
     if ( es_int(w, es, "repllive", 0) != 0 )
@@ -442,11 +454,7 @@ void repl_reply(long w, long es, var &r)
     }
     if ( r["kind"] == madc::session_reply::stopped )
     {
-	ui::set(w, es, "replbusy", 0);
-	ui::set(w, es, "replrunning", 0);
-	ui::set(w, es, "replcseq", 0);
-	ui::set(w, es, "replloadseq", 0);
-	ui::set(w, es, "replrunseq", 0);
+	repl_clear_marks(w, es);
 	var st = r["exit_status"];
 	if ( r["restarted"] == true )
 	    repl_feed(w, es, format("[the session stopped (exit {}); a new one started]\n", st));
@@ -584,6 +592,39 @@ void repl_show(long w, long es)
     ui::set(w, es, "replfocus", 1);
 }
 
+// A fresh backend for the tab's session: F5's and Stop's one restart
+// (Thonny's Stop/Restart). The old state is gone, so no reply is owed and
+// the stopped event is published, as when a backend ends (a plugin's rows of
+// the old state clear). False = the restart failed; the transcript says why.
+bool repl_restart(long w, long es)
+{
+    long h = es_int(w, es, "replh", 0);
+    if ( !madc::session_restart(h) )
+    {
+	var why = madc::session_error(h);
+	repl_feed(w, es, format("[the session did not start: {}]\n", why));
+	return false;
+    }
+    repl_clear_marks(w, es);
+    var gone = { "kind": madc::session_reply::stopped, "restarted": true };
+    repl_publish(w, es, reSTOPPED, gone);
+    return true;
+}
+
+// Stop (`replstop`, plan §41.11a): the tab's session restarts whether or not
+// an entry runs, and the transcript says so. With no session there is
+// nothing to stop.
+void repl_stop_restart(long w, long es)
+{
+    if ( es_int(w, es, "replh", 0) == 0 )
+    {
+	ui::set(w, es, "msg", "The shell has no session to stop.");
+	return;
+    }
+    if ( repl_restart(w, es) )
+	repl_feed(w, es, "[stopped; a new session started]\n");
+}
+
 // F5, `replrun` (plan §41.10a; Thonny's F5, IPython's %run): the buffer
 // `doc` run into the tab's session. A session that already existed is
 // restarted, so the run is clean and an entry still running stops with the
@@ -613,16 +654,9 @@ void repl_run(long w, long es, long doc)
     long h = es_int(w, es, "replh", 0);
     if ( !madc::session_running(h) )
 	return;				// repl_start said why
-    if ( had && !madc::session_restart(h) )
-    {
-	var why = madc::session_error(h);
-	repl_feed(w, es, format("[the session did not start: {}]\n", why));
+    if ( had && !repl_restart(w, es) )
 	return;
-    }
-    ui::set(w, es, "replbusy", 0);
-    ui::set(w, es, "replrunning", 0);
-    ui::set(w, es, "replcseq", 0);
-    ui::set(w, es, "replrunseq", 0);
+    repl_clear_marks(w, es);		// a fresh session owes nothing either
     var name = php::basename(p.c_str());
     var line = format("%run {}", name);
     var pr;

@@ -76,6 +76,7 @@ Window onlywin Only Window [split]
 
 Build build Build…
 Build replrun Run in REPL
+Build replstop Stop the REPL
 
 Help help Keyboard Help
 

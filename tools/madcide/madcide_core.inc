@@ -7027,6 +7027,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		repl_run(w, es, doc);
 		return true;
 	    }
+	    case cmdREPLSTOP:
+		repl_stop_restart(w, es);
+		return true;
 	    case cmdBUFSEL:
 	    {
 		// Switch to a buffer (polish P4): by ring index when the command

@@ -29,3 +29,5 @@ f5 again: ran=true fresh=true names again=true
 f5 refused: cites the path=true busy=0
 f5 pseudo: Not a file: [repl]
 f5 empty: The buffer is empty.
+stop before: The shell has no session to stop.
+stop: running=1 then=0 said=true fresh=true

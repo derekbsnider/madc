@@ -1,8 +1,7 @@
 # chthonic's menu (plan §41.11a): a beginner's subset of the one command
 # vocabulary, in the format of profiles/default.menu. No Build, Project or
-# Views rows: the power surface is not advertised. Run ▸ Stop, Run ▸
-# Language… and View ▸ Variables join as their commands land (Stop on the
-# toolbar too).
+# Views rows: the power surface is not advertised. Run ▸ Language… and
+# View ▸ Variables join as their commands land.
 
 File editfile Open…
 File save Save [editable]
@@ -16,6 +15,7 @@ Edit -
 Edit find Find…
 
 Run replrun Run
+Run replstop Stop
 
 View repl Shell
 View problems Problems
@@ -26,3 +26,4 @@ Help help Help
 toolbar editfile Open
 toolbar save Save [editable]
 toolbar replrun Run
+toolbar replstop Stop

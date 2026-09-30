@@ -18,7 +18,10 @@
 //      transcript, and an entry calls the buffer's static; a name from
 //      before a second F5 is gone after it; a refused buffer shows its
 //      diagnostics under its path; a pseudo buffer and an empty one are
-//      refused at the status line.
+//      refused at the status line;
+//   8. Stop (`replstop`, plan §41.11a): with no session there is nothing to
+//      stop; during an entry that never ends, the entry stops with its
+//      session, the transcript says so, and the next entry runs in a new one.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -108,6 +111,14 @@ int main()
     IdeSession S;
     S.attach(w, es);
     ui::set(w, es, "caret", 5);
+
+    // 8, first half: Stop before any session.
+    var e0;
+    ev_action(e0, "replstop", "");
+    S.apply_ide_event(doc, e0);
+    var msg0;
+    ui::get(msg0, w, es, "msg");
+    println("stop before: {}", msg0);
 
     // 1. The tab, the session, the keyboard.
     var e;
@@ -258,6 +269,25 @@ int main()
     S.apply_ide_event(doc, e);
     ui::get(msg, w, es, "msg");
     println("f5 empty: {}", msg);
+
+    // 8. Stop during an entry that never ends.
+    repl_set_input(w, es, "");
+    ui::set(w, es, "replfocus", 1);
+    mark = transcript_size(w, es);
+    ev_text(e, "long spin = 0; for (;;) spin++;");
+    S.apply_ide_event(doc, e);
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    settle(w, es, true);
+    long spinning = es_int(w, es, "replrunning", 0);
+    ev_action(e, "replstop", "");
+    S.apply_ide_event(doc, e);
+    long after = es_int(w, es, "replrunning", 0);
+    enter_line(S, doc, w, es, "spin");
+    transcript_since(got, w, es, mark);
+    println("stop: running={} then={} said={} fresh={}", spinning, after,
+	    rust::contains(got.c_str(), "[stopped; a new session started]") != 0,
+	    rust::contains(got.c_str(), "undeclared") != 0);
     S.close();				// stops the pump and the session
     php::unlink(path);
     return 0;

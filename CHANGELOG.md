@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide's Stop command (plan §41.11a step 3a)
+
+Stop (`replstop`, plan §41.11a) restarts the REPL's session and clears any in-flight replies. With no session, the command refuses with a message; during a running entry that never ends, the entry stops with its restarting session, and the transcript says `[stopped; a new session started]`. The next entry runs in a fresh backend, as F5 now does before its load (both commands reuse the new `repl_restart()` helper). Stop joins the Build menu (new `cmdREPLSTOP` enum item), chthonic's Run menu, and the toolbar alongside Open, Save, and Run. The `repl_clear_marks()` helper centralizes clearing the seqs (`replbusy`, `replrunning`, `replcseq`, `replloadseq`, `replrunseq`) when a session is owed nothing. Gate: testmadcide_repl.mad pin 8 (stop before message, stop during spin and new session) + testmadcide_toolbar (Stop button), testidemenu (commands=54, items=10), testmadcide_chthonic (Stop in menu and toolbar).
+
 ### madcide's REPL pane commands require editor tier (V6a duplex D3, plan §41.11a)
 
 The REPL pane's three commands — F5 run (`cmdREPLRUN`), typed entry (`cmdREPLENTER`), and the backend (`cmdREPL`) — now require editor tier, gated the same as builds and runs. An observer-tier client that sends replrun, replenter, or repl receives a tier-refused error: `<command> requires editor (you are observer)`. The gate: testmadcide_serve_tiers.mad's new section 1b (observer-run line) sends all three commands from an observer and verifies each is refused with the correct prose.
