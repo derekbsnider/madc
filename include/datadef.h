@@ -947,11 +947,19 @@ public:
     std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
     std::set<size_t> member_packed; // member index -> __attribute__((packed)) on the member itself
     // C++11 default member initializer (NSDMI): member NAME -> the PARSED init
-    // expression (`int x = 5;` -> TokenInt(5)). Applied at default construction as
-    // `__this->member = expr` for any member not explicitly initialized. Absent =
-    // no in-class initializer (or one that did not parse — object members then take
-    // the existing value-init construction). Name-keyed (survives MI reordering).
+    // expression (`int x = 5;` -> TokenInt(5)). A scalar member applies it at
+    // default construction as `__this->member = expr`, a class-type member
+    // direct-initializes from it, for any member not explicitly initialized.
+    // Absent = no in-class initializer (or one that did not parse — the member is
+    // then default-initialized). Name-keyed (survives MI reordering).
     std::map<std::string, TokenBase *> member_default_inits;
+    // The BRACE form of a default member initializer ([class.mem]
+    // brace-or-equal-initializer), absent for `= expr`: `m{e}` is List (the
+    // entry above holds e), `m{}` is Empty (the entry above holds the scalar
+    // application's 0). A class-type member list-initializes from List and
+    // value-initializes from Empty.
+    enum class NsdmiBraces : uint8_t { List, Empty };
+    std::map<std::string, NsdmiBraces> member_nsdmi_braces;
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t pragma_pack;	// the #pragma pack(N) part of `pack` (0 = none): a class's base subobjects take only this cap

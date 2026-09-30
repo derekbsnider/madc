@@ -1951,6 +1951,25 @@ public:
 	void zero_init_subobject_stmts(const std::function<node_t()> &mint_addr,
 			       DataDefCLASS *cdd, bool base_subobject,
 			       std::vector<node_t> &out, TokenBase *origin);
+	// A class-type member's default member initializer ([class.mem]/10) as
+	// DIRECT-initialization of member `mi` of `cdd` at `mint_addr`: `= T(...)`
+	// / `= T{...}` elide to their list, any other initializer is the one
+	// argument. FALSE (nothing emitted) when the member has none to apply.
+	bool class_member_nsdmi_init(const std::function<node_t()> &mint_addr,
+			       DataDefCLASS *cdd, size_t mi, DataDefCLASS *mc,
+			       std::vector<node_t> &out, TokenBase *origin);
+	// Class-type member `mi` of `cdd` when no mem-initializer names it: its
+	// default member initializer, else default-initialization of a complete
+	// object (virtual bases too). The one owner behind the user-ctor prologue
+	// (class_member_construct) and the implicit default constructor
+	// (append_member_default_constructs).
+	void class_member_default_construct(const std::function<node_t()> &mint_addr,
+			       DataDefCLASS *cdd, size_t mi, DataDefCLASS *mc,
+			       std::vector<node_t> &out, TokenBase *origin);
+	// `{ struct cdd *__this = recv; <stmts> }` — statements naming the object
+	// under construction through `this`, with `this` bound to `recv`.
+	node_t this_bound_block(DataDefCLASS *cdd, const char *recv,
+			       const std::vector<node_t> &stmts, TokenBase *origin);
 	// Value-initialization's zero-fill ([dcl.init]/8): the one above,
 	// unless the class has a user-provided default constructor. The
 	// default-initialization that follows is the caller's construction.

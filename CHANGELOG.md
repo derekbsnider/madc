@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### A class-type member's default member initializer applies in user and implicit constructors
+
+`struct Z { S s = S(10); };` where `S` is a class type now applies the
+default member initializer to member `s` when constructing a `Z` — in both a
+user-provided constructor (the prologue applies it if the mem-initializer list
+does not name the member) and the implicit default constructor. The initializer
+form `= expr` copy-initializes; `m{ }` value-initializes and `m{e}` list-initializes
+([class.mem]/10). Before, NSDMI was skipped for class-type members and read
+uninitialized storage; only scalar members applied NSDMI.
+
 ### Braced mem-initializers and new-expressions list-initialize with initializer-list constructors
 
 A braced mem-initializer `v{ a, b }` or braced new-expression `new L{ a, b }`

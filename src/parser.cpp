@@ -46251,8 +46251,8 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
     // direct-list-init): the single-expression and empty lists map onto the
     // same `recv.member = expr` application the `=` form uses ({expr} = the
     // expression; {} = value-init, 0 for the scalar/pointer application —
-    // object members are SKIPPED at emit by emit_member_default_inits and
-    // keep their value-init construction, so the stored 0 is inert for them).
+    // a class-type member reads DataDefSTRUCT::member_nsdmi_braces instead,
+    // which records the brace form and the empty list).
     // A multi-element list ({a, b} — aggregate/ctor-arg init) has no faithful
     // scalar application; throw rather than silently mis-initialize.
     // libc++ shape that demanded this: __format/buffer.h `size_t __size_{0};`.
@@ -46294,6 +46294,12 @@ TokenBase *Program::capture_member_default_init(TokenBase *tn, DataDefSTRUCT *dd
 	if ( bd.angle > 0 && bangle_comma )
 	    Throw(tn) << "Ambiguous '<' in braced member default initializer"
 		      << flush;
+	// Record the brace form: a class-type member list-initializes from
+	// it ([dcl.init.list]), where the scalar application reads only the
+	// expression (and `m{}`'s 0).
+	dds->member_nsdmi_braces[mname] = binit_toks.empty()
+	    ? DataDefSTRUCT::NsdmiBraces::Empty
+	    : DataDefSTRUCT::NsdmiBraces::List;
 	if ( binit_toks.empty() )
 	    binit_toks.push_back(new TokenInt(0)); // `m{}` — value-init
 	queue_member_default_init(*this, dds, mname, binit_toks);
