@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide's Build menu palette rows attach to the menu carrying the build command, not its title
+
+The Build menu's palette rows (the `build-<n>` items listing compile and run commands) now appear in any menu that carries the `build` command, not only the menu titled "Build". The dispatch moved from title-string matching to command code: compose_menu_bar checks whether the menu's items contain the build command code, rather than testing `if (m["title"] == "Build")`. Gate: tests/testidemenu.mad's new build-rows-by-command line (pin 10) renames the Build menu to "Compile" and verifies its palette rows remain the same.
+
 ### madcide's program name selects a profile bundle (plugins Stage A, part 4)
 
 A madcide binary or symbolic/hard link invoked under the name of a bundle now opens that bundle with no --profile flag. The profile selection order is the command line's --profile (if given), then the program's name (argv[0] basename without extension) when a bundle of that name exists, then settings.json's "profile" field, then default. A binary or link named chthonic or chthonic.exe opens the chthonic bundle with no configuration. A program name no bundle has falls through to the settings or default. The program_name() function extracts argv[0]'s basename and strips its last extension if present; active_profile() checks the name against the bundle search path and uses its bundle when found. The man page documents the profile selection precedence. Gate: tests/testmadcide_bundles (pin 10, bundles-progname line tests all four cases: link, .exe, explicit --profile, and unknown name).

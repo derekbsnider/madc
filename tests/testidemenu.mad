@@ -93,6 +93,28 @@ int main()
     println("build-menu: items={} sep-at={} first={}/{} enabled={} last={}/{} enabled={}",
 	    php::count(bitems), bsep, bfirst["id"], bfirst["title"],
 	    enabled_of(bfirst), blast["id"], blast["title"], enabled_of(blast));
+    // The rows follow the COMMAND the menu carries (`build`), never its
+    // title: the same data under another title still lists them.
+    var rdef = def;
+    long nm = php::count(rdef);
+    for ( long k = 0; k < nm; k = k + 1 )
+    {
+	var rm = rdef[k];
+	if ( rm["title"] == "Build" )
+	{
+	    rm["title"] = "Compile";
+	    rdef[k] = rm;
+	}
+    }
+    ui::set(w, es, "menudef", rdef);
+    var rtree;
+    S.compose_ide_tree(rtree, doc);
+    long rcount = -1;
+    for ( var rb : rtree["hints"]["menu"]["bar"] )
+	if ( rb["title"] == "Compile" )
+	    rcount = php::count(rb["items"]);
+    println("build-rows-by-command: {}", rcount == php::count(bitems) ? "same" : "DIFFER");
+    ui::set(w, es, "menudef", def);
 
     var tree;
     S.compose_ide_tree(tree, doc);

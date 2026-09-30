@@ -1576,6 +1576,7 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 	if ( m["place"].as_integer() != mpBAR )
 	    continue;
 	var items = {};
+	bool palette_rows = false;
 	for ( var it : m["items"] )
 	{
 	    if ( !it["sep"].is_null() )
@@ -1588,15 +1589,19 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 	    if ( !when_holds(ctx, when) )
 		row["enabled"] = 0;
 	    items.push(row);
+	    if ( it["code"].as_integer() == cmdBUILD )
+		palette_rows = true;
 	}
-	// The Build menu carries the ^B palette's rows as DIRECT items
+	// The menu that carries the ^B palette's command (`build`, the Build
+	// menu in default.menu) lists the palette's rows as DIRECT items
 	// (owner 2026-09-08: Build -> Run runs, no overlay): the same
 	// `buildcmds` data the palette lists — the built-ins for the
 	// buffer or the project, plus a manifest's own commands — one item
 	// per row, id `build-<n>` (its 1-based row, the palette's choose
 	// contract), after a separator. Stop is enabled only while a build
 	// runs, the rest only while none does (what the palette's rows do).
-	if ( m["title"] == "Build" )
+	// Which menu is DATA (the command it carries), never its title.
+	if ( palette_rows )
 	{
 	    ensure_build_cmds(w, es);
 	    var brows;
