@@ -3447,6 +3447,15 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
   - **Order:**
     - The caret drawing is a display bug under either anchor, so it is fixed first, in its own commit.
     - The start-column switch is suite-wide: the fixtures that pin columns change, and the frozen-header pack stores token columns, so its format version is bumped. It rides the next merge wave.
+  - **Part 1 done 2026-09-30** (bce128835): the caret line through `madc::line_layout`.
+  - **Part 2's inventory (recon 2026-09-30, every read of a token's column):**
+    - The stamp: `Program::getRealToken` (`src/lexer.cpp`) sets `tb->column = source.column()` after the token is read; `Source::column()` counts the bytes consumed on the line. The start is captured before the read. Parser-built tokens take `TokenBase::_parse_column` (the last consumed token's column), so they move from its end to its start with it.
+    - About 260 COPY sites (a position handed from token to token): neutral when every column changes together.
+    - About 45 DIAGNOSTIC sites (`add_diagnostic`, `print_diagnostic`, `throwbuf::sync`, `madc_error`, the problems rows, the CIR dump): they print the start; the headers print gcc's screen column through `line_layout` of the line.
+    - 12 END-DEPENDENT sites, each given an end of its own: `highlight_token_rows` (`t->column - spelling`, `prev_end_col`), `graph_token_start`, `graph_extent_of`, `parseCompound`'s `}` end, the statement wrapper's three `end_column` stamps (`_parse_column`, the `;`, the `head_tok` equality), madcide's `lsp_diag_range`.
+    - About 22 MIXED or AMBIGUOUS sites: `TokenFunc::column` (0, a `{`, a name token's end) read by `enclosing_func_at` and the outline; `graph_at`'s 0-based start contract; `diagnostic_cause_for`'s end-token equality; the pragma and `eoe` stamps; `lsp_name_span`'s call-site limit.
+    - 2 persistent formats: the CIR forest's positions (`CIR_FOREST_FORMAT_VERSION` 50 → 51) and `.madh` token records (the `compiler_hash` signature, since `FORMAT_VERSION` accepts older files).
+    - About 15 fixtures: `testprojecterrline`, `testcompilerdata`, `testparsehandle`, `testparserecoverh`, `testparsespans`, `teststringspans`, `testspansmacro`, `testlexspans`, `testgraphaccessors`, `testgraphedit`, `testgraphpast`, `testmadcide_serve_edit`, `testmadcide_lsp`, and `test_repl_session` (`:1:10:` → `:1:7:`).
 
 - **D27. An undefined reference is refused at its first use, not at its entry** (owner, 2026-09-26: "the refusal should wait for first use to match behavior of Julia and clang-repl").
   - **The rule.**
