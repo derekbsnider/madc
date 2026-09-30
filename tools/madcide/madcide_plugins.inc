@@ -14,7 +14,9 @@
 //                         user's plugins/, then the shipped plugins/
 //   plugin_manifest_read  a manifest's words, checked once, at load
 //   active_profile        which bundle: the command line's --profile, then
-//                         settings.json's "profile", then `default`
+//                         the program's own name (program_name) when a
+//                         bundle of that name exists, then settings.json's
+//                         "profile", then `default`
 //   bundle_select         the active bundle onto the bag
 //   bundle_word           the name a bundle gives a data kind, else the
 //                         default bundle's (base_word)
@@ -276,15 +278,41 @@ void user_settings_load(long w, long es)
     ui::set(w, es, "usersettings", s);
 }
 
+void path_sans_ext(var &out, var &p);	// madcide_core.inc: THE {base} rule
+
+// The name the program was invoked by: madc::sys.argv[0]'s last path
+// component without its extension, so /usr/bin/chthonic, chthonic.exe and
+// the script tools/madcide/madcide.mad read chthonic, chthonic and madcide.
+// A symbolic or hard link is invoked under its own name.
+void program_name(var &out)
+{
+    out = "";
+    if ( php::count(madc::sys.argv) == 0 )
+	return;
+    var a0 = madc::sys.argv[0];
+    var base = php::basename(a0);
+    path_sans_ext(out, base);
+}
+
 // WHICH bundle (§5.2): the command line's --profile (`cli`, "" = not
-// given), then settings.json's "profile", then `default`, so nothing changes
-// without either.
+// given), then the program's own name when a bundle of that name exists (a
+// `chthonic` binary, or a link named chthonic, opens the chthonic bundle
+// with no flag; owner 2026-09-30), then settings.json's "profile", then
+// `default`, so nothing changes without one of them.
 void active_profile(var &out, long w, long es, const char *cli)
 {
     out = "default";
     if ( cli != 0 && strlen(cli) > 0 )
     {
 	out = cli;
+	return;
+    }
+    var pn;
+    program_name(pn);
+    var pdir;
+    if ( plugin_name_ok(pn.c_str()) && plugin_find(pdir, pn.c_str()) )
+    {
+	out = pn;
 	return;
     }
     var us;

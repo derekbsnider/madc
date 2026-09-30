@@ -22,7 +22,12 @@
 //      emacs keys);
 //   9. the fallbacks say so: a bundle naming a missing keys file runs the
 //      default keys; a refused manifest, an unknown profile and a name that is
-//      a path leave the default profile in use, the reason on the status line.
+//      a path leave the default profile in use, the reason on the status line;
+//  10. the program's own name (madc::sys.argv[0], its basename without the
+//      extension) selects the bundle of that name with no flag — a link
+//      /usr/local/bin/chthonic, a chthonic.exe — ahead of settings.json's
+//      "profile"; the command line still beats it, and a name no bundle has
+//      falls through to settings.json.
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env); the runner points every other test at none.
 #include "../tools/texteditor/lined_core.inc"
@@ -173,6 +178,22 @@ int main()
     // 6. The command line beats settings.json.
     probe(r, path, "default");
     println("bundles-cli: bundle={} keys={} window={}", r["bundle"], r["keys"], r["window"]);
+
+    // 10. The program's own name (settings.json still says "mine").
+    var a0 = madc::sys.argv[0];
+    madc::sys.argv[0] = "/usr/local/bin/chthonic";
+    probe(r, path, "");
+    var pl = r["bundle"];
+    madc::sys.argv[0] = "chthonic.exe";
+    probe(r, path, "");
+    var pe = r["bundle"];
+    probe(r, path, "default");
+    var pc = r["bundle"];
+    madc::sys.argv[0] = "/opt/renamed-ide";
+    probe(r, path, "");
+    var pu = r["bundle"];
+    madc::sys.argv[0] = a0;
+    println("bundles-progname: link={} exe={} cli={} unknown={}", pl, pe, pc, pu);
 
     // 7. A user setting beats the bundle's default.
     php::file_put_contents(sp.c_str(), "{ \"profile\": \"mine\", \"repl.std\": \"c17\" }");
