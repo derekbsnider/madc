@@ -3186,7 +3186,7 @@ There is no patch release before it: B85's fix rides this release.
 - A completion popup.
 - A Windows backend.
 
-**The release order,** each step its own commit with Tier 1 and Tier 2, a batch checkpoint after each batch, and the seam battery with every platform lane after step 8:
+**The release order,** each step its own commit with Tier 1 and Tier 2, a batch checkpoint after each batch, and the seam battery with every platform lane after step 9:
 0. **The release-path bugs, each fixed in its own commit, B85 first (it is silent, and it is in the released package):**
    - B85 (done): one data-location owner for the profiles, the verbs and the checks (`resolve_data_dir`, which `resolve_profile_dir` now calls), the package shipping `verbs/` and `checks/`, madcide refusing to start without them, and the startup hint naming the loaded table's own chords. Gates: `scripts/madcide_save_quit_gate.sh` (fulltest: save and quit from a foreign cwd, with the profiles and with the rescue keys; no verbs refuses to start; a negative control), the install gate saving and quitting with the installed package, and the quit gate from a foreign cwd. The key fallback chain (the requested profile, then the default profile's, then the rescue set) lands with bundles (step 1), where a profile first names its keys.
    - B84 (done): a class-run extent beside `text_buffer::word_right`, read by `delword`. Gate: a model test with JOE 4.6's measured table (`BUGS.md`).
@@ -3226,7 +3226,9 @@ There is no patch release before it: B85's fix rides this release.
 7. **The `host` transport** (B4, G6): the `chthonic` plugin run in a separate process over the seat, and a plugin crash leaving madcide running.
 8. **The REPL pane on the contribution points** (B5): no built-in path left beside them.
 
-Then the seam battery, every platform lane's full suite, and the release.
+9. **The Homebrew tap, macOS and Linux** (owner 2026-09-30; packaging arc PK6): bottles on both. Homebrew's Linux base is ours (Ubuntu 24.04, GCC 13, glibc 2.39), so the Linux work is prefix independence and a full-suite lane on a Homebrew Linux install.
+
+Then the seam battery, every platform lane's full suite, and the master release. The `chthonic` product (its own build, the Windows REPL backend, the Microsoft Store MSIX) is the release after it (plugin design §9 items 3-4); its two-unit link probe runs early.
 
 **Decided (owner, 2026-09-30):**
 1. **No file opens an untitled buffer.** Thonny's behaviour. Save asks for a name (Save As), and F5 runs it under the unit name `untitled`. It builds on B86's one open rule (slice 0). Slice 1 recons whether a buffer can exist without a path, and gives it a placeholder name if it cannot, which Save As replaces.

@@ -327,6 +327,22 @@ packaging shape, and all the proper build scripts and tests in order.
   Center, manual first, Store submission API later if wanted; winget
   rides the `msstore` source automatically); the apt/yum repo-hosting
   decision.
+  - **Owner direction 2026-09-30:** Homebrew bottles for macOS AND Linux
+    are in the master release (plugins design §9 item 4), for easy
+    installs where the distribution packages do not reach — the Linux
+    deb/rpm need glibc 2.38+ and GCC 13's libstdc++ (built on Ubuntu
+    24.04: glibc 2.38's `__isoc23_*` redirects and `fmod`, GCC 13's
+    `std::ios_base_library_init`), so they do not run on Ubuntu 22.04
+    (the owner's WSL). This supersedes the "binary formula ONLY"
+    ruling. Homebrew's Linux bottles are built on Ubuntu 24.04 with GCC
+    13 and glibc 2.39 (Homebrew/brew#21761, 2026-06-07; docs.brew.sh
+    Linux-CI), and an older host gets Homebrew's own `glibc` (2.39) and
+    `gcc`: our Linux build's base, so a Linux bottle is not a new
+    toolchain flavor. Its work is prefix independence (the build-time
+    include tables, the forest's paths and the `/usr/local/lib` runpath
+    fallback under `/home/linuxbrew/.linuxbrew`) and a full-suite lane
+    on a Homebrew Linux install (no CI home yet). The Microsoft Store
+    carries `chthonic` only, in the release after master.
 - **PK7 — madcide-as-binary (a PK3 prerequisite, owner-ruled part of
   the packaging). ✅ EXECUTED 2026-09-01.** madcide AOT-compiles via
   `madc -o` into a 393 KB binary linked against the shared libmadc
