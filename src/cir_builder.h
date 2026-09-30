@@ -1304,10 +1304,17 @@ private:
 		std::vector<TokenBase *> ci_args; // token args for the relower shapes
 	};
 	std::map<class FuncDef *, std::vector<TsubstMemInitPattern> > m_tsubst_meminit_patterns;
-	// Set by a tsubst_method_body HIT whose returned body already carries the
-	// substituted mem-init statements; func_def reads+clears it to suppress
-	// the shell-side ctor-init emission for exactly that ctor.
-	bool m_tsubst_body_carries_meminits = false;
+	// A substituted mem-initializer's statement: the member it initializes
+	// (empty for a delegation).
+	struct TsubstMemInitStmt {
+		std::string member;
+		node_t stmt;
+	};
+	// Set by a tsubst_method_body HIT that substituted the mem-initializers:
+	// func_def's prologue places them — each at its member's position in
+	// declaration order — instead of the shell-side emission, for exactly
+	// that ctor.
+	std::vector<TsubstMemInitStmt> m_tsubst_meminit_stmts;
 	// Phase-5 slice 3: set when tsubst_method_body bailed on a COVERED shape
 	// (pattern built + binding complete) and returned a LOUD error body
 	// instead of NULL — func_def counts it in the fallback profile (not as a
@@ -1961,8 +1968,7 @@ public:
 	// Class-type member `mi` of `cdd` when no mem-initializer names it: its
 	// default member initializer, else default-initialization of a complete
 	// object (virtual bases too). The one owner behind the user-ctor prologue
-	// (class_member_construct) and the implicit default constructor
-	// (append_member_default_constructs).
+	// and the implicit default constructor (member_default_construct_stmts).
 	void class_member_default_construct(const std::function<node_t()> &mint_addr,
 			       DataDefCLASS *cdd, size_t mi, DataDefCLASS *mc,
 			       std::vector<node_t> &out, TokenBase *origin);
@@ -2324,10 +2330,29 @@ public:
 	// `done_bases` = indices of BASE subobjects whose ctor/dtor this
 	// function already emitted. Members flattened in from those bases are
 	// that base's lifetime, not ours — see member_origin in datadef.h.
-	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
-				    TokenBase *origin,
-				    const std::set<std::string> *skip = NULL,
-				    const std::set<int> *done_bases = NULL);
+	// Default-initialization of member `mi` of `cdd` through the pointer
+	// named `recv`: a madc `array` member's runtime construction, a
+	// class-type member's class_member_default_construct. `implicit`: the
+	// implicit default constructor, which skips a member it cannot
+	// default-construct. Nothing for a scalar, or for a member a base's ctor
+	// constructed. Returns true if it emitted any.
+	bool member_default_construct_stmts(DataDefCLASS *cdd, size_t mi,
+				    const char *recv, bool implicit,
+				    const std::set<int> *done_bases,
+				    std::vector<node_t> &out, TokenBase *origin);
+	// The non-static data members' initialization in declaration order
+	// ([class.base.init]/13): each member's mem-initializer (the substituted
+	// one of a tsubst hit, else `ctor`'s), else its default member
+	// initializer, else its default-initialization. `ctor` NULL is the
+	// implicit default constructor. `recv` names the object under
+	// construction; a default member initializer reads it as `__this`.
+	// `construct` / `default_inits` select the default-initializations and
+	// the scalar default member initializers. Returns true if it emitted any.
+	bool class_member_init_stmts(DataDefCLASS *cdd, FuncDef *ctor,
+				    const char *recv, bool construct,
+				    bool default_inits,
+				    const std::set<int> *done_bases,
+				    std::vector<node_t> &out, TokenBase *origin);
 	// `sym((void*)recv->member)` expression statement — madarray_construct /
 	// madarray_destruct on a madc `array` (madc::value) data member.
 	node_t array_member_runtime_call(const char *sym, bool returns_value,
@@ -2341,7 +2366,9 @@ public:
 	static bool is_carrier_keyed_subscript(TokenBase *tb);
 	node_t carrier_slot_call(node_t recv_void, TokenBase *index,
 				 TokenBase *origin);
-	bool class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
+	// Member `mi` of `cdd` from its mem-initializer `ci` in `fd`.
+	bool member_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd, size_t mi,
+				    const FuncDef::CtorInitializer *ci,
 				    std::vector<node_t> &out, TokenBase *origin);
 	// Aggregate list-initialization of a member ([dcl.init.aggr]):
 	// `Foo() : p{1,2}` assigns the flattened argument sequence to the
@@ -2354,20 +2381,11 @@ public:
 				    const std::vector<TokenBase *> &args,
 				    size_t &ai, std::vector<node_t> &out,
 				    TokenBase *origin);
-	// Apply C++11 default member initializers (NSDMI: `int x = 5;`) for any
-	// scalar/pointer member not explicitly initialized (not in `skip`) and not
-	// owned by a base whose constructor this construction ran (`done_bases`).
-	// The receiver is `recv`, accessed `recv->member` when `arrow` (a ctor
-	// body's `__this`) or `recv.member` otherwise. Object members are
-	// value-initialized by the existing member-construction path, not here.
-	bool emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
-				    bool arrow, std::vector<node_t> &out,
-				    TokenBase *origin,
-				    const std::set<std::string> *skip = NULL,
-				    const std::set<int> *done_bases = NULL);
-	// The default member initializer a construction of `cdd` applies to
-	// member `mi` (NULL when none): emit_member_default_inits' filter, read
-	// through the one owner of a flattened member's initializer.
+	// The scalar/pointer default member initializer (NSDMI: `int x = 5;`) a
+	// construction of `cdd` applies to member `mi` — NULL when none, for an
+	// object member (its construction applies its own), or for a member
+	// owned by a base whose ctor this construction ran (`done_bases`) —
+	// read through the one owner of a flattened member's initializer.
 	TokenBase *applied_member_default_init(DataDefCLASS *cdd, size_t mi,
 					       const std::set<int> *done_bases);
 	// True when ctorless `cdd`'s implicit default constructor applies at
@@ -2380,17 +2398,6 @@ public:
 	// construction/destruction (so it requires a ctor/dtor even if the user
 	// wrote none).
 	bool class_has_object_members(DataDefCLASS *cdd);
-	// Default-construct every class-type member of `cdd` through the NAMED
-	// pointer variable `recv_ptr`, appending to the c2mir list node
-	// `items` (a fresh id() per member — c2mir nodes hold a single parent
-	// link, so a receiver node cannot be shared). Returns true when
-	// anything was emitted. The one member loop behind implicit default
-	// construction (class_ctor_call_addr's ctorless arm, the ctorless
-	// `new` path).
-	bool append_member_default_constructs(node_t items,
-					      const char *recv_ptr,
-					      DataDefCLASS *cdd,
-					      TokenBase *origin);
 	// True when ctorless `cdd`'s implicit default construction must emit
 	// member statements (some member has a callable default ctor or is a
 	// ctorless class that itself needs construction).

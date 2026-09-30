@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Non-static data members initialize in declaration order
+
+Members now initialize in declaration order ([class.base.init]/13) across all
+constructor paths: user-provided, implicit default, new-expressions, and
+tsubst instantiations. Each member initializes from its mem-initializer, else
+its default member initializer, else its default-initialization. Before, three
+separate initialization walks initialized members out of order, so a member's
+initializer could read another member's uninitialized storage, or a side effect
+could observe the wrong object state.
+
 ### A class-type member's default member initializer applies in user and implicit constructors
 
 `struct Z { S s = S(10); };` where `S` is a class type now applies the

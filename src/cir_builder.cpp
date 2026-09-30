@@ -13989,6 +13989,16 @@ static TokenBase *class_member_nsdmi_of(const DataDefCLASS *cdd, size_t mi,
 	return member_default_init_of(cdd, mi, braces);
 }
 
+// Some member of `cdd` — a flattened base member included — has a default
+// member initializer.
+static bool class_has_member_default_init(const DataDefCLASS *cdd)
+{
+	for (size_t mi = 0; mi < cdd->members.size(); mi++)
+		if (member_default_init_of(cdd, mi))
+			return true;
+	return false;
+}
+
 // Member `mi` of `cdd` is a base's to construct: the base whose constructor
 // this construction emitted (done_bases), or a user-constructor class it was
 // flattened from, which the base chain constructs — through ctorless layers
@@ -14018,45 +14028,36 @@ static bool member_copied_by_base(const DataDefCLASS *cdd, size_t mi,
 	return c && c != cdd && owns(c);
 }
 
-bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
-					std::vector<node_t> &out, TokenBase *origin,
-					const std::set<std::string> *skip,
-					const std::set<int> *done_bases)
+bool CirBuilder::member_default_construct_stmts(DataDefCLASS *cdd, size_t mi,
+					const char *recv, bool implicit,
+					const std::set<int> *done_bases,
+					std::vector<node_t> &out, TokenBase *origin)
 {
-	if (!cdd) return false;
-	bool any = false;
-	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
-		const auto &m = cdd->members[mi];
-		if (skip && skip->count(m.first)) continue;
-		if (member_constructed_by_base(cdd, mi, done_bases)) continue;
-		if (is_array_object(m.second)) {
-			flush_pending_stmts(out);
-			out.push_back(array_member_runtime_call(
-				"madarray_construct", true, "__this", m.first,
-				origin));
-			any = true;
-			continue;
-		}
-		DataDefCLASS *mc = as_class_instance(m.second);
-		if (!mc) continue;
-#ifdef MADC_DEBUG_CTORINIT
-		fprintf(stderr, "[ctorinit] member-default owner=%s member=%s mclass=%s\n",
-			cdd->name.c_str(), m.first.c_str(), mc->name.c_str());
-#endif
-		const std::string &mname = m.first;
-		std::vector<node_t> ms;
-		class_member_default_construct([&]() -> node_t {
-			return node1(N_ADDR,
-				node2(N_DEREF_FIELD, id("__this", origin),
-				      id(mname.c_str(), origin)),
-				origin);
-		}, cdd, mi, mc, ms, origin);
-		if (ms.empty()) continue;
-		flush_pending_stmts(out);
-		out.insert(out.end(), ms.begin(), ms.end());
-		any = true;
+	const auto &m = cdd->members[mi];
+	if (member_constructed_by_base(cdd, mi, done_bases)) return false;
+	if (is_array_object(m.second)) {
+		out.push_back(array_member_runtime_call("madarray_construct",
+			true, recv, m.first, origin));
+		return true;
 	}
-	return any;
+	DataDefCLASS *mc = as_class_instance(m.second);
+	if (!mc) return false;
+	if (implicit && mc->has_user_ctor && !class_default_ctor_def(mc)
+	    && !class_member_nsdmi_of(cdd, mi))
+		return false;
+#ifdef MADC_DEBUG_CTORINIT
+	fprintf(stderr, "[ctorinit] member-default owner=%s member=%s mclass=%s\n",
+		cdd->name.c_str(), m.first.c_str(), mc->name.c_str());
+#endif
+	const std::string &mname = m.first;
+	const size_t before = out.size();
+	class_member_default_construct([&]() -> node_t {
+		return node1(N_ADDR,
+			node2(N_DEREF_FIELD, id(recv, origin),
+			      id(mname.c_str(), origin)),
+			origin);
+	}, cdd, mi, mc, out, origin);
+	return out.size() != before;
 }
 
 static std::string last_scope_part(const std::string &name)
@@ -14184,163 +14185,153 @@ static const FuncDef::CtorInitializer *find_member_initializer(
 	return NULL;
 }
 
-bool CirBuilder::class_ctor_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
+bool CirBuilder::member_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
+					size_t mi,
+					const FuncDef::CtorInitializer *ci,
 					std::vector<node_t> &out, TokenBase *origin)
 {
-	if (!cdd || !fd || fd->ctor_initializers.empty()) return false;
-	bool any = false;
-	for (const auto &m : cdd->members) {
-		const FuncDef::CtorInitializer *ci = find_member_initializer(fd, m.first);
-		if (!ci) continue;
-		// Env-gated probe (MADC_CTORINIT_PROBE=<substr of the owner class>):
-		// the SHAPE of a member initializer's argument list. A single
-		// argument that is a TokenPackExpansion means the list was never
-		// expanded — `m(pattern...)` is N initializers, not one.
-		{
-			static const char *cip = ::getenv("MADC_CTORINIT_PROBE");
-			if (cip && *cip
-			    && cdd->name.find(cip) != std::string::npos) {
-				// fd identity is REQUIRED, not decoration: a class
-				// has many ctors and the owner name alone made two
-				// different ones look like one (pair's delegating
-				// o23 read as the piecewise o24).
-				fprintf(stderr, "CTORINIT owner=%s fd=%p disp=%s"
-					" nci=%zu member=%s"
-					" nargs=%zu arg0_is_expansion=%d"
-					" packs=%zu\n",
-					cdd->name.c_str(), (void *)fd,
-					fd->function_display_name.empty()
-					  ? fd->method_display_name.c_str()
-					  : fd->function_display_name.c_str(),
-					fd->ctor_initializers.size(),
-					m.first.c_str(),
-					ci->args.size(),
-					(!ci->args.empty() && dynamic_cast<
-					 TokenPackExpansion *>(ci->args[0]))
-						? 1 : 0,
-					(size_t)0);
-			}
-			if (cip && *cip && !ci->args.empty()
-			    && cdd->name.find(cip) != std::string::npos) {
-				TokenCallFunc *atc =
-					dynamic_cast<TokenCallFunc *>(ci->args[0]);
-				fprintf(stderr, "CTORINIT   arg0 member=%s call=%s"
-					" nexpl=%zu",
-					m.first.c_str(),
-					atc ? atc->var.name.c_str() : "(not-a-call)",
-					atc ? atc->explicit_template_args.size()
-					    : (size_t)0);
-				if (atc)
-					for (DataDef *ea : atc->explicit_template_args)
-						fprintf(stderr, " expl='%s'",
-							ea ? ea->name.c_str() : "?");
-				fprintf(stderr, " packs=%zu\n",
-					m_tsubst_active_type_arg_packs
-					  ? m_tsubst_active_type_arg_packs->size()
-					  : (size_t)0);
-			}
+	const auto &m = cdd->members[mi];
+	// Env-gated probe (MADC_CTORINIT_PROBE=<substr of the owner class>):
+	// the SHAPE of a member initializer's argument list. A single
+	// argument that is a TokenPackExpansion means the list was never
+	// expanded — `m(pattern...)` is N initializers, not one.
+	{
+		static const char *cip = ::getenv("MADC_CTORINIT_PROBE");
+		if (cip && *cip
+		    && cdd->name.find(cip) != std::string::npos) {
+			// fd identity is REQUIRED, not decoration: a class
+			// has many ctors and the owner name alone made two
+			// different ones look like one (pair's delegating
+			// o23 read as the piecewise o24).
+			fprintf(stderr, "CTORINIT owner=%s fd=%p disp=%s"
+				" nci=%zu member=%s"
+				" nargs=%zu arg0_is_expansion=%d"
+				" packs=%zu\n",
+				cdd->name.c_str(), (void *)fd,
+				fd->function_display_name.empty()
+				  ? fd->method_display_name.c_str()
+				  : fd->function_display_name.c_str(),
+				fd->ctor_initializers.size(),
+				m.first.c_str(),
+				ci->args.size(),
+				(!ci->args.empty() && dynamic_cast<
+				 TokenPackExpansion *>(ci->args[0]))
+					? 1 : 0,
+				(size_t)0);
 		}
-#ifdef MADC_DEBUG_CTORINIT
-		fprintf(stderr, "[ctorinit] member-init owner=%s member=%s ci=%s nargs=%zu mclass=%s\n",
-			cdd->name.c_str(), m.first.c_str(), ci->name.c_str(),
-			ci->args.size(),
-			as_class_instance(m.second) ? as_class_instance(m.second)->name.c_str() : "(non-class)");
-#endif
-		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
-				   id(m.first.c_str(), origin));
-		if (DataDefCLASS *mc = as_class_instance(m.second)) {
-			if (class_direct_init_stmts(
-				[&]() -> node_t {
-					return node1(N_ADDR,
-						node2(N_DEREF_FIELD, id("__this", origin),
-						      id(m.first.c_str(), origin)),
-						origin);
-				}, mc, ci->args, ci->braced,
-				ci->nested_list_flattened,
-				/*base_subobject=*/false,
-				/*vbase_forward=*/false, out, origin))
-				any = true;
-			continue;
+		if (cip && *cip && !ci->args.empty()
+		    && cdd->name.find(cip) != std::string::npos) {
+			TokenCallFunc *atc =
+				dynamic_cast<TokenCallFunc *>(ci->args[0]);
+			fprintf(stderr, "CTORINIT   arg0 member=%s call=%s"
+				" nexpl=%zu",
+				m.first.c_str(),
+				atc ? atc->var.name.c_str() : "(not-a-call)",
+				atc ? atc->explicit_template_args.size()
+				    : (size_t)0);
+			if (atc)
+				for (DataDef *ea : atc->explicit_template_args)
+					fprintf(stderr, " expl='%s'",
+						ea ? ea->name.c_str() : "?");
+			fprintf(stderr, " packs=%zu\n",
+				m_tsubst_active_type_arg_packs
+				  ? m_tsubst_active_type_arg_packs->size()
+				  : (size_t)0);
 		}
-		if (ci->args.empty()) {
-			// Value-initialization `member()` ([dcl.init]p8): a scalar
-			// or pointer member ZERO-initializes (real
-			// `_Vector_impl_data() : _M_start(), _M_finish(), ...` —
-			// skipping it left garbage that the dtor then freed).
-			// Class members took the ctor-call arm above.
-			if (m.second && (m.second->is_numeric()
-					 || m.second->is_pointer())) {
-				node_t z = node2(N_ASSIGN, fld,
-						 integer(0L, origin), origin);
-				out.push_back(node2(N_EXPR, list(), z, origin));
-				any = true;
-				continue;
-			}
-			// A plain-STRUCT member zero-initializes the same way
-			// ([dcl.init]p8 — no user ctor, so the ctor-call arm
-			// above never applies): assign the C11 zero compound
-			// literal, the TokenCast lane's `(struct T){0}` shape.
-			// libc++'s `__compressed_pair_elem(__value_init_tag)
-			// : __value_() {}` is this arm — its empty body left
-			// every default-constructed string's rep uninitialized
-			// (SSO flag/pointer garbage -> wild memmove on the
-			// first assignment).
-			if (const DataDefSTRUCT *cst = as_plain_struct(m.second)) {
-				node_t z = node2(N_ASSIGN, fld,
-					zero_struct_compound(cst, origin),
-					origin);
-				out.push_back(node2(N_EXPR, list(), z, origin));
-				any = true;
-			}
-			continue;
-		}
-		// Aggregate LIST-init of a plain-struct member ([dcl.init.aggr]):
-		// `Foo() : p{1,2}` fills p's fields in declaration order. This
-		// used to fall into the `continue` below, which left the member
-		// UNINITIALISED and said nothing — `p{1,2}` printed garbage
-		// where g++ printed "1 2". A single argument whose type is the
-		// member's own type is a copy, not a field fill, and keeps the
-		// scalar assign path.
-		if (ci->braced && dynamic_cast<DataDefSTRUCT *>(m.second)
-		    && !(ci->args.size() == 1 && ci->args[0]
-			 && ci->args[0]->datadef() == m.second)) {
-			std::vector<std::string> path(1, m.first);
-			size_t ai = 0;
-			flush_pending_stmts(out);
-			if (aggregate_member_init_stmts(path, m.second, ci->args,
-							ai, out, origin))
-				any = true;
-			continue;
-		}
-		if (ci->args.size() != 1 || !ci->args[0])
-			continue;
-		node_t init = translate_expr(ci->args[0]);
-		// A reference member (`T& m`, lowered to a pointer slot) BINDS to its
-		// initializer's address rather than copying a value: `m(e)` means
-		// `m = &e`. translate_expr yields the referent lvalue (e.g. `*x` for a
-		// reference argument), so address-of recovers the pointer (`&*x == x`).
-		// Without this the struct VALUE was stored into the pointer slot
-		// ("incompatible types in assignment to a pointer") — hit by
-		// _Rb_tree::_Auto_node's `_Rb_tree& _M_t` init `_M_t(__t)`.
-		if (m.second && m.second->is_reference())
-			init = node1(N_ADDR, init, origin);
-		// Derived->base pointer (or reference) member initializer
-		// (`__ptr_(__p)`: libc++ __tree_iterator's __iter_pointer from a
-		// __node_pointer, two bases up): the mem-init twin of the
-		// assignment (`a = b`) and declaration (`A *p = bptr`) arms —
-		// the upcast made explicit, a SECONDARY base's offset applied
-		// (tests/testmemberinitupcast: `B *p; It(D *q) : p(q)` read A's
-		// field through p — a silent wrong answer — and c2mir warned
-		// `incompatible types in assignment to a pointer` on every
-		// libc++ std::map). upcast_class_ptr returns its operand
-		// unchanged when no conversion applies.
-		init = upcast_class_ptr(init, m.second, ci->args[0], origin);
-		node_t asgn = node2(N_ASSIGN, fld, init, origin);
-		flush_pending_stmts(out);
-		out.push_back(node2(N_EXPR, list(), asgn, origin));
-		any = true;
 	}
-	return any;
+#ifdef MADC_DEBUG_CTORINIT
+	fprintf(stderr, "[ctorinit] member-init owner=%s member=%s ci=%s nargs=%zu mclass=%s\n",
+		cdd->name.c_str(), m.first.c_str(), ci->name.c_str(),
+		ci->args.size(),
+		as_class_instance(m.second) ? as_class_instance(m.second)->name.c_str() : "(non-class)");
+#endif
+	node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
+			   id(m.first.c_str(), origin));
+	if (DataDefCLASS *mc = as_class_instance(m.second))
+		return class_direct_init_stmts(
+			[&]() -> node_t {
+				return node1(N_ADDR,
+					node2(N_DEREF_FIELD, id("__this", origin),
+					      id(m.first.c_str(), origin)),
+					origin);
+			}, mc, ci->args, ci->braced,
+			ci->nested_list_flattened,
+			/*base_subobject=*/false,
+			/*vbase_forward=*/false, out, origin);
+	if (ci->args.empty()) {
+		// Value-initialization `member()` ([dcl.init]p8): a scalar
+		// or pointer member ZERO-initializes (real
+		// `_Vector_impl_data() : _M_start(), _M_finish(), ...` —
+		// skipping it left garbage that the dtor then freed).
+		// Class members took the ctor-call arm above.
+		if (m.second && (m.second->is_numeric()
+				 || m.second->is_pointer())) {
+			node_t z = node2(N_ASSIGN, fld,
+					 integer(0L, origin), origin);
+			out.push_back(node2(N_EXPR, list(), z, origin));
+			return true;
+		}
+		// A plain-STRUCT member zero-initializes the same way
+		// ([dcl.init]p8 — no user ctor, so the ctor-call arm
+		// above never applies): assign the C11 zero compound
+		// literal, the TokenCast lane's `(struct T){0}` shape.
+		// libc++'s `__compressed_pair_elem(__value_init_tag)
+		// : __value_() {}` is this arm — its empty body left
+		// every default-constructed string's rep uninitialized
+		// (SSO flag/pointer garbage -> wild memmove on the
+		// first assignment).
+		if (const DataDefSTRUCT *cst = as_plain_struct(m.second)) {
+			node_t z = node2(N_ASSIGN, fld,
+				zero_struct_compound(cst, origin),
+				origin);
+			out.push_back(node2(N_EXPR, list(), z, origin));
+			return true;
+		}
+		return false;
+	}
+	// Aggregate LIST-init of a plain-struct member ([dcl.init.aggr]):
+	// `Foo() : p{1,2}` fills p's fields in declaration order. This
+	// used to fall into the early return below, which left the member
+	// UNINITIALISED and said nothing — `p{1,2}` printed garbage
+	// where g++ printed "1 2". A single argument whose type is the
+	// member's own type is a copy, not a field fill, and keeps the
+	// scalar assign path.
+	if (ci->braced && dynamic_cast<DataDefSTRUCT *>(m.second)
+	    && !(ci->args.size() == 1 && ci->args[0]
+		 && ci->args[0]->datadef() == m.second)) {
+		std::vector<std::string> path(1, m.first);
+		size_t ai = 0;
+		flush_pending_stmts(out);
+		return aggregate_member_init_stmts(path, m.second, ci->args,
+						   ai, out, origin);
+	}
+	if (ci->args.size() != 1 || !ci->args[0])
+		return false;
+	node_t init = translate_expr(ci->args[0]);
+	// A reference member (`T& m`, lowered to a pointer slot) BINDS to its
+	// initializer's address rather than copying a value: `m(e)` means
+	// `m = &e`. translate_expr yields the referent lvalue (e.g. `*x` for a
+	// reference argument), so address-of recovers the pointer (`&*x == x`).
+	// Without this the struct VALUE was stored into the pointer slot
+	// ("incompatible types in assignment to a pointer") — hit by
+	// _Rb_tree::_Auto_node's `_Rb_tree& _M_t` init `_M_t(__t)`.
+	if (m.second && m.second->is_reference())
+		init = node1(N_ADDR, init, origin);
+	// Derived->base pointer (or reference) member initializer
+	// (`__ptr_(__p)`: libc++ __tree_iterator's __iter_pointer from a
+	// __node_pointer, two bases up): the mem-init twin of the
+	// assignment (`a = b`) and declaration (`A *p = bptr`) arms —
+	// the upcast made explicit, a SECONDARY base's offset applied
+	// (tests/testmemberinitupcast: `B *p; It(D *q) : p(q)` read A's
+	// field through p — a silent wrong answer — and c2mir warned
+	// `incompatible types in assignment to a pointer` on every
+	// libc++ std::map). upcast_class_ptr returns its operand
+	// unchanged when no conversion applies.
+	init = upcast_class_ptr(init, m.second, ci->args[0], origin);
+	node_t asgn = node2(N_ASSIGN, fld, init, origin);
+	flush_pending_stmts(out);
+	out.push_back(node2(N_EXPR, list(), asgn, origin));
+	return true;
 }
 
 // Aggregate list-initialization of a member: assign the flattened argument
@@ -14429,29 +14420,48 @@ struct PendingStmtScope {
 	}
 };
 
-bool CirBuilder::emit_member_default_inits(DataDefCLASS *cdd, const char *recv,
-					   bool arrow, std::vector<node_t> &out,
-					   TokenBase *origin,
-					   const std::set<std::string> *skip,
-					   const std::set<int> *done_bases)
+bool CirBuilder::class_member_init_stmts(DataDefCLASS *cdd, FuncDef *ctor,
+					 const char *recv, bool construct,
+					 bool default_inits,
+					 const std::set<int> *done_bases,
+					 std::vector<node_t> &out,
+					 TokenBase *origin)
 {
 	if (!cdd) return false;
 	bool any = false;
-	// Only what an initializer's own translation queues goes ahead of its
-	// assignment (PendingStmtScope).
+	// A member's statements go in after what its own translation queued,
+	// never the caller's queue (PendingStmtScope).
 	PendingStmtScope pending_scope(m_pending_stmts);
-	// Declaration order ([class.base.init]p11): iterate the members, not the map.
+	const bool substituted = !m_tsubst_meminit_stmts.empty();
 	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
 		const std::string &mn = cdd->members[mi].first;
-		TokenBase *init = applied_member_default_init(cdd, mi, done_bases);
-		if (!init) continue;
-		// An explicit ctor member-init / aggregate-init OVERRIDES the NSDMI.
-		if (skip && skip->count(mn)) continue;
-		node_t fld = node2(arrow ? N_DEREF_FIELD : N_FIELD,
-				   id(recv, origin), id(mn.c_str(), origin));
-		node_t asgn = node2(N_ASSIGN, fld, translate_expr(init), origin);
+		std::vector<node_t> ms;
+		const FuncDef::CtorInitializer *ci =
+			ctor ? find_member_initializer(ctor, mn) : NULL;
+		bool mem_init = ci != NULL;
+		if (ctor && substituted) {
+			// A tsubst hit substituted `ctor`'s mem-initializers.
+			for (const TsubstMemInitStmt &s : m_tsubst_meminit_stmts)
+				if (s.member == mn) {
+					ms.push_back(s.stmt);
+					mem_init = true;
+				}
+		} else if (ci)
+			member_initializer_stmts(cdd, ctor, mi, ci, ms, origin);
+		TokenBase *init = (!mem_init && default_inits)
+			? applied_member_default_init(cdd, mi, done_bases) : NULL;
+		if (init) {
+			node_t fld = node2(N_DEREF_FIELD, id(recv, origin),
+					   id(mn.c_str(), origin));
+			ms.push_back(node2(N_EXPR, list(),
+				node2(N_ASSIGN, fld, translate_expr(init), origin),
+				origin));
+		} else if (!mem_init && construct)
+			member_default_construct_stmts(cdd, mi, recv, !ctor,
+						       done_bases, ms, origin);
+		if (ms.empty()) continue;
 		flush_pending_stmts(out);
-		out.push_back(node2(N_EXPR, list(), asgn, origin));
+		out.insert(out.end(), ms.begin(), ms.end());
 		any = true;
 	}
 	return any;
@@ -15480,63 +15490,6 @@ node_t CirBuilder::synth_dtor_proto(const std::string &sym, DataDefCLASS *cdd)
 	append(proto, ignore());
 	append(proto, ignore());
 	return proto;
-}
-
-// Default-construct every class-type member of `cdd` through the NAMED
-// pointer variable `recv_ptr` (`__this` / a bound receiver temp / a heap
-// pointer). Takes a name, not a node: c2mir nodes hold a single parent
-// link, so a receiver node cannot be reused across members — each member
-// mints a fresh id(). The one member loop behind implicit default
-// construction — class_ctor_call_addr's ctorless arm and the ctorless
-// `new` path both use it. Each member is a COMPLETE object, so it goes
-// through the complete-object assembler (user-ctor virtual bases + the
-// default ctor / ctorless cascade). A member class with ctors but no
-// default ctor emits nothing (the parser owns that diagnosis).
-bool CirBuilder::append_member_default_constructs(node_t items,
-						  const char *recv_ptr,
-						  DataDefCLASS *cdd,
-						  TokenBase *origin)
-{
-	if (!cdd) return false;
-	bool any = false;
-	for (size_t mi = 0; mi < cdd->members.size(); mi++) {
-		const auto &m = cdd->members[mi];
-		if (member_constructed_by_base(cdd, mi, NULL)) continue;
-		if (is_array_object(m.second)) {
-			append(items, array_member_runtime_call(
-				"madarray_construct", true, recv_ptr, m.first,
-				origin));
-			any = true;
-			continue;
-		}
-		DataDefCLASS *mc = as_class_instance(m.second);
-		if (!mc) continue;
-		if (mc->has_user_ctor && !class_default_ctor_def(mc)
-		    && !class_member_nsdmi_of(cdd, mi))
-			continue;
-		// A default member initializer names the object under
-		// construction through `this`: build it against `__this`,
-		// bound to the receiver.
-		const bool rebind = strcmp(recv_ptr, "__this") != 0
-				    && class_member_nsdmi_of(cdd, mi);
-		const char *recv = rebind ? "__this" : recv_ptr;
-		const std::string &mname = m.first;
-		std::vector<node_t> stmts;
-		class_member_default_construct([&]() -> node_t {
-			return node1(N_ADDR,
-				node2(N_DEREF_FIELD, id(recv, origin),
-				      id(mname.c_str(), origin)),
-				origin);
-		}, cdd, mi, mc, stmts, origin);
-		if (stmts.empty()) continue;
-		if (rebind)
-			append(items, this_bound_block(cdd, recv_ptr, stmts, origin));
-		else
-			for (node_t s : stmts)
-				append(items, s);
-		any = true;
-	}
-	return any;
 }
 
 // True when ctorless `cdd`'s implicit default ctor must construct base
@@ -17324,17 +17277,25 @@ void CirBuilder::append_vptr_and_member_inits(node_t blk, const char *recv,
 				node2(N_ASSIGN, lhs, vtab, origin), origin));
 		}
 	}
-	if (members)
-		append_member_default_constructs(blk, recv, cdd, origin);
-	if (member_inits) {
-		// An initializer names `this` as the object under construction:
-		// bind `__this` to the receiver in a block of its own (it shadows
-		// the enclosing method's `__this`, which is the right object only
-		// in that method's own constructor).
-		std::vector<node_t> inits;
-		if (emit_member_default_inits(cdd, "__this", true, inits, origin))
-			append(blk, this_bound_block(cdd, recv, inits, origin));
-	}
+	if (!members && !member_inits)
+		return;
+	// A default member initializer names the object under construction
+	// through `this`: the walk builds against `__this`, bound to the
+	// receiver in a block of its own (it shadows the enclosing method's
+	// `__this`, which is the right object only in that method's own
+	// constructor). The receiver is a NAME, not a node: c2mir nodes hold a
+	// single parent link, so each member mints a fresh id().
+	const bool rebind = strcmp(recv, "__this") != 0
+			    && class_has_member_default_init(cdd);
+	std::vector<node_t> stmts;
+	if (!class_member_init_stmts(cdd, NULL, rebind ? "__this" : recv,
+				     members, member_inits, NULL, stmts, origin))
+		return;
+	if (rebind)
+		append(blk, this_bound_block(cdd, recv, stmts, origin));
+	else
+		for (node_t s : stmts)
+			append(blk, s);
 }
 
 // The class that DECLARED a selected constructor. Normally `cdd` itself — but
@@ -29746,7 +29707,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			*reason_out = why;
 		return NULL;
 	};
-	m_tsubst_body_carries_meminits = false;
+	m_tsubst_meminit_stmts.clear();
 	m_tsubst_bailed_covered = false;
 	FuncDef *source = fd ? fd->tsubst_source : NULL;
 	if (!source)
@@ -29838,8 +29799,9 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		// path — absent map entry): every ci is a single-arg (or empty)
 		// ASSIGN-path member init (scalar/pointer/reference member), the
 		// owner has no bases / vtable / NSDMIs and no class-instance
-		// members (so the pattern inits are the ENTIRE ctor prologue and
-		// body-head emission order is [class.base.init]-correct).
+		// members (so the pattern inits are the ENTIRE ctor prologue).
+		// The prologue places each at its member's position in
+		// declaration order (class_member_init_stmts).
 		FuncDef *recipe_fd = dynamic_cast<FuncDef *>(recipe->var.type);
 		DataDefCLASS *pat_ocls =
 			dynamic_cast<DataDefCLASS *>(source->member_template_owner);
@@ -29931,10 +29893,11 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			// Member-CONSTRUCTION shape (the pair indexed ctor:
 			// `first(std::forward<_Args1>(std::get<_Indexes1>(__t1))...)`).
 			// Every ci must name a data member, and every class-instance
-			// member must be covered by a ci — an uncovered one would
-			// default-construct in the PROLOGUE, before these body-head
-			// inits (declaration-order violation). Bases/vtable are fine:
-			// they emit in the prologue, always before members. Args stay
+			// member must be covered by a ci (the admitted shape; the
+			// prologue walk places uncovered members in declaration order
+			// too, so widening it is eligibility work, not ordering).
+			// Bases/vtable are fine: they emit in the prologue, always
+			// before members. Args stay
 			// TOKENS; the hit relowers them per instantiation (pack
 			// expansions need the live window).
 			bool admit2 = true;
@@ -30134,7 +30097,7 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 	node_t result = NULL;
 	// Phase-5 slice 1: substituted mem-init statements for the admitted ctor
 	// shape, copied under the SAME active binding/pack window as the body.
-	std::vector<node_t> meminit_stmts;
+	std::vector<TsubstMemInitStmt> meminit_stmts;
 	bool meminit_failed = false;
 	{
 		TsubstSpeculativeDiagnostics diag(m_prog);
@@ -30233,7 +30196,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 						meminit_failed = true;
 						break;
 					}
-					meminit_stmts.push_back(dc->as_node());
+					meminit_stmts.push_back(TsubstMemInitStmt{
+						std::string(), dc->as_node() });
 					continue;
 				}
 				DataDef *mem = NULL;
@@ -30292,7 +30256,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 							meminit_failed = true;
 							break;
 						}
-						meminit_stmts.push_back(cc->as_node());
+						meminit_stmts.push_back(TsubstMemInitStmt{
+							p.name, cc->as_node() });
 						continue;
 					}
 					// Scalar/pointer member: only the EMPTY pack
@@ -30328,8 +30293,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 							    id(p.name.c_str(), origin));
 					node_t zasgn = node2(N_ASSIGN, zfld,
 							     integer(0L, origin), origin);
-					meminit_stmts.push_back(
-						node2(N_EXPR, list(), zasgn, origin));
+					meminit_stmts.push_back(TsubstMemInitStmt{ p.name,
+						node2(N_EXPR, list(), zasgn, origin) });
 					continue;
 				}
 				node_t fld = node2(N_DEREF_FIELD,
@@ -30351,13 +30316,13 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 					}
 					init = ic->as_node();
 					// Reference member (pointer slot) BINDS: store the
-					// referent's address (class_ctor_initializer_stmts model).
+					// referent's address (member_initializer_stmts model).
 					if (mem->is_reference())
 						init = node1(N_ADDR, init, origin);
 				}
 				node_t asgn = node2(N_ASSIGN, fld, init, origin);
-				meminit_stmts.push_back(
-					node2(N_EXPR, list(), asgn, origin));
+				meminit_stmts.push_back(TsubstMemInitStmt{ p.name,
+					node2(N_EXPR, list(), asgn, origin) });
 			}
 		}
 		diag.restore_public_state();
@@ -30414,8 +30379,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 		// carrier emits the cis), never the body hit.
 		std::set<std::string> meminit_callees;
 		if (!meminit_failed)
-			for (node_t s : meminit_stmts)
-				cir_collect_call_callees(s, meminit_callees);
+			for (const TsubstMemInitStmt &s : meminit_stmts)
+				cir_collect_call_callees(s.stmt, meminit_callees);
 		for (const std::string &b : bound_params)
 			meminit_callees.erase(b);
 		// Pass 1.6 synthesizes destructors for synth-eligible classes and emits
@@ -30564,23 +30529,17 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 			for (const std::string &s : meminit_callees)
 				referenced_funcs.insert(s);
 	}
-	// Phase-5 slice 1: a fully-substituted mem-init set rides at the head of
-	// the hit body ([class.base.init]-correct for the admitted shape: the
-	// inits ARE the entire prologue) and func_def suppresses its shell-side
-	// emission (whole-ctor switch). A failed substitution just keeps the
-	// shell path — mem-inits are not yet load-bearing under hybrid B.
-	m_tsubst_body_carries_meminits = false;
+	// Phase-5 slice 1: a fully-substituted mem-init set replaces the
+	// shell-side emission (whole-ctor switch): func_def's prologue places
+	// each statement at its member's position in declaration order
+	// (class_member_init_stmts). A failed substitution just keeps the shell
+	// path — mem-inits are not yet load-bearing under hybrid B.
+	m_tsubst_meminit_stmts.clear();
 	if (getenv("MADC_XTEST_PAT_MEMINIT_DEBUG") && (meminit_failed || !meminit_stmts.empty()))
 		fprintf(stderr, "[MEMINIT-HIT] fn=%s stmts=%zu failed=%d\n",
 			tf->var.name.c_str(), meminit_stmts.size(), (int)meminit_failed);
-	if (!meminit_failed && !meminit_stmts.empty()) {
-		node_t outer = list();
-		for (node_t s : meminit_stmts)
-			append(outer, s);
-		append(outer, result);
-		result = node2(N_BLOCK, list(), outer, tf);
-		m_tsubst_body_carries_meminits = true;
-	}
+	if (!meminit_failed)
+		m_tsubst_meminit_stmts.swap(meminit_stmts);
 	return result;
 }
 
@@ -31096,7 +31055,6 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		//      class) — set after base construction, matching C++.
 		// Epilogue (after the body): base dtor call (dtor with a base dtor).
 		std::vector<node_t> prologue, epilogue;
-		std::set<std::string> explicit_member_inits;
 		// C++11 DELEGATING constructor ([class.base.init]p6): the targeted
 		// same-class ctor performs the COMPLETE initialization (bases,
 		// members, vptr) before this ctor's body runs — the entire
@@ -31107,9 +31065,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			(is_ctor && fd) ? find_delegating_initializer(ocls, fd)
 					: NULL;
 		// Phase-5 slice 1 whole-ctor switch (delegating form): a tsubst hit
-		// body already carrying the substituted delegation call owns the
-		// entire prologue — the shell-token-side call would double-construct.
-		if (delegating_ci && !m_tsubst_body_carries_meminits) {
+		// that substituted the delegation call owns the entire prologue —
+		// the shell-token-side call would double-construct.
+		if (delegating_ci && !m_tsubst_meminit_stmts.empty()) {
+			for (const TsubstMemInitStmt &s : m_tsubst_meminit_stmts)
+				prologue.push_back(s.stmt);
+		} else if (delegating_ci) {
 #ifdef MADC_DEBUG_CTORINIT
 			fprintf(stderr, "[ctorinit] DELEGATING-EMIT owner=%s fn=%s ci=%s nargs=%zu ninit=%zu\n",
 				ocls->name.c_str(), tf->var.name.c_str(),
@@ -31122,11 +31083,6 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			flush_pending_stmts(prologue);
 			if (stmt) prologue.push_back(stmt);
 		}
-		if (is_ctor && !delegating_ci && fd)
-			for (const FuncDef::CtorInitializer &ci : fd->ctor_initializers)
-				for (const auto &m : ocls->members)
-					if (ci.name == m.first || last_scope_part(ci.name) == m.first)
-						explicit_member_inits.insert(m.first);
 		// Bases whose ctor/dtor THIS function emits: their flattened
 		// members are their lifetime, not ours (see member_origin).
 		std::set<int> done_bases;
@@ -31218,24 +31174,21 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 					node2(N_ASSIGN, vptr_lhs, vtab, tf), tf));
 			}
 		}
-		// Phase-5 slice 1 whole-ctor switch: a tsubst hit body that already
-		// carries the substituted mem-inits (at its head) owns them — the
-		// shell-token-side emission would double-initialize.
-		if (is_ctor && !delegating_ci && !m_tsubst_body_carries_meminits)
-			class_ctor_initializer_stmts(ocls, fd, prologue, tf);
-		// C++11 default member initializers (`int x = 5;`): applied for every
-		// member NOT given an explicit ctor member-init, after the ctor-init
-		// list (which overrides them via explicit_member_inits) — a ctorless
-		// base's flattened members included; a base whose ctor ran above
-		// (done_bases) applied its own.
-		if (is_ctor && !delegating_ci)
-			emit_member_default_inits(ocls, "__this", true, prologue, tf,
-						  &explicit_member_inits, &done_bases);
-		// Construct embedded object members at ctor entry (after base ctor),
-		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
-		if (is_ctor && !delegating_ci)
-			class_member_construct(ocls, prologue, tf,
-					       &explicit_member_inits, &done_bases);
+		// The members, after the bases and the vptr stamps, in declaration
+		// order ([class.base.init]/13) whatever the mem-initializer order:
+		// each member's mem-initializer (a tsubst hit's substituted one
+		// replaces the shell-side emission), else its default member
+		// initializer (a ctorless base's flattened members included; a base
+		// whose ctor ran above — done_bases — applied its own), else its
+		// default-initialization. Destructed at dtor exit (before the base
+		// dtor) — C++ member lifetime.
+		if (is_ctor && !delegating_ci) {
+			flush_pending_stmts(prologue);
+			class_member_init_stmts(ocls, fd, "__this", true, true,
+						&done_bases, prologue, tf);
+			flush_pending_stmts(prologue);
+		}
+		m_tsubst_meminit_stmts.clear();
 		// Destroy NON-VIRTUAL bases in REVERSE declaration order (MI), offset-adjusted.
 		// Virtual bases are destroyed once by the complete-object dtor (_dtor_complete).
 		// Collected BEFORE the member teardown below so a base that destroys
