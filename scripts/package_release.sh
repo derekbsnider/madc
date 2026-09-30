@@ -28,6 +28,7 @@
 #                                               SYSTEM libgit2 (the nexus's PAST verbs; git:: programs) —
 #                                               a WEAK dependency too: libgit2 is the IDE's, not madc's
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
+#   /usr/share/madcide/verbs/, checks/          the line editor's verb and check bodies
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
@@ -169,6 +170,12 @@ stage() {
     install -m 755 tmp/madcide-pkg "$p/bin/madcide"
     mkdir -p "$p/share/madcide/profiles"
     install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
+    # The line editor's verb and check bodies (save, quit and the rest are
+    # verbs): resolve_data_dir finds them here, and madcide refuses to start
+    # without them rather than run an editor that cannot save or quit.
+    mkdir -p "$p/share/madcide/verbs" "$p/share/madcide/checks"
+    install -m 644 tools/texteditor/verbs/*.madv "$p/share/madcide/verbs/"
+    install -m 644 tools/texteditor/checks/*.madv "$p/share/madcide/checks/"
     gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
     gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
     install -m 644 LICENSE "$p/share/doc/madc/copyright"

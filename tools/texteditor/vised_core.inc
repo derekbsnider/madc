@@ -130,10 +130,11 @@ void run_visual(const char *path, bool ro, ui::level lvl)
 {
     long w = ui::world_new();
     long doc = setup_editor(w, path, ro);
-    if ( doc == 0 )
+    if ( doc <= 0 )
     {
-	printf("cannot read %s\n", path);
-	return;
+	if ( doc == 0 )
+	    printf("cannot read %s\n", path);
+	return;			// -1: the verbs, already reported
     }
     long es = ui::entity_by_name(w, "editor-state");
     // The level-generic loop (compose-as-data -> render -> event -> apply):

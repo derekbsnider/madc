@@ -8,6 +8,7 @@
 #   madc-<ver>-windows-x86_64/bin/madc.exe            stripped, forest-packed
 #   madc-<ver>-windows-x86_64/bin/madcide.exe         the IDE, AOT-compiled by that PE under wine
 #   madc-<ver>-windows-x86_64/bin/profiles/           madcide keybinding/theme profiles (data beside the exe)
+#   madc-<ver>-windows-x86_64/bin/verbs/, checks/     the line editor's verb and check bodies
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
 #   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine (win twin of libmadc.so.0; AOT output + madcide bind it)
@@ -83,6 +84,11 @@ install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
 # madcide's profile search ends at <exedir>/profiles (resolve_profile_dir).
 mkdir -p "$STAGE/$ROOT/bin/profiles"
 install -m 644 tools/madcide/profiles/* "$STAGE/$ROOT/bin/profiles/"
+# The line editor's verb and check bodies, beside the exe the same way
+# (resolve_data_dir's last arm): without them madcide cannot save or quit.
+mkdir -p "$STAGE/$ROOT/bin/verbs" "$STAGE/$ROOT/bin/checks"
+install -m 644 tools/texteditor/verbs/*.madv "$STAGE/$ROOT/bin/verbs/"
+install -m 644 tools/texteditor/checks/*.madv "$STAGE/$ROOT/bin/checks/"
 # Example config at the root under a NON-live name: ./madc.ini is a
 # real search arm, so an extracted example must never shadow a config.
 install -m 644 docs/examples/madc.ini "$STAGE/$ROOT/madc.ini.example"

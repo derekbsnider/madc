@@ -684,14 +684,17 @@ void refuse_edit(long w, long es)
 
 // The editor session every entry (vised, madcide, the headless gates)
 // opens the same way: document + editor-state + the shared verbs/check +
-// the derived access verdict.
+// the derived access verdict. 0 = the file could not be read; -1 = the
+// shared verbs could not bind (the reason is already on stderr), and an
+// editor that cannot save or quit must not start.
 long setup_editor(long w, const char *path, bool ro)
 {
     long doc = setup_document(w, path, ro);
     if ( doc == 0 )
 	return 0;
     long es = ui::create(w, "editor-state");
-    bind_lineed_verbs(w);
+    if ( !bind_lineed_verbs(w) )
+	return -1;
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "adoc", doc);	// the subject-document rule's key

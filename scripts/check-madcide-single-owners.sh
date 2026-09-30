@@ -569,7 +569,46 @@ if [ "$(count_buildstop_reads "$TOOLS"/*.inc "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
-echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
+# Where madcide's and the line editor's DATA lives has ONE owner:
+# resolve_data_dir (tools/texteditor/lined_core.inc; B85). The install
+# layout's `share/` arm is spelled once, inside it, and no data file is read
+# through a cwd-relative "tools/..." path: that path is what made save and
+# quit (line-editor verbs) do nothing outside the repo root, and never in
+# the shipped package.
+count_share_arms()
+{
+	cat "$@" | grep -c '/share/{}'
+}
+count_cwd_data_reads()
+{
+	cat "$@" | grep -cE '"tools/(madcide|texteditor)/'
+}
+
+n=$(count_share_arms "$TOOLS"/*.inc "$TEXTED"/*.inc)
+m=$(count_cwd_data_reads "$TOOLS"/*.inc "$TEXTED"/*.inc)
+if [ "$n" -ne 1 ] || [ "$m" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n install-layout share/ arms" \
+	     "(expected 1: resolve_data_dir) and $m cwd-relative tools/ data" \
+	     "reads (expected 0) across tools/madcide + tools/texteditor. Find" \
+	     "data through resolve_data_dir." >&2
+	grep -nE '/share/\{\}|"tools/(madcide|texteditor)/' \
+	     "$TOOLS"/*.inc "$TEXTED"/*.inc >&2
+	exit 1
+fi
+
+# Negative control: a synthetic cwd-relative read must trip the marker.
+tmp=$(mktemp)
+echo '    php::file_get_contents(t, "tools/texteditor/verbs/q.madv");	// synthetic' > "$tmp"
+if [ "$(count_cwd_data_reads "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic cwd-relative data read (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+echo "check-madcide-single-owners: OK (one data-location owner: resolve_data_dir;" \
+     "one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \
      "validator seat: graph_edit_apply)"

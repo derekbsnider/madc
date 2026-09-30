@@ -18,11 +18,16 @@ with open(src, "w") as f:
     f.write('#include <stdio.h>\n'
             'int main(void) { printf("main ran %d\\n", 6 * 7); return 0; }\n')
 
+root = os.getcwd()
 pid, fd = pty.fork()
 if pid == 0:
+    # The cwd is the temp dir, never the checkout (B85: data found relative
+    # to the cwd would pass here and fail for a user); every path absolute.
     os.environ["TERM"] = "xterm"
-    ide = os.environ.get("MADCIDE", "tools/madcide/madcide.mad")
-    os.execvp("bin/madc", ["bin/madc", ide, src])
+    ide = os.path.abspath(os.environ.get("MADCIDE", "tools/madcide/madcide.mad"))
+    madc = os.path.join(root, "bin/madc")
+    os.chdir(workdir)
+    os.execvp(madc, [madc, ide, src])
 fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
 
 out = b""

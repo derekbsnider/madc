@@ -32,41 +32,19 @@ Found 2026-09-29 while fixing the aggregate and member attribute readers
 (c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
 gcc 13 and clang 18.
 
-### B85. madcide saves and quits only when started from the repo root (the shipped package never can)
+### B85 (remaining). madcide's startup hint names JOE's chords under every profile
 
-- Found 2026-09-30, while measuring the owner's report that madcide leaves
-  you stuck when its key profile is not found. Measured with `bin/madc` at
-  `029a55a0f` on the container, with the source-tree madcide copied to
-  `tmp/rescue/tree` and launched on a pty (`tmp/rescue/probe.py`).
-- Save (`^K D`) writes nothing and says nothing; the buffer stays
-  `(Modified)`. Quit (`^K Q`) does nothing. The rescue set's `^S` and `^Q`
-  do nothing either, so a missing profile does leave the user stuck. The
-  start prints `cannot load the subject-document prologue` to stderr, which
-  the TUI's screen hides. SILENT: a save the user asked for is lost.
-- From `/tmp` with `joe.keys` present: typing `x`, then `^K D`, leaves the
-  file unchanged, and `^K Q` does not exit. From the repo root: `Wrote 30
-  bytes.`, and `^K Q` exits. With `joe.keys` removed, the rescue `^Q` exits
-  from the repo root and does not exit from `/tmp`.
-- Layer: `cmdSAVE` and `cmdQUIT` (`tools/madcide/madcide_core.inc:6542-6555`)
-  → `do_verb("w" | "q" | "q!")` → `ui::act`, running the line editor's verbs,
-  which `bind_lineed_verbs` (`tools/texteditor/lined_core.inc:20-45`) reads
-  from the cwd-relative paths `tools/texteditor/verbs/*.madv` and
-  `tools/texteditor/checks/editable.madv`. Outside the repo root no verb
-  binds. The package ships `share/madcide/profiles` only
-  (`scripts/package_release.sh:170-171`), so an installed madcide finds the
-  verbs from no directory. The install gate's pty probe checks the first
-  paint only, and `madcide_quit_gate.sh` runs from the repo root.
-- Also: the startup hint hard-codes JOE's chords (`^K Q exits / ^K H`,
-  `madcide_core.inc:7742`) under every profile, the rescue set included.
-- Fix shape: one data-location owner for madcide's and the line editor's
-  data (profiles, verbs, checks), generalizing `resolve_profile_dir`
-  (`madcide_core.inc:220`: beside `__FILE__`, then `share/madcide`, then
-  beside the executable). The package ships `verbs/` and `checks/`. A key
-  profile that is not found falls back to the default profile's, then to the
-  baked rescue set. The hint names the loaded table's own chords. Gates: the
-  install gate's pty probe saves and quits from `/tmp`, with the profiles
-  present and with them hidden; the quit gate runs from a foreign cwd.
-- Planned: plan §41.11a slice 0 (the release path), first.
+- The save/quit half of B85 is fixed (the line editor's data found through
+  `resolve_data_dir`, the package shipping its verbs and checks, madcide
+  refusing to start without them; `scripts/madcide_save_quit_gate.sh`).
+- What remains: the startup hint hard-codes JOE's `^K Q exits / ^K H`
+  (`tools/madcide/madcide_core.inc`, the bottom message line) under every
+  profile, the rescue set included, so a user in the rescue set is told to
+  press chords that are not bound.
+- Fix shape: the hint names the chords the LOADED table binds to quit and
+  help, through the engine's one ranking (`key_resolver::seq_for_code`,
+  `include/madcdis/keys.h`) surfaced as a `ui::` verb over a table.
+- Planned: plan §41.11a step 0, the commit after this one.
 
 ### B83. c2mir's local initializer skips a member after a bit-field's unit (stock c2m)
 

@@ -206,32 +206,14 @@ void proj_layout_path(var &out, var &pf)
     out = format("{}.layout", base);
 }
 
-// Where the profile/theme/status data lives (packaging arc PK7): the
-// source tree keeps profiles beside THIS file (__FILE__ is the
-// include-resolved path — from any cwd, and php::dirname splits both
-// separators for a Windows launch). An INSTALLED madcide is an AOT
-// binary whose __FILE__ names a build tree that box never had, so the
-// running binary's own directory (madc::compiler_path — the process's
-// resolved executable, madcide itself in the AOT shape) anchors the
-// install layouts: <exedir>/../share/madcide/profiles (the Linux/mac
-// package layout) then <exedir>/profiles (the Windows zip: data beside
-// the exe). First existing directory wins; nothing found keeps the
-// source-tree spelling so the rescue report names a real place to fix.
+// Where the profile/theme/status data lives (packaging arc PK7): beside
+// THIS file in the source tree, else the install layouts
+// (share/madcide/profiles, then profiles beside the exe) — the one rule,
+// resolve_data_dir (tools/texteditor/lined_core.inc), which the line
+// editor's verbs and checks read too.
 void resolve_profile_dir(var &dir)
 {
-    dir = format("{}/profiles", php::dirname(__FILE__));
-    if ( php::file_exists(dir) )
-	return;
-    var exedir = php::dirname(madc::compiler_path());
-    var share = format("{}/../share/madcide/profiles", exedir);
-    if ( php::file_exists(share) )
-    {
-	dir = share;
-	return;
-    }
-    var beside = format("{}/profiles", exedir);
-    if ( php::file_exists(beside) )
-	dir = beside;
+    resolve_data_dir(dir, "madcide", php::dirname(__FILE__), "profiles");
 }
 
 // One binding per line: "SEQ ACTION" — the action is the LAST word, the
@@ -7909,8 +7891,8 @@ long IdeSession::open(const char *path0, bool ro)
     var p = path0;		// ring discipline: own the text first
     w = ui::world_new();
     long doc = setup_editor(w, p.c_str(), ro);
-    if ( doc == 0 )
-	return 0;
+    if ( doc <= 0 )
+	return doc;		// 0 unreadable; -1 the verbs (already reported)
     es = ui::entity_by_name(w, "editor-state");
     if ( !init_view_es(w, es, doc, p.c_str()) )
 	return -1;		// the profile AND rescue bindings both failed

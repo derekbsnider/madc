@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### madcide saves and quits when started from any directory
+
+The line editor's verb and check file paths were previously resolved as cwd-relative
+paths, so save and quit operations only worked when madcide was started from the
+repository root. These paths are now resolved through `resolve_data_dir()`, which
+checks the source tree (from `__FILE__`), then the installed layouts (`<exedir>/../share/madcide/`
+for Linux/Mac, `<exedir>/` for Windows), ensuring they work regardless of the starting
+directory. The line editor now refuses to start if verb or check files cannot be loaded,
+preventing silent save failures. The package now ships verb and check bodies in the
+installed data directories, so an installed madcide can save and quit from any cwd.
+
 ### Bit-fields under packing can now straddle their declared type's boundary
 
 Under `#pragma pack` or packed attributes, bit-fields can straddle their declared
