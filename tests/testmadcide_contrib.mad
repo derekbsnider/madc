@@ -217,9 +217,11 @@ int main()
 	    at == caret_to_line(w, doc, 2, 0) ? 1 : 0, at3 == at ? "stays" : "moved");
 
     // 10. The REPL pane's reply events: an entry taken, a run returned (no
-    // subscriber), the session stopped.
+    // subscriber), the session stopped, the session's names answered (an
+    // older request's answer is dropped).
     bool sub1 = plugin_event(w, reTAKEN, (long)&heard);
     bool sub2 = plugin_event(w, reSTOPPED, (long)&heard);
+    bool sub3 = plugin_event(w, reBINDINGS, (long)&heard);
     bool badk = plugin_event(w, reLAST, (long)&heard);
     bool noh = plugin_event(w, reRAN, 0);
     ui::set(w, S.es, "replbusy", 7);
@@ -231,16 +233,24 @@ int main()
     repl_reply(w, S.es, ran);
     var stopped = { "kind": madc::session_reply::stopped, "seq": 0, "exit_status": 3 };
     repl_reply(w, S.es, stopped);
+    ui::set(w, S.es, "replbseq", 12);
+    var none = {};	// a literal cannot nest a brace list yet (BUGS.md B98)
+    var older = { "kind": madc::session_reply::bindings, "seq": 11, "rows": none };
+    repl_reply(w, S.es, older);
+    var answer = { "kind": madc::session_reply::bindings, "seq": 12, "rows": none };
+    repl_reply(w, S.es, answer);
+    long owed = es_int(w, S.es, "replbseq", -1);
     var log;
     ui::get(log, w, S.es, "test.heard");
     long kt = reTAKEN;		// a long: format spells an unsigned-char enum as
     long ks = reSTOPPED;	// a byte (BUGS.md B93)
-    var expected = format("|{}|{}:3", kt, ks);
+    long kb = reBINDINGS;
+    var expected = format("|{}|{}:3|{}", kt, ks, kb);
     var verdict = log;
     if ( log == expected )
-	verdict = "taken,stopped";
-    println("contrib-events: subscribed={} bad-kind={} no-handler={} heard={}",
-	    sub1 && sub2 ? 1 : 0, badk ? 1 : 0, noh ? 1 : 0, verdict);
+	verdict = "taken,stopped,bindings";
+    println("contrib-events: subscribed={} bad-kind={} no-handler={} heard={} owed={}",
+	    sub1 && sub2 && sub3 ? 1 : 0, badk ? 1 : 0, noh ? 1 : 0, verdict, owed);
 
     S.close();
     php::unlink(path);

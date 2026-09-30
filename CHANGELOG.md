@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide's replbindings command and reBINDINGS event (plan §41.11a step 3d)
+
+The REPL pane publishes the session's bindings to the plugin event feed as `reBINDINGS` events when `cmdREPLBINDINGS` is dispatched. `repl_reply` handles bindings-kind session replies and publishes the events with their rows (name, type, value, file, line). Only the newest request's answer is published; older request sequences are dropped as they arrive (the completion-reply pattern). Gate: tests/testmadcide_contrib.mad section 10 (plugin_event subscribed, bindings heard, older seq dropped), tests/testmadcide_repl.mad section 10 (live session answer with rows). B98 (a value literal cannot nest a brace list) is filed as a side finding (the test works around it by spelling the inner array as a named var).
+
 ### The bindings wire op and verb (plan §41.11a step 3d)
 
 The wire layer for session bindings is complete: `madc::session_bindings(h)` sends a request for the session's defined names, and the reply carries `rows` with each name's kind, type, value (bounded by the show form's limits: 16 elements, 80 columns), and origin file and line. `SessionClient::bindings()` sends the wire request asynchronously, `bindings_wait()` provides a synchronous API, and the backend's `serve_session()` dispatch calls the existing `InteractiveSession::bindings()` engine method, serializing its output to JSON. Pointer values show their address without dereferencing (`char *p = (char *)1` reads as a value, never followed, so the backend stays running). The backend protocol's `Op::bindings` enum and `madc::session_reply::bindings` reply kind are new; the wire shape and verb-layer `reply_row()` pattern mirror the existing `load` and `run` operations. Gate: tests/testsession_bindings.mad (integration test), tests/unit/test_session_backend.cpp "the session's bindings, as rows" (wire serialization/deserialization unit test). madcide's `replbindings` command follows in a later commit.

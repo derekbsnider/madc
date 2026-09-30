@@ -33,7 +33,8 @@
 // of F5's load / run, 0 when none), replrunning (it was taken and runs, or
 // F5's main runs), replsent (its text), replcseq / replccaret / replctext
 // (a pending completion), replloadseq / replrunseq / replrunpath (F5's
-// load and run requests, and the path main runs under), replin (the input
+// load and run requests, and the path main runs under), replbseq (a
+// pending bindings request, replbindings), replin (the input
 // buffer) with its parked rcaret / rmark / rbend, replhist / replhpos /
 // repldraft (the history), replstd (the `--std=` spelling a new session
 // takes; "" = the engine's default).
@@ -302,6 +303,7 @@ void repl_clear_marks(long w, long es)
     ui::set(w, es, "replcseq", 0);
     ui::set(w, es, "replloadseq", 0);
     ui::set(w, es, "replrunseq", 0);
+    ui::set(w, es, "replbseq", 0);
 }
 
 void repl_start(long w, long es)
@@ -426,6 +428,14 @@ void repl_reply(long w, long es, var &r)
 	    return;
 	ui::set(w, es, "replcseq", 0);
 	repl_completed(w, es, r);
+	return;
+    }
+    if ( r["kind"] == madc::session_reply::bindings )
+    {
+	if ( seq != es_int(w, es, "replbseq", 0) )
+	    return;
+	ui::set(w, es, "replbseq", 0);
+	repl_publish(w, es, reBINDINGS, r);
 	return;
     }
     if ( r["kind"] == madc::session_reply::load )
@@ -575,6 +585,18 @@ void repl_complete(long w, long es)
     ui::set(w, es, "replcseq", seq);
     ui::set(w, es, "replccaret", caret);
     ui::set(w, es, "replctext", text);
+}
+
+// replbindings (plan §41.11a step 3d): ask the session for the names it
+// defined. The answer is published as reBINDINGS with the reply's rows; only
+// the newest request's is (an older seq's reply is dropped, as a
+// completion's is). The session answers between entries.
+void repl_bindings(long w, long es)
+{
+    long h = es_int(w, es, "replh", 0);
+    if ( !madc::session_running(h) )
+	return;
+    ui::set(w, es, "replbseq", madc::session_bindings(h));
 }
 
 // The session's end with the IDE's (IdeSession::stop_tasks): the pump stops

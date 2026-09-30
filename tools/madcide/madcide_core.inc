@@ -7060,6 +7060,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdREPLSTOP:
 		repl_stop_restart(w, es);
 		return true;
+	    case cmdREPLBINDINGS:
+		repl_bindings(w, es);
+		return true;
 	    case cmdREPLLANG:
 	    {
 		// Run ▸ Language…: its argument (the seat's, -c's, a choice

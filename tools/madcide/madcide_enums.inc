@@ -32,7 +32,8 @@ enum ide_cmd : unsigned short
     cmdINSERTFILE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdREPL, cmdREPLLANG, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL,
+    cmdREFRESH, cmdREPL, cmdREPLBINDINGS, cmdREPLLANG, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS,
+    cmdSAVEQUIT, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
     cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
@@ -102,6 +103,7 @@ void cmd_table(var &t)
     rows[] = { "name": "redo", "code": cmdREDO };
     rows[] = { "name": "refresh", "code": cmdREFRESH };
     rows[] = { "name": "repl", "code": cmdREPL };
+    rows[] = { "name": "replbindings", "code": cmdREPLBINDINGS };
     rows[] = { "name": "repllang", "code": cmdREPLLANG };
     rows[] = { "name": "replrun", "code": cmdREPLRUN };
     rows[] = { "name": "replstop", "code": cmdREPLSTOP };
@@ -388,10 +390,10 @@ long menu_place_of(var &word)
 // where the manifest is READ; written back as the file's word.
 // The REPL pane's reply events (plan §41.11a): what the pane publishes on
 // the plugin event feed as its session answers — an entry taken, F5's run
-// returned, F5's load refused, the session stopped (the bindings answer
-// joins with its reply). A plugin subscribes to the kinds it needs
-// (plugin_event); reLAST bounds the range.
-enum repl_event : unsigned char { reNONE = 0, reTAKEN, reRAN, reREFUSED, reSTOPPED, reLAST };
+// returned, F5's load refused, the session stopped, the session's names
+// answered (replbindings: the reply carries their rows). A plugin subscribes
+// to the kinds it needs (plugin_event); reLAST bounds the range.
+enum repl_event : unsigned char { reNONE = 0, reTAKEN, reRAN, reREFUSED, reSTOPPED, reBINDINGS, reLAST };
 
 enum ide_projkind : unsigned char { pkCONSOLE = 0, pkGUI };
 const char *projkind_name(long k)
@@ -719,6 +721,7 @@ long cmd_min_tier(long code)
     // editor — the REPL pane: a backend process, and the code it runs (F5's
     // buffer, a typed entry), as a build's run is
     case cmdREPL:
+    case cmdREPLBINDINGS:
     case cmdREPLRUN:
     case cmdREPLSTOP:
     case cmdREPLLANG:

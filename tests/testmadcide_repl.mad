@@ -62,11 +62,23 @@ void settle(long w, long es, bool running)
 	if ( running && es_int(w, es, "replrunning", 0) != 0 )
 	    return;
 	if ( !running && es_int(w, es, "replbusy", 0) == 0
-	     && es_int(w, es, "replcseq", 0) == 0 )
+	     && es_int(w, es, "replcseq", 0) == 0
+	     && es_int(w, es, "replbseq", 0) == 0 )
 	    return;
 	madc::sleep_ms(10);
     }
     println("settle: timed out");
+}
+
+// A subscriber to the session's names answered (reBINDINGS): each row as
+// `name type = value @ file:line;`.
+void bound(long w, long es, long doc, var &event)
+{
+    var s = "";
+    for ( var row : event["reply"]["rows"] )
+	s = format("{}{} {} = {} @ {}:{};", s, row["name"], row["type"],
+		   row["value"], row["file"], row["line"]);
+    ui::set(w, es, "test.bound", s);
 }
 
 // Type a line into whatever has the keyboard, then press enter and settle.
@@ -350,6 +362,17 @@ int main()
     S.command(doc, cmdREPLLANG, "fortran", lc);
     ui::get(msg, w, es, "msg");
     println("lang unknown: {}", msg);
+
+    // 10. The session's names: replbindings asks, the answer is published
+    // to a subscriber with the rows.
+    bool subscribed = plugin_event(w, reBINDINGS, (long)&bound);
+    enter_line(S, doc, w, es, "int answer = 42;");
+    ev_action(e, "replbindings", "");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    var rows;
+    ui::get(rows, w, es, "test.bound");
+    println("bindings: subscribed={} rows={}", subscribed, rows);
     S.close();				// stops the pump and the session
     php::unlink(path);
     return 0;

@@ -493,6 +493,34 @@ int main() { std::vector<int> local(3, 9); printf("%zu %d %zu %d\n", many.size()
   parser change (template overload resolution): its own focused session
   (owner, 2026-09-13).
 
+### B98. A value literal cannot nest a brace list: `{ "rows": {} }` is refused
+
+```cpp
+int main()
+{
+    var x = { "rows": {} };		// an empty array as a field's value
+    var y = { "a": { "b": 1 } };	// an object in an object
+    var z = { { 1, 2 }, { 3 } };	// an array of arrays
+    return 0;
+}
+```
+
+- madc (`--std=madc`): each literal is refused, `error: Nested brace list in
+  a value literal is not supported (yet)`, at the inner `{`. JSON, a
+  JavaScript object literal (`{ rows: [] }`) and PHP (`['rows' => []]`)
+  all nest. Spelling the inner value as a named `var` first (`var none =
+  {}; var x = { "rows": none };`) compiles.
+- The refusal is deliberate and loud (`Program::parse_ctor_args_list`,
+  src/parser.cpp): a `{`-headed element never reaches `parseExpression`,
+  which has no brace-head reading. The inner list's target is the carrier
+  itself (a `var` element), so no constructor selection is needed to type
+  it.
+- Found 2026-09-30 writing `tests/testmadcide_contrib.mad` section 10 (plan
+  §41.11a step 3d), which spells the inner array as a named `var` meanwhile.
+- Layer: the carrier list's element reader. A carrier list's `{` element
+  should be read as a nested carrier literal (the same reader, recursive).
+  A core parser change: its own focused session (owner, 2026-09-13).
+
 ### B77. A data-only struct cannot qualify a name in an expression
 
 ```cpp

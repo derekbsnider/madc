@@ -38,3 +38,4 @@ lang pick: closed=true std=c++17 said=true taken=true current=c++17
 lang again: marked=true closed=true
 lang arg: std=c17
 lang unknown: Unknown language 'fortran' (c17, c++17, madc).
+bindings: subscribed=true rows=answer int = 42 @ REPL[1]:1;
