@@ -95,7 +95,7 @@
   ```
 
 - **The search path,** first found by name wins:
-  1. the user's directory, `$XDG_CONFIG_HOME/madcide/plugins` (or `~/.config/madcide/plugins`), or `%APPDATA%\madcide\plugins` on Windows;
+  1. the user's directory, `$XDG_CONFIG_HOME/madcide/plugins` (or `~/.config/madcide/plugins`), or `%APPDATA%\madcide\plugins` on Windows. `MADCIDE_CONFIG_DIR` overrides the configuration directory, as `MADCIDE_SESSION_DIR` does the session directory: `run_tests.sh` points it at a directory that does not exist, so the suite never reads a developer's configuration, and a test that needs one names its fixture in its `.env`;
   2. then the directories `resolve_profile_dir` already searches, which gain a `plugins/` beside `profiles/`.
 
   A plugin dropped in a directory joins with no list edited, as a `.keys` file joins `toggle_profile` today.
@@ -199,7 +199,18 @@ All of it is in the next release (owner, 2026-09-30). The order, interleaved wit
   - `--profile NAME`;
   - `default` and `chthonic` as bundles, and the command line's file becoming optional (an untitled buffer, decided 2026-09-30).
 
-  **Gate:** a model test composing each bundle; a manifest with an unknown word refused with its reason; a user-directory bundle overriding a shipped one by name; `"profile": "chthonic"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting `chthonic`.
+  **Gate:** a model test composing each bundle; a manifest with an unknown word refused with its reason; a user-directory bundle overriding a shipped one by name; `"profile": "chthonic"` in a test `settings.json` (under a test configuration directory, `MADCIDE_CONFIG_DIR`) selecting `chthonic`.
+
+  **Built, part 1 (2026-09-30): the loader, the search path and settings.** `tools/madcide/madcide_plugins.inc` holds one owner each:
+  - `madcide_config_dir` (`MADCIDE_CONFIG_DIR`, then `$XDG_CONFIG_HOME/madcide`, `%APPDATA%/madcide` on Windows, `~/.config/madcide`);
+  - `plugin_find`, the search path (the user's `plugins/`, then the shipped one through `resolve_data_dir`);
+  - `plugin_manifest_read`, which checks every word at load: `plugin_field` and `contribution_kind` in `madcide_enums.inc`, the name its directory's, `api` 1, a data word one name and never a path;
+  - `active_profile` (the command line, then `settings.json`'s `"profile"`, then `default`) and `bundle_select`, which leaves the default in use with the reason on the status line;
+  - `bundle_word` (a word the bundle leaves unset is the default bundle's);
+  - `bundle_data_path`, the one path the five data loaders read (the bundle's own directory, then `profiles/`; gated by `check-madcide-single-owners.sh`);
+  - `setting_get` (`settings.json`, then the bundle's default, then the default bundle's).
+
+  `init_view_es` loads what the bundle names, with the key fallback chain (the bundle's keys, then the default's, then the rescue set), and `repl.std` seeds `replstd`. `plugins/default/default.plugin` ships beside a built-in copy, and the test pins the two to one reading. The packages ship `plugins/`. `keyed_get` no longer adds the key it reads (the carrier's subscript creates the slot it reads, so a validating read had added `"version": null` to a manifest). Gate: `tests/testmadcide_bundles`.
 - **Stage B, plugin code:**
   1. **Contributed commands, views and events** (G4), and the toolbar placement, with handlers in `builtin` form only: the extension points exercised by madcide's own code first (step 2).
   2. **The `library` transport** (G1, G2, G5): `--build-plugin`, the API table, versioned refusal; on Linux first, then macOS (`MH_DYLIB`) and Windows (DLL), through ROADMAP 6.5 (step 4).

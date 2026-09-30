@@ -99,11 +99,13 @@ run_linux() {
     [ -x "$madc" ]    || fail "$kind" "no executable $madc in the artifact"
     [ -x "$madcide" ] || fail "$kind" "no executable $madcide in the artifact"
 
+    # MADCIDE_CONFIG_DIR: no ambient user settings.json or plugins/ (the
+    # run_tests.sh hermeticity); the artifact's own data is what is gated.
     local -a runenv
     if [ -n "$libdir" ]; then
-        runenv=(env "LD_LIBRARY_PATH=$libdir")
+        runenv=(env "LD_LIBRARY_PATH=$libdir" "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     else
-        runenv=(env -u LD_LIBRARY_PATH)
+        runenv=(env -u LD_LIBRARY_PATH "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     fi
 
     # 1. installed madc runs a program
@@ -142,6 +144,9 @@ run_linux() {
     # 4. negative control: hide the installed profiles => RESCUE banner.
     local pdir="$root/${libdir:+usr/}share/madcide/profiles"
     [ -d "$pdir" ] || fail "$kind" "no profiles dir at $pdir in the artifact"
+    local gdir="$root/${libdir:+usr/}share/madcide/plugins"
+    [ -f "$gdir/default/default.plugin" ] \
+        || fail "$kind" "no plugins/default/default.plugin at $gdir in the artifact"
     mv "$pdir" "$pdir.hidden"
     out=$( ( ulimit -t 120; timeout 90 "${runenv[@]}" \
              python3 scripts/install_gate_pty.py "$madcide" "$probe" pk4probe ) 2>&1 )
@@ -274,6 +279,9 @@ gate_winzip() {
         && [ -f "$bindir/verbs/_subject.madv" ] && [ -f "$bindir/checks/editable.madv" ] \
         || fail winzip "the zip carries no bin/verbs or bin/checks (madcide could not save or quit)"
     ok winzip "zipped madcide's verbs and checks sit beside the exe"
+    [ -f "$bindir/plugins/default/default.plugin" ] \
+        || fail winzip "the zip carries no bin/plugins/default/default.plugin"
+    ok winzip "zipped madcide's plugins sit beside the exe"
 
     # 4. negative control: hide the engine DLL => both must fail
     #    (proves the green runs above were bound by adjacency to the

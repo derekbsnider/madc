@@ -264,10 +264,13 @@ long clog_kind_of(var &rec)
 
 // One keyed READ of a map that may still be null or the empty container (`{}`
 // is an empty ARRAY; a keyed read before the first keyed write throws). out
-// stays null for a missing key. (Promoted from madcide_past.inc, Nexus L4c.)
+// stays null for a missing key, and the map is left as it was: the carrier's
+// subscript CREATES the slot it reads (madarray_key_slot: access vivifies), so
+// the missing key is asked first — a validating read of a manifest must not
+// add `"version": null` to it. (Promoted from madcide_past.inc, Nexus L4c.)
 void keyed_get(var &out, var &map, const char *key)
 {
-    if ( map.is_object() )
+    if ( map.is_object() && php::array_key_exists(key, map) )
 	out = map[key];
 }
 

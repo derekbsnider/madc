@@ -212,6 +212,13 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
 
+# madcide's user configuration (settings.json and the user's plugins/) is the
+# developer's, never the suite's — the same hermeticity as --no-config: point it
+# at a directory that does not exist, so no test reads an ambient
+# ~/.config/madcide. A test that needs one names its own fixture directory in
+# its .env (MADCIDE_CONFIG_DIR=tmp/…), which env(1) applies over this.
+export MADCIDE_CONFIG_DIR="$REPO_ROOT/tmp/madcide-no-config"
+
 # A separate fixture directory uses the same runner (GUI, etc.).
 TEST_DIR="${MADC_TEST_DIR:-tests}"
 if ! compgen -G "$TEST_DIR/*.mad" >/dev/null; then

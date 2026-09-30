@@ -1556,3 +1556,65 @@ long tool_family_of(const char *name)
     }
     return tfREGISTRY;
 }
+
+// ---- plugins (docs/plans/2026-09-30-madcide-plugins.md §5.1-5.3) ----------
+// A plugin MANIFEST (<name>/<name>.plugin, JSON) is an input boundary: its
+// words convert once, at load (plugin_manifest_read, madcide_plugins.inc),
+// and an unknown word refuses the plugin with its reason. The field words
+// of the manifest object:
+enum plugin_field : unsigned char { pfNONE = 0, pfNAME, pfTITLE, pfVERSION, pfAPI, pfCONTRIBUTES, pfLAST };
+const char *plugin_field_name(long f)
+{
+    switch ( f )
+    {
+	case pfNAME: return "name";
+	case pfTITLE: return "title";
+	case pfVERSION: return "version";
+	case pfAPI: return "api";
+	case pfCONTRIBUTES: return "contributes";
+    }
+    return "";
+}
+long plugin_field_of(var &word)
+{
+    if ( word.is_null() )
+	return pfNONE;
+    for ( long k = pfNAME; k < pfLAST; k = k + 1 )
+	if ( word == plugin_field_name(k) )
+	    return k;
+    return pfNONE;
+}
+
+// A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds
+// name a file in its existing format, and the kind's word IS the file's
+// extension (`"layout": "chthonic"` is chthonic.layout); `settings` carries
+// the plugin's setting defaults. Stage A serves these; the code kinds
+// (commands, views, events) join with the contribution points.
+enum contribution_kind : unsigned char { cbNONE = 0, cbKEYS, cbLAYOUT, cbMENU, cbTHEME, cbSTATUS, cbSETTINGS, cbLAST };
+const char *contribution_kind_name(long k)
+{
+    switch ( k )
+    {
+	case cbKEYS: return "keys";
+	case cbLAYOUT: return "layout";
+	case cbMENU: return "menu";
+	case cbTHEME: return "theme";
+	case cbSTATUS: return "status";
+	case cbSETTINGS: return "settings";
+    }
+    return "";
+}
+long contribution_kind_of(var &word)
+{
+    if ( word.is_null() )
+	return cbNONE;
+    for ( long k = cbKEYS; k < cbLAST; k = k + 1 )
+	if ( word == contribution_kind_name(k) )
+	    return k;
+    return cbNONE;
+}
+// A data kind names a FILE (every kind but settings).
+bool contribution_is_data(long k)
+{
+    return k >= cbKEYS && k <= cbSTATUS;
+}

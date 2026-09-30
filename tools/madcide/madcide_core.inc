@@ -18,6 +18,7 @@
 // shapes).
 
 #include "madcide_enums.inc"	// ide_cmd + the state discriminators, as codes
+#include "madcide_plugins.inc"	// bundles: the manifest, the search path, settings
 
 // The bag's discriminator slots — ONE reader and ONE writer each (V0.5d):
 // integers on the bag, an enumerator at every site, a name only where text
@@ -59,10 +60,14 @@ class IdeSession
 	long w;		// the ui world (documents + state entity live in it)
 	long es;	// the editor-state entity — the bags
 
-	long open(const char *path0, bool ro);	// full session startup;
-						// > 0 = the launch doc,
-						// -1 = refused or fatal,
-						// reported on stderr
+	long open(const char *path0, bool ro, const char *profile = "");
+						// full session startup
+						// under the profile named
+						// ("" = settings.json's,
+						// else default); > 0 = the
+						// launch doc, -1 = refused
+						// or fatal, reported on
+						// stderr
 	void attach(long w0, long es0);	// a session over an EXISTING
 					// world + state entity (the
 					// headless harness, embedders)
@@ -496,19 +501,19 @@ bool load_profile(long w, long es, const char *name)
     // the parse below makes hundreds of ring calls, so OWN the text
     // FIRST — the stored profile name rotted to garbage without this.
     var pname = name;
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var kpath;
+    bundle_data_path(kpath, w, es, pname.c_str(), cbKEYS);
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.keys", dir, pname)) )
+    if ( !php::file_get_contents(txt, kpath.c_str()) )
     {
-	ui::set(w, es, "msg", format("No profile '{}'.", pname));
+	ui::set(w, es, "msg", format("No keys '{}'.", pname));
 	return false;
     }
     // The baked modal defaults ride UNDER every profile (same parser,
     // later lines win): a profile respells a modal key by carrying its
     // own @scope line; one that says nothing keeps the defaults. Parsed
     // FIRST, the profile over them — so a refusal names the PROFILE's own
-    // line: "Profile 'x' line 12: unknown action 'svae'."
+    // line: "Keys 'x' line 12: unknown action 'svae'."
     var full = format("{}\n{}", modal_default_keys_text(), txt);
     var table;
     var scopes;
@@ -516,12 +521,12 @@ bool load_profile(long w, long es, const char *name)
     parse_keys(table, scopes, modal_default_keys_text(), err);
     if ( !parse_keys(table, scopes, txt.c_str(), err) )
     {
-	ui::set(w, es, "msg", format("Profile '{}' {}.", pname, err));
+	ui::set(w, es, "msg", format("Keys '{}' {}.", pname, err));
 	return false;
     }
     if ( !ui::tui_validate_keys(table) )
     {
-	ui::set(w, es, "msg", format("Profile '{}' rejected.", pname));
+	ui::set(w, es, "msg", format("Keys '{}' rejected.", pname));
 	return false;
     }
     ui::set(w, es, "keytable", table);
@@ -1040,12 +1045,12 @@ const char *default_layout_text()
 bool load_layout(long w, long es, const char *name)
 {
     var lname = name;		// ring discipline: own the text first
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var lpath;
+    bundle_data_path(lpath, w, es, lname.c_str(), cbLAYOUT);
     var txt;
     var layout;
     var err;
-    bool ok = php::file_get_contents(txt, format("{}/{}.layout", dir, lname));
+    bool ok = php::file_get_contents(txt, lpath.c_str());
     if ( ok )
 	ok = parse_layout(layout, txt.c_str(), err);
     else
@@ -1340,10 +1345,10 @@ void toggle_slot(long w, long es, long slot)
 bool load_theme(long w, long es, const char *name)
 {
     var tname = name;		// ring discipline: own the text first
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var tpath;
+    bundle_data_path(tpath, w, es, tname.c_str(), cbTHEME);
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, tname)) )
+    if ( !php::file_get_contents(txt, tpath.c_str()) )
 	return false;
     var th;
     var gth;			// the @gui scope: CSS custom properties
@@ -1417,10 +1422,10 @@ bool load_theme(long w, long es, const char *name)
 bool load_menu(long w, long es, const char *name)
 {
     var mname = name;		// ring discipline: own the text first
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var mpath;
+    bundle_data_path(mpath, w, es, mname.c_str(), cbMENU);
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.menu", dir, mname)) )
+    if ( !php::file_get_contents(txt, mpath.c_str()) )
 	return false;
     var menus = {};
     var at;			// menu title -> index into menus
@@ -1630,10 +1635,10 @@ void load_status(long w, long es, const char *name)
     var sname = name;		// ring discipline: own the text first
     var lmsg = "\\i%k%T%W%I%X %n %m%y%R %M %x";	// joerc's defaults
     var rmsg = " %S Row %4r Col %3c";		// first char = fill
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var spath;
+    bundle_data_path(spath, w, es, sname.c_str(), cbSTATUS);
     var txt;
-    if ( php::file_get_contents(txt, format("{}/{}.status", dir, sname)) )
+    if ( php::file_get_contents(txt, spath.c_str()) )
     {
 	array lines;
 	php::explode(lines, "\n", txt.c_str());
@@ -7836,20 +7841,26 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 // ---- the session lifecycle (the gateway seam) ---------------------------
 
 // The per-CLIENT view initialisation (client-server V3b-2). Everything a
-// client's editor-state bag needs once its world + document exist: its own
-// profile / theme / menu / layout, the buffer table's launch row, the
-// project read-back, and the first lexical colour. open() runs it for
+// client's editor-state bag needs once its world + document exist: its
+// profile (the BUNDLE `profile` names — "" = settings.json's, else
+// default) and the keys / theme / menu / layout / status it names, the
+// buffer table's launch row, the project read-back, and the first lexical
+// colour. open() runs it for
 // client 0 over the es setup_editor created; spawn_view_es runs it for
 // every additional window onto the SAME session (viewwindow). ONE builder,
 // so a spawned window's bag is constructed by the same code as the launch
 // window's — a second window that renders the shared document identically.
 // Returns false ONLY when the startup profile AND the built-in rescue
 // bindings both fail (fatal; the caller reports the exit).
-bool init_view_es(long w, long es, long doc, const char *path)
+bool init_view_es(long w, long es, long doc, const char *path,
+		  const char *profile)
 {
     var p = path;		// ring discipline: own the text first — the
 				// data loads below cycle the ring, so a bare
 				// `path` pointer read empty at launchpath.
+    var prof = "";
+    if ( profile != 0 )
+	prof = profile;
     // resolve_profile_dir owns the search: source tree (beside this
     // file, from any cwd — php::dirname splits both separators; '/'
     // alone cost the first genuine-Win validation its keybindings),
@@ -7857,30 +7868,80 @@ bool init_view_es(long w, long es, long doc, const char *path)
     var pdir;
     resolve_profile_dir(pdir);
     ui::set(w, es, "profile_dir", pdir.c_str());
-    load_status(w, es, "joe");	// the status FORMAT rides the profile
-    if ( !load_theme(w, es, "default") )
-	ui::set(w, es, "msg", "No theme 'default' — colours off.");
-    load_menu(w, es, "default");	// the menu/command data (optional, S1)
-    load_layout(w, es, "default");	// WHERE Views live (V2): the client's
-					// layout; the baked default when the
-					// file is missing or refused
-    // The profile loads LAST of the three data loads: a broken layout
-    // fails the theme too, and its message must not bury the rescue
-    // announcement — the status line has to SAY the fallback is active.
-    if ( !load_profile(w, es, "joe") )
+    // The BUNDLE (plugins Stage A, madcide_plugins.inc): settings.json,
+    // then the active profile's manifest. Every data load below takes its
+    // name from it, and a word the bundle leaves unset is the default
+    // bundle's.
+    user_settings_load(w, es);
+    var want;
+    active_profile(want, w, es, prof.c_str());
+    bundle_select(w, es, want.c_str());
+    var sw;
+    bundle_word(sw, w, es, cbSTATUS);
+    load_status(w, es, sw.c_str());	// the status FORMAT rides the profile
+    var tw;
+    bundle_word(tw, w, es, cbTHEME);
+    if ( !load_theme(w, es, tw.c_str()) )
     {
+	var dt;
+	base_word(dt, w, es, cbTHEME);
+	if ( dt != tw && load_theme(w, es, dt.c_str()) )
+	    ui::set(w, es, "msg", format("No theme '{}' — the default theme '{}' is in use.", tw, dt));
+	else
+	    ui::set(w, es, "msg", format("No theme '{}' — colours off.", tw));
+    }
+    var mw;
+    bundle_word(mw, w, es, cbMENU);
+    if ( !load_menu(w, es, mw.c_str()) )	// the menu/command data (optional, S1)
+    {
+	var dm;
+	base_word(dm, w, es, cbMENU);
+	if ( dm != mw && load_menu(w, es, dm.c_str()) )
+	    ui::set(w, es, "msg", format("No menu '{}' — the default menu is in use.", mw));
+    }
+    var lw;
+    bundle_word(lw, w, es, cbLAYOUT);
+    if ( !load_layout(w, es, lw.c_str()) )	// WHERE Views live (V2): the
+    {						// client's layout; the baked
+	var dl;					// default when the file is
+	base_word(dl, w, es, cbLAYOUT);		// missing or refused (and
+	if ( dl != lw )				// load_layout says so)
+	    load_layout(w, es, dl.c_str());
+    }
+    // The keys load LAST of the data loads: a broken layout fails the theme
+    // too, and its message must not bury the fallback announcement — the
+    // status line has to SAY the fallback is active. THE key fallback chain:
+    // the bundle's keys, then the default bundle's, then the built-in rescue
+    // set.
+    var kw;
+    bundle_word(kw, w, es, cbKEYS);
+    if ( !load_profile(w, es, kw.c_str()) )
+    {
+	var why;
+	ui::get(why, w, es, "msg");	// load_profile's refusal
+	var dk;
+	base_word(dk, w, es, cbKEYS);
+	if ( dk != kw && load_profile(w, es, dk.c_str()) )
+	    ui::set(w, es, "msg", format("{} The default keys '{}' are in use.", why, dk));
 	// No profile file = NO bindings at all (they are pure data), so a
 	// silent continue traps the session in a bindingless editor (the
 	// first genuine-Win validation hit exactly this). The baked-in
 	// rescue set keeps the session usable — only ITS failure is fatal.
-	if ( !bind_rescue_keys(w, es) )
+	else if ( !bind_rescue_keys(w, es) )
 	{
-	    var dir;
-	    ui::get(dir, w, es, "profile_dir");
-	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
+	    var kpath;
+	    bundle_data_path(kpath, w, es, kw.c_str(), cbKEYS);
+	    println(stderr, "madcide: cannot load the startup keys {} and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", kpath);
 	    return false;
 	}
     }
+    // The REPL's standard (repl.std, the setting's first home): it seeds the
+    // session value a new REPL session takes (replstd; "" = the engine's
+    // default).
+    var rs;
+    setting_get(rs, w, es, "repl.std");
+    if ( !rs.is_null() && rs.is_string() && strlen(rs.c_str()) > 0 )
+	ui::set(w, es, "replstd", rs);
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
@@ -7918,18 +7979,18 @@ bool init_view_es(long w, long es, long doc, const char *path)
 // in either window mutates the one document and the other window shows it
 // on its next compose. Mirrors setup_editor's es half (the world verbs are
 // already bound and the document already loaded), then the SAME per-client
-// init open() runs. Returns the new es, or 0 if the profile + rescue both
-// failed.
-long spawn_view_es(long w, long doc, const char *path)
+// init open() runs, under the requesting client's profile. Returns the new
+// es, or 0 if the profile + rescue both failed.
+long spawn_view_es(long w, long doc, const char *path, const char *profile = "")
 {
     var p = path;		// ring discipline: own before the ring-using
-				// derive_access / init below clobber the slot
+    var pr = profile;		// derive_access / init below clobber the slot
     long es = ui::create(w, "editor-state");
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "adoc", doc);
     derive_access(w, es);
-    if ( !init_view_es(w, es, doc, p.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
 	return 0;
     return es;
 }
@@ -7942,7 +8003,9 @@ long IdeSession::spawn_view(long doc)
 {
     var dp;
     ui::get(dp, w, doc, "path");
-    return spawn_view_es(w, doc, dp.c_str());
+    var bn;
+    ui::get(bn, w, es, "bundle");
+    return spawn_view_es(w, doc, dp.c_str(), bn.c_str());
 }
 
 // Drain a parked viewwindow spawn: the doc a new window should view, left
@@ -7963,12 +8026,14 @@ bool IdeSession::take_spawn(long &doc)
 // No terminal anywhere: the TUI client opens its own AFTER this and asks
 // for the key table. The launch document comes through THE open rule
 // (open_buffer_doc, the one ^K E uses): a missing path opens as a new
-// file and says so on the status line. > 0 = the launch doc; -1 = refused
-// (a path that exists but cannot be read) or fatal, already reported on
-// stderr.
-long IdeSession::open(const char *path0, bool ro)
+// file and says so on the status line. `profile` is the command line's
+// --profile ("" = settings.json's, else default). > 0 = the launch doc;
+// -1 = refused (a path that exists but cannot be read) or fatal, already
+// reported on stderr.
+long IdeSession::open(const char *path0, bool ro, const char *profile)
 {
     var p = path0;		// ring discipline: own the text first
+    var pr = profile;
     w = ui::world_new();
     var note;
     long doc = open_buffer_doc(note, w, p.c_str(), ro);
@@ -7980,7 +8045,7 @@ long IdeSession::open(const char *path0, bool ro)
     if ( !setup_editor_state(w, doc) )
 	return -1;		// the verbs (already reported)
     es = ui::entity_by_name(w, "editor-state");
-    if ( !init_view_es(w, es, doc, p.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
 	return -1;		// the profile AND rescue bindings both failed
     if ( strlen(note.c_str()) > 0 )
 	msg_beside(w, es, note.c_str());	// New file <path>.

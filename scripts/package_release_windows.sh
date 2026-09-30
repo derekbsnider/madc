@@ -84,6 +84,9 @@ install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
 # madcide's profile search ends at <exedir>/profiles (resolve_profile_dir).
 mkdir -p "$STAGE/$ROOT/bin/profiles"
 install -m 644 tools/madcide/profiles/* "$STAGE/$ROOT/bin/profiles/"
+# The shipped plugins (bundles), beside the exe the same way.
+mkdir -p "$STAGE/$ROOT/bin/plugins"
+cp -R tools/madcide/plugins/. "$STAGE/$ROOT/bin/plugins/"
 # The line editor's verb and check bodies, beside the exe the same way
 # (resolve_data_dir's last arm): without them madcide cannot save or quit.
 mkdir -p "$STAGE/$ROOT/bin/verbs" "$STAGE/$ROOT/bin/checks"

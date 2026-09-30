@@ -24,8 +24,8 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 probe="$work/probe.c"
 fresh() { printf 'int main(void) { return 0; }\n' > "$probe"; }
-run() {	# <keys-hex> <madcide.mad>
-    ( ulimit -t 180; timeout 120 python3 scripts/madcide_save_quit_pty.py \
+run() {	# <keys-hex> <madcide.mad> (no ambient user config: MADCIDE_CONFIG_DIR)
+    ( ulimit -t 180; timeout 120 env MADCIDE_CONFIG_DIR="$work/no-config" python3 scripts/madcide_save_quit_pty.py \
         "$probe" "$1" "$root/bin/madc" "$2" ) 2>&1
 }
 fail() { echo "madcide_save_quit_gate: FAIL — $1 (got: $2)"; exit 1; }

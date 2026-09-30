@@ -640,7 +640,39 @@ if [ "$(count_document_mints "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEX
 fi
 rm -f "$tmp"
 
+# A data file's PATH has ONE owner: bundle_data_path (tools/madcide/
+# madcide_plugins.inc; plugins Stage A) — the active bundle's own directory,
+# then the shared profiles/. The keys, layout, menu, theme and status loaders
+# each formed `<profile_dir>/<name>.<kind>` themselves; a sixth copy would
+# read past a bundle's own files. Marker: no `{}/{}.<kind>` path spelled with
+# a data kind's extension across tools/madcide + tools/texteditor.
+count_data_paths()
+{
+	cat "$@" | grep -cE '"\{\}/\{\}\.(keys|layout|menu|theme|status)"'
+}
+
+n=$(count_data_paths "$TOOLS"/*.inc "$TEXTED"/*.inc)
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n data-file paths spelled by" \
+	     "hand across tools/madcide + tools/texteditor (expected 0: every" \
+	     "loader asks bundle_data_path)." >&2
+	grep -nE '"\{\}/\{\}\.(keys|layout|menu|theme|status)"' "$TOOLS"/*.inc "$TEXTED"/*.inc >&2
+	exit 1
+fi
+
+# Negative control: a synthetic hand-spelled path must trip the marker.
+tmp=$(mktemp)
+echo '    php::file_get_contents(txt, format("{}/{}.layout", dir, n));	// synthetic' > "$tmp"
+if [ "$(count_data_paths "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic hand-spelled data path (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one data-location owner: resolve_data_dir;" \
+     "one data-file path: bundle_data_path;" \
      "one document minter: new_document; one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \

@@ -28,6 +28,7 @@
 #                                               SYSTEM libgit2 (the nexus's PAST verbs; git:: programs) —
 #                                               a WEAK dependency too: libgit2 is the IDE's, not madc's
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
+#   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
 #   /usr/share/madcide/verbs/, checks/          the line editor's verb and check bodies
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
@@ -170,6 +171,10 @@ stage() {
     install -m 755 tmp/madcide-pkg "$p/bin/madcide"
     mkdir -p "$p/share/madcide/profiles"
     install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
+    # The shipped plugins (bundles: <name>/<name>.plugin and the data files
+    # it carries), the plugin search path's second arm (resolve_data_dir).
+    mkdir -p "$p/share/madcide/plugins"
+    cp -R tools/madcide/plugins/. "$p/share/madcide/plugins/"
     # The line editor's verb and check bodies (save, quit and the rest are
     # verbs): resolve_data_dir finds them here, and madcide refuses to start
     # without them rather than run an editor that cannot save or quit.

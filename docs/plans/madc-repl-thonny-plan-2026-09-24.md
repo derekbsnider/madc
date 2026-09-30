@@ -3206,7 +3206,9 @@ There is no patch release before it: B85's fix rides this release.
    - A new `testmadcide_chthonic` model test: the composed panel visible with the REPL active, the menu bar's rows, no project or outline pane, a session running at open.
    - A manifest with an unknown word refused with its reason.
    - A user-directory bundle overriding a shipped one by name.
-   - `"profile": "chthonic"` in a test `settings.json` (under a test `XDG_CONFIG_HOME`) selecting it.
+   - `"profile": "chthonic"` in a test `settings.json` (under a test configuration directory, `MADCIDE_CONFIG_DIR`) selecting it.
+
+   Part 1 done (the loader, the search path, `settings.json`, the key fallback chain; `tests/testmadcide_bundles`; plugin design §8).
    - `testmadcide_layout`'s pin of `default.layout` is unchanged.
 2. **The plugin system's contribution points** (the plugin design's B1): contributed commands (ids interned above the built-in range), contributed views (the generic compose arm over a bag key), events (the feed, and `repl_event`), and the toolbar placement: `menu_place`, and the `toolbar` hint through `web_model`, the page and the TUI. All are exercised first by madcide's own code (`builtin`).
 
