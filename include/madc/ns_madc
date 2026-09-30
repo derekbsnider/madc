@@ -685,7 +685,10 @@ namespace madc {
     //     prints comes after it, then its offer row. An offer's state (a
     //     madc::offer_state code), ok, shown, rendered (the diagnostics as the
     //     CLI prints them), submitted, diagnostics (the rows parse_check
-    //     returns); a completion's start and names; a stop's exit_status
+    //     returns); a load's ok, rendered and diagnostics; a run's ok,
+    //     rendered, status (main's) and diagnostics (the rows recorded since
+    //     the last entry or load began, the run's own included); a
+    //     completion's start and names; a stop's exit_status
     //     (128 + signal for a signal) and signal (0 when the backend exited).
     //   session_output(out, h): what the program printed since the last call.
     //   session_input(h, text): text for the program's stdin.

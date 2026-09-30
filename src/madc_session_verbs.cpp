@@ -60,6 +60,13 @@ madc::taskio::readiness_source *session_source(int64_t handle)
     return session_of(handle);
 }
 
+// A reply's diagnostic rows as the row carries them: an array, empty when
+// the backend sent none.
+madc::value reply_diagnostics(const SessionClient::Reply &r)
+{
+    return r.diagnostics.is_array() ? r.diagnostics : madc::value::make_array();
+}
+
 // A reply as a row: named fields, the kind and the verdict as their enum
 // codes (<bits/session_enums>).
 madc::value reply_row(const SessionClient::Reply &r)
@@ -77,7 +84,7 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["shown"] = madc::value(r.shown);
 	    f["rendered"] = madc::value(r.rendered);
 	    f["submitted"] = madc::value((int64_t)r.submitted);
-	    f["diagnostics"] = r.diagnostics.is_array() ? r.diagnostics : madc::value::make_array();
+	    f["diagnostics"] = reply_diagnostics(r);
 	    break;
 	case madc::session_reply::complete:
 	{
@@ -96,6 +103,7 @@ madc::value reply_row(const SessionClient::Reply &r)
 	case madc::session_reply::run:
 	    f["ok"] = madc::value(r.ok);
 	    f["rendered"] = madc::value(r.rendered);
+	    f["diagnostics"] = reply_diagnostics(r);
 	    if ( r.kind == madc::session_reply::run )
 		f["status"] = madc::value((int64_t)r.status);
 	    break;

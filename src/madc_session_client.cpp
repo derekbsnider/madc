@@ -135,6 +135,16 @@ bool write_line(int fd, const std::string &line)
     return true;
 }
 
+// A reply's diagnostic rows: what the unit it answers recorded (a taken
+// entry's, a load's, a run's), as parse_check shapes them, so a client can
+// list them (madcide's Problems) as well as print the rendered text.
+void attach_diagnostics(nlohmann::json &rep, InteractiveSession &session)
+{
+    madc::value rows;
+    madc::diagnostic_rows_from_child(session.program(), rows);
+    rep["diagnostics"] = madc::hub::detail::wt_value_to_json(rows);
+}
+
 // The backend: one session, a request per line until the channel closes.
 // The program's output is flushed before each reply, so the client reads
 // an entry's output before its result.
@@ -212,9 +222,7 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 		{
 		    rep["shown"] = session.shown();
 		    rep["submitted"] = session.submitted();
-		    madc::value rows;
-		    madc::diagnostic_rows_from_child(session.program(), rows);
-		    rep["diagnostics"] = madc::hub::detail::wt_value_to_json(rows);
+		    attach_diagnostics(rep, session);
 		}
 		break;
 	    }
@@ -236,6 +244,7 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 						  req.value("path", std::string()));
 		else
 		    rep["ok"] = session.load(req.value("path", std::string()));
+		attach_diagnostics(rep, session);
 		break;
 	    case Op::continues:
 		rep["continues"] = session.continues_if(req.value("text", std::string()));
@@ -253,6 +262,7 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 		int status = 0;
 		rep["ok"] = session.run_main((int)args.size(), argv.data(), &status);
 		rep["status"] = status;
+		attach_diagnostics(rep, session);
 		break;
 	    }
 	    case Op::begin:
@@ -650,6 +660,9 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
     reply.seq = j.value("seq", 0u);
     reply.rendered = j.value("rendered", std::string());
     reply.ok = j.value("ok", false);
+    // A taken entry's, a load's and a run's reply carry their rows.
+    if ( j.contains("diagnostics") )
+	reply.diagnostics = madc::hub::detail::wt_json_to_value(j["diagnostics"]);
     switch ( op )
     {
 	case Op::running:
@@ -660,8 +673,6 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    reply.state = state_of(j.value("state", std::string()));
 	    reply.shown = j.value("shown", std::string());
 	    reply.submitted = j.value("submitted", 0u);
-	    if ( j.contains("diagnostics") )
-		reply.diagnostics = madc::hub::detail::wt_json_to_value(j["diagnostics"]);
 	    break;
 	case Op::complete:
 	    reply.kind = Reply::Kind::complete;

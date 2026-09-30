@@ -67,6 +67,27 @@ std::string first_error_row(const madc::value &rows)
     return std::string();
 }
 
+// The first error row's `file:line`, or "" when there is none: where an
+// editor's Problems row goes.
+std::string first_error_at(const madc::value &rows)
+{
+    if ( !rows.is_array() )
+	return std::string();
+    for ( const madc::value &row : rows.as_array() )
+    {
+	if ( !row.is_object() )
+	    continue;
+	const std::map<std::string, madc::value> &f = row.as_object();
+	std::map<std::string, madc::value>::const_iterator code = f.find("severity_code");
+	std::map<std::string, madc::value>::const_iterator file = f.find("file");
+	std::map<std::string, madc::value>::const_iterator line = f.find("line");
+	if ( code != f.end() && file != f.end() && line != f.end()
+	  && code->second.as_integer() == (int64_t)madc::diag_severity::error )
+	    return file->second.as_string() + ":" + std::to_string(line->second.as_integer());
+    }
+    return std::string();
+}
+
 } // namespace
 
 TEST_CASE("session backend: an entry's output comes before its result")
@@ -249,6 +270,9 @@ TEST_CASE("session backend: load a program file, then run its main")
     CHECK(r.ok);
     CHECK(r.status == 7);
     CHECK(out == "main argc=2 last=extra\n");
+    // A clean run's reply carries its rows, none of them an error.
+    CHECK(r.diagnostics.is_array());
+    CHECK(first_error_row(r.diagnostics).empty());
     // The file and the session are one unit: its static is a session name.
     REQUIRE(c.offer_wait("base + 2", true, r, out, kWait) == 1);
     CHECK(r.shown == "42");
@@ -272,9 +296,18 @@ TEST_CASE("session backend: load an editor buffer's text under its name")
     CHECK_FALSE(r.ok);
     CAPTURE(r.rendered);
     CHECK(r.rendered.find("buffer_one.c:1:") != std::string::npos);
+    // The reply carries the rows too, citing the path and the line, for an
+    // editor's Problems pane (plan §41.11a step 3).
+    CHECK(first_error_at(r.diagnostics) == "buffer_one.c:1");
+    REQUIRE(c.load_wait_text("int fine = 1;\nint later = nosuch_name;\n",
+			     "buffer_three.c", r, out) == 1);
+    CHECK_FALSE(r.ok);
+    CHECK(first_error_at(r.diagnostics) == "buffer_three.c:2");
     REQUIRE(c.load_wait_text("static int triple(int v) { return 3 * v; }\n"
 			     "int shown = 14;\n", "buffer_two.c", r, out) == 1);
     CHECK(r.ok);
+    CHECK(r.diagnostics.is_array());
+    CHECK(first_error_row(r.diagnostics).empty());
     REQUIRE(c.offer_wait("triple(shown) + keep", true, r, out, kWait) == 1);
     CHECK(r.shown == "43");
 }
