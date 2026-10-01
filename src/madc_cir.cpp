@@ -3450,7 +3450,9 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	uint32_t record_flags = 0;
 	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd))		// REF is-a PTR: check first
 	{
+		// flags bit 0: an rvalue reference (`T&&`, a distinct type).
 		kind = madc::dis::DK_REF;   operand = rf->base_type;
+		record_flags = rf->is_rvalue_reference() ? 1u : 0u;
 	}
 	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 	{
@@ -4922,7 +4924,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	// class names datatype_map never keys); the flat name is the fallback
 	// (pinned/derived spellings); either miss degrades to the eager arm.
 	std::string ret_flat = fd->returns.is_reference()
-			     ? fd->return_value_type().name + "&"
+			     ? fd->return_value_type().name
+			       + (fd->returns.is_rvalue_reference() ? "&&" : "&")
 			     : fd->returns.name;
 	uint32_t ret_tid = madc_type_id_for(&fd->returns);
 	std::string ret_bank = "#" + std::to_string(ret_tid) + "#" + ret_flat;

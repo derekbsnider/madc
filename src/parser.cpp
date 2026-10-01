@@ -3332,6 +3332,15 @@ static std::vector<std::string> namespace_qualifiers(const std::string &ns_name)
     return out;
 }
 
+// THE C++ spelling of a reference over its referent's spelling: `T&` or
+// `T&&` — the declarator that is part of the type's identity ([dcl.ref]/2).
+// Every DataDef -> spelling lane (template-argument keys, binding identity,
+// the class-pattern replay, the mangler's input) spells a reference here.
+static std::string reference_spelling(const std::string &referent, bool rvalue)
+{
+    return referent + (rvalue ? "&&" : "&");
+}
+
 static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 {
     if ( !dd )
@@ -3347,7 +3356,7 @@ static std::string cpp_spelling_for_mangle(DataDef *dd, bool as_ref)
 	DataDef *base = ptr && ptr->base_type ? ptr->base_type : dd;
 	std::string s = base->canonical_cpp_spelling().empty()
 		      ? base->name : base->canonical_cpp_spelling();
-	return s + "&";
+	return reference_spelling(s, dd->is_rvalue_reference());
     }
     // A FUNCTION-POINTER parameter spells STRUCTURALLY (`Ret (*)(P1,P2)`) —
     // every DataDefFPTR is named "funcptr", and the name fallback below made
@@ -3460,7 +3469,7 @@ std::string DataDefFPTR::structural_spelling_core(const std::string &core) const
     // reference (Itanium R<type> inside the function type — `O &(*)(O &)`
     // is PFR1ORS_E, g++ parity), as is_ref_param does for the parameters.
     if ( target->returns_reference() )
-	s += "&";
+	s = reference_spelling(s, target->returns.is_rvalue_reference());
     s += core.empty() ? std::string(" (") : " (" + core + ")(";
     for ( size_t i = 0; i < target->parameters.size(); ++i )
     {
@@ -3478,7 +3487,7 @@ std::string DataDefFPTR::structural_spelling_core(const std::string &core) const
 	    && !fptr_structural_spelling(target->parameters[i]).empty();
 	if ( target->is_ref_param(i) && !structural
 	  && (ps.empty() || ps.back() != '&') )
-	    s += "&";
+	    s = reference_spelling(s, target->parameters[i]->is_rvalue_reference());
     }
     s += ")";
     return s;
@@ -5680,7 +5689,8 @@ static std::string template_type_arg_spelling(TokenDataType *adt,
 	    {
 		const std::string &rs = r->base_type->canonical_cpp_spelling();
 		return cv_spelling
-		     + (rs.empty() ? r->base_type->name : rs) + "&";
+		     + reference_spelling(rs.empty() ? r->base_type->name : rs,
+					  adt->definition.is_rvalue_reference());
 	    }
     // A POINTER argument builds from its BASE's canonical spelling for the
     // same reason (the pointer dd's NAME composes from the base's bare name):
@@ -5854,7 +5864,9 @@ static std::string template_binding_identity_spelling(DataDef *dd)
     if ( dd->is_reference() )
 	if ( DataDefPTR *r = pointer_dd_of(dd) )
 	    if ( r->base_type )
-		return template_binding_identity_spelling(r->base_type) + "&";
+		return reference_spelling(
+		    template_binding_identity_spelling(r->base_type),
+		    dd->is_rvalue_reference());
     DataDef *canon = canonical_template_binding_dd(dd);
     return canon ? canon->name : dd->name;
 }
@@ -8097,7 +8109,8 @@ static std::string basic_class_datadef_spelling(DataDef *dd)
 				     qualified->quals,
 				     pointer_dd_of(qualified->base_type) != NULL);
     if ( DataDefREF *ref = dynamic_cast<DataDefREF *>(dd) )
-	return basic_class_datadef_spelling(ref->base_type) + "&";
+	return reference_spelling(basic_class_datadef_spelling(ref->base_type),
+				  ref->is_rvalue_reference());
     if ( DataDefPTR *ptr = pointer_dd_of(dd) )
 	return basic_class_datadef_spelling(ptr->base_type) + "*";
     if ( DataDefCArray *array = dynamic_cast<DataDefCArray *>(dd) )
@@ -8155,7 +8168,7 @@ static std::string basic_class_pattern_type_spelling(
 	    if ( type.kind == Program::ClassTypePatternKind::Pointer )
 		spelling += "*";
 	    else if ( type.kind == Program::ClassTypePatternKind::Reference )
-		spelling += "&";
+		spelling = reference_spelling(spelling, (type.flags & 1u) != 0);
 	    else if ( type.kind == Program::ClassTypePatternKind::ConstType )
 	    {
 		const Program::ClassTypePattern &operand =
@@ -8989,7 +9002,8 @@ public:
 	    result = pgm.getPointerType(resolve(type.operand));
 	    break;
 	case Program::ClassTypePatternKind::Reference:
-	    result = pgm.getReferenceType(resolve(type.operand));
+	    result = pgm.getReferenceType(resolve(type.operand),
+					  (type.flags & 1u) != 0);
 	    break;
 	case Program::ClassTypePatternKind::ConstType:
 	    result = pgm.getQualifiedType(resolve(type.operand),
@@ -10525,7 +10539,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		if ( sfx->id() == TokenID::tkBand || sfx->id() == TokenID::tkLand )
 		{
 		    nextToken();
-		    DataDefREF *ref = getReferenceType(&adt->definition);
+		    DataDefREF *ref = getReferenceType(&adt->definition,
+						       sfx->id() == TokenID::tkLand);
 		    TokenDataType *radt = new TokenDataType(ref->name.c_str(), *ref);
 		    radt->file = dtok->file;
 		    radt->line = dtok->line;
@@ -16504,16 +16519,16 @@ struct TraitTypeArg
 // is_move_assignable<int> silently folded FALSE through the whole
 // __and_fn/__conditional_t chain; a baked REF also never same_as-matched the
 // spelled form of the same type. Normalize to the referent+flags shape the
-// spelled form produces. madc's IR keeps ONE reference kind post-resolution,
-// so a baked reference reads as the LVALUE form (trait uses that need the
-// rvalue distinction spell it with trailing `&&` tokens, which win above).
+// spelled form produces; the baked reference's kind is its type's
+// (`_Tp` bound to `int&&` is the rvalue form).
 static void unwrap_baked_trait_arg(Program &pgm, TraitTypeArg &a)
 {
     if ( a.is_lref || a.is_rref )
 	return;
     if ( DataDefREF *rdd = dynamic_cast<DataDefREF *>(a.dd) )
     {
-	a.is_lref = true;
+	a.is_rref = rdd->is_rvalue_reference();
+	a.is_lref = !a.is_rref;
 	a.dd = rdd->base_type;
     }
     // A baked CONST rides referent_const — the flag the spelled form's leading
@@ -27583,6 +27598,11 @@ static DataDef *resolve_flat_return_name(Program &pgm, const std::string &nm)
 {
     if ( nm.empty() )
 	return NULL;
+    if ( nm.size() > 2 && nm.compare(nm.size() - 2, 2, "&&") == 0 )
+    {
+	DataDef *base = resolve_flat_return_name(pgm, nm.substr(0, nm.size() - 2));
+	return base ? (DataDef *)pgm.getReferenceType(base, true) : NULL;
+    }
     if ( nm[nm.size() - 1] == '*' || nm[nm.size() - 1] == '&' )
     {
 	DataDef *base = resolve_flat_return_name(pgm,
@@ -31122,24 +31142,32 @@ DataDef *Program::simd_comparison_type(DataDef *ld, DataDef *rd)
     return simd_type(lane, v->vector_bytes);
 }
 
-DataDefREF *Program::getReferenceType(DataDef *base)
+DataDefREF *Program::getReferenceType(DataDef *base, bool rvalue)
 {
-    // C++ reference collapsing: a reference to a reference is the same
-    // reference type (`using r = T&; r& x` is still T&).
+    // [dcl.ref]/6 reference collapsing: `&&` applied to a reference is that
+    // reference (`T& &&` is T&, `T&& &&` is T&&); `&` applied to any
+    // reference is the lvalue reference to its referent (`T&& &` is T&).
     if ( base->is_reference() )
-	return static_cast<DataDefREF *>(base);
+    {
+	DataDefREF *have = base->as_reference_dd();
+	if ( rvalue || !base->is_rvalue_reference() || !have || !have->base_type )
+	    return have ? have : static_cast<DataDefREF *>(base);
+	return getReferenceType(have->base_type, false);
+    }
 
-    auto it = ref_type_cache.find(base);
+    std::pair<DataDef *, bool> key(base, rvalue);
+    auto it = ref_type_cache.find(key);
     if ( it != ref_type_cache.end() )
 	return it->second;
 
-    DataDefREF *ref = new DataDefREF(*base);
-    ref_type_cache[base] = ref;
+    DataDefREF *ref = new DataDefREF(*base, rvalue);
+    ref_type_cache[key] = ref;
     // B3 write-through (the reference-collapse early return above never reaches here — an
     // existing reference is not re-recorded). Off by default → no change to bin/madc.
     if ( forest_arena_enabled )
 	forest_arena_record_unary(ref);
-    DBG(std::cout << "getReferenceType() created reference to " << base->name << std::endl);
+    DBG(std::cout << "getReferenceType() created " << (rvalue ? "rvalue " : "")
+	<< "reference to " << base->name << std::endl);
     return ref;
 }
 
@@ -32442,12 +32470,13 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 	// denotes the operand OBJECT itself ([expr.static.cast]p3) — mark the
 	// type as a reference so the CIR lowering keeps the operand lvalue
 	// instead of emitting a value cast (whose result has no address). Which
-	// reference kind the source wrote decides the cast's VALUE CATEGORY
-	// (xvalue for `&&`, lvalue for `&`) — recorded on the TokenCast, since
-	// DataDefREF does not carry it.
-	cast_to_rvalue_ref = peekToken()->id() == TokenID::tkLand;
+	// reference kind of the collapsed type decides the cast's VALUE CATEGORY
+	// (xvalue for `T&&`, lvalue for `T&` — `L&&` with L = int& is int&),
+	// recorded on the TokenCast.
+	bool spelled_rvalue = peekToken()->id() == TokenID::tkLand;
 	nextToken();
-	cast_dd = getReferenceType(cast_dd);
+	cast_dd = getReferenceType(cast_dd, spelled_rvalue);
+	cast_to_rvalue_ref = cast_dd->is_rvalue_reference();
     }
     skip_expression_whitespace();
     if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
@@ -34910,11 +34939,13 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
 	{
 	    if ( pat[i]->id() == TokenID::tkMul )
 	    { ++ptr; level_cv.push_back(cvNONE); ++i; }
-	    // A reference declarator (`&`/`&&`). madc collapses lvalue/rvalue refs
-	    // into one DataDefREF, so both spellings peel one reference level; the
-	    // count just records that the slot is a reference pattern (`_Tp&`).
+	    // A reference declarator: 1 = `&`, 2 = `&&`. In a class partial
+	    // specialization `_Tp&&` is an rvalue-reference pattern, never a
+	    // forwarding reference: it matches only a `T&&` argument, `_Tp&`
+	    // only a `T&` one ([temp.class.spec.match], [dcl.ref]/2).
 	    else if ( pat[i]->id() == TokenID::tkBand
-		   || pat[i]->id() == TokenID::tkLand ) { ref = 1; ++i; }
+		   || pat[i]->id() == TokenID::tkLand )
+	    { ref = pat[i]->id() == TokenID::tkLand ? 2 : 1; ++i; }
 	    else if ( is_type_qualifier_token(pat[i]) )
 	    {
 		// EAST cv on the CORE (`_Tp const` — libc++'s is_const/is_volatile/
@@ -34990,6 +35021,7 @@ static bool unify_spec_pattern_arg(Program &pgm, const std::vector<TokenBase *> 
     if ( ref )
     {
 	if ( !cur || !cur->is_reference() ) return false;
+	if ( cur->is_rvalue_reference() != (ref == 2) ) return false;
 	DataDefPTR *rp = pointer_dd_of(cur);
 	cur = rp ? rp->base_type : NULL;
     }
@@ -35249,7 +35281,7 @@ struct Program::ClassRegistrationJournal::State
     size_t forest_tokbytes_size;
     registration_map<DataDef *, DataDef *>::transaction_state
 	ptr_type_cache_transaction;
-    registration_map<DataDef *, DataDefREF *>::transaction_state
+    registration_map<std::pair<DataDef *, bool>, DataDefREF *>::transaction_state
 	ref_type_cache_transaction;
     registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *>::transaction_state
 	qualified_type_cache_transaction;
@@ -36176,11 +36208,12 @@ class ClassPatternNormalizer
 
     Program::ClassTypePatternId unary(
 	Program::ClassTypePatternKind kind,
-	Program::ClassTypePatternId operand)
+	Program::ClassTypePatternId operand, uint32_t flags = 0)
     {
 	Program::ClassTypePatternId id = append_type();
 	pattern.types[id].kind = kind;
 	pattern.types[id].operand = operand;
+	pattern.types[id].flags = flags;
 	return id;
     }
 
@@ -36289,6 +36322,7 @@ class ClassPatternNormalizer
 	    tokens.erase(tokens.begin());
 	}
 	std::vector<Program::ClassTypePatternKind> suffix;
+	std::vector<uint32_t> suffix_flags;	// a Reference's: 1 = `&&`
 	bool pack_expand = false;
 	if ( tokens.size() >= 3
 	  && tokens[tokens.size() - 1]->id() == TokenID::tkDot
@@ -36307,6 +36341,7 @@ class ClassPatternNormalizer
 		suffix.push_back(Program::ClassTypePatternKind::Reference);
 	    else
 		break;
+	    suffix_flags.push_back(id == TokenID::tkLand ? 1u : 0u);
 	    tokens.pop_back();
 	}
 
@@ -36445,7 +36480,7 @@ class ClassPatternNormalizer
 	if ( add_const )
 	    base = unary(Program::ClassTypePatternKind::ConstType, base);
 	for ( size_t i = suffix.size(); i-- > 0; )
-	    base = unary(suffix[i], base);
+	    base = unary(suffix[i], base, suffix_flags[i]);
 	if ( pack_expand )
 	{
 	    Program::ClassTypePatternId expanded =
@@ -36505,6 +36540,7 @@ class ClassPatternNormalizer
 	else if ( DataDefREF *ref = dynamic_cast<DataDefREF *>(dd) )
 	{
 	    pattern.types[id].kind = Program::ClassTypePatternKind::Reference;
+	    pattern.types[id].flags = ref->is_rvalue_reference() ? 1u : 0u;
 	    Program::ClassTypePatternId operand = normalize_type(ref->base_type);
 	    pattern.types[id].operand = operand;
 	}
@@ -37802,14 +37838,14 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
     // `_ArgTypes...` from the instantiated body (the __is_invocable / _S_key wall).
     {
 	std::string core = trim_spelling(spelling);
-	std::vector<char> suffixes;    // outermost-first: '*' ptr, '&' ref (&& folds to ref)
+	std::vector<char> suffixes;    // outermost-first: '*' ptr, '&' lvalue ref, 'R' rvalue ref
 	for (;;)
 	{
 	    while ( !core.empty() && core.back() == ' ' ) core.pop_back();
 	    if ( !core.empty() && core.back() == '*' )
 	    { core.pop_back(); suffixes.push_back('*'); continue; }
 	    if ( core.size() >= 2 && core.compare(core.size() - 2, 2, "&&") == 0 )
-	    { core.erase(core.size() - 2); suffixes.push_back('&'); continue; }
+	    { core.erase(core.size() - 2); suffixes.push_back('R'); continue; }
 	    if ( !core.empty() && core.back() == '&' )
 	    { core.pop_back(); suffixes.push_back('&'); continue; }
 	    break;
@@ -37850,7 +37886,8 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
 		for ( size_t i = suffixes.size(); i-- > 0; )
 		    dd = suffixes[i] == '*'
 		       ? static_cast<DataDef *>(pgm.getPointerType(dd))
-		       : static_cast<DataDef *>(pgm.getReferenceType(dd));
+		       : static_cast<DataDef *>(pgm.getReferenceType(dd,
+							suffixes[i] == 'R'));
 		return dd;
 	    }
     }
@@ -49521,14 +49558,14 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    TokenBase *rt = nextToken();
 	    TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
 	    DataDef *new_ret = rtt ? &rtt->definition : NULL;
-	    bool tr_ref = false;
+	    bool tr_ref = false, tr_rvalue = false;
 	    for ( ; new_ret ; )
 	    {
 		TokenBase *s = peekToken();
 		if ( s && s->id() == TokenID::tkMul )
 		    { nextToken(); new_ret = getPointerType(new_ret); continue; }
 		if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
-		    { nextToken(); tr_ref = true; continue; }
+		    { tr_rvalue = nextToken()->id() == TokenID::tkLand; tr_ref = true; continue; }
 		break;
 	    }
 	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
@@ -49540,7 +49577,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    if ( cur && new_ret && (&cur->return_value_type() != new_ret
 				    || (want_ref && !cur->returns.is_reference())) )
 	    {
-		FuncDef *fresh = clone_funcdef_with_return(cur, returnDecl(*new_ret, want_ref));
+		FuncDef *fresh = clone_funcdef_with_return(cur, returnDecl(*new_ret, want_ref,
+		    tr_ref ? tr_rvalue : cur->returns.is_rvalue_reference()));
 		funcdef_map[body.var->name] = fresh;
 		body.var->type = fresh;
 	    }
@@ -49581,7 +49619,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 		if ( deduced && deduced != &cur->return_value_type() )
 		{
 		    FuncDef *fresh = clone_funcdef_with_return(
-			cur, returnDecl(*deduced, cur->returns_reference()));
+			cur, returnDecl(*deduced, cur->returns_reference(),
+					cur->returns.is_rvalue_reference()));
 		    funcdef_map[body.var->name] = fresh;
 		    body.var->type = fresh;
 		    tf->setDataType(body.var->type);
@@ -52257,12 +52296,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// lvalue (returned by address, a T*). Only valid before a method, not a data
 	// member (a `T&` data member is not supported — caught at member parse).
 	bool ret_is_ref = false;
+	// The reference's kind, collapsed over an alias-spelled reference type
+	// ([dcl.ref]/6): `T&&` is an rvalue reference, `L&&` with L = int& is not.
+	bool ret_rvalue_ref = false;
 	if ( pgm.peekToken()
 	  && (pgm.peekToken()->id() == TokenID::tkBand
 	   || pgm.peekToken()->id() == TokenID::tkLand) )
 	{
-	    pgm.nextToken(); // consume '&' or '&&'
+	    TokenBase *amp = pgm.nextToken(); // consume '&' or '&&'
 	    ret_is_ref = true;
+	    ret_rvalue_ref = pgm.getReferenceType(cmember_dd,
+		amp->id() == TokenID::tkLand)->is_rvalue_reference();
 	}
 #if MADC_DEBUG_ALIASREF
 	if ( mtype->spelling_is("reference") || mtype->spelling_is("const_reference") )
@@ -52361,6 +52405,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // via returnDecl (the reference ends up in the type, not a flag).
 	    if ( cmember_dd->is_reference() )
 	    {
+		if ( !ret_is_ref )
+		    ret_rvalue_ref = cmember_dd->is_rvalue_reference();
 		ret_is_ref = true;
 		cmember_dd = static_cast<DataDefPTR *>(cmember_dd)->base_type;
 	    }
@@ -52437,7 +52483,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    }
 	    pgm.parseFunction(*cmember_dd, mangled, ddc, NULL, ret_is_ref,
 			      std::string(), is_static_member, false, false,
-			      is_constexpr_member);
+			      is_constexpr_member, false, false, ret_rvalue_ref);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(pgm.strpool, mangled)) )
@@ -52515,7 +52561,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // bound in every constructor's mem-init list (it has no default
 	    // value and cannot be rebound) — the same model as a reference param.
 	    if ( ret_is_ref )
-		cmember_dd = pgm.getReferenceType(cmember_dd);
+		cmember_dd = pgm.getReferenceType(cmember_dd, ret_rvalue_ref);
 	    // Bit-field member: `unsigned flags : 3;`, comma-separated
 	    // `unsigned a : 3, b : 5;` (parity with TokenSTRUCT::parse; a
 	    // bit-field is never an array). The shared Program::parse_bitfield_width
@@ -55319,10 +55365,10 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 		if ( !dd->as_fptr_dd() && !dd->as_carray_dd() )
 		    dd = getQualifiedType(dd, ref_cv & modeled_cv());
 	    }
-	    dd = getReferenceType(dd);
+	    rvalue_here = pk->id() == TokenID::tkLand;
+	    dd = getReferenceType(dd, rvalue_here);
 	    ref_dd = dd;
 	    ref_here = true;
-	    rvalue_here = pk->id() == TokenID::tkLand;
 	    break;			// nothing may follow a reference but the declarator
 	}
 	if ( is_contextual_identifier_token(pk) && tokens.size() > 1 && tokens[1]
@@ -55418,7 +55464,8 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
     if ( ref_here && dd == ref_dd )
     {
 	out.ref = RefType::rtReference;
-	out.rvalue_ref = rvalue_here;
+	// The collapsed type's kind ([dcl.ref]/6): `L&&` with L = int& is int&.
+	out.rvalue_ref = dd->is_rvalue_reference();
     }
     return dd;
 }
@@ -55791,7 +55838,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
 	    base_param_dd, param_dd, param_ptr_depth, param_leading_const,
 	    param_is_ref, param_top_cv);
 	if ( param_is_ref )
-	    param_spelling += param_rvalue_ref ? "&&" : "&";
+	    param_spelling = reference_spelling(param_spelling, param_rvalue_ref);
 	func->param_cpp_spellings.push_back(param_spelling);
 	func->param_typedef_names.push_back(param_alias);
 
@@ -61925,10 +61972,11 @@ DataDef *Program::conditional_arithmetic_type(TokenBase *t, TokenBase *f)
 // [temp.deduct.call]/3 needs the argument expression's value category for a
 // forwarding reference. TokenCallFunc and TokenCallMethod inherit TokenVar, so
 // test real calls before the named-variable arm: a value-returning call is a
-// prvalue, while a reference-returning call denotes its referent. The type
-// model does not yet distinguish T& from T&& returns; that broader rvalue-ref
-// identity remains the documented value-category follow-up.
-static bool fn_template_call_arg_is_lvalue(TokenBase *expr)
+// prvalue, a `T&&`-returning call an xvalue, and any other reference-returning
+// call denotes its referent. Which kind a call returns is its RESOLVED
+// callee's (Program::argument_value_category) — the parse-bound callee may be
+// the template's placeholder, while the CIR ranks the bound instance.
+static bool fn_template_call_arg_is_lvalue(TokenBase *expr, Program &pgm)
 {
     if ( !expr )
 	return false;
@@ -61936,7 +61984,9 @@ static bool fn_template_call_arg_is_lvalue(TokenBase *expr)
       || expr->type() == TokenType::ttCallMethod )
     {
 	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(expr);
-	return call && call->call_returns_reference();
+	if ( !call || !call->call_returns_reference() )
+	    return false;
+	return pgm.argument_value_category(call) != ArgValueCategory::Rvalue;
     }
     if ( dynamic_cast<TokenVar *>(expr) )
 	return true;
@@ -62026,6 +62076,12 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	    return t && !t->is_reference() ? ArgValueCategory::Rvalue
 					   : ArgValueCategory::Unknown;
 	}
+	// A reference-returning call is an lvalue (`T&`) or an xvalue (`T&&`)
+	// — its return type's kind ([basic.lval]/1.3).
+	if ( fd && !fd->stands_for_function_template() && fd->returns_reference()
+	  && !call->returns_ref_override )
+	    return fd->returns.is_rvalue_reference() ? ArgValueCategory::Rvalue
+						     : ArgValueCategory::Lvalue;
 	// A function template's return as the PARSE sees it is no proof of a
 	// prvalue: the call may still be bound to the template's stand-in (its
 	// placeholder, with a fabricated `auto` / int64 return), and an
@@ -62091,7 +62147,8 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 // Keep this an over-discriminating dispatch key; instantiate_fn_template_binding
 // remains the canonical (template, deduced-binding) identity and deduplicates
 // call shapes that ultimately name the same specialization.
-static std::string fn_template_call_shape_suffix(TokenCallFunc *tc)
+static std::string fn_template_call_shape_suffix(TokenCallFunc *tc,
+						 Program &pgm)
 {
     std::string shape = "(";
     if ( tc )
@@ -62101,7 +62158,7 @@ static std::string fn_template_call_shape_suffix(TokenCallFunc *tc)
 	    TokenBase *arg = tc->parameters[i];
 	    DataDef *dd = arg ? arg->datadef() : NULL;
 	    shape += dd ? dd->name : std::string("?");
-	    shape += fn_template_call_arg_is_lvalue(arg) ? "@L," : "@R,";
+	    shape += fn_template_call_arg_is_lvalue(arg, pgm) ? "@L," : "@R,";
 	}
 	shape += ")";
 	for ( DataDef *ea : tc->explicit_template_args )
@@ -62150,9 +62207,21 @@ static int fn_template_deduce_param(const std::string &spelling,
     // pointee is a declared type but the direct scalar arm sees the raw
     // expression dd (integer literals carry the ddINT flavor twin).
     DataDef *dd = canonical_template_binding_dd(arg_dd);
+    // An expression never has reference type ([expr.type]/1): an rvalue-
+    // reference-typed argument denotes its referent, as an lvalue when named
+    // (`int&& r`) — deducing through the lvalue reference — else as an xvalue,
+    // which deduces the referent below.
+    if ( pgm && dd->is_rvalue_reference() )
+    {
+	DataDefREF *rr = dd->as_reference_dd();
+	if ( !arg_expr || fn_template_call_arg_is_lvalue(arg_expr, *pgm) )
+	    dd = pgm->getReferenceType(dd, false);
+	else if ( rr && rr->base_type )
+	    dd = rr->base_type;
+    }
     if ( pgm && arg_expr && shape.amps == 2 && shape.stars == 0
       && !shape.cv && !dd->is_reference()
-      && fn_template_call_arg_is_lvalue(arg_expr) )
+      && fn_template_call_arg_is_lvalue(arg_expr, *pgm) )
 	dd = pgm->getReferenceType(dd);
     if ( dd->is_reference() )
     {
@@ -63580,7 +63649,8 @@ DataDef *Program::resolve_template_param_default_type(
 	    TokenID sfx = nextToken()->id();
 	    DataDef *w = (sfx == TokenID::tkMul)
 		? static_cast<DataDef *>(getPointerType(&resolved->definition))
-		: static_cast<DataDef *>(getReferenceType(&resolved->definition));
+		: static_cast<DataDef *>(getReferenceType(&resolved->definition,
+							  sfx == TokenID::tkLand));
 	    resolved = new TokenDataType(w->name.c_str(), *w);
 	}
     }
@@ -64119,7 +64189,7 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		if ( sid == TokenID::tkMul )
 		    base = pgm.getPointerType(base);
 		else if ( sid == TokenID::tkBand || sid == TokenID::tkLand )
-		    base = pgm.getReferenceType(base);
+		    base = pgm.getReferenceType(base, sid == TokenID::tkLand);
 		else
 		    ok = false;	// not a plain declarator suffix
 	    }
@@ -67259,7 +67329,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // the SAME logical instantiation from a DIFFERENT call site, so call-site keying
     // (inst_name below) can't stop it. Key on owner + fn + the shared call shape; a
     // re-entrant request returns early (its body finishes in the outer frame).
-    const std::string call_shape = fn_template_call_shape_suffix(tc);
+    const std::string call_shape = fn_template_call_shape_suffix(tc, *this);
     std::string mfi_key = owner->name + "::" + fd->function_display_name
 			  + call_shape;
     // Per-call-shape instance memo — keyed on the PLACEHOLDER identity
@@ -68034,12 +68104,13 @@ static DataDef *skipped_template_function_return_type(
     // `vector<T>& f(` (the `>` sits behind the `&`, not adjacent to the name).
     size_t type_end = name_index;
     size_t ref_wraps = 0, star_wraps = 0;
+    bool rvalue_wrap = false;	// the reference is `&&`
     while ( type_end > 0 && type_end <= tokens.size() && tokens[type_end - 1] )
     {
 	TokenBase *dt = tokens[type_end - 1];
 	TokenID did = dt->id();
 	if ( did == TokenID::tkBand || did == TokenID::tkLand )
-	{ ++ref_wraps; --type_end; continue; }
+	{ rvalue_wrap = did == TokenID::tkLand; ++ref_wraps; --type_end; continue; }
 	if ( did == TokenID::tkCONST || did == TokenID::tkVOLATILE )
 	{ --type_end; continue; }
 	if ( dt->type() != TokenType::ttDataType
@@ -68055,7 +68126,7 @@ static DataDef *skipped_template_function_return_type(
 	for ( size_t s = 0; base && s < star_wraps; ++s )
 	    base = pgm.getPointerType(base);
 	if ( base && ref_wraps )
-	    base = pgm.getReferenceType(base);
+	    base = pgm.getReferenceType(base, rvalue_wrap);
 	return base;
     };
     // A template-id return type (`pair<iterator, bool> m(...)`) ends in a
@@ -71653,7 +71724,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 			    bool static_specified,
 			    bool constexpr_specified,
 			    bool lambda_declarator,
-			    bool destructor_declarator)
+			    bool destructor_declarator,
+			    bool return_rvalue_ref)
 {
     // Compound balance on THROW: a parse error escaping mid-function leaves the
     // param-scope / body compounds pushed. Callers that swallow the exception
@@ -71773,7 +71845,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	// MIR-link dlsym binds the real libc symbol.
 	if ( func->builtin_registration )
 	{
-	    func = new FuncDef(returnDecl(dd, return_ref));
+	    func = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
 	    // Every machine registration is a bare C symbol (libc_signatures,
 	    // a host-embedded callback): the explicit prototype REDECLARES the C
 	    // library's function and inherits its linkage ([dcl.link]/5) — so
@@ -71797,7 +71869,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	else if ( func->declaration_only
 	       && !func->is_void_params && func->parameters.empty() )
 	{
-	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
+	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
 	    fresh->return_types = func->return_types;
 	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;
@@ -71842,7 +71914,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( &func->return_value_type() != &dd )
 	{
 	    DBG(std::cout << "parseFunction() return type refresh: " << func->return_value_type().name << " → " << dd.name << " for " << id << std::endl);
-	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref));
+	    FuncDef *fresh = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
 	    fresh->parameters   = func->parameters;
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
@@ -71888,7 +71960,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     }
     else
     {
-	func = new FuncDef(returnDecl(dd, return_ref));
+	func = new FuncDef(returnDecl(dd, return_ref, return_rvalue_ref));
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
     }
@@ -72419,7 +72491,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    // parameter. Wrap it once so both declaration/definition writeback
 	    // paths preserve every inner pointer layer (`T*&` -> REF(PTR(T))).
 	    DataDef *reference_param_type = (rtype == RefType::rtReference)
-		? static_cast<DataDef *>(getReferenceType(param_dd)) : NULL;
+		? static_cast<DataDef *>(getReferenceType(param_dd, param_rvalue_ref))
+		: NULL;
 	    // Canonical C++ spelling of this parameter, captured from the SOURCE
 	    // TOKENS (leading const + base type + `*`s + trailing `&`) — computed
 	    // ONCE for both arms below. The first declaration records it,
@@ -72443,7 +72516,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 			param_spelling += "[" + std::to_string(a->count) + "]";
 		}
 		else
-		    param_spelling += param_rvalue_ref ? "&&" : "&";
+		    param_spelling = reference_spelling(param_spelling,
+							param_rvalue_ref);
 	    }
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
@@ -72879,14 +72953,14 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( !rtt )
 	    Throw(rt ? rt : nt) << "Could not resolve trailing return type" << flush;
 	DataDef *new_ret = &rtt->definition;
-	bool tr_ref = false;
+	bool tr_ref = false, tr_rvalue = false;
 	for (;;)
 	{
 	    TokenBase *s = peekToken();
 	    if ( s && s->id() == TokenID::tkMul )
 		{ nextToken(); new_ret = getPointerType(new_ret); continue; }
 	    if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
-		{ nextToken(); tr_ref = true; continue; }
+		{ tr_rvalue = nextToken()->id() == TokenID::tkLand; tr_ref = true; continue; }
 	    break;
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
@@ -72900,7 +72974,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( new_ret && (&func->return_value_type() != new_ret
 			 || (want_ref && !func->returns.is_reference())) )
 	{
-	    FuncDef *fresh = clone_funcdef_with_return(func, returnDecl(*new_ret, want_ref));
+	    FuncDef *fresh = clone_funcdef_with_return(func, returnDecl(*new_ret, want_ref,
+		tr_ref ? tr_rvalue : func->returns.is_rvalue_reference()));
 	    funcdef_map[id] = fresh;
 	    if ( var )
 		var->type = fresh;
@@ -73524,7 +73599,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( deduced && deduced != &func->return_value_type() )
 	{
 	    FuncDef *fresh = clone_funcdef_with_return(
-		func, returnDecl(*deduced, func->returns_reference()));
+		func, returnDecl(*deduced, func->returns_reference(),
+				 func->returns.is_rvalue_reference()));
 	    funcdef_map[id] = fresh;
 	    var->type = fresh;
 	    func = fresh;
@@ -74941,14 +75017,20 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     // Distribute only a glvalue conditional. A prvalue conditional must
     // evaluate once into ONE temporary, without evaluating its unused arm.
     enum class BindingCategory { Prvalue, Lvalue, Xvalue };
-    auto binding_category = [](TokenBase *arm) {
+    auto binding_category = [this](TokenBase *arm) {
 	if ( TokenCast *cast = dynamic_cast<TokenCast *>(arm) )
 	{
 	    if ( !cast->cast_type || !cast->cast_type->is_reference() )
 		return BindingCategory::Prvalue;
 	    return cast->to_rvalue_ref ? BindingCategory::Xvalue : BindingCategory::Lvalue;
 	}
-	return fn_template_call_arg_is_lvalue(arm)
+	if ( arm && (arm->type() == TokenType::ttCallFunc
+		     || arm->type() == TokenType::ttCallMethod) )
+	    if ( TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(arm) )
+		if ( call->call_returns_reference()
+		  && argument_value_category(call) == ArgValueCategory::Rvalue )
+		    return BindingCategory::Xvalue;
+	return fn_template_call_arg_is_lvalue(arm, *this)
 	    ? BindingCategory::Lvalue : BindingCategory::Prvalue;
     };
     auto binding_value_type = [](TokenBase *arm) -> DataDef * {
@@ -75333,7 +75415,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	if ( DataDefREF *rref = read_type->as_reference_dd() )
 	{
 	    ret_is_ref = true;
-	    decl_rvalue_ref = vd.rvalue_ref;
+	    decl_rvalue_ref = rref->is_rvalue_reference();	// an alias-spelled `R x` too
 	    if ( vd.ref != RefType::rtReference )
 		decl_typedef_alias.clear();	// a reference TYPEDEF base: emit the lowered reference
 	    read_type = rref->base_type;	// referent — getReferenceType rebuilds the ref
@@ -76041,7 +76123,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    // First-class reference (Phase 1): a reference variable's type is a
 	    // DataDefREF (is_reference() true), not a plain pointer; vfREFERENCE
 	    // stays as a derived mirror. Renders `T*`, so emitted C is unchanged.
-	    decl_type = getReferenceType(decl_type);
+	    decl_type = getReferenceType(decl_type, decl_rvalue_ref);
 	}
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
@@ -77269,7 +77351,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	pending_function_display_name = source_id;
     parseFunction(*decl_type, parse_id, qualified_owner_class, NULL, ret_is_ref,
 		  decl_typedef_alias, qualified_static_member,
-		  gotinline && !gotstatic, gotstatic, gotconstexpr);
+		  gotinline && !gotstatic, gotstatic, gotconstexpr, false, false,
+		  ret_is_ref && decl_rvalue_ref);
     pending_function_display_name.clear();
 
     // [dcl.link]: a FILE-SCOPE function declared under extern "C" has C

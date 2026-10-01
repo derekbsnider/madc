@@ -2695,7 +2695,7 @@ void CirFrozenForest::materialize_pass()
 				continue;	// not ready this round (or dropped aggregate)
 			DataDef *d;
 			if (r.kind == madc::dis::DK_REF)
-				d = new DataDefREF(*operand);
+				d = new DataDefREF(*operand, (r.flags & 1u) != 0);
 			else if (r.kind == madc::dis::DK_CONST)
 				// The cv mask rides flags; a pre-mask record (0) was const.
 				d = new DataDefQUAL(*operand, r.flags ? r.flags : cvCONST);

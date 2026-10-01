@@ -686,6 +686,13 @@ public:
     {
 	return false;
     }
+    // True only for an RVALUE reference type (`T&&`): a distinct type from
+    // `T&` ([dcl.ref]/2), minted only by Program::getReferenceType, which owns
+    // the collapse ([dcl.ref]/6). Same lowering as `T&`.
+    virtual bool is_rvalue_reference() const
+    {
+	return false;
+    }
     // True only for a DataDefQUAL whose mask has cvCONST: a const-qualified
     // type (`const T`). Lowered identically to T (const has no runtime/ABI
     // effect — same size, DataType, codegen), but the type keeps its const-ness
@@ -2081,8 +2088,13 @@ class DataDefLPSTR : public DataDefPTR { public: DataDefLPSTR(); };
 class DataDefREF : public DataDefPTR
 {
 public:
-    DataDefREF(DataDef &base) : DataDefPTR(base) {}
+    // `T&&` (true) or `T&` (false): part of the type's identity, fixed at
+    // construction — one DataDefREF per (referent, kind).
+    const bool rvalue;
+    DataDefREF(DataDef &base, bool is_rvalue = false)
+	: DataDefPTR(base), rvalue(is_rvalue) {}
     virtual bool is_reference() const override { return true; }
+    virtual bool is_rvalue_reference() const override { return rvalue; }
     // A reference's reftype is rtReference — STRUCTURAL, overriding DataDefPTR's
     // rtPointer. (Historically a DataDefREF's _type sat in the POINTER band
     // because the ctor chains through DataDefPTR/rtPtr, so the inherited tag
@@ -2135,6 +2147,7 @@ public:
     virtual bool is_complex() const override { return base_type->is_complex(); }
     virtual bool is_pointer() const override { return base_type->is_pointer(); }
     virtual bool is_reference() const override { return base_type->is_reference(); }
+    virtual bool is_rvalue_reference() const override { return base_type->is_rvalue_reference(); }
     virtual bool is_member_pointer() const override { return base_type->is_member_pointer(); }
     virtual bool is_struct() const override { return base_type->is_struct(); }
     virtual bool is_object() const override { return base_type->is_object(); }

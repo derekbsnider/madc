@@ -4997,7 +4997,7 @@ public:
     // per (element, bytes) — simd_type() is the owner; a NAMED vector typedef
     // stays its own object
     std::map<std::pair<DataDef *, size_t>, DataDefSIMD *> simd_type_cache;
-    registration_map<DataDef *, DataDefREF *> ref_type_cache; // cached reference-to-T DataDefs (alias-spelled T&)
+    registration_map<std::pair<DataDef *, bool>, DataDefREF *> ref_type_cache; // cached reference types: (referent, is_rvalue) -> T& / T&&
     // cached cv-qualified DataDefs: ONE variant per (unqualified base, CvQual mask)
     registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *> qualified_type_cache;
     funcdef_map_t  funcdef_map;		// function definitions
@@ -7041,7 +7041,8 @@ public:
 		       bool static_specified = false,
 		       bool constexpr_specified = false,
 		       bool lambda_declarator = false,
-		       bool destructor_declarator = false);
+		       bool destructor_declarator = false,
+		       bool return_rvalue_ref = false);	// with return_ref: `T&&`
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     // [lex.ext] — desugar a literal carrying a ud-suffix into the call to its
@@ -7686,7 +7687,11 @@ public:
     // qualifier: a by-value parameter drops it ([dcl.fct]/5,
     // [temp.deduct.call]/2), a reference binds by it.
     DataDef *call_argument_type(TokenBase *arg);
-    DataDefREF *getReferenceType(DataDef *base);
+    // THE reference-type minter: `base&` (rvalue false) or `base&&` (true),
+    // one DataDefREF per (referent, kind). A reference `base` collapses
+    // ([dcl.ref]/6): `&&` of a reference is that reference, `&` of any
+    // reference is the lvalue reference to its referent.
+    DataDefREF *getReferenceType(DataDef *base, bool rvalue = false);
     // THE qualified-type minter: `base` with the cv bits of `cv` (CvQual) ADDED
     // to whatever it already carries — canonical, one DataDefQUAL per
     // (unqualified base, mask), cached in qualified_type_cache (gcc's
@@ -7728,8 +7733,8 @@ public:
     // "a reference return is born as a DataDefREF" decision so FuncDef::returns
     // holds the real reference type, not a bare referent + parallel flag
     // (first-class refs Phase 2).
-    DataDef &returnDecl(DataDef &dd, bool is_ref)
-	{ return is_ref ? *(DataDef *)getReferenceType(&dd) : dd; }
+    DataDef &returnDecl(DataDef &dd, bool is_ref, bool rvalue = false)
+	{ return is_ref ? *(DataDef *)getReferenceType(&dd, rvalue) : dd; }
     // Fold a trailing template-argument declarator suffix (`*`, `&`, `&&`) off the
     // token stream into the argument's type, returning the wrapped type token.
     // One owner of the rule, shared by every template-argument parser — a pointer

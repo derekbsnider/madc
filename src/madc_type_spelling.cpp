@@ -461,7 +461,8 @@ std::string TypeSpeller::shown(DataDef *dd) const
 	// would spell; a value's type (the show's) is never one.
 	if (DataDefREF *r = dd->as_reference_dd()) {
 		const std::string w = shown(r->base_type);
-		return w + (w[w.size() - 1] == '*' ? "&" : " &");
+		const char *amp = r->is_rvalue_reference() ? "&&" : "&";
+		return w + (w[w.size() - 1] == '*' ? "" : " ") + amp;
 	}
 	// A function's own type (a designator's, which %type asks for, never
 	// the show): `int (int)`.
