@@ -644,37 +644,6 @@ int main() { printf("%d %d %d\n", eat(), eat(1), eat(1, 2.5)); return 0; }
 - Layer: not yet traced: the pack-expansion parameter declarator of an
   instantiated `const T&...` (empty and one-element packs).
 
-### B110. `std::string` from an iterator pair is refused: `std::string t(s.begin(), s.end())`
-
-```cpp
-#include <cstdio>
-#include <string>
-int main()
-{
-	const char *p = "abc";
-	std::string t(p, p + 3);
-	std::string u(t.cbegin(), t.cend());
-	printf("%s %s\n", t.c_str(), u.c_str());
-	return 0;
-}
-```
-
-- g++ 13 (`-std=c++17`): `abc abc`. madc (`--std=c++17`, at `8f6df07b2`):
-  `cir error: no matching constructor for call to
-  'basic_string_char_std__char_traits_char__std__allocator_char_(char*,
-  char*)'`, and the same for the `__normal_iterator` pair; not compiled.
-- `std::vector<int>(first, last)` works, and so does a free function
-  template over `std::_RequireInputIter` with string iterators. The
-  candidate is lost before deduction: the iterator-pair constructor
-  template never enters `instantiate_fn_template_binding`
-  (`MADC_MTB_PROBE` shows no `basic_string` constructor key).
-- A reversed or copied string (`std::string r(s.rbegin(), s.rend())`) is
-  everyday beginner C++.
-- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
-  2026-09-30.
-- Layer: not yet traced: how `basic_string`'s member constructor templates
-  reach the constructor candidate set.
-
 ### B107. `sizeof(typename C<T>::m)` outside a template is refused: "Expecting identifier"
 
 ```cpp

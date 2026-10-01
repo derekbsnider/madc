@@ -6668,6 +6668,26 @@ static size_t parameter_list_ranges(const std::vector<TokenBase *> &tokens,
     return tokens.size();
 }
 
+// Where a parameter's default argument begins: the index of the parameter's
+// top-level `=` in tokens[begin, end), or `end` when it declares none
+// ([dcl.fct.default]). Outside every delimiter only — `X<(a = b)>` and a
+// lambda's `{ int x = 1; }` inside a decltype are part of the type.
+static size_t parameter_default_begin(const std::vector<TokenBase *> &tokens,
+				      size_t begin, size_t end)
+{
+    DelimDepth d;
+    for ( size_t i = begin; i < end && i < tokens.size(); )
+    {
+	TokenBase *t = tokens[i];
+	if ( !t ) { ++i; continue; }
+	if ( d.top() && t->id() == TokenID::tkAssign )
+	    return i;
+	size_t n = delim_scan_step(tokens, i, d);
+	i += n ? n : 1;
+    }
+    return end;
+}
+
 // An out-of-line definition's class-head arguments (`Z<T*, (3 > 2)>` before
 // `::`) in the shape the attach matches: one run per argument, and an empty
 // `<>` as one empty run. Borrowed pointers; the caller clones.
@@ -60466,25 +60486,7 @@ static bool skipped_template_function_signature_spellings(
 	return false;
 
     auto param_type_end = [&](size_t begin, size_t end) -> size_t {
-	size_t real_end = end;
-	// Its OWN tracker. This lambda used to mutate the enclosing scan's
-	// depth counters by reference while that scan was still walking the
-	// list, so every default-argument scan corrupted the outer parameter
-	// walk's idea of where it was.
-	DelimDepth pd;
-	for ( size_t i = begin; i < end && i < tokens.size(); )
-	{
-	    TokenBase *t = tokens[i];
-	    if ( !t ) { ++i; continue; }
-	    if ( t->id() == TokenID::tkAssign
-	      && !pd.paren && !pd.angle && !pd.square )
-	    {
-		real_end = i;
-		break;
-	    }
-	    size_t n = delim_scan_step(tokens, i, pd);
-	    i += n ? n : 1;
-	}
+	size_t real_end = parameter_default_begin(tokens, begin, end);
 	size_t last = real_end;
 	while ( last > begin && !tokens[last - 1] )
 	    --last;
@@ -67003,9 +67005,15 @@ bool Program::instantiate_member_ctor_template_candidate(
 	cdd->name.c_str(), ctor_args.size(), (int)cdd->is_externally_defined(),
 	(int)cdd->is_extern_template_instantiated, cdd->ctors.size());
 #endif
-    // A libstdc++-EXPORTED class binds mangled-direct; only a madc-LOCAL
-    // monomorphized class needs its retained ctor body instantiated here.
-    if ( cdd->is_externally_defined() || cdd->is_extern_template_instantiated )
+    // A libstdc++-EXPORTED class binds its members mangled-direct; only a
+    // madc-LOCAL monomorphized class needs its retained ctor body instantiated
+    // here. An `extern template class` explicit instantiation exports the
+    // class's MEMBERS, not its member templates' specializations
+    // ([temp.explicit]/9-10: a member template is not instantiated by the
+    // class's explicit instantiation) — g++ instantiates
+    // basic_string(_InputIterator, _InputIterator) in the user's TU — so its
+    // ctor templates instantiate here like a local class's.
+    if ( cdd->is_externally_defined() )
 	return false;
     // [over.match.best] + [class.copy.ctor]: for a SAME-TYPE (or sliced
     // derived-to-base) single-argument construction, the IMPLICIT copy
@@ -67037,42 +67045,54 @@ bool Program::instantiate_member_ctor_template_candidate(
 	for ( TokenBase *a : ctor_args )
 	    if ( a && datadef_involves_placeholder(a->datadef()) )
 		return false;
-    // Count the FUNCTION parameters of a member-template ctor from its retained
-    // decl (top-level commas between the declarator '(' and ')', `<...>` nested).
-    // std::pair registers TWO member-template ctors — the piecewise (3 params) and
-    // the private indexed (4 params); the right one is chosen by matching this
-    // count to the construction's argument count.
-    auto member_ctor_param_count = [](const std::vector<TokenBase *> &decl) -> int {
+    // The FUNCTION parameters of a member-template ctor, from its retained decl
+    // (top-level commas between the declarator '(' and ')', `<...>` nested):
+    // `total` of them, the first `required` without a default argument.
+    // std::pair registers TWO member-template ctors — the piecewise (3 params)
+    // and the private indexed (4 params); the right one is chosen by matching
+    // this arity to the construction's argument count.
+    struct CtorArity { int total = -1; int required = -1; };
+    auto member_ctor_arity = [](const std::vector<TokenBase *> &decl) -> CtorArity {
+	CtorArity a;
 	size_t ni = skipped_template_function_declarator_name_index(decl, NULL);
-	if ( ni >= decl.size() ) return -1;
+	if ( ni >= decl.size() ) return a;
 	size_t op = ni + 1;
 	while ( op < decl.size()
 	     && !(decl[op] && decl[op]->id() == TokenID::tkOpBrk) )
 	    ++op;
-	if ( op >= decl.size() ) return -1;
+	if ( op >= decl.size() ) return a;
 	// The parameters are parameter_list_ranges' (a `void (*)(int, int)`
 	// parameter is one); `()` and `(void)` declare none.
 	std::vector<std::pair<size_t, size_t> > ranges;
 	parameter_list_ranges(decl, op, ranges);
-	int cnt = 0;
+	a.total = a.required = 0;
 	for ( const std::pair<size_t, size_t> &r : ranges )
 	{
 	    std::string sp = serialize_token_range(decl, r.first, r.second);
-	    if ( !sp.empty() && sp != "void" )
-		++cnt;
+	    if ( sp.empty() || sp == "void" )
+		continue;
+	    ++a.total;
+	    if ( parameter_default_begin(decl, r.first, r.second) == r.second )
+		a.required = a.total;
 	}
-	return cnt;
+	return a;
     };
     // Find a member-template CONSTRUCTOR placeholder among the class's ctors
     // (registered with its body retained by register_skipped_class_template_function).
-    // Prefer the OVERLOAD whose function-param count matches the construction's
-    // argument count (pair's piecewise 3-param vs indexed 4-param ctor); fall back
-    // to the first member-template ctor when none matches by arity.
+    // The candidates whose arity fits the construction ([over.match.viable]/2:
+    // n arguments fit m parameters when n == m, or n < m and the rest have
+    // defaults) are tried in turn, `candidate_skip` selecting the next: the
+    // exact-arity ones first (pair's piecewise 3-param vs indexed 4-param ctor),
+    // then those the call completes with defaults — basic_string's
+    // (_InputIterator, _InputIterator, const _Alloc & = _Alloc()) for
+    // `string(first, last)`. Fall back to the first member-template ctor when
+    // no arity fits.
     FuncDef *fd = NULL;
     Variable *placeholder = NULL;
     FuncDef *fd_fallback = NULL;
     Variable *ph_fallback = NULL;
-    size_t arity_candidate = 0;
+    std::vector<Variable *> exact_fit, default_fit;
+    const int nargs = (int)ctor_args.size();
     for ( Variable *cv : cdd->ctors )
     {
 	FuncDef *cfd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
@@ -67086,16 +67106,18 @@ bool Program::instantiate_member_ctor_template_candidate(
 	  && !cfd->template_param_names.empty() )
 	{
 	    if ( !ph_fallback ) { fd_fallback = cfd; ph_fallback = cv; }
-	    if ( member_ctor_param_count(cfd->member_template_decl)
-		 == (int)ctor_args.size() )
-	    {
-		if ( arity_candidate++ < candidate_skip )
-		    continue;
-		fd = cfd;
-		placeholder = cv;
-		break;
-	    }
+	    CtorArity a = member_ctor_arity(cfd->member_template_decl);
+	    if ( a.total == nargs )
+		exact_fit.push_back(cv);
+	    else if ( a.required >= 0 && a.required <= nargs && nargs < a.total )
+		default_fit.push_back(cv);
 	}
+    }
+    exact_fit.insert(exact_fit.end(), default_fit.begin(), default_fit.end());
+    if ( candidate_skip < exact_fit.size() )
+    {
+	placeholder = exact_fit[candidate_skip];
+	fd = dynamic_cast<FuncDef *>(placeholder->type);
     }
     if ( !fd && candidate_skip == 0 )
 	{ fd = fd_fallback; placeholder = ph_fallback; }
@@ -68917,19 +68939,7 @@ bool Program::split_upcoming_function_params(std::vector<std::vector<TokenBase *
 
 static void trim_param_default(std::vector<TokenBase *> &param)
 {
-    DelimDepth d;
-    for ( size_t i = 0; i < param.size(); ++i )
-    {
-	TokenBase *t = param[i];
-	if ( !t )
-	    continue;
-	if ( d.top() && t->id() == TokenID::tkAssign )
-	{
-	    param.resize(i);
-	    return;
-	}
-	i += delim_scan_step(param, i, d) - 1;
-    }
+    param.resize(parameter_default_begin(param, 0, param.size()));
 }
 
 static void skip_template_suffix_tokens(const std::vector<TokenBase *> &param,
