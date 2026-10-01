@@ -644,39 +644,6 @@ int main() { printf("%d %d %d\n", eat(), eat(1), eat(1, 2.5)); return 0; }
 - Layer: not yet traced: the pack-expansion parameter declarator of an
   instantiated `const T&...` (empty and one-element packs).
 
-### B111. `std::vector` from an iterator pair is refused: `std::vector<int> v(w.begin(), w.end())`
-
-```cpp
-#include <cstdio>
-#include <vector>
-int main()
-{
-	std::vector<int> range(3, 7);
-	std::vector<int> copy(range.begin(), range.end());
-	printf("%zu %d\n", copy.size(), copy[0]);
-	return 0;
-}
-```
-
-- g++ 13 = clang++ 18 (`-std=c++17`): `3 7`. madc (`--std=c++17`): `cir
-  error: parse-once internal: tsubst bailed on the covered instantiation
-  'vector_int32_t_std__allocator_int32_t____M_range_initialize__mti' ...
-  [why: tsubst body calls un-emittable symbol] @stl_vector.h:1668`.
-- From pointers (`std::vector<int> v(a, a + 3)`) works since 2026-10-01
-  (by-value class arguments in a tsubst copy are converted; test
-  testtsubstbyvalueclassarg).
-- `MADC_XTEST_PAT_MEMINIT_DEBUG=1`: the un-emittable symbol is the
-  placeholder `vector<int>::emplace_back`. madc takes the input-iterator
-  `_M_range_initialize` (B113; g++ takes the forward-iterator one), whose
-  `emplace_back(*__first)` is a variadic member call whose argument is a
-  dependent class `operator*` call; the copy never rewrites it to an
-  instance. With `int *` iterators the same body works.
-- Found 2026-10-01 while fixing B96. Off the release path, filed per owner
-  2026-09-30; beginner C++ copies containers into vectors this way.
-- Layer: not yet traced: the tsubst copy of a member PACK call
-  (`emplace_back(_Args&&...)`) whose argument is a class operator call
-  (copy_cir_subtree's N_CALL member rebuild, rebuild_member_pack_args).
-
 ### B110. `std::string` from an iterator pair is refused: `std::string t(s.begin(), s.end())`
 
 ```cpp

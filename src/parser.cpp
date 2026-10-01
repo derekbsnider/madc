@@ -22372,7 +22372,8 @@ static Variable *rank_fn_overload_candidates(
 	// [temp.over]/1: a specialization is a candidate only as the product
 	// of THIS call's deduction. `k<long>`, instantiated by `k(1L, 1L)`, is
 	// no candidate for `k(1, 2L)` — its deduction fails (T is int and
-	// long) — so the call takes `k(double, double)`.
+	// long) — so the call takes `k(double, double)`. A deferred
+	// (dependent) call has no product, so no specialization is a candidate.
 	if ( deduction
 	  && deduction->outcome != FnTemplateDeduction::Outcome::NotRun
 	  && e.specialization() && e.var != deduction->specialization )
@@ -65663,7 +65664,10 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     // (FnTemplateDeduction). A deferred (dependent) call has none yet.
     tc->deduction = FnTemplateDeduction();
     if ( fn_template_deduction_deferred(*this, tc) )
+    {
+	tc->deduction.outcome = FnTemplateDeduction::Outcome::Deferred;
 	return NULL;
+    }
     // Order candidates most-specialized first ([temp.func.order]) so the
     // first-viable selection below picks the most specialized overload that
     // deduces. Incomparable candidates keep registration order.

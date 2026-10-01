@@ -1181,11 +1181,14 @@ public:
 // deduction produced — never a specialization some other call instantiated.
 // instantiate_namespace_fn_template_for_call records the outcome on the call;
 // the namespace overload ranker admits specializations through it.
-// NotRun: no deduction information (deferred as dependent, never attempted,
-// or a self-recursive instantiation whose product is not registered yet).
+// NotRun: no deduction information (never attempted, or a self-recursive
+// instantiation whose product is not registered yet). Deferred: the call is
+// dependent ([temp.res]) — it has no candidate set until instantiation, so
+// no specialization is one; the pattern keeps the template and the copy
+// re-resolves it on the substituted arguments.
 struct FnTemplateDeduction
 {
-    enum class Outcome : unsigned char { NotRun, Failed, Deduced };
+    enum class Outcome : unsigned char { NotRun, Deferred, Failed, Deduced };
     Outcome outcome = Outcome::NotRun;
     Variable *specialization = nullptr;	// Deduced: the overload-set entry
 };
