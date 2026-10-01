@@ -300,7 +300,8 @@ extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
 ```
 
 `madcide --build-plugin <dir>` builds it into its library beside the manifest
-(`hello.so`), the running madcide compiling in-process; nothing is built
+(`hello.so` on Linux, `hello.dll` on Windows), the running madcide compiling
+in-process; nothing is built
 automatically. The library loads when the profile in use is the plugin, or
 when `settings.json` lists it (`"plugins": ["hello"]`), before the keys and
 menus load, so a key profile or a menu can name `greet`. A handler calls
@@ -312,5 +313,6 @@ A missing library, a library built against another plugin API version (it
 says both), a library without `madcide_plugin_activate`, and an activation
 that returns false are each reported on the status line, and the editor opens
 without the plugin; what a refused activation registered is taken back.
-Plugin libraries are Linux shared objects today; macOS and Windows follow
-when `madc -shared` emits a `.dylib` and a `.dll`.
+Plugin libraries are Linux shared objects and Windows DLLs (a Windows plugin
+imports the engine from the `libmadc-0.dll` beside `madcide.exe`); macOS
+follows when `madc -shared` emits a `.dylib`.

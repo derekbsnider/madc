@@ -1,1 +1,0 @@
-a plugin library on Windows waits for the PE writer to emit a DLL (the plugin design G2, plan §41.11a step 4 after Linux)

@@ -331,7 +331,10 @@ typedef struct MIR_object_exec_params {
                           shared_p is set */
   const char *identifier; /* Apple targets: the code-signature identifier
                              (conventionally the output basename); NULL =
-                             "mir.image".  Ignored for ELF targets.  Callers
+                             "mir.image".  PE targets with shared_p: the
+                             DLL's own name in its export directory
+                             (conventionally the output basename); NULL =
+                             "mir.dll".  Ignored for ELF targets.  Callers
                              must zero-initialize this struct so newly added
                              tail fields default off. */
   /* Extra read-only carrier section (Apple targets): when extra_data is

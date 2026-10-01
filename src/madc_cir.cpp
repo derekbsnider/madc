@@ -2601,8 +2601,9 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 #endif
     MIR_object_exec_params xp;
     cir_fill_exec_params(xp, kind, libs, runpath, gui_subsystem);
-    // Apple targets: the ad-hoc code-signature identifier is conventionally
-    // the output basename (ignored by the ELF writer).
+    // The output basename: Apple targets' ad-hoc code-signature identifier,
+    // a PE DLL's own name in its export directory (ignored by the ELF
+    // writer).
     const char *out_base = strrchr(out_path, '/');
     xp.identifier = out_base ? out_base + 1 : out_path;
     std::vector<uint8_t> pack_blob;
