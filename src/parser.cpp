@@ -20749,13 +20749,22 @@ static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B);
 // [over.ics.rank] for ONE argument's two conversion sequences (rank s1 to
 // parameter p1, s2 to p2): the higher score_arg_to_param rank, else — two
 // derived-to-base conversions — the nearer base ([over.ics.rank]/4.4,
-// compare_derived_to_base). +1 = the first, -1 = the second, 0 = neither.
+// compare_derived_to_base), else — two reference bindings whose kinds and
+// argument category are known (b1, b2 > 0: reference_param_binding_rank) —
+// the better binding ([over.ics.rank]/3.2.3: an rvalue binds `T&&` over
+// `const T&`; /3.2.6: an lvalue binds `T&` over `const T&`). +1 = the first,
+// -1 = the second, 0 = neither.
 static int compare_conversion_sequences(const DataDef *arg, int s1,
-		const DataDef *p1, bool r1, int s2, const DataDef *p2, bool r2)
+		const DataDef *p1, bool r1, int s2, const DataDef *p2, bool r2,
+		int b1 = 0, int b2 = 0)
 {
     if ( s1 != s2 )
 	return s1 > s2 ? 1 : -1;
-    return compare_derived_to_base(arg, p1, r1, p2, r2);
+    if ( int d = compare_derived_to_base(arg, p1, r1, p2, r2) )
+	return d;
+    if ( b1 > 0 && b2 > 0 && b1 != b2 )
+	return b1 > b2 ? 1 : -1;
+    return 0;
 }
 
 // [over.match.best]/2.1 over n arguments' verdicts (verdict(i): +1, -1, 0):
@@ -20784,7 +20793,8 @@ static int conversion_dominance(size_t n, Verdict verdict)
 static int compare_candidate_conversions(FuncDef *a, size_t a_hidden,
 		size_t a_fixed, FuncDef *b, size_t b_hidden, size_t b_fixed,
 		const std::vector<const DataDef *> &argtypes,
-		const std::vector<bool> *zero_args = NULL)
+		const std::vector<bool> *zero_args = NULL,
+		const std::vector<ArgValueCategory> *categories = NULL)
 {
     size_t n = std::min(argtypes.size(), std::min(a_fixed, b_fixed));
     return conversion_dominance(n, [&](size_t i) -> int {
@@ -20797,7 +20807,11 @@ static int compare_candidate_conversions(FuncDef *a, size_t a_hidden,
 				    a->is_nonconst_lref_param(ai));
 	int sb = score_arg_to_param(argtypes[i], pb, rb, true, zlit,
 				    b->is_nonconst_lref_param(bi));
-	return compare_conversion_sequences(argtypes[i], sa, pa, ra, sb, pb, rb);
+	ArgValueCategory cat = categories && i < categories->size()
+	    ? (*categories)[i] : ArgValueCategory::Unknown;
+	return compare_conversion_sequences(argtypes[i], sa, pa, ra, sb, pb, rb,
+		reference_param_binding_rank(a, ai, argtypes[i], cat),
+		reference_param_binding_rank(b, bi, argtypes[i], cat));
     });
 }
 
@@ -20819,7 +20833,8 @@ static const DataDefSTRUCT *param_concrete_class_for_proof(DataDef *pt, bool ref
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 					  const std::vector<const DataDef *> &argtypes,
 					  int obj_cv,
-					  bool *all_rejections_proven)
+					  bool *all_rejections_proven,
+					  const std::vector<ArgValueCategory> *categories)
 {
     Variable *best = NULL;
     int best_score = -1;
@@ -20936,6 +20951,12 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		bool refp = fd->is_ref_param(pi);
 		s = score_arg_to_param(argtypes[i], pt, refp, true, false,
 				       fd->is_nonconst_lref_param(pi));
+		// [dcl.init.ref]/5: a non-const `T&` binds no rvalue, a `T&&`
+		// no lvalue of its type.
+		if ( s >= 0 && refp && categories && i < categories->size()
+		  && reference_param_binding_rank(fd, pi, argtypes[i],
+						  (*categories)[i]) < 0 )
+		    s = -1;
 		if ( s < 0 )
 		{
 		    // Proof requires the ONE param class whose conversion
@@ -21050,7 +21071,8 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	    // parameters are spellings, not types: it is not compared here.
 	    int by_args = best_fd && !retained_member_template && !best_retained
 		? compare_candidate_conversions(fd, hidden, fixed, best_fd,
-						best_hidden, best_fixed, argtypes)
+						best_hidden, best_fixed, argtypes,
+						NULL, categories)
 		: 0;
 	    if ( by_args )
 	    {
@@ -21100,7 +21122,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
     }
     if ( base_class )
 	return base_class->findMethodOverload(name, argtypes, obj_cv,
-					      all_rejections_proven);
+					      all_rejections_proven, categories);
     // No same-name candidate anywhere in the chain: the by-name pick the
     // caller holds came through a lookup path this walk cannot see (alias
     // webs, using-declarations — libc++ __tree_node_types::__get_ptr).
@@ -22382,13 +22404,10 @@ const std::vector<std::string> &Program::NamespaceFnOverload::template_args() co
     FuncDef *fd = funcdef();
     return fd ? fd->overload_template_args : none;
 }
-// A function-template instantiation product, by its declaration identity: it
-// carries its bound template arguments, or the "\x01@<identity>" suffix its
-// registrar stamped (parseFunction's fold).
+// A function-template instantiation product (FuncDef::is_specialization_product).
 static bool specialization_identity(const FuncDef *fd)
 {
-    return fd && (!fd->overload_template_args.empty()
-		  || fd->overload_spelling.find("\x01@") != std::string::npos);
+    return fd && fd->is_specialization_product();
 }
 bool Program::NamespaceFnOverload::specialization() const
 {
@@ -22452,6 +22471,58 @@ static bool proven_distinct_types(const DataDef *a, const DataDef *b,
     return ka && kb;
 }
 
+// An argument type PROVEN not reference-related to a reference parameter's
+// referent ([dcl.init.ref]/4: neither similar to it nor derived from it):
+// the reference binds the temporary the argument's conversion materializes —
+// an rvalue, whatever the argument's own category. Similarity is
+// proven_distinct_types' (cv stripped at every level); an unproven shape
+// counts as related, so the caller judges the binding by the argument's own
+// category.
+static bool proven_not_reference_related(const DataDef *referent,
+					 const DataDef *arg)
+{
+    if ( !referent || !arg )
+	return false;
+    if ( arg->is_reference() )
+	if ( const DataDefPTR *ar = pointer_dd_of(arg) )
+	    if ( ar->base_type )
+		arg = ar->base_type;
+    const DataDef *r = referent->unqualified();
+    const DataDef *a = arg->unqualified();
+    if ( !r || !a )
+	return false;
+    const DataDefCLASS *rc = dynamic_cast<const DataDefCLASS *>(r);
+    const DataDefCLASS *ac = dynamic_cast<const DataDefCLASS *>(a);
+    if ( rc && ac )
+	return !ac->is_or_derives_from(rc)
+	    && !const_cast<DataDef *>(a)->denotes_same_type(
+		    *const_cast<DataDef *>(r));
+    // A class against a scalar or a pointer: two proven kinds that differ.
+    if ( rc )
+	return Program::proven_scalar_identity(a) || pointer_dd_of(a);
+    if ( ac )
+	return Program::proven_scalar_identity(r) || pointer_dd_of(r);
+    return proven_distinct_types(r, a, 0);
+}
+
+int reference_param_binding_rank(const FuncDef *fd, size_t pi,
+				 const DataDef *adc, ArgValueCategory cat)
+{
+    if ( !fd || cat == ArgValueCategory::Unknown || !fd->is_ref_param(pi) )
+	return 0;
+    bool param_rvalue = fd->is_concrete_rvalue_ref_param(pi);
+    bool param_const = fd->param_referent_is_const(pi);
+    // A forwarding reference, an instance's bound `&&`, or a typedef'd
+    // reference (`reference`, `const_reference`): no carrier shows the kind.
+    if ( !param_rvalue && !param_const && !fd->is_nonconst_lref_param(pi) )
+	return 0;
+    const DataDefPTR *rp = pointer_dd_of(fd->parameters[pi]);
+    bool arg_rvalue = cat == ArgValueCategory::Rvalue
+	|| proven_not_reference_related(rp ? rp->base_type : NULL, adc);
+    return copy_move_ref_binding_rank(param_rvalue, param_const, arg_rvalue,
+				      adc && adc->is_const());
+}
+
 // The same function declared twice (a declaration and its definition, a
 // respelled typedef — `f(size_t)` / `f(unsigned long)` — a restored twin):
 // no parameter over the ranked arity is PROVEN distinct. A reference
@@ -22484,7 +22555,8 @@ static Variable *rank_fn_overload_candidates(
 	const std::vector<bool> *zero_args = NULL,
 	const std::vector<DataDef *> *explicit_template_args = NULL,
 	std::string *ambiguity = NULL,
-	const FnTemplateDeduction *deduction = NULL)
+	const FnTemplateDeduction *deduction = NULL,
+	const std::vector<ArgValueCategory> *categories = NULL)
 {
     Variable *best = NULL;
     const Program::NamespaceFnOverload *best_e = NULL;
@@ -22586,6 +22658,12 @@ static Variable *rank_fn_overload_candidates(
 	    int s = score_arg_to_param(argtypes[i], fd->parameters[i], refp,
 				       true, zlit,
 				       fd->is_nonconst_lref_param(i));
+	    // [dcl.init.ref]/5: a non-const `T&` binds no rvalue, a `T&&` no
+	    // lvalue of its type.
+	    if ( s >= 0 && refp && categories && i < categories->size()
+	      && reference_param_binding_rank(fd, i, argtypes[i],
+					      (*categories)[i]) < 0 )
+		s = -1;
 #if MADC_DEBUG_FNTPL
 	    std::cerr << "FNTPL rank cand=" << e.var->name << " arg" << i
 		      << " a=" << (argtypes[i] ? argtypes[i]->name : "?")
@@ -22630,7 +22708,7 @@ static Variable *rank_fn_overload_candidates(
 	    // apply only when they are indistinguishable.
 	    int by_args = bfd ? compare_candidate_conversions(fd, 0, pn, bfd, 0,
 					bfd->fixed_param_count(), argtypes,
-					zero_args)
+					zero_args, categories)
 			      : 0;
 	    if ( by_args )
 	    {
@@ -22663,7 +22741,8 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		const std::vector<bool> *zero_args,
 		const std::vector<DataDef *> *explicit_template_args,
 		bool *strict_no_viable, std::string *ambiguity,
-		const FnTemplateDeduction *deduction)
+		const FnTemplateDeduction *deduction,
+		const std::vector<ArgValueCategory> *categories)
 {
     activate_forest_function_family(ns, name);
     if ( strict_no_viable )
@@ -22685,7 +22764,8 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
     Variable *best = rank_fn_overload_candidates(oi->second, argtypes,
 						 zero_args,
 						 explicit_template_args,
-						 ambiguity, deduction);
+						 ambiguity, deduction,
+						 categories);
 #if MADC_DEBUG_FNTPL
     std::cerr << "FNTPL rank " << ns << "::" << name << " WINNER="
 	      << (best ? best->name : "(none)") << std::endl;
@@ -22849,15 +22929,17 @@ TokenCallMethod *Program::reselect_method_overload(TokenCallMethod *tc,
     size_t n_rank = tc->parameters.size();
     if ( tc->user_argc != (size_t)-1 && tc->user_argc < n_rank )
 	n_rank = tc->user_argc;
+    std::vector<ArgValueCategory> cats;
     for ( size_t pi = 0; pi < n_rank; ++pi )
     {
 	TokenBase *p = tc->parameters[pi];
 	at.push_back(call_argument_type(p));
+	cats.push_back(argument_value_category(p));
     }
     bool rejections_proven = true;
     Variable *ov = cls->findMethodOverload(id, at,
 					   implicit_object_cv(recv),
-					   &rejections_proven);
+					   &rejections_proven, &cats);
     TokenCallMethod *selected = tc;
     if ( !ov )
     {
@@ -23298,6 +23380,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	// Rank through the one owner and rebind; an unscorable set keeps the
 	// arity pick (the old behavior).
 	std::vector<const DataDef *> at;
+	std::vector<ArgValueCategory> cats;
 	bool all_args_known = true;
 	for ( TokenBase *p : tc->parameters )
 	{
@@ -23306,6 +23389,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 			    const_cast<DataDef *>(ad), true) )
 		all_args_known = false;
 	    at.push_back(ad);
+	    cats.push_back(argument_value_category(p));
 	}
 	// An UNKNOWN argument shape scores neutral in findMethodOverload, which
 	// would let a varargs catch-all outrank real candidates — and a
@@ -23318,7 +23402,7 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	    return tc;
 	bool rejections_proven = true;
 	Variable *ov = owner->findMethodOverload(member, at, -1,
-						 &rejections_proven);
+						 &rejections_proven, &cats);
 	if ( !ov )
 	{
 	    // [over.match.viable]: a fully-typed, concrete argument list no
@@ -23343,13 +23427,17 @@ TokenCallFunc *Program::reselect_static_member_overload(TokenCallFunc *tc,
 	return tc;
     }
     std::vector<const DataDef *> at;
+    std::vector<ArgValueCategory> cats;
     for ( TokenBase *p : tc->parameters )
+    {
 	at.push_back(call_argument_type(p));
+	cats.push_back(argument_value_category(p));
+    }
     // Selection: a more-specialized overload may win the [temp.func.order]
     // tiebreak (`take(U*)` over `take(P)`). When findMethodOverload can't score
     // a candidate (e.g. a typedef-reference param it doesn't model), keep the
     // already parse-resolved overload (tc->var) — the rebind below still applies.
-    Variable *ov = owner->findMethodOverload(member, at);
+    Variable *ov = owner->findMethodOverload(member, at, -1, NULL, &cats);
 #if MADC_DEBUG_FNTPL
     {
 	const char *dump = ::getenv("MADC_DEBUG_FNTPL_DUMP");
@@ -41283,9 +41371,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			    else if ( !tc->explicit_template_args.empty() )
 				Throw(tb) << "expected '(' after explicit template arguments" << flush;
 			    std::vector<const DataDef *> at;
+			    std::vector<ArgValueCategory> cats;
 			    for ( TokenBase *p : tc->parameters )
+			    {
 				at.push_back(call_argument_type(p));
-			    if ( Variable *ov = method_cls->findMethodOverload(id, at) )
+				cats.push_back(argument_value_category(p));
+			    }
+			    if ( Variable *ov = method_cls->findMethodOverload(id, at,
+						-1, NULL, &cats) )
 				if ( ov != &tc->var && (ov->flags & vfSTATIC) )
 				{
 				    TokenCallFunc *tc2 = new TokenCallFunc(*ov);
@@ -41735,9 +41828,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				else if ( !tc->explicit_template_args.empty() )
 				    Throw(tb) << "expected '(' after explicit template arguments" << flush;
 				std::vector<const DataDef *> at;
+				std::vector<ArgValueCategory> cats;
 				for ( TokenBase *p : tc->parameters )
+				{
 				    at.push_back(call_argument_type(p));
-				if ( Variable *ov = method_cls->findMethodOverload(id, at) )
+				    cats.push_back(argument_value_category(p));
+				}
+				if ( Variable *ov = method_cls->findMethodOverload(id, at,
+						    -1, NULL, &cats) )
 				    if ( ov != &tc->var && (ov->flags & vfSTATIC) )
 				    {
 					TokenCallFunc *tc2 = new TokenCallFunc(*ov);
@@ -61555,6 +61653,7 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
 	n = tc->user_argc;
     std::vector<const DataDef *> at;
     std::vector<bool> zeros;
+    std::vector<ArgValueCategory> cats;
     for ( size_t i = 0; i < n; ++i )
     {
 	// [conv.array]/[conv.func]: an array (or function) argument used as a
@@ -61566,10 +61665,11 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
 	// `__ns_<fn>` import. array_decay_pointer returns NULL for non-arrays.
 	at.push_back(call_argument_type(tc->parameters[i]));
 	zeros.push_back(is_zero_integer_literal(tc->parameters[i]));
+	cats.push_back(argument_value_category(tc->parameters[i]));
     }
     Variable *w = find_namespace_function_overload(
 	fd->namespace_name, fd->function_display_name, at, &zeros,
-	&tc->explicit_template_args, NULL, NULL, &tc->deduction);
+	&tc->explicit_template_args, NULL, NULL, &tc->deduction, &cats);
     FuncDef *wfd = w ? dynamic_cast<FuncDef *>(w->type) : NULL;
     if ( wfd )
 	return wfd;
@@ -61841,6 +61941,148 @@ static bool fn_template_call_arg_is_lvalue(TokenBase *expr)
     if ( dynamic_cast<TokenVar *>(expr) )
 	return true;
     return is_addressable_expression(expr);
+}
+
+// A built-in arithmetic, bitwise, shift, relational, equality or logical
+// operator yields a prvalue ([expr.unary.op] .. [expr.log.or]). Over a class
+// or enum operand the operator may be a user function returning a reference
+// (`cout << x` is an lvalue), so only arithmetic, pointer and carrier-free
+// operands prove it.
+static bool builtin_operator_yields_prvalue(TokenBase *arg)
+{
+    TokenOperator *op = dynamic_cast<TokenOperator *>(arg);
+    if ( !op || op->is_indirection() )
+	return false;
+    switch ( op->id() )
+    {
+    case TokenID::tkNeg: case TokenID::tkUnaryPlus: case TokenID::tkBnot:
+    case TokenID::tkLnot: case TokenID::tkAdd: case TokenID::tkSub:
+    case TokenID::tkMul: case TokenID::tkDiv: case TokenID::tkMod:
+    case TokenID::tkBand: case TokenID::tkBor: case TokenID::tkXor:
+    case TokenID::tkLand: case TokenID::tkLor: case TokenID::tkEquals:
+    case TokenID::tkNotEq: case TokenID::tkLT: case TokenID::tkGT:
+    case TokenID::tkLE: case TokenID::tkGE: case TokenID::tkBSL:
+    case TokenID::tkBSR:
+	break;
+    default:
+	return false;
+    }
+    bool any = false;
+    for ( TokenBase *o : { op->left, op->right } )
+    {
+	if ( !o )
+	    continue;
+	const DataDef *dd = operand_value_type(o);
+	dd = dd ? dd->unqualified() : NULL;
+	if ( !dd || dd->is_object() || dd->is_struct()
+	  || dd->rawtype() == DataType::dtARRAY
+	  || dynamic_cast<const DataDefENUM *>(dd) )
+	    return false;
+	any = true;
+    }
+    return any;
+}
+
+// The shapes the tree states unambiguously answer; everything else is
+// Unknown and keeps today's ranking (no refusal, no preference):
+//   std::move(x)                  -> Rvalue (an identity forward with no
+//                                    explicit template argument is move)
+//   std::forward<T>(x), T non-ref -> Rvalue; T a reference -> Unknown
+//                                    (DataDefREF spells `&` and `&&` alike)
+//   a call returning by value     -> Rvalue (prvalue)
+//   static_cast<T&&>(x)           -> Rvalue (xvalue); static_cast<T&> ->
+//                                    Lvalue; a cast to a non-reference type
+//                                    -> Rvalue (functional / C-style: prvalue)
+//   a temporary object, `&x`, sizeof, a numeric / character / boolean /
+//   nullptr literal, a built-in arithmetic operator -> Rvalue
+//   a named variable or member (a named rvalue reference too), `*p`, `a[i]`,
+//   a string literal              -> Lvalue
+//   c ? a : b, (a, b)             -> the arms' common category, b's
+// Prefix ++/-- and assignment are C++ lvalues whose address the lowering does
+// not yet form (B116): Unknown.
+ArgValueCategory Program::argument_value_category(TokenBase *arg,
+						  FuncDef *callee)
+{
+    if ( !arg )
+	return ArgValueCategory::Unknown;
+    // TokenCallFunc, TokenMember and TokenCallMethod all derive from
+    // TokenVar (a member read from TokenCallFunc), so a CALL is told by its
+    // token type before any class test.
+    if ( arg->type() == TokenType::ttCallFunc
+      || arg->type() == TokenType::ttCallMethod )
+    {
+	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(arg);
+	if ( !call )
+	    return ArgValueCategory::Unknown;
+	FuncDef *fd = callee ? callee : resolved_call_funcdef(call);
+	FuncDef *raw = call->var.type ? call->var.type->as_funcdef_dd() : NULL;
+	if ( call->parameters.size() == 1 && call->parameters[0]
+	  && ((fd && fd->inline_builtin_kind == "forward")
+	      || (raw && raw->inline_builtin_kind == "forward")) )
+	{
+	    if ( call->explicit_template_args.empty() )
+		return ArgValueCategory::Rvalue;
+	    DataDef *t = call->explicit_template_args[0];
+	    return t && !t->is_reference() ? ArgValueCategory::Rvalue
+					   : ArgValueCategory::Unknown;
+	}
+	// A function template's return as the PARSE sees it is no proof of a
+	// prvalue: the call may still be bound to the template's stand-in (its
+	// placeholder, with a fabricated `auto` / int64 return), and an
+	// instance's return may stand unmodeled inside an unevaluated operand
+	// (std::declval<T&>()'s `decltype(__declval<_Tp>(0))` reads as a value).
+	// The CIR's callee (call_target_funcdef) is the bound instance.
+	if ( !callee && fd
+	  && (fd->stands_for_function_template() || fd->is_specialization_product()
+	      || !fd->template_param_names.empty() || fd->is_member_template
+	      || fd->dependent_pattern || fd->tsubst_source) )
+	    return ArgValueCategory::Unknown;
+	if ( fd && !call->call_returns_reference() && !fd->returns_reference()
+	  && !fd->return_value_type().is_reference() )
+	    return ArgValueCategory::Rvalue;
+	return ArgValueCategory::Unknown;
+    }
+    if ( TokenCast *tc = dynamic_cast<TokenCast *>(arg) )
+    {
+	// [expr.static.cast]/1,4 ([expr.cast] for the C-style form): a cast to
+	// a reference type yields an lvalue (`T&`) or an xvalue (`T&&`); a cast
+	// to a non-reference type yields a prvalue. DataDefREF spells both
+	// reference kinds `&`, so the parse records which one the source wrote
+	// (TokenCast::to_rvalue_ref).
+	if ( !tc->cast_type || !tc->cast_type->is_reference() )
+	    return ArgValueCategory::Rvalue;
+	return tc->to_rvalue_ref ? ArgValueCategory::Rvalue
+				 : ArgValueCategory::Lvalue;
+    }
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(arg) )
+    {
+	// [expr.cond]/4: two lvalue arms of ONE type are an lvalue; arms of
+	// different types convert to a prvalue (/7).
+	ArgValueCategory t = argument_value_category(tq->true_expr);
+	if ( t != argument_value_category(tq->false_expr) )
+	    return ArgValueCategory::Unknown;
+	if ( t == ArgValueCategory::Lvalue )
+	{
+	    const DataDef *a = operand_value_type(tq->true_expr);
+	    const DataDef *b = operand_value_type(tq->false_expr);
+	    if ( !a || !b || a->unqualified() != b->unqualified() )
+		return ArgValueCategory::Unknown;
+	}
+	return t;
+    }
+    if ( arg->id() == TokenID::tkComma )
+	if ( TokenOperator *co = dynamic_cast<TokenOperator *>(arg) )
+	    return argument_value_category(co->right);
+    if ( arg->as_objtemp_tok() || dynamic_cast<TokenAddrOf *>(arg)
+      || dynamic_cast<TokenTypeQuery *>(arg) || dynamic_cast<TokenInt *>(arg)
+      || dynamic_cast<TokenChar *>(arg) || dynamic_cast<TokenReal *>(arg)
+      || builtin_operator_yields_prvalue(arg) )
+	return ArgValueCategory::Rvalue;
+    if ( arg->is_indirection() || dynamic_cast<TokenSubscript *>(arg)
+      || dynamic_cast<TokenSubscriptExpr *>(arg)
+      || dynamic_cast<TokenStr *>(arg) || dynamic_cast<TokenVar *>(arg) )
+	return ArgValueCategory::Lvalue;
+    return ArgValueCategory::Unknown;
 }
 
 // The pre-deduction call shape used by member-template recursion and instance

@@ -2206,10 +2206,11 @@ public:
 	node_t class_tag_ref(DataDef *dd, TokenBase *origin = NULL);
 	// Select the ctor overload of `cdd` matching the initializer arguments by
 	// generic overload scoring. NULL when no overload set is recorded.
-	// Value category of a constructor argument, as far as the tree says
-	// (see the definition): feeds the T&& preference in select_ctor_overload.
-	enum CtorArgCategory { cacUnknown, cacLvalue, cacRvalue };
-	CtorArgCategory ctor_arg_value_category(TokenBase *arg);
+	// Value category of a call or constructor argument: the one reader
+	// (Program::argument_value_category) with a call argument's callee
+	// resolved the CIR's way (call_target_funcdef). Feeds the reference
+	// bindings of select_ctor_overload and of every overload re-rank here.
+	ArgValueCategory arg_value_category(TokenBase *arg);
 	// implicit_move: argument 0 is a `return` operand naming a local or a
 	// parameter ([class.copy.elision]/3) — ranked as an rvalue.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,

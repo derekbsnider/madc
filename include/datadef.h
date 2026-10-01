@@ -42,6 +42,13 @@ extern thread_local bool madc_no_warnings;
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
 
+// An argument expression's value category for reference binding
+// ([basic.lval]); a prvalue and an xvalue bind a reference alike
+// ([dcl.init.ref]/5), so both are Rvalue. Unknown: the tree cannot state it,
+// and overload ranking neither refuses nor prefers on it. The one reader is
+// Program::argument_value_category.
+enum class ArgValueCategory { Unknown, Lvalue, Rvalue };
+
 // The TARGET's 64-bit data model (task #46, owner decision 2026-08-13:
 // win64 = the PLATFORM model, LLP64). ONE owner for every "how wide is
 // long / which Itanium letter is size_t on this target" question — never
@@ -1892,10 +1899,14 @@ public:
     // cv-rejections, and scalar/enum/typedef-opaque score failures mark it
     // false: those verdicts are not yet trustworthy enough to hard-fail a
     // call on. Consumers use it to decide whether a scored miss may THROW.
+    // categories (optional, index-aligned with argtypes): each argument's
+    // value category — a reference parameter's binding reads it
+    // (reference_param_binding_rank); NULL ranks every argument Unknown.
     Variable *findMethodOverload(const std::string &name,
 				 const std::vector<const DataDef *> &argtypes,
 				 int obj_cv = -1,
-				 bool *all_rejections_proven = 0);
+				 bool *all_rejections_proven = 0,
+				 const std::vector<ArgValueCategory> *categories = 0);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
     // class declares; used to type a class-object operator expression with the
     // operator's declared result type.

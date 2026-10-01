@@ -5379,13 +5379,16 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 		std::string mname = method_candidate_display_name(callee_var, fd);
 		if (owner && !mname.empty()) {
 			std::vector<const DataDef *> at;
+			std::vector<ArgValueCategory> cats;
 			at.reserve(tcf->parameters.size());
 			for (TokenBase *p : tcf->parameters) {
 				DataDef *adp = m_prog->array_decay_pointer(p);
 				at.push_back(adp ? adp
 						 : m_prog->operand_value_datadef(p));
+				cats.push_back(arg_value_category(p));
 			}
-			if (Variable *winner = owner->findMethodOverload(mname, at)) {
+			if (Variable *winner = owner->findMethodOverload(mname, at,
+						-1, NULL, &cats)) {
 				FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
 				if (wfd && (winner->flags & vfSTATIC)) {
 					callee_var = winner;
@@ -5429,6 +5432,7 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 				n = tcf->user_argc;
 			std::vector<const DataDef *> at;
 			std::vector<bool> zeros;
+			std::vector<ArgValueCategory> cats;
 			for (size_t i = 0; i < n; i++) {
 				// [conv.array]/[conv.func]: an array (or function)
 				// argument used as a VALUE for overload resolution
@@ -5447,6 +5451,8 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 						tcf->parameters[i]));
 				zeros.push_back(is_zero_integer_literal(
 						tcf->parameters[i]));
+				cats.push_back(arg_value_category(
+						tcf->parameters[i]));
 			}
 			bool strict_no_viable = false;
 			std::string ambiguity;
@@ -5454,7 +5460,7 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 					fd->namespace_name, fd->function_display_name,
 					at, &zeros, &tcf->explicit_template_args,
 					&strict_no_viable, &ambiguity,
-					&tcf->deduction);
+					&tcf->deduction, &cats);
 			if (::getenv("MADC_OVL_PROBE"))
 				fprintf(stderr, "[ovl] cir rank %s::%s argc=%zu a0=%s -> %s\n",
 					fd->namespace_name.c_str(),
@@ -13949,7 +13955,6 @@ static const char *deleted_constructor_reason(DataDefCLASS *cdd, FuncDef *ctor)
 	return "use of deleted constructor";
 }
 
-static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi);	// defined with the ctor selection below
 
 // The constructor that copies (`move` false) or moves an object of `cdd` from
 // another of its class: between T(const T&) and T(T&&), an xvalue binds the
@@ -15221,7 +15226,7 @@ void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
 	// ([class.copy.elision]/3), and so is a prvalue.
 	if (src && !class_copy_ctor_def(cdd)) {
 		bool move = implicit_move
-			|| ctor_arg_value_category(src) == cacRvalue;
+			|| arg_value_category(src) == ArgValueCategory::Rvalue;
 		if (node_t copy = implicit_copy_construct_from_addr(
 			    node1(N_DEREF, id(RETBUF_NAME, origin), origin),
 			    object_arg_addr(src, cdd), cdd, origin, move)) {
@@ -16664,103 +16669,18 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 	return arg->datadef();
 }
 
-// [basic.lval] value category of a constructor ARGUMENT, as far as the tree
-// says — the input [over.ics.rank]/3.2.3 needs to prefer `T&&` over
-// `const T&` for an rvalue and to refuse `T&&` for an lvalue. Only the
-// unambiguous shapes answer; everything else is Unknown and keeps today's
-// ranking (no preference, no refusal):
-//   std::move(x)                -> Rvalue (an identity forward with no explicit
-//                                  template argument is move)
-//   std::forward<T>(x), T non-ref -> Rvalue; T a reference -> Unknown (DataDefREF
-//                                  spells `&` and `&&` alike)
-//   a call returning by value    -> Rvalue (prvalue)
-//   static_cast<T&&>(x)          -> Rvalue (xvalue — the move-ctor test shape
-//                                  libc++ writes out of class); static_cast<T&>
-//                                  -> Lvalue; a cast to a non-reference type
-//                                  -> Rvalue (functional / C-style: prvalue)
-//   a named variable / member    -> Lvalue (a named rvalue reference too)
-CirBuilder::CtorArgCategory CirBuilder::ctor_arg_value_category(TokenBase *arg)
+// The one value-category reader (Program::argument_value_category), with a
+// call argument's target resolved the CIR's way: call_target_funcdef sees
+// the per-call instance the lowering binds, and the identity-forward kind
+// (std::move / std::forward) may live only on it.
+ArgValueCategory CirBuilder::arg_value_category(TokenBase *arg)
 {
-	if (!arg)
-		return cacUnknown;
-	if (TokenCallFunc *fw = dynamic_cast<TokenCallFunc *>(arg)) {
-		if (identity_forward_operand(fw)) {
-			if (fw->explicit_template_args.empty())
-				return cacRvalue;
-			DataDef *t = fw->explicit_template_args[0];
-			return (t && !t->is_reference()) ? cacRvalue : cacUnknown;
-		}
-		FuncDef *fd = call_target_funcdef(fw);
-		if (fd && !fd->returns_reference()
-		    && !fd->return_value_type().is_reference())
-			return cacRvalue;
-		return cacUnknown;
-	}
-	if (TokenCallMethod *cm = dynamic_cast<TokenCallMethod *>(arg)) {
-		FuncDef *fd = dynamic_cast<FuncDef *>(cm->var.type);
-		if (fd && !fd->returns_reference()
-		    && !fd->return_value_type().is_reference())
-			return cacRvalue;
-		return cacUnknown;
-	}
-	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg)) {
-		// [expr.static.cast]/1,4 ([expr.cast] for the C-style form): a
-		// cast to a reference type yields an lvalue (`T&`) or an xvalue
-		// (`T&&`); a cast to a non-reference type yields a prvalue.
-		// DataDefREF spells both reference kinds `&`, so the parse
-		// records which one the source wrote (TokenCast::to_rvalue_ref).
-		if (!tc->cast_type || !tc->cast_type->is_reference())
-			return cacRvalue;
-		return tc->to_rvalue_ref ? cacRvalue : cacLvalue;
-	}
-	if (arg->as_objtemp_tok())
-		return cacRvalue;
-	if (dynamic_cast<TokenVar *>(arg) || dynamic_cast<TokenMember *>(arg))
-		return cacLvalue;
-	return cacUnknown;
-}
-
-// Parameter i of `fd` is a CONCRETE rvalue reference (`T&&`, T not one of the
-// constructor template's own parameters): DataDefREF spells `&` for both
-// reference kinds, so the captured source spelling is the only carrier (the
-// same discipline is_nonconst_lref_param and the mangler use). A FORWARDING
-// reference (`_Up&&` / `_Args&&...` on a member-template ctor — libc++'s
-// __compressed_pair(_T1&&, _T2&&), std::pair(_U1&&, _U2&&), every node
-// construction behind emplace / _M_emplace_hint_unique) binds an lvalue too
-// ([temp.deduct.call]/3 deduces `_Up` as `U&`), so it is not rvalue-only and
-// keeps today's ranking: build-33 refused every lvalue to those and left
-// std::map / vector<T>::push_back with no viable constructor.
-static bool ctor_param_is_concrete_rvalue_ref(FuncDef *fd, size_t pi)
-{
-	if (!fd || !fd->param_spells_rvalue_reference(pi))
-		return false;
-	// An INSTANCE of a member-template constructor (tsubst_source links it
-	// to its pattern) has no parameter left to judge: deduction against
-	// this very argument list formed its parameter types ([temp.deduct.call]
-	// — an lvalue deduces `U` as `U&`, and the substituted spelling reads
-	// `tag*&&`, the reference's DataDef name plus the pattern's `&&`), so a
-	// `&&` here is the forwarding reference, already bound. Judging it as a
-	// concrete rvalue reference refused the lvalue that deduced it
-	// (tests/testmembertmplctor: "no matching constructor for box_int32_t(tag)").
-	if (fd->tsubst_source)
-		return false;
-	std::string sp = fd->param_cpp_spellings[pi];
-	while (!sp.empty() && sp[sp.size() - 1] == ' ')
-		sp.erase(sp.size() - 1);
-	if (sp.size() >= 3 && sp.compare(sp.size() - 3, 3, "...") == 0) {
-		sp.erase(sp.size() - 3);
-		while (!sp.empty() && sp[sp.size() - 1] == ' ')
-			sp.erase(sp.size() - 1);
-	}
-	if (fd->is_member_template || !fd->template_param_names.empty()) {
-		std::string base = sp.substr(0, sp.size() - 2);
-		while (!base.empty() && base[base.size() - 1] == ' ')
-			base.erase(base.size() - 1);
-		for (size_t t = 0; t < fd->template_param_names.size(); t++)
-			if (fd->template_param_names[t] == base)
-				return false;   // forwarding reference
-	}
-	return true;
+	FuncDef *callee = NULL;
+	if (arg && (arg->type() == TokenType::ttCallFunc
+		    || arg->type() == TokenType::ttCallMethod))
+		if (TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(arg))
+			callee = call_target_funcdef(call);
+	return m_prog->argument_value_category(arg, callee);
 }
 
 FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
@@ -16843,13 +16763,13 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			if (s >= 0 && refp && i == 0 && ctor_args.size() == 1
 			    && fd->is_copy_or_move_constructor_of(cdd)
 			    && same_object_class(adc, cdd)) {
-				CtorArgCategory cat = implicit_move
-					? cacRvalue : ctor_arg_value_category(ctor_args[i]);
-				if (cat != cacUnknown) {
+				ArgValueCategory cat = implicit_move
+					? ArgValueCategory::Rvalue : arg_value_category(ctor_args[i]);
+				if (cat != ArgValueCategory::Unknown) {
 					int rank = copy_move_ref_binding_rank(
 						fd->param_spells_rvalue_reference(pi),
 						fd->param_referent_is_const(pi),
-						cat == cacRvalue,
+						cat == ArgValueCategory::Rvalue,
 						adc && adc->is_const());
 					s = rank < 0 ? -1 : s + rank;
 					ranked_special_copy_move = true;
@@ -16860,11 +16780,14 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 			// wins for std::move(x) — before this the copy ctor,
 			// declared first, took the tie and the moved-from
 			// object kept its resources: tests/testrvaluectorselect,
-			// silent wrong answer); an LVALUE argument cannot bind
-			// it at all ([dcl.init.ref]/5). An argument whose
-			// category the tree cannot state keeps today's ranking.
+			// silent wrong answer); an LVALUE argument of its type
+			// cannot bind it at all ([dcl.init.ref]/5 — one of
+			// another type binds the temporary its conversion
+			// makes: reference_param_binding_rank). An argument
+			// whose category the tree cannot state keeps today's
+			// ranking.
 			if (s >= 0 && refp && !ranked_special_copy_move
-			    && ctor_param_is_concrete_rvalue_ref(fd, pi)) {
+			    && fd->is_concrete_rvalue_ref_param(pi)) {
 				// [class.copy.elision]/3: the operand of a
 				// `return` that names a local or a parameter
 				// is resolved AS IF an rvalue — the caller
@@ -16873,12 +16796,12 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 				// suffices: only concrete-`T&&` candidates
 				// read the category, so when none is viable
 				// the ranking is exactly the lvalue pass's.
-				CtorArgCategory cat = (implicit_move && i == 0)
-					? cacRvalue
-					: ctor_arg_value_category(ctor_args[i]);
-				if (cat == cacLvalue)
+				ArgValueCategory cat = (implicit_move && i == 0)
+					? ArgValueCategory::Rvalue
+					: arg_value_category(ctor_args[i]);
+				if (reference_param_binding_rank(fd, pi, adc, cat) < 0)
 					s = -1;
-				else if (cat == cacRvalue)
+				else if (cat == ArgValueCategory::Rvalue)
 					++s;
 			}
 			if (s < 0) { ok = false; break; }
@@ -17381,7 +17304,7 @@ node_t CirBuilder::try_implicit_copy_construct(node_t dst_lvalue,
 				defaulted->param_spells_rvalue_reference(1));
 		return implicit_copy_construct_from_addr(dst_lvalue, src_addr,
 			cdd, origin,
-			ctor_arg_value_category(ctor_args[0]) == cacRvalue);
+			arg_value_category(ctor_args[0]) == ArgValueCategory::Rvalue);
 	};
 	if (acls != cdd) {
 		// The target's implicit copy constructor may bind through ONE

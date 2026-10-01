@@ -334,6 +334,43 @@ public:
 	    return false;                      // the referent is const
 	return true;
     }
+    // Parameter i is a CONCRETE rvalue reference (`T&&`, T not one of this
+    // function template's own parameters): it binds no lvalue of its type
+    // ([dcl.init.ref]/5). DataDefREF spells `&` for both reference kinds, so
+    // the captured spelling is the carrier (as is_nonconst_lref_param's). A
+    // FORWARDING reference (`_Up&&` / `_Args&&...` on a template) binds an
+    // lvalue too ([temp.deduct.call]/3 deduces `_Up` as `U&`) — libc++'s
+    // __compressed_pair(_T1&&, _T2&&), std::pair(_U1&&, _U2&&), every node
+    // construction behind emplace. An INSTANCE (a member template's links to
+    // its pattern through tsubst_source; a function template's carries its
+    // specialization identity) has no parameter left to judge: deduction
+    // against its call formed the type, and the substituted spelling reads
+    // the reference's DataDef name plus the pattern's `&&` (`tag*&&`,
+    // `int&&` for `T&&` with T = int&) — the forwarding reference, already
+    // bound.
+    bool is_concrete_rvalue_ref_param(size_t i) const {
+	if ( !param_spells_rvalue_reference(i) || tsubst_source
+	  || is_specialization_product() )
+	    return false;
+	if ( !is_member_template && template_param_names.empty() )
+	    return true;
+	std::string sp = param_cpp_spellings[i];
+	while ( !sp.empty() && sp[sp.size() - 1] == ' ' )
+	    sp.erase(sp.size() - 1);
+	if ( sp.size() >= 3 && sp.compare(sp.size() - 3, 3, "...") == 0 )
+	{
+	    sp.erase(sp.size() - 3);
+	    while ( !sp.empty() && sp[sp.size() - 1] == ' ' )
+		sp.erase(sp.size() - 1);
+	}
+	std::string base = sp.substr(0, sp.size() - 2);
+	while ( !base.empty() && base[base.size() - 1] == ' ' )
+	    base.erase(base.size() - 1);
+	for ( size_t t = 0; t < template_param_names.size(); t++ )
+	    if ( template_param_names[t] == base )
+		return false;                  // forwarding reference
+	return true;
+    }
     // Source typedef alias used for each parameter, when the declaration named
     // one. Index-aligned with `parameters`; empty means render from DataDef.
     std::vector<std::string> param_typedef_names;
@@ -445,6 +482,13 @@ public:
     // explicit-template-argument prefix match binds a call to the instance.
     std::string overload_spelling;
     std::vector<std::string> overload_template_args;
+    // A function-template instantiation product, by its declaration identity:
+    // it carries its bound template arguments, or the "\x01@<identity>"
+    // suffix its registrar stamped (parseFunction's fold).
+    bool is_specialization_product() const {
+	return !overload_template_args.empty()
+	    || overload_spelling.find("\x01@") != std::string::npos;
+    }
     // The identity a function template's PLACEHOLDER carries in
     // overload_spelling (register_skipped_namespace_template_function, the
     // forest restore): it is seeded into an overload set so ranking runs,
@@ -839,6 +883,15 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 // rule does not decide. Defined in cir_builder.cpp.
 int compare_derived_to_base(const DataDef *adc, const DataDef *p1, bool ref1,
 			    const DataDef *p2, bool ref2);
+// [dcl.init.ref]/5 + [over.ics.rank]/3.2.3, 3.2.6 for REFERENCE parameter `pi`
+// of `fd` bound by an argument of type `adc` and value category `cat`: the
+// copy_move_ref_binding_rank of the binding (higher is better; -1 = it cannot
+// bind), or 0 when a fact it needs is unknown — the category, or a typedef'd
+// reference whose kind no carrier shows. An argument not reference-related to
+// the referent binds the temporary its conversion materializes: an rvalue.
+// Defined in parser.cpp beside the overload rankers.
+int reference_param_binding_rank(const FuncDef *fd, size_t pi,
+				 const DataDef *adc, ArgValueCategory cat);
 
 class DataStruct: public DataDef
 {
@@ -4305,6 +4358,9 @@ public:
     // `deduction` (optional): the call's own template-argument deduction
     // outcome — when it ran, the only specialization ranked is its product
     // ([temp.over]/1); NULL or NotRun ranks every registered specialization.
+    // `categories` (optional, index-aligned): each argument's value category
+    // (argument_value_category) — a reference parameter's binding reads it;
+    // NULL ranks every argument Unknown.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes,
@@ -4312,7 +4368,8 @@ public:
 					       const std::vector<DataDef *> *explicit_template_args = NULL,
 					       bool *strict_no_viable = NULL,
 					       std::string *ambiguity = NULL,
-					       const FnTemplateDeduction *deduction = NULL);
+					       const FnTemplateDeduction *deduction = NULL,
+					       const std::vector<ArgValueCategory> *categories = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`
@@ -7232,6 +7289,14 @@ public:
     // applies; sets *no_winner when a set applies but no candidate is viable.
     FuncDef *resolved_call_funcdef(class TokenCallFunc *tc,
 				   bool *no_winner = NULL);
+    // [basic.lval] value category of a call ARGUMENT, as far as the tree states
+    // it — the input overload ranking needs to refuse a non-const `T&` for an
+    // rvalue and a `T&&` for an lvalue, and to prefer `T&&` for an rvalue
+    // ([dcl.init.ref]/5, [over.ics.rank]/3.2.3). `callee`, when the caller
+    // has resolved a call argument's target (the CIR's call_target_funcdef),
+    // answers for that call; else resolved_call_funcdef does. See parser.cpp.
+    ArgValueCategory argument_value_category(TokenBase *arg,
+					     FuncDef *callee = NULL);
     // Type an operator expression on a class-object operand with the operator's
     // return type (Part A of generic operator-overload support). No-op unless the
     // left operand is a class object declaring the matching binary operator, or

@@ -53,36 +53,6 @@ int main() { printf("main\n"); return 0; }
   (src/madc_program.cpp) must run its code's entries before it frees the
   code, as `dlclose` does, or the exit-time handlers call freed code.
 
-### B92. A prvalue argument binds a non-const lvalue reference in overload ranking
-
-```cpp
-#include <stdio.h>
-static const char *w(int &) { return "int&"; }
-static const char *w(const int &) { return "const int&"; }
-static const char *pw(char *&) { return "char*&"; }
-static const char *pw(char *const &) { return "char*const&"; }
-static char buf[2];
-int main() { int x = 1; printf("%s %s\n", w(x), w(1)); char *p = buf; printf("%s %s\n", pw(p), pw((char *)buf)); return 0; }
-```
-
-- g++ = clang++ (`-std=c++17`): `int& const int&` / `char*& char*const&`.
-  madc: `int& int&` / `char*& char*&` (SILENT: the prvalue takes the `T&`
-  overload, which cannot bind it, [dcl.init.ref]/5).
-- The mirror, same channel: `r(int &&)` / `r(const int &)` called as `r(x)`
-  (an lvalue) and `r(2)`: g++ `const int& int&&`, madc `int&& int&&` (an
-  lvalue takes `T&&`, which cannot bind it).
-- Found 2026-09-30 while fixing B89, with its reducer's prvalue call.
-- Layer: the free-function ranker (`src/parser.cpp` ~22387) scores each
-  candidate through `score_arg_to_param(argtypes[i], …,
-  fd->is_nonconst_lref_param(i))` over argument TYPES only. The flag makes
-  only the user-defined-conversion path non-viable, so a same-type prvalue
-  still binds `T&`. The argument's value category never reaches the ranker
-  (the literal-zero fact rides beside the types as `zero_args`).
-- Fix: the value category (its owner is `fn_template_call_arg_is_lvalue`,
-  the forwarding-reference deduction's) rides beside the types the same way;
-  a non-const lvalue reference refuses a prvalue, an rvalue reference an
-  lvalue. Its own commit, next after B89.
-
 ### B81. A mem-initializer flattens a nested braced list, losing its nesting
 
 ```cpp
