@@ -2276,6 +2276,60 @@ TEST_CASE("session bindings: C++ containers, a class the session wrote, a qualif
     CHECK(c.shown() == "\"xy\"");
 }
 
+// BUGS.md B97: a template instantiation's type is its template-id as g++ and
+// clang++ write it, the arguments by their source names and the defaulted
+// ones left out, in %type, %whos's rows and the show alike. The oracle (g++
+// 13 / clang++ 18, an incomplete `show<decltype(x)>`'s diagnostic):
+// std::vector<int>, std::map<int, long int> / std::map<int, long>,
+// std::__cxx11::list<int> / std::list<int>, Box<int>, Box<int, 8>,
+// Two<int>, Two<int, long int> / Two<int, long>, and std::vector<int> for a
+// written default. madc writes the separator without a space, as the show
+// always has.
+TEST_CASE("%type spells a template instantiation as g++ and clang++ do (B97)")
+{
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c++17"));
+    REQUIRE(c.submit("#include <vector>"));
+    REQUIRE(c.submit("#include <map>"));
+    REQUIRE(c.submit("#include <list>"));
+    REQUIRE(c.submit("#include <string>"));
+    REQUIRE(c.submit("template <class T, int N = 4> struct Box { T v[N]; };"));
+    REQUIRE(c.submit("template <class T, class U = T> struct Two { T a; U b; };"));
+    REQUIRE(c.submit("std::vector<int> v = { 1, 2, 3 };"));
+    REQUIRE(c.submit("std::map<int, long> m;"));
+    REQUIRE(c.submit("std::list<int> l;"));
+    REQUIRE(c.submit("std::vector<std::string> vs;"));
+    REQUIRE(c.submit("Box<int> b;"));
+    REQUIRE(c.submit("Box<int, 8> b8;"));
+    REQUIRE(c.submit("Two<int> t1;"));
+    REQUIRE(c.submit("Two<int, long> t2;"));
+    REQUIRE(c.submit("std::vector<int, std::allocator<int>> v2;"));
+    struct { const char *entry, *type; } types[] = {
+	{ "%type v", "std::vector<int>" },
+	{ "%type m", "std::map<int,long>" },
+	{ "%type l", "std::list<int>" },
+	{ "%type vs", "std::vector<std::string>" },
+	{ "%type b", "Box<int>" },
+	{ "%type b8", "Box<int,8>" },
+	{ "%type t1", "Two<int>" },
+	{ "%type t2", "Two<int,long>" },
+	{ "%type v2", "std::vector<int>" },
+	{ "%type &v", "std::vector<int> *" },
+    };
+    for ( size_t i = 0; i < sizeof(types) / sizeof(types[0]); ++i )
+    {
+	CAPTURE(types[i].entry);
+	REQUIRE(c.submit(types[i].entry));
+	CHECK(c.shown() == types[i].type);
+    }
+    madc::value rows;
+    c.bindings(rows);
+    CHECK(binding_field(rows, "v", "type") == "std::vector<int>");
+    CHECK(binding_field(rows, "b8", "type") == "Box<int,8>");
+    REQUIRE(c.submit("v"));
+    CHECK(c.shown() == "std::vector<int>{ 1, 2, 3 }");	// the show agrees
+}
+
 TEST_CASE("session bindings: a madc var (madc)")
 {
     InteractiveSession c;

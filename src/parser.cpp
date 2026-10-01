@@ -37575,6 +37575,11 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
     return hit;
 }
 
+DataDef *Program::existing_type_of_spelling(const std::string &spelling)
+{
+    return resolve_arg_spelling_datadef(*this, spelling);
+}
+
 // [temp.deduct.call]/4 derived-to-base: when a template-id PARAMETER pattern
 // (`_Tuple_impl<__i,_Head,_Tail...>&`) is matched against an argument whose class
 // DERIVES from a specialization of that template (`tuple<_Elements...>` publicly

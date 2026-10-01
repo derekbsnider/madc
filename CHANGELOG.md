@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### TypeSpeller: spell template instantiations as their source template-ids (B97)
+
+When a template instantiation has no alias name, %type and the show's type word now spell the template-id as g++ and clang++ write it (template name, source-argument types, trailing defaults omitted) instead of the canonical spelling (all defaults expanded). New helpers template_word and argument_word compute the source template-id from the canonical spelling by looking up template defaults and trimming matches. Test: eleven cases covering std::vector, std::map, std::list, std::string, and user-defined templates with and without default arguments.
+
 ### cir: atomic builtins use append_i64 for i64 spelling consistency
 
 The ull_type lambda in lower_atomic_builtin() now calls the centralized append_i64() helper to build the unsigned long long type specifier, ensuring consistent i64 spelling across CIR codegen. This gates i64 spelling via check-i64-spec-spelling.sh (LLP64 parity: c2mir models platform long as 32-bit on win64, so lone N_LONG truncates 64-bit values there).

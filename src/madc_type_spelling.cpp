@@ -27,6 +27,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "cir_builder.h"	// dd_peel_pointers
+#include "spelling_delim.h"	// split_template_id_parts
 #include "madc_type_spelling.h"
 
 // var_dump's one deliberate divergence from PHP: it names the REAL type. The
@@ -132,7 +133,11 @@ std::string TypeSpeller::alias(DataDef *dd) const
 // A plain aggregate keeps `struct X`. It is already the source's own spelling,
 // and preferring an alias there would rename `struct Point` to whatever
 // `typedef struct Point Point_t;` happened to add.
-std::string TypeSpeller::class_word(DataDefCLASS *cls) const
+//
+// With no alias, an instantiation is its template-id as g++ and clang++ write
+// it (template_word): `std::vector<int>`, never the canonical
+// `std::vector<int32_t,std::allocator<int32_t>>`.
+std::string TypeSpeller::class_word(DataDefSTRUCT *cls) const
 {
 	if (cls->union_layout)
 		return "union " + cls->name;
@@ -141,10 +146,208 @@ std::string TypeSpeller::class_word(DataDefCLASS *cls) const
 		std::string named = alias(cls);
 		if (!named.empty())
 			return strip_inline_namespaces(named);
+		std::string word = template_word(canon);
+		if (!word.empty())
+			return strip_inline_namespaces(word);
 	}
 	if (!canon.empty())
 		return strip_inline_namespaces(canon);
 	return "struct " + cls->name;
+}
+
+static std::string trim_spaces(const std::string &s)
+{
+	size_t a = 0, b = s.size();
+	while (a < b && s[a] == ' ')
+		++a;
+	while (b > a && s[b - 1] == ' ')
+		--b;
+	return s.substr(a, b - a);
+}
+
+static std::string despaced(const std::string &s)
+{
+	std::string out;
+	for (size_t i = 0; i < s.size(); i++)
+		if (s[i] != ' ')
+			out += s[i];
+	return out;
+}
+
+// Template `name` qualified the way an instantiation's canonical spelling
+// qualifies it: by the namespace that defines it. A qualified name is looked
+// up where it says; an unqualified one from `from` (the namespace whose
+// default argument names it) outward, as unqualified lookup goes. False =
+// no such template.
+static bool qualified_template_name(Program *pgm, const std::string &from,
+				    const std::string &name0, std::string &out)
+{
+	std::string name = name0.compare(0, 2, "::") == 0 ? name0.substr(2)
+							 : name0;
+	size_t sc = name.rfind("::");
+	if (sc != std::string::npos) {
+		std::string bare = name.substr(sc + 2);
+		Program::TemplateDef *t = pgm->find_template(bare,
+							     name.substr(0, sc));
+		if (!t)
+			return false;
+		out = t->defining_namespace.empty()
+		    ? bare : t->defining_namespace + "::" + bare;
+		return true;
+	}
+	for (std::string ns = from; ; ) {
+		Program::TemplateDef *t = pgm->find_template(name, ns);
+		if (t && t->defining_namespace == ns) {
+			out = ns.empty() ? name : ns + "::" + name;
+			return true;
+		}
+		if (t && !ns.empty() && t->defining_namespace.compare(0,
+				ns.size() + 2, ns + "::") == 0) {
+			out = t->defining_namespace + "::" + name;	// an inline child's
+			return true;
+		}
+		if (ns.empty())
+			return false;
+		size_t up = ns.rfind("::");
+		ns = up == std::string::npos ? std::string() : ns.substr(0, up);
+	}
+}
+
+// The canonical spelling of one default template argument, `text`, with the
+// parameters before its slot substituted by their arguments' canonical
+// spellings: `allocator<_Tp>` with _Tp = int32_t is std::allocator<int32_t>,
+// as the instantiation's own records write it (templates qualified by their
+// defining namespace, a builtin by its canonical name, a folded integer as
+// its digits). False = a default this reading does not spell (a dependent
+// member type, an expression): its argument is then shown, never guessed
+// away.
+static bool default_argument_text(Program *pgm, const Program::TemplateDef &td,
+				  const std::string &text, size_t slot,
+				  const std::vector<std::string> &args,
+				  std::string &out)
+{
+	std::string s = trim_spaces(text);
+	std::string cv;
+	for (bool peeled = true; peeled; ) {
+		peeled = false;
+		static const char *const words[] = { "const ", "volatile " };
+		for (size_t w = 0; w < 2; w++)
+			if (s.compare(0, strlen(words[w]), words[w]) == 0) {
+				cv += words[w];
+				s = trim_spaces(s.substr(strlen(words[w])));
+				peeled = true;
+			}
+	}
+	for (size_t j = 0; j < slot && j < td.typeparams.size()
+			   && j < args.size(); j++)
+		if (s == td.typeparams[j]) {
+			out = cv + args[j];
+			return true;
+		}
+	std::string head;
+	std::vector<std::string> sub;
+	if (split_template_id_parts(s, head, sub, SpellingTail::Reject)) {
+		std::string qualified;
+		if (!qualified_template_name(pgm, td.defining_namespace,
+					     despaced(head), qualified))
+			return false;
+		out = cv + qualified + "<";
+		for (size_t k = 0; k < sub.size(); k++) {
+			std::string a;
+			if (!default_argument_text(pgm, td, sub[k], slot, args, a))
+				return false;
+			out += (k ? "," : "") + a;
+		}
+		out += ">";
+		return true;
+	}
+	if (s.find_first_of("<>(),:*&") != std::string::npos)
+		return false;
+	if (DataDef *bd = Program::resolve_builtin_type_spelling(s)) {
+		out = cv + bd->name;
+		return true;
+	}
+	size_t d = s.compare(0, 1, "-") == 0 ? 1 : 0;
+	if (d < s.size() && s.find_first_not_of("0123456789", d) == std::string::npos) {
+		out = s;
+		return true;
+	}
+	return false;
+}
+
+// How many trailing arguments of an instantiation of template `head` equal
+// the template's defaults, the arguments before each substituted — the ones
+// g++ and clang++ leave out when they name the type ([temp.arg]/4's defaults
+// are not part of what anybody writes).
+static size_t defaulted_tail(Program *pgm, const std::string &head0,
+			     const std::vector<std::string> &args)
+{
+	std::string head = head0.compare(0, 2, "::") == 0 ? head0.substr(2)
+							 : head0;
+	size_t sc = head.rfind("::");
+	std::string ns = sc == std::string::npos ? std::string()
+						 : head.substr(0, sc);
+	Program::TemplateDef *found = pgm->find_template(
+		sc == std::string::npos ? head : head.substr(sc + 2), ns);
+	if (!found || found->defining_namespace != ns)
+		return 0;
+	// A copy: the lookups below may thaw other templates in the registry,
+	// whose storage moves on insert.
+	const Program::TemplateDef td = *found;
+	size_t n = 0;
+	for (size_t i = args.size(); i-- > 0; ) {
+		if (i >= td.typeparams.size() || i >= td.typeparam_defaults.size()
+		    || td.typeparam_defaults[i].empty())
+			break;
+		if (i < td.typeparam_is_pack.size() && td.typeparam_is_pack[i])
+			break;
+		std::string text;
+		for (size_t t = 0; t < td.typeparam_defaults[i].size(); t++)
+			text += (t ? " " : "")
+			      + madc_token_spelling(td.typeparam_defaults[i][t]);
+		std::string want;
+		if (!default_argument_text(pgm, td, text, i, args, want)
+		    || despaced(want) != despaced(args[i]))
+			break;
+		++n;
+	}
+	return n;
+}
+
+// An instantiation's template-id as g++ and clang++ write it: the template's
+// name, then its arguments, each by its source name (`int`, `std::string`),
+// the trailing ones that equal the template's defaults left out. The
+// canonical spelling is the type's identity (mangling, deduction), so it is
+// read here and never rewritten. Empty = not a template-id this reads (a
+// member of an instantiation, `A<B>::C<D>`): the caller keeps the canonical.
+std::string TypeSpeller::template_word(const std::string &canon) const
+{
+	std::string head;
+	std::vector<std::string> args;
+	if (!pgm || !split_template_id_parts(canon, head, args,
+					     SpellingTail::Reject))
+		return std::string();
+	head = despaced(head);
+	size_t shown_n = args.size() - defaulted_tail(pgm, head, args);
+	std::string out = head + "<";
+	for (size_t i = 0; i < shown_n; i++)
+		out += (i ? "," : "") + argument_word(trim_spaces(args[i]));
+	return out + ">";
+}
+
+// One template argument by its source name: a type's (shown: `int`, a
+// class's own template-id or alias; a leading cv kept, `const int`), a value
+// as the canonical spelling writes it.
+std::string TypeSpeller::argument_word(const std::string &arg) const
+{
+	static const char *const words[] = { "const ", "volatile " };
+	for (size_t w = 0; w < 2; w++)
+		if (arg.compare(0, strlen(words[w]), words[w]) == 0)
+			return words[w]
+			     + argument_word(trim_spaces(arg.substr(strlen(words[w]))));
+	if (DataDef *dd = pgm->existing_type_of_spelling(arg))
+		return shown(dd);
+	return arg;
 }
 
 // D10's show (plan §41.4a) spells a pointer or enum TYPE the way the entry's
@@ -311,9 +514,17 @@ std::string TypeSpeller::shown(DataDef *dd) const
 		} else
 			word = (c->union_layout ? "union " : "struct ") + c->name;
 	}
-	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub))
-		word = cxx ? s->name
-			   : (s->union_layout ? "union " : "struct ") + s->name;
+	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub)) {
+		// An aggregate a template instantiated (`Box<int>`, no class
+		// members, so never promoted) is named as a class is; any other
+		// keeps its tag's name.
+		if (cxx && s->canonical_cpp_spelling().find('<') != std::string::npos
+		    && !s->union_layout)
+			word = class_word(s);
+		else
+			word = cxx ? s->name
+				   : (s->union_layout ? "union " : "struct ") + s->name;
+	}
 	else
 		word = scalar_word(ub);
 	if (!level_cv.empty())

@@ -3920,6 +3920,11 @@ public:
 				  std::vector<std::string> &out);
     // The variant carrying a parsed body, if any (for completion gating).
     TemplateDef *template_with_body(const std::string &name);
+    // The type a spelling names (a canonical one, as an instantiation's
+    // records write it: "int32_t", "std::allocator<int32_t>",
+    // "const int32_t*"), when that type already EXISTS: lookups only, never
+    // an instantiation (resolve_arg_spelling_datadef). NULL = none.
+    DataDef *existing_type_of_spelling(const std::string &spelling);
     // Replace the same-namespace variant (merging template-default args from the
     // prior one) or append a new variant. only_if_absent => leave an existing
     // same-namespace variant untouched (first-wins, for bodyless forward decls).

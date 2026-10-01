@@ -1256,30 +1256,6 @@ std::string s = "hello";
   annotation and the fallback go. A core parser change: its own focused
   session (owner, 2026-09-13).
 
-### B97. `%type` and `?` spell a template instantiation canonically (`std::vector<int32_t,std::allocator<int32_t>>`)
-
-```text
-#include <vector>
-std::vector<int> v = { 1, 2, 3 };
-%type v
-v
-```
-
-- madc (`--std=c++17`): `%type v` and `?v` print
-  `std::vector<int32_t,std::allocator<int32_t>>`, while the value's own show
-  prints `std::vector<int>{ 1, 2, 3 }`, and g++'s and clang++'s diagnostics
-  write `std::vector<int>`. The source's name is the rule (owner 2026-08-17:
-  never `std::__cxx11::basic_string<...>`). `%whos` and madcide's Variables
-  view read the same spelling.
-- Found 2026-09-30 while building `%whos` (plan §41.11a step 3d). Fix before
-  step 6, the Variables view.
-- Layer: `TypeSpeller::class_word` (`src/madc_type_spelling.cpp`) falls back
-  to `canonical_cpp_spelling()` when no alias names the instantiation; the
-  show's value word is built by `cir_dump.cpp`'s template word from the
-  instantiation's source arguments. Two spellings of one type: the
-  TypeSpeller header says the show forwards to it, so the fix moves the
-  source-argument spelling into `class_word`, and both read it.
-
 ### B7. An undeducible function-template call dies in MIR without a location
 
 - Found 2026-09-25, while fixing the juxtaposed-operand bug (`2bcd34fc8`).

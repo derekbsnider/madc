@@ -10,8 +10,10 @@
 // forward here.
 //
 // It reads the Program's type registries (a class's alias, the inline
-// namespaces), and only reads them, so it may run inside an entry
-// transaction. A NULL Program spells as C with no aliases.
+// namespaces, a template's defaults), and only reads them, so it may run
+// inside an entry transaction; a lookup may thaw a restored template or
+// intern a pointer type, the registries' own caches, never a registration.
+// A NULL Program spells as C with no aliases.
 //
 // Thread contract: as the Program it reads (one thread, between entries).
 
@@ -19,6 +21,7 @@
 
 class Program;
 class DataDef;
+class DataDefSTRUCT;
 class DataDefCLASS;
 class FuncDef;
 class Method;
@@ -26,12 +29,14 @@ class Method;
 class TypeSpeller
 {
 public:
-    explicit TypeSpeller(const Program *pgm) : pgm(pgm) {}
+    explicit TypeSpeller(Program *pgm) : pgm(pgm) {}
     // A value's type, as D10's show writes it before the value.
     std::string shown(DataDef *dd) const;
-    // A class: the source's name for an instantiation (`std::string`),
-    // else its canonical spelling, else `struct X` / `union U`.
-    std::string class_word(DataDefCLASS *cls) const;
+    // A class (or an aggregate a template instantiated): the source's name
+    // for an instantiation (`std::string`), else its template-id as g++ and
+    // clang++ write it (`std::vector<int>`), else its canonical spelling,
+    // else `struct X` / `union U`.
+    std::string class_word(DataDefSTRUCT *cls) const;
     // The source's own name for a type, found by identity in the datatype
     // maps; empty when nothing names it.
     std::string alias(DataDef *dd) const;
@@ -49,7 +54,9 @@ public:
 			  const Method *m) const;
 private:
     std::string parameter_list(FuncDef *fd, const Method *m) const;
-    const Program *pgm;
+    std::string template_word(const std::string &canon) const;
+    std::string argument_word(const std::string &arg) const;
+    Program *pgm;
 };
 
 #endif
