@@ -153,8 +153,8 @@ class FuncDef;
 std::string madc_self_exe_path();
 
 // The relocatable install's library directory beside the running executable:
-// <exe dir>/../lib (bin/madc pairs with lib/; an installed madc with
-// /usr/local/lib). Empty when the executable is unresolvable. The one owner
+// <exe dir>/../lib (bin/madc pairs with lib/; an installed madc with the
+// build's MADC_RUNPATH_LIBDIR). Empty when the executable is unresolvable. The one owner
 // of that shape — the native lanes' runpath and the module opener both read
 // it.
 std::string madc_self_lib_dir();

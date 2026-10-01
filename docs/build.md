@@ -95,6 +95,21 @@ sudo make -C src install-libmadc    # the embedding library + its public headers
 
 `PREFIX` (default `/usr/local`) and `DESTDIR` are both honoured.
 
+A program `madc -o` writes finds `libmadc.so.0` through its runpath:
+`$ORIGIN/../lib`, the compiling madc's own library directory, then
+`MADC_RUNPATH_LIBDIR` (a build variable, default `/usr/local/lib`). A
+packager whose library directory moves between versions sets it to the
+stable one, as the Homebrew formula does (`make -C src
+MADC_RUNPATH_LIBDIR=$HOMEBREW_PREFIX/lib`).
+
+The full installed layout (madcide, its profiles, plugins and data,
+`libmadc_rt.a`, the docs) is `scripts/stage_install.sh <root> <libdir>
+<prefix>`, which the deb, rpm and tarball (`scripts/package_release.sh`)
+and the Homebrew formula share. The formula is the template
+`packaging/homebrew/madc.rb.in`, rendered for a source tarball by
+`scripts/brew_formula.sh`; `scripts/brew_lane.sh` installs it from this
+tree through a local tap and runs the suite against the installed madc.
+
 ## Running a program
 
 ```bash

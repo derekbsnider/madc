@@ -2725,13 +2725,16 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     runpath = "$ORIGIN/../lib:";
 #endif
     // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
-    // installed madc pairs with /usr/local/lib — both go on the produced
-    // binary's library search path so it works from either layout.
+    // installed madc pairs with the build's stable library directory
+    // (MADC_RUNPATH_LIBDIR: /usr/local/lib, or a package manager's linked
+    // lib, which outlives the compiling madc's own versioned directory) —
+    // both go on the produced binary's library search path so it works
+    // from either layout.
     runpath += madc_self_lib_dir();
     if (runpath.empty() || runpath[runpath.size() - 1] == ':')
-	runpath += "/usr/local/lib";
+	runpath += MADC_RUNPATH_LIBDIR;
     else
-	runpath += ":/usr/local/lib";
+	runpath += std::string(":") + MADC_RUNPATH_LIBDIR;
 }
 
 // THE object-capture-mode scope (dupaudit family object_mode_emit_scoping):

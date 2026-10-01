@@ -596,6 +596,13 @@ DEFINES += -DMADC_ENABLE_CONFIG_FILE
 endif
 SYSCONFDIR ?= $(if $(sysconfdir),$(sysconfdir),$(PREFIX)/etc)
 DEFINES += -DMADC_SYSCONFDIR='"$(SYSCONFDIR)"'
+# The stable library directory a produced program's runpath names last
+# (cir_native_link_env), after its own ../lib and the compiling madc's: where
+# an installed libmadc.so.0 is found once that madc's directory is gone (a
+# package manager's versioned keg, removed by an upgrade). A Homebrew build
+# passes its prefix's lib, where `brew link` puts libmadc.
+MADC_RUNPATH_LIBDIR ?= /usr/local/lib
+DEFINES += -DMADC_RUNPATH_LIBDIR='"$(MADC_RUNPATH_LIBDIR)"'
 # Same baked-define hazard as the forest shape above (-MMD tracks headers, not
 # flags): switching the axis without a clean would keep the previous shape's
 # madc_config.o. Stamp it per obj tree the same way.

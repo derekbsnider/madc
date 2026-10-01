@@ -343,6 +343,15 @@ packaging shape, and all the proper build scripts and tests in order.
     fallback under `/home/linuxbrew/.linuxbrew`) and a full-suite lane
     on a Homebrew Linux install (no CI home yet). The Microsoft Store
     carries `chthonic` only, in the release after master.
+  - **Progress 2026-10-01 (Linux):** the formula is the template
+    `packaging/homebrew/madc.rb.in` (rendered by `scripts/brew_formula.sh`),
+    built from source and staged by `scripts/stage_install.sh`, the
+    packages' one staging owner; the runpath's stable directory is the
+    build's `MADC_RUNPATH_LIBDIR` (the formula passes `HOMEBREW_PREFIX/lib`).
+    `scripts/brew_lane.sh` installs it from this tree through a local tap
+    and runs the suite against it: 1851/0 (ledger row `brew-linux`, release
+    tier). Open: the macOS arm (madc REPL plan, release step 9), the tap
+    repository and its bottle CI.
 - **PK7 — madcide-as-binary (a PK3 prerequisite, owner-ruled part of
   the packaging). ✅ EXECUTED 2026-09-01.** madcide AOT-compiles via
   `madc -o` into a 393 KB binary linked against the shared libmadc

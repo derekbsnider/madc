@@ -147,64 +147,11 @@ rm -rf tmp/pkgroot tmp/rpmtop
 mkdir -p dist
 
 stage() {
-    # $3 (prefix) is "usr" for the deb/rpm filesystem layout and "" for
-    # the relocatable tarball root — the SAME staging lines serve all
-    # three packages (one implementation; only the layout parameterizes).
-    local root="$1" libdir="$2" prefix="$3"
-    local p="$root${prefix:+/$prefix}"
-    mkdir -p "$p/bin" "$root/$libdir" \
-             "$p/share/man/man1" "$p/share/doc/madc/examples"
-    install -m 755 bin/madc-release "$p/bin/madc"
-    # NO strip here: since the PK2 shared default, `make release` strips
-    # the release library BEFORE packing the forest into it (strip-before-
-    # pack ordering, src/Makefile) — stripping again rewrites the ELF and
-    # silently drops the appended forest container. lib/release/ is the
-    # release mode's OWN product dir (per-mode-names law): a dev rebuild
-    # can never swap this file.
-    install -m 644 lib/release/libmadc.so "$root/$libdir/libmadc.so.0"
-    ln -s libmadc.so.0 "$root/$libdir/libmadc.so"
-    # The emitted-C runtime (a few KB, static): what `madc --emit=c11`
-    # output links on a box with no madc at all (cc prog.c -lmadc_rt) —
-    # try/catch context stack + VLA scope-exit helpers, nothing else.
-    # Platform parity: the mac and win archives already ship it.
-    install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
-    # The platform webview library: the loader tries <exedir>/../lib first
-    # (the tarball's lib/), then the system search (the deb/rpm libdir,
-    # registered by the ldconfig trigger).
-    install -m 755 lib/libmadcwebview.so "$root/$libdir/libmadcwebview.so"
-    install -m 755 lib/libmadcgit.so "$root/$libdir/libmadcgit.so"
-    install -m 755 tmp/madcide-pkg "$p/bin/madcide"
-    mkdir -p "$p/share/madcide/profiles"
-    install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
-    # The shipped plugins (bundles: <name>/<name>.plugin, the data files
-    # it carries, and its code as source plus its built library), the
-    # plugin search path's second arm (resolve_data_dir).
-    mkdir -p "$p/share/madcide/plugins"
-    cp -R tmp/plugins-pkg/. "$p/share/madcide/plugins/"
-    # The plugin API headers a plugin's code includes (<madcide/plugin>):
-    # --build-plugin puts this directory on the include path
-    # (resolve_data_dir), and `madc -shared -I` names it by hand.
-    mkdir -p "$p/share/madcide/include/madcide"
-    install -m 644 tools/madcide/include/madcide/* "$p/share/madcide/include/madcide/"
-    # The line editor's verb and check bodies (save, quit and the rest are
-    # verbs): resolve_data_dir finds them here, and madcide refuses to start
-    # without them rather than run an editor that cannot save or quit.
-    mkdir -p "$p/share/madcide/verbs" "$p/share/madcide/checks"
-    install -m 644 tools/texteditor/verbs/*.madv "$p/share/madcide/verbs/"
-    install -m 644 tools/texteditor/checks/*.madv "$p/share/madcide/checks/"
-    gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
-    gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
-    install -m 644 LICENSE "$p/share/doc/madc/copyright"
-    install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
-    gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
-    # The example config keeps its real name: share/doc is not on
-    # madc.ini's search path, so it can never shadow a user's config.
-    install -m 644 docs/examples/madc.ini "$p/share/doc/madc/examples/madc.ini"
-    # dpkg-deb requires plain 0755 directories. GNU chmod's NUMERIC modes
-    # deliberately preserve a directory's setgid bit (inherited from the
-    # checkout), so it must be cleared symbolically first.
-    find "$root" -type d -exec chmod g-s {} +
-    find "$root" -type d -exec chmod 0755 {} +
+    # $3 (prefix) is "usr" for the deb/rpm filesystem layout and "" for the
+    # relocatable tarball root — the SAME staging (scripts/stage_install.sh,
+    # which the Homebrew formula calls too) serves all three packages; only
+    # the layout parameterizes. The packages carry the optional modules.
+    MADC_STAGE_REQUIRE_MODULES=1 scripts/stage_install.sh "$1" "$2" "$3"
 }
 
 # ---------- deb ----------
