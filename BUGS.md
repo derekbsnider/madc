@@ -1216,6 +1216,25 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
 
 ## Diagnostics
 
+### B105. `tests/testmadcide` built as a Windows executable hangs under wine after `colon-exec-ok`
+
+```text
+WINEDEBUG=-all WINEPATH='Z:\workspace\madc\bin' wine bin/madc-hosted-x86-64-windows.exe -o tmp/t.exe tests/testmadcide.mad
+wine tmp/t.exe        # times out (120 s); the JIT run of the same test passes under wine
+```
+
+- Measured 2026-10-01 at `c30f723ff`, and the same with the tools of
+  `fbfd79670` (the last green wine64 seam) on today's engine. The output stops
+  after `colon-exec-ok` (`IdeSession::term_exec`'s `rqCMD`, a `system()` of
+  `echo colon-exec-ok`), so `vi-load:` and every pin after it are missing;
+  `build-out:`, `build-stop:` and `view1-node:` are missing earlier in the run.
+- Not gated anywhere: the wine64 lane runs the suite JIT only
+  (`remote_build.sh`'s wine stage has no `--exe`), and the genuine Windows lane
+  runs `madc.exe` on each test. Off the release path, filed per owner
+  2026-09-30.
+- Layer: not yet traced (the executable's `system()` under wine, or the
+  terminal and build pieces of the IDE's Windows executable).
+
 ### B104. An enumerator declared twice in one scope is accepted, and the later one wins
 
 ```c
