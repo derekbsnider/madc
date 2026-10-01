@@ -28,33 +28,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
-### B113. SILENT: of two function templates that both deduce, the first declared is called, not the better conversion
-
-```cpp
-#include <cstdio>
-#include <iterator>
-template<class It> int ri(It, It, std::input_iterator_tag) { return 1; }
-template<class It> int ri(It, It, std::forward_iterator_tag) { return 2; }
-int main() { int a[3] = { 1, 2, 3 }; printf("%d\n", ri(a, a + 3, std::random_access_iterator_tag())); return 0; }
-```
-
-- g++ 13 = clang++ 18 (`-std=c++17`): `2`. madc (`--std=c++17`, at
-  `f6c808cc1` and with B112's fix): `1`, exit 0. Both templates deduce
-  `It = int*`; the tag converts to `forward_iterator_tag`, a nearer base,
-  so that specialization is the better candidate ([over.ics.rank]/4.4.4).
-  This is libstdc++'s tag dispatch (`_M_range_initialize`, `__distance`,
-  `__advance`): madc takes the input-iterator path. The same for two member
-  templates of one class (`V::ri2`, called from another member template).
-- Found 2026-10-01 during B111's recon. SILENT; off the release path, filed
-  per owner 2026-09-30, raised with the owner.
-- Layer: `Program::instantiate_namespace_fn_template_for_call` instantiates
-  the FIRST template that deduces (most-specialized order; incomparable ones
-  in declaration order), so a call's candidate set holds one specialization.
-  [temp.over]/1 adds every template's deduced specialization and ranks them
-  by conversion sequence. Deduction and body instantiation are one step
-  (`try_instantiate_namespace_fn_template`); deducing every template without
-  instantiating the losers' bodies needs a deduction-only primitive.
-
 ### B109. SILENT: a `void_t` detection specialization over ANOTHER template's member never matches
 
 ```cpp

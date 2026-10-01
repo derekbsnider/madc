@@ -6688,6 +6688,35 @@ static size_t parameter_default_begin(const std::vector<TokenBase *> &tokens,
     return end;
 }
 
+static bool fn_template_word_is_cv(const std::string &w);
+
+// Where a parameter's TYPE ends in tokens[begin, end): before its default
+// argument (parameter_default_begin) and before its declarator-id. A trailing
+// identifier is the declarator-id only when the tokens before it already name
+// a type: never after `::` (`std::input_iterator_tag` is one type-name) or
+// after cv-qualifiers / an elaborated keyword alone (`const T`, `struct S`
+// declare unnamed parameters).
+static size_t parameter_type_end(const std::vector<TokenBase *> &tokens,
+				 size_t begin, size_t end)
+{
+    size_t type_end = parameter_default_begin(tokens, begin, end);
+    size_t last = type_end;
+    while ( last > begin && !tokens[last - 1] )
+	--last;
+    if ( last <= begin + 1 || !tokens[last - 1]
+      || tokens[last - 1]->type() != TokenType::ttIdentifier )
+	return type_end;
+    size_t prev = last - 1;
+    while ( prev > begin && !tokens[prev - 1] )
+	--prev;
+    if ( prev <= begin || tokens[prev - 1]->id() == TokenID::tkNS )
+	return type_end;
+    for ( size_t k = begin; k < prev; ++k )
+	if ( tokens[k] && !fn_template_word_is_cv(template_token_fragment(tokens[k])) )
+	    return last - 1;
+    return type_end;
+}
+
 // An out-of-line definition's class-head arguments (`Z<T*, (3 > 2)>` before
 // `::`) in the shape the attach matches: one run per argument, and an empty
 // `<>` as one empty run. Borrowed pointers; the caller clones.
@@ -37706,7 +37735,10 @@ static DataDef *resolve_arg_spelling_datadef(Program &pgm, const std::string &sp
 		}
 	    }
 	}
-	if ( !suffixes.empty() && !core.empty() && core != trim_spelling(spelling) )
+	// A peeled `const` alone (`const A`, no declarator suffix) is the
+	// const-qualified type too.
+	if ( (!suffixes.empty() || had_const) && !core.empty()
+	  && core != trim_spelling(spelling) )
 	    if ( DataDef *base = resolve_arg_spelling_datadef(pgm, core) )
 	    {
 		DataDef *dd = base;
@@ -60566,19 +60598,19 @@ static bool extract_free_signature(
     std::string ret_spelling = serialize_token_range(tokens, ret_begin, declarator_start);
     if ( ret_spelling.empty() )
 	return false;
-    // Parameters: top-level (depth-0, angle-0, square-0) comma ranges inside
-    // (...), dropping a trailing parameter NAME. Angle tracking keeps a comma
-    // inside `<...>` template args from splitting a parameter.
+    // Parameters: parameter_list_ranges' top-level ranges inside (...), each
+    // its type (parameter_type_end: the declarator-id dropped) and its default
+    // argument, kept — `= …` in a spelling marks a defaulted parameter.
     std::vector<std::string> params;
     std::vector<std::pair<size_t, size_t> > ranges;
     parameter_list_ranges(tokens, lparen, ranges);
     for ( const std::pair<size_t, size_t> &r : ranges )
     {
-	size_t real_end = r.second;
-	if ( real_end > r.first + 1 && tokens[real_end - 1]
-	  && tokens[real_end - 1]->type() == TokenType::ttIdentifier )
-	    --real_end;   // drop the parameter name (type spans > 1 token)
-	std::string sp = serialize_token_range(tokens, r.first, real_end);
+	size_t type_end = parameter_type_end(tokens, r.first, r.second);
+	size_t def = parameter_default_begin(tokens, r.first, r.second);
+	std::string sp = serialize_token_range(tokens, r.first, type_end);
+	if ( def < r.second )
+	    sp += " " + serialize_token_range(tokens, def, r.second);
 	if ( !sp.empty() && sp != "void" )   // `f(void)` == zero params
 	    params.push_back(sp);
     }
@@ -60612,30 +60644,12 @@ static bool skipped_template_function_signature_spellings(
     if ( return_spelling.empty() )
 	return false;
 
-    auto param_type_end = [&](size_t begin, size_t end) -> size_t {
-	size_t real_end = parameter_default_begin(tokens, begin, end);
-	size_t last = real_end;
-	while ( last > begin && !tokens[last - 1] )
-	    --last;
-	if ( last > begin + 1 && tokens[last - 1]
-	  && tokens[last - 1]->type() == TokenType::ttIdentifier )
-	{
-	    size_t prev = last - 1;
-	    while ( prev > begin && !tokens[prev - 1] )
-		--prev;
-	    if ( prev > begin && tokens[prev - 1]
-	      && tokens[prev - 1]->id() != TokenID::tkNS )
-		return last - 1;
-	}
-	return real_end;
-    };
-
     param_spellings.clear();
     std::vector<std::pair<size_t, size_t> > ranges;
     parameter_list_ranges(tokens, lparen, ranges);
     for ( const std::pair<size_t, size_t> &r : ranges )
     {
-	size_t real_end = param_type_end(r.first, r.second);
+	size_t real_end = parameter_type_end(tokens, r.first, r.second);
 	std::string sp = serialize_token_range(tokens, r.first, real_end);
 	if ( !sp.empty() && sp != "void" )
 	    param_spellings.push_back(sp);
@@ -62386,18 +62400,26 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 		const std::string &sp, DataDef *arg_core,
 		bool relaxed_class_viability = false);
 
+// `deduce_only`: stop when deduction succeeds — [temp.over]/1's candidate test,
+// with nothing instantiated. `concrete_params_out` (per argument): the spelling
+// of a parameter that names no template parameter (the argument converts to
+// it), empty where deduction formed the parameter from the argument.
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out = NULL,
 	Variable **var_out = NULL,
-	bool relaxed_concrete_class_params = false)
+	bool relaxed_concrete_class_params = false,
+	bool deduce_only = false,
+	std::vector<std::string> *concrete_params_out = NULL)
 {
     InstTimer _it(pgm, pgm._inst_fn_count);	// --show-stats
     if ( type_args_out )
 	type_args_out->clear();
     if ( type_arg_packs_out )
 	type_arg_packs_out->clear();
+    if ( concrete_params_out )
+	concrete_params_out->assign(tc ? tc->parameters.size() : 0, std::string());
     // Two-tree Phase 2 (PLAN §11.5c, widening step 1): defer this fn-template
     // instantiation only when, inside a dependent body parse, the call is genuinely
     // type-dependent (an arg involves a template-parameter placeholder) — leave it
@@ -63048,6 +63070,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    if ( !free_operator_concrete_param_matches(
 			pgm, sp, deduce_dd, relaxed_concrete_class_params) )
 		{ FTPROBE("concrete-param-mismatch"); return false; }
+	    if ( concrete_params_out && i < concrete_params_out->size() )
+		(*concrete_params_out)[i] = sp;
 	    continue;
 	}
 	// A parameter already deduced from an earlier argument must agree
@@ -63064,6 +63088,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // saying empty while a trailing argument filled the pack is a mismatch).
     if ( pack_empty && binding.count(pack_param) )
 	{ FTPROBE("exit-53233"); return false; }
+    if ( deduce_only )
+	return true;
 #ifdef MADC_DEBUG_CTORTMPL
     if ( getenv("MADC_DEBUG_CTORTMPL") && !tid_packs.empty() )
     {
@@ -65859,6 +65885,53 @@ static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B)
 	&& !member_tmpl_at_least_specialized(B, A);
 }
 
+// [temp.over]/1 + [over.match.best]/2.1: of the function templates whose
+// deduction succeeded for `tc` (deduced[k]), the one whose specialization is
+// the best viable function. Per argument, a parameter deduction formed from it
+// is the identity; a concrete parameter (concrete[k][i], its spelling) ranks by
+// score_arg_to_param and, between two derived-to-base conversions,
+// compare_derived_to_base. A candidate replaces the current best only when it
+// is better for some argument and worse for none, so ties keep the earlier
+// one (the callers order most-specialized first, [over.match.best]/2.5).
+// Returns an index, or -1 when no candidate deduced.
+static int best_deduced_fn_template(Program &pgm, TokenCallFunc *tc,
+	const std::vector<bool> &deduced,
+	const std::vector<std::vector<std::string> > &concrete)
+{
+    struct Conversion { int score; DataDef *param; bool ref; bool known; };
+    // One argument's conversion to candidate k's parameter.
+    auto conversion = [&](size_t k, size_t i, DataDef *arg) -> Conversion {
+	const std::string &sp = i < concrete[k].size() ? concrete[k][i]
+						       : std::string();
+	if ( sp.empty() )
+	    return Conversion{ 5, NULL, false, true };	// deduced: the identity
+	std::string core = sp;
+	bool ref = core.find('&') != std::string::npos;
+	while ( !core.empty() && (core.back() == '&' || core.back() == ' ') )
+	    core.pop_back();
+	DataDef *p = core.empty() ? NULL : resolve_arg_spelling_datadef(pgm, core);
+	if ( !p || !arg )
+	    return Conversion{ 0, NULL, false, false };
+	return Conversion{ score_arg_to_param(arg, p, ref), p, ref, true };
+    };
+    auto compare = [&](size_t a, size_t b) -> int {
+	return conversion_dominance(tc ? tc->parameters.size() : 0,
+				    [&](size_t i) -> int {
+	    DataDef *arg = pgm.operand_value_datadef(tc->parameters[i]);
+	    Conversion ca = conversion(a, i, arg), cb = conversion(b, i, arg);
+	    if ( !ca.known || !cb.known )
+		return 0;
+	    return compare_conversion_sequences(arg, ca.score, ca.param, ca.ref,
+						cb.score, cb.param, cb.ref);
+	});
+    };
+    int best = -1;
+    for ( size_t k = 0; k < deduced.size(); ++k )
+	if ( deduced[k] && (best < 0 || compare(k, (size_t)best) > 0) )
+	    best = (int)k;
+    return best;
+}
+
 Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 {
     if ( !tc )
@@ -65907,7 +65980,27 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     // ([temp.deduct.call]/4: a converting constructor can serve it —
     // `f(T, N)` called as `f(t, 2)` with `N(int)`).
     for ( int relax_pass = 0; relax_pass < 2; ++relax_pass )
-    for ( Program::FnTemplateDef *cand : order )
+    {
+    // [temp.over]/1: every template whose deduction succeeds contributes its
+    // specialization, and the best of them ([over.match.best]) is the one
+    // instantiated — it is tried first. The rest keep the most-specialized
+    // order behind it, for a candidate that fails past deduction
+    // (substitution, a missing default).
+    std::vector<Program::FnTemplateDef *> attempt = order;
+    if ( order.size() > 1 )
+    {
+	std::vector<bool> deduced(order.size(), false);
+	std::vector<std::vector<std::string> > concrete(order.size());
+	for ( size_t k = 0; k < order.size(); ++k )
+	    deduced[k] = try_instantiate_namespace_fn_template(*this, *order[k],
+				fn_key, tc, NULL, NULL, NULL, relax_pass != 0,
+				true, &concrete[k]);
+	int b = best_deduced_fn_template(*this, tc, deduced, concrete);
+	if ( b > 0 )
+	    std::rotate(attempt.begin(), attempt.begin() + b,
+			attempt.begin() + b + 1);
+    }
+    for ( Program::FnTemplateDef *cand : attempt )
 	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc,
 						   NULL, NULL, &inst,
 						   relax_pass != 0) )
@@ -65935,6 +66028,7 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    }
 	    return inst;
 	}
+    }
     tc->deduction.outcome = FnTemplateDeduction::Outcome::Failed;
     return NULL;
 }
@@ -66979,9 +67073,29 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // string literal in engine::register_function). An exact sibling can
     // never be stolen; an impossible relaxed claim still fails loudly at
     // instantiation.
+    // Within a pass, [temp.over]/1 (instantiate_namespace_fn_template_for_call's
+    // rule): every sibling is DEDUCED first (phase 0, nothing instantiated) and
+    // the best specialization ([over.match.best], best_deduced_fn_template) is
+    // tried first in phase 1; the rest keep their order behind it.
     for ( int relax_pass = 0; relax_pass < 2 && !ok; ++relax_pass )
-    for ( size_t mci = 0; mci < mti_cands.size() && !ok; ++mci )
     {
+    std::vector<size_t> attempt;
+    for ( size_t k = 0; k < mti_cands.size(); ++k )
+	attempt.push_back(k);
+    std::vector<bool> deduced(mti_cands.size(), false);
+    std::vector<std::vector<std::string> > concrete(mti_cands.size());
+    for ( int phase = mti_cands.size() > 1 ? 0 : 1; phase < 2 && !ok; ++phase )
+    {
+    if ( phase == 1 )
+    {
+	int b = best_deduced_fn_template(*this, tc, deduced, concrete);
+	if ( b > 0 )
+	    std::rotate(attempt.begin(), attempt.begin() + b,
+			attempt.begin() + b + 1);
+    }
+    for ( size_t ai = 0; ai < attempt.size() && !ok; ++ai )
+    {
+    size_t mci = attempt[ai];
     fd = mti_cands[mci];
     inst_var = NULL;
     if ( !fd->dependent_pattern )
@@ -67077,6 +67191,14 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // candidate A's instance.
     ft.inst_identity = tc->var.name + "__mti"
 	+ (mci ? "__c" + std::to_string(mci) : std::string());
+    if ( phase == 0 )
+    {
+	deduced[mci] = try_instantiate_namespace_fn_template(*this, ft, key, tc,
+				NULL, NULL, NULL, relax_pass != 0, true,
+				&concrete[mci]);
+	tsubst_skip_body_name = saved_skip_body;
+	continue;
+    }
     ok = try_instantiate_namespace_fn_template(*this, ft, key, tc,
 					       &concrete_type_args,
 					       &concrete_type_arg_packs,
@@ -67091,6 +67213,8 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 		  << " inst=" << inst_name
 		  << " ok=" << (int)ok << std::endl;
 #endif
+    }
+    }
     }
     if ( !ok )
 	return NULL;
