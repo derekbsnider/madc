@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### scripts: macho_obj_gate compiles its C fixtures --std=c17
+
+The macho_obj_gate script now passes `--std=c17` when compiling its C fixture files, ensuring free functions retain their C identities for linking and symbol lookup in legs [4] and [6] (mixed-TU linking and reader merges). Both architectures (arm64, x86_64) now pass.
+
 ### mir-pe, madcide: madc -shared emits a Windows DLL, so plugin libraries load on Windows (plan §41.11a step 4, part 3)
 
 The PE writer now emits a proper DLL for `madc -shared` output (`MIR_object_exec_params.shared_p`), setting the `IMAGE_FILE_DLL` characteristic, image base `0x180000000` (relocated by base relocations), an export directory of every defined named non-local symbol (sorted by name, the ELF `-shared` dynamic-symbol rule), and a `pex_dll_stub` entry point that applies import-addend fixups at `DLL_PROCESS_ATTACH`, reads argc/argv/envp through UCRT slots and runs the init array. A runtime-needing DLL imports the value runtime from `libmadc-0.dll` via cir's `cir_windows_import_dlls` logic. Two defects fixed on the way (each in its own commit): the Windows build had been red since 2026-09-28 (an unused interrupt guard in `madc_session_client.cpp`, which had no backend process yet per plan §41.9a), and the plugin registry kept handlers and library handles in `long` (32 bits on Windows LLP64), causing symbol lookups to fail through truncated pointers; handlers and addresses are now `int64_t` in the registration verbs, and B101 is filed (madc accepts casts from pointer to narrower integer where gcc and clang refuse). Tests: `testbuild_shared` and `testmadcide_plugin_library` pass under wine with JIT, exe and obj; the genuine Windows lane runs them at the seam (its channel was down on 2026-10-01).
