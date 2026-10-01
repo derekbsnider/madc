@@ -213,8 +213,11 @@ bool CirBuilder::format_arg_bind(TokenBase *arg, FormatArg &fa,
 	}
 	else if ( u->rawtype() == DataType::dtBOOL )
 		kind = fkBool;
-	else if ( u->rawtype() == DataType::dtINT8
-	       || u->rawtype() == DataType::dtUINT8 )
+	// Only plain `char` is a character ([format.formatter.spec]/2):
+	// `signed char`, `unsigned char` (int8_t, uint8_t) and an enum over
+	// them are integers. They share char's rawtype, so the test is the
+	// scalar's identity (Program::proven_scalar_identity), not rawtype().
+	else if ( Program::proven_scalar_identity(u) == &ddCHAR )
 		kind = fkChar;
 	else if ( u->is_real() )
 		kind = fkF64;

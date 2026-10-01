@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### cir: format prints signed char and unsigned char as integers, not characters (B93)
+
+The `format`, `print`, and `println` functions now format plain `char` as a character, but `signed char`, `unsigned char`, and enums over them as integers ([format.formatter.spec]/2). Before: every 8-bit type was sent to the character formatter—unsigned char u = 65; println("{}") printed "A" instead of "65"; an enum enumerator printed as the raw byte (0x00, 0x01, 0x02). tests/testformatsignedchar: madc now prints the same output as g++ 13 and clang++ 18 (-std=c++20, std::format). The fix: CirBuilder::format_arg_bind's argument classifier (src/cir_format.cpp) now uses Program::proven_scalar_identity to distinguish char, signed char and unsigned char (they share rawtype()). plain char goes to fkChar; the other two take the integer arms. Reducer: tests/testformatsignedchar.mad with expected output from g++ 13 and clang++ 18. BUGS.md: B93 entry removed.
+
 ### cir: format / print / println evaluate every argument once, in order, before any output (B99)
 
 The `format`, `print`, and `println` functions now evaluate every argument once, in order, before any output is written, binding each argument by reference for the full expression ([format.args]: std::make_format_args). Before: format / print / println translated each argument where its field was written. Arguments were evaluated out of order: `println("unused ", side(1))` never ran side(1); `println("used {}", side(2))` printed `"used "` before side(2) ran; `println("twice {0} {0}", side(3))` ran side(3) at each field. tests/testformatargonce: madc now prints the same output as g++ 13 and clang++ 18 (-std=c++20, std::format). The fix: CirBuilder::lower_format_call evaluates all arguments at the head of the statement expression into temporaries via the new format_arg_bind path. Each field reads its temporary through format_field_stmt's revised contract. Reducer: tests/testformatargonce.mad with expected output from the oracles. BUGS.md: B99 entry removed.

@@ -83,44 +83,6 @@ int main() { int x = 1; printf("%s %s\n", w(x), w(1)); char *p = buf; printf("%s
   a non-const lvalue reference refuses a prvalue, an rvalue reference an
   lvalue. Its own commit, next after B89.
 
-### B93. `format` prints `signed char`, `unsigned char` and enums over them as characters
-
-```cpp
-enum small_e : unsigned char { sA = 0, sB, sC };
-int main()
-{
-    unsigned char u = 65;
-    signed char sc = 65;
-    char c = 65;
-    println("uchar=[{}] schar=[{}] char=[{}] enumlit=[{}]", u, sc, c, sB);
-    return 0;
-}
-```
-
-- g++ = clang++ (`-std=c++20`, the same line through `std::format`, the
-  enumerator as `+sB`): `uchar=[65] schar=[65] char=[A] enumlit=[1]`.
-  madc (`--std=madc`): `uchar=[A] schar=[A] char=[A] enumlit=[\001]` (SILENT:
-  `std::format` formats only `char` as a character; `signed char` and
-  `unsigned char` are integers, [format.formatter.spec]/2). A `uint8_t`
-  counter prints a control byte; an enum with a fixed `unsigned char`
-  underlying type prints its value as a raw byte, where a plain enum prints
-  the number.
-- Found 2026-09-30 while writing `tests/testmadcide_contrib` (pin 10 formats
-  a `repl_event` enumerator; the test formats it as a `long`).
-- Layer: the format lowering's argument classifier (`src/cir_format.cpp`
-  ~226) sends every type whose `rawtype()` is `dtINT8` or `dtUINT8` to
-  `fkChar` (`__madc_fmt_char`). `char` and `signed char` share one rawtype,
-  so the test cannot tell them apart; a scalar's identity is
-  `Program::proven_scalar_identity`'s (`indirection.md`), never `rawtype()`.
-- Fix: `fkChar` for plain `char` only (by identity); `signed char` and
-  `unsigned char` take the integer arms, and an enum its promoted underlying
-  type's integer arm (it has no char formatter in `std::format`). Its own
-  commit, with the reducer and both oracles.
-
-Found 2026-09-29 while fixing the aggregate and member attribute readers
-(c77129ab2, 6671bd11a). Measured that day with `bin/madc` at 6671bd11a,
-gcc 13 and clang 18.
-
 ### B81. A mem-initializer flattens a nested braced list, losing its nesting
 
 ```cpp
