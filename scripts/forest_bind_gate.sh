@@ -1230,6 +1230,46 @@ int main() {
 EOF
 run_case deletedctor "0 1 1 0"
 
+# --- case: constcopy — a bound class's `const X&` copy constructor stays one.
+#     A restored parameter keeps its recorded const flag (paramrec
+#     PF_CONST_PARAM -> FuncDef::const_params), which the copy constructor's
+#     selection reads: without it a member's `X(const X&)` cannot bind the
+#     const source of an implicit memberwise copy, no constructor is chosen,
+#     and the member is bit-copied — exit 0 with "v=1 live=1 after=-1" here
+#     (std::string as such a member: a double free, tests/testimplcopy).
+cat > tmp/fbgate_constcopy.h <<'EOF'
+#ifndef FBGATE_CONSTCOPY_H
+#define FBGATE_CONSTCOPY_H
+struct FbgCounted {
+	int *live;
+	int v;
+	FbgCounted(int *l, int x) : live(l), v(x) { ++*live; }
+	FbgCounted(const FbgCounted &o) : live(o.live), v(o.v + 100) { ++*live; }
+	~FbgCounted() { --*live; }
+};
+#endif
+EOF
+cat > tmp/fbgate_constcopy_producer.cpp <<'EOF'
+#include <fbgate_constcopy.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_constcopy_consumer.cpp <<'EOF'
+#include <fbgate_constcopy.h>
+#include <cstdio>
+struct Holder { FbgCounted c; int n; Holder(int *l, int k) : c(l, k), n(k) { } ~Holder() { } };
+int main() {
+	int live = 0;
+	{
+		Holder a(&live, 1);
+		Holder b(a);	// implicit copy: FbgCounted(const FbgCounted&) runs
+		printf("v=%d live=%d", b.c.v, live);
+	}
+	printf(" after=%d\n", live);
+	return 0;
+}
+EOF
+run_case constcopy "v=101 live=2 after=0"
+
 # --- case: subbind (THE OWNER'S BAR: a REAL integration test on the forest) ---
 # tests/testsubscript.mad (string/array subscripting, <string> + <map> whole)
 # freeze+bind == live == its .expect fixture. The last family that flipped it:
@@ -1681,5 +1721,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 30/30 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
+echo "forest_bind_gate: GREEN 31/31 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
 exit 0

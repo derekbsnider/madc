@@ -2100,6 +2100,21 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	return _restored;
 }
 
+// One recorded parameter back onto the function a DK_FUNC record rebuilds, as
+// it was parsed (LOADED == parsed): its type, its const flag
+// (FuncDef::const_params, which a copy constructor's selection reads) and its
+// C++ spelling, index-aligned with the parameters. Every arm that rebuilds a
+// FuncDef from a paramrec run pushes through here.
+static void restore_param(FuncDef *fd, DataDef *pd,
+			  const madc::dis::paramrec &pr,
+			  const madc::dis::FrozenDefArena &a)
+{
+	fd->parameters.push_back(pd);
+	fd->const_params.push_back((pr.flags & madc::dis::PF_CONST_PARAM) != 0);
+	const char *sp = pr.cpp_spelling_id ? a.c_str(pr.cpp_spelling_id) : NULL;
+	fd->param_cpp_spellings.push_back(sp ? sp : "");
+}
+
 void CirFrozenForest::materialize_pass()
 {
 	ForestWorkFrame _fw(_work_secs, _work_depth);
@@ -2636,10 +2651,10 @@ void CirFrozenForest::materialize_pass()
 					continue;	// not ready this round
 				bool pok = true;
 				std::vector<DataDef *> ps(fr.params_count);
+				std::vector<madc::dis::paramrec> prs(fr.params_count);
 				for (uint32_t p = 0; p < fr.params_count; ++p) {
-					madc::dis::paramrec pr;
-					if (!a.get_payload(fr.params_begin, p, pr)
-					    || !(ps[p] = arena_swizzle(pr.type_id, by_id))) {
+					if (!a.get_payload(fr.params_begin, p, prs[p])
+					    || !(ps[p] = arena_swizzle(prs[p].type_id, by_id))) {
 						pok = false;
 						break;
 					}
@@ -2649,7 +2664,7 @@ void CirFrozenForest::materialize_pass()
 				FuncDef *tfd = new FuncDef(*ret);
 				_mat_storage.push_back(tfd);
 				for (uint32_t p = 0; p < fr.params_count; ++p)
-					tfd->parameters.push_back(ps[p]);
+					restore_param(tfd, ps[p], prs[p], a);
 				tfd->is_varargs =
 					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
 				tfd->is_void_params =
@@ -3159,8 +3174,9 @@ void CirFrozenForest::materialize_pass()
 					_mat_storage.push_back(thisp);
 					fd->parameters.push_back(thisp);
 					// hidden __this — excluded from mangling, but the
-					// spelling array must stay index-aligned with
-					// parameters (parseFunction parity).
+					// const and spelling arrays stay index-aligned
+					// with parameters (parseFunction parity).
+					fd->const_params.push_back(false);
 					fd->param_cpp_spellings.push_back(std::string());
 				}
 				bool pok = true;
@@ -3178,7 +3194,6 @@ void CirFrozenForest::materialize_pass()
 					}
 					DataDef *pd = arena_swizzle(pr.type_id, by_id);
 					if (!pd) { pok = false; break; }
-					fd->parameters.push_back(pd);
 					// The C++ param spelling rides the paramrec exactly
 					// as on the free-function arm below: without it a
 					// restored method's signature is NOT the parsed
@@ -3186,9 +3201,7 @@ void CirFrozenForest::materialize_pass()
 					// (bind_external_class_symbols) fabricates a
 					// parameter-less symbol (C1Ev) for a ctor whose
 					// pack-side binding stayed empty.
-					const char *psp = pr.cpp_spelling_id
-						        ? a.c_str(pr.cpp_spelling_id) : NULL;
-					fd->param_cpp_spellings.push_back(psp ? psp : "");
+					restore_param(fd, pd, pr, a);
 					const uint8_t *db =
 						a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
 					if (db && pr.def_tok_count) {
@@ -3744,13 +3757,10 @@ void CirFrozenForest::materialize_pass()
 			}
 			DataDef *pd = arena_swizzle(pr.type_id, by_id);
 			if (!pd) { pok = false; break; }
-			fd->parameters.push_back(pd);
 			// v21: the C++ param spelling rides the record — the
 			// Itanium mangle of a declaration-only ns function
 			// (storage_alias_name at flush) reads it.
-			const char *ps = pr.cpp_spelling_id
-				       ? a.c_str(pr.cpp_spelling_id) : NULL;
-			fd->param_cpp_spellings.push_back(ps ? ps : "");
+			restore_param(fd, pd, pr, a);
 			const uint8_t *db = a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
 			if (db && pr.def_tok_count) {
 				CirRestoredTemplateRun run;

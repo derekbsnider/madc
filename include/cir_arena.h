@@ -472,10 +472,15 @@ struct vgrouprec {
 	uint32_t addr_point;	// VtableGroup.addr_point
 };
 
+// paramrec.flags: the parameter's recorded facts.
+enum ParamFlags : uint32_t {
+	PF_CONST_PARAM = 1u << 0,	// FuncDef::const_params[i]
+};
+
 // A function parameter (FuncDef::parameters[i]).
 struct paramrec {
 	uint32_t type_id;	// the parameter type, as a type-id
-	uint32_t flags;		// bit0 = const_param (grows)
+	uint32_t flags;		// ParamFlags
 	uint32_t cpp_spelling_id;	// param_cpp_spellings[i] (0 = render from type)
 	// v23: the parameter's DEFAULT-ARGUMENT expression, as its RAW SOURCE
 	// TOKEN run (FuncDef::param_default_tokens[i], .madh record form) in the

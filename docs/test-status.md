@@ -1,5 +1,7 @@
 # Test Status
 
+Frozen-forest const_param restoration (2026-10-01): `const_param` flag (`PF_CONST_PARAM`) is now restored from `paramrec` records when materializing function/method parameters from bound forests, fixing copy constructor selection on forest-bound classes. Reducer: forest_bind_gate constcopy case prints `v=101 live=2 after=0` (matches g++/clang++). Also: `testimplcopy` (string member copy) aborted with double-free before (forest bound), passes after. Tier 1: 5/5 JIT, 2/2 EXE, 2/2 OBJ. forest_bind_gate: 31/31 GREEN. Packed suite: 1850 passed, 0 failed, 9 skipped, 1 timeout (unrelated testmadcide_plugin_host). Tier 2: all six lanes at baselines.
+
 B37 deleted copy/move constructors (2026-09-28):
 `testdeletedcopyunique`, `testdeletedcopyreturn`, and `testdeletedmovector`
 require the same rejection as g++ and clang++ under C++17. Eleven focused

@@ -3943,7 +3943,8 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 		madc::dis::paramrec &pr = prs[p];
 		memset(&pr, 0, sizeof(pr));
 		pr.type_id         = pt[p];
-		pr.flags           = (p < fd->const_params.size() && fd->const_params[p]) ? 1u : 0u;
+		pr.flags           = (p < fd->const_params.size() && fd->const_params[p])
+				   ? madc::dis::PF_CONST_PARAM : 0u;
 		pr.cpp_spelling_id = (p < fd->param_cpp_spellings.size()
 				      && !fd->param_cpp_spellings[p].empty())
 				   ? forest_arena.strings.intern(fd->param_cpp_spellings[p].c_str()) : 0u;
