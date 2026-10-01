@@ -39626,6 +39626,39 @@ std::string Program::canonical_arg_key_fragment(
 		return sanitize_template_arg_fragment(cdd->name + sfx);
 	}
     }
+    // A MEMBER TYPE of a template-id (`typename strip<int32_t&>::type`) keys
+    // as the type it RESOLVES to — the one-key rule again: the real lane keys
+    // the resolved argument (template_type_arg_spelling), so the raw member
+    // spelling named a second, empty shell for the same specialization
+    // (make_tuple's `typedef tuple<typename __decay_and_strip<_Elements>::__type...>`
+    // in its body against its return type: c2mir "incompatible return-expr",
+    // tuple:2005). Resolved through the isolated-stream owner, and only
+    // outside a dependent parse: a pattern's member type names its own
+    // parameters, and a key is never rewritten from the parse context there.
+    if ( !argtoks.empty() && !dependent_parse_in_progress
+      && !class_pattern_capture_in_progress )
+    {
+	std::string scoped = spelling_trim(spelling);
+	if ( scoped.compare(0, 9, "typename ") == 0 )
+	    scoped = spelling_trim(scoped.substr(9));
+	std::vector<std::string> parts = split_scope_spelling(scoped);
+	bool member_of_template_id = false;
+	for ( size_t i = 0; i + 1 < parts.size(); ++i )
+	    if ( parts[i].find('<') != std::string::npos )
+		member_of_template_id = true;
+	if ( member_of_template_id )
+	    if ( DataDef *rd = resolve_type_token_range(argtoks, 0, argtoks.size()) )
+		if ( !datadef_has_unresolved_dependent_surface(rd) )
+		{
+		    std::string rs = template_type_arg_spelling(
+			new TokenDataType(rd->name.c_str(), *rd), "");
+		    if ( afp_in )
+			std::cerr << "[argfrag] member '" << spelling << "' -> '"
+				  << rs << "'" << std::endl;
+		    if ( !rs.empty() )
+			return sanitize_template_arg_fragment(rs);
+		}
+    }
     // A TEMPLATE-ID core (`alloc9<int>`) follows the same one-key rule:
     // a use site spells the RESOLVED type canonically
     // (`alloc9<int32_t>`, namespace-qualified), so an explicit
