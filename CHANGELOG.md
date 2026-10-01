@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### templates: instantiated function template specializations are candidates only for their originating call (B112)
+
+A specialization instantiated by one call is no longer a candidate for another call via the global overload set. [temp.over]/1 specifies a call's candidate set as the non-template functions plus, per function template, the specialization that THIS call's template-argument deduction produced. madc instantiated every called template and registered its specialization under the template's name as an ordinary overload, so a later call could bind a specialization from an earlier instantiation. `TokenCallFunc` carries `FnTemplateDeduction` (the outcome of instantiation for that call: NotRun, Failed, or Deduced with the specialization); `find_namespace_function_overload` ranks only the specialization recorded on the call. The fix covers calls in template bodies too: CirBuilder::resolve_copied_dependent_call deduces before ranking the tsubst re-resolution. tests/testsfinaedefaultmember restores `only_long(1L)` at the site that was removed to work around B112; both calls now rank correctly. Calls like `std::max(x, 0)` with `long x` no longer bind `max<long>` (instantiated elsewhere); they are now refused with a diagnostic quality issue filed as B114. Filed during this fix: B113 (SILENT: of two function templates that both deduce, the first declared is called, not the better conversion), B114 (a failed deduction is reported as an undefined MIR import), B115 (a function template over a `const T&...` pack is refused).
+
 ### templates: default template argument substitution failure removes candidates (B96)
 
 In a function template's default template argument, a member that a complete class lacks, a non-dependent alias argument that fails to fold (`std::_RequireInputIter`, `std::enable_if_t`), and `typename std::enable_if<false>::type` each remove the candidate, as [temp.deduct]/8 requires. `std::vector<int> v(40, 5)` now takes the fill constructor; its iterator-pair constructor template is invalid because `std::_RequireInputIter<int>` substitutes to a missing type.

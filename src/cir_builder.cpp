@@ -2733,6 +2733,11 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	// needlessly rejected calls with class-pointer/reference args — e.g.
 	// std::__do_uninit_copy(basic_string*, ...) — that resolve+instantiate fine.
 	// g++ shape: tsubst re-runs finish_call_expr on substituted args.)
+	// [temp.over]/1: the substituted call's candidates are the non-template
+	// overloads plus the specialization ITS deduction produces, so the call
+	// deduces FIRST and ranks with that outcome — never against whatever
+	// specializations other calls instantiated.
+	FnTemplateDeduction deduction;
 	auto instantiate_concrete_call = [&]() {
 		TokenCallFunc synth(tcf->var);
 		synth.explicit_template_args = explicit_args;
@@ -2744,6 +2749,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			synth.parameters.push_back(tsubst_concrete_arg_token(
 				concrete_param_types[i], i, param_origins[i]));
 		m_prog->instantiate_namespace_fn_template_for_call(&synth);
+		deduction = synth.deduction;
 	};
 	auto instantiate_concrete_operator_call = [&]() -> Variable * {
 		if (fd->function_display_name.compare(0, 8, "operator") != 0
@@ -2767,9 +2773,10 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		return op_callee;
 	};
 
+	instantiate_concrete_call();
 	Variable *winner = m_prog->find_namespace_function_overload(
 		fd->namespace_name, fd->function_display_name, at, &zeros,
-		&explicit_args);
+		&explicit_args, NULL, NULL, &deduction);
 	if (!winner) {
 		// A free OPERATOR template isn't a namespace function overload —
 		// it lives in the retained fn_template_map / free_operator_overloads
@@ -2778,25 +2785,10 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		// runs. Instantiate it here, exactly as that arm does (the eager
 		// first body parse used to do this as a side effect).
 		winner = instantiate_concrete_operator_call();
-	}
-	if (!winner) {
-		instantiate_concrete_call();
-		winner = m_prog->find_namespace_function_overload(
-			fd->namespace_name, fd->function_display_name, at, &zeros,
-			&explicit_args);
-	} else {
-		if (system_header_call && !body_available_for(winner)) {
-			Variable *inst = instantiate_concrete_operator_call();
-			if (!inst || !body_available_for(inst)) {
-				instantiate_concrete_call();
-				inst = m_prog->find_namespace_function_overload(
-					fd->namespace_name,
-					fd->function_display_name,
-					at, &zeros, &explicit_args);
-			}
-			if (inst)
-				winner = inst;
-		}
+	} else if (system_header_call && !body_available_for(winner)) {
+		Variable *inst = instantiate_concrete_operator_call();
+		if (inst && body_available_for(inst))
+			winner = inst;
 	}
 	if (!winner) {
 		if (error_out)
@@ -5087,7 +5079,8 @@ Variable *CirBuilder::call_target_variable(TokenCallFunc *tcf, FuncDef **fd_out)
 			Variable *w = m_prog->find_namespace_function_overload(
 					fd->namespace_name, fd->function_display_name,
 					at, &zeros, &tcf->explicit_template_args,
-					&strict_no_viable, &ambiguity);
+					&strict_no_viable, &ambiguity,
+					&tcf->deduction);
 			if (::getenv("MADC_OVL_PROBE"))
 				fprintf(stderr, "[ovl] cir rank %s::%s argc=%zu a0=%s -> %s\n",
 					fd->namespace_name.c_str(),

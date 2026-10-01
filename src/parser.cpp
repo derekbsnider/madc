@@ -22249,6 +22249,18 @@ const std::vector<std::string> &Program::NamespaceFnOverload::template_args() co
     FuncDef *fd = funcdef();
     return fd ? fd->overload_template_args : none;
 }
+// A function-template instantiation product, by its declaration identity: it
+// carries its bound template arguments, or the "\x01@<identity>" suffix its
+// registrar stamped (parseFunction's fold).
+static bool specialization_identity(const FuncDef *fd)
+{
+    return fd && (!fd->overload_template_args.empty()
+		  || fd->overload_spelling.find("\x01@") != std::string::npos);
+}
+bool Program::NamespaceFnOverload::specialization() const
+{
+    return specialization_identity(funcdef());
+}
 
 // A plain concrete overload — the candidates whose tie the ranker may call
 // AMBIGUOUS (a template set has its own partial-ordering and
@@ -22264,8 +22276,7 @@ static bool plain_concrete_overload(FuncDef *fd)
 {
     return fd && !fd->overload_spelling.empty()
 	&& fd->overload_spelling[0] != '\x01'
-	&& fd->overload_spelling.find("\x01@") == std::string::npos
-	&& fd->overload_template_args.empty() && !fd->is_varargs
+	&& !specialization_identity(fd) && !fd->is_varargs
 	&& !fd->is_member_template && !fd->dependent_pattern
 	&& !fd->tsubst_source;
 }
@@ -22339,7 +22350,8 @@ static Variable *rank_fn_overload_candidates(
 	const std::vector<const DataDef *> &argtypes,
 	const std::vector<bool> *zero_args = NULL,
 	const std::vector<DataDef *> *explicit_template_args = NULL,
-	std::string *ambiguity = NULL)
+	std::string *ambiguity = NULL,
+	const FnTemplateDeduction *deduction = NULL)
 {
     Variable *best = NULL;
     const Program::NamespaceFnOverload *best_e = NULL;
@@ -22356,6 +22368,14 @@ static Variable *rank_fn_overload_candidates(
 	// its score and — registered first — would win over the real
 	// instantiation, emitting an undefined `__ns_<fn>` import. Skip it.
 	if ( e.spelling() == FuncDef::template_placeholder_spelling() )
+	    continue;
+	// [temp.over]/1: a specialization is a candidate only as the product
+	// of THIS call's deduction. `k<long>`, instantiated by `k(1L, 1L)`, is
+	// no candidate for `k(1, 2L)` — its deduction fails (T is int and
+	// long) — so the call takes `k(double, double)`.
+	if ( deduction
+	  && deduction->outcome != FnTemplateDeduction::Outcome::NotRun
+	  && e.specialization() && e.var != deduction->specialization )
 	    continue;
 	if ( explicit_template_args && !explicit_template_args->empty() )
 	{
@@ -22491,7 +22511,8 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
 		const std::vector<const DataDef *> &argtypes,
 		const std::vector<bool> *zero_args,
 		const std::vector<DataDef *> *explicit_template_args,
-		bool *strict_no_viable, std::string *ambiguity)
+		bool *strict_no_viable, std::string *ambiguity,
+		const FnTemplateDeduction *deduction)
 {
     activate_forest_function_family(ns, name);
     if ( strict_no_viable )
@@ -22513,7 +22534,7 @@ Variable *Program::find_namespace_function_overload(const std::string &ns,
     Variable *best = rank_fn_overload_candidates(oi->second, argtypes,
 						 zero_args,
 						 explicit_template_args,
-						 ambiguity);
+						 ambiguity, deduction);
 #if MADC_DEBUG_FNTPL
     std::cerr << "FNTPL rank " << ns << "::" << name << " WINNER="
 	      << (best ? best->name : "(none)") << std::endl;
@@ -61356,7 +61377,7 @@ FuncDef *Program::resolved_call_funcdef(TokenCallFunc *tc, bool *no_winner)
     }
     Variable *w = find_namespace_function_overload(
 	fd->namespace_name, fd->function_display_name, at, &zeros,
-	&tc->explicit_template_args);
+	&tc->explicit_template_args, NULL, NULL, &tc->deduction);
     FuncDef *wfd = w ? dynamic_cast<FuncDef *>(w->type) : NULL;
     if ( wfd )
 	return wfd;
@@ -62207,6 +62228,16 @@ static bool call_involves_placeholder(TokenCallFunc *tc)
 	return is_type_dependent(tc);
 }
 
+// Does this call's function-template deduction wait for instantiation? A
+// type-dependent call inside a dependent parse, and — in any context — a call
+// whose explicit template-argument list still names a template parameter
+// (no type to instantiate to; see call_template_args_dependent).
+static bool fn_template_deduction_deferred(Program &pgm, TokenCallFunc *tc)
+{
+	return (pgm.dependent_parse_in_progress && call_involves_placeholder(tc))
+	    || call_template_args_dependent(tc);
+}
+
 static bool free_operator_concrete_param_matches(Program &pgm,
 		const std::string &sp, DataDef *arg_core,
 		bool relaxed_class_viability = false);
@@ -62247,10 +62278,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	}
     }
 #endif
-    if ( pgm.dependent_parse_in_progress && call_involves_placeholder(tc) )
-	return false;
     // …and UNCONDITIONALLY when the explicit template-argument list is itself
-    // still dependent. The gate above is scoped to a dependent parse because a
+    // still dependent. The first gate is scoped to a dependent parse because a
     // concrete-argument call inside a template body instantiates eagerly; a
     // template PARAMETER standing in an argument list is different in kind —
     // there is no type to instantiate to, in any context. tsubst's body-copy
@@ -62260,7 +62289,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     // DataDefTemplateParam and dependent_parse_in_progress already false.
     // Binding it produced a placeholder instance on the SHARED parse-once node
     // and overwrote the good one the expanding lane had already made.
-    if ( call_template_args_dependent(tc) )
+    // Both gates: fn_template_deduction_deferred.
+    if ( fn_template_deduction_deferred(pgm, tc) )
 	return false;
     DBG_PACK("try_inst %s args=%zu\n", key.c_str(), tc->parameters.size());
     // Env-gated probe (MADC_FNTPL_PROBE=<substr of the template key>): entry
@@ -65615,6 +65645,11 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     std::vector<FnTemplateDef> *mi = thawed_fn_templates(fn_key);
     if ( mi == fn_template_map.end() )
 	return NULL;
+    // The call's deduction outcome is what its overload resolution ranks
+    // (FnTemplateDeduction). A deferred (dependent) call has none yet.
+    tc->deduction = FnTemplateDeduction();
+    if ( fn_template_deduction_deferred(*this, tc) )
+	return NULL;
     // Order candidates most-specialized first ([temp.func.order]) so the
     // first-viable selection below picks the most specialized overload that
     // deduces. Incomparable candidates keep registration order.
@@ -65633,6 +65668,13 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc,
 						   NULL, NULL, &inst) )
 	{
+	    // A self-recursive instantiation's product is not registered yet
+	    // (inst NULL): no information, NotRun.
+	    if ( inst )
+	    {
+		tc->deduction.outcome = FnTemplateDeduction::Outcome::Deduced;
+		tc->deduction.specialization = inst;
+	    }
 	    // Pin the CALL's return type to the INSTANCE's ([temp.deduct] — the
 	    // deduced specialization's type IS the call's type). The placeholder
 	    // FuncDef returns int64, which is indistinguishable from a scalar
@@ -65649,6 +65691,7 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    }
 	    return inst;
 	}
+    tc->deduction.outcome = FnTemplateDeduction::Outcome::Failed;
     return NULL;
 }
 

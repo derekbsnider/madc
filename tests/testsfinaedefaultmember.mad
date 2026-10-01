@@ -8,9 +8,8 @@
 // and the tsubst of its body bailed. (Range construction is B111.)
 // pick() is the same rule on a free function: through std::_RequireInputIter,
 // and with the missing member named directly; only_long() is the enable_if
-// idiom (a member chain the class does not have). only_long(1L) stays out of
-// this TU: an instantiated only_long<long> would wrongly compete for
-// only_long(1) as an ordinary overload (B112).
+// idiom (a member chain the class does not have); only_long(1L) deduces
+// T = long, and its only_long<long> is no candidate for only_long(1).
 // Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
 #include <cstdio>
 #include <iterator>
@@ -43,6 +42,6 @@ int main()
 	printf("string-fill: %s\n", s.c_str());
 	printf("pick: %d %d\n", pick(1, 2), pick(&a[0], &a[1]));
 	printf("pick-direct: %d %d\n", pick_direct(1, 2), pick_direct(&a[0], &a[1]));
-	printf("enable-if: %d\n", only_long(1));
+	printf("enable-if: %d %d\n", only_long(1), only_long(1L));
 	return 0;
 }

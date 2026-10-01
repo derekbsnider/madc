@@ -1176,6 +1176,20 @@ public:
     virtual TokenPackExpansion *as_pack_expansion_tok() override { return this; }
 };
 
+// [temp.over]/1: a call's candidate set is the non-template functions plus,
+// per function template, the specialization THIS call's template-argument
+// deduction produced — never a specialization some other call instantiated.
+// instantiate_namespace_fn_template_for_call records the outcome on the call;
+// the namespace overload ranker admits specializations through it.
+// NotRun: no deduction information (deferred as dependent, never attempted,
+// or a self-recursive instantiation whose product is not registered yet).
+struct FnTemplateDeduction
+{
+    enum class Outcome : unsigned char { NotRun, Failed, Deduced };
+    Outcome outcome = Outcome::NotRun;
+    Variable *specialization = nullptr;	// Deduced: the overload-set entry
+};
+
 class TokenCallFunc: public TokenVar
 {
 public:
@@ -1206,6 +1220,10 @@ public:
     // TokenCallFunc-lane callee resolver) and the parse-side call rebuilds.
     // NULL = not a madc-instantiated member-template call (the common case).
     Variable *mti_instance = nullptr;
+    // The outcome of THIS call's namespace function-template deduction
+    // (instantiate_namespace_fn_template_for_call) — the specialization its
+    // overload resolution may consider (see FnTemplateDeduction).
+    FnTemplateDeduction deduction;
     bool auto_scope_context = false;
     TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
     virtual DataDef *returns()  const {
@@ -4250,6 +4268,9 @@ public:
 	FuncDef *funcdef() const;
 	const std::string &spelling() const;
 	const std::vector<std::string> &template_args() const;
+	// A function-template specialization (an instantiation product), not
+	// a declared function.
+	bool specialization() const;
     };
     registration_map<std::string, std::vector<NamespaceFnOverload> >
 	namespace_fn_overload_sets;
@@ -4272,13 +4293,17 @@ public:
     // (overload_spelling — frozen with the declaration, so a restored member
     // carries it too), and "distinct" is the scorer's own type identity
     // (typedef-transparent, cv stripped), never object identity.
+    // `deduction` (optional): the call's own template-argument deduction
+    // outcome — when it ran, the only specialization ranked is its product
+    // ([temp.over]/1); NULL or NotRun ranks every registered specialization.
     Variable *find_namespace_function_overload(const std::string &ns,
 					       const std::string &name,
 					       const std::vector<const DataDef *> &argtypes,
 					       const std::vector<bool> *zero_args = NULL,
 					       const std::vector<DataDef *> *explicit_template_args = NULL,
 					       bool *strict_no_viable = NULL,
-					       std::string *ambiguity = NULL);
+					       std::string *ambiguity = NULL,
+					       const FnTemplateDeduction *deduction = NULL);
     // A parsed CONCRETE free-operator function viable for the operand types:
     // ranks the union of every "::"+opname-suffixed overload set (all
     // namespaces + the global "" key). NULL when none binds. `zero_args`

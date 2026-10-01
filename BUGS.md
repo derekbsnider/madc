@@ -28,31 +28,31 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
-### B112. SILENT: an instantiated function template specialization competes as an ordinary overload
+### B113. SILENT: of two function templates that both deduce, the first declared is called, not the better conversion
 
 ```cpp
 #include <cstdio>
-template<typename T> int k(T, T) { return 1; }
-int k(double, double) { return 2; }
-int main() { printf("k %d %d\n", k(1L, 1L), k(1, 2L)); return 0; }
+#include <iterator>
+template<class It> int ri(It, It, std::input_iterator_tag) { return 1; }
+template<class It> int ri(It, It, std::forward_iterator_tag) { return 2; }
+int main() { int a[3] = { 1, 2, 3 }; printf("%d\n", ri(a, a + 3, std::random_access_iterator_tag())); return 0; }
 ```
 
-- g++ 13 = clang++ 18 (`-std=c++17`): `k 1 2`. madc (`--std=c++17`, B96's
-  fix applied): `k 1 1`, exit 0. `k(1, 2L)` deduces `T` as both `int` and
-  `long`, so the template is no candidate ([temp.deduct.call], [temp.over]);
-  `k(double, double)` is the only viable function. madc binds the
-  specialization `k<long>` that `k(1L, 1L)` instantiated, converting `1` to
-  `long`. Without `k(1L, 1L)` in the TU, madc is right.
-- The same shape accepts invalid code: a call whose deduction fails and has
-  no other candidate (`std::max(x, 0)` with `long x`, a g++ error) can bind
-  a specialization instantiated elsewhere in the TU.
-- Found 2026-10-01 while fixing B96 (its test's `only_long(1)` resolved to
-  an instantiated `only_long<long>`). Off the release path, filed per owner
-  2026-09-30; SILENT, it outranks other filed work.
-- Layer (suspected): overload resolution collects candidates by NAME, and an
-  instantiated specialization is registered under the template's name like
-  an ordinary function; a specialization should enter a call's candidate set
-  only through that call's own deduction.
+- g++ 13 = clang++ 18 (`-std=c++17`): `2`. madc (`--std=c++17`, at
+  `f6c808cc1` and with B112's fix): `1`, exit 0. Both templates deduce
+  `It = int*`; the tag converts to `forward_iterator_tag`, a nearer base,
+  so that specialization is the better candidate ([over.ics.rank]/4.4.4).
+  This is libstdc++'s tag dispatch (`_M_range_initialize`, `__distance`,
+  `__advance`): madc takes the input-iterator path.
+- Found 2026-10-01 during B111's recon. SILENT; off the release path, filed
+  per owner 2026-09-30, raised with the owner.
+- Layer: `Program::instantiate_namespace_fn_template_for_call` instantiates
+  the FIRST template that deduces (most-specialized order; incomparable ones
+  in declaration order), so a call's candidate set holds one specialization.
+  [temp.over]/1 adds every template's deduced specialization and ranks them
+  by conversion sequence. Deduction and body instantiation are one step
+  (`try_instantiate_namespace_fn_template`); deducing every template without
+  instantiating the losers' bodies needs a deduction-only primitive.
 
 ### B109. SILENT: a `void_t` detection specialization over ANOTHER template's member never matches
 
@@ -621,6 +621,27 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B115. A function template over a `const T&...` pack is refused: `eat()`, `eat(1)`
+
+```cpp
+#include <cstdio>
+template<typename... T> int eat(const T&...) { return (int)sizeof...(T); }
+int main() { printf("%d %d %d\n", eat(), eat(1), eat(1, 2.5)); return 0; }
+```
+
+- g++ 13 = clang++ 18 (`-std=c++17`): `0 1 2`. madc (`--std=c++17`, at
+  `f6c808cc1` and with B112's fix): `MIR error: import of undefined item
+  eat`, exit 1.
+- `MADC_FNTPL_PROBE=eat` on g++.dg/cpp0x/variadic32.C: the empty pack's
+  instantiation body throws (`Failed to find type when parsing function
+  parameters`), and the instance registered for `eat(1)` (`eat__o2`, stamped
+  `eat<int>`) is emitted with no parameters. The gxx-c++11 lane counts
+  variadic32 and variadic33 as passing because it stops at `--emit=c11`.
+- Found 2026-10-01 while validating B112. Off the release path, filed per
+  owner 2026-09-30.
+- Layer: not yet traced: the pack-expansion parameter declarator of an
+  instantiated `const T&...` (empty and one-element packs).
 
 ### B111. `std::vector` from an iterator pair is refused: `std::vector<int> v(a, a + 3)`
 
@@ -1338,6 +1359,35 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
   (`lowering-vs-raising.md` Tier 2/3), not only the check.
 
 ## Diagnostics
+
+### B114. A call whose function-template deduction fails is reported as an undefined MIR import
+
+```cpp
+#include <iterator>
+int main() { int a[3] = { 1, 2, 3 }; std::__iterator_category(a); return 0; }
+```
+
+- g++ 13: `2:62: error: no matching function for call to
+  '__iterator_category(int [3])'` (`const _Iter&` deduces `int [3]`, and
+  `iterator_traits<int [3]>` has no `iterator_category`). clang++ 18:
+  `2:38: error: no matching function for call to '__iterator_category'`.
+- madc (`--std=c++17`, at `f6c808cc1` and with B112's fix): `MIR error:
+  import of undefined item __ns_std___iterator_category`, exit 1, with no
+  source position.
+- The same for a set with specializations: `long x = 5; std::max(x, 0L);
+  std::max(x, 0);` (g++: `no matching function for call to 'max(long int&,
+  int)'`). Since B112's fix, `std::max(x, 0)` no longer binds `max<long>`;
+  it is refused with `import of undefined item __ns_std_max`.
+- Found 2026-10-01 during B111's recon. Off the release path, filed per owner
+  2026-09-30.
+- madc's deduction lane also reports "failed" for shapes it does not model
+  (an empty pack, a non-type explicit argument; g++.dg/cpp0x variadic32,
+  nontype4), so a failed deduction alone is not a "no candidate" verdict.
+- Layer (suspected): a one-member set (the placeholder) never reaches the
+  ranker's strict no-viable verdict (`find_namespace_function_overload`
+  returns early below two members), so `CirBuilder::call_target_variable`
+  falls back to the placeholder. The verdict needs the deduction lane to
+  tell a genuine failure ([temp.deduct]) from a shape it does not model.
 
 ### B108. "no matching constructor" spells an argument's type as madc's internal name: `int32_t`, and an array as its element
 
