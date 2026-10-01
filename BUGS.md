@@ -28,6 +28,74 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B112. SILENT: an instantiated function template specialization competes as an ordinary overload
+
+```cpp
+#include <cstdio>
+template<typename T> int k(T, T) { return 1; }
+int k(double, double) { return 2; }
+int main() { printf("k %d %d\n", k(1L, 1L), k(1, 2L)); return 0; }
+```
+
+- g++ 13 = clang++ 18 (`-std=c++17`): `k 1 2`. madc (`--std=c++17`, B96's
+  fix applied): `k 1 1`, exit 0. `k(1, 2L)` deduces `T` as both `int` and
+  `long`, so the template is no candidate ([temp.deduct.call], [temp.over]);
+  `k(double, double)` is the only viable function. madc binds the
+  specialization `k<long>` that `k(1L, 1L)` instantiated, converting `1` to
+  `long`. Without `k(1L, 1L)` in the TU, madc is right.
+- The same shape accepts invalid code: a call whose deduction fails and has
+  no other candidate (`std::max(x, 0)` with `long x`, a g++ error) can bind
+  a specialization instantiated elsewhere in the TU.
+- Found 2026-10-01 while fixing B96 (its test's `only_long(1)` resolved to
+  an instantiated `only_long<long>`). Off the release path, filed per owner
+  2026-09-30; SILENT, it outranks other filed work.
+- Layer (suspected): overload resolution collects candidates by NAME, and an
+  instantiated specialization is registered under the template's name like
+  an ordinary function; a specialization should enter a call's candidate set
+  only through that call's own deduction.
+
+### B109. SILENT: a `void_t` detection specialization over ANOTHER template's member never matches
+
+```cpp
+#include <cstdio>
+#include <iterator>
+#include <memory>
+#include <type_traits>
+template<typename T, typename = void> struct has_category { static const int v = 0; };
+template<typename T>
+struct has_category<T, std::void_t<typename std::iterator_traits<T>::iterator_category>> { static const int v = 1; };
+struct Iter { typedef std::input_iterator_tag iterator_category; typedef int value_type;
+	typedef long difference_type; typedef int *pointer; typedef int &reference; };
+struct Handle { int id; };
+struct HandleDeleter { typedef Handle *pointer; void operator()(Handle *h) const { delete h; } };
+int main()
+{
+	printf("detect: %d %d %d\n", has_category<int>::v, has_category<int *>::v, has_category<Iter>::v);
+	printf("deleter-pointer: %d\n",
+	       (int)std::is_same<std::unique_ptr<int, HandleDeleter>::pointer, Handle *>::value);
+	return 0;
+}
+```
+
+- g++ 13 = clang++ 18 (`-std=c++17`): `detect: 0 1 1`, `deleter-pointer: 1`.
+  madc (`--std=c++17`, at `8f6df07b2`): `detect: 0 0 0`, `deleter-pointer:
+  0`, exit 0. libstdc++'s own `unique_ptr` detects a deleter's `pointer`
+  this way (`bits/unique_ptr.h:158`, `__void_t<typename
+  remove_reference<_Ep>::type::pointer>`), so `unique_ptr<T, D>::pointer`
+  silently ignores `D::pointer`.
+- The same idiom over the parameter's own member (`void_t<typename
+  T::category>`) is right.
+- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
+  2026-09-30; it outranks other filed work (SILENT).
+- Layer: `Program::eval_void_t_detection_slot`'s argument walk reads the
+  spelling and requires its first scope segment to be a deduced parameter
+  (`ded.find(segs[0])`), so `std::iterator_traits<T>::...` fails before any
+  resolution. Design: an argument the spelling walk cannot read is
+  substituted (its token run, `template_argument_runs`) and resolved by
+  `resolve_template_param_default_type` (`require_full_parse`), the
+  substitution context B96's fix gives (a missing member there is the
+  failure).
+
 ### B102. A namespace-scope object's destructor never runs at exit
 
 ```cpp
@@ -554,31 +622,86 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
-### B96. `std::vector<int> v(40, 5);` is refused: the iterator-pair constructor is instantiated
+### B111. `std::vector` from an iterator pair is refused: `std::vector<int> v(a, a + 3)`
 
 ```cpp
-#include <vector>
 #include <cstdio>
-std::vector<int> many(40, 5);
-int main() { std::vector<int> local(3, 9); printf("%zu %d %zu %d\n", many.size(), many[39], local.size(), local[2]); return 0; }
+#include <vector>
+int main()
+{
+	int a[3] = { 4, 5, 6 };
+	std::vector<int> range(a, a + 3);
+	std::vector<int> copy(range.begin(), range.end());
+	printf("%zu %d %zu %d\n", range.size(), range[2], copy.size(), copy[0]);
+	return 0;
+}
 ```
 
-- g++ = clang++ (`-std=c++17`): `40 5 3 9`. madc (`--std=c++17`, a file and
-  the REPL alike): `cir error: parse-once internal: tsubst bailed on the
-  covered instantiation ... of std::vector::vector<_InputIterator,
-  __anon_tparam0> [why: tsubst: unresolved dependent member call]
-  @/usr/include/c++/13/bits/stl_vector.h:709`, and the unit is not compiled.
-- `vector<int> v(n, 0)` is beginner C++'s everyday constructor; the teaching
-  IDE's users meet it at once. Schedule before the release's seam.
-- Found 2026-09-30 while trying `%whos` over a `std::vector` (plan §41.11a
-  step 3d).
-- Layer (suspected): overload resolution keeps the template
-  `vector(_InputIterator, _InputIterator, const allocator_type &)` for two
-  `int` arguments; its `_RequireInputIter<_InputIterator>` default template
-  argument ([temp.deduct]/8, SFINAE) should remove it, leaving
-  `vector(size_type, const value_type &, const allocator_type &)`. A core
-  parser change (template overload resolution): its own focused session
-  (owner, 2026-09-13).
+- g++ 13 = clang++ 18 (`-std=c++17`): `3 6 3 4`. madc (`--std=c++17`): from
+  `int*`, c2mir's check refuses the iterator-pair constructor's body
+  (`stl_vector.h:711:23: incompatible argument type for struct/union type
+  parameter`); from vector iterators, `tsubst bailed on ...
+  _M_range_initialize__mti`. The same at `8f6df07b2` and with B96's fix.
+- The candidate is chosen correctly (B96 is the fill constructor); the
+  iterator-pair constructor's instantiated body is what fails.
+- Found 2026-10-01 while fixing B96. Off the release path, filed per owner
+  2026-09-30; beginner C++ copies arrays into vectors this way.
+- Layer: not yet traced: `vector(_InputIterator, _InputIterator, const
+  allocator_type &)` -> `_M_range_initialize(__first, __last,
+  std::__iterator_category(__first))`, the tag-dispatched call (line 711) and
+  the forward-iterator overload's body (line 1671).
+
+### B110. `std::string` from an iterator pair is refused: `std::string t(s.begin(), s.end())`
+
+```cpp
+#include <cstdio>
+#include <string>
+int main()
+{
+	const char *p = "abc";
+	std::string t(p, p + 3);
+	std::string u(t.cbegin(), t.cend());
+	printf("%s %s\n", t.c_str(), u.c_str());
+	return 0;
+}
+```
+
+- g++ 13 (`-std=c++17`): `abc abc`. madc (`--std=c++17`, at `8f6df07b2`):
+  `cir error: no matching constructor for call to
+  'basic_string_char_std__char_traits_char__std__allocator_char_(char*,
+  char*)'`, and the same for the `__normal_iterator` pair; not compiled.
+- `std::vector<int>(first, last)` works, and so does a free function
+  template over `std::_RequireInputIter` with string iterators. The
+  candidate is lost before deduction: the iterator-pair constructor
+  template never enters `instantiate_fn_template_binding`
+  (`MADC_MTB_PROBE` shows no `basic_string` constructor key).
+- A reversed or copied string (`std::string r(s.rbegin(), s.rend())`) is
+  everyday beginner C++.
+- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
+  2026-09-30.
+- Layer: not yet traced: how `basic_string`'s member constructor templates
+  reach the constructor candidate set.
+
+### B107. `sizeof(typename C<T>::m)` outside a template is refused: "Expecting identifier"
+
+```cpp
+#include <cstdio>
+template<typename T> struct traits {};
+template<typename T> struct traits<T *> { typedef int category; };
+int main() { traits<int *>::category c = 3; printf("p1 %d %zu\n", c, sizeof(typename traits<int *>::category)); return 0; }
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `p1 3 4`. madc: `4:109: error:
+  Expecting identifier` at the `typename` inside `sizeof(...)`.
+- C++11 allows `typename` before a qualified name outside a template
+  ([temp.res]/5). The same operand in a template's default argument
+  (`enable_if<sizeof(typename traits<It>::category) != 0>`) is refused too,
+  which there surfaces as a lost candidate: `no matching constructor`.
+- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
+  2026-09-30.
+- Layer (suspected): `sizeof`'s type-id operand reader (`parse_type_id` is
+  the type-id owner, `indirection.md`) does not take a `typename`-prefixed
+  qualified name.
 
 ### B100. A `const var &` parameter refuses a text prvalue: `take("x")`, `take(format(...))`
 
@@ -1215,6 +1338,27 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
   (`lowering-vs-raising.md` Tier 2/3), not only the check.
 
 ## Diagnostics
+
+### B108. "no matching constructor" spells an argument's type as madc's internal name: `int32_t`, and an array as its element
+
+```cpp
+struct V { V(unsigned long, const int &) {} };
+int main() { int arr[2] = { 7, 8 }; V y(arr, arr + 2); return 0; }
+```
+
+- g++ 13: `2:41: error: invalid conversion from 'int*' to 'long unsigned
+  int'` (the one candidate, the array argument decayed to `int*`). clang++
+  18: `2:39: error: no matching constructor for initialization of 'V'`.
+- madc (`--std=c++17`, at `8f6df07b2`): `cir error: no matching constructor
+  for call to 'V(int32_t, int32_t*)'`: `int` is spelled `int32_t`, and the
+  array argument is spelled as its element type (neither `int [2]` nor the
+  decayed `int*`).
+- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
+  2026-09-30.
+- Layer (suspected): the message's argument list is spelled from the
+  flattened `datadef()` with the internal type names; the source's names and
+  `Program::array_operand_type` are the owners (`indirection.md`; owner rule
+  "show the source's name").
 
 ### B106. A class template's missing dependent member type is reported as an internal ClassPattern error at the instantiation
 

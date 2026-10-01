@@ -7757,10 +7757,18 @@ static bool class_has_unresolved_dependent_surface(DataDefCLASS *cls)
 	|| class_has_dependent_base(cls));
 }
 
-static bool class_allows_opaque_member_type(DataDefCLASS *cls)
+bool Program::class_allows_opaque_member_type(DataDefCLASS *cls) const
 {
     if ( class_has_unresolved_dependent_surface(cls) )
 	return true;
+    // [temp.deduct]/8: in a substitution's immediate context a complete,
+    // concrete class without the member makes the type invalid — the
+    // deduction fails (`typename iterator_traits<int>::iterator_category` in
+    // std::_RequireInputIter, which removes vector's iterator-pair
+    // constructor for `vector<int>(40, 5)`). An incomplete shell keeps the
+    // leniency: its members are not known yet.
+    if ( in_substitution_context && cls && !is_incomplete_class_datadef(cls) )
+	return false;
     return cls && cls->from_system_header
 	&& cls->canonical_cpp_spelling().find('<') != std::string::npos;
 }
@@ -10937,6 +10945,9 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // guard above.
     assert(!class_pattern_capture_in_progress);
 
+    // The arguments are resolved; the class BODY is a new instantiation,
+    // never a substitution's immediate context ([temp.deduct]/8).
+    SubstitutionContext body_context(*this, false);
     bool force_legacy = force_legacy_class_patterns;
     const char *force_env = ::getenv("MADC_CLASS_PATTERN_FORCE_LEGACY");
     if ( force_env && *force_env && strcmp(force_env, "0") != 0 )
@@ -12236,6 +12247,18 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     return use_site_type_token((TokenDataType *)(*now), tb);
 }
 
+// [temp.deduct]/8: in a substitution's immediate context an argument that
+// names no template parameter (alias_arg_tokens_dependent) is not dependent,
+// so its failure to fold or resolve is the substitution failure itself, not
+// a deferral — `is_convertible<__iter_category_t<int>, input_iterator_tag>::
+// value` in std::_RequireInputIter<int>. Outside that context a failure stays
+// a deferral (the opaque placeholder madc's header modeling leans on).
+bool Program::failure_is_substitution_failure(
+	const std::vector<TokenBase *> &arg_tokens)
+{
+    return in_substitution_context && !alias_arg_tokens_dependent(arg_tokens);
+}
+
 bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
 		     const std::vector<std::vector<TokenBase *> > &arg_tokens)
 {
@@ -12263,7 +12286,8 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
 	    // A non-type arg is concrete iff it constant-folds; a still-dependent
 	    // arg (`bwr<_Tp>::value` with `_Tp` unbound) Throws and is caught here.
 	    int64_t v = 0;
-	    if ( !fold_nontype_arg_constant(arg_tokens[i], v) )
+	    if ( !fold_nontype_arg_constant(arg_tokens[i], v)
+	      && !failure_is_substitution_failure(arg_tokens[i]) )
 		all_concrete = false;
 	    continue;
 	}
@@ -12287,7 +12311,8 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
 	tokens.swap_back(std::move(saved_tokens));
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
-	if ( !rt || datadef_has_unresolved_dependent_surface(&rt->definition) )
+	if ( !rt ? !failure_is_substitution_failure(arg_tokens[i])
+		 : datadef_has_unresolved_dependent_surface(&rt->definition) )
 	    all_concrete = false;
     }
     if ( pushed_owner_scope
@@ -50606,7 +50631,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    // A base-specifier is a COMMITTED type context (`typename` is
 	    // forbidden here) — descend with the opaque escape enabled.
 	    if ( bcls && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS
-	      && class_allows_opaque_member_type(bcls) )
+	      && pgm.class_allows_opaque_member_type(bcls) )
 	    {
 		if ( base_vri )
 		    pgm.allow_variadic_real_inst = true;
@@ -51828,7 +51853,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		// class_scope_stack to be EMPTY.
 		TokenDataType *mtype = pgm.resolve_member_storage_type(type_head);
 		if ( !mtype
-		  && (class_allows_opaque_member_type(ddc)
+		  && (pgm.class_allows_opaque_member_type(ddc)
 		   || pgm.is_system_header_path(TokenBase::_parse_file))
 		  && type_head && is_contextual_identifier_token(type_head) )
 		{
@@ -63018,6 +63043,9 @@ DataDef *Program::resolve_template_param_default_type(
 {
     if ( default_tokens.empty() )
 	return NULL;
+    // The substitution's immediate context ([temp.deduct]/8): an invalid
+    // type in it is this resolve's NULL, the deduction failure.
+    SubstitutionContext immediate(*this, true);
     std::vector<TokenBase *> body =
 	substitute_template_binding(default_tokens, binding);
     body.push_back(new TokenSemi());
@@ -63085,10 +63113,17 @@ DataDef *Program::resolve_template_param_default_type(
     // sentinel mean a member-type-chain miss that resolve_member_chain_or_type
     // tolerated by returning the class itself (`enable_if<false,bool>::type`
     // -> the class, `::type` unconsumed) — for constraint evaluation that IS
-    // the substitution failure. Off for the defaults-fill callers (their
-    // established contract accepts a resolved base).
+    // the substitution failure. require_full_parse refuses ANY leftover; the
+    // defaults-fill callers leave it off, and refuse only the member-chain
+    // leftover below.
     if ( resolved && require_full_parse
       && peekToken() && peekToken()->id() != TokenID::tkSemi )
+	resolved = NULL;
+    // For every caller, a member chain left unconsumed (`::type` after
+    // `enable_if<false>`) is a member the class does not have: in this
+    // substitution's immediate context that is the deduction failure
+    // ([temp.deduct]/8), never the class itself.
+    if ( resolved && peekToken() && peekToken()->id() == TokenID::tkNS )
 	resolved = NULL;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
@@ -64628,6 +64663,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	pgm.pending_fn_instantiation_symbol_name =
 	    sep == std::string::npos ? key : key.substr(sep + 2);
     }
+    // The body is a new instantiation, never a substitution's immediate
+    // context ([temp.deduct]/8).
+    Program::SubstitutionContext body_context(pgm, false);
     ++pgm.fn_template_instantiation_depth;
     try
     {

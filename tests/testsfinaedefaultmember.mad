@@ -1,0 +1,48 @@
+// B96: `std::vector<int> v(40, 5)` takes vector's fill constructor. Its
+// iterator-pair constructor template is removed by its default template
+// argument std::_RequireInputIter<int>: iterator_traits<int> has no
+// iterator_category, so substituting the default is invalid and the deduction
+// fails ([temp.deduct]/8). madc kept the candidate (a missing member of a
+// complete system-header class became an opaque member type, and an alias
+// argument that failed to fold was read as dependent), chose it for two ints,
+// and the tsubst of its body bailed. (Range construction is B111.)
+// pick() is the same rule on a free function: through std::_RequireInputIter,
+// and with the missing member named directly; only_long() is the enable_if
+// idiom (a member chain the class does not have). only_long(1L) stays out of
+// this TU: an instantiated only_long<long> would wrongly compete for
+// only_long(1) as an ordinary overload (B112).
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <iterator>
+#include <string>
+#include <type_traits>
+#include <vector>
+
+template<typename It, typename = std::_RequireInputIter<It>>
+int pick(It, It) { return 1; }
+int pick(long, long) { return 2; }
+
+template<typename It, typename = typename std::iterator_traits<It>::iterator_category>
+int pick_direct(It, It) { return 1; }
+int pick_direct(long, long) { return 2; }
+
+// The enable_if idiom spelled with `typename ...::type`: enable_if<false> has
+// no `type`, so the default is invalid for T = int.
+template<typename T, typename = typename std::enable_if<std::is_same<T, long>::value>::type>
+int only_long(T) { return 1; }
+int only_long(double) { return 2; }
+
+std::vector<int> many(40, 5);
+
+int main()
+{
+	std::vector<int> local(3, 9);
+	int a[3] = { 4, 5, 6 };
+	std::string s(3, 'x');
+	printf("fill: %zu %d %zu %d\n", many.size(), many[39], local.size(), local[2]);
+	printf("string-fill: %s\n", s.c_str());
+	printf("pick: %d %d\n", pick(1, 2), pick(&a[0], &a[1]));
+	printf("pick-direct: %d %d\n", pick_direct(1, 2), pick_direct(&a[0], &a[1]));
+	printf("enable-if: %d\n", only_long(1));
+	return 0;
+}

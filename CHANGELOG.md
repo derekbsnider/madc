@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### templates: default template argument substitution failure removes candidates (B96)
+
+In a function template's default template argument, a member that a complete class lacks, a non-dependent alias argument that fails to fold (`std::_RequireInputIter`, `std::enable_if_t`), and `typename std::enable_if<false>::type` each remove the candidate, as [temp.deduct]/8 requires. `std::vector<int> v(40, 5)` now takes the fill constructor; its iterator-pair constructor template is invalid because `std::_RequireInputIter<int>` substitutes to a missing type.
+
 ### diagnostics: the diagnostic caret underlines the token as gcc does
 
 A diagnostic's caret line now underlines the cited token as gcc does (`^` under its first character, `~` under the rest of the token's screen columns), including the REPL's diagnostics. The `Diagnostic` record carries the token's end (end_line and end_column from `madc_token_end`); positional recorders fill it; the echo renderer draws `^` at the start byte and `~` for each further screen column through the token's end on the line. A token that runs onto the next line is underlined to the line's end (gcc's first-line convention; madc echoes one line).

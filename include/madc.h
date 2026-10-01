@@ -4399,6 +4399,30 @@ public:
     // body are consumed unevaluated, exactly like instantiated class-template
     // member bodies (parse_static_assert_statement).
     size_t fn_template_instantiation_depth = 0;
+    // [temp.deduct]/8: true while the IMMEDIATE context of a substitution is
+    // resolved — a function template's default template argument or its
+    // SFINAE constraint (resolve_template_param_default_type), template-ids
+    // and their arguments included. An invalid type there is the deduction
+    // failure: a member a complete class does not have is not an opaque
+    // member type (class_allows_opaque_member_type). A new instantiation —
+    // a class template's body, a function template's body — is not the
+    // immediate context and clears it. Per-Program state: a Program is one
+    // thread's (thread-safety.md).
+    bool in_substitution_context = false;
+    struct SubstitutionContext
+    {
+	Program &pgm;
+	bool saved;
+	SubstitutionContext(Program &p, bool immediate)
+	    : pgm(p), saved(p.in_substitution_context)
+	{ pgm.in_substitution_context = immediate; }
+	~SubstitutionContext() { pgm.in_substitution_context = saved; }
+    };
+    // A member TYPE named of `cls` that lookup did not find may stand as an
+    // opaque member type: a class with an unresolved dependent surface, or
+    // (outside a substitution's immediate context) a system-header class
+    // template instantiation — the leniency madc's header modeling leans on.
+    bool class_allows_opaque_member_type(DataDefCLASS *cls) const;
     // True only while resolving a qualified member-TYPE chain (`typename X<..>::type`):
     // a concrete-arg trailing-type-pack class template is then REALLY instantiated
     // (body parse + member eval) so its member types fold (e.g. `__construct_helper<
@@ -8087,6 +8111,11 @@ public:
     // deferred dependent use.
     bool alias_use_args_all_concrete(const TemplateAliasDef &td,
 			 const std::vector<std::vector<TokenBase *> > &arg_tokens);
+    // An alias-use argument's failure to fold / resolve is a SUBSTITUTION
+    // FAILURE (not a dependent deferral): in a substitution's immediate
+    // context (in_substitution_context) for an argument naming no template
+    // parameter ([temp.deduct]/8).
+    bool failure_is_substitution_failure(const std::vector<TokenBase *> &arg_tokens);
     // An arg token sequence is DEPENDENT when it names a live template
     // parameter or carries a dependent-surface type token — such an arg
     // legitimately fails to resolve NOW and resolves at instantiation;
