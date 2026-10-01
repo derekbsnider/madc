@@ -2123,7 +2123,7 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 				out = inner;
 		} else if (on && on->base.code != N_ADDR && on->datadef()
 			   && as_class_instance(on->datadef())) {
-			out = node1(N_ADDR, out, arg);
+			out = copied_object_address(out, arg);
 		} else if (on && on->base.code == N_ID && !on->datadef()
 			   && on->origin_id) {
 			// A bare pattern N_ID carries no datadef; recover the object
@@ -2139,7 +2139,7 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 			if (vdd && subst)
 				vdd = subst_datadef_active(vdd, *subst);
 			if (vdd && as_class_instance(vdd))
-				out = node1(N_ADDR, out, arg);
+				out = copied_object_address(out, arg);
 		} else if (on && (on->base.code == N_FIELD
 				  || on->base.code == N_DEREF_FIELD)
 			   && on->origin_id) {
@@ -2164,6 +2164,18 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 		return node2(N_CAST, ptr_type_node(formal), out, arg);
 	}
 	if (refp && formal && formal->is_pointer()) {
+		// A dereference the instance re-resolves (tsubst_dependent_operator)
+		// to a by-value operator* is a prvalue where the pattern's builtin
+		// `*v` was an lvalue it bound as `&*v`: bind the instance's value,
+		// through a temporary ([dcl.init.ref]/5) — `put(*b)`.
+		TsubstOperatorPlan plan;
+		if (subst && tsubst_operator_plan(arg, *subst, plan) && plan.rebuilt
+		    && expr_is_nonaddressable_rvalue(plan.rebuilt)) {
+			cir_node *an = CIR_NODE(out);
+			if (an && an->base.code == N_ADDR)
+				out = c2mir_node_first_op(out);
+			arg = plan.rebuilt;
+		}
 		cir_node *on = CIR_NODE(out);
 		DataDef *value_type = on ? on->datadef() : NULL;
 		if (!value_type && arg)
@@ -2253,7 +2265,7 @@ node_t CirBuilder::copied_class_value_arg(TokenBase *arg, node_t value,
 	prefix.push_back(var_decl(ref, arg));
 	prefix.push_back(node2(N_EXPR, list(),
 			       node2(N_ASSIGN, id(rname, arg),
-				     node1(N_ADDR, value, arg), arg),
+				     copied_object_address(value, arg), arg),
 			       arg));
 	TokenVar *stand_in = new TokenVar(*ref);
 	stand_in->file = arg->file;
@@ -2266,6 +2278,246 @@ node_t CirBuilder::copied_class_value_arg(TokenBase *arg, node_t value,
 		      m_pending_stmts.end());
 	m_pending_stmts.swap(saved);
 	return r;
+}
+
+// The builtin node a binary operator token lowers to (N_NE for `!=`, ...);
+// false for a token with no builtin binary lowering.
+static bool builtin_binary_operator_code(TokenID id, c2mir_node_code_t &code)
+{
+	switch (id) {
+	case TokenID::tkAdd:    code = N_ADD; return true;
+	case TokenID::tkSub:    code = N_SUB; return true;
+	case TokenID::tkMul:    code = N_MUL; return true;
+	case TokenID::tkDiv:    code = N_DIV; return true;
+	case TokenID::tkMod:    code = N_MOD; return true;
+	case TokenID::tkAssign: code = N_ASSIGN; return true;
+	case TokenID::tkEquals: code = N_EQ; return true;
+	case TokenID::tkNotEq:  code = N_NE; return true;
+	case TokenID::tkLT:     code = N_LT; return true;
+	case TokenID::tkLE:     code = N_LE; return true;
+	case TokenID::tkGT:     code = N_GT; return true;
+	case TokenID::tkGE:     code = N_GE; return true;
+	case TokenID::tkBand:   code = N_AND; return true;
+	case TokenID::tkBor:    code = N_OR; return true;
+	case TokenID::tkXor:    code = N_XOR; return true;
+	case TokenID::tkLand:   code = N_ANDAND; return true;
+	case TokenID::tkLor:    code = N_OROR; return true;
+	case TokenID::tkBSL:    code = N_LSH; return true;
+	case TokenID::tkBSR:    code = N_RSH; return true;
+	case TokenID::tkComma:  code = N_COMMA; return true;
+	case TokenID::tkAddEq:  code = N_ADD_ASSIGN; return true;
+	case TokenID::tkSubEq:  code = N_SUB_ASSIGN; return true;
+	case TokenID::tkMulEq:  code = N_MUL_ASSIGN; return true;
+	case TokenID::tkDivEq:  code = N_DIV_ASSIGN; return true;
+	case TokenID::tkModEq:  code = N_MOD_ASSIGN; return true;
+	case TokenID::tkBandEq: code = N_AND_ASSIGN; return true;
+	case TokenID::tkBorEq:  code = N_OR_ASSIGN; return true;
+	case TokenID::tkXorEq:  code = N_XOR_ASSIGN; return true;
+	case TokenID::tkBSLEq:  code = N_LSH_ASSIGN; return true;
+	case TokenID::tkBSREq:  code = N_RSH_ASSIGN; return true;
+	default: return false;
+	}
+}
+
+Variable *CirBuilder::copied_address_holding_param(node_t n)
+{
+	cir_node *cn = n ? CIR_NODE(n) : NULL;
+	if (!cn || cn->base.code != N_ID || !m_cur_method)
+		return NULL;
+	for (Variable *pv : m_cur_method->parameters)
+		if (pv && (pv->is_reference() || param_is_invisible_ref(*pv))
+		    && cir_id_spells(cn, pv->name.c_str()))
+			return pv;
+	return NULL;
+}
+
+node_t CirBuilder::copied_object_address(node_t value, TokenBase *origin)
+{
+	return copied_address_holding_param(value)
+		? value : node1(N_ADDR, value, origin);
+}
+
+Variable *CirBuilder::tsubst_operand_variable(Variable &pattern_var,
+				const std::map<DataDef *, DataDef *> &subst)
+{
+	if (!template_param_under_type_layers(pattern_var.type))
+		return NULL;
+	if (m_cur_method)
+		for (Variable *iv : m_cur_method->parameters)
+			if (iv && iv->name == pattern_var.name)
+				return iv;
+	DataDef *concrete = subst_datadef_active(pattern_var.type, subst);
+	if (!concrete || template_param_under_type_layers(concrete))
+		return NULL;
+	Variable *v = new Variable(pattern_var.name, *concrete, 1, NULL, false);
+	v->flags = pattern_var.flags;
+	return v;
+}
+
+// [temp.dep.res]: an operator whose operand is type-dependent is looked up
+// when the template is instantiated, on the operand's substituted type — g++
+// rebuilds it in tsubst_copy_and_build through build_x_binary_op /
+// build_x_unary_op, the non-template path. A pattern operand typed by a bare
+// template parameter (`I b; b != e`, `*b`, `++b`) gave the pattern no class to
+// look an operator up in, so it lowered the builtin form, and an instance
+// whose I is a class (an iterator) got `!=` / `*` / `++` on a struct. When a
+// NAMED operand substitutes to a class, lower the operator again through the
+// ordinary dispatch with the instance's variable in the operand slot: binary
+// and inc/dec operators through translate_expr (class_operator_call and the
+// unary/postfix owners), `*v` through build_indirection, the one dereference
+// builder. A dependent operand that is not a named variable, or a
+// substitution that leaves no class operand (a pointer), keeps the generic
+// copy.
+bool CirBuilder::tsubst_operator_plan(TokenBase *tb,
+				const std::map<DataDef *, DataDef *> &subst,
+				TsubstOperatorPlan &plan)
+{
+	plan = TsubstOperatorPlan();
+	if (!tb || !m_prog)
+		return false;
+	auto stand_in = [&](Variable &v, TokenBase *at) -> TokenVar * {
+		TokenVar *s = new TokenVar(v);
+		s->file = at->file;
+		s->line = at->line;
+		s->column = at->column;
+		return s;
+	};
+	// `*v`: a TokenDeref names v; a reference v is a TokenDerefExpr over it
+	// (build_indirection's expression arm).
+	Variable *deref_var = NULL;
+	if (TokenDeref *td = tb->as_deref_tok())
+		deref_var = &td->var;
+	else if (TokenDerefExpr *tde = tb->as_deref_expr_tok())
+		if (tde->expr && tde->expr->type() == TokenType::ttVariable)
+			if (TokenVar *dv = tde->expr->as_var_tok())
+				deref_var = &dv->var;
+	if (deref_var) {
+		Variable *cv = tsubst_operand_variable(*deref_var, subst);
+		if (!cv)
+			return false;
+		TokenVar *operand = stand_in(*cv, tb);
+		if (!operand_object_class(operand))
+			return false;
+		plan.rebuilt = m_prog->build_indirection(operand, tb);
+		return plan.rebuilt != NULL;
+	}
+	if (tb->as_deref_expr_tok())
+		return false;
+	TokenOperator *top = tb->is_operator() ? tb->as_operator_tok() : NULL;
+	if (!top)
+		return false;
+	c2mir_node_code_t unused;
+	if (tb->id() != TokenID::tkInc && tb->id() != TokenID::tkDec
+	    && (!top->left || !top->right
+		|| !builtin_binary_operator_code(tb->id(), unused)))
+		return false;
+	bool class_operand = false;
+	// false: an operand this re-resolution cannot stand in for.
+	auto concrete_operand = [&](TokenBase *&slot) -> bool {
+		if (!slot)
+			return true;
+		TokenVar *tv = slot->type() == TokenType::ttVariable
+			? slot->as_var_tok() : NULL;
+		if (!tv)
+			return !template_param_under_type_layers(slot->datadef());
+		Variable *cv = tsubst_operand_variable(tv->var, subst);
+		if (!cv)
+			return !template_param_under_type_layers(tv->var.type);
+		slot = stand_in(*cv, tv);
+		if (operand_object_class(slot))
+			class_operand = true;
+		return true;
+	};
+	TokenBase *left = top->left, *right = top->right;
+	if (!concrete_operand(left) || !concrete_operand(right) || !class_operand)
+		return false;
+	plan.op = top;
+	plan.left = left;
+	plan.right = right;
+	return true;
+}
+
+cir_node *CirBuilder::tsubst_dependent_operator(cir_node *src,
+				const std::map<DataDef *, DataDef *> &subst)
+{
+	TokenBase *tb = src->origin_id ? madc_token_for_slot(src->origin_id)
+				       : NULL;
+	if (!tb)
+		return NULL;
+	// Only the operator's OWN builtin node: an expression statement, the
+	// `&` binding it to a reference parameter or a conversion around it
+	// carries the same origin token, and the copy descends through those.
+	c2mir_node_code_t builtin;
+	if (tb->as_deref_tok() || tb->as_deref_expr_tok())
+		builtin = N_DEREF;
+	else if (tb->id() == TokenID::tkInc || tb->id() == TokenID::tkDec) {
+		TokenOperator *step = tb->as_operator_tok();
+		bool post = step && step->left;
+		builtin = tb->id() == TokenID::tkInc ? (post ? N_POST_INC : N_INC)
+						     : (post ? N_POST_DEC : N_DEC);
+	} else if (!builtin_binary_operator_code(tb->id(), builtin))
+		return NULL;
+	if (src->base.code != builtin)
+		return NULL;
+	TsubstOperatorPlan plan;
+	if (!tsubst_operator_plan(tb, subst, plan))
+		return NULL;
+	auto lower = [&](TokenBase *expr) -> cir_node * {
+		bool saved_mode = m_tsubst_pattern_mode;
+		m_tsubst_pattern_mode = false;
+		std::vector<node_t> saved;
+		saved.swap(m_pending_stmts);
+		node_t r = translate_expr(expr);
+		std::vector<node_t> pending;
+		pending.swap(m_pending_stmts);
+		m_pending_stmts.swap(saved);
+		m_tsubst_pattern_mode = saved_mode;
+		if (!r)
+			return NULL;
+		if (!pending.empty()) {
+			// The operator's own temporaries stay with it: a loop
+			// condition re-evaluates them per iteration. A reference
+			// result stays an lvalue (`*({ ...; &x; })`).
+			bool lvalue = r->code == N_DEREF;
+			node_t items = list();
+			for (node_t p : pending)
+				append(items, p);
+			append(items, node2(N_EXPR, list(),
+				lvalue ? c2mir_node_first_op(r) : r, tb));
+			r = node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+			if (lvalue)
+				r = node1(N_DEREF, r, tb);
+		}
+		CIR_NODE(r)->tree1_origin = src->self;
+		return CIR_NODE(r);
+	};
+	if (plan.rebuilt)
+		return lower(plan.rebuilt);
+	std::swap(plan.op->left, plan.left);
+	std::swap(plan.op->right, plan.right);
+	cir_node *r = lower(plan.op);
+	std::swap(plan.op->left, plan.left);
+	std::swap(plan.op->right, plan.right);
+	return r;
+}
+
+DataDef *CirBuilder::tsubst_dependent_operator_type(TokenBase *tb,
+				const std::map<DataDef *, DataDef *> &subst)
+{
+	TsubstOperatorPlan plan;
+	if (!tsubst_operator_plan(tb, subst, plan))
+		return NULL;
+	if (plan.rebuilt)
+		return plan.rebuilt->datadef();
+	if (plan.op->id() != TokenID::tkInc && plan.op->id() != TokenID::tkDec)
+		return NULL;
+	// A step's type is its operand's (TokenInc / TokenDec::datadef()).
+	std::swap(plan.op->left, plan.left);
+	std::swap(plan.op->right, plan.right);
+	DataDef *d = plan.op->datadef();
+	std::swap(plan.op->left, plan.left);
+	std::swap(plan.op->right, plan.right);
+	return d;
 }
 
 static bool pending_function_body_available(CirBuilder *cb, Program *prog,
@@ -2668,6 +2920,14 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 					continue;
 				}
 			}
+		}
+		// Likewise an argument that is an operator on a dependent operand
+		// (`emplace_back(*__first)` with an iterator class): typed by the
+		// operator the instance resolves, not the pattern's placeholder.
+		if (DataDef *odd = tsubst_dependent_operator_type(p, *subst)) {
+			changed = true;
+			append_substituted_param(p, odd, *subst, false);
+			continue;
 		}
 		append_substituted_param(p, p ? p->datadef() : NULL, *subst,
 					 is_zero_integer_literal(p));
@@ -3716,6 +3976,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						      &ddUINT64, query));
 		}
 	}
+	if (subst && src->origin_id && m_tsubst_copy_pack_index < 0)
+		if (cir_node *done = tsubst_dependent_operator(src, *subst))
+			return done;
 	if (subst && src->base.code == N_IGNORE && src->datadef()
 	    && src->origin_id) {
 		TokenNEW *tn =
@@ -4266,18 +4529,16 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 				return NULL;
 			return copied;
 		}
-		if (inner && m_cur_method) {
-			for (Variable *pv : m_cur_method->parameters) {
-				if (pv && pv->is_reference()
-				    && cir_id_spells(CIR_NODE(inner),
-						     pv->name.c_str())) {
-					cir_node *copied =
-						copy_cir_subtree(CIR_NODE(inner), subst);
-					if (!copied)
-						return NULL;
-					return copied;
-				}
-			}
+		// The pattern's `&param` addresses the parameter OBJECT. An instance
+		// parameter that holds the object's address — a reference, or a
+		// by-value class passed by invisible reference ([class.temporary]/3,
+		// the Itanium ABI: `reverse_iterator` declares its copy ctor) — is
+		// that address already.
+		if (inner && copied_address_holding_param(inner)) {
+			cir_node *copied = copy_cir_subtree(CIR_NODE(inner), subst);
+			if (!copied)
+				return NULL;
+			return copied;
 		}
 	}
 
@@ -25192,38 +25453,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						  : translate_expr(top->right);
 
 			c2mir_node_code_t code;
-			switch (tb->id()) {
-			case TokenID::tkAdd:    code = N_ADD; break;
-			case TokenID::tkSub:    code = N_SUB; break;
-			case TokenID::tkMul:    code = N_MUL; break;
-			case TokenID::tkDiv:    code = N_DIV; break;
-			case TokenID::tkMod:    code = N_MOD; break;
-			case TokenID::tkAssign: code = N_ASSIGN; break;
-			case TokenID::tkEquals: code = N_EQ; break;
-			case TokenID::tkNotEq:  code = N_NE; break;
-			case TokenID::tkLT:     code = N_LT; break;
-			case TokenID::tkLE:     code = N_LE; break;
-			case TokenID::tkGT:     code = N_GT; break;
-			case TokenID::tkGE:     code = N_GE; break;
-			case TokenID::tkBand:   code = N_AND; break;
-			case TokenID::tkBor:    code = N_OR; break;
-			case TokenID::tkXor:    code = N_XOR; break;
-			case TokenID::tkLand:   code = N_ANDAND; break;
-			case TokenID::tkLor:    code = N_OROR; break;
-			case TokenID::tkBSL:    code = N_LSH; break;
-			case TokenID::tkBSR:    code = N_RSH; break;
-			case TokenID::tkComma:  code = N_COMMA; break;
-			case TokenID::tkAddEq:  code = N_ADD_ASSIGN; break;
-			case TokenID::tkSubEq:  code = N_SUB_ASSIGN; break;
-			case TokenID::tkMulEq:  code = N_MUL_ASSIGN; break;
-			case TokenID::tkDivEq:  code = N_DIV_ASSIGN; break;
-			case TokenID::tkModEq:  code = N_MOD_ASSIGN; break;
-			case TokenID::tkBandEq: code = N_AND_ASSIGN; break;
-			case TokenID::tkBorEq:  code = N_OR_ASSIGN; break;
-			case TokenID::tkXorEq:  code = N_XOR_ASSIGN; break;
-			case TokenID::tkBSLEq:  code = N_LSH_ASSIGN; break;
-			case TokenID::tkBSREq:  code = N_RSH_ASSIGN; break;
-			default: {
+			if (!builtin_binary_operator_code(tb->id(), code)) {
 				// No CIR lowering for this operator. Previously this
 				// silently fell back to N_ADD — `a <=> b` compiled as
 				// a + b. Reject via the pre-c2mir gate instead (same
@@ -25234,7 +25464,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					 "has no lowering for token id %d)",
 					 describe_token(tb).c_str(), (int)tb->id());
 				return error_node(buf, tb);
-			}
 			}
 			// Derived->base pointer reassignment (`A *a; B *b; a = b;`):
 			// make the implicit upcast explicit so c2mir does not warn.

@@ -2845,6 +2845,38 @@ public:
 	// Is `arg` a PRVALUE of class `target` — the parameter object itself
 	// ([class.temporary], guaranteed elision)?
 	bool class_prvalue_of(class TokenBase *arg, DataDefCLASS *target);
+	// Copy-time operator re-resolution ([temp.dep.res]) of an operator the
+	// pattern lowered as builtin because a NAMED operand had a bare
+	// template-parameter type that substitutes to a class: `*v` rebuilt
+	// through build_indirection, or the instance's operands for a binary /
+	// inc-dec operator's slots.
+	struct TsubstOperatorPlan {
+		class TokenBase *rebuilt = nullptr;	// `*v`
+		class TokenOperator *op = nullptr;	// binary / inc-dec ...
+		class TokenBase *left = nullptr;	// ... with these operands
+		class TokenBase *right = nullptr;
+	};
+	bool tsubst_operator_plan(class TokenBase *tb,
+				  const std::map<DataDef *, DataDef *> &subst,
+				  TsubstOperatorPlan &plan);
+	// The plan's two readers: the operator's node in the copy (NULL keeps
+	// the generic copy), and its type as a call argument (NULL: unknown).
+	cir_node *tsubst_dependent_operator(cir_node *src,
+				const std::map<DataDef *, DataDef *> &subst);
+	DataDef *tsubst_dependent_operator_type(class TokenBase *tb,
+				const std::map<DataDef *, DataDef *> &subst);
+	// The instance parameter a copied N_ID names when that parameter holds
+	// its object's ADDRESS — a reference, or a by-value class passed by
+	// invisible reference — else NULL; and the address of the object a
+	// copied value denotes (that parameter itself, else `&value`). The copy's
+	// form of object_var_addr's rule.
+	class Variable *copied_address_holding_param(node_t n);
+	node_t copied_object_address(node_t value, class TokenBase *origin);
+	// The instance's variable for a pattern variable whose type names a
+	// template parameter: the instance FuncDef's parameter of that name, or
+	// the variable with its type substituted. NULL for a non-dependent one.
+	class Variable *tsubst_operand_variable(class Variable &pattern_var,
+				const std::map<DataDef *, DataDef *> &subst);
 	class Variable *resolve_copied_dependent_call(
 		class TokenCallFunc *tcf,
 		const std::map<DataDef *, DataDef *> *subst,
