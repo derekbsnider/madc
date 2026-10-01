@@ -1662,6 +1662,11 @@ long plugin_field_of(var &word)
     return pfNONE;
 }
 
+// How a plugin's CODE reached madcide's process (§5.4): compiled into
+// madcide, its library loaded, its source compiled in when it activates, or a
+// child process speaking over the seat. An active plugin's row records it.
+enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLAST };
+
 // A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds
 // name a file in its existing format, and the kind's word IS the file's
 // extension (`"layout": "chthonic"` is chthonic.layout); `settings` carries

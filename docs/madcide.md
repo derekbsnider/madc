@@ -301,19 +301,26 @@ extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
 ```
 
 `madcide --build-plugin <dir>` builds it into its library beside the manifest
-(`hello.so` on Linux, `hello.dll` on Windows), the running madcide compiling
-in-process; nothing is built
-automatically. The library loads when the profile in use is the plugin, or
-when `settings.json` lists it (`"plugins": ["hello"]`), before the keys and
-menus load, so a key profile or a menu can name `greet`. A handler calls
-madcide only through `ide::` (`command`, `view`, `event` at activation;
-`run`, `command_id`, `get`, `set` from a handler), so a plugin binds to
-nothing of madcide's own.
+(`hello.so` on Linux, `hello.dll` on Windows, `hello.dylib` on macOS), the
+running madcide compiling in-process; nothing is built automatically. The
+plugin's code activates when the profile in use is the plugin, or when
+`settings.json` lists it (`"plugins": ["hello"]`), before the keys and menus
+load, so a key profile or a menu can name `greet`: from its library when it
+has one this madcide accepts, else from its source, compiled into the
+running madcide. A library loads in well under a millisecond; a source costs
+a compile at every launch (about 16 ms for the first plugin and 7 ms for each
+further one with the installed madcide), so a plugin ships fast with its
+library and works without one. A handler calls madcide only through `ide::`
+(`command`, `view`, `event` at activation; `run`, `command_id`, `get`, `set`
+from a handler), so a plugin binds to nothing of madcide's own.
 
-A missing library, a library built against another plugin API version (it
-says both), a library without `madcide_plugin_activate`, and an activation
-that returns false are each reported on the status line, and the editor opens
-without the plugin; what a refused activation registered is taken back.
+A library built against another plugin API version (it says both), or one
+that cannot be loaded or has no `madcide_plugin_activate`, is refused, and
+the plugin's source replaces it; the status line says so, so the library can
+be rebuilt. A source that does not compile (its first error, positioned) or
+has no activation, and an activation that returns false, are each reported on
+the status line, and the editor opens without the plugin; what a refused
+activation registered is taken back.
 Plugin libraries are Linux shared objects, Windows DLLs and macOS dylibs; a
 plugin binds the engine the editor loaded (`libmadc.so.0`, the
 `libmadc-0.dll` beside `madcide.exe`, `lib/libmadc-0.dylib`).

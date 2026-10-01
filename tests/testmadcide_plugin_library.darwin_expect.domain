@@ -3,7 +3,7 @@
 # target's (madc::library_suffix: .dylib on macOS). Every other labelled line must
 # be identical in both (scripts/check-expect-twins.sh).
 madcide
-activate-nolib
+stale-msg
 activate-future
 activate-noentry
 activate-declines

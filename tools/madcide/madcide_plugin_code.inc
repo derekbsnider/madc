@@ -1,29 +1,35 @@
 // madcide_plugin_code.inc — a plugin's CODE (docs/plans/2026-09-30-madcide-
-// plugins.md §5.4-5.5, §8 Stage B item 2; plan §41.11a step 4): the API
-// table madcide hands a plugin, the `library` transport's activation, and
-// `madcide --build-plugin`, which builds a plugin's library.
+// plugins.md §5.4-5.5, §8 Stage B items 2-3; plan §41.11a steps 4-5): the
+// API table madcide hands a plugin, the `library` and `source` transports'
+// activation, and `madcide --build-plugin`, which builds a plugin's library.
 //
 // One owner each:
 //   madcide_api           THE table (<madcide/plugin_api>): immutable, so
 //                         every world and every plugin shares it
 //   plugin_library_path   where a plugin's library is: <dir>/<name><suffix>
+//   plugin_include_dirs   what a plugin's source compiles with (madcide's
+//                         include directory)
+//   plugin_code_symbol /  opened code's symbols and close, by its transport
+//   plugin_code_close
 //   plugin_activate       a plugin's code activated in a world, once: its
-//                         library opened with every reference bound, its API
-//                         version checked, its activation run; a refusal
-//                         takes back what it registered
+//                         library loaded, or, when there is none madcide
+//                         accepts, its source compiled into this process;
+//                         every reference bound, its API version checked,
+//                         its activation run; a refusal takes back what it
+//                         registered
 //   plugins_activate      a session's plugins: the active bundle's code, then
 //                         each plugin settings.json's "plugins" names
 //   plugin_build          the plugin's source built into its library, the
 //                         running madc compiling in-process with madcide's
 //                         include directory (--build-plugin)
 //
-// The library's value-runtime references bind to the libmadc already loaded
+// The code's value-runtime references bind to the libmadc already loaded
 // (the plugin design's G1 recon); everything it calls of madcide's goes
 // through the table, so it binds to nothing of madcide's.
 //
 // Thread contract: activation runs at session open, on the session's thread,
-// before the profiles and menus load; a library stays loaded for the
-// process once a plugin in it is active.
+// before the profiles and menus load; a plugin's code stays loaded for the
+// process once it is active.
 
 // ---- the table -------------------------------------------------------------
 // Each entry adapts the registry's or the session's one owner.
@@ -74,12 +80,120 @@ const ide_api madcide_api = { MADCIDE_PLUGIN_API, ide_api_command,
 			      ide_api_view, ide_api_event, ide_api_run,
 			      ide_api_command_id, ide_api_get, ide_api_set };
 
-// ---- the library transport ---------------------------------------------------
+// ---- the code's transports ---------------------------------------------------
 // Where plugin `name`'s library is: <dir>/<name><suffix>, the target's
 // shared-library suffix from the one spelling owner (madc::library_suffix).
 void plugin_library_path(var &out, var &dir, const char *name)
 {
     out = format("{}/{}{}", dir, name, madc::library_suffix());
+}
+
+// The include directories a plugin's source compiles with: madcide's own
+// (<madcide/plugin>), for --build-plugin and the `source` transport alike.
+void plugin_include_dirs(var &out)
+{
+    var inc;
+    resolve_data_dir(inc, "madcide", php::dirname(__FILE__), "include");
+    out = { inc };
+}
+
+// A symbol of a plugin's opened code, by the transport that opened it.
+int64_t plugin_code_symbol(long transport, int64_t h, const char *name)
+{
+    switch ( transport )
+    {
+	case ptLIBRARY: return madc::library_symbol(h, name);
+	case ptSOURCE: return madc::code_symbol(h, name);
+    }
+    return 0;
+}
+
+// Close a plugin's opened code, by the transport that opened it.
+void plugin_code_close(long transport, int64_t h)
+{
+    switch ( transport )
+    {
+	case ptLIBRARY:
+	    madc::library_close(h);
+	    break;
+	case ptSOURCE:
+	    madc::code_close(h);
+	    break;
+    }
+}
+
+// The library form: <dir>/<name><suffix>, loaded. 0 = none usable; `why` is
+// empty when there is no library at all, else the reason it was refused.
+int64_t plugin_open_library(var &lib, var &dir, var &name, var &why)
+{
+    why = "";
+    plugin_library_path(lib, dir, name.c_str());
+    if ( !php::file_exists(lib) )
+	return 0;
+    var lwhy;
+    int64_t h = madc::library_open(lib.c_str(), lwhy);
+    if ( h == 0 )
+	why = format("{} cannot be loaded: {}", lib, lwhy);
+    return h;
+}
+
+// The source form: the manifest's "code", compiled into this process with
+// madcide's include directories. 0 = refused, `why` the reason (a compile's
+// first row, positioned).
+int64_t plugin_open_source(var &src, var &dir, var &m, var &why)
+{
+    var code;
+    keyed_get(code, m, plugin_field_name(pfCODE));
+    if ( code.is_null() )
+    {
+	why = "it names no \"code\"";
+	return 0;
+    }
+    src = format("{}/{}", dir, code);
+    var incs;
+    plugin_include_dirs(incs);
+    var rows = {};
+    int64_t h = madc::code_open(rows, src.c_str(), incs);
+    if ( h != 0 )
+	return h;
+    why = format("{} did not compile", src);
+    if ( php::count(rows) > 0 )
+    {
+	var r = rows[0];
+	why = format("{}: {}:{}:{}: {}", why, r["file"], r["line"], r["column"],
+		     r["message"]);
+    }
+    return 0;
+}
+
+// Opened code's two entries found and its plugin API version checked; the
+// activation entry in `aa`. False = refused, `why` the reason, the code closed.
+bool plugin_code_check(long transport, int64_t h, var &from, var &dir,
+		       var &why, int64_t &aa)
+{
+    int64_t va = plugin_code_symbol(transport, h, "madcide_plugin_api");
+    aa = plugin_code_symbol(transport, h, "madcide_plugin_activate");
+    if ( va == 0 || aa == 0 )
+    {
+	plugin_code_close(transport, h);
+	var entry = "madcide_plugin_activate";
+	if ( va == 0 )
+	    entry = "madcide_plugin_api";
+	why = format("{} is not a madcide plugin (it defines no {})", from, entry);
+	return false;
+    }
+    plugin_version_fn vf = (plugin_version_fn)va;
+    long built = vf();
+    if ( built == plugin_api_served() )
+	return true;
+    plugin_code_close(transport, h);
+    if ( transport == ptLIBRARY )
+	why = format("{} was built against plugin API {}; this madcide serves {}: rebuild it with `madcide --build-plugin {}`",
+		     from, built, plugin_api_served(), dir);
+    else
+	why = format("{} targets plugin API {}; this madcide serves {}", from,
+		     built, plugin_api_served());
+    return false;
 }
 
 // The registry's row counts: a mark taken before an activation.
@@ -126,48 +240,36 @@ bool plugin_is_active(long w, const char *name)
     return false;
 }
 
-// Activate plugin `name`'s code (its directory `dir`) in world `w`, once per
-// world. False = refused, `why` the reason; nothing it registered remains.
-bool plugin_activate(long w, var &dir, const char *name0, var &why)
+// Activate plugin `name`'s code (its directory `dir`, its manifest `m`) in
+// world `w`, once per world (§5.5): its library when there is one this madcide
+// accepts (a load), else its source compiled into this process. False =
+// refused, `why` the reason; nothing it registered remains. `note` = the
+// reason a library was refused when its source replaced it ("" otherwise).
+bool plugin_activate(long w, var &dir, const char *name0, var &m, var &why,
+		     var &note)
 {
     var name = name0;		// ring discipline: own the text first
+    note = "";
     if ( plugin_is_active(w, name.c_str()) )
 	return true;
-    var lib;
-    plugin_library_path(lib, dir, name.c_str());
-    if ( !php::file_exists(lib) )
+    long transport = ptLIBRARY;
+    var from;
+    int64_t aa = 0;
+    int64_t h = plugin_open_library(from, dir, name, why);
+    bool ok = h != 0 && plugin_code_check(ptLIBRARY, h, from, dir, why, aa);
+    if ( !ok )
     {
-	why = format("no library {}: build it with `madcide --build-plugin {}`",
-		     lib, dir);
-	return false;
-    }
-    var lwhy;
-    int64_t h = madc::library_open(lib.c_str(), lwhy);
-    if ( h == 0 )
-    {
-	why = format("{} cannot be loaded: {}", lib, lwhy);
-	return false;
-    }
-    int64_t va = madc::library_symbol(h, "madcide_plugin_api");
-    int64_t aa = madc::library_symbol(h, "madcide_plugin_activate");
-    if ( va == 0 || aa == 0 )
-    {
-	madc::library_close(h);
-	var entry = "madcide_plugin_activate";
-	if ( va == 0 )
-	    entry = "madcide_plugin_api";
-	why = format("{} is not a madcide plugin library (it defines no {})",
-		     lib, entry);
-	return false;
-    }
-    plugin_version_fn vf = (plugin_version_fn)va;
-    long built = vf();
-    if ( built != plugin_api_served() )
-    {
-	madc::library_close(h);
-	why = format("{} was built against plugin API {}; this madcide serves {}: rebuild it with `madcide --build-plugin {}`",
-		     lib, built, plugin_api_served(), dir);
-	return false;
+	var lwhy = why;		// "" = no library at all
+	transport = ptSOURCE;
+	h = plugin_open_source(from, dir, m, why);
+	ok = h != 0 && plugin_code_check(ptSOURCE, h, from, dir, why, aa);
+	if ( !ok )
+	{
+	    if ( strlen(lwhy.c_str()) > 0 )
+		why = format("{}; its source: {}", lwhy, why);
+	    return false;
+	}
+	note = lwhy;
     }
     var mark;
     registry_mark(mark, w);
@@ -175,25 +277,30 @@ bool plugin_activate(long w, var &dir, const char *name0, var &why)
     if ( !af(&madcide_api, w) )
     {
 	registry_rollback(w, mark);
-	madc::library_close(h);
-	why = format("its activation refused it ({})", lib);
+	plugin_code_close(transport, h);
+	why = format("its activation refused it ({})", from);
 	return false;
     }
     long reg = plugin_registry_make(w);
     var active;
     registry_rows(active, w, "active");
-    active[] = { "name": name, "library": lib, "handle": h };
+    active[] = { "name": name, "transport": transport, "from": from,
+		 "handle": h };
     ui::set(w, reg, "active", active);
     return true;
 }
 
-// Activate one plugin found by name; a refusal goes to the status line.
-void plugin_activate_named(long w, long es, var &dir, const char *name0)
+// Activate one plugin found by name; a refusal, or a library its source
+// replaced, goes to the status line.
+void plugin_activate_named(long w, long es, var &dir, const char *name0, var &m)
 {
     var name = name0;
     var why;
-    if ( !plugin_activate(w, dir, name.c_str(), why) )
+    var note;
+    if ( !plugin_activate(w, dir, name.c_str(), m, why, note) )
 	ui::set(w, es, "msg", format("Plugin '{}' refused: {}", name, why));
+    else if ( strlen(note.c_str()) > 0 )
+	ui::set(w, es, "msg", format("Plugin '{}': its source is in use ({})", name, note));
 }
 
 // A session's plugins, activated in its world before the profiles and menus
@@ -214,7 +321,7 @@ void plugins_activate(long w, long es)
 	ui::get(b, w, es, "bundle");
 	var bdir;
 	ui::get(bdir, w, es, "bundledir");
-	plugin_activate_named(w, es, bdir, b.c_str());
+	plugin_activate_named(w, es, bdir, b.c_str(), m);
     }
     var us;
     ui::get(us, w, es, "usersettings");
@@ -250,7 +357,7 @@ void plugins_activate(long w, long es)
 	var pc;
 	keyed_get(pc, pm, plugin_field_name(pfCODE));
 	if ( !pc.is_null() )
-	    plugin_activate_named(w, es, dir, n.c_str());
+	    plugin_activate_named(w, es, dir, n.c_str(), pm);
     }
 }
 
@@ -282,9 +389,8 @@ bool plugin_build(var &why, var &rows, const char *dir0)
     var src = format("{}/{}", dir, code);
     var lib;
     plugin_library_path(lib, dir, name.c_str());
-    var inc;
-    resolve_data_dir(inc, "madcide", php::dirname(__FILE__), "include");
-    var incs = { inc };
+    var incs;
+    plugin_include_dirs(incs);
     if ( !madc::build_native(rows, src.c_str(), "shared", lib.c_str(), incs) )
     {
 	why = format("{} did not build", src);

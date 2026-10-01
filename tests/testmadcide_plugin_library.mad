@@ -1,7 +1,9 @@
-// The plugin `library` transport (plan §41.11a step 4; plugin design §5.4-
-// 5.5, §8 Stage B item 2): a plugin's code, built into its library by
-// --build-plugin, activates in the session's world through the API table and
-// registers its commands and views, which then run as built-in ones do.
+// The plugin `library` and `source` transports (plan §41.11a steps 4-5;
+// plugin design §5.4-5.5, §8 Stage B items 2-3): a plugin's code, built into
+// its library by --build-plugin, or, when there is no library madcide
+// accepts, its source compiled into madcide's process, activates in the
+// session's world through the API table and registers its commands and
+// views, which then run as built-in ones do.
 // Pins:
 //   1. --build-plugin's owner (plugin_build) builds a plugin's "code" into
 //      <dir>/<name><suffix>, the plugin reaching <madcide/plugin> through
@@ -14,12 +16,16 @@
 //      through the one dispatcher with their argument, and one handler runs
 //      another command by name through the table (ide::command_id,
 //      ide::run) and reads the status line back (ide::get); its view
-//      registers;
+//      registers; a plugin never built activates from its source, and its
+//      command runs; a library built against another plugin API is refused
+//      and its (since fixed) source replaces it, the status line saying so;
+//      each active row records its transport;
 //   3. a second view of the same world activates nothing twice;
-//   4. refusals, each with its reason: no library built (the reason names
-//      --build-plugin), a library built against another plugin API (both
-//      numbers), a library with no activation entry, and an activation
-//      that refuses, whose registrations are taken back.
+//   4. refusals, each with its reason: a library built against another
+//      plugin API whose source targets it too (both reasons, both numbers),
+//      code with no activation entry (both forms), an activation that
+//      refuses, whose registrations are taken back, and a source that does
+//      not compile with no library (its first row, positioned).
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env).
 #include "../tools/texteditor/lined_core.inc"
@@ -94,9 +100,23 @@ void build(var &files, var &plugins, const char *name)
 void activate(long w, var &plugins, const char *name)
 {
     var dir = format("{}/{}", plugins, name);
+    var m;
     var why = "";
-    bool ok = plugin_activate(w, dir, name, why);
-    println("activate-{}: ok={} {}", name, ok ? 1 : 0, why);
+    var note = "";
+    bool ok = plugin_manifest_read(m, why, dir, name)
+	   && plugin_activate(w, dir, name, m, why, note);
+    println("activate-{}: ok={} {}{}", name, ok ? 1 : 0, why, note);
+}
+
+// The transport an active plugin's code came by (ptNONE = not active).
+long active_transport(long w, const char *name)
+{
+    var rows;
+    registry_rows(rows, w, "active");
+    for ( var r : rows )
+	if ( r["name"] == name )
+	    return r["transport"].as_integer();
+    return ptNONE;
 }
 
 // The status line after a command run with its argument.
@@ -150,8 +170,21 @@ int main()
 	"        return false;\n"
 	"    return ide::view(w, \"hellolist\", \"Hello\", \"hello.rows\", 0) != 0;\n"
 	"}\n");
-    plugin_fixture(files, made, plugins, "nolib", "nolib.mad",
+    plugin_fixture(files, made, plugins, "srconly", "srconly.mad",
 	"#include <madcide/plugin>\n"
+	"bool srconly_greet(long w, long es, long doc, const char *arg)\n"
+	"{\n"
+	"    ide::set(w, es, \"msg\", format(\"From source, {}.\", arg));\n"
+	"    return true;\n"
+	"}\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n"
+	"    ide::bind(api);\n"
+	"    return ide::command(w, \"srcgreet\", \"Greet from source\", srconly_greet) != 0;\n"
+	"}\n");
+    plugin_fixture(files, made, plugins, "stale", "stale.mad",
+	"#include <madcide/plugin_api>\n"
+	"extern \"C\" long madcide_plugin_api()\n{\n    return 2;\n}\n"
 	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
 	"{\n    return true;\n}\n");
     plugin_fixture(files, made, plugins, "future", "future.mad",
@@ -186,6 +219,18 @@ int main()
     build(files, plugins, "declines");
     build(files, plugins, "broken");
     build(files, plugins, "nocode");
+    build(files, plugins, "stale");
+    // stale's library stays built against API 2; its source is then fixed.
+    var stsrc = format("{}/stale/stale.mad", plugins);
+    php::file_put_contents(stsrc.c_str(),
+	"#include <madcide/plugin>\n"
+	"bool stale_cmd(long w, long es, long doc, const char *arg)\n"
+	"{\n    ide::set(w, es, \"msg\", \"Stale, fixed.\");\n    return true;\n}\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n"
+	"    ide::bind(api);\n"
+	"    return ide::command(w, \"stalecmd\", \"Stale\", stale_cmd) != 0;\n"
+	"}\n");
     // The command line's --build-plugin: what it built, or its refusal (on
     // stderr) and exit 1.
     var hdir = format("{}/hello/", plugins);
@@ -194,15 +239,25 @@ int main()
     long nrc = run_build_plugin(ndir.c_str());
     println("cli-build: built={} refused={}", brc, nrc);
 
-    // 2. settings.json's "plugins" activates hello's code at session open.
+    // 2. settings.json's "plugins" activates hello's library, srconly's
+    // source and stale's fixed source at session open.
     var sp = format("{}/settings.json", cfg);
-    put(files, sp, "{\"plugins\": [\"hello\"]}\n");
+    put(files, sp, "{\"plugins\": [\"hello\", \"srconly\", \"stale\"]}\n");
     IdeSession S;
     long doc = S.open(path, false, "default");
+    var om;
+    ui::get(om, S.w, S.es, "msg");
+    println("stale-msg: {}", om);
+    println("transports: hello={} srconly={} stale={}",
+	    active_transport(S.w, "hello") == ptLIBRARY ? 1 : 0,
+	    active_transport(S.w, "srconly") == ptSOURCE ? 1 : 0,
+	    active_transport(S.w, "stale") == ptSOURCE ? 1 : 0);
     long gc = cmd_of_w(S.w, "greet");
     println("hello-code: contributed={}", cmd_contributed(gc) ? 1 : 0);
     run_named(S, doc, "greet", "world");
     run_named(S, doc, "greetagain", "");
+    run_named(S, doc, "srcgreet", "world");
+    run_named(S, doc, "stalecmd", "");
     var vn = "hellolist";
     println("hello-view: {}", view_of_w(S.w, vn) != viewNONE ? 1 : 0);
 
@@ -216,11 +271,11 @@ int main()
 	    cmd_of_w(S.w, "greet") == gc ? 1 : 0, php::count(active), m2);
 
     // 4. Refusals, each with its reason.
-    activate(S.w, plugins, "nolib");
     activate(S.w, plugins, "future");
     activate(S.w, plugins, "noentry");
     activate(S.w, plugins, "declines");
     println("declined-taken-back: {}", cmd_of_w(S.w, "declined") == 0 ? 1 : 0);
+    activate(S.w, plugins, "broken");
     S.close();
 
     // Remove every file, then every directory this test made.
