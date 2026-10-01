@@ -13,7 +13,9 @@
 #
 # Rule: a BARE suffix literal (".so" / ".dylib" / ".dll") or the prefix
 # concatenation ("lib" + ...) appears in no source or header outside the
-# owner. Full image names (libc.so.6, ucrtbase.dll, libSystem.B.dylib) are
+# owner — the engine's C++ and the madc code shipped in tools/ and
+# examples/ alike: a script names a library file with madc::library_suffix()
+# (madcide's plugin libraries, plan §41.11a step 4). Full image names (libc.so.6, ucrtbase.dll, libSystem.B.dylib) are
 # platform runtime constants, not the rule, and are not matched.
 #
 # Negative control: a synthetic violation must FAIL the scan, else the gate
@@ -48,12 +50,13 @@ fi
 rm -f "$tmp"
 
 # --- the tree ---------------------------------------------------------------
-files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' | grep -v "^$OWNER\$")
+files=$(git ls-files 'src/*.cpp' 'src/*.h' 'include/*.h' 'include/**/*.h' \
+	'tools/*.inc' 'tools/*.mad' 'examples/*.mad' | grep -v "^$OWNER\$")
 # shellcheck disable=SC2086
 if ! out=$(scan $files 2>&1); then
 	echo "check-one-library-spelling: a library spelling outside the one owner ($OWNER):" >&2
 	echo "$out" >&2
-	echo "  -> read the spelling from madc_modules (madc_target_dso_suffix / madc_module_library_spelling / madc_spelled_library_p)" >&2
+	echo "  -> read the spelling from madc_modules (madc_target_dso_suffix / madc_module_library_spelling / madc_spelled_library_p; madc::library_suffix in madc code)" >&2
 	exit 1
 fi
 echo "check-one-library-spelling: OK — the lib prefix and the .so/.dylib/.dll suffix are spelled only in $OWNER (negative controls bite)"

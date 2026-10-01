@@ -50,6 +50,7 @@ const MadcModuleSpec *madc_module_find_spelled(const std::string &spelling);
 // list the web UI level), never a name test.
 bool madc_module_any_flagged(unsigned flags);
 const char *madc_target_dso_suffix(TargetOS os);
+const char *madc_target_dso_suffix();	// for madc_target_os (madc::library_suffix)
 // True when `name` already carries SOME target's library suffix (libc.so.6,
 // libfoo.so, libSystem.B.dylib, ucrtbase.dll) — as opposed to a bare stem
 // (libc++, libsystem_: the darwin cover prefixes) or a module name. The one

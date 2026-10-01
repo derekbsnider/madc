@@ -271,7 +271,8 @@ namespace madc {
     //   parse_build: emit a native artifact from the handle's EXISTING
     //       parsed tree — the buffer the handle was last (re)parsed
     //       from, unsaved edits included, is what compiles. kind: "exe"
-    //       = PIE executable | "obj" = relocatable object. out_diags
+    //       = PIE executable | "obj" = relocatable object | "shared" = a
+    //       shared object. out_diags
     //       gets diagnostics rows either way (a false always carries at
     //       least one error row; a handle whose parse has error rows
     //       never reaches the emitter). Build rows ride out_diags only —
@@ -307,9 +308,10 @@ namespace madc {
     // Build = the --project build):
     //   project_build: the --project AOT lane IN-PROCESS — every TU
     //       compiled with its manifest options, ONE MIR-assembled native
-    //       image ("exe"; "obj" = per-TU objects, so an explicit outpath
-    //       with more than one TU is refused — the CLI's rule). Empty
-    //       outpath = a.out ("exe") / per-TU naming ("obj"). out_diags
+    //       image ("exe", or "shared" a shared object; "obj" = per-TU
+    //       objects, so an explicit outpath with more than one TU is
+    //       refused — the CLI's rule). Empty outpath = a.out ("exe",
+    //       "shared", gcc's) / per-TU naming ("obj"). out_diags
     //       gets rows either way; a false always carries at least one
     //       error row — per-TU DETAIL comes from a project CHECK
     //       (project_open + parse_check per TU), run one first. The
@@ -332,15 +334,20 @@ namespace madc {
     // IN-PROCESS — parse `path` in a child Program (relative #includes
     // resolve as the CLI's do), emit a native artifact at `outpath`.
     // kind: "exe" = PIE executable (the CLI -o default), "obj" =
-    // relocatable object (-r -o). out_diags gets diagnostics rows (the
-    // diagnostics() shape) either way; a failure ALWAYS carries at least
-    // one error row. True = the artifact was written. The parse phase
-    // cooperates with `go` tasks; the emit phase runs without yield
-    // points (it briefly blocks a cooperative scheduler).
+    // relocatable object (-r -o), "shared" = a shared object (-shared;
+    // name it with library_suffix). include_dirs, when given, are the
+    // CLI's -I directories in order (an array of text). out_diags gets
+    // diagnostics rows (the diagnostics() shape) either way; a failure
+    // ALWAYS carries at least one error row. True = the artifact was
+    // written. The parse phase cooperates with `go` tasks; the emit phase
+    // runs without yield points (it briefly blocks a cooperative
+    // scheduler).
     // Thread contract: the runtime-eval confinement — each call owns
     // its child Program.
     bool build_native(value &out_diags, const char *path, const char *kind,
 		      const char *outpath);
+    bool build_native(value &out_diags, const char *path, const char *kind,
+		      const char *outpath, const value &include_dirs);
     // The running compiler's own resolved executable path — "run this
     // program" spawns a child OF SELF, never a PATH madc. Stable for the
     // process lifetime; "" = the platform probe failed. Concurrent reads
@@ -436,6 +443,25 @@ namespace madc {
     // when it cannot be. A LAZY module row (madcwebview) compiles and
     // runs without its library — ask this before the first call.
     bool module_available(const char *name);
+    // A shared library opened at run time by PATH — a madcide plugin's
+    // library, or any madc-built one (plan §41.11a step 4):
+    //   library_open: every reference binds at open, so a library whose
+    //       names cannot all bind is refused there, never at its first
+    //       call; its names stay local (two libraries' same-named
+    //       functions never meet). Its handle, or 0 with the loader's
+    //       reason in `why`.
+    //   library_symbol: the address of `name` in it; 0 = no such name.
+    //       An extern "C" name is its spelling; a C++ name is mangled.
+    //   library_close: close a library nothing of which is still in use.
+    //   library_suffix: this target's shared-library suffix (".so",
+    //       ".dylib", ".dll"), the library spelling owner's — name a
+    //       library file with it, never with a spelled suffix.
+    // Thread contract: the loader's — every call is safe from any thread;
+    // a handle is the process's.
+    int64_t library_open(const char *path, value &why);
+    int64_t library_symbol(int64_t lib, const char *name);
+    void library_close(int64_t lib);
+    const char *library_suffix();
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
     // std::string conveniences — present only because <string> precedes

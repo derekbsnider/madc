@@ -1,0 +1,116 @@
+// madc::build_native's "shared" kind and include directories, and the
+// library verbs that open what it builds (plan §41.11a step 4, the plugin
+// design's G5: a madcide plugin library is built and opened this way).
+// Pins:
+//   1. a TU that includes a header from another directory builds as a
+//      shared object when that directory is given (-I), and is refused,
+//      the missing header named, when it is not;
+//   2. library_open opens it with every reference bound; library_symbol
+//      finds its extern "C" functions, which run (one through the value
+//      runtime), and answers 0 for a name the library does not define;
+//   3. parse_build's "shared" kind builds a handle's tree the same way;
+//   4. refusals, one row each: an unknown kind (the row names the three),
+//      include directories that are not an array, one that is not text;
+//   5. library_open refuses a missing file and a file that is not a
+//      library, with the loader's reason; library_suffix is the target's.
+// Oracle: g++ 13 and clang++ 18, `-shared -fPIC -I<dir>` over the same two
+// functions (std::format) and a dlopen(RTLD_NOW) + dlsym host, print
+// `answer 42` and `greet hello, plugin`.
+typedef long (*answer_fn)(long x);
+typedef const char *(*greet_fn)(const char *who);
+
+// The first row's message of a build's diagnostics ("" = no rows).
+void first_message(var &out, var &rows)
+{
+	out = "";
+	if ( php::count(rows) > 0 )
+		out = rows[0]["message"];
+}
+
+int main()
+{
+	var dir = "tmp/testbuild_shared";
+	var inc = format("{}/inc", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(inc.c_str());
+	var hdr = format("{}/madc_bs.h", inc);
+	php::file_put_contents(hdr.c_str(), "#define MADC_BS_BASE 40\n");
+	var src = format("{}/madc_bs.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"#include <madc_bs.h>\n"
+		"extern \"C\" long madc_bs_answer(long x)\n"
+		"{\n\treturn MADC_BS_BASE + x;\n}\n"
+		"extern \"C\" const char *madc_bs_greet(const char *who)\n"
+		"{\n\treturn format(\"hello, {}\", who);\n}\n");
+	var sfx = madc::library_suffix();
+	println("suffix: {}", sfx);
+	var lib = format("{}/madc_bs{}", dir, sfx);
+
+	// 1. -I reaches the header; without it the build is refused.
+	var incs = { inc };
+	var d;
+	bool ok = madc::build_native(d, src.c_str(), "shared", lib.c_str(), incs);
+	long n = php::count(d);
+	println("shared: ok={} rows={}", ok ? 1 : 0, n);
+	var lib0 = format("{}/madc_bs_noinc{}", dir, sfx);
+	bool noinc = madc::build_native(d, src.c_str(), "shared", lib0.c_str());
+	var m;
+	first_message(m, d);
+	println("noinc: ok={} {}", noinc ? 1 : 0, m);
+
+	// 2. Open it; its functions run.
+	var why;
+	int64_t h = madc::library_open(format("./{}", lib), why);
+	println("open: {} why-null={}", h != 0 ? 1 : 0, why.is_null() ? 1 : 0);
+	answer_fn af = (answer_fn)madc::library_symbol(h, "madc_bs_answer");
+	greet_fn gf = (greet_fn)madc::library_symbol(h, "madc_bs_greet");
+	long a = af(2);
+	println("answer {}", a);
+	var g = gf("plugin");
+	println("greet {}", g);
+	int64_t none = madc::library_symbol(h, "madc_bs_nothing");
+	println("nothing: {}", none == 0 ? 1 : 0);
+
+	// 3. The live-handle lane builds the same kind.
+	int64_t ph = madc::parse_open(
+		"extern \"C\" long madc_bs_twice(long x)\n{\n\treturn 2 * x;\n}\n",
+		"madc_bs_twice.mad");
+	var lib2 = format("{}/madc_bs_twice{}", dir, sfx);
+	bool pok = madc::parse_build(d, ph, "shared", lib2.c_str());
+	madc::parse_close(ph);
+	int64_t h2 = madc::library_open(format("./{}", lib2), why);
+	answer_fn tf = (answer_fn)madc::library_symbol(h2, "madc_bs_twice");
+	long t = tf(21);
+	println("parse_build: ok={} twice {}", pok ? 1 : 0, t);
+
+	// 4. Refusals, one row each.
+	var lib3 = format("{}/madc_bs_x{}", dir, sfx);
+	bool bk = madc::build_native(d, src.c_str(), "dll", lib3.c_str(), incs);
+	first_message(m, d);
+	println("badkind: ok={} rows={} {}", bk ? 1 : 0, php::count(d), m);
+	var five = 5;
+	bool bi = madc::build_native(d, src.c_str(), "shared", lib3.c_str(), five);
+	first_message(m, d);
+	println("notarray: ok={} rows={} {}", bi ? 1 : 0, php::count(d), m);
+	var bad = { 5 };
+	bool be = madc::build_native(d, src.c_str(), "shared", lib3.c_str(), bad);
+	first_message(m, d);
+	println("nottext: ok={} rows={} {}", be ? 1 : 0, php::count(d), m);
+
+	// 5. What the loader refuses, with its reason.
+	var gone = format("./{}/madc_bs_gone{}", dir, sfx);
+	int64_t h3 = madc::library_open(gone.c_str(), why);
+	println("missing: {} why={}", h3 == 0 ? 1 : 0, why.is_string() ? 1 : 0);
+	int64_t h4 = madc::library_open(format("./{}", src), why);
+	println("notlib: {} why={}", h4 == 0 ? 1 : 0, why.is_string() ? 1 : 0);
+
+	madc::library_close(h2);
+	madc::library_close(h);
+	php::unlink(lib.c_str());
+	php::unlink(lib2.c_str());
+	php::unlink(src.c_str());
+	php::unlink(hdr.c_str());
+	php::rmdir(inc.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

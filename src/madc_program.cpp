@@ -4846,10 +4846,12 @@ bool internal_program_source_emit(::Program &self,
 					     out, display_name);
 }
 
-// ONE owner for the build-surface kind vocabulary ("exe" | "obj") — the
-// path lane and the live-handle lane must never drift (a new kind lands
-// here once). False = unknown name; the caller owns the diagnostic.
-static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
+// ONE owner for the build-surface kind vocabulary ("exe" | "obj" |
+// "shared") — the path lane, the live-handle lane and the project lane must
+// never drift (a new kind lands here once, its refusal text with it).
+// False = unknown name, with `why` the diagnostic every lane records.
+static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind,
+			   std::string &why)
 {
     if ( kind_name == "exe" )
     {
@@ -4861,6 +4863,13 @@ static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
 	kind = mnkObject;		// relocatable .o (-r -o)
 	return true;
     }
+    if ( kind_name == "shared" )
+    {
+	kind = mnkShared;		// a shared object (-shared)
+	return true;
+    }
+    why = "unknown build kind '" + kind_name
+	+ "' (expected \"exe\", \"obj\" or \"shared\")";
     return false;
 }
 
@@ -4876,7 +4885,10 @@ static bool parse_tree_backend_ready(::Program &child)
 // parse a FILE in a child Program (the lexer owns file ingestion and the
 // TU's relative #includes, exactly as parse_open_file), then
 // madc_cir_emit_native — run IN-PROCESS. kind: "exe" = PIE executable
-// (the CLI -o default), "obj" = relocatable .o (-r -o). Diagnostics come
+// (the CLI -o default), "obj" = relocatable .o (-r -o), "shared" = a
+// shared object (-shared). include_dirs are the CLI's -I directories, in
+// order: an array of text (null = none; any other shape, or an element
+// that is not text, is refused with a row). Diagnostics come
 // back as rows either way; a failure with nothing recorded (a backend
 // refusal prints to stderr, not into Program::diagnostics — the named
 // backend-diagnostics-as-data residue) gets one synthesized error row so
@@ -4887,7 +4899,8 @@ static bool parse_tree_backend_ready(::Program &child)
 bool internal_program_build_native(::Program &self, const std::string &path,
 				   const std::string &kind_name,
 				   madc::value &out,
-				   const std::string &outpath)
+				   const std::string &outpath,
+				   const madc::value &include_dirs)
 {
     self.clear_diagnostics();
     self.clear_error();
@@ -4901,11 +4914,29 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 	// contract); recording into child.diagnostics is untouched.
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = native_kind_of(kind_name, kind);
+	std::string kind_why;
+	bool kind_ok = native_kind_of(kind_name, kind, kind_why);
 	if ( !kind_ok )
+	    child.set_error(::Program::DiagnosticPhase::compiler, kind_why);
+	if ( kind_ok && !include_dirs.is_null() && !include_dirs.is_array() )
+	{
+	    kind_ok = false;
 	    child.set_error(::Program::DiagnosticPhase::compiler,
-			    "unknown build kind '" + kind_name
-			    + "' (expected \"exe\" or \"obj\")");
+			    "the include directories must be an array of"
+			    " directory names");
+	}
+	if ( kind_ok && include_dirs.is_array() )
+	    for ( const madc::value &d : include_dirs.as_array() )
+	    {
+		if ( !d.is_string() )
+		{
+		    kind_ok = false;
+		    child.set_error(::Program::DiagnosticPhase::compiler,
+				    "an include directory must be text");
+		    break;
+		}
+		child.add_include_dir(d.as_string());	// -I, in order
+	    }
 	struct stat sb;
 	if ( kind_ok
 	  && (stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) )
@@ -7434,11 +7465,10 @@ bool internal_program_parse_build(int64_t handle,
 	// contract); ObjectModeScope lives inside the emit lane itself.
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = native_kind_of(kind_name, kind);
+	std::string kind_why;
+	bool kind_ok = native_kind_of(kind_name, kind, kind_why);
 	if ( !kind_ok )
-	    child.set_error(::Program::DiagnosticPhase::compiler,
-			    "unknown build kind '" + kind_name
-			    + "' (expected \"exe\" or \"obj\")");
+	    child.set_error(::Program::DiagnosticPhase::compiler, kind_why);
 	if ( kind_ok )
 	    ok = madc_cir_emit_native(&child, st->display_name.c_str(),
 				      kind, outpath.c_str(),
@@ -7699,11 +7729,10 @@ bool internal_program_project_build(::Program &self,
     {
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = native_kind_of(kind_name, kind);
+	std::string kind_why;
+	bool kind_ok = native_kind_of(kind_name, kind, kind_why);
 	if ( !kind_ok )
-	    synth.set_error(::Program::DiagnosticPhase::compiler,
-			    "unknown build kind '" + kind_name
-			    + "' (expected \"exe\" or \"obj\")");
+	    synth.set_error(::Program::DiagnosticPhase::compiler, kind_why);
 	ProjectManifest manifest;
 	std::string err;
 	if ( kind_ok && !read_project_manifest(manifest_path, manifest, err) )

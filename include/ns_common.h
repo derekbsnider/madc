@@ -219,11 +219,14 @@ bool madc_source_emit_kind_map(void *result, void *result_map, void *source,
 			       void *filename, int64_t target_kind);
 // madc::build_native — the CLI's AOT lane in-process (madcide IDE-10c):
 // parse a FILE in a child Program, emit a native artifact. kind = "exe"
-// (PIE executable, the -o default) | "obj" (relocatable .o). result =
+// (PIE executable, the -o default) | "obj" (relocatable .o) | "shared" (a
+// shared object, -shared). result =
 // madc::value* (diagnostics rows, same shape as madc_source_diagnostics —
 // a failure always carries at least one error row); path/kind/outpath =
-// std::string*. True = the artifact was written.
-bool madc_build_native(void *result, void *path, void *kind, void *outpath);
+// std::string*; include_dirs = const madc::value* (the -I directories, an
+// array of text; NULL = none). True = the artifact was written.
+bool madc_build_native(void *result, void *path, void *kind, void *outpath,
+		       const void *include_dirs);
 
 // ---- madc:: persistent parse handles (madcide AST-1) --------------------
 // The same child machinery given a LIFETIME: open/refresh/close, with

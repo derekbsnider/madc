@@ -15,9 +15,11 @@
 // madcdl_error().
 void *madcdl_open_global(const char *path, bool bind_now = false);
 
-// Load WITHOUT publishing to the default scope (POSIX RTLD_LAZY, local) —
-// the script-level dlopen() contract.
-void *madcdl_open_local(const char *path);
+// Load WITHOUT publishing to the default scope (POSIX local) — the
+// script-level dlopen() contract (lazy). bind_now resolves every reference
+// at open (RTLD_NOW), so a library whose names cannot all bind is refused
+// here, not at its first call: madc::library_open's contract.
+void *madcdl_open_local(const char *path, bool bind_now = false);
 
 // Handle onto the program's own default symbol scope (POSIX dlopen(NULL)).
 void *madcdl_open_self(void);

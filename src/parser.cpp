@@ -323,11 +323,14 @@ bool internal_program_source_emit_kind(::Program &self,
 				       value *out_map = nullptr);
 // The build surface (madcide IDE-10c; madc_program.cpp beside the child
 // pipeline): the CLI's AOT lane in-process — parse a FILE in a child,
-// emit a native artifact ("exe" | "obj"); diagnostics rows either way.
+// emit a native artifact ("exe" | "obj" | "shared"); diagnostics rows
+// either way. include_dirs: the -I directories (an array of text; null =
+// none).
 bool internal_program_build_native(::Program &self, const std::string &path,
 				   const std::string &kind_name,
 				   value &out,
-				   const std::string &outpath);
+				   const std::string &outpath,
+				   const value &include_dirs);
 // Persistent parse handles (madcide AST-1; madc_program.cpp beside the
 // child pipeline): the same compile-never-execute children given a
 // LIFETIME — open/refresh/close, with outline / diagnostics /
@@ -1064,8 +1067,10 @@ bool madc_source_emit_kind_map(void *result, void *result_map, void *source,
 }
 
 // The build bridge (madcide IDE-10c): path/kind/outpath = std::string*,
-// result = madc::value* (diagnostics rows). True = artifact written.
-bool madc_build_native(void *result, void *path, void *kind, void *outpath)
+// result = madc::value* (diagnostics rows), include_dirs = const
+// madc::value* (NULL = none). True = artifact written.
+bool madc_build_native(void *result, void *path, void *kind, void *outpath,
+		       const void *include_dirs)
 {
     madc::value &out = *(madc::value *)result;
     out = madc::value();
@@ -1075,11 +1080,15 @@ bool madc_build_native(void *result, void *path, void *kind, void *outpath)
     if ( !active )
 	return false;
 
+    const madc::value none;
     return madc::internal_program_build_native(*active,
 					       *(const std::string *)path,
 					       *(const std::string *)kind,
 					       out,
-					       *(const std::string *)outpath);
+					       *(const std::string *)outpath,
+					       include_dirs
+						   ? *(const madc::value *)include_dirs
+						   : none);
 }
 
 // ---- madc:: persistent parse handles (madcide AST-1) ---------------------

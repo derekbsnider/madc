@@ -1,0 +1,1 @@
+a shared object on Windows is refused until the PE writer emits a DLL (the plugin design G2, plan §41.11a step 4 after Linux)

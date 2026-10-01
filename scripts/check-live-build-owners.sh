@@ -3,10 +3,12 @@
 # consolidated owners stay single (DupFamilies native_build_kind_map,
 # parse_tree_backend_ready, fork_child_runtime_reset).
 #
-# 1. The "exe"/"obj" -> MadcNativeKind vocabulary has ONE owner:
-#    native_kind_of (src/madc_program.cpp). Marker: the kind_name
+# 1. The "exe"/"obj"/"shared" -> MadcNativeKind vocabulary has ONE owner:
+#    native_kind_of (src/madc_program.cpp). Markers: the kind_name
 #    comparison spelling appears exactly once — a lane mapping kind
-#    names itself has drifted off the owner.
+#    names itself has drifted off the owner — and so does the refusal's
+#    text (the owner returns it; the three lanes each spelled their own
+#    copy until the "shared" kind, plan §41.11a step 4).
 # 2. "May this retained tree reach the backend" has ONE owner:
 #    parse_tree_backend_ready. Marker: the inline gate spelling
 #    (tkProgram && !child.has_error_diagnostic()) appears exactly once
@@ -30,6 +32,11 @@ FORK_FILES="$FILE $(dirname "$0")/../src/madc_session_client.cpp"
 count_kind()
 {
 	grep -c 'kind_name == "exe"' "$1"
+}
+
+count_refusal()
+{
+	grep -c 'unknown build kind' "$1"
 }
 
 count_gate()
@@ -60,6 +67,13 @@ if [ "$n" -ne 1 ]; then
 	fail=1
 fi
 
+n=$(count_refusal "$FILE")
+if [ "$n" -ne 1 ]; then
+	echo "check-live-build-owners: FAIL — $n spellings of the unknown-kind" \
+	     "refusal (expected 1: native_kind_of's). Record the owner's why." >&2
+	fail=1
+fi
+
 n=$(count_gate "$FILE")
 if [ "$n" -ne 1 ]; then
 	echo "check-live-build-owners: FAIL — $n inline backend-ready gates" \
@@ -87,11 +101,13 @@ cat "$FILE" > "$tmp"
 {
 	echo 'static void __synthetic(const std::string &kind_name, ::Program &child) {'
 	echo '    if ( kind_name == "exe" ) return;'
+	echo '    child.set_error(phase, "unknown build kind");'
 	echo '    if ( child.tkProgram && !child.has_error_diagnostic() ) return;'
 	echo '    pid_t pid = fork(); (void)pid;'
 	echo '}'
 } >> "$tmp"
 if [ "$(count_kind "$tmp")" -ne 2 ] \
+|| [ "$(count_refusal "$tmp")" -ne 2 ] \
 || [ "$(count_gate "$tmp")" -ne 2 ] \
 || [ "$(count_forks "$tmp")" -ne $((nf_file + 1)) ]; then
 	rm -f "$tmp"
