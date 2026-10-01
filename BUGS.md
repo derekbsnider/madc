@@ -442,6 +442,50 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B116. A reference cannot bind `++x`, `--x`, `x = v` or `x op= v`
+
+```cpp
+#include <cstdio>
+static void g(int &r) { r += 10; }
+static int &h(int &r) { return r; }
+int main()
+{
+    int x = 1, y = 0;
+    int a[2] = { 5, 6 };
+    int i = 0;
+    g(++x); printf("pre-inc: %d\n", x);
+    g(x = 3); printf("assign: %d\n", x);
+    g(x += 4); printf("compound: %d\n", x);
+    g(--x); printf("pre-dec: %d\n", x);
+    g(a[i++] = 7); printf("once: %d %d %d\n", a[0], a[1], i);
+    int &r = (y = 5); r = 9; printf("bind: %d\n", y);
+    h(++y) = 2; printf("ret: %d\n", y);
+    return 0;
+}
+```
+
+- g++ 13 = clang++ 18 (`-std=c++17`): `pre-inc: 12`, `assign: 13`,
+  `compound: 27`, `pre-dec: 36`, `once: 17 6 1`, `bind: 9`, `ret: 2`.
+  madc (`--std=c++17`, at `8db0e52d0`): `int &r = (y = 5);` is refused at
+  parse ("Reference initializer must be an lvalue"); without it, every call
+  argument above fails in c2mir ("lvalue required as unary & operand"),
+  exit 1.
+- In C++ prefix `++`/`--` and every (compound) assignment yield an lvalue
+  ([expr.pre.incr]/1, [expr.ass]/1); in C they do not, so the fix is gated
+  on the language standard.
+- Found 2026-10-01 while writing B92's reducer.
+- Layer: two. The parser's reference-initializer check
+  (`reference_bind_address_expr`, src/parser.cpp) and `is_addressable_expression`
+  do not count these operators as lvalues; the CIR builds `&(x = v)`, which C
+  rejects. The return-statement hoist in `CirBuilder` (a ref-returning
+  function's `return v = v + x;`: the lhs address in a temporary, assign
+  through it, return it) is the right lowering, written for that one site.
+- Fix: one owner for the address of a C++ lvalue-yielding operator (the
+  lhs address once into a temporary, the operation through it, the
+  temporary as the value), reached from every place an address is formed,
+  the return hoist included; the parser predicates count the operators as
+  lvalues under C++.
+
 ### B115. A function template over a `const T&...` pack is refused: `eat()`, `eat(1)`
 
 ```cpp
