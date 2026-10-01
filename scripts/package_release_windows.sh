@@ -87,6 +87,10 @@ install -m 644 tools/madcide/profiles/* "$STAGE/$ROOT/bin/profiles/"
 # The shipped plugins (bundles), beside the exe the same way.
 mkdir -p "$STAGE/$ROOT/bin/plugins"
 cp -R tools/madcide/plugins/. "$STAGE/$ROOT/bin/plugins/"
+# The plugin API headers (<madcide/plugin>), beside the exe the same way:
+# --build-plugin's include directory (resolve_data_dir's last arm).
+mkdir -p "$STAGE/$ROOT/bin/include/madcide"
+install -m 644 tools/madcide/include/madcide/* "$STAGE/$ROOT/bin/include/madcide/"
 # The line editor's verb and check bodies, beside the exe the same way
 # (resolve_data_dir's last arm): without them madcide cannot save or quit.
 mkdir -p "$STAGE/$ROOT/bin/verbs" "$STAGE/$ROOT/bin/checks"

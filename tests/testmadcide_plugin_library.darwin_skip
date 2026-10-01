@@ -1,0 +1,1 @@
+a plugin library on darwin waits for the Mach-O writer to emit MH_DYLIB (the plugin design G2, plan §41.11a step 4 after Linux)

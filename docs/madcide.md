@@ -263,3 +263,54 @@ session owns, the terminal and a fresh window share it.
 
 Dedicated keys and menu items for the `view*` commands are a coming addition;
 today they reach the colon line — and any client that speaks the registry.
+
+## Plugins
+
+A profile is a plugin: a directory `<name>/` holding its manifest
+`<name>.plugin` (JSON) and the data files it carries (keys, layout, menu,
+theme, status line). madcide looks in the user's `plugins/` directory first
+(`~/.config/madcide/plugins`, `%APPDATA%\madcide\plugins` on Windows, or
+`$MADCIDE_CONFIG_DIR/plugins`), then in the shipped one, so a user's plugin
+overrides a shipped plugin of the same name.
+
+A plugin can carry code. Its manifest names the source, one madc file in its
+directory:
+
+```json
+{ "name": "hello", "api": 1, "code": "hello.mad" }
+```
+
+The source includes `<madcide/plugin>` and defines the activation madcide
+calls when it loads the plugin, which registers its commands and views:
+
+```cpp
+#include <madcide/plugin>
+
+bool hello_greet(long w, long es, long doc, const char *arg)
+{
+    ide::set(w, es, "msg", format("Hello, {}.", arg));
+    return true;
+}
+
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
+{
+    ide::bind(api);
+    return ide::command(w, "greet", "Greet", hello_greet) != 0;
+}
+```
+
+`madcide --build-plugin <dir>` builds it into its library beside the manifest
+(`hello.so`), the running madcide compiling in-process; nothing is built
+automatically. The library loads when the profile in use is the plugin, or
+when `settings.json` lists it (`"plugins": ["hello"]`), before the keys and
+menus load, so a key profile or a menu can name `greet`. A handler calls
+madcide only through `ide::` (`command`, `view`, `event` at activation;
+`run`, `command_id`, `get`, `set` from a handler), so a plugin binds to
+nothing of madcide's own.
+
+A missing library, a library built against another plugin API version (it
+says both), a library without `madcide_plugin_activate`, and an activation
+that returns false are each reported on the status line, and the editor opens
+without the plugin; what a refused activation registered is taken back.
+Plugin libraries are Linux shared objects today; macOS and Windows follow
+when `madc -shared` emits a `.dylib` and a `.dll`.

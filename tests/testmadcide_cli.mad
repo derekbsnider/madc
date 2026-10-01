@@ -180,6 +180,17 @@ int main()
     show_args("cli-args-novalue", 3, v9);
     const char *v10[3] = { "madcide", "a.c", "b.c" };
     show_args("cli-args-twofiles", 3, v10);
+    // --build-plugin DIR (plan §41.11a step 4) takes a directory and needs
+    // no file; without its directory it is refused.
+    const char *b1[3] = { "madcide", "--build-plugin", "plugins/hello" };
+    ide_args ba;
+    var bwhy;
+    bool bok = ide_args_parse(ba, bwhy, 3, b1);
+    println("cli-args-build-plugin: ok={} dir={} file={}", bok ? 1 : 0,
+	    ba.build_plugin == NULL ? "-" : ba.build_plugin,
+	    ba.file == NULL ? "-" : ba.file);
+    const char *b2[2] = { "madcide", "--build-plugin" };
+    show_args("cli-args-build-plugin-novalue", 2, b2);
     const char *n1[1] = { "madcide" };
     show_args("cli-args-nofile", 1, n1);
     const char *n2[2] = { "madcide", "--gui" };

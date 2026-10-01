@@ -29,6 +29,7 @@
 #                                               a WEAK dependency too: libgit2 is the IDE's, not madc's
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
+#   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
 #   /usr/share/madcide/verbs/, checks/          the line editor's verb and check bodies
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
@@ -175,6 +176,11 @@ stage() {
     # it carries), the plugin search path's second arm (resolve_data_dir).
     mkdir -p "$p/share/madcide/plugins"
     cp -R tools/madcide/plugins/. "$p/share/madcide/plugins/"
+    # The plugin API headers a plugin's code includes (<madcide/plugin>):
+    # --build-plugin puts this directory on the include path
+    # (resolve_data_dir), and `madc -shared -I` names it by hand.
+    mkdir -p "$p/share/madcide/include/madcide"
+    install -m 644 tools/madcide/include/madcide/* "$p/share/madcide/include/madcide/"
     # The line editor's verb and check bodies (save, quit and the rest are
     # verbs): resolve_data_dir finds them here, and madcide refuses to start
     # without them rather than run an editor that cannot save or quit.

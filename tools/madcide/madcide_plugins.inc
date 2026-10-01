@@ -34,6 +34,8 @@
 // manifests and settings on the bag are read-only afterwards (plugin design
 // §7).
 
+#include "include/madcide/plugin_api"	// the API version, the handler contracts
+
 // Where madcide's configuration lives, from its inputs (the environment's
 // values; NULL or "" = unset): MADCIDE_CONFIG_DIR (madcide's own override —
 // the test suite points it at a fixture, or nowhere), then
@@ -147,11 +149,12 @@ bool plugin_find(var &dir, const char *name0)
     return false;
 }
 
-// The plugin API version this madcide serves. A manifest's "api" names the
-// version it targets.
+// The plugin API version this madcide serves (<madcide/plugin_api>'s). A
+// manifest's "api" names the version it targets, and a plugin library
+// records the one it was built against.
 long plugin_api_served()
 {
-    return 1;
+    return MADCIDE_PLUGIN_API;
 }
 
 // Plugin `name`'s manifest from `dir`, every word checked once (the input
@@ -206,6 +209,13 @@ bool plugin_manifest_read(var &m, var &why, var &dir, const char *name0)
 	    why = format("{}: \"{}\" must be text", path, plugin_field_name(f));
 	    return false;
 	}
+    }
+    var code;
+    keyed_get(code, m, plugin_field_name(pfCODE));
+    if ( !code.is_null() && (!code.is_string() || !plugin_name_ok(code.c_str())) )
+    {
+	why = format("{}: \"code\" must name the plugin's source file in its directory", path);
+	return false;
     }
     var c;
     keyed_get(c, m, plugin_field_name(pfCONTRIBUTES));
@@ -601,12 +611,13 @@ void setting_get(var &out, long w, long es, const char *key0)
 // ---- contributed commands (Stage B1, step 2; §5.3, G4) ---------------------
 // The registry is one world entity, `plugins` (§5.3's storage note): every
 // client of the world sees the same commands. A command's handler is its
-// function's ADDRESS, kept as an integer and called through cmd_handler — a
-// builtin handler's `(long)&fn` now, a library's dlsym answer at step 4.
-// Codes are interned from cmd_contrib_base() upward, in registration order.
+// function's ADDRESS, kept as an integer and called through cmd_handler
+// (<madcide/plugin_api>) — a builtin handler's `(long)&fn`, and a library
+// plugin's, registered by its activation through the API table
+// (madcide_plugin_code.inc). Codes are interned from cmd_contrib_base()
+// upward, in registration order.
 // Thread contract: registration runs on the session's thread before the
 // profiles and menus load; the rows are read-only afterwards.
-typedef bool (*cmd_handler)(long w, long es, long doc, const char *arg);
 
 // The first contributed code: above every ide_cmd enumerator.
 long cmd_contrib_base()
@@ -768,9 +779,9 @@ long cmd_min_tier_w(long w, long code)
 // subscribed to its kind runs, in registration order, with the event
 // { kind, reply } (the reply's row as the session sent it). A handler keeps a
 // view's rows current or posts commands; it never holds the pane's session.
+// The handler's contract is event_handler (<madcide/plugin_api>).
 // Thread contract: handlers run on the session's thread, between events,
 // never during composition.
-typedef void (*event_handler)(long w, long es, long doc, var &event);
 
 // Subscribe a handler to a kind. False = refused: a kind outside repl_event
 // or no handler.

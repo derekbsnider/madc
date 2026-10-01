@@ -56,3 +56,5 @@ cli-args-twofiles: refused: unexpected argument 'b.c' (the file is 'a.c')
 cli-args-nofile: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=0
 cli-needs-file: tui=- gui=- line=- once=-c mcp=--mcp lsp=--lsp serve=--serve
 cli-usage: names-profile=1 file-optional=1
+cli-args-build-plugin: ok=1 dir=plugins/hello file=-
+cli-args-build-plugin-novalue: refused: --build-plugin needs a plugin DIR

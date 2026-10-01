@@ -524,6 +524,39 @@ int main() { std::vector<int> local(3, 9); printf("%zu %d %zu %d\n", many.size()
   parser change (template overload resolution): its own focused session
   (owner, 2026-09-13).
 
+### B100. A `const var &` parameter refuses a text prvalue: `take("x")`, `take(format(...))`
+
+```cpp
+void take(const var &v)
+{
+    println("got {}", v);
+}
+int main()
+{
+    const char *s = "lit";
+    take(s);			// binds
+    take("direct");		// refused
+    take(format("f{}", 1));	// refused
+    return 0;
+}
+```
+
+- madc (`--std=madc`, `bin/madc` at `67660bc79`): `9:14: assignment of
+  incompatible value` and `10:13: ...` from c2mir's check, `cir_compile
+  failed`. A named `const char *` binds.
+- g++ 13 and clang++ 18, with a class `value` constructible from `const
+  char *` in its place: `got lit` / `got direct` / `got f1`. madc
+  `--std=c++17` on that same C++ prints the same three lines, so the gap is
+  the carrier's own temporary, not reference binding in general.
+- Found 2026-10-01 writing the plugin API's `ide::set` (plan §41.11a step 4),
+  which gains `ui::set`'s overloads (`const char *`, integer, bool, real)
+  beside `const var &`, as the engine's bag writes have.
+- Layer: cir's reference-binding owner, `ref_param_arg_addr` →
+  `ref_param_arg_addr_from_value` (src/cir_builder.cpp): a carrier referent
+  with a converted temp from a text prvalue is emitted as an assignment
+  into the carrier's storage, which C has no form for; it needs the
+  carrier's construction from text (the path a named `const char *` takes).
+
 ### B98. A value literal cannot nest a brace list: `{ "rows": {} }` is refused
 
 ```cpp

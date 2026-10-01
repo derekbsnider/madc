@@ -152,7 +152,7 @@ class IdeSession
 // THE action event for a command: what a key bound to `code` produces, with
 // `arg` as its argument ("" = none) for a command that reads one off the
 // event. Every synthesized command event is this one shape: post, command,
-// a choice list's row, a client's paste answer.
+// a choice list's row, a client's paste answer, a plugin's ide::run.
 void action_event(var &e, long code, const char *arg)
 {
     var a = arg;		// ring discipline: own the text first
@@ -161,6 +161,8 @@ void action_event(var &e, long code, const char *arg)
     if ( strlen(a.c_str()) > 0 )
 	e["arg"] = a;
 }
+
+#include "madcide_plugin_code.inc"	// plugin code: the API table, activation, --build-plugin
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -8437,6 +8439,9 @@ bool init_view_es(long w, long es, long doc, const char *path,
     var want;
     active_profile(want, w, es, prof.c_str());
     bundle_select(w, es, want.c_str());
+    // Plugin CODE activates before any data loads, so a key profile, a menu
+    // or a layout can name what it registers (madcide_plugin_code.inc).
+    plugins_activate(w, es);
     var sw;
     bundle_word(sw, w, es, cbSTATUS);
     load_status(w, es, sw.c_str());	// the status FORMAT rides the profile

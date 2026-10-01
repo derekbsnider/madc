@@ -1,0 +1,241 @@
+// The plugin `library` transport (plan §41.11a step 4; plugin design §5.4-
+// 5.5, §8 Stage B item 2): a plugin's code, built into its library by
+// --build-plugin, activates in the session's world through the API table and
+// registers its commands and views, which then run as built-in ones do.
+// Pins:
+//   1. --build-plugin's owner (plugin_build) builds a plugin's "code" into
+//      <dir>/<name><suffix>, the plugin reaching <madcide/plugin> through
+//      madcide's include directory; a source that does not compile is
+//      refused with positioned rows, and a manifest with no "code" with the
+//      reason; the command line's run_build_plugin says what it built (a
+//      trailing separator names the same plugin) or exits 1;
+//   2. settings.json's "plugins" activates a plugin's code at session open,
+//      before the profiles load: its commands have contributed codes, run
+//      through the one dispatcher with their argument, and one handler runs
+//      another command by name through the table (ide::command_id,
+//      ide::run) and reads the status line back (ide::get); its view
+//      registers;
+//   3. a second view of the same world activates nothing twice;
+//   4. refusals, each with its reason: no library built (the reason names
+//      --build-plugin), a library built against another plugin API (both
+//      numbers), a library with no activation entry, and an activation
+//      that refuses, whose registrations are taken back.
+// The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
+// the .env).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// Every directory up to and including `dir` (one level per php::mkdir).
+void mkdirs(var &made, const char *dir0)
+{
+    var dir = dir0;
+    array parts;
+    php::explode(parts, "/", dir.c_str());
+    var grown = "";
+    for ( var seg : parts )
+    {
+	if ( strlen(grown.c_str()) == 0 )
+	    grown = seg;
+	else
+	    grown = format("{}/{}", grown, seg);
+	if ( !php::file_exists(grown) )
+	{
+	    php::mkdir(grown.c_str());
+	    made.push(grown);
+	}
+    }
+}
+
+void put(var &files, var &path, const char *text)
+{
+    php::file_put_contents(path.c_str(), text);
+    files.push(path);
+}
+
+// A plugin directory under `plugins` with its manifest and source; `code`
+// "" = a manifest with no "code".
+void plugin_fixture(var &files, var &made, var &plugins, const char *name,
+		    const char *code, const char *source)
+{
+    var dir = format("{}/{}", plugins, name);
+    mkdirs(made, dir.c_str());
+    var mp = format("{}/{}.plugin", dir, name);
+    if ( strlen(code) == 0 )
+	put(files, mp, format("{{\"name\": \"{}\", \"api\": 1}}\n", name));
+    else
+    {
+	put(files, mp, format("{{\"name\": \"{}\", \"api\": 1, \"code\": \"{}\"}}\n",
+			      name, code));
+	var sp = format("{}/{}", dir, code);
+	put(files, sp, source);
+    }
+}
+
+// Build plugin `name` and say how it went; the library joins `files`.
+void build(var &files, var &plugins, const char *name)
+{
+    var dir = format("{}/{}", plugins, name);
+    var why;
+    var rows = {};
+    bool ok = plugin_build(why, rows, dir.c_str());
+    long line0 = 0;
+    if ( php::count(rows) > 0 )
+	line0 = rows[0]["line"].as_integer();
+    if ( ok )
+	files.push(why);
+    println("build-{}: ok={} rows={} line-pos={}", name, ok ? 1 : 0,
+	    php::count(rows), line0 > 0 ? 1 : 0);
+    if ( !ok )
+	println("build-{}-why: {}", name, why);
+}
+
+// Activate plugin `name` in world `w` directly; its verdict and reason.
+void activate(long w, var &plugins, const char *name)
+{
+    var dir = format("{}/{}", plugins, name);
+    var why = "";
+    bool ok = plugin_activate(w, dir, name, why);
+    println("activate-{}: ok={} {}", name, ok ? 1 : 0, why);
+}
+
+// The status line after a command run with its argument.
+void run_named(IdeSession &S, long doc, const char *name, const char *arg)
+{
+    long code = cmd_of_w(S.w, name);
+    bool cont = true;
+    S.command(doc, code, arg, cont);
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    println("run-{}: cont={} msg={}", name, cont ? 1 : 0, msg);
+}
+
+int main()
+{
+    var files = {};
+    var made = {};
+    const char *path = "madc_ide_plugin_library.c";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+
+    var cfg;
+    madcide_config_dir(cfg);
+    var plugins = format("{}/plugins", cfg);
+    mkdirs(made, plugins.c_str());
+
+    plugin_fixture(files, made, plugins, "hello", "hello.mad",
+	"#include <madcide/plugin>\n"
+	"bool hello_greet(long w, long es, long doc, const char *arg)\n"
+	"{\n"
+	"    ide::set(w, es, \"msg\", format(\"Hello, {}.\", arg));\n"
+	"    return true;\n"
+	"}\n"
+	"bool hello_again(long w, long es, long doc, const char *arg)\n"
+	"{\n"
+	"    long code = ide::command_id(w, \"greet\");\n"
+	"    bool cont = ide::run(w, es, doc, code, \"again\");\n"
+	"    var m;\n"
+	"    ide::get(m, w, es, \"msg\");\n"
+	"    var said = \"quit\";\n"
+	"    if ( cont )\n"
+	"        said = \"ran\";\n"
+	"    ide::set(w, es, \"msg\", format(\"{} ({})\", m, said));\n"
+	"    return true;\n"
+	"}\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n"
+	"    ide::bind(api);\n"
+	"    if ( ide::command(w, \"greet\", \"Greet\", hello_greet) == 0 )\n"
+	"        return false;\n"
+	"    if ( ide::command(w, \"greetagain\", \"Greet again\", hello_again) == 0 )\n"
+	"        return false;\n"
+	"    return ide::view(w, \"hellolist\", \"Hello\", \"hello.rows\", 0) != 0;\n"
+	"}\n");
+    plugin_fixture(files, made, plugins, "nolib", "nolib.mad",
+	"#include <madcide/plugin>\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n    return true;\n}\n");
+    plugin_fixture(files, made, plugins, "future", "future.mad",
+	"#include <madcide/plugin_api>\n"
+	"extern \"C\" long madcide_plugin_api()\n{\n    return 2;\n}\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n    return true;\n}\n");
+    plugin_fixture(files, made, plugins, "noentry", "noentry.mad",
+	"#include <madcide/plugin>\n"
+	"bool noentry_cmd(long w, long es, long doc, const char *arg)\n"
+	"{\n    return true;\n}\n");
+    plugin_fixture(files, made, plugins, "declines", "declines.mad",
+	"#include <madcide/plugin>\n"
+	"bool declines_cmd(long w, long es, long doc, const char *arg)\n"
+	"{\n    return true;\n}\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n"
+	"    ide::bind(api);\n"
+	"    ide::command(w, \"declined\", \"Declined\", declines_cmd);\n"
+	"    return false;\n"
+	"}\n");
+    plugin_fixture(files, made, plugins, "broken", "broken.mad",
+	"#include <madcide/plugin>\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n    return true\n}\n");
+    plugin_fixture(files, made, plugins, "nocode", "", "");
+
+    // 1. --build-plugin's owner.
+    build(files, plugins, "hello");
+    build(files, plugins, "future");
+    build(files, plugins, "noentry");
+    build(files, plugins, "declines");
+    build(files, plugins, "broken");
+    build(files, plugins, "nocode");
+    // The command line's --build-plugin: what it built, or its refusal (on
+    // stderr) and exit 1.
+    var hdir = format("{}/hello/", plugins);
+    long brc = run_build_plugin(hdir.c_str());
+    var ndir = format("{}/nocode", plugins);
+    long nrc = run_build_plugin(ndir.c_str());
+    println("cli-build: built={} refused={}", brc, nrc);
+
+    // 2. settings.json's "plugins" activates hello's code at session open.
+    var sp = format("{}/settings.json", cfg);
+    put(files, sp, "{\"plugins\": [\"hello\"]}\n");
+    IdeSession S;
+    long doc = S.open(path, false, "default");
+    long gc = cmd_of_w(S.w, "greet");
+    println("hello-code: contributed={}", cmd_contributed(gc) ? 1 : 0);
+    run_named(S, doc, "greet", "world");
+    run_named(S, doc, "greetagain", "");
+    var vn = "hellolist";
+    println("hello-view: {}", view_of_w(S.w, vn) != viewNONE ? 1 : 0);
+
+    // 3. A second view of the world activates nothing twice.
+    long es2 = S.spawn_view(doc);
+    var m2;
+    ui::get(m2, S.w, es2, "msg");
+    var active;
+    registry_rows(active, S.w, "active");
+    println("spawn: same-code={} active={} msg={}",
+	    cmd_of_w(S.w, "greet") == gc ? 1 : 0, php::count(active), m2);
+
+    // 4. Refusals, each with its reason.
+    activate(S.w, plugins, "nolib");
+    activate(S.w, plugins, "future");
+    activate(S.w, plugins, "noentry");
+    activate(S.w, plugins, "declines");
+    println("declined-taken-back: {}", cmd_of_w(S.w, "declined") == 0 ? 1 : 0);
+    S.close();
+
+    // Remove every file, then every directory this test made.
+    long nf = php::count(files);
+    for ( long i = 0; i < nf; i = i + 1 )
+    {
+	var f = files[i];
+	php::unlink(f.c_str());
+    }
+    long nd = php::count(made);
+    for ( long i = nd - 1; i >= 0; i = i - 1 )
+    {
+	var d = made[i];
+	php::rmdir(d.c_str());
+    }
+    php::unlink(path);
+    return 0;
+}

@@ -83,6 +83,10 @@ int main(int argc, char **argv)
     // is the question "what is already running?" (V6c-4).
     if ( a.sessions )
 	return run_sessions();
+    // `--build-plugin DIR` builds a plugin's library and exits: no session,
+    // no file (madcide_plugin_code.inc).
+    if ( a.build_plugin != NULL )
+	return run_build_plugin(a.build_plugin);
     // No file: the editor opens an untitled buffer (Thonny's, JOE's
     // Unnamed); a headless face has nothing to act on without one.
     if ( a.file == NULL && ide_face_needs_file(a) != NULL )

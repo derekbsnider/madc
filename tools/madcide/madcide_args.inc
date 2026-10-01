@@ -5,10 +5,12 @@
 //
 //   madcide [<file>] [ro] [--profile NAME] [--gui|--line] [-c "<command> [arg]"]
 //           [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
-//           [--no-serve] [--sessions] [--help] [--] [<file>]
+//           [--no-serve] [--sessions] [--build-plugin DIR] [--help] [--] [<file>]
 //
 // No file opens the editor on an untitled buffer (decided 2026-09-30); the
 // headless faces (-c, --mcp, --lsp, --serve) act on a file and need one.
+// --build-plugin DIR builds the plugin in DIR into its library and exits
+// (plan §41.11a step 4); like --sessions it needs no file.
 //
 // `--` ends the flags (a file whose name starts with '-'). An unknown flag, a
 // flag missing its value and a second file are refused with the reason and
@@ -33,6 +35,7 @@ struct ide_args
     bool attach;
     bool no_serve;
     bool sessions;		// --sessions: what is running (no file needed)
+    const char *build_plugin;	// --build-plugin DIR; NULL = not given
     bool help;			// --help / -h
 };
 
@@ -43,6 +46,7 @@ const char *ide_usage()
 	   "       madcide <file> [ro] [--profile NAME] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
 	   "       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n"
 	   "       madcide --sessions                                 (what is running, and how to join it)\n"
+	   "       madcide --build-plugin DIR                         (build the plugin in DIR into its library)\n"
 	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n";
 }
 
@@ -65,6 +69,8 @@ const char *ide_flag_wants(const char *flag)
 	return "\"<command> [arg]\"";
     if ( strcmp(flag, "--serve") == 0 )
 	return "<host:port>";
+    if ( strcmp(flag, "--build-plugin") == 0 )
+	return "a plugin DIR";
     return "a profile NAME";
 }
 
@@ -84,6 +90,7 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
     a.attach = false;
     a.no_serve = false;
     a.sessions = false;
+    a.build_plugin = NULL;
     a.help = false;
     bool flags = true;		// false after `--`
     for ( int i = 1; i < argc; i++ )
@@ -108,7 +115,8 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 	    else if ( strcmp(w, "--help") == 0 || strcmp(w, "-h") == 0 )
 		a.help = true;
 	    else if ( strcmp(w, "-c") == 0 || strcmp(w, "--serve") == 0
-		      || strcmp(w, "--profile") == 0 )
+		      || strcmp(w, "--profile") == 0
+		      || strcmp(w, "--build-plugin") == 0 )
 	    {
 		int v = ide_flag_value(why, argc, argv, i, ide_flag_wants(w));
 		if ( v == 0 )
@@ -118,6 +126,8 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 		    a.once = argv[v];
 		else if ( strcmp(w, "--serve") == 0 )
 		    a.serve = argv[v];
+		else if ( strcmp(w, "--build-plugin") == 0 )
+		    a.build_plugin = argv[v];
 		else
 		    a.profile = argv[v];
 	    }

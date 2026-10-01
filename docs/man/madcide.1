@@ -1,4 +1,4 @@
-.TH MADCIDE 1 "2026-09-30" "madc" "User Commands"
+.TH MADCIDE 1 "2026-10-01" "madc" "User Commands"
 .SH NAME
 madcide \- terminal IDE built on the live madc compiler
 .SH SYNOPSIS
@@ -7,6 +7,9 @@ madcide \- terminal IDE built on the live madc compiler
 .RI [ ro ]
 .RB [ \-\-profile
 .IR name ]
+.br
+.B madcide \-\-build\-plugin
+.I dir
 .SH DESCRIPTION
 .B madcide
 is a terminal IDE whose core is the running
@@ -77,8 +80,18 @@ setting in
 else
 .BR default .
 .B chthonic
-is the learning profile: pico's single-chord keys, the editor with the
-REPL below it, and a beginner's menu.
+is the learning profile, laid out as Thonny is: Thonny's keys, the editor
+with the REPL below it, and a beginner's menu.
+.TP
+.BI \-\-build\-plugin " dir"
+Build the plugin in
+.I dir
+into its library,
+.IR dir / name .so
+beside its manifest, and exit: 0 when built, 1 with the compiler's
+diagnostics when not. The running madcide compiles it in-process, with
+its own plugin headers on the include path. Nothing is ever built
+automatically.
 .TP
 .B \-\-help
 Print the usage and exit.
@@ -166,10 +179,27 @@ and
 .I settings.json
 is a JSON object:
 .B "profile"
-names the profile, and any other key is a setting, which beats the
-profile's own default (for example
+names the profile,
+.B "plugins"
+lists plugins whose code loads beside the profile's, and any other key is
+a setting, which beats the profile's own default (for example
 .BR "repl.std" ,
 the REPL's language standard).
+.PP
+A plugin with code names its source in its manifest
+.RB ( """code"": ""name.mad""" ),
+madc code that includes
+.B <madcide/plugin>
+and defines
+.BR madcide_plugin_activate ,
+which registers its commands and views. Its library, built by
+.BR \-\-build\-plugin ,
+loads when the profile in use is the plugin or
+.B "plugins"
+names it, before the keys and menus load, so they can bind its commands.
+A missing library, a library built against another plugin API version,
+and an activation that refuses are each reported on the status line, and
+the editor opens without the plugin.
 .SH SEE ALSO
 .BR madc (1)
 .br

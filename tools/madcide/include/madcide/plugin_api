@@ -1,0 +1,58 @@
+// <madcide/plugin_api> — the types madcide and a plugin's code share
+// (docs/plans/2026-09-30-madcide-plugins.md §5.3-5.4; plan §41.11a step 4):
+// the plugin API's version, the handler contracts and the table of calls
+// madcide hands a plugin when it activates it. madcide includes this; a
+// plugin includes <madcide/plugin>, which includes this and adds the
+// plugin's side.
+//
+// Thread contract: the table is filled once by madcide and never written
+// after; activation and every call through it run on the session's thread.
+#ifndef __MADCIDE_PLUGIN_API_H
+#define __MADCIDE_PLUGIN_API_H 1
+
+// The plugin API version: a manifest's "api" names the one it targets, a
+// plugin library records the one it was built against (madcide_plugin_api,
+// <madcide/plugin>), and madcide refuses either when it is not the version
+// it serves. The table below is append-only: an entry added at its end
+// moves this number.
+#define MADCIDE_PLUGIN_API 1
+
+// A contributed command's handler, run by the dispatcher with the command's
+// argument. False = it ended the session (the dispatcher's quit verdict).
+typedef bool (*cmd_handler)(long w, long es, long doc, const char *arg);
+
+// A contributed event handler, run with { kind, reply } for each event of
+// the kind it subscribed to (repl_event).
+typedef void (*event_handler)(long w, long es, long doc, var &event);
+
+// The calls a plugin makes into madcide, all of them (SQLite's
+// sqlite3_api_routines pattern): a plugin binds to no symbol of madcide's,
+// so the same plugin runs whichever way it is loaded.
+struct ide_api
+{
+    long version;	// the MADCIDE_PLUGIN_API of the madcide that filled it
+    // Registration, at activation. Each answers as the registry does:
+    // command its code (0 = refused), view its kind (0 = refused), event
+    // false when refused. A view's `show` is 0 or a contributed command.
+    long (*command)(long w, const char *name, const char *title, cmd_handler h);
+    long (*view)(long w, const char *name, const char *title, const char *key,
+		 long show);
+    bool (*event)(long w, long kind, event_handler h);
+    // Use, from a handler: run any command by code as a key bound to it
+    // would, `arg` its argument where the command reads one (false = it
+    // ended the session); a command's code by name (0 = none); a bag key of
+    // an entity (the session `es`, a document) read or written.
+    bool (*run)(long w, long es, long doc, long code, const char *arg);
+    long (*command_id)(long w, const char *name);
+    void (*get)(var &out, long w, long scope, const char *key);
+    void (*set)(long w, long scope, const char *key, const var &value);
+};
+
+// A plugin library's two entries, looked up by madcide when it loads the
+// library: madcide_plugin_api (the version it was built against) and
+// madcide_plugin_activate (bind the table, register in world `w`; false
+// refuses the plugin).
+typedef long (*plugin_version_fn)();
+typedef bool (*plugin_activate_fn)(const ide_api *api, long w);
+
+#endif

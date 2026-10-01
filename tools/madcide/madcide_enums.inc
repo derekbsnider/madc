@@ -1636,7 +1636,9 @@ long tool_family_of(const char *name)
 // words convert once, at load (plugin_manifest_read, madcide_plugins.inc),
 // and an unknown word refuses the plugin with its reason. The field words
 // of the manifest object:
-enum plugin_field : unsigned char { pfNONE = 0, pfNAME, pfTITLE, pfVERSION, pfAPI, pfCONTRIBUTES, pfLAST };
+// "code" names the plugin's source file (one name in its directory), built
+// into its library <name><library_suffix> (madcide_plugin_code.inc).
+enum plugin_field : unsigned char { pfNONE = 0, pfNAME, pfTITLE, pfVERSION, pfAPI, pfCONTRIBUTES, pfCODE, pfLAST };
 const char *plugin_field_name(long f)
 {
     switch ( f )
@@ -1646,6 +1648,7 @@ const char *plugin_field_name(long f)
 	case pfVERSION: return "version";
 	case pfAPI: return "api";
 	case pfCONTRIBUTES: return "contributes";
+	case pfCODE: return "code";
     }
     return "";
 }
