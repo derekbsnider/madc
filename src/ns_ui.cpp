@@ -112,6 +112,8 @@ namespace ui {
     typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
+    typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
+    typedef const char *(*ui_host_clip_get_fn)(void *host);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -132,6 +134,13 @@ namespace ui {
 				// event did (run() returns 0, nothing posted)
 				// — the cooperative scheduler's bounded wait
 				// while tasks are live; nonzero = no timer
+				// here; optional
+	ui_host_clip_set_fn clip_set; // put plain text on the platform's
+				// clipboard (plan §41.11a step 3e); 0 = taken;
+				// nonzero = no clipboard here; optional
+	ui_host_clip_get_fn clip_get; // the platform clipboard's text, read
+				// now ("" = it holds none); the host owns it
+				// until its next call; NULL = no clipboard
 				// here; optional
     };
 }
@@ -231,6 +240,10 @@ struct ui_frontend
     // grid has none: false.
     virtual bool dialogs() const { return false; }
     virtual bool dialog(const char *) { return false; }
+    // The platform clipboard (plan §41.11a step 3e): put or read plain
+    // text. A grid reaches none: false (the application keeps its own).
+    virtual bool clipboard_set(const char *) { return false; }
+    virtual bool clipboard_get(std::string &) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -424,7 +437,13 @@ struct ui_dom_frontend : ui_frontend
 			   "<style>";
 	if ( css )
 	    html += *css;
-	html += "</style></head><body><div id=\"root\"></div>"
+	// The engine's primary modifier (plan §41.11a step 3e): where it is
+	// Cmd the page sends Cmd with a printable as a key; elsewhere Cmd
+	// keys stay the browser's (its Cmd+C / Cmd+V).
+	html += "</style></head><body data-primary=\"";
+	html += madc::hub::key_primary_mod()
+		== madc::hub::key_mod_bits(::ui::key_mod::cmd) ? "cmd" : "ctrl";
+	html += "\"><div id=\"root\"></div>"
 		"<span id=\"measure\">M</span>"
 		"<input id=\"kb\" autofocus autocomplete=\"off\" spellcheck=\"false\">"
 		"<script>";
@@ -569,6 +588,20 @@ struct ui_dom_frontend : ui_frontend
     bool dialog(const char *json)
     {
 	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
+    }
+    bool clipboard_set(const char *text)
+    {
+	return host && ops->clip_set && ops->clip_set(host, text ? text : "") == 0;
+    }
+    bool clipboard_get(std::string &out)
+    {
+	if ( !host || !ops->clip_get )
+	    return false;
+	const char *t = ops->clip_get(host);
+	if ( !t )
+	    return false;
+	out = t;
+	return true;
     }
 };
 
@@ -735,6 +768,11 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 						// code, or the code the control
 						// posting this name carried
 	    fields["seq"] = madc::value(e.seq);
+	    // The modifiers held on the chord's last key (Shift reaches a
+	    // binding without it: a motion extends a selection); absent when
+	    // none were, or a control posted the name.
+	    if ( e.mods != 0 )
+		fields["mods"] = madc::value((int64_t)e.mods);
 	    // The command's argument a native control carried (a buffer
 	    // tab's ring index — polish P4); absent for a chord.
 	    if ( !e.text.empty() )
@@ -1782,6 +1820,34 @@ bool dialog(int64_t t, const char *json)
 {
     ui_frontend *f = ui_frontend_get(t);
     return f && f->dialog(json);
+}
+
+// The platform clipboard a target reaches (plan §41.11a step 3e). A read
+// answers with '\n' line ends whatever the platform keeps ("\r\n" on
+// Windows, a lone '\r' from an old Mac application).
+bool clipboard_set(int64_t t, const char *text)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->clipboard_set(text);
+}
+
+bool clipboard_get(madc::value &out, int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    std::string raw;
+    if ( !f || !f->clipboard_get(raw) )
+	return false;
+    std::string lf;
+    lf.reserve(raw.size());
+    for ( size_t i = 0; i < raw.size(); ++i )
+    {
+	if ( raw[i] != '\r' )
+	    lf += raw[i];
+	else if ( i + 1 >= raw.size() || raw[i + 1] != '\n' )
+	    lf += '\n';
+    }
+    out = madc::value(lf);
+    return true;
 }
 
 int64_t rows(int64_t t)

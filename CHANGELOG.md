@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Keys, UI: Shift reaches a binding, and the platform clipboard (plan §41.11a step 3e, slice 3a)
+
+Shift on a bound motion reaches that binding with Shift still held, allowing applications to extend a selection by that motion. Action events now carry the key_mod bits held on their last key. The key resolver's fallback order is: the key as pressed, without Shift (if held), then without any modifier. The platform clipboard through ui::clipboard_set/get reaches GdkClipboard (GTK4), NSPasteboard (Cocoa), or CF_UNICODETEXT (Win32); a read answers with LF line ends. Terminal and browser page targets return false and fall back to the application's own clipboard copy.
+
 ### Keys: modifiers on every key (plan §41.11a step 3e, slice 2)
 
 Shift, Alt, Ctrl and Cmd now combine with any key. A key carries its modifiers as ui::key_mod bits in tui_keyev, spelled canonically: "ctrl+shift+s", "ctrl+f2", "shift+right", "alt+f4", "cmd+s", "ctrl+plus"; a plain Ctrl+letter stays "^s". A modified key nothing binds reads as its unmodified form (Shift+Right is right). Printables under Ctrl, Alt or Cmd never type. The terminal decodes xterm's modified sequences (cursor keys, function keys, CSI u, CSI Z, modifyOtherKeys, NUL for Ctrl+Space); the page spells Ctrl, Shift and Alt. Named out: chords the terminal cannot distinguish (Ctrl+Shift+S, Ctrl+digit, Ctrl+plus/minus) are GUI-only; Cmd with a printable stays the browser's (Cmd+C / Cmd+V are its clipboard) until slice 3; `primary` resolves on the engine's platform, so a browser on a Mac driving an engine on Linux reads `primary` as Ctrl. Gate: test_keys (spelling round-trip, primary resolution), test_tui_model (xterm decoding), test_web_model (page input, modified key resolution).

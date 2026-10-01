@@ -200,6 +200,58 @@ TEST_CASE("modified keys — bound apart, else read as their key")
     CHECK(ev[2].text == "b");
 }
 
+TEST_CASE("modified keys — Shift reaches a binding without it, and the action keeps it")
+{
+    // Shift on a bound motion (plan §41.11a step 3e): Ctrl+Shift+Left finds
+    // Ctrl+Left's binding before Left's, and the action says Shift was
+    // held, so the application extends a selection by that motion.
+    tui_bindings b;
+    REQUIRE(b.bind("ctrl+left", "wordleft"));
+    REQUIRE(b.bind("left", "cleft"));
+    REQUIRE(b.bind("ctrl+shift+z", "redo"));
+    REQUIRE(b.bind("^z", "undo"));
+    REQUIRE(b.bind("^k left", "blockleft"));
+    std::string err;
+    REQUIRE(b.finalize(err));
+    key_resolver r;
+    r.set_bindings(b);
+    const unsigned char shift = (unsigned char)ui::key_mod::shift;
+    const unsigned char ctrl = (unsigned char)ui::key_mod::ctrl;
+    tui_keyev k;
+    REQUIRE(tui_key_from_name("ctrl+shift+left", k));
+    key_step s = r.step(k);
+    CHECK(s.action_name == "wordleft");
+    CHECK(s.seq == "ctrl+left");
+    CHECK(s.mods == (unsigned char)(ctrl | shift));
+    REQUIRE(tui_key_from_name("shift+left", k));
+    s = r.step(k);
+    CHECK(s.action_name == "cleft");
+    CHECK(s.mods == shift);
+    // A binding WITH Shift wins over the one without it.
+    REQUIRE(tui_key_from_name("ctrl+shift+z", k));
+    CHECK(r.step(k).action_name == "redo");
+    s = r.step(tui_keyev(tui_key::ctrl, 'z'));
+    CHECK(s.action_name == "undo");
+    CHECK(s.mods == 0);
+    // A continuation: ^K then Shift+Left reads as ^K left, Shift kept.
+    CHECK(r.step(tui_keyev(tui_key::ctrl, 'k')).k == key_step::kind::pending);
+    REQUIRE(tui_key_from_name("shift+left", k));
+    s = r.step(k);
+    CHECK(s.action_name == "blockleft");
+    CHECK(s.seq == "^k left");
+    CHECK(s.mods == shift);
+    // Through the one keys -> events loop: the action event carries them.
+    focus_state f;
+    std::vector<tui_keyev> keys;
+    REQUIRE(tui_key_from_name("ctrl+shift+left", k));
+    keys.push_back(k);
+    std::vector<tui_event> ev = madc::hub::ui_apply_keys(r, f, keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "wordleft");
+    CHECK(ev[0].mods == (unsigned char)(ctrl | shift));
+}
+
 TEST_CASE("bindings — build validation is loud and whole-table")
 {
     tui_bindings b;

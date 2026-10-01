@@ -75,6 +75,7 @@ inline std::vector<tui_event> ui_apply_keys(key_resolver &keys_owner,
 	    e.action_name = step.action_name;
 	    e.action_code = step.action_code;
 	    e.seq = step.seq;
+	    e.mods = step.mods;	// Shift held on a motion extends a selection
 	    out.push_back(e);
 	    continue;
 	}

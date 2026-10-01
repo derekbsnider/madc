@@ -83,9 +83,11 @@ namespace ui_ws {
     }
 }
 
-// No menu / dialog / tick op: a ws window has no native menu bar or file
-// dialog, and no platform loop to bound (readline is the cooperative wait).
+// No menu / dialog / tick / clipboard op: a ws window has no native menu bar
+// or file dialog, no platform loop to bound (readline is the cooperative
+// wait), and a page asks the user before it reads the clipboard — so the
+// application keeps its own copy (plan §41.11a step 3e).
 static ui::ui_host_ops __ui_ws_ops = {
-    ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0
+    ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0, 0, 0
 };
 static bool __ui_ws_registered = ui::register_host("ws", ui::WEB, &__ui_ws_ops);

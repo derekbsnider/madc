@@ -821,14 +821,16 @@
            (e.altKey ? 'alt+' : '') + (e.metaKey ? 'cmd+' : '');
   }
 
+  // Cmd is a binding modifier where the engine's primary modifier is Cmd
+  // (the page's body says which, plan §41.11a step 3e); elsewhere Cmd with a
+  // printable stays the browser's (its Cmd+C / Cmd+V).
+  var cmdBinds = document.body.getAttribute('data-primary') === 'cmd';
+
   function keySpelling(e) {
     if (named[e.key]) return modWords(e, true) + named[e.key];
     if (e.key.length !== 1 || !(e.ctrlKey || e.altKey || e.metaKey))
       return null;                  // a printable types (the input event)
-    // Cmd with a printable stays the browser's (Cmd+C / Cmd+V are its
-    // clipboard) until the IDE's own clipboard commands exist (step 3e's
-    // selection slice).
-    if (e.metaKey) return null;
+    if (e.metaKey && !cmdBinds) return null;
     // AltGr (Windows reports it as Ctrl+Alt) and macOS's Option type
     // characters: '@' on a German layout, 'ß' from Option+S.
     if (e.getModifierState && e.getModifierState('AltGraph')) return null;
@@ -858,6 +860,13 @@
     var t = kb.value;
     kb.value = '';
     if (t) post({ kind: 'text', text: t });
+  });
+  // The browser's own Paste (its menu, or a key the page leaves to it) types
+  // the clipboard's text, line breaks kept: the input box would drop them.
+  kb.addEventListener('paste', function (e) {
+    var t = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+    e.preventDefault();
+    if (t) post({ kind: 'text', text: t.replace(/\r\n?/g, '\n') });
   });
   document.addEventListener('mousedown', function () { setTimeout(function () { kb.focus(); }, 0); });
 

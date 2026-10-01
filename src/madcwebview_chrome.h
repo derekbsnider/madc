@@ -1,9 +1,10 @@
 /* madcwebview_chrome.h — madc's extension of the webview C API: the NATIVE
  * chrome around the webview — a menu bar over the window (madcide GUI chrome
- * S2) and the platform's file dialogs (S4). Built into libmadcwebview beside
- * upstream's webview.cc; scripts/gen_webview_header.py appends this text to
- * the embedded include/madc/webview.h, so the ONE module interface carries
- * upstream's API and madc's — never a hand copy.
+ * S2), the platform's file dialogs (S4) and its clipboard (plan §41.11a step
+ * 3e). Built into libmadcwebview beside upstream's webview.cc;
+ * scripts/gen_webview_header.py appends this text to the embedded
+ * include/madc/webview.h, so the ONE module interface carries upstream's API
+ * and madc's — never a hand copy.
  *
  * JSON-free by design: the host (the <ns_ui_web> fragment) walks the engine's
  * menu description and calls begin / add / separator / end; the platform
@@ -64,6 +65,19 @@ WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
 typedef void (*madcwebview_tick_fn)(void *arg);
 WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn cb,
 				 void *arg);
+
+/* The platform's clipboard, plain UTF-8 text (plan §41.11a step 3e): set
+ * replaces what it holds; get reads it NOW and hands the text to cb before
+ * it returns ("" = it holds no text). Line ends are the platform's: set
+ * writes "\r\n" on Win32, get passes on whatever the clipboard holds.
+ * Nonzero = no window / no clipboard here. GTK4: GdkClipboard (its read is
+ * asynchronous, so get turns the main context until it answers, cancelled
+ * after two seconds); Cocoa: the general NSPasteboard; Win32:
+ * CF_UNICODETEXT. UI thread only, outside a running loop's callback. */
+typedef void (*madcwebview_text_fn)(const char *text, void *arg);
+WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text);
+WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
+					  void *arg);
 
 #ifdef __cplusplus
 }

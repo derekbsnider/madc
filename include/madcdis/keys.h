@@ -80,6 +80,31 @@ inline tui_keyev key_unmodified(const tui_keyev &k)
     return tui_keyev(k.kind, k.ch);
 }
 
+// The same key without Shift: the FIRST fallback, before key_unmodified, so
+// Shift with a bound key reaches that binding (Ctrl+Shift+Left finds
+// Ctrl+Left's) while the event still says Shift was held — Shift on a
+// motion extends a selection (plan §41.11a step 3e).
+inline tui_keyev key_without_shift(const tui_keyev &k)
+{
+    return tui_keyev(k.kind, k.ch,
+		     (unsigned char)(k.mods & ~key_mod_bits(::ui::key_mod::shift)));
+}
+
+// The lookups a key makes, in order: as pressed; without Shift; without
+// any modifier. `out` holds up to three; the count is returned, duplicates
+// left out. A HEAD skips a fallback that types (Ctrl+3 never types a 3); a
+// chord's continuation takes it (^K then Alt+S is ^K s).
+inline size_t key_lookups(const tui_keyev &k, tui_keyev out[3])
+{
+    size_t n = 0;
+    out[n++] = k;
+    if ( k.mods & key_mod_bits(::ui::key_mod::shift) )
+	out[n++] = key_without_shift(k);
+    if ( k.mods != 0 && out[n - 1].mods != 0 )
+	out[n++] = key_unmodified(k);
+    return n;
+}
+
 // `primary` in a binding: Ctrl, or Cmd on macOS (Thonny binds each command
 // both ways). The engine's platform decides.
 inline unsigned char key_primary_mod()
@@ -500,7 +525,9 @@ struct key_step
     kind k;
     std::string action_name, seq;
     int64_t action_code;	// the bound code (0 = none), beside the name
-    key_step() : k(kind::passthrough), action_code(0) {}
+    unsigned char mods;		// action: the modifiers held on the last key
+				// (Shift reaches a binding without it)
+    key_step() : k(kind::passthrough), action_code(0), mods(0) {}
 };
 
 class key_resolver
@@ -535,13 +562,16 @@ public:
 		s.k = key_step::kind::cancelled;
 		return s;
 	    }
+	    // A modified continuation nothing binds reads as its key without
+	    // Shift, then as its key (key_lookups).
+	    tui_keyev look[3];
+	    size_t nl = key_lookups(k, look);
 	    std::string candidate = _pending + " "
 				  + tui_bindings::cont_spelling(k);
-	    // A modified continuation nothing binds reads as its key.
-	    if ( k.mods != 0 && !_bindings.prefix(candidate)
-		 && !_bindings.bound(candidate) )
+	    for ( size_t i = 1; i < nl && !_bindings.prefix(candidate)
+				    && !_bindings.bound(candidate); ++i )
 		candidate = _pending + " "
-			  + tui_bindings::cont_spelling(key_unmodified(k));
+			  + tui_bindings::cont_spelling(look[i]);
 	    if ( _bindings.prefix(candidate) )
 	    {
 		_pending = candidate;
@@ -552,6 +582,7 @@ public:
 	    s.action_name = _bindings.action_of(candidate).name;
 	    s.action_code = _bindings.action_of(candidate).code;
 	    s.seq = candidate;
+	    s.mods = k.mods;
 	    _pending.clear();
 	    return s;
 	}
@@ -560,13 +591,16 @@ public:
 	if ( !_bindings.empty() && k.kind != tui_key::resize
 	     && k.kind != tui_key::wake )
 	{
-	    if ( head_step(k, s) )
-		return s;
-	    // A modified key nothing binds reads as its key, unless that key
-	    // types (Ctrl+3 never types a 3).
-	    if ( k.mods != 0 && !key_types(key_unmodified(k))
-		 && head_step(key_unmodified(k), s) )
-		return s;
+	    // A modified key nothing binds reads as its key without Shift,
+	    // then as its key, unless that key types (key_lookups).
+	    tui_keyev look[3];
+	    size_t nl = key_lookups(k, look);
+	    for ( size_t i = 0; i < nl; ++i )
+		if ( !(i > 0 && key_types(look[i])) && head_step(look[i], s) )
+		{
+		    s.mods = k.mods;
+		    return s;
+		}
 	}
 	return s;
     }
