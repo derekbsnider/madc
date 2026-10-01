@@ -38238,6 +38238,27 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
     }
     if ( !concrete_is_void )
 	return false;
+    // The Args' token runs (scan_template_argument_list, the one reader of a
+    // template-argument list), for an Arg the spelling walk below cannot read.
+    std::vector<std::vector<TokenBase *> > arg_runs;
+    if ( slot_tokens )
+	for ( size_t k = 0; k < slot_tokens->size(); ++k )
+	    if ( (*slot_tokens)[k] && (*slot_tokens)[k]->id() == TokenID::tkLT )
+	    {
+		TemplateArgumentList list;
+		if ( scan_template_argument_list(*slot_tokens, k, list, this) )
+		    arg_runs = template_argument_runs(*slot_tokens, list);
+		break;
+	    }
+    // [temp.deduct]/8: an Arg whose first name is no deduced parameter —
+    // another template's member, `typename iterator_traits<T>::
+    // iterator_category`, `typename remove_reference<_Ep>::type::pointer` —
+    // is well-formed iff its substituted type resolves in the substitution's
+    // immediate context (resolve_template_param_default_type).
+    auto substituted_arg_resolves = [&](size_t i) -> bool {
+	return arg_runs.size() == pargs.size() && i < arg_runs.size()
+	    && resolve_template_param_default_type(arg_runs[i], ded, NULL, true);
+    };
     // Every Arg of the pattern's __void_t<...> must be a well-formed type.
     for ( size_t i = 0; i < pargs.size(); ++i )
     {
@@ -38290,11 +38311,17 @@ bool Program::eval_void_t_detection_slot(const std::string &slot_spelling,
 	    std::map<std::string, DataDef *>::const_iterator bit = ded.find(base);
 	    if ( bit != ded.end() && bit->second )
 		continue;                          // well-formed -> detection succeeds
-	    return false;                          // not PARAM::member -> can't confirm
+	    if ( substituted_arg_resolves(i) )
+		continue;
+	    return false;                          // not a well-formed type
 	}
 	std::map<std::string, DataDef *>::const_iterator pit = ded.find(segs[0]);
 	if ( pit == ded.end() || !pit->second )
+	{
+	    if ( substituted_arg_resolves(i) )
+		continue;
 	    return false;
+	}
 	// A TEMPLATE member anywhere in the chain (`_Tp::template rebind<_Up>::other`)
 	// is beyond the plain type-alias walk: resolve the whole dependent member
 	// chain through the real machinery (deduced params substituted). This is the

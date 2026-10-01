@@ -28,48 +28,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
-### B109. SILENT: a `void_t` detection specialization over ANOTHER template's member never matches
-
-```cpp
-#include <cstdio>
-#include <iterator>
-#include <memory>
-#include <type_traits>
-template<typename T, typename = void> struct has_category { static const int v = 0; };
-template<typename T>
-struct has_category<T, std::void_t<typename std::iterator_traits<T>::iterator_category>> { static const int v = 1; };
-struct Iter { typedef std::input_iterator_tag iterator_category; typedef int value_type;
-	typedef long difference_type; typedef int *pointer; typedef int &reference; };
-struct Handle { int id; };
-struct HandleDeleter { typedef Handle *pointer; void operator()(Handle *h) const { delete h; } };
-int main()
-{
-	printf("detect: %d %d %d\n", has_category<int>::v, has_category<int *>::v, has_category<Iter>::v);
-	printf("deleter-pointer: %d\n",
-	       (int)std::is_same<std::unique_ptr<int, HandleDeleter>::pointer, Handle *>::value);
-	return 0;
-}
-```
-
-- g++ 13 = clang++ 18 (`-std=c++17`): `detect: 0 1 1`, `deleter-pointer: 1`.
-  madc (`--std=c++17`, at `8f6df07b2`): `detect: 0 0 0`, `deleter-pointer:
-  0`, exit 0. libstdc++'s own `unique_ptr` detects a deleter's `pointer`
-  this way (`bits/unique_ptr.h:158`, `__void_t<typename
-  remove_reference<_Ep>::type::pointer>`), so `unique_ptr<T, D>::pointer`
-  silently ignores `D::pointer`.
-- The same idiom over the parameter's own member (`void_t<typename
-  T::category>`) is right.
-- Found 2026-10-01 during B96's recon. Off the release path, filed per owner
-  2026-09-30; it outranks other filed work (SILENT).
-- Layer: `Program::eval_void_t_detection_slot`'s argument walk reads the
-  spelling and requires its first scope segment to be a deduced parameter
-  (`ded.find(segs[0])`), so `std::iterator_traits<T>::...` fails before any
-  resolution. Design: an argument the spelling walk cannot read is
-  substituted (its token run, `template_argument_runs`) and resolved by
-  `resolve_template_param_default_type` (`require_full_parse`), the
-  substitution context B96's fix gives (a missing member there is the
-  failure).
-
 ### B102. A namespace-scope object's destructor never runs at exit
 
 ```cpp
