@@ -42,7 +42,9 @@ inline std::vector<tui_event> ui_apply_keys(key_resolver &keys_owner,
 	// The key owner FIRST: a pending chord consumes the key; a bound
 	// head fires or opens a chord; everything else is passthrough.
 	key_step step = keys_owner.step(k);
-	if ( step.k == key_step::kind::passthrough && k.kind == tui_key::ch )
+	// A printable types only with no chord modifier held: Ctrl+3 or
+	// Ctrl+Space nothing binds reaches the application as a key.
+	if ( step.k == key_step::kind::passthrough && key_types(k) )
 	{
 	    run += k.ch;
 	    continue;

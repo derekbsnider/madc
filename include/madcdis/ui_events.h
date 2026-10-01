@@ -155,6 +155,7 @@ struct tui_event
     std::string	   text;	// text: the run; snapshot: the page's text
     tui_key	   key;		// key: which one (ctrl -> `ch`)
     char	   ch;
+    unsigned char  mods;	// key: the ui::key_mod bits held with it
     size_t	   option;	// choose: 0-based option index;
 				// key: the focused choice's 0-based selection
 				// (valid only when choice_focused)
@@ -183,7 +184,7 @@ struct tui_event
 				// (madcide: the window index); -1 = none
 
     tui_event() : kind(tui_event_kind::none), key(tui_key::none), ch(0),
-		  option(0), choice_focused(false), action(0), action_code(0),
+		  mods(0), option(0), choice_focused(false), action(0), action_code(0),
 		  phase(pointer_phase::down), offset(0), subject(0), tag(-1) {}
 };
 

@@ -100,10 +100,11 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     CHECK(k[4].kind == tui_key::end);
     CHECK(k[5].kind == tui_key::ins);
 
-    // A modifier-parameterized arrow resolves to the unmodified key.
+    // A modifier-parameterized arrow is the arrow with its modifiers.
     k = parse("\x1b[1;2A");
     REQUIRE(k.size() == 1u);
     CHECK(k[0].kind == tui_key::up);
+    CHECK(k[0].mods == (unsigned char)ui::key_mod::shift);
 
     // Bare ESC resolves only at the input pause (flush).
     tui_keyparse p;
@@ -130,6 +131,49 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     q.feed("x", 1, out);
     REQUIRE(out.size() == 1u);
     CHECK(out[0].ch == 'x');
+}
+
+// xterm's modified keys (plan §41.11a step 3e): each decodes to its key
+// with ui::key_mod bits, spelled by the one key owner, and tui_key_bytes
+// writes each back as the bytes the parser reads.
+TEST_CASE("keyparse — xterm's modified keys decode, and their bytes round-trip")
+{
+    struct { const char *bytes; const char *name; } rows[] = {
+	{ "\x1b[1;5A", "ctrl+up" },		// the cursor keys' 1;m
+	{ "\x1b[1;2C", "shift+right" },
+	{ "\x1b[1;6H", "ctrl+shift+home" },
+	{ "\x1b[3;5~", "ctrl+del" },		// the tilde keys' n;m
+	{ "\x1b[15;2~", "shift+f5" },
+	{ "\x1b[12;5~", "ctrl+f2" },
+	{ "\x1b[1;3P", "alt+f1" },		// a modified F1..F4
+	{ "\x1b[Z", "shift+tab" },		// back-tab
+	{ "\x1b[27;6;83~", "ctrl+shift+s" },	// modifyOtherKeys
+	{ "\x1b[27;5;51~", "ctrl+3" },
+	{ "\x1b[27;5;43~", "ctrl+plus" },
+	{ "\x1b[115;5u", "^s" },		// CSI u: plain Ctrl+S stays ^s
+	{ "\x1b[119;6u", "ctrl+shift+w" },
+    };
+    for ( size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i )
+    {
+	CAPTURE(rows[i].name);
+	std::vector<tui_keyev> k = parse(rows[i].bytes);
+	REQUIRE(k.size() == 1u);
+	CHECK(madc::hub::tui_key_name(k[0]) == rows[i].name);
+	std::string back = madc::hub::tui_key_bytes(k[0]);
+	std::vector<tui_keyev> again = parse(back.c_str());
+	REQUIRE(again.size() == 1u);
+	CHECK(madc::hub::tui_key_name(again[0]) == rows[i].name);
+    }
+    // NUL is the terminals' Ctrl+Space; its bytes are NUL again.
+    tui_keyparse p;
+    std::vector<tui_keyev> out;
+    p.feed("\0", 1, out);
+    REQUIRE(out.size() == 1u);
+    CHECK(madc::hub::tui_key_name(out[0]) == "ctrl+space");
+    CHECK(madc::hub::tui_key_bytes(out[0]) == std::string(1, '\0'));
+    // The unmodified keys' bytes are unchanged.
+    CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::up)) == "\x1b[A");
+    CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::ctrl, 's')) == "\x13");
 }
 
 TEST_CASE("keyparse — function keys: xterm's tilde codes and SS3, the Linux console's")

@@ -594,9 +594,9 @@ ui_frontend *ui_frontend_get(int64_t handle)
 // Key spelling at the value boundary: the model's tui_key_name is the one
 // spelling owner (both directions — the bindings tables parse with its
 // inverse), adopted here.
-std::string ui_key_name(madc::hub::tui_key k, char ch)
+std::string ui_key_name(madc::hub::tui_key k, char ch, unsigned char mods)
 {
-    return madc::hub::tui_key_name(madc::hub::tui_keyev(k, ch));
+    return madc::hub::tui_key_name(madc::hub::tui_keyev(k, ch, mods));
 }
 
 ui_session *ui_get(int64_t handle)
@@ -668,7 +668,9 @@ bool ui_script_executor(action_env &env, const invocation &inv,
 // every target — a key on the terminal and the same key in a window arrive
 // at the application as the same object:
 //   { event:"text",   text:"..." }       a coalesced printable run
-//   { event:"key",    key:"up"|"^s"|.. } a non-printable key; carries
+//   { event:"key",    key:"up"|"^s"|"shift+up"|.. } a non-printable key,
+//       or a printable under Ctrl/Alt/Cmd ("ctrl+3"); `mods` carries its
+//       ui::key_mod bits (0 = none) and `key` spells them; carries
 //       option:N (1-based, the choose contract) when a focused choice
 //       existed — the focused row for keys the widget does not consume
 //   { event:"action", action:"name", seq:"^k s" }  a bound sequence
@@ -707,8 +709,9 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    break;
 	case madc::hub::tui_event_kind::key:
 	    fields["event"] = madc::value(std::string("key"));
-	    fields["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    fields["key"] = madc::value(ui_key_name(e.key, e.ch, e.mods));
 	    fields["key_code"] = madc::value((int64_t)e.key);	// ui::key
+	    fields["mods"] = madc::value((int64_t)e.mods);	// ui::key_mod bits
 	    // A focused choice's live selection rides along (1-based, the
 	    // choose contract) so the application can act on the focused
 	    // row for keys the widget does not consume (ins/del); absent
@@ -2039,6 +2042,24 @@ int64_t key_code(const char *name)
     if ( !name || !madc::hub::tui_key_from_name(name, k) )
 	return (int64_t)madc::hub::tui_key::none;
     return (int64_t)k.kind;
+}
+
+// A key spelling without its modifiers ("shift+up" -> "up"), the
+// fallback a binding lookup takes (key_unmodified, the key owner's): a
+// scope table the application keeps reads a modified key it does not bind
+// as its key, as the engine's own table does. False (out "") when the name
+// is not a modified key spelling, or its key alone would type.
+bool key_unmodified(madc::value &out, const char *name)
+{
+    out = madc::value(std::string());
+    madc::hub::tui_keyev k;
+    if ( !name || !madc::hub::tui_key_from_name(name, k) || k.mods == 0 )
+	return false;
+    madc::hub::tui_keyev u = madc::hub::key_unmodified(k);
+    if ( madc::hub::key_types(u) )
+	return false;
+    out = madc::value(madc::hub::tui_key_name(u));
+    return true;
 }
 
 bool key_bytes(madc::value &out, const char *name)

@@ -575,6 +575,40 @@ TEST_CASE("apply_input — a function key from the page: bound, it is its action
     CHECK(ev[0].seq == "f5");
 }
 
+// The page spells modifiers (plan §41.11a step 3e): Ctrl+Shift+S posts
+// "ctrl+shift+s", bound apart from ^s; an unbound Shift+Right reads as
+// right; Ctrl+Space nothing binds is a key event, never a typed space.
+TEST_CASE("apply_input — a modified key from the page: bound apart, else its key")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, editor_tree(w, 0));
+    tui_bindings b;
+    b.bind("^s", "save");
+    b.bind("ctrl+shift+s", "saveas");
+    b.bind("right", "cright");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    std::vector<tui_event> ev =
+	m.apply_input("{\"kind\":\"key\",\"key\":\"ctrl+shift+s\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"^s\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "save");
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"shift+right\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "cright");
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"ctrl+space\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::key);
+    CHECK(ev[0].mods == (unsigned char)ui::key_mod::ctrl);
+}
+
 TEST_CASE("codes — an option's code hint rides the choose event; a posted action name converts to its code at the boundary")
 {
     world w;

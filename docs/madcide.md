@@ -68,6 +68,13 @@ The JOE defaults most worth knowing:
 | `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses, indented and syntax-coloured like the source) |
 | `^N` · `^K Z` | the Modes palette (`:` = the vi colon line, `v` = vi modal editing) · a shell |
 
+A binding's keys may carry modifiers: `ctrl+shift+s`, `ctrl+f2`,
+`shift+right`, `alt+f4`, `ctrl+space`, `ctrl+plus`, and `primary+s` (Ctrl,
+or Cmd on macOS). A plain Ctrl+letter is still written `^s`. A modified key
+a profile does not bind acts as its key (`shift+right` is `right`). A
+terminal reports modifiers only where it sends xterm's modified sequences,
+so Ctrl+Shift+S and Ctrl+digit are the window's (`--gui`, the browser).
+
 A binding's last word is a command name from the IDE's one vocabulary
 (`tools/madcide/madcide_enums.inc`, the `ide_cmd` enum and its name table).
 The profile resolves every word to its code when it LOADS — a misspelt word

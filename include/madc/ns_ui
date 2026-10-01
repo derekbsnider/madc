@@ -412,6 +412,12 @@ namespace ui {
     // terminal's pty when the user types at it. False (out empty) when the
     // name is not a key spelling. A text run is its own bytes already.
     bool    key_bytes(value &out, const char *name);
+    // A modified key spelling without its modifiers ("shift+up" -> "up";
+    // a key event's `mods` holds ui::key_mod bits): what a scope table the
+    // application keeps reads for a modified key it does not bind, as the
+    // engine's own bindings do. False (out "") when the name is not a
+    // modified key, or its key alone would type (Ctrl+3 is not "3").
+    bool    key_unmodified(value &out, const char *name);
     // The LAYOUT vocabulary's boundary converters (client-server arc V2,
     // <bits/ui_enums> ui::split / ui::side): a `.layout` profile's word ->
     // its code (none for a word that is not one — the loader's refusal),

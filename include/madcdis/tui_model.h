@@ -426,9 +426,15 @@ inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
 // SS3 forms of the VT100/xterm family; the shapes every terminal library
 // parses — cross-checked against termbox2's and ncurses's tables). A bare
 // ESC is ambiguous until the input pauses: the TARGET calls flush() when
-// its read times out after an ESC, resolving it to the esc key. Modifier
-// parameters on arrows ("1;2A") resolve to the unmodified key in this
-// pilot.
+// its read times out after an ESC, resolving it to the esc key. xterm's
+// modified keys decode with their modifiers (plan §41.11a step 3e): a
+// cursor or function key's second parameter ("CSI 1;5A" Ctrl+Up,
+// "CSI 15;2~" Shift+F5, "CSI 1;3P" Alt+F1), CSI Z (Shift+Tab), and a
+// modifyOtherKeys or CSI u report of any other key ("CSI 27;6;83~",
+// "CSI 115;5u"). ui::key_mod's bits are the parameter less one. A terminal
+// that reports none sends Ctrl+Shift+S as Ctrl+S; those chords are the
+// GUI's. NUL is Ctrl+Space. An Esc-prefixed byte is still the esc key then
+// the byte (the profiles' `esc x` Meta chords).
 //
 // A byte of 0x80 and above is a `ch`: UTF-8 input arrives as the bytes of
 // its code points, and a printable run coalesces them into one text event
@@ -462,35 +468,79 @@ class tui_keyparse
     std::string _paste_end;	// the part of the end marker matched so far
     bool _paste_cr;		// the last pasted byte was CR (CR LF is one)
 
-    static void emit(std::vector<tui_keyev> &out, tui_key k, char c = 0)
+    static void emit(std::vector<tui_keyev> &out, tui_key k, char c = 0,
+		     unsigned char mods = 0)
     {
-	out.push_back(tui_keyev(k, c));
+	out.push_back(key_normalized(tui_keyev(k, c, mods)));
+    }
+    // A key a modifyOtherKeys / CSI u report names by its code.
+    static void emit_code(std::vector<tui_keyev> &out, int code,
+			  unsigned char mods)
+    {
+	switch ( code )
+	{
+	    case 9:   emit(out, tui_key::tab, 0, mods); return;
+	    case 13:  emit(out, tui_key::enter, 0, mods); return;
+	    case 27:  emit(out, tui_key::esc, 0, mods); return;
+	    case 8:
+	    case 127: emit(out, tui_key::backspace, 0, mods); return;
+	    default:
+		if ( code >= 0x20 && code <= 0x7e )
+		    emit(out, tui_key::ch, (char)code, mods);
+		return;			// otherwise unrecognized: dropped
+	}
     }
     static void resolve_csi(const std::string &params, char final_byte,
 			    std::vector<tui_keyev> &out)
     {
+	// "a;b;c": the key (or 1), the modifiers + 1, a code.
+	int p[3] = { 0, 0, 0 };
+	size_t np = 0, at = 0;
+	while ( np < 3 )
+	{
+	    size_t semi = params.find(';', at);
+	    p[np++] = atoi(params.substr(at, semi == std::string::npos
+					       ? std::string::npos : semi - at).c_str());
+	    if ( semi == std::string::npos )
+		break;
+	    at = semi + 1;
+	}
+	unsigned char mods = p[1] > 1 ? (unsigned char)(p[1] - 1) : 0;
 	switch ( final_byte )
 	{
-	    case 'A': emit(out, tui_key::up); return;
-	    case 'B': emit(out, tui_key::down); return;
-	    case 'C': emit(out, tui_key::right); return;
-	    case 'D': emit(out, tui_key::left); return;
-	    case 'H': emit(out, tui_key::home); return;
-	    case 'F': emit(out, tui_key::end); return;
+	    case 'A': emit(out, tui_key::up, 0, mods); return;
+	    case 'B': emit(out, tui_key::down, 0, mods); return;
+	    case 'C': emit(out, tui_key::right, 0, mods); return;
+	    case 'D': emit(out, tui_key::left, 0, mods); return;
+	    case 'H': emit(out, tui_key::home, 0, mods); return;
+	    case 'F': emit(out, tui_key::end, 0, mods); return;
+	    case 'P': case 'Q': case 'R': case 'S':	// CSI 1;m P: a modified F1..F4
+		emit(out, tui_key::fkey, (char)(final_byte - 'P' + 1), mods);
+		return;
+	    case 'Z':				// back-tab
+		emit(out, tui_key::tab, 0,
+		     (unsigned char)(mods | key_mod_bits(::ui::key_mod::shift)));
+		return;
+	    case 'u':				// CSI code;m u
+		emit_code(out, p[0], mods);
+		return;
 	    case '~':
-		switch ( params.empty() ? 0 : atoi(params.c_str()) )
+		switch ( p[0] )
 		{
-		    case 1: case 7: emit(out, tui_key::home); return;
-		    case 4: case 8: emit(out, tui_key::end); return;
-		    case 2: emit(out, tui_key::ins); return;
-		    case 3: emit(out, tui_key::del); return;
-		    case 5: emit(out, tui_key::pgup); return;
-		    case 6: emit(out, tui_key::pgdn); return;
+		    case 1: case 7: emit(out, tui_key::home, 0, mods); return;
+		    case 4: case 8: emit(out, tui_key::end, 0, mods); return;
+		    case 2: emit(out, tui_key::ins, 0, mods); return;
+		    case 3: emit(out, tui_key::del, 0, mods); return;
+		    case 5: emit(out, tui_key::pgup, 0, mods); return;
+		    case 6: emit(out, tui_key::pgdn, 0, mods); return;
+		    case 27:			// modifyOtherKeys: 27;m;code
+			emit_code(out, p[2], mods);
+			return;
 		    default:
 		    {
-			int n = fkey_of_tilde_code(atoi(params.c_str()));
+			int n = fkey_of_tilde_code(p[0]);
 			if ( n )
-			    emit(out, tui_key::fkey, (char)n);
+			    emit(out, tui_key::fkey, (char)n, mods);
 			return;		// otherwise unrecognized: dropped
 		    }
 		}
@@ -619,8 +669,10 @@ class tui_keyparse
 	    emit(out, tui_key::ctrl, (char)(b + 0x40));	// ^\ ^] ^^ ^_
 	else if ( b >= 0x20 )
 	    emit(out, tui_key::ch, (char)b);	// ASCII, and UTF-8's bytes
-	// 0x00: dropped. A grid still draws one byte per cell, so a
-	// multibyte glyph there is the grid's named residue.
+	else if ( b == 0x00 )			// the terminals' Ctrl+Space
+	    emit(out, tui_key::ch, ' ', key_mod_bits(::ui::key_mod::ctrl));
+	// A grid still draws one byte per cell, so a multibyte glyph there is
+	// the grid's named residue.
     }
 
 public:
@@ -657,8 +709,61 @@ public:
 // parser's CSI/SS3 arms read (the CSI form for the cursor keys, the tilde
 // codes for ins/del/pgup/pgdn, 0x7f for backspace, \r for enter). A
 // control chord is its control byte; a printable is itself; `none` is
-// empty.
+// empty. A modified key is xterm's modified form (the parser's): the cursor
+// and function keys' "1;m" / "n;m" parameters, CSI Z for Shift+Tab,
+// modifyOtherKeys (CSI 27;m;code~) for any other key, NUL for Ctrl+Space.
+inline std::string tui_key_base_bytes(const tui_keyev &k);
 inline std::string tui_key_bytes(const tui_keyev &k)
+{
+    if ( k.mods == 0 )
+	return tui_key_base_bytes(k);
+    const unsigned char ctrl = key_mod_bits(::ui::key_mod::ctrl);
+    const unsigned char shift = key_mod_bits(::ui::key_mod::shift);
+    unsigned char mods = k.mods;
+    if ( k.kind == tui_key::ctrl )
+	mods |= ctrl;
+    const std::string m = std::to_string(1 + (int)mods);
+    switch ( k.kind )
+    {
+	case tui_key::up:    return "\x1b[1;" + m + "A";
+	case tui_key::down:  return "\x1b[1;" + m + "B";
+	case tui_key::right: return "\x1b[1;" + m + "C";
+	case tui_key::left:  return "\x1b[1;" + m + "D";
+	case tui_key::home:  return "\x1b[1;" + m + "H";
+	case tui_key::end:   return "\x1b[1;" + m + "F";
+	case tui_key::ins:   return "\x1b[2;" + m + "~";
+	case tui_key::del:   return "\x1b[3;" + m + "~";
+	case tui_key::pgup:  return "\x1b[5;" + m + "~";
+	case tui_key::pgdn:  return "\x1b[6;" + m + "~";
+	case tui_key::fkey:
+	    if ( k.ch >= 1 && k.ch <= 4 )
+		return "\x1b[1;" + m + (char)('P' + k.ch - 1);
+	    if ( k.ch >= 5 && k.ch <= 12 )
+		return "\x1b[" + std::to_string(fkey_tilde_code(k.ch)) + ";" + m + "~";
+	    return std::string();
+	case tui_key::tab:
+	    if ( k.mods == shift )
+		return std::string("\x1b[Z");
+	    return "\x1b[27;" + m + ";9~";
+	case tui_key::enter:	 return "\x1b[27;" + m + ";13~";
+	case tui_key::esc:	 return "\x1b[27;" + m + ";27~";
+	case tui_key::backspace: return "\x1b[27;" + m + ";127~";
+	case tui_key::ch:
+	    if ( k.ch == ' ' && k.mods == ctrl )
+		return std::string(1, '\0');
+	    return "\x1b[27;" + m + ";" + std::to_string((int)(unsigned char)k.ch) + "~";
+	case tui_key::ctrl:
+	{
+	    // The letter's code: upper-case under Shift, as xterm reports it.
+	    char c = k.ch;
+	    if ( (k.mods & shift) && c >= 'a' && c <= 'z' )
+		c = (char)(c - 'a' + 'A');
+	    return "\x1b[27;" + m + ";" + std::to_string((int)(unsigned char)c) + "~";
+	}
+	default:		 return std::string();
+    }
+}
+inline std::string tui_key_base_bytes(const tui_keyev &k)
 {
     switch ( k.kind )
     {

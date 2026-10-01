@@ -813,14 +813,37 @@
   };
   var ctrlPunct = { '\\': '^\\', ']': '^]', '^': '^^', '_': '^_' };
 
+  // The key's modifiers as the engine's spelling words (ctrl, shift, alt,
+  // cmd; plan §41.11a step 3e): the engine parses them with its one key
+  // owner. A plain Ctrl+letter stays "^s", every profile's spelling.
+  function modWords(e, withShift) {
+    return (e.ctrlKey ? 'ctrl+' : '') + (withShift && e.shiftKey ? 'shift+' : '') +
+           (e.altKey ? 'alt+' : '') + (e.metaKey ? 'cmd+' : '');
+  }
+
   function keySpelling(e) {
-    if (named[e.key]) return named[e.key];
-    if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.length === 1) {
+    if (named[e.key]) return modWords(e, true) + named[e.key];
+    if (e.key.length !== 1 || !(e.ctrlKey || e.altKey || e.metaKey))
+      return null;                  // a printable types (the input event)
+    // Cmd with a printable stays the browser's (Cmd+C / Cmd+V are its
+    // clipboard) until the IDE's own clipboard commands exist (step 3e's
+    // selection slice).
+    if (e.metaKey) return null;
+    // AltGr (Windows reports it as Ctrl+Alt) and macOS's Option type
+    // characters: '@' on a German layout, 'ß' from Option+S.
+    if (e.getModifierState && e.getModifierState('AltGraph')) return null;
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !/[a-zA-Z0-9]/.test(e.key))
+      return null;
+    if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       if (/[a-zA-Z]/.test(e.key)) return '^' + e.key.toLowerCase();
       if (ctrlPunct[e.key]) return ctrlPunct[e.key];
-      if (e.key === ' ') return 'space';
     }
-    return null;
+    // A letter reports its case under Shift; any other printable is already
+    // its shifted character (Ctrl+plus), so Shift is spelled on letters only.
+    var letter = /[a-zA-Z]/.test(e.key);
+    var base = e.key === ' ' ? 'space' : e.key === '+' ? 'plus'
+             : letter ? e.key.toLowerCase() : e.key;
+    return modWords(e, letter) + base;
   }
 
   kb.addEventListener('keydown', function (e) {

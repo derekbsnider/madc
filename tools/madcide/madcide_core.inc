@@ -442,6 +442,10 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	var lk = php::strtolower(k.c_str());
 	a = sc[lk.c_str()];		// lowercase spellings match either case
     }
+    var uk;				// a modified key the scope does not
+    if ( a.is_null() && kind == ui::event_kind::key	// bind reads as its
+	 && ui::key_unmodified(uk, k.c_str()) )		// key (the engine's rule)
+	a = sc[uk.c_str()];
     if ( a.is_null() )
 	return false;
     out = a;

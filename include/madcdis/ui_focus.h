@@ -157,6 +157,7 @@ public:
 	e.kind = tui_event_kind::key;
 	e.key = k.kind;
 	e.ch = k.ch;
+	e.mods = k.mods;
 	if ( choice )
 	{
 	    e.choice_focused = true;

@@ -34,6 +34,15 @@ namespace ui {
 	fkey		// a function key; `ch` = its number, 1..12 (F1..F12)
     };
 
+    // A key's modifiers (plan §41.11a step 3e): bits over any key, a key
+    // event's `mods`. The values are xterm's modifier parameter less one
+    // (1 + shift + alt*2 + ctrl*4 + meta*8), so a terminal's modified
+    // sequence decodes by subtraction. `cmd` is macOS's Command (the
+    // browser's metaKey). A plain Ctrl+letter stays the `ctrl` key with no
+    // bits (its spelling `^s` is unchanged); `primary` is a binding word
+    // only (Ctrl, or Cmd on macOS), never a bit.
+    enum class key_mod : unsigned char { none = 0, shift = 1, alt = 2, ctrl = 4, cmd = 8 };
+
     // What the application receives from ui::event: SEMANTIC units, never
     // raw terminal events (the event object's "event" name is this value's
     // spelling; "event_code" carries the value).
