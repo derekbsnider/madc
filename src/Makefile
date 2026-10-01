@@ -890,6 +890,7 @@ $(MIRBUILD)/arm64-macos/libmir.a: FORCE
 machogate: cross-arm64-macos cross-x86-64-macos
 	@cd .. && bash scripts/macho_obj_gate.sh
 	@cd .. && bash scripts/macho_exe_dylib_gate.sh
+	@cd .. && bash scripts/macho_dylib_gate.sh
 
 # macOS release artifacts (macos-release-lane plan W1): the darwin twin of
 # `release`. The hosted binaries are ALREADY -O2 and forest-packed at link

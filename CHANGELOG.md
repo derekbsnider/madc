@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### mir-macho: madc -shared emits an MH_DYLIB on macOS (plan §41.11a step 4, part 4)
+
+The Mach-O writer now emits a properly formatted dylib for `madc -shared` output, with MH_DYLIB header, LC_ID_DYLIB load command naming the install path as @rpath/<basename>, and an export trie of every defined named symbol (a compressed prefix tree that dyld walks correctly). Gate: `scripts/macho_dylib_gate.sh` in `make -C src machogate` verifies both arm64 and x86-64 on the container: the header and load commands, the export trie structure holding all globals and no locals (so ld64.lld walks it unambiguously), and a program linked against the dylib through the trie. A library using the value runtime waits for D5 (libmadc-0.dylib) before it can run.
+
+Found on the way and fixed in its own commit: `macho_obj_gate.sh` had been red since `--std=madc` became the default for C files; its C fixtures now compile with `--std=c17` to retain their C identities for linking and symbol lookup in legs [4] and [6] (mixed-TU linking and reader merges). Both architectures (arm64, x86_64) now pass.
+
 ### scripts: macho_obj_gate compiles its C fixtures --std=c17
 
 The macho_obj_gate script now passes `--std=c17` when compiling its C fixture files, ensuring free functions retain their C identities for linking and symbol lookup in legs [4] and [6] (mixed-TU linking and reader merges). Both architectures (arm64, x86_64) now pass.
