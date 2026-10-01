@@ -2499,8 +2499,11 @@ public:
     }
     void setpos(int row, int col) { _lf = _cr = (row-1); _column = col; }
     // The offending line and a caret, on `os`: the stream its diagnostic's
-    // header went to, so the two never part.
-    void showerror(int row=0, int col=0, std::ostream &os = std::cerr);
+    // header went to, so the two never part. (end_line, end_col) is where
+    // the cited token ends (0: unknown, the caret alone) — the echo
+    // underlines it (D26).
+    void showerror(int row=0, int col=0, std::ostream &os = std::cerr,
+		   int end_line=0, int end_col=0);
     // Line `row` of the text, position-neutral (the header and the echo
     // read the same line).
     void line_text(int row, std::string &ln);
@@ -2530,11 +2533,21 @@ public:
 // one formatter for the offending-line + caret display; madc_show_file_error
 // rereads a non-live file (an #included header) from disk on the cold
 // diagnostic path and returns false when it cannot echo faithfully. Both
-// write to `os`, the stream the diagnostic's header went to.
+// write to `os`, the stream the diagnostic's header went to. The caret is
+// `^` at `col`, then `~` under the rest of the token through byte
+// `end_col` of the line (gcc's `^~~`; 0 or before `col`: the caret alone).
+// madc_show_file_error takes the token's end as (end_line, end_col):
+// a token that runs past the line is underlined to the line's end.
 void show_error_source_line(const std::string &ln, int col,
-			    std::ostream &os = std::cerr);
+			    std::ostream &os = std::cerr, int end_col = 0);
 bool madc_show_file_error(const char *fname, int row, int col,
-			  std::ostream &os = std::cerr);
+			  std::ostream &os = std::cerr,
+			  int end_line = 0, int end_col = 0);
+// The last byte of line `row` (its text `ln`) that a token starting at
+// `col` and ending at (end_line, end_col) covers: end_col on its own line,
+// the line's end when it runs on, 0 when there is no end (D26).
+int madc_underline_end(const std::string &ln, int row, int col,
+		       int end_line, int end_col);
 // Line `row` of file `fname`, reread from disk (false: unreadable or short).
 bool madc_file_line(const char *fname, int row, std::string &ln);
 // gcc's SCREEN column of a 1-based byte column in a line (tabs to 8-column
@@ -2694,7 +2707,8 @@ std::string madc_token_spelling(TokenBase *tb);
 // Where token `tb` ENDS (D26): the line and the column of its last byte —
 // the recorded lexical end (TokenBase::lex_end_*), else its start advanced
 // by its spelling's length less one (a token with no recorded end is one
-// line long). Defined in lexer.cpp beside the spelling owner.
+// line long); 0:0 for no token. Defined in lexer.cpp beside the spelling
+// owner.
 void madc_token_end(TokenBase *tb, int &line, int &column);
 
 // THE C-string-literal escape rule (defined in lexer.cpp): the cooked
@@ -3143,6 +3157,10 @@ public:
 	std::string file;
 	int line = 0;
 	int column = 0;
+	// Where the cited token ends (madc_token_end), 0 when the position is
+	// not a token's: the echo underlines line:column through it (D26).
+	int end_line = 0;
+	int end_column = 0;
 	// The one test of "an error, not a warning"
 	// (scripts/check-one-error-diagnostic-scan.sh).
 	bool is_error() const { return severity == DiagnosticSeverity::error; }	// allowed-exception: the owner
@@ -6114,8 +6132,10 @@ public:
     std::istream &input();
     std::ostream &output();
     std::ostream &error();
+    // (end_line, end_column): where the cited token ends (Diagnostic).
     void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
-	const std::string &message, const char *file=NULL, int line=0, int column=0);
+	const std::string &message, const char *file=NULL, int line=0, int column=0,
+	int end_line=0, int end_column=0);
     // WHY an error refused (Diagnostic::cause), from the refusal's own
     // context: a lexer refusal's is its Source's (the MAIN unit's only — a
     // header that ends inside a comment is broken, not unfinished); an
@@ -6133,9 +6153,11 @@ public:
     void report_warning(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0);
     void report_error(DiagnosticPhase phase, const std::string &message,
-	const char *file=NULL, int line=0, int column=0);
+	const char *file=NULL, int line=0, int column=0,
+	int end_line=0, int end_column=0);
     void set_error(DiagnosticPhase phase, const std::string &message,
-	const char *file=NULL, int line=0, int column=0);
+	const char *file=NULL, int line=0, int column=0,
+	int end_line=0, int end_column=0);
     void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
     const char *diagnostic_severity_name(DiagnosticSeverity severity) const;
     const char *diagnostic_phase_name(DiagnosticPhase phase) const;
@@ -6833,7 +6855,8 @@ public:
     // set_error + mute-aware render. Returns the diagnostic's index.
     size_t record_frontend_error(DiagnosticPhase phase,
 				 const std::string &message,
-				 const char *file, int line, int column);
+				 const char *file, int line, int column,
+				 int end_line = 0, int end_column = 0);
     // The parser-phase convenience (token position, diagnostic_file_for).
     // Consumers: the recovery arms (which then CONTINUE the loop), the
     // terminal catch cluster, parse_expression_unit's cluster.
@@ -6845,7 +6868,8 @@ public:
     // sites. Returns the diagnostic's index.
     size_t record_throw_diagnostic(const std::exception &e,
 				   DiagnosticPhase phase,
-				   const char *file, int line, int column);
+				   const char *file, int line, int column,
+				   int end_line = 0, int end_column = 0);
     // The parser-phase convenience: the position Throw captured.
     size_t record_throw_diagnostic(const std::exception &e, TokenProgram *tp);
     // Skip to the next statement sync point after a contained error: consume

@@ -1,3 +1,4 @@
 testdiagstartcol.mad:2:19: 
 expected ',' or ';' before 'foo'
         int x = 1 foo; return x; }
+[1;32m^~~[m

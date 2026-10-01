@@ -7,6 +7,7 @@ int main(void) {
 //
 // Oracle: gcc 13 -fsyntax-only on lines 1-2 as a .c file:
 //   2:19: error: expected ',' or ';' before 'foo'
-// echoing the line with its tab expanded and the caret under foo's f. madc
-// before D26 cited 2:14 (foo's LAST byte, a byte column). clang cites this
-// error at 2:11 (where it wants the `;`, in bytes), a different anchor.
+// echoing the line with its tab expanded and `^~~` under foo (the caret
+// under its f). madc before D26 cited 2:14 (foo's LAST byte, a byte column)
+// and drew the caret alone. clang cites this error at 2:11 (where it wants
+// the `;`, in bytes), a different anchor.

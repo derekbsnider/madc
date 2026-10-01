@@ -164,3 +164,71 @@ TEST_CASE("D26: a header's column is the start byte's screen column (gcc's)")
     CHECK(madc_screen_column("\tfoo", 1) == 1);
     CHECK(madc_screen_column("", 3) == 3);
 }
+
+// D26: the caret underlines the cited token, gcc's `^~~` — `^` under its
+// first byte, then a `~` for each further screen column through its last
+// byte (show_error_source_line's end_col). The oracles are gcc 13's echoes
+// (-fsyntax-only) of each line as a C file's:
+//   "\tint x = 1 foo; return x; }"   2:19  ^~~
+//   "    int x = 1 \"中\";"           2:15  ^~~~   (a wide character, 2 columns)
+//   "    int y = 1 \"éé\";"           3:15  ^~~~   (two-byte characters, 1 each)
+//   "    return undeclared_name; }"   4:12  ^~~~~~~~~~~~~~~
+// The indent and the mark of the caret line for byte columns col..end_col.
+static std::string underline(const std::string &ln, int col, int end_col,
+			     long &indent)
+{
+    std::ostringstream os;
+    show_error_source_line(ln, col, os, end_col);
+    std::string out = os.str();
+    size_t nl = out.find('\n');
+    REQUIRE(nl != std::string::npos);
+    std::string caret = out.substr(nl + 1);
+    const std::string open = "\033[1;32m", close = "\033[m\n";
+    size_t at = caret.find(open);
+    indent = -1;
+    if ( at == std::string::npos || caret.find_first_not_of(' ') != at
+	 || caret.size() < at + open.size() + close.size()
+	 || caret.compare(caret.size() - close.size(), close.size(), close) )
+	return "";
+    indent = (long)at;
+    return caret.substr(at + open.size(),
+			caret.size() - close.size() - at - open.size());
+}
+
+TEST_CASE("D26: the caret underlines the token (gcc's ^~~)")
+{
+    setenv("COLUMNS", "200", 1);
+    long indent;
+    CHECK(underline("\tint x = 1 foo; return x; }", 12, 14, indent) == "^~~");
+    CHECK(indent == 18);
+    CHECK(underline("    int x = 1 \"\xe4\xb8\xad\";", 15, 19, indent) == "^~~~");
+    CHECK(indent == 14);
+    CHECK(underline("    int y = 1 \"\xc3\xa9\xc3\xa9\";", 15, 20, indent) == "^~~~");
+    CHECK(indent == 14);
+    CHECK(underline("    return undeclared_name; }", 12, 26, indent)
+	  == "^~~~~~~~~~~~~~~");
+    CHECK(indent == 11);
+    // A one-byte token, an end before the start, and no end: the caret alone.
+    CHECK(underline("int x = 1 ; }", 11, 11, indent) == "^");
+    CHECK(underline("int x = 1 foo;", 11, 3, indent) == "^");
+    CHECK(underline("int x = 1 foo;", 11, 0, indent) == "^");
+    // An end past the line (a token that runs on) stops at the line's end.
+    CHECK(underline("x + undeclared_fo\\", 5, 99, indent) == "^~~~~~~~~~~~~~");
+    CHECK(indent == 4);
+    // A line wider than the terminal: the tail's caret is underlined too.
+    setenv("COLUMNS", "20", 1);
+    CHECK(underline("int a_long_name = 1 foo; return a_long_name;", 21, 23, indent)
+	  == "^~~");
+    CHECK(indent == 5);
+    unsetenv("COLUMNS");
+}
+
+// A token's end on the cited line (madc_underline_end): its own line's end
+// column, the line's length when it runs onto a later line, none before.
+TEST_CASE("D26: the underline's last byte on the cited line")
+{
+    CHECK(madc_underline_end("return undeclared_name;", 2, 8, 2, 22) == 22);
+    CHECK(madc_underline_end("x + undeclared_fo\\", 1, 5, 2, 1) == 18);
+    CHECK(madc_underline_end("abc", 2, 1, 0, 0) == 0);
+    CHECK(madc_underline_end("abc", 2, 3, 2, 1) == 0);
+}

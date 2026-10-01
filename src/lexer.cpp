@@ -10252,6 +10252,11 @@ TokenBase *Program::getRealToken()
 // plain source. Keywords/identifiers/types/comments are all TokenIdent-derived.
 void madc_token_end(TokenBase *tb, int &line, int &column)
 {
+    if ( !tb )
+    {
+	line = column = 0;
+	return;
+    }
     if ( tb->lex_end_column )
     {
 	line = tb->lex_end_line;
@@ -10535,7 +10540,8 @@ void Source::line_text(int row, std::string &ln)
 	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
 }
 
-void Source::showerror(int row, int col, std::ostream &os)
+void Source::showerror(int row, int col, std::ostream &os, int end_line,
+		       int end_col)
 {
 	std::string ln;
 
@@ -10543,9 +10549,21 @@ void Source::showerror(int row, int col, std::ostream &os)
 	{
 	    row = line();
 	    col = column();
+	    end_line = end_col = 0;
 	}
 	line_text(row, ln);
-	show_error_source_line(ln, col, os);
+	show_error_source_line(ln, col, os,
+			   madc_underline_end(ln, row, col, end_line, end_col));
+}
+
+int madc_underline_end(const std::string &ln, int row, int col, int end_line,
+		       int end_col)
+{
+    if ( end_line == row && end_col >= col )
+	return end_col;
+    if ( end_line > row )
+	return (int)ln.length();	// gcc underlines a run-on token to the line's end
+    return 0;
 }
 
 // The 1-based SCREEN column of 1-based byte column `col` in line `ln` — gcc's
@@ -10588,7 +10606,10 @@ int madc_diag_screen_column(Source *src, const char *fname, int row, int col)
 // (madc::line_layout: tabs to 8-column stops, code-point widths — gcc's
 // screen columns) and the caret sits under that byte's screen column, as gcc
 // and clang draw it. A raw tab or a byte counted as a column misplaced it (B8).
-void show_error_source_line(const std::string &ln, int col, std::ostream &os)
+// Bytes col+1 .. end_col (1-based, the token's rest on this line) are
+// underlined with `~` across their screen columns: gcc's `^~~` (D26).
+void show_error_source_line(const std::string &ln, int col, std::ostream &os,
+			    int end_col)
 {
     char *env_columns = getenv("COLUMNS");
     size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
@@ -10598,8 +10619,16 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os)
     // letting substr raise out_of_range mid-print (which surfaced as "tree
     // build failed (basic_string::substr...)" and MASKED the real error).
     size_t at = col > 1 ? std::min((size_t)(col - 1), ln.length()) : 0;
+    // One past the token's last byte on this line (a byte index).
+    size_t stop = end_col > 0 ? std::min((size_t)end_col, ln.length()) : 0;
     std::vector<size_t> screen;
     std::string shown = madc::line_layout(ln, 0, screen);
+    // `^` then a `~` for each further screen column the token covers.
+    auto mark = [](const std::vector<size_t> &cols, size_t from, size_t to) {
+	size_t width = to > from ? cols[to] - cols[from] : 0;
+	return std::string("\e[1;32m^")
+	       + std::string(width > 1 ? width - 1 : 0, '~') + "\e[m";
+    };
 
     if ( screen.back() + 5 > term_columns )
     {
@@ -10609,11 +10638,12 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os)
 	std::vector<size_t> tail_screen;
 	os << "  ..." << madc::line_layout(ln.substr(at), lead, tail_screen)
 	   << std::endl;
-	os << std::string(lead, ' ') << "\e[1;32m^\e[m" << std::endl;
+	os << std::string(lead, ' ')
+	   << mark(tail_screen, 0, stop > at ? stop - at : 0) << std::endl;
 	return;
     }
     os << shown << std::endl;
-    os << std::string(screen[at], ' ') << "\e[1;32m^\e[m" << std::endl;
+    os << std::string(screen[at], ' ') << mark(screen, at, stop) << std::endl;
 }
 
 // Echo line `row` of a file that is NOT the live Source buffer — a token from
@@ -10634,12 +10664,14 @@ bool madc_file_line(const char *fname, int row, std::string &ln)
     return i == row;
 }
 
-bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os)
+bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os,
+		  int end_line, int end_col)
 {
     std::string ln;
     if ( !madc_file_line(fname, row, ln) )
 	return false;
-    show_error_source_line(ln, col, os);
+    show_error_source_line(ln, col, os,
+			   madc_underline_end(ln, row, col, end_line, end_col));
     return true;
 }
 
@@ -10661,9 +10693,11 @@ int throwbuf::sync()
 	     << madc_diag_screen_column(_src, fname, _at.line, _at.column)
 	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
 	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
-	    _src->showerror(_at.line, _at.column);
+	    _src->showerror(_at.line, _at.column, cerr, _at.end_line,
+			    _at.end_column);
 	else
-	    madc_show_file_error(fname, _at.line, _at.column);
+	    madc_show_file_error(fname, _at.line, _at.column, cerr, _at.end_line,
+				 _at.end_column);
     }
     else
     if ( _src )

@@ -3569,6 +3569,11 @@ cling is the precedent for adapting IPython-style interaction to C++, so it is m
     - Forest format 51; the `.madh` `compiler_hash` signature changed.
     - Gates: the reducers against gcc (`2:19`, `2:12`); four fixtures moved to the cited name's first byte (`testcompilerdata` 2:12, `testprojecterrline` 2:24, `testmadcide_cli` 3:21, `testmadcide` 1:1 / 2:29; gcc gives the same columns for the three that are C), and `test_repl_session`'s `%type nope + 1` (`:1:7:`); `test_diag_caret`'s header case; an A/B of the tests/ suite, every other difference an anchor (the graph's Statement node starts at its first token).
     - Remaining: the underline (`^~~`). The stored diagnostic record carries no end yet; it gets the token's end on the cited line, and the echo underlines through it.
+  - **The underline done 2026-10-01** (D26 complete):
+    - `Diagnostic` carries the cited token's end (`end_line` / `end_column`, from `madc_token_end`). The positional recorders take it as trailing defaults; the token-sourced ones fill it: `record_parse_error`, `classify_entry`'s refusal, and, from the position `Throw` captures when the error is raised (`ParsePosition::of`; f48f62bfb), `throwbuf::sync`'s own echo and `record_throw_diagnostic`'s parser form.
+    - `show_error_source_line` draws `^` under the start byte and a `~` for each further screen column through the token's last byte on the line. `madc_underline_end` picks that byte: the token's end on its own line, the line's end for a token that runs onto the next line (gcc's first line; madc echoes one line, where gcc also echoes the continuation with its own `~`).
+    - Gates: `test_diag_caret` (gcc's `^~~` under `foo`, `^~~~` under `"中"` and `"éé"`, `undeclared_name`'s 15 columns, the caret alone without an end, a run-on token, the too-wide tail); `testdiagstartcol` pins `^~~` through the printer; `test_repl_session` pins `^~~~` under `nope` through a recorded diagnostic.
+    - Open: a macro-synthesized token keeps the invocation stamp with no extent, so its caret stands alone; citing the invocation's name with its underline is the follow-on noted in the design.
 
 - **D27. An undefined reference is refused at its first use, not at its entry** (owner, 2026-09-26: "the refusal should wait for first use to match behavior of Julia and clang-repl").
   - **The rule.**

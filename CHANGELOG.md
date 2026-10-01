@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### diagnostics: the diagnostic caret underlines the token as gcc does
+
+A diagnostic's caret line now underlines the cited token as gcc does (`^` under its first character, `~` under the rest of the token's screen columns), including the REPL's diagnostics. The `Diagnostic` record carries the token's end (end_line and end_column from `madc_token_end`); positional recorders fill it; the echo renderer draws `^` at the start byte and `~` for each further screen column through the token's end on the line. A token that runs onto the next line is underlined to the line's end (gcc's first-line convention; madc echoes one line).
+
 ### diagnostics: parse errors raised on dying tokens record their captured position
 
 A parse error raised on a token that does not survive the unwind is recorded with the position captured when it was raised, instead of reading the dead token from stack memory. On gcc's g++.dg/cpp0x/implicit7.C the raising token was a stack local of a frame the unwind had left; the former implementation kept a `TokenBase *` and dereferenced it after the unwind, reading stack memory below the stack pointer (found by valgrind: 5 "Invalid read" errors in `record_throw_diagnostic` and `diagnostic_file_for` before the fix).

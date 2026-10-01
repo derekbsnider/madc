@@ -1216,6 +1216,36 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
 
 ## Diagnostics
 
+### B106. A class template's missing dependent member type is reported as an internal ClassPattern error at the instantiation
+
+```cpp
+template <typename T>
+struct B
+{
+  typename T::U u;
+};
+struct E { int x; };
+B<E> b;
+int main() { return 0; }
+```
+
+- g++ 13: `4:17: error: no type named 'U' in 'struct E'`, with the
+  instantiation at line 7 as a note. clang++ 18: `4:15: error: no type named
+  'U' in 'E'`, the same note.
+- madc (`--std=c++11`, at `f48f62bfb`): `7:1: error: internal: basic
+  ClassPattern could not resolve type 1 kind=10 name='U' operand=2
+  owner='(null)' in 'B'`, then `1 parse error(s) — compilation refused`. The
+  refusal is right; the words are the resolver's state, and the position is
+  the instantiation's, not the member's.
+- Found 2026-10-01 while reducing the g++.dg/cpp0x/implicit7.C crash (the
+  dangling throw position, fixed in f48f62bfb). Off the release path, filed
+  per owner 2026-09-30.
+- Layer: the ClassPattern type resolver (`src/parser.cpp`, the
+  `pgm.Throw(binding.location) << "internal: basic ClassPattern could not
+  resolve type "` arm). A `typename T::U` that names no type of the
+  substituted class is [temp.res]'s user-facing error, cited at the member's
+  declarator with the instantiation as a note.
+
 ### B105. `tests/testmadcide` built as a Windows executable hangs under wine after `colon-exec-ok`
 
 ```text
@@ -1371,8 +1401,9 @@ int main(void) {
   the header prints gcc's screen column: the reducer is `2:19` with the caret
   under `foo`'s `f`. The `column - spelling` compensations are gone (the
   highlighter, the code graph, the LSP's diagnostic range); forest format 51.
-- Remaining: the caret underlines the token (`^~~`), which needs the stored
-  diagnostic record to carry the token's end.
+- Part 3 fixed 2026-10-01 (D26): the caret underlines the token (`^~~`,
+  gcc's form): the diagnostic record carries the token's end, and the echo
+  draws a `~` under each further screen column of it. **B8 FIXED.**
 
 ### B9. madc wording where gcc and clang name the missing token
 

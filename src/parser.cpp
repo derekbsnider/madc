@@ -24449,7 +24449,7 @@ size_t Program::error_diagnostic_count() const
     return n;
 }
 
-void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const std::string &message, const char *file, int line, int column, int end_line, int end_column)
 {
     Diagnostic diag;
     diag.severity = severity;
@@ -24459,6 +24459,8 @@ void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
     diag.file = file ? file : "";
     diag.line = line;
     diag.column = column;
+    diag.end_line = end_line;
+    diag.end_column = end_column;
     diagnostics.push_back(diag);
 }
 
@@ -24494,14 +24496,15 @@ void Program::report_warning(DiagnosticPhase phase, const std::string &message, 
     add_diagnostic(DiagnosticSeverity::warning, phase, message, file, line, column);
 }
 
-void Program::report_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+void Program::report_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column, int end_line, int end_column)
 {
-    add_diagnostic(DiagnosticSeverity::error, phase, message, file, line, column);
+    add_diagnostic(DiagnosticSeverity::error, phase, message, file, line, column,
+		   end_line, end_column);
 }
 
-void Program::set_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+void Program::set_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column, int end_line, int end_column)
 {
-    report_error(phase, message, file, line, column);
+    report_error(phase, message, file, line, column, end_line, end_column);
     last_error.has_error = true;
     last_error.message = message;
     last_error.file = file ? file : "";
@@ -24564,12 +24567,14 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
     // The echo goes where the header went (a session's captured stream, a
     // backend's reply), never to std::cerr behind the caller's back.
     if ( can_show_diagnostic_source(diag) )
-	source.showerror(diag.line, diag.column, os);
+	source.showerror(diag.line, diag.column, os, diag.end_line,
+			 diag.end_column);
     else if ( !diag.file.empty() && diag.line > 0 )
 	// Diagnostic from an #included file: the live Source buffer holds the
 	// top-level TU, so echo the named file from disk (cold path); embedded
 	// headers with no on-disk presence skip the echo gracefully.
-	madc_show_file_error(diag.file.c_str(), diag.line, diag.column, os);
+	madc_show_file_error(diag.file.c_str(), diag.line, diag.column, os,
+			     diag.end_line, diag.end_column);
 }
 
 void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
@@ -78849,9 +78854,10 @@ void Program::finalize_script_main()
 // Returns the diagnostic's index.
 size_t Program::record_frontend_error(DiagnosticPhase phase,
 				      const std::string &message,
-				      const char *file, int line, int column)
+				      const char *file, int line, int column,
+				      int end_line, int end_column)
 {
-    set_error(phase, message, file, line, column);
+    set_error(phase, message, file, line, column, end_line, end_column);
     print_last_diagnostic(error());
     return diagnostics.size() - 1;
 }
@@ -78862,10 +78868,13 @@ size_t Program::record_frontend_error(DiagnosticPhase phase,
 size_t Program::record_parse_error(const std::string &message,
 				   TokenBase *where, TokenProgram *tp)
 {
+    int end_line, end_column;
+    madc_token_end(where, end_line, end_column);
     return record_frontend_error(DiagnosticPhase::parser, message,
 				 diagnostic_file_for(where ? where->file : NULL, tp),
 				 where ? where->line : 0,
-				 where ? where->column : 0);
+				 where ? where->column : 0,
+				 end_line, end_column);
 }
 
 // THE Throw-origin recording rule: a std::exception from throwbuf::sync
@@ -78877,10 +78886,11 @@ size_t Program::record_parse_error(const std::string &message,
 // Returns the diagnostic's index.
 size_t Program::record_throw_diagnostic(const std::exception &e,
 					DiagnosticPhase phase,
-					const char *file, int line, int column)
+					const char *file, int line, int column,
+					int end_line, int end_column)
 {
     set_error(phase, Throw.str().empty() ? e.what() : Throw.str(),
-	      file, line, column);
+	      file, line, column, end_line, end_column);
     return diagnostics.size() - 1;
 }
 
@@ -78892,7 +78902,8 @@ size_t Program::record_throw_diagnostic(const std::exception &e,
     const ParsePosition *at = Throw.at();
     return record_throw_diagnostic(e, DiagnosticPhase::parser,
 				   diagnostic_file_for(at ? at->file : NULL, tp),
-				   at ? at->line : 0, at ? at->column : 0);
+				   at ? at->line : 0, at ? at->column : 0,
+				   at ? at->end_line : 0, at ? at->end_column : 0);
 }
 
 // Skip to the next statement sync point after a contained error: consume
@@ -79348,9 +79359,12 @@ Program::EntryClassification Program::classify_entry(const std::string &text,
     // A balance refusal is recorded like any other, so the session renders it
     // when the entry is final.
     auto refusal = [this](TokenBase *t, const std::string &message) {
+	int end_line, end_column;
+	madc_token_end(t, end_line, end_column);
 	add_diagnostic(DiagnosticSeverity::error, DiagnosticPhase::parser,
 		       message, t && t->file ? t->file : NULL,
-		       t ? t->line : 0, t ? t->column : 0);
+		       t ? t->line : 0, t ? t->column : 0,
+		       end_line, end_column);
 	return diagnostics.back();
     };
     const bool session = interactive_session;
