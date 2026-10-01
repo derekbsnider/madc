@@ -7756,7 +7756,7 @@ static bool class_operator_value_result(TokenBase *arg)
 	if ((op->id() == TokenID::tkInc || op->id() == TokenID::tkDec)
 	    && op->left && !op->right) {
 		FuncDef *post = class_postfix_step_operator(
-			as_class_instance(op->left->datadef()), op->id());
+			as_class_instance(operand_value_type(op->left)), op->id());
 		return post && !post->returns_reference();
 	}
 	if (op->argc() != 2 || !op->left || !op->right)
@@ -22456,7 +22456,9 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 	// carrier_operand is its ONE admission rule, as in class_operator_call,
 	// so `-v` reaches its operator- row (D28) and a carrier without the
 	// operator declines below.
-	DataDefCLASS *cls = as_class_instance(operand->datadef());
+	// The operand's VALUE (operand_value_type): a reference denotes its
+	// class object.
+	DataDefCLASS *cls = as_class_instance(operand_value_type(operand));
 	if (!cls && carrier_operand(operand))
 		cls = &ddARRAY;
 	if (!cls) return NULL;
@@ -25233,7 +25235,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// When only one form is declared, fall back to it.
 			const char *uop = (tb->id() == TokenID::tkInc) ? "++" : "--";
 			std::string opmname = std::string("operator") + uop;
-			DataDefCLASS *icls = as_class_instance(operand_tb->datadef());
+			// The operand's VALUE: a reference denotes its class object.
+			DataDefCLASS *icls = as_class_instance(operand_value_type(operand_tb));
 			if (is_post && icls) {
 				// Prefer the parameterized (postfix) overload.
 				FuncDef *post = class_postfix_step_operator(icls, tb->id());

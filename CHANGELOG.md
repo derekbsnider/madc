@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### cir: ++, --, -, ! on a reference to a class call the class's operators
+
+The forms ++r, --r, r++ and -r, !r on a reference variable or reference parameter to a class now call the class's operators, per [expr.type]/1 (a reference denotes its object). Before: c2mir rejected the builtin lowering with "invalid operand types" and "incompatible types in assignment to struct/union", affecting plain code and function template instances (libstdc++'s __advance for class iterators). Fix: three sites now read the operand through operand_value_type (the one owner of "operand value through a reference", per indirection.md) instead of operand->datadef(): CirBuilder::translate_expr's ++/-- class dispatch, CirBuilder::class_unary_operator_call (unary - + ! ~), and class_operator_value_result's postfix arm. References to classes denote the objects, not the indirection itself; the dereference reaches the class's operators through make_unary_object_operator_call.
+
 ### overload resolution: a nearer base is the better derived-to-base conversion
 
 With C derived from B derived from A, converting C to B (by value, or binding const B&) is better than C to A; C* to B* is better than C* to A*; [over.ics.rank]/4.4. score_arg_to_param scored every derived-to-base conversion alike, so the tie fell to declaration order; tests/testnearerbaseoverload's calls printed 1 for every overload (free functions href/hptr/hval/hrev, member functions S::m/S::p), exit 0; g++ prints 2. New compare_derived_to_base (src/cir_builder.cpp, beside score_arg_to_param) decides one argument's two derived-to-base conversions: the base that itself derives from the other wins. New in src/parser.cpp: compare_conversion_sequences and conversion_dominance apply per-argument comparison in the tie branch of rank_fn_overload_candidates and DataDefCLASS::findMethodOverload, before template/plain and cv/template/partial-ordering rules respectively. Retained member templates are excluded from the per-argument comparison because their parameters are spellings, not types.
