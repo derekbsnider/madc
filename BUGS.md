@@ -365,25 +365,6 @@ struct AS { int f() { return x; } char c; alignas(16) int x; };                 
   `apply_member_layout_attributes`, as `TokenSTRUCT::parse` does.
   `g++.dg/cpp0x/alignas5.C` then leaves the gxx-c++11 baseline.
 
-### B78. A qualified non-static member in `sizeof` has `int`'s size
-
-```cpp
-#include <cstdio>
-struct C { double t; char a[12]; int f() { return 0; } };
-int main() { std::printf("q: %zu %zu\n", sizeof(C::t), sizeof(C::a)); return 0; }
-```
-
-- g++ = clang++: `q: 8 12`. madc: `q: 4 1` (SILENT). Reducer: `tmp/b65r/v7.cpp`.
-- Where: `resolve_class_qualified_expression`'s no-object arm (a member
-  named without an object, valid only in an unevaluated operand,
-  [expr.prim.id]/2) pushes `TokenInt(0)` "typed as the member", but
-  `TokenInt::setDataType` accepts only an integer or complex type, so a
-  `double`, pointer, struct or array member stays `int`. `alignof` reads it
-  the same way. The operand needs a token that carries any type, with the
-  member's array extents and its own alignment.
-- Found 2026-09-29 while tracing the B65 member regression. Core expression
-  parser: a focused session.
-
 ### B64. A typedef's own `aligned(N)` is not modeled
 
 ```c

@@ -34335,14 +34335,21 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		}
 	    }
 	    // No object: only an unevaluated operand may name the member
-	    // ([expr.prim.id]/2 — sizeof / decltype read its type), which is
-	    // what a value typed as the member serves.
-	    TokenInt *ti = new TokenInt(0);
-	    ti->setDataType(scope->m_type(member_name));
-	    ti->file = member_tb->file;
-	    ti->line = member_tb->line;
-	    ti->column = member_tb->column;
-	    exStack.push(ti);
+	    // ([expr.prim.id]/2 — sizeof, alignof, decltype read its type). The
+	    // member of an object of the class, as the arm above builds it over
+	    // __this, keeps the member's whole type: a double, a pointer, a
+	    // class, an array's extents (member_array_type). A TokenInt typed
+	    // as the member kept only an integer type.
+	    Variable *object = new Variable(scope->name, *scope, 1, NULL, false);
+	    Variable *member = new Variable(member_name,
+					    *scope->m_type(member_name), 1, NULL,
+					    false);
+	    TokenMember *tm = new TokenMember(*object, *member,
+					      (size_t)member_ofs);
+	    tm->file = member_tb->file;
+	    tm->line = member_tb->line;
+	    tm->column = member_tb->column;
+	    exStack.push(tm);
 	    *tb_out = member_tb;
 	    return QualifiedClassExprAction::PushedExpression;
 	}

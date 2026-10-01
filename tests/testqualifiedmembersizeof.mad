@@ -1,0 +1,35 @@
+// A qualified non-static data member named without an object, `C::t`, may
+// appear in an unevaluated operand ([expr.prim.id]/2): sizeof, alignof and
+// decltype read the member's whole type. madc typed it as an integer
+// placeholder that kept only an integer type, so `sizeof(C::t)` for a double
+// was 4 and `sizeof(C::a)` for a char[12] was 1 (exit 0).
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <cstddef>
+
+struct E { long x, y; };
+struct C {
+    double t;
+    char a[12];
+    int m[2][3];
+    E e;
+    int *p;
+    short s;
+    int f() { return 0; }
+};
+struct D : C { int g() { return (int)sizeof(C::t) + (int)sizeof(a); } };
+
+int main()
+{
+    std::printf("sizeof: %zu %zu %zu %zu %zu %zu\n", sizeof(C::t), sizeof(C::a),
+                sizeof(C::m), sizeof(C::e), sizeof(C::p), sizeof(C::s));
+    std::printf("alignof: %zu %zu %zu\n", alignof(decltype(C::t)),
+                alignof(decltype(C::e)), alignof(decltype(C::s)));
+    decltype(C::t) d = 2.5;
+    double C::*pm = &C::t;
+    C c;
+    c.*pm = 1.5;
+    D dd;
+    std::printf("decltype: %.1f %.1f %d\n", d, c.t, dd.g());
+    return 0;
+}
