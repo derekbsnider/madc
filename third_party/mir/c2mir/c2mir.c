@@ -17211,14 +17211,15 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         emit_scalar_assign (c2m_ctx, new_op (init_el.member_decl, mem), &val, t,
                             i == init_start || rel_offset == init_el.offset);
         rel_offset = init_el.offset + _MIR_type_size (ctx, t);
-        if (init_el.member_decl != NULL && init_el.member_decl->bit_field_bytes_p) {
-          /* its bits may run past its type's unit: the gap fill must not reach them */
-          mir_size_t end = init_el.offset
-                           + ((mir_size_t) init_el.member_decl->bit_offset
-                              + init_el.member_decl->width + MIR_CHAR_BIT - 1)
-                               / MIR_CHAR_BIT;
-
-          if (end > rel_offset) rel_offset = end;
+        if (init_el.member_decl != NULL && init_el.member_decl->bit_offset >= 0) {
+          /* A bit-field ends at the byte after its last bit, not at its type's
+             unit: a member after it in the unit (`char c; int x : 4; char d;`,
+             d at byte 2) still takes the gap fill, and a byte-wise field's bits
+             running past the unit are never reached by it. */
+          rel_offset = init_el.offset
+                       + ((mir_size_t) init_el.member_decl->bit_offset
+                          + init_el.member_decl->width + MIR_CHAR_BIT - 1)
+                           / MIR_CHAR_BIT;
         }
       }
     }
