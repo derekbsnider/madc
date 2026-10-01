@@ -234,9 +234,9 @@ madc::dis::value_pool *TokenBase::_active_valpool = NULL;
 
 // A consumed token with no recorded lexical end (a parser-built or injected
 // token, a prelude-image token): its end from its spelling.
-void ParsePosition::set_end_from_spelling(TokenBase *t)
+void ParsePosition::end_from_spelling(TokenBase *t, ParsePosition &p)
 {
-    madc_token_end(t, TokenBase::_parse_end_line, TokenBase::_parse_end_column);
+    madc_token_end(t, p.end_line, p.end_column);
 }
 
 // Generated parser-local names are process-wide for historical compatibility.
@@ -78459,10 +78459,10 @@ void Program::dump_registered_names(FILE *out)
 // raised inside an #included file names the header (tokens carry file/line/col
 // — the MC11-IR law), not the top-level TU. Fall back to the TU name only for
 // tokens with no stamped file.
-static const char *diagnostic_file_for(TokenBase *tb, TokenProgram *tp)
+static const char *diagnostic_file_for(const char *file, TokenProgram *tp)
 {
-    if ( tb && tb->file && *tb->file )
-	return tb->file;
+    if ( file && *file )
+	return file;
     return tp ? tp->source.c_str() : NULL;
 }
 
@@ -78863,7 +78863,7 @@ size_t Program::record_parse_error(const std::string &message,
 				   TokenBase *where, TokenProgram *tp)
 {
     return record_frontend_error(DiagnosticPhase::parser, message,
-				 diagnostic_file_for(where, tp),
+				 diagnostic_file_for(where ? where->file : NULL, tp),
 				 where ? where->line : 0,
 				 where ? where->column : 0);
 }
@@ -78884,16 +78884,15 @@ size_t Program::record_throw_diagnostic(const std::exception &e,
     return diagnostics.size() - 1;
 }
 
-// The parser-phase convenience: position from Throw.token() — the throw's
-// own recorded token.
+// The parser-phase convenience: the position Throw captured when the error
+// was raised (the token itself may not have survived the unwind).
 size_t Program::record_throw_diagnostic(const std::exception &e,
 					TokenProgram *tp)
 {
-    TokenBase *err_tb = Throw.token();
+    const ParsePosition *at = Throw.at();
     return record_throw_diagnostic(e, DiagnosticPhase::parser,
-				   diagnostic_file_for(err_tb, tp),
-				   err_tb ? err_tb->line : 0,
-				   err_tb ? err_tb->column : 0);
+				   diagnostic_file_for(at ? at->file : NULL, tp),
+				   at ? at->line : 0, at ? at->column : 0);
 }
 
 // Skip to the next statement sync point after a contained error: consume

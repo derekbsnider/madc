@@ -509,22 +509,20 @@ struct ParsePosition
 	TokenBase::_parse_end_line = end_line;
 	TokenBase::_parse_end_column = end_column;
     }
-    // The position of token `t`: its file, start and end (the recorded
-    // lexical end, else the one derived from its spelling).
-    static void set_from(TokenBase *t)
+    // The position of token `t` as a value: its file, start and end (the
+    // recorded lexical end, else the one derived from its spelling). A copy
+    // outlives the token (throwbuf keeps one for its diagnostic).
+    static ParsePosition of(TokenBase *t)
     {
-	TokenBase::_parse_file = t->file;
-	TokenBase::_parse_line = t->line;
-	TokenBase::_parse_column = t->column;
-	if ( t->lex_end_column )
-	{
-	    TokenBase::_parse_end_line = t->lex_end_line;
-	    TokenBase::_parse_end_column = t->lex_end_column;
-	}
-	else
-	    set_end_from_spelling(t);
+	ParsePosition p = { t->file, t->line, t->column, t->lex_end_line,
+		    t->lex_end_column };
+	if ( !t->lex_end_column )
+	    end_from_spelling(t, p);
+	return p;
     }
-    static void set_end_from_spelling(TokenBase *t);	// parser.cpp
+    // The parser's position becomes token `t`'s.
+    static void set_from(TokenBase *t) { of(t).restore(); }
+    static void end_from_spelling(TokenBase *t, ParsePosition &p);	// parser.cpp
 };
 
 // whitespace

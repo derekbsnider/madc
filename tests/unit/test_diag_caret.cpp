@@ -108,6 +108,48 @@ TEST_CASE("B8: a line wider than the terminal shows its tail from the caret")
     unsetenv("COLUMNS");
 }
 
+// A Throw keeps its raising token's POSITION, never the token: the catch arm
+// records the diagnostic after the unwind, when the token may be gone. On
+// g++.dg/cpp0x/implicit7.C the cited token was a stack local of the
+// ClassPattern resolver, and record_throw_diagnostic read it 13 KB below the
+// stack pointer (valgrind: "Invalid read ... on thread 1's stack").
+static void raise_on_a_dying_token(throwstream &ts, bool with_end)
+{
+    TokenIdent tok;		// dies when this frame unwinds
+    tok.file = "f.c";
+    tok.line = 3;
+    tok.column = 7;
+    if ( with_end )
+    {
+	tok.lex_end_line = 3;
+	tok.lex_end_column = 10;
+    }
+    ts(&tok) << "use of undeclared identifier 'nope'" << std::flush;
+}
+
+TEST_CASE("Throw keeps the raising position past the token's lifetime")
+{
+    DiagnosticRenderMute mute;		// sync throws without rendering
+    throwstream ts;
+    CHECK_THROWS(raise_on_a_dying_token(ts, true));
+    const ParsePosition *at = ts.at();
+    REQUIRE((at != NULL));
+    CHECK(std::string(at->file) == "f.c");
+    CHECK(at->line == 3);
+    CHECK(at->column == 7);
+    CHECK(at->end_line == 3);
+    CHECK(at->end_column == 10);
+    CHECK(ts.str() == "use of undeclared identifier 'nope'");
+    // No recorded end: derived from the spelling (none here: the start).
+    CHECK_THROWS(raise_on_a_dying_token(ts, false));
+    REQUIRE((ts.at() != NULL));
+    CHECK(ts.at()->end_line == 3);
+    CHECK(ts.at()->end_column == 7);
+    // An error that names no token has no position.
+    CHECK_THROWS(ts(NULL) << "no token" << std::flush);
+    CHECK((ts.at() == NULL));
+}
+
 // D26 part 2: a diagnostic's HEADER prints the same place as gcc's — the
 // start byte's screen column (madc_screen_column), while the stored column
 // stays a byte count. The oracles are gcc's headers for the reducers above.

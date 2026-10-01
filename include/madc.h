@@ -2575,17 +2575,28 @@ public:
     virtual const char *what() const throw () override { return _msg.c_str(); }
 };
 
-// streambuf class to throw an exception at sync
+// streambuf class to throw an exception at sync. It keeps the raising
+// token's POSITION, copied when the error is raised, never the token: the
+// catch arm that records the diagnostic runs after the unwind, and the token
+// may have died in it (a stack token's frame) — a kept pointer was read
+// dangling there.
 class throwbuf: public std::stringbuf
 {
 protected:
-    TokenBase *_tb;
+    bool _has_at;
+    ParsePosition _at;
     Source *_src;
 public:
-    throwbuf() : std::stringbuf() { _tb = NULL; _src = NULL; }
+    throwbuf() : std::stringbuf(), _has_at(false), _at(), _src(NULL) {}
     virtual int sync() override;
-    TokenBase *token() { return _tb; }
-    TokenBase *token(TokenBase *t) { return (_tb=t); }
+    // The raising token's position (NULL: the error names no token).
+    const ParsePosition *at() const { return _has_at ? &_at : NULL; }
+    void at(TokenBase *t)
+    {
+	_has_at = t != NULL;
+	if ( t )
+	    _at = ParsePosition::of(t);
+    }
     Source *source() { return _src; }
     Source *source(Source *s) { return (_src=s); }
 };
@@ -2596,7 +2607,7 @@ protected:
     throwbuf _tbuf;
 public:
     throwstream() : std::ostream(&_tbuf) { exceptions(std::ios_base::badbit); }
-    TokenBase *token() { return _tbuf.token(); };
+    const ParsePosition *at() const { return _tbuf.at(); }
     Source *source() { return _tbuf.source(); }
     Source *source(Source *s) { return _tbuf.source(s); }
     Source *source(Source &s) { return _tbuf.source(&s); }
@@ -2608,7 +2619,7 @@ public:
     // every error after the first into a spurious "basic_ios::clear: iostream
     // error" and discarding the real message. str("") drops any stale message.
     throwstream& operator()(TokenBase *t)
-    { clear(); _tbuf.str(std::string()); _tbuf.token(t); return *this; }
+    { clear(); _tbuf.str(std::string()); _tbuf.at(t); return *this; }
 };
 
 
@@ -6835,7 +6846,7 @@ public:
     size_t record_throw_diagnostic(const std::exception &e,
 				   DiagnosticPhase phase,
 				   const char *file, int line, int column);
-    // The parser-phase convenience: position from Throw.token().
+    // The parser-phase convenience: the position Throw captured.
     size_t record_throw_diagnostic(const std::exception &e, TokenProgram *tp);
     // Skip to the next statement sync point after a contained error: consume
     // tokens stepping DelimDepth (the one tracker) until a ';' outside every

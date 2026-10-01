@@ -10648,22 +10648,22 @@ int throwbuf::sync()
     if ( DiagnosticRenderMute::active )
 	throw std::exception();	// captured as data — render nothing
     cerr << endl;
-    if ( _tb )
+    if ( _has_at )
     {
 	// file, line, column, AND the echoed source line must all come from
 	// the SAME provenance — the token's. Before this, an error inside an
 	// #included file printed the top-level file's NAME with the header's
 	// LINE and echoed the top-level file's text (three-way inconsistent).
-	const char *tok_file = (_tb->file && *_tb->file) ? _tb->file : NULL;
+	const char *tok_file = (_at.file && *_at.file) ? _at.file : NULL;
 	const char *fname = tok_file ? tok_file
 			  : (_src ? _src->fname() : "???");
-	cerr << ANSI_WHITE << fname << ':' << _tb->line << ':'
-	     << madc_diag_screen_column(_src, fname, _tb->line, _tb->column)
+	cerr << ANSI_WHITE << fname << ':' << _at.line << ':'
+	     << madc_diag_screen_column(_src, fname, _at.line, _at.column)
 	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
 	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
-	    _src->showerror(_tb->line, _tb->column);
+	    _src->showerror(_at.line, _at.column);
 	else
-	    madc_show_file_error(fname, _tb->line, _tb->column);
+	    madc_show_file_error(fname, _at.line, _at.column);
     }
     else
     if ( _src )

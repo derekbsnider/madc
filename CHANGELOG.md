@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### diagnostics: parse errors raised on dying tokens record their captured position
+
+A parse error raised on a token that does not survive the unwind is recorded with the position captured when it was raised, instead of reading the dead token from stack memory. On gcc's g++.dg/cpp0x/implicit7.C the raising token was a stack local of a frame the unwind had left; the former implementation kept a `TokenBase *` and dereferenced it after the unwind, reading stack memory below the stack pointer (found by valgrind: 5 "Invalid read" errors in `record_throw_diagnostic` and `diagnostic_file_for` before the fix).
+
 ### diagnostics: token columns cite the start in gcc's screen columns (D26 part 2)
 
 A token's column is now its START (the lexer records it when the token's first byte is read), with an END position beside it; the header prints gcc's screen column (tabs to 8-column stops, code-point widths where a UTF-8 character is one column and an East Asian wide character two). Diagnostic header prints the START as gcc's screen column; highlighter, code graph and LSP diagnostic range read the token's START (in bytes); the stored unit stays bytes. The reducer testdiagstartcol shows lines 1-2 with a tab; gcc 13 cites 2:19 with the caret under foo's f, now madc does too (before: 2:14, foo's last byte, a byte column). For undeclared_name gcc cites 2:12 and madc now 2:12 (was 2:26). Forest format 51; the `.madh` compiler_hash signature changed. Gates: four fixtures (testcompilerdata, testprojecterrline, testmadcide_cli, testmadcide) moved to token start; test_repl_session's `%type nope + 1` check moved to `:1:7:`; test_diag_caret added a TEST_CASE with screen-column cases. Packed release suite (forest format 51) 1851 passed, 0 failed, 0 timed out, 9 skipped. Static gates green. An A/B of tests/ JIT output showed only anchor differences. Remaining: the underline (^~~).
