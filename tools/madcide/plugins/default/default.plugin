@@ -1,7 +1,7 @@
 {
   "name": "default",
   "title": "Workbench",
-  "api": 1,
+  "api": 2,
   "contributes": {
     "keys": "joe",
     "status": "joe",

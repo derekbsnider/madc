@@ -75,6 +75,10 @@ export WINEDEBUG=-all
 wineserver -p || true
 rm -f tmp/madcide-pkg.exe
 ( ulimit -t 600; timeout 600 wine "$BIN" -o tmp/madcide-pkg.exe tools/madcide/madcide.mad )
+# The shipped plugins: a plugin with code carries its library (a .dll),
+# built by this madcide.exe under wine (plan §41.11a step 6).
+echo "== madcide plugins (each with code built by the packaged madcide.exe) =="
+scripts/build_shipped_plugins.sh tmp/plugins-pkg-win wine tmp/madcide-pkg.exe
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/$ROOT/bin" "$STAGE/$ROOT/lib" "$STAGE/$ROOT/THIRD_PARTY_NOTICES"
@@ -84,9 +88,10 @@ install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
 # madcide's profile search ends at <exedir>/profiles (resolve_profile_dir).
 mkdir -p "$STAGE/$ROOT/bin/profiles"
 install -m 644 tools/madcide/profiles/* "$STAGE/$ROOT/bin/profiles/"
-# The shipped plugins (bundles), beside the exe the same way.
+# The shipped plugins (bundles; a plugin's code as source plus its .dll),
+# beside the exe the same way.
 mkdir -p "$STAGE/$ROOT/bin/plugins"
-cp -R tools/madcide/plugins/. "$STAGE/$ROOT/bin/plugins/"
+cp -R tmp/plugins-pkg-win/. "$STAGE/$ROOT/bin/plugins/"
 # The plugin API headers (<madcide/plugin>), beside the exe the same way:
 # --build-plugin's include directory (resolve_data_dir's last arm).
 mkdir -p "$STAGE/$ROOT/bin/include/madcide"

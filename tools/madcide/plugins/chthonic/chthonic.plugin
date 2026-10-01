@@ -1,7 +1,8 @@
 {
   "name": "chthonic",
   "title": "Learning",
-  "api": 1,
+  "api": 2,
+  "code": "chthonic.mad",
   "contributes": {
     "keys": "thonny",
     "layout": "chthonic",

@@ -70,10 +70,10 @@ void plugin_fixture(var &files, var &made, var &plugins, const char *name,
     mkdirs(made, dir.c_str());
     var mp = format("{}/{}.plugin", dir, name);
     if ( strlen(code) == 0 )
-	put(files, mp, format("{{\"name\": \"{}\", \"api\": 1}}\n", name));
+	put(files, mp, format("{{\"name\": \"{}\", \"api\": 2}}\n", name));
     else
     {
-	put(files, mp, format("{{\"name\": \"{}\", \"api\": 1, \"code\": \"{}\"}}\n",
+	put(files, mp, format("{{\"name\": \"{}\", \"api\": 2, \"code\": \"{}\"}}\n",
 			      name, code));
 	var sp = format("{}/{}", dir, code);
 	put(files, sp, source);
@@ -108,17 +108,6 @@ void activate(long w, var &plugins, const char *name)
     bool ok = plugin_manifest_read(m, why, dir, name)
 	   && plugin_activate(w, dir, name, m, why, note);
     println("activate-{}: ok={} {}{}", name, ok ? 1 : 0, why, note);
-}
-
-// The transport an active plugin's code came by (ptNONE = not active).
-long active_transport(long w, const char *name)
-{
-    var rows;
-    registry_rows(rows, w, "active");
-    for ( var r : rows )
-	if ( r["name"] == name )
-	    return r["transport"].as_integer();
-    return ptNONE;
 }
 
 // The status line after a command run with its argument.
@@ -186,12 +175,12 @@ int main()
 	"}\n");
     plugin_fixture(files, made, plugins, "stale", "stale.mad",
 	"#include <madcide/plugin_api>\n"
-	"extern \"C\" long madcide_plugin_api()\n{\n    return 2;\n}\n"
+	"extern \"C\" long madcide_plugin_api()\n{\n    return 3;\n}\n"
 	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
 	"{\n    return true;\n}\n");
     plugin_fixture(files, made, plugins, "future", "future.mad",
 	"#include <madcide/plugin_api>\n"
-	"extern \"C\" long madcide_plugin_api()\n{\n    return 2;\n}\n"
+	"extern \"C\" long madcide_plugin_api()\n{\n    return 3;\n}\n"
 	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
 	"{\n    return true;\n}\n");
     plugin_fixture(files, made, plugins, "noentry", "noentry.mad",
@@ -222,7 +211,7 @@ int main()
     build(files, plugins, "broken");
     build(files, plugins, "nocode");
     build(files, plugins, "stale");
-    // stale's library stays built against API 2; its source is then fixed.
+    // stale's library stays built against API 3; its source is then fixed.
     var stsrc = format("{}/stale/stale.mad", plugins);
     php::file_put_contents(stsrc.c_str(),
 	"#include <madcide/plugin>\n"
@@ -251,9 +240,9 @@ int main()
     ui::get(om, S.w, S.es, "msg");
     println("stale-msg: {}", om);
     println("transports: hello={} srconly={} stale={}",
-	    active_transport(S.w, "hello") == ptLIBRARY ? 1 : 0,
-	    active_transport(S.w, "srconly") == ptSOURCE ? 1 : 0,
-	    active_transport(S.w, "stale") == ptSOURCE ? 1 : 0);
+	    plugin_active_transport(S.w, "hello") == ptLIBRARY ? 1 : 0,
+	    plugin_active_transport(S.w, "srconly") == ptSOURCE ? 1 : 0,
+	    plugin_active_transport(S.w, "stale") == ptSOURCE ? 1 : 0);
     long gc = cmd_of_w(S.w, "greet");
     println("hello-code: contributed={}", cmd_contributed(gc) ? 1 : 0);
     run_named(S, doc, "greet", "world");

@@ -19,6 +19,7 @@ int main()
     long es = ui::entity_by_name(w, "editor-state");
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     bundle_select(w, es, "chthonic");	// the shipped bundle: its menu
+    plugins_activate(w, es);		// its code first: the menu names its Variables
     ui::set(w, es, "profile", "pico");
     load_status(w, es, "joe");
     load_theme(w, es, "default");

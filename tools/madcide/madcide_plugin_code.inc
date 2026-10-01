@@ -76,9 +76,16 @@ void ide_api_set(long w, long scope, const char *key, const var &value)
     ui::set(w, scope, key, value);
 }
 
+bool show_view(long w, long es, long kind);	// madcide_core.inc, the one show owner
+bool ide_api_show(long w, long es, long kind)
+{
+    return show_view(w, es, kind);
+}
+
 const ide_api madcide_api = { MADCIDE_PLUGIN_API, ide_api_command,
 			      ide_api_view, ide_api_event, ide_api_run,
-			      ide_api_command_id, ide_api_get, ide_api_set };
+			      ide_api_command_id, ide_api_get, ide_api_set,
+			      ide_api_show };
 
 // ---- the code's transports ---------------------------------------------------
 // Where plugin `name`'s library is: <dir>/<name><suffix>, the target's
@@ -229,6 +236,18 @@ void registry_rollback(long w, var &mark)
     }
 }
 
+// The transport plugin `name`'s code came by in world `w` (ptNONE = its
+// code is not active there).
+long plugin_active_transport(long w, const char *name)
+{
+    var rows;
+    registry_rows(rows, w, "active");
+    for ( var r : rows )
+	if ( r["name"] == name )
+	    return r["transport"].as_integer();
+    return ptNONE;
+}
+
 // A world's plugin code, closed with it (§5.5: activated at session open,
 // closed at session close). `active` = the world's "active" rows, read
 // before the world closes; each code closes by the transport that opened it
@@ -242,12 +261,7 @@ void plugins_close(var &active)
 // Is plugin `name`'s code already active in world `w`?
 bool plugin_is_active(long w, const char *name)
 {
-    var rows;
-    registry_rows(rows, w, "active");
-    for ( var r : rows )
-	if ( r["name"] == name )
-	    return true;
-    return false;
+    return plugin_active_transport(w, name) != ptNONE;
 }
 
 // Activate plugin `name`'s code (its directory `dir`, its manifest `m`) in

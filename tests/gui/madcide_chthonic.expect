@@ -1,0 +1,7 @@
+CHTHONIC open
+CHTHONIC click: action=replrun
+CHTHONIC output=1 row=1
+CHTHONIC click: action=replstop
+CHTHONIC stopped: running=0
+CHTHONIC output=1 row=1
+CHTHONIC closed

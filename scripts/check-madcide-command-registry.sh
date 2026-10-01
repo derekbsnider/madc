@@ -19,12 +19,16 @@
 #   5. every `cmd…` spelled in the dispatcher is an enumerator (the
 #      compiler enforces this too; the gate names the drift first);
 #   6. the contributed range (plugins Stage B1, G4): a name shipped code
-#      contributes (`plugin_command(w, "name", …)` in the dispatcher) is
-#      neither a table name nor contributed twice — registration refuses
-#      both, so the command would silently be absent;
-#   7. every bundle's menu and keys (plugins/*/) names a table name or a
-#      shipped contribution, like the registry and the profiles (which may
-#      name contributions too);
+#      contributes (`plugin_command(w, "name", …)` in the dispatcher, or
+#      `ide::command(w, "name", …)` in a shipped plugin's code) is neither a
+#      table name nor contributed twice — registration refuses both, so the
+#      command would silently be absent;
+#   7. every bundle's menu and keys (plugins/<name>/) names a table name, a
+#      contribution of the dispatcher, or one of the bundle's OWN code (its
+#      .mad's ide::command names: the bundle's code activates before its
+#      menu and keys load, another plugin's only when settings.json lists
+#      it), like the registry and the profiles (which may name the
+#      dispatcher's contributions too);
 #   8. the ranges stay disjoint: the enumerators run from cmdNONE = 0 with
 #      no other explicit value, and their count is under cmd_view_row_base(),
 #      which is under cmd_contrib_base() (built-in commands, then the
@@ -99,6 +103,34 @@ contributed_calls()
 	sed 's/.*, "//; s/"$//'
 }
 
+# The names a shipped plugin's code contributes: the literal name of every
+# ide::command(<world>, "<name>", …) call in the given files (<madcide/plugin>'s
+# registration; ide::command_id is a lookup, not a registration).
+plugin_code_calls()
+{
+	cat "$@" | grep -o -E 'ide::command\([^,()]*, "[A-Za-z0-9_-]*"' |
+	sed 's/.*, "//; s/"$//'
+}
+
+# A bundle's words not known to it: its menus' and key files' words that are
+# neither in `known` (the table plus the dispatcher's contributions) nor
+# contributed by the bundle's own code — one bundle per directory.
+bundle_unknown_words()
+{
+	local plugins="$1" known="$2" d f words own
+	words=$(mktemp); own=$(mktemp)
+	for d in $(find "$plugins" -mindepth 1 -maxdepth 1 -type d | sort); do
+		{ for f in "$d"/*.menu; do [ -f "$f" ] && registry_ids "$f"; done
+		  for f in "$d"/*.keys; do [ -f "$f" ] && profile_ids "$f"; done
+		} | sort -u > "$words"
+		{ cat "$known"
+		  for f in "$d"/*.mad; do [ -f "$f" ] && plugin_code_calls "$f"; done
+		} | sort -u > "$own"
+		missing_from "$words" "$own"
+	done
+	rm -f "$words" "$own"
+}
+
 # A range's floor: the literal a `long <fn>()` returns (cmd_contrib_base,
 # cmd_view_row_base, view_contrib_base).
 range_base()
@@ -149,11 +181,10 @@ check()
 {
 	local core="$1" enums="$2" menu="$3" profiles="$4" plugins="$5" pinc="$6" label="$7"
 	local reg pairs tnames tenums enumids dis spelled prof bad
-	local calls contrib known breg bprof base rowbase vbase count vcount
+	local calls pcalls contrib known base rowbase vbase count vcount
 	reg=$(mktemp); pairs=$(mktemp); tnames=$(mktemp); tenums=$(mktemp)
 	enumids=$(mktemp); dis=$(mktemp); spelled=$(mktemp); prof=$(mktemp)
-	calls=$(mktemp); contrib=$(mktemp); known=$(mktemp); breg=$(mktemp)
-	bprof=$(mktemp)
+	calls=$(mktemp); pcalls=$(mktemp); contrib=$(mktemp); known=$(mktemp)
 	registry_ids "$menu" > "$reg"
 	table_pairs "$enums" > "$pairs"
 	awk '{ print $1 }' "$pairs" | sort -u > "$tnames"
@@ -165,9 +196,8 @@ check()
 	contributed_calls $(dispatcher_files "$core") > "$calls"
 	sort -u "$calls" > "$contrib"
 	sort -u "$tnames" "$contrib" > "$known"
-	: > "$breg"; : > "$bprof"
-	for f in $(bundle_files "$plugins" menu); do registry_ids "$f"; done | sort -u > "$breg"
-	for f in $(bundle_files "$plugins" keys); do profile_ids "$f"; done | sort -u > "$bprof"
+	: > "$pcalls"
+	for f in $(bundle_files "$plugins" mad); do plugin_code_calls "$f"; done > "$pcalls"
 	base=$(range_base "$pinc" cmd_contrib_base)
 	rowbase=$(range_base "$pinc" cmd_view_row_base)
 	vbase=$(range_base "$pinc" view_contrib_base)
@@ -218,18 +248,19 @@ check()
 		     "or an include spells a cmd… that is not an enumerator:" $bad >&2
 		rc=1
 	fi
-	bad=$(comm -12 "$contrib" "$tnames"; sort "$calls" | uniq -d)
+	bad=$(sort -u "$calls" "$pcalls" | comm -12 - "$tnames"; sort "$calls" "$pcalls" | uniq -d)
 	if [ -n "$bad" ]; then
 		echo "check-madcide-command-registry: FAIL ($label) — shipped code" \
 		     "contributes a built-in's name or one name twice (registration" \
 		     "refuses it; the command would be absent):" $bad >&2
 		rc=1
 	fi
-	bad=$(missing_from "$breg" "$known"; missing_from "$bprof" "$known")
+	bad=$(bundle_unknown_words "$plugins" "$known")
 	if [ -n "$bad" ]; then
 		echo "check-madcide-command-registry: FAIL ($label) — a bundle's menu or" \
-		     "keys names a word neither the table nor a shipped contribution" \
-		     "names (the bundle would be REFUSED at load):" $bad >&2
+		     "keys names a word neither the table, the dispatcher nor the" \
+		     "bundle's own code contributes (the bundle would be REFUSED at" \
+		     "load):" $bad >&2
 		rc=1
 	fi
 	count=$(enum_ids "$enums" | wc -l)
@@ -245,7 +276,7 @@ check()
 		rc=1
 	fi
 	rm -f "$reg" "$pairs" "$tnames" "$tenums" "$enumids" "$dis" "$spelled" "$prof"
-	rm -f "$calls" "$contrib" "$known" "$breg" "$bprof"
+	rm -f "$calls" "$pcalls" "$contrib" "$known"
 	return $rc
 }
 
@@ -326,6 +357,44 @@ if ! check "$tmpcore" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "con
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — positive control: a bundle menu" \
 	     "naming a shipped contribution was refused (the range went unlearned)." >&2
+	exit 1
+fi
+# (i) a bundle's own code: a word its .mad registers (ide::command) is
+# accepted in ITS menu and refused in another bundle's, and a plugin's code
+# contributing a built-in's name is refused
+fresh_plugins()
+{
+	rm -rf "$tmpplug"
+	tmpplug=$(mktemp -d)
+	(cd "$PLUGINS" && find . -type f) | while read -r f; do
+		mkdir -p "$tmpplug/$(dirname "$f")"
+		cat "$PLUGINS/$f" > "$tmpplug/$f"
+	done
+}
+fresh_plugins
+echo "Help zzown Own" >> "$tmpplug/chthonic/chthonic.menu"
+printf '%s\n' '    long zz = ide::command(w, "zzown", "Own", zz_own);' >> "$tmpplug/chthonic/chthonic.mad"
+if ! check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control"; then
+	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
+	echo "check-madcide-command-registry: FAIL — positive control: a bundle menu" \
+	     "naming its own code's contribution was refused (the bundle's code went unread)." >&2
+	exit 1
+fi
+mkdir -p "$tmpplug/zzother"
+echo "Help zzown Own" > "$tmpplug/zzother/zzother.menu"
+if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control" 2>/dev/null; then
+	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
+	echo "check-madcide-command-registry: FAIL — negative control: a bundle menu" \
+	     "naming ANOTHER bundle's code contribution went undetected (the bundles" \
+	     "stopped being checked one by one)." >&2
+	exit 1
+fi
+fresh_plugins
+printf '%s\n' '    long zz = ide::command(w, "save", "Save", zz_save);' >> "$tmpplug/chthonic/chthonic.mad"
+if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control" 2>/dev/null; then
+	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
+	echo "check-madcide-command-registry: FAIL — negative control: a plugin's code" \
+	     "contributing a built-in's name went undetected (the plugin-code marker went blind)." >&2
 	exit 1
 fi
 # (h) each floor moved into its neighbour's range: the row verbs inside the

@@ -125,6 +125,10 @@ fi
 echo "== madcide (AOT via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release -o tmp/madcide-pkg tools/madcide/madcide.mad )
 strip --strip-unneeded tmp/madcide-pkg
+# The shipped plugins: a plugin with code carries its library, built by
+# this madcide (plan §41.11a step 6); every stage() copies the one set.
+echo "== madcide plugins (each with code built by the packaged madcide) =="
+scripts/build_shipped_plugins.sh tmp/plugins-pkg tmp/madcide-pkg
 
 # ---------- 2. packed suite against the distribution binary ----------
 # MADC_PKG_SKIP_SUITE=1 skips the suite for a package run on content a
@@ -172,10 +176,11 @@ stage() {
     install -m 755 tmp/madcide-pkg "$p/bin/madcide"
     mkdir -p "$p/share/madcide/profiles"
     install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
-    # The shipped plugins (bundles: <name>/<name>.plugin and the data files
-    # it carries), the plugin search path's second arm (resolve_data_dir).
+    # The shipped plugins (bundles: <name>/<name>.plugin, the data files
+    # it carries, and its code as source plus its built library), the
+    # plugin search path's second arm (resolve_data_dir).
     mkdir -p "$p/share/madcide/plugins"
-    cp -R tools/madcide/plugins/. "$p/share/madcide/plugins/"
+    cp -R tmp/plugins-pkg/. "$p/share/madcide/plugins/"
     # The plugin API headers a plugin's code includes (<madcide/plugin>):
     # --build-plugin puts this directory on the include path
     # (resolve_data_dir), and `madc -shared -I` names it by hand.

@@ -1,13 +1,15 @@
 // The chthonic profile (plan §41.11a step 1; plugins Stage A): the teaching
 // bundle madcide ships, tools/madcide/plugins/chthonic — Thonny's keys,
 // chthonic.layout (the editor, and below it the REPL as the visible panel's
-// first tab with Problems beside it; no sidebar) and chthonic.menu (the
-// beginner's subset of the command vocabulary). Pins:
+// first tab with Problems beside it; the Variables view in the right
+// sidebar), chthonic.menu (the
+// beginner's subset of the command vocabulary) and chthonic.mad (its code,
+// the Variables view). Pins:
 //   1. `open(path, ro, "chthonic")` (the command line's --profile) loads the
 //      shipped bundle: the runner's MADCIDE_CONFIG_DIR names no user
 //      directory, so nothing overrides it;
 //   2. its keys are Thonny's, and its layout shows the REPL, with no Outline,
-//      Project or Terminal pane and no sidebar;
+//      Project or Terminal pane, and a sidebar;
 //   3. the menu bar is File, Edit, Run, View, Tools, Help: Run's rows are
 //      replrun (F5's), replstop and repllang, and there is no Build or
 //      Window menu;
@@ -22,10 +24,20 @@
 //      current one, Thonny, marked; choosing VS Code rebinds and keeps it
 //      for this bundle in settings.json (this test's configuration
 //      directory, its .env), so the next chthonic session opens with it
-//      while the default bundle keeps its own keys.
+//      while the default bundle keeps its own keys;
+//   8. the Variables view (plan §41.11a step 6), its code activated from
+//      source: after F5 on §34's program plus a global its rows read
+//      `count int 3` and `square int (int)`; choosing `square` moves the
+//      caret to its line; an entry `int y = 7;` adds its row; Stop empties
+//      the view;
+//   9. the same, its code activated from the library --build-plugin built
+//      (a copy of the bundle in this test's configuration directory, which
+//      the search path puts first).
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
+
+#include "madcide_repl_drive.inc"	// ev_*, settle, enter_line
 
 // The menu bar's titles, space-separated, and the named menu's command ids.
 void menu_bar(var &titles, var &ids, long w, long es, const char *menu)
@@ -77,6 +89,71 @@ void toolbar_rows(var &out, IdeSession &S, long doc)
 	    ok = 0;
     }
     out = format("{}codes={}", out, ok);
+}
+
+// The Variables view's rows as its pane composes them, `|`-separated.
+void variables_rows(var &out, IdeSession &S, long doc)
+{
+    var vn = "variables";
+    long kind = view_of_w(S.w, vn);
+    var cur;
+    layout_get(cur, S.w, S.es);
+    long tab = -1;
+    long ci = chrome_hosting(cur, kind, tab);
+    if ( ci < 0 )
+    {
+	out = "unhosted";
+	return;
+    }
+    var pane;
+    compose_chrome_pane(pane, S.w, S.es, doc, cur["chrome"][ci]);
+    out = "";
+    for ( var it : pane["children"][0]["children"] )
+	out = format("{}{}|", out, it["content"]);
+}
+
+// Pins 8-9 over one session: F5, a row chosen, an entry, Stop.
+void variables_gate(IdeSession &S, long doc, const char *label)
+{
+    long w = S.w;
+    long es = S.es;
+    ui::text_load(w, doc, "#include <stdio.h>\n"
+	"int count = 3;\n"
+	"int square(int n) { return n * n; }\n"
+	"int main() { printf(\"%d\\n\", square(5)); }\n");
+    var e;
+    ev_action(e, "replrun", "f5");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    var got;
+    variables_rows(got, S, doc);
+    println("{}-f5: [{}]", label, got);
+    var vn = "variables";
+    long kind = view_of_w(w, vn);
+    var rows;
+    ui::get(rows, w, es, "chthonic.vars");
+    long opt = 0;
+    long i = 1;
+    for ( var r : rows )
+    {
+	if ( rust::starts_with(r["content"].c_str(), "square ") != 0 )
+	    opt = i;
+	i = i + 1;
+    }
+    ui::set(w, es, "caret", 0);
+    var ch = { "event": "choose", "event_code": ui::event_kind::choose,
+	       "option": opt, "action": "", "action_code": view_row_cmd(kind) };
+    S.apply_ide_event(doc, ch);
+    println("{}-goto: square-line={}", label,
+	    es_int(w, es, "caret", -1) == caret_to_line(w, doc, 3, 0) ? 1 : 0);
+    enter_line(S, doc, w, es, "int y = 7;");
+    variables_rows(got, S, doc);
+    println("{}-entry: [{}]", label, got);
+    ev_action(e, "replstop", "");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+    variables_rows(got, S, doc);
+    println("{}-stop: [{}]", label, got);
 }
 
 int main()
@@ -141,6 +218,11 @@ int main()
     var why;
     json_object_read(kept, why, spath);
     println("keystyle-choose: keys={} msg={} kept={}", k, msg, kept["keys"]["chthonic"]);
+
+    // 8. The Variables view, its code from source.
+    println("variables-code: transport-source={}",
+	    plugin_active_transport(S.w, "chthonic") == ptSOURCE ? 1 : 0);
+    variables_gate(S, doc, "variables");
     S.close();
 
     IdeSession S2;
@@ -163,6 +245,41 @@ int main()
     ui::get(k, D.w, D.es, "profile");
     println("keystyle-default: keys={}", k);
     D.close();
+
+    // 9. The same from the library --build-plugin built, in a copy of the
+    // bundle that the search path finds first.
+    var pdir = format("{}/plugins", cfg);
+    var bdir = format("{}/chthonic", pdir);
+    php::mkdir(pdir.c_str());
+    php::mkdir(bdir.c_str());
+    var shipped;
+    plugin_find(shipped, "chthonic");
+    var parts = { "chthonic.plugin", "chthonic.layout", "chthonic.menu", "chthonic.mad" };
+    for ( var f : parts )
+    {
+	var text;
+	php::file_get_contents(text, format("{}/{}", shipped, f));
+	php::file_put_contents(format("{}/{}", bdir, f), text.c_str());
+    }
+    var bwhy;
+    var brows;
+    bool built = plugin_build(bwhy, brows, bdir.c_str());
+    IdeSession L;
+    long ldoc = L.open(path, false, "chthonic");
+    if ( built )
+	bwhy = "";		// the library's path: its suffix is the platform's
+    println("variables-lib: built={}{} transport-library={}", built ? 1 : 0, bwhy,
+	    plugin_active_transport(L.w, "chthonic") == ptLIBRARY ? 1 : 0);
+    variables_gate(L, ldoc, "variables-lib");
+    L.close();
+    for ( var f : parts )
+	php::unlink(format("{}/{}", bdir, f));
+    var lib;
+    var vb = bdir;
+    plugin_library_path(lib, vb, "chthonic");
+    php::unlink(lib.c_str());
+    php::rmdir(bdir.c_str());
+    php::rmdir(pdir.c_str());
 
     php::unlink(spath.c_str());
     php::rmdir(cfg.c_str());

@@ -1,9 +1,12 @@
 # chthonic's workbench (plan §41.11a): the teaching layout, Thonny's shape.
 # The editor above, and below it the REPL as the visible panel's first tab
-# with Problems beside it. No project tree, no Outline, no Terminal or Output
-# (F5's output is the REPL's). A pane visible at startup whose active View is
-# the REPL starts its session when the window opens (init_view_es).
+# with Problems beside it; on the right the Variables view (chthonic's own
+# code, chthonic.mad: the session's names). No project tree, no Outline, no
+# Terminal or Output (F5's output is the REPL's). A pane visible at startup
+# whose active View is the REPL starts its session when the window opens
+# (init_view_es).
 # The same format as profiles/default.layout.
 @window main
 pane editor tabs views source focus
+pane sidebar right 25% tabs views variables
 pane panel bottom 35% tabs views repl problems

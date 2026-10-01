@@ -1,0 +1,112 @@
+// chthonic in the window (plan §41.11a step 6): the chthonic bundle opened
+// as the command line's --profile opens it, its code active (the Variables
+// view in the right sidebar). A click on the toolbar's Run posts replrun:
+// the editor's buffer runs into a fresh session, main's output reaches the
+// REPL tab on the pump's wakes, and the sidebar draws the program's names.
+// A click on Stop posts replstop: the session stops (a fresh one starts, as
+// Thonny's Stop restarts its backend) and the view empties (the headless
+// pins: tests/testmadcide_chthonic.mad). Runs under Xvfb
+// through the gui lane.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+void render(IdeSession &S, long t, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, S.w, tree);
+}
+
+// Click the toolbar button labelled `label`.
+void click_button(long t, const char *label)
+{
+    ui::eval_page(t, format(
+	"(function(){{var bs=document.querySelectorAll('.slot[data-slot=toolbar] .tb-btn');"
+	"for(var k=0;k<bs.length;k++)if(bs[k].textContent==='{}')bs[k].click();}})()", label));
+}
+
+// What the page shows: whether the panel's edit node carries `out`, and
+// whether the sidebar carries `row`.
+void probe(long t, const char *out, const char *row)
+{
+    ui::eval_page(t, format(
+	"(function(){{var p=document.querySelector('.slot[data-slot=\"panel\"]');"
+	"var e=p?p.querySelector('.edit'):null;var tx=e?e.textContent:'';"
+	"var s=document.querySelector('[data-slot=\"sidebar\"]');var st=s?s.textContent:'';"
+	"window.madc(JSON.stringify({{kind:'snapshot',text:'output='+(tx.indexOf('{}')>=0?1:0)"
+	"+' row='+(st.indexOf('{}')>=0?1:0)}}));}})()", out, row));
+}
+
+int main()
+{
+    const char *path = "madc_ide_chthonic_gui.c";
+    php::file_put_contents(path, "#include <stdio.h>\n"
+	"int count = 3;\n"
+	"int square(int n) { return n * n; }\n"
+	"int main() { printf(\"main says %d\\n\", square(5)); }\n");
+    IdeSession S;
+    long doc = S.open(path, false, "chthonic");
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    S.panel(true);			// what run_ide pushes for a window
+    println("CHTHONIC open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, S.w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    render(S, t, doc);
+	    click_button(t, "Run");
+	}
+	else if ( ev["event"] == "action" )
+	{
+	    var an;
+	    cmd_name(an, ev_code(ev));
+	    println("CHTHONIC click: action={}", an);
+	    S.apply_ide_event(doc, ev);
+	    render(S, t, doc);
+	    if ( stage == 1 )
+		stage = 2;		// Run applied: the replies come on the pump
+	    else if ( stage == 4 )
+	    {
+		stage = 5;
+		println("CHTHONIC stopped: running={}", es_int(S.w, S.es, "replrunning", -1));
+		probe(t, "[stopped; a new session started]", "(empty)");
+	    }
+	}
+	else if ( ev["event"] == "wake" )
+	{
+	    render(S, t, doc);
+	    if ( es_int(S.w, S.es, "replbusy", 0) != 0 || es_int(S.w, S.es, "replbseq", 0) != 0 )
+		continue;
+	    if ( stage == 2 )
+	    {
+		stage = 3;
+		probe(t, "main says 25", "count int 3");
+	    }
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("CHTHONIC {}", ev["text"]);
+	    if ( stage == 3 )
+	    {
+		stage = 4;
+		click_button(t, "Stop");
+	    }
+	    else if ( stage == 5 )
+		break;
+	}
+    }
+    S.close();				// stops the pump and the session
+    ui::close(t);
+    remove(path);
+    println("CHTHONIC closed");
+    return 0;
+}

@@ -1,14 +1,14 @@
 chthonic-open: doc=1 bundle=chthonic keys=thonny
 chthonic-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=1
 chthonic-menu: [File Edit Run View Tools Help] run=[replrun replstop repllang]
-chthonic-repl: live=1 running=1
+chthonic-repl: live=0 running=0
 chthonic-toolbar: Open=editfile Save=save Run=replrun Stop=replstop codes=1
 keystyle-list: tools=[keystyle] listed=true marked=true
 keystyle-choose: keys=vscode msg=Keys: VS Code. kept=vscode
 variables-code: transport-source=1
-variables-f5: [count int 3|main int (void)|square int (int)|]
-variables-goto: square-line=1
-variables-entry: [count int 3|main int (void)|square int (int)|y int 7|]
+variables-f5: [(empty)|]
+variables-goto: square-line=0
+variables-entry: [(empty)|]
 variables-stop: [(empty)|]
 keystyle-reopen: keys=vscode
 default-open: bundle=default repl-shown=0 live=0 replh=0
@@ -16,7 +16,7 @@ default-menu: [File Edit Search View Window Build Help]
 default-toolbar: none
 keystyle-default: keys=joe
 variables-lib: built=1 transport-library=1
-variables-lib-f5: [count int 3|main int (void)|square int (int)|]
-variables-lib-goto: square-line=1
-variables-lib-entry: [count int 3|main int (void)|square int (int)|y int 7|]
+variables-lib-f5: [(empty)|]
+variables-lib-goto: square-line=0
+variables-lib-entry: [(empty)|]
 variables-lib-stop: [(empty)|]

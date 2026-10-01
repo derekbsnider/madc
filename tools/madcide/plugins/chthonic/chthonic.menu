@@ -29,6 +29,7 @@ Run replstop Stop
 Run repllang Language…
 
 View repl Shell
+View variables Variables
 View problems Problems
 
 Tools keystyle Key bindings…

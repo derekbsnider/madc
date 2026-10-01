@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide: chthonic's Variables view (plan §41.11a step 6)
+
+The chthonic plugin's code adds a Variables view: its activation registers a command and view through the plugin API (version 2), subscribes to reTAKEN, reRAN, reBINDINGS and reSTOPPED events, and requests bindings through replbindings. Each row formats as one text line: the binding's name, type and value (when nonempty). A binding from the program's file carries navigation to its definition; bindings from entries show name, type and value but carry no file or line, so a row click goes nowhere. `chthonic.layout` gains a right sidebar for the view and `chthonic.menu` adds View ▸ Variables. The plugin ships as source (`plugins/chthonic/chthonic.mad`) and a prebuilt library per platform (Linux .so, Windows .dll via wine; macOS carries it in the tarball when it carries madcide, step 9). `scripts/build_shipped_plugins.sh` builds every shipped plugin's code with the packaged madcide, and `scripts/package_install_gate.sh` requires the built library. `scripts/check-madcide-command-registry.sh` validates each bundle's menu and keys against its own code's contributed commands and madcide's built-in commands. Gate: `tests/testmadcide_chthonic` pins 8-9 (the source and library forms activate; bindings appear after reBINDINGS events), `tests/gui/madcide_chthonic` (the Run button in the window), `tests/testmadcide_chthonic.win64_expect` (under wine, no backend yet).
+
 ### madcide: session close closes its plugins' code
 
 The session's close now frees every active plugin's code loaded or compiled at activation. IdeSession::close() reads the world's active rows before the world closes, then calls plugins_close to run plugin_code_close on each (the right transport — library, source, or built-in). On Windows this allows plugin DLLs to be removed after the run (Windows refuses to remove a loaded library). Test: testmadcide_plugin_library pin 5 verifies the library is freed after session close by attempting php::unlink(hello.dll) and expecting success (library-released=1) on Linux, darwin and wine64.

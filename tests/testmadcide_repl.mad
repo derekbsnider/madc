@@ -32,43 +32,7 @@
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 
-void ev_text(var &e, const char *t)
-{
-    var f = { "event": "text", "event_code": ui::event_kind::text, "text": t };
-    e = f;
-}
-
-void ev_key(var &e, const char *k)
-{
-    var f = { "event": "key", "event_code": ui::event_kind::key, "key": k,
-	      "key_code": ui::key_code(k) };
-    e = f;
-}
-
-void ev_action(var &e, const char *a, const char *seq)
-{
-    var f = { "event": "action", "event_code": ui::event_kind::action,
-	      "action": a, "seq": seq };
-    e = f;
-}
-
-// Let the pump run until nothing is outstanding (or `ms` passed): an offer
-// answered, a completion answered — or, with `running`, until the offered
-// entry has been taken and runs.
-void settle(long w, long es, bool running)
-{
-    for ( long waited = 0; waited < 20000; waited = waited + 10 )
-    {
-	if ( running && es_int(w, es, "replrunning", 0) != 0 )
-	    return;
-	if ( !running && es_int(w, es, "replbusy", 0) == 0
-	     && es_int(w, es, "replcseq", 0) == 0
-	     && es_int(w, es, "replbseq", 0) == 0 )
-	    return;
-	madc::sleep_ms(10);
-    }
-    println("settle: timed out");
-}
+#include "madcide_repl_drive.inc"	// ev_*, settle, enter_line
 
 // A subscriber to the session's names answered (reBINDINGS): each row as
 // `name type = value @ file:line;`.
@@ -79,20 +43,6 @@ void bound(long w, long es, long doc, var &event)
 	s = format("{}{} {} = {} @ {}:{};", s, row["name"], row["type"],
 		   row["value"], row["file"], row["line"]);
     ui::set(w, es, "test.bound", s);
-}
-
-// Type a line into whatever has the keyboard, then press enter and settle.
-void enter_line(IdeSession &S, long doc, long w, long es, const char *text)
-{
-    var e;
-    if ( strlen(text) > 0 )
-    {
-	ev_text(e, text);
-	S.apply_ide_event(doc, e);
-    }
-    ev_key(e, "enter");
-    S.apply_ide_event(doc, e);
-    settle(w, es, false);
 }
 
 // The transcript's text after `from` bytes (what the last steps added).

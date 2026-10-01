@@ -15,7 +15,7 @@
 // <madcide/plugin>), and madcide refuses either when it is not the version
 // it serves. The table below is append-only: an entry added at its end
 // moves this number.
-#define MADCIDE_PLUGIN_API 1
+#define MADCIDE_PLUGIN_API 2
 
 // A contributed command's handler, run by the dispatcher with the command's
 // argument. False = it ended the session (the dispatcher's quit verdict).
@@ -24,6 +24,12 @@ typedef bool (*cmd_handler)(long w, long es, long doc, const char *arg);
 // A contributed event handler, run with { kind, reply } for each event of
 // the kind it subscribed to (repl_event).
 typedef void (*event_handler)(long w, long es, long doc, var &event);
+// The REPL pane's reply events, the kinds an event handler subscribes to:
+// an entry taken, F5's run returned, F5's load refused, the session
+// stopped, the session's names answered (replbindings: the reply carries
+// their rows). madcide publishes them and a plugin names them, so this is
+// their one text; reLAST bounds the range. Append-only, as the table is.
+enum repl_event : unsigned char { reNONE = 0, reTAKEN, reRAN, reREFUSED, reSTOPPED, reBINDINGS, reLAST };
 
 // The calls a plugin makes into madcide, all of them (SQLite's
 // sqlite3_api_routines pattern): a plugin binds to no symbol of madcide's,
@@ -46,6 +52,10 @@ struct ide_api
     long (*command_id)(long w, const char *name);
     void (*get)(var &out, long w, long scope, const char *key);
     void (*set)(long w, long scope, const char *key, const var &value);
+    // Show a view of world `w` in session `es` (a contributed view's own
+    // kind, from view): its pane comes up with it active. False = no pane
+    // of the layout hosts it (the status line says so). API 2.
+    bool (*show)(long w, long es, long kind);
 };
 
 // A plugin library's two entries, looked up by madcide when it loads the

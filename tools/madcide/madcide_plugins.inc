@@ -261,7 +261,7 @@ bool plugin_manifest_read(var &m, var &why, var &dir, const char *name0)
 // (testmadcide_bundles pins the two to one reading).
 const char *default_bundle_text()
 {
-    return "{ \"name\": \"default\", \"title\": \"Workbench\", \"api\": 1,"
+    return "{ \"name\": \"default\", \"title\": \"Workbench\", \"api\": 2,"
 	   " \"contributes\": { \"keys\": \"joe\", \"status\": \"joe\","
 	   " \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\" } }";
 }

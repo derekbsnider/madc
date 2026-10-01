@@ -147,6 +147,16 @@ run_linux() {
     local gdir="$root/${libdir:+usr/}share/madcide/plugins"
     [ -f "$gdir/default/default.plugin" ] \
         || fail "$kind" "no plugins/default/default.plugin at $gdir in the artifact"
+    # Every shipped plugin with code carries its built library beside its
+    # source (scripts/build_shipped_plugins.sh; plan §41.11a step 6).
+    local pg pn
+    for pg in "$gdir"/*/; do
+        pg="${pg%/}"
+        pn=$(basename "$pg")
+        grep -q '"code"' "$pg/$pn.plugin" 2>/dev/null || continue
+        [ -f "$pg/$pn.so" ] \
+            || fail "$kind" "plugin '$pn' ships no library ($pn.so) at $pg in the artifact"
+    done
     mv "$pdir" "$pdir.hidden"
     out=$( ( ulimit -t 120; timeout 90 "${runenv[@]}" \
              python3 scripts/install_gate_pty.py "$madcide" "$probe" pk4probe ) 2>&1 )

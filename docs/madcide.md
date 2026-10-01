@@ -278,7 +278,7 @@ A plugin can carry code. Its manifest names the source, one madc file in its
 directory:
 
 ```json
-{ "name": "hello", "api": 1, "code": "hello.mad" }
+{ "name": "hello", "api": 2, "code": "hello.mad" }
 ```
 
 The source includes `<madcide/plugin>` and defines the activation madcide
@@ -311,8 +311,25 @@ running madcide. A library loads in well under a millisecond; a source costs
 a compile at every launch (about 16 ms for the first plugin and 7 ms for each
 further one with the installed madcide), so a plugin ships fast with its
 library and works without one. A handler calls madcide only through `ide::`
-(`command`, `view`, `event` at activation; `run`, `command_id`, `get`, `set`
-from a handler), so a plugin binds to nothing of madcide's own.
+(`command`, `view`, `event` at activation; `run`, `command_id`, `get`, `set`,
+`show` from a handler), so a plugin binds to nothing of madcide's own. The
+code stays loaded until the session closes.
+
+`ide::event` subscribes a handler to the REPL pane's events, whose kinds
+`<madcide/plugin_api>` names: `reTAKEN` (an entry ran), `reRAN` (F5's program
+returned), `reBINDINGS` (the session's names answered: `event["reply"]["rows"]`,
+each row with `name`, `kind`, `type`, `value`, `file` and `line`) and
+`reSTOPPED` (the session stopped). A view's rows are `{ "content", "file",
+"line" }` objects on the key the view names; choosing a row with a line goes
+there.
+
+The shipped `chthonic` plugin carries code: the Variables view in chthonic's
+right sidebar (View ▸ Variables), Thonny's. It lists the names the REPL session
+defined, each with its type and value (`count int 3`, `square int (int)`),
+refreshed after every entry and every F5 run and emptied when the session
+stops; choosing a name the program's file defined goes to its line. The
+packages ship it as its source plus its library, built by the packaged
+madcide.
 
 A library built against another plugin API version (it says both), or one
 that cannot be loaded or has no `madcide_plugin_activate`, is refused, and

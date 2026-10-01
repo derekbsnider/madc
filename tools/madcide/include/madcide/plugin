@@ -99,6 +99,11 @@ namespace ide
 	var v = d;
 	api->set(w, scope, key, v);
     }
+
+    bool show(long w, long es, long kind)
+    {
+	return api->show(w, es, kind);
+    }
 }
 
 // The plugin API version this library was built against, read by madcide
