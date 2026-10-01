@@ -1,0 +1,22 @@
+// A block-scope typedef names its type ([dcl.typedef]/2); a template argument
+// formed from it is that type ([temp.type]). madc gave a scalar typedef inside
+// a namespace-scope function the identity `ns::E`, so `id<E>` and `addr<E>`
+// were instantiated over a type named E at file scope, where no E exists:
+// c2mir "unknown type E".
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+namespace ns {
+template<class T> T id(T v) { return v; }
+template<class T> T *addr(T &v) { return &v; }
+int f()
+{
+    typedef int E;
+    E x = 3;
+    return id<E>(x) + *addr<E>(x);
+}
+}
+int main()
+{
+    printf("%d\n", ns::f());
+    return 0;
+}

@@ -54532,7 +54532,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    alias_dd->set_canonical_spelling(base_source_spelling);
 	    dd = alias_dd;
 	}
-	else if ( pgm.class_scope_stack.empty()
+	// A NAMESPACE-scope scalar typedef keeps a distinct alias dd naming
+	// it — never a BLOCK-scope one (pgm.compounds open): `typedef int
+	// __element_type;` in std::get's body declares no `std::__element_type`,
+	// and an alias carrying that name leaked into the specialization a
+	// template argument formed from it (`std::forward<__element_type>`
+	// returned `__element_type *` at file scope). It names its type.
+	else if ( pgm.class_scope_stack.empty() && pgm.compounds.empty()
 	       && !pgm.current_namespace().empty()
 	       && dd && !dd->is_pointer() && !typedef_alias_keeps_shape(dd)
 	       && dd->basetype() == BaseType::btSimple
