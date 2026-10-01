@@ -65,6 +65,12 @@
 # runner capability — lets the suite run against e.g. a forest-packed
 # copy (tmp/madc_packed) without touching the tree's binary.
 #
+# MADC_TEST_SAVE_DIR (env): a directory that receives each test's JIT
+# output — <base>.out (stdout; stdout+stderr for an .expect_err test) and
+# <base>.err (stderr) — for an A/B of two builds over the whole suite
+# (`diff -r` of two such directories). Generic runner capability; unset, the
+# outputs are discarded as before.
+#
 # MADC_WRAPPER (env): command prefix that runs the binary on its execution
 # domain — `wine` for the PE madc.exe on the build container. Word-split
 # deliberately (a wrapper may carry flags). Same generic-capability rule
@@ -363,6 +369,7 @@ for t in "$TEST_DIR"/*.mad; do
             out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
+        [ -n "$MADC_TEST_SAVE_DIR" ] && printf '%s\n' "$out" > "$MADC_TEST_SAVE_DIR/$base.out"
         ok=1
         timed_out=0
         if [ $rc -eq 124 ]; then
@@ -419,6 +426,10 @@ for t in "$TEST_DIR"/*.mad; do
         fi
         err=""
         [ "$MADC_FAIL_DETAIL" -gt 0 ] && [ -s "$errf" ] && err=$(head -n "$MADC_FAIL_DETAIL" "$errf")
+        if [ -n "$MADC_TEST_SAVE_DIR" ]; then
+            printf '%s\n' "$out" > "$MADC_TEST_SAVE_DIR/$base.out"
+            cp "$errf" "$MADC_TEST_SAVE_DIR/$base.err" 2>/dev/null
+        fi
         rm -f "$errf"
     fi
     if [ $ok -eq 1 ]; then
