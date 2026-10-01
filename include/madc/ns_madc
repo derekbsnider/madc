@@ -462,6 +462,24 @@ namespace madc {
     int64_t library_symbol(int64_t lib, const char *name);
     void library_close(int64_t lib);
     const char *library_suffix();
+    // Code compiled into THIS process from a source file — a madcide
+    // plugin's `source` form (plan §41.11a step 5), the library verbs'
+    // source twin:
+    //   code_open: compile `path` (build_native's inputs: the -I
+    //       directories, an array of text) and keep it: its references
+    //       bind what this process already loaded (the one engine), and
+    //       its dynamic initializers have run once. Its handle, or 0 with
+    //       the diagnostics rows in `out_diags` (build_native's shape).
+    //   code_symbol: the address of `name` (a function or an object) in
+    //       it; 0 = no such name. An extern "C" name is its spelling.
+    //   code_close: free the code; none of its addresses may be called
+    //       after.
+    // Thread contract: the runtime-eval confinement — a code handle is
+    // used only from the thread that opened it; its code runs on the
+    // caller's thread.
+    int64_t code_open(value &out_diags, const char *path, const value &include_dirs);
+    int64_t code_symbol(int64_t code, const char *name);
+    void code_close(int64_t code);
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
     // std::string conveniences — present only because <string> precedes

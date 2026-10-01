@@ -3788,15 +3788,10 @@ struct program::impl
 	if ( pgm->last_error.has_error )
 	    return false;
 	// File-scope class globals (e.g. `std::string g = "hi";`) construct in
-	// the synthesized module function __madc_global_init — main calls it
-	// too, but a call-only session never runs main. The function carries a
-	// static once-guard, so init-here + a later run_main stays single-shot.
+	// the module's dynamic initialization — main runs it too, but a
+	// call-only session never runs main (CirJitSession::run_global_init).
 	if ( jit )
-	{
-	    void *ginit = jit->function_code("__madc_global_init");
-	    if ( ginit )
-		((void (*)())ginit)();
-	}
+	    jit->run_global_init();
 	runtime_initialized = true;
 	return true;
     }
@@ -4896,6 +4891,41 @@ static bool parse_tree_backend_ready(::Program &child)
 // Thread contract: the runtime-eval confinement — the call owns its
 // child; the emit phase has no yield points (it blocks a cooperative
 // scheduler for its duration — the named backend-yield residue).
+// A source child's inputs, the one owner for the in-process compile verbs
+// (build_native, code_open): the include directories (the CLI's -I, an
+// array of text, in order) and the source file itself. False = refused,
+// the reason recorded on `child`.
+static bool child_source_setup(::Program &child, const std::string &path,
+			       const madc::value &include_dirs)
+{
+    if ( !include_dirs.is_null() && !include_dirs.is_array() )
+    {
+	child.set_error(::Program::DiagnosticPhase::compiler,
+			"the include directories must be an array of"
+			" directory names");
+	return false;
+    }
+    if ( include_dirs.is_array() )
+	for ( const madc::value &d : include_dirs.as_array() )
+	{
+	    if ( !d.is_string() )
+	    {
+		child.set_error(::Program::DiagnosticPhase::compiler,
+				"an include directory must be text");
+		return false;
+	    }
+	    child.add_include_dir(d.as_string());	// -I, in order
+	}
+    struct stat sb;
+    if ( stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode) )
+    {
+	child.set_error(::Program::DiagnosticPhase::compiler,
+			"cannot read source file", path.c_str());
+	return false;
+    }
+    return true;
+}
+
 bool internal_program_build_native(::Program &self, const std::string &path,
 				   const std::string &kind_name,
 				   madc::value &out,
@@ -4918,33 +4948,8 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 	bool kind_ok = native_kind_of(kind_name, kind, kind_why);
 	if ( !kind_ok )
 	    child.set_error(::Program::DiagnosticPhase::compiler, kind_why);
-	if ( kind_ok && !include_dirs.is_null() && !include_dirs.is_array() )
-	{
-	    kind_ok = false;
-	    child.set_error(::Program::DiagnosticPhase::compiler,
-			    "the include directories must be an array of"
-			    " directory names");
-	}
-	if ( kind_ok && include_dirs.is_array() )
-	    for ( const madc::value &d : include_dirs.as_array() )
-	    {
-		if ( !d.is_string() )
-		{
-		    kind_ok = false;
-		    child.set_error(::Program::DiagnosticPhase::compiler,
-				    "an include directory must be text");
-		    break;
-		}
-		child.add_include_dir(d.as_string());	// -I, in order
-	    }
-	struct stat sb;
-	if ( kind_ok
-	  && (stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) )
-	{
-	    kind_ok = false;
-	    child.set_error(::Program::DiagnosticPhase::compiler,
-			    "cannot read source file", path.c_str());
-	}
+	if ( kind_ok )
+	    kind_ok = child_source_setup(child, path, include_dirs);
 	if ( kind_ok )
 	{
 	    TokenProgram *tp = child.tokenize(path.c_str());
@@ -4961,6 +4966,92 @@ bool internal_program_build_native(::Program &self, const std::string &path,
     }
     diagnostic_rows_from_child(child, out);
     return ok;
+}
+
+// ---- code in this process (madcide's `source` plugins, plan §41.11a step 5)
+// A source file compiled into the RUNNING process and kept: a child Program
+// (build_native's inputs, child_source_setup) whose JIT session is linked
+// against this process — its imports bind what the process already loaded,
+// so the code shares the one engine (the plugin design's G1) — and whose
+// dynamic initializers (__madc_global_init) have run, once. code_symbol
+// answers a function's or an object's address by its emitted name (an
+// extern "C" name is its spelling), as library_symbol answers a library's.
+// The source twin of the library verbs. Handle discipline = handle_table.
+// Thread contract: the runtime-eval confinement — a code handle is used
+// only from the thread that opened it, and its code runs on the caller's
+// thread; closing it frees the code, so no address it gave may be called
+// after. Its file-scope objects are not destroyed at close: no namespace-
+// scope destructor runs yet, at exit or here (BUGS.md B102).
+struct code_state
+{
+    ::Program *child;
+    CirJitSession *jit;
+    code_state() : child((::Program *)0), jit((CirJitSession *)0) {}
+    ~code_state() { delete jit; delete child; }
+};
+
+static handle_table<code_state> &code_handles()
+{
+    static handle_table<code_state> handles;
+    return handles;
+}
+
+int64_t internal_program_code_open(::Program &self, const std::string &path,
+				   madc::value &out,
+				   const madc::value &include_dirs)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    code_state *st = new code_state();
+    st->child = new ::Program(self.engine);
+    ::Program &child = *st->child;
+    child.registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    bool ok = false;
+    {
+	DiagnosticRenderMute mute;	// rows, never rendering (build_native's)
+	if ( child_source_setup(child, path, include_dirs) )
+	{
+	    TokenProgram *tp = child.tokenize(path.c_str());
+	    if ( tp && child.parse(tp) )
+	    {
+		st->jit = new CirJitSession();
+		ok = st->jit->build(&child, path.c_str());
+	    }
+	}
+	if ( !ok && !child.has_error_diagnostic() )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "the code did not compile into this process with no"
+			    " recorded diagnostic (backend output goes to stderr)",
+			    path.c_str());
+    }
+    diagnostic_rows_from_child(child, out);
+    if ( !ok )
+    {
+	delete st;
+	return 0;
+    }
+    // Dynamic initialization, in the caller's runtime scope: every later
+    // call into the code runs there too.
+    st->jit->run_global_init();
+    return code_handles().open(st);
+}
+
+int64_t internal_program_code_symbol(int64_t code, const std::string &name)
+{
+    code_state *st = code_handles().get(code);
+    if ( !st || !st->jit || name.empty() )
+	return 0;
+    void *addr = st->jit->function_code(name.c_str());
+    if ( !addr )
+	addr = st->jit->data_address(name.c_str());
+    return (int64_t)(intptr_t)addr;
+}
+
+bool internal_program_code_close(int64_t code)
+{
+    return code_handles().close(code);
 }
 
 // ---- persistent parse handles (madcide AST-1 / IDE-6) --------------------

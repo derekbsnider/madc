@@ -331,6 +331,13 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 				   value &out,
 				   const std::string &outpath,
 				   const value &include_dirs);
+// Code in this process (madc_program.cpp beside build_native): a FILE
+// compiled into the running process and kept, its initializers run; a
+// symbol's address by name; close frees it. Rows as build_native's.
+int64_t internal_program_code_open(::Program &self, const std::string &path,
+				   value &out, const value &include_dirs);
+int64_t internal_program_code_symbol(int64_t code, const std::string &name);
+bool internal_program_code_close(int64_t code);
 // Persistent parse handles (madcide AST-1; madc_program.cpp beside the
 // child pipeline): the same compile-never-execute children given a
 // LIFETIME — open/refresh/close, with outline / diagnostics /
@@ -1089,6 +1096,34 @@ bool madc_build_native(void *result, void *path, void *kind, void *outpath,
 					       include_dirs
 						   ? *(const madc::value *)include_dirs
 						   : none);
+}
+
+int64_t madc_code_open(void *result, void *path, const void *include_dirs)
+{
+    madc::value &out = *(madc::value *)result;
+    out = madc::value();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+
+    const madc::value none;
+    return madc::internal_program_code_open(*active,
+					    *(const std::string *)path, out,
+					    include_dirs
+						? *(const madc::value *)include_dirs
+						: none);
+}
+
+int64_t madc_code_symbol(int64_t code, void *name)
+{
+    return madc::internal_program_code_symbol(code, *(const std::string *)name);
+}
+
+bool madc_code_close(int64_t code)
+{
+    return madc::internal_program_code_close(code);
 }
 
 // ---- madc:: persistent parse handles (madcide AST-1) ---------------------

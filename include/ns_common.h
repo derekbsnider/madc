@@ -227,6 +227,14 @@ bool madc_source_emit_kind_map(void *result, void *result_map, void *source,
 // array of text; NULL = none). True = the artifact was written.
 bool madc_build_native(void *result, void *path, void *kind, void *outpath,
 		       const void *include_dirs);
+// madc::code_open / code_symbol / code_close — a FILE compiled into the
+// RUNNING process and kept (a madcide `source` plugin, plan §41.11a step 5):
+// result = madc::value* (build_native's rows); path = std::string*;
+// include_dirs as build_native's. The handle (0 = refused); a symbol's
+// address by name = std::string* (0 = none); close frees the code.
+int64_t madc_code_open(void *result, void *path, const void *include_dirs);
+int64_t madc_code_symbol(int64_t code, void *name);
+bool madc_code_close(int64_t code);
 
 // ---- madc:: persistent parse handles (madcide AST-1) --------------------
 // The same child machinery given a LIFETIME: open/refresh/close, with

@@ -154,6 +154,14 @@ public:
     // build() (module loaded + linked). NULL when absent.
     void *data_address(const char *emitted_name);
 
+    // Run the module's dynamic initialization (__madc_global_init: its
+    // file-scope class objects constructed), as main's prologue runs it, for
+    // a module called without its main (libmadc's program::call, a
+    // madc::code_open). Once-guarded inside the function, so a later
+    // run_main stays single-shot. False when the module has none. Valid
+    // after build().
+    bool run_global_init();
+
     // Generate and run main(argc, argv); returns main's return value.
     // `ok` (when non-null) reports whether main was found and invoked.
     // `out_secs` (when non-null) receives the execution wall time in seconds

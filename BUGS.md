@@ -28,6 +28,31 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B102. A namespace-scope object's destructor never runs at exit
+
+```cpp
+#include <cstdio>
+struct D { ~D() { printf("dtor\n"); } };
+D g;
+int main() { printf("main\n"); return 0; }
+```
+
+- g++ 13 and clang++ 18: `main` / `dtor` ([basic.start.term]/1: an object
+  of static storage duration is destroyed when `main` returns, in reverse
+  order of construction). madc (`--std=c++17`, `bin/madc` at `409fceb08`),
+  JIT and `-o` executable alike: `main` only. Exit 0. `--emit=c11` holds the
+  destructor's body, but nothing registers it.
+- Found 2026-10-01 building the plugin `source` transport (plan §41.11a
+  step 5): what `madc::code_close` must do with opened code's static objects
+  depends on it.
+- Layer (suspected): `__madc_global_init`'s dynamic initialization
+  (`CirBuilder`, src/cir_builder.cpp) constructs each class-typed global and
+  queues no destruction. The g++ model: each construction is followed by
+  `__cxa_atexit(dtor, &obj, __dso_handle)`, and `dlclose` runs that DSO's
+  entries through `__cxa_finalize`. When the fix lands, `code_close`
+  (src/madc_program.cpp) must run its code's entries before it frees the
+  code, as `dlclose` does, or the exit-time handlers call freed code.
+
 ### B99. `format` / `print` / `println` evaluate an argument at its field, once per field, or never
 
 ```cpp

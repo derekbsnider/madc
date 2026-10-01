@@ -640,6 +640,31 @@ void library_close(int64_t lib)
 	madcdl_close((void *)lib);
 }
 
+// A source file compiled into THIS process and kept (a madcide `source`
+// plugin, plan §41.11a step 5): the source twin of library_open. Its
+// imports bind what the process already loaded (the one engine), and its
+// dynamic initializers have run once. 0 = refused, `out_diags` the rows
+// (build_native's shape, its include directories too).
+int64_t code_open(value &out_diags, const char *path, const value &include_dirs)
+{
+	std::string p = path ? path : "";
+	return madc_code_open(&out_diags, &p, &include_dirs);
+}
+
+// The address of `name` (a function or an object, by its emitted name: an
+// extern "C" name is its spelling) in opened code; 0 = no such name.
+int64_t code_symbol(int64_t code, const char *name)
+{
+	std::string n = name ? name : "";
+	return madc_code_symbol(code, &n);
+}
+
+// Free opened code: none of its addresses may be called after.
+void code_close(int64_t code)
+{
+	madc_code_close(code);
+}
+
 // This target's shared-library suffix, the library spelling owner's
 // (madc_target_dso_suffix): a script names its library file with it, never
 // with a spelled suffix.

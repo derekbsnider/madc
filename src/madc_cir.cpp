@@ -2046,6 +2046,15 @@ bool CirJitSession::run_session_main(Program *prog, const char *unit_name,
     return ok;
 }
 
+bool CirJitSession::run_global_init()
+{
+    void *ginit = function_code("__madc_global_init");
+    if (!ginit)
+	return false;
+    ((void (*)())ginit)();
+    return true;
+}
+
 int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
 {
     void *code = function_code("main");

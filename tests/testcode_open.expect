@@ -1,0 +1,10 @@
+open: 1 rows=0
+noinc: 1 Failed to open include file: madc_co.h
+answer 42
+greet hello, plugin
+count 3 then 4
+nothing: 1
+apart: 4 5
+missing: 1 cannot read source file
+notarray: 1 the include directories must be an array of directory names
+broken: 1 line-pos=1
