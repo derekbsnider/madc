@@ -5767,8 +5767,7 @@ node_t CirBuilder::lower_atomic_builtin(TokenCallFunc *tcf,
 	auto ull_type = [&]() -> node_t {
 		node_t spec = list();
 		append(spec, simple(N_UNSIGNED));
-		append(spec, simple(N_LONG));
-		append(spec, simple(N_LONG));
+		append_i64(spec);
 		return node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
 	};
 	auto address = [&](TokenBase *a) -> node_t {

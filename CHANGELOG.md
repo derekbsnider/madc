@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### cir: atomic builtins use append_i64 for i64 spelling consistency
+
+The ull_type lambda in lower_atomic_builtin() now calls the centralized append_i64() helper to build the unsigned long long type specifier, ensuring consistent i64 spelling across CIR codegen. This gates i64 spelling via check-i64-spec-spelling.sh (LLP64 parity: c2mir models platform long as 32-bit on win64, so lone N_LONG truncates 64-bit values there).
+
 ### darwin: libmadc-0.dylib, and runtime-needing images load it (D5; plan §41.11a step 4, part 5)
 
 The hosted macOS build links libmadc-0.dylib (the runtime library, per architecture, installed name @rpath/libmadc-0.dylib), and a runtime-needing image or library loads it as the first LC_LOAD_DYLIB. The Mach-O writer now emits LC_RPATH directives following the target platform, not the build host: @executable_path/../lib when the load is @rpath/. A fix found on the way: the forest probe reads the main executable's image through `_dyld_get_image_header(0)`, since a dylib cannot name `_mh_execute_header`. The five darwin test skips waiting on D5 are removed, so testbuild_shared, testmadcide_plugin_library, testbuildnative, testparserun, and testmadcide now run in the darwin lane. Gate: `scripts/macho_dylib_gate.sh` verifies on both arm64 and x86-64 that the dylib's install name is correct, runtime-needing images carry the right LC_RPATHs and load the runtime, and 7 of 7 madc-runtime symbol binds appear in its export trie (the negative control: runtime-free libraries carry no libmadc load and no LC_RPATH).
