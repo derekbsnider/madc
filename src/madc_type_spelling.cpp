@@ -155,6 +155,20 @@ std::string TypeSpeller::class_word(DataDefSTRUCT *cls) const
 	return "struct " + cls->name;
 }
 
+// An aggregate a template instantiated (`Box<int>`: no class members, so
+// never promoted to a class) is named as a class is; any other keeps its
+// tag's name.
+std::string TypeSpeller::aggregate_name(DataDefSTRUCT *s) const
+{
+	if (s->union_layout
+	    || s->canonical_cpp_spelling().find('<') == std::string::npos)
+		return s->name;
+	std::string word = class_word(s);
+	if (word.compare(0, 7, "struct ") == 0)
+		word = word.substr(7);
+	return word;
+}
+
 static std::string trim_spaces(const std::string &s)
 {
 	size_t a = 0, b = s.size();
@@ -514,17 +528,9 @@ std::string TypeSpeller::shown(DataDef *dd) const
 		} else
 			word = (c->union_layout ? "union " : "struct ") + c->name;
 	}
-	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub)) {
-		// An aggregate a template instantiated (`Box<int>`, no class
-		// members, so never promoted) is named as a class is; any other
-		// keeps its tag's name.
-		if (cxx && s->canonical_cpp_spelling().find('<') != std::string::npos
-		    && !s->union_layout)
-			word = class_word(s);
-		else
-			word = cxx ? s->name
-				   : (s->union_layout ? "union " : "struct ") + s->name;
-	}
+	else if (DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(ub))
+		word = cxx ? aggregate_name(s)
+			   : (s->union_layout ? "union " : "struct ") + s->name;
 	else
 		word = scalar_word(ub);
 	if (!level_cv.empty())

@@ -202,19 +202,20 @@ static std::string dump_scalar_type_word(DataDef *dd)
 // because a struct IS what a PHP developer reads as an object. ONE owner: the
 // *RECURSION* marker prints the word of the frame it REPLACES, and a second
 // " Object" spelling there would be free to drift from this one.
-static std::string dump_pr_object_word(DataDefSTRUCT *sdd)
+static std::string dump_pr_object_word(const std::string &name)
 {
-	return sdd->name + " Object";
+	return name + " Object";
 }
 
 // An aggregate's type word. `struct` for every non-union aggregate, `union` for
 // a union: madc PROMOTES a plain struct to DataDefCLASS when it earns
 // class-hood (an object member, an NSDMI, a nested type), so "class" would be a
 // claim about the SOURCE that the type graph cannot support.
-static std::string dump_aggregate_type_word(DataDefSTRUCT *sdd)
+static std::string dump_aggregate_type_word(DataDefSTRUCT *sdd,
+					    const std::string &name)
 {
 	std::string kind = sdd->union_layout ? "union " : "struct ";
-	return kind + sdd->name;
+	return kind + name;
 }
 
 // The type word for ANY type: a CONTAINER goes through the container rule, any
@@ -356,6 +357,12 @@ std::string CirBuilder::type_alias_spelling(DataDef *dd)
 std::string CirBuilder::dump_class_type_word(DataDefCLASS *cls)
 {
 	return TypeSpeller(m_prog).class_word(cls);
+}
+
+// The name var_dump's and print_r's aggregate heads carry: TypeSpeller's.
+std::string CirBuilder::dump_aggregate_name(DataDefSTRUCT *sdd)
+{
+	return TypeSpeller(m_prog).aggregate_name(sdd);
 }
 
 // D10's show word for a type: TypeSpeller's, which the session's %type reads
@@ -798,8 +805,9 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 	} else
 		out.push_back(dump_head(fl, depth,
 					fl == dfVarDump
-					  ? dump_aggregate_type_word(sdd)
-					  : dump_pr_object_word(sdd),
+					  ? dump_aggregate_type_word(sdd,
+						dump_aggregate_name(sdd))
+					  : dump_pr_object_word(dump_aggregate_name(sdd)),
 					shown.size(), origin));
 
 	for (size_t si = 0; si < nshow; si++) {
@@ -1943,7 +1951,7 @@ std::string CirBuilder::dump_pr_recursion_word(DataDef *dd)
 	if (cls && class_iterator_iteration_protocol(cls, ip, NULL, this))
 		return "Array";
 	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(u))
-		return dump_pr_object_word(sdd);
+		return dump_pr_object_word(dump_aggregate_name(sdd));
 	return "Array";
 }
 

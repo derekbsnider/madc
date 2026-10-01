@@ -37,6 +37,10 @@ public:
     // clang++ write it (`std::vector<int>`), else its canonical spelling,
     // else `struct X` / `union U`.
     std::string class_word(DataDefSTRUCT *cls) const;
+    // The name an aggregate's word carries, without C's tag: an aggregate a
+    // template instantiated by its template-id (`Box<int>`), any other by
+    // its tag's name. The show, var_dump and print_r name one with it.
+    std::string aggregate_name(DataDefSTRUCT *s) const;
     // The source's own name for a type, found by identity in the datatype
     // maps; empty when nothing names it.
     std::string alias(DataDef *dd) const;

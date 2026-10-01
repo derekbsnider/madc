@@ -1119,6 +1119,7 @@ private:
 	std::string strip_inline_namespaces(const std::string &spelling);
 	std::string dump_type_word(DataDef *dd);
 	std::string dump_class_type_word(class DataDefCLASS *cls);
+	std::string dump_aggregate_name(class DataDefSTRUCT *sdd);
 	// A class's word, CONTAINER-aware: the two container recognizers decide
 	// it, so an entry's head-line word and the word the walk below it prints
 	// answer one question. dump_type_word routes every class through here.
