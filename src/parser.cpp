@@ -33140,6 +33140,20 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
     if ( !step )
 	if ( DataDef *elem = array_operand_element_type(pointer_expr) )
 	    return new TokenDerefExpr(operand, elem);
+    // A REFERENCE variable to a class object denotes the object
+    // ([expr.type]/1): `*r` is its operator*, never an indirection through
+    // the reference's pointer representation — the one
+    // effective_pointer_type_for_member_access keeps for a reference-to-class
+    // head (`r->m`), which the pointer test below would take (`int f(const It
+    // &i) { return *i; }`). The variable is the receiver, as for a named
+    // object above (a reference holds the object's address).
+    if ( tv && !step && tv->var.type )
+	if ( DataDef *ref = referent_if_reference(tv->var.type) )
+	    if ( !ref->is_pointer() )
+		if ( TokenCallMethod *opcall =
+			make_unary_object_operator_call(*this, &tv->var, NULL,
+							"operator*") )
+		    return opcall;
     DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
     if ( !dtype )
 	dtype = pointer_expr->datadef();
