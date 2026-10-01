@@ -61,6 +61,26 @@ void client_service(IdeSession &S, long t)
 	    S.dialog_fallback(req);
 	return;
     }
+    // The platform clipboard (plan §41.11a step 3e): a copy published, and
+    // a paste read and handed back as the paste command's argument — the
+    // session's own copy when the platform will not answer. An empty text
+    // pastes nothing (and parks nothing again).
+    if ( kind == rqCLIPSET )
+    {
+	ui::clipboard_set(t, req["text"].c_str());
+	return;
+    }
+    if ( kind == rqPASTE )
+    {
+	var txt;
+	if ( !ui::clipboard_get(txt, t) )
+	    txt = req["own"];
+	if ( txt.is_null() || strlen(txt.c_str()) == 0 )
+	    return;
+	bool cont = true;
+	S.command(S.active(0), cmdPASTE, txt.c_str(), cont);
+	return;
+    }
     if ( !ui::suspend(t) )
     {
 	S.request_refused(req);		// never a silent drop (P3b-1)
@@ -148,6 +168,7 @@ void spawn_client(var &clients, IdeSession &S, long w, ui::level lvl,
     bool ht = ui::level_of(nt) <= ui::TUI;
     S.terminal(ht);
     S.dialogs(ui::dialogs(nt));
+    S.clipboard(ui::clipboards(nt));
     S.panel(!ht);
     var cN;
     make_client(cN, nextid, nt, nes, trLOCAL, lvl, tierOWNER);
@@ -172,6 +193,7 @@ void run_ide(IdeSession &S, long doc, ui::level lvl)
     bool has_term = ui::level_of(t) <= ui::TUI;
     S.terminal(has_term);
     S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
+    S.clipboard(ui::clipboards(t));	// ... and reach the platform's clipboard
     S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)
     // Client 0 = the launching window/terminal over open()'s es. `clients`
     // is a dialect var array of the general records; ONE IdeSession is

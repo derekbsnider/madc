@@ -240,8 +240,10 @@ struct ui_frontend
     // grid has none: false.
     virtual bool dialogs() const { return false; }
     virtual bool dialog(const char *) { return false; }
-    // The platform clipboard (plan §41.11a step 3e): put or read plain
-    // text. A grid reaches none: false (the application keeps its own).
+    // The platform clipboard (plan §41.11a step 3e): does this surface
+    // reach one, and put or read plain text. A grid reaches none: false
+    // (the application keeps its own).
+    virtual bool clipboards() const { return false; }
     virtual bool clipboard_set(const char *) { return false; }
     virtual bool clipboard_get(std::string &) { return false; }
 };
@@ -589,6 +591,7 @@ struct ui_dom_frontend : ui_frontend
     {
 	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
     }
+    bool clipboards() const { return host && ops->clip_set && ops->clip_get; }
     bool clipboard_set(const char *text)
     {
 	return host && ops->clip_set && ops->clip_set(host, text ? text : "") == 0;
@@ -1825,6 +1828,12 @@ bool dialog(int64_t t, const char *json)
 // The platform clipboard a target reaches (plan §41.11a step 3e). A read
 // answers with '\n' line ends whatever the platform keeps ("\r\n" on
 // Windows, a lone '\r' from an old Mac application).
+bool clipboards(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->clipboards();
+}
+
 bool clipboard_set(int64_t t, const char *text)
 {
     ui_frontend *f = ui_frontend_get(t);

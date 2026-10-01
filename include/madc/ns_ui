@@ -515,11 +515,14 @@ namespace ui {
     bool    dialogs(int64_t t);
     bool    dialog(int64_t t, const char *json);
     // The PLATFORM clipboard a target reaches (plan §41.11a step 3e):
-    // plain text. clipboard_set(t, text) — true = the platform's clipboard
-    // took it; clipboard_get(out, t) — true = the platform answered, `out`
-    // its text with '\n' line ends ("" when it holds none). False = this
-    // target reaches no platform clipboard (the terminal, a browser page,
-    // a bad handle): the application keeps its own copy, and pastes that.
+    // plain text. clipboards(t) — does this target reach one (a window
+    // whose host has the clip ops); clipboard_set(t, text) — true = the
+    // platform's clipboard took it; clipboard_get(out, t) — true = the
+    // platform answered, `out` its text with '\n' line ends ("" when it
+    // holds none). False = this target reaches no platform clipboard (the
+    // terminal, a browser page, a bad handle): the application keeps its
+    // own copy, and pastes that.
+    bool    clipboards(int64_t t);
     bool    clipboard_set(int64_t t, const char *text);
     bool    clipboard_get(value &out, int64_t t);
 }

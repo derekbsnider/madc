@@ -71,9 +71,20 @@ The JOE defaults most worth knowing:
 A binding's keys may carry modifiers: `ctrl+shift+s`, `ctrl+f2`,
 `shift+right`, `alt+f4`, `ctrl+space`, `ctrl+plus`, and `primary+s` (Ctrl,
 or Cmd on macOS). A plain Ctrl+letter is still written `^s`. A modified key
-a profile does not bind acts as its key (`shift+right` is `right`). A
+a profile does not bind acts as its key without Shift, then as its key
+(`ctrl+shift+left` is `ctrl+left`'s binding, `shift+right` is `right`). A
 terminal reports modifiers only where it sends xterm's modified sequences,
 so Ctrl+Shift+S and Ctrl+digit are the window's (`--gui`, the browser).
+
+Shift with a motion selects, as in Thonny and VS Code: the selection is the
+same block the block keys light, extended from where the first shifted
+motion started, and a motion without Shift drops it. Typing, Backspace,
+Delete, Enter and Paste replace a selection made this way (or by Select all,
+or by dragging the pointer); a block made with the block keys (JOE's `^K B`
+/ `^K K`) keeps JOE's rules. Edit ▸ Cut, Copy, Paste and Select all are
+commands (`cut`, `copy`, `paste`, `selectall`); `^K Y`'s delete fills the
+same clipboard. Under `--gui` it is the system's clipboard; in a terminal
+or a browser page it is madcide's own.
 
 A binding's last word is a command name from the IDE's one vocabulary
 (`tools/madcide/madcide_enums.inc`, the `ide_cmd` enum and its name table).

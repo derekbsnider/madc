@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide, editor: selection and the clipboard commands (plan §41.11a step 3e, slice 3b)
+
+Shift with a motion extends a GUI selection through the single selection_range rule in the shared editor core; typing, Backspace, Delete, Enter and Paste replace a selection made this way (or by Select all or dragging), while a motion without Shift drops it. A block made with the block keys (JOE's `^K B` / `^K K`) keeps JOE's separate rules. Cut, Copy, Paste and Select all are IDE commands (`cmdCUT`, `cmdCOPY`, `cmdPASTE`, `cmdSELECTALL`) dispatched through the consolidated cut and copy rules (cut_selection, copy_selection in the shared core). The session keeps its own clipboard copy in the es `clip` slot. For targets reaching a platform clipboard (GTK4, Cocoa, Win32), a Copy command parks a `clipset` request and a Paste command parks a `paste` request; the client answers the paste with the platform's text. Gate: testmadcide_select verifies Thonny and VS Code behaviour on identical keys; check-one-selection-rule.sh (fulltest) prevents copies of the selection and cut rules.
+
 ### Keys, UI: Shift reaches a binding, and the platform clipboard (plan §41.11a step 3e, slice 3a)
 
 Shift on a bound motion reaches that binding with Shift still held, allowing applications to extend a selection by that motion. Action events now carry the key_mod bits held on their last key. The key resolver's fallback order is: the key as pressed, without Shift (if held), then without any modifier. The platform clipboard through ui::clipboard_set/get reaches GdkClipboard (GTK4), NSPasteboard (Cocoa), or CF_UNICODETEXT (Win32); a read answers with LF line ends. Terminal and browser page targets return false and fall back to the application's own clipboard copy.

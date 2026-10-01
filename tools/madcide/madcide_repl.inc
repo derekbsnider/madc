@@ -134,13 +134,15 @@ void repl_field_enter(var &parked, long w, long es)
     var hs;
     ui::get(hs, w, es, "hspans");
     parked = { "caret": es_int(w, es, "caret", 0), "mark": es_int(w, es, "mark", -1),
-	       "bend": es_int(w, es, "bend", -1), "fview": es_int(w, es, "fview", 0),
+	       "bend": es_int(w, es, "bend", -1), "selgui": es_flag(w, es, "selgui"),
+	       "fview": es_int(w, es, "fview", 0),
 	       "anchor": es_int(w, es, "anchor", -1), "editable": ed,
 	       "ro_msg": ro, "hspans": hs };
     var none = {};
     ui::set(w, es, "caret", es_int(w, es, "rcaret", 0));
     ui::set(w, es, "mark", es_int(w, es, "rmark", -1));
     ui::set(w, es, "bend", es_int(w, es, "rbend", -1));
+    ui::set(w, es, "selgui", es_flag(w, es, "rselgui"));
     ui::set(w, es, "fview", 0);		// no View: nav_doc is the input itself
     ui::set(w, es, "anchor", -1);
     ui::set(w, es, "editable", true);
@@ -153,9 +155,11 @@ void repl_field_leave(var &parked, long w, long es)
     ui::set(w, es, "rcaret", es_int(w, es, "caret", 0));
     ui::set(w, es, "rmark", es_int(w, es, "mark", -1));
     ui::set(w, es, "rbend", es_int(w, es, "bend", -1));
+    ui::set(w, es, "rselgui", es_flag(w, es, "selgui"));
     ui::set(w, es, "caret", parked["caret"]);
     ui::set(w, es, "mark", parked["mark"]);
     ui::set(w, es, "bend", parked["bend"]);
+    ui::set(w, es, "selgui", parked["selgui"]);
     ui::set(w, es, "fview", parked["fview"]);
     ui::set(w, es, "anchor", parked["anchor"]);
     ui::set(w, es, "editable", parked["editable"]);
@@ -189,6 +193,7 @@ void repl_set_input(long w, long es, const char *text)
     ui::set(w, es, "rcaret", strlen(t.c_str()));
     ui::set(w, es, "rmark", -1);
     ui::set(w, es, "rbend", -1);
+    ui::set(w, es, "rselgui", false);
 }
 
 // The input takes edits unless an entry was offered and has not been taken

@@ -814,56 +814,185 @@ bool redo_edit(long w, long es, long doc)
     return true;
 }
 
-// Cut (or, read-only, just copy) the mark..caret region: the clipboard
-// is interaction state on the editor-state bag.
-void cut_selection(long w, long es, long doc, long caret, bool editable)
+// ---- the selection (plan §41.11a step 3e) -------------------------------
+// THE selection rule, one owner (the edit node's highlight, a peer's
+// presence highlight, madcide's block commands and the clipboard all read
+// it): the block runs [mark, bend-else-caret]; under a TWO-POINT
+// personality (the es "selblock" flag: JOE's ^K B / ^K K) a mark without
+// an end is no block yet. `r` answers {lo, hi}; false = no selection.
+bool selection_range(var &r, long w, long es, long caret)
 {
     long mark = es_int(w, es, "mark", -1);
-    if ( mark < 0 )
+    long bend = es_int(w, es, "bend", -1);
+    long e = bend >= 0 ? bend : caret;
+    if ( bend < 0 && es_flag(w, es, "selblock") )
+	e = mark;
+    long lo = mark < e ? mark : e;
+    long hi = mark < e ? e : mark;
+    var b = { "lo": lo, "hi": hi };
+    r = b;
+    return mark >= 0 && lo < hi;
+}
+
+// A selection made the GUI way — Shift with a motion, Select all, a pointer
+// drag — sets the es "selgui" flag beside the markers: typing, Backspace,
+// Delete, Enter and a paste REPLACE it, and a motion without Shift drops
+// it. A block the block keys make (JOE's ^K B / ^K K, pico's mark) leaves
+// the flag unset and keeps its own rules.
+bool selection_gui(long w, long es)
+{
+    return es_flag(w, es, "selgui");
+}
+
+void select_clear(long w, long es)
+{
+    ui::set(w, es, "mark", -1);
+    ui::set(w, es, "bend", -1);
+    ui::set(w, es, "selgui", false);
+}
+
+// Light [anchor, here] as a GUI selection, through the SAME markers the
+// block keys set: the mark, plus the end under the two-point personality
+// (selection_range's rule reads both).
+void select_span(long w, long es, long anchor, long here)
+{
+    if ( anchor == here )
     {
-	ui::set(w, es, "msg", "No mark set (^B).");
+	select_clear(w, es);
 	return;
     }
-    long lo = mark < caret ? mark : caret;
-    long hi = mark < caret ? caret : mark;
-    ui::set(w, es, "mark", -1);
-    if ( lo == hi )
-	return;
+    ui::set(w, es, "mark", anchor);
+    ui::set(w, es, "bend", es_flag(w, es, "selblock") ? here : -1);
+    ui::set(w, es, "selgui", true);
+}
+
+// Was Shift held on the key (or the bound chord's last key) the event
+// carries? (ui::key_mod bits in its `mods`.)
+bool ev_shift(var &ev)
+{
+    var m;
+    keyed_get(m, ev, "mods");
+    return !m.is_null() && (m.as_integer() & (long)ui::key_mod::shift) != 0;
+}
+
+// A caret motion's selection rule, run once the caret moved from `before`:
+// Shift held extends the GUI selection from its anchor (the caret the
+// first shifted motion started from); a motion without Shift drops a GUI
+// selection and leaves a block alone.
+void motion_select(long w, long es, long before, var &ev)
+{
+    long now = es_int(w, es, "caret", before);
+    if ( ev_shift(ev) )
+    {
+	long mark = es_int(w, es, "mark", -1);
+	select_span(w, es, selection_gui(w, es) && mark >= 0 ? mark : before, now);
+    }
+    else if ( selection_gui(w, es) )
+	select_clear(w, es);
+}
+
+// Typing over a GUI selection: the selection's text is replaced by `text`
+// ("" = deleted) as ONE undo step, the caret after it. False = no GUI
+// selection (nothing changed: the caller's own edit applies).
+bool selection_replace(long w, long es, long doc, long caret, const char *text)
+{
+    var r;
+    if ( !selection_gui(w, es) || !selection_range(r, w, es, caret) )
+	return false;
+    var t = text;
+    long lo = r["lo"].as_integer();
+    long hi = r["hi"].as_integer();
+    select_clear(w, es);
+    edit_checkpoint(w, es, doc, caret);
+    ed_text_erase(w, es, doc, lo, hi - lo);
+    if ( strlen(t.c_str()) > 0 )
+	ed_text_insert(w, es, doc, lo, t.c_str());
+    ui::set(w, es, "caret", lo + strlen(t.c_str()));
+    ui::set(w, doc, "modified", true);
+    return true;
+}
+
+// ---- the clipboard: interaction state on the editor-state bag ("clip").
+// THE cut rule, one owner (vised's ^K, madcide's Cut and JOE's ^K Y): the
+// selection's text goes to the clipboard and the markers clear; an
+// editable buffer loses the text, the caret keeping its place in what
+// remains (the cut point when it sat inside or at the end); read-only, the
+// text is only copied. False = no selection (nothing changed: the caller
+// spells its own refusal).
+bool cut_selection(long w, long es, long doc, long caret, bool editable)
+{
+    var r;
+    if ( !selection_range(r, w, es, caret) )
+	return false;
+    long lo = r["lo"].as_integer();
+    long hi = r["hi"].as_integer();
     var t;
     ui::text(t, w, doc);
     ui::set(w, es, "clip", perl::substr(t, lo, hi - lo));
-    if ( editable )
-    {
-	edit_checkpoint(w, es, doc, caret);
-	ed_text_erase(w, es, doc, lo, hi - lo);
-	ui::set(w, es, "caret", lo);
-	ui::set(w, doc, "modified", true);
-    }
-    else
+    select_clear(w, es);
+    if ( !editable )
     {
 	var ro;
 	ui::get(ro, w, es, "ro_msg");
 	var m = format("{} (Copied.)", ro);
 	ui::set(w, es, "msg", m.c_str());
+	return true;
     }
+    edit_checkpoint(w, es, doc, caret);
+    ed_text_erase(w, es, doc, lo, hi - lo);
+    long nc = caret;
+    if ( nc > hi )
+	nc = nc - (hi - lo);
+    else if ( nc > lo )
+	nc = lo;
+    ui::set(w, es, "caret", nc);
+    ui::set(w, doc, "modified", true);
+    return true;
 }
 
-// Insert the clipboard at the caret (gated; a silent no-op when empty).
+// Copy the selection's text to the clipboard; the selection stays. False =
+// no selection.
+bool copy_selection(long w, long es, long doc, long caret)
+{
+    var r;
+    if ( !selection_range(r, w, es, caret) )
+	return false;
+    long lo = r["lo"].as_integer();
+    long hi = r["hi"].as_integer();
+    var t;
+    ui::text(t, w, doc);
+    ui::set(w, es, "clip", perl::substr(t, lo, hi - lo));
+    return true;
+}
+
+// Insert `text` at the caret (gated), replacing a GUI selection; the caret
+// lands after it. An empty text is a silent no-op.
+void paste_text(long w, long es, long doc, long caret, const char *text0)
+{
+    var text = text0;
+    if ( strlen(text.c_str()) == 0 )
+	return;
+    if ( !es_flag(w, es, "editable") )
+    {
+	refuse_edit(w, es);
+	return;
+    }
+    if ( selection_replace(w, es, doc, caret, text.c_str()) )
+	return;
+    edit_checkpoint(w, es, doc, caret);
+    ed_text_insert(w, es, doc, caret, text.c_str());
+    ui::set(w, es, "caret", caret + strlen(text.c_str()));
+    ui::set(w, doc, "modified", true);
+}
+
+// Insert the clipboard at the caret (paste_text's rules).
 void paste_clip(long w, long es, long doc, long caret)
 {
     var c;
     ui::get(c, w, es, "clip");
-    if ( c.is_null() || strlen(c.c_str()) == 0 )
+    if ( c.is_null() )
 	return;
-    if ( !es_flag(w, es, "editable") )
-	refuse_edit(w, es);
-    else
-    {
-	edit_checkpoint(w, es, doc, caret);
-	ed_text_insert(w, es, doc, caret, c.c_str());
-	ui::set(w, es, "caret", caret + strlen(c.c_str()));
-	ui::set(w, doc, "modified", true);
-    }
+    paste_text(w, es, doc, caret, c.c_str());
 }
 
 // The kind=="text" arm both editors share: search-pattern append while
@@ -880,7 +1009,7 @@ void edit_text_run(long w, long es, long doc, long caret, var &ev)
     }
     else if ( !es_flag(w, es, "editable") )
 	refuse_edit(w, es);
-    else
+    else if ( !selection_replace(w, es, doc, caret, t.c_str()) )
     {
 	edit_checkpoint(w, es, doc, caret);
 	ed_text_insert(w, es, doc, caret, t.c_str());
@@ -958,12 +1087,12 @@ void compose_heading(var &head, long w, long es, long doc,
 }
 
 // The edit window bound to the document: caret + selection as hints
-// ({caret, sel_start, sel_end} byte offsets). The selection runs
-// [mark, bend-else-caret] — except under a TWO-POINT personality (the
-// es "selblock" flag, derived from the loaded profile's vocabulary:
-// JOE's ^K B / ^K K), where a mark WITHOUT an end lights nothing; an
-// editor that never sets `bend` or the flag (vised) keeps the original
-// live mark..caret rule unchanged.
+// ({caret, sel_start, sel_end} byte offsets) — selection_range's rule: the
+// selection runs [mark, bend-else-caret], except under a TWO-POINT
+// personality (the es "selblock" flag, derived from the loaded profile's
+// vocabulary: JOE's ^K B / ^K K), where a mark WITHOUT an end lights
+// nothing; an editor that never sets `bend` or the flag (vised) keeps the
+// live mark..caret rule.
 void compose_edit_node(var &ed, long w, long es, long doc, long caret)
 {
     var e = { "role": "edit" };
@@ -973,15 +1102,11 @@ void compose_edit_node(var &ed, long w, long es, long doc, long caret)
     e["subject"] = doc;		// the entity the node projects (uinode's
 				// edit contract) — a pointer event names it
     var hints = { "caret": caret };
-    long mark = es_int(w, es, "mark", -1);
-    long bend = es_int(w, es, "bend", -1);
-    long send = bend >= 0 ? bend : caret;
-    if ( bend < 0 && es_flag(w, es, "selblock") )
-	send = mark;
-    if ( mark >= 0 && mark != send )
+    var sr;
+    if ( selection_range(sr, w, es, caret) )
     {
-	hints["sel_start"] = mark < send ? mark : send;
-	hints["sel_end"] = mark < send ? send : mark;
+	hints["sel_start"] = sr["lo"];
+	hints["sel_end"] = sr["hi"];
     }
     // Presence (client-server V3c): the OTHER clients viewing this document
     // draw as carets in their dealt presence colour SLOT. Each es registered
@@ -1002,13 +1127,11 @@ void compose_edit_node(var &ed, long w, long es, long doc, long caret)
 	    if ( pcaret < 0 )
 		continue;
 	    var pr = { "caret": pcaret, "colour": es_int(w, peer, "presence_colour", 0) };
-	    long pmark = es_int(w, peer, "mark", -1);
-	    long pbend = es_int(w, peer, "bend", -1);
-	    long psend = pbend >= 0 ? pbend : pcaret;
-	    if ( pmark >= 0 && pmark != psend )
+	    var psr;
+	    if ( selection_range(psr, w, peer, pcaret) )
 	    {
-		pr["sel_start"] = pmark < psend ? pmark : psend;
-		pr["sel_end"] = pmark < psend ? psend : pmark;
+		pr["sel_start"] = psr["lo"];
+		pr["sel_end"] = psr["hi"];
 	    }
 	    pres.push(pr);
 	}
@@ -1080,65 +1203,60 @@ void compose_menu(var &menu)
     menu = mn;
 }
 
-// Caret movement and the direct edit keys (backspace/del/enter). True =
-// the key was one of ours; false = the dispatcher's key, not handled.
-bool edit_key(long w, long es, long doc, long caret, var &ev)
+// Where a caret motion key moves the caret from `caret`; -1 = not a
+// motion key (the line keys move by line, pgup / pgdn by ten).
+long motion_target(long w, long doc, long caret, var &k)
 {
-    var k = ev["key_code"];		// ui::key — the enumerator, not the name
-    bool editable = es_flag(w, es, "editable");
     long size = ui::text_size(w, doc);
     if ( k == ui::key::left )
-    {
-	if ( caret > 0 )
-	    ui::set(w, es, "caret", caret - 1);
-	return true;
-    }
+	return caret > 0 ? caret - 1 : caret;
     if ( k == ui::key::right )
-    {
-	if ( caret < size )
-	    ui::set(w, es, "caret", caret + 1);
-	return true;
-    }
+	return caret < size ? caret + 1 : caret;
     long line = line_of(w, doc, caret);
     long start = line_start_of(w, doc, line);
     long col = caret - start;
     if ( k == ui::key::home )
-    {
-	ui::set(w, es, "caret", start);
-	return true;
-    }
+	return start;
     if ( k == ui::key::end )
     {
 	long len = ui::text_line_len(w, doc, line);
 	if ( len < 0 )
 	    len = 0;
-	ui::set(w, es, "caret", start + len);
-	return true;
+	return start + len;
     }
     if ( k == ui::key::up )
-    {
-	ui::set(w, es, "caret", caret_to_line(w, doc, line - 1, col));
-	return true;
-    }
+	return caret_to_line(w, doc, line - 1, col);
     if ( k == ui::key::down )
-    {
-	ui::set(w, es, "caret", caret_to_line(w, doc, line + 1, col));
-	return true;
-    }
+	return caret_to_line(w, doc, line + 1, col);
     if ( k == ui::key::pgup )
-    {
-	ui::set(w, es, "caret", caret_to_line(w, doc, line - 10, col));
-	return true;
-    }
+	return caret_to_line(w, doc, line - 10, col);
     if ( k == ui::key::pgdn )
+	return caret_to_line(w, doc, line + 10, col);
+    return -1;
+}
+
+// Caret movement and the direct edit keys (backspace/del/enter). True =
+// the key was one of ours; false = the dispatcher's key, not handled. A
+// motion with Shift extends the GUI selection (motion_select); Backspace,
+// Delete and Enter replace one.
+bool edit_key(long w, long es, long doc, long caret, var &ev)
+{
+    var k = ev["key_code"];		// ui::key — the enumerator, not the name
+    bool editable = es_flag(w, es, "editable");
+    long size = ui::text_size(w, doc);
+    long to = motion_target(w, doc, caret, k);
+    if ( to >= 0 )
     {
-	ui::set(w, es, "caret", caret_to_line(w, doc, line + 10, col));
+	ui::set(w, es, "caret", to);
+	motion_select(w, es, caret, ev);
 	return true;
     }
     if ( k == ui::key::backspace )
     {
 	if ( !editable )
 	    refuse_edit(w, es);
+	else if ( selection_replace(w, es, doc, caret, "") )
+	    return true;
 	else if ( caret > 0 )
 	{
 	    edit_checkpoint(w, es, doc, caret);
@@ -1152,6 +1270,8 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
     {
 	if ( !editable )
 	    refuse_edit(w, es);
+	else if ( selection_replace(w, es, doc, caret, "") )
+	    return true;
 	else if ( caret < size )
 	{
 	    edit_checkpoint(w, es, doc, caret);
@@ -1164,7 +1284,7 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
     {
 	if ( !editable )
 	    refuse_edit(w, es);
-	else
+	else if ( !selection_replace(w, es, doc, caret, "\n") )
 	{
 	    edit_checkpoint(w, es, doc, caret);
 	    ed_text_insert(w, es, doc, caret, "\n");
@@ -1187,10 +1307,9 @@ bool edit_key(long w, long es, long doc, long caret, var &ev)
 // The pointer arm — ONE caret model for mouse and keyboard. `ev` is the
 // engine's pointer event ({phase_code, offset}: a BYTE offset in this document
 // the target's hit test resolved to). A press places the caret and drops
-// any live selection; a drag lights [press, here] through the SAME
-// selection state the block keys set — the mark, plus the end under the
-// two-point personality (compose_edit_node's rule reads both); a release
-// is the last placement. `selectable` false (madcide's displayed views:
+// any live selection; a drag lights [press, here] as a GUI selection
+// (select_span: the SAME markers the block keys set, so typing replaces
+// it); a release is the last placement. `selectable` false (madcide's displayed views:
 // stored-space markers are meaningless there) keeps the gesture to caret
 // placement. The press offset parks on the es as "anchor" for the drag
 // that follows it; the release drops it.
@@ -1201,25 +1320,17 @@ void edit_pointer(long w, long es, long doc, var &ev, bool selectable)
     ui::set(w, es, "caret", off);
     if ( ph == ui::pointer_phase::down )
     {
-	ui::set(w, es, "mark", -1);
-	ui::set(w, es, "bend", -1);
+	select_clear(w, es);
 	ui::set(w, es, "anchor", off);
 	return;
     }
     long anchor = es_int(w, es, "anchor", -1);
     if ( anchor < 0 )
 	return;		// a drag whose press landed elsewhere: caret only
-    if ( selectable && off != anchor )
-    {
-	ui::set(w, es, "mark", anchor);
-	if ( es_flag(w, es, "selblock") )
-	    ui::set(w, es, "bend", off);
-    }
+    if ( selectable )
+	select_span(w, es, anchor, off);	// a GUI selection (anchor == off: none)
     else
-    {
-	ui::set(w, es, "mark", -1);
-	ui::set(w, es, "bend", -1);
-    }
+	select_clear(w, es);
     if ( ph == ui::pointer_phase::up )
 	ui::set(w, es, "anchor", -1);
 }

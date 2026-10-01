@@ -82,7 +82,10 @@ bool apply_event(long w, long es, long doc, var &ev)
     }
     if ( k == "^k" )
     {
-	cut_selection(w, es, doc, caret, editable);
+	if ( es_int(w, es, "mark", -1) < 0 )
+	    ui::set(w, es, "msg", "No mark set (^B).");
+	else if ( !cut_selection(w, es, doc, caret, editable) )
+	    select_clear(w, es);	// an empty region: the mark drops
 	return true;
     }
     if ( k == "^u" )

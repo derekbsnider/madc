@@ -122,6 +122,10 @@ class IdeSession
 	void dialogs(bool has);		// the client can show native file
 					// dialogs (S4): open / save-as park a
 					// filedialog request instead of a prompt
+	void clipboard(bool has);	// the client reaches the platform's
+					// clipboard (plan §41.11a step 3e): a
+					// copy parks a clipset request, a
+					// paste a paste request
 	void panel(bool has);		// the client renders REGIONS (a
 					// window): runs and the shell go to a
 					// pty in the Terminal tab; the panel
@@ -2905,27 +2909,16 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 }
 
 // ---- the block model (JOE ^K B / ^K K / ^K C / ^K M / ^K Y) -----------
-// begin = es "mark", end = es "bend"; when the end is unset the block
-// runs mark..caret — the SAME rule the shared selection highlight
-// projects. `r` answers {lo, hi}; false = no block, and this owner
-// spells the ONE refusal message.
+// begin = es "mark", end = es "bend"; the shared selection rule
+// (selection_range, editor_events.inc) reads them, so a block and the
+// highlight agree. `r` answers {lo, hi}; false = no block, and this owner
+// spells the block keys' ONE refusal message.
 bool block_range(var &r, long w, long es, long caret)
 {
-    long mark = es_int(w, es, "mark", -1);
-    long bend = es_int(w, es, "bend", -1);
-    long e = bend >= 0 ? bend : caret;
-    if ( bend < 0 && es_flag(w, es, "selblock") )
-	e = mark;	// two-point personality: no end yet = no block
-    long lo = mark < e ? mark : e;
-    long hi = mark < e ? e : mark;
-    var b = { "lo": lo, "hi": hi };
-    r = b;
-    if ( mark < 0 || lo >= hi )
-    {
-	ui::set(w, es, "msg", "No block (^K B, ^K K).");
-	return false;
-    }
-    return true;
+    if ( selection_range(r, w, es, caret) )
+	return true;
+    ui::set(w, es, "msg", "No block (^K B, ^K K).");
+    return false;
 }
 
 // ^K C: copy the block's text to the caret (the cursor stays on the
@@ -2991,37 +2984,91 @@ void block_move(long w, long es, long doc, long caret)
     ui::set(w, doc, "modified", true);
 }
 
-// ^K Y: delete the block (the clip takes its text — read-only copies,
-// like the shared cut rule); the caret lands on the cut point.
+void clip_publish(long w, long es);	// the clipboard commands, below
+
+// ^K Y: delete the block — the shared cut rule (cut_selection): the
+// clipboard takes its text (read-only, it is only copied) and the caret
+// lands on the cut point.
 void block_del(long w, long es, long doc, long caret)
 {
     var r;
     if ( !block_range(r, w, es, caret) )
 	return;
-    long lo = r["lo"].as_integer();
-    long hi = r["hi"].as_integer();
-    var t;
-    ui::text(t, w, doc);
-    ui::set(w, es, "clip", perl::substr(t, lo, hi - lo));
-    ui::set(w, es, "mark", -1);
-    ui::set(w, es, "bend", -1);
-    if ( !es_flag(w, es, "editable") )
+    cut_selection(w, es, doc, caret, es_flag(w, es, "editable"));
+    clip_publish(w, es);
+}
+
+// ---- the clipboard commands (plan §41.11a step 3e: Thonny's Edit menu) --
+// Cut, Copy and Paste over the shared cut / copy / paste rules
+// (editor_events.inc) and the session's own copy (es "clip"). Where the
+// client reaches the platform's clipboard (its pushed fact, es "hasclip"),
+// a copy is published there through the parked-request slot, and a paste
+// asks the client for the platform's text: the client answers with
+// cmdPASTE carrying the text as its argument. Without that fact the
+// session's own copy is the clipboard (the terminal, a browser page, a
+// headless session).
+void clip_publish(long w, long es)
+{
+    if ( !es_flag(w, es, "hasclip") )
+	return;
+    var c;
+    ui::get(c, w, es, "clip");
+    if ( c.is_null() )
+	c = "";
+    var rq = { "kind": rqCLIPSET, "text": c, "pause": 0 };
+    ui::set(w, es, "termreq", rq);
+}
+
+void clip_cut(long w, long es, long doc, long caret)
+{
+    if ( !cut_selection(w, es, doc, caret, es_flag(w, es, "editable")) )
     {
-	var ro;
-	ui::get(ro, w, es, "ro_msg");
-	var m = format("{} (Copied.)", ro);
-	ui::set(w, es, "msg", m.c_str());
+	ui::set(w, es, "msg", "Nothing selected.");
 	return;
     }
-    edit_checkpoint(w, es, doc, caret);
-    ed_text_erase(w, es, doc, lo, hi - lo);
-    long nc = caret;
-    if ( nc > hi )
-	nc = nc - (hi - lo);
-    else if ( nc > lo )
-	nc = lo;
-    ui::set(w, es, "caret", nc);
-    ui::set(w, doc, "modified", true);
+    clip_publish(w, es);
+}
+
+void clip_copy(long w, long es, long doc, long caret)
+{
+    if ( !copy_selection(w, es, doc, caret) )
+    {
+	ui::set(w, es, "msg", "Nothing selected.");
+	return;
+    }
+    clip_publish(w, es);
+}
+
+// Paste: `arg` is the text the client read from the platform's clipboard;
+// none came (null) = ask the client for it when it reaches one (the
+// session's own copy rides along, for a platform that will not answer),
+// else paste the session's own copy.
+void clip_paste(long w, long es, long doc, long caret, var &arg)
+{
+    if ( !arg.is_null() )
+    {
+	paste_text(w, es, doc, caret, arg.c_str());
+	return;
+    }
+    if ( !es_flag(w, es, "hasclip") )
+    {
+	paste_clip(w, es, doc, caret);
+	return;
+    }
+    var own;
+    ui::get(own, w, es, "clip");
+    if ( own.is_null() )
+	own = "";
+    var rq = { "kind": rqPASTE, "own": own, "pause": 0 };
+    ui::set(w, es, "termreq", rq);
+}
+
+// Select all: the whole text as a GUI selection, the caret at its end.
+void select_all(long w, long es, long doc)
+{
+    long n = ui::text_size(w, doc);
+    ui::set(w, es, "caret", n);
+    select_span(w, es, 0, n);
 }
 
 // ---- direct editing (^Y delete line, ^W delete word right) ------------
@@ -3325,6 +3372,7 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     row["caret"] = es_int(w, es, "caret", 0);
     row["mark"] = es_int(w, es, "mark", -1);
     row["bend"] = es_int(w, es, "bend", -1);
+    row["selgui"] = es_flag(w, es, "selgui");	// a GUI selection stays one
     bufs[cur] = row;
     ui::set(w, es, "buffers", bufs);
     var t = bufs[idx];
@@ -3336,6 +3384,9 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     ui::set(w, es, "caret", t["caret"].as_integer());
     ui::set(w, es, "mark", t["mark"].as_integer());
     ui::set(w, es, "bend", t["bend"].as_integer());
+    var tsg;
+    keyed_get(tsg, t, "selgui");		// a fresh row has none: a block
+    ui::set(w, es, "selgui", !tsg.is_null() && tsg.as_boolean());
     derive_access(w, es);
     lex_first_spans(w, es, nd);
     ui::set(w, es, "pending_parse", 1);
@@ -6406,6 +6457,7 @@ void editor_enter_leaf(long w, long es, var &tree, long arriving)
     ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
     ui::set(w, es, "mark", tleaf["pmark"].as_integer());
     ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    ui::set(w, es, "selgui", false);	// a window's parked markers are a block
     var v;
     view_row(v, w, es, vid);
     if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
@@ -6969,13 +7021,34 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdMARK:
 	    {
 		ui::set(w, es, "mark", caret);
+		ui::set(w, es, "selgui", false);	// a block, not a GUI selection
 		return true;
 	    }
 	    case cmdBEND:
 	    {
 		ui::set(w, es, "bend", caret);
+		ui::set(w, es, "selgui", false);
 		return true;
 	    }
+	    // The clipboard (Thonny's Edit menu, plan §41.11a step 3e): over
+	    // the NAV target, so a displayed View copies what it shows (cut
+	    // and paste refuse there through the editable gate).
+	    case cmdCUT:
+		clip_cut(w, es, nav, caret);
+		return true;
+	    case cmdCOPY:
+		clip_copy(w, es, nav, caret);
+		return true;
+	    case cmdPASTE:
+	    {
+		var parg;
+		keyed_get(parg, ev, "arg");
+		clip_paste(w, es, nav, caret, parg);
+		return true;
+	    }
+	    case cmdSELECTALL:
+		select_all(w, es, nav);
+		return true;
 	    case cmdBLOCKCOPY:
 	    {
 		block_copy(w, es, doc, caret);
@@ -7011,24 +7084,30 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		delete_word(w, es, doc, caret);
 		return true;
 	    }
+	    // The motions this dispatcher owns: Shift held on the chord
+	    // extends the GUI selection (motion_select), as edit_key's do.
 	    case cmdWORDLEFT:
 	    {
 		ui::set(w, es, "caret", ui::text_word_left(w, nav, caret));
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdWORDRIGHT:
 	    {
 		ui::set(w, es, "caret", ui::text_word_right(w, nav, caret));
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdTOP:
 	    {
 		ui::set(w, es, "caret", 0);
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdBOTTOM:
 	    {
 		ui::set(w, es, "caret", ui::text_size(w, nav));
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdCHECK:
@@ -7299,6 +7378,10 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    cmd_name_w(kn, w, code);
 	    var ke = { "event": "key", "event_code": ui::event_kind::key,
 		       "key": kn, "key_code": mk };
+	    var em;
+	    keyed_get(em, ev, "mods");
+	    if ( !em.is_null() )
+		ke["mods"] = em;	// Shift on the chord selects
 	    if ( edit_key(w, es, nav, caret, ke) )
 		return true;
 	}
@@ -8573,6 +8656,11 @@ void IdeSession::terminal(bool has)
 void IdeSession::dialogs(bool has)
 {
     ui::set(w, es, "hasdialogs", has);
+}
+
+void IdeSession::clipboard(bool has)
+{
+    ui::set(w, es, "hasclip", has);
 }
 
 void IdeSession::panel(bool has)

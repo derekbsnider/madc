@@ -216,6 +216,7 @@ int main()
     println("dialogs -> {}", ui::dialogs(t) ? "yes" : "no");
     bool shown = ui::dialog(t, "{\"mode\":\"open\",\"title\":\"Open File\",\"path\":\"\"}");
     println("dialog -> {}", shown ? "shown" : "refused");
+    println("clipboards -> {}", ui::clipboards(t) ? "yes" : "no");
     println("clipboard set (none yet) -> {}", ui::clipboard_set(t, "x") ? "taken" : "refused");
     var clip;
     println("clipboard get (none yet) -> {}", ui::clipboard_get(clip, t) ? "answered" : "refused");

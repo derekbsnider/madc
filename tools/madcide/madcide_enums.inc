@@ -27,13 +27,13 @@ enum ide_cmd : unsigned short
     cmdNONE = 0,			// unbound chord / unknown name
     // ---- the command registry (profiles/default.menu) ----
     cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
-    cmdBUILD, cmdCHECK, cmdCOLON, cmdDELLINE, cmdDELWORD, cmdDISCARD,
+    cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
     cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
-    cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPREVW,
+    cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
     cmdREFRESH, cmdREPL, cmdREPLBINDINGS, cmdREPLLANG, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS,
-    cmdSAVEQUIT, cmdSHELL,
+    cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
     cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
@@ -74,6 +74,8 @@ void cmd_table(var &t)
     rows[] = { "name": "build", "code": cmdBUILD };
     rows[] = { "name": "check", "code": cmdCHECK };
     rows[] = { "name": "colon", "code": cmdCOLON };
+    rows[] = { "name": "copy", "code": cmdCOPY };
+    rows[] = { "name": "cut", "code": cmdCUT };
     rows[] = { "name": "delline", "code": cmdDELLINE };
     rows[] = { "name": "delword", "code": cmdDELWORD };
     rows[] = { "name": "discard", "code": cmdDISCARD };
@@ -95,6 +97,7 @@ void cmd_table(var &t)
     rows[] = { "name": "outline", "code": cmdOUTLINE };
     rows[] = { "name": "output", "code": cmdOUTPUT };
     rows[] = { "name": "panel", "code": cmdPANEL };
+    rows[] = { "name": "paste", "code": cmdPASTE };
     rows[] = { "name": "prevw", "code": cmdPREVW };
     rows[] = { "name": "problems", "code": cmdPROBLEMS };
     rows[] = { "name": "profile", "code": cmdPROFILE };
@@ -111,6 +114,7 @@ void cmd_table(var &t)
     rows[] = { "name": "save", "code": cmdSAVE };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
+    rows[] = { "name": "selectall", "code": cmdSELECTALL };
     rows[] = { "name": "shell", "code": cmdSHELL };
     rows[] = { "name": "shrinkw", "code": cmdSHRINKW };
     rows[] = { "name": "splitw", "code": cmdSPLITW };
@@ -339,7 +343,9 @@ const char *vimode_name(long m)
 // client executes it).
 enum ide_req : unsigned char
 {
-    rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL
+    rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL,
+    rqCLIPSET,		// put the session's copy on the platform clipboard
+    rqPASTE		// read the platform clipboard and paste it
 };
 const char *req_name(long k)
 {
@@ -351,6 +357,8 @@ const char *req_name(long k)
 	case rqPROJRUN: return "projrun";
 	case rqCMD: return "cmd";
 	case rqSHELL: return "shell";
+	case rqCLIPSET: return "clipset";
+	case rqPASTE: return "paste";
     }
     return "";
 }
@@ -574,14 +582,15 @@ long view_show_cmd(long kind)
 // The commands that read their ARGUMENT off the action event (the seat's,
 // the -c line's, a choice list row's) instead of answering a prompt they
 // open: IdeSession::command hands them the argument directly, as it hands a
-// contributed command its own. Without an argument they open their own
-// choice list.
+// contributed command its own. Without an argument keystyle and repllang
+// open their own choice list, and paste pastes the clipboard.
 bool cmd_takes_arg(long code)
 {
     switch ( code )
     {
 	case cmdKEYSTYLE:
 	case cmdREPLLANG:
+	case cmdPASTE:		// the text to paste (a client's platform read)
 	    return true;
     }
     return false;
@@ -601,6 +610,7 @@ bool cmd_edits_field(long code)
 	case cmdBACKSPACE: case cmdDEL: case cmdENTER:
 	case cmdWORDLEFT: case cmdWORDRIGHT: case cmdDELLINE: case cmdDELWORD:
 	case cmdTOP: case cmdBOTTOM: case cmdUNDO: case cmdREDO:
+	case cmdCUT: case cmdCOPY: case cmdPASTE: case cmdSELECTALL:
 	    return true;
     }
     return false;

@@ -37,6 +37,11 @@ File quit Quit
 Edit undo Undo [editable && !viewing]
 Edit redo Redo [editable && !viewing]
 Edit -
+Edit cut Cut [selection && editable]
+Edit copy Copy [selection]
+Edit paste Paste [editable]
+Edit selectall Select All
+Edit -
 Edit mark Mark Block Start [!viewing]
 Edit bend Mark Block End [!viewing]
 Edit blockcopy Copy Block [selection && editable]
