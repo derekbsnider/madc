@@ -1164,10 +1164,27 @@ private:
 	// the placeholder symbol directly — those lanes ask first and route
 	// through lower_format_call instead.
 	bool format_intrinsic_call(class TokenCallFunc *tcf);
-	// One replacement field: classify the argument's concrete type,
-	// validate the spec's presentation against it (false + `why` = the
-	// compile-time diagnostic), and emit the typed primitive call.
-	bool format_field_stmt(TokenBase *arg, const std::string &spec,
+	// One format argument, evaluated ONCE, in order, before any output
+	// ([format.args]: make_format_args binds every argument first): its
+	// kind (cir_format.cpp's FormatKind), the temporary holding its value
+	// (a class object's: its address), and for a string of the other
+	// library flavor the c_str() / size() it is read through.
+	struct FormatArg {
+		int kind = -1;
+		std::string tmp;
+		std::string cstr_sym, size_sym;
+	};
+	// Classify the argument's concrete type and evaluate it into a
+	// temporary appended to `out` (false + `why` = the compile-time
+	// diagnostic: no formatter for the type).
+	bool format_arg_bind(TokenBase *arg, FormatArg &fa,
+			     std::vector<node_t> &out, TokenBase *origin,
+			     std::string &why);
+	// One replacement field over its bound argument: validate the spec's
+	// presentation against the argument's kind (false + `why` = the
+	// compile-time diagnostic), and emit the typed primitive call reading
+	// the argument's temporary.
+	bool format_field_stmt(const FormatArg &fa, const std::string &spec,
 			       const std::string &sink_var,
 			       std::vector<node_t> &out, TokenBase *origin,
 			       std::string &why);

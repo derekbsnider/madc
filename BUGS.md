@@ -53,37 +53,6 @@ int main() { printf("main\n"); return 0; }
   (src/madc_program.cpp) must run its code's entries before it frees the
   code, as `dlclose` does, or the exit-time handlers call freed code.
 
-### B99. `format` / `print` / `println` evaluate an argument at its field, once per field, or never
-
-```cpp
-long side(long x) { printf("side %ld\n", x); return x; }
-int main()
-{
-    println("unused ", side(1));	// no field names the argument
-    println("used {}", side(2));
-    println("twice {0} {0}", side(3));
-    return 0;
-}
-```
-
-- g++ 13 and clang++ 18 (`std::format`, `-std=c++20`; the container's
-  libstdc++ has no `<print>`): every argument is evaluated once, in order,
-  before any output: `side 1` / `unused ` / `side 2` / `used 2` /
-  `side 3` / `twice 3 3`.
-- madc (`--std=madc`, `bin/madc` at `df6bf51f4`): `unused ` (side(1) never
-  runs) / `used side 2` then `2` (the argument runs after the text before
-  its field was written) / `twice side 3` / `3 side 3` / `3` (it runs at each
-  field). Exit 0.
-- Found 2026-10-01 probing the plugin `library` transport (plan §41.11a
-  step 4): `println("activate ", act(&api, 7))` never called `act`.
-- Layer: `CirBuilder::lower_format_call` (src/cir_format.cpp) walks the
-  literal and hands each field's argument TOKEN to `format_field_stmt`,
-  which translates it in place, so an argument is evaluated where its field
-  is written. The arguments should be evaluated once each, in order, into
-  temporaries at the head of the statement expression, with each field
-  reading its temporary: a class prvalue (`var`, `std::string`) bound by
-  reference for the call's duration, as `std::make_format_args` binds them.
-
 ### B92. A prvalue argument binds a non-const lvalue reference in overload ranking
 
 ```cpp
