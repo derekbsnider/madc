@@ -1321,6 +1321,8 @@ The critical change is sequencing: the editor+REPL experience should become usef
 >
 > The REPL and Run are JIT-only. The stepper's executor is decided when the stepper is designed, as a stated trade-off (for example, JIT plus statement probes versus the interpreter). This supersedes §3.1's "MIR interpreter reserved" line, the executor wording in §14.5, and Phase 7's "MIR interpreter execution".
 
+> **Designed (owner, 2026-10-01): time travel** — [`2026-10-01-chthonic-time-travel.md`](2026-10-01-chthonic-time-travel.md). The stepper is a playhead over a recorded run: Debug runs the program ahead under the trace build (the JIT with statement probes, the executor decision above), it records each step's changes (keyframes plus deltas, nothing replayed), and a timeline strip scrubs it, with Step over / into / out / back as playhead moves and a lane per task. It ships after the master release, as the chthonic product release's headline.
+
 ---
 
 ## 22. Source/IR teaching views
@@ -1494,7 +1496,9 @@ Add:
 
 ## 31. Phase 7 — expression stepper
 
-Implement the earlier Thonny-inspired stepper:
+> **Superseded (owner, 2026-10-01)** by the time-travel design, [`2026-10-01-chthonic-time-travel.md`](2026-10-01-chthonic-time-travel.md): the JIT with statement probes instead of the interpreter, stepping in both directions over a recorded run, a timeline strip with a lane per task. Its stages T1-T4 and gates (golden step records under JIT and `--exe`, and the traced `--emit=c11` built by gcc and clang giving the same record) replace this section's list. Expression-level stepping and the synchronized source / MC11 / C11 views remain, as its later slice.
+
+The earlier list, kept for its history:
 
 - MIR interpreter execution;
 - statement and expression granularity;
