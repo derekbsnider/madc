@@ -1216,6 +1216,33 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
 
 ## Diagnostics
 
+### B104. An enumerator declared twice in one scope is accepted, and the later one wins
+
+```c
+#include <stdio.h>
+enum provenance { pvNONE = 0, pvCOMPILER, pvGIT, pvEVENT };
+enum again { pxA = 0, pxB, pvEVENT };
+int main(void) { printf("pvEVENT=%d\n", (int)pvEVENT); return 0; }
+```
+
+- gcc 13 (`-std=c17`): `error: redeclaration of enumerator 'pvEVENT'`; g++ 13:
+  `error: 'pvEVENT' conflicts with a previous declaration`; clang 18:
+  `error: redefinition of enumerator 'pvEVENT'` (C11 6.7.2.2 with 6.7/3;
+  [dcl.enum], [basic.scope.declarative]). madc (`bin/madc` at `89868e2de`,
+  `--std=c17`, `--std=c++17` and the dialect alike): compiles, prints
+  `pvEVENT=2`, exit 0. A SILENT wrong answer: the second declaration
+  renumbers every later use of the name.
+- Found 2026-10-01: plan §41.11a step 7's `enum plugin_verb` reused
+  `pvNONE` and `pvEVENT` from `enum provenance`, and `graph.history`'s event
+  rows came out labelled `record` (`tests/testgraphpast`, the batch
+  checkpoint). The madcide names are fixed (`plv*`, and `ide_pmode`'s
+  `lmNONE`, which collided with `lsp_method`'s at the same value), and
+  `check-madcide-enums.sh` rule 7 refuses an enumerator declared twice in
+  madcide's sources until the compiler does.
+- Layer (suspected): the enumerator's declaration into its scope (the enum
+  body's reader in the parser) adds the name without a lookup of an earlier
+  declaration in the same scope. A parser change, for its own session.
+
 ### B103. A C function declared with `()` is spelled `int (void)`, not `int ()`
 
 ```c

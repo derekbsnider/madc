@@ -482,24 +482,24 @@ long container_of(var &name)
 // A pane's stacking MODE: `tabs` shows one View at a time behind a strip;
 // `stack` shows every View one above the other, each with its header (the
 // S5 window stack's shape).
-enum ide_pmode : unsigned char { lmNONE = 0, lmTABS, lmSTACK };
+enum ide_pmode : unsigned char { pnNONE = 0, pnTABS, pnSTACK };
 const char *pmode_name(long m)
 {
     switch ( m )
     {
-	case lmTABS: return "tabs";
-	case lmSTACK: return "stack";
+	case pnTABS: return "tabs";
+	case pnSTACK: return "stack";
     }
     return "";
 }
 long pmode_of(var &name)
 {
     if ( name.is_null() )
-	return lmNONE;
-    for ( long k = lmTABS; k <= lmSTACK; k = k + 1 )
+	return pnNONE;
+    for ( long k = pnTABS; k <= pnSTACK; k = k + 1 )
 	if ( name == pmode_name(k) )
 	    return k;
-    return lmNONE;
+    return pnNONE;
 }
 
 // ---- Views (client-server arc V1; design doc §2.1) -------------------------
@@ -1700,33 +1700,33 @@ enum plugin_host_state : unsigned char { hsNONE = 0, hsRUNNING, hsRESTARTING, hs
 // calls (command, view, event at activation; run, command_id, get, set,
 // show) and its activation's end (activated) — and what madcide sends it
 // (start, invoke). The word is read once, at the line.
-enum plugin_verb : unsigned char { pvNONE = 0, pvSTART, pvCOMMAND, pvVIEW, pvEVENT, pvRUN, pvCOMMAND_ID, pvGET, pvSET, pvSHOW, pvACTIVATED, pvINVOKE, pvLAST };
+enum plugin_verb : unsigned char { plvNONE = 0, plvSTART, plvCOMMAND, plvVIEW, plvEVENT, plvRUN, plvCOMMAND_ID, plvGET, plvSET, plvSHOW, plvACTIVATED, plvINVOKE, plvLAST };
 const char *plugin_verb_name(long v)
 {
     switch ( v )
     {
-	case pvSTART: return "start";
-	case pvCOMMAND: return "command";
-	case pvVIEW: return "view";
-	case pvEVENT: return "event";
-	case pvRUN: return "run";
-	case pvCOMMAND_ID: return "command_id";
-	case pvGET: return "get";
-	case pvSET: return "set";
-	case pvSHOW: return "show";
-	case pvACTIVATED: return "activated";
-	case pvINVOKE: return "invoke";
+	case plvSTART: return "start";
+	case plvCOMMAND: return "command";
+	case plvVIEW: return "view";
+	case plvEVENT: return "event";
+	case plvRUN: return "run";
+	case plvCOMMAND_ID: return "command_id";
+	case plvGET: return "get";
+	case plvSET: return "set";
+	case plvSHOW: return "show";
+	case plvACTIVATED: return "activated";
+	case plvINVOKE: return "invoke";
     }
     return "";
 }
 long plugin_verb_of(var &word)
 {
     if ( word.is_null() )
-	return pvNONE;
-    for ( long v = pvSTART; v < pvLAST; v = v + 1 )
+	return plvNONE;
+    for ( long v = plvSTART; v < plvLAST; v = v + 1 )
 	if ( word == plugin_verb_name(v) )
 	    return v;
-    return pvNONE;
+    return plvNONE;
 }
 
 // A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds

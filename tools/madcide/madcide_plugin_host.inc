@@ -60,9 +60,9 @@ void plugin_seat_request(var &out, long w, long es, long tier, var &req)
     keyed_get(verbw, req, "plugin");
     long verb = plugin_verb_of(verbw);
     long need = tierOBSERVER;
-    if ( verb == pvSET || verb == pvSHOW )
+    if ( verb == plvSET || verb == plvSHOW )
 	need = tierEDITOR;
-    if ( verb == pvRUN )
+    if ( verb == plvRUN )
 	need = cmd_min_tier_w(w, req["code"].as_integer());
     if ( tier < need )
     {
@@ -78,7 +78,7 @@ void plugin_seat_request(var &out, long w, long es, long tier, var &req)
 	scope = scopev.as_integer();
     switch ( verb )
     {
-	case pvRUN:
+	case plvRUN:
 	{
 	    long code = req["code"].as_integer();
 	    var nm;
@@ -103,14 +103,14 @@ void plugin_seat_request(var &out, long w, long es, long tier, var &req)
 	    out = { "ok": true, "result": ran };
 	    return;
 	}
-	case pvCOMMAND_ID:
+	case plvCOMMAND_ID:
 	{
 	    var nm = req["name"];
 	    long code = cmd_of_w(w, nm.c_str());
 	    out = { "ok": true, "code": code };
 	    return;
 	}
-	case pvGET:
+	case plvGET:
 	{
 	    var key = req["key"];
 	    var v;
@@ -119,7 +119,7 @@ void plugin_seat_request(var &out, long w, long es, long tier, var &req)
 	    out["value"] = v;
 	    return;
 	}
-	case pvSET:
+	case plvSET:
 	{
 	    var key = req["key"];
 	    var v;
@@ -128,15 +128,15 @@ void plugin_seat_request(var &out, long w, long es, long tier, var &req)
 	    out = { "ok": true };
 	    return;
 	}
-	case pvSHOW:
+	case plvSHOW:
 	{
 	    bool shown = show_view(w, es, req["kind"].as_integer());
 	    out = { "ok": shown };
 	    return;
 	}
-	case pvCOMMAND:
-	case pvVIEW:
-	case pvEVENT:
+	case plvCOMMAND:
+	case plvVIEW:
+	case plvEVENT:
 	{
 	    out = { "ok": false, "error": "a plugin registers at its activation" };
 	    return;
@@ -191,15 +191,15 @@ bool plugin_host_converse(var &done, madc::channel &ch, long w, long es,
 	var verbw;
 	keyed_get(verbw, msg, "plugin");
 	long verb = plugin_verb_of(verbw);
-	if ( verb == pvNONE )
+	if ( verb == plvNONE )
 	    continue;
-	if ( verb == pvACTIVATED )
+	if ( verb == plvACTIVATED )
 	{
 	    done = msg;
 	    return true;
 	}
 	var reply;
-	if ( verb == pvCOMMAND )
+	if ( verb == plvCOMMAND )
 	{
 	    var nm = msg["name"];
 	    var tt = msg["title"];
@@ -207,7 +207,7 @@ bool plugin_host_converse(var &done, madc::channel &ch, long w, long es,
 					      msg["hid"].as_integer());
 	    reply = { "ok": code != 0, "code": code };
 	}
-	else if ( verb == pvVIEW )
+	else if ( verb == plvVIEW )
 	{
 	    var nm = msg["name"];
 	    var tt = msg["title"];
@@ -216,7 +216,7 @@ bool plugin_host_converse(var &done, madc::channel &ch, long w, long es,
 					   msg["show"].as_integer(), host);
 	    reply = { "ok": kind != viewNONE, "kind": kind };
 	}
-	else if ( verb == pvEVENT )
+	else if ( verb == plvEVENT )
 	{
 	    bool ok = plugin_event_hosted(w, msg["kind"].as_integer(), host,
 					  msg["hid"].as_integer());
@@ -251,7 +251,7 @@ int64_t plugin_host_start(long w, long es, long hi, var &from, var &why,
 	return -1;
     }
     plugin_host_forget_events(w, host);
-    var start = { "plugin": plugin_verb_name(pvSTART), "name": host, "w": w };
+    var start = { "plugin": plugin_verb_name(plvSTART), "name": host, "w": w };
     start["dir"] = hr["dir"];
     start["manifest"] = hr["manifest"];
     plugin_host_write(ch, start);
@@ -460,7 +460,7 @@ bool plugin_host_invoke(long w, long es, long doc, var &host, long hid,
 	    ui::set(w, es, "msg", format("Plugin '{}' is not running.", host));
 	return false;
     }
-    var inv = { "plugin": plugin_verb_name(pvINVOKE), "hid": hid, "w": w,
+    var inv = { "plugin": plugin_verb_name(plvINVOKE), "hid": hid, "w": w,
 		"es": es, "doc": doc, "arg": arg };
     if ( !event.is_null() )
 	inv["event"] = event;
@@ -627,7 +627,7 @@ bool plugin_host_call(var &out, var &req)
 long seat_api_command(long w, const char *name, const char *title, cmd_handler h)
 {
     long hid = plugin_host_keep((int64_t)h);
-    var req = { "plugin": plugin_verb_name(pvCOMMAND), "name": name, "title": title,
+    var req = { "plugin": plugin_verb_name(plvCOMMAND), "name": name, "title": title,
 		"hid": hid };
     var r;
     if ( !plugin_host_call(r, req) )
@@ -638,7 +638,7 @@ long seat_api_command(long w, const char *name, const char *title, cmd_handler h
 long seat_api_view(long w, const char *name, const char *title, const char *key,
 		   long show)
 {
-    var req = { "plugin": plugin_verb_name(pvVIEW), "name": name, "title": title,
+    var req = { "plugin": plugin_verb_name(plvVIEW), "name": name, "title": title,
 		"key": key, "show": show };
     var r;
     if ( !plugin_host_call(r, req) )
@@ -649,14 +649,14 @@ long seat_api_view(long w, const char *name, const char *title, const char *key,
 bool seat_api_event(long w, long kind, event_handler h)
 {
     long hid = plugin_host_keep((int64_t)h);
-    var req = { "plugin": plugin_verb_name(pvEVENT), "kind": kind, "hid": hid };
+    var req = { "plugin": plugin_verb_name(plvEVENT), "kind": kind, "hid": hid };
     var r;
     return plugin_host_call(r, req) && r["ok"].as_boolean();
 }
 
 bool seat_api_run(long w, long es, long doc, long code, const char *arg)
 {
-    var req = { "plugin": plugin_verb_name(pvRUN), "es": es, "doc": doc,
+    var req = { "plugin": plugin_verb_name(plvRUN), "es": es, "doc": doc,
 		"code": code, "arg": arg };
     var r;
     return plugin_host_call(r, req) && r["ok"].as_boolean()
@@ -665,7 +665,7 @@ bool seat_api_run(long w, long es, long doc, long code, const char *arg)
 
 long seat_api_command_id(long w, const char *name)
 {
-    var req = { "plugin": plugin_verb_name(pvCOMMAND_ID), "name": name };
+    var req = { "plugin": plugin_verb_name(plvCOMMAND_ID), "name": name };
     var r;
     if ( !plugin_host_call(r, req) )
 	return cmdNONE;
@@ -674,7 +674,7 @@ long seat_api_command_id(long w, const char *name)
 
 void seat_api_get(var &out, long w, long scope, const char *key)
 {
-    var req = { "plugin": plugin_verb_name(pvGET), "scope": scope, "key": key };
+    var req = { "plugin": plugin_verb_name(plvGET), "scope": scope, "key": key };
     var r;
     var none;
     out = none;
@@ -684,7 +684,7 @@ void seat_api_get(var &out, long w, long scope, const char *key)
 
 void seat_api_set(long w, long scope, const char *key, const var &value)
 {
-    var req = { "plugin": plugin_verb_name(pvSET), "scope": scope, "key": key };
+    var req = { "plugin": plugin_verb_name(plvSET), "scope": scope, "key": key };
     req["value"] = value;
     var r;
     plugin_host_call(r, req);
@@ -692,7 +692,7 @@ void seat_api_set(long w, long scope, const char *key, const var &value)
 
 bool seat_api_show(long w, long es, long kind)
 {
-    var req = { "plugin": plugin_verb_name(pvSHOW), "kind": kind };
+    var req = { "plugin": plugin_verb_name(plvSHOW), "kind": kind };
     var r;
     return plugin_host_call(r, req) && r["ok"].as_boolean();
 }
@@ -751,7 +751,7 @@ int plugin_child()
 	if ( !ok )
 	    why = format("its activation refused it ({})", from);
     }
-    var done = { "plugin": plugin_verb_name(pvACTIVATED), "ok": ok, "why": why,
+    var done = { "plugin": plugin_verb_name(plvACTIVATED), "ok": ok, "why": why,
 		 "note": note, "from": from };
     plugin_host_write(io, done);
     if ( !ok )
@@ -761,7 +761,7 @@ int plugin_child()
     {
 	var vw;
 	keyed_get(vw, msg, "plugin");
-	if ( plugin_verb_of(vw) == pvINVOKE )
+	if ( plugin_verb_of(vw) == plvINVOKE )
 	    plugin_host_run_invoke(msg);
     }
     return 0;

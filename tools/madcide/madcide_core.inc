@@ -727,7 +727,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
     }
     long side = ui::side_code("");
     long size = 0;
-    long mode = lmNONE;
+    long mode = pnNONE;
     bool collecting = false;
     bool focus = false;
     bool hidden = false;
@@ -784,7 +784,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 	    continue;
 	}
 	long pm = pmode_of(wd);
-	if ( pm != lmNONE )
+	if ( pm != pnNONE )
 	{
 	    mode = pm;
 	    continue;
@@ -817,8 +817,8 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 	size = 20;
     if ( size == 0 && slot == slotPANEL )
 	size = 25;
-    if ( mode == lmNONE )
-	mode = lmTABS;
+    if ( mode == pnNONE )
+	mode = pnTABS;
     long f = focus ? 1 : 0;
     long h = hidden ? 1 : 0;
     row = { "kind": ctPANE, "slot": slot, "side": side, "size": size,
@@ -6445,7 +6445,7 @@ void view_split(long w, long es, long doc, long dir, long lang)
     tabs.push(tab);
     long snone = ui::side_code("");
     long ksed = slotEDITOR;
-    long mtabs = lmTABS;
+    long mtabs = pnTABS;
     var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
 		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
 		    "hidden": 0, "pcaret": pcar, "pmark": -1, "pbend": -1 };
