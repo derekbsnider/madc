@@ -341,3 +341,29 @@ activation registered is taken back.
 Plugin libraries are Linux shared objects, Windows DLLs and macOS dylibs; a
 plugin binds the engine the editor loaded (`libmadc.so.0`, the
 `libmadc-0.dll` beside `madcide.exe`, `lib/libmadc-0.dylib`).
+
+A plugin's code can run in a process of its own, so a crash in it leaves the
+editor running. The manifest asks for it beside its code:
+
+```json
+{ "name": "hello", "api": 2, "code": "hello.mad", "transport": "host" }
+```
+
+and `"plugins.isolate": true` in `settings.json` does it for every plugin.
+madcide forks a child of itself that opens the plugin's code by the same rule
+(its library, else its source) and activates it; the plugin's source is the
+same either way. Its commands, views and events work as they do in madcide's
+process, and its `ide::` calls reach the session as requests. A line the
+child writes that is not a request (its own output, a crash report) shows on
+madcide's stderr. When the child ends, the status line says so and madcide
+starts it again, at most three times a session; then its commands say the
+plugin is not running. Windows has no fork, so there a plugin that asks for
+its own process runs in madcide's, and the status line says why.
+
+The seat (`madcide --serve`, `--attach`) answers the same requests from any
+client, under its tier: `{"plugin": "get", "key": K, "seq": N}` and
+`{"plugin": "command_id", "name": NAME, "seq": N}` (an observer may),
+`{"plugin": "set", "key": K, "value": V, "seq": N}` and
+`{"plugin": "show", "kind": KIND, "seq": N}` (an editor), and `{"plugin":
+"run", "code": C, "arg": A, "seq": N}` (the command's own tier); `scope`
+names an entity of the world, the session's when absent.

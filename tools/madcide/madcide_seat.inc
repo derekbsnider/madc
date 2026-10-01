@@ -5,6 +5,7 @@
 //   envAPI   {"cmd","args","seq"}    -> api_run (madcide_api.inc), reply {seq, ok, …}
 //   envHELLO {"madc":"lsp"}          -> this connection's JSON-RPC dialect (V6c-3c)
 //   envRPC   {"jsonrpc","id",…}      -> mcp_handle, or lsp_handle once a hello said so
+//   envPLUGIN {"plugin",…,"seq"}     -> plugin_seat_request (G6: get / set, run, …)
 // so an MCP client (an agent host), an LSP editor (through the attach relay)
 // and an api client all speak to ONE `--serve` session over the same socket,
 // under the SAME tier roster (grant_tier / clienttier). The engine's serve_web
@@ -78,6 +79,17 @@ void serve_line_client(IdeSession &S, long doc, madc::channel &client, long self
 	    }
 	    if ( mcp_handle(S, doc, self_id, req, resp) )	// a notification has no reply
 		api_write(client, resp);
+	    continue;
+	}
+	if ( env == envPLUGIN )
+	{
+	    // The plugin envelope's requests (G6: get / set and the rest),
+	    // under this connection's tier, by the owner a plugin host's
+	    // connection is served by too (madcide_plugin_host.inc).
+	    var preply;
+	    plugin_seat_request(preply, S.world(), S.es, eff_tier(self_id), req);
+	    preply["seq"] = req["seq"];
+	    api_write(client, preply);
 	    continue;
 	}
 	long seq = req["seq"].as_integer();

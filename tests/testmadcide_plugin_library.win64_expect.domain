@@ -1,9 +1,13 @@
 # Labels whose line legitimately DIFFERS from tests/testmadcide_plugin_library.win64_expect
 # versus tests/testmadcide_plugin_library.expect: each names a plugin library, whose suffix is the
-# target's (madc::library_suffix: .dll on Windows). Every other labelled line must
+# target's (madc::library_suffix: .dll on Windows) — or, for activate-asks and
+# asks-transport, a host plugin that runs in madcide's process (no fork on
+# Windows). Every other labelled line must
 # be identical in both (scripts/check-expect-twins.sh).
 madcide
 stale-msg
 activate-future
 activate-noentry
 activate-declines
+activate-asks
+asks-transport

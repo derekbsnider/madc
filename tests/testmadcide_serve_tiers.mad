@@ -7,7 +7,9 @@
 // The gate: an OBSERVER's edit (delline, tierEDITOR) is refused, and so is
 // running code through the REPL pane (replrun, replenter, repl: tierEDITOR,
 // as a build's run); the OWNER promotes it to editor; the same edit then
-// lands. Deterministic: the owner
+// lands. The plugin envelope's requests (G6, plugin_seat_request — the
+// ones a host plugin's child makes) are tiered too: the owner's set lands,
+// an observer may get it, an observer's set is refused. Deterministic: the owner
 // SPEAKS first (share id 1), the observer second (id 2) — the seat classifies
 // and tiers a connection on its first byte (serve_conn_task, the production
 // task the serve face spawns).
@@ -94,6 +96,30 @@ int main()
     var p13;
     js::parse(p13, r13);
     println("observer-run: {} / {} / {}", p11["error"], p12["error"], p13["error"]);
+
+    // 1c) The plugin envelope on the seat: get is an observer's, set an
+    // editor's.
+    own.write("{\"plugin\":\"set\",\"key\":\"tiers.probe\",\"value\":\"the owner's\",\"seq\":14}\n");
+    yield();
+    var r14;
+    own.readline(r14);
+    var p14;
+    js::parse(p14, r14);
+    obs.write("{\"plugin\":\"set\",\"key\":\"tiers.probe\",\"value\":\"the observer's\",\"seq\":15}\n");
+    yield();
+    var r15;
+    obs.readline(r15);
+    var p15;
+    js::parse(p15, r15);
+    obs.write("{\"plugin\":\"get\",\"key\":\"tiers.probe\",\"seq\":16}\n");
+    yield();
+    var r16;
+    obs.readline(r16);
+    var p16;
+    js::parse(p16, r16);
+    println("plugin-envelope: owner-set={} observer-set={} error={} observer-get={} seq={}",
+	    p14["ok"].as_boolean() ? 1 : 0, p15["ok"].as_boolean() ? 1 : 0,
+	    p15["error"], p16["value"], p16["seq"]);
 
     // 2) The owner promotes the observer (id 2) to editor.
     own.write("{\"cmd\":\"clienttier\",\"args\":\"2 editor\",\"seq\":2}\n");

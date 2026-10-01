@@ -217,6 +217,13 @@ bool plugin_manifest_read(var &m, var &why, var &dir, const char *name0)
 	why = format("{}: \"code\" must name the plugin's source file in its directory", path);
 	return false;
     }
+    var tr;
+    keyed_get(tr, m, plugin_field_name(pfTRANSPORT));
+    if ( !tr.is_null() && (plugin_transport_of(tr) != ptHOST || code.is_null()) )
+    {
+	why = format("{}: \"transport\" may only ask for \"host\" (its code in a process of its own), beside \"code\"", path);
+	return false;
+    }
     var c;
     keyed_get(c, m, plugin_field_name(pfCONTRIBUTES));
     if ( c.is_null() )
@@ -747,8 +754,70 @@ long plugin_command(long w, const char *name0, const char *title0,
     return code;
 }
 
+// The index of the row of registry list `list` named `name`; -1 = none.
+long registry_named_index(long w, const char *list, var &name)
+{
+    var rows;
+    registry_rows(rows, w, list);
+    long n = php::count(rows);
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( rows[i]["name"] == name )
+	    return i;
+    return -1;
+}
+
+// Is row `r` registered by plugin host `host` (§5.4's host transport)?
+bool registry_row_hosted_by(var &r, var &host)
+{
+    var rh;
+    keyed_get(rh, r, "host");
+    return !rh.is_null() && rh == host;
+}
+
+// Register a command a plugin HOST contributes (§5.4's host transport): its
+// row carries the host's name and the child's handler id where an
+// in-process row carries the handler, and running it sends the child an
+// invocation (plugin_host_invoke). A restarted host registering its own
+// name again re-binds the row to its new handler id and keeps the code, so
+// the keys and menus that name it still reach it; any other repeat is
+// refused as plugin_command refuses it.
+long plugin_command_hosted(long w, const char *name0, const char *title0,
+			   var &host, long hid)
+{
+    var name = name0;		// ring discipline: own the text first
+    var title = title0;
+    if ( !plugin_name_ok(name.c_str()) )
+	return 0;
+    long reg = plugin_registry_make(w);
+    var rows;
+    contributed_commands(rows, w);
+    long at = registry_named_index(w, "commands", name);
+    if ( at >= 0 )
+    {
+	var r = rows[at];
+	if ( !registry_row_hosted_by(r, host) )
+	    return 0;
+	rows[at]["hid"] = hid;
+	ui::set(w, reg, "commands", rows);
+	return r["code"].as_integer();
+    }
+    if ( cmd_of_w(w, name.c_str()) != cmdNONE )
+	return 0;
+    long code = cmd_contrib_base() + php::count(rows);
+    rows[] = { "name": name, "code": code, "title": title, "host": host,
+	       "hid": hid };
+    ui::set(w, reg, "commands", rows);
+    return code;
+}
+
+// A host's invocation, sent to its child (madcide_plugin_host.inc).
+bool plugin_host_invoke(long w, long es, long doc, var &host, long hid,
+			const char *arg, var &event);
+
 // Run a contributed command's handler with the command's argument. False =
 // the handler ended the session (the dispatcher's continue / quit verdict).
+// A host's command is sent to its child, which runs it on its own; the
+// session continues.
 bool run_contributed(long w, long es, long doc, long code, const char *arg0)
 {
     var arg = arg0;		// ring discipline: own the text first
@@ -759,8 +828,26 @@ bool run_contributed(long w, long es, long doc, long code, const char *arg0)
 	ui::set(w, es, "msg", format("Unknown command {}.", code));
 	return true;
     }
+    var host;
+    keyed_get(host, r, "host");
+    if ( !host.is_null() )
+    {
+	var none;
+	plugin_host_invoke(w, es, doc, host, r["hid"].as_integer(), arg.c_str(), none);
+	return true;
+    }
     cmd_handler h = (cmd_handler)r["handler"].as_integer();
     return h(w, es, doc, arg.c_str());
+}
+
+// The EFFECTIVE tier of a connection id. An untracked id (-1 — a direct,
+// local caller such as the -c / headless-harness seat that never shared) is
+// the operator itself: full rights (owner). A real network client always has
+// a share()d id with a granted tier, so this only widens the local path.
+long eff_tier(long id)
+{
+    long t = madc::conn_cookie(id);
+    return t < 0 ? tierOWNER : t;
 }
 
 // The seat tier a command needs (V6a tiers), contributed commands included:
@@ -801,7 +888,38 @@ bool plugin_event(long w, long kind, event_handler handler)
     return true;
 }
 
-// Publish an event of a kind to its subscribers (none: nothing runs).
+// Subscribe a plugin HOST's handler (its child's handler id) to a kind, as
+// plugin_event subscribes an in-process one. A restarted host drops its old
+// subscriptions first (plugin_host_forget_events) and subscribes again.
+bool plugin_event_hosted(long w, long kind, var &host, long hid)
+{
+    if ( kind <= reNONE || kind >= reLAST )
+	return false;
+    long reg = plugin_registry_make(w);
+    var rows;
+    registry_rows(rows, w, "events");
+    rows[] = { "kind": kind, "host": host, "hid": hid };
+    ui::set(w, reg, "events", rows);
+    return true;
+}
+
+// A host's subscriptions, gone: its child is ending or starting again.
+void plugin_host_forget_events(long w, var &host)
+{
+    long reg = plugin_registry(w);
+    if ( reg == 0 )
+	return;
+    var rows;
+    registry_rows(rows, w, "events");
+    var kept = {};
+    for ( var r : rows )
+	if ( !registry_row_hosted_by(r, host) )
+	    kept[] = r;
+    ui::set(w, reg, "events", kept);
+}
+
+// Publish an event of a kind to its subscribers (none: nothing runs); a
+// host's subscription sends it to the host's child.
 void publish_event(long w, long es, long doc, long kind, var &reply)
 {
     var rows;
@@ -810,6 +928,13 @@ void publish_event(long w, long es, long doc, long kind, var &reply)
     for ( var r : rows )
 	if ( r["kind"].as_integer() == kind )
 	{
+	    var host;
+	    keyed_get(host, r, "host");
+	    if ( !host.is_null() )
+	    {
+		plugin_host_invoke(w, es, doc, host, r["hid"].as_integer(), "", ev);
+		continue;
+	    }
 	    event_handler h = (event_handler)r["handler"].as_integer();
 	    h(w, es, doc, ev);
 	}
@@ -992,5 +1117,31 @@ long plugin_view(long w, const char *name0, const char *title0,
     rows[] = { "name": name, "kind": kind, "title": title, "key": key,
 	       "show": show };
     ui::set(w, reg, "views", rows);
+    return kind;
+}
+
+// Register a view a plugin HOST contributes: plugin_view's, its row marked
+// with the host, so a restarted host registering its own view again gets the
+// same kind (the layout that names it keeps it); any other repeat is refused.
+long plugin_view_hosted(long w, const char *name0, const char *title0,
+			const char *key0, long show, var &host)
+{
+    var name = name0;		// ring discipline: own the text first
+    long at = registry_named_index(w, "views", name);
+    var rows;
+    contributed_views(rows, w);
+    if ( at >= 0 )
+    {
+	var r = rows[at];
+	if ( !registry_row_hosted_by(r, host) )
+	    return viewNONE;
+	return r["kind"].as_integer();
+    }
+    long kind = plugin_view(w, name.c_str(), title0, key0, show);
+    if ( kind == viewNONE )
+	return kind;
+    contributed_views(rows, w);
+    rows[php::count(rows) - 1]["host"] = host;
+    ui::set(w, plugin_registry(w), "views", rows);
     return kind;
 }

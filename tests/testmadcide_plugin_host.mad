@@ -1,0 +1,221 @@
+// The plugin `host` transport (plan §41.11a step 7; plugin design §5.4, §6
+// G6, §8 Stage B item 5): a plugin's code in a process of its own, a fork
+// child of the running madcide, speaking the plugin envelope; a crash there
+// leaves madcide running and the child starts again.
+// Pins:
+//   1. a manifest's "transport" may only ask for "host", and only beside its
+//      "code"; anything else is refused at load with the reason;
+//   2. settings.json's "plugins" activates a host plugin at session open: its
+//      row records the host transport, its command is contributed, its view
+//      registers, and its command runs in ANOTHER process (its pid is not
+//      madcide's) and reaches the session through the API table's requests
+//      (set, get);
+//   3. the plugin running its own command through ide::run sees its effect
+//      before ide::run returns, as it does in madcide's process; an event a
+//      session publishes reaches its handler in the child;
+//   4. a crash in its command ends only the child: madcide runs on, the
+//      status line says the child started again, and its command works again;
+//      after the fourth end the plugin stops and its command says it is not
+//      running;
+//   5. settings.json's "plugins.isolate" runs chthonic's code in a child: its
+//      Variables view fills after F5 as it does in madcide's process.
+// The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
+// the .env).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+#include "madcide_repl_drive.inc"	// ev_*, settle
+
+extern "C" int getpid(void);
+
+void put(var &files, var &path, const char *text)
+{
+    php::file_put_contents(path.c_str(), text);
+    files.push(path);
+}
+
+// Run a command by name with its argument (the session's dispatcher).
+void run_named(IdeSession &S, long doc, const char *name, const char *arg)
+{
+    long code = cmd_of_w(S.w, name);
+    bool cont = true;
+    S.command(doc, code, arg, cont);
+}
+
+// Let the session's tasks run until the status line starts with `prefix` (a
+// host's effects arrive as its requests); `out` = the status line.
+void wait_msg(var &out, IdeSession &S, const char *prefix)
+{
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	ui::get(out, S.w, S.es, "msg");
+	if ( out.is_string() && strncmp(out.c_str(), prefix, strlen(prefix)) == 0 )
+	    return;
+	madc::sleep_ms(10);
+    }
+    println("wait_msg: timed out waiting for '{}' (msg: {})", prefix, out);
+}
+
+int main()
+{
+    var files = {};
+    var made = {};
+    const char *path = "madc_ide_plugin_host.c";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    var cfg;
+    madcide_config_dir(cfg);
+    var plugins = format("{}/plugins", cfg);
+    var hdir = format("{}/hosted", plugins);
+    php::mkdir(cfg.c_str());
+    php::mkdir(plugins.c_str());
+    php::mkdir(hdir.c_str());
+    made.push(cfg);
+    made.push(plugins);
+    made.push(hdir);
+
+    // 1. The manifest's "transport".
+    var mp = format("{}/hosted.plugin", hdir);
+    var m;
+    var why;
+    put(files, mp, "{\"name\": \"hosted\", \"api\": 2, \"code\": \"hosted.mad\", \"transport\": \"library\"}\n");
+    plugin_manifest_read(m, why, hdir, "hosted");
+    println("transport-library: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
+    php::file_put_contents(mp.c_str(), "{\"name\": \"hosted\", \"api\": 2, \"transport\": \"host\"}\n");
+    plugin_manifest_read(m, why, hdir, "hosted");
+    println("transport-no-code: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
+    php::file_put_contents(mp.c_str(), "{\"name\": \"hosted\", \"api\": 2, \"code\": \"hosted.mad\", \"transport\": \"host\"}\n");
+    var sp = format("{}/hosted.mad", hdir);
+    put(files, sp,
+	"#include <madcide/plugin>\n"
+	"extern \"C\" int getpid(void);\n"
+	"bool hosted_greet(long w, long es, long doc, const char *arg)\n"
+	"{\n"
+	"    long pid = getpid();\n"
+	"    ide::set(w, es, \"test.pid\", pid);\n"
+	"    ide::set(w, es, \"msg\", format(\"Hello, {}.\", arg));\n"
+	"    return true;\n"
+	"}\n"
+	"bool hosted_again(long w, long es, long doc, const char *arg)\n"
+	"{\n"
+	"    bool cont = ide::run(w, es, doc, ide::command_id(w, \"hgreet\"), \"again\");\n"
+	"    var said;\n"
+	"    ide::get(said, w, es, \"msg\");\n"
+	"    ide::set(w, es, \"msg\", format(\"Again: {} ({})\", said, cont ? \"ran\" : \"quit\"));\n"
+	"    return true;\n"
+	"}\n"
+	"bool hosted_crash(long w, long es, long doc, const char *arg)\n"
+	"{\n"
+	"    int *p = (int *)0;\n"
+	"    *p = 1;\n"
+	"    return true;\n"
+	"}\n"
+	"void hosted_heard(long w, long es, long doc, var &event)\n"
+	"{\n"
+	"    ide::set(w, es, \"msg\", format(\"Heard {}.\", event[\"reply\"][\"what\"]));\n"
+	"}\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n"
+	"    ide::bind(api);\n"
+	"    long show = ide::command(w, \"hgreet\", \"Greet\", hosted_greet);\n"
+	"    return show != 0\n"
+	"        && ide::command(w, \"hagain\", \"Greet again\", hosted_again) != 0\n"
+	"        && ide::command(w, \"hcrash\", \"Crash\", hosted_crash) != 0\n"
+	"        && ide::view(w, \"hostedlist\", \"Hosted\", \"hosted.rows\", show) != 0\n"
+	"        && ide::event(w, reTAKEN, hosted_heard);\n"
+	"}\n");
+
+    // 2. Activated at session open, in a child process.
+    var stp = format("{}/settings.json", cfg);
+    put(files, stp, "{\"plugins\": [\"hosted\"]}\n");
+    IdeSession S;
+    long doc = S.open(path, false, "default");
+    var vn = "hostedlist";
+    println("host-open: transport-host={} contributed={} view={}",
+	    plugin_active_transport(S.w, "hosted") == ptHOST ? 1 : 0,
+	    cmd_contributed(cmd_of_w(S.w, "hgreet")) ? 1 : 0,
+	    view_of_w(S.w, vn) != viewNONE ? 1 : 0);
+    var msg;
+    run_named(S, doc, "hgreet", "world");
+    wait_msg(msg, S, "Hello");
+    var pid;
+    ui::get(pid, S.w, S.es, "test.pid");
+    long mine = getpid();
+    println("host-greet: msg={} other-process={}", msg,
+	    pid.as_integer() != 0 && pid.as_integer() != mine ? 1 : 0);
+
+    // 3. Its own command within ide::run; an event.
+    run_named(S, doc, "hagain", "");
+    wait_msg(msg, S, "Again");
+    println("host-again: msg={}", msg);
+    var reply = { "what": "the entry" };
+    publish_event(S.w, S.es, doc, reTAKEN, reply);
+    wait_msg(msg, S, "Heard");
+    println("host-event: msg={}", msg);
+
+    // 4. A crash ends only the child.
+    run_named(S, doc, "hcrash", "");
+    wait_msg(msg, S, "Plugin 'hosted' ended");
+    println("host-crash: msg={}", msg);
+    run_named(S, doc, "hgreet", "back");
+    wait_msg(msg, S, "Hello");
+    println("host-after: msg={}", msg);
+    run_named(S, doc, "hcrash", "");
+    wait_msg(msg, S, "Plugin 'hosted' ended");
+    run_named(S, doc, "hcrash", "");
+    wait_msg(msg, S, "Plugin 'hosted' ended");
+    run_named(S, doc, "hcrash", "");
+    wait_msg(msg, S, "Plugin 'hosted' stopped");
+    println("host-stopped: msg={}", msg);
+    run_named(S, doc, "hgreet", "anyone");
+    ui::get(msg, S.w, S.es, "msg");
+    println("host-gone: msg={}", msg);
+    S.close();
+
+    // 5. chthonic's code in a child, under "plugins.isolate".
+    php::file_put_contents(stp.c_str(), "{\"plugins.isolate\": true}\n");
+    IdeSession C;
+    const char *cpath = "madc_ide_plugin_host_c.c";
+    php::file_put_contents(cpath, "int main() { return 0; }\n");
+    long cdoc = C.open(cpath, false, "chthonic");
+    println("isolate-open: transport-host={}",
+	    plugin_active_transport(C.w, "chthonic") == ptHOST ? 1 : 0);
+    ui::text_load(C.w, cdoc, "#include <stdio.h>\n"
+	"int count = 3;\n"
+	"int square(int n) { return n * n; }\n"
+	"int main() { printf(\"%d\\n\", square(5)); }\n");
+    var e;
+    ev_action(e, "replrun", "f5");
+    C.apply_ide_event(cdoc, e);
+    settle(C.w, C.es, false);
+    var rows;
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	ui::get(rows, C.w, C.es, "chthonic.vars");
+	if ( rows.is_array() && php::count(rows) > 0 )
+	    break;
+	madc::sleep_ms(10);
+    }
+    var shown = "";
+    for ( var r : rows )
+	shown = format("{}{}|", shown, r["content"]);
+    println("isolate-rows: [{}]", shown);
+    C.close();
+
+    // Remove every file, then every directory this test made.
+    long nf = php::count(files);
+    for ( long i = 0; i < nf; i = i + 1 )
+    {
+	var f = files[i];
+	php::unlink(f.c_str());
+    }
+    long nd = php::count(made);
+    for ( long i = nd - 1; i >= 0; i = i - 1 )
+    {
+	var d = made[i];
+	php::rmdir(d.c_str());
+    }
+    php::unlink(path);
+    php::unlink(cpath);
+    return 0;
+}

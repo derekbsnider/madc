@@ -28,8 +28,9 @@
 // through the table, so it binds to nothing of madcide's.
 //
 // Thread contract: activation runs at session open, on the session's thread,
-// before the profiles and menus load; a plugin's code stays loaded for the
-// process once it is active.
+// before the profiles and menus load; a plugin's code stays loaded until the
+// session closes (plugins_close), and a `host` plugin's in its own process
+// (madcide_plugin_host.inc).
 
 // ---- the table -------------------------------------------------------------
 // Each entry adapts the registry's or the session's one owner.
@@ -269,6 +270,64 @@ bool plugin_is_active(long w, const char *name)
 // accepts (a load), else its source compiled into this process. False =
 // refused, `why` the reason; nothing it registered remains. `note` = the
 // reason a library was refused when its source replaced it ("" otherwise).
+// Plugin `name`'s code opened by the one rule (§5.5), in madcide's process
+// or in a plugin host's child alike: its library when there is one this
+// madcide accepts, else its source compiled into the process; its entries
+// found and its API version checked (`aa` = its activation entry). False =
+// refused, `why` both forms' reasons; `note` says so when a refused
+// library's source replaced it.
+bool plugin_code_open(var &dir, var &name, var &m, long &transport, int64_t &h,
+		      int64_t &aa, var &from, var &why, var &note)
+{
+    note = "";
+    transport = ptLIBRARY;
+    h = plugin_open_library(from, dir, name, why);
+    if ( h != 0 && plugin_code_check(ptLIBRARY, h, from, dir, why, aa) )
+	return true;
+    var lwhy = why;		// "" = no library at all
+    transport = ptSOURCE;
+    h = plugin_open_source(from, dir, m, why);
+    if ( h == 0 || !plugin_code_check(ptSOURCE, h, from, dir, why, aa) )
+    {
+	if ( strlen(lwhy.c_str()) > 0 )
+	    why = format("{}; its source: {}", lwhy, why);
+	return false;
+    }
+    if ( strlen(lwhy.c_str()) > 0 )
+	note = format("its source is in use ({})", lwhy);
+    return true;
+}
+
+// Does plugin `m` run in a process of its own (§5.4's host transport)? Its
+// manifest asks ("transport": "host"), or settings.json's "plugins.isolate"
+// asks it of every plugin.
+bool plugin_wants_host(long w, var &m)
+{
+    var tr;
+    keyed_get(tr, m, plugin_field_name(pfTRANSPORT));
+    if ( plugin_transport_of(tr) == ptHOST )
+	return true;
+    long es = ui::entity_by_name(w, "editor-state");
+    var us;
+    ui::get(us, w, es, "usersettings");
+    var iso;
+    keyed_get(iso, us, "plugins.isolate");
+    return iso.is_boolean() && iso.as_boolean();
+}
+
+// A host plugin activated in its own process (madcide_plugin_host.inc): 1 =
+// active, 0 = refused (`why`), -1 = no plugin process here (`why` says why;
+// the plugin then runs in madcide's process).
+long plugin_host_activate(long w, var &dir, var &name, var &m, var &why,
+			  var &note);
+
+// Activate plugin `name`'s code (its directory `dir`, its manifest `m`) in
+// world `w`, once per world (§5.5): in its own process when it asks for one
+// and this platform has one (a `host` plugin), else in madcide's (its
+// library, or its source). False = refused, `why` the reason; nothing it
+// registered remains. `note` = what the status line says of a plugin that
+// activated otherwise than asked (a refused library's source in use, a host
+// plugin in madcide's process).
 bool plugin_activate(long w, var &dir, const char *name0, var &m, var &why,
 		     var &note)
 {
@@ -276,24 +335,28 @@ bool plugin_activate(long w, var &dir, const char *name0, var &m, var &why,
     note = "";
     if ( plugin_is_active(w, name.c_str()) )
 	return true;
-    long transport = ptLIBRARY;
+    var hnote = "";
+    if ( plugin_wants_host(w, m) )
+    {
+	long hr = plugin_host_activate(w, dir, name, m, why, note);
+	if ( hr > 0 )
+	    return true;
+	if ( hr == 0 )
+	    return false;
+	hnote = format("it runs in madcide's process ({})", why);
+    }
+    long transport = ptNONE;
     var from;
     int64_t aa = 0;
-    int64_t h = plugin_open_library(from, dir, name, why);
-    bool ok = h != 0 && plugin_code_check(ptLIBRARY, h, from, dir, why, aa);
-    if ( !ok )
+    int64_t h = 0;
+    if ( !plugin_code_open(dir, name, m, transport, h, aa, from, why, note) )
+	return false;
+    if ( strlen(hnote.c_str()) > 0 )
     {
-	var lwhy = why;		// "" = no library at all
-	transport = ptSOURCE;
-	h = plugin_open_source(from, dir, m, why);
-	ok = h != 0 && plugin_code_check(ptSOURCE, h, from, dir, why, aa);
-	if ( !ok )
-	{
-	    if ( strlen(lwhy.c_str()) > 0 )
-		why = format("{}; its source: {}", lwhy, why);
-	    return false;
-	}
-	note = lwhy;
+	if ( strlen(note.c_str()) > 0 )
+	    note = format("{}; {}", hnote, note);
+	else
+	    note = hnote;
     }
     var mark;
     registry_mark(mark, w);
@@ -324,7 +387,7 @@ void plugin_activate_named(long w, long es, var &dir, const char *name0, var &m)
     if ( !plugin_activate(w, dir, name.c_str(), m, why, note) )
 	ui::set(w, es, "msg", format("Plugin '{}' refused: {}", name, why));
     else if ( strlen(note.c_str()) > 0 )
-	ui::set(w, es, "msg", format("Plugin '{}': its source is in use ({})", name, note));
+	ui::set(w, es, "msg", format("Plugin '{}': {}", name, note));
 }
 
 // A session's plugins, activated in its world before the profiles and menus

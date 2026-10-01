@@ -23,4 +23,6 @@ activate-noentry: ok=0 tmp/testmadcide_plugin_library_cfg/plugins/noentry/noentr
 activate-declines: ok=0 its activation refused it (tmp/testmadcide_plugin_library_cfg/plugins/declines/declines.so)
 declined-taken-back: 1
 activate-broken: ok=0 tmp/testmadcide_plugin_library_cfg/plugins/broken/broken.mad did not compile: tmp/testmadcide_plugin_library_cfg/plugins/broken/broken.mad:5:1: expected ';' before '}' token
+activate-asks: ok=1
+asks-transport: host
 closed: library-released=1

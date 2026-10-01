@@ -25,7 +25,9 @@
 //      plugin API whose source targets it too (both reasons, both numbers),
 //      code with no activation entry (both forms), an activation that
 //      refuses, whose registrations are taken back, and a source that does
-//      not compile with no library (its first row, positioned);
+//      not compile with no library (its first row, positioned); a plugin
+//      that asks for the host transport runs in a process of its own, or,
+//      on Windows (no fork), in madcide's, the note saying why;
 //   5. the session's close closes its plugins' code (a library loaded until
 //      then cannot be removed on Windows).
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
@@ -202,6 +204,18 @@ int main()
 	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
 	"{\n    return true\n}\n");
     plugin_fixture(files, made, plugins, "nocode", "", "");
+    plugin_fixture(files, made, plugins, "asks", "asks.mad",
+	"#include <madcide/plugin>\n"
+	"bool asks_cmd(long w, long es, long doc, const char *arg)\n"
+	"{\n    return true;\n}\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n"
+	"    ide::bind(api);\n"
+	"    return ide::command(w, \"askscmd\", \"Asks\", asks_cmd) != 0;\n"
+	"}\n");
+    var amp = format("{}/asks/asks.plugin", plugins);
+    php::file_put_contents(amp.c_str(),
+	"{\"name\": \"asks\", \"api\": 2, \"code\": \"asks.mad\", \"transport\": \"host\"}\n");
 
     // 1. --build-plugin's owner.
     build(files, plugins, "hello");
@@ -267,6 +281,11 @@ int main()
     activate(S.w, plugins, "declines");
     println("declined-taken-back: {}", cmd_of_w(S.w, "declined") == 0 ? 1 : 0);
     activate(S.w, plugins, "broken");
+    // 4b. A plugin that asks for a process of its own gets one where there
+    // is fork; elsewhere (Windows) it runs in madcide's process, and says so.
+    activate(S.w, plugins, "asks");
+    println("asks-transport: {}",
+	    plugin_transport_name(plugin_active_transport(S.w, "asks")));
     S.close();
 
     // 5. The session's close closes its plugins' code: hello's library is

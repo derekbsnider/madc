@@ -18,8 +18,9 @@
 //
 // Transport: the accepted connection is an ordinary madc::channel byte
 // stream (the listen:// acceptor, V6a step 1/2a); the {"event":…} push feed
-// (broadcast_events) and the permission tiers (grant_tier / eff_tier /
-// clienttier) live here beside the command core.
+// (broadcast_events) and the permission tiers (grant_tier / clienttier)
+// live here beside the command core; eff_tier, which a plugin host's seat
+// reads too, is madcide_plugins.inc's, beside cmd_min_tier_w.
 
 // ---- JSON-RPC 2.0 envelopes — ONE spelling for every face --------------------
 // The MCP seat, the LSP face and madcide-as-an-MCP-client all speak JSON-RPC
@@ -130,16 +131,6 @@ long grant_tier(long self_id)
 	    return tierOBSERVER;
     }
     return tierOWNER;
-}
-
-// The EFFECTIVE tier of a connection id. An untracked id (-1 — a direct,
-// local caller such as the -c / headless-harness seat that never shared) is
-// the operator itself: full rights (owner). A real network client always has
-// a share()d id with a granted tier, so this only widens the local path.
-long eff_tier(long id)
-{
-    long t = madc::conn_cookie(id);
-    return t < 0 ? tierOWNER : t;
 }
 
 // clienttier <id> <tier> — the OWNER verb that re-tiers a connection (it acts

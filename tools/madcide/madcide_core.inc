@@ -163,6 +163,7 @@ void action_event(var &e, long code, const char *arg)
 }
 
 #include "madcide_plugin_code.inc"	// plugin code: the API table, activation, --build-plugin
+#include "madcide_plugin_host.inc"	// the host transport: a plugin's code in a child process
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -8833,6 +8834,7 @@ void IdeSession::stop_tasks()
 	stop_build(w, es);
     repl_stop(w, es);
     term_stop(w, es);
+    plugin_hosts_stop(w);
 }
 
 void IdeSession::close()

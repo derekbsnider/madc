@@ -830,7 +830,9 @@ long proposal_status_of(var &word)
 // message. Sniffing the params would be a guess; the relay is madcide's own
 // code on both ends, so it can simply say. A connection that never sends one
 // stays MCP — the behaviour every existing client already has.
-enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC, envHELLO };
+// envPLUGIN {"plugin": <verb>, ...} is the fourth: the plugin envelope
+// (plugin_verb), a plugin host's calls and G6's get / set for any client.
+enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC, envHELLO, envPLUGIN };
 long envelope_of(var &req)
 {
     if ( !req["jsonrpc"].is_null() )
@@ -839,6 +841,8 @@ long envelope_of(var &req)
 	return envAPI;
     if ( !req["madc"].is_null() )
 	return envHELLO;
+    if ( !req["plugin"].is_null() )
+	return envPLUGIN;
     return envNONE;
 }
 
@@ -1636,7 +1640,7 @@ long tool_family_of(const char *name)
 // of the manifest object:
 // "code" names the plugin's source file (one name in its directory), built
 // into its library <name><library_suffix> (madcide_plugin_code.inc).
-enum plugin_field : unsigned char { pfNONE = 0, pfNAME, pfTITLE, pfVERSION, pfAPI, pfCONTRIBUTES, pfCODE, pfLAST };
+enum plugin_field : unsigned char { pfNONE = 0, pfNAME, pfTITLE, pfVERSION, pfAPI, pfCONTRIBUTES, pfCODE, pfTRANSPORT, pfLAST };
 const char *plugin_field_name(long f)
 {
     switch ( f )
@@ -1647,6 +1651,7 @@ const char *plugin_field_name(long f)
 	case pfAPI: return "api";
 	case pfCONTRIBUTES: return "contributes";
 	case pfCODE: return "code";
+	case pfTRANSPORT: return "transport";
     }
     return "";
 }
@@ -1664,6 +1669,65 @@ long plugin_field_of(var &word)
 // madcide, its library loaded, its source compiled in when it activates, or a
 // child process speaking over the seat. An active plugin's row records it.
 enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLAST };
+const char *plugin_transport_name(long t)
+{
+    switch ( t )
+    {
+	case ptBUILTIN: return "builtin";
+	case ptLIBRARY: return "library";
+	case ptSOURCE: return "source";
+	case ptHOST: return "host";
+    }
+    return "";
+}
+long plugin_transport_of(var &word)
+{
+    if ( word.is_null() )
+	return ptNONE;
+    for ( long t = ptBUILTIN; t < ptLAST; t = t + 1 )
+	if ( word == plugin_transport_name(t) )
+	    return t;
+    return ptNONE;
+}
+
+// A plugin host's state (§5.4's host transport): its child running, being
+// started again after it ended, being stopped with its session, or stopped
+// for good (it ended too often, or would not start).
+enum plugin_host_state : unsigned char { hsNONE = 0, hsRUNNING, hsRESTARTING, hsSTOPPING, hsSTOPPED, hsLAST };
+
+// A message of the PLUGIN envelope ({"plugin": <verb>, ...}; §5.4's `host`
+// transport): what a plugin host's child asks of madcide — the API table's
+// calls (command, view, event at activation; run, command_id, get, set,
+// show) and its activation's end (activated) — and what madcide sends it
+// (start, invoke). The word is read once, at the line.
+enum plugin_verb : unsigned char { pvNONE = 0, pvSTART, pvCOMMAND, pvVIEW, pvEVENT, pvRUN, pvCOMMAND_ID, pvGET, pvSET, pvSHOW, pvACTIVATED, pvINVOKE, pvLAST };
+const char *plugin_verb_name(long v)
+{
+    switch ( v )
+    {
+	case pvSTART: return "start";
+	case pvCOMMAND: return "command";
+	case pvVIEW: return "view";
+	case pvEVENT: return "event";
+	case pvRUN: return "run";
+	case pvCOMMAND_ID: return "command_id";
+	case pvGET: return "get";
+	case pvSET: return "set";
+	case pvSHOW: return "show";
+	case pvACTIVATED: return "activated";
+	case pvINVOKE: return "invoke";
+    }
+    return "";
+}
+long plugin_verb_of(var &word)
+{
+    if ( word.is_null() )
+	return pvNONE;
+    for ( long v = pvSTART; v < pvLAST; v = v + 1 )
+	if ( word == plugin_verb_name(v) )
+	    return v;
+    return pvNONE;
+}
 
 // A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds
 // name a file in its existing format, and the kind's word IS the file's
