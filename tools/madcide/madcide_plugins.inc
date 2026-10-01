@@ -725,9 +725,11 @@ void cmd_name_w(var &out, long w, long code)
 
 // Register a contributed command. The name must be a plugin name
 // (plugin_name_ok) and new — neither a built-in's nor an earlier
-// contribution's; the handler must be an address. The code it is given; 0 =
-// refused.
-long plugin_command(long w, const char *name0, const char *title0, long handler)
+// contribution's; the handler must be a function (cmd_handler, kept as its
+// full-width address: a pointer never fits a Windows `long`). The code it is
+// given; 0 = refused.
+long plugin_command(long w, const char *name0, const char *title0,
+		    cmd_handler handler)
 {
     var name = name0;		// ring discipline: own the text first
     var title = title0;
@@ -739,7 +741,8 @@ long plugin_command(long w, const char *name0, const char *title0, long handler)
     var rows;
     contributed_commands(rows, w);
     long code = cmd_contrib_base() + php::count(rows);
-    rows[] = { "name": name, "code": code, "title": title, "handler": handler };
+    int64_t addr = (int64_t)handler;
+    rows[] = { "name": name, "code": code, "title": title, "handler": addr };
     ui::set(w, reg, "commands", rows);
     return code;
 }
@@ -783,16 +786,17 @@ long cmd_min_tier_w(long w, long code)
 // Thread contract: handlers run on the session's thread, between events,
 // never during composition.
 
-// Subscribe a handler to a kind. False = refused: a kind outside repl_event
-// or no handler.
-bool plugin_event(long w, long kind, long handler)
+// Subscribe a handler to a kind (kept as its full-width address, as a
+// command's is). False = refused: a kind outside repl_event or no handler.
+bool plugin_event(long w, long kind, event_handler handler)
 {
     if ( handler == 0 || kind <= reNONE || kind >= reLAST )
 	return false;
     long reg = plugin_registry_make(w);
     var rows;
     registry_rows(rows, w, "events");
-    rows[] = { "kind": kind, "handler": handler };
+    int64_t addr = (int64_t)handler;
+    rows[] = { "kind": kind, "handler": addr };
     ui::set(w, reg, "events", rows);
     return true;
 }

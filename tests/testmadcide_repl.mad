@@ -365,7 +365,7 @@ int main()
 
     // 10. The session's names: replbindings asks, the answer is published
     // to a subscriber with the rows.
-    bool subscribed = plugin_event(w, reBINDINGS, (long)&bound);
+    bool subscribed = plugin_event(w, reBINDINGS, bound);
     enter_line(S, doc, w, es, "int answer = 42;");
     ev_action(e, "replbindings", "");
     S.apply_ide_event(doc, e);

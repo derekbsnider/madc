@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide: plugin handlers and library handles at full width
+
+Plugin command and event handlers are now stored as int64_t in the registry verbs plugin_command() and plugin_event(), and plugin_activate() holds library handles and symbol addresses as int64_t. This prevents pointer truncation on Windows (LLP64, where long is 32 bits) that caused plugin library symbol lookups to fail under wine: the handler cast to int64_t preserves the full pointer value when stored. B101 filed: madc accepts casts from pointer to narrower integer (like `(int)p`, `(long)p` on Windows) where gcc and clang refuse them.
+
 ### session: the Windows build's interrupt guard has an explicit body
 
 The HostIgnoresInterrupt RAII guard struct on Windows now defines an explicit empty constructor body (no backend process yet per plan §41.9a), preventing mingw g++ -Wall -Werror from flagging the guard instances created in BackendSession::submit() and BackendSession::offer() as unused variables.

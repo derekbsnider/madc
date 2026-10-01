@@ -29,7 +29,7 @@
 // Each entry adapts the registry's or the session's one owner.
 long ide_api_command(long w, const char *name, const char *title, cmd_handler h)
 {
-    return plugin_command(w, name, title, (long)h);
+    return plugin_command(w, name, title, h);
 }
 
 long ide_api_view(long w, const char *name, const char *title, const char *key,
@@ -40,7 +40,7 @@ long ide_api_view(long w, const char *name, const char *title, const char *key,
 
 bool ide_api_event(long w, long kind, event_handler h)
 {
-    return plugin_event(w, kind, (long)h);
+    return plugin_event(w, kind, h);
 }
 
 // A command run from a handler goes through the one dispatcher as a key
@@ -142,14 +142,14 @@ bool plugin_activate(long w, var &dir, const char *name0, var &why)
 	return false;
     }
     var lwhy;
-    long h = madc::library_open(lib.c_str(), lwhy);
+    int64_t h = madc::library_open(lib.c_str(), lwhy);
     if ( h == 0 )
     {
 	why = format("{} cannot be loaded: {}", lib, lwhy);
 	return false;
     }
-    long va = madc::library_symbol(h, "madcide_plugin_api");
-    long aa = madc::library_symbol(h, "madcide_plugin_activate");
+    int64_t va = madc::library_symbol(h, "madcide_plugin_api");
+    int64_t aa = madc::library_symbol(h, "madcide_plugin_activate");
     if ( va == 0 || aa == 0 )
     {
 	madc::library_close(h);

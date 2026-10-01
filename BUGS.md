@@ -435,6 +435,37 @@ int main(void)
 
 ## Accepts invalid code
 
+### B101. A cast from a pointer to a narrower integer type is accepted: `(int)p`, and `(long)p` on Windows
+
+```cpp
+typedef bool (*fn)(long);
+bool f(long x) { return x > 0; }
+int main()
+{
+	fn p = f;
+	int n = (int)p;
+	return n == 0;
+}
+```
+
+- g++ 13: `error: cast from 'fn' {aka 'bool (*)(long int)'} to 'int' loses
+  precision [-fpermissive]`; clang++ 18: `error: cast from pointer to
+  smaller type 'int' loses information` ([expr.reinterpret.cast]/4: a
+  pointer converts only to an integral type large enough to hold it). madc
+  (`--std=c++17`, `bin/madc` at `2e77c5504`): compiles, runs, exit 0, the
+  pointer truncated to 32 bits. In C, gcc and clang warn
+  (`-Wpointer-to-int-cast`, on by default); madc says nothing.
+- On Windows `long` is 32 bits (LLP64), so `(long)p` is the same cast. The
+  madcide plugin registry kept command handlers and library handles that
+  way; on Linux it worked, and under wine a plugin library's symbol lookups
+  went through a truncated handle and found nothing. Found 2026-10-01
+  bringing the plugin `library` transport to Windows (plan §41.11a step 4);
+  the registry now keeps them as `int64_t`, in its own commit.
+- Layer (suspected): the cast's semantic check (`TokenCast`,
+  `include/madc.h`, read by `Program::parseCastExpression`): nothing
+  compares a pointer operand's width with an integer target's. A core
+  parser change: its own focused session (owner, 2026-09-13).
+
 ### B95. `std::string s = 5;` is accepted, then fails at link without a position
 
 ```cpp

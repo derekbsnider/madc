@@ -84,12 +84,12 @@ int main()
     long w = S.world();
 
     // 1. Registration.
-    long code = plugin_command(w, "greet", "Greet", (long)&greet);
+    long code = plugin_command(w, "greet", "Greet", greet);
     println("contrib-register: above-base={} again={} builtin-name={} bad-name={} no-handler={}",
 	    code >= cmd_contrib_base() ? 1 : 0,
-	    plugin_command(w, "greet", "Greet", (long)&greet),
-	    plugin_command(w, "save", "Save", (long)&greet),
-	    plugin_command(w, "two words", "x", (long)&greet),
+	    plugin_command(w, "greet", "Greet", greet),
+	    plugin_command(w, "save", "Save", greet),
+	    plugin_command(w, "two words", "x", greet),
 	    plugin_command(w, "other", "x", 0));
 
     // 2. The converters.
@@ -143,7 +143,7 @@ int main()
     println("contrib-mcp: listed={} lsp={}", listed, offered);
 
     // 6. A view's registration.
-    long show = plugin_command(w, "variables", "Variables", (long)&show_vars);
+    long show = plugin_command(w, "variables", "Variables", show_vars);
     long kind = plugin_view(w, "variables", "Variables", "test.vars", show);
     println("contrib-view-register: above-base={} again={} builtin-name={} bad-key={} bad-show={}",
 	    view_contributed(kind) ? 1 : 0,
@@ -219,10 +219,10 @@ int main()
     // 10. The REPL pane's reply events: an entry taken, a run returned (no
     // subscriber), the session stopped, the session's names answered (an
     // older request's answer is dropped).
-    bool sub1 = plugin_event(w, reTAKEN, (long)&heard);
-    bool sub2 = plugin_event(w, reSTOPPED, (long)&heard);
-    bool sub3 = plugin_event(w, reBINDINGS, (long)&heard);
-    bool badk = plugin_event(w, reLAST, (long)&heard);
+    bool sub1 = plugin_event(w, reTAKEN, heard);
+    bool sub2 = plugin_event(w, reSTOPPED, heard);
+    bool sub3 = plugin_event(w, reBINDINGS, heard);
+    bool badk = plugin_event(w, reLAST, heard);
     bool noh = plugin_event(w, reRAN, 0);
     ui::set(w, S.es, "replbusy", 7);
     var taken = { "kind": madc::session_reply::offer, "seq": 7,
