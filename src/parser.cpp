@@ -79490,7 +79490,6 @@ bool Program::begin_interactive_session(const std::string &display_name)
     tkFunction = tkProgram;
     flush_forest_pending_globals();
     tkProgram->source = fname;
-    tkProgram->is = new std::stringstream(std::string());
     _parser_init();
     ast.push_back(tkProgram);
     return true;

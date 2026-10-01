@@ -1604,10 +1604,9 @@ class TokenProgram: public TokenCpnd
 {
 public:
     std::string source;
-    std::istream *is;
     uint32_t lines;
     size_t bytes;
-    TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; is = NULL; }
+    TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; }
     virtual TokenType type() const override { return TokenType::ttProgram; }
 };
 

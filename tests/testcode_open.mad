@@ -12,7 +12,13 @@
 //   3. two opened codes keep their own same-named statics apart;
 //   4. refusals, each with its row: a missing file, include directories
 //      that are not an array, a source that does not compile (its row
-//      positioned).
+//      positioned);
+//   5. a source compiled, then closed, or refused is no longer held open:
+//      it can be removed (Windows refuses to remove an open file — a
+//      compile that kept its main file open left a madcide plugin's source
+//      locked for the life of the process). Oracle: g++ 13 and clang++ 18
+//      close a translation unit's files once they are read; under wine the
+//      three removals then succeed.
 // Oracle: g++ 13 and clang++ 18 over the same TU (std::format in place of
 // format, a std::string global) linked into a host that calls the three
 // functions print `answer 42`, `greet hello, plugin`, `count 3 then 4`.
@@ -98,11 +104,14 @@ int main()
 		line0 = d[0]["line"].as_integer();
 	println("broken: {} line-pos={}", h5 == 0 ? 1 : 0, line0 > 0 ? 1 : 0);
 
+	// 5. Closed or refused, a source is not held open.
 	madc::code_close(h2);
 	madc::code_close(h);
-	php::unlink(bad.c_str());
-	php::unlink(src.c_str());
-	php::unlink(hdr.c_str());
+	bool rb = php::unlink(bad.c_str());
+	bool rs = php::unlink(src.c_str());
+	bool rh = php::unlink(hdr.c_str());
+	println("released: refused={} closed={} header={}", rb ? 1 : 0, rs ? 1 : 0,
+		rh ? 1 : 0);
 	php::rmdir(inc.c_str());
 	php::rmdir(dir.c_str());
 	return 0;

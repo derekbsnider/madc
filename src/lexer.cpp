@@ -10767,7 +10767,6 @@ TokenProgram *Program::tokenize(const char *fname)
     file.clear();
 
     tkProgram->source = fname;
-    tkProgram->is = new ifstream(fname);
     tkProgram->lines = source.line()-1;
     tkProgram->bytes = file.tellg();
 
@@ -10799,7 +10798,6 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     flush_forest_pending_globals();	// v13: globals staged during #include bind
 
     tkProgram->source = effective_name;
-    tkProgram->is = new std::stringstream(source_text);
     tkProgram->lines = source.line()-1;
     tkProgram->bytes = source_text.size();
 

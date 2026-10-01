@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### lexer: TokenProgram::is removed — files released after tokenize
+
+The unused TokenProgram::is member (assigned but never read) is removed, freeing source files after tokenization. On Windows this allows code_open'd or refused sources to be removed immediately after compilation, fixing lock-timeout issues where the main file was held open by madcide's source plugins. Oracle: g++ 13 and clang++ 18 close TU files after reading; madc now matches. Gate: tests/testcode_open pin 5.
+
 ### TypeSpeller: spell template instantiations as their source template-ids (B97)
 
 When a template instantiation has no alias name, %type and the show's type word now spell the template-id as g++ and clang++ write it (template name, source-argument types, trailing defaults omitted) instead of the canonical spelling (all defaults expanded). New helpers template_word and argument_word compute the source template-id from the canonical spelling by looking up template defaults and trimming matches. Test: eleven cases covering std::vector, std::map, std::list, std::string, and user-defined templates with and without default arguments.
