@@ -392,7 +392,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 61 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (six lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `make -C src fulltest` once per merge wave — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 65 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (six lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `make -C src fulltest` once per merge wave — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -418,10 +418,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **36 rules, 1215 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1231 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~459 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1695 lines.**
+- **Grand total loaded by Claude Code per turn: ~1711 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

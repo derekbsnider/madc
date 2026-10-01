@@ -22,6 +22,10 @@ and produces exactly the oscillation this rule exists to stop.
   TIER 3  THE SEAM BATTERY, per MERGE WAVE — hours. `make -C src fulltest`
           plus the platform lanes, at the arc's release boundary only.
 
+  PER FIX = ONE command, Tier 1 + Tier 2: `scripts/fix_lanes.sh <globs>`
+          (remote: `TESTS='<globs>' remote_build.sh sync build fix`). Never
+          hand-chain the batch or the packed suite onto a fix.
+
 TIER 2 IS NOT OPTIONAL AND IS NOT A SUITE. Three minutes is cheaper than the
 targeted run it is being skipped in favour of. A change to `src/`, `include/`
 or `third_party/` that has not run Tier 2 is not validated, however many

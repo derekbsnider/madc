@@ -178,3 +178,19 @@ would make it per fix, and the develop push already requires the battery,
 whose fulltest runs the same suite. What it does is speak: `lane_ledger.sh
 check` prints a BATCH reminder while the row is stale, and `/commit` runs that
 check, so the reminder is in front of whoever is committing.
+
+## Why the per-fix gate is one named command (owner, 2026-10-01)
+
+During a bug run (B112, a non-deduced-conversion regression, B111), every fix
+was validated by a hand-composed chain: Tier 1, Tier 2, the batch, `make -C src
+release` and the packed suite, about thirty minutes per fix. The rule already
+said the batch runs once per batch of fixes and the memory file said so too;
+the drift happened because the per-fix run was re-typed each time, and each
+re-typing appended whatever had last been useful. The owner: "we certainly
+cannot be running a 30+ minute barrage of tests for each individual bug fix",
+and, on hearing the rule was already written down, "maybe we need a command
+for this". `scripts/fix_lanes.sh` (and `remote_build.sh`'s `fix` stage) is that
+command: Tier 1 over the fix's globs on JIT, exe and obj, then Tier 2, about
+five minutes, with a zero-test Tier 1 counted RED because a wrong glob looks
+green otherwise. A rule restated in prose decays; a command that does exactly
+the per-fix work, and nothing more, is the mechanism.

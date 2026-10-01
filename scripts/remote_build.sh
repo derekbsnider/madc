@@ -21,6 +21,9 @@
 #             MADC_FAST_NO_RECORD=1 — the ledger that gates a push is the
 #             NAS checkout's, so record the printed tallies HERE, never on
 #             the rsync copy where nothing would read them
+#   fix       the PER-FIX gate (scripts/fix_lanes.sh): Tier 1 over TESTS='<glob>
+#             ...' (JIT + exe + obj), then Tier 2 (fast_lanes.sh). ~5 minutes;
+#             the ONE command a fix runs. No-record, as for fastlanes
 #   batch     the BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
 #             JIT only, once per batch of fixes; MADC_BATCH_NO_RECORD=1, so
 #             record its printed tests-jit tally HERE, as for fastlanes
@@ -276,6 +279,18 @@ for stage in $stages; do
 		# one command from the NAS. No-record on purpose: see the usage
 		# note above — a row written on the rsync copy gates nothing.
 		run_remote "fastlanes" "cd $REMOTE_MADC; MADC_FAST_NO_RECORD=1 bash scripts/fast_lanes.sh"
+		;;
+	fix)
+		# The PER-FIX gate (scripts/fix_lanes.sh): Tier 1 over TESTS, then
+		# Tier 2. `set -f`: the globs are run_tests.sh's to match against
+		# tests/, never the remote shell's against the repo root. No-record
+		# for the fastlanes reason.
+		if [ -z "$TESTS" ]; then
+			echo "stage 'fix' needs TESTS='<glob> [glob...]'" >&2
+			note_stage "fix" 1
+		else
+			run_remote "fix" "cd $REMOTE_MADC; set -f; MADC_FAST_NO_RECORD=1 bash scripts/fix_lanes.sh $TESTS"
+		fi
 		;;
 	batch)
 		# The BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,

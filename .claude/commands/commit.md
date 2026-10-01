@@ -48,21 +48,25 @@ Run this.**
    before believing anything downstream. Zero warnings is an owner law; the
    build is `-Werror`, so a warning is already a failure.
 
-5. **Tier 1 — targeted.** `bash scripts/run_tests.sh [--exe --obj] <names>` on
-   the container, over the new test plus its neighbors. A fix touching native
-   artifact, AOT or shared codegen paths runs `--exe --obj` too. A new fix
-   without a reducer in `tests/` carrying BOTH oracles is not ready to commit
-   (`.claude/rules/fix-what-you-find.md`).
-
-6. **Tier 2 — fast conformance.** On the container:
-   `( ulimit -t 3600; timeout 2400 bash scripts/fast_lanes.sh )`, redirected to
-   a log. It is a RATCHET: a test failing OUTSIDE its recorded baseline is a
+5–6. **Tier 1 + Tier 2 — ONE command.**
+   `TESTS='<glob> [glob...]' bash scripts/remote_build.sh sync build fix`
+   (scripts/fix_lanes.sh on the container, ~5 minutes): Tier 1 runs the globs
+   — the new test plus its neighbors — on JIT, exe and obj in one run; Tier 2
+   runs `scripts/fast_lanes.sh` under its CPU and wall caps. It prints one
+   tally line per tier and ends `fix_lanes: GREEN` or `RED`. **Run this, never
+   a hand-chained sequence:** chaining is how the batch and the packed suite
+   crept into every fix (owner 2026-10-01). A Tier 1 that matches no test is
+   RED (a wrong glob). A new fix without a reducer in `tests/` carrying BOTH
+   oracles is not ready to commit (`.claude/rules/fix-what-you-find.md`).
+   Tier 2 is a RATCHET: a test failing OUTSIDE its recorded baseline is a
    regression and **stops the commit**; a baseline test that now passes is LOUD
    and means shrink the baseline in the same commit. Do not pipe a long run to
    `head`/`tail` — it hides the exit status
    (`[[feedback_selfhost_lane_harness_traps]]`).
    **A red lane is not a reason to commit anyway and fix later.** The tier's
    whole value is finding it while the change is still one change.
+   **Nothing else runs per fix:** the batch is step 10's, once per batch of
+   fixes; the packed and platform lanes are the seam battery's.
 
 7. **Write the message.** A commit touching `src/` or `include/` carries the
    four trailers, and `scripts/check-rule-trailers.sh` fails the build without
