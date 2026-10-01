@@ -874,10 +874,11 @@ long cmd_min_tier_w(long w, long code)
 // never during composition.
 
 // Subscribe a handler to a kind (kept as its full-width address, as a
-// command's is). False = refused: a kind outside repl_event or no handler.
+// command's is). False = refused: a kind outside repl_event and
+// session_event (event_kind_ok), or no handler.
 bool plugin_event(long w, long kind, event_handler handler)
 {
-    if ( handler == 0 || kind <= reNONE || kind >= reLAST )
+    if ( handler == 0 || !event_kind_ok(kind) )
 	return false;
     long reg = plugin_registry_make(w);
     var rows;
@@ -893,7 +894,7 @@ bool plugin_event(long w, long kind, event_handler handler)
 // subscriptions first (plugin_host_forget_events) and subscribes again.
 bool plugin_event_hosted(long w, long kind, var &host, long hid)
 {
-    if ( kind <= reNONE || kind >= reLAST )
+    if ( !event_kind_ok(kind) )
 	return false;
     long reg = plugin_registry_make(w);
     var rows;
@@ -1087,12 +1088,12 @@ bool view_key_ok(const char *key)
     return false;
 }
 
-// Register a contributed view. The name must be a plugin name and new
-// (neither a built-in view's nor an earlier contribution's), the key the
-// plugin's own (view_key_ok), and `show` cmdNONE or a contributed command.
-// The kind it is given; viewNONE = refused.
-long plugin_view(long w, const char *name0, const char *title0,
-		 const char *key0, long show)
+// Register a contributed view of a shape (view_shape). The name must be a
+// plugin name and new (neither a built-in view's nor an earlier
+// contribution's), the key the plugin's own (view_key_ok), and `show`
+// cmdNONE or a contributed command. The kind it is given; viewNONE = refused.
+long plugin_view_shaped(long w, const char *name0, const char *title0,
+			const char *key0, long show, long shape)
 {
     var name = name0;		// ring discipline: own the text first
     var title = title0;
@@ -1115,9 +1116,26 @@ long plugin_view(long w, const char *name0, const char *title0,
     if ( view_row_cmd(kind) >= cmd_contrib_base() )
 	return viewNONE;	// the row verbs' range is full
     rows[] = { "name": name, "kind": kind, "title": title, "key": key,
-	       "show": show };
+	       "show": show, "shape": shape };
     ui::set(w, reg, "views", rows);
     return kind;
+}
+
+// A row-list view (vsROWS): the plugin API's `view`.
+long plugin_view(long w, const char *name0, const char *title0,
+		 const char *key0, long show)
+{
+    return plugin_view_shaped(w, name0, title0, key0, show, vsROWS);
+}
+
+// A view's shape: a contributed view's row's, vsROWS for every other.
+long view_shape_w(long w, long kind)
+{
+    if ( !view_contributed(kind) )
+	return vsROWS;
+    var r;
+    registry_row(r, w, "views", "kind", kind);
+    return r.is_null() ? vsROWS : r["shape"].as_integer();
 }
 
 // Register a view a plugin HOST contributes: plugin_view's, its row marked

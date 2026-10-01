@@ -58,6 +58,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
     ui::set(w, es, "replstd", "c11");
@@ -140,8 +141,8 @@ int main()
 	    {
 		stage = 13;			// F5 applied: the replies come on the pump
 		var an;
-		cmd_name(an, ev_code(ev));	// a code-bound chord carries its code
-		println("REPL f5: action={} focus={}", an, es_int(w, es, "replfocus", 0));
+		cmd_name_w(an, w, ev_code(ev));	// a code-bound chord carries its code
+		println("REPL f5: action={} focus={}", an, (es_int(w, es, "consolefocus", 0) == repl_view(w) ? 1 : 0));
 	    }
 	    if ( ev["event"] != "key" )
 		continue;
@@ -157,7 +158,7 @@ int main()
 		stage = 11;
 		var in;
 		ui::text(in, w, repl_input_doc(w, es));
-		println("REPL unfocused: focus={} input={}", es_int(w, es, "replfocus", 0), in);
+		println("REPL unfocused: focus={} input={}", (es_int(w, es, "consolefocus", 0) == repl_view(w) ? 1 : 0), in);
 		probe_panel(t, "twice_it");
 	    }
 	}

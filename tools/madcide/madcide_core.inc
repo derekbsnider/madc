@@ -1098,7 +1098,7 @@ bool load_layout(long w, long es, const char *name)
     {
 	var fallback;
 	var ferr;
-	parse_layout(fallback, default_layout_text(), ferr);
+	parse_layout(fallback, default_layout_text(), ferr, w);
 	ui::set(w, es, "layout", fallback);
 	ui::set(w, es, "msg", format("Layout '{}' {} — the default layout is in use.", lname, err));
 	return false;
@@ -1220,7 +1220,7 @@ void layout_get(var &lo, long w, long es)
     if ( lo.is_null() )
     {
 	var err;
-	parse_layout(lo, default_layout_text(), err);
+	parse_layout(lo, default_layout_text(), err, w);
 	ui::set(w, es, "layout", lo);
     }
 }
@@ -4042,7 +4042,7 @@ void layout_persist(long w, long es)
 
 // An ASSET is a file; a pseudo-buffer ([build], [terminal], [repl]) is
 // named in brackets — a view the IDE writes, bytes only. The one test: the
-// layer owner (asset_layers_of), projadd and F5 (repl_run) read it.
+// layer owner (asset_layers_of), projadd and F5 (the REPL pane's replrun) read it.
 bool path_is_asset(var &p)
 {
     if ( p.is_null() )
@@ -4643,12 +4643,12 @@ bool choice_action(var &act, long w, long es, long option)
 }
 
 // The editor window has the keyboard: no other owner holds it — the
-// terminal, the REPL input, a prompt, the project window or the modes
+// terminal, a console's input (the REPL pane's), a prompt, the project window or the modes
 // palette (apply_ide_event's routing order, read as one fact).
 bool editor_has_keyboard(long w, long es)
 {
     return es_int(w, es, "termfocus", 0) == 0
-	&& es_int(w, es, "replfocus", 0) == 0
+	&& es_int(w, es, "consolefocus", 0) == 0
 	&& !prompt_active(w, es) && !project_active(w, es)
 	&& !modes_active(w, es);
 }
@@ -5153,9 +5153,234 @@ bool terminal_event(long w, long es, var &ev)
     return false;
 }
 
-// The panel's REPL tab (plan §41.9a): a session in its own process, its
-// transcript and its input field — beside the Terminal it borrows from.
-#include "madcide_repl.inc"
+// ---- the console view (plan §41.11a step 8) --------------------------------
+// A contributed view of shape vsCONSOLE (the REPL pane's, madcide_repl.inc):
+// its key holds { transcript, input, prompt, editable } — the transcript's
+// and the input's documents, the prompt the input follows ("" = none), and
+// whether the input takes edits now — which its plugin keeps current.
+// Composition renders it (console_node) and never calls the plugin. Which
+// console has the keyboard is the es `consolefocus` (its kind; 0 = none).
+// Its input is a FIELD: a document edited under the editor's own interaction
+// state, the editor's parked while the field's is live (field_enter /
+// field_leave) and the field's own kept on its document.
+
+// A console view's state (null when its plugin has set none).
+void console_state(var &out, long w, long es, long kind)
+{
+    var key;
+    view_rows_key(key, w, kind);
+    if ( strlen(key.c_str()) > 0 )
+	ui::get(out, w, es, key.c_str());
+}
+
+// One document of a console's state ("transcript" or "input"; 0 = none yet).
+long console_doc(long w, long es, long kind, const char *field)
+{
+    var st;
+    console_state(st, w, es, kind);
+    var d;
+    keyed_get(d, st, field);
+    return d.is_null() ? 0 : d.as_integer();
+}
+
+// Does a console's input take edits now (true when its plugin says nothing)?
+bool console_editable(long w, long es, long kind)
+{
+    var st;
+    console_state(st, w, es, kind);
+    var e;
+    keyed_get(e, st, "editable");
+    return e.is_null() || e.as_boolean();
+}
+
+// The console view whose input is `doc` (viewNONE = none).
+long console_of_input(long w, long es, long doc)
+{
+    if ( doc == 0 )
+	return viewNONE;
+    var rows;
+    contributed_views(rows, w);
+    for ( var r : rows )
+    {
+	var shape;
+	keyed_get(shape, r, "shape");
+	if ( shape.is_null() || shape.as_integer() != vsCONSOLE )
+	    continue;
+	long k = r["kind"].as_integer();
+	if ( console_doc(w, es, k, "input") == doc )
+	    return k;
+    }
+    return viewNONE;
+}
+
+// A field's caret moved to `caret` with no mark, block or selection (its
+// text replaced: a history recall, a taken entry's clearing).
+void field_reset(long w, long fdoc, long caret)
+{
+    ui::set(w, fdoc, "caret", caret);
+    ui::set(w, fdoc, "mark", -1);
+    ui::set(w, fdoc, "bend", -1);
+    ui::set(w, fdoc, "selgui", false);
+}
+
+// A FIELD's document: not a buffer-table row, its own caret, mark and
+// selection kept on it while the field is not live.
+long field_document(long w, const char *name)
+{
+    long d = new_document(w, name, "");
+    ui::set(w, d, "field", true);
+    field_reset(w, d, 0);
+    return d;
+}
+
+bool field_doc(long w, long doc)
+{
+    if ( doc == 0 )
+	return false;
+    var f;
+    ui::get(f, w, doc, "field");
+    return !f.is_null() && f.as_boolean();
+}
+
+// A field's caret while it is not live.
+long field_caret(long w, long fdoc)
+{
+    var c;
+    ui::get(c, w, fdoc, "caret");
+    return c.is_null() ? 0 : c.as_integer();
+}
+
+// The field's state made live, the editor's parked in `parked`: the
+// session's editing commands then run on the field's document without
+// touching the editor's caret, selection or colour.
+void field_enter(var &parked, long w, long es, long fdoc)
+{
+    var ed;
+    ui::get(ed, w, es, "editable");
+    var ro;
+    ui::get(ro, w, es, "ro_msg");
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    parked = { "caret": es_int(w, es, "caret", 0), "mark": es_int(w, es, "mark", -1),
+	       "bend": es_int(w, es, "bend", -1), "selgui": es_flag(w, es, "selgui"),
+	       "fview": es_int(w, es, "fview", 0),
+	       "anchor": es_int(w, es, "anchor", -1), "editable": ed,
+	       "ro_msg": ro, "hspans": hs };
+    var none = {};
+    ui::set(w, es, "caret", field_caret(w, fdoc));
+    ui::set(w, es, "mark", es_int(w, fdoc, "mark", -1));
+    ui::set(w, es, "bend", es_int(w, fdoc, "bend", -1));
+    ui::set(w, es, "selgui", es_flag(w, fdoc, "selgui"));
+    ui::set(w, es, "fview", 0);		// no View: nav_doc is the field itself
+    ui::set(w, es, "anchor", -1);
+    ui::set(w, es, "editable", true);
+    ui::set(w, es, "ro_msg", "");
+    ui::set(w, es, "hspans", none);
+}
+
+// The field's live state kept on its document, the editor's restored.
+void field_leave(var &parked, long w, long es, long fdoc)
+{
+    ui::set(w, fdoc, "caret", es_int(w, es, "caret", 0));
+    ui::set(w, fdoc, "mark", es_int(w, es, "mark", -1));
+    ui::set(w, fdoc, "bend", es_int(w, es, "bend", -1));
+    ui::set(w, fdoc, "selgui", es_flag(w, es, "selgui"));
+    ui::set(w, es, "caret", parked["caret"]);
+    ui::set(w, es, "mark", parked["mark"]);
+    ui::set(w, es, "bend", parked["bend"]);
+    ui::set(w, es, "selgui", parked["selgui"]);
+    ui::set(w, es, "fview", parked["fview"]);
+    ui::set(w, es, "anchor", parked["anchor"]);
+    ui::set(w, es, "editable", parked["editable"]);
+    ui::set(w, es, "ro_msg", parked["ro_msg"]);
+    ui::set(w, es, "hspans", parked["hspans"]);
+}
+
+// Replace `del` bytes at `off` with `ins` in a field, its caret after the
+// insertion (through the text-mutation owners, under the field's state).
+void field_edit(long w, long es, long fdoc, long off, long del, const char *ins)
+{
+    var t = ins;
+    var parked;
+    field_enter(parked, w, es, fdoc);
+    if ( del > 0 )
+	ed_text_erase(w, es, fdoc, off, del);
+    if ( strlen(t.c_str()) > 0 )
+	ed_text_insert(w, es, fdoc, off, t.c_str());
+    ui::set(w, es, "caret", off + strlen(t.c_str()));
+    field_leave(parked, w, es, fdoc);
+}
+
+// Text as a console shows an entry: the prompt, then the text, each line
+// after the first indented to the prompt's width (the CLI's rule).
+void console_entry_display(var &out, const char *prompt, const char *text)
+{
+    var p = prompt;
+    var t = text;
+    var pad = php::str_repeat(" ", ui::text_columns(p.c_str()));	// columns (B87)
+    array lines;
+    php::explode(lines, "\n", t.c_str());
+    long n = php::count(lines);
+    var s = p;
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var one = php::array_get_cstr(lines, i);
+	if ( i == 0 )
+	    s = format("{}{}", s, one);
+	else
+	    s = format("{}\n{}{}", s, pad, one);
+    }
+    out = s;
+}
+
+// Where the input's caret falls in that display.
+long console_display_caret(const char *prompt, const char *text, long caret)
+{
+    long pl = strlen(prompt);
+    long nl = 0;
+    for ( long i = 0; i < caret && text[i] != 0; i = i + 1 )
+	if ( text[i] == '\n' )
+	    nl = nl + 1;
+    return pl + caret + nl * pl;
+}
+
+// Where an event goes while a console's input has the keyboard.
+enum console_route : unsigned char { crPASS = 0, crHANDLED, crFIELD, crCOMMAND };
+
+// Route one event while console `kind`'s input has the keyboard: a binding
+// in the scope the view names is its command (crCOMMAND for a contributed
+// one, the console's own; a built-in one is the event's action from here
+// on), text and the field's commands edit the input, the rest passes on.
+long console_route_event(long w, long es, long kind, var &ev)
+{
+    var ek = ev["event_code"];
+    if ( ek != ui::event_kind::text && ek != ui::event_kind::key
+	 && ek != ui::event_kind::action )
+	return crPASS;
+    var scope;
+    view_name_w(scope, w, kind);
+    var a;
+    if ( scoped_action(a, w, es, scope.c_str(), ev) )
+    {
+	long code = a.as_integer();
+	// The binding's command, as an action event (the key's own spelling
+	// stays in `seq`, the one a scope looks up).
+	var an;
+	cmd_name_w(an, w, code);
+	ev["event"] = "action";
+	ev["event_code"] = ui::event_kind::action;
+	ev["action"] = an;
+	ev["action_code"] = code;
+	if ( cmd_contributed(code) )
+	    return crCOMMAND;
+	if ( !cmd_edits_field(code) )
+	    return crPASS;
+	return console_editable(w, es, kind) ? crFIELD : crHANDLED;
+    }
+    if ( ek == ui::event_kind::action && !cmd_edits_field(ev_code(ev)) )
+	return crPASS;
+    return console_editable(w, es, kind) ? crFIELD : crHANDLED;
+}
 
 void stop_build(long w, long es)
 {
@@ -6083,19 +6308,19 @@ void IdeSession::pointer_event(long doc, long nav, var &ev)
     if ( tdoc != 0 && tsubj == tdoc )
     {
 	ui::set(w, es, "termfocus", 1);
-	ui::set(w, es, "replfocus", 0);
+	ui::set(w, es, "consolefocus", 0);
 	return;
     }
     ui::set(w, es, "termfocus", 0);
-    // The REPL tab likewise: a press on its node (the input buffer is its
-    // subject) gives the input the keyboard.
-    long rin = es_int(w, es, "replin", 0);
-    if ( rin != 0 && tsubj == rin )
+    // A console likewise (the REPL pane's): a press on its node (its input
+    // is the subject) gives the input the keyboard.
+    long ck = console_of_input(w, es, tsubj);
+    if ( ck != viewNONE )
     {
-	ui::set(w, es, "replfocus", 1);
+	ui::set(w, es, "consolefocus", ck);
 	return;
     }
-    ui::set(w, es, "replfocus", 0);
+    ui::set(w, es, "consolefocus", 0);
     long idx = -1;
     long tag = ev["tag"].is_null() ? -1 : ev["tag"].as_integer();
     if ( tag >= 0 && tag < window_count(w, es) )
@@ -6797,6 +7022,19 @@ void view_window(long w, long es, long doc)
 // session surface. False = quit.
 bool IdeSession::apply_ide_event(long doc, var &ev_in)
 {
+    // An event on a FIELD's document runs under the field's state (a
+    // console's input: its routing below, a handler's ide::run on it), the
+    // editor's parked around it; inside, the field is live already.
+    if ( field_doc(w, doc) && es_int(w, es, "infield", 0) != doc )
+    {
+	var parked;
+	field_enter(parked, w, es, doc);
+	ui::set(w, es, "infield", doc);
+	bool fcont = apply_ide_event(doc, ev_in);
+	ui::set(w, es, "infield", 0);
+	field_leave(parked, w, es, doc);
+	return fcont;
+    }
     // The startup hint yields to the first event of any kind — the same
     // "first event returns the row" rule run_ide's loop used to apply.
     ui::set(w, es, "hint", 0);
@@ -6852,27 +7090,25 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( modes_active(w, es) )
 	return modes_event(w, es, nav, caret, ev);
 
-    // The REPL tab's input has the keyboard (plan §41.9a): its @repl scope
-    // first, then text and the field's commands edit the input buffer —
-    // the session's own dispatch, on that buffer, under the field's caret
-    // with the editor's parked around it — and every other command keeps
-    // its target (save saves the file). The modals above keep theirs.
-    if ( es_int(w, es, "replfocus", 0) != 0 )
+    // A console's input has the keyboard (plan §41.11a step 8; the REPL
+    // pane's, §41.9a): a binding in the scope the view names runs its
+    // command, text and the field's commands edit the input — the session's
+    // own dispatch on the input document, under the field's state (the
+    // field rule above) — and every other command keeps its target (save
+    // saves the file). The modals above keep theirs.
+    long cfocus = es_int(w, es, "consolefocus", 0);
+    if ( cfocus != 0 )
     {
-	long rin = repl_input_doc(w, es);
-	if ( doc != rin )
+	long fin = console_doc(w, es, cfocus, "input");
+	if ( fin != 0 && doc != fin )
 	{
-	    long route = repl_route(w, es, ev);
-	    if ( route == rrHANDLED )
+	    long route = console_route_event(w, es, cfocus, ev);
+	    if ( route == crHANDLED )
 		return true;
-	    if ( route == rrFIELD )
-	    {
-		var parked;
-		repl_field_enter(parked, w, es);
-		bool fcont = apply_ide_event(rin, ev);
-		repl_field_leave(parked, w, es);
-		return fcont;
-	    }
+	    if ( route == crCOMMAND )
+		return run_contributed(w, es, doc, ev_code(ev), "");
+	    if ( route == crFIELD )
+		return apply_ide_event(fin, ev);
 	}
     }
 
@@ -7245,27 +7481,10 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		if ( es_int(w, es, "termlive", 0) != 0 )
 		{
 		    ui::set(w, es, "termfocus", 1);
-		    ui::set(w, es, "replfocus", 0);
+		    ui::set(w, es, "consolefocus", 0);
 		}
 		return true;
 	    }
-	    case cmdREPL:
-	    {
-		repl_show(w, es);
-		return true;
-	    }
-	    case cmdREPLRUN:
-	    {
-		// F5: the stored buffer (never a view of it) into the REPL tab.
-		repl_run(w, es, doc);
-		return true;
-	    }
-	    case cmdREPLSTOP:
-		repl_stop_restart(w, es);
-		return true;
-	    case cmdREPLBINDINGS:
-		repl_bindings(w, es);
-		return true;
 	    case cmdKEYSTYLE:
 	    {
 		// Tools ▸ Key bindings…: its argument (a choice row's, the
@@ -7276,18 +7495,6 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		if ( !ka.is_null() )
 		    ks = format("{}", ka);
 		key_style(w, es, ks.c_str());
-		return true;
-	    }
-	    case cmdREPLLANG:
-	    {
-		// Run ▸ Language…: its argument (the seat's, -c's, a choice
-		// row's) or the choice list.
-		var la;
-		keyed_get(la, ev, "arg");
-		var ls = "";
-		if ( !la.is_null() )
-		    ls = format("{}", la);
-		repl_lang(w, es, ls.c_str());
 		return true;
 	    }
 	    case cmdBUFSEL:
@@ -7637,6 +7844,54 @@ void contributed_view_node(var &out, long w, long es, long kind, bool focus)
     out = cb;
 }
 
+// A console view's node (vsCONSOLE): one edit node over the transcript, then
+// the prompt and the input (no prompt while its plugin shows none: an entry
+// that runs reads the input as its standard input), the caret in the input.
+// Its subject is the input: a press on it gives the input the keyboard
+// (pointer_event). The state is the plugin's; this renders it.
+void console_node(var &out, long w, long es, long kind)
+{
+    var st;
+    console_state(st, w, es, kind);
+    var tt = "";
+    long tdoc = console_doc(w, es, kind, "transcript");
+    if ( tdoc != 0 )
+	ui::text(tt, w, tdoc);
+    long tlen = strlen(tt.c_str());
+    if ( tlen > 0 && tt.c_str()[tlen - 1] != '\n' )
+    {
+	tt = format("{}\n", tt);		// a fresh row after output with no newline
+	tlen = tlen + 1;
+    }
+    long fin = console_doc(w, es, kind, "input");
+    var content = tt;
+    long caret = tlen;
+    if ( fin != 0 && console_editable(w, es, kind) )
+    {
+	var in;
+	ui::text(in, w, fin);
+	var p = "";
+	var pv;
+	keyed_get(pv, st, "prompt");
+	if ( !pv.is_null() )
+	    p = pv;
+	var disp;
+	console_entry_display(disp, p.c_str(), in.c_str());
+	content = format("{}{}", tt, disp);
+	caret = tlen + console_display_caret(p.c_str(), in.c_str(), field_caret(w, fin));
+    }
+    var hints = { "caret": caret, "console": 1 };
+    if ( es_int(w, es, "consolefocus", 0) == kind )
+    {
+	hints["focus"] = 1;
+	hints["tabkey"] = 1;		// tab completes; ^] hands the keyboard back
+    }
+    var node = { "role": "edit", "content": content, "hints": hints };
+    if ( fin != 0 )
+	node["subject"] = fin;
+    out = node;
+}
+
 // ---- the chrome panes (V2): composed FROM the layout ----------------------
 // A visible chrome pane is a group docked by its slot (`region`, the wire
 // word), placed by its `side` and `size` (the grid carves a band; the page
@@ -7645,7 +7900,8 @@ void contributed_view_node(var &out, long w, long es, long kind, bool focus)
 // and holding the active tab's projection: Problems = the diagnostics rows,
 // Outline = the definitions (both through diag_items, the one builder),
 // Output = the [build] text (its tail), Terminal = the [terminal] screen, a
-// contributed view = its rows (contributed_view_node). A kind with no
+// contributed view = its rows (contributed_view_node) or its console
+// (console_node). A kind with no
 // builder yet names itself. The pane's `focus` autofocuses its
 // list; Tab reaches it as ever.
 void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
@@ -7704,13 +7960,6 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    pkids.push(term);
 	    break;
 	}
-	case viewREPL:
-	{
-	    var rn;
-	    repl_compose(rn, w, es);
-	    pkids.push(rn);
-	    break;
-	}
 	case viewOUTPUT:
 	{
 	    var outn = { "role": "content" };
@@ -7747,7 +7996,10 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    if ( view_contributed(shown) )
 	    {
 		var cv;
-		contributed_view_node(cv, w, es, shown, focus);
+		if ( view_shape_w(w, shown) == vsCONSOLE )
+		    console_node(cv, w, es, shown);
+		else
+		    contributed_view_node(cv, w, es, shown, focus);
 		pkids.push(cv);
 		break;
 	    }
@@ -8507,19 +8759,11 @@ bool init_view_es(long w, long es, long doc, const char *path,
 	    return false;
 	}
     }
-    // The REPL's standard (repl.std, the setting's first home): it seeds the
-    // session value a new REPL session takes (replstd; "" = the engine's
-    // default).
-    var rs;
-    setting_get(rs, w, es, "repl.std");
-    if ( !rs.is_null() && rs.is_string() && strlen(rs.c_str()) > 0 )
-	ui::set(w, es, "replstd", rs);
-    // The REPL session starts at open when the layout SHOWS it — a visible
-    // pane whose active View is the REPL, as Thonny starts its backend with
-    // its window (chthonic.layout). Layout data decides, never the bundle's
-    // name; the default layout keeps the REPL hidden, so it forks nothing.
-    if ( view_shown(w, es, viewREPL) )
-	repl_start(w, es);
+    // The session is open, its data loaded: the modules subscribed to its
+    // open start what they own (the REPL pane its session, when the layout
+    // shows the pane).
+    var opened = {};
+    publish_event(w, es, doc, seOPEN, opened);
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
@@ -8632,7 +8876,9 @@ long IdeSession::open(const char *path0, bool ro, const char *profile)
 
 // A session over an EXISTING world + state entity: the headless harness
 // (tests/testmadcide.mad) and embedders seed their own documents and
-// drive the surface directly.
+// drive the surface directly. A world made outside open() has madcide's
+// own modules once builtins_activate(w, es) runs (before its profiles and
+// menus load, which name their commands); attach only re-points.
 void IdeSession::attach(long w0, long es0)
 {
     w = w0;
@@ -8823,7 +9069,8 @@ void IdeSession::term_exec(var &req)
 // send fires its select case, it SIGTERMs the child and exits — the
 // drain never hangs on it.
 // The session's background tasks told to stop: a build (stop_build, both
-// kinds), the REPL tab's pump, the Terminal tab's program. ONE owner, for
+// kinds), each module's subscribed to the stop (seSTOP: the REPL pane's
+// pump), the Terminal tab's program, the plugin hosts. ONE owner, for
 // close() and for a host that ends a `scope` around the session's loop
 // before close() (run_tui): a pump spawned inside that scope is a member of
 // it, so the join waits on it, and only a stop sent here ends it. Each stop
@@ -8832,7 +9079,8 @@ void IdeSession::stop_tasks()
 {
     if ( es_int(w, es, "buildlive", 0) != 0 )
 	stop_build(w, es);
-    repl_stop(w, es);
+    var stopping = {};
+    publish_event(w, es, active_doc(w, es, 0), seSTOP, stopping);	// the REPL pane's pump
     term_stop(w, es);
     plugin_hosts_stop(w);
 }
@@ -8841,7 +9089,8 @@ void IdeSession::close()
 {
     stop_tasks();
     madc::task_drain();
-    repl_close(w, es);
+    var closing = {};
+    publish_event(w, es, active_doc(w, es, 0), seCLOSE, closing);	// the REPL pane's session
     // Every buffer's parse handle closes with the session.
     var bufs;
     ui::get(bufs, w, es, "buffers");
@@ -9163,4 +9412,19 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     // dispatcher.
     cont = vi_exec(doc, a.as_integer(), n);
     return true;
+}
+
+// ---- madcide's builtin modules (plan §41.11a step 8) ----------------------
+// Compiled in (transport `builtin`) after everything they call. Each one
+// registers its commands, views and event handlers through the plugin points
+// at its activation (builtins_activate), and nothing above names its
+// functions (check-madcide-command-registry.sh).
+#include "madcide_repl.inc"	// the panel's REPL tab (plan §41.9a)
+
+void builtin_plugins(var &out)
+{
+    builtin_activate_fn repl = repl_activate;
+    int64_t ra = (int64_t)repl;
+    out = {};
+    out[] = { "name": "repl", "activate": ra };
 }

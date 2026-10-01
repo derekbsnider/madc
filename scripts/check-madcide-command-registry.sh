@@ -34,7 +34,13 @@
 #      which is under cmd_contrib_base() (built-in commands, then the
 #      contributed views' row verbs, then contributed commands); the ide_view
 #      enumerators' count is under view_contrib_base() — a contributed code
-#      or kind never aliases a built-in one.
+#      or kind never aliases a built-in one;
+#   9. no built-in path beside the plugin points (plan §41.11a step 8): a
+#      BUILTIN module (an include after the core's "madcide's builtin
+#      modules" marker, reached only through builtin_plugins' activation
+#      rows) has none of its functions named by the core above the marker or
+#      by the other madcide files the core includes — its commands, views and
+#      event handlers are registered at its activation, never called.
 # The dispatcher is madcide_core.inc plus the madcide files it #includes (a
 # pane's own commands live beside the pane: madcide_repl.inc).
 set -u
@@ -129,6 +135,42 @@ bundle_unknown_words()
 		missing_from "$words" "$own"
 	done
 	rm -f "$words" "$own"
+}
+
+# The builtin modules: the madcide files the core includes after its
+# "madcide's builtin modules" marker.
+builtin_modules()
+{
+	awk '/^\/\/ ---- madcide.s builtin modules/ { on = 1 } on' "$1" |
+	grep -o -E '^#include "madcide_[a-z0-9_]+\.inc"' |
+	sed 's/^#include "//; s/"$//' |
+	while read -r f; do echo "$ROOT/tools/madcide/$f"; done
+}
+
+# The functions the given files declare or define (a line that starts with
+# a return type and names a function), one name per line.
+module_functions()
+{
+	cat "$@" |
+	grep -E '^[A-Za-z_][A-Za-z0-9_ *&:<>]*[ *&][a-z_][a-z0-9_]*\(' |
+	sed -E 's/^[A-Za-z_][A-Za-z0-9_ *&:<>]*[ *&]([a-z_][a-z0-9_]*)\(.*/\1/' | sort -u
+}
+
+# Direction 9: every builtin module function the rest of madcide names
+# (comments stripped), as "name"; empty = none.
+builtin_leaks()
+{
+	local core="$1" mods names f
+	mods=$(builtin_modules "$core")
+	[ -n "$mods" ] || return 0
+	names=$(mktemp)
+	module_functions $mods > "$names"
+	{ awk '/^\/\/ ---- madcide.s builtin modules/ { exit } { print }' "$core"
+	  for f in $(dispatcher_files "$core" | tail -n +2); do
+		case " $(echo $mods) " in *" $f "*) ;; *) cat "$f" ;; esac
+	  done
+	} | sed 's|//.*||' | grep -o -w -F -f "$names" | sort -u
+	rm -f "$names"
 }
 
 # A range's floor: the literal a `long <fn>()` returns (cmd_contrib_base,
@@ -275,6 +317,18 @@ check()
 		     "${vbase:-unread}; explicit values: ${bad:-none})." >&2
 		rc=1
 	fi
+	if [ -z "$(builtin_modules "$core")" ]; then
+		echo "check-madcide-command-registry: FAIL ($label) — no builtin module" \
+		     "follows the core's \"madcide's builtin modules\" marker (its anchor moved)." >&2
+		rc=1
+	fi
+	bad=$(builtin_leaks "$core")
+	if [ -n "$bad" ]; then
+		echo "check-madcide-command-registry: FAIL ($label) — madcide names a" \
+		     "builtin module's function (a built-in path beside the plugin points;" \
+		     "register it at the module's activation instead):" $bad >&2
+		rc=1
+	fi
 	rm -f "$reg" "$pairs" "$tnames" "$tenums" "$enumids" "$dis" "$spelled" "$prof"
 	rm -f "$calls" "$pcalls" "$contrib" "$known"
 	return $rc
@@ -395,6 +449,15 @@ if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control"
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — negative control: a plugin's code" \
 	     "contributing a built-in's name went undetected (the plugin-code marker went blind)." >&2
+	exit 1
+fi
+# (j) the core calling a builtin module's function: a built-in path beside
+# the points
+awk '{ print } /^bool IdeSession::apply_ide_event/ { print "\trepl_start(w, es);" }' "$CORE" > "$tmpcore"
+if check "$tmpcore" "$ENUMS" "$MENU" "$PROFILES" "$PLUGINS" "$PLUGINSINC" "control" 2>/dev/null; then
+	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
+	echo "check-madcide-command-registry: FAIL — negative control: the core" \
+	     "calling a builtin module's function went undetected (direction 9 went blind)." >&2
 	exit 1
 fi
 # (h) each floor moved into its neighbour's range: the row verbs inside the

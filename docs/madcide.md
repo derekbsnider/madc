@@ -323,6 +323,12 @@ each row with `name`, `kind`, `type`, `value`, `file` and `line`) and
 "line" }` objects on the key the view names; choosing a row with a line goes
 there.
 
+madcide's own REPL pane is a plugin compiled into madcide: its commands
+(`repl`, `replrun`, `replstop`, `repllang`, `replbindings`, and the input's
+`replenter`, `replcomplete`, `replolder`, `replnewer`, `replunfocus` in the
+`@repl` scope) and its view `repl` register the way a plugin's do, so a key
+profile, a menu or a layout names them as it names any plugin's.
+
 The shipped `chthonic` plugin carries code: the Variables view in chthonic's
 right sidebar (View ▸ Variables), Thonny's. It lists the names the REPL session
 defined, each with its type and value (`count int 3`, `square int (int)`),

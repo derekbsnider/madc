@@ -287,9 +287,10 @@ int main()
     // The adapter holds NO command grammar: it strips the wire prefix and hands
     // the name to api_run, the one command core every transport drives. What
     // initialize advertises is exactly what dispatch accepts, because both read
-    // cmd_table.
+    // the world's command table (the built-in names and the contributed ones,
+    // the REPL pane's among them).
     var ct;
-    cmd_table(ct);
+    cmd_table_w(ct, S.world());
     var execp = caps["executeCommandProvider"];
     var ids = execp["commands"];
     println("exec-advertised-matches-table: {}",

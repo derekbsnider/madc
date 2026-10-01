@@ -377,6 +377,44 @@ bool plugin_activate(long w, var &dir, const char *name0, var &m, var &why,
     return true;
 }
 
+// madcide's own modules, compiled in (transport `builtin`, §5.3): each one
+// registers its commands, views and event handlers through the same points
+// a plugin's code does, and the core calls nothing else of it. The rows
+// {name, activate} are builtin_plugins()'s (madcide_core.inc, after the
+// modules), `activate` a builtin_activate_fn's address.
+typedef bool (*builtin_activate_fn)(long w);
+void builtin_plugins(var &out);
+
+// The builtin modules, activated once per world before any other plugin, so
+// a bundle's code, a profile or a menu can name what they register. A module
+// whose activation refuses is taken back and reported on the status line.
+void builtins_activate(long w, long es)
+{
+    var rows;
+    builtin_plugins(rows);
+    for ( var b : rows )
+    {
+	var name = b["name"];
+	if ( plugin_is_active(w, name.c_str()) )
+	    continue;
+	var mark;
+	registry_mark(mark, w);
+	builtin_activate_fn af = (builtin_activate_fn)b["activate"].as_integer();
+	if ( !af(w) )
+	{
+	    registry_rollback(w, mark);
+	    ui::set(w, es, "msg", format("Built-in module '{}' refused its activation.", name));
+	    continue;
+	}
+	long reg = plugin_registry_make(w);
+	var active;
+	registry_rows(active, w, "active");
+	int64_t none = 0;
+	active[] = { "name": name, "transport": ptBUILTIN, "from": "", "handle": none };
+	ui::set(w, reg, "active", active);
+    }
+}
+
 // Activate one plugin found by name; a refusal, or a library its source
 // replaced, goes to the status line.
 void plugin_activate_named(long w, long es, var &dir, const char *name0, var &m)
@@ -391,13 +429,15 @@ void plugin_activate_named(long w, long es, var &dir, const char *name0, var &m)
 }
 
 // A session's plugins, activated in its world before the profiles and menus
-// load, so a key profile or a menu can name their commands: the active
-// bundle's code, then each plugin settings.json's "plugins" names (§5.2). A
+// load, so a key profile or a menu can name their commands: madcide's own
+// modules (builtins_activate), the active bundle's code, then each plugin
+// settings.json's "plugins" names (§5.2). A
 // plugin there contributes its code; the data words stay the active
 // profile's. A refusal goes to the status line, and the session opens either
 // way.
 void plugins_activate(long w, long es)
 {
+    builtins_activate(w, es);
     var m;
     ui::get(m, w, es, "bundleman");
     var code;

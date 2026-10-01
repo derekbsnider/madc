@@ -32,7 +32,7 @@ enum ide_cmd : unsigned short
     cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdREPL, cmdREPLBINDINGS, cmdREPLLANG, cmdREPLRUN, cmdREPLSTOP, cmdSAVE, cmdSAVEAS,
+    cmdREFRESH, cmdSAVE, cmdSAVEAS,
     cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
@@ -41,11 +41,10 @@ enum ide_cmd : unsigned short
     // ---- motions: the action name IS the key spelling (edit_key's keys) ----
     cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
     cmdPGUP, cmdPGDN, cmdBACKSPACE, cmdDEL, cmdENTER,
-    // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @repl @insert) ----
+    // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @insert) ----
     cmdPCOMMIT, cmdPCANCEL, cmdPDELCHAR, cmdPYES, cmdPROJCLOSE, cmdPROJDELCHAR,
     cmdPROJADD, cmdPROJDEL, cmdPROJOPEN, cmdMODESOPEN, cmdMODESCLOSE, cmdPANECLOSE,
-    cmdTERMUNFOCUS, cmdREPLENTER, cmdREPLCOMPLETE, cmdREPLOLDER, cmdREPLNEWER,
-    cmdREPLUNFOCUS, cmdVINORMAL,
+    cmdTERMUNFOCUS, cmdVINORMAL,
     // ---- the vi grammar (@normal): operators, the G motion, insert entries ----
     cmdVIDELETE, cmdVICHANGE, cmdVIGOTO, cmdVIINSERT, cmdVIINSERTBOL, cmdVIAPPEND,
     cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
@@ -106,11 +105,6 @@ void cmd_table(var &t)
     rows[] = { "name": "quit", "code": cmdQUIT };
     rows[] = { "name": "redo", "code": cmdREDO };
     rows[] = { "name": "refresh", "code": cmdREFRESH };
-    rows[] = { "name": "repl", "code": cmdREPL };
-    rows[] = { "name": "replbindings", "code": cmdREPLBINDINGS };
-    rows[] = { "name": "repllang", "code": cmdREPLLANG };
-    rows[] = { "name": "replrun", "code": cmdREPLRUN };
-    rows[] = { "name": "replstop", "code": cmdREPLSTOP };
     rows[] = { "name": "save", "code": cmdSAVE };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
@@ -158,11 +152,6 @@ void cmd_table(var &t)
     rows[] = { "name": "modesclose", "code": cmdMODESCLOSE };
     rows[] = { "name": "paneclose", "code": cmdPANECLOSE };
     rows[] = { "name": "termunfocus", "code": cmdTERMUNFOCUS };
-    rows[] = { "name": "replenter", "code": cmdREPLENTER };
-    rows[] = { "name": "replcomplete", "code": cmdREPLCOMPLETE };
-    rows[] = { "name": "replolder", "code": cmdREPLOLDER };
-    rows[] = { "name": "replnewer", "code": cmdREPLNEWER };
-    rows[] = { "name": "replunfocus", "code": cmdREPLUNFOCUS };
     rows[] = { "name": "vinormal", "code": cmdVINORMAL };
     rows[] = { "name": "videlete", "code": cmdVIDELETE };
     rows[] = { "name": "vichange", "code": cmdVICHANGE };
@@ -402,6 +391,27 @@ long menu_place_of(var &word)
 // (plugin_event).
 #include "include/madcide/plugin_api"
 
+// The session's own events (plan §41.11a step 8): its open (after the layout
+// loads), its tasks' stop (IdeSession::stop_tasks) and its close (after the
+// drain), published to the handlers subscribed to them (plugin_event), so a
+// module with a task or a process starts and ends it with the session. Their
+// range is disjoint from repl_event's; builtin form first: they join
+// <madcide/plugin_api> when a plugin outside madcide needs them.
+enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLAST };
+
+// A kind plugin_event subscribes to: a repl_event or a session_event.
+bool event_kind_ok(long kind)
+{
+    return (kind > reNONE && kind < reLAST) || (kind > seNONE && kind < seLAST);
+}
+
+// A contributed view's shape (plan §41.11a step 8): `vsROWS` renders its
+// key's rows {content, file?, line?} as a choice; `vsCONSOLE` renders its
+// key's {transcript, input, prompt, editable} as a console (a transcript, then
+// the prompt and an input field with the keyboard). Composition reads the
+// key; the plugin keeps it current.
+enum view_shape : unsigned char { vsROWS = 0, vsCONSOLE };
+
 enum ide_projkind : unsigned char { pkCONSOLE = 0, pkGUI };
 const char *projkind_name(long k)
 {
@@ -513,7 +523,7 @@ long pmode_of(var &name)
 enum ide_view : unsigned char
 {
     viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
-    viewPROJECT, viewOUTLINE, viewHELP, viewREPL
+    viewPROJECT, viewOUTLINE, viewHELP
 };
 const char *view_name(long k)
 {
@@ -527,7 +537,6 @@ const char *view_name(long k)
 	case viewPROJECT: return "project";
 	case viewOUTLINE: return "outline";
 	case viewHELP: return "help";
-	case viewREPL: return "repl";
     }
     return "";
 }
@@ -545,7 +554,6 @@ const char *view_title(long k)
 	case viewPROJECT: return "Project";
 	case viewOUTLINE: return "Outline";
 	case viewHELP: return "Help";
-	case viewREPL: return "REPL";
     }
     return "";
 }
@@ -553,7 +561,7 @@ long view_of(var &name)
 {
     if ( name.is_null() )
 	return viewNONE;
-    for ( long k = viewSOURCE; k <= viewREPL; k = k + 1 )
+    for ( long k = viewSOURCE; k <= viewHELP; k = k + 1 )
 	if ( name == view_name(k) )
 	    return k;
     return viewNONE;
@@ -572,7 +580,6 @@ long view_show_cmd(long kind)
 	case viewOUTLINE: return cmdOUTLINE;
 	case viewPROJECT: return cmdPROJECT;
 	case viewHELP: return cmdHELP;
-	case viewREPL: return cmdREPL;
     }
     return cmdNONE;
 }
@@ -580,14 +587,13 @@ long view_show_cmd(long kind)
 // The commands that read their ARGUMENT off the action event (the seat's,
 // the -c line's, a choice list row's) instead of answering a prompt they
 // open: IdeSession::command hands them the argument directly, as it hands a
-// contributed command its own. Without an argument keystyle and repllang
-// open their own choice list, and paste pastes the clipboard.
+// contributed command its own. Without an argument keystyle opens its own
+// choice list, and paste pastes the clipboard.
 bool cmd_takes_arg(long code)
 {
     switch ( code )
     {
 	case cmdKEYSTYLE:
-	case cmdREPLLANG:
 	case cmdPASTE:		// the text to paste (a client's platform read)
 	    return true;
     }
@@ -729,14 +735,6 @@ long cmd_min_tier(long code)
     case cmdBLD_STOP:
     case cmdBLD_PROJ_BUILD:
     case cmdBLD_PROJ_RUN:
-    // editor — the REPL pane: a backend process, and the code it runs (F5's
-    // buffer, a typed entry), as a build's run is
-    case cmdREPL:
-    case cmdREPLBINDINGS:
-    case cmdREPLRUN:
-    case cmdREPLSTOP:
-    case cmdREPLLANG:
-    case cmdREPLENTER:
     // editor — the `:` line can mutate/save (its `:!` shell gap is a
     // refinement: gate the parsed sub-verb, not the gateway)
     case cmdCOLON:

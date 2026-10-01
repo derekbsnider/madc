@@ -1,10 +1,13 @@
 // madcide_repl.inc — the panel's REPL tab (plan §41.9a slice 3; §37 item 9):
 // an interactive session in its own process (madc::session_*, the running
 // madc forked — nothing execs), its transcript in the tab and an input field
-// under it. Included by madcide_core.inc after the Terminal tab, whose
-// pseudo-buffer, pump and @scope machinery it reuses, and before
-// IdeSession's dispatcher, which routes the keyboard here while the input
-// has it (`replfocus`).
+// under it. madcide's first BUILTIN plugin (plan §41.11a step 8): included
+// at the end of madcide_core.inc, it registers through the plugin points at
+// its activation (repl_activate) — its ten commands, its console view
+// `repl` (vsCONSOLE: the core composes it from `repl.pane` and routes the
+// keyboard to its input while the input has it, `consolefocus`) and its
+// handlers of the session's open, stop and close — and the core names none
+// of its functions.
 //
 // The transcript is the [repl] buffer, fed like the Terminal's screen
 // (ui::term_feed: append-only, bounded): each taken entry after the prompt
@@ -28,22 +31,37 @@
 // loaded under its path, then its main run (its output in the transcript,
 // the input its stdin), and the prompt left with the buffer's names.
 //
-// State on the bag: replh (the session handle), replstop (the pump's stop
-// channel), repllive, replfocus, replbusy (the seq of the entry offered, or
+// State on the bag: repl.pane (the console view's state: { transcript,
+// input, prompt, editable }, kept by repl_pane_sync), replh (the session
+// handle), replstop (the pump's stop channel), repllive, replbusy (the seq
+// of the entry offered, or
 // of F5's load / run, 0 when none), replrunning (it was taken and runs, or
 // F5's main runs), replsent (its text), replcseq / replccaret / replctext
 // (a pending completion), replloadseq / replrunseq / replrunpath (F5's
 // load and run requests, and the path main runs under), replbseq (a
 // pending bindings request, replbindings), replin (the input
-// buffer) with its parked rcaret / rmark / rbend, replhist / replhpos /
+// buffer, a field: its caret is the field's own), replhist / replhpos /
 // repldraft (the history), replstd (the `--std=` spelling a new session
 // takes; "" = the engine's default).
 //
 // Thread contract: session-thread bag state; the pump is a cooperative task
 // on the same thread (term_pump's contract).
 
-// Where an event goes while the input has the keyboard.
-enum repl_route : unsigned char { rrPASS = 0, rrHANDLED, rrFIELD };
+// The pane's own registrations in a world (its view's kind, Run ▸
+// Language…'s code), kept at its activation on the world's `repl-pane`
+// entity: a code converted once, never a name looked up at use.
+long repl_world(long w)
+{
+    long e = ui::entity_by_name(w, "repl-pane");
+    if ( e == 0 )
+	e = ui::create(w, "repl-pane");
+    return e;
+}
+
+long repl_view(long w)
+{
+    return es_int(w, repl_world(w), "view", viewNONE);
+}
 
 long repl_doc_if_any(long w, long es)
 {
@@ -67,11 +85,8 @@ long repl_input_doc(long w, long es)
     long d = es_int(w, es, "replin", 0);
     if ( d != 0 )
 	return d;
-    d = new_document(w, "[repl-input]", "");
+    d = field_document(w, "[repl-input]");
     ui::set(w, es, "replin", d);
-    ui::set(w, es, "rcaret", 0);
-    ui::set(w, es, "rmark", -1);
-    ui::set(w, es, "rbend", -1);
     return d;
 }
 
@@ -82,105 +97,11 @@ void repl_prompt(var &out, long w, long es)
     out = format("{}> ", sn);
 }
 
-// Text as the pane shows an entry: the prompt, then the text, each line
-// after the first indented to the prompt's width.
-void repl_entry_display(var &out, const char *prompt, const char *text)
-{
-    var p = prompt;
-    var t = text;
-    var pad = php::str_repeat(" ", ui::text_columns(p.c_str()));	// columns (B87)
-    array lines;
-    php::explode(lines, "\n", t.c_str());
-    long n = php::count(lines);
-    var s = p;
-    for ( long i = 0; i < n; i = i + 1 )
-    {
-	var one = php::array_get_cstr(lines, i);
-	if ( i == 0 )
-	    s = format("{}{}", s, one);
-	else
-	    s = format("{}\n{}{}", s, pad, one);
-    }
-    out = s;
-}
-
-// Where the input's caret falls in that display.
-long repl_display_caret(const char *prompt, const char *text, long caret)
-{
-    long pl = strlen(prompt);
-    long nl = 0;
-    for ( long i = 0; i < caret && text[i] != 0; i = i + 1 )
-	if ( text[i] == '\n' )
-	    nl = nl + 1;
-    return pl + caret + nl * pl;
-}
-
 void repl_feed(long w, long es, const char *text)
 {
     var t = text;
     if ( strlen(t.c_str()) > 0 )
 	term_feed_text(w, repl_doc(w, es), t.c_str());
-}
-
-// ---- the input field: the editor's live interaction state parked while the
-//      field's is live, so the session's editing commands run on the input
-//      buffer without touching the editor's caret, selection or colour ----
-void repl_field_enter(var &parked, long w, long es)
-{
-    var ed;
-    ui::get(ed, w, es, "editable");
-    var ro;
-    ui::get(ro, w, es, "ro_msg");
-    var hs;
-    ui::get(hs, w, es, "hspans");
-    parked = { "caret": es_int(w, es, "caret", 0), "mark": es_int(w, es, "mark", -1),
-	       "bend": es_int(w, es, "bend", -1), "selgui": es_flag(w, es, "selgui"),
-	       "fview": es_int(w, es, "fview", 0),
-	       "anchor": es_int(w, es, "anchor", -1), "editable": ed,
-	       "ro_msg": ro, "hspans": hs };
-    var none = {};
-    ui::set(w, es, "caret", es_int(w, es, "rcaret", 0));
-    ui::set(w, es, "mark", es_int(w, es, "rmark", -1));
-    ui::set(w, es, "bend", es_int(w, es, "rbend", -1));
-    ui::set(w, es, "selgui", es_flag(w, es, "rselgui"));
-    ui::set(w, es, "fview", 0);		// no View: nav_doc is the input itself
-    ui::set(w, es, "anchor", -1);
-    ui::set(w, es, "editable", true);
-    ui::set(w, es, "ro_msg", "");
-    ui::set(w, es, "hspans", none);
-}
-
-void repl_field_leave(var &parked, long w, long es)
-{
-    ui::set(w, es, "rcaret", es_int(w, es, "caret", 0));
-    ui::set(w, es, "rmark", es_int(w, es, "mark", -1));
-    ui::set(w, es, "rbend", es_int(w, es, "bend", -1));
-    ui::set(w, es, "rselgui", es_flag(w, es, "selgui"));
-    ui::set(w, es, "caret", parked["caret"]);
-    ui::set(w, es, "mark", parked["mark"]);
-    ui::set(w, es, "bend", parked["bend"]);
-    ui::set(w, es, "selgui", parked["selgui"]);
-    ui::set(w, es, "fview", parked["fview"]);
-    ui::set(w, es, "anchor", parked["anchor"]);
-    ui::set(w, es, "editable", parked["editable"]);
-    ui::set(w, es, "ro_msg", parked["ro_msg"]);
-    ui::set(w, es, "hspans", parked["hspans"]);
-}
-
-// Replace `del` bytes at `off` with `ins` in the input, the caret after it
-// (through the text-mutation owners, under the field's state).
-void repl_field_edit(long w, long es, long off, long del, const char *ins)
-{
-    var t = ins;
-    long rin = repl_input_doc(w, es);
-    var parked;
-    repl_field_enter(parked, w, es);
-    if ( del > 0 )
-	ed_text_erase(w, es, rin, off, del);
-    if ( strlen(t.c_str()) > 0 )
-	ed_text_insert(w, es, rin, off, t.c_str());
-    ui::set(w, es, "caret", off + strlen(t.c_str()));
-    repl_field_leave(parked, w, es);
 }
 
 // The whole input replaced (history recall, a taken entry's clearing).
@@ -190,10 +111,7 @@ void repl_set_input(long w, long es, const char *text)
     long rin = repl_input_doc(w, es);
     ui::text_load(w, rin, t.c_str());
     ui::set(w, rin, "modified", false);
-    ui::set(w, es, "rcaret", strlen(t.c_str()));
-    ui::set(w, es, "rmark", -1);
-    ui::set(w, es, "rbend", -1);
-    ui::set(w, es, "rselgui", false);
+    field_reset(w, rin, strlen(t.c_str()));
 }
 
 // The input takes edits unless an entry was offered and has not been taken
@@ -225,10 +143,11 @@ void repl_history_push(long w, long es, const char *entry)
 // the caret (false: the caller forwards the motion).
 bool repl_history_step(long w, long es, long dir)
 {
+    long rin = repl_input_doc(w, es);
     var text;
-    ui::text(text, w, repl_input_doc(w, es));
+    ui::text(text, w, rin);
     const char *s = text.c_str();
-    long caret = es_int(w, es, "rcaret", 0);
+    long caret = field_caret(w, rin);
     long len = strlen(s);
     if ( dir < 0 )
     {
@@ -282,6 +201,7 @@ bool repl_history_step(long w, long es, long dir)
 
 // ---- the session: open, pump, replies ----
 void repl_pump(long w, long es, long h, long stopc);
+void repl_pane_sync(long w, long es);
 
 // F5's rows into Problems (plan §41.11a step 3): the replies to its load
 // and to its run carry the rows the unit recorded, citing the buffer's
@@ -376,7 +296,7 @@ void repl_completed(long w, long es, var &r)
 	return;
     }
     var word = first.substr(0, common);
-    repl_field_edit(w, es, start, caret - start, word.c_str());
+    field_edit(w, es, rin, start, caret - start, word.c_str());
 }
 
 // The replies a plugin hears (repl_event): published after the pane has
@@ -398,7 +318,7 @@ void repl_reply(long w, long es, var &r)
 	var p;
 	repl_prompt(p, w, es);
 	var shown;
-	repl_entry_display(shown, p.c_str(), sent.c_str());
+	console_entry_display(shown, p.c_str(), sent.c_str());
 	repl_feed(w, es, format("{}\n", shown));
 	repl_history_push(w, es, sent.c_str());
 	repl_set_input(w, es, "");
@@ -415,8 +335,8 @@ void repl_reply(long w, long es, var &r)
 	if ( !taken )
 	{
 	    // Incomplete or extendable: keep editing on a new line.
-	    long caret = es_int(w, es, "rcaret", 0);
-	    repl_field_edit(w, es, caret, 0, "\n");
+	    long rin = repl_input_doc(w, es);
+	    field_edit(w, es, rin, field_caret(w, rin), 0, "\n");
 	    return;
 	}
 	var sv = r["shown"];
@@ -511,7 +431,10 @@ void repl_drain(long w, long es, long h)
 	madc::session_output(o, h);
 	repl_feed(w, es, o.c_str());
 	if ( got == 0 )
+	{
+	    repl_pane_sync(w, es);
 	    return;
+	}
 	if ( !running )
 	    repl_reply(w, es, r);
     }
@@ -583,9 +506,10 @@ void repl_complete(long w, long es)
     long h = es_int(w, es, "replh", 0);
     if ( !madc::session_running(h) || es_int(w, es, "replbusy", 0) != 0 )
 	return;
+    long rin = repl_input_doc(w, es);
     var text;
-    ui::text(text, w, repl_input_doc(w, es));
-    long caret = es_int(w, es, "rcaret", 0);
+    ui::text(text, w, rin);
+    long caret = field_caret(w, rin);
     long seq = madc::session_complete(h, text.c_str(), caret);
     ui::set(w, es, "replcseq", seq);
     ui::set(w, es, "replccaret", caret);
@@ -630,10 +554,10 @@ void repl_close(long w, long es)
 // input the keyboard.
 void repl_show(long w, long es)
 {
-    show_view(w, es, viewREPL);
+    show_view(w, es, repl_view(w));
     repl_start(w, es);
     ui::set(w, es, "termfocus", 0);
-    ui::set(w, es, "replfocus", 1);
+    ui::set(w, es, "consolefocus", repl_view(w));
 }
 
 // A fresh backend for the tab's session: F5's, Stop's and Language's one
@@ -755,12 +679,13 @@ void repl_lang(long w, long es, const char *arg0)
     var cur;
     repl_lang_current(cur, w, es);
     var crows = {};
+    long lang = es_int(w, repl_world(w), "lang", cmdNONE);
     for ( var r : rows )
     {
 	long mark = 0;
 	if ( r["std"] == cur )
 	    mark = 1;
-	crows[] = { "title": r["title"], "code": cmdREPLLANG, "arg": r["std"],
+	crows[] = { "title": r["title"], "code": lang, "arg": r["std"],
 		    "current": mark };
     }
     choice_show(w, es, "Language", crows);
@@ -803,7 +728,7 @@ void repl_run(long w, long es, long doc)
     var pr;
     repl_prompt(pr, w, es);
     var shown;
-    repl_entry_display(shown, pr.c_str(), line.c_str());
+    console_entry_display(shown, pr.c_str(), line.c_str());
     repl_feed(w, es, format("{}\n", shown));
     long seq = madc::session_load(h, p.c_str(), text.c_str());
     ui::set(w, es, "replloadseq", seq);
@@ -811,101 +736,154 @@ void repl_run(long w, long es, long doc)
     ui::set(w, es, "replbusy", seq);
 }
 
-// An @repl binding: the REPL's own actions, or a motion the history hands
-// on to the field (the caret off the first / last line), or any other
-// command the profile bound there, which runs as itself.
-long repl_command(long w, long es, long code, var &ev)
+// The console view's state (repl.pane), as composition reads it: the
+// transcript and the input, the prompt (none while an entry runs: the input
+// is its standard input) and whether the input takes edits. Kept after
+// every handler and every pass of the pump, the pane's only writers.
+void repl_pane_sync(long w, long es)
 {
-    switch ( code )
-    {
-	case cmdREPLENTER:
-	    repl_enter(w, es);
-	    return rrHANDLED;
-	case cmdREPLCOMPLETE:
-	    repl_complete(w, es);
-	    return rrHANDLED;
-	case cmdREPLUNFOCUS:
-	    ui::set(w, es, "replfocus", 0);
-	    ui::set(w, es, "msg", "Keyboard back to the editor.");
-	    return rrHANDLED;
-	case cmdREPLOLDER:
-	case cmdREPLNEWER:
-	{
-	    bool older = code == cmdREPLOLDER;
-	    if ( repl_editable(w, es) && repl_history_step(w, es, older ? -1 : 1) )
-		return rrHANDLED;
-	    code = older ? cmdUP : cmdDOWN;
-	    break;
-	}
-    }
-    // The binding's command, as an action event (the key's own spelling
-    // stays in `seq`, the one a scope looks up).
-    var an;
-    cmd_name_w(an, w, code);
-    ev["event"] = "action";
-    ev["event_code"] = ui::event_kind::action;
-    ev["action"] = an;
-    ev["action_code"] = code;
-    if ( !cmd_edits_field(code) )
-	return rrPASS;
-    return repl_editable(w, es) ? rrFIELD : rrHANDLED;
+    var p = "";
+    if ( es_int(w, es, "replrunning", 0) == 0 )
+	repl_prompt(p, w, es);
+    var st = { "transcript": repl_doc_if_any(w, es), "input": es_int(w, es, "replin", 0),
+	       "prompt": p, "editable": repl_editable(w, es) };
+    ui::set(w, es, "repl.pane", st);
 }
 
-// Route one event while the input has the keyboard: text and the field's
-// commands edit the input, @repl bindings act, the rest passes on.
-long repl_route(long w, long es, var &ev)
+// ---- the pane's commands (cmd_handler), registered at its activation ----
+bool repl_cmd_show(long w, long es, long doc, const char *arg)
 {
-    var kind = ev["event_code"];
-    if ( kind != ui::event_kind::text && kind != ui::event_kind::key
-	 && kind != ui::event_kind::action )
-	return rrPASS;
-    var a;
-    if ( scoped_action(a, w, es, "repl", ev) )
-	return repl_command(w, es, a.as_integer(), ev);
-    if ( kind == ui::event_kind::action && !cmd_edits_field(ev_code(ev)) )
-	return rrPASS;
-    return repl_editable(w, es) ? rrFIELD : rrHANDLED;
+    repl_show(w, es);
+    repl_pane_sync(w, es);
+    return true;
 }
 
-// The tab's node: one edit node over the transcript, then the prompt and
-// the input (while an entry runs, its input line without a prompt), the
-// caret in the input. Its subject is the input buffer: a press on it gives
-// the input the keyboard (pointer_event).
-void repl_compose(var &out, long w, long es)
+// F5: the stored buffer (never a view of it) into the REPL tab.
+bool repl_cmd_run(long w, long es, long doc, const char *arg)
 {
-    var tt = "";
-    long rdoc = repl_doc_if_any(w, es);
-    if ( rdoc != 0 )
-	ui::text(tt, w, rdoc);
-    long tlen = strlen(tt.c_str());
-    if ( tlen > 0 && tt.c_str()[tlen - 1] != '\n' )
-    {
-	tt = format("{}\n", tt);		// a fresh row after output with no newline
-	tlen = tlen + 1;
-    }
-    long rin = es_int(w, es, "replin", 0);
-    var content = tt;
-    long caret = tlen;
-    if ( rin != 0 && repl_editable(w, es) )
-    {
-	var in;
-	ui::text(in, w, rin);
-	var p = "";
-	if ( es_int(w, es, "replrunning", 0) == 0 )
-	    repl_prompt(p, w, es);
-	var disp;
-	repl_entry_display(disp, p.c_str(), in.c_str());
-	content = format("{}{}", tt, disp);
-	caret = tlen + repl_display_caret(p.c_str(), in.c_str(), es_int(w, es, "rcaret", 0));
-    }
-    var hints = { "caret": caret, "repl": 1 };
-    if ( es_int(w, es, "replfocus", 0) != 0 )
-    {
-	hints["focus"] = 1;
-	hints["tabkey"] = 1;		// tab completes; ^] hands the keyboard back
-    }
-    var node = { "role": "edit", "content": content, "hints": hints };
-    if ( rin != 0 )
-	node["subject"] = rin;
-    out = node;
+    repl_run(w, es, doc);
+    repl_pane_sync(w, es);
+    return true;
+}
+
+bool repl_cmd_stop(long w, long es, long doc, const char *arg)
+{
+    repl_stop_restart(w, es);
+    repl_pane_sync(w, es);
+    return true;
+}
+
+bool repl_cmd_bindings(long w, long es, long doc, const char *arg)
+{
+    repl_bindings(w, es);
+    return true;
+}
+
+// Run ▸ Language…: its argument (the seat's, -c's, a choice row's) or the
+// choice list.
+bool repl_cmd_lang(long w, long es, long doc, const char *arg)
+{
+    repl_lang(w, es, arg);
+    repl_pane_sync(w, es);
+    return true;
+}
+
+// The @repl scope's own: offer the input, complete, the history, the
+// keyboard back to the editor.
+bool repl_cmd_enter(long w, long es, long doc, const char *arg)
+{
+    repl_enter(w, es);
+    repl_pane_sync(w, es);
+    return true;
+}
+
+bool repl_cmd_complete(long w, long es, long doc, const char *arg)
+{
+    repl_complete(w, es);
+    return true;
+}
+
+bool repl_cmd_unfocus(long w, long es, long doc, const char *arg)
+{
+    ui::set(w, es, "consolefocus", 0);
+    ui::set(w, es, "msg", "Keyboard back to the editor.");
+    return true;
+}
+
+// Older / newer: the history at the input's first / last line, else the
+// arrow's own motion on the input (run on the field's document, so under the
+// field's state).
+bool repl_history_key(long w, long es, bool older)
+{
+    bool cont = true;
+    if ( repl_editable(w, es) && !repl_history_step(w, es, older ? -1 : 1) )
+	cont = ide_api_run(w, es, repl_input_doc(w, es), older ? cmdUP : cmdDOWN, "");
+    repl_pane_sync(w, es);
+    return cont;
+}
+
+bool repl_cmd_older(long w, long es, long doc, const char *arg)
+{
+    return repl_history_key(w, es, true);
+}
+
+bool repl_cmd_newer(long w, long es, long doc, const char *arg)
+{
+    return repl_history_key(w, es, false);
+}
+
+// ---- the session's events (event_handler) ----
+// The open: the REPL's standard (repl.std, the setting's first home) seeds
+// the session value a new REPL session takes (replstd; "" = the engine's
+// default), and the session starts when the layout SHOWS the pane — a
+// visible pane whose active View is the REPL, as Thonny starts its backend
+// with its window (chthonic.layout). Layout data decides, never the bundle's
+// name; the default layout keeps the REPL hidden, so it forks nothing.
+void repl_on_open(long w, long es, long doc, var &event)
+{
+    var rs;
+    setting_get(rs, w, es, "repl.std");
+    if ( !rs.is_null() && rs.is_string() && strlen(rs.c_str()) > 0 )
+	ui::set(w, es, "replstd", rs);
+    if ( view_shown(w, es, repl_view(w)) )
+	repl_start(w, es);
+    repl_pane_sync(w, es);
+}
+
+// The stop: the pump stops before any join of it (IdeSession::stop_tasks).
+void repl_on_stop(long w, long es, long doc, var &event)
+{
+    repl_stop(w, es);
+}
+
+// The close: the session, after the drain.
+void repl_on_close(long w, long es, long doc, var &event)
+{
+    repl_close(w, es);
+}
+
+// The activation (builtin_plugins' row): the pane's commands, its console
+// view and its handlers of the session's events, through the plugin points.
+// False = a registration refused (builtins_activate takes the rest back).
+bool repl_activate(long w)
+{
+    long show = plugin_command(w, "repl", "REPL", repl_cmd_show);
+    long lang = plugin_command(w, "repllang", "REPL language", repl_cmd_lang);
+    long view = plugin_view_shaped(w, "repl", "REPL", "repl.pane", show, vsCONSOLE);
+    if ( show == 0 || lang == 0 || view == viewNONE )
+	return false;
+    long rw = repl_world(w);
+    ui::set(w, rw, "view", view);
+    ui::set(w, rw, "lang", lang);
+    return plugin_command(w, "replrun", "Run in REPL", repl_cmd_run) != 0
+	&& plugin_command(w, "replstop", "Stop the REPL", repl_cmd_stop) != 0
+	&& plugin_command(w, "replbindings", "REPL bindings", repl_cmd_bindings) != 0
+	&& plugin_command(w, "replenter", "REPL enter", repl_cmd_enter) != 0
+	&& plugin_command(w, "replcomplete", "REPL complete", repl_cmd_complete) != 0
+	&& plugin_command(w, "replolder", "REPL older", repl_cmd_older) != 0
+	&& plugin_command(w, "replnewer", "REPL newer", repl_cmd_newer) != 0
+	&& plugin_command(w, "replunfocus", "REPL unfocus", repl_cmd_unfocus) != 0
+	&& plugin_event(w, seOPEN, repl_on_open)
+	&& plugin_event(w, seSTOP, repl_on_stop)
+	&& plugin_event(w, seCLOSE, repl_on_close);
 }

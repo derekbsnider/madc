@@ -54,3 +54,18 @@ void enter_line(IdeSession &S, long doc, long w, long es, const char *text)
     S.apply_ide_event(doc, e);
     settle(w, es, false);
 }
+
+// Has the REPL pane's input the keyboard (1 / 0)? A console's focus is its
+// view's kind (consolefocus).
+long repl_focused(long w, long es)
+{
+    return es_int(w, es, "consolefocus", 0) == repl_view(w) ? 1 : 0;
+}
+
+// The REPL input's caret: the field's own, kept on its document (-1 = no
+// input yet).
+long repl_field_caret(long w, long es)
+{
+    long rin = es_int(w, es, "replin", 0);
+    return rin == 0 ? -1 : field_caret(w, rin);
+}

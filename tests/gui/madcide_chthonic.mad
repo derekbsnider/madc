@@ -68,7 +68,7 @@ int main()
 	else if ( ev["event"] == "action" )
 	{
 	    var an;
-	    cmd_name(an, ev_code(ev));
+	    cmd_name_w(an, S.world(), ev_code(ev));
 	    println("CHTHONIC click: action={}", an);
 	    S.apply_ide_event(doc, ev);
 	    render(S, t, doc);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide: the REPL pane on the plugin points — the first builtin plugin (plan §41.11a step 8)
+
+`madcide_repl.inc` is madcide's first `builtin` plugin, included at the end of `madcide_core.inc`: `repl_activate(w)` registers its ten commands, its console view `repl` (shape `vsCONSOLE`, key `repl.pane`), and handlers of session events `seOPEN`, `seSTOP`, `seCLOSE` through the plugin points (`plugin_command`, `plugin_view_shaped`, `plugin_event`). The core's ten command codes, `viewREPL` and their table rows are gone. The console view's state lives on the bag under `repl.pane` as `{transcript, input, prompt, editable}` and the pane's view kind and Run ▸ Language…'s code on a world entity `repl-pane`. Keyboard routing uses `consolefocus` (the console view's focus key) instead of `replfocus`. The field's document owns its own caret, mark and selection (`field_document`), so editing the input runs on the field's state (`field_enter` / `field_leave`), and commands like `replolder` at the input's first line run through `ide_api_run`. A world made outside `IdeSession::open` runs `builtins_activate(w, es)` before profiles load, so profiles and menus can name the pane's commands; world-less readers (`parse_keys`, `parse_layout`) know only built-in names. Gate: `check-madcide-command-registry.sh` direction 9 (no madcide file names a builtin module's function), `tests/testmadcide_repl`, `tests/testmadcide_chthonic`, `tests/gui/madcide_repl`, `tests/testmadcide_layout`, `tests/testmadcide_lsp`, `tests/testmadcide_plugin_library`.
+
 ### madcide: no enumerator declared twice — plugin_verb and ide_pmode renamed
 
 The plugin_verb enum's pvNONE and pvEVENT collided with provenance's; ide_pmode's lmNONE collided with lsp_method's. Both enums renamed (plv* and pn* prefixes). Rule 7 added to check-madcide-enums.sh to enforce one declaration per enumerator across madcide's sources (C11 6.7.2.2, [dcl.enum]); B104 filed for madc's acceptance of duplicate enumerator names where gcc, g++ and clang refuse them.

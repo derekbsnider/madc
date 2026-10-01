@@ -266,7 +266,8 @@ int main()
     var vn = "hellolist";
     println("hello-view: {}", view_of_w(S.w, vn) != viewNONE ? 1 : 0);
 
-    // 3. A second view of the world activates nothing twice.
+    // 3. A second view of the world activates nothing twice (the active rows:
+    // the three plugins and madcide's builtin REPL pane).
     long es2 = S.spawn_view(doc);
     var m2;
     ui::get(m2, S.w, es2, "msg");

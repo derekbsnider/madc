@@ -85,7 +85,7 @@ void toolbar_rows(var &out, IdeSession &S, long doc)
     {
 	out = format("{}{}={} ", out, r["label"], r["action"]);
 	var a = r["action"];
-	if ( r["code"].as_integer() != cmd_of(a.c_str()) )
+	if ( r["code"].as_integer() != cmd_of_w(S.w, a.c_str()) )
 	    ok = 0;
     }
     out = format("{}codes={}", out, ok);
@@ -173,7 +173,7 @@ int main()
     ui::get(k, S.w, S.es, "profile");
     println("chthonic-open: doc={} bundle={} keys={}", doc > 0 ? 1 : 0, b, k);
     println("chthonic-views: repl={} problems-tab={} outline={} project={} terminal={} sidebar={}",
-	    view_shown(S.w, S.es, viewREPL) ? 1 : 0,
+	    view_shown(S.w, S.es, repl_view(S.w)) ? 1 : 0,
 	    view_shown(S.w, S.es, viewPROBLEMS) ? 1 : 0,
 	    view_shown(S.w, S.es, viewOUTLINE) ? 1 : 0,
 	    view_shown(S.w, S.es, viewPROJECT) ? 1 : 0,
@@ -237,7 +237,7 @@ int main()
     ui::get(b, D.w, D.es, "bundle");
     menu_bar(titles, ids, D.w, D.es, "Run");
     println("default-open: bundle={} repl-shown={} live={} replh={}", b,
-	    view_shown(D.w, D.es, viewREPL) ? 1 : 0, es_int(D.w, D.es, "repllive", 0),
+	    view_shown(D.w, D.es, repl_view(D.w)) ? 1 : 0, es_int(D.w, D.es, "repllive", 0),
 	    es_int(D.w, D.es, "replh", 0));
     println("default-menu: [{}]", titles);
     toolbar_rows(tbr, D, D.active(0));

@@ -38,6 +38,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
 
     one(w, es, doc, "foo   bar baz\n", 3);
     one(w, es, doc, "foo   bar baz\n", 4);

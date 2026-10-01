@@ -73,6 +73,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
     ui::set(w, es, "replstd", "c11");
@@ -92,9 +93,11 @@ int main()
     var e;
     ev_action(e, "repl", "");
     S.apply_ide_event(doc, e);
+    var tabname;
+    view_name_w(tabname, w, slot_shown(w, es, slotPANEL));
     println("show: tab={} live={} focus={} standard={}",
-	    view_name(slot_shown(w, es, slotPANEL)), es_int(w, es, "repllive", 0),
-	    es_int(w, es, "replfocus", 0), madc::session_standard(es_int(w, es, "replh", 0)));
+	    tabname, es_int(w, es, "repllive", 0),
+	    repl_focused(w, es), madc::session_standard(es_int(w, es, "replh", 0)));
     enter_line(S, doc, w, es, "#include <stdio.h>");
     ev_text(e, "int x = 6 * 7;");
     S.apply_ide_event(doc, e);
@@ -104,10 +107,10 @@ int main()
     ui::text(edtext, w, doc);
     println("typed: input={} editor untouched={} editor caret={} field caret={}", in,
 	    strcmp(edtext.c_str(), "long add(long a, long b) { return a + b; }\n") == 0,
-	    es_int(w, es, "caret", -1), es_int(w, es, "rcaret", -1));
+	    es_int(w, es, "caret", -1), repl_field_caret(w, es));
     ev_key(e, "left");
     S.apply_ide_event(doc, e);
-    println("motion: field caret={} editor caret={}", es_int(w, es, "rcaret", -1),
+    println("motion: field caret={} editor caret={}", repl_field_caret(w, es),
 	    es_int(w, es, "caret", -1));
     ev_key(e, "enter");
     S.apply_ide_event(doc, e);
@@ -154,7 +157,7 @@ int main()
     S.apply_ide_event(doc, e);
     settle(w, es, false);
     input_text(in, w, es);
-    println("completed: {} caret={}", in, es_int(w, es, "rcaret", -1));
+    println("completed: {} caret={}", in, repl_field_caret(w, es));
     repl_set_input(w, es, "");
 
     // 4. A running entry's stdin.
@@ -182,7 +185,7 @@ int main()
     ev_text(e, "1 +");
     S.apply_ide_event(doc, e);
     var node;
-    repl_compose(node, w, es);
+    console_node(node, w, es, repl_view(w));
     var content = node["content"];
     long clen = strlen(content.c_str());
     var hints = node["hints"];
@@ -192,7 +195,7 @@ int main()
 	    hints["focus"], node["subject"] == repl_input_doc(w, es));
     ev_key(e, "^]");
     S.apply_ide_event(doc, e);
-    println("unfocus: focus={}", es_int(w, es, "replfocus", 0));
+    println("unfocus: focus={}", repl_focused(w, es));
 
     // 7. F5: the editor's buffer run into a fresh session.
     ui::text_load(w, doc, "#include <stdio.h>\n"
@@ -207,7 +210,7 @@ int main()
     ev_action(e, "replrun", "f5");
     S.apply_ide_event(doc, e);
     settle(w, es, false);
-    println("f5: focus={} busy={}", es_int(w, es, "replfocus", 0), es_int(w, es, "replbusy", -1));
+    println("f5: focus={} busy={}", repl_focused(w, es), es_int(w, es, "replbusy", -1));
     enter_line(S, doc, w, es, "triple(14)");
     enter_line(S, doc, w, es, "int kept = 9;");
     transcript_since(got, w, es, mark);
@@ -257,7 +260,7 @@ int main()
 
     // 8. Stop during an entry that never ends.
     repl_set_input(w, es, "");
-    ui::set(w, es, "replfocus", 1);
+    ui::set(w, es, "consolefocus", repl_view(w));
     mark = transcript_size(w, es);
     ev_text(e, "long spin = 0; for (;;) spin++;");
     S.apply_ide_event(doc, e);
@@ -307,9 +310,10 @@ int main()
     S.apply_ide_event(doc, e);
     println("lang again: marked={} closed={}", marked, cur_pane(w, es) == paneNONE);
     bool lc = true;
-    S.command(doc, cmdREPLLANG, "c17", lc);
+    long langc = cmd_of_w(w, "repllang");
+    S.command(doc, langc, "c17", lc);
     println("lang arg: std={}", madc::session_standard(es_int(w, es, "replh", 0)));
-    S.command(doc, cmdREPLLANG, "fortran", lc);
+    S.command(doc, langc, "fortran", lc);
     ui::get(msg, w, es, "msg");
     println("lang unknown: {}", msg);
 
