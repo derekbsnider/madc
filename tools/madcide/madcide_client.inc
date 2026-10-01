@@ -77,8 +77,9 @@ void client_service(IdeSession &S, long t)
 	    txt = req["own"];
 	if ( txt.is_null() || strlen(txt.c_str()) == 0 )
 	    return;
-	bool cont = true;
-	S.command(S.active(0), cmdPASTE, txt.c_str(), cont);
+	var e;
+	action_event(e, cmdPASTE, txt.c_str());	// as the page's paste arrives
+	S.apply_ide_event(S.active(0), e);
 	return;
     }
     if ( !ui::suspend(t) )

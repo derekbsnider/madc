@@ -223,11 +223,14 @@ rm -f "$tmp"
 # the name, gate the tier, S.command, count the error rows, compose, typeset,
 # fan out the new events). Every transport drives it — the api seat, the MCP
 # seat, the LSP face and, since the V6 seam, the ui::NONE `-c` client, which
-# had restated the run/compose/render sequence. Marker: `S.command(` appears
-# once across tools/madcide.
+# had restated the run/compose/render sequence. Marker: a `.command(` call,
+# through ANY receiver, appears once across tools/madcide (the receiver's
+# name is not the rule: a session spelled `s` runs a command the same way). A
+# command run from inside the session or a client is its action event
+# through apply_ide_event (action_event), never a second command call.
 count_command_runs()
 {
-	cat "$@" | grep -c '\bS\.command('
+	cat "$@" | grep -c -E '\b[A-Za-z_][A-Za-z0-9_]*\.command\('
 }
 
 n=$(count_command_runs "$TOOLS"/*.inc)
@@ -235,7 +238,7 @@ if [ "$n" -ne 1 ]; then
 	echo "check-madcide-single-owners: FAIL — $n S.command( run site(s)" \
 	     "across tools/madcide (expected 1: api_run, the one command core" \
 	     "every transport drives)." >&2
-	grep -n '\bS\.command(' "$TOOLS"/*.inc >&2
+	grep -n -E '\b[A-Za-z_][A-Za-z0-9_]*\.command\(' "$TOOLS"/*.inc >&2
 	exit 1
 fi
 
@@ -243,7 +246,8 @@ fi
 tmp=$(mktemp)
 cat "$TOOLS"/*.inc > "$tmp"
 echo '    bool ok = S.command(adoc, code, arg, cont);	// synthetic' >> "$tmp"
-if [ "$(count_command_runs "$tmp")" -ne 2 ]; then
+echo '    s.command(doc, code, arg, cont);		// synthetic, another receiver' >> "$tmp"
+if [ "$(count_command_runs "$tmp")" -ne 3 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic command run (the marker went blind)." >&2
@@ -671,8 +675,35 @@ if [ "$(count_data_paths "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; then
 fi
 rm -f "$tmp"
 
+# A synthesized command event has ONE builder: action_event (post, command
+# and a choice list's row each spelled the literal, and the client's paste
+# answer ran a second command call, until plan §41.11a step 4). Marker: the
+# event's "action_code" key appears once across tools/madcide.
+count_action_events()
+{
+	cat "$@" | grep -c -E '"action_code"[[:space:]]*:'
+}
+
+n=$(count_action_events "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n action-event literal(s)" \
+	     "across tools/madcide (expected 1: action_event, the one builder)." >&2
+	grep -n -E '"action_code"[[:space:]]*:' "$TOOLS"/*.inc >&2
+	exit 1
+fi
+tmp=$(mktemp)
+cat "$TOOLS"/*.inc > "$tmp"
+echo '    var e = { "event": "action", "action_code": code };	// synthetic' >> "$tmp"
+if [ "$(count_action_events "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic action-event literal (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
 echo "check-madcide-single-owners: OK (one data-location owner: resolve_data_dir;" \
-     "one data-file path: bundle_data_path;" \
+     "one data-file path: bundle_data_path; one action-event builder: action_event;" \
      "one document minter: new_document; one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \

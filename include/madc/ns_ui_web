@@ -245,7 +245,7 @@ namespace ui_web {
 	host *h = (host *)arg;
 	if ( h->clip )
 	    free(h->clip);
-	long n = strlen(text);
+	int64_t n = strlen(text);
 	h->clip = (char *)malloc(n + 1);
 	if ( h->clip )
 	{

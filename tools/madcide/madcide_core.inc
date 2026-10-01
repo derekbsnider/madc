@@ -149,6 +149,19 @@ class IdeSession
 					// parse handles, close the world
 };
 
+// THE action event for a command: what a key bound to `code` produces, with
+// `arg` as its argument ("" = none) for a command that reads one off the
+// event. Every synthesized command event is this one shape: post, command,
+// a choice list's row, a client's paste answer.
+void action_event(var &e, long code, const char *arg)
+{
+    var a = arg;		// ring discipline: own the text first
+    e = { "event": "action", "event_code": ui::event_kind::action,
+	  "action": "", "action_code": code };
+    if ( strlen(a.c_str()) > 0 )
+	e["arg"] = a;
+}
+
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
 // trimmed, non-empty, not a '#' comment. False = skip this line.
@@ -4617,8 +4630,12 @@ bool choice_action(var &act, long w, long es, long option)
     if ( rows.is_null() || i < 0 || i >= php::count(rows) )
 	return false;
     var r = rows[i];
-    act = { "event": "action", "event_code": ui::event_kind::action,
-	    "action": "", "action_code": r["code"], "arg": r["arg"] };
+    var ra;
+    keyed_get(ra, r, "arg");
+    var at = "";
+    if ( !ra.is_null() )
+	at = format("{}", ra);
+    action_event(act, r["code"].as_integer(), at.c_str());
     return true;
 }
 
@@ -8841,8 +8858,8 @@ void IdeSession::close()
 // the session ended (a quit propagates).
 bool IdeSession::post(long doc, long code)
 {
-    var e = { "event": "action", "event_code": ui::event_kind::action,
-	      "action": "", "action_code": code };
+    var e;
+    action_event(e, code, "");
     return apply_ide_event(doc, e);
 }
 
@@ -8873,8 +8890,8 @@ bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
     {
 	// A contributed command, or one that reads its argument off the event
 	// (cmd_takes_arg), takes its argument itself: no prompt between.
-	var e = { "event": "action", "event_code": ui::event_kind::action,
-		  "action": "", "action_code": code, "arg": a };
+	var e;
+	action_event(e, code, a.c_str());
 	cont = apply_ide_event(doc, e);
 	return true;
     }
