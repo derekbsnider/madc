@@ -833,6 +833,12 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 		       bool param_is_ref = false, bool allow_udc = true,
 		       bool arg_is_zero_literal = false,
 		       bool param_is_nonconst_lref = false);
+// [over.ics.rank]/4.4: of two derived-to-base conversions of one argument, the
+// one to the base that derives from the other is better (C to B over C to A,
+// C* to B* over C* to A*). +1 = the conversion to `p1`, -1 = to `p2`, 0 = the
+// rule does not decide. Defined in cir_builder.cpp.
+int compare_derived_to_base(const DataDef *adc, const DataDef *p1, bool ref1,
+			    const DataDef *p2, bool ref2);
 
 class DataStruct: public DataDef
 {

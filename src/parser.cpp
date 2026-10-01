@@ -20717,6 +20717,61 @@ static int score_retained_member_template_param(
 // the partial-ordering primitives it reuses).
 static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B);
 
+// [over.ics.rank] for ONE argument's two conversion sequences (rank s1 to
+// parameter p1, s2 to p2): the higher score_arg_to_param rank, else — two
+// derived-to-base conversions — the nearer base ([over.ics.rank]/4.4,
+// compare_derived_to_base). +1 = the first, -1 = the second, 0 = neither.
+static int compare_conversion_sequences(const DataDef *arg, int s1,
+		const DataDef *p1, bool r1, int s2, const DataDef *p2, bool r2)
+{
+    if ( s1 != s2 )
+	return s1 > s2 ? 1 : -1;
+    return compare_derived_to_base(arg, p1, r1, p2, r2);
+}
+
+// [over.match.best]/2.1 over n arguments' verdicts (verdict(i): +1, -1, 0):
+// the first candidate is better when it is better for some argument and worse
+// for none. +1 = the first, -1 = the second, 0 = neither.
+template<class Verdict>
+static int conversion_dominance(size_t n, Verdict verdict)
+{
+    bool better = false, worse = false;
+    for ( size_t i = 0; i < n; ++i )
+    {
+	int d = verdict(i);
+	if ( d > 0 )
+	    better = true;
+	else if ( d < 0 )
+	    worse = true;
+    }
+    return better == worse ? 0 : (better ? 1 : -1);
+}
+
+// [over.match.best]/2.1 for two viable candidates whose conversion totals tie,
+// per argument through compare_conversion_sequences. +1 = `a` better, -1 =
+// `b` better, 0 = neither. `*_hidden`: the leading hidden slots (`__this`);
+// `*_fixed`: the visible fixed parameter counts, the bound of what the
+// rankers score.
+static int compare_candidate_conversions(FuncDef *a, size_t a_hidden,
+		size_t a_fixed, FuncDef *b, size_t b_hidden, size_t b_fixed,
+		const std::vector<const DataDef *> &argtypes,
+		const std::vector<bool> *zero_args = NULL)
+{
+    size_t n = std::min(argtypes.size(), std::min(a_fixed, b_fixed));
+    return conversion_dominance(n, [&](size_t i) -> int {
+	size_t ai = i + a_hidden, bi = i + b_hidden;
+	DataDef *pa = ai < a->parameters.size() ? a->parameters[ai] : NULL;
+	DataDef *pb = bi < b->parameters.size() ? b->parameters[bi] : NULL;
+	bool ra = a->is_ref_param(ai), rb = b->is_ref_param(bi);
+	bool zlit = zero_args && i < zero_args->size() && (*zero_args)[i];
+	int sa = score_arg_to_param(argtypes[i], pa, ra, true, zlit,
+				    a->is_nonconst_lref_param(ai));
+	int sb = score_arg_to_param(argtypes[i], pb, rb, true, zlit,
+				    b->is_nonconst_lref_param(bi));
+	return compare_conversion_sequences(argtypes[i], sa, pa, ra, sb, pb, rb);
+    });
+}
+
 // The concrete class a parameter DECLARES, seen through the reference
 // representation (DataDefPTR/REF wrapper) when refp; NULL for scalars,
 // enums, plain pointers and typedef-opaque shapes — the shapes whose
@@ -20739,6 +20794,9 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 {
     Variable *best = NULL;
     int best_score = -1;
+    // The best candidate's parameter slots, for the by-argument tie-break.
+    size_t best_hidden = 0, best_fixed = 0;
+    bool best_retained = false;
     bool any_named = false;
     // True while every rejected same-name candidate fell to a PROVABLE
     // verdict (header comment in datadef.h) — the licence for a caller to
@@ -20943,18 +21001,37 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		rejections_proven = false;
 	    continue;
 	}
+	auto take_best = [&]() {
+	    best = mv;
+	    best_hidden = hidden;
+	    best_fixed = fixed;
+	    best_retained = retained_member_template;
+	};
 	if ( ok && total > best_score )
 	{
 	    best_score = total;
-	    best = mv;
+	    take_best();
 	}
 	else if ( ok && total == best_score && best )
 	{
 	    FuncDef *best_fd = dynamic_cast<FuncDef *>(best->type);
+	    // Equal totals: compare the arguments' conversion sequences one by
+	    // one ([over.match.best]/2.1 — a nearer base is the better
+	    // derived-to-base conversion). A retained member template's
+	    // parameters are spellings, not types: it is not compared here.
+	    int by_args = best_fd && !retained_member_template && !best_retained
+		? compare_candidate_conversions(fd, hidden, fixed, best_fd,
+						best_hidden, best_fixed, argtypes)
+		: 0;
+	    if ( by_args )
+	    {
+		if ( by_args > 0 )
+		    take_best();
+	    }
 	    // Score tie between const/non-const siblings: the implicit object
 	    // parameter is the discriminator ([over.match.best] — a non-const
 	    // object's exact cv-match beats the qualification conversion).
-	    if ( obj_cv >= 0 && best_fd
+	    else if ( obj_cv >= 0 && best_fd
 	      && best_fd->method_cv() != fd->method_cv() )
 	    {
 		// The closest cv wins: the fewer qualifiers the member adds to
@@ -20964,7 +21041,7 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 		int n_fd = ((add_fd & cvCONST) ? 1 : 0) + ((add_fd & cvVOLATILE) ? 1 : 0);
 		int n_best = ((add_best & cvCONST) ? 1 : 0) + ((add_best & cvVOLATILE) ? 1 : 0);
 		if ( n_fd < n_best )
-		    best = mv;
+		    take_best();
 	    }
 	    // Equal conversion sequences prefer a non-template function over a
 	    // function-template specialization ([over.match.best.general]).
@@ -20972,14 +21049,14 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 	      && best_fd->is_member_template != fd->is_member_template )
 	    {
 		if ( !fd->is_member_template )
-		    best = mv;
+		    take_best();
 	    }
 	    // Viability tie: prefer the more-specialized member template
 	    // ([temp.func.order]). Without this the first-registered candidate
 	    // wins arbitrarily — `take(P)` could shadow the exact `take(U*)`.
 	    else if ( best_fd && best_fd->is_member_template && fd->is_member_template
 	      && member_tmpl_more_specialized(fd, best_fd) )
-		best = mv;
+		take_best();
 	}
     }
     if ( best )
@@ -22518,7 +22595,24 @@ static Variable *rank_fn_overload_candidates(
 			   ? dynamic_cast<FuncDef *>(best_e->var->type) : NULL;
 	    bool cand_plain = plain_concrete_overload(fd);
 	    bool best_plain = best_e && plain_concrete_overload(bfd);
-	    if ( cand_plain && !best_plain )
+	    // The arguments' conversion sequences one by one first
+	    // ([over.match.best]/2.1: a nearer base is the better
+	    // derived-to-base conversion) — the template / plain rules below
+	    // apply only when they are indistinguishable.
+	    int by_args = bfd ? compare_candidate_conversions(fd, 0, pn, bfd, 0,
+					bfd->fixed_param_count(), argtypes,
+					zero_args)
+			      : 0;
+	    if ( by_args )
+	    {
+		if ( by_args > 0 )
+		{
+		    best = e.var;
+		    best_e = &e;
+		    tied = NULL;
+		}
+	    }
+	    else if ( cand_plain && !best_plain )
 	    {
 		best = e.var;
 		best_e = &e;

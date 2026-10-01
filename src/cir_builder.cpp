@@ -16513,6 +16513,46 @@ int score_arg_to_param(const DataDef *adc, const DataDef *pdc,
 	return 0;            // unrecognized pairing: neutral
 }
 
+// [over.ics.rank]/4.4 (declared in madc.h): two derived-to-base conversions of
+// ONE argument of class C, to bases B and A where B derives from A — C to B
+// (by value or binding B&) is better than C to A, and C* to B* is better than
+// C* to A*. score_arg_to_param grades every such conversion alike, so this
+// answers what its rank cannot. +1 when the conversion to `p1` is the better,
+// -1 when the one to `p2` is, 0 when the rule does not decide.
+int compare_derived_to_base(const DataDef *adc, const DataDef *p1, bool ref1,
+			    const DataDef *p2, bool ref2)
+{
+	if (!adc || !p1 || !p2)
+		return 0;
+	if (adc->is_reference())
+		if (const DataDefPTR *ar = pointer_dd_of(adc))
+			if (ar->base_type)
+				adc = ar->base_type;
+	// The base class a parameter converts the argument to: a class object
+	// (by value or through the reference's pointer representation), or a
+	// class pointer's pointee for a pointer argument.
+	auto target = [adc](const DataDef *p, bool refp) -> const DataDefCLASS * {
+		if (refp && p->is_pointer())
+			if (const DataDefPTR *pp = pointer_dd_of(p))
+				if (pp->base_type)
+					return as_user_class(pp->base_type);
+		if (adc->is_pointer())
+			return p->is_pointer() ? class_pointer_pointee(p) : NULL;
+		return as_user_class(p);
+	};
+	const DataDefCLASS *c = adc->is_pointer() ? class_pointer_pointee(adc)
+						  : as_user_class(adc);
+	const DataDefCLASS *b1 = target(p1, ref1), *b2 = target(p2, ref2);
+	if (!c || !b1 || !b2 || b1 == b2 || c == b1 || c == b2
+	    || !c->is_or_derives_from(b1) || !c->is_or_derives_from(b2))
+		return 0;
+	if (b1->is_or_derives_from(b2))
+		return 1;
+	if (b2->is_or_derives_from(b1))
+		return -1;
+	return 0;
+}
+
 // The call symbol for a constructor of `cdd`. Precedence: an external ABI
 // symbol (emit_symbol) > a
 // disambiguated-overload symbol (local_emit_name — the 2nd+ same-arity ctor,
