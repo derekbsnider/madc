@@ -1,0 +1,11 @@
+set-mark: ctrl+space
+kill-region: ^w
+kill-ring-save: alt+w
+yank: ^y
+mark-whole-buffer: ^x h
+scroll-down: alt+v
+forward-word: alt+f
+backward-word: alt+b
+beginning-of-buffer: alt+<
+end-of-buffer: alt+>
+goto-line: alt+g g
