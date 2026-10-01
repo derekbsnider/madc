@@ -2074,7 +2074,8 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 					     DataDef *formal, bool refp,
 					     bool allow_converted_temp,
 					     const std::map<DataDef *, DataDef *> *subst,
-					     std::vector<node_t> &prefix)
+					     std::vector<node_t> &prefix,
+					     DataDef *arg_type)
 {
 	node_t out = copied_reference_slot_arg(arg, src_arg, refp);
 	if (!out) {
@@ -2178,7 +2179,93 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 			form, prefix);
 		return node2(N_CAST, ptr_type_node(formal), addr, arg);
 	}
+	// A BY-VALUE class formal the pattern never converted to: its callee
+	// was still a function-template placeholder when the argument was
+	// lowered (tsubst_arg_uncoerced).
+	if (!refp && arg && arg_type && src_arg
+	    && CIR_NODE(src_arg)->tsubst_arg_uncoerced)
+		if (DataDefCLASS *vc = by_value_class_formal(formal))
+			return copied_class_value_arg(arg, out, vc, arg_type, prefix);
 	return out;
+}
+
+void CirBuilder::mark_pattern_arg_uncoerced(node_t args)
+{
+	if (!m_tsubst_pattern_mode || !args)
+		return;
+	node_t last = NULL;
+	for (node_t a = c2mir_node_first_op(args); a != NULL;
+	     a = c2mir_node_next_op(a))
+		last = a;
+	if (last)
+		CIR_NODE(last)->tsubst_arg_uncoerced = true;
+}
+
+// Copy-initialize a BY-VALUE class parameter of class `target` from an
+// argument the pattern lowered with no formal ([dcl.init]/17.6,
+// [over.match.copy]) — g++'s tsubst re-runs convert_arguments on the
+// substituted arguments. The one by-value-formal owner, object_arg_value,
+// converts (the trivially copyable value, a derived object's slice, a
+// converting constructor, the Itanium invisible reference) over a REFERENCE
+// stand-in bound to the copied value, so the argument the pattern already
+// evaluated — a temporary it already constructed — is reused, never
+// evaluated or constructed again. A prvalue is the parameter object when it
+// is of class `target` ([class.temporary]); one of another type is spilled
+// bitwise into a plain local first (the value IS the object), which a class
+// with a destructor would destroy twice, so that case is refused loudly.
+node_t CirBuilder::copied_class_value_arg(TokenBase *arg, node_t value,
+					  DataDefCLASS *target, DataDef *arg_type,
+					  std::vector<node_t> &prefix)
+{
+	DataDef *vt = arg_type;
+	if (vt && vt->is_reference())
+		vt = ref_param_referent(vt);
+	if (!vt || !arg || !m_prog)
+		return value;
+	DataDefCLASS *vc = as_class_instance(vt);
+	bool invisible = class_param_via_invisible_ref(target) != NULL;
+	if (vc == target && !invisible)
+		return value;
+	bool prvalue = expr_is_nonaddressable_rvalue(arg);
+	if (vc == target && (prvalue || class_prvalue_of(arg, target)))
+		return node1(N_ADDR, value, arg);
+	if (prvalue) {
+		if (vc && class_needs_dtor(vc))
+			return error_node("tsubst: a class prvalue with a destructor"
+					  " converting to a by-value class parameter",
+					  arg);
+		char name[32];
+		snprintf(name, sizeof(name), "__madc_objtmp_%d",
+			 m_strtmp_counter++);
+		Variable *tmp = new Variable(name, *vt, 1, NULL, false);
+		tmp->flags |= vfLOCAL;
+		prefix.push_back(var_decl(tmp, arg));
+		prefix.push_back(node2(N_EXPR, list(),
+				       node2(N_ASSIGN, id(name, arg), value, arg),
+				       arg));
+		value = id(name, arg);
+	}
+	char rname[32];
+	snprintf(rname, sizeof(rname), "__madc_objtmp_%d", m_strtmp_counter++);
+	Variable *ref = new Variable(rname, *m_prog->getReferenceType(vt), 1,
+				     NULL, false);
+	ref->flags |= vfLOCAL;
+	prefix.push_back(var_decl(ref, arg));
+	prefix.push_back(node2(N_EXPR, list(),
+			       node2(N_ASSIGN, id(rname, arg),
+				     node1(N_ADDR, value, arg), arg),
+			       arg));
+	TokenVar *stand_in = new TokenVar(*ref);
+	stand_in->file = arg->file;
+	stand_in->line = arg->line;
+	stand_in->column = arg->column;
+	std::vector<node_t> saved;
+	saved.swap(m_pending_stmts);
+	node_t r = object_arg_value(stand_in, target);
+	prefix.insert(prefix.end(), m_pending_stmts.begin(),
+		      m_pending_stmts.end());
+	m_pending_stmts.swap(saved);
+	return r;
 }
 
 static bool pending_function_body_available(CirBuilder *cb, Program *prog,
@@ -4123,11 +4210,20 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						allow_converted_temp = const_ref_param(wfd, pi);
 					}
 				}
+				// The argument's substituted type: concrete_param_types
+				// covers the explicit arguments (packs expanded), which
+				// `fi` counts after a member call's leading extras.
+				size_t ci = !tmm ? fi
+					  : (fi >= member_extras ? fi - member_extras
+								 : (size_t)-1);
+				DataDef *arg_type = ci < concrete_param_types.size()
+						  ? concrete_param_types[ci] : NULL;
 				node_t rewritten =
 					copied_call_arg_for_formal(arg, a, pt,
 								   refp,
 								   allow_converted_temp,
-								   subst, arg_prefix);
+								   subst, arg_prefix,
+								   arg_type);
 				if (!rewritten)
 					return CIR_NODE(error_node(
 						"tsubst: failed dependent call arg copy",
@@ -4388,6 +4484,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 	dst->synth_from_origin = src->synth_from_origin;
 	dst->tree1_origin      = src->self;      // provenance back-ref (seg, idx)
 	dst->tsubst_pack_expand = src->tsubst_pack_expand;
+	dst->tsubst_arg_uncoerced = src->tsubst_arg_uncoerced;
 	dst->tsubst_pack_index = src->tsubst_pack_index;
 	dst->tsubst_pack_value_id = src->tsubst_pack_value_id;
 	if (m_tsubst_copy_pack_index >= 0)
@@ -7246,21 +7343,24 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 	if (dynamic_cast<TokenPackExpansion *>(arg)
 	    && template_param_in_pack_pattern(arg))
 		return class_object_value(arg, target);
-	bool prvalue = object_returning_call_class(arg) == target;
-	if (!prvalue)
-		if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
-			prvalue = as_class_instance(ot->obj_class) == target;
-	if (!prvalue)
-		if (TokenCast *tc = dynamic_cast<TokenCast *>(arg))
-			prvalue = as_class_instance(tc->cast_type) == target
-				  && tc->expr
-				  && as_class_instance(tc->expr->datadef()) != target;
-	if (!prvalue)
-		prvalue = arg && class_operator_value_result(arg)
-			  && as_class_instance(arg->datadef()) == target;
-	if (prvalue)
+	if (class_prvalue_of(arg, target))
 		return node1(N_ADDR, class_object_value(arg, target), arg);
 	return node1(N_ADDR, class_object_temp(arg, target), arg);
+}
+
+bool CirBuilder::class_prvalue_of(TokenBase *arg, DataDefCLASS *target)
+{
+	if (object_returning_call_class(arg) == target)
+		return true;
+	if (TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(arg))
+		if (as_class_instance(ot->obj_class) == target)
+			return true;
+	if (TokenCast *tc = dynamic_cast<TokenCast *>(arg))
+		if (as_class_instance(tc->cast_type) == target && tc->expr
+		    && as_class_instance(tc->expr->datadef()) != target)
+			return true;
+	return arg && class_operator_value_result(arg)
+	    && as_class_instance(arg->datadef()) == target;
 }
 
 bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
@@ -7719,6 +7819,8 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn.
 			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
+		if (!pt)
+			mark_pattern_arg_uncoerced(args);
 	}
 	// Capture forwarding: by-value callees receive the snapshot local created at
 	// the lambda expression; by-reference callees receive the live variable's
@@ -13444,6 +13546,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			// A secondary base sits at a non-zero offset, so without it the
 			// callee read the wrong subobject (silent `1 1 20 12`).
 			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
+		if (!pt)
+			mark_pattern_arg_uncoerced(args);
 	}
 
 	// Virtual dispatch: a method declared (or inherited as) virtual is called

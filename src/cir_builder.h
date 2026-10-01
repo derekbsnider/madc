@@ -2826,11 +2826,25 @@ public:
 	std::string copied_pack_value_name(const char *name) const;
 	node_t copied_reference_slot_arg(class TokenBase *arg, node_t src_arg,
 					 bool refp);
+	// `arg_type`: the argument's substituted type (the re-resolution's
+	// concrete_param_types entry), NULL when unknown.
 	node_t copied_call_arg_for_formal(class TokenBase *arg, node_t src_arg,
 					 DataDef *formal, bool refp,
 					 bool allow_converted_temp,
 					 const std::map<DataDef *, DataDef *> *subst,
-					 std::vector<node_t> &prefix);
+					 std::vector<node_t> &prefix,
+					 DataDef *arg_type = nullptr);
+	// A pattern argument lowered with no formal: mark the last arg of `args`
+	// (cir_node::tsubst_arg_uncoerced) — pattern capture only.
+	void mark_pattern_arg_uncoerced(node_t args);
+	// Copy-time conversion of an uncoerced argument of type `arg_type` to a
+	// BY-VALUE class formal of class `target` (copied_call_arg_for_formal).
+	node_t copied_class_value_arg(class TokenBase *arg, node_t value,
+				      DataDefCLASS *target, DataDef *arg_type,
+				      std::vector<node_t> &prefix);
+	// Is `arg` a PRVALUE of class `target` — the parameter object itself
+	// ([class.temporary], guaranteed elision)?
+	bool class_prvalue_of(class TokenBase *arg, DataDefCLASS *target);
 	class Variable *resolve_copied_dependent_call(
 		class TokenCallFunc *tcf,
 		const std::map<DataDef *, DataDef *> *subst,

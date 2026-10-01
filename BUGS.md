@@ -43,7 +43,8 @@ int main() { int a[3] = { 1, 2, 3 }; printf("%d\n", ri(a, a + 3, std::random_acc
   `It = int*`; the tag converts to `forward_iterator_tag`, a nearer base,
   so that specialization is the better candidate ([over.ics.rank]/4.4.4).
   This is libstdc++'s tag dispatch (`_M_range_initialize`, `__distance`,
-  `__advance`): madc takes the input-iterator path.
+  `__advance`): madc takes the input-iterator path. The same for two member
+  templates of one class (`V::ri2`, called from another member template).
 - Found 2026-10-01 during B111's recon. SILENT; off the release path, filed
   per owner 2026-09-30, raised with the owner.
 - Layer: `Program::instantiate_namespace_fn_template_for_call` instantiates
@@ -643,34 +644,38 @@ int main() { printf("%d %d %d\n", eat(), eat(1), eat(1, 2.5)); return 0; }
 - Layer: not yet traced: the pack-expansion parameter declarator of an
   instantiated `const T&...` (empty and one-element packs).
 
-### B111. `std::vector` from an iterator pair is refused: `std::vector<int> v(a, a + 3)`
+### B111. `std::vector` from an iterator pair is refused: `std::vector<int> v(w.begin(), w.end())`
 
 ```cpp
 #include <cstdio>
 #include <vector>
 int main()
 {
-	int a[3] = { 4, 5, 6 };
-	std::vector<int> range(a, a + 3);
+	std::vector<int> range(3, 7);
 	std::vector<int> copy(range.begin(), range.end());
-	printf("%zu %d %zu %d\n", range.size(), range[2], copy.size(), copy[0]);
+	printf("%zu %d\n", copy.size(), copy[0]);
 	return 0;
 }
 ```
 
-- g++ 13 = clang++ 18 (`-std=c++17`): `3 6 3 4`. madc (`--std=c++17`): from
-  `int*`, c2mir's check refuses the iterator-pair constructor's body
-  (`stl_vector.h:711:23: incompatible argument type for struct/union type
-  parameter`); from vector iterators, `tsubst bailed on ...
-  _M_range_initialize__mti`. The same at `8f6df07b2` and with B96's fix.
-- The candidate is chosen correctly (B96 is the fill constructor); the
-  iterator-pair constructor's instantiated body is what fails.
+- g++ 13 = clang++ 18 (`-std=c++17`): `3 7`. madc (`--std=c++17`): `cir
+  error: parse-once internal: tsubst bailed on the covered instantiation
+  'vector_int32_t_std__allocator_int32_t____M_range_initialize__mti' ...
+  [why: tsubst body calls un-emittable symbol] @stl_vector.h:1668`.
+- From pointers (`std::vector<int> v(a, a + 3)`) works since 2026-10-01
+  (by-value class arguments in a tsubst copy are converted; test
+  testtsubstbyvalueclassarg).
+- `MADC_XTEST_PAT_MEMINIT_DEBUG=1`: the un-emittable symbol is the
+  placeholder `vector<int>::emplace_back`. madc takes the input-iterator
+  `_M_range_initialize` (B113; g++ takes the forward-iterator one), whose
+  `emplace_back(*__first)` is a variadic member call whose argument is a
+  dependent class `operator*` call; the copy never rewrites it to an
+  instance. With `int *` iterators the same body works.
 - Found 2026-10-01 while fixing B96. Off the release path, filed per owner
-  2026-09-30; beginner C++ copies arrays into vectors this way.
-- Layer: not yet traced: `vector(_InputIterator, _InputIterator, const
-  allocator_type &)` -> `_M_range_initialize(__first, __last,
-  std::__iterator_category(__first))`, the tag-dispatched call (line 711) and
-  the forward-iterator overload's body (line 1671).
+  2026-09-30; beginner C++ copies containers into vectors this way.
+- Layer: not yet traced: the tsubst copy of a member PACK call
+  (`emplace_back(_Args&&...)`) whose argument is a class operator call
+  (copy_cir_subtree's N_CALL member rebuild, rebuild_member_pack_args).
 
 ### B110. `std::string` from an iterator pair is refused: `std::string t(s.begin(), s.end())`
 

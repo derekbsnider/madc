@@ -186,7 +186,8 @@ static bool cir_fill_record(cir_node *n, cir_frozen_record &r)
 	r.tree1_origin         = n->tree1_origin;
 	r.src_lang             = (uint8_t)n->src_lang;
 	r.flags                = (n->synth_from_origin ? CIR_FROZEN_SYNTH_FROM_ORIGIN : 0)
-			       | (n->tsubst_pack_expand ? CIR_FROZEN_PACK_EXPAND : 0);
+			       | (n->tsubst_pack_expand ? CIR_FROZEN_PACK_EXPAND : 0)
+			       | (n->tsubst_arg_uncoerced ? CIR_FROZEN_ARG_UNCOERCED : 0);
 	return true;
 }
 
@@ -1002,6 +1003,7 @@ cir_node *CirFrozenSegment::shell(uint32_t idx)
 	cn->src_lang             = (CirSourceLang)r.src_lang;
 	cn->synth_from_origin    = (r.flags & CIR_FROZEN_SYNTH_FROM_ORIGIN) != 0;
 	cn->tsubst_pack_expand   = (r.flags & CIR_FROZEN_PACK_EXPAND) != 0;
+	cn->tsubst_arg_uncoerced = (r.flags & CIR_FROZEN_ARG_UNCOERCED) != 0;
 	cn->self.seg = _seg;
 	cn->self.idx = idx;
 
@@ -4448,7 +4450,8 @@ bool cir_trees_structurally_identical(node_t a, node_t b)
 		    || !(cx->tree1_origin == cy->tree1_origin)
 		    || cx->src_lang != cy->src_lang
 		    || cx->synth_from_origin != cy->synth_from_origin
-		    || cx->tsubst_pack_expand != cy->tsubst_pack_expand)
+		    || cx->tsubst_pack_expand != cy->tsubst_pack_expand
+		    || cx->tsubst_arg_uncoerced != cy->tsubst_arg_uncoerced)
 			return false;
 		// Extension STRING ids compare by CONTENT via the accessors,
 		// not by raw id — a forest thaw legitimately re-interns them
