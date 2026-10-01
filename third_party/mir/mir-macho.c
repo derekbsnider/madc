@@ -194,6 +194,7 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
 #define MACHO_LC_DYSYMTAB 0xbu
 #define MACHO_LC_LOAD_DYLIB 0xcu
 #define MACHO_LC_ID_DYLIB 0xdu
+#define MACHO_LC_RPATH (0x1cu | MACHO_LC_REQ_DYLD)
 #define MACHO_LC_LOAD_DYLINKER 0xeu
 #define MACHO_LC_UUID 0x1bu
 #define MACHO_LC_CODE_SIGNATURE 0x1du
@@ -314,6 +315,19 @@ static void machob_section (dwbuf_t *b, const char *sect, const char *seg, uint6
 static uint32_t machob_lc_str_size (uint32_t fixed, const char *s) {
   uint32_t n = fixed + (uint32_t) strlen (s) + 1;
   return (n + 7u) & ~7u;
+}
+
+/* LC_RPATH's size for a `len'-byte path (8-padded, NUL included) */
+static uint32_t machob_rpath_size (size_t len) { return (uint32_t) ((12 + len + 1 + 7) & ~(size_t) 7); }
+
+/* Does the image load anything through @rpath?  Only then do the runpath's
+   entries become LC_RPATHs: dyld consults them for @rpath loads alone, and
+   an image without one stays exactly as it was. */
+static int macho_rpath_p (const MIR_object_exec_params *params) {
+  if (params->runpath == NULL || params->runpath[0] == '\0') return 0;
+  for (size_t i = 0; i < params->n_needed; i++)
+    if (strncmp (params->needed[i], "@rpath/", 7) == 0) return 1;
+  return 0;
 }
 
 typedef struct {
@@ -580,6 +594,17 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     sizeofcmds += 72 + 80;
     ncmds++;
   }
+  int rpath_p = macho_rpath_p (params); /* one LC_RPATH per runpath entry */
+  if (rpath_p)
+    for (const char *r = params->runpath; *r != '\0';) {
+      const char *e = strchr (r, ':');
+      size_t len = e != NULL ? (size_t) (e - r) : strlen (r);
+      if (len != 0) {
+        sizeofcmds += machob_rpath_size (len);
+        ncmds++;
+      }
+      r += len + (e != NULL);
+    }
 
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   /* ---- layout: identity fileoff <-> vaddr-base mapping */
@@ -1018,6 +1043,25 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
         while (lc.len - base_len != sz) buf_u8 (&lc, 0);
       }
     }
+
+    /* LC_RPATH: the runpath's entries, in order (dyld tries each for an
+       @rpath load) */
+    if (rpath_p)
+      for (const char *r = params->runpath; *r != '\0';) {
+        const char *e = strchr (r, ':');
+        size_t len = e != NULL ? (size_t) (e - r) : strlen (r);
+        if (len != 0) {
+          uint32_t sz = machob_rpath_size (len);
+          size_t base_len = lc.len;
+          buf_u32 (&lc, MACHO_LC_RPATH);
+          buf_u32 (&lc, sz);
+          buf_u32 (&lc, 12); /* path offset */
+          buf_bytes (&lc, r, len);
+          buf_u8 (&lc, 0);
+          while (lc.len - base_len != sz) buf_u8 (&lc, 0);
+        }
+        r += len + (e != NULL);
+      }
 
     /* LC_FUNCTION_STARTS */
     buf_u32 (&lc, MACHO_LC_FUNCTION_STARTS);

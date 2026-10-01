@@ -1,0 +1,19 @@
+build-hello: ok=1 rows=0 line-pos=0
+build-future: ok=1 rows=0 line-pos=0
+build-noentry: ok=1 rows=0 line-pos=0
+build-declines: ok=1 rows=0 line-pos=0
+build-broken: ok=0 rows=1 line-pos=1
+build-nocode: ok=0 rows=0 line-pos=0
+build-nocode-why: tmp/testmadcide_plugin_library_cfg/plugins/nocode/nocode.plugin names no "code" to build
+madcide: built tmp/testmadcide_plugin_library_cfg/plugins/hello/hello.dylib
+cli-build: built=0 refused=1
+hello-code: contributed=1
+run-greet: cont=1 msg=Hello, world.
+run-greetagain: cont=1 msg=Hello, again. (ran)
+hello-view: 1
+spawn: same-code=1 active=1 msg=
+activate-nolib: ok=0 no library tmp/testmadcide_plugin_library_cfg/plugins/nolib/nolib.dylib: build it with `madcide --build-plugin tmp/testmadcide_plugin_library_cfg/plugins/nolib`
+activate-future: ok=0 tmp/testmadcide_plugin_library_cfg/plugins/future/future.dylib was built against plugin API 2; this madcide serves 1: rebuild it with `madcide --build-plugin tmp/testmadcide_plugin_library_cfg/plugins/future`
+activate-noentry: ok=0 tmp/testmadcide_plugin_library_cfg/plugins/noentry/noentry.dylib is not a madcide plugin library (it defines no madcide_plugin_activate)
+activate-declines: ok=0 its activation refused it (tmp/testmadcide_plugin_library_cfg/plugins/declines/declines.dylib)
+declined-taken-back: 1

@@ -1,1 +1,0 @@
-a shared object that uses the value runtime is refused on darwin until D5 (libmadc-0.dylib; the plugin design G2, plan §41.11a step 4); the Mach-O writer emits MH_DYLIB (scripts/macho_dylib_gate.sh)

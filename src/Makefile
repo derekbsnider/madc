@@ -939,11 +939,16 @@ endif
 # madc hosted on macOS (Route 1): full madc binaries for the Macs. The
 # emitted-C runtime archive (W3) builds beside each binary from the same
 # per-mode objects; package_release_macos.sh ships it as lib/libmadc_rt.a.
+# libmadc-0.dylib (D5) builds beside them too; on a darwin host (one arch,
+# the binary that runs here) it is also placed as lib/libmadc-0.dylib.
+ifeq ($(DARWIN_HOST),1)
+DARWIN_DEV_RT_DYLIB = ../lib/libmadc-0.dylib
+endif
 hosted-x86-64-macos:
-	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos ../lib/libmadc_rt-hosted-x86-64-macos.a
+	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos ../lib/libmadc_rt-hosted-x86-64-macos.a ../obj/hosted-x86-64-macos/libmadc-0.dylib $(DARWIN_DEV_RT_DYLIB)
 
 hosted-arm64-macos:
-	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a
+	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a ../obj/hosted-arm64-macos/libmadc-0.dylib $(DARWIN_DEV_RT_DYLIB)
 
 # darwin-HOST MIR variant libs: built BY the darwin compiler, so host
 # detection selects the Apple arms natively — no MIR_TARGET knobs.
@@ -1468,6 +1473,26 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 ../bin/libmadc-0.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
 	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc.def $(MIRDIR)/mir-int128-helper.h
 	$(CXX) -shared -o $@ $(OBJDIR)/libmadc.def -Wl,--out-implib,../lib/libmadc.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+endif
+
+# libmadc-0.dylib (D5, PK3-mac-runtime): the darwin twin of libmadc-0.dll
+# and libmadc.so.0 — the FULL engine, the runtime provider a runtime-needing
+# AOT image or shared object (a madcide plugin library) loads by its install
+# name @rpath/libmadc-0.dylib (cir_apple_runtime_dylib), the image's
+# LC_RPATHs naming @executable_path/../lib and the compiling madc's lib dir.
+# Whole-archive (-force_load): the loading images reference these symbols,
+# the dylib itself does not. A dylib exports its globals (the
+# --export-all-symbols analogue). Built per mode in the obj tree, where
+# forest.bin lives (the container builds both arches in one tree);
+# package_release_macos.sh ships it as lib/libmadc-0.dylib, and a darwin
+# host also places it there in the dev tree (bin/../lib, which the
+# LC_RPATHs reach).
+ifdef HOSTED_DARWIN_TARGET
+$(OBJDIR)/libmadc-0.dylib: $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -dynamiclib -o $@ -Wl,-install_name,@rpath/libmadc-0.dylib $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+
+../lib/libmadc-0.dylib: $(OBJDIR)/libmadc-0.dylib
+	cp -p $< $@
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the

@@ -18,7 +18,7 @@
 #include <sys/time.h>
 #ifdef __APPLE__
 #include <mach-o/getsect.h>	// self-image forest carrier: __MADC,__forest section
-#include <mach-o/ldsyms.h>	// _mh_execute_header (MH_EXECUTE self-probe)
+#include <mach-o/dyld.h>	// _dyld_get_image_header (the main executable's header)
 #endif
 #include "madc_posix_io.h"	// map_file_readonly — the one file-mapping owner
 				// (also why no <sys/mman.h> here: MIR's
@@ -821,12 +821,16 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 		// time (-sectcreate) or by the post-link packer. The section
 		// data IS the container (footer at its end), already mapped
 		// and slid in the running image — zero-copy, process-lifetime.
-		// _mh_execute_header limits this probe to the executable
-		// image; the shared-library shape (forest-in-dylib) gets its
-		// own dladdr-based arm in the carriers track S4.
+		// The probe reads the main executable's image (dyld's image 0),
+		// whether the engine is linked into it or loaded from
+		// libmadc-0.dylib: the link-time _mh_execute_header exists only
+		// in an executable, so the dylib could not name it. The
+		// forest-in-dylib shape gets its own dladdr-based arm in the
+		// carriers track S4.
 		unsigned long seclen = 0;
-		uint8_t *sec = getsectiondata(&_mh_execute_header, "__MADC",
-					      "__forest", &seclen);
+		uint8_t *sec = getsectiondata(
+			(const struct mach_header_64 *)_dyld_get_image_header(0),
+			"__MADC", "__forest", &seclen);
 		if (sec && seclen) {
 			image = sec;
 			len = (size_t)seclen;

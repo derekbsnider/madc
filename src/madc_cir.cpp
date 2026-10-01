@@ -2461,20 +2461,21 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
 
 #if MADC_TARGET_APPLE_P
 // ONE rule for the Mach-O emit lanes (source image + object link): a
-// program still needing the madc runtime cannot link — no target libmadc
-// dylib exists — and the message names the fix. Returns true when the
-// emit must refuse. (The PE lanes used to share this refusal; W3.5's
-// libmadc-0.dll lifted it — see cir_windows_import_dlls.)
-static bool cir_target_runtime_refused(bool have_madc, bool drop_madc,
-				       const char *out_path)
+// runtime-needing image loads the madc surface (madc_puts, the
+// madc_value_* bridge, the __madc_* helpers) from libmadc-0.dylib — the
+// darwin twin of libmadc.so.0 and libmadc-0.dll (D5) — by its install name
+// @rpath/libmadc-0.dylib; the runpath (cir_native_link_env:
+// @executable_path/../lib, then this madc's own lib dir) becomes the
+// image's LC_RPATHs. FIRST on the load list: the writer binds flat once
+// extras are present, and dyld's flat lookup searches in load order,
+// specific before general (cir_windows_import_dlls' rule). Until D5 such a
+// program was refused here; -static-libmadc still merges the C-lane
+// runtime into the image instead.
+static void cir_apple_runtime_dylib(bool have_madc, bool drop_madc,
+				    std::vector<const char *> &libs)
 {
-    if (!have_madc || drop_madc)
-	return false;
-    fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
-	    " not exist as a library for this native-emit target; build it"
-	    " into the image with -static-libmadc (C-lane machinery only)\n",
-	    out_path);
-    return true;
+    if (have_madc && !drop_madc)
+	libs.push_back("@rpath/libmadc-0.dylib");
 }
 #endif
 
@@ -2584,12 +2585,11 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
     // Mach-O: the base C/C++ sonames are cover analysis only — never load
-    // commands. A program still needing the madc runtime fails at emit,
-    // not at dyld; a C++ program gets its real world (libc++) as an
+    // commands. A program still needing the madc runtime loads
+    // libmadc-0.dylib; a C++ program gets its real world (libc++) as an
     // LC_LOAD_DYLIB, and with extras present the writer binds every
     // import flat across the load list (mir-debug.h).
-    if (cir_target_runtime_refused(have_madc, drop_madc, out_path))
-	return false;
+    cir_apple_runtime_dylib(have_madc, drop_madc, libs);
     cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
     // PE: runtime-needing programs import from libmadc-0.dll; the list
@@ -2704,11 +2704,13 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // release tarball is the standing case) binds its OWN tree's runtime
     // before the compiling madc's libdir or the system fallback. The
     // token is the loader's, never the shell's: $ORIGIN on ELF,
-    // @executable_path on Mach-O. PE has no runpath (adjacency binds) —
+    // @executable_path on Mach-O — the TARGET's loader, so a Linux-hosted
+    // cross madc emitting Mach-O writes dyld's token (the cover set above
+    // is the host's; this is not). PE has no runpath (adjacency binds) —
     // its value stays what it was, unread by the writer.
-#ifdef __APPLE__
+#if MADC_TARGET_APPLE_P
     runpath = "@executable_path/../lib:";
-#elif defined(_WIN32)
+#elif MADC_TARGET_WINDOWS_P
     runpath = "";
 #else
     runpath = "$ORIGIN/../lib:";
@@ -3050,14 +3052,11 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 		      << std::endl);
 	std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
-	// Same Mach-O rule as cir_write_native_image — one refusal text,
-	// one extra-dylib policy (the shared helpers are the single
+	// Same Mach-O rule as cir_write_native_image — one runtime-dylib
+	// rule, one extra-dylib policy (the shared helpers are the single
 	// owners; this lane's copy had already drifted to an older
 	// message once).
-	if (cir_target_runtime_refused(have_madc, drop_madc, out_path)) {
-	    MIR_object_destroy(obj);
-	    return -1;
-	}
+	cir_apple_runtime_dylib(have_madc, drop_madc, libs);
 	cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
 	// Same PE rule as cir_write_native_image: libmadc-0.dll first

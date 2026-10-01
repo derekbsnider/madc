@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### darwin: libmadc-0.dylib, and runtime-needing images load it (D5; plan §41.11a step 4, part 5)
+
+The hosted macOS build links libmadc-0.dylib (the runtime library, per architecture, installed name @rpath/libmadc-0.dylib), and a runtime-needing image or library loads it as the first LC_LOAD_DYLIB. The Mach-O writer now emits LC_RPATH directives following the target platform, not the build host: @executable_path/../lib when the load is @rpath/. A fix found on the way: the forest probe reads the main executable's image through `_dyld_get_image_header(0)`, since a dylib cannot name `_mh_execute_header`. The five darwin test skips waiting on D5 are removed, so testbuild_shared, testmadcide_plugin_library, testbuildnative, testparserun, and testmadcide now run in the darwin lane. Gate: `scripts/macho_dylib_gate.sh` verifies on both arm64 and x86-64 that the dylib's install name is correct, runtime-needing images carry the right LC_RPATHs and load the runtime, and 7 of 7 madc-runtime symbol binds appear in its export trie (the negative control: runtime-free libraries carry no libmadc load and no LC_RPATH).
+
 ### mir-macho: madc -shared emits an MH_DYLIB on macOS (plan §41.11a step 4, part 4)
 
 The Mach-O writer now emits a properly formatted dylib for `madc -shared` output, with MH_DYLIB header, LC_ID_DYLIB load command naming the install path as @rpath/<basename>, and an export trie of every defined named symbol (a compressed prefix tree that dyld walks correctly). Gate: `scripts/macho_dylib_gate.sh` in `make -C src machogate` verifies both arm64 and x86-64 on the container: the header and load commands, the export trie structure holding all globals and no locals (so ld64.lld walks it unambiguously), and a program linked against the dylib through the trie. A library using the value runtime waits for D5 (libmadc-0.dylib) before it can run.

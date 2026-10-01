@@ -37,10 +37,11 @@ the file could not be read or the problems projection carries errors
 command does not take. The argument is what you would have typed at the
 prompt the command opens.
 
-The packaged `madcide` binary ships with the Linux, Windows and macOS
-releases (`bin/madcide`, `bin\madcide.exe`); the window needs the platform
-webview library the packages install beside it (WebView2 on Windows,
-WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
+The packaged `madcide` binary ships with the Linux and Windows releases
+(`bin/madcide`, `bin\madcide.exe`), and joins the macOS release once its
+release job builds it beside `lib/libmadc-0.dylib`; the window needs the
+platform webview library the packages install beside it (WebView2 on
+Windows, WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
 
 ## Keys are profiles
 
@@ -313,6 +314,6 @@ A missing library, a library built against another plugin API version (it
 says both), a library without `madcide_plugin_activate`, and an activation
 that returns false are each reported on the status line, and the editor opens
 without the plugin; what a refused activation registered is taken back.
-Plugin libraries are Linux shared objects and Windows DLLs (a Windows plugin
-imports the engine from the `libmadc-0.dll` beside `madcide.exe`); macOS
-follows when `madc -shared` emits a `.dylib`.
+Plugin libraries are Linux shared objects, Windows DLLs and macOS dylibs; a
+plugin binds the engine the editor loaded (`libmadc.so.0`, the
+`libmadc-0.dll` beside `madcide.exe`, `lib/libmadc-0.dylib`).

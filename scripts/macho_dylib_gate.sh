@@ -11,7 +11,14 @@
 #     ld64.lld (an independent reader) walks to resolve a program's
 #     references — `lib_f`, `lib_foo` and `lib_foobar` are prefixes of one
 #     another, the shape a flat trie mis-walks;
-#   * the program linked against it records the install name.
+#   * the program linked against it records the install name;
+#   * the madc runtime (D5): libmadc-0.dylib names itself
+#     @rpath/libmadc-0.dylib; a runtime-needing program and a runtime-needing
+#     library (a plugin's shape) load it by that name, carry LC_RPATHs
+#     starting @executable_path/../lib (dyld's token, though the emitting
+#     madc runs on Linux), and every madc-runtime bind they make is in its
+#     export trie; the runtime-free library above (the negative control)
+#     loads no libmadc and carries no LC_RPATH.
 #
 # Execution (dyld loading it, its initializers running) is the Mac
 # battery's job; this gate proves the STRUCTURE on the container, both
@@ -19,7 +26,10 @@
 #
 # Container artifacts required — SKIP (rc 0) when missing, the
 # macho_obj_gate precedent: the cross madcs (make -C src cross-arm64-macos
-# cross-x86-64-macos), llvm-18 tools, clang-18 + lld and the macOS SDK.
+# cross-x86-64-macos), llvm-18 tools, clang-18 + lld and the macOS SDK. The
+# runtime legs also need each arch's obj/hosted-<arch>-macos/libmadc-0.dylib
+# (make -C src hosted-<arch>-macos, or release-macos) and say SKIP for an
+# arch that lacks it.
 # Knobs (env): OTOOL / OBJDUMP name the readers, CLANG the linking driver,
 # MACOS_SDK the SDK. A SKIP names the knob that would lift it.
 set -u
@@ -98,6 +108,67 @@ for a in arm64 x86-64; do
 	else
 		fail "[$a] ld64.lld refused the dylib: $(grep -m1 error "$D/$a/link.log")"
 	fi
+done
+
+cat > "$D/rt.mad" <<'EOF'
+int main()
+{
+	var x = { "a": 1 };
+	println("hi {} {}", 42, x["a"]);
+	return 0;
+}
+EOF
+cat > "$D/rtlib.mad" <<'EOF'
+extern "C" const char *rt_greet(const char *who)
+{
+	return format("hello, {}", who);
+}
+EOF
+# A madc-runtime import: the runtime's C surface or its C++ namespace.
+rt_names() { grep -E '^_(_madc|madc|madarray|__madc|_ZN4madc)'; }
+binds_of() { "$OBJDUMP" --macho --bind "$1" 2>/dev/null | awk 'NR>3{print $NF}' | sort -u; }
+
+for a in arm64 x86-64; do
+	dy="obj/hosted-$a-macos/libmadc-0.dylib"
+	if [ ! -f "$dy" ]; then
+		echo "  SKIP [$a] runtime legs: $dy not built (make -C src hosted-$a-macos)"
+		continue
+	fi
+	"$OTOOL" -l "$dy" 2>/dev/null | grep -q "name @rpath/libmadc-0.dylib " \
+		&& pass "[$a] libmadc-0.dylib names itself @rpath/libmadc-0.dylib" \
+		|| fail "[$a] libmadc-0.dylib has no LC_ID_DYLIB @rpath/libmadc-0.dylib"
+	"$OBJDUMP" --macho --exports-trie "$dy" 2>/dev/null | awk 'NR>2{print $2}' | sort -u > "$D/$a/rtexports.txt"
+	for k in exe lib; do
+		img="$D/$a/rt-$k"
+		if [ $k = exe ]; then
+			run "bin/madc-$a-macos" -o "$img" "$D/rt.mad" >"$D/$a/rt-$k.log" 2>&1
+		else
+			run "bin/madc-$a-macos" -shared -o "$img" "$D/rtlib.mad" >"$D/$a/rt-$k.log" 2>&1
+		fi
+		if [ $? -ne 0 ]; then
+			fail "[$a] runtime $k emit failed: $(tail -1 "$D/$a/rt-$k.log")"
+			continue
+		fi
+		lcs="$("$OTOOL" -l "$img" 2>/dev/null)"
+		echo "$lcs" | grep -q "name @rpath/libmadc-0.dylib " \
+			&& pass "[$a] the runtime $k loads @rpath/libmadc-0.dylib" \
+			|| fail "[$a] the runtime $k does not load @rpath/libmadc-0.dylib"
+		first=$(echo "$lcs" | grep -A2 -E "cmd LC_RPATH$" | grep -m1 " path " | awk '{print $2}')
+		[ "$first" = "@executable_path/../lib" ] \
+			&& pass "[$a] the runtime $k's first LC_RPATH is @executable_path/../lib" \
+			|| fail "[$a] the runtime $k's first LC_RPATH is '$first'"
+		binds_of "$img" | rt_names > "$D/$a/rt-$k-binds.txt"
+		nb=$(wc -l < "$D/$a/rt-$k-binds.txt")
+		miss=$(comm -23 "$D/$a/rt-$k-binds.txt" "$D/$a/rtexports.txt" | paste -sd' ')
+		if [ "$nb" -gt 0 ] && [ -z "$miss" ]; then
+			pass "[$a] the runtime $k's $nb madc-runtime binds are all libmadc-0.dylib exports"
+		else
+			fail "[$a] the runtime $k: $nb runtime binds, not exported: '$miss'"
+		fi
+	done
+	nl=$("$OTOOL" -l "$D/$a/libx.dylib" 2>/dev/null | grep -cE "libmadc-0.dylib |cmd LC_RPATH$")
+	[ "$nl" = "0" ] && pass "[$a] the runtime-free library loads no libmadc and carries no LC_RPATH" \
+		|| fail "[$a] the runtime-free library carries $nl libmadc / LC_RPATH load command(s)"
 done
 
 [ $rc -eq 0 ] && echo "macho_dylib_gate: OK" || echo "macho_dylib_gate: FAILURES"
