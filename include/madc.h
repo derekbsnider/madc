@@ -4649,6 +4649,17 @@ public:
     // this path; the normal operator machinery proceeds.
     TokenBase *lower_free_operator_to_call(class TokenOperator *to,
 					   bool no_rewrite = false);
+    // The UNARY twin ([over.match.oper]/3): `@x` / `x@` on a class (or
+    // struct) operand with no member operator@ is a CALL to the best
+    // non-member operator@ (a concrete operator function, or the
+    // specialization a free operator template deduces). NULL = not this
+    // lane. free_unary_operator_call is the one owner (opname
+    // "operator*" for build_indirection); the TokenOperator form reads a
+    // prefix / postfix / unary token's operand.
+    TokenBase *free_unary_operator_call(TokenBase *operand,
+					const std::string &opname,
+					bool postfix, TokenBase *at);
+    TokenBase *lower_free_unary_operator_to_call(class TokenOperator *to);
     // C++20 rewritten candidates ([over.match.oper]): != via ==, reversed
     // ==, relationals via (x <=> y) @ 0. Consulted only after every direct
     // candidate set missed.
@@ -7183,6 +7194,11 @@ public:
     // DataDefPTR(A)) — the referenced class. A plain `A*` pointer operand
     // stays NULL: only the reference representation is transparent here.
     class DataDefCLASS *operand_object_class(TokenBase *operand);
+    // An operand a non-member operator function can take ([over.match.oper]):
+    // a class object, or a plain struct (not class-promoted, so
+    // operand_object_class is NULL) — `box == 7`. The free-operator lanes'
+    // one admission rule.
+    bool operator_function_operand(TokenBase *operand);
     // The VALUE view of an operand's type (reference expression / vfREFERENCE
     // variable -> the referenced type) for deduction and overload ranking.
     // A CALL operand types by its RESOLVED callee's return — see

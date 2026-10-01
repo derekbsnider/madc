@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### operators: a unary operator's non-member candidates (free operator*, ++, -, !)
+
+A unary operator on a class or plain-struct operand now searches for non-member operator functions through the candidate lane in [over.match.oper]/3. Program::free_unary_operator_call instantiates free operator@ templates on the operand type (binary-lane equivalent for unary arity); lower_free_unary_operator_to_call reads a TokenOperator's operand and invokes it. build_indirection's class-object handlers (the one deref builder per indirection.md) now try free_unary_operator_call("operator*") after checking for the member operator*. The cir_builder's tsubst_operator_plan now offers dependent operators to both free lanes before lowering builtin forms. Program::operator_function_operand (new admission rule) gates both lanes: a class object or a plain struct. Before: madc refused `*w` with free operator* with "cannot dereference non-pointer type". After: plain-code and member-template unary operators now match g++ and clang++, instantiating both free function templates and concrete free operators.
+
 ### templates: a constructor template whose trailing parameters have defaults is a candidate (B110)
 
 Member constructor templates with trailing default parameters are now viable candidates in [over.match.viable]/2 terms: n arguments match m parameters when n == m or n < m and the rest have defaults. The candidate scan in instantiate_member_ctor_template_candidate now computes both parameter count (total) and required count (parameters without defaults), tries exact-arity candidates first, then those the call can complete with defaults. basic_string's iterator-pair constructor template, `template<class _InputIterator> basic_string(_InputIterator, _InputIterator, const _Alloc & = _Alloc())`, is now matched for 2-argument construction. Consolidated two private parameter-default scans into parameter_default_begin, the one reader of where a parameter's default argument begins in a token sequence.

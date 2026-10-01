@@ -21431,6 +21431,16 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
     return NULL;
 }
 
+bool Program::operator_function_operand(TokenBase *operand)
+{
+    if ( !operand )
+	return false;
+    // DataDefCLASS derives from DataDefSTRUCT, so the struct test only
+    // widens — it never re-routes a class operand.
+    return operand_object_class(operand)
+	|| dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(operand));
+}
+
 // The std comparison-category class a builtin `<=>` yields ([expr.spaceship]):
 // std::partial_ordering when either operand is floating, else
 // std::strong_ordering. These are the STANDARD names of the standard types
@@ -21712,14 +21722,11 @@ TokenBase *Program::lower_free_operator_to_call(TokenOperator *to,
 	return NULL;
     DataDefCLASS *lc = operand_object_class(to->left);
     DataDefCLASS *rc = operand_object_class(to->right);
-    // A plain C struct (not class-promoted, so operand_object_class is NULL)
-    // is still a valid operand of a user-written free operator template
-    // ([over.match.oper] — `box == 7`). Engage the free/retained lanes below;
-    // the member arms stay lc-gated and no-op for it. DataDefCLASS derives
-    // from DataDefSTRUCT, so this only widens, never re-routes, class operands.
-    if ( !lc && !rc
-      && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->left))
-      && !dynamic_cast<DataDefSTRUCT *>(operand_value_datadef(to->right)) )
+    // A plain struct operand engages the free/retained lanes below too
+    // (operator_function_operand); the member arms stay lc-gated and no-op
+    // for it.
+    if ( !operator_function_operand(to->left)
+      && !operator_function_operand(to->right) )
 	return NULL;
     ensure_free_overload_surfaces();	// task #25 B3: consult flush
     std::string opname = std::string("operator") + opsym;
@@ -31388,6 +31395,13 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 		exStack.push(opcall);
 		break;
 	    }
+	    if ( TokenBase *opcall = lower_free_unary_operator_to_call(to) )
+	    {
+		DBG(cout << "Lowered free unary operator to call" << endl);
+		opStack.pop();
+		exStack.push(opcall);
+		break;
+	    }
 	    // Type a class-object operator expression with the operator's RETURN type
 	    // (generic operator-overload support — applies to every class identically).
 	    // Authoritative over the built-in pointer/arithmetic heuristics via
@@ -33137,9 +33151,14 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
 	// operator applies to the step's RESULT (`*it++` is `*(it++)`) —
 	// the expression arm below.
 	if ( !step && !array )
+	{
 	    if ( TokenCallMethod *opcall =
 		    make_unary_object_operator_call(*this, &var, NULL, "operator*") )
 		return opcall;
+	    if ( TokenBase *fcall =
+		    free_unary_operator_call(operand, "operator*", false, star) )
+		return fcall;
+	}
 	DataDef *base = deref_type_for_variable(&var);
 	if ( !base )
 	    base = dependent_deref_result_type(var.type);
@@ -33171,10 +33190,16 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
     if ( tv && !step && tv->var.type )
 	if ( DataDef *ref = referent_if_reference(tv->var.type) )
 	    if ( !ref->is_pointer() )
+	    {
 		if ( TokenCallMethod *opcall =
 			make_unary_object_operator_call(*this, &tv->var, NULL,
 							"operator*") )
 		    return opcall;
+		if ( TokenBase *fcall =
+			free_unary_operator_call(operand, "operator*", false,
+						 star) )
+		    return fcall;
+	    }
     DataDef *dtype = effective_pointer_type_for_member_access(pointer_expr);
     if ( !dtype )
 	dtype = pointer_expr->datadef();
@@ -33190,6 +33215,9 @@ TokenBase *Program::build_indirection(TokenBase *operand, TokenBase *star)
     if ( TokenCallMethod *opcall =
 	    make_unary_object_operator_call(*this, NULL, operand, "operator*") )
 	return opcall;
+    if ( TokenBase *fcall =
+	    free_unary_operator_call(operand, "operator*", false, star) )
+	return fcall;
     if ( DataDef *dep_base = dependent_deref_result_type(dtype) )
 	return new TokenDerefExpr(operand, dep_base);
     debug_deref_fail(*this, 2, star, dtype);
@@ -44601,8 +44629,13 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    if ( isPostfixPosition() && !exStack.empty() )
 		    {
 			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->ival() << endl);
-			resolve_object_operator_type(to);
-			exStack.push(to);
+			if ( TokenBase *opcall = lower_free_unary_operator_to_call(to) )
+			    exStack.push(opcall);
+			else
+			{
+			    resolve_object_operator_type(to);
+			    exStack.push(to);
+			}
 		    }
 		    else
 			opStack.push(to);
@@ -65496,6 +65529,95 @@ DataDef *Program::instantiate_free_operator_template(const std::string &opname,
 		_fop_keys, _fop_cands,
 		want ? want->param_spellings[1].c_str() : "(any)");
     return result;
+}
+
+TokenBase *Program::free_unary_operator_call(TokenBase *operand,
+					     const std::string &opname,
+					     bool postfix, TokenBase *at)
+{
+    if ( !operand || !presents_as_cpp() )
+	return NULL;
+    if ( !operator_function_operand(operand) )
+	return NULL;
+    DataDefCLASS *cls = operand_object_class(operand);
+    // A member operator@ owns the expression (the member lanes).
+    if ( cls && cls->unary_operator_return_type(opname, postfix) )
+	return NULL;
+    ensure_free_overload_surfaces();
+    // The call's arguments: the operand, and for a postfix ++/-- the int 0
+    // that selects operator@(T, int) ([over.inc]).
+    std::vector<TokenBase *> args;
+    args.push_back(operand);
+    if ( postfix )
+    {
+	TokenInt *marker = new TokenInt(0);
+	marker->file = at ? at->file : operand->file;
+	marker->line = at ? at->line : operand->line;
+	marker->column = at ? at->column : operand->column;
+	args.push_back(marker);
+    }
+    // A free operator TEMPLATE takes part through the specialization it
+    // deduces for these arguments — the first that deduces, as the binary
+    // lane's instantiate_free_operator_template walk.
+    {
+	Variable probe_var(opname, ddINT, 1, NULL, false);
+	TokenCallFunc probe(probe_var);
+	probe.parameters = args;
+	const std::string suffix = "::" + opname;
+	fn_template_map.for_each(	/* thaw-owner */
+	    [&]( const char *key_c, std::vector<FnTemplateDef> &vec ) -> bool {
+		std::string key(key_c);
+		if ( key.size() < suffix.size()
+		  || key.compare(key.size() - suffix.size(), suffix.size(),
+				 suffix) )
+		    return false;
+		for ( FnTemplateDef &c : vec )
+		    thaw_fn_def(c);
+		for ( size_t vi = 0; vi < vec.size(); ++vi )
+		{
+		    Variable *inst = NULL;
+		    if ( try_instantiate_namespace_fn_template(*this, vec[vi], key,
+							       &probe, NULL, NULL,
+							       &inst) && inst )
+			return true;
+		}
+		return false;
+	    });
+    }
+    // Rank every non-member candidate, as the binary lane's concrete set.
+    std::vector<const DataDef *> argtypes;
+    std::vector<bool> zero_args;
+    for ( TokenBase *a : args )
+    {
+	argtypes.push_back(free_operator_arg_datadef(a));
+	zero_args.push_back(is_zero_integer_literal(a));
+    }
+    Variable *win = find_free_operator_function(opname, argtypes, &zero_args);
+    if ( !win )
+	return NULL;
+    TokenCallFunc *tc = new TokenCallFunc(*win);
+    tc->file = at ? at->file : operand->file;
+    tc->line = at ? at->line : operand->line;
+    tc->column = at ? at->column : operand->column;
+    tc->parameters = args;
+    return tc;
+}
+
+TokenBase *Program::lower_free_unary_operator_to_call(TokenOperator *to)
+{
+    if ( !to )
+	return NULL;
+    bool step = to->id() == TokenID::tkInc || to->id() == TokenID::tkDec;
+    // A unary operator reads its right operand; ++/-- the one it has.
+    if ( !step && (to->argc() != 1 || to->left || !to->right) )
+	return NULL;
+    bool postfix = step && to->left != NULL;
+    TokenBase *operand = postfix ? to->left : to->right;
+    const char *opsym = object_operator_symbol(to->id());
+    if ( !opsym || !operand )
+	return NULL;
+    return free_unary_operator_call(operand, std::string("operator") + opsym,
+				    postfix, to);
 }
 
 // --- Function-template partial ordering ([temp.func.order]) ----------------

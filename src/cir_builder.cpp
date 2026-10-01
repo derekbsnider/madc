@@ -2396,7 +2396,7 @@ bool CirBuilder::tsubst_operator_plan(TokenBase *tb,
 		if (!cv)
 			return false;
 		TokenVar *operand = stand_in(*cv, tb);
-		if (!operand_object_class(operand))
+		if (!m_prog->operator_function_operand(operand))
 			return false;
 		plan.rebuilt = m_prog->build_indirection(operand, tb);
 		return plan.rebuilt != NULL;
@@ -2424,13 +2424,29 @@ bool CirBuilder::tsubst_operator_plan(TokenBase *tb,
 		if (!cv)
 			return !template_param_under_type_layers(tv->var.type);
 		slot = stand_in(*cv, tv);
-		if (operand_object_class(slot))
+		if (m_prog->operator_function_operand(slot))
 			class_operand = true;
 		return true;
 	};
 	TokenBase *left = top->left, *right = top->right;
 	if (!concrete_operand(left) || !concrete_operand(right) || !class_operand)
 		return false;
+	// The parse-time order: an operator the operands' types serve by a
+	// NON-member operator function is the call the parser's free lanes build
+	// (lower_free_operator_to_call, lower_free_unary_operator_to_call — the
+	// reduce step's first questions); otherwise the member / builtin lowering
+	// of translate_expr.
+	std::swap(top->left, left);
+	std::swap(top->right, right);
+	bool step = tb->id() == TokenID::tkInc || tb->id() == TokenID::tkDec;
+	TokenBase *fcall = step ? m_prog->lower_free_unary_operator_to_call(top)
+				: m_prog->lower_free_operator_to_call(top);
+	std::swap(top->left, left);
+	std::swap(top->right, right);
+	if (fcall) {
+		plan.rebuilt = fcall;
+		return true;
+	}
 	plan.op = top;
 	plan.left = left;
 	plan.right = right;
