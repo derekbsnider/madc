@@ -167,4 +167,73 @@ inline std::vector<std::string> split_template_args_spelling(const std::string &
 	return out;
 }
 
+// A parameter's REFERENCE declarator read off its type spelling (`T&`,
+// `const W<T>&&`, `_Args&&...`): the reference kind, the referent spelling,
+// and whether the referent is const at TOP level — a `const` outside every
+// `<...>` / `(...)` and after the last top-level `*` (`const char*&` refers to
+// a mutable pointer, `W<const T>&` to a mutable W, `const W<int*>&` to a
+// const W). The one owner of the spelled reference-binding facts: FuncDef's
+// parameter predicates and the function-template candidate ranker read it.
+struct SpelledReference
+{
+	bool is_ref = false;		// a trailing `&` or `&&`
+	bool rvalue = false;		// `&&`
+	bool referent_const = false;
+	std::string referent;		// the spelling before the reference, trimmed
+};
+
+inline SpelledReference spelled_reference(const std::string &sp)
+{
+	SpelledReference r;
+	size_t n = sp.size();
+	while ( n > 0 && sp[n - 1] == ' ' )
+		--n;
+	if ( n >= 3 && sp.compare(n - 3, 3, "...") == 0 )
+	{
+		n -= 3;
+		while ( n > 0 && sp[n - 1] == ' ' )
+			--n;
+	}
+	if ( n == 0 || sp[n - 1] != '&' )
+		return r;
+	r.is_ref = true;
+	--n;
+	if ( n > 0 && sp[n - 1] == '&' )
+	{
+		r.rvalue = true;
+		--n;
+	}
+	r.referent = spelling_trim(sp.substr(0, n));
+	const std::string &t = r.referent;
+	// The referent's own level starts after the last top-level `*`.
+	size_t from = 0;
+	{
+		SpellingDelimDepth d;
+		for ( size_t i = 0; i < t.size(); ++i )
+		{
+			bool top = d.top();
+			d.update(t[i]);
+			if ( top && t[i] == '*' )
+				from = i + 1;
+		}
+	}
+	SpellingDelimDepth d;
+	for ( size_t i = 0; i < t.size(); ++i )
+	{
+		bool top = d.top();
+		d.update(t[i]);
+		if ( i < from || !top || t.compare(i, 5, "const") != 0 )
+			continue;
+		bool starts = i == 0 || !SpellingDelimDepth::name_char(t[i - 1]);
+		bool ends = i + 5 >= t.size()
+			 || !SpellingDelimDepth::name_char(t[i + 5]);
+		if ( starts && ends )
+		{
+			r.referent_const = true;
+			break;
+		}
+	}
+	return r;
+}
+
 #endif

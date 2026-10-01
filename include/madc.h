@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "libmadc/value.h"
+#include "spelling_delim.h"
 #include "madc/bits/diag_enums"	// diag_severity / diag_phase — the shared enum text
 #include "madc/bits/file_kinds"	// madc::file_kind — LanguageStd's values ARE its C/C++/madc ranges
 #include "madc/bits/session_enums"	// madc::name_kind — TopLevelName::Kind's one enum text
@@ -261,17 +262,7 @@ public:
     bool param_spells_rvalue_reference(size_t i) const {
 	if ( !is_ref_param(i) || i >= param_cpp_spellings.size() )
 	    return false;
-	const std::string &sp = param_cpp_spellings[i];
-	size_t n = sp.size();
-	while ( n > 0 && sp[n - 1] == ' ' )
-	    --n;
-	if ( n >= 3 && sp.compare(n - 3, 3, "...") == 0 )
-	{
-	    n -= 3;
-	    while ( n > 0 && sp[n - 1] == ' ' )
-		--n;
-	}
-	return n >= 2 && sp[n - 1] == '&' && sp[n - 2] == '&';
+	return spelled_reference(param_cpp_spellings[i]).rvalue;
     }
     bool param_referent_is_const(size_t i) const {
 	if ( !is_ref_param(i) )
@@ -317,22 +308,15 @@ public:
 	// automatically as DataDefQUAL coverage grows.
 	if ( i >= param_cpp_spellings.size() )
 	    return false;
-	const std::string &sp = param_cpp_spellings[i];
-	size_t n = sp.size();
-	if ( n < 1 || sp[n - 1] != '&' )
-	    return false;                      // no explicit '&' tail: unknown
-	if ( param_spells_rvalue_reference(i) )
-	    return false;                      // rvalue reference
-	// The REFERENT's own const: after the last `*` (`char* const&`), or
-	// anywhere when there is none (`const T&`, `T const&`). A const before
+	// The REFERENT's own const (spelled_reference): after the last
+	// top-level `*` (`char* const&`), outside every `<...>`. A const before
 	// a `*` qualifies a pointee — `const char*&` refers to a MUTABLE
 	// pointer and binds no prvalue — so it is no evidence (the declarator's
 	// top-level cv, declarator_written_cv, is const_params' fact above).
-	size_t star = sp.rfind('*');
-	std::string top = star == std::string::npos ? sp : sp.substr(star + 1);
-	if ( top.find("const") != std::string::npos )
-	    return false;                      // the referent is const
-	return true;
+	SpelledReference r = spelled_reference(param_cpp_spellings[i]);
+	if ( !r.is_ref )
+	    return false;                      // no explicit '&' tail: unknown
+	return !r.rvalue && !r.referent_const;
     }
     // Parameter i is a CONCRETE rvalue reference (`T&&`, T not one of this
     // function template's own parameters): it binds no lvalue of its type

@@ -1,0 +1,35 @@
+// Function-template overloads that differ only in a parameter's reference
+// declarator (`W<T>&`, `const W<T>&`, `W<T>&&`, `const W<T>&&`) are chosen by
+// the argument's value category ([dcl.init.ref]/5, [over.ics.rank]/3.2.3).
+// madc's parse-time choice among the deduced candidates ranked types only,
+// instantiated the first-declared `W<T>&` for an xvalue or a prvalue, and the
+// CIR then refused that binding: f, g and std::get were undefined imports.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <tuple>
+#include <utility>
+#include <cstdio>
+
+template<class T> struct W { T v; };
+template<class T> W<T> mk(T v) { return W<T>{v}; }
+
+template<class T> const char *f(W<T> &) { return "W&"; }
+template<class T> const char *f(const W<T> &) { return "const W&"; }
+template<class T> const char *f(W<T> &&) { return "W&&"; }
+template<class T> const char *f(const W<T> &&) { return "const W&&"; }
+
+template<class T> const char *g(W<T> &) { return "W&"; }
+template<class T> const char *g(const W<T> &) { return "const W&"; }
+
+int main()
+{
+    W<int> w{1};
+    printf("f: %s %s %s\n", f(w), f(std::move(w)), f(mk(3)));
+    printf("g: %s %s %s\n", g(w), g(std::move(w)), g(mk(3)));
+    std::tuple<int> t(4);
+    int k = 5;
+    std::tuple<int&&> tr(std::move(k));
+    printf("get: %d %d %d %d\n", std::get<0>(std::move(t)),
+	   std::get<0>(std::tuple<int>(6)), std::get<0>(std::move(tr)),
+	   std::get<0>(std::forward_as_tuple(7)));
+    return 0;
+}

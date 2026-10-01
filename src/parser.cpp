@@ -62070,6 +62070,13 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(arg);
 	if ( !call )
 	    return ArgValueCategory::Unknown;
+	// A call whose function-template deduction ran at parse time names its
+	// specialization: that instance's declared return is the call's
+	// ([temp.deduct] — the deduced specialization's type IS the call's), as
+	// the CIR's bound callee (call_target_funcdef) is.
+	if ( !callee && call->deduction.outcome == FnTemplateDeduction::Outcome::Deduced
+	  && call->deduction.specialization && call->deduction.specialization->type )
+	    callee = call->deduction.specialization->type->as_funcdef_dd();
 	FuncDef *fd = callee ? callee : resolved_call_funcdef(call);
 	FuncDef *raw = call->var.type ? call->var.type->as_funcdef_dd() : NULL;
 	if ( call->parameters.size() == 1 && call->parameters[0]
@@ -62755,6 +62762,8 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 // with nothing instantiated. `concrete_params_out` (per argument): the spelling
 // of a parameter that names no template parameter (the argument converts to
 // it), empty where deduction formed the parameter from the argument.
+// `declared_params_out` (per argument): the parameter's declared spelling
+// either way — its reference declarator decides what the argument may bind.
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
@@ -62762,7 +62771,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Variable **var_out = NULL,
 	bool relaxed_concrete_class_params = false,
 	bool deduce_only = false,
-	std::vector<std::string> *concrete_params_out = NULL)
+	std::vector<std::string> *concrete_params_out = NULL,
+	std::vector<std::string> *declared_params_out = NULL)
 {
     InstTimer _it(pgm, pgm._inst_fn_count);	// --show-stats
     if ( type_args_out )
@@ -62771,6 +62781,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	type_arg_packs_out->clear();
     if ( concrete_params_out )
 	concrete_params_out->assign(tc ? tc->parameters.size() : 0, std::string());
+    if ( declared_params_out )
+	declared_params_out->assign(tc ? tc->parameters.size() : 0, std::string());
     // Two-tree Phase 2 (PLAN §11.5c, widening step 1): defer this fn-template
     // instantiation only when, inside a dependent body parse, the call is genuinely
     // type-dependent (an arg involves a template-parameter placeholder) — leave it
@@ -63084,6 +63096,11 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    continue;
 	}
 	const std::string &sp = ov.param_spellings[i];
+	if ( declared_params_out )
+	    for ( size_t a = i; a < declared_params_out->size()
+		  && (a == i || (i + 1 == ov.param_spellings.size()
+				 && fn_template_param_is_pack(sp, pack_param))); ++a )
+		(*declared_params_out)[a] = sp;
 	DataDef *arg_dd = pgm.operand_value_datadef(tc->parameters[i]);
 #if MADC_DEBUG_FNTPL
 	std::cerr << "FNTPL deduce " << key << " param[" << i << "] sp='" << sp
@@ -66245,11 +66262,49 @@ static bool member_tmpl_more_specialized(FuncDef *A, FuncDef *B)
 // compare_derived_to_base. A candidate replaces the current best only when it
 // is better for some argument and worse for none, so ties keep the earlier
 // one (the callers order most-specialized first, [over.match.best]/2.5).
+// A reference parameter binds by the argument's value category too
+// ([dcl.init.ref]/5, [over.ics.rank]/3.2.3): declared[k][i] is candidate k's
+// declared parameter spelling, ranked by copy_move_ref_binding_rank — a
+// binding it refuses makes the candidate not viable, and a better binding
+// breaks a tie. A forwarding reference (`T&&`, T one of the candidate's own
+// type parameters) binds every category. The same rule as the CIR's rank over
+// the instances (reference_param_binding_rank), so the parse instantiates the
+// overload the CIR will select.
 // Returns an index, or -1 when no candidate deduced.
 static int best_deduced_fn_template(Program &pgm, TokenCallFunc *tc,
 	const std::vector<bool> &deduced,
-	const std::vector<std::vector<std::string> > &concrete)
+	const std::vector<std::vector<std::string> > &concrete,
+	const std::vector<std::vector<std::string> > &declared,
+	const std::vector<std::vector<std::string> > &typeparams)
 {
+    // Candidate k's binding rank for argument i: 0 = no reference binding to
+    // judge (not a reference, a forwarding reference, an unknown category),
+    // -1 = the parameter cannot bind the argument, else higher is better.
+    auto binding = [&](size_t k, size_t i) -> int {
+	if ( !tc || i >= tc->parameters.size() || k >= declared.size()
+	  || i >= declared[k].size() || k >= typeparams.size() )
+	    return 0;
+	SpelledReference r = spelled_reference(declared[k][i]);
+	if ( !r.is_ref )
+	    return 0;
+	if ( r.rvalue && !r.referent_const )
+	    for ( const std::string &tp : typeparams[k] )
+		if ( r.referent == tp )
+		    return 0;		// a forwarding reference
+	ArgValueCategory cat = pgm.argument_value_category(tc->parameters[i]);
+	if ( cat == ArgValueCategory::Unknown )
+	    return 0;
+	const DataDef *arg = pgm.operand_value_datadef(tc->parameters[i]);
+	return copy_move_ref_binding_rank(r.rvalue, r.referent_const,
+					  cat == ArgValueCategory::Rvalue,
+					  arg && arg->is_const());
+    };
+    auto viable = [&](size_t k) -> bool {
+	for ( size_t i = 0; tc && i < tc->parameters.size(); ++i )
+	    if ( binding(k, i) < 0 )
+		return false;
+	return true;
+    };
     struct Conversion { int score; DataDef *param; bool ref; bool known; };
     // One argument's conversion to candidate k's parameter.
     auto conversion = [&](size_t k, size_t i, DataDef *arg) -> Conversion {
@@ -66274,12 +66329,14 @@ static int best_deduced_fn_template(Program &pgm, TokenCallFunc *tc,
 	    if ( !ca.known || !cb.known )
 		return 0;
 	    return compare_conversion_sequences(arg, ca.score, ca.param, ca.ref,
-						cb.score, cb.param, cb.ref);
+						cb.score, cb.param, cb.ref,
+						binding(a, i), binding(b, i));
 	});
     };
     int best = -1;
     for ( size_t k = 0; k < deduced.size(); ++k )
-	if ( deduced[k] && (best < 0 || compare(k, (size_t)best) > 0) )
+	if ( deduced[k] && viable(k)
+	  && (best < 0 || compare(k, (size_t)best) > 0) )
 	    best = (int)k;
     return best;
 }
@@ -66343,11 +66400,17 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     {
 	std::vector<bool> deduced(order.size(), false);
 	std::vector<std::vector<std::string> > concrete(order.size());
+	std::vector<std::vector<std::string> > declared(order.size());
+	std::vector<std::vector<std::string> > typeparams(order.size());
 	for ( size_t k = 0; k < order.size(); ++k )
+	{
 	    deduced[k] = try_instantiate_namespace_fn_template(*this, *order[k],
 				fn_key, tc, NULL, NULL, NULL, relax_pass != 0,
-				true, &concrete[k]);
-	int b = best_deduced_fn_template(*this, tc, deduced, concrete);
+				true, &concrete[k], &declared[k]);
+	    typeparams[k] = order[k]->typeparams;
+	}
+	int b = best_deduced_fn_template(*this, tc, deduced, concrete,
+					 declared, typeparams);
 	if ( b > 0 )
 	    std::rotate(attempt.begin(), attempt.begin() + b,
 			attempt.begin() + b + 1);
@@ -67436,11 +67499,14 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
 	attempt.push_back(k);
     std::vector<bool> deduced(mti_cands.size(), false);
     std::vector<std::vector<std::string> > concrete(mti_cands.size());
+    std::vector<std::vector<std::string> > declared(mti_cands.size());
+    std::vector<std::vector<std::string> > typeparams(mti_cands.size());
     for ( int phase = mti_cands.size() > 1 ? 0 : 1; phase < 2 && !ok; ++phase )
     {
     if ( phase == 1 )
     {
-	int b = best_deduced_fn_template(*this, tc, deduced, concrete);
+	int b = best_deduced_fn_template(*this, tc, deduced, concrete,
+					 declared, typeparams);
 	if ( b > 0 )
 	    std::rotate(attempt.begin(), attempt.begin() + b,
 			attempt.begin() + b + 1);
@@ -67547,7 +67613,8 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     {
 	deduced[mci] = try_instantiate_namespace_fn_template(*this, ft, key, tc,
 				NULL, NULL, NULL, relax_pass != 0, true,
-				&concrete[mci]);
+				&concrete[mci], &declared[mci]);
+	typeparams[mci] = ft.typeparams;
 	tsubst_skip_body_name = saved_skip_body;
 	continue;
     }
