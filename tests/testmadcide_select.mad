@@ -61,9 +61,15 @@ int main()
     long shift = (long)ui::key_mod::shift;
     long ctrlshift = (long)ui::key_mod::ctrl | shift;
 
-    // Pico's keys: a one-point personality, as Thonny's will be.
+    // Thonny's keys: a one-point personality (no block end). The open's
+    // argument names a bundle; the key style loads as Tools ▸ Key bindings…
+    // loads it.
     IdeSession S;
-    long doc = S.open(path, false, "pico");
+    long doc = S.open(path, false);
+    load_profile(S.w, S.es, "thonny");
+    var kp;
+    ui::get(kp, S.w, S.es, "profile");
+    println("keys: {} two-point={}", kp, es_flag(S.w, S.es, "selblock") ? 1 : 0);
     key(S, doc, "shift+right", ui::key::right, shift);
     key(S, doc, "shift+right", ui::key::right, shift);
     key(S, doc, "shift+right", ui::key::right, shift);
@@ -139,7 +145,10 @@ int main()
     // clipboard Paste reads.
     php::file_put_contents(path, "hello world\n");
     IdeSession J;
-    long jd = J.open(path, false, "joe");
+    long jd = J.open(path, false);
+    load_profile(J.w, J.es, "joe");
+    ui::get(kp, J.w, J.es, "profile");
+    println("keys: {} two-point={}", kp, es_flag(J.w, J.es, "selblock") ? 1 : 0);
     key(J, jd, "shift+right", ui::key::right, shift);
     key(J, jd, "shift+right", ui::key::right, shift);
     println("joe-shift: mark={} bend={}", es_int(J.w, J.es, "mark", -1), es_int(J.w, J.es, "bend", -1));

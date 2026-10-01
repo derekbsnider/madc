@@ -1,12 +1,12 @@
 // The chthonic profile (plan §41.11a step 1; plugins Stage A): the teaching
-// bundle madcide ships, tools/madcide/plugins/chthonic — pico's keys,
+// bundle madcide ships, tools/madcide/plugins/chthonic — Thonny's keys,
 // chthonic.layout (the editor, and below it the REPL as the visible panel's
 // first tab with Problems beside it; no sidebar) and chthonic.menu (the
 // beginner's subset of the command vocabulary). Pins:
 //   1. `open(path, ro, "chthonic")` (the command line's --profile) loads the
 //      shipped bundle: the runner's MADCIDE_CONFIG_DIR names no user
 //      directory, so nothing overrides it;
-//   2. its keys are pico's, and its layout shows the REPL, with no Outline,
+//   2. its keys are Thonny's, and its layout shows the REPL, with no Outline,
 //      Project or Terminal pane and no sidebar;
 //   3. the menu bar is File, Edit, Run, View, Tools, Help: Run's rows are
 //      replrun (F5's), replstop and repllang, and there is no Build or
@@ -17,11 +17,12 @@
 //   6. the toolbar (menu_place): chthonic.menu's `toolbar` rows are the
 //      composed root's `toolbar` hint — Open, Save, Run, each carrying its
 //      command's code — and the default menu places none;
-//   7. Tools ▸ Key bindings… (plan §41.11a step 3e): the styles listed by
-//      their @title names with the current one marked; choosing one rebinds
-//      and keeps it for this bundle in settings.json (this test's
-//      configuration directory, its .env), so the next chthonic session
-//      opens with it while the default bundle keeps its own keys.
+//   7. Tools ▸ Key bindings… (plan §41.11a step 3e): the six styles listed by
+//      their @title names (JOE, Vim, Emacs, Pico, Thonny, VS Code) with the
+//      current one, Thonny, marked; choosing VS Code rebinds and keeps it
+//      for this bundle in settings.json (this test's configuration
+//      directory, its .env), so the next chthonic session opens with it
+//      while the default bundle keeps its own keys.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -123,10 +124,12 @@ int main()
     const char *kt = ktext.c_str();
     println("keystyle-list: tools=[{}] listed={} marked={}", ids,
 	    rust::contains(kt, "Key bindings") != 0 && rust::contains(kt, "Emacs") != 0
-	    && rust::contains(kt, "JOE") != 0 && rust::contains(kt, "Vim") != 0,
-	    rust::contains(kt, "Pico  (current)") != 0);
+	    && rust::contains(kt, "JOE") != 0 && rust::contains(kt, "Vim") != 0
+	    && rust::contains(kt, "Pico") != 0 && rust::contains(kt, "Thonny") != 0
+	    && rust::contains(kt, "VS Code") != 0,
+	    rust::contains(kt, "Thonny  (current)") != 0);
     var kch = { "event": "choose", "event_code": ui::event_kind::choose,
-		"option": 1, "action": "", "action_code": cmdCHOICE };
+		"option": 6, "action": "", "action_code": cmdCHOICE };
     S.apply_ide_event(doc, kch);
     var msg;
     ui::get(msg, S.w, S.es, "msg");

@@ -3,7 +3,7 @@
   "title": "Learning",
   "api": 1,
   "contributes": {
-    "keys": "pico",
+    "keys": "thonny",
     "layout": "chthonic",
     "menu": "chthonic",
     "settings": {

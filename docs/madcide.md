@@ -46,7 +46,11 @@ WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
 
 Every key binding is data in `tools/madcide/profiles/*.keys`: `joe` (the
 default — the full JOE/WordStar set), `pico`, `emacs`, `neovim` (a modal
-personality that starts in normal mode). `^T` opens Options; its Keymap
+personality that starts in normal mode), `thonny` (Thonny's keys: Ctrl+S,
+Ctrl+Z/Y, Ctrl+X/C/V, Ctrl+A, F5 to run, Ctrl+F2 to stop; chthonic's
+default) and `vscode` (VS Code's default keymap; Ctrl+K opens its chords).
+Each lists, in its header, the keys whose command madcide does not have
+yet. `^T` opens Options; its Keymap
 row cycles profiles for the session; `^K H` shows the loaded profile's own
 bindings. View ▸ Key Bindings… (chthonic's Tools ▸ Key bindings…, the
 `keystyle` command) lists the profiles by their display names and keeps the
