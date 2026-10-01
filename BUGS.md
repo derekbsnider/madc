@@ -1216,6 +1216,28 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
 
 ## Diagnostics
 
+### B103. A C function declared with `()` is spelled `int (void)`, not `int ()`
+
+```c
+int f();
+int g(void);
+%type f
+%type g
+```
+
+- gcc 13 and clang 18 (`-std=c17`, the type in an `-Wint-conversion`
+  diagnostic of `int x = f;`): `int ()` for `f` (no prototype, C17 6.7.6.3/14)
+  and `int (void)` for `g`. madc's REPL (`--std=c17`, `bin/madc` at
+  `d2e801a72`): `int (void)` for both. chthonic's Variables view shows
+  `main int (void)` for `int main() {…}` the same way. Display only; exit 0.
+- Found 2026-10-01 writing the Variables view's gate (plan §41.11a step 6).
+- Layer (suspected): `TypeSpeller::parameter_list`
+  (src/madc_type_spelling.cpp) writes an empty C list as `void`, because the
+  function type records no difference between `()` and `(void)`. The fix
+  needs that bit where the declarator reader builds the function type
+  (`Program::parse_declarator`), so it is a parser change for its own
+  session; under C23 both spellings are `int (void)`.
+
 ### B94. A declaration whose type is a qualified typedef name takes the typedef's header position
 
 ```text
