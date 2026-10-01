@@ -65664,9 +65664,17 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	order.insert(order.begin() + pos, cand);
     }
     Variable *inst = NULL;
+    // Two viability passes, the member-template lane's rule
+    // (instantiate_member_fn_template_for_call): STRICT over every
+    // candidate, then — only when none matched — RELAXED, where a concrete
+    // named-class parameter no deduction touches stops vetoing
+    // ([temp.deduct.call]/4: a converting constructor can serve it —
+    // `f(T, N)` called as `f(t, 2)` with `N(int)`).
+    for ( int relax_pass = 0; relax_pass < 2; ++relax_pass )
     for ( Program::FnTemplateDef *cand : order )
 	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc,
-						   NULL, NULL, &inst) )
+						   NULL, NULL, &inst,
+						   relax_pass != 0) )
 	{
 	    // A self-recursive instantiation's product is not registered yet
 	    // (inst NULL): no information, NotRun.
