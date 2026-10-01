@@ -208,6 +208,24 @@ TEST_GLOBS="$*"
 # must run unguarded says so in its .env fixture.
 export MADC_MEM_LIMIT="${MADC_MEM_LIMIT:-auto}"
 
+# A test that crashes leaves no core: a core is never a test product. Where
+# the kernel's core_pattern pipes to a helper (WSL's /wsl-capture-crash),
+# `ulimit -c 0` does not stop it — a piped dump ignores RLIMIT_CORE except
+# for a limit of exactly one byte, the kernel's "skip this dump" value — and
+# each crash streams the whole process to the helper, seconds apiece (a
+# plugin host test's deliberately crashing children: 10-24 s against 1.7 s).
+# Set once here, every test process inherits it. The one-byte limit goes
+# first: `ulimit -c 0` lowers the HARD limit too, and an unprivileged
+# process cannot raise it back to one.
+if [ -r /proc/sys/kernel/core_pattern ] \
+   && [ "$(head -c 1 /proc/sys/kernel/core_pattern)" = "|" ] \
+   && command -v prlimit > /dev/null 2>&1 \
+   && prlimit --pid $$ --core=1:1 2>/dev/null; then
+	:
+else
+	ulimit -c 0 2>/dev/null
+fi
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"

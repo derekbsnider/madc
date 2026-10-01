@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### scripts: test runner limits core dumps to 1 byte, preventing piped handler hangs
+
+Tests that crash leave no core file (cores are never a test product). On WSL the kernel's core_pattern pipes to /wsl-capture-crash; the kernel ignores RLIMIT_CORE except for the 1-byte limit (the "skip this dump" signal), so each crash streams the whole process to the pipe destination, seconds apiece. testmadcide_plugin_host's deliberately crashing children: dev binary took 10-24 s, release binary took about 6 s and timed out (10 s cap) in about 2 of 10 runs. scripts/run_tests.sh now sets prlimit --core=1:1 once (inherited by every test process) if the platform supports prlimit and core_pattern has a pipe. After: testmadcide_plugin_host passes 10/10 runs (release) and 5/5 (dev), each test process with 1 byte soft and hard core limit. No test in tests/ depends on a core file. Tier 2 (scripts/fast_lanes.sh) passes all six lanes at their recorded baselines.
+
 ### cir_freeze: restore const_param flag from frozen forest paramrec records
 
 Materialization of function and method parameters from a frozen forest now reads the `PF_CONST_PARAM` flag from `paramrec` records and restores it to `FuncDef::const_params`, which copy constructor selection reads to match `const T&` parameter signatures. Without restoration, implicit memberwise copy constructors on forest-bound classes cannot call member copy constructors that require const references, falling back to bit-copy (which causes double-free with std::string members). Frozen forest format unchanged; flag was recorded at freeze time but not read back on three rebuild arms. Test: forest_bind_gate constcopy case (FbgCounted's copy ctor invoked by Holder's implicit copy); packed suite 1850 passed, 0 failed, 9 skipped, 1 timeout (unrelated).
