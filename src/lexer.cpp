@@ -1863,6 +1863,8 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
 		rt->file = origin->file;
 		rt->line = origin->line;
 		rt->column = origin->column;
+		rt->lex_end_line = origin->lex_end_line;
+		rt->lex_end_column = origin->lex_end_column;
 		// The replacement spelling is not the source's bytes at the
 		// origin position (`NULL` -> `((void *)0)`): coordinate
 		// consumers (parse_spans) must skip these (tfSYNTHPOS).
@@ -3253,9 +3255,7 @@ void Program::_tokenizer_init()
     // otherwise keeps the previous unit's stale nonzero position on every
     // token (madcide IDE-3 found it: every child diagnostic carried the
     // HOST program's last line).
-    TokenBase::_parse_file = NULL;
-    TokenBase::_parse_line = 0;
-    TokenBase::_parse_column = 0;
+    ParsePosition::reset();
     deferred_function_body_sink = NULL;
     parsing_cpp_struct_class = false;
     _include_iostream = false;
@@ -6074,6 +6074,8 @@ static bool push_precompiled_header_tokens(Program &pgm,
 	    {
 		replacement->line = itb->line;
 		replacement->column = itb->column;
+		replacement->lex_end_line = itb->lex_end_line;
+		replacement->lex_end_column = itb->lex_end_column;
 		delete itb;
 		itb = replacement;
 	    }
@@ -9863,7 +9865,26 @@ bool Program::evaluateIfCondition()
 
 TokenBase *Program::getToken()
 {
+    // The token's START (D26: gcc's anchor) is the cursor before this call
+    // reads its first byte, and its END the cursor when the call returns. A
+    // directive, a macro expansion or a lookahead re-enters getToken, and the
+    // call that reads a token stamps it first, so an outer call leaves an
+    // already-stamped token alone. A token that arrives positioned (an
+    // injected or a pragma's token) keeps its own position. A
+    // macro-synthesized token's position is getRealToken's to set.
+    // A line splice at the cursor belongs before the token: peek() consumes
+    // it (as the first get() would), so the start is the token's own line.
+    source.peek();
+    int start_line = source.line();
+    int start_column = source.cursor_column() + 1;
     TokenBase *tb = _getToken();
+    if ( tb && tb->column == 0 )
+    {
+	tb->line = start_line;
+	tb->column = start_column;
+	tb->lex_end_line = source.line();
+	tb->lex_end_column = source.column();
+    }
 
     // Step 4: identifier spelling_id is now interned AT CREATION (make_ident and
     // the TokenIdent ctors), so the old getToken() stamp-from-str fallback is gone
@@ -9904,7 +9925,7 @@ void Program::handle_pragma_body()
 	source.get();
     std::string pragma;
     int pragma_line = source.line();
-    int pragma_col = source.column();
+    int pragma_col = source.column() + 1;	// the pragma word's start
     while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
 	pragma += source.get();
     if ( pragma == "pack" )
@@ -10186,6 +10207,13 @@ TokenBase *Program::getRealToken()
 		// own spelling. Coordinate consumers (parse_spans) skip it.
 		tb->setFlag(tfSYNTHPOS);
 		synth_mark = source.synth_reads();
+		// Synthesized bytes advance no column: the token stands at
+		// the invocation's end, today's frozen stamp (citing the
+		// invocation's start is a follow-on, D26).
+		tb->line = source.line();
+		tb->column = source.column();
+		tb->lex_end_line = tb->line;
+		tb->lex_end_column = tb->column;
 	    }
 	    if ( tb->line == 0 )
 		tb->line = source.line(); //_line;
@@ -10222,6 +10250,19 @@ TokenBase *Program::getRealToken()
 // preserved — true byte-faithful reconstruction needs tokens to retain raw
 // source text (a follow-on). Sufficient to demonstrate trivia retention on
 // plain source. Keywords/identifiers/types/comments are all TokenIdent-derived.
+void madc_token_end(TokenBase *tb, int &line, int &column)
+{
+    if ( tb->lex_end_column )
+    {
+	line = tb->lex_end_line;
+	column = tb->lex_end_column;
+	return;
+    }
+    line = tb->line;
+    size_t n = madc_token_spelling(tb).size();
+    column = tb->column + (n ? (int)n - 1 : 0);
+}
+
 std::string madc_token_spelling(TokenBase *tb)
 {
     switch ( tb->type() )
@@ -10469,21 +10510,12 @@ void Source::consume_block_comment(int row, int col, std::string *keep)
     refuse_at_end_of_input("unterminated comment");
 }
 
-void Source::showerror(int row, int col, std::ostream &os)
+// Line `row` of this Source's text, for a diagnostic's header and echo.
+// Position-neutral: a WARNING resumes lexing right after it prints, so the
+// cursor state is saved and restored.
+void Source::line_text(int row, std::string &ln)
 {
-//	std::cout << "showerror(" << row << ", " << col << ')' << std::endl;
-	std::string ln;
-
-	if ( !row || !col )
-	{
-	    row = line();
-	    col = column();
-	}
-
-	// This display walk MUST be position-neutral: a WARNING resumes lexing
-	// right after it prints, so the cursor state is saved here and restored
-	// before every return. (It was destructive-only before — every caller
-	// was a fatal error path, so the clobbered cursor never mattered.)
+	ln.clear();
 	size_t saved_gpos = _gpos;
 	int saved_cr = _cr, saved_lf = _lf, saved_column = _column;
 
@@ -10495,15 +10527,58 @@ void Source::showerror(int row, int col, std::ostream &os)
 	while ( peek() != -1 )
 	{
 	    getline(ln);
-	    //cout << "line()-1 " << (line()-1) << "  row " << row << endl;
 	    if ( line()-1 >= row )
 		break;
         }
 
 	_gpos = saved_gpos;
 	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
+}
 
+void Source::showerror(int row, int col, std::ostream &os)
+{
+	std::string ln;
+
+	if ( !row || !col )
+	{
+	    row = line();
+	    col = column();
+	}
+	line_text(row, ln);
 	show_error_source_line(ln, col, os);
+}
+
+// The 1-based SCREEN column of 1-based byte column `col` in line `ln` — gcc's
+// column (madc::line_layout: tabs to 8-column stops, code-point widths), the
+// one a diagnostic's header prints (D26). The stored unit stays bytes.
+int madc_screen_column(const std::string &ln, int col)
+{
+    if ( col <= 1 )
+	return col;
+    // screen[i] = the screen column byte i starts at; screen[length] = the
+    // line's end. A position past the end (an end-of-input cite) continues
+    // one column per byte from there.
+    size_t at = std::min((size_t)(col - 1), ln.length());
+    std::vector<size_t> screen;
+    madc::line_layout(ln, 0, screen);
+    if ( at >= screen.size() )
+	return col;
+    return (int)screen[at] + 1 + (col - 1 - (int)at);
+}
+
+// The screen column a diagnostic's header prints for (fname, row, col): the
+// line read where its echo reads it — the live Source when `fname` is its
+// file, else the file on disk — and the byte column when neither has it.
+int madc_diag_screen_column(Source *src, const char *fname, int row, int col)
+{
+    if ( row <= 0 || col <= 0 )
+	return col;
+    std::string ln;
+    if ( src && fname && src->fname() && strcmp(fname, src->fname()) == 0 )
+	src->line_text(row, ln);
+    else if ( !madc_file_line(fname, row, ln) )
+	return col;
+    return madc_screen_column(ln, col);
 }
 
 // Shared display tail for a diagnostic source echo: the offending line and a
@@ -10546,18 +10621,23 @@ void show_error_source_line(const std::string &ln, int col, std::ostream &os)
 // false (echo skipped) when the file cannot be opened or is shorter than
 // `row` — e.g. an embedded header with no on-disk presence, or stale
 // provenance; skipping beats echoing the wrong file's text.
-bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os)
+bool madc_file_line(const char *fname, int row, std::string &ln)
 {
     if ( !fname || !*fname || row <= 0 )
 	return false;
     std::ifstream f(fname);
     if ( !f.is_open() )
 	return false;
-    std::string ln;
     int i = 0;
     while ( i < row && std::getline(f, ln) )
 	++i;
-    if ( i != row )
+    return i == row;
+}
+
+bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os)
+{
+    std::string ln;
+    if ( !madc_file_line(fname, row, ln) )
 	return false;
     show_error_source_line(ln, col, os);
     return true;
@@ -10577,7 +10657,8 @@ int throwbuf::sync()
 	const char *tok_file = (_tb->file && *_tb->file) ? _tb->file : NULL;
 	const char *fname = tok_file ? tok_file
 			  : (_src ? _src->fname() : "???");
-	cerr << ANSI_WHITE << fname << ':' << _tb->line << ':' << _tb->column
+	cerr << ANSI_WHITE << fname << ':' << _tb->line << ':'
+	     << madc_diag_screen_column(_src, fname, _tb->line, _tb->column)
 	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
 	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
 	    _src->showerror(_tb->line, _tb->column);
@@ -10835,9 +10916,7 @@ bool Program::lex_entry(const std::string &text, const std::string &display_name
     activate_token_pools();
     // An entry's tokens take their positions from its own text, never the
     // previous entry's (the _tokenizer_init reset, per unit).
-    TokenBase::_parse_file = NULL;
-    TokenBase::_parse_line = 0;
-    TokenBase::_parse_column = 0;
+    ParsePosition::reset();
     if ( !lex_unit_text(fname, entry) )
 	return false;
     inject_pending_auto_includes();

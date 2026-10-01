@@ -2343,6 +2343,9 @@ public:
     bool eof()  { return _pushback.empty() && _gpos >= _buf.size(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
     int column(){ return _column ? _column : 1; }
+    // The bytes already read on the cursor's line: 0 at a line's start (the
+    // next byte is column cursor_column() + 1 — a token's START, D26).
+    int cursor_column() const { return _column; }
     // The line of the last non-trivia token the lexer minted from THIS
     // source (getRealToken stamps it); 0 before the first. The import
     // directive-position test reads it: `import` heads a logical line iff no
@@ -2498,6 +2501,9 @@ public:
     // The offending line and a caret, on `os`: the stream its diagnostic's
     // header went to, so the two never part.
     void showerror(int row=0, int col=0, std::ostream &os = std::cerr);
+    // Line `row` of the text, position-neutral (the header and the echo
+    // read the same line).
+    void line_text(int row, std::string &ln);
     // Consume a block comment through its closing `*/`, the caller having
     // consumed the opening `/*` whose `/` sat at `row`/`col`; the consumed
     // text (the `*/` included) is appended to *keep when given. The ONE
@@ -2529,6 +2535,14 @@ void show_error_source_line(const std::string &ln, int col,
 			    std::ostream &os = std::cerr);
 bool madc_show_file_error(const char *fname, int row, int col,
 			  std::ostream &os = std::cerr);
+// Line `row` of file `fname`, reread from disk (false: unreadable or short).
+bool madc_file_line(const char *fname, int row, std::string &ln);
+// gcc's SCREEN column of a 1-based byte column in a line (tabs to 8-column
+// stops, code-point widths), and the one a diagnostic's header prints for a
+// position — its line read from `src` when that is the position's file, else
+// from disk; the byte column when neither has the line (D26).
+int madc_screen_column(const std::string &ln, int col);
+int madc_diag_screen_column(Source *src, const char *fname, int row, int col);
 
 // Mute diagnostic RENDERING (Program::print_diagnostic's header + source
 // echo AND throwbuf::sync's stderr render) while a compile-only child
@@ -2665,6 +2679,12 @@ TokenBase *madc_token_for_slot(uint32_t id);
 // canonicalized where the original text was not retained (they re-lex to
 // the same value); pair with TokenBase::leading_trivia for layout.
 std::string madc_token_spelling(TokenBase *tb);
+
+// Where token `tb` ENDS (D26): the line and the column of its last byte —
+// the recorded lexical end (TokenBase::lex_end_*), else its start advanced
+// by its spelling's length less one (a token with no recorded end is one
+// line long). Defined in lexer.cpp beside the spelling owner.
+void madc_token_end(TokenBase *tb, int &line, int &column);
 
 // THE C-string-literal escape rule (defined in lexer.cpp): the cooked
 // bytes rendered as a double-quoted literal's BODY (no quotes) that
@@ -6773,9 +6793,7 @@ public:
 		++_tok_reread;
 	    if ( _cur_token->read_count > _tok_max_reads )
 		_tok_max_reads = _cur_token->read_count;
-	    TokenBase::_parse_file   = _cur_token->file;
-	    TokenBase::_parse_line   = _cur_token->line;
-	    TokenBase::_parse_column = _cur_token->column;
+	    ParsePosition::set_from(_cur_token);
 	    // #pragma pack events pinned to this token (see _pragma_pack_events):
 	    // applied once, at first consumption — the empty() guard keeps the
 	    // hot path free for the (usual) pack-less TU.

@@ -1,0 +1,12 @@
+int main(void) {
+	int x = 1 foo; return x; }
+
+// B8 / plan D26: a diagnostic cites where the problem STARTS, in gcc's
+// screen columns (a tab runs to the next 8-column stop). The code above must
+// stay on lines 1-2: line 2 is a tab, then `int x = 1 foo;`.
+//
+// Oracle: gcc 13 -fsyntax-only on lines 1-2 as a .c file:
+//   2:19: error: expected ',' or ';' before 'foo'
+// echoing the line with its tab expanded and the caret under foo's f. madc
+// before D26 cited 2:14 (foo's LAST byte, a byte column). clang cites this
+// error at 2:11 (where it wants the `;`, in bytes), a different anchor.

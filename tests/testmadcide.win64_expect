@@ -17,8 +17,8 @@ junk long add(long a, long b) { return a + b; }
 long twice(long x) { return add(x, x); }
 
 Problems
-  1. 1:4 error use of undeclared identifier 'junk'
-  2. 2:31 error use of undeclared identifier 'add'
+  1. 1:1 error use of undeclared identifier 'junk'
+  2. 2:29 error use of undeclared identifier 'add'
 --- end ---
 goto-diag: caret=0
 --- outline view ---

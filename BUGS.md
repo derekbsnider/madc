@@ -1366,12 +1366,13 @@ int main(void) {
   under the cited byte's screen column (`tests/unit/test_diag_caret.cpp`,
   gcc's columns). The cited byte is still the token's LAST: the reducer's
   caret is under `foo`'s final `o` and the header says `2:14`.
-- Remaining (part 2, D26): the token's column becomes its START (the lexer
-  records it when it begins the token), the header prints gcc's screen
-  column, and the caret underlines the token (`^~~`). The `column -
-  spelling` compensations go (`src/madc_program.cpp`: the highlighter and
-  the code graph), the frozen-header pack's format version is bumped, and
-  the three fixtures that pin a `line:col` change.
+- Part 2 fixed 2026-10-01 (D26): a token's column is its START (the lexer
+  records it when it begins the token, and the token's end beside it), and
+  the header prints gcc's screen column: the reducer is `2:19` with the caret
+  under `foo`'s `f`. The `column - spelling` compensations are gone (the
+  highlighter, the code graph, the LSP's diagnostic range); forest format 51.
+- Remaining: the caret underlines the token (`^~~`), which needs the stored
+  diagnostic record to carry the token's end.
 
 ### B9. madc wording where gcc and clang name the missing token
 

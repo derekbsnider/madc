@@ -162,8 +162,8 @@ namespace madc {
     //   parse_spans: highlight classification rows for the TU's OWN
     //       tokens from the retained state — { line, column, length,
     //       class } in source coordinates (1-based line; column = the
-    //       span's START, 0-based — note diagnostics columns elsewhere
-    //       are end-anchored); class names: keyword, ident, number,
+    //       span's START, 0-based — a diagnostic's column names the same
+    //       place 1-based); class names: keyword, ident, number,
     //       string, comment (from retained trivia), type, function (an
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.

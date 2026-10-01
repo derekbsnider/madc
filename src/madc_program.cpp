@@ -5766,17 +5766,21 @@ static void highlight_token_rows(::Program &child,
 	}
 	if ( hc != HighlightClass::hcNone && !sp.empty() )
 	{
-	    // Token stamps are END-anchored (the repo's diagnostic
-	    // convention); a span's contract is START + length.
-	    long start = (long)t->column - (long)sp.size();
+	    // A token's stamp is its 1-based START (D26); a span's contract
+	    // is a 0-based start + length.
+	    long start = (long)t->column - 1;
 	    if ( start < 0 )
 		start = 0;
 	    rows.push_back(highlight_row((long)t->line, start,
 					 (long)sp.size(),
 					 highlight_class_name(hc)));
 	}
-	prev_line = (long)t->line;	// lexed spellings are single-line
-	prev_end_col = (long)t->column;	// the stamp IS the end
+	// The cursor after the token: its end (the column of its last byte,
+	// which is the 0-based column just past it).
+	int end_line = 0, end_column = 0;
+	madc_token_end(t, end_line, end_column);
+	prev_line = (long)end_line;
+	prev_end_col = (long)end_column;
     }
     // A comment after the LAST token lives in the trailing trivia, not on
     // any token; the cursor the loop left is its exact anchor.
@@ -7327,11 +7331,10 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
 // stamps; it never scans the token stream for a terminator.
 struct GraphExtent { int line, column, end_line, end_column; };
 
-// START of a token: stamps are END-anchored (column = the byte after the last
-// char — highlight_token_rows' convention), so start = column - spelling; a
-// string literal reads its lex-recorded first piece. False = a synthetic-
-// position head (a macro expansion: the spelling occupies no source bytes) —
-// no extent rather than a wrong one.
+// START of a token, 0-based: the stamp is its 1-based start (D26); a string
+// literal reads its lex-recorded first piece. False = a synthetic-position
+// head (a macro expansion: the spelling occupies no source bytes) — no extent
+// rather than a wrong one.
 static bool graph_token_start(TokenBase *t, int &line, int &column)
 {
     if ( !t || t->is_synthetic_position() )
@@ -7343,9 +7346,8 @@ static bool graph_token_start(TokenBase *t, int &line, int &column)
 	    column = ts->src_pieces.front().col;
 	    return true;
 	}
-    std::string sp = madc_token_spelling(t);
     line = t->line;
-    column = t->column - (int)sp.size();
+    column = t->column - 1;
     if ( column < 0 )
 	column = 0;
     return true;

@@ -631,7 +631,8 @@ uint64_t compiler_hash()
     {
 	const char *sig = "madh-v1-tt" // token type enum
 			  "-ti"        // token id enum
-			  "-2026b";    // format generation
+			  "-2026c";    // format generation (2026c: a token's column is
+				       // its START, D26)
 	cached = hash_content(sig, strlen(sig));
     }
     return cached;

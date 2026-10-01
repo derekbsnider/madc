@@ -324,11 +324,10 @@ bool lsp_name_span(long &from, long &to, long w, long doc, long line,
 }
 
 // ---- diagnostics --------------------------------------------------------
-// parse_check rows carry a 1-based line and an END-anchored 1-based column
-// (the span rows are start-anchored — the two conventions differ, and the
-// engine's header says so). The range therefore ends AT the column and starts
-// at the beginning of the word ending there; a column that names no word
-// (a call's paren, say) falls back to the single character before it.
+// parse_check rows carry a 1-based line and a 1-based START column (gcc's
+// anchor, a byte count: the place a span row's 0-based start names). The
+// range is the word starting there; a column that starts no word (a call's
+// paren, say) covers the single character there.
 
 void lsp_diag_range(var &out, long w, long doc, long enc, var &row)
 {
@@ -342,17 +341,19 @@ void lsp_diag_range(var &out, long w, long doc, long enc, var &row)
 	return;
     }
     long llen = ui::text_line_len(w, doc, line);
-    long col = row["column"].as_integer();		// 1-based, end-anchored
+    long col = row["column"].as_integer();		// 1-based, the start
     if ( col < 1 || col > llen )
     {
 	lsp_range_of(out, w, doc, enc, lstart, lstart + llen);
 	return;						// no usable column: the line
     }
-    long endoff = lstart + col;
-    long s = ui::text_word_left(w, doc, endoff);
-    if ( s < lstart || s >= endoff )
-	s = endoff > lstart ? endoff - 1 : lstart;
-    lsp_range_of(out, w, doc, enc, s, endoff);
+    long at = lstart + col - 1;
+    long a = 0;
+    long b = 0;
+    if ( lsp_word_span(a, b, w, doc, at) && a == at )
+	lsp_range_of(out, w, doc, enc, a, b);
+    else
+	lsp_range_of(out, w, doc, enc, at, at + 1);
 }
 
 // The severity as the protocol's number, from the row's ENUMERATOR (never its

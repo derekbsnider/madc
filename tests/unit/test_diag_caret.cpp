@@ -107,3 +107,18 @@ TEST_CASE("B8: a line wider than the terminal shows its tail from the caret")
     CHECK(shown == "  ...foo; return a_long_name;");
     unsetenv("COLUMNS");
 }
+
+// D26 part 2: a diagnostic's HEADER prints the same place as gcc's — the
+// start byte's screen column (madc_screen_column), while the stored column
+// stays a byte count. The oracles are gcc's headers for the reducers above.
+TEST_CASE("D26: a header's column is the start byte's screen column (gcc's)")
+{
+    CHECK(madc_screen_column("\tint x = 1 foo; return x; }", 12) == 19);
+    CHECK(madc_screen_column("\tchar *s = \"\xc3\xa9\xc3\xa9\"; int x = 1 foo; return x; }", 30) == 35);
+    CHECK(madc_screen_column("    char *s = \"\xe4\xb8\xad\"; int x = 1 foo; return x; }", 32) == 31);
+    CHECK(madc_screen_column("int x = 1 foo;", 11) == 11);
+    // Past the line's end (an end-of-input cite): one column per byte on.
+    CHECK(madc_screen_column("\tfoo", 6) == 13);
+    CHECK(madc_screen_column("\tfoo", 1) == 1);
+    CHECK(madc_screen_column("", 3) == 3);
+}

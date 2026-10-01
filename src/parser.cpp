@@ -227,8 +227,17 @@ const char *TokenBase::_parse_file = NULL;
 int TokenBase::_parse_line = 0;
 thread_local bool DiagnosticRenderMute::active = false;
 int TokenBase::_parse_column = 0;
+int TokenBase::_parse_end_line = 0;
+int TokenBase::_parse_end_column = 0;
 madc::dis::intern_table *TokenBase::_active_strpool = NULL;
 madc::dis::value_pool *TokenBase::_active_valpool = NULL;
+
+// A consumed token with no recorded lexical end (a parser-built or injected
+// token, a prelude-image token): its end from its spelling.
+void ParsePosition::set_end_from_spelling(TokenBase *t)
+{
+    madc_token_end(t, TokenBase::_parse_end_line, TokenBase::_parse_end_column);
+}
 
 // Generated parser-local names are process-wide for historical compatibility.
 // Class-pattern capture snapshots them in ClassRegistrationJournal so its
@@ -9065,28 +9074,19 @@ static void prepare_class_pattern_definition(
 
 class BasicClassPatternParsePosition
 {
-    const char *file;
-    int line;
-    int column;
+    ParsePosition saved;
 public:
     explicit BasicClassPatternParsePosition(
 	const Program::TemplateDef &definition)
-	: file(TokenBase::_parse_file), line(TokenBase::_parse_line),
-	  column(TokenBase::_parse_column)
+	: saved(ParsePosition::current())
     {
 	const TokenBase *source = basic_class_pattern_source_token(definition);
 	if ( source )
-	{
-	    TokenBase::_parse_file = source->file;
-	    TokenBase::_parse_line = source->line;
-	    TokenBase::_parse_column = source->column;
-	}
+	    ParsePosition::set_from(const_cast<TokenBase *>(source));
     }
     ~BasicClassPatternParsePosition()
     {
-	TokenBase::_parse_file = file;
-	TokenBase::_parse_line = line;
-	TokenBase::_parse_column = column;
+	saved.restore();
     }
 };
 
@@ -11093,15 +11093,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // clones the template's real (system-header) origin makes from_system_header,
     // lazy-body deferral, AND error attribution all see the true source. Point
     // _parse_* at the template body's origin across the clone loop, then restore.
-    const char *cloned_pf = TokenBase::_parse_file;
-    int cloned_pl = TokenBase::_parse_line;
-    int cloned_pc = TokenBase::_parse_column;
+    ParsePosition cloned_pl_pos = ParsePosition::current();
     for ( TokenBase *bt0 : td.body )
 	if ( bt0 && bt0->file )
 	{
-	    TokenBase::_parse_file = bt0->file;
-	    TokenBase::_parse_line = bt0->line;
-	    TokenBase::_parse_column = bt0->column;
+	    ParsePosition::set_from(bt0);
 	    break;
 	}
     std::vector<TokenBase *> inj;
@@ -12018,9 +12014,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // Restore the live parse position now that all instantiation clones are made;
     // nextToken() will re-derive _parse_file from each injected token as the class
     // re-parses (the clones now carry the template's true origin file).
-    TokenBase::_parse_file = cloned_pf;
-    TokenBase::_parse_line = cloned_pl;
-    TokenBase::_parse_column = cloned_pc;
+    cloned_pl_pos.restore();
 
     DBG(std::cout << "instantiate_template_use(): injecting " << inj.size()
 	<< " tokens for " << mangled << std::endl);
@@ -15407,15 +15401,11 @@ static bool read_constant_subobject(Program &pgm, TokenBase *where,
     TokenStream::Pos saved_tokens = pgm.tokens.savepos();
     TokenBase *saved_cur = pgm.curToken();
     TokenBase *saved_prv = pgm.prevToken();
-    const char *saved_file = TokenBase::_parse_file;
-    int saved_line = TokenBase::_parse_line;
-    int saved_column = TokenBase::_parse_column;
+    ParsePosition saved_line_pos = ParsePosition::current();
     auto restore = [&]() {
 	pgm.tokens.restore(saved_tokens);
 	pgm.setTokenContext(saved_cur, saved_prv);
-	TokenBase::_parse_file = saved_file;
-	TokenBase::_parse_line = saved_line;
-	TokenBase::_parse_column = saved_column;
+	saved_line_pos.restore();
     };
     auto walk = [&]() -> bool {
 	size_t offset = 0;
@@ -15613,9 +15603,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 	    _prv_token = saved_prv;
 	    if ( _cur_token )
 	    {
-		TokenBase::_parse_file = _cur_token->file;
-		TokenBase::_parse_line = _cur_token->line;
-		TokenBase::_parse_column = _cur_token->column;
+		ParsePosition::set_from(_cur_token);
 	    }
 	    return false;
 	}
@@ -18563,9 +18551,7 @@ bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &ou
     _prv_token = saved_prv;
     if ( _cur_token )
     {
-	TokenBase::_parse_file = _cur_token->file;
-	TokenBase::_parse_line = _cur_token->line;
-	TokenBase::_parse_column = _cur_token->column;
+	ParsePosition::set_from(_cur_token);
     }
     return false;
 }
@@ -18955,9 +18941,7 @@ ConstValue Program::evaluate_constexpr_function_call(
     TokenStream::State saved_tokens = tokens.swap_in(std::move(return_tokens));
     TokenBase *saved_cur = _cur_token;
     TokenBase *saved_prv = _prv_token;
-    const char *saved_file = TokenBase::_parse_file;
-    int saved_line = TokenBase::_parse_line;
-    int saved_column = TokenBase::_parse_column;
+    ParsePosition saved_line_pos = ParsePosition::current();
     constexpr_call_bindings.push_back(frame);
 
     madc_wide_int value = 0;
@@ -18975,18 +18959,14 @@ ConstValue Program::evaluate_constexpr_function_call(
 	tokens.swap_back(std::move(saved_tokens));
 	_cur_token = saved_cur;
 	_prv_token = saved_prv;
-	TokenBase::_parse_file = saved_file;
-	TokenBase::_parse_line = saved_line;
-	TokenBase::_parse_column = saved_column;
+	saved_line_pos.restore();
 	throw;
     }
     constexpr_call_bindings.pop_back();
     tokens.swap_back(std::move(saved_tokens));
     _cur_token = saved_cur;
     _prv_token = saved_prv;
-    TokenBase::_parse_file = saved_file;
-    TokenBase::_parse_line = saved_line;
-    TokenBase::_parse_column = saved_column;
+    saved_line_pos.restore();
     return apply_integer_cast_value(&func->return_value_type(), value);
 }
 
@@ -19141,9 +19121,7 @@ ConstValue Program::parse_constant_primary()
 	    _prv_token = qprv;
 	    if ( _cur_token )
 	    {
-		TokenBase::_parse_file = _cur_token->file;
-		TokenBase::_parse_line = _cur_token->line;
-		TokenBase::_parse_column = _cur_token->column;
+		ParsePosition::set_from(_cur_token);
 	    }
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
@@ -19217,9 +19195,7 @@ ConstValue Program::parse_constant_primary()
 		    _prv_token = saved_prv;
 		    if ( _cur_token )
 		    {
-			TokenBase::_parse_file = _cur_token->file;
-			TokenBase::_parse_line = _cur_token->line;
-			TokenBase::_parse_column = _cur_token->column;
+			ParsePosition::set_from(_cur_token);
 		    }
 		}
 	    }
@@ -24575,7 +24551,9 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
     if ( DiagnosticRenderMute::active )
 	return;		// captured as data; the record already exists
     if ( !diag.file.empty() )
-	os << ANSI_WHITE << diag.file << ':' << diag.line << ':' << diag.column;
+	os << ANSI_WHITE << diag.file << ':' << diag.line << ':'
+	   << madc_diag_screen_column(&source, diag.file.c_str(), diag.line,
+				      diag.column);
     else
 	os << ANSI_WHITE << ':';
     os << ": \e[1;31m" << diagnostic_severity_name(diag.severity)
@@ -29165,16 +29143,12 @@ void Program::parse_yield_point()
 {
     if ( __madc_task_runnable() == 0 )
 	return;
-    const char *pf = TokenBase::_parse_file;
-    int pl = TokenBase::_parse_line;
-    int pc = TokenBase::_parse_column;
+    ParsePosition pl_pos = ParsePosition::current();
     bool mute = DiagnosticRenderMute::active;
     DiagnosticRenderMute::active = false;
     __madc_yield();
     activate_token_pools();
-    TokenBase::_parse_file = pf;
-    TokenBase::_parse_line = pl;
-    TokenBase::_parse_column = pc;
+    pl_pos.restore();
     DiagnosticRenderMute::active = mute;
     ++_coop_yields;
 }
@@ -36960,24 +36934,18 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     // Hold the body's real origin in _parse_* for the WHOLE capture window —
     // clones, trailing semi, parse, and normalizer — restored at the common
     // exit below (and on the early return).
-    const char *capture_pf = TokenBase::_parse_file;
-    int capture_pl = TokenBase::_parse_line;
-    int capture_pc = TokenBase::_parse_column;
+    ParsePosition capture_pl_pos = ParsePosition::current();
     for ( size_t bt0 = 0; bt0 < td.body.size(); ++bt0 )
 	if ( td.body[bt0] && td.body[bt0]->file )
 	{
-	    TokenBase::_parse_file = td.body[bt0]->file;
-	    TokenBase::_parse_line = td.body[bt0]->line;
-	    TokenBase::_parse_column = td.body[bt0]->column;
+	    ParsePosition::set_from(td.body[bt0]);
 	    break;
 	}
     std::vector<TokenBase *> injected = class_pattern_clone_tokens(td.body);
     if ( injected.size() < 2 || !injected[1]
 	  || injected[1]->type() != TokenType::ttIdentifier )
     {
-	TokenBase::_parse_file = capture_pf;
-	TokenBase::_parse_line = capture_pl;
-	TokenBase::_parse_column = capture_pc;
+	capture_pl_pos.restore();
 	td.class_pattern_reason = ClassParseReason::PatternParseError;
 	return 0;
     }
@@ -36987,9 +36955,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     TokenStream::Pos saved_tokens = tokens.savepos();
     TokenBase *saved_prv = _prv_token;
     TokenBase *saved_cur = _cur_token;
-    const char *saved_parse_file = TokenBase::_parse_file;
-    int saved_parse_line = TokenBase::_parse_line;
-    int saved_parse_column = TokenBase::_parse_column;
+    ParsePosition saved_parse_line_pos = ParsePosition::current();
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
@@ -37202,10 +37168,8 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     _cur_token = saved_cur;
     // saved_parse_* were captured AFTER the body-origin stamp above, so they
     // hold the stamped values — restore the caller's true statics instead.
-    TokenBase::_parse_file = capture_pf;
-    TokenBase::_parse_line = capture_pl;
-    TokenBase::_parse_column = capture_pc;
-    (void)saved_parse_file; (void)saved_parse_line; (void)saved_parse_column;
+    capture_pl_pos.restore();
+    (void)saved_parse_line_pos;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     diagnostics.resize(saved_diag_count);
@@ -48813,9 +48777,7 @@ void Program::capture_balanced_group_tokens(TokenID close_id,
     TokenStream::Pos saved_tokens = tokens.savepos();
     TokenBase *saved_cur = _cur_token;
     TokenBase *saved_prv = _prv_token;
-    const char *saved_file = TokenBase::_parse_file;
-    int saved_line = TokenBase::_parse_line;
-    int saved_column = TokenBase::_parse_column;
+    ParsePosition saved_line_pos = ParsePosition::current();
     DelimDepth d(this);
     while ( TokenBase *pk = peekToken() )
     {
@@ -48831,9 +48793,7 @@ void Program::capture_balanced_group_tokens(TokenID close_id,
     }
     tokens.restore(saved_tokens);
     setTokenContext(saved_cur, saved_prv);
-    TokenBase::_parse_file = saved_file;
-    TokenBase::_parse_line = saved_line;
-    TokenBase::_parse_column = saved_column;
+    saved_line_pos.restore();
 }
 
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret);
@@ -57535,15 +57495,11 @@ void Program::consume_template_parameter_declarator(std::string &name_out,
 	TokenStream::Pos saved = tokens.savepos();
 	TokenBase *saved_cur = _cur_token;
 	TokenBase *saved_prv = _prv_token;
-	const char *saved_file = TokenBase::_parse_file;
-	int saved_line = TokenBase::_parse_line;
-	int saved_column = TokenBase::_parse_column;
+	ParsePosition saved_line_pos = ParsePosition::current();
 	bool member_ptr = member_pointer_declarator_ahead(nextToken());
 	tokens.restore(saved);
 	setTokenContext(saved_cur, saved_prv);
-	TokenBase::_parse_file = saved_file;
-	TokenBase::_parse_line = saved_line;
-	TokenBase::_parse_column = saved_column;
+	saved_line_pos.restore();
 	if ( !member_ptr )
 	    break;                       // a plain name: the declarator-id
 	while ( peekToken() && peekToken()->id() != TokenID::tkMul )
@@ -70277,8 +70233,7 @@ TokenBase *Program::parseCompound()
     {
 	if ( tb->id() == TokenID::tkClBrc )
 	{
-	    code->end_line = tb->line;
-	    code->end_column = tb->column;
+	    madc_token_end(tb, code->end_line, code->end_column);
 	    popCompound();
 	    DBG(std::cout << "parseCompound() ends" << std::endl);
 	    return code;
@@ -72758,16 +72713,12 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	TokenStream::Pos saved_body_pos = tokens.savepos();
 	TokenBase *saved_body_cur = _cur_token;
 	TokenBase *saved_body_prv = _prv_token;
-	const char *saved_body_file = TokenBase::_parse_file;
-	int saved_body_line = TokenBase::_parse_line;
-	int saved_body_column = TokenBase::_parse_column;
+	ParsePosition saved_body_line_pos = ParsePosition::current();
 	constexpr_raw_body = collect_compound_body_tokens(nt);
 	tokens = saved_body_pos;
 	_cur_token = saved_body_cur;
 	_prv_token = saved_body_prv;
-	TokenBase::_parse_file = saved_body_file;
-	TokenBase::_parse_line = saved_body_line;
-	TokenBase::_parse_column = saved_body_column;
+	saved_body_line_pos.restore();
     }
     // Phase-5 slice 4b (parse-once): a member-template INSTANTIATION whose
     // source carries a Tree-1 dependent_pattern takes its body from tsubst at
@@ -73589,9 +73540,7 @@ static bool constexpr_eval_token_run(Program &pgm,
     TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(run));
     TokenBase *saved_cur = pgm.curToken();
     TokenBase *saved_prv = pgm.prevToken();
-    const char *saved_file = TokenBase::_parse_file;
-    int saved_line = TokenBase::_parse_line;
-    int saved_column = TokenBase::_parse_column;
+    ParsePosition saved_line_pos = ParsePosition::current();
     bool ok = true;
     // A SPECULATIVE fold: declining is the ordinary outcome for any argument
     // this slice does not model (a class object, an address-of), and the
@@ -73625,9 +73574,7 @@ static bool constexpr_eval_token_run(Program &pgm,
     }
     pgm.tokens.swap_back(std::move(saved_tokens));
     pgm.setTokenContext(saved_cur, saved_prv);
-    TokenBase::_parse_file = saved_file;
-    TokenBase::_parse_line = saved_line;
-    TokenBase::_parse_column = saved_column;
+    saved_line_pos.restore();
     if ( !ok && constexpr_ctor_debug() )
 	fprintf(stderr, "[CXCTOR] argument run did not fold (%zu token(s))\n",
 		toks.size());
@@ -77260,18 +77207,15 @@ TokenBase *Program::parseStatement(TokenBase *tb)
     {
 	if ( !r->head_tok )
 	    r->head_tok = tb;
-	r->end_line = TokenBase::_parse_line;
-	r->end_column = TokenBase::_parse_column;
+	r->end_line = TokenBase::_parse_end_line;
+	r->end_column = TokenBase::_parse_end_column;
 	if ( r->as_decl_tok() )
 	{
 	    // Same line only: a ';' further down is a separate statement.
 	    TokenBase *pk = peekToken();
 	    if ( pk && pk->id() == TokenID::tkSemi && !pk->is_synthetic_position()
 	      && pk->line == r->end_line )
-	    {
-		r->end_line = pk->line;
-		r->end_column = pk->column;
-	    }
+		madc_token_end(pk, r->end_line, r->end_column);
 	}
     }
     else if ( pending_funcs.size() > funcs_before )
@@ -77286,8 +77230,8 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	TokenFunc *tf = pending_funcs.back()
 	    ? pending_funcs.back()->as_func_tok() : (TokenFunc *)0;
 	if ( tf && !tf->head_tok
-	  && tf->end_line == TokenBase::_parse_line
-	  && tf->end_column == TokenBase::_parse_column )
+	  && tf->end_line == TokenBase::_parse_end_line
+	  && tf->end_column == TokenBase::_parse_end_column )
 	    tf->head_tok = tb;
     }
     return r;

@@ -270,15 +270,23 @@ public:
     //   head_tok   — the FIRST source token of the construct (the token
     //                parseStatement was handed); its START is the extent start
     //   end_line / end_column — the END of the LAST consumed token: the static
-    //                parse position when the construct finished (a simple
-    //                statement's ';', a compound's '}'). Columns are END-
-    //                anchored (the byte after the token's last char).
+    //                parse END position when the construct finished (a simple
+    //                statement's ';', a compound's '}'): the column of that
+    //                token's last byte.
     // NULL / 0 = no extent (a leaf, an expression node, a synthesized token).
     // TokenCpnd's former end_line (the closing-brace line) lives here now.
     // Replaced the never-read, never-written `std::streampos pos`.
     TokenBase *head_tok;
     int end_line;
     int end_column;
+    // `line` / `column` are where the token STARTS (D26: gcc's caret, the
+    // byte its first character is; 1-based, a byte count). Its lexical END —
+    // the line and the column of its last byte — is recorded beside it when
+    // it is read from source text (Program::getToken); 0 = not recorded (a
+    // parser-built or injected token, a prelude-image token), and
+    // madc_token_end() then derives it from the start and the spelling.
+    int lex_end_line = 0;
+    int lex_end_column = 0;
     // Flat POD data record (Phase 2). See TokenRec above.
     TokenRec rec;
     // Diagnostic: how many times the parser has CONSUMED this token via
@@ -303,10 +311,15 @@ public:
     std::string leading_trivia;
     // Current parse position — updated by nextToken(), inherited by
     // all new tokens so synthetic parser-created tokens automatically
-    // get the position of the most recently consumed source token.
+    // get the position of the most recently consumed source token: its
+    // START (line / column). _parse_end_* is that token's END, where a
+    // construct's extent ends. Saved and restored together through
+    // ParsePosition, never one static at a time.
     static const char *_parse_file;
     static int _parse_line;
     static int _parse_column;
+    static int _parse_end_line;
+    static int _parse_end_column;
     // Active interned-spelling pool for spelling() (interning Step 4). Bound to the
     // currently-processing Program's strpool at lex/parse entry (compile is
     // sequential per-Program, incl. --project per-TU). Lets the arg-less spelling()
@@ -347,6 +360,8 @@ public:
 	    c->file = file;
 	    c->line = line;
 	    c->column = column;
+	    c->lex_end_line = lex_end_line;
+	    c->lex_end_column = lex_end_column;
 	    // The ud-suffix is part of the literal's IDENTITY, not its
 	    // position — a cloned `123_w` is still `123_w`. Propagated here
 	    // (the sanctioned copier) because clone() is per-class.
@@ -459,6 +474,57 @@ public:
     // (a call arm that knew TokenDerefExpr alone lost `(*t)(i)`).
     bool is_indirection()
     { return as_deref_tok() || as_deref_expr_tok() || as_deref_step_tok(); }
+};
+
+// The parse position as ONE value (D26): the last consumed token's file, its
+// START (what a token the parser builds inherits) and its END (where a
+// construct's extent ends). A nested parse saves it, moves it and restores it
+// whole, so a start from one token never sits beside another token's end.
+struct ParsePosition
+{
+    const char *file;
+    int line;
+    int column;
+    int end_line;
+    int end_column;
+    static ParsePosition current()
+    {
+	ParsePosition p = { TokenBase::_parse_file, TokenBase::_parse_line,
+			    TokenBase::_parse_column, TokenBase::_parse_end_line,
+			    TokenBase::_parse_end_column };
+	return p;
+    }
+    // No position: a unit's lexing starts here, so its tokens take their
+    // positions from its own text.
+    static void reset()
+    {
+	ParsePosition none = { NULL, 0, 0, 0, 0 };
+	none.restore();
+    }
+    void restore() const
+    {
+	TokenBase::_parse_file = file;
+	TokenBase::_parse_line = line;
+	TokenBase::_parse_column = column;
+	TokenBase::_parse_end_line = end_line;
+	TokenBase::_parse_end_column = end_column;
+    }
+    // The position of token `t`: its file, start and end (the recorded
+    // lexical end, else the one derived from its spelling).
+    static void set_from(TokenBase *t)
+    {
+	TokenBase::_parse_file = t->file;
+	TokenBase::_parse_line = t->line;
+	TokenBase::_parse_column = t->column;
+	if ( t->lex_end_column )
+	{
+	    TokenBase::_parse_end_line = t->lex_end_line;
+	    TokenBase::_parse_end_column = t->lex_end_column;
+	}
+	else
+	    set_end_from_spelling(t);
+    }
+    static void set_end_from_spelling(TokenBase *t);	// parser.cpp
 };
 
 // whitespace

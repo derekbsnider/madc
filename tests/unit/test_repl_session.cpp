@@ -1963,7 +1963,7 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     // Refused: an undeclared name at the column typed, a statement, an
     // unknown command.
     CHECK_FALSE(c.submit("%type nope + 1"));
-    CHECK(err.str().find(":1:10: ") != std::string::npos);
+    CHECK(err.str().find(":1:7: ") != std::string::npos);
     CHECK_FALSE(c.submit("%type x;"));
     CHECK(err.str().find("%type takes an expression") != std::string::npos);
     CHECK_FALSE(c.submit("%nosuch"));
