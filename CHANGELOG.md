@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide: session close closes its plugins' code
+
+The session's close now frees every active plugin's code loaded or compiled at activation. IdeSession::close() reads the world's active rows before the world closes, then calls plugins_close to run plugin_code_close on each (the right transport — library, source, or built-in). On Windows this allows plugin DLLs to be removed after the run (Windows refuses to remove a loaded library). Test: testmadcide_plugin_library pin 5 verifies the library is freed after session close by attempting php::unlink(hello.dll) and expecting success (library-released=1) on Linux, darwin and wine64.
+
 ### lexer: TokenProgram::is removed — files released after tokenize
 
 The unused TokenProgram::is member (assigned but never read) is removed, freeing source files after tokenization. On Windows this allows code_open'd or refused sources to be removed immediately after compilation, fixing lock-timeout issues where the main file was held open by madcide's source plugins. Oracle: g++ 13 and clang++ 18 close TU files after reading; madc now matches. Gate: tests/testcode_open pin 5.

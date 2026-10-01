@@ -8850,7 +8850,10 @@ void IdeSession::close()
 	if ( ph != 0 )
 	    madc::parse_close(ph);
     }
+    var active;
+    registry_rows(active, w, "active");	// the plugins' code outlives no world
     ui::world_close(w);
+    plugins_close(active);
 }
 
 // ---- the vi arm (modes-as-scopes — the session owns mode routing) -------

@@ -25,7 +25,9 @@
 //      plugin API whose source targets it too (both reasons, both numbers),
 //      code with no activation entry (both forms), an activation that
 //      refuses, whose registrations are taken back, and a source that does
-//      not compile with no library (its first row, positioned).
+//      not compile with no library (its first row, positioned);
+//   5. the session's close closes its plugins' code (a library loaded until
+//      then cannot be removed on Windows).
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env).
 #include "../tools/texteditor/lined_core.inc"
@@ -277,6 +279,13 @@ int main()
     println("declined-taken-back: {}", cmd_of_w(S.w, "declined") == 0 ? 1 : 0);
     activate(S.w, plugins, "broken");
     S.close();
+
+    // 5. The session's close closes its plugins' code: hello's library is
+    // no longer loaded (Windows refuses to remove a loaded library).
+    var hlib;
+    var hd = format("{}/hello", plugins);
+    plugin_library_path(hlib, hd, "hello");
+    println("closed: library-released={}", php::unlink(hlib.c_str()) ? 1 : 0);
 
     // Remove every file, then every directory this test made.
     long nf = php::count(files);

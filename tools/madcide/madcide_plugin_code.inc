@@ -229,6 +229,16 @@ void registry_rollback(long w, var &mark)
     }
 }
 
+// A world's plugin code, closed with it (§5.5: activated at session open,
+// closed at session close). `active` = the world's "active" rows, read
+// before the world closes; each code closes by the transport that opened it
+// once nothing in the world can call it.
+void plugins_close(var &active)
+{
+    for ( var r : active )
+	plugin_code_close(r["transport"].as_integer(), r["handle"].as_integer());
+}
+
 // Is plugin `name`'s code already active in world `w`?
 bool plugin_is_active(long w, const char *name)
 {
