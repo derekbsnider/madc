@@ -904,6 +904,10 @@ struct HostIgnoresInterrupt
 	sigaction(SIGINT, &ign, &saved);
     }
     ~HostIgnoresInterrupt() { sigaction(SIGINT, &saved, NULL); }
+#else
+    // No backend process on Windows yet (plan §41.9a): the interrupt has
+    // no one else to go to, so the host keeps it.
+    HostIgnoresInterrupt() {}
 #endif
 };
 }

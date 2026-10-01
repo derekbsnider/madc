@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### session: the Windows build's interrupt guard has an explicit body
+
+The HostIgnoresInterrupt RAII guard struct on Windows now defines an explicit empty constructor body (no backend process yet per plan §41.9a), preventing mingw g++ -Wall -Werror from flagging the guard instances created in BackendSession::submit() and BackendSession::offer() as unused variables.
+
 ### madcide, ui: one action-event builder, and the two gates step 3e turned red
 
 The synthesized action event (a key press, a post, a choice list row, a client's paste answer) now goes through one builder: `action_event(e, code, arg)` in madcide_core.inc. Every call site that created the event inline—`IdeSession::post()`, `IdeSession::command()`, `choice_action()`, and `client_service()` (the paste handler)—now calls `action_event()` and then `apply_ide_event()`. The client's paste answer no longer calls `S.command()` directly; it builds the event and lets `apply_ide_event()` dispatch it. Gate: `scripts/check-madcide-single-owners.sh` (one action-event builder across tools/madcide, plus negative control for blind-marker detection). The ui_web host header in `include/madc/ns_ui_web` now declares `int64_t n` for the clipboard-size variable instead of bare `long`, so the gate `scripts/check-ns-header-widths.sh` passes (namespace headers contain no bare long).
