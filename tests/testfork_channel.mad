@@ -1,0 +1,109 @@
+// madc::fork_uri and the madcfork:// scheme: a fork child running a
+// function of this program, its stdin and stdout the channel (the plugin
+// host transport's child, plan §41.11a step 7).
+// Pins:
+//   1. the child runs the function: a line written here is what it reads,
+//      and what it writes is read here, line by line;
+//   2. the child inherits the program's data at the fork (a global set
+//      before the open) and its writes stay its own (the parent's global is
+//      unchanged);
+//   3. madc::conn_send writes one line to ONE shared channel (here the
+//      child's, which answers it) and answers false for an id no channel
+//      holds; madc::conn_cancel ends a shared channel's child that no longer
+//      reads (its readline then answers false);
+//   4. closing the write side ends the child's input: it returns, and the
+//      channel ends (readline answers false);
+//   5. a child's stderr is folded into the channel (a line it writes there
+//      is read here), and a child that crashes ends the channel the same
+//      way: this program runs on;
+//   6. a URI that names no function is refused, with the reason; on
+//      Windows (no fork) every madcfork:// open is (the win64 twin).
+// Oracle: the POSIX model — a g++ 13 or clang++ 18 program that forks with
+// a pipe on the child's stdin and one on its stdout, and calls the same
+// function in the child, prints the same lines.
+int counter = 0;
+
+int echo_child()
+{
+	madc::channel io("stdio://");
+	var line;
+	while ( io.readline(line) )
+	{
+		counter = counter + 1;
+		io.write(format("child {} {}\n", counter, line));
+	}
+	return 0;
+}
+
+int crash_child()
+{
+	madc::channel io("stdio://");
+	var line;
+	io.readline(line);
+	println(stderr, "child stderr: {}", line);
+	int *p = (int *)0;
+	*p = 1;
+	return 0;
+}
+
+int stuck_child()
+{
+	for ( ;; )
+		madc::sleep_ms(1000);
+	return 0;
+}
+
+int main()
+{
+	// 1-2. The child, its data, its replies.
+	counter = 41;
+	madc::channel ch(madc::fork_uri(echo_child));
+	var why = "";
+	if ( !ch.ok() )
+		why = format(" {}", ch.last_error());
+	println("open: {}{}", ch.ok() ? 1 : 0, why);
+	ch.write("hello\n");
+	var got;
+	ch.readline(got);
+	println("reply1: {}", got);
+	ch.write("again\n");
+	ch.readline(got);
+	println("reply2: {}", got);
+	println("parent counter: {}", counter);
+
+	// 3. One line to one shared channel.
+	long id = ch.share();
+	bool sent = madc::conn_send(id, "shared\n");
+	ch.readline(got);
+	bool unknown = madc::conn_send(id + 1000, "lost\n");
+	ch.unshare(id);
+	println("conn_send: sent={} reply={} unknown={}", sent ? 1 : 0, got, unknown ? 1 : 0);
+	madc::channel st(madc::fork_uri(stuck_child));
+	long sid = st.share();
+	madc::conn_cancel(sid);
+	bool alive = st.readline(got);
+	st.unshare(sid);
+	st.close();
+	println("conn_cancel: ended={}", alive ? 0 : 1);
+
+	// 4. Its input ends; so does the channel.
+	ch.close_write();
+	bool more = ch.readline(got);
+	println("after close: more={}", more ? 1 : 0);
+	ch.close();
+
+	// 5. Its stderr is the channel's; a crash ends it; this program runs on.
+	madc::channel cr(madc::fork_uri(crash_child));
+	cr.write("go\n");
+	long folded = 0;
+	while ( cr.readline(got) )
+		if ( got == "child stderr: go" )
+			folded = 1;
+	println("crash: stderr-folded={} ended, runs on", folded);
+	cr.close();
+
+	// 6. No function named.
+	madc::channel bad("madcfork://nothing");
+	println("bad: ok={} {}", bad.ok() ? 1 : 0, bad.last_error());
+	return 0;
+}

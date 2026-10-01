@@ -1,0 +1,10 @@
+# Labels whose line legitimately DIFFERS from tests/testfork_channel.win64_expect
+# versus tests/testfork_channel.expect — the win64 domain's own answers: Windows
+# has no fork, so every madcfork:// open is refused with that reason and the
+# child's lines never arrive. Every other labelled line must be identical in
+# both (scripts/check-expect-twins.sh).
+open
+reply1
+reply2
+conn_send
+crash

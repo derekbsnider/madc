@@ -665,6 +665,18 @@ void code_close(int64_t code)
 	madc_code_close(code);
 }
 
+// The URI a madc::channel opens to fork a child running `entry`, a function
+// of this program (the madcfork:// scheme, madc_program.cpp, registered
+// here at its first spelling). Ring text, the c_str() contract.
+void register_fork_channel_factory();	// madc_program.cpp
+const char *fork_uri(int (*entry)())
+{
+    register_fork_channel_factory();
+    std::string &slot = ns_common::ring_slot();
+    slot = "madcfork://" + std::to_string((unsigned long long)(uintptr_t)entry);
+    return slot.c_str();
+}
+
 // This target's shared-library suffix, the library spelling owner's
 // (madc_target_dso_suffix): a script names its library file with it, never
 // with a spelled suffix.

@@ -147,10 +147,13 @@ private:
 	    { "ipc", domain::ipc, family::generic_ipc, false, false },
 	    { "exec", domain::execution, family::process, true, true },
 	    // madc's own program-as-a-data-source schemes (madcide polish
-	    // P3b-1): the live parse handle / the project manifest run in a
-	    // child through the process owner — process family, like exec.
+	    // P3b-1): the live parse handle / the project manifest / a
+	    // function of the running program (madcfork://, a madcide plugin
+	    // host) run in a child through the process owner — process
+	    // family, like exec.
 	    { "madcrun", domain::execution, family::process, true, true },
 	    { "madcproj", domain::execution, family::process, true, true },
+	    { "madcfork", domain::execution, family::process, true, true },
 	    // a command on a pseudo-terminal (the embedded Terminal's shell)
 	    { "pty", domain::execution, family::process, true, true }
 	};

@@ -870,6 +870,29 @@ void conn_broadcast(int64_t except_id, const char *line)
 	}
 }
 
+// Write `line` to the ONE share()-registered channel `id` (a madcide plugin
+// host's connection: the invocation its row names). False = no such
+// connection, or its write failed (the peer left; its serve task removes it
+// on EOF). Atomic against the parked reader as conn_broadcast is.
+bool conn_send(int64_t id, const char *line)
+{
+	if ( !line )
+		return false;
+	std::map<int64_t, ConnEntry>::iterator it = g_shared.find(id);
+	return it != g_shared.end() && it->second.ch->write(line);
+}
+
+// Cancel the ONE share()-registered channel `id`'s source (a process: the
+// owner's SIGTERM; a socket: its shutdown), so the task parked in its
+// readline wakes to the end — how a session stops a plugin host whose code
+// no longer reads. An id no channel holds: nothing.
+void conn_cancel(int64_t id)
+{
+	std::map<int64_t, ConnEntry>::iterator it = g_shared.find(id);
+	if ( it != g_shared.end() )
+		it->second.ch->cancel();
+}
+
 // Set / read the opaque per-connection cookie (madcide's permission tier).
 // conn_cookie returns -1 for an unknown id (a client that left). These are
 // how a serve task reads its own tier and how the owner's clienttier verb

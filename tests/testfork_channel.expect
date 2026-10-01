@@ -1,0 +1,9 @@
+open: 1
+reply1: child 42 hello
+reply2: child 43 again
+parent counter: 41
+conn_send: sent=1 reply=child 44 shared unknown=0
+conn_cancel: ended=1
+after close: more=0
+crash: stderr-folded=1 ended, runs on
+bad: ok=0 madcfork: 'nothing' is not a function's address (madc::fork_uri spells it)

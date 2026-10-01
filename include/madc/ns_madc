@@ -382,6 +382,12 @@ namespace madc {
     // all). Best-effort — a dead peer is skipped, never fatal. The hub
     // fan-out a serve task calls after its command appends change events.
     void conn_broadcast(int64_t except_id, const char *line);
+    // Write `line` to the ONE shared channel `id`; false = no such
+    // connection (it left) or the write failed.
+    bool conn_send(int64_t id, const char *line);
+    // Cancel the ONE shared channel `id`'s source (a child process: its
+    // SIGTERM), so a task parked in its readline wakes to the end.
+    void conn_cancel(int64_t id);
 
     // Per-connection cookie (V6a tiers): an OPAQUE int the application stores
     // against a share() id — madcide keeps the permission tier there. The
@@ -480,6 +486,17 @@ namespace madc {
     int64_t code_open(value &out_diags, const char *path, const value &include_dirs);
     int64_t code_symbol(int64_t code, const char *name);
     void code_close(int64_t code);
+    // A fork child running a function of this program: fork_uri(entry) is
+    // the URI a madc::channel opens (`madc::channel ch(fork_uri(f));`). The
+    // child runs `entry` with its stdin and stdout as the channel (what it
+    // writes, its stderr folded in, is read here; what is written here it
+    // reads), and exits with entry's return; it inherits the
+    // program's code and data at the fork. A child that ends (an exit or a
+    // crash) ends the channel: readline answers false. Refused on Windows
+    // (no fork): the channel is not ok().
+    // Thread contract: the channel is the opener's (one thread); the child
+    // is its own process.
+    const char *fork_uri(int (*entry)());
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
     // std::string conveniences — present only because <string> precedes

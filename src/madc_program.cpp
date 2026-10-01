@@ -5309,6 +5309,74 @@ public:
     }
 };
 
+// `madcfork://<entry>`: a fork CHILD running a function of the running
+// program, `int entry()` (its address in decimal; madc::fork_uri spells it),
+// whose stdin and stdout are the channel — read = what the child writes
+// (its stderr folded in, one stream, as madcrun:// folds it: a crash's
+// report arrives on the channel, never on this process's terminal), write =
+// what it reads. Through the ONE
+// spawn owner, as madcrun:// runs a tree: the pipes, the reap and the cancel
+// are the owner's, nothing execs, and the child inherits the program's code
+// and data at the fork. A madcide plugin host runs this way (plan §41.11a
+// step 7). Windows: no fork, so the scheme is refused there.
+class ForkChannelFactory : public DataChannelRegistry::Factory
+{
+public:
+    std::unique_ptr<DataChannel> open(const DataSource &source,
+				      ChannelOpenMode mode,
+				      error *err = nullptr) const override
+    {
+	(void)mode;
+	const std::string spec = source.path();
+	char *end = (char *)0;
+	const unsigned long long addr = strtoull(spec.c_str(), &end, 10);
+	if ( spec.empty() || !end || *end != '\0' || addr == 0 )
+	{
+	    detail::set_channel_error(err, "madcfork: '" + spec
+				   + "' is not a function's address (madc::fork_uri spells it)");
+	    return std::unique_ptr<DataChannel>();
+	}
+#ifdef _WIN32
+	detail::set_channel_error(err, "madcfork: no fork on Windows");
+	return std::unique_ptr<DataChannel>();
+#else
+	typedef int (*fork_entry)();
+	const fork_entry entry = (fork_entry)(uintptr_t)addr;
+	ProcessOptions options;
+	options.inherit_stderr = true;
+	options.child_body = [entry]() -> int {
+	    __madc_task_atfork_child();		// a fork child running madc code
+	    run_child_prologue(true);		// its stderr onto the stream
+	    int rc = entry();
+	    fflush(stdout);
+	    return rc & 0xff;
+	};
+	std::unique_ptr<Process> process(
+	    new Process(DataSource("exec://<madcfork>"), options));
+	if ( !process->start(err) )
+	    return std::unique_ptr<DataChannel>();
+	return detail::exec_channel_over(std::move(process));
+#endif
+    }
+};
+
+} // namespace
+
+// The madcfork:// scheme, registered once by its first spelling
+// (madc::fork_uri): it needs no Program.
+void register_fork_channel_factory()
+{
+    static bool registered = false;
+    if ( registered )
+	return;
+    registered = true;
+    DataChannelRegistry::instance().register_factory(
+	"madcfork", std::unique_ptr<DataChannelRegistry::Factory>(
+			new ForkChannelFactory()));
+}
+
+namespace {
+
 // Registered by the Program that opens parse / project handles (the IDE's
 // own runtime Program) — once; the project policy follows the latest.
 void register_run_channel_factories(::Program &self)
