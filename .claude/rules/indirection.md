@@ -46,8 +46,8 @@
   `ref_param_arg_addr` (a const referent materializes a prvalue).
 - A reference-returning call's result (`*call`, every call arm and the host-call shim):
   cir's `reference_call_result` (gated: `check-one-reference-call-result.sh`).
-- A derived-to-base pointer conversion (init, assign, compare, argument, return): cir's
-  `upcast_class_ptr` → `base_subobject_ptr` (null stays null) → `base_subobject_addr`.
+- A class-pointer conversion (implicit via cir's `upcast_class_ptr`; a static or C-style
+  cast): `base_subobject_ptr` up / `derived_object_ptr` down (null stays null).
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 

@@ -32317,6 +32317,17 @@ static bool is_named_cpp_cast(const std::string &name)
 	|| name == "const_cast";
 }
 
+// A named cast's spelling as the conversions it may perform — read once,
+// here, at the keyword; the CIR dispatches on the kind.
+static TokenCast::Kind named_cpp_cast_kind(const std::string &name)
+{
+    if ( name == "reinterpret_cast" )
+	return TokenCast::Kind::Reinterpret;
+    if ( name == "const_cast" )
+	return TokenCast::Kind::Const;
+    return TokenCast::Kind::Static;
+}
+
 TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 				       const std::string &cast_name)
 {
@@ -32387,6 +32398,7 @@ TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
 	    << cast_name << "<...>(...)" << flush;
     TokenCast *tc = new TokenCast(cast_dd, expr);
     tc->to_rvalue_ref = cast_to_rvalue_ref;
+    tc->kind = named_cpp_cast_kind(cast_name);
     tc->file = cast_tb->file;
     tc->line = cast_tb->line;
     tc->column = cast_tb->column;

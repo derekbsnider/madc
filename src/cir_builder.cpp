@@ -6535,50 +6535,75 @@ static int vbase_slot_index(DataDefCLASS *view, DataDefCLASS *owner,
 			    size_t &nv_extra);	// defined with vbase_dynamic_adjust
 static bool node_bottoms_at_this(node_t n);	// defined with vbase_dynamic_adjust
 
-// Does selecting `base` within `derived` move the address? Through a virtual
-// base it may (the offset is read at run time); otherwise by the static
-// subobject offset. A "yes" that turns out to be 0 costs only a null test.
-static bool base_subobject_moves(DataDefCLASS *derived, DataDefCLASS *base)
+// The inverse of base_subobject_addr — a BASE-to-DERIVED static downcast
+// ([expr.static.cast]/2, /11): a `base`-subobject address in, the enclosing
+// `derived` object's `Derived *` out. A virtual-base downcast is ill-formed,
+// so the static offset is the whole story.
+node_t CirBuilder::derived_object_addr(node_t value, DataDefCLASS *base,
+				       DataDefCLASS *derived, TokenBase *origin)
 {
-	size_t nv = 0;
-	if (vbase_slot_index(derived, base, nv) >= 0)
-		return true;
 	size_t off = derived->base_offset_of(base);
-	return off != 0 && off != (size_t)-1;
+	if (off != 0 && off != (size_t)-1)
+		value = node2(N_SUB, node2(N_CAST, char_ptr_type(), value, origin),
+			      integer((int64_t)off, origin), origin);
+	return node2(N_CAST, class_ptr_type(derived), value, origin);
 }
 
-// The POINTER form of base_subobject_addr: a null pointer converts to a null
-// pointer ([conv.ptr]/3), so an upcast that moves the address tests the
+// A class-pointer conversion between related classes, `from *` to `to *` —
+// an upcast (base_subobject_addr) or a static downcast (derived_object_addr).
+// The null pointer converts to the null pointer ([conv.ptr]/3,
+// [expr.static.cast]/11), so a conversion that moves the address tests the
 // operand first, read once through a temp —
-//   ({ struct D *__madc_upc_N = (struct D *)(value);
-//      __madc_upc_N ? <base_subobject_addr(__madc_upc_N)> : (struct B *)0; })
+//   ({ struct F *__madc_upc_N = (struct F *)(value);
+//      __madc_upc_N ? <step(__madc_upc_N)> : (struct T *)0; })
 // — g++'s and clang's lowering (a virtual base's offset is never read
-// through a null vptr). An object's address (`&d`) and the object under
-// construction (`__this`) are never null: they convert directly, as in g++.
-node_t CirBuilder::base_subobject_ptr(node_t value, DataDefCLASS *derived,
-				      DataDefCLASS *base, TokenBase *origin)
+// through a null vptr). Through a virtual base the address may move (the
+// offset is read at run time); otherwise by the static offset. An object's
+// address (`&d`) and the object under construction (`__this`) are never
+// null: they convert directly, as in g++.
+node_t CirBuilder::null_tested_class_ptr(node_t value, DataDefCLASS *from,
+					 DataDefCLASS *to, bool up,
+					 TokenBase *origin)
 {
-	if (!base_subobject_moves(derived, base) || value->code == N_ADDR
-	    || node_bottoms_at_this(value))
-		return base_subobject_addr(value, derived, base, origin);
+	size_t nv = 0;
+	size_t off = up ? from->base_offset_of(to) : to->base_offset_of(from);
+	bool moves = (up && vbase_slot_index(from, to, nv) >= 0)
+		  || (off != 0 && off != (size_t)-1);
+	auto step = [&](node_t v) -> node_t {
+		return up ? base_subobject_addr(v, from, to, origin)
+			  : derived_object_addr(v, from, to, origin);
+	};
+	if (!moves || value->code == N_ADDR || node_bottoms_at_this(value))
+		return step(value);
 	char tmp[40];
 	snprintf(tmp, sizeof(tmp), "__madc_upc_%d", m_strtmp_counter++);
 	node_t sd = simple(N_SPEC_DECL, origin);
-	append(sd, node1(N_SHARE, node1(N_LIST, class_tag_ref(derived))));
+	append(sd, node1(N_SHARE, node1(N_LIST, class_tag_ref(from))));
 	node_t sd_dl = list();
 	append(sd_dl, pointer());
 	append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
 	append(sd, ignore());
 	append(sd, ignore());
-	append(sd, node2(N_CAST, class_ptr_type(derived), value, origin));
+	append(sd, node2(N_CAST, class_ptr_type(from), value, origin));
 	node_t items = list();
 	append(items, sd);
-	node_t sel = node3(N_COND, id(tmp, origin),
-			   base_subobject_addr(id(tmp, origin), derived, base, origin),
-			   node2(N_CAST, class_ptr_type(base), integer(0, origin), origin),
+	node_t sel = node3(N_COND, id(tmp, origin), step(id(tmp, origin)),
+			   node2(N_CAST, class_ptr_type(to), integer(0, origin), origin),
 			   origin);
 	append(items, node2(N_EXPR, list(), sel, origin));
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+node_t CirBuilder::base_subobject_ptr(node_t value, DataDefCLASS *derived,
+				      DataDefCLASS *base, TokenBase *origin)
+{
+	return null_tested_class_ptr(value, derived, base, true, origin);
+}
+
+node_t CirBuilder::derived_object_ptr(node_t value, DataDefCLASS *base,
+				      DataDefCLASS *derived, TokenBase *origin)
+{
+	return null_tested_class_ptr(value, base, derived, false, origin);
 }
 
 node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rhs,
@@ -25077,7 +25102,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				DataDefCLASS *source = as_user_class(edd);
 				if (!source && edd && edd->is_reference())
 					source = pointee_user_class(edd);
-				if (target && source && target != source
+				// reinterpret_cast / const_cast keep the object.
+				bool relate = tc->kind == TokenCast::Kind::Static;
+				if (relate && target && source && target != source
 				    && source->is_or_derives_from(target)) {
 					node_t addr = node1(N_ADDR,
 						translate_expr(tc->expr), tb);
@@ -25088,33 +25115,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// The INVERSE selection — a BASE-to-DERIVED
 				// reference DOWNCAST (libc++ use_facet's
 				// `static_cast<const _Facet&>(__l.use_facet(id))`):
-				// subtract the derived class's STATIC offset of
-				// that base and retype. A virtual-base downcast
-				// is ill-formed ([expr.static.cast]p11), so the
-				// static offset is the whole story. Untyped, the
-				// facet return carried the BASE struct type
-				// (c2mir "incompatible return-expr type in
-				// function returning a pointer") and a non-zero
-				// base offset would read the wrong storage.
-				if (target && source && target != source
-				    && target->is_or_derives_from(source)) {
-					node_t addr = node1(N_ADDR,
-						translate_expr(tc->expr), tb);
-					size_t off = target->base_offset_of(source);
-					if (off != 0 && off != (size_t)-1) {
-						node_t charp = node2(N_CAST,
-							node2(N_TYPE,
-							      node1(N_LIST, simple(N_CHAR)),
-							      node2(N_DECL, ignore(),
-								    node1(N_LIST, pointer()))),
-							addr, tb);
-						addr = node2(N_SUB, charp,
-							integer((int64_t)off, tb), tb);
-					}
-					return node1(N_DEREF,
-						node2(N_CAST, class_ptr_type(target),
-						      addr, tb), tb);
-				}
+				// step back by the derived class's static offset
+				// of that base and retype. Untyped, the facet
+				// return carried the BASE struct type (c2mir
+				// "incompatible return-expr type in function
+				// returning a pointer") and a non-zero base
+				// offset would read the wrong storage.
+				if (relate && target && source && target != source
+				    && target->is_or_derives_from(source))
+					return node1(N_DEREF, derived_object_addr(
+						node1(N_ADDR, translate_expr(tc->expr), tb),
+						source, target, tb), tb);
 				return translate_expr(tc->expr);
 			}
 			// Integer-_Complex casts (struct spine): to a lowered
@@ -25176,6 +25187,25 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					node2(N_DECL, ignore(), fdecl_list));
 				return node2(N_CAST, type_node,
 					     translate_expr(tc->expr), tb);
+			}
+			// A class-pointer cast between related classes — an upcast
+			// ([conv.ptr]/3) or a static downcast ([expr.static.cast]/11);
+			// a C-style cast takes static_cast's conversions first
+			// ([expr.cast]/4). The address moves by the base subobject's
+			// offset and a null pointer stays null; reinterpret_cast and
+			// const_cast keep the address (the generic cast below).
+			if (tc->kind == TokenCast::Kind::Static && cast_dd
+			    && cast_dd->is_pointer() && !cast_dd->is_reference()) {
+				DataDefCLASS *to = pointee_user_class(cast_dd);
+				DataDefCLASS *from = expr_pointee_class(tc->expr);
+				if (to && from && to != from
+				    && from->is_or_derives_from(to))
+					return base_subobject_ptr(translate_expr(tc->expr),
+								  from, to, tb);
+				if (to && from && to != from
+				    && to->is_or_derives_from(from))
+					return derived_object_ptr(translate_expr(tc->expr),
+								  from, to, tb);
 			}
 			// GCC front-end parity (task #65): an out-of-range CONSTANT
 			// float->int cast folds at compile time with saturation —

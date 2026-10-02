@@ -1529,6 +1529,13 @@ public:
     // cast ([expr.static.cast]/1: xvalue vs lvalue) is what constructor
     // overload ranking reads (CirBuilder::ctor_arg_value_category).
     bool to_rvalue_ref = false;
+    // The conversions the cast may perform. A C-style or functional cast tries
+    // static_cast's first ([expr.cast]/4), so it is Static too: a class-pointer
+    // or member-pointer cast between related classes moves the value by the
+    // base subobject's offset. reinterpret_cast keeps the value's bits;
+    // const_cast changes only cv.
+    enum class Kind { Static, Reinterpret, Const };
+    Kind kind = Kind::Static;
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
     virtual TokenType type() const override { return TokenType::ttBase; }
     virtual DataDef *datadef() const override { return cast_type; }

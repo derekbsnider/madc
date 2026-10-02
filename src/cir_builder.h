@@ -734,6 +734,17 @@ class CirBuilder {
 	// Its POINTER form: a null `derived` pointer stays null ([conv.ptr]/3).
 	node_t base_subobject_ptr(node_t value, DataDefCLASS *derived,
 				  DataDefCLASS *base, class TokenBase *origin);
+	// The inverse, a static downcast ([expr.static.cast]/11): a `base`
+	// subobject's address in, its `derived` object's `Derived *` out; and its
+	// pointer form (null stays null).
+	node_t derived_object_addr(node_t value, DataDefCLASS *base,
+				   DataDefCLASS *derived, class TokenBase *origin);
+	node_t derived_object_ptr(node_t value, DataDefCLASS *base,
+				  DataDefCLASS *derived, class TokenBase *origin);
+	// The one null test both pointer forms share (`up` picks the step).
+	node_t null_tested_class_ptr(node_t value, DataDefCLASS *from,
+				     DataDefCLASS *to, bool up,
+				     class TokenBase *origin);
 	// Derived->base pointer/reference conversion. Returns `value` unchanged when
 	// no conversion applies; otherwise emits the same base-subobject adjustment
 	// recorded by class layout.
