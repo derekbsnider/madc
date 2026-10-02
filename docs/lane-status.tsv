@@ -2,15 +2,16 @@
 darwin-suite	release	b025833d039c	2026-09-22	arm64 1533/0/0TO/30skip, Intel 1534/0/0TO/29skip — gh run 35694459245 (darwin-probe.yml, head_branch=feature/mir-builtin-import-adopt-claude, head_sha=b025833d0: BOTH the workflow file and the source from the branch under test). +13 each vs the 2026-09-20 record = the variadic-sibling-paint fix (58727ac0a) restoring every test that reaches a real macOS SDK header (sys/qos.h). +1 skip each = tests/testasmlabelmirbuiltin.darwin_skip (mir.arg_memcpy is a SysV-x86-64 event). verify_macho_release OK on both arches, 835 units. Runner mac battery 10/1 both — the include-free value intrinsic standing known-open, unchanged. Exe lane ADVISORY (arm64 1166/273, Intel 1140/299) until the darwin runtime dylib (D5); suite rc=0 both
 libcxx	release	b025833d039c	2026-09-22	jit 1547/0/0TO/16skip; exe 1451/0; obj 1451/0 (+4 vs the previous 1543 = the variadic-sibling-paint reducer and siblings)
 genuine-win	release	697c3338b12b	2026-09-22	1494/0/0TO/69skip — the FULL suite on the owner Windows 11 box over the W0.2 channel (scripts/win_suite.sh from the container; the packed madc-release-x86-64-windows.exe REBUILT from current content at 09:11 with DLLs + tests/tools/examples staged, MADC_SKIP_EXT="win64 win", 60 tests carry a domain skip fixture). +14 vs the 2026-09-21 row (1480/0/0TO/69skip) = the variadic-sibling-paint fix and its reducer. win_suite rc=0
-linux-battery	yes	fbfd79670e9d	2026-09-24	fulltest 1624/0/0TO/9skip (smaug_gate OK); exe 1523/0; obj 1523/0; packed 1624/0; headerless 1590/0/43skip — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
-wine64	yes	fbfd79670e9d	2026-09-24	1560/0/0TO/73skip — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
-headerless-win	yes	fbfd79670e9d	2026-09-24	1559/0/0TO/74skip — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude); pack v4 roots setjmp.h/signal.h
-macos	yes	fbfd79670e9d	2026-09-24	BUILD lane: release-macos rc=0 on BOTH arches + package-macos rc=0 + pull tarballs rc=0 — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
-aarch64-ld	yes	fbfd79670e9d	2026-09-24	scripts/aarch64_ldouble_lane.sh under qemu-aarch64: control OK; GREEN aot + jit on every tests/cross/aarch64_*.c fixture — seam battery at fbfd79670 (the volatile-across-the-board + indirection wave, feature/dupfamily-fixes-claude)
-c-testsuite	commit	029a55a0f92a	2026-09-30	220 passed, 0 failed (0 outside baseline)
-c-torture	commit	029a55a0f92a	2026-09-30	1613 passed, 3 compile-failed, 8 runtime-failed, 11 failing 0 outside baseline
-c2mir-tests	commit	029a55a0f92a	2026-09-30	309 passed, 54 failed, 0 outside baseline
-gui	commit	029a55a0f92a	2026-09-30	20 passed, 0 failed | EXE 20 | OBJ 20
-gxx-c++11	no	029a55a0f92a	2026-09-30	1492 passed, 454 failing, 0 outside baseline
-index-c	yes	029a55a0f92a	2026-09-30	50/50 tasks OK, 0 failed
-tests-jit	batch	029a55a0f92a	2026-09-30	1831 passed, 0 failed, 0 timed out, 9 skipped
+brew-linux	release	328b13c09126	2026-10-02	1911/0/0TO/9skip - scripts/brew_lane.sh on the container (Homebrew 7.0.7, Ubuntu 24.04): brew install --build-bottle + brew bottle + the keg POURED back from the bottle (receipt poured_from_bottle) + brew test; forest as the libmadc.so.0.forest sidecar; loader check (unmasked from the keg, keg lib masked from HOMEBREW_PREFIX/lib, runs 42); the suite with MADC_BIN the poured madc
+c-testsuite	commit	f5579bf1dd92	2026-10-02	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing) — fast tier
+c-torture	commit	f5579bf1dd92	2026-10-02	c-torture: 1613 passed, 3 compile-failed, 8 runtime-failed, 0 timed out, 61 skipped (--std=c17); 11 failing, 0 outside baseline — fast tier
+c2mir-tests	commit	f5579bf1dd92	2026-10-02	c2mir-tests: 314 passed, 50 failed (0 outside baseline, 0 baseline tests now passing) — fast tier
+gui	commit	f5579bf1dd92	2026-10-02	gui: 25 passed, 0 failed | EXE: 25 passed | OBJ: 25 passed — fast tier
+gxx-c++11	no	f5579bf1dd92	2026-10-02	gxx-c++11: 1500 passed, 446 compile-failed, 0 runtime-failed, 2722 skipped; 0 outside baseline — fast tier
+index-c	yes	f5579bf1dd92	2026-10-02	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — fast tier
+linux-battery	yes	9419e7f4a9f9	2026-10-02	seam_battery.sh: gates rc=0 (69 unit binaries 0 failed, 87 static gates, smaug_gate OK, forest_bind 32/32, project_gate); headerless 1880/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 1914/0/0TO/9skip, EXE 1744/0, OBJ 1744/0
+headerless-win	yes	9419e7f4a9f9	2026-10-02	1841/0/0TO/82skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine, seam_battery.sh
+wine64	yes	9419e7f4a9f9	2026-10-02	the packed PE under wine: headerless-win 1841/0/0TO/82skip + ondisk-win 1/0 — seam_battery.sh (owner 10-02: one full-suite run per platform, on the shipped artifact)
+aarch64-ld	yes	9419e7f4a9f9	2026-10-02	aarch64_ldouble_lane GREEN (aot + jit on every fixture) — seam_battery.sh
+macos	yes	9419e7f4a9f9	2026-10-02	BUILD lane: hosted builds + release-macos rc=0 on both arches, package-macos rc=0; darwin pack gate OK (58 headers, 837 units arm64) — seam_battery.sh
+tests-jit	batch	9419e7f4a9f9	2026-10-02	1914 passed, 0 failed, 0 timed out, 9 skipped — the tests/ suite JIT on packed -O2 madc-release (seam exeobj)
