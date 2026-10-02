@@ -1305,7 +1305,11 @@ endif
 # instead — its dynamic table already carries every one of them.
 ifeq ($(ENABLE_SHARED_CLI),1)
 CLI_LIB_DEP = $(LIBMADC_SHARED)
-CLI_LINK = -L$(LIBDIR) -lmadc $(CLI_RPATH)
+# -lmadc resolves in THIS mode's library directory (lib/ for dev,
+# lib/$(MODE)/ for release and debug — the per-mode-names law above).
+# -L$(LIBDIR) bound a release link to the DEV libmadc.so, and in a tree with
+# no dev build to lib/libmadc.a (no MIR inside: undefined c2mir symbols).
+CLI_LINK = -L$(patsubst %/,%,$(dir $(LIBMADC_SHARED))) -lmadc $(CLI_RPATH)
 else
 CLI_LIB_DEP = $(LIBMADC_STATIC)
 CLI_LINK = $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB)
