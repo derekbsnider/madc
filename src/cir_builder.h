@@ -615,6 +615,11 @@ class CirBuilder {
 	// True only for a genuine class OBJECT value (declared class variable,
 	// class member, class-array element, or reference/value parameter).
 	static bool is_class_object_value(TokenBase *arg);
+	// A class OBJECT expression of ANY value category: the lvalue shapes
+	// is_class_object_value admits, or a class prvalue (a `T(args)`
+	// temporary, a by-value class-returning call). The admission of every
+	// c_str coercion into a char* / varargs position (object_cstr_arg).
+	bool is_class_object_expr(TokenBase *arg);
 	// A CALL whose selected function returns a non-trivial class by value through
 	// the __retbuf ABI. Returns the class, or NULL.
 	DataDefCLASS *object_returning_call_class(TokenBase *arg);

@@ -5297,6 +5297,16 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 	return false;
 }
 
+// The text coercion's admission reads both value categories: a prvalue
+// passed the lvalue-only test fell to the raw pass, and a `value("t")` /
+// by-value `var` call into a const char* parameter handed the callee the
+// temporary's storage words (an empty string, no diagnostic in a varargs
+// position). object_cstr_arg's object_arg_addr materializes the prvalue.
+bool CirBuilder::is_class_object_expr(TokenBase *arg)
+{
+	return is_class_object_value(arg) || object_returning_call_class(arg) != NULL; // allowed-exception: the owner
+}
+
 // The FuncDef behind a CALL token: either the called function directly, or the
 // TARGET signature of a function-pointer variable being called indirectly
 // (`auto f = [...]; f()`). Function ABI classification happens after overload
@@ -8030,13 +8040,13 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			// &(*p) folds to p); a prvalue arg is materialized into a temp.
 			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
 							const_ref_param(callee, pi)));
-		else if (is_char_pointer(pt) && is_class_object_value(arg))
+		else if (is_char_pointer(pt) && is_class_object_expr(arg))
 			append(args, object_cstr_arg(arg));
 		else if (is_size1_pointer(pt) && is_class_object_value(arg))
 			append(args, object_arg_addr(arg, NULL));
 		else if ((!pt || (callee && callee->is_varargs
 				  && pi + 1 >= callee->parameters.size()))
-			 && is_class_object_value(arg))
+			 && is_class_object_expr(arg))
 			// No declared formal — a varargs tail (`printf("%s", s)`;
 			// an is_varargs FuncDef's LAST parameter is the varargs
 			// MARKER, so the tail starts at size()-1) or an import-bound
@@ -8046,7 +8056,7 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args,
 			// import alias-form convention. Classes without c_str keep
 			// their previous lowering (object_cstr_arg falls back to
 			// translate_expr); plain C structs never reach here
-			// (is_class_object_value is user-class-gated).
+			// (is_class_object_expr is user-class-gated).
 			append(args, object_cstr_arg(arg));
 		else if (DataDefCOMPLEX *plow = as_lowered_complex(pt)) {
 			// Lowered-complex formal: a same-type arg passes by value
@@ -17774,7 +17784,7 @@ node_t CirBuilder::class_ctor_call_addr(node_t this_addr, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			explicit_nodes.push_back(ref_param_arg_addr(arg,
 				ref_param_referent(pt), const_ref_param(ctor, pi)));
-		else if (is_char_pointer(pt) && is_class_object_value(arg))
+		else if (is_char_pointer(pt) && is_class_object_expr(arg))
 			// A c_str()-bearing object/carrier into a char* ctor
 			// parameter (`string s = arr[i];` — the slot-typed
 			// element into basic_string(const char*)): the same
@@ -19245,7 +19255,7 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else if (is_ref_param)
 			append(args, ref_param_arg_addr(arg, ref_param_referent(pt),
 							const_ref_param(ctor, pi)));
-		else if (is_char_pointer(pt) && is_class_object_value(arg))
+		else if (is_char_pointer(pt) && is_class_object_expr(arg))
 			// A c_str()-bearing object/carrier into a char* ctor
 			// parameter (`string s = arr[i];`): the same coercion
 			// the general call path applies (its is_char_pointer arm).
@@ -20708,7 +20718,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		eparams.push_back(native_param_shape(pt, true));
 		append(args, ref_param_arg_addr(top->right,
 			ref_param_referent(pt), const_ref_param(callee, 1)));
-	} else if (is_char_pointer(pt) && is_class_object_value(top->right)) {
+	} else if (is_char_pointer(pt) && is_class_object_expr(top->right)) {
 		// A c_str()-bearing object/carrier into a char* operator
 		// parameter (`joined = arr[i];` — the slot-typed element into
 		// basic_string::operator=(const char*)): the same coercion the
@@ -21602,7 +21612,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		else if (refp)
 			append(args, ref_param_arg_addr(top->right,
 				ref_param_referent(pt), const_ref_param(callee, 1)));
-		else if (is_char_pointer(pt) && is_class_object_value(top->right))
+		else if (is_char_pointer(pt) && is_class_object_expr(top->right))
 			// carrier/object into a char* operator parameter — the
 			// external-call twin's coercion (object_cstr_arg).
 			append(args, object_cstr_arg(top->right));
@@ -25678,7 +25688,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					TokenBase *p = tcf->parameters[i];
 					// printstr/puts take char*: object values need a
 					// character-pointer view; literals are already const char*.
-					if (is_class_object_value(p))
+					if (is_class_object_expr(p))
 						append(a, object_cstr_arg(p));
 					else
 						append(a, translate_expr(p));
@@ -25706,7 +25716,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				node_t dargs = list();
 				for (size_t i = 1; i < tcf->parameters.size(); i++) {
 					TokenBase *p = tcf->parameters[i];
-					if (is_class_object_value(p))
+					if (is_class_object_expr(p))
 						append(dargs, object_cstr_arg(p));
 					else
 						append(dargs, translate_expr(p));
@@ -26795,8 +26805,7 @@ node_t CirBuilder::translate_throw_call(TokenTHROW *th)
 	DataType dt = edd ? edd->rawtype() : DataType::dtINT64;
 	const char *sym;
 	ExternParam ep;
-	bool throw_object_cstr = is_class_object_value(th->throw_expr)
-			      || object_returning_call_class(th->throw_expr);
+	bool throw_object_cstr = is_class_object_expr(th->throw_expr);
 	// dtLDOUBLE rides the double path: the throw runtime carries one real
 	// payload width, and this is where a long double went when it WAS a
 	// double. The catch-tag side (parser.cpp, MADC_EXCEPT_DOUBLE) agrees.
