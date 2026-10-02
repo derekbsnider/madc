@@ -71,6 +71,8 @@
   `leading_cv` mask, never dropped; the bits `modeled_cv()` names qualify each
   pointee — volatile in every mode, const in C only); `[dims]`:
   `parse_array_dimensions` + `nest_carray_dims` (gated).
+- A `C::*` chain ahead (its head a class name, a class or dependent type token):
+  `member_pointer_declarator_ahead`; its owner: `parse_member_pointer_owner`.
 - An object's top-level cv (`modeled_cv()`'s bits) is its declared TYPE's — a variable's
   (parseDeclaration), a member's (incl. a class body's), a typedef's, a parameter
   OBJECT's (the definition's, never the function type's), a reference's referent (the

@@ -55005,6 +55005,22 @@ DataDef *Program::member_declarator(DataDef *base, MemberDeclarator &md,
     return elem;
 }
 
+// Can `tb` begin the owner chain of a pointer-to-member declarator `C::*`
+// ([dcl.mptr]/1: the nested-name-specifier denotes a class)? A class name the
+// lexer left an identifier, or a TYPE token naming a class or a dependent type
+// — a class-template body reads `T1::*` with its parameter as a type token.
+// The ONE head test of member_pointer_declarator_ahead; a caller that needs
+// the chain asks that, never this test plus its own.
+static bool member_pointer_owner_head(TokenBase *tb)
+{
+    if ( is_contextual_identifier_token(tb) )
+	return true;
+    if ( !tb || tb->type() != TokenType::ttDataType )
+	return false;
+    const DataDef &dd = static_cast<TokenDataType *>(tb)->definition;
+    return dd.as_struct_dd() || datadef_is_dependent_type(dd);
+}
+
 // At a `(` (tokens[0], unconsumed): does it open a NESTED declarator rather
 // than a parameter list? `*` `&` `&&` `(` and a `C::[D::]*` chain open one
 // ([dcl.decl]: a ptr-operator, or another `( declarator )`); so does a plain
@@ -55025,11 +55041,15 @@ bool Program::nested_declarator_opens(DeclaratorMode mode)
       || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
       || t1->id() == TokenID::tkOpSqr )	// `int ([4])`: a parenthesized abstract array declarator
 	return true;
+    if ( tokens.size() > 2 && tokens[2]
+      && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT)
+      && member_pointer_declarator_ahead(t1, 2) )
+	return true;			// `(C::*`, `(T1::*` yes; `(std::string` no
     if ( !is_contextual_identifier_token(t1) )
 	return false;
     if ( tokens.size() > 2 && tokens[2]
       && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT) )
-	return member_pointer_declarator_ahead(t1, 2);	// `(C::*` yes; `(std::string` no
+	return false;
     return mode != DeclaratorMode::Abstract && !token_starts_type_name(t1);
 }
 
@@ -55224,30 +55244,25 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    ref_here = true;
 	    break;			// nothing may follow a reference but the declarator
 	}
-	if ( is_contextual_identifier_token(pk) && tokens.size() > 1 && tokens[1]
-	  && (tokens[1]->id() == TokenID::tkNS || tokens[1]->id() == TokenID::tkLT) )
+	if ( member_pointer_declarator_ahead(pk, 1) )
 	{
 	    TokenBase *first = nextToken();
-	    if ( member_pointer_declarator_ahead(first) )
+	    std::string owner_name;
+	    DataDef *owner = parse_member_pointer_owner(first, owner_name);
+	    if ( fresh_fn )
 	    {
-		std::string owner_name;
-		DataDef *owner = parse_member_pointer_owner(first, owner_name);
-		if ( fresh_fn )
-		{
-		    // `R (C::*)(A) const` — the signature's qualifiers were read
-		    // with the suffix; the pointer is the 16-byte {ptr, adj} pair.
-		    dd = new DataDefMemberFnPtr(owner, owner_name, fresh_fn->target,
-						fresh_fn->target && fresh_fn->target->is_const_method);
-		    fresh_fn = NULL;
-		}
-		else
-		    dd = new DataDefMemberPtr(owner, owner_name, *dd);
-		skip_cv_qualifier_tokens();	// cv on the member pointer itself
-		continue;
+		// `R (C::*)(A) const` — the signature's qualifiers were read
+		// with the suffix; the pointer is the 16-byte {ptr, adj} pair.
+		dd = new DataDefMemberFnPtr(owner, owner_name, fresh_fn->target,
+					    fresh_fn->target && fresh_fn->target->is_const_method);
+		fresh_fn = NULL;
 	    }
-	    pushToken(first);		// a qualified NAME, not a chain: the declarator-id
+	    else
+		dd = new DataDefMemberPtr(owner, owner_name, *dd);
+	    skip_cv_qualifier_tokens();	// cv on the member pointer itself
+	    continue;
 	}
-	break;
+	break;				// a qualified NAME, not a chain, is the declarator-id
     }
 
     // 2. direct-declarator.
@@ -55417,10 +55432,11 @@ DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 // (peek_after_balanced_template_id_from — DelimDepth carrying this Program,
 // so a nested `<` is a name question), which is why this is not const.
 // `from` is the index of the segment's first `::` / `<` — 0 with `first`
-// consumed; 2 when the caller still holds `(` `first` on the stream.
+// consumed; 1 with `first` the next token; 2 when the caller still holds
+// `(` `first` on the stream.
 bool Program::member_pointer_declarator_ahead(TokenBase *first, size_t from)
 {
-    if ( !first || !is_contextual_identifier_token(first) )
+    if ( !member_pointer_owner_head(first) )
 	return false;
     size_t i = from;
     for ( ;; )
@@ -55464,7 +55480,19 @@ bool Program::member_pointer_declarator_ahead(TokenBase *first, size_t from)
 DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
 					    std::string &owner_name)
 {
-    owner_name = contextual_identifier_name(owner_first);
+    // A TYPE-token head (member_pointer_owner_head) already names its class or
+    // dependent type: alone, it IS the owner; a longer chain resolves by
+    // spelling like any other.
+    DataDef *head_type = NULL;
+    if ( is_contextual_identifier_token(owner_first) )
+	owner_name = contextual_identifier_name(owner_first);
+    else
+    {
+	TokenDataType *td = static_cast<TokenDataType *>(owner_first);
+	owner_name = td->spelling();
+	head_type = td->definition.as_struct_dd()
+	    ? static_cast<DataDef *>(td->definition.as_struct_dd()) : &td->definition;
+    }
     // A segment may be a template-id (`First<int>::*`): the suffix skipper is
     // the one owner of the balanced list, and its captured tokens spell the
     // segment, so the owner name reads `First<int>` exactly as a type does.
@@ -55494,6 +55522,8 @@ DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
     // Split at TOP-LEVEL `::` only — a template argument may itself be
     // qualified (`First<std::string>::*`); split_scope_spelling owns that rule.
     std::vector<std::string> parts = split_scope_spelling(owner_name);
+    if ( head_type && parts.size() == 1 && owner_name.find('<') == std::string::npos )
+	return head_type;
     DataDef *owner = resolve_qualified_class_owner(parts);
     if ( !owner )
     {
@@ -57733,8 +57763,8 @@ bool Program::template_parameter_declarator_ahead()
 // SFINAE consumers read.
 //
 // Handles ptr-operators with their own cv, pointer-to-member (whose `C::[D::]*`
-// lookahead has ONE owner — member_pointer_declarator_ahead, probed
-// transactionally because it reads the chain with the head consumed),
+// lookahead has ONE owner — member_pointer_declarator_ahead, probed with the
+// head still the next token),
 // parenthesized declarators, and function / array suffixes. Which `(` opens a
 // NESTED declarator rather than a parameter list is the only caller-specific
 // rule here; balanced nesting inside a suffix is DelimDepth's.
@@ -57757,12 +57787,7 @@ void Program::consume_template_parameter_declarator(std::string &name_out,
 	    nextToken();
 	    continue;
 	}
-	if ( !is_contextual_identifier_token(pk) )
-	    break;
-	StreamMark saved = mark_stream();
-	bool member_ptr = member_pointer_declarator_ahead(nextToken());
-	rewind_stream(saved);
-	if ( !member_ptr )
+	if ( !member_pointer_declarator_ahead(pk, 1) )
 	    break;                       // a plain name: the declarator-id
 	while ( peekToken() && peekToken()->id() != TokenID::tkMul )
 	    nextToken();                 // the `::`-separated nested-name

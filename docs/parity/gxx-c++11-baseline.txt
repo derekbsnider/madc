@@ -546,7 +546,6 @@ g++.dg/template/pr88795.C
 g++.dg/template/pr96329.C
 g++.dg/template/pr97399.C
 g++.dg/template/ptrmem1.C
-g++.dg/template/ptrmem19.C
 g++.dg/template/ptrmem34.C
 g++.dg/template/sfinae-deleted-pr119343.C
 g++.dg/template/sfinae20.C
