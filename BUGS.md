@@ -623,6 +623,37 @@ int main(void) { printf("%zu\n", offsetof(struct { char c; int i; }, i)); return
 - Found 2026-10-02 with B151. Off the release path, filed per owner
   2026-09-30.
 
+### B153. Packed binary, `--project`, `<string>` in two TUs: SIGSEGV under forest bind
+
+```cpp
+// m.cpp
+#include <cstdio>
+int fa(); int fb();
+int main() { printf("%d %d\n", fa(), fb()); return 0; }
+// a.cpp
+#include <string>
+int fa() { std::string s("abc"); return (int)s.size(); }
+// b.cpp
+#include <string>
+int fb() { std::string s("hello"); return (int)s.size(); }
+```
+
+- `cc.json` names the three TUs; `madc-release --project cc.json`.
+- g++ 13 and clang++ 18: `3 5`. Packed `bin/madc-release` (2026-10-02):
+  SIGSEGV, core dumped. `--no-forest-bind` prints `3 5`.
+- Release archive (`scripts/release_bins.sh`): v0.92.0 through v0.94.0
+  print `3 5`; v0.95.0 through v0.100.0 crash. It entered between v0.94.0
+  (caae16af6) and v0.95.0 (36fc42fc5), the cold-startup release.
+- Stack: `madc_thaw_member_template` ←
+  `instantiate_member_ctor_template_candidate` ←
+  `parse_functional_type_expression` ← `rebuild_forest_param_defaults` ←
+  `flush_forest_pending_globals` ← `Program::tokenize` ←
+  `madc_project_execute`. The second TU's bind thaws a member constructor
+  template; layer not yet traced.
+- tests/testprojectmtiorder runs with `--no-forest-bind` until this is
+  fixed. Found 2026-10-02 in the seam battery's packed lanes. Off the
+  release path (shipped since v0.95), filed per owner 2026-09-30.
+
 ### B148. A constructor template's mem-initializer that reads a member of a class temporary crashes c2mir
 
 ```cpp

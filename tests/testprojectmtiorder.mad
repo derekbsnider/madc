@@ -13,5 +13,9 @@
 //
 // The build is the three .cpp TUs named in testprojectmtiorder.cc.json (the
 // --project flag in the .flags fixture); this file is an ignored positional.
+// The .flags fixture also says --no-forest-bind: a packed binary binding the
+// forest for <string> in two or more --project TUs crashes in
+// madc_thaw_member_template (B153, filed; v0.100.0 crashes alike), and this
+// test is about instance naming, which the live parse exercises.
 // Oracle: g++ 13 and clang++ 18 build the same three TUs and print the
 // .expect lines: a = 4*100 + 1*10 + 1, b = 8*1000 + 3*100 + 3*10 + 5.

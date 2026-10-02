@@ -1,1 +1,1 @@
---project tests/testprojectmtiorder.cc.json
+--no-forest-bind --project tests/testprojectmtiorder.cc.json
