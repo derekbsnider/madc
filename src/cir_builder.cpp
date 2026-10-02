@@ -771,6 +771,39 @@ node_t CirBuilder::lvalue_operator_address(node_t op, TokenBase *origin)
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
 }
 
+// The address of a baked const object's folded read — the one owner, reached
+// from node1. translate_expr folds a read of a const-declared integral
+// constant (vfCONSTBAKED) to the literal of its value; an address use (unary
+// `&`, a reference binding) applies no lvalue-to-rvalue conversion
+// ([conv.lval]/1, [dcl.init.ref]/5) and designates the object itself, so
+// `h(cx)` with `h(const int &)` binds `&cx`, never `&2`. The fold's product is
+// a single integer literal whose origin is the variable's token (an int64
+// value: constant_value_literal); the object is that token translated with
+// the fold suppressed, so captures, references and emitted names follow the
+// ordinary variable path. An enumerator or a host-set constant is no object
+// (no vfCONSTBAKED). NULL: not a folded object read.
+node_t CirBuilder::folded_read_object(node_t op)
+{
+	cir_node *on = CIR_NODE(op);
+	if (!on)
+		return NULL;
+	switch (on->base.code) {
+	case N_I: case N_LL: case N_U: case N_ULL:
+		break;
+	default:
+		return NULL;
+	}
+	TokenBase *tok = madc_token_for_slot(on->origin_id);
+	TokenVar *tv = tok ? tok->as_var_tok() : NULL;
+	if (!tv || !(tv->var.flags & vfCONSTBAKED) || tok == m_object_designator)
+		return NULL;
+	TokenBase *saved = m_object_designator;
+	m_object_designator = tok;
+	node_t object = translate_expr(tok);
+	m_object_designator = saved;
+	return object;
+}
+
 node_t CirBuilder::node1(c2mir_node_code_t code, node_t op1, TokenBase *origin)
 {
 	// A C conditional / comma is NEVER an lvalue (C11 6.5.15, 6.5.17 —
@@ -812,6 +845,8 @@ node_t CirBuilder::node1(c2mir_node_code_t code, node_t op1, TokenBase *origin)
 		if (on && yields_left_lvalue(on->base.code))
 			if (node_t r = lvalue_operator_address(op1, origin))
 				return r;
+		if (node_t object = folded_read_object(op1))
+			op1 = object;
 	}
 	cir_node *cn = make(code, origin);
 	node_t n = cn->as_node();
@@ -24094,11 +24129,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// (fixed arrays excluded: a constant ARRAY read — e.g. a wide
 			// string literal's int[] — is an address use, not a scalar fold;
 			// get<int64_t>() would return element 0.)
+			// An address use of the variable (folded_read_object, from
+			// node1's N_ADDR) is no read: it translates as the variable.
 			if (tv->var.is_constant() && tv->var.data
 			    && (!(tv->var.flags & vfCONSTDECL)
 				|| (tv->var.flags & vfCONSTBAKED)) && tv->var.type
 			    && tv->var.type->is_integer() && !tv->var.type->is_pointer()
-			    && !tv->var.is_fixed_array())
+			    && !tv->var.is_fixed_array() && tb != m_object_designator)
 				return constant_value_literal(tv->var, tb);
 			if (tv->var.name.compare(0, 11, "__literal__") == 0) {
 				const std::string &content = tv->var.name.substr(11);

@@ -1374,6 +1374,10 @@ private:
 	// so tsubst can expand it to the concrete type per instantiation. False
 	// everywhere else (a stray placeholder at type lowering stays a hard error).
 	bool m_tsubst_pattern_mode = false;
+	// The variable token folded_read_object is translating for its OBJECT:
+	// translate_expr reads it as the variable, never as the constant-folded
+	// literal its reads become (`&2` is no object).
+	TokenBase *m_object_designator = NULL;
 	// Active during tsubst body copy when the concrete member-template instance
 	// carries type argument packs. Keys are template parameter indices; values
 	// are the DataDefTemplateParam placeholders used in the saved Tree-1 recipe.
@@ -1552,6 +1556,9 @@ public:
 	// node1's N_ADDR over a C++ lvalue-yielding operator (prefix ++/--, an
 	// assignment): the lhs address once, the operation through it.
 	node_t lvalue_operator_address(node_t op, TokenBase *origin);
+	// node1's N_ADDR over a folded read of a baked const object: the object
+	// it reads, translated without the fold. NULL for any other operand.
+	node_t folded_read_object(node_t op);
 	node_t node2(c2mir_node_code_t code, node_t op1, node_t op2, TokenBase *origin = NULL);
 	node_t node3(c2mir_node_code_t code, node_t op1, node_t op2, node_t op3, TokenBase *origin = NULL);
 	node_t node4(c2mir_node_code_t code, node_t op1, node_t op2, node_t op3, node_t op4, TokenBase *origin = NULL);

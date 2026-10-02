@@ -92,6 +92,24 @@ The runtime and library-method extern (`need_output_extern`) still spells its
 own return from `ret_ptr` / `ret_specs` / `ret_cls`, with no FuncDef. It is
 marked in the gate and recorded as the family's open member.
 
+## Why a folded const object's address has one owner (2026-10-02)
+
+A read of a `const int cx = 2;` whose initializer is an integral constant
+expression (vfCONSTBAKED) translates as the literal `2`. That is what lets
+`const int H = cx + 3;` emit a constant file-scope initializer c2mir accepts.
+Taking an address applies no lvalue-to-rvalue conversion ([conv.lval]/1), so
+`&cx`, and every reference binding of `cx` ([dcl.init.ref]/5.1), designates the
+object. madc folded first and took the address of the literal, so c2mir refused
+`&2` (BUGS.md B129). The address is built at about ten binding sites, and also
+at the arms of a conditional (`node1` distributes `&` into them) and at an
+aggregate's reference member. A guard at one site left the others refusing.
+`folded_read_object` runs at `node1`'s N_ADDR, where every address is born. It
+recognizes the fold's product (a single integer literal whose origin token is
+the variable) and re-translates the variable with the fold suppressed, so
+captures, references and emitted names follow the ordinary variable path. An
+enumerator has no object (no vfCONSTBAKED): binding one still materializes a
+temporary.
+
 ## Symbol counting
 
 Counting `(` `[` `{` `<` is solved by `DelimDepth`. Whether a `<` opens a

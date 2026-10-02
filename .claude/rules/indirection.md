@@ -14,6 +14,9 @@
   `Program::build_address_of` (the reader keeps only the compound literal and
   the unparenthesized qualified-id, [expr.unary.op]/4). Result type:
   `addressof_result_type`. "Is this `*x`": `TokenBase::is_indirection()`.
+- The address of a const object whose reads fold to their value (`&cx`, any
+  reference binding of `cx`): cir's `folded_read_object`, from `node1`'s N_ADDR —
+  never a guard on the fold at one site.
 - Function vs function pointer: `as_funcdef_dd()` / `as_fptr_dd()` (const-safe) —
   never `is_function() && is_numeric()` or an unmarked `dynamic_cast<DataDefFPTR *>`
   (gated: `check-one-fptr-predicate.sh`); bare `is_function()` means "either". Its
