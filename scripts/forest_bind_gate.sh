@@ -871,6 +871,90 @@ fi
 rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir" "$strbind_live_mir"
 echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); whole-TU MIR byte-identical to live (#23), output == live == g++"
 
+# --- case: quietbind — a bound container adds NOTHING to a consumer's stderr ---
+#     The flush re-derives a restored function's default arguments from their
+#     frozen token runs, and a FREE function's re-derive waits until this TU
+#     registers the function (forest_settle_param_defaults). A container frozen
+#     from a <string> producer holds basic_string<wchar_t>'s iterator-pair
+#     constructor instance — a compiler-derived identity, deferred until named
+#     — whose `= allocator<wchar_t>()` names a product no consumer declares
+#     until something promotes it. Re-derived at bind, EVERY consumer (a C file
+#     with only <stdio.h> among them) printed "use of undeclared identifier
+#     'allocator_wchar_t'" (stringfwd.h:71), and the packed release failed
+#     every .expect_quiet test. The <string> consumer constructs std::string
+#     and std::wstring from iterator pairs, taking the defaulted allocator: the
+#     promoted instance's default re-derives then, and resolves.
+qb_prod="tmp/fbgate_quietbind_producer.cpp"
+qb_snap="tmp/fbgate_quietbind.msnap"
+qb_c="tmp/fbgate_quietbind_c.c"
+qb_cpp="tmp/fbgate_quietbind_cpp.cpp"
+qb_str="tmp/fbgate_quietbind_str.cpp"
+qb_gcc="tmp/fbgate_quietbind_gcc"
+qb_err="tmp/fbgate_quietbind.err"
+qb_clean() { rm -f "$qb_snap" "$qb_gcc" "$qb_err"; }
+cat > "$qb_prod" <<'QBEOF'
+#include <string>
+#include <cstdio>
+int main() { std::string s("x"); std::puts(s.c_str()); return 0; }
+QBEOF
+cat > "$qb_c" <<'QBEOF'
+#include <stdio.h>
+int main(void) { puts("c"); return 0; }
+QBEOF
+cat > "$qb_cpp" <<'QBEOF'
+#include <cstdio>
+int main() { std::puts("cpp"); return 0; }
+QBEOF
+cat > "$qb_str" <<'QBEOF'
+#include <string>
+#include <cstdio>
+int main() {
+    const char a[] = "abc";
+    const wchar_t w[] = L"wxyz";
+    std::string s(a, a + 3);
+    std::wstring ws(w, w + 4);
+    std::printf("s=%s ws=%d\n", s.c_str(), (int)ws.size());
+    return 0;
+}
+QBEOF
+if ! timeout 180 "$BIN" --freeze="$qb_snap" "$qb_prod" >/dev/null 2>&1; then
+    qb_clean
+    fail "[quietbind] --freeze <string> FAILED"
+fi
+[ -f "$qb_snap" ] || fail "[quietbind] --freeze produced no container"
+if command -v g++ >/dev/null 2>&1; then
+    if ! timeout 120 g++ "$qb_str" -o "$qb_gcc" >/dev/null 2>&1; then
+        qb_clean
+        fail "[quietbind] g++ compile FAILED"
+    fi
+    qb_gcc_out=$("$qb_gcc" 2>/dev/null)
+    if [ "$qb_gcc_out" != "s=abc ws=4" ]; then
+        qb_clean
+        fail "[quietbind] g++ output '$qb_gcc_out' != 's=abc ws=4'"
+    fi
+fi
+for qb in "$qb_c:c" "$qb_cpp:cpp" "$qb_str:s=abc ws=4"; do
+    qb_src="${qb%%:*}"
+    qb_exp="${qb#*:}"
+    qb_live=$(timeout 60 "$BIN" "$qb_src" 2>/dev/null)
+    if [ "$qb_live" != "$qb_exp" ]; then
+        qb_clean
+        fail "[quietbind] live-parse output of $qb_src '$qb_live' != '$qb_exp'"
+    fi
+    qb_out=$(timeout 60 "$BIN" --forest-bind="$qb_snap" "$qb_src" 2>"$qb_err")
+    if [ "$qb_out" != "$qb_exp" ]; then
+        qb_clean
+        fail "[quietbind] bind output of $qb_src '$qb_out' != '$qb_exp' (== live)"
+    fi
+    if [ -s "$qb_err" ]; then
+        sed 's/\x1b\[[0-9;]*m//g' "$qb_err" | head -6 >&2
+        qb_clean
+        fail "[quietbind] binding the <string> container wrote to $qb_src's stderr (above)"
+    fi
+done
+qb_clean
+echo "forest_bind_gate: [quietbind] OK — a bound <string> container leaves a C, a C++ and a <string> consumer's stderr empty; output == live == g++"
+
 # --- case: strops (widening: restored-method OVERLOAD fidelity) ---
 # A consumer exercising an overload SET on a bound class: append has 9 parsed
 # overloads (const string&, const char*, initializer_list<char>, ...).
@@ -1721,5 +1805,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 31/31 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
+echo "forest_bind_gate: GREEN 32/32 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind"
 exit 0

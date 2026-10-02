@@ -27608,6 +27608,7 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	return old;
 
     funcdef_map[pf.name] = pf.fd;
+    forest_registered_funcs.insert(pf.fd);
     Variable *fv = pf.mvar;
     if ( pf.mvar )
     {
@@ -27724,6 +27725,9 @@ Variable *Program::register_forest_func(const PendingForestFunc &pf)
 	<< (pf.fd->is_varargs ? ", varargs" : "") << ") fd=" << (void *)pf.fd
 	<< " mvar_fd=" << (void *)(pf.mvar ? pf.mvar->type : NULL)
 	<< std::endl);
+    // Registered after the flush's default rebuild: its defaults re-derive
+    // now, with its declaration (a no-op for one registered before it).
+    forest_settle_param_defaults(pf.fd);
     return fv;
 }
 
@@ -28660,101 +28664,143 @@ void Program::flush_forest_pending_globals()
 		if ( smi == struct_map.end() || smi->second != rd.owner )
 		    continue;
 	    }
-	    rd.fd->param_defaults.assign(rd.fd->parameters.size(), NULL);
-	    for ( size_t rix = 0; rix < rd.runs.size(); ++rix )
+	    // The FREE-function twin of the owner gate: a default re-parses with
+	    // its function's declaration, so a function this TU has not
+	    // registered — dropped by the closure filter, or a deferred
+	    // compiler-derived identity nothing has named yet (a member
+	    // constructor template's instance, basic_string<wchar_t>'s
+	    // iterator-pair constructor with its `= allocator<wchar_t>()`) —
+	    // re-derives none at bind. register_forest_func settles it when the
+	    // function registers (forest_settle_param_defaults).
+	    else if ( !forest_registered_funcs.count(rd.fd) )
 	    {
-		uint32_t pidx = rd.runs[rix].first;
-		const CirRestoredTemplateRun &run = rd.runs[rix].second;
-		if ( pidx >= rd.fd->parameters.size() || !run.bytes || !run.count )
-		    continue;
-		std::deque<TokenBase *> toks;
-		if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, toks) )
-		    continue;
-		const char *fn = run.file ? intern_file(run.file) : NULL;
-		std::vector<TokenBase *> seq;
-		for ( TokenBase *t : toks )
-		{
-		    if ( !t )
-			continue;
-		    t->file = fn;
-		    seq.push_back(t);
-		}
-		if ( seq.empty() )
-		    continue;
-		// The live parse stopped at the parameter list's ',' / ')' —
-		// plant the ')' as the sub-stream's stop token.
-		seq.push_back(new TokenClBrk());
-		// No previous token: a leading unary op judges as unary,
-		// exactly as after the live `=`.
-		NestedTokenStream nested(*this, seq);
-		// Live parses a default inside parseFunction's param-scope
-		// COMPOUND (pushCompound + method->owner_class): the identifier
-		// arm resolves a class-static (`= _S_max_align`) through
-		// compounds.top()->method->owner_class. Reproduce that scope,
-		// plus the class body's class_scope_stack frame.
-		Variable temp_fn(rd.fd->name, *rd.fd, 1, NULL, false);
-		Method temp_method(temp_fn);
-		temp_method.owner_class = rd.owner;
-		size_t saved_css = class_scope_stack.size();
-		pushCompound();
-		TokenCpnd *pscope = compounds.empty() ? NULL : compounds.top();
-		if ( pscope )
-		    pscope->method = &temp_method;
-		if ( rd.owner )
-		    class_scope_stack.push_back(rd.owner);
-		// Live also parsed inside `namespace NS {}` — unqualified names
-		// (io_errc) resolve through the namespace chain.
-		// BEST-EFFORT: a default whose referents the closure filter
-		// dropped must not re-derive — same live-parity principle as
-		// the owner gate above, one reference deeper. The registration
-		// gates judge by NAME/HEAD verdicts, but a run's tokens spell
-		// referents by NAME (pmr _Alloc_hider's `= _Alloc()` names
-		// polymorphic_allocator_char — a product the head gate
-		// dropped), so the mismatch surfaces only here. Skip leaves
-		// the param defaultless: a later call that genuinely demands
-		// it fails LOUD on arity — never a silent wrong value.
-		TokenBase *expr = NULL;
-		try
-		{
-		    TokenBase *head = nextToken();
-		    if ( !is_c_mode() && head && head->id() == TokenID::tkOpBrc )
-			if ( TokenBase *typed = respell_braced_list_for_target(
-				referent_if_reference(rd.fd->parameters[pidx]), head) )
-			    head = typed;
-		    if ( rd.ns && *rd.ns )
-		    {
-			NamespaceScope nsg(*this, rd.ns);
-			expr = parseExpression(head, true);
-		    }
-		    else
-			expr = parseExpression(head, true);
-		}
-		catch ( ... )
-		{
-		    expr = NULL;
-		    DBG(std::cout << "flush_forest_pending_globals: default arg "
-			<< (rd.owner ? rd.owner->name + "::" : std::string())
-			<< rd.fd->name << " param " << pidx
-			<< " SKIPPED (referent outside the bound closure)"
-			<< std::endl);
-		}
-		// Unwind to the saved marks: a mid-parse throw can leave extra
-		// compound / class-scope frames behind.
-		while ( class_scope_stack.size() > saved_css )
-		    class_scope_stack.pop_back();
-		while ( pscope && !compounds.empty() && compounds.top() != pscope )
-		    popCompound();
-		if ( pscope && !compounds.empty() && compounds.top() == pscope )
-		    popCompound();
-		nested.close();
-		rd.fd->param_defaults[pidx] = expr;
-		DBG(std::cout << "flush_forest_pending_globals: default arg "
-		    << (rd.owner ? rd.owner->name + "::" : std::string())
-		    << rd.fd->name << " param " << pidx << " ("
-		    << run.count << " tokens)" << std::endl);
+		forest_unsettled_defaults[rd.fd] = i;
+		continue;
 	    }
+	    rebuild_forest_param_defaults(rd);
 	}
     }
+}
+
+// One restored function's default arguments, re-derived from their frozen
+// token runs (the v23 rebuild above): each run deserializes into a sub-stream
+// ending in the live stop token `)` and parses inside the owner's class scope
+// and the defining namespace, as parseFunction parsed it.
+void Program::rebuild_forest_param_defaults(const CirRestoredFuncDefaults &rd)
+{
+    rd.fd->param_defaults.assign(rd.fd->parameters.size(), NULL);
+    for ( size_t rix = 0; rix < rd.runs.size(); ++rix )
+    {
+	uint32_t pidx = rd.runs[rix].first;
+	const CirRestoredTemplateRun &run = rd.runs[rix].second;
+	if ( pidx >= rd.fd->parameters.size() || !run.bytes || !run.count )
+	    continue;
+	std::deque<TokenBase *> toks;
+	if ( !madc_pch::deserialize_tokens(run.bytes, run.len, run.count, toks) )
+	    continue;
+	const char *fn = run.file ? intern_file(run.file) : NULL;
+	std::vector<TokenBase *> seq;
+	for ( TokenBase *t : toks )
+	{
+	    if ( !t )
+		continue;
+	    t->file = fn;
+	    seq.push_back(t);
+	}
+	if ( seq.empty() )
+	    continue;
+	// The live parse stopped at the parameter list's ',' / ')' —
+	// plant the ')' as the sub-stream's stop token.
+	seq.push_back(new TokenClBrk());
+	// No previous token: a leading unary op judges as unary,
+	// exactly as after the live `=`.
+	NestedTokenStream nested(*this, seq);
+	// Live parses a default inside parseFunction's param-scope
+	// COMPOUND (pushCompound + method->owner_class): the identifier
+	// arm resolves a class-static (`= _S_max_align`) through
+	// compounds.top()->method->owner_class. Reproduce that scope,
+	// plus the class body's class_scope_stack frame.
+	Variable temp_fn(rd.fd->name, *rd.fd, 1, NULL, false);
+	Method temp_method(temp_fn);
+	temp_method.owner_class = rd.owner;
+	size_t saved_css = class_scope_stack.size();
+	pushCompound();
+	TokenCpnd *pscope = compounds.empty() ? NULL : compounds.top();
+	if ( pscope )
+	    pscope->method = &temp_method;
+	if ( rd.owner )
+	    class_scope_stack.push_back(rd.owner);
+	// Live also parsed inside `namespace NS {}` — unqualified names
+	// (io_errc) resolve through the namespace chain.
+	// BEST-EFFORT: a default whose referents the closure filter
+	// dropped must not re-derive — same live-parity principle as
+	// the owner gate above, one reference deeper. The registration
+	// gates judge by NAME/HEAD verdicts, but a run's tokens spell
+	// referents by NAME (pmr _Alloc_hider's `= _Alloc()` names
+	// polymorphic_allocator_char — a product the head gate
+	// dropped), so the mismatch surfaces only here. Skip leaves
+	// the param defaultless: a later call that genuinely demands
+	// it fails LOUD on arity — never a silent wrong value.
+	TokenBase *expr = NULL;
+	try
+	{
+	    TokenBase *head = nextToken();
+	    if ( !is_c_mode() && head && head->id() == TokenID::tkOpBrc )
+		if ( TokenBase *typed = respell_braced_list_for_target(
+			referent_if_reference(rd.fd->parameters[pidx]), head) )
+		    head = typed;
+	    if ( rd.ns && *rd.ns )
+	    {
+		NamespaceScope nsg(*this, rd.ns);
+		expr = parseExpression(head, true);
+	    }
+	    else
+		expr = parseExpression(head, true);
+	}
+	catch ( ... )
+	{
+	    expr = NULL;
+	    DBG(std::cout << "flush_forest_pending_globals: default arg "
+		<< (rd.owner ? rd.owner->name + "::" : std::string())
+		<< rd.fd->name << " param " << pidx
+		<< " SKIPPED (referent outside the bound closure)"
+		<< std::endl);
+	}
+	// Unwind to the saved marks: a mid-parse throw can leave extra
+	// compound / class-scope frames behind.
+	while ( class_scope_stack.size() > saved_css )
+	    class_scope_stack.pop_back();
+	while ( pscope && !compounds.empty() && compounds.top() != pscope )
+	    popCompound();
+	if ( pscope && !compounds.empty() && compounds.top() == pscope )
+	    popCompound();
+	nested.close();
+	rd.fd->param_defaults[pidx] = expr;
+	DBG(std::cout << "flush_forest_pending_globals: default arg "
+	    << (rd.owner ? rd.owner->name + "::" : std::string())
+	    << rd.fd->name << " param " << pidx << " ("
+	    << run.count << " tokens)" << std::endl);
+    }
+}
+
+// A FREE function registered after the flush's default rebuild (a deferred
+// identity a source lookup or CIR reachability promoted): its defaults
+// re-derive now, with its declaration — the flush left them unsettled.
+void Program::forest_settle_param_defaults(const FuncDef *fd)
+{
+    std::map<const FuncDef *, size_t>::iterator it =
+	forest_unsettled_defaults.find(fd);
+    if ( it == forest_unsettled_defaults.end() )
+	return;
+    size_t ix = it->second;
+    forest_unsettled_defaults.erase(it);
+    if ( !bind_forest )
+	return;
+    const std::vector<CirRestoredFuncDefaults> &fdefs =
+	bind_forest->restored_param_defaults();
+    if ( ix < fdefs.size() && fdefs[ix].fd == fd
+      && fdefs[ix].fd->param_defaults.empty() )
+	rebuild_forest_param_defaults(fdefs[ix]);
 }
 
 void Program::add_namespaces()

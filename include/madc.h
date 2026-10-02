@@ -43,6 +43,7 @@ class CirFrozenForest;	// forest grove binding (cir_freeze.h); pointer member on
 struct MadcSharedPreludeCache; // project-local immutable auto-include snapshots
 struct CirRestoredTemplate;	// task #25 B2: lazy template-payload source (cir_freeze.h)
 struct CirRestoredTemplateRun;	// one frozen token run (cir_freeze.h)
+struct CirRestoredFuncDefaults;	// one restored function's default-argument runs (cir_freeze.h)
 struct madc_stdlib_flavor;	// generated stdlib flavor table (madc_sys_includes.h); pointer member only
 class MadcEngine;
 class TokenBase;
@@ -6375,6 +6376,11 @@ public:
     DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
     Variable *register_forest_func(const PendingForestFunc &pf);
     Variable *activate_forest_func(const std::string &name);
+    // A restored function's default arguments, re-derived from their frozen
+    // token runs (the flush's v23 rebuild): one function's rebuild, and the
+    // deferred rebuild of a FREE function registered after the flush.
+    void rebuild_forest_param_defaults(const CirRestoredFuncDefaults &rd);
+    void forest_settle_param_defaults(const FuncDef *fd);
     // GCC canon for a call to an UNDECLARED name the C library declares: the
     // call takes the library's REAL prototype (gcc: the builtin's, with a
     // warning; clang: "implicitly declaring library function 'printf' with type
@@ -6532,6 +6538,16 @@ public:
     // overload-family lookup or a CIR reference promotes only the demanded
     // records through the same registration owner used by eager declarations.
     std::map<std::string, PendingForestFunc> forest_deferred_funcs;
+    // A restored FREE function's defaults re-derive when this TU registers it
+    // (register_forest_func), as a live parse parses a default with its
+    // declaration — never at bind for a function the closure filter dropped
+    // or deferred, whose defaults may name referents this TU never declared.
+    // forest_registered_funcs: the restored FuncDefs registered so far;
+    // forest_unsettled_defaults: each unregistered one's index into the bound
+    // forest's restored_param_defaults(), rebuilt by
+    // forest_settle_param_defaults when the function registers.
+    std::set<const FuncDef *> forest_registered_funcs;
+    std::map<const FuncDef *, size_t> forest_unsettled_defaults;
     std::map<std::string, std::vector<std::string> >
 	forest_deferred_func_families;
     // forest_adopt_declared_function: the bare FUNCTION names the pack's decl
