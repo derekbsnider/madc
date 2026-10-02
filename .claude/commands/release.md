@@ -62,12 +62,15 @@ Perform the full release workflow:
 
 12. **Push develop to GitHub**: `git push origin develop`
 
-13. **Archive the release binary** (owner directive 2026-08-09): after the
-    release rebake, copy the packed release binary to the per-release archive
-    on BOTH hosts so releases can be timed against each other later:
-    `cp -p bin/madc-release tmp/release-bins/madc-release-vX.Y.Z`
-    (`tmp/` is gitignored; create `tmp/release-bins/` if missing). Do the same
-    in the container tree when the rebake happens there.
+13. **Archive the release binary** (owner directive 2026-08-09, 2026-10-02):
+    after the release rebake, on the build container,
+    `bash scripts/release_bins.sh archive` — it files the tree's
+    `bin/madc-release` WITH its `lib/` (the driver is thin since v0.98.0) as
+    `tmp/release-bins/vX.Y.Z/`, after checking the tree holds the release's
+    content and the entry runs. Then on the NAS
+    `bash scripts/release_bins.sh sync` mirrors it. The master push gate
+    (`scripts/lane_ledger.sh check --release`) refuses a release missing from
+    the archive.
 
 14. **Report**: Print a summary of what was released and the madc version, and remind the user to run `/promote` when ready to push to master
 

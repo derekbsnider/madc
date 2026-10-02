@@ -167,7 +167,10 @@ container_busy_check() {
 		echo "=== container busy-check SKIPPED (MADC_ALLOW_CONCURRENT=1) ==="
 		return 0
 	fi
-	busy=$($SSH 'pgrep -fa "run_tests\.sh|make -C .*/src|make -C /workspace/madc" 2>/dev/null | grep -v pgrep' 2>/dev/null)
+	# A release build for the archive (scripts/release_bins.sh backfill)
+	# runs in its own exported tree under tmp/relbuild/ — its own obj/ and
+	# bin/, nothing shared with this tree — so it never counts as busy.
+	busy=$($SSH 'pgrep -fa "run_tests\.sh|make -C .*/src|make -C /workspace/madc" 2>/dev/null | grep -v pgrep | grep -v "/tmp/relbuild/"' 2>/dev/null)
 	if [ -n "$busy" ]; then
 		echo "REFUSING: a build or test run is already live in the container." >&2
 		printf '%s\n' "$busy" | sed 's/^/  /' >&2

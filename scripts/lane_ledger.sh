@@ -144,6 +144,17 @@ check() {
 		echo "lane_ledger: BATCH tier stale (${stale_batch# }) — run" \
 		     "scripts/batch_lane.sh when this batch of fixes is done" >&2
 	fi
+	# A master release also needs every released madc-release archived (owner
+	# 2026-08-09, 2026-10-02): the /release archive step was a prose step and
+	# lapsed for six releases. The archive check proves it can fail first.
+	if [ "$promote_gate" = --release ]; then
+		if ! bash scripts/release_bins.sh selftest > /dev/null ||
+		   ! bash scripts/release_bins.sh check >&2; then
+			echo "lane_ledger: release BLOCKED — the release-binary" \
+			     "archive (scripts/release_bins.sh) is incomplete" >&2
+			rc=1
+		fi
+	fi
 	if [ "$rc" -ne 0 ]; then
 		echo "lane_ledger: ${promote_gate#--} BLOCKED — stale gated" \
 		     "lane(s) above must re-run on current content" >&2

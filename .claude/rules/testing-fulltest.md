@@ -66,6 +66,9 @@ that names a slice is a targeted run, not a battery.
 The battery's `exeobj` stage covers native executables and objects on every
 seam; do not leave the tree with JIT green and EXE broken, or EXE green and JIT broken.
 Do NOT run integration tests in a shell loop — use the Makefile target.
+A red test's history is the RELEASE ARCHIVE's: `scripts/release_bins.sh run
+[--last N] [--head] <test>...` (build container) runs it on every archived
+release; classify a red as regression vs pre-existing from that matrix.
 A standing "pause before big test suites" instruction is about TIER 3. It never
 covers Tier 1 or Tier 2 — if an instruction's scope is unclear, ask which tier
 it means rather than silently promoting a three-minute gate into it.

@@ -227,3 +227,24 @@ command: Tier 1 over the fix's globs on JIT, exe and obj, then Tier 2, about
 five minutes, with a zero-test Tier 1 counted RED because a wrong glob looks
 green otherwise. A rule restated in prose decays; a command that does exactly
 the per-fix work, and nothing more, is the mechanism.
+
+## Why a red test is classified against the release archive (owner, 2026-10-02)
+
+The release rule (fix regressions, file pre-existing defects) turns on one
+question per red test: did a shipped release pass it? Answering it by hand
+meant building an old tag in a scratch tree, or trusting a hand-off claim.
+`tmp/release-bins/` already held every release binary for timing comparisons,
+but the archive step was a prose step in `/release`, and it decayed twice
+over: the NAS copy stopped at v0.97.0, and the container's v0.98.0–v0.99.2
+copies were thin drivers (bin/madc-release has been a 150 KB driver over
+libmadc.so.0 since v0.98.0) archived without their libmadc, so each bound the
+host's libmadc and died on a symbol lookup. One copy, labelled v0.81.0,
+reported 0.80.0 (baked before the VERSION bump).
+
+`scripts/release_bins.sh` is now the archive's one owner: each entry is a
+self-contained directory (the binary, its lib/, a PROVENANCE note) verified
+where it runs; `backfill` recovers a missing release from the shipped tarball
+or by building its release commit; `run` is the regression matrix. The master
+push gate (`lane_ledger.sh check --release`) refuses a release missing from
+the archive, after a negative control proves the check can fail.
+
