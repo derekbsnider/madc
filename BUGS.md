@@ -28,6 +28,40 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B121. A const object binds the non-const reference overload
+
+```cpp
+#include <utility>
+#include <cstdio>
+struct W { int v; };
+static const char *w(W &) { return "W&"; }
+static const char *w(const W &) { return "const W&"; }
+static const char *r(W &&) { return "W&&"; }
+static const char *r(const W &&) { return "const W&&"; }
+template<class T> struct X { T v; };
+template<class T> const char *f(X<T> &) { return "X&"; }
+template<class T> const char *f(const X<T> &) { return "const X&"; }
+int main()
+{
+    W a{1};
+    const W ca{2};
+    X<int> x{1};
+    const X<int> cx{2};
+    printf("%s %s %s %s %s %s\n", w(a), w(ca), r(std::move(a)),
+           r(std::move(ca)), f(x), f(cx));
+    return 0;
+}
+```
+
+- g++ 13 = clang++ 18 (`-std=c++17`): `W& const W& W&& const W&& X& const X&`.
+  madc (`--std=c++17`, at `17d464b8a` and after `b84cb6334`):
+  `W& W& W&& W&& X& X&`, exit 0.
+- A non-const `T&` / `T&&` binds no const object ([dcl.init.ref]/5). C++
+  `const` is not in madc's types (`modeled_cv()` carries const in C only), so
+  the binding rank (`copy_move_ref_binding_rank`'s `arg_const`) reads every
+  object as non-const. Layer: the const-qualified-type model
+  (`DataDefQUAL` for C++ const, FEATURE_CONST_TYPES), not the rankers.
+
 ### B102. A namespace-scope object's destructor never runs at exit
 
 ```cpp
@@ -412,49 +446,45 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
-### B116. A reference cannot bind `++x`, `--x`, `x = v` or `x op= v`
+### B127. `T1::*` over a class-template parameter is refused, and ptrmem19.C hangs
 
 ```cpp
-#include <cstdio>
-static void g(int &r) { r += 10; }
-static int &h(int &r) { return r; }
-int main()
-{
-    int x = 1, y = 0;
-    int a[2] = { 5, 6 };
-    int i = 0;
-    g(++x); printf("pre-inc: %d\n", x);
-    g(x = 3); printf("assign: %d\n", x);
-    g(x += 4); printf("compound: %d\n", x);
-    g(--x); printf("pre-dec: %d\n", x);
-    g(a[i++] = 7); printf("once: %d %d %d\n", a[0], a[1], i);
-    int &r = (y = 5); r = 9; printf("bind: %d\n", y);
-    h(++y) = 2; printf("ret: %d\n", y);
-    return 0;
+struct C { int foo(int v) { return v + 1; } };
+template <class T1, class T2, class T3> struct A { typedef T2 (T1::*m)(T3); };
+int main() { A<C, int, int>::m p = &C::foo; C c; return (c.*p)(41) == 42 ? 0 : 1; }
+```
+
+- g++ 13 (`-std=c++11`): exit 0. madc (`--std=c++11`, at `79bd6f1d9`):
+  `error: Expecting identifier in declarator` at `(T1::*m)`, exit 1. The same
+  typedef with a concrete class (`int (C::*m)(int)`) compiles and runs.
+- `g++.dg/template/ptrmem19.C` (gxx-c++11 lane, baseline line 550): madc
+  repeats that error at the same position until the lane's 30 s timeout
+  (`--std=c++11 --emit=c11`; g++ `-fsyntax-only`: 6 ms). Error recovery
+  re-enters the declarator without advancing.
+- Layer: the declarator reader (`Program::parse_declarator`; the `C::*`
+  ptr-operator's nested-name-specifier refuses a template type parameter),
+  then the recovery that re-parses the member without consuming a token.
+
+### B126. A polyglot public refuses a temporary for a read-only `value &` input
+
+```cpp
+int main() {
+	println("{}", php::array_key_exists("a", { "a": 1 }));
+	return 0;
 }
 ```
 
-- g++ 13 = clang++ 18 (`-std=c++17`): `pre-inc: 12`, `assign: 13`,
-  `compound: 27`, `pre-dec: 36`, `once: 17 6 1`, `bind: 9`, `ret: 2`.
-  madc (`--std=c++17`, at `8db0e52d0`): `int &r = (y = 5);` is refused at
-  parse ("Reference initializer must be an lvalue"); without it, every call
-  argument above fails in c2mir ("lvalue required as unary & operand"),
-  exit 1.
-- In C++ prefix `++`/`--` and every (compound) assignment yield an lvalue
-  ([expr.pre.incr]/1, [expr.ass]/1); in C they do not, so the fix is gated
-  on the language standard.
-- Found 2026-10-01 while writing B92's reducer.
-- Layer: two. The parser's reference-initializer check
-  (`reference_bind_address_expr`, src/parser.cpp) and `is_addressable_expression`
-  do not count these operators as lvalues; the CIR builds `&(x = v)`, which C
-  rejects. The return-statement hoist in `CirBuilder` (a ref-returning
-  function's `return v = v + x;`: the lhs address in a temporary, assign
-  through it, return it) is the right lowering, written for that one site.
-- Fix: one owner for the address of a C++ lvalue-yielding operator (the
-  lhs address once into a temporary, the operation through it, the
-  temporary as the value), reached from every place an address is formed,
-  the return hoist included; the parser predicates count the operators as
-  lvalues under C++.
+- PHP: `array_key_exists("a", ["a" => 1])` is `true`. madc: `error: no matching
+  overload for 'php::array_key_exists' with argument types (char*, madc::value)`.
+- The dialect headers spell read-only carrier inputs `value &` (about 150
+  parameters over `ns_php` / `ns_perl` / `ns_python` / `ns_ruby` / `ns_js` /
+  `ns_rust` / `ns_madc`). [dcl.init.ref]/5 binds a prvalue only to a const
+  lvalue reference, so a temporary is refused wherever an overload set ranks
+  the binding (a one-candidate call still binds it). `php::array_push` is
+  already `const value &` (its kind-preserving overload).
+- Layer: the header signatures, through each runtime `extern "C"` entry (`const
+  value *`, in `include/madc/ns_*.h` and `src/ns_*.cpp` together). Output
+  parameters (`array &out`, the array a call mutates) stay `value &`.
 
 ### B115. A function template over a `const T&...` pack is refused: `eat()`, `eat(1)`
 
@@ -988,27 +1018,6 @@ int main() { std::map<int,int> l = m; printf("%d %d\n", m2[1], l[1]); return 0; 
   `5:21`: the copy constructor is not found, at file and block scope.
 - Where: the CIR's constructor choice (`cir error`), not traced. D12 keeps no
   such object until its slice 2.
-
-### B46. `std::move(x) + 0` is refused, and a first `std::move` shows nothing
-
-- Found 2026-09-27, while tracing why an entry's `std::move(v)` showed
-  nothing (plan §41.6a, "Built, slice 1", D).
-
-```cpp
-#include <stdio.h>
-#include <utility>
-int main() { int x = 3; int k = std::move(x) + 0; printf("%d\n", k); return 0; }
-```
-
-- g++ 13: `3`. madc `--std=c++17`: "Malformed expression: 2 operands with
-  no operator between them" at the `+`, at file and block scope.
-  `auto y = std::move(x);`, `sizeof(std::move(x))` and a user function
-  returning `T&&` are right.
-- In a REPL entry, the first use of `std::move(x)` shows nothing, and
-  `std::move(v)` of a vector shows only its type word; a later use shows the
-  value. `std::forward<T>(v)` does the same.
-- Where: not traced. The call's value type around std::move's first
-  instantiation (its return type is `remove_reference<T>::type&&`).
 
 ### B47. A C-style cast to a qualified template's reference type is refused
 
@@ -1592,6 +1601,22 @@ unless stated. The owners already exist: `DelimDepth` with
 `delim_scan_step` (index scans) and `Program::delimStepStream` (stream
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
+
+### B130. A speculative rewind restores the cursor, not always the read context
+
+- Found 2026-10-02 while consolidating the nested token streams (B46). A
+  nested parse now returns the outer read context through one owner,
+  `Program::NestedTokenStream` (gated by `check-one-nested-stream.sh`). A
+  REWIND has no such owner: `TokenStream::savepos()` / `tokens = saved`
+  returns the cursor and pushback only. The read context is `curToken`,
+  `prevToken` (which `isUnaryPosition` reads) and `ParsePosition`.
+- 33 `savepos()` sites in `src/parser.cpp`. By a ±6-line check, 14 save
+  `_prv_token` beside the rewind and 19 do not. A rewind that skips it
+  leaves the speculative parse's last tokens as the context, the bug class
+  B46 was. No reducer is measured yet.
+- Fix: one `Program` mark carrying the `Pos` and the context, restored
+  together, beside `NestedTokenStream`, with a gate (its own commit). KG
+  `DupFamily{token_stream_rewind_context}`.
 
 ### B90. A declarator's top-level cv, restated three times
 
