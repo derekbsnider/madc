@@ -1132,6 +1132,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-pointee-accessor.sh
 	@cd .. && bash scripts/check-one-operand-promotion.sh
 	@cd .. && bash scripts/check-one-nontype-splice.sh
+	@cd .. && bash scripts/check-one-string-char-fill.sh
 	@cd .. && bash scripts/check-volatile-accesses.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
 	@cd .. && bash scripts/check-one-declarator-reader.sh

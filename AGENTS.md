@@ -142,6 +142,9 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `Program::member_declarator`), gated by `check-one-declarator-reader.sh`;
    `[dims]` alone is `parse_array_dimensions` + `nest_carray_dims`. Never
    read a declarator by hand in an arm.
+   A string literal initializing a character array is read by
+   `Program::string_char_array` and fitted by `Program::fit_char_array`
+   (gated by `check-one-string-char-fill.sh`).
    The operand of a unary `*`, a cast or a bare `sizeof` is a cast-expression
    read by ONE owner, `Program::parseCastExpression` (the expression engine,
    bounded), and a dereference is built only by `Program::build_indirection`
