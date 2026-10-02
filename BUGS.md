@@ -76,6 +76,38 @@ int main()
   stands for null moves too (`int B::*pn = 0; int D::*pd = pn;` reads
   non-null).
 
+### B138. c2m: a static initializer's later designator does not override
+
+```c
+#include <stdio.h>
+struct S { long p; int q; };
+struct T { int k; struct S s; int z; };
+struct T g4 = { .s = { 0 }, .s.p = -1 };
+struct T g5 = { .s.p = -1 };
+struct T g6 = { 1, { 0, 2 }, .s.p = -1 };
+struct T g7 = { 1, { 3, 2 }, 4, .s.p = -1 };
+struct S h1 = { 5, 6, .p = 7 };
+int main(void)
+{
+	struct T l6 = { 1, { 0, 2 }, .s.p = -1 };
+	printf("%ld %ld | %ld %d | %ld %d %d | %ld %d | %ld %d\n", g4.s.p, g5.s.p, g6.s.p, g6.s.q,
+	       g7.s.p, g7.s.q, g7.z, h1.p, h1.q, l6.s.p, l6.s.q);
+	return 0;
+}
+```
+
+- gcc 13 = clang 18 = `bin/madc`: `-1 -1 | -1 2 | -1 2 4 | 7 6 | -1 2`.
+- The in-tree c2mir driver (`obj/mir/host/c2m -eg`, 2026-10-02 at
+  `4fea45aef`): `0 -1 | 0 2 | 3 2 4 | 5 6 | -1 2`. In a static initializer
+  the FIRST initializer of a subobject is kept; a later designator naming it
+  is dropped (C11 6.7.9p19: each initializer overrides any earlier one for the
+  same subobject). The automatic `l6` is right.
+- madc is unaffected today: its parser resolves designators to positional
+  slots, so the N_INIT lists it hands c2mir never override. A lowering that
+  appends an overriding designator to a static initializer would inherit it.
+- Layer: c2mir's static-data initializer walk (`third_party/mir/c2mir`).
+- Found 2026-10-02 probing designator chains for B136's zero-initialization.
+
 ### B121. A const object binds the non-const reference overload
 
 ```cpp
@@ -493,6 +525,27 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B137. A designator chain with an array index is refused
+
+```c
+#include <stdio.h>
+struct S { long p; int q; };
+struct T { int k; struct S s[2]; long a[3]; };
+struct T g1 = { .a[1] = 4 };
+struct T g2 = { .s[1].q = 5 };
+struct S arr[2] = { [1].q = 6 };
+long m[2][2] = { [1][0] = 7 };
+int main(void) { struct T l1 = { .a[2] = 8 }; printf("%ld %d %d %ld %ld\n", g1.a[1], g2.s[1].q, arr[1].q, m[1][0], l1.a[2]); return 0; }
+```
+
+- gcc 13 = clang 18: `4 5 6 7 8`.
+- madc (`--std=c17`, 2026-10-02 at `4fea45aef`) refuses all four file-scope
+  initializers: `.a[1]` and `.s[1].q` "Expecting '=' after designated
+  initializer", `[1].q` and `[1][0]` "Expecting '=' after array designator".
+  A designator list ([C11 6.7.9p1] `designation: designator-list =`) is read
+  one designator long, except member after member: `.s.p = -1` is accepted.
+- Found 2026-10-02 probing designator chains for B136's zero-initialization.
 
 ### B127. `T1::*` over a class-template parameter is refused
 
