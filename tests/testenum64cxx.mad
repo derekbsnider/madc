@@ -6,6 +6,8 @@
 // `enum U { M = 0xFFFFFFFFu }` read back as -1.
 // Oracle: g++ and clang++ -std=c++17 print "sizes 8 4 8 8 16",
 // "values 4294967297 4294967295 8589934592 12884901888" and "overloads 2 3 1".
+// On LLP64 (long is 4 bytes) Big promotes to long long: mingw-w64 g++ prints
+// "overloads 4 3 1" (tests/testenum64cxx.win64_expect).
 #include <cstdio>
 
 enum Big { BIG_A = 0x100000000LL, BIG_B };
@@ -17,6 +19,7 @@ struct holds { Big b; char c; };
 int f(int) { return 1; }
 int f(long) { return 2; }
 int f(unsigned) { return 3; }
+int f(long long) { return 4; }
 
 int main()
 {

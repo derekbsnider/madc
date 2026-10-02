@@ -4,8 +4,10 @@
    clang++ read 8 (a value past int) or the fixed base's size: at namespace
    scope and inside a class (B1). An anonymous enum whose values fit int keeps
    int (the libstdc++ `enum { __value = N };` trait idiom). Overloads still
-   pick by promotion ([conv.prom]/3): BIG promotes to long, SMALL to int.
-   Oracle: g++ and clang++ -std=c++17 print every line below. */
+   pick by promotion ([conv.prom]/3): BIG promotes to long, SMALL to int
+   (on LLP64, where long is 4 bytes, BIG promotes to long long instead).
+   Oracle: g++ and clang++ -std=c++17 print every line below; mingw-w64 g++
+   prints "overloads 3 1" (tests/testenumeratortypecxx.win64_expect). */
 #include <stdio.h>
 
 enum { BIG = 0x100000000 };
@@ -16,6 +18,7 @@ struct S { enum { CBIG = 0x100000000 }; enum : short { CFIX = 2 }; enum { __valu
 
 int which(int) { return 1; }
 int which(long) { return 2; }
+int which(long long) { return 3; }
 
 int main()
 {
