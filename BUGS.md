@@ -133,6 +133,11 @@ int main() {
   non-reference (an xvalue). `S(S&&)` is baked in for every `T`. The fix is to
   defer the construction whenever an argument is type-dependent ([temp.dep.expr]:
   overload resolution of a dependent call happens at instantiation).
+- The functional-cast form `return A(std::forward<U>(u)).v;` in a member
+  template, and `w = A(std::forward<U>(u)).v;` in a constructor template's
+  body, also move from an lvalue argument. `U` itself deduces correctly
+  (`std::is_lvalue_reference<U>::value` is 1), and
+  `A(static_cast<U &&>(u)).v` copies (2026-10-02).
 - Found 2026-10-02 with B144. Off the release path, filed per owner 2026-09-30.
 
 ### B121. A const object binds the non-const reference overload
@@ -553,6 +558,49 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B148. A constructor template's mem-initializer that reads a member of a class temporary crashes c2mir
+
+```cpp
+#include <cstdio>
+struct A { int v; A(int x) : v(x) {} A(const A &o) : v(o.v + 100) {} };
+struct R { int w; template<class U> R(U &u) : w(A(u).v) {} };
+int main() { A a(1); R r(a); printf("%d\n", r.w); return 0; }
+```
+
+- g++ 13 and clang++ 18: `101`. madc (2026-10-02, at 4bad47e26 plus the
+  instance-symbol fix): SIGSEGV inside `c2mir_compile_tree`, exit 139.
+  v0.99.2 refused it loudly instead (`undeclared identifier __madc_objtmp_1`,
+  `request for member v in something not a structure or union`).
+- The same mem-initializer in a non-template constructor
+  (`P(A &u) : w(A(u).v) {}`) prints `101`. A forwarding form,
+  `template<class U> S(U &&u) : w(A(std::forward<U>(u)).v) {}`, is refused
+  with `lvalue required as unary & operand` instead of crashing.
+- Layer: not yet traced. The class temporary in a member template's
+  mem-initializer (the `__madc_objtmp` the v0.99.2 message names) has no
+  declaration in the instantiated constructor's tree.
+- Found 2026-10-02 while probing value categories in member constructor
+  templates (the cross-TU instance-symbol fix). Off the release path, filed per
+  owner 2026-09-30.
+
+### B149. `std::map::emplace` leaves an undefined MIR import
+
+```cpp
+#include <cstdio>
+#include <map>
+int main() { std::map<int, int> m; m.emplace(3, 4); printf("%zu %d\n", m.size(), m[3]); return 0; }
+```
+
+- g++ 13 and clang++ 18: `1 4`. madc (2026-10-02, at 4bad47e26 and at
+  v0.99.2): `MIR error: import of undefined item
+  map_int32_t_int32_t_std__less_..._emplace`, exit 1. The same happens with
+  `std::map<std::string, std::string>` and lvalue arguments.
+- `std::vector::emplace_back(s)` with an lvalue works (B146 is the converting
+  `emplace_back(3)`). No test in `tests/` calls `map::emplace`.
+- Layer: not yet traced. `map::emplace` is a variadic member template that
+  forwards to `_M_t._M_emplace_unique`; the call is bound to the placeholder
+  symbol, and no instance is defined.
+- Found 2026-10-02 with B148. Off the release path, filed per owner 2026-09-30.
 
 ### B146. `std::vector<S>::emplace_back(3)` is refused: tsubst bails on the converting placement construction
 
