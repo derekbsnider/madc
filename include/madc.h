@@ -7973,6 +7973,7 @@ public:
 			       bool method_allowed = false);
     void push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 				   bool is_thread_local, bool is_volatile,
+				   bool is_const, bool is_constexpr, bool is_inline,
 				   size_t specifier_align);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
 				 unsigned leading_cv = cvNONE,

@@ -75030,9 +75030,13 @@ size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDe
 // `Q a(1), b(2);`) re-enters parseDeclaration through the stream: push a
 // clone of the base-type token and the decl-specifiers it carried, which
 // qualify EVERY declarator of the list — one owner for both list arms (the
-// constructor-syntax arm and the initializer arm).
+// constructor-syntax arm and the initializer arm). `const` / `constexpr`
+// among them: `const char *a, *b` declares b a `const char *`, and
+// `constexpr int a = 1, b = 2` makes b a constant ([dcl.dcl]/9 — the
+// decl-specifier-seq applies to each init-declarator).
 void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 					bool is_thread_local, bool is_volatile,
+					bool is_const, bool is_constexpr, bool is_inline,
 					size_t specifier_align)
 {
     declarator_list_continues = true;
@@ -75042,6 +75046,13 @@ void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
     pushToken(type_tb->clone_origin());
     if ( is_volatile )
 	pushToken(new TokenVOLATILE());
+    // constexpr implies the const it sets (TokenCppKeyword::parse).
+    if ( is_constexpr )
+	pushToken(new TokenCppKeyword("constexpr"));
+    else if ( is_const )
+	pushToken(new TokenCONST());
+    if ( is_inline )
+	pushToken(new TokenCppKeyword("inline"));
     if ( parsing_extern_decl )
 	pushToken(new TokenEXTERN());
     if ( is_static )
@@ -75825,7 +75836,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
-					  decl_align);
+					  gotconst, gotconstexpr, gotinline, decl_align);
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -76999,7 +77010,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
-					  decl_align);
+					  gotconst, gotconstexpr, gotinline, decl_align);
 	    }
 	}
 
