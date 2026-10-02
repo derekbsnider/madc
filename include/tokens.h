@@ -2074,6 +2074,10 @@ public:
     DataDefCLASS *alloc_class;
     std::vector<TokenBase *> ctor_args;
     bool braced = false; // list-initialization selects braced constructor overloads
+    // A new-initializer `( ... )` / `{ ... }` was written ([expr.new]/23):
+    // omitted, the object is default-initialized; `()` value-initializes
+    // (zero for a scalar or a plain struct) — empty ctor_args are both.
+    bool has_initializer = false;
     // Placement new: `new (placement) Type(args)` constructs at the given
     // address instead of allocating. `placement` is the address expression
     // (NULL for ordinary `new`); `alloc_type` is the constructed type when it

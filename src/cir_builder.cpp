@@ -3985,6 +3985,10 @@ cir_node *CirBuilder::tsubst_scalar_placement_store(
 {
 	node_t value = NULL;
 	if (tn->ctor_args.empty()) {
+		// `_Up` default-initializes (no store), and a plain struct's
+		// `_Up()` zero-fills: both the placement arm's.
+		if (!tn->has_initializer || concrete->as_struct_dd())
+			return NULL;
 		// `_Up()` value-init: zero-initialize ([dcl.init]/8).
 		value = integer(0, tn);
 	} else if (tn->ctor_args.size() == 1) {
@@ -4174,6 +4178,7 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			lowered.placement = tn->placement;
 			lowered.ctor_args = tn->ctor_args;
 			lowered.braced = tn->braced;
+			lowered.has_initializer = tn->has_initializer;
 			lowered.array_size = tn->array_size;
 			lowered.array_init = tn->array_init;
 			lowered.alloc_class = concrete_class;
@@ -23848,6 +23853,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// address is a pure expression, so re-translate per use.
 			auto addr = [&]() -> node_t { return translate_expr(tn->placement); };
 			node_t construct = NULL;
+			node_t fill = NULL;
 			if (tn->alloc_class) {
 				// Complete-object construction at the (typed) placement
 				// address — the shared assembler: user ctor call (with
@@ -23858,16 +23864,24 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				DataDefCLASS *pc = tn->alloc_class;
 				node_t pitems = list();
 				std::vector<node_t> cstmts;
-				// The new-initializer direct-initializes
-				// ([expr.new]/23): `new (p) T()` value-initializes,
-				// a ctor-less T's list aggregate-initializes.
-				class_direct_init_stmts([&]() -> node_t {
+				auto typed_addr = [&]() -> node_t {
 					return node2(N_CAST, class_ptr_type(pc),
 						     addr(), tb);
-				}, pc, tn->ctor_args, tn->braced,
-				/*list_flattened=*/false,
-				/*base_subobject=*/false, /*vbase_forward=*/false,
-				cstmts, tb);
+				};
+				// The new-initializer direct-initializes
+				// ([expr.new]/23): `new (p) T()` value-initializes,
+				// a ctor-less T's list aggregate-initializes. With
+				// none, `new (p) T` default-initializes: the
+				// construction alone, the storage left as it was.
+				if (!tn->has_initializer)
+					complete_object_construct_stmts(typed_addr, pc,
+						tn->ctor_args, tb, cstmts);
+				else
+					class_direct_init_stmts(typed_addr, pc,
+						tn->ctor_args, tn->braced,
+						/*list_flattened=*/false,
+						/*base_subobject=*/false,
+						/*vbase_forward=*/false, cstmts, tb);
 				for (node_t cs : cstmts)
 					append(pitems, cs);
 				append(pitems, node2(N_EXPR, list(),
@@ -23876,30 +23890,47 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				return node1(N_STMTEXPR,
 					     node2(N_BLOCK, list(), pitems, tb), tb);
 			} else {
-				// Scalar T: *(T *)addr = arg (or zero-init when no args).
+				// Scalar or plain-struct T: *(T *)addr = arg.
 				// Cast the placement address to the CONSTRUCTED type's
 				// pointer before the store: placement new constructs a T at
 				// the address regardless of the pointer's static type, and
 				// libstdc++ writes `::new((void *)__p) _Up(...)` — storing
 				// through the raw `(void *)` yields "assignment of incompatible
 				// value". A no-op when addr is already T* (e.g. `new(&buf) int`).
-				node_t rhs = tn->ctor_args.empty()
-						? integer(0, tb) : translate_expr(tn->ctor_args[0]);
+				// No new-initializer default-initializes: no store. `()`
+				// value-initializes — zero, a plain struct's bytes
+				// all zero ([dcl.init]/8).
 				DataDef *t = tn->alloc_type;
 				int levels = 1 + dd_peel_pointers(t);   // the one pointer-peel owner
-				node_t decls = list();
-				for (int i = 0; i < levels; i++) append(decls, pointer());
-				node_t tptr = node2(N_TYPE, type_list(t),
-						    node2(N_DECL, ignore(), decls));
-				node_t typed_addr = node2(N_CAST, tptr, addr(), tb);
-				construct = node2(N_ASSIGN, node1(N_DEREF, typed_addr, tb),
-						  rhs, tb);
+				auto typed_addr = [&]() -> node_t {
+					node_t decls = list();
+					for (int i = 0; i < levels; i++) append(decls, pointer());
+					node_t tptr = node2(N_TYPE, type_list(t),
+							    node2(N_DECL, ignore(), decls));
+					return node2(N_CAST, tptr, addr(), tb);
+				};
+				if (!tn->ctor_args.empty())
+					construct = node2(N_ASSIGN,
+						node1(N_DEREF, typed_addr(), tb),
+						translate_expr(tn->ctor_args[0]), tb);
+				else if (tn->has_initializer && !tn->alloc_type->as_struct_dd())
+					construct = node2(N_ASSIGN,
+						node1(N_DEREF, typed_addr(), tb),
+						integer(0, tb), tb);
+				else if (tn->has_initializer)
+					fill = zero_fill_stmt(typed_addr(),
+						node1(N_SIZEOF, node2(N_TYPE,
+							type_list(tn->alloc_type),
+							node2(N_DECL, ignore(), list())), tb),
+						tb);
 			}
 			// ({ <construct>; addr; }) — yields the placement address
 			// (the class arm returned above with its typed yield).
 			node_t items = list();
 			if (construct)
 				append(items, node2(N_EXPR, list(), construct, tb));
+			if (fill)
+				append(items, fill);
 			append(items, node2(N_EXPR, list(), addr(), tb));
 			return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
 		}
@@ -23934,13 +23965,26 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 			// new T / new T(v) -> ({ T *__newN = (T*)malloc(sizeof(T));
 			//                        [*__newN = v;] __newN; })
-			need_output_extern("malloc", true,
-				{ { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+			// `new T()` value-initializes ([expr.new]/23, [dcl.init]/8):
+			// zero — calloc's storage, as the class arm's below.
+			bool value_init = tn->has_initializer && tn->ctor_args.empty();
 			char stmp[32];
 			snprintf(stmp, sizeof(stmp), "__new%d", m_strtmp_counter++);
 			node_t margs = list();
-			append(margs, t_sizeof());
-			node_t mcall = node2(N_CALL, id("malloc", tb), margs, tb);
+			node_t mcall;
+			if (value_init) {
+				need_output_extern("calloc", true,
+					{ { {N_UNSIGNED, N_LONG, N_LONG}, false },
+					  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+				append(margs, integer(1, tb));
+				append(margs, t_sizeof());
+				mcall = node2(N_CALL, id("calloc", tb), margs, tb);
+			} else {
+				need_output_extern("malloc", true,
+					{ { {N_UNSIGNED, N_LONG, N_LONG}, false } });
+				append(margs, t_sizeof());
+				mcall = node2(N_CALL, id("malloc", tb), margs, tb);
+			}
 			node_t scast = node2(N_CAST, t_ptr_type(), mcall, tb);
 			node_t sdecl = simple(N_SPEC_DECL);
 			append(sdecl, node1(N_SHARE, type_list(et)));

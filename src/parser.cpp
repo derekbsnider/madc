@@ -56976,6 +56976,7 @@ TokenBase *TokenNEW::parse(Program &pgm)
     if ( tn && tn->id() == TokenID::tkOpBrk )
     {
 	pgm.nextToken(); // consume '('
+	has_initializer = true;
 	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
 	{
 	    TokenBase *arg = pgm.parseExpression(pgm.nextToken(), true);
@@ -57021,6 +57022,7 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	else
 	    ctor_args.push_back(init);
 	braced = true;
+	has_initializer = true;
     }
     // [expr.new]: an abstract class, a reference or function type, or a
     // deleted default constructor with no arguments cannot be `new`ed — a
