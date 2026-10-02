@@ -5,13 +5,12 @@
 # off it. Foundational/config headers first, containers, then streams —
 # the same discipline glibc/libstdc++'s internal ordering encodes.
 #
-# LIST VERSION 4 (2026-09-24; v3 2026-08-16). Grow deliberately: every header here must
+# LIST VERSION 5 (2026-10-02: cstdint; v4 2026-09-24; v3 2026-08-16). Grow deliberately: every header here must
 # compile QUIETLY (exit 0, zero diagnostics) in this combined order — the
 # pack step is a release gate. algorithm CLEARED at v26 HEAD (quiet after
 # streams; the B4a istreambuf_iterator arity blocker is gone). Known
 # blockers, revisit when fixed (all pre-existing LIVE-parse bugs — parser
 # track, not forest):
-#   cstdint     — `using ::int_fast8_t` is not a declaration in '::'
 #   cmath       — `Expecting a type argument to __promote<>` (exits 0 but
 #                 not quiet) in combination with stream headers
 #   iomanip     — `Expecting member name in class definition`
@@ -54,8 +53,17 @@
 # the pre-v3 freezes) — this parse failure adds no dropped definitions. That is
 # a reason to proceed, NOT a reason to call it clean. Tracked as its own defect;
 # when time_get parses, delete this note rather than the header.
+#
+# v5 (2026-10-02) added cstdint, here and in the win64 and darwin lists: its
+# blocker no longer reproduces (this list plus cstdint compiles with zero
+# diagnostics live, --no-forest-bind, on Linux and under wine -- the four
+# locale diagnostics above did not appear either; whether time_get now parses
+# is unverified, so that note stays), and
+# testalignascxx / testsizeofdependentexpr, the first tests to include it,
+# failed the headerless lanes on the absent root.
 cstddef
 climits
+cstdint
 cctype
 cstring
 cstdio
