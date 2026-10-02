@@ -12,7 +12,15 @@
 #   sync      rsync the madc tree to the container (third_party/mir rides along)
 #   build     configure (once) + make -C src (which builds libmir into obj/mir/)
 #   unittest  make -C src test
-#   fulltest  make -C src fulltest
+#   fulltest  make -C src fulltest (gates + the tests/ suite on the dev binary)
+#   gates     make -C src gates — unit tests + every repository gate, no tests/
+#             suite: the seam battery's first stage (scripts/seam_battery.sh)
+#   ondisk    the packed binary over the headerless-skipped tests, headers on
+#             disk (headerless_suite.sh complement) — with `headerless`, the
+#             whole suite once on the shipped artifact
+#   ondisk-win  the win64 twin of ondisk (the packed PE under wine)
+#   exeobj    the native-artifact lanes on the SHIPPED binary:
+#             MADC_BIN=bin/madc-release run_tests.sh --exe --obj
 #   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe/obj).
 #             a GUI-module test lifts the runner's memory guard itself;
 #             ordinary compiler runs keep their existing memory guard.
@@ -65,7 +73,8 @@
 #             (tarballs into dist/), then pull the tarballs back
 #   pull      rsync container-built bin/madc (+ madc-release) back to
 #             the NAS (ABI-identical userlands; QNAP never compiles)
-#   battery   fulltest + exe + obj + release + packed + headerless (the push gate)
+#   battery   release + gates + headerless + ondisk + exeobj — the Linux seam set on
+#             the shipped packed binary (scripts/seam_battery.sh adds the platforms)
 #   shell     print the ssh command and exit
 #
 # Every remote invocation is one ssh call running a generated script, so
@@ -129,7 +138,13 @@ fi
 # GREEN. Task #58 broke that promise on real Windows and unrelated work fixed it
 # days later, and NO lane noticed either event, because this one was
 # hand-invoked. A lane nobody runs is a lane that does not exist.
-stages=${stages/battery/sync build fulltest exe obj release packed headerless}
+# Owner 2026-10-02: the full tests/ suite runs ONE way at the seam — on the
+# shipped -O2 packed artifact, headerless — and the on-disk include path and
+# the native-artifact lanes ride the same binary (ondisk = the headerless-
+# skipped subset; exeobj = --exe --obj). The gates run first, without the
+# suite; the -O0 dev binary's full-suite runs (fulltest, exe, obj, packed) are
+# no longer seam stages. scripts/seam_battery.sh adds the platform lanes.
+stages=${stages/battery/sync build release gates headerless ondisk exeobj}
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
@@ -266,6 +281,21 @@ for stage in $stages; do
 		;;
 	fulltest)
 		run_remote "fulltest" "make -C $REMOTE_MADC/src -j20 fulltest"
+		;;
+	gates)
+		run_remote "gates" "make -C $REMOTE_MADC/src -j20 gates"
+		;;
+	ondisk)
+		run_remote "ondisk" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
+		;;
+	ondisk-win)
+		run_remote "ondisk-win" "make -C $REMOTE_MADC/src -j20 release-windows; cd $REMOTE_MADC; MADC_HEADERLESS_PROFILE=win64 MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
+		;;
+	exeobj)
+		# The seam's native-artifact lanes run the SHIPPED -O2 packed binary
+		# (owner 2026-10-02): same coverage as exe + obj on the dev binary, at
+		# a fraction of the compile time.
+		run_remote "exeobj" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh --exe --obj"
 		;;
 	gui)
 		# ONE body, in scripts/gui_lane.sh — the webview build, the Xvfb

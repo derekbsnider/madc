@@ -19,8 +19,15 @@ and produces exactly the oscillation this rule exists to stop.
           then record its tests-jit tally). Run it before reporting a batch
           done, before a push, and before moving to another area. Ledger row
           `tests-jit` (promote=batch): never blocks, `check` reminds while stale.
-  TIER 3  THE SEAM BATTERY, per MERGE WAVE — hours. `make -C src fulltest`
-          plus the platform lanes, at the arc's release boundary only.
+  TIER 3  THE SEAM BATTERY, per MERGE WAVE — about an hour, ONE command:
+          `bash scripts/seam_battery.sh`, at the arc's release boundary only.
+          Cheapest first: pre-build every toolchain + static gates, then
+          `make -C src gates` (unit tests + gates, no suite), then the FULL
+          tests/ suite ONE way — on the SHIPPED artifact, the -O2 packed
+          madc-release, headerless (Linux and win64) — then the small on-disk
+          subsets (`ondisk`, `ondisk-win`), then `exeobj` (--exe --obj on the
+          packed binary), then the macOS build and aarch64 (owner 2026-10-02).
+          The -O0 dev binary never runs the full suite at the seam.
 
   PER FIX = ONE command, Tier 1 + Tier 2: `scripts/fix_lanes.sh <globs>`
           (remote: `TESTS='<globs>' remote_build.sh sync build fix`). Never
@@ -37,14 +44,14 @@ point is that it runs while the change is still one change.
 
 Incremental changes get TARGETED validation: the new/affected tests plus the
 touched subsystem's neighbors — never the full battery per commit.
-Run `make -C src fulltest` ONCE per merge wave, at the release/merge gate
+Run the seam battery ONCE per merge wave, at the release/merge gate
 (or when a change's blast radius is genuinely suite-wide, e.g. lexer/include
 machinery, shared codegen).
 NEVER re-run a suite on content that is already green — ceremonies are git-only.
 Draw the merge wave at FEATURE completion, not at every slice: BANK the whole
 feature — every slice AND every known-open fix of it — before spending the
-multi-hour push-gate lanes (fulltest + exe + obj + packed + headerless,
-c-testsuite, wine, the macOS cross build). A feature with a pending or
+push-gate battery (gates, the packed headerless suite on Linux and win64, the
+on-disk subsets, exe + obj, the macOS and aarch64 builds). A feature with a pending or
 known-open fix is NOT a merge wave yet — hold the long suites until it is
 complete, so they run once for the whole feature, not once per slice.
 The merge wave is the SEAM the arc's plan or design doc names — its RELEASE
@@ -56,9 +63,8 @@ Between seams the work banks on the arc's feature branch (pushes freely); the
 ONE battery, the lane records and the develop merge/push happen at the seam.
 Before launching the battery, name the seam it gates in one sentence; a sentence
 that names a slice is a targeted run, not a battery.
-When work touches native executable, AOT, runtime-parity, or shared codegen paths,
-the merge-wave battery also includes `bash scripts/run_tests.sh --exe`.
-Do not leave the tree with JIT green and EXE broken, or EXE green and JIT broken.
+The battery's `exeobj` stage covers native executables and objects on every
+seam; do not leave the tree with JIT green and EXE broken, or EXE green and JIT broken.
 Do NOT run integration tests in a shell loop — use the Makefile target.
 A standing "pause before big test suites" instruction is about TIER 3. It never
 covers Tier 1 or Tier 2 — if an instruction's scope is unclear, ask which tier

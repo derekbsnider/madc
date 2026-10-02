@@ -63,12 +63,45 @@ one-sentence test before any battery launch — "this gates <arc>'s release
 boundary <Vn>, every slice banked" — exists because the relabelling is silent:
 nothing in the tooling can tell a slice from a seam, only the plan can.
 
-## Why `make -C src fulltest` stays the merge-wave gate
+## Why the seam battery runs the suite ONCE, on the packed -O2 artifact (owner, 2026-10-02)
 
-That target is still the single command that exercises the normal unit
-and integration suite the way the repo expects. It catches the common
-parser/compiler/runtime regressions without relying on ad hoc command
-loops or per-agent habits.
+Until 2026-10-02 the seam ran the whole tests/ suite four ways: `fulltest`
+and `exe` + `obj` on the -O0 dev binary, then `packed` and `headerless` on
+the -O2 packed `madc-release`. The develop battery that day measured the cost
+(Linux): fulltest 28 min, exe + obj 42 min, packed 3.5 min, headerless 3 min.
+About 70 of its 85 minutes were the -O0 binary compiling, and the packed and
+headerless runs re-ran the same 1900 tests on the shipped binary in under four
+minutes each.
+
+The battery logs since late July (tmp/logs/rb-*.log) show which lane caught
+what:
+
+- packed or headerless caught failures the -O0 run did not, repeatedly:
+  testvolatilepointeeo2 (packed only, 09-24); header roots missing from the
+  pack (headerless only, 09-24 and 10-02); a forest-bind regression that made
+  73 `.expect_quiet` tests fail under the packed binary while fulltest was green
+  (10-02); testprojectmtiorder (packed and headerless only, 10-02).
+- the -O0 run caught nothing the packed runs missed in the two full
+  batteries compared (09-24: its 2 failures were among packed's 3; 10-02: 0).
+- exe/obj caught about one defect a month after the July AOT bring-up
+  (testcompoundlitdesig 08-29; testnexus_layers 09-15, structural; the
+  testgraphpast timeout fixture 09-20).
+- on win64, headerless-win's failures always contained wine's (8 vs 13 on
+  09-24, 19 vs 20 on 10-02).
+
+So the owner's ruling: the full barrage runs ONE way, on the binary that
+ships, headerless (the strictest form: nothing on disk can rescue a forest
+decline). The on-disk include path rides only the tests whose
+`.headerless_skip` fixtures exclude them from that run (`headerless_suite.sh`
+complement mode), so the two runs together cover the suite once. exe + obj
+stay a FULL run — they are the lane that sees emission and runtime-linking
+defects — but on the packed binary, where compile time no longer dominates
+(a 28-test subset: 5 s packed vs 16 s dev). The order is cheapest-first, so a
+red stage is seen in minutes. The -O0 dev binary keeps the per-fix and
+per-batch tiers, where its incremental build is the point.
+
+`make -C src fulltest` still exists (gates + the suite on the dev binary) for
+a local all-in-one run; `make -C src gates` is the seam's gate stage.
 
 ## Why native-EXE work needs an explicit second lane
 
@@ -83,8 +116,8 @@ they stress different surfaces:
 - startup/runtime state reconstruction
 - global data materialization
 
-So for native executable, AOT, parity, or shared codegen work, the task
-is not done until `bash scripts/run_tests.sh --exe` is green too.
+So the seam battery's `exeobj` stage runs `--exe --obj` over the whole
+suite on every merge wave, not only when the work looks native.
 
 ## Why the rule forbids leaving one lane broken
 

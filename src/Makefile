@@ -1102,8 +1102,11 @@ test: $(TESTBINS)
 		fi; \
 	done
 
-fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
-	@cd .. && bash scripts/run_tests.sh
+# The seam battery's first stage (scripts/seam_battery.sh): the unit tests and
+# every repository gate, WITHOUT the tests/ suite — the battery runs that on the
+# shipped -O2 packed artifact (owner 2026-10-02). fulltest = gates + the suite
+# on the dev binary, for a local all-in-one run.
+gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@python3 ../scripts/gen_webview_header.py --check
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
@@ -1232,6 +1235,9 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
 	@cd .. && timeout 1500 bash scripts/win_posix_archive_gate.sh
+
+fulltest: gates
+	@cd .. && bash scripts/run_tests.sh
 
 # CIR renderer fidelity gate over the whole corpus (diagnostic; localizes
 # missing renderer constructs and gcc-vs-emitted asm divergences).
