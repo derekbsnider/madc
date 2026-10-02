@@ -1120,6 +1120,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-nested-stream.sh
 	@cd .. && bash scripts/check-one-stream-rewind.sh
 	@cd .. && bash scripts/check-one-token-run.sh
+	@cd .. && bash scripts/check-one-ptr-operator-fold.sh
 	@cd .. && bash scripts/check-one-return-declarator.sh
 	@cd .. && bash scripts/check-one-member-init-walk.sh
 	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh

@@ -330,7 +330,6 @@ g++.dg/cpp0x/lambda/lambda-61148.C
 g++.dg/cpp0x/lambda/lambda-80947.C
 g++.dg/cpp0x/lambda/lambda-constexpr3.C
 g++.dg/cpp0x/lambda/lambda-conv12.C
-g++.dg/cpp0x/lambda/lambda-conv4.C
 g++.dg/cpp0x/lambda/lambda-debug.C
 g++.dg/cpp0x/lambda/lambda-decltype2.C
 g++.dg/cpp0x/lambda/lambda-ice12.C

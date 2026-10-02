@@ -5260,6 +5260,27 @@ static bool conversion_type_id_ends_at(TokenBase *t)
 	|| id == TokenID::tkOpBrc || id == TokenID::tkClBrc;
 }
 
+// The token after a trailing-return-type, outside every delimiter: the
+// function body's `{` or a function-try-block's `try`, the declarator's `;` /
+// `,`, the `=` of a pure-, defaulted- or deleted-specifier or an initializer,
+// a virt-specifier (`override` / `final`), a trailing requires-clause, or the
+// close of an enclosing declarator (a parameter's `)`). A type-id holds none
+// of them at its top level.
+static bool trailing_return_type_ends_at(TokenBase *t)
+{
+    switch ( t->id() )
+    {
+	case TokenID::tkOpBrc: case TokenID::tkTRY:
+	case TokenID::tkSemi:  case TokenID::tkComma: case TokenID::tkAssign:
+	case TokenID::tkClBrk: case TokenID::tkClSqr: case TokenID::tkClBrc:
+	    return true;
+	default:
+	    break;
+    }
+    const std::string s = contextual_identifier_name(t);
+    return s == "override" || s == "final" || s == "requires";
+}
+
 // How many tokens FOLLOW the `operator` keyword. ONE decision, shared by the
 // index form below and the stream form (Program::delimStepStream) — the two
 // must never disagree about how far an operator-id reaches.
@@ -49051,6 +49072,43 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret);
 static DataDef *deduce_return_type_from_stmt(Program *pgm, TokenBase *stmt,
 					      bool p_is_reference);
 
+FuncDef *Program::adopt_trailing_return_type(FuncDef *func,
+					     const std::vector<TokenBase *> &run)
+{
+    std::vector<TokenBase *> seq = run;
+    TokenBase *end = new TokenSemi();
+    seq.push_back(end);
+    NestedTokenStream trailing_run(*this, std::move(seq), NestedTokenStream::Injected);
+    unsigned lead_cv = skip_cv_qualifier_tokens();
+    TokenBase *rt = nextToken();
+    TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
+    if ( !rtt )
+	Throw(rt == end ? run.front() : rt) << "Could not resolve trailing return type" << flush;
+    DeclaratorResult decl;
+    DataDef *ret = parse_type_id(&rtt->definition, lead_cv, decl);
+    if ( peekToken() != end )
+	Throw(peekToken() ? peekToken() : run.front())
+	    << "Expecting the end of the trailing return type" << flush;
+    trailing_run.close();
+    // Born with the real return type: a DataDefREF for a reference return (the
+    // type-id's `&` / `&&`, collapsed, OR func already returned one), so the
+    // reference lives in the type, not a parallel flag (first-class refs
+    // Phase 2). Clone when the value type differs OR func must become a
+    // reference but is not yet a real DataDefREF.
+    bool tr_ref = false, tr_rvalue = false;
+    if ( DataDefREF *r = ret->as_reference_dd() )
+    {
+	ret = r->base_type;
+	tr_ref = true;
+	tr_rvalue = r->rvalue;
+    }
+    bool want_ref = tr_ref || func->returns_reference();
+    if ( &func->return_value_type() == ret && (!want_ref || func->returns.is_reference()) )
+	return func;
+    return clone_funcdef_with_return(func, returnDecl(*ret, want_ref,
+	tr_ref ? tr_rvalue : func->returns.is_rvalue_reference()));
+}
+
 void Program::enqueue_deferred_function_body(Variable *var,
 					   Method *method, TokenBase *open,
 					   const std::vector<TokenBase *> *trailing_ret)
@@ -49383,42 +49441,15 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	// parameters are back in scope (code->method set), and adopt it onto the
 	// method's FuncDef — the deferred analogue of parseFunction's eager path.
 	if ( !body.trailing_ret_tokens.empty() && body.var )
-	{
-	    FuncDef *cur = dynamic_cast<FuncDef *>(body.var->type);
-	    std::vector<TokenBase *> trtoks = body.trailing_ret_tokens;
-	    trtoks.push_back(new TokenSemi());
-	    NestedTokenStream trailing_run(*this, std::move(trtoks),
-					   NestedTokenStream::Injected);
-	    TokenBase *rt = nextToken();
-	    TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
-	    DataDef *new_ret = rtt ? &rtt->definition : NULL;
-	    bool tr_ref = false, tr_rvalue = false;
-	    for ( ; new_ret ; )
+	    if ( FuncDef *cur = dynamic_cast<FuncDef *>(body.var->type) )
 	    {
-		TokenBase *s = peekToken();
-		if ( s && s->id() == TokenID::tkMul )
-		    { nextToken(); new_ret = getPointerType(new_ret); continue; }
-		if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
-		    { tr_rvalue = nextToken()->id() == TokenID::tkLand; tr_ref = true; continue; }
-		break;
+		FuncDef *fresh = adopt_trailing_return_type(cur, body.trailing_ret_tokens);
+		if ( fresh != cur )
+		{
+		    funcdef_map[body.var->name] = fresh;
+		    body.var->type = fresh;
+		}
 	    }
-	    trailing_run.close();
-	    // Born with the real return type: a DataDefREF for a reference return
-	    // (trailing `&`/`&&` OR cur already returned one) so the reference is
-	    // in the type, not a parallel flag (first-class refs Phase 2 / R5).
-	    bool want_ref = tr_ref || (cur && cur->returns_reference());
-	    if ( cur && new_ret && (&cur->return_value_type() != new_ret
-				    || (want_ref && !cur->returns.is_reference())) )
-	    {
-		FuncDef *fresh = clone_funcdef_with_return(cur, returnDecl(*new_ret, want_ref,
-		    tr_ref ? tr_rvalue : cur->returns.is_rvalue_reference()));
-		funcdef_map[body.var->name] = fresh;
-		body.var->type = fresh;
-	    }
-	    // No else: when the value type already matches and cur is already a
-	    // reference return, there is nothing to do (the reference lives in the
-	    // type — first-class refs Phase 2 retired the returns_ref flag).
-	}
 
 	if ( !body.ctor_init_tokens.empty() )
 	    if ( FuncDef *ffd = dynamic_cast<FuncDef *>(body.var->type) )
@@ -72698,23 +72729,23 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	}
 	if ( q->id() == TokenID::tkDeRef )	// `->` trailing return type
 	{
+	    // The run is the type-id: up to the token that follows one
+	    // (trailing_return_type_ends_at) outside every delimiter, DelimDepth's
+	    // answer — so the comma of `-> std::pair<int, int>` is inside the
+	    // angle, and an `= 0` or `override` is left for the loop.
+	    DelimDepth d(this);
 	    nt = nextToken();
-	    int pd = 0, sd = 0, bd = 0;
-	    while ( nt )
+	    while ( nt && !(d.top() && trailing_return_type_ends_at(nt)) )
 	    {
-		if ( pd == 0 && sd == 0 && bd == 0
-		  && (nt->id() == TokenID::tkOpBrc || nt->id() == TokenID::tkSemi
-		   || nt->id() == TokenID::tkComma) )
-		    break;
-		if ( nt->id() == TokenID::tkOpBrk ) ++pd;
-		else if ( nt->id() == TokenID::tkClBrk && pd > 0 ) --pd;
-		else if ( nt->id() == TokenID::tkOpSqr ) ++sd;
-		else if ( nt->id() == TokenID::tkClSqr && sd > 0 ) --sd;
-		else if ( nt->id() == TokenID::tkOpBrc ) ++bd;
-		else if ( nt->id() == TokenID::tkClBrc && bd > 0 ) --bd;
 		trailing_ret_tokens.push_back(nt->clone_origin());
+		std::vector<TokenBase *> optail;
+		delimStepStream(nt, d, &optail);
+		for ( size_t k = 0; k < optail.size(); ++k )
+		    trailing_ret_tokens.push_back(optail[k]->clone_origin());
 		nt = nextToken();
 	    }
+	    if ( trailing_ret_tokens.empty() )
+		Throw(nt ? nt : q) << "Expecting a type after '->'" << flush;
 	    continue;
 	}
 	if ( q->id() == TokenID::tkTHROW )
@@ -72819,45 +72850,14 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	if ( trailing_ret_tokens.empty() )
 	    return;
-	std::vector<TokenBase *> trtoks = trailing_ret_tokens;
-	trtoks.push_back(new TokenSemi());
-	NestedTokenStream trailing_run(*this, std::move(trtoks),
-				       NestedTokenStream::Injected);
-	TokenBase *rt = nextToken();
-	TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
-	if ( !rtt )
-	    Throw(rt ? rt : nt) << "Could not resolve trailing return type" << flush;
-	DataDef *new_ret = &rtt->definition;
-	bool tr_ref = false, tr_rvalue = false;
-	for (;;)
+	FuncDef *fresh = adopt_trailing_return_type(func, trailing_ret_tokens);
+	if ( fresh != func )
 	{
-	    TokenBase *s = peekToken();
-	    if ( s && s->id() == TokenID::tkMul )
-		{ nextToken(); new_ret = getPointerType(new_ret); continue; }
-	    if ( s && (s->id() == TokenID::tkBand || s->id() == TokenID::tkLand) )
-		{ tr_rvalue = nextToken()->id() == TokenID::tkLand; tr_ref = true; continue; }
-	    break;
-	}
-	trailing_run.close();
-	// The cloned FuncDef is born with the real return type: a DataDefREF
-	// when the trailing return is a reference OR func already returned one
-	// (so the reference lives in the type, not a parallel flag — R5 can then
-	// drop the flag). Clone when the value type differs OR func must become a
-	// reference but is not yet a real DataDefREF.
-	bool want_ref = tr_ref || func->returns_reference();
-	if ( new_ret && (&func->return_value_type() != new_ret
-			 || (want_ref && !func->returns.is_reference())) )
-	{
-	    FuncDef *fresh = clone_funcdef_with_return(func, returnDecl(*new_ret, want_ref,
-		tr_ref ? tr_rvalue : func->returns.is_rvalue_reference()));
 	    funcdef_map[id] = fresh;
 	    if ( var )
 		var->type = fresh;
 	    func = fresh;
 	}
-	// No else: when the value type already matches and func is already a
-	// reference return, there is nothing to do — the reference lives in the
-	// type (first-class refs Phase 2 retired the returns_ref flag).
 	trailing_ret_tokens.clear();
     };
 
@@ -73001,6 +73001,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
     if ( nt->id() == TokenID::tkAssign )
     {
+	// `virtual auto f() -> int = 0;`, `auto operator=(const S &) -> S & =
+	// default;`: the declaration ends here, so its trailing return is adopted
+	// here, as on the `;` paths.
+	resolve_trailing_return();
 	TokenBase *assigned = nextToken();
 	bool pure_virtual = assigned && assigned->type() == TokenType::ttInteger
 	    && assigned->ival() == 0;

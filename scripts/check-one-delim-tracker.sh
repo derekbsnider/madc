@@ -46,7 +46,9 @@ fi
 # (BUGS.md B58-B61). Each migration lowers it.
 # 55 on 2026-09-29, when the token marker's decrement window learned to cross
 # one statement (four counters it had never seen; round 9).
-BASELINE=22
+# 19 on 2026-10-02: parseFunction's trailing-return capture (three counters,
+# no angle axis) now runs on DelimDepth (B132).
+BASELINE=19
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #

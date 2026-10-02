@@ -7904,6 +7904,15 @@ public:
     // using-alias target), unlike a declaration's, which is its object's.
     // modeled_cv() bits only.
     DataDef *parse_type_id(DataDef *base, unsigned leading_cv, DeclaratorResult &decl);
+    // THE trailing return type (`auto f() -> type-id`, a lambda's `-> T`): the
+    // run parseFunction captured, read with the parameters in scope as ONE
+    // type-id — the leading cv, the type, then parse_type_id (`*`s with their
+    // cv, `&` / `&&`, `(*)(params)`, `(&)[N]`). Anything after the type-id is
+    // refused. Returns `func` when its return already matches, else a clone
+    // born with that return type, which the caller re-points its Variable and
+    // funcdef_map entry at. parseFunction's eager path and the deferred body
+    // replay both read through it.
+    FuncDef *adopt_trailing_return_type(FuncDef *func, const std::vector<TokenBase *> &run);
     // THE top-level cv of the OBJECT a declarator declares (modeled_cv bits):
     // the leading run the caller consumed plus the declarator's own east cv
     // when no `*` intervenes, else the cv after the last `*` (the pointer

@@ -805,6 +805,19 @@ yet measured.
   `resolve_canonical_type_spelling` (candidate).
 - `overload_sig_pointer_depth_probe`: `ParsedParamSig.pointer_depth` plus
   `unwrap_pointer_depth` (candidate).
+- `hand_rolled_ptr_operator_fold` (verified 2026-10-02, ratchet at 7): a loop
+  that tests a token for `*` and folds `getPointerType` by hand reads only part
+  of the declarator grammar, and drops what it does not read. The trailing
+  return type was read that way twice: in parseFunction's eager path and in
+  the deferred body replay. Neither read a leading cv, `(&)[N]` or
+  `(*)(params)`. `-> int (*)(int)` became `int` (sizeof 4, gcc 8), and a
+  member's `-> const int (&)[3]` fell back to body deduction (sizeof 8,
+  gcc 12). Both now read through `adopt_trailing_return_type` over
+  `parse_type_id` (B132, `tests/testtrailingreturntypeid`). Seven sites remain:
+  the named-cast and C-cast type stars (two identical copies), a
+  template-argument spelling, the member `T *` / `T &` suffix, a class-pattern
+  pointer base, a comma declarator's return type, and a multi-return entry
+  type. Gate `check-one-ptr-operator-fold.sh` (fulltest, two-sided).
 - Doc drift: `parse_member_fnptr_declarator` and `parse_fnptr_member_tail` are
   named as owners in five comments and gate headers, but neither exists
   (verified).
