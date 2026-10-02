@@ -478,6 +478,35 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B140. C: excess elements in an initializer list are refused
+
+```c
+#include <stdio.h>
+int a[2] = { 1, 2, 3 };
+struct S { int x, y; } s = { 4, 5, 6 };
+int main(void) { int l[1] = { 7, 8 }; printf("%d %d | %d %d | %d\n", a[0], a[1], s.x, s.y, l[0]); return 0; }
+```
+
+- gcc 13 = clang 18 (`-std=c17`): three warnings ("excess elements in array
+  initializer", "... in struct initializer"), the excess dropped:
+  `1 2 | 4 5 | 7`. g++/clang++ refuse it ("too many initializers").
+- madc (`--std=c17`, 2026-10-02, `f055ae418` + the string-literal fit): `a`
+  and `l` refused by the
+  parser, "Too many initializers for array (expected 2)" / "(expected 1)"; the
+  struct alone reaches c2mir and is refused there, "excess elements in
+  array/struct/union initializer" (c2mir's `check_initializer`).
+- C11 6.7.9p2 makes the excess a constraint violation; gcc's C dialect
+  diagnoses it as a warning and drops it. madc's string-literal fit already
+  does (`Program::fit_char_array`: drop + `report_warning`); the list case is
+  refused at two layers instead — the parser's array capacity check in
+  `parse_declaration_body` and c2mir's struct/union walk.
+- The fix must keep madc's own static-data writer from writing past the
+  array (drop the excess at the layer that places it), keep C++ refusing, and
+  note that madc renders no warnings in batch mode (only the REPL renders
+  recorded diagnostics), so a gcc-default warning is invisible.
+- Found 2026-10-02 beside the string-literal fit. Off the release path, filed
+  per owner 2026-09-30.
+
 ### B127. `T1::*` over a class-template parameter is refused
 
 ```cpp
