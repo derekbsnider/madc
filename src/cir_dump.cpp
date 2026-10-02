@@ -1128,9 +1128,7 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 						      node1(N_ADDR, acc(), origin),
 						      NULL, origin,
 						      id(idxname.c_str(), origin));
-		if (opfd->returns_reference())
-			return node1(N_DEREF, call, origin);
-		return call;
+		return reference_call_result(opfd, call, origin);
 	};
 
 	bool is_text = dump_elem_is_char(elem);

@@ -801,6 +801,12 @@ class CirBuilder {
 		bool allow_converted_temp, RefArgValueForm value_form,
 		std::vector<node_t> &prefix);
 	RefArgValueForm copied_ref_arg_value_form(TokenBase *arg, node_t value);
+	// THE result of a call to `callee`: a reference return lowers to the
+	// referent's ADDRESS (T& is a T* at this level), so the call expression
+	// is `*call` — the referent lvalue, read or written. Every call, method,
+	// operator, subscript and postfix arm and the host-call shim read a
+	// call's result through here (gated: check-one-reference-call-result.sh).
+	node_t reference_call_result(FuncDef *callee, node_t call, TokenBase *origin);
 	// True for the argument forms that are unambiguously prvalues and therefore
 	// not addressable: a by-value-returning call, a postfix ++/--, a builtin
 	// binary arithmetic/bitwise result, or a literal. Conservative by design —

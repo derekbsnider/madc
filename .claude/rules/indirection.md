@@ -44,6 +44,8 @@
   `Program::finish_expression` — every exit of `parseExpression`.
 - Binding a reference (an argument, an aggregate's reference MEMBER slot): cir's
   `ref_param_arg_addr` (a const referent materializes a prvalue).
+- A reference-returning call's result (`*call`, every call arm and the host-call shim):
+  cir's `reference_call_result` (gated: `check-one-reference-call-result.sh`).
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 

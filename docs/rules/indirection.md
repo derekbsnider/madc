@@ -805,6 +805,18 @@ yet measured.
   `resolve_canonical_type_spelling` (candidate).
 - `overload_sig_pointer_depth_probe`: `ParsedParamSig.pointer_depth` plus
   `unwrap_pointer_depth` (candidate).
+- ~~`reference_return_call_lvalue`~~ — consolidated 2026-10-02: madc lowers
+  `T&` as `T*`, so a call to a reference-returning function yields the
+  referent's address and the call expression is `*call`. That rule was inlined
+  at 18 sites (every call, method, operator, subscript and postfix arm, the dump
+  walker, the manipulator bind) with no owner, and the host-call shim was the
+  copy that lacked it: it passed the address to the integer / real / text
+  setters. c2mir warned on an `int &` return and refused the whole program on a
+  `double &` one, and a host `program::call` returned the address as the value
+  (B134). `CirBuilder::reference_call_result` is the owner. Reducers
+  `tests/testrefreturnshim` (`.expect_quiet`) and the unit case "call returns
+  the referent of a reference-returning function". Gate
+  `check-one-reference-call-result.sh` (fulltest, two-sided).
 - `hand_rolled_ptr_operator_fold` (verified 2026-10-02, ratchet at 7): a loop
   that tests a token for `*` and folds `getPointerType` by hand reads only part
   of the declarator grammar, and drops what it does not read. The trailing

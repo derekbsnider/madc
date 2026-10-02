@@ -2148,6 +2148,14 @@ node_t CirBuilder::copied_reference_slot_arg(TokenBase *arg, node_t src_arg,
 	return slot;
 }
 
+node_t CirBuilder::reference_call_result(FuncDef *callee, node_t call,
+					 TokenBase *origin)
+{
+	if (callee && callee->returns_reference())	// allowed-exception: the owner
+		return node1(N_DEREF, call, origin);
+	return call;
+}
+
 CirBuilder::RefArgValueForm CirBuilder::copied_ref_arg_value_form(
 	TokenBase *arg, node_t value)
 {
@@ -4623,12 +4631,10 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 			node_t call = node2(N_CALL, id(sym.c_str(), tcf), args, tcf);
 			CIR_NODE(call)->synth_from_origin = src->synth_from_origin;
 			CIR_NODE(call)->tree1_origin = src->self;
-			node_t result = call;
-			if (wfd && wfd->returns_reference()
-			    && !m_tsubst_copy_under_deref) {
-				result = node1(N_DEREF, call, tcf);
+			node_t result = m_tsubst_copy_under_deref
+				? call : reference_call_result(wfd, call, tcf);
+			if (result != call)
 				CIR_NODE(result)->tree1_origin = src->self;
-			}
 			if (arg_prefix.empty())
 				return CIR_NODE(result);
 			node_t items = list();
@@ -13312,9 +13318,7 @@ node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
 	}
 	// A T&-returning method returns an address; deref so the call expression is
 	// the referenced lvalue, matching the non-external method/operator paths.
-	if (callee && callee->returns_reference())
-		return node1(N_DEREF, call, origin);
-	return call;
+	return reference_call_result(callee, call, origin);
 }
 
 // Itanium vbase-offset slot of `owner` in `view`'s vtable: -(3 + i) words
@@ -13866,9 +13870,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 							origin));
 			return id(ptmp, origin);   // materialized object lvalue
 		}
-		if (callee->returns_reference())
-			return node1(N_DEREF, mcall, origin);
-		return mcall;
+		return reference_call_result(callee, mcall, origin);
 	}
 
 	if (callee && callee->is_member_template && callee->declaration_only)
@@ -14013,9 +14015,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	}
 	// A T&-returning method returns the address of its result; deref so the
 	// call expression is the referenced lvalue (read: *p; write: *p = rhs).
-	if (callee && callee->returns_reference())
-		return node1(N_DEREF, mcall, origin);
-	return mcall;
+	return reference_call_result(callee, mcall, origin);
 }
 
 bool CirBuilder::class_has_object_members(DataDefCLASS *cdd)
@@ -20276,9 +20276,7 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	need_output_extern_unprototyped(sym.c_str(), ret_ptr, ret_specs);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	if (callee->returns_reference())
-		return node1(N_DEREF, call, origin);
-	return call;
+	return reference_call_result(callee, call, origin);
 }
 
 static std::string requalify_head(const std::string &spell, const std::string &qhead);
@@ -20868,9 +20866,7 @@ node_t CirBuilder::class_operator_external_call(TokenOperator *top,
 		m_pending_stmts.push_back(node2(N_EXPR, list(), ocall, origin));
 		return id(objtmp, origin);   // materialized object lvalue
 	}
-	if (callee->returns_reference())
-		return node1(N_DEREF, ocall, origin);
-	return ocall;
+	return reference_call_result(callee, ocall, origin);
 }
 
 node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls,
@@ -20954,7 +20950,7 @@ node_t CirBuilder::try_free_operator_call(TokenOperator *top, DataDefCLASS *lcls
 				node_t call = node2(N_CALL,
 					id(minst->emit_symbol.c_str(), origin), a, origin);
 				CIR_NODE(call)->synth_from_origin = true;
-				return node1(N_DEREF, call, origin);   // ostream&
+				return reference_call_result(minst, call, origin);   // ostream&
 			}
 			// CONCRETE manipulator (`os << hex`, `os << fixed`):
 			// rc->var is already bound to the resolved namespace
@@ -21741,9 +21737,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		return id(objtmp, origin);   // materialized object lvalue
 	}
 	// T&-returning operator returns an address; deref to the lvalue.
-	if (callee && callee->returns_reference())
-		return node1(N_DEREF, ocall, origin);
-	return ocall;
+	return reference_call_result(callee, ocall, origin);
 }
 
 // C++20 builtin three-way comparison ([expr.spaceship]), per g++ -O0 canon
@@ -22611,9 +22605,7 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 		return id(rtmp, origin);
 	}
 	// A T&-returning unary operator returns an address; deref to the lvalue.
-	if (callee->returns_reference())
-		return node1(N_DEREF, ocall, origin);
-	return ocall;
+	return reference_call_result(callee, ocall, origin);
 }
 
 // Build the bare `ClassName__operator[](&obj, i)` call — the raw method result.
@@ -22659,9 +22651,7 @@ node_t CirBuilder::class_nullary_call(DataDefCLASS *cls, const char *name,
 	// NOT when the value is DISCARDED (`++it;` as a statement): `*f(&it);` is a
 	// dereference with no effect, which is a warning in every compiler that
 	// looks — and the zero-warnings law makes that a defect, not a style note.
-	if (fd->returns_reference() && !discard_value)
-		return node1(N_DEREF, call, origin);
-	return call;
+	return discard_value ? call : reference_call_result(fd, call, origin);
 }
 
 node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
@@ -22780,9 +22770,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	FuncDef *callee = mv ? (mv->type ? mv->type->as_funcdef_dd() : NULL) : NULL;
 	// operator[] conventionally returns T& -> deref to the lvalue so the
 	// result is usable as both an rvalue (read) and an lvalue (`v[i] = x`).
-	if (callee && callee->returns_reference())
-		return node1(N_DEREF, call, origin);
-	return call;
+	return reference_call_result(callee, call, origin);
 }
 
 /*static*/ bool CirBuilder::class_subscript_is_object(TokenBase *arg)
@@ -24443,7 +24431,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			append(args, translate_expr(mpa->args[i]));
 		node_t call = node2(N_CALL, node2(N_CAST, ftype, callee, tb), args, tb);
 		CIR_NODE(call)->synth_from_origin = true;
-		return fd->returns_reference() ? node1(N_DEREF, call, tb) : call;
+		return reference_call_result(fd, call, tb);
 	}
 
 	// Address-of variable
@@ -24745,8 +24733,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					if (addr)
 						// operator[] returns T& -> a pointer; deref to the
 						// element lvalue (mirror of class_subscript_call).
-						return callee->returns_reference()
-						       ? node1(N_DEREF, addr, tb) : addr;
+						return reference_call_result(callee, addr, tb);
 				}
 			}
 			// madc array element read on an expression base
@@ -25302,9 +25289,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					append(pargs, integer(0, tb));   // dummy int (postfix marker)
 					node_t pcall = node2(N_CALL, id(sym.c_str(), tb), pargs, tb);
 					CIR_NODE(pcall)->synth_from_origin = true;
-					if (post->returns_reference())
-						return node1(N_DEREF, pcall, tb);
-					return pcall;
+					return reference_call_result(post, pcall, tb);
 				}
 				// No postfix overload: fall through to the nullary form below.
 			}
@@ -25925,9 +25910,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			build_call_args(tcf, args);
 			node_t call = node2(N_CALL, func_id, args, tb);
 			FuncDef *cdf = call_target_funcdef(tcf);
-			if (cdf && cdf->returns_reference())
-				return node1(N_DEREF, call, tb);
-			return call;
+			return reference_call_result(cdf, call, tb);
 		}
 	}
 
@@ -27704,16 +27687,14 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 			node_t fill = node2(N_CALL, id(sym.c_str(), fe), a, fe);
 			append(body_items, node2(N_EXPR, list(), fill, fe));
 		} else {
-			node_t elem = opfd && opfd->returns_reference()
-					? node1(N_DEREF, op_addr(), fe) : op_addr();
+			node_t elem = reference_call_result(opfd, op_addr(), fe);
 			node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
 					      elem, fe);
 			append(body_items, node2(N_EXPR, list(), assign, fe));
 		}
 	} else {
 		// Scalar element: x = *(c[__fe_i])  (load through the reference).
-		node_t elem = opfd && opfd->returns_reference()
-				? node1(N_DEREF, op_addr(), fe) : op_addr();
+		node_t elem = reference_call_result(opfd, op_addr(), fe);
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), elem, fe);
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
@@ -32441,7 +32422,10 @@ node_t CirBuilder::synth_call_shim_var(Program *prog, Variable *fvar)
 		}
 		}
 	}
-	node_t call = node2(N_CALL, id(target_sym.c_str()), cargs);
+	// A reference return converts its referent (`int &f()` gives the host the
+	// int); a class referent took the no-shim bail above.
+	node_t call = reference_call_result(fd, node2(N_CALL, id(target_sym.c_str()), cargs),
+					    NULL);
 
 	// 5. Result conversion (set helpers; scalar calls nest in the setter).
 	std::vector<ExternParam> set_scalar{ { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } };
