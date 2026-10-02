@@ -7282,6 +7282,15 @@ public:
     // answers for that call; else resolved_call_funcdef does. See parser.cpp.
     ArgValueCategory argument_value_category(TokenBase *arg,
 					     FuncDef *callee = NULL);
+    // A C++ prefix ++/-- or (compound) assignment over a built-in operand:
+    // an lvalue, its left operand ([expr.pre.incr]/1, [expr.ass]/1); in C a
+    // prvalue. See parser.cpp.
+    bool builtin_operator_yields_lvalue(TokenBase *arg) const;
+    // A non-variable expression that designates an object (a member, a
+    // dereference, a subscript, a reference-returning call, an lvalue
+    // conditional or lvalue-yielding operator); callers pair it with the
+    // plain-variable test.
+    bool is_addressable_expression(TokenBase *expr) const;
     // Type an operator expression on a class-object operand with the operator's
     // return type (Part A of generic operator-overload support). No-op unless the
     // left operand is a class object declaring the matching binary operator, or

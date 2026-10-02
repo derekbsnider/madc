@@ -1,0 +1,11 @@
+// The C twin of tests/testlvalueopbind: in C an assignment yields a prvalue
+// (C11 6.5.16p3), so `&(x = 3)` is a constraint violation. madc admits the
+// C++ lvalue-yielding operators only in a C++ mode and keeps refusing this.
+// Oracle: gcc -std=c17 "lvalue required as unary '&' operand"; clang -std=c17
+// "cannot take the address of an rvalue of type 'int'".
+int main(void)
+{
+	int x = 1;
+	int *p = &(x = 3);
+	return *p;
+}

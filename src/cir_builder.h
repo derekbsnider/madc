@@ -1549,6 +1549,9 @@ public:
 	// ---- Composite node builders ----
 	node_t list();
 	node_t node1(c2mir_node_code_t code, node_t op1, TokenBase *origin = NULL);
+	// node1's N_ADDR over a C++ lvalue-yielding operator (prefix ++/--, an
+	// assignment): the lhs address once, the operation through it.
+	node_t lvalue_operator_address(node_t op, TokenBase *origin);
 	node_t node2(c2mir_node_code_t code, node_t op1, node_t op2, TokenBase *origin = NULL);
 	node_t node3(c2mir_node_code_t code, node_t op1, node_t op2, node_t op3, TokenBase *origin = NULL);
 	node_t node4(c2mir_node_code_t code, node_t op1, node_t op2, node_t op3, node_t op4, TokenBase *origin = NULL);

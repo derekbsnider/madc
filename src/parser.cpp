@@ -33620,8 +33620,10 @@ bool Program::next_parenthesized_type_is_compound_literal()
     return is_compound_literal;
 }
 
-static bool is_addressable_expression(TokenBase *expr)
+bool Program::is_addressable_expression(TokenBase *expr) const
 {
+    if ( builtin_operator_yields_lvalue(expr) )
+	return true;
     if ( TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(expr) )
 	return tcp->expr && tcp->expr->datadef() && tcp->expr->datadef()->is_complex();
     if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
@@ -62029,7 +62031,7 @@ static bool fn_template_call_arg_is_lvalue(TokenBase *expr, Program &pgm)
     }
     if ( dynamic_cast<TokenVar *>(expr) )
 	return true;
-    return is_addressable_expression(expr);
+    return pgm.is_addressable_expression(expr);
 }
 
 // A built-in arithmetic, bitwise, shift, relational, equality or logical
@@ -62053,6 +62055,12 @@ static bool builtin_operator_yields_prvalue(TokenBase *arg)
     case TokenID::tkLE: case TokenID::tkGE: case TokenID::tkBSL:
     case TokenID::tkBSR:
 	break;
+    case TokenID::tkInc: case TokenID::tkDec:
+	// [expr.post.incr]/1: a postfix ++/-- yields a prvalue; the prefix
+	// forms are builtin_operator_yields_lvalue's (an lvalue in C++).
+	if ( !op->left )
+	    return false;
+	break;
     default:
 	return false;
     }
@@ -62070,6 +62078,32 @@ static bool builtin_operator_yields_prvalue(TokenBase *arg)
 	any = true;
     }
     return any;
+}
+
+// A prefix ++/-- ([expr.pre.incr]/1) and every (compound) assignment
+// ([expr.ass]/1) yield their left operand as an LVALUE in C++; in C they
+// yield a prvalue (C11 6.5.3.1, 6.5.16). Only a built-in operand answers: a
+// class, struct or carrier operand assigns through its operator=, whose
+// return type decides. The CIR lowers the address of one through
+// CirBuilder::lvalue_operator_address.
+bool Program::builtin_operator_yields_lvalue(TokenBase *arg) const
+{
+    if ( is_c_mode() || !arg )
+	return false;
+    TokenOperator *op = arg->as_operator_tok();
+    if ( !op || op->is_indirection() )
+	return false;
+    TokenBase *target = NULL;
+    if ( op->id() == TokenID::tkInc || op->id() == TokenID::tkDec )
+	target = op->left ? NULL : op->right;	// postfix: a prvalue
+    else if ( TokenAssign *as = dynamic_cast<TokenAssign *>(op) )
+	target = as->multi_vars.empty() ? as->left : NULL;
+    else if ( dynamic_cast<TokenCompoundAssign *>(op) )
+	target = op->left;
+    const DataDef *dd = target ? operand_value_type(target) : NULL;
+    dd = dd ? dd->unqualified() : NULL;
+    return dd && !dd->is_object() && !dd->is_struct() && !dd->is_function()
+	&& dd->rawtype() != DataType::dtARRAY && !dd->as_carray_dd();
 }
 
 // The shapes the tree states unambiguously answer; everything else is
@@ -62175,6 +62209,8 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
     if ( arg->id() == TokenID::tkComma )
 	if ( TokenOperator *co = dynamic_cast<TokenOperator *>(arg) )
 	    return argument_value_category(co->right);
+    if ( builtin_operator_yields_lvalue(arg) )
+	return ArgValueCategory::Lvalue;
     if ( arg->as_objtemp_tok() || dynamic_cast<TokenAddrOf *>(arg)
       || dynamic_cast<TokenTypeQuery *>(arg) || dynamic_cast<TokenInt *>(arg)
       || dynamic_cast<TokenChar *>(arg) || dynamic_cast<TokenReal *>(arg)

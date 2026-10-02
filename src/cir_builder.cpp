@@ -699,6 +699,78 @@ node_t CirBuilder::i64_list(TokenBase *origin)
 		     simple(N_LONG, origin));			// i64-owner
 }
 
+// The C nodes of the operators C++ defines to yield their LEFT operand as an
+// lvalue: prefix ++/-- ([expr.pre.incr]/1) and every (compound) assignment
+// ([expr.ass]/1). Their postfix forms yield a prvalue in both languages.
+static bool yields_left_lvalue(c2mir_node_code_t c)
+{
+	switch (c) {
+	case N_INC: case N_DEC: case N_ASSIGN:
+	case N_ADD_ASSIGN: case N_SUB_ASSIGN: case N_MUL_ASSIGN:
+	case N_DIV_ASSIGN: case N_MOD_ASSIGN: case N_LSH_ASSIGN:
+	case N_RSH_ASSIGN: case N_AND_ASSIGN: case N_OR_ASSIGN:
+	case N_XOR_ASSIGN:
+		return true;
+	default:
+		return false;
+	}
+}
+
+// The address of a C++ lvalue-yielding operator — the one owner, reached from
+// node1 (where every N_ADDR is born). C's forms of these operators yield an
+// rvalue, so `&(x = v)` is a constraint violation in any emitted program; it
+// lowers as gcc's gimplifier does, the left operand evaluated ONCE
+// (`a[i++] = 7`), the operation applied through its address, the address the
+// value:
+//   &(L op R) -> ({ void *__t = (void *)&L; *(T *)__t op R; (T *)__t; })
+// T is the left operand's type, read from the operator's origin token (`=`,
+// `@=` and `++` are typed by their left operand). The parser admits these as
+// lvalues only in a C++ mode (Program::builtin_operator_yields_lvalue). NULL:
+// not rewritten (no origin type, or a function / array lhs).
+node_t CirBuilder::lvalue_operator_address(node_t op, TokenBase *origin)
+{
+	cir_node *on = CIR_NODE(op);
+	TokenBase *tok = on ? madc_token_for_slot(on->origin_id) : NULL;
+	DataDef *t = tok ? operand_value_type(tok) : NULL;
+	if (!m_prog || !t || t->is_function() || t->as_fptr_dd()
+	    || t->as_carray_dd())
+		return NULL;
+	node_t lhs = c2mir_node_first_op(op);
+	node_t rhs = lhs ? c2mir_node_next_op(lhs) : NULL;
+	bool unary = on->base.code == N_INC || on->base.code == N_DEC;
+	if (!lhs || (unary ? rhs != NULL : (!rhs || c2mir_node_next_op(rhs))))
+		return NULL;
+	c2mir_op_remove(op, lhs);
+	if (rhs)
+		c2mir_op_remove(op, rhs);
+	char tmp[40];
+	snprintf(tmp, sizeof(tmp), "__madc_lvop_%d", m_strtmp_counter++);
+	DataDef *pt = m_prog->getPointerType(t);
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, node1(N_LIST, simple(N_VOID))));
+	node_t dl = list();
+	append(dl, pointer());
+	append(sd, node2(N_DECL, id(tmp, origin), dl));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, node2(N_CAST, void_ptr_type(),
+			 node1(N_ADDR, lhs, origin), origin));
+	node_t items = list();
+	append(items, sd);
+	node_t through = node1(N_DEREF,
+			       node2(N_CAST, ptr_type_node(pt), id(tmp, origin),
+				     origin), origin);
+	// The operation keeps the operator's own origin (MC11-IR: its tokens
+	// and position); the scaffolding around it is the address's.
+	node_t step = unary ? node1(on->base.code, through, tok)
+			    : node2(on->base.code, through, rhs, tok);
+	append(items, node2(N_EXPR, list(), step, origin));
+	append(items, node2(N_EXPR, list(),
+			    node2(N_CAST, ptr_type_node(pt), id(tmp, origin),
+				  origin), origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
 node_t CirBuilder::node1(c2mir_node_code_t code, node_t op1, TokenBase *origin)
 {
 	// A C conditional / comma is NEVER an lvalue (C11 6.5.15, 6.5.17 —
@@ -737,6 +809,9 @@ node_t CirBuilder::node1(c2mir_node_code_t code, node_t op1, TokenBase *origin)
 				return op1;
 			}
 		}
+		if (on && yields_left_lvalue(on->base.code))
+			if (node_t r = lvalue_operator_address(op1, origin))
+				return r;
 	}
 	cir_node *cn = make(code, origin);
 	node_t n = cn->as_node();
@@ -26010,27 +26085,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 // Statement translation
 // -----------------------------------------------------------------------
 
-// The (compound-)assignment operator IDs and their CIR node codes — the
-// subset of the binary-operator switch translate_return's ref-assign arm
-// needs (C++ [expr.ass]: all of these yield the assigned lvalue).
-static bool assign_op_node_code(TokenID id, c2mir_node_code_t &code)
-{
-	switch (id) {
-	case TokenID::tkAssign: code = N_ASSIGN; return true;
-	case TokenID::tkAddEq:  code = N_ADD_ASSIGN; return true;
-	case TokenID::tkSubEq:  code = N_SUB_ASSIGN; return true;
-	case TokenID::tkMulEq:  code = N_MUL_ASSIGN; return true;
-	case TokenID::tkDivEq:  code = N_DIV_ASSIGN; return true;
-	case TokenID::tkModEq:  code = N_MOD_ASSIGN; return true;
-	case TokenID::tkBandEq: code = N_AND_ASSIGN; return true;
-	case TokenID::tkBorEq:  code = N_OR_ASSIGN; return true;
-	case TokenID::tkXorEq:  code = N_XOR_ASSIGN; return true;
-	case TokenID::tkBSLEq:  code = N_LSH_ASSIGN; return true;
-	case TokenID::tkBSREq:  code = N_RSH_ASSIGN; return true;
-	default: return false;
-	}
-}
-
 node_t CirBuilder::translate_return(TokenRETURN *tr)
 {
 	// `return <void-expr>;` inside a void function (e.g.
@@ -26189,28 +26243,8 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			}
 		}
 	}
-	// A ref-returning function whose return operand is a SCALAR
-	// (compound-)assignment: C++ assignment yields the assigned LVALUE
-	// ([expr.ass]) but C11's yields an rvalue, so the ref arm's
-	// `return &(assign)` is invalid C ("lvalue required as unary &
-	// operand" — the ios_base fmtflags operator|=/&=/^= drain family and
-	// any user `return v = v + x;`). Lower as the g++ shape: hoist the
-	// lhs ADDRESS once into a temp of the function's C return type,
-	// assign through it, return the temp (single evaluation of the lhs).
-	// Class operands are excluded — class assignment dispatches through
-	// operator= / memberwise machinery, not a raw N_ASSIGN.
-	TokenOperator *ref_assign = NULL;
-	c2mir_node_code_t ref_assign_code = N_ASSIGN;
-	if (m_cur_func_returns_ref && tr->returns && m_cur_func_ret_spec_dd
-	    && !m_cur_func_returns_class_ptr) {
-		TokenOperator *rtop = dynamic_cast<TokenOperator *>(tr->returns);
-		if (rtop && rtop->left && rtop->right
-		    && assign_op_node_code(rtop->id(), ref_assign_code)
-		    && !as_class_instance(rtop->left->datadef()))
-			ref_assign = rtop;
-	}
-	// The CLASS twin of the hoist above: a ref-returning function whose
-	// return operand is a class-to-class `=` (`return *this = __str;` —
+	// A ref-returning function whose return operand is a class-to-class `=`
+	// (`return *this = __str;` —
 	// basic_string::assign(basic_string&&), the string drain family). A
 	// USER-declared operator= dispatches below through class_operator_call
 	// and its result flows exactly as before. The IMPLICIT operator=
@@ -26220,7 +26254,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// and return the lhs ADDRESS — for the implicit operator= the
 	// expression's value is defined to be the lhs itself ([expr.ass]).
 	TokenOperator *cls_ref_assign = NULL;
-	if (m_cur_func_returns_ref && tr->returns && !ref_assign) {
+	if (m_cur_func_returns_ref && tr->returns) {
 		TokenOperator *rtop = dynamic_cast<TokenOperator *>(tr->returns);
 		if (rtop && rtop->id() == TokenID::tkAssign
 		    && rtop->left && rtop->right) {
@@ -26240,21 +26274,7 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	}
 	node_t expr;
 	bool expr_is_address = false;
-	if (ref_assign) {
-		char tmp[48];
-		snprintf(tmp, sizeof(tmp), "__madc_refret_%d", m_strtmp_counter++);
-		node_t lhs_addr =
-			reference_member_value_is_stored_address(ref_assign->left)
-			? translate_expr(ref_assign->left)
-			: node1(N_ADDR, translate_expr(ref_assign->left), tr);
-		node_t rhs = translate_expr(ref_assign->right);
-		m_pending_stmts.push_back(return_value_temp(tmp, lhs_addr, tr));
-		node_t asg = node2(ref_assign_code,
-				   node1(N_DEREF, id(tmp, tr), tr), rhs, tr);
-		m_pending_stmts.push_back(node2(N_EXPR, list(), asg, tr));
-		expr = id(tmp, tr);   // already the address — no & wrap below
-		expr_is_address = true;
-	} else if (cls_ref_assign) {
+	if (cls_ref_assign) {
 		node_t ov = class_operator_call(cls_ref_assign, cls_ref_assign);
 		if (ov)
 			// user operator=: the call IS the return value; the &
