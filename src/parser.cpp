@@ -33675,14 +33675,16 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	    // ([expr.unary.op]/3) — the Itanium {ptr, adj} pair
 	    // (DataDefMemberFnPtr); the CIR mints the constant (a virtual
 	    // member encodes its vtable slot). madc_program.cpp:2890
-	    // `(this->*fn)(...)` with `fn` bound from `&impl::f`.
+	    // `(this->*fn)(...)` with `fn` bound from `&impl::f`. The type's
+	    // target is the member's function type (member_function_type).
 	    if ( method_var && method_var->type && method_var->type->is_function() )
 	    {
 		if ( peekToken() && peekToken()->id() == TokenID::tkLT )
 		    skip_template_id_suffix();
 		FuncDef *mfd = dynamic_cast<FuncDef *>(method_var->type);
 		DataDefMemberFnPtr *mpt = new DataDefMemberFnPtr(
-		    aclass, aname, mfd, mfd && mfd->is_const_method);
+		    aclass, aname, mfd ? member_function_type(mfd) : NULL,
+		    mfd && mfd->is_const_method);
 		return new TokenMemberPtrConst(aclass, method_var, member_name, 0, mpt);
 	    }
 	    // A NON-static DATA member: `&C::field` is a pointer to data member —
@@ -54915,6 +54917,34 @@ DataDefFPTR *Program::fnptr_twin(DataDefFPTR *fn_type)
     return twin;
 }
 
+// A pointer to member function's `target` is the member's function TYPE —
+// what parseFnPtrParams and parse_member_signature_qualifiers build for the
+// declarator `R (C::*)(A) const`, and what every reader of the member pointer
+// (the `.*` call lowering, deduction) takes it to be: the source parameters,
+// the receiver supplied separately. `&C::f` names the method's own FuncDef,
+// whose parameters lead with the hidden __this; this drops that slot from
+// each index-aligned parameter array.
+FuncDef *Program::member_function_type(FuncDef *method)
+{
+    FuncDef *fn = new FuncDef(method->returns);
+    for ( size_t i = 1; i < method->parameters.size(); ++i )
+    {
+	fn->parameters.push_back(method->parameters[i]);
+	fn->const_params.push_back(i < method->const_params.size()
+				   && method->const_params[i]);
+	fn->param_cpp_spellings.push_back(i < method->param_cpp_spellings.size()
+					  ? method->param_cpp_spellings[i] : std::string());
+	fn->param_typedef_names.push_back(i < method->param_typedef_names.size()
+					  ? method->param_typedef_names[i] : std::string());
+    }
+    fn->is_varargs = method->is_varargs;
+    fn->is_void_params = method->is_void_params;
+    fn->is_const_method = method->is_const_method;
+    fn->is_volatile_method = method->is_volatile_method;
+    fn->ref_qualifier = method->ref_qualifier;
+    return fn;
+}
+
 // A struct/class DATA MEMBER: the ONE reader in Named mode, then the member
 // storage contract — addMember stores the ELEMENT type with the declarator's
 // OWN dims (peeled down to the base the caller passed, so a typedef'd array
@@ -62328,6 +62358,112 @@ static bool deduced_bindings_conflict(DataDef *bound, DataDef *dd)
     return cb->name != cd->name;
 }
 
+// A pointer-to-member ptr-operator in a parameter SPELLING's words
+// (fn_template_split_words): `C :: *`, its class a plain identifier, possibly
+// qualified (`ns :: C :: *`). `colon` is the index of the first `:` before
+// the `*`, `qual` the first word of the class's qualified name. False when
+// the spelling has none, or its class is not an identifier (`X<T>::*`).
+static bool member_pointer_spelling_class(const std::vector<std::string> &words,
+					  size_t &colon, size_t &qual)
+{
+    for ( size_t k = 1; k + 2 < words.size(); ++k )
+    {
+	if ( words[k] != ":" || words[k+1] != ":" || words[k+2] != "*" )
+	    continue;
+	const std::string &cls = words[k-1];
+	if ( cls.empty() || !(isalpha((unsigned char)cls[0]) || cls[0] == '_') )
+	    return false;
+	colon = k;
+	qual = k - 1;
+	while ( qual >= 3 && words[qual-1] == ":" && words[qual-2] == ":" )
+	    qual -= 3;
+	return true;
+    }
+    return false;
+}
+
+// A pointer-to-member parameter SPELLING (`int T1::*pm`, `int(T1::*pm)(int)`)
+// against a pointer-to-member argument ([temp.deduct.type]/8 lists `T T::*`
+// and `T (T::*)(T)` among the deducible forms): the class named before `::*`
+// deduces from the argument's class, a data member's type through
+// fn_template_deduce_param, a member function's signature through
+// fn_template_deduce_fnptr_param as the plain `R (*)(params)` it is. False
+// when the parameter and the argument do not match (a deduction failure).
+static bool fn_template_deduce_member_pointer_param(const std::string &spelling,
+	const std::vector<std::string> &typeparams,
+	const std::string &pack_param,
+	DataDef *arg_dd,
+	std::map<std::string, DataDef *> &binding,
+	bool &pack_empty,
+	const std::vector<std::string> *tid_pack_names,
+	std::map<std::string, std::vector<DataDef *> > *tid_packs)
+{
+    std::vector<std::string> words;
+    fn_template_split_words(spelling, words);
+    size_t colon = 0, qual = 0;
+    if ( !arg_dd || !member_pointer_spelling_class(words, colon, qual) )
+	return false;
+    DataDef *arg = arg_dd->unqualified();
+    DataDefMemberFnPtr *mfp = dynamic_cast<DataDefMemberFnPtr *>(arg);	// exact-class dispatch
+    DataDefMemberPtr *dmp = dynamic_cast<DataDefMemberPtr *>(arg);	// exact-class dispatch
+    bool function_form = false;
+    for ( size_t i = 0; i < qual; ++i )
+	if ( words[i] == "(" )
+	    function_form = true;
+    if ( function_form ? !mfp || !mfp->target : !dmp || !dmp->member_type )
+	return false;
+    const std::string &cls = words[colon - 1];
+    if ( std::find(typeparams.begin(), typeparams.end(), cls) != typeparams.end() )
+    {
+	DataDef *owner = mfp ? mfp->owner_class : dmp->owner_class;
+	if ( !owner )
+	    return false;
+	std::map<std::string, DataDef *>::iterator have = binding.find(cls);
+	if ( have != binding.end() )
+	{
+	    if ( deduced_bindings_conflict(have->second, owner) )
+		return false;
+	}
+	else
+	    binding[cls] = canonical_template_binding_dd(owner);
+    }
+    // The words around the ptr-operator, the class and its `::` dropped.
+    std::string rest;
+    for ( size_t i = 0; i < words.size(); ++i )
+	if ( i < qual || i > colon + 1 )
+	    rest += (rest.empty() ? "" : " ") + words[i];
+    if ( function_form )
+    {
+	// The cv-qualifier-seq is part of the member's function type: a
+	// `R (T::*)(A) const` parameter deduces from a const member only.
+	bool spelled_const = false;
+	for ( size_t i = words.size(); i-- > 0 && words[i] != ")"; )
+	    if ( words[i] == "const" )
+		spelled_const = true;
+	if ( spelled_const != mfp->is_const_method )
+	    return false;
+	return fn_template_deduce_fnptr_param(rest, typeparams, pack_param,
+					      mfp->target, binding, pack_empty,
+					      tid_pack_names, tid_packs);
+    }
+    std::string member;
+    for ( size_t i = 0; i < qual; ++i )
+	member += (member.empty() ? "" : " ") + words[i];
+    std::string tp;
+    DataDef *dd = NULL;
+    int r = fn_template_deduce_param(member, typeparams, dmp->member_type, tp, dd);
+    if ( r < 0 )
+	return false;
+    if ( r == 1 )
+    {
+	std::map<std::string, DataDef *>::iterator have = binding.find(tp);
+	if ( have != binding.end() )
+	    return !deduced_bindings_conflict(have->second, dd);
+	binding[tp] = dd;
+    }
+    return true;
+}
+
 // C++ SYMBOL MANGLING phase 3b: the Itanium symbol a USER function template's
 // product defines (_Z4makeIiET_S0_, _ZN2ns6nidentIiEET_S1_ — g++/clang's, so
 // the product links into a g++ program and two TUs' products fold as one weak
@@ -63007,6 +63143,23 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	    if ( pack_elems.size() == 1 && binding.find(pack_param) == binding.end() )
 		binding[pack_param] = pack_elems[0];
 	    continue;
+	}
+	// A pointer-to-member parameter against a pointer-to-member argument:
+	// its class deduces ([temp.deduct.type]/8) — `T1::*` is a ptr-operator,
+	// not a qualified-id's non-deduced nested-name-specifier.
+	{
+	    std::vector<std::string> mpw;
+	    size_t mpc = 0, mpq = 0;
+	    fn_template_split_words(sp, mpw);
+	    if ( arg_dd && arg_dd->is_member_pointer()
+	      && member_pointer_spelling_class(mpw, mpc, mpq) )
+	    {
+		if ( !fn_template_deduce_member_pointer_param(sp, ft.typeparams,
+			pack_param, arg_dd, binding, pack_empty,
+			&pack_tps, &tid_packs) )
+		    { FTPROBE("member-pointer-deduction"); return false; }
+		continue;
+	    }
 	}
 	// Every template parameter this spelling names is already bound
 	// (explicit template arguments — `__str_concat<_Str>(...)` whose

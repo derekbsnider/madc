@@ -1,0 +1,42 @@
+// A pointer-to-member parameter deduces its class and its member's type
+// ([temp.deduct.type]/8: `T T::*` and `T (T::*)(T)` are deducible forms):
+// `int (T1::*pm)(int)` from `&C::foo` binds T1 = C, `M T::*pm` from `&C::d`
+// binds M = int and T = C, `R (T::*pm)(A)` binds R, T and A, a const member
+// function's `int (T::*)(int) const` binds T. madc bound none of them — the
+// member-function form failed the candidate, the data-member form skipped
+// `T1::*` as a non-deduced nested-name-specifier — and every call failed at
+// link time, "import of undefined item". The member-function form failed
+// because `&C::foo`'s type carried the method's own parameter list, hidden
+// receiver first; `auto ap = &C::foo; (c.*ap)(3)` failed on it too ("too few
+// arguments"). The cv-qualifier-seq is part of the member's type: `which`
+// picks the overload whose `const` matches the member's.
+//
+// g++ 13 and clang++ 18 (-std=c++17) print the .expect line.
+#include <cstdio>
+
+struct C {
+	int d;
+	int foo(int v) { return v + 1; }
+	int bar(int v) const { return v + d; }
+};
+
+template <class T1> int call(T1 &o, int (T1::*pm)(int), int v) { return (o.*pm)(v); }
+template <class T1> int call_only(int (T1::*pm)(int), int v) { T1 o; return (o.*pm)(v); }
+template <class T1> int get_only(int T1::*pm) { T1 o; o.*pm = 7; return o.*pm; }
+template <class M, class T> M read(T &o, M T::*pm) { return o.*pm; }
+template <class R, class T, class A> R apply(T &o, R (T::*pm)(A), A a) { return (o.*pm)(a); }
+template <class T> int call_const(const T &o, int (T::*pm)(int) const, int v) { return (o.*pm)(v); }
+template <class T> int which(int (T::*)(int)) { return 1; }
+template <class T> int which(int (T::*)(int) const) { return 2; }
+
+int main()
+{
+	C c;
+	c.d = 5;
+	auto ap = &C::foo;
+	std::printf("pm %d %d %d %d %d %d\n", call(c, &C::foo, 41), call_only(&C::foo, 9),
+		    get_only(&C::d), read(c, &C::d), apply(c, &C::foo, 1), call_const(c, &C::bar, 10));
+	std::printf("auto %d\n", (c.*ap)(3));
+	std::printf("cv %d %d\n", which(&C::foo), which(&C::bar));
+	return 0;
+}

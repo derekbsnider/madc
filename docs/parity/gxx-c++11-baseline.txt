@@ -110,6 +110,9 @@
 #   FEATURE_CONST_TYPES).
 # SHRUNK 2026-10-02 (454 -> 453), B120: a function-template call's type is its
 #   DECLARED return, its reference included — cpp0x/rv-dotstar passes.
+# SHRUNK 2026-10-02 (452 -> 451), B127: a pointer-to-member parameter deduces
+#   its class and its member's type, and `&C::f`'s type is the member's function
+#   type without the hidden receiver — cpp0x/vt-55542 passes.
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -487,7 +490,6 @@ g++.dg/cpp0x/variadic7.C
 g++.dg/cpp0x/variadic75.C
 g++.dg/cpp0x/variadic87.C
 g++.dg/cpp0x/variadic9.C
-g++.dg/cpp0x/vt-55542.C
 g++.dg/cpp0x/vt-59988.C
 g++.dg/cpp0x/vt-82936.C
 g++.dg/template/access41a.C

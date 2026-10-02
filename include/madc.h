@@ -8038,6 +8038,11 @@ public:
     // The pointer-to-function twin of a FUNCTION type (a fresh DataDefFPTR over
     // the same signature, ptr_syntax set) — `*` on a function type, [dcl.fct]/5.
     DataDefFPTR *fnptr_twin(DataDefFPTR *fn_type);
+    // The function TYPE of a non-static member function — the `T` of
+    // `T C::*` ([dcl.mptr]/3): its signature without the hidden __this
+    // receiver (parameter 0 of a method FuncDef), the shape a
+    // `R (C::*)(A) cv` declarator builds.
+    FuncDef *member_function_type(FuncDef *method);
     // A struct/class DATA MEMBER's declarator through the ONE reader, then the
     // member storage contract: addMember takes the ELEMENT type with the
     // declarator's OWN dims (count = their product, 0 for `[]`; the first

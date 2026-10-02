@@ -512,36 +512,6 @@ int main(void) { int l[1] = { 7, 8 }; printf("%d %d | %d %d | %d\n", a[0], a[1],
 - Found 2026-10-02 beside the string-literal fit. Off the release path, filed
   per owner 2026-09-30.
 
-### B127. `T1::*` over a class-template parameter is refused
-
-```cpp
-struct C { int foo(int v) { return v + 1; } };
-template <class T1, class T2, class T3> struct A { typedef T2 (T1::*m)(T3); };
-int main() { A<C, int, int>::m p = &C::foo; C c; return (c.*p)(41) == 42 ? 0 : 1; }
-```
-
-- g++ 13 (`-std=c++11`): exit 0. madc (`--std=c++11`, at `79bd6f1d9`):
-  `error: Expecting identifier in declarator` at `(T1::*m)`, exit 1. The same
-  typedef with a concrete class (`int (C::*m)(int)`) compiles and runs.
-- `g++.dg/template/ptrmem19.C` (gxx-c++11 lane) got the same refusal. Its
-  hang (the refusal repeated until the lane's 30 s timeout) was the class
-  re-parse's injected run left in the stream, fixed with B131.
-- Layer: the declarator reader (`Program::parse_declarator`; the `C::*`
-  ptr-operator's nested-name-specifier refuses a template type parameter).
-- 2026-10-02, the declarator half is FIXED: `member_pointer_owner_head` admits a
-  type-token owner (a class, or a dependent type) in the one `C::*` lookahead,
-  `member_pointer_declarator_ahead`. ptrmem19.C left the gxx-c++11 baseline;
-  `tests/testmemberptrtemplateparam` is the reducer.
-- STILL OPEN, deduction: a function template whose parameter is a
-  member-FUNCTION pointer over its own parameter does not deduce it.
-  ```cpp
-  struct C { int foo(int v) { return v + 1; } };
-  template <class T1> int call(T1 &o, int (T1::*pm)(int), int v) { return (o.*pm)(v); }
-  int main() { C c; return call(c, &C::foo, 41) == 42 ? 0 : 1; }
-  ```
-  g++ 13: exit 0. madc: `MIR error: import of undefined item call`. The
-  data-member form (`int T1::*pm`) deduces.
-
 ### B126. A polyglot public refuses a temporary for a read-only `value &` input
 
 ```cpp
