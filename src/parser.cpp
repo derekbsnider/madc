@@ -64090,7 +64090,7 @@ static std::vector<TokenBase *> clone_run_with_template_names(
 }
 
 static bool instantiate_fn_template_binding(Program &pgm,
-	Program::FnTemplateDef &ft_in, const std::string &key,
+	Program::FnTemplateDef &ft_in, const std::string &key_requested,
 	std::map<std::string, DataDef *> &binding,
 	const std::string &pack_param_in, bool pack_empty, Variable **var_out,
 	std::vector<DataDef *> pack_elems,
@@ -64100,6 +64100,9 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	std::vector<DataDef *> *type_args_out,
 	std::vector<std::vector<DataDef *> > *type_arg_packs_out)
 {
+    // The registration key: the caller's declarator name, until a fresh
+    // instantiation names itself from its identity (ft.inst_name_base, below).
+    std::string key = key_requested;
     std::string pack_param = pack_param_in;
     // Env-gated exit probe (MADC_FNTPL_PROBE): the binding stage's own
     // fail-cleanly bails, named (the MTB probe's sibling).
@@ -64681,6 +64684,32 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		    *var_out = *vi;
 	    }
 	    return true;
+	}
+    }
+    // A fresh instantiation named from its IDENTITY (inst_key: the template,
+    // its deduced binding, the overload's declaration), never from the
+    // request that reached it first: every route to one specialization —
+    // another call shape, another TU, a forest producer and the consumer
+    // that binds its frozen instance — then names it alike, so linkonce
+    // definitions agree at link and a bound compile emits the live compile's
+    // item set. The caller's renamed declarator (one identifier) is replaced;
+    // the name-keyed body-parse skip follows it.
+    if ( !ft.inst_name_base.empty() )
+    {
+	size_t ni = skipped_template_function_declarator_name_index(ft.decl, NULL);
+	if ( ni < ft.decl.size() && ft.decl[ni] )
+	{
+	    const std::string named =
+		pgm.instance_overload_symbol(ft.inst_name_base, inst_key);
+	    TokenBase *old = ft.decl[ni];
+	    TokenBase *ren = new TokenIdent(named.c_str());
+	    ren->file = old->file;
+	    ren->line = old->line;
+	    ren->column = old->column;
+	    ft.decl[ni] = ren;
+	    if ( pgm.tsubst_skip_body_name == key )
+		pgm.tsubst_skip_body_name = named;
+	    key = named;
 	}
     }
     pgm.fn_template_instantiated.insert(inst_key);
@@ -67726,10 +67755,12 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     ft.ns = namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
-    // placeholder, which would drop them) — unique PER TYPE-SHAPE and
-    // candidate (instance_overload_symbol: `__mti__oN`, N keyed on the call
-    // shape, so every TU names a shape's instance alike), and each call binds
-    // its own shape's instance via the shape_key memo above +
+    // placeholder, which would drop them): `__mti__oN`, N keyed on the
+    // SPECIALIZATION — the binding instantiator mints it from its memo
+    // identity (ft.inst_name_base below), so every call shape, TU and forest
+    // consumer that reaches one specialization names it alike. This
+    // call-shape name is only the request's provisional declarator; each call
+    // binds its own shape's instance via the shape_key memo above +
     // tc->mti_instance below.
     inst_name = instance_overload_symbol(tc->var.name + "__mti",
 					 call_shape + "#c" + std::to_string(mci));
@@ -67802,6 +67833,7 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     // candidate A's instance.
     ft.inst_identity = tc->var.name + "__mti"
 	+ (mci ? "__c" + std::to_string(mci) : std::string());
+    ft.inst_name_base = tc->var.name + "__mti";
     if ( phase == 0 )
     {
 	deduced[mci] = try_instantiate_namespace_fn_template(*this, ft, key, tc,

@@ -4497,6 +4497,12 @@ public:
 	// mint duplicate definitions — g++ has one instantiation per
 	// (template, binding). Set to the placeholder's stable symbol.
 	std::string inst_identity;
+	// When non-empty, a FRESH instantiation's declarator is named
+	// instance_overload_symbol(inst_name_base, <memo identity>) — the
+	// specialization's identity, so every request that reaches it (another
+	// call shape, another TU, a forest consumer binding the producer's
+	// frozen instance) names it alike. Empty: the caller's declarator name.
+	std::string inst_name_base;
 	// task #25 B2: lazy payload source (see TemplateDef::frozen_src).
 	CirRestoredTemplate *frozen_src;
 	CirFrozenForest *frozen_src_forest;
@@ -4504,6 +4510,7 @@ public:
 	    typeparam_constraints(), typeparam_is_type(),
 	    typeparam_is_pack(), decl(), ns(), inline_builtin_kind(),
 	    owner_class(NULL), instance_method(false), inst_identity(),
+	    inst_name_base(),
 	    frozen_src(NULL), frozen_src_forest(NULL) {}
     };
     madc::dis::intern_keyed_map<std::vector<FnTemplateDef>> fn_template_map; // keyed via template_name_pool (enumerated via for_each)
