@@ -378,9 +378,9 @@ int64_t php_array_push_bool(madc::value *arr, bool val)
 
 // carrier push — a value of ANY kind, kind-preserving deep copy (the value
 // copy ctor); pushing an array-kind carrier nests it. Serves both the
-// script's (array&, value&) overload and the legacy __php_array_push_array
+// script's (array&, const value&) overload and the legacy __php_array_push_array
 // plumbing symbol.
-int64_t php_array_push_value(madc::value *arr, madc::value *value)
+int64_t php_array_push_value(madc::value *arr, const madc::value *value)
 {
 	ns_common::value_array_for_write(*arr, "php::array_push")
 		.push_back(*value);
@@ -1477,7 +1477,7 @@ int64_t __php_array_push_int(madc::value *a, int64_t b) { return php_array_push_
 int64_t __php_array_push_real(madc::value *a, double b) { return php_array_push_real(a, b); }
 int64_t __php_array_push_bool(madc::value *a, bool b) { return php_array_push_bool(a, b); }
 int64_t __php_array_push_array(madc::value *a, madc::value *b) { return php_array_push_value(a, b); }
-int64_t __php_array_push_value(madc::value *a, madc::value *b) { return php_array_push_value(a, b); }
+int64_t __php_array_push_value(madc::value *a, const madc::value *b) { return php_array_push_value(a, b); }
 std::string *__php_array_pop(std::string *a, madc::value *b) { return php_array_pop(a, b); }
 std::string *__php_array_get(std::string *a, madc::value *b, int64_t c) { return php_array_get(a, b, c); }
 int64_t __php_array_get_int(madc::value *a, int64_t b) { return php_array_get_int(a, b); }

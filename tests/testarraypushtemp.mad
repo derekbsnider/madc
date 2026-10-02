@@ -1,0 +1,24 @@
+// php::array_push accepts ANY value and preserves its kind — a temporary
+// included. The carrier overload is `array_push(array &, const value &)`:
+// [dcl.init.ref]/5 binds a prvalue to a const lvalue reference and never to a
+// non-const one, so the former `value &v` spelling refused `value(3.5)` and
+// the call fell to the const char* overload — the real pushed as the text
+// "3.5" (a string-kind element), and before the carrier-prvalue text coercion
+// as an empty string. .expect_quiet gates the c2mir argument warning.
+// Oracle — the C++ analogue (struct value { double d; }): g++ -std=c++17 and
+// clang++ -std=c++17 bind `push(value{3.5})` to `int push(const value &)`
+// (prints 7) and refuse `pushnc(value{3.5})` against `int pushnc(value &)`
+// (g++: "cannot bind non-const lvalue reference of type 'value&' to an
+// rvalue of type 'value'"; clang++: "no matching function for call to
+// 'pushnc'").
+int main() {
+	array a;
+	var v = 2.5;
+	php::array_push(a, v);
+	php::array_push(a, value(3.5));
+	php::array_push(a, value("text"));
+	php::array_push(a, 7);
+	php::array_push(a, "lit");
+	php::var_dump(a);
+	return 0;
+}
