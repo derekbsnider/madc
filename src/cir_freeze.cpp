@@ -3808,8 +3808,12 @@ void CirFrozenForest::materialize_pass()
 		fd->template_return_deduce_arg_index   = (int)r.tret_arg_index;
 		fd->template_return_deduce_from_pointer =
 			(r.flags & madc::dis::DF_TRET_FROM_POINTER) != 0;
+		fd->template_return_deduce_forwarding =
+			(r.flags & madc::dis::DF_TRET_FWD) != 0;
 		fd->template_return_ref =
-			(r.flags & madc::dis::DF_TRET_REF) != 0;
+			!(r.flags & madc::dis::DF_TRET_REF) ? RefKind::None
+			: (r.flags & madc::dis::DF_TRET_RREF) ? RefKind::Rvalue
+			: RefKind::Lvalue;
 		// v46: the overload-set DECLARATION IDENTITY — the parameter
 		// spelling and an instantiation product's template-argument
 		// identity spellings — so the restored member ranks exactly as

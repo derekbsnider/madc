@@ -120,8 +120,9 @@ enum DefKind : uint32_t {
 			// packed header binds exactly as the live parse left it.
 };
 
-// Kind-independent flag bits on a defrec (grows as the schema completes — a new bool is a
-// new bit, dumped for free).
+// Flag bits on a defrec (grows as the schema completes — a new bool is a new bit, dumped
+// for free). All 32 bits are taken: a bit may carry one meaning per record KIND, each
+// such flag marked `<kind>-scoped` and read only under that kind's test.
 enum DefFlags : uint32_t {
 	DF_UNION_LAYOUT      = 1u << 0,
 	DF_IS_COMPLETE       = 1u << 1,
@@ -178,7 +179,14 @@ enum DefFlags : uint32_t {
 						// otherwise it cleanly lacks (a producer root must
 						// never restore into a consumer).
 	DF_TRET_FROM_POINTER = 1u << 18,	// v21: FuncDef::template_return_deduce_from_pointer
-	DF_TRET_REF          = 1u << 19,	// v21: FuncDef::template_return_ref
+	DF_TRET_REF          = 1u << 19,	// v21: FuncDef::template_return_ref != None
+	DF_TRET_FWD          = 1u << 5,	// DK_FUNC-scoped: FuncDef::
+						// template_return_deduce_forwarding (the deduced
+						// parameter is a forwarding `T &&`); shares the
+						// bit with the aggregate-only DF_HAS_VTABLE.
+	DF_TRET_RREF         = 1u << 8,	// DK_FUNC-scoped: template_return_ref is
+						// Rvalue (`T &&`); shares the bit with the
+						// aggregate-only DF_HAS_USER_CTOR. Absent = `T &`.
 
 	DF_FPTR_PTR_SYNTAX   = 1u << 20,	// v22: DataDefFPTR::ptr_syntax (explicit `(*)` form
 						// vs a Form-1 function typedef)

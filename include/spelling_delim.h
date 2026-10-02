@@ -236,4 +236,20 @@ inline SpelledReference spelled_reference(const std::string &sp)
 	return r;
 }
 
+// A FORWARDING reference ([temp.deduct.call]/3): an rvalue reference to a
+// cv-unqualified type parameter of the function template itself (`T &&`,
+// `T &&...`; never `const T &&`, never `vector<T> &&`). The one test over a
+// declared parameter spelling.
+inline bool spelling_is_forwarding_reference(const std::string &sp,
+				const std::vector<std::string> &typeparams)
+{
+	SpelledReference r = spelled_reference(sp);
+	if ( !r.rvalue || r.referent_const )
+		return false;
+	for ( size_t i = 0; i < typeparams.size(); ++i )
+		if ( r.referent == typeparams[i] )
+			return true;
+	return false;
+}
+
 #endif

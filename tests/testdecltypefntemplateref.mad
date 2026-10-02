@@ -1,0 +1,40 @@
+// decltype of a call to a function template instance is its DECLARED return
+// type, reference included ([dcl.type.decltype]/1.3, [basic.lval]/1.3): an
+// identity return `T &&f(T &)`, `T &f(T &)`, std::move, a forwarding `T &&f(T &&)`
+// (an lvalue argument deduces T as `A &`, [temp.deduct.call]/3, and the return
+// collapses to `A &`) and an explicit `f<int &>` all name their reference.
+// madc read the referent (a parallel "returns a reference" flag carried no kind):
+// move/tmv/tref/fwd/forward<int&>/explicit printed 0, exit 0.
+// Oracle: g++ 13.3 and clang++ 18.1 (-std=c++17 -Wall, warning-free) print the
+// .expect lines.
+#include <type_traits>
+#include <utility>
+#include <cstdio>
+template<class T> T &&tmv(T &x) { return static_cast<T&&>(x); }
+template<class T> T &tref(T &x) { return x; }
+template<class T> T tval(T &x) { return x; }
+template<class T> T &&fwd(T &&x) { return static_cast<T&&>(x); }
+int &&mv(int &x) { return static_cast<int&&>(x); }
+static const char *ov(int &) { return "int&"; }
+static const char *ov(int &&) { return "int&&"; }
+#define IS(e, t) (int)std::is_same<decltype(e), t>::value
+int main()
+{
+	int k = 3;
+	int &r = k;
+	printf("move: %d\n", IS(std::move(k), int&&));
+	printf("tmv: %d %d\n", IS(tmv(k), int&&), IS(tmv(r), int&&));
+	printf("tref: %d\n", IS(tref(k), int&));
+	printf("tval: %d\n", IS(tval(k), int));
+	printf("fwd: %d %d\n", IS(fwd(k), int&), IS(fwd(3), int&&));
+	printf("plain: %d\n", IS(mv(k), int&&));
+	printf("forward: %d %d\n", IS(std::forward<int&>(k), int&), IS(std::forward<int>(k), int&&));
+	printf("explicit: %d %d\n", IS(tmv<int&>(k), int&), IS(fwd<int&>(k), int&));
+	printf("pick: %s %s %s\n", ov(std::forward<int&>(k)), ov(std::forward<int>(k)), ov(tmv(k)));
+	int &&x = tmv(k);
+	x = 5;
+	printf("bind: %d\n", k);
+	tref(k) = 7;
+	printf("assign: %d\n", k);
+	return 0;
+}

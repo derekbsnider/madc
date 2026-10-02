@@ -156,6 +156,9 @@ protected:
     virtual int sync() override;
 };
 
+// The reference a declarator spells: none, `&` ([dcl.ref] lvalue), `&&` (rvalue).
+enum class RefKind : uint8_t { None, Lvalue, Rvalue };
+
 class FuncDef: public DataDef
 {
 public:
@@ -431,7 +434,10 @@ public:
     std::string template_return_param_name;
     int template_return_deduce_arg_index;
     bool template_return_deduce_from_pointer;
-    bool template_return_ref;
+    // The deduced parameter is a forwarding reference (`T &&`, cv-unqualified):
+    // an lvalue argument deduces T as `A &` ([temp.deduct.call]/3).
+    bool template_return_deduce_forwarding;
+    RefKind template_return_ref;	// the identity return's `&` / `&&`
     std::string return_typedef_name;
     // When non-empty, the C symbol this function is CALLED as / DEFINED as,
     // instead of the default ClassName__method scheme. Used to bind a class
@@ -648,7 +654,7 @@ public:
     };
     std::vector<CtorInitializer> ctor_initializers;
     // Initializer order matches member declaration order (avoids -Wreorder).
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_ref(false), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), capture_default(CaptureMode::None), lambda_mutable(false), template_return_param_name(), template_return_deduce_arg_index(-1), template_return_deduce_from_pointer(false), template_return_deduce_forwarding(false), template_return_ref(RefKind::None), return_typedef_name(), emit_symbol(), method_display_name(), function_display_name(), namespace_name(), inline_builtin_kind(), dyn_module_library(), dyn_module_member(), dyn_module_typed(false), ctor_trailing_self(false), is_member_template(false), template_param_names(), template_param_is_pack(), template_param_is_type(), template_return_spelling(), template_param_spellings(), member_template_decl(), member_template_owner(NULL), member_template_return_tokens(), member_template_param_type_tokens(), member_tmpl_frozen(NULL), dependent_pattern(NULL), tsubst_source(NULL), tsubst_type_args(), tsubst_type_arg_packs(), tsubst_body_skipped(false), ctor_initializers(), is_varargs(false), is_void_params(false), no_instrument_function(false), no_strict_aliasing(false), weak_binding(false), has_large_struct_retbuf(false), declaration_only(false), defaulted_or_deleted(false), is_deleted(false), noexcept_spec(0), pure_virtual(false), is_const_method(false), ref_qualifier(0), vague_linkage(false), internal_linkage(false), c_linkage(false) {}
     DataDef *findParameter(const std::string &);
     virtual BaseType basetype() const override { return BaseType::btFunct; }
     virtual size_t alignment() const override { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
@@ -1240,8 +1246,10 @@ class TokenCallFunc: public TokenVar
 {
 public:
     std::vector<TokenBase *> parameters;
+    // The call's DECLARED return when the parse pins it (a function-template
+    // call: the instance's, or the type substituted without a body) — a
+    // reference return is its DataDefREF, as FuncDef::returns holds one.
     DataDef *return_override = nullptr;
-    bool returns_ref_override = false;
     // Explicit template arguments captured at the call site
     // (`__stoa<long, int>(...)`): leading template parameters bound
     // left-to-right by instantiate_namespace_fn_template_for_call.
@@ -1280,15 +1288,14 @@ public:
 	return &((FuncDef *)var.type)->returns;
     }
     // Does this call yield a REFERENCE (an lvalue of the referent)? The
-    // reference-ness lives in EITHER the callee's declared return
-    // (FuncDef::returns_reference) OR the parse-time substituted return of a
-    // template call (returns_ref_override — set when explicit template args
-    // form the return type without a body). THE one test every "is this call
-    // an lvalue / may a reference bind to it" consumer must use — checking
-    // only the FuncDef half sent a placeholder-bound
-    // `T &r = std::use_facet<F>(loc)` down the address-of-the-callee arm.
+    // reference-ness lives in the TYPE: the callee's declared return
+    // (FuncDef::returns_reference) OR the parse-pinned return_override of a
+    // template call. THE one test every "is this call an lvalue / may a
+    // reference bind to it" consumer must use — checking only the FuncDef half
+    // sent a placeholder-bound `T &r = std::use_facet<F>(loc)` down the
+    // address-of-the-callee arm.
     bool call_returns_reference() const {
-	if ( returns_ref_override )
+	if ( return_override && return_override->is_reference() )
 	    return true;
 	FuncDef *fd = dynamic_cast<FuncDef *>(var.type);
 	return fd && fd->returns_reference();
@@ -8183,8 +8190,9 @@ public:
     // object's type.
     void check_atomic_builtin_call(TokenCallFunc *tc);
     madc_wide_int evaluate_atomic_always_lock_free(TokenBase *tb);
-    DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc,
-							    bool *ret_ref);
+    // A free/namespace function-template call's DECLARED return type (a
+    // reference return as its DataDefREF), formed without an instantiation.
+    DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc);
     // Key-based core of the above: resolve a free/namespace function-template
     // call's return type from "ns::name" + the explicit type arguments. Called
     // by the TokenCallFunc entry AND recursively for a `decltype(inner_call)`
@@ -8196,12 +8204,12 @@ public:
     // (`decltype(addr(x))`) whose explicit-args list is empty.
     DataDef *resolve_fn_template_return_by_key(const std::string &key,
 				const std::vector<DataDef *> &explicit_args,
-				bool *ret_ref, int depth,
+				int depth,
 				const std::vector<DataDef *> *call_arg_types = NULL);
     // Resolve `decltype ( IDENT < targs > ( args ) )` (substituted tokens) by
     // recursing into IDENT's template return type in namespace `ns`. No emit.
     DataDef *resolve_decltype_call_return(const std::vector<TokenBase *> &sub,
-				const std::string &ns, bool *ret_ref, int depth);
+				const std::string &ns, int depth);
     TokenBase *collect_template_argument_spelling(TokenBase *first,
 						  std::string &spelling,
 						  std::vector<TokenBase *> *tokens_out = NULL);

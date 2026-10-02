@@ -32203,7 +32203,12 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	instantiate_member_fn_template_for_call(tc);
     }
 
-    apply_template_call_return_inference(tc);
+    // [temp.arg.explicit]: an explicit template argument FIXES its
+    // parameter, while the identity-return inference deduces T from the
+    // argument — so it serves a deduced call, and an explicit-argument call
+    // only when the substituting lane below forms nothing.
+    if ( tc->explicit_template_args.empty() )
+	apply_template_call_return_inference(tc);
     check_atomic_builtin_call(tc);
 
     // Free/namespace function template called with EXPLICIT template args: form
@@ -32219,17 +32224,17 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
       && (!tc->explicit_template_args.empty()
        || (unevaluated_operand_depth > 0 && !tc->parameters.empty())) )
     {
-	bool tr_ref = false;
-	if ( DataDef *rt = resolve_namespace_fn_template_call_return_type(tc, &tr_ref) )
+	if ( DataDef *rt = resolve_namespace_fn_template_call_return_type(tc) )
 	{
 	    if ( rt != &ddAUTO )
 	    {
 		tc->return_override = rt;
-		tc->returns_ref_override = tr_ref;
 		tc->setDataType(rt);
 	    }
 	}
     }
+    if ( !tc->return_override && !tc->explicit_template_args.empty() )
+	apply_template_call_return_inference(tc);
 
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
@@ -60452,6 +60457,23 @@ void Program::instantiate_outofline_nested_classes(
     }
 }
 
+// Is the parameter spelled by tokens [b, e) — its declarator name dropped — a
+// forwarding reference to `tparam` (spelling_is_forwarding_reference)?
+static bool skipped_param_is_forwarding(const std::vector<TokenBase *> &tokens,
+					size_t b, size_t e,
+					const std::string &tparam)
+{
+    if ( e > b + 1 && tokens[e - 1] && is_contextual_identifier_token(tokens[e - 1])
+      && tokens[e - 2] && tokens[e - 2]->id() == TokenID::tkLand )
+	--e;
+    std::string sp;
+    for ( size_t i = b; i < e; ++i )
+	if ( tokens[i] )
+	    sp += template_token_fragment(tokens[i]);
+    return spelling_is_forwarding_reference(sp,
+					    std::vector<std::string>(1, tparam));
+}
+
 static void record_skipped_template_return_pattern(
 	FuncDef *fd, const std::vector<TokenBase *> &tokens,
 	const std::vector<std::string> &typeparams, const std::string &name)
@@ -60480,7 +60502,7 @@ static void record_skipped_template_return_pattern(
     // typed the call __normal_iterator — deducing __uninitialized_copy_a's
     // _InputIterator wrong and reusing the plain-copy instantiation).
     std::string return_param;
-    bool return_ref = false;
+    RefKind return_ref = RefKind::None;
     for ( size_t i = name_index; i-- > 0; )
     {
 	TokenBase *t = tokens[i];
@@ -60488,7 +60510,9 @@ static void record_skipped_template_return_pattern(
 	    continue;
 	if ( t->id() == TokenID::tkBand || t->id() == TokenID::tkLand )
 	{
-	    return_ref = true;
+	    if ( return_ref == RefKind::None )
+		return_ref = t->id() == TokenID::tkLand ? RefKind::Rvalue
+							 : RefKind::Lvalue;
 	    continue;
 	}
 	if ( !is_contextual_identifier_token(t) )
@@ -60541,6 +60565,9 @@ static void record_skipped_template_return_pattern(
 		    fd->template_return_param_name = return_param;
 		    fd->template_return_deduce_arg_index = arg_index;
 		    fd->template_return_deduce_from_pointer = saw_pointer;
+		    fd->template_return_deduce_forwarding =
+			skipped_param_is_forwarding(tokens, param_start,
+						    param_end, return_param);
 		    fd->template_return_ref = return_ref;
 		}
 		return;
@@ -60568,6 +60595,9 @@ static void record_skipped_template_return_pattern(
 		fd->template_return_param_name = return_param;
 		fd->template_return_deduce_arg_index = arg_index;
 		fd->template_return_deduce_from_pointer = saw_pointer;
+		fd->template_return_deduce_forwarding =
+		    skipped_param_is_forwarding(tokens, param_start, param_end,
+						return_param);
 		fd->template_return_ref = return_ref;
 		return;
 	    }
@@ -60576,6 +60606,8 @@ static void record_skipped_template_return_pattern(
 	}
     }
 }
+
+static bool fn_template_call_arg_is_lvalue(TokenBase *expr, Program &pgm);
 
 void Program::apply_template_call_return_inference(TokenCallFunc *tc)
 {
@@ -60589,7 +60621,9 @@ void Program::apply_template_call_return_inference(TokenCallFunc *tc)
     size_t arg_index = (size_t)fd->template_return_deduce_arg_index;
     if ( arg_index >= tc->parameters.size() || !tc->parameters[arg_index] )
 	return;
-    DataDef *deduced = tc->parameters[arg_index]->datadef();
+    // The argument's VALUE: an expression never has reference type
+    // ([expr]/5), so `T` deduces from the referent ([temp.deduct.call]/3).
+    DataDef *deduced = operand_value_type(tc->parameters[arg_index]);
     if ( fd->template_return_deduce_from_pointer )
     {
 	DataDefPTR *ptr = pointer_dd_of(deduced);
@@ -60597,9 +60631,16 @@ void Program::apply_template_call_return_inference(TokenCallFunc *tc)
     }
     if ( !deduced )
 	return;
-    tc->return_override = deduced;
-    tc->returns_ref_override = fd->template_return_ref;
-    tc->setDataType(deduced);
+    // [temp.deduct.call]/3: an lvalue argument to a forwarding parameter
+    // deduces T as `A &`, and the declared `T &&` collapses to `A &`.
+    if ( fd->template_return_deduce_forwarding
+      && fn_template_call_arg_is_lvalue(tc->parameters[arg_index], *this) )
+	deduced = getReferenceType(deduced, false);
+    // The call's type is the DECLARED return: `T`, `T &` or `T &&`.
+    DataDef *declared = fd->template_return_ref == RefKind::None ? deduced
+	: getReferenceType(deduced, fd->template_return_ref == RefKind::Rvalue);
+    tc->return_override = declared;
+    tc->setDataType(declared);
 }
 
 // An __atomic_* operand's type: the value it denotes (a reference is its
@@ -62159,7 +62200,7 @@ ArgValueCategory Program::argument_value_category(TokenBase *arg,
 	// A reference-returning call is an lvalue (`T&`) or an xvalue (`T&&`)
 	// — its return type's kind ([basic.lval]/1.3).
 	if ( fd && !fd->stands_for_function_template() && fd->returns_reference()
-	  && !call->returns_ref_override )
+	  && !(call->return_override && call->return_override->is_reference()) )
 	    return fd->returns.is_rvalue_reference() ? ArgValueCategory::Rvalue
 						     : ArgValueCategory::Lvalue;
 	// A function template's return as the PARSE sees it is no proof of a
@@ -66356,10 +66397,8 @@ static int best_deduced_fn_template(Program &pgm, TokenCallFunc *tc,
 	SpelledReference r = spelled_reference(declared[k][i]);
 	if ( !r.is_ref )
 	    return 0;
-	if ( r.rvalue && !r.referent_const )
-	    for ( const std::string &tp : typeparams[k] )
-		if ( r.referent == tp )
-		    return 0;		// a forwarding reference
+	if ( spelling_is_forwarding_reference(declared[k][i], typeparams[k]) )
+	    return 0;		// a forwarding reference
 	ArgValueCategory cat = pgm.argument_value_category(tc->parameters[i]);
 	if ( cat == ArgValueCategory::Unknown )
 	    return 0;
@@ -66505,9 +66544,10 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	    FuncDef *ifd = inst ? dynamic_cast<FuncDef *>(inst->type) : NULL;
 	    if ( ifd && !tc->return_override )
 	    {
-		DataDef *rt = &ifd->return_value_type();
+		// The instance's DECLARED return, its reference included
+		// (FuncDef::returns holds the DataDefREF).
+		DataDef *rt = &ifd->returns;
 		tc->return_override = rt;
-		tc->returns_ref_override = ifd->returns_reference();
 		tc->setDataType(rt);
 	    }
 	    return inst;
@@ -68405,14 +68445,12 @@ static bool datadef_is_nontype_constant(const DataDef *dd)
 // `decltype(std::declval<int>())` came out `long`, sizeof 8 not 4).
 // Handles a leading (`T f()`) OR trailing (`auto f() -> T`) return; a trailing
 // `-> decltype(...)` (declval's own `decltype(__declval<_Tp>(0))`) is left for a
-// later layer (returns NULL -> caller keeps the placeholder). Sets *ret_ref when
-// the return is an lvalue/rvalue reference (`T&` / `T&&`, ref-collapsed away for
-// type identity). Returns NULL (no override) when nothing resolves.
+// later layer (returns NULL -> caller keeps the placeholder). A reference return
+// (`T&` / `T&&`) is returned AS the reference type, collapsed. Returns NULL (no
+// override) when nothing resolves.
 DataDef *Program::resolve_namespace_fn_template_call_return_type(
-		TokenCallFunc *tc, bool *ret_ref)
+		TokenCallFunc *tc)
 {
-    if ( ret_ref )
-	*ret_ref = false;
     // No explicit args: an UNEVALUATED deduced call ([dcl.type.decltype] —
     // `decltype(addr(x))`, libc++'s `decltype(std::__to_address(...))`) still
     // forms its function type; deduce the binding from the argument value
@@ -68459,10 +68497,10 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 	for ( TokenBase *p : tc->parameters )
 	    arg_types.push_back(p ? operand_value_datadef(p) : NULL);
 	return resolve_fn_template_return_by_key(key, std::vector<DataDef *>(),
-						 ret_ref, 0, &arg_types);
+						 0, &arg_types);
     }
     return resolve_fn_template_return_by_key(key, tc->explicit_template_args,
-					     ret_ref, 0);
+					     0);
 }
 
 // Core of resolve_namespace_fn_template_call_return_type: resolve "ns::name" +
@@ -68472,11 +68510,9 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 DataDef *Program::resolve_fn_template_return_by_key(
 		const std::string &key,
 		const std::vector<DataDef *> &explicit_args,
-		bool *ret_ref, int depth,
+		int depth,
 		const std::vector<DataDef *> *call_arg_types)
 {
-    if ( ret_ref )
-	*ret_ref = false;
     bool have_arg_types = call_arg_types && !call_arg_types->empty();
     if ( depth > 8 || (explicit_args.empty() && !have_arg_types) )
 	return NULL;
@@ -68655,15 +68691,20 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    while ( rs < re && ft.decl[rs]
 		 && specifiers.count(template_token_fragment(ft.decl[rs])) )
 		++rs;
-	// Fold a trailing `&` / `&&` off the end (a reference return collapses to
-	// the referenced type for type identity; tr_ref then drives the DataDefREF
-	// return type via returnDecl, so the reference lives in the type).
-	bool tr_ref = false;
+	// Fold a trailing `&` / `&&` off the end: the referenced type resolves
+	// (and passes the placeholder checks below) alone, and the spelled
+	// reference re-forms the DECLARED return on the way out.
+	bool tr_ref = false, tr_rvalue = false;
 	// (a parenthesized declarator keeps its `&`: the reader folds it)
 	while ( !paren_declarator && re > rs && ft.decl[re - 1]
 	     && (ft.decl[re - 1]->id() == TokenID::tkBand
 	      || ft.decl[re - 1]->id() == TokenID::tkLand) )
-	    { tr_ref = true; --re; }
+	{
+	    if ( !tr_ref )
+		tr_rvalue = ft.decl[re - 1]->id() == TokenID::tkLand;
+	    tr_ref = true;
+	    --re;
+	}
 	if ( rs >= re )
 	    continue;
 	// Bind type parameters positionally from the explicit template arguments.
@@ -68951,7 +68992,7 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// import (declval/__declval are undefined by design). The recursive
 	// resolver reads the substituted decl tokens directly — no emission.
 	DataDef *rt = NULL;
-	bool dt_ref = false;
+	bool dt_ref = false, dt_rvalue = false;
 	bool operand_parsed = false;
 	{
 	    // [temp.names]: unqualified names in the candidate's return type
@@ -68964,7 +69005,7 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	    if ( !sub.empty() && sub[0] && is_contextual_identifier_token(sub[0])
 	      && contextual_identifier_name(sub[0]) == "decltype" )
 	    {
-		rt = resolve_decltype_call_return(sub, ft.ns, &dt_ref, depth);
+		rt = resolve_decltype_call_return(sub, ft.ns, depth);
 		// Every other decltype operand — a static member call on the
 		// (substituted) class type, libc++ __unwrap_iter's
 		// `decltype(_Impl::__unwrap(std::declval<_Iter>()))` — goes to
@@ -68973,19 +69014,20 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		// — no body instantiation, and the operand tree is dropped once
 		// its type is read, so nothing reaches emission). The parse
 		// takes the substituted tokens into the expression tree, so
-		// they are not freed below. A reference-typed operand answers
-		// as its referenced type + the ref flag, the shape the
-		// template-id lane already reports.
+		// they are not freed below.
 		if ( !rt )
 		{
 		    operand_parsed = true;
 		    rt = resolve_type_token_range(sub, 0, sub.size());
-		    if ( rt && rt->is_reference() )
-		    {
-			DataDefREF *rr = static_cast<DataDefREF *>(rt);
-			rt = rr->base_type;
-			dt_ref = true;
-		    }
+		}
+		// A reference-typed decltype (either lane) answers as its
+		// referenced type for the checks below; its kind re-forms the
+		// declared return on the way out.
+		if ( rt && rt->is_reference() )
+		{
+		    dt_ref = true;
+		    dt_rvalue = rt->is_rvalue_reference();
+		    rt = static_cast<DataDefREF *>(rt)->base_type;
 		}
 	    }
 	    else
@@ -69024,8 +69066,13 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		delete t;
 	if ( rt )
 	{
-	    if ( ret_ref )
-		*ret_ref = tr_ref || dt_ref;
+	    // The DECLARED return: the decltype's reference, then the spelled
+	    // trailing one, through the one minting owner ([dcl.ref]/6
+	    // collapsing — `T &&` with T = `int &` is `int &`).
+	    if ( dt_ref )
+		rt = getReferenceType(rt, dt_rvalue);
+	    if ( tr_ref )
+		rt = getReferenceType(rt, tr_rvalue);
 	    return rt;
 	}
     }
@@ -69040,10 +69087,8 @@ DataDef *Program::resolve_fn_template_return_by_key(
 // a template-id call (out of scope) or nothing resolves.
 DataDef *Program::resolve_decltype_call_return(
 		const std::vector<TokenBase *> &sub,
-		const std::string &ns, bool *ret_ref, int depth)
+		const std::string &ns, int depth)
 {
-    if ( ret_ref )
-	*ret_ref = false;
     if ( sub.size() < 3 || !sub[1] || sub[1]->id() != TokenID::tkOpBrk )
 	return NULL;
     // Operand = the content of decltype's parens, up to their balanced close
@@ -69131,7 +69176,7 @@ DataDef *Program::resolve_decltype_call_return(
 	lookup_ns = canon.empty() ? qual : canon;
     }
     return resolve_fn_template_return_by_key(lookup_ns + "::" + inner_name,
-					     inner_args, ret_ref, depth + 1);
+					     inner_args, depth + 1);
 }
 
 // Stamp the PATTERN state a member function template carries on its FuncDef —
@@ -71619,6 +71664,7 @@ static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret)
     f->template_return_deduce_arg_index = src->template_return_deduce_arg_index;
     f->template_return_deduce_from_pointer = src->template_return_deduce_from_pointer;
     f->template_return_ref = src->template_return_ref;
+    f->template_return_deduce_forwarding = src->template_return_deduce_forwarding;
     f->return_typedef_name = src->return_typedef_name;
     f->emit_symbol = src->emit_symbol;
     f->method_display_name = src->method_display_name;
@@ -75145,10 +75191,10 @@ TokenBase *Program::reference_bind_address_expr(TokenBase *expr,
     {
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr);
 	// call_returns_reference covers BOTH sources of reference-ness: the
-	// callee FuncDef's declared return AND the token's substituted return
-	// (returns_ref_override — a placeholder-bound template call with
-	// explicit args, `std::use_facet<F>(loc)`, carries its `const F&`
-	// there; the placeholder FuncDef itself returns a value type).
+	// callee FuncDef's declared return AND the token's pinned return
+	// (return_override — a placeholder-bound template call with explicit
+	// args, `std::use_facet<F>(loc)`, carries its `const F&` there; the
+	// placeholder FuncDef itself returns a value type).
 	if ( tcf && tcf->call_returns_reference() )
 	{
 	    TokenAddrExpr *addr = new TokenAddrExpr(expr, ptr_type);

@@ -3935,8 +3935,12 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	r.tret_arg_index  = (uint32_t)fd->template_return_deduce_arg_index;
 	if (fd->template_return_deduce_from_pointer)
 		r.flags |= madc::dis::DF_TRET_FROM_POINTER;
-	if (fd->template_return_ref)
+	if (fd->template_return_deduce_forwarding)
+		r.flags |= madc::dis::DF_TRET_FWD;
+	if (fd->template_return_ref != RefKind::None)
 		r.flags |= madc::dis::DF_TRET_REF;
+	if (fd->template_return_ref == RefKind::Rvalue)
+		r.flags |= madc::dis::DF_TRET_RREF;
 	// v23: serialize each param's DEFAULT-argument token run (raw source
 	// tokens, .madh record form) into the arena tokbytes block BEFORE the
 	// paramrec run is appended (tokbytes is a separate block, but resolve-

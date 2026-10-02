@@ -108,6 +108,8 @@
 #   `__atomic_load(int *, const int *, int)` must be refused for its const
 #   output, and madc's C++ types carry no const on a pointee (modeled_cv,
 #   FEATURE_CONST_TYPES).
+# SHRUNK 2026-10-02 (454 -> 453), B120: a function-template call's type is its
+#   DECLARED return, its reference included — cpp0x/rv-dotstar passes.
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -410,7 +412,6 @@ g++.dg/cpp0x/range-for39.C
 g++.dg/cpp0x/ref-bind6.C
 g++.dg/cpp0x/rv-cond3.C
 g++.dg/cpp0x/rv-decl1.C
-g++.dg/cpp0x/rv-dotstar.C
 g++.dg/cpp0x/rv-return.C
 g++.dg/cpp0x/scoped_enum10.C
 g++.dg/cpp0x/scoped_enum4.C
