@@ -1928,6 +1928,13 @@ public:
 				 int obj_cv = -1,
 				 bool *all_rejections_proven = 0,
 				 const std::vector<ArgValueCategory> *categories = 0);
+    // The operator[] a subscript of this class calls ([over.sub]): the
+    // operator[] overloads ranked on the index's type and value category (an
+    // lvalue index never binds a `K&&` parameter). A NULL index_type (a
+    // synthesized loop counter, a braced list) takes findMethod's pick, as
+    // does a set nothing ranks strictly better.
+    Variable *subscript_operator(const DataDef *index_type,
+				 ArgValueCategory category = ArgValueCategory::Unknown);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
     // class declares; used to type a class-object operator expression with the
     // operator's declared result type.

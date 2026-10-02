@@ -20675,6 +20675,18 @@ static const DataDefSTRUCT *param_concrete_class_for_proof(DataDef *pt, bool ref
 }
 
 
+Variable *DataDefCLASS::subscript_operator(const DataDef *index_type,
+					   ArgValueCategory category)
+{
+    const std::string opname = "operator[]";
+    if ( !index_type )
+	return findMethod(opname);
+    std::vector<const DataDef *> at(1, index_type);
+    std::vector<ArgValueCategory> cats(1, category);
+    Variable *mv = findMethodOverload(opname, at, -1, NULL, &cats);
+    return mv ? mv : findMethod(opname);
+}
+
 Variable *DataDefCLASS::findMethodOverload(const std::string &name,
 					  const std::vector<const DataDef *> &argtypes,
 					  int obj_cv,
@@ -33124,7 +33136,8 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		// dispatches such a TokenSubscriptExpr through operator[]
 		// (class_subscript_addr_on) — only the parse-time type was
 		// missing, so `_entries[i].hash` looked `hash` up on the vector.
-		if ( DataDef *e = TokenSubscript::subscript_operator_element_type(base_type) )
+		if ( DataDef *e = TokenSubscript::subscript_operator_element_type(base_type,
+										  idx_expr) )
 		    elem_type = e;
 	    }
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);

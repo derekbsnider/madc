@@ -1666,7 +1666,7 @@ public:
         }
         else if ( bt->type() == DataType::dtSIMD )
             _datatype = static_cast<DataDefSIMD *>(bt)->element_type;
-        else if ( DataDef *e = subscript_operator_element_type(bt) )
+        else if ( DataDef *e = subscript_operator_element_type(bt, idx) )
             // A class with `T& operator[](...)` (a real madc template container
             // like vector<T>/map<K,V>/set<T>): the element type is the operator[]
             // return VALUE type (the base T — return_value_type() yields the
@@ -1692,7 +1692,11 @@ public:
     // `dd` is not a class declaring operator[]. Static so the ctor can use it;
     // the ONE owner every subscript site asks (a reference to the class
     // answers as the class).
-    static DataDef *subscript_operator_element_type(DataDef *dd)
+    // `index` (optional): the subscript's index, which ranks an overloaded
+    // operator[] by type (DataDefCLASS::subscript_operator); NULL asks only
+    // whether the class subscripts at all.
+    static DataDef *subscript_operator_element_type(DataDef *dd,
+						    TokenBase *index = NULL)
     {
         dd = referent_type(dd);
         if ( !dd || !dd->is_object() )
@@ -1700,8 +1704,8 @@ public:
         DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
         if ( !cls )
             return NULL;
-        std::string opname = "operator[]";
-        Variable *mv = cls->findMethod(opname);
+        Variable *mv = cls->subscript_operator(index ? operand_value_type(index)
+						     : NULL);
         if ( !mv )
             return NULL;
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);

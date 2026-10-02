@@ -1,0 +1,4 @@
+plain: cref rref
+template: cref rref
+type: int str
+map: key=en size=2 en=hello fr=bonjour

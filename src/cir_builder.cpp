@@ -17602,6 +17602,17 @@ ArgValueCategory CirBuilder::arg_value_category(TokenBase *arg)
 	return m_prog->argument_value_category(arg, callee);
 }
 
+Variable *CirBuilder::class_subscript_operator(DataDefCLASS *cls,
+					       TokenBase *index)
+{
+	if (!cls)
+		return NULL;
+	if (!index)
+		return cls->subscript_operator(NULL);
+	return cls->subscript_operator(ctor_arg_datadef(index),
+				       arg_value_category(index));
+}
+
 FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 					  const std::vector<TokenBase *> &ctor_args,
 					  bool implicit_move)
@@ -20501,8 +20512,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		if (!arg) return NULL;
 		if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg)) {
 			DataDefCLASS *ccls = class_behind(tsub->object.type);
-			std::string opname = "operator[]";
-			Variable *omv = ccls ? ccls->findMethod(opname) : NULL;
+			Variable *omv = class_subscript_operator(ccls, tsub->index);
 			FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
 			if (ofd && ofd->returns_reference()) {
 				DataDef *rd = &ofd->return_value_type();
@@ -22399,8 +22409,8 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
 		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;
-		std::string opname = "operator[]";
-		Variable *omv = ccls ? ccls->findMethod(opname) : NULL;
+		Variable *omv = lsub ? class_subscript_operator(ccls, lsub->index)
+				     : NULL;
 		FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
 		if (ofd) lcls = class_behind(&ofd->return_value_type());
 	}
@@ -23498,8 +23508,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 					   node_t index_lvalue)
 {
 	if (!cls || !recv_addr) return NULL;
-	std::string opname = "operator[]";
-	Variable *mv = cls->findMethod(opname);
+	Variable *mv = class_subscript_operator(cls, index);
 	if (!mv) return NULL;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
 
@@ -23566,7 +23575,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 	// ClassName__operator[] (which reached the C emitter as the sanitized
 	// `__operator_lb_rb`, an undeclared function: c2mir implicit-int'd it
 	// and "invalid type argument of unary *" followed at every subscript).
-	std::string sym = class_method_call_symbol(cls, callee, opname);
+	std::string sym = class_method_call_symbol(cls, callee, "operator[]");
 	node_t args = list();
 	append(args, recv_addr);
 	append(args, index_arg());
@@ -23580,8 +23589,7 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	if (!tsub) return NULL;
 	DataDefCLASS *cls = class_behind(tsub->object.type);
 	if (!cls) return NULL;
-	std::string opname = "operator[]";
-	Variable *mv = cls->findMethod(opname);
+	Variable *mv = class_subscript_operator(cls, tsub->index);
 	if (!mv) return NULL;
 	FuncDef *callee = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	node_t recv_addr;
@@ -23604,8 +23612,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	node_t call = class_subscript_addr(tsub, origin);
 	if (!call) return NULL;
 	DataDefCLASS *cls = class_behind(tsub->object.type);
-	std::string opname = "operator[]";
-	Variable *mv = cls ? cls->findMethod(opname) : NULL;
+	Variable *mv = class_subscript_operator(cls, tsub->index);
 	FuncDef *callee = mv ? (mv->type ? mv->type->as_funcdef_dd() : NULL) : NULL;
 	// operator[] conventionally returns T& -> deref to the lvalue so the
 	// result is usable as both an rvalue (read) and an lvalue (`v[i] = x`).
@@ -23618,8 +23625,11 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	if (!tsub) return false;
 	DataDefCLASS *cls = class_behind(tsub->object.type);
 	if (!cls) return false;
-	std::string opname = "operator[]";
-	Variable *mv = cls->findMethod(opname);
+	// Static: ranked on the index TYPE (the return-class question an
+	// overload set differing only in value category answers alike).
+	Variable *mv = cls->subscript_operator(tsub->index
+					       ? operand_value_type(tsub->index)
+					       : NULL);
 	if (!mv) return false;
 	FuncDef *callee = (mv->type ? mv->type->as_funcdef_dd() : NULL);
 	return callee && class_behind(&callee->return_value_type()) != NULL;
@@ -25662,8 +25672,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// deliberately rejects. The shared operand resolver also owns
 			// late-bound call return types and preserves pointer receivers.
 			if (DataDefCLASS *bcls = operand_object_class(tse->base_expr)) {
-				std::string subop = "operator[]";
-				Variable *mv = bcls->findMethod(subop);
+				Variable *mv = class_subscript_operator(bcls, tse->index);
 				FuncDef *callee = mv ? (mv->type ? mv->type->as_funcdef_dd() : NULL) : NULL;
 				if (callee) {
 					node_t recv_addr = object_arg_addr(tse->base_expr, bcls);

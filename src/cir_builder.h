@@ -2307,6 +2307,11 @@ public:
 	// resolved the CIR's way (call_target_funcdef). Feeds the reference
 	// bindings of select_ctor_overload and of every overload re-rank here.
 	ArgValueCategory arg_value_category(TokenBase *arg);
+	// The operator[] a subscript of `cls` lowers to: DataDefCLASS::
+	// subscript_operator over the index's overload-matching type
+	// (ctor_arg_datadef) and value category (arg_value_category). A NULL
+	// index (a synthesized counter) takes the class's single pick.
+	Variable *class_subscript_operator(DataDefCLASS *cls, TokenBase *index);
 	// Value category of a call argument the tsubst lane substitutes:
 	// `origin` the pattern's argument, `result_type` its substituted type
 	// (a call's or cast's result, its reference kept).
