@@ -1767,7 +1767,9 @@ public:
 	node_t function_value_symbol(const Variable &v, class FuncDef *fd, TokenBase *origin);
 	// One aggregate MEMBER slot's initializer: a reference member binds the
 	// address (ref_param_arg_addr), every other slot is init_value's.
-	node_t init_slot_value(TokenBase *elem, DataDef *dd, size_t i);
+	// member_indexed: the list's slots were placed by designators.
+	node_t init_slot_value(TokenBase *elem, DataDef *dd, size_t i,
+			       bool member_indexed);
 	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.

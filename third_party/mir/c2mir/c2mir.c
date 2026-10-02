@@ -9268,6 +9268,35 @@ static void setup_const_addr_p (c2m_ctx_t c2m_ctx, node_t r) {
   e->c.i_val = offset;
 }
 
+/* The member of struct/union TYPE a field designator ID names. An unnamed
+   anonymous member's type opens no scope: its members are declared in the
+   scope of the aggregate holding it (where a member records it), so inside
+   its own braces (`{ .f = 1 }` for `union { int a; float f; };`) the name is
+   looked up there and must belong to it. */
+static int find_init_field (c2m_ctx_t c2m_ctx, node_t id, struct type *type, symbol_t *sym) {
+  node_t scope = type->u.tag_type;
+  decl_t decl;
+
+  if (type->unnamed_anon_struct_union_member_type_p) {
+    node_t decl_list = NL_EL (type->u.tag_type->u.ops, 1);
+
+    scope = NULL;
+    for (node_t m = NL_HEAD (decl_list->u.ops); m != NULL; m = NL_NEXT (m))
+      if (m->code == N_MEMBER && m->attr != NULL) {
+        scope = ((decl_t) m->attr)->scope;
+        break;
+      }
+    if (scope == NULL) return FALSE;
+  }
+  if (!symbol_find (c2m_ctx, S_REGULAR, id, scope, sym)) return FALSE;
+  if (!type->unnamed_anon_struct_union_member_type_p) return TRUE;
+  decl = sym->def_node->attr;
+  for (node_t c = decl->containing_unnamed_anon_struct_union_member; c != NULL;
+       c = ((decl_t) c->attr)->containing_unnamed_anon_struct_union_member)
+    if (((decl_t) c->attr)->decl_spec.type == type) return TRUE;
+  return FALSE;
+}
+
 static void process_init_field_designator (c2m_ctx_t c2m_ctx, node_t designator_member,
                                            struct type *container_type) {
   decl_t decl;
@@ -9291,6 +9320,7 @@ static void process_init_field_designator (c2m_ctx_t c2m_ctx, node_t designator_
   for (curr_member = decl->containing_unnamed_anon_struct_union_member; curr_member != NULL;
        curr_member = decl->containing_unnamed_anon_struct_union_member) {
     decl = curr_member->attr;
+    if (decl->decl_spec.type == container_type) break; /* inside its own braces */
     VARR_PUSH (node_t, containing_anon_members, curr_member);
   }
   while (VARR_LENGTH (node_t, containing_anon_members) != 0) {
@@ -9473,7 +9503,7 @@ check_one_value:
 
           if (curr_type->mode != TM_STRUCT && curr_type->mode != TM_UNION) {
             error (c2m_ctx, POS (curr_des), "field name not in struct or union initializer");
-          } else if (!symbol_find (c2m_ctx, S_REGULAR, id, curr_type->u.tag_type, &sym)) {
+          } else if (!find_init_field (c2m_ctx, id, curr_type, &sym)) {
             error (c2m_ctx, POS (curr_des), "unknown field %s in initializer", id->u.s.s);
           } else {
             process_init_field_designator (c2m_ctx, sym.def_node, curr_type);
@@ -16709,7 +16739,7 @@ check_one_value:
 
           /* field should be only in struct/union initializer */
           assert (curr_type->mode == TM_STRUCT || curr_type->mode == TM_UNION);
-          found_p = symbol_find (c2m_ctx, S_REGULAR, id, curr_type->u.tag_type, &sym);
+          found_p = find_init_field (c2m_ctx, id, curr_type, &sym);
           assert (found_p); /* field should present */
           process_init_field_designator (c2m_ctx, sym.def_node, curr_type);
           ok_p = update_path_and_do (c2m_ctx, NL_NEXT (curr_des) == NULL, collect_init_els, mark,

@@ -10389,7 +10389,8 @@ DataDef *CirBuilder::init_nested_list_type(DataDef *dd, size_t idx)
 // materializing a prvalue for a const referent. `RM rm{lv}` stored lv's VALUE
 // in the pointer slot and the first read dereferenced 40. Every other slot is
 // init_value's.
-node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i)
+node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i,
+				    bool member_indexed)
 {
 	DataDef *st = elem ? init_slot_type(unqualified_type(dd), i) : NULL;
 	if (DataDef *referent = st ? ref_param_referent(st) : NULL)
@@ -10400,6 +10401,19 @@ node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i)
 	// elements the same way.
 	DataDef *du = unqualified_type(dd);
 	DataDefSTRUCT *sdd = (du && !du->is_complex()) ? du->as_struct_dd() : NULL;
+	// A braced clause in an anonymous member's first slot of a list placed
+	// by POSITION initializes the whole anonymous member — the parser read
+	// it against that aggregate (aggregate_slot_member_type). In a
+	// member-indexed list that slot is the first member's own.
+	TokenStructLit *al = !member_indexed && sdd
+		? dynamic_cast<TokenStructLit *>(elem) : NULL;
+	if (al && !al->array_elem_dd)
+		for (const DataDefSTRUCT::AnonymousAggregateInfo &ai
+		     : sdd->anonymous_aggregates)
+			if (ai.aggregate && ai.first_member == i)
+				return aggregate_init_list(al->inits,
+					const_cast<DataDefSTRUCT *>(ai.aggregate), elem,
+					false, al->has_field_designators);
 	if (sdd && i < sdd->members.size()
 	    && holds_member_data_pointer(sdd->members[i].second)) {
 		DataDef *mt = sdd->members[i].second;
@@ -10490,7 +10504,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 				append(des, node1(N_FIELD_ID,
 						  id(sdd->members[chosen].first.c_str())));
 			append(lst, node2(N_INIT, des,
-					  init_slot_value(inits[chosen], dd, chosen)));
+					  init_slot_value(inits[chosen], dd, chosen, has_field_designators)));
 			return lst;
 		}
 		// More than one slot is written. What they MEAN depends on
@@ -10552,7 +10566,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 					append(des, node1(N_FIELD_ID,
 							  id(sdd->members[i].first.c_str())));
 				append(lst, node2(N_INIT, des,
-						  init_slot_value(inits[i], dd, i)));
+						  init_slot_value(inits[i], dd, i, has_field_designators)));
 			}
 			return lst;
 		}
@@ -10565,7 +10579,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 			append(des, node1(N_FIELD_ID,
 					  id(sdd->members[chosen].first.c_str())));
 		append(lst, node2(N_INIT, des,
-				  init_slot_value(inits[chosen], dd, chosen)));
+				  init_slot_value(inits[chosen], dd, chosen, has_field_designators)));
 		return lst;
 	}
 	for (size_t i = 0; i < inits.size(); i++) {
@@ -10582,7 +10596,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 			continue;
 		}
 		append(lst, node2(N_INIT, list(),
-				  init_slot_value(inits[i], dd, i)));
+				  init_slot_value(inits[i], dd, i, has_field_designators)));
 	}
 	complete_member_pointer_struct_list(lst, inits, dd, origin);
 	return lst;
