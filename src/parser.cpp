@@ -17431,6 +17431,9 @@ static int noexcept_destructor_spec(Program &pgm, DataDef *dd, int depth)
 // - TokenCast recurses (scalar conversions do not throw; a throwing
 //   dynamic_cast<T&> is not distinguishable post-parse and is accepted — no
 //   real-header noexcept condition spells one).
+// - A built-in indirection (TokenBase::is_indirection) recurses into its pointer
+//   operand; an explicit destructor call conjoins its object's walk with the
+//   destructor's specification (noexcept_destructor_spec).
 // - Leaves (variables, literals, nullptr, string literals) cannot throw.
 // - Any other node kind: refuse — never a silently wrong bool.
 static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
@@ -17500,6 +17503,9 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	    return -1;
 	int nx = fd->noexcept_spec == FuncDef::NxTrue ? 1
 	       : fd->noexcept_spec == FuncDef::NxNone ? 0 : -1;
+	DBG(cerr << "noexcept_eval: call " << tc->var.name << " spec=" << nx
+		 << " args=" << r << " deferred_condition="
+		 << fd->noexcept_condition_tokens.size() << endl);
 	return noexcept_conjoin(r, nx);
     }
     if ( TokenCast *tcst = dynamic_cast<TokenCast *>(tb) )
@@ -17510,6 +17516,27 @@ static int noexcept_eval_expr(Program &pgm, TokenBase *tb, int depth)
 	for ( TokenBase *e : ts->extra_indices )
 	    r = noexcept_conjoin(r, noexcept_eval_expr(pgm, e, depth + 1));
 	return r;
+    }
+    // A built-in indirection ([expr.unary.op]/1) cannot throw: a class
+    // operand's operator* is built as a call (build_indirection), so these
+    // nodes are the built-in form. `*(e)` is e's; a named pointer and `*p++`
+    // read a variable.
+    if ( tb->is_indirection() )
+    {
+	TokenDerefExpr *de = tb->as_deref_expr_tok();
+	return de ? noexcept_eval_expr(pgm, de->expr, depth + 1) : 1;
+    }
+    // An explicit or pseudo destructor call (`declval<T&>().~T()`, the
+    // libstdc++ is_nothrow_destructible probe): the object expression's walk
+    // and the destructor's specification ([except.spec]/8 for one declared
+    // without a specifier); a scalar or trivial type names no destructor.
+    if ( TokenExplicitDtor *xd = tb->as_explicit_dtor_tok() )
+    {
+	int r = noexcept_eval_expr(pgm, xd->obj, depth + 1);
+	if ( !xd->dtor_class )
+	    return r;
+	return noexcept_conjoin(r, noexcept_destructor_spec(pgm, xd->dtor_class,
+							    depth + 1));
     }
     if ( tb->is_operator() )
     {

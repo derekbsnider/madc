@@ -116,6 +116,10 @@
 # SHRUNK 2026-10-02 (451 -> 450), B141: the right operand of `.*` / `->*` is a
 #   cast-expression read by parseCastExpression — template/ptrmem1 passes
 #   (`(c.*M)` over a non-type template parameter).
+# SHRUNK 2026-10-02 (450 -> 448): the noexcept operator answers a built-in
+#   indirection (`noexcept(*p)`) and an explicit destructor call
+#   (`x.~T()`, the destructor's specification) — cpp0x/constexpr-noexcept4 and
+#   cpp0x/noexcept10 pass.
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -204,7 +208,6 @@ g++.dg/cpp0x/constexpr-is_literal.C
 g++.dg/cpp0x/constexpr-memchr.C
 g++.dg/cpp0x/constexpr-missing.C
 g++.dg/cpp0x/constexpr-noexcept2.C
-g++.dg/cpp0x/constexpr-noexcept4.C
 g++.dg/cpp0x/constexpr-nonlit.C
 g++.dg/cpp0x/constexpr-nsdmi3.C
 g++.dg/cpp0x/constexpr-nullptr-1.C
@@ -349,7 +352,6 @@ g++.dg/cpp0x/lambda/lambda-this3.C
 g++.dg/cpp0x/local-targ1.C
 g++.dg/cpp0x/narrowing1.C
 g++.dg/cpp0x/noexcept01.C
-g++.dg/cpp0x/noexcept10.C
 g++.dg/cpp0x/noexcept11.C
 g++.dg/cpp0x/noexcept13.C
 g++.dg/cpp0x/noexcept16.C
