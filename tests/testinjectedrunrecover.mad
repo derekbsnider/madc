@@ -1,0 +1,20 @@
+// A refused declaration inside an instantiated class template ends the
+// instantiation; it does not loop.
+//
+// The class definition is re-parsed from a token run injected ahead of the
+// live stream (Program::NestedTokenStream, Injected). Closing that run
+// discards what the failed parse left of it. Before the run had an owner the
+// leftover tokens stayed in the stream and error recovery re-read them: madc
+// printed "Expecting identifier in declarator" about 150,000 times until the
+// timeout killed it (B131; g++.dg/template/ptrmem19.C hung the same way).
+//
+// g++ 13 and clang++ 18 (-std=c++11) accept this program (exit 0). madc still
+// refuses `T2 (T1::*m)(T3)` over a class-template parameter (BUGS.md B127);
+// when B127 is fixed this becomes a run test.
+template <class T1, class T2, class T3> struct A { typedef T2 (T1::*m)(T3); A(m) {} };
+struct B;
+struct C { void foo(B *); };
+typedef A<C, void, B *> D;
+typedef void (C::*E)(B *);
+D d((E) &C::foo);
+int main() { return 0; }

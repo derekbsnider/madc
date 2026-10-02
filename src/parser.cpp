@@ -6057,14 +6057,14 @@ static TokenDataType *resolve_type_token_sequence(Program &pgm,
     if ( seq.empty() )
 	return NULL;
 
-    TokenSemi *sentinel = new TokenSemi();
     std::vector<TokenBase *> inj;
     for ( size_t i = 0; i < seq.size(); ++i )
 	inj.push_back(seq[i]->clone_origin());
-    inj.push_back(sentinel);
-    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	  it != inj.rend(); ++it )
-	pgm.pushToken(*it);
+    inj.push_back(new TokenSemi());
+    // Closing the run discards what the type read left of it (the sentinel
+    // included) and returns the caller's read context.
+    Program::NestedTokenStream run(pgm, std::move(inj),
+				   Program::NestedTokenStream::Injected);
 
     TokenBase *head = pgm.nextToken();
     std::string cv_spelling;
@@ -6084,24 +6084,6 @@ static TokenDataType *resolve_type_token_sequence(Program &pgm,
 	    resolved = pdt;
 	}
     }
-
-    bool have_sentinel = false;
-    for ( size_t si = 0; si < pgm.tokens.size(); ++si )
-	if ( pgm.tokens[si] == sentinel )
-	{
-	    have_sentinel = true;
-	    break;
-	}
-    if ( have_sentinel )
-    {
-	while ( pgm.peekToken() && pgm.peekToken() != sentinel )
-	    pgm.nextToken();
-	if ( pgm.peekToken() == sentinel )
-	    pgm.nextToken();
-    }
-    else if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
-	pgm.nextToken();
-
     return resolved;
 }
 
@@ -7451,15 +7433,16 @@ TokenDataType *Program::instantiate_opaque_template_use(Program::TemplateDef &td
 		replay.push_back(t ? t->clone_origin() : NULL);
 	}
 	replay.push_back(new TokenGT());
-	for ( std::vector<TokenBase *>::reverse_iterator it = replay.rbegin();
-	      it != replay.rend(); ++it )
-	    pushToken(*it);
-
-	bool saved_vri = allow_variadic_real_inst;
-	allow_variadic_real_inst = true;
-	TokenDataType *real = instantiate_template_use(tname, tb,
-	    td.defining_namespace, td.owner_class);
-	allow_variadic_real_inst = saved_vri;
+	TokenDataType *real = NULL;
+	{
+	    NestedTokenStream replay_run(*this, std::move(replay),
+					 NestedTokenStream::Injected);
+	    bool saved_vri = allow_variadic_real_inst;
+	    allow_variadic_real_inst = true;
+	    real = instantiate_template_use(tname, tb,
+		td.defining_namespace, td.owner_class);
+	    allow_variadic_real_inst = saved_vri;
+	}
 	if ( real )
 	    return real;
     }
@@ -10483,9 +10466,8 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	{
 	    std::vector<TokenBase *> inj = default_tokens;
 	    inj.push_back(new TokenSemi());
-	    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-		  it != inj.rend(); ++it )
-		pushToken(*it);
+	    NestedTokenStream default_run(*this, std::move(inj),
+					  NestedTokenStream::Injected);
 	    TokenBase *dtok = nextToken();
 	    std::string cv_spelling;
 	    dtok = consume_template_type_arg_qualifiers(dtok, cv_spelling);
@@ -10534,8 +10516,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 		}
 		break;
 	    }
-	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-		nextToken();
+	    default_run.close();
 	    type_args.push_back(adt);
 	    arg_types_by_slot.push_back(adt);
 	    arg_tokens_by_slot.push_back(std::vector<TokenBase *>());
@@ -12092,10 +12073,11 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
     }
 
-    // Inject to the FRONT of the parse deque (push_front in reverse so they
-    // dequeue in order), then re-parse the class definition via its keyword token.
-    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin(); it != inj.rend(); ++it )
-	pushToken(*it);
+    // Inject ahead of the live stream, then re-parse the class definition via
+    // its keyword token. Closing the run returns the use site's read context
+    // and discards what the parse left of the run.
+    NestedTokenStream class_run(*this, std::move(inj),
+				NestedTokenStream::Injected);
     // Re-parse the injected class definition at TOP-LEVEL scope. Instantiation
     // is triggered mid-statement (e.g. while parsing `Box<int> b;` inside a
     // function), so the enclosing function's compound scope is active — without
@@ -12261,6 +12243,7 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     parsing_cpp_union_class = saved_cpp_union_class;
     instantiating_canonical_spelling = saved_canon;
     instantiating_dependent_surface = saved_dependent_surface;
+    class_run.close();
 
     // Attach any out-of-line member definitions (`Class<T>::member` in a .tcc) of
     // this template to the freshly-instantiated class as deferred (ODR-use-lazy)
@@ -13013,9 +12996,8 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    inj.push_back(bt->clone_origin());
 	}
 	inj.push_back(new TokenSemi());
-	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	      it != inj.rend(); ++it )
-	    pushToken(*it);
+	NestedTokenStream default_run(*this, std::move(inj),
+				      NestedTokenStream::Injected);
 	TokenBase *dtok = nextToken();
 	std::string cv_spelling;
 	dtok = consume_template_type_arg_qualifiers(dtok, cv_spelling);
@@ -13027,8 +13009,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 					<< tname << "<>" << flush;
 	// A defaulted param's declarator suffix (`class V = U*`) folds too.
 	adt = fold_template_arg_declarator(adt, dtok, &cv_spelling);
-	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-	    nextToken();
+	default_run.close();
 	args.push_back(adt);
 	arg_spellings.push_back(template_type_arg_spelling(adt, cv_spelling));
 	subst[td.typeparams[ai]] = adt;
@@ -13049,11 +13030,9 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	}
 	inj.push_back(bt->clone_origin());
     }
-    TokenSemi *alias_sentinel = new TokenSemi();
-    inj.push_back(alias_sentinel);
-    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	  it != inj.rend(); ++it )
-	pushToken(*it);
+    inj.push_back(new TokenSemi());
+    NestedTokenStream alias_run(*this, std::move(inj),
+				NestedTokenStream::Injected);
 
     bool pushed_owner_scope = false;
     if ( td.owner_class )
@@ -13073,22 +13052,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
     // its operator-> return degraded to a placeholder, task #72).
     if ( resolved )
 	resolved = fold_template_arg_declarator(resolved, head, NULL, body_lead_cv);
-    bool have_sentinel = false;
-    for ( size_t si = 0; si < tokens.size(); ++si )
-	if ( tokens[si] == alias_sentinel )
-	{
-	    have_sentinel = true;
-	    break;
-	}
-    if ( have_sentinel )
-    {
-	while ( peekToken() && peekToken() != alias_sentinel )
-	    nextToken();
-	if ( peekToken() == alias_sentinel )
-	    nextToken();
-    }
-    else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-	nextToken();
+    alias_run.close();
 
     if ( pushed_owner_scope
       && !class_scope_stack.empty()
@@ -13123,11 +13087,9 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	    }
 	    inj2.push_back(bt->clone_origin());
 	}
-	TokenSemi *sentinel2 = new TokenSemi();
-	inj2.push_back(sentinel2);
-	for ( std::vector<TokenBase *>::reverse_iterator it = inj2.rbegin();
-	      it != inj2.rend(); ++it )
-	    pushToken(*it);
+	inj2.push_back(new TokenSemi());
+	NestedTokenStream fallback_run(*this, std::move(inj2),
+				       NestedTokenStream::Injected);
 
 	bool po2 = false;
 	if ( td.owner_class )
@@ -13151,18 +13113,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	  && class_scope_stack.back() == td.owner_class )
 	    class_scope_stack.pop_back();
 
-	bool hs2 = false;
-	for ( size_t si = 0; si < tokens.size(); ++si )
-	    if ( tokens[si] == sentinel2 ) { hs2 = true; break; }
-	if ( hs2 )
-	{
-	    while ( peekToken() && peekToken() != sentinel2 )
-		nextToken();
-	    if ( peekToken() == sentinel2 )
-		nextToken();
-	}
-	else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-	    nextToken();
+	fallback_run.close();
 
 	if ( resolved )
 	    return use_site_type_token(resolved, tb);
@@ -13229,9 +13180,8 @@ void Program::complete_pending_template_instantiations(const std::string &class_
 	    toks.push_back(pending[i].args[ai]->clone_origin());
 	}
 	toks.push_back(new TokenGT());
-	for ( std::vector<TokenBase *>::reverse_iterator it = toks.rbegin();
-	      it != toks.rend(); ++it )
-	    pushToken(*it);
+	NestedTokenStream replay_run(*this, std::move(toks),
+				     NestedTokenStream::Injected);
 
 	TokenIdent fake_name(class_name.c_str());
 	instantiate_template_use(class_name, &fake_name);
@@ -19768,8 +19718,9 @@ namespace { struct MadcNullStreambuf : std::streambuf {
 bool Program::fold_if_constexpr_condition(int64_t &out)
 {
     // Collect the balanced condition tokens (stream is just past the opening `(`),
-    // consuming the matching `)`. Keep them so a non-constant condition can be
-    // pushed back for the runtime-`if` fallback.
+    // consuming the matching `)`. A non-constant condition rewinds to here for
+    // the runtime-`if` fallback.
+    StreamMark cond_start = mark_stream();
     std::vector<TokenBase *> cond_toks;
     DelimDepth d(this);
     d.enter(TokenID::tkOpBrk);
@@ -19785,10 +19736,8 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     }
     if ( d.paren != 0 )
     {
-	// Unbalanced — push back what we took and bail to the runtime path.
-	for ( std::vector<TokenBase *>::reverse_iterator it = cond_toks.rbegin();
-	      it != cond_toks.rend(); ++it )
-	    pushToken(*it);
+	// Unbalanced — rewind what we took and bail to the runtime path.
+	rewind_stream(cond_start);
 	return false;
     }
 
@@ -19829,11 +19778,8 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     {
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
-	// Restore the live stream: condition tokens followed by the ')'.
-	pushToken(new TokenClBrk());
-	for ( std::vector<TokenBase *>::reverse_iterator it = cond_toks.rbegin();
-	      it != cond_toks.rend(); ++it )
-	    pushToken(*it);
+	// Restore the live stream: the condition tokens and its ')'.
+	rewind_stream(cond_start);
     }
     if ( recursion_limit_hit )
 	report_constexpr_recursion_limit(*this,
@@ -33491,26 +33437,21 @@ bool Program::token_begins_parameter_declaration(TokenBase *tb)
 
 bool Program::next_parenthesized_type_is_compound_literal()
 {
-    std::vector<TokenBase *> saved;
+    // A look ahead: every exit rewinds what it read.
+    StreamMark start = mark_stream();
     TokenBase *open = nextToken();
     if ( !open )
 	return false;
-    saved.push_back(open);
     if ( open->id() != TokenID::tkOpBrk )
     {
-	for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
-	      it != saved.rend(); ++it )
-	    pushToken(*it);
+	rewind_stream(start);
 	return false;
     }
 
     TokenBase *head = nextToken();
-    if ( head )
-	saved.push_back(head);
     bool type_head = token_starts_type_name(head);
     // The type's group from inside its consumed `(`, on the stream tracker
-    // (the head is stepped too, for the `<` reading after it); every token
-    // taken, an operator-id's tail included, is pushed back below.
+    // (the head is stepped too, for the `<` reading after it).
     DelimDepth d(this);
     d.enter(TokenID::tkOpBrk);
     if ( type_head )
@@ -33520,17 +33461,12 @@ bool Program::next_parenthesized_type_is_compound_literal()
 	TokenBase *t = nextToken();
 	if ( !t )
 	    break;
-	saved.push_back(t);
-	std::vector<TokenBase *> optail;
-	delimStepStream(t, d, &optail);
-	saved.insert(saved.end(), optail.begin(), optail.end());
+	delimStepStream(t, d);
     }
 
     bool is_compound_literal = type_head && d.paren == 0
 	&& peekToken() && peekToken()->id() == TokenID::tkOpBrc;
-    for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
-	  it != saved.rend(); ++it )
-	pushToken(*it);
+    rewind_stream(start);
     return is_compound_literal;
 }
 
@@ -42583,6 +42519,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				substitute_var_template_init(*vti, targs);
 			    if ( !sub.empty() )
 			    {
+				// a splice: the substituted initializer replaces
+				// the variable-template id in this expression.
 				for ( std::vector<TokenBase *>::reverse_iterator it =
 					  sub.rbegin();
 				      it != sub.rend(); ++it )
@@ -43798,7 +43736,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			   || t1->id() == TokenID::tkOpBrc) )
 			    cast_dd = NULL;
 		    }
-		    if ( !cast_dd )
+		    if ( !cast_dd )	// a splice: the consumed cv run goes back ahead of the operand
 			for ( size_t qk = cast_qualifiers.size(); qk-- > 0; )
 			    pushToken(cast_qualifiers[qk]);
 		    if ( cast_dd )
@@ -43859,10 +43797,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 				int64_t n = array_explicit_count;
 				if ( n <= 0 )
 				{
-				    // Count top-level comma-separated items in {...}
-				    std::vector<TokenBase *> peek_buf;
-				    TokenBase *ob = nextToken();
-				    peek_buf.push_back(ob);
+				    // Count top-level comma-separated items in {...},
+				    // then rewind to the `{`.
+				    StreamMark brace_start = mark_stream();
+				    nextToken();		// the `{`
 				    n = 1;
 				    int depth = 1;
 				    while ( depth > 0 )
@@ -43870,7 +43808,6 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					TokenBase *t = nextToken();
 					if ( !t )
 					    break;
-					peek_buf.push_back(t);
 					if ( t->id() == TokenID::tkOpBrc )
 					    ++depth;
 					else if ( t->id() == TokenID::tkClBrc )
@@ -43878,9 +43815,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 					else if ( depth == 1 && t->id() == TokenID::tkComma )
 					    ++n;
 				    }
-				    for ( std::vector<TokenBase *>::reverse_iterator it = peek_buf.rbegin();
-					  it != peek_buf.rend(); ++it )
-					pushToken(*it);
+				    rewind_stream(brace_start);
 				}
 				DataDefSTRUCT *arr_sdd = new DataDefSTRUCT("__compound_array", 0);
 				for ( int64_t i = 0; i < n; i++ )
@@ -44911,13 +44846,10 @@ TokenBase *Program::finish_expression(std::stack<TokenBase *> &opStack,
     // (the statement terminator, parse_expression_unit, return's `,`). Binding
     // a pending operator can INSTANTIATE a template (the free-operator
     // lowering: std::less<string>'s `__x < __y` instantiates basic_string's
-    // operator<), and those nested parses move the token context into the
-    // instantiated body. Keep the stop token across them.
-    TokenBase *stop_cur = _cur_token;
-    TokenBase *stop_prv = _prv_token;
+    // operator<); those nested parses run in their own token runs
+    // (Program::NestedTokenStream), which return this context when they close.
     while ( !opStack.empty() )
 	popOperator(opStack, exStack);
-    setTokenContext(stop_cur, stop_prv);
 
     if ( exStack.size() > 1 )
 	Throw(exStack.top()) << "Malformed expression: " << exStack.size()
@@ -48954,17 +48886,17 @@ bool Program::desugar_abbreviated_fn_template()
     }
     if ( !found || end >= tokens.size() )
 	return false;
-    // Consume the declaration head [0, end] (terminator included; a `{`
-    // body stays in the stream) and rewrite each placeholder to an invented
-    // identifier, recording per-placeholder PACK-ness: [dcl.fct]/18 spells a
-    // pack as `auto...` / `auto&&...` — the ellipsis after the placeholder's
-    // ptr/ref/cv ops marks the invented parameter a pack, and the ellipsis
-    // itself STAYS (it is the pack-expansion spelling of the rewritten
-    // parameter-declaration).
+    // Read the declaration head [0, end] (terminator included; a `{` body
+    // stays in the stream) without consuming it, and rewrite each placeholder
+    // to an invented identifier, recording per-placeholder PACK-ness:
+    // [dcl.fct]/18 spells a pack as `auto...` / `auto&&...` — the ellipsis
+    // after the placeholder's ptr/ref/cv ops marks the invented parameter a
+    // pack, and the ellipsis itself STAYS (it is the pack-expansion spelling
+    // of the rewritten parameter-declaration).
     std::vector<TokenBase *> decl;
     decl.reserve(end + 1);
-    for ( size_t k = 0; k <= end && !tokens.empty(); ++k )
-	decl.push_back(nextToken());
+    for ( size_t k = 0; k <= end; ++k )
+	decl.push_back(tokens[k]);
     struct Invented { std::string name; bool pack; };
     std::vector<Invented> invented;
     DelimDepth rd;
@@ -49007,18 +48939,10 @@ bool Program::desugar_abbreviated_fn_template()
 	k += n ? n : 1;
     }
     if ( invented.empty() )
-    {
-	// Pre-scan and rewrite disagreed (guarded operand only) — restore
-	// the stream untouched.
-	for ( size_t k = decl.size(); k-- > 0; )
-	    pushToken(decl[k]);
-	return false;
-    }
-    // Push back LIFO: the rewritten declaration first (reverse), then the
-    // synthesized head (reverse), so the stream reads
+	return false;	// pre-scan and rewrite disagreed (guarded operand only)
+    // The declaration is replaced in the stream by the synthesized head and
+    // the rewritten declaration, so the stream reads
     // `template < class[...] __madc_iparam1, ... > <declaration...>`.
-    for ( size_t k = decl.size(); k-- > 0; )
-	pushToken(decl[k]);
     std::vector<TokenBase *> head;
     TokenBase *site = decl[0];
     auto stamp = [&](TokenBase *nt2) {
@@ -49043,8 +48967,8 @@ bool Program::desugar_abbreviated_fn_template()
 	stamp(new TokenIdent(invented[p].name));
     }
     stamp(new TokenGT());
-    for ( size_t k = head.size(); k-- > 0; )
-	pushToken(head[k]);
+    head.insert(head.end(), decl.begin(), decl.end());
+    tokens.splice_front(decl.size(), head);
     return true;
 }
 
@@ -49436,21 +49360,19 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
     size_t saved_class_scopes = class_scope_stack.size();
     try
     {
-	for ( std::vector<TokenBase *>::reverse_iterator it = body.body_tokens.rbegin();
-	      it != body.body_tokens.rend(); ++it )
-	    pushToken(*it);
 	// Deferred mem-initializer-list: replay its tokens (+ the body '{'
 	// the eager path would have left) ahead of the body, and parse them
 	// now — the class is complete, so initializer arguments referencing
 	// members declared after the ctor resolve ([class.base.init]).
+	std::vector<TokenBase *> run;
 	if ( !body.ctor_init_tokens.empty() )
 	{
-	    pushToken(new TokenOpBrc());
-	    for ( std::vector<TokenBase *>::reverse_iterator it =
-		      body.ctor_init_tokens.rbegin();
-		  it != body.ctor_init_tokens.rend(); ++it )
-		pushToken(*it);
+	    run = body.ctor_init_tokens;
+	    run.push_back(new TokenOpBrc());
 	}
+	run.insert(run.end(), body.body_tokens.begin(), body.body_tokens.end());
+	NestedTokenStream body_run(*this, std::move(run),
+				   NestedTokenStream::Injected);
 
 	pushCompound();
 	TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
@@ -49465,9 +49387,8 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	    FuncDef *cur = dynamic_cast<FuncDef *>(body.var->type);
 	    std::vector<TokenBase *> trtoks = body.trailing_ret_tokens;
 	    trtoks.push_back(new TokenSemi());
-	    for ( std::vector<TokenBase *>::reverse_iterator it = trtoks.rbegin();
-		  it != trtoks.rend(); ++it )
-		pushToken(*it);
+	    NestedTokenStream trailing_run(*this, std::move(trtoks),
+					   NestedTokenStream::Injected);
 	    TokenBase *rt = nextToken();
 	    TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
 	    DataDef *new_ret = rtt ? &rtt->definition : NULL;
@@ -49481,8 +49402,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 		    { tr_rvalue = nextToken()->id() == TokenID::tkLand; tr_ref = true; continue; }
 		break;
 	    }
-	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-		nextToken();
+	    trailing_run.close();
 	    // Born with the real return type: a DataDefREF for a reference return
 	    // (trailing `&`/`&&` OR cur already returned one) so the reference is
 	    // in the type, not a parallel flag (first-class refs Phase 2 / R5).
@@ -49513,6 +49433,7 @@ void Program::parse_deferred_function_body(Program::DeferredFunctionBody &body)
 	if ( !tc )
 	    Throw(body.body_tokens.empty() ? NULL : body.body_tokens.front())
 		<< "Failed to parse deferred function body" << flush;
+	body_run.close();
 
 	tf->method = body.method;
 	tf->parent = tc->parent;
@@ -53829,6 +53750,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	pgm.pushToken(tn2);
 	if ( amp_tok )
 	    pgm.pushToken(amp_tok);
+	// a splice: the declarator's head goes back for parseDeclaration.
 	for ( size_t si = star_toks.size(); si-- > 0; )
 	    pgm.pushToken(star_toks[si]);	// deque front reads `* ... & tn2` again
 	if ( const_tok )
@@ -55326,6 +55248,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 	    dd = getQualifiedType(dd, leading_cv & modeled_cv());
 	bool built = false;
 	dd = parse_declarator_suffixes(dd, mode, out, runtime_names, depth, false, built);
+	// a splice: the nested declarator goes back for the next level.
 	for ( size_t k = stash.size(); k-- > 0; )
 	    pushToken(stash[k]);
 	dd = parse_declarator_level(dd, mode, out, runtime_names, depth + 1, built);
@@ -65488,9 +65411,8 @@ static TokenDataType *resolve_canonical_type_spelling(Program &pgm,
 	toks.push_back(arg_types[i]->clone_origin());
     }
     toks.push_back(new TokenGT());
-    for ( std::vector<TokenBase *>::reverse_iterator it = toks.rbegin();
-	  it != toks.rend(); ++it )
-	pgm.pushToken(*it);
+    Program::NestedTokenStream replay_run(pgm, std::move(toks),
+					  Program::NestedTokenStream::Injected);
     TokenIdent *anchor = new TokenIdent(head.c_str());
     return pgm.instantiate_template_id(head, anchor, ns);
 }
@@ -70642,9 +70564,8 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	    inj.push_back(bt ? bt->clone_origin() : NULL);
 	}
 	inj.push_back(new TokenSemi());
-	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	      it != inj.rend(); ++it )
-	    pgm.pushToken(*it);
+	Program::NestedTokenStream spec_run(pgm, std::move(inj),
+					    Program::NestedTokenStream::Injected);
 
 	std::stack<TokenCpnd *> saved_compounds;
 	std::swap(pgm.compounds, saved_compounds);
@@ -70707,6 +70628,7 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 	pgm.cur_func_name = saved_func;
 	pgm.instantiating_canonical_spelling = saved_canon;
 	pgm.instantiating_dependent_surface = saved_dependent_surface;
+	spec_run.close();
 
 	// Both key spellings must name the ONE parsed class: qualified-key
 	// lookups (instantiate_template_use's rule) and legacy-key pointer
@@ -71203,7 +71125,7 @@ void Program::parse_old_style_parameter_declaration(
 {
     unsigned lead_cv = cvNONE;
     DataDef *base_type = parse_old_style_parameter_base(nt, &lead_cv);
-    nt = nextToken();
+    nt = peekToken();
 
     while ( nt )
     {
@@ -71213,7 +71135,7 @@ void Program::parse_old_style_parameter_declaration(
 	// The copy this replaces read `(*name)(params)`, stars with cv, the
 	// name, and `[N]...` skipped by a hand-rolled depth counter that made
 	// EVERY dimension a pointer level (`int a[2][3]` came out `int **`).
-	pushToken(nt);
+	// `nt` is only peeked: the reader consumes it after the base.
 	DeclaratorResult kd;
 	DataDef *decl_type = parse_declarator(base_type, DeclaratorMode::Parameter, kd,
 					      NULL, lead_cv);
@@ -71235,7 +71157,7 @@ void Program::parse_old_style_parameter_declaration(
 	    return;
 	if ( nt->id() != TokenID::tkComma )
 	    Throw(nt) << "Expecting ',' or ';' in K&R parameter declaration" << flush;
-	nt = nextToken();
+	nt = peekToken();
     }
 
     Throw << "Unexpected end of input in K&R parameter declaration" << flush;
@@ -71257,8 +71179,7 @@ bool Program::is_old_style_parameter_declaration_start(TokenBase *tb)
     return false;
 }
 
-bool Program::scan_old_style_definition_suffix(
-					     std::vector<TokenBase *> &suffix)
+bool Program::scan_old_style_definition_suffix()
 {
     if ( !is_old_style_parameter_declaration_start(peekToken()) )
 	return false;
@@ -71269,7 +71190,6 @@ bool Program::scan_old_style_definition_suffix(
 	TokenBase *t = nextToken();
 	if ( !t )
 	    return false;
-	suffix.push_back(t);
 
 	if ( d.paren == 0 && d.square == 0 )
 	{
@@ -71287,7 +71207,7 @@ bool Program::scan_old_style_definition_suffix(
 // `name(params) { body }` or `name(ids) decl-list { body }` — the omitted
 // return type defaults to int (knr_supported() standards only, C78..C17).
 // Probes the shape non-destructively (balanced parens, then `{` or a K&R
-// declaration suffix; every consumed token is pushed back), and on a match
+// declaration suffix; the probe rewinds what it read), and on a match
 // re-consumes and parses the definition. Returns true when a definition was
 // parsed. This must also win for names ALREADY known — a prior implicit
 // call declaration or prototype (`dummy(); ... dummy(){}`) must not divert
@@ -71304,25 +71224,20 @@ bool Program::try_parse_implicit_int_function_definition(TokenBase *tb)
     if ( datatype_map.count(fname) || struct_map.count(fname) )
 	return false;
 
-    std::vector<TokenBase *> saved;
-    saved.push_back(nextToken()); // consume (
+    StreamMark probe_start = mark_stream();
+    nextToken(); // consume (
     int depth = 1;
     while ( depth > 0 )
     {
 	TokenBase *t = nextToken();
 	if ( !t ) break;
-	saved.push_back(t);
 	if ( t->id() == TokenID::tkOpBrk ) ++depth;
 	else if ( t->id() == TokenID::tkClBrk ) --depth;
     }
     bool found_brace = peekToken() && peekToken()->id() == TokenID::tkOpBrc;
-    std::vector<TokenBase *> suffix;
     if ( !found_brace )
-	found_brace = scan_old_style_definition_suffix(suffix);
-    for ( auto it = suffix.rbegin(); it != suffix.rend(); ++it )
-	pushToken(*it);
-    for ( auto it = saved.rbegin(); it != saved.rend(); ++it )
-	pushToken(*it);
+	found_brace = scan_old_style_definition_suffix();
+    rewind_stream(probe_start);
     if ( !found_brace )
 	return false;
     nextToken(); // re-consume (
@@ -71605,12 +71520,12 @@ static TokenBase *drop_captured_dim_exprs(TokenBase *chain,
 // opening '('): scan the balanced remainder plus the declarator suffix
 // (cv/ref-qualifiers, noexcept(...), __attribute__((...)), asm labels,
 // trailing return) to the first TOP-LEVEL '{' (definition) or ';' / ','
-// (declaration). Pure lookahead — every consumed token is pushed back.
+// (declaration). Pure lookahead — the scan rewinds what it read.
 // A block-scope K&R-style DEFINITION (param decls between ')' and '{')
 // reads as a declaration here; that GNU-nested C arcana is out of scope.
 bool Program::function_declarator_has_body()
 {
-    std::vector<TokenBase *> seen;
+    StreamMark start = mark_stream();
     DelimDepth d;
     d.paren = 1;			// caller already consumed the '('
     bool body = false;
@@ -71624,16 +71539,9 @@ bool Program::function_declarator_has_body()
 		break;
 	}
 	t = nextToken();
-	seen.push_back(t);
-	std::vector<TokenBase *> optail;
-	delimStepStream(t, d, &optail);
-	for ( size_t k = 0; k < optail.size(); ++k )
-	    if ( optail[k] )
-		seen.push_back(optail[k]);
+	delimStepStream(t, d);
     }
-    for ( std::vector<TokenBase *>::reverse_iterator it = seen.rbegin();
-	  it != seen.rend(); ++it )
-	pushToken(*it);
+    rewind_stream(start);
     return body;
 }
 
@@ -72913,9 +72821,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    return;
 	std::vector<TokenBase *> trtoks = trailing_ret_tokens;
 	trtoks.push_back(new TokenSemi());
-	for ( std::vector<TokenBase *>::reverse_iterator it = trtoks.rbegin();
-	      it != trtoks.rend(); ++it )
-	    pushToken(*it);
+	NestedTokenStream trailing_run(*this, std::move(trtoks),
+				       NestedTokenStream::Injected);
 	TokenBase *rt = nextToken();
 	TokenDataType *rtt = resolve_declared_type_token(rt, true, true);
 	if ( !rtt )
@@ -72931,8 +72838,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		{ tr_rvalue = nextToken()->id() == TokenID::tkLand; tr_ref = true; continue; }
 	    break;
 	}
-	if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-	    nextToken();
+	trailing_run.close();
 	// The cloned FuncDef is born with the real return type: a DataDefREF
 	// when the trailing return is a reference OR func already returned one
 	// (so the reference lives in the type, not a parallel flag — R5 can then
@@ -76003,6 +75909,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		zero->file = brc->file; zero->line = brc->line; zero->column = brc->column;
 		inner.push_back(zero);
 	    }
+	    // a splice: `T x{v}` goes back as `T x = v`.
 	    for ( size_t i = inner.size(); i-- > 0; )
 		pushToken(inner[i]);             // re-push inner tokens in order
 	    pushToken(syn);                      // '= <inner...>'
@@ -78758,13 +78665,12 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		     || peekToken()->type() == TokenType::ttIdentifier) )
 	    {
 		std::vector<DataDef *> rtypes;
-		std::vector<TokenBase *> saved;
+		StreamMark type_list_start = mark_stream();
 		bool saw_multi_return_comma = false;
 		bool not_a_type_list = false;
 		while ( true )
 		{
 		    TokenBase *rt = nextToken();
-		    saved.push_back(rt);
 		    // Leading `const` qualifier (`(double, const char *)`) —
 		    // consume it and qualify the resolved base type.
 		    bool entry_const = false;
@@ -78772,7 +78678,6 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		    {
 			entry_const = true;
 			rt = nextToken();
-			saved.push_back(rt);
 		    }
 		    TokenDataType *tdt = NULL;
 		    if ( rt->type() == TokenType::ttDataType )
@@ -78797,12 +78702,10 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		    if ( entry_const )
 			entry = getQualifiedType(entry, cvCONST & modeled_cv());
 		    TokenBase *sep = nextToken();
-		    saved.push_back(sep);
 		    while ( sep && sep->id() == TokenID::tkMul )
 		    {
 			entry = getPointerType(entry);
 			sep = nextToken();
-			saved.push_back(sep);
 		    }
 		    rtypes.push_back(entry);
 		    if ( !sep )
@@ -78819,31 +78722,21 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 		}
 		if ( not_a_type_list )
 		{
-		    for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
-			  it != saved.rend(); ++it )
-			if ( *it )
-			    pushToken(*it);
+		    rewind_stream(type_list_start);
 		    resetPrevToken();
 		    return parseExprStmt(tb);
 		}
 		if ( !saw_multi_return_comma )
 		{
-		    for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
-			  it != saved.rend(); ++it )
-			if ( *it )
-			    pushToken(*it);
+		    rewind_stream(type_list_start);
 		    resetPrevToken();
 		    return parseExprStmt(tb);
 		}
 		TokenBase *fname = nextToken();
-		saved.push_back(fname);
 		if ( !fname || fname->type() != TokenType::ttIdentifier
 		  || !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 		{
-		    for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
-			  it != saved.rend(); ++it )
-			if ( *it )
-			    pushToken(*it);
+		    rewind_stream(type_list_start);
 		    resetPrevToken();
 		    return parseExprStmt(tb);
 		}

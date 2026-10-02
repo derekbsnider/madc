@@ -446,7 +446,7 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
-### B127. `T1::*` over a class-template parameter is refused, and ptrmem19.C hangs
+### B127. `T1::*` over a class-template parameter is refused
 
 ```cpp
 struct C { int foo(int v) { return v + 1; } };
@@ -457,13 +457,13 @@ int main() { A<C, int, int>::m p = &C::foo; C c; return (c.*p)(41) == 42 ? 0 : 1
 - g++ 13 (`-std=c++11`): exit 0. madc (`--std=c++11`, at `79bd6f1d9`):
   `error: Expecting identifier in declarator` at `(T1::*m)`, exit 1. The same
   typedef with a concrete class (`int (C::*m)(int)`) compiles and runs.
-- `g++.dg/template/ptrmem19.C` (gxx-c++11 lane, baseline line 550): madc
-  repeats that error at the same position until the lane's 30 s timeout
-  (`--std=c++11 --emit=c11`; g++ `-fsyntax-only`: 6 ms). Error recovery
-  re-enters the declarator without advancing.
+- `g++.dg/template/ptrmem19.C` (gxx-c++11 lane, baseline line 550) gets
+  the same refusal. Its hang (the refusal repeated until the lane's 30 s
+  timeout) was the class re-parse's injected run left in the stream, fixed
+  with B131; `tests/testinjectedrunrecover` is this shape, an `.expect_err`
+  test until this entry is fixed.
 - Layer: the declarator reader (`Program::parse_declarator`; the `C::*`
-  ptr-operator's nested-name-specifier refuses a template type parameter),
-  then the recovery that re-parses the member without consuming a token.
+  ptr-operator's nested-name-specifier refuses a template type parameter).
 
 ### B126. A polyglot public refuses a temporary for a read-only `value &` input
 
@@ -1601,29 +1601,6 @@ unless stated. The owners already exist: `DelimDepth` with
 `delim_scan_step` (index scans) and `Program::delimStepStream` (stream
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
-
-### B131. An injected token run parsed to its end has no owner
-
-- Found 2026-10-02 while consolidating the rewinds (B130). A nested run
-  that ends in a swap back or a rewind is `Program::NestedTokenStream`'s
-  (B46, B130); a rewind is `Program::rewind_stream`'s. A run pushed with
-  `pushToken` and parsed to its end has neither, so nothing returns the
-  outer read context: about 25 hand-pushed runs in `src/parser.cpp` (a
-  template-argument `< args >` replay before `instantiate_template_use` /
-  `instantiate_template_id`, a default argument or alias target with a `;`
-  sentinel, a trailing return type, a class definition re-parse). Unreads
-  (consumed tokens pushed back: a rewind spelled as a push) and splices
-  that join the outer construct (a `>>` split, a declarator stash) share
-  the `pushToken` loop shape.
-- Measured with a temporary probe over tests/ (batch, 2026-10-02): binding
-  an expression's pending operators moved the read context 92 times in 45
-  tests, each time leaving a run's `>` as `curToken` (test3eqclass,
-  testcastarrow, testbarestring, testcontainerdtor, testforeach2, ...).
-  `finish_expression` restores its stop token around that loop, which
-  masks it there; no reducer outside it is measured yet.
-- Fix: a run parsed as its own construct goes through `NestedTokenStream`
-  (Injected); an unread becomes a mark and a rewind; a splice is marked as
-  one; gate (its own commit). KG `DupFamily{injected_token_run_context}`.
 
 ### B90. A declarator's top-level cv, restated three times
 

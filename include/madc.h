@@ -6877,7 +6877,7 @@ public:
 		pgm.setTokenContext(NULL, NULL);
 	    }
 	    else
-		for ( size_t i = seq.size(); i-- > 0; )
+		for ( size_t i = seq.size(); i-- > 0; )	// allowed-exception: the owner
 		    pgm.pushToken(seq[i]);
 	}
 	~NestedTokenStream() { close(); }
@@ -8122,7 +8122,7 @@ public:
 		const std::vector<std::string> &param_ids,
 		std::map<std::string, DataDef *> &param_types,
 		std::map<std::string, unsigned> *param_object_cvs = NULL);
-    bool scan_old_style_definition_suffix(std::vector<TokenBase *> &suffix);
+    bool scan_old_style_definition_suffix();
     // Namespace resolution helpers: walk the enclosing-namespace chain to find
     // a member, resolve a bare name against the active namespace scope, and
     // report the namespace the current C++ scope looks up in.
