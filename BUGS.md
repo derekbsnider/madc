@@ -446,6 +446,43 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B141. The right operand of `.*` / `->*` is read as a postfix chain
+
+```cpp
+#include <cstdio>
+struct C { int d; int foo(int v) { return v + d; } };
+int main() { C c; c.d = 1; std::printf("%d\n", (c.*&C::foo)(9)); return 0; }
+```
+
+- g++ 13 (`-std=c++17`): `10`. madc (`--std=c++17`, 2026-10-02):
+  `error: Expecting a pointer-to-member after '.*'` at `&C::foo`, exit 1.
+- [expr.mptr.oper]/1: `pm-expression .* cast-expression` — the right operand
+  is a cast-expression, whose reader is `Program::parseCastExpression`. The
+  `.*` arm in the expression engine reads a parenthesized primary or a
+  `parsePostfixChain`, so a unary operator (`&C::foo`, `*pp`) or a cast there
+  is refused.
+- Found 2026-10-02 beside B127 (`&C::foo`'s member-pointer type).
+
+### B142. c2m refuses a wide string literal for a `wchar_t` array, and an overlong string
+
+```c
+#include <wchar.h>
+#include <stdio.h>
+wchar_t w[3] = L"ab";
+char s[2] = "abc";
+int main(void) { printf("%d %d %c\n", (int)w[0], (int)w[2], s[1]); return 0; }
+```
+
+- gcc 13 = clang 18 (`-std=c17`): `97 0 b` (a warning for `s`, its excess
+  dropped). madc (whose parser places both through `Program::fit_char_array`)
+  prints `97 0 b`. The in-tree c2m driver (`obj/mir/host/c2m x.c -eg`) refuses
+  both in `check_initializer`: "assignment of incompatible value" for `w`,
+  "string is too long for array initializer" for `s`.
+- Layer: c2mir `check_initializer` (a string literal initializing an array
+  of a wide character type; C's drop of the excess, C11 6.7.9p14 + p2).
+- Found 2026-10-02 beside the string-literal fit (`d39f231ea`). The c2m driver
+  is the self-hosting compiler; madc never hands c2mir either shape.
+
 ### B140. C: excess elements in an initializer list are refused
 
 ```c
