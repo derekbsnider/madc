@@ -74488,14 +74488,6 @@ static TokenStructLit *char_list_of(const std::string &s)
     return slit;
 }
 
-static TokenStructLit *char_init_from_literal(TokenStr *strtok, bool include_null)
-{
-    TokenStructLit *slit = char_list_of(strtok->str);
-    if ( include_null )
-	slit->inits.push_back(new TokenInt(0));
-    return slit;
-}
-
 static size_t find_struct_member_index(DataDefSTRUCT *sdd, const std::string &field_name)
 {
     if ( !sdd )
@@ -74506,29 +74498,56 @@ static size_t find_struct_member_index(DataDefSTRUCT *sdd, const std::string &fi
     return sdd->members.size();
 }
 
-// A character array of `count` elements from a string literal's characters:
-// truncated or zero-padded to it (no NUL when they fill it exactly, C11
-// 6.7.9p14); `count` 0, an array of unknown size, keeps them all and the NUL.
-static TokenStructLit *fit_char_array(TokenStructLit *chars, size_t count)
+TokenStructLit *Program::fit_char_array(TokenStructLit *chars, size_t count,
+					bool pad, TokenBase *where)
 {
+    size_t n = chars->inits.size();
     if ( count == 0 )
-	chars->inits.push_back(new TokenInt(0));
-    else
     {
-	if ( chars->inits.size() > count )
-	    chars->inits.resize(count);
+	chars->inits.push_back(new TokenInt(0));
+	return chars;
+    }
+    if ( is_cpp_mode() && n + 1 > count )
+	Throw(where) << "initializer-string for char array is too long, array size is "
+		     << count << " but initializer has size " << n + 1
+		     << " (including the null terminating character)" << flush;
+    if ( n > count )
+    {
+	// C: the excess is dropped with a warning (gcc, clang; c-torture
+	// pr86714 reads the truncated array).
+	report_warning(DiagnosticPhase::parser,
+		       "initializer-string for char array is too long",
+		       where->file, where->line, where->column);
+	chars->inits.resize(count);
+	n = count;
+    }
+    if ( n < count )
+	chars->inits.push_back(new TokenInt(0));
+    if ( pad )
 	while ( chars->inits.size() < count )
 	    chars->inits.push_back(new TokenInt(0));
-    }
     return chars;
 }
 
-TokenStructLit *Program::string_char_array(TokenStr *strtok, size_t count)
+TokenStructLit *Program::string_char_array(TokenStr *strtok, size_t count,
+					   bool wide, bool pad)
 {
-    TokenStructLit *slit = char_init_from_literal(strtok, false);
-    while ( peekToken() && peekToken()->type() == TokenType::ttString )
-	append_string_literal_chars(slit, ((TokenStr *)nextToken())->str);
-    return fit_char_array(slit, count);
+    TokenStructLit *slit = new TokenStructLit();
+    for ( TokenStr *lit = strtok; lit; )
+    {
+	if ( wide )
+	{
+	    std::vector<uint32_t> units;
+	    madc_wide_payload_target_units(lit->str, dd_platform_wchar()->size, units);
+	    for ( uint32_t u : units )
+		slit->inits.push_back(new TokenInt((int64_t)u));
+	}
+	else
+	    append_string_literal_chars(slit, lit->str);
+	lit = peekToken() && peekToken()->type() == TokenType::ttString
+	    ? (TokenStr *)nextToken() : NULL;
+    }
+    return fit_char_array(slit, count, pad, strtok);
 }
 
 // The positional-slot TYPE inside aggregate `tsdd` at member index `mi`:
@@ -74780,12 +74799,12 @@ TokenStructLit *InitializerCursor::open_slot(size_t fi, size_t i, const Shape &s
 	}
     }
     else if ( cur && cur->type() == TokenType::ttString && slot.char_array() )
-	lit = fit_char_array(char_init_from_literal((TokenStr *)cur, false),
-			     (size_t)slot.dims[0]);
+	lit = pgm_.fit_char_array(char_list_of(((TokenStr *)cur)->str),
+				  (size_t)slot.dims[0], true, cur);
     else if ( cur && cur->as_var_tok() && cur->as_var_tok()->var.is_string_literal()
 	   && slot.char_array() )
-	lit = fit_char_array(char_list_of(cur->as_var_tok()->var.string_literal_text()),
-			     (size_t)slot.dims[0]);
+	lit = pgm_.fit_char_array(char_list_of(cur->as_var_tok()->var.string_literal_text()),
+				  (size_t)slot.dims[0], true, cur);
     else
 	lit = new TokenStructLit();
     if ( cur && lit != cur )
@@ -76494,32 +76513,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	       || wide_string_array_init)
 	      && arr_dims.size() == 1 )
 	    {
-		// C concatenates adjacent string literals, so consume all
-		// immediately consecutive ttString tokens here.
-		while ( peekToken() && peekToken()->type() == TokenType::ttString )
-		{
-		    TokenBase *strtok = nextToken();
-		    const std::string &s = ((TokenStr *)strtok)->str;
-		    if ( wide_string_array_init )
-		    {
-			std::vector<uint32_t> units;
-			madc_wide_payload_target_units(
-			    s, dd_platform_wchar()->size, units);
-			for ( uint32_t u : units )
-			    init_list.push_back(new TokenInt((int64_t)u));
-		    }
-		    else
-		    {
-			for ( char c : s )
-			    init_list.push_back(new TokenInt((int64_t)(unsigned char)c));
-		    }
-		}
-		// C89/C99: if the explicit array size exactly matches the
-		// string length, the null terminator is omitted (e.g.
-		// `char c[3] = "abc";` is valid). For inferred sizes and
-		// any size larger than the literal, append '\0'.
-		if ( arr_dims[0] == 0 || arr_dims[0] > init_list.size() )
-		    init_list.push_back(new TokenInt(0)); // null terminator
+		// The characters and the NUL when there is room — the rest of
+		// the array zero-fills, so no padding.
+		TokenStructLit *chars = string_char_array((TokenStr *)nextToken(),
+		    (size_t)arr_dims[0], wide_string_array_init, false);
+		init_list.insert(init_list.end(), chars->inits.begin(), chars->inits.end());
 	    }
 	    else if ( is_struct_init && peek0->id() != TokenID::tkOpBrc )
 	    {

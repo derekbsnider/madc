@@ -1,0 +1,24 @@
+// A string literal with more characters than the char array it initializes
+// (C11 6.7.9p2, p14): gcc and clang warn ("initializer-string for array of
+// 'char' is too long") and drop the excess, in every form — gcc's own
+// c-torture pr86714 reads the truncated array. madc refused the unbraced
+// form, "Too many initializers for array (expected 2)", while its braced and
+// member forms dropped the excess.
+//
+// gcc 13 and clang 18 (-std=c17, -w) print the .expect line.
+#include <stdio.h>
+
+struct P { char c[2]; int n; };
+
+char g[2] = "abc";
+struct P gp = { "xyz", 5 };
+char gm[2][2] = { "abc", "de" };
+
+int main(void)
+{
+	char l[2] = "abc";
+	struct P lp = { "xyz", 5 };
+	printf("ol %c%c %c%c %d | %c%c %c%c | %c%c %c%c %d\n", g[0], g[1], gp.c[0], gp.c[1], gp.n,
+	       gm[0][0], gm[0][1], gm[1][0], gm[1][1], l[0], l[1], lp.c[0], lp.c[1], lp.n);
+	return 0;
+}

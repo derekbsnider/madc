@@ -9011,11 +9011,21 @@ public:
     bool parse_designation(TokenBase *first, bool gnu_field,
 			   std::vector<InitializerCursor::Designator> &out,
 			   TokenBase *&value);
-    // A string literal (the adjacent ones after it concatenated) as the
-    // element list of a character array of `count` elements: truncated or
-    // zero-padded to it; `count` 0 (unknown size) keeps every character and
-    // the NUL.
-    TokenStructLit *string_char_array(TokenStr *strtok, size_t count);
+    // A string literal (the adjacent ones after it concatenated; a wide one in
+    // the target wchar_t's units) as the element list of a character array
+    // of `count` elements, fitted by fit_char_array. The ONE string-literal
+    // reader of every char-array initializer.
+    TokenStructLit *string_char_array(TokenStr *strtok, size_t count,
+				      bool wide = false, bool pad = true);
+    // A character array's elements `chars` (no NUL) fitted to `count`
+    // (C11 6.7.9p14, [dcl.init.string]): the NUL when there is room, zeros
+    // to `count` after it when `pad` (a flattened row keeps its width);
+    // `count` 0 (unknown size) keeps every character and the NUL. More
+    // characters than elements drops the excess with a warning at `where`
+    // (gcc's C); under --std=c++NN no room for the NUL is refused
+    // ([dcl.init.string]/2).
+    TokenStructLit *fit_char_array(TokenStructLit *chars, size_t count,
+				   bool pad, TokenBase *where);
     // C11 _Generic: parse + select the association at parse time; the
     // controlling side renders through the same signature encoding as
     // parse_builtin_types_compatible_operand (with lvalue conversion and
