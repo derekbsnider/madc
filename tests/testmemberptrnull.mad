@@ -1,0 +1,89 @@
+// A null pointer to member ([conv.mem]/1) has its own value: -1 for a data
+// member (0 is the first member's offset) and {ptr = 0, adj} for a member
+// function (Itanium C++ ABI 2.3). madc stored a null constant as 0, so
+// `&B::y` at offset 0 read as null, and refused a member-function null
+// ("incompatible types in assignment to struct/union", "invalid types of
+// comparison operands"). Every zero-initialization of an object holding a
+// data member pointer — static storage, `{}`, an aggregate's omitted member,
+// `T()`, `new T()`, a mem-initializer `m()` — writes -1 there; a member
+// pointer's truth value ([conv.bool]) is its null test.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect lines.
+#include <stdio.h>
+
+struct B { int y; int z; int get() { return y; } int got() { return z; } };
+typedef int B::*MP;
+typedef int (B::*MF)();
+struct S { MP p; int q; };
+struct T { int k; S s; MP a[2]; };
+struct U { MP p; U() : p() {} };
+struct V { MP p = nullptr; MP r{}; };
+struct K { MP p; MP q; int n; int sum() const { return n; } };
+struct H { MP a[3]; int n; };
+
+MP gp;
+S gs;
+T gt;
+MP garr[3];
+static S gsi = { &B::z };
+MF gf;
+
+static int is_null(MP p) { return p == 0; }
+static MP pass(MP p) { return p; }
+static MP none() { return 0; }
+static MF fnone() { return nullptr; }
+static int truth(bool b) { return b ? 1 : 0; }
+static bool as_bool(MP p) { return p; }
+
+int main()
+{
+	MP py = &B::y, pn = 0, pz = &B::z;
+	MP vp{};
+	S s = {};
+	MP pa;
+	pa = 0;
+	MF fn = 0, fy = &B::get, fz = &B::got;
+	printf("null %d %d %d %d %d %d\n", gp == 0, py == 0, pn == nullptr, vp == 0,
+	       s.p == 0, pa == 0);
+	printf("test %d %d %d %d %d\n", is_null(0), is_null(py), !pn, py ? 1 : 0, pn ? 1 : 0);
+	printf("fn %d %d %d %d %d %d %d %d\n", fn == 0, fy == 0, gf == nullptr, fy ? 1 : 0,
+	       fy == fy, fy == fz, fy != fz, fnone() == fn);
+
+	static MP sp;
+	S s2 = { &B::y };
+	S s3{};
+	T t1 = {};
+	T t2 = { 1, { &B::z, 2 } };
+	S *hp = new S();
+	U u;
+	V v;
+	MP m = MP();
+	MP la[2] = {};
+	MP lb[2] = { &B::y };
+	printf("static %d %d %d %d %d %d %d\n", gs.p == 0, gt.s.p == 0, gt.a[1] == 0,
+	       garr[2] == 0, gsi.p == 0, sp == 0, gsi.p == pz);
+	printf("brace %d %d %d %d %d %d\n", s2.p == 0, s3.p == 0, t1.s.p == 0, t1.a[0] == 0,
+	       t2.a[1] == 0, t2.s.p == pz);
+	printf("value %d %d %d %d %d %d %d %d\n", hp->p == 0, u.p == 0, v.p == 0, v.r == 0,
+	       m == 0, la[1] == 0, lb[0] == 0, lb[1] == 0);
+
+	bool b1 = py, b2 = pn;
+	printf("bool %d %d %d %d %d %d %d %d\n", (int)b1, (int)b2, truth(py), truth(pn),
+	       pass(0) == 0, none() == nullptr, (int)as_bool(py), (int)as_bool(pn));
+	K k = { &B::z };
+	K k2 = {};
+	H h = { { &B::y } };
+	H h2 = {};
+	printf("agg %d %d %d %d %d %d %d %d\n", k.p == pz, k.q == 0, k2.p == 0, h.a[0] == 0,
+	       h.a[1] == 0, h.a[2] == 0, h2.a[0] == 0, k.sum());
+	B o;
+	o.y = 5;
+	MP sel = pn ? pn : py;
+	MP *arr = new MP[2]();
+	K *kp = new K();
+	printf("new %d %d %d %d\n", o.*sel, arr[1] == 0, kp->q == 0, (pn ? 1 : 0) + (pz ? 2 : 0));
+	delete hp;
+	delete[] arr;
+	delete kp;
+	return 0;
+}

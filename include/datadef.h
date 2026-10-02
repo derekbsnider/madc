@@ -758,6 +758,16 @@ public:
     {
 	return false;
     }
+    // A pointer to DATA member (`T C::*`): its null value is -1 (Itanium),
+    // not the all-zero bytes a member-function pointer's null shares.
+    bool is_member_data_pointer() const
+    {
+	return is_member_pointer() && !is_member_function_pointer();
+    }
+    // Does an object of this type hold one (itself, an element, a member
+    // zero-initialization reaches)? Its zero-initialization is not all-zero
+    // bytes then: each such pointer is null, -1.
+    bool holds_member_data_pointer() const;
     virtual bool is_struct() const
     {
 	if ( basetype() == BaseType::btStruct )
@@ -1605,6 +1615,10 @@ public:
 		return (i < member_array_flags.size()) ? member_array_flags[i] : false;
 	return false;
     }
+    // Member `i` is one zero-initialization reaches ([dcl.init]/6): named,
+    // not a virtual base's (the complete object's, laid out apart), and of a
+    // union — this one or an anonymous one flattened in — only the first.
+    bool member_is_zero_initialized(size_t i) const;
     const std::vector<carray_dim_t> *m_dims(const std::string &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )

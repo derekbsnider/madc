@@ -1535,6 +1535,11 @@ inline bool is_zero_integer_literal(const TokenBase *t)
     return t && t->id() == TokenID::tkInt && t->ival() == 0;
 }
 
+// A null pointer constant ([conv.ptr]/1): a zero integer literal or `nullptr`
+// (a TokenNullptr is a zero TokenInt), and madc's own NULL, `((void *)0)` in
+// every mode (include/madc/stddef.h).
+bool is_null_pointer_constant(const TokenBase *t);
+
 class TokenNullptr: public TokenInt
 {
 public:

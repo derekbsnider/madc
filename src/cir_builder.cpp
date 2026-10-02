@@ -4924,6 +4924,13 @@ static const DataDef *unqualified_type(const DataDef *dd)
 	return dd ? dd->unqualified() : dd;
 }
 
+// NULL-tolerant DataDef::holds_member_data_pointer: a zero fill of such an
+// object leaves 0 — the first member's offset — where its null is -1.
+static bool holds_member_data_pointer(const DataDef *dd)
+{
+	return dd && dd->holds_member_data_pointer();
+}
+
 // A class instance (`class Foo { ... };`, including header-defined std classes)
 // lowers to a plain C struct, matching the Cfront C++->C model. Returns the
 // class DataDef when `dd` denotes a non-pointer value class, else NULL.
@@ -6629,8 +6636,14 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 	// A pointer to member converts the other way at the same sites — `B::*`
 	// to `D::*` ([conv.mem]/2) — so at most one operand of a comparison
 	// converts here too.
-	if (member_pointer_class(lhs_dd))
+	if (lhs_dd && unqualified_type(lhs_dd)->is_member_pointer())
 		return member_pointer_conversion(value, lhs_dd, rhs, false, origin);
+	// [conv.bool]: a pointer to member converts to bool by its null test
+	// — the null data pointer is -1, which a C conversion reads as true.
+	DataDef *rv = rhs ? unqualified_type(operand_value_type(rhs)) : NULL;
+	if (rv && rv->is_member_pointer() && lhs_dd
+	    && unqualified_type(lhs_dd)->rawtype() == DataType::dtBOOL)
+		return member_pointer_truth_value(value, rv, origin);
 	DataDefCLASS *base = pointee_user_class(lhs_dd);
 	DataDefCLASS *derived = pointee_user_class(rhs_dd);
 	if (!derived)
@@ -10217,34 +10230,35 @@ TokenBase *CirBuilder::unwrap_scalar_braces(TokenBase *elem, DataDef *slot_dd)
 	return sl;
 }
 
+// An initializer that fills an AGGREGATE slot as ONE object keeps the
+// positional cursor valid: a string literal (or its materialized char-array
+// TokenVar form), or an expression already of aggregate type (`{3, ls, 4,
+// ...}` — a struct variable fills the member). A SCALAR expression on an
+// aggregate slot starts brace elision (C11 6.7.9p20).
+static bool fills_aggregate_slot(TokenBase *child, bool char_array_slot)
+{
+	if (!child)
+		return true;
+	if (child->type() == TokenType::ttString)
+		return true;
+	if (TokenVar *tv = child->as_var_tok())
+		if (tv->var.is_fixed_array())
+			return true;
+	DataDef *cdd = child->datadef();
+	if (cdd && (cdd->is_struct() || cdd->as_carray_dd()))
+		return true;
+	// A string literal materialized as a char-pointer variable: on a
+	// char-array slot the only legal non-brace whole-slot filler IS a
+	// string literal, so char-pointer-typed means string here.
+	return char_array_slot && cdd && cdd->is_pointer();
+}
+
 void CirBuilder::unwrap_scalar_braces_list(std::vector<TokenBase *> &inits,
 					   DataDef *dd, bool slots_are_elements)
 {
 	DataDefSTRUCT *sdd = slots_are_elements
 		? NULL : dynamic_cast<DataDefSTRUCT *>(dd);
 	bool is_union = sdd && sdd->union_layout;
-	// An initializer that fills an AGGREGATE slot as ONE object keeps the
-	// positional cursor valid: a string literal (or its materialized
-	// char-array TokenVar form), or an expression already of aggregate
-	// type (`{3, ls, 4, ...}` — a struct variable fills the member).
-	// A SCALAR expression on an aggregate slot starts brace elision.
-	auto fills_aggregate_slot = [](TokenBase *child, bool char_array_slot) -> bool {
-		if (!child)
-			return true;
-		if (child->type() == TokenType::ttString)
-			return true;
-		if (TokenVar *tv = child->as_var_tok())
-			if (tv->var.is_fixed_array())
-				return true;
-		DataDef *cdd = child->datadef();
-		if (cdd && (cdd->is_struct() || cdd->as_carray_dd()))
-			return true;
-		// A string literal materialized as a char-pointer variable:
-		// on a char-array slot the only legal non-brace whole-slot
-		// filler IS a string literal, so char-pointer-typed means
-		// string here.
-		return char_array_slot && cdd && cdd->is_pointer();
-	};
 	DBG(std::cout << "unwrap_scalar_braces_list(" << (dd ? dd->name : "?")
 		      << ") slots=" << inits.size() << std::endl);
 	for (size_t i = 0; i < inits.size(); i++) {
@@ -10381,6 +10395,28 @@ node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i)
 	if (DataDef *referent = st ? ref_param_referent(st) : NULL)
 		return ref_param_arg_addr(elem, referent,
 					  unqualified_type(referent) != referent);
+	// A slot holding pointers to data member: unwritten, it holds their
+	// null; a counted array's braced list completes its unwritten
+	// elements the same way.
+	DataDef *du = unqualified_type(dd);
+	DataDefSTRUCT *sdd = (du && !du->is_complex()) ? du->as_struct_dd() : NULL;
+	if (sdd && i < sdd->members.size()
+	    && holds_member_data_pointer(sdd->members[i].second)) {
+		DataDef *mt = sdd->members[i].second;
+		size_t cnt = i < sdd->member_counts.size() ? sdd->member_counts[i] : 1;
+		const std::vector<carray_dim_t> *md =
+			i < sdd->member_dims.size() ? &sdd->member_dims[i] : NULL;
+		if (!elem)
+			return member_pointer_null_value(mt, cnt, md, NULL);
+		TokenStructLit *sl = dynamic_cast<TokenStructLit *>(elem);
+		if (sl && cnt != 1 && !sl->array_elem_dd) {
+			node_t lst = aggregate_init_list(sl->inits, mt, elem, true,
+							 sl->has_field_designators);
+			complete_member_pointer_element_list(lst, sl->inits, mt, cnt,
+							     md, elem);
+			return lst;
+		}
+	}
 	return init_value(elem, init_slot_is_aggregate(dd, i),
 			  init_nested_list_type(dd, i));
 }
@@ -10419,10 +10455,15 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 				? dd : NULL;
 		bool elem_aggregate = eu && ((eu->is_struct() && !eu->is_complex())
 					     || eu->as_carray_dd() != NULL);
-		for (size_t i = 0; i < inits.size(); i++)
-			append(lst, node2(N_INIT, list(),
-					  init_value(inits[i], elem_aggregate,
-						     nested)));
+		for (size_t i = 0; i < inits.size(); i++) {
+			// An unwritten element holding pointers to data
+			// member holds their null.
+			node_t gap = inits[i] ? NULL
+				: member_pointer_null_value(dd, 1, NULL, origin);
+			append(lst, node2(N_INIT, list(), gap ? gap
+					  : init_value(inits[i], elem_aggregate,
+						       nested)));
+		}
 		return lst;
 	}
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(unqualified_type(dd));
@@ -10543,6 +10584,7 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 		append(lst, node2(N_INIT, list(),
 				  init_slot_value(inits[i], dd, i)));
 	}
+	complete_member_pointer_struct_list(lst, inits, dd, origin);
 	return lst;
 }
 
@@ -11149,7 +11191,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// too — the emitted INIT list is identical either way.
 		node_t lst = list();
 		if (tdecl->init_list.empty() && v->is_fixed_array() && v->data
-		    && v->type && v->type->is_integer()) {
+		    && v->type && v->type->is_integer()
+		    && !holds_member_data_pointer(v->type)) {
 			// The parser baked a static/global integer array's constant
 			// initializer into v->data and cleared init_list. Reconstruct the
 			// INIT entries from the storage so the CIR backend sees them.
@@ -11171,6 +11214,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			lst = aggregate_init_list(tdecl->init_list, base_dd,
 						  origin, elem_slots,
 						  tdecl->init_has_field_designators);
+			if (elem_slots) {
+				std::vector<carray_dim_t> dims = v->array_dims();
+				complete_member_pointer_element_list(lst,
+					tdecl->init_list, base_dd,
+					v->total_elements(),
+					dims.size() > 1 ? &dims : NULL, origin);
+			}
 		}
 		init_node = lst;
 	} else if (tdecl && tdecl->initialize) {
@@ -11244,6 +11294,26 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// a virtual base reads the vtable's vbase-offset slot (task #36).
 		init_node = upcast_class_ptr(init_node, v->type,
 					     init_expr, origin);
+		}
+	}
+	// Static storage is zero-initialized first ([basic.start.static]/2): a
+	// pointer to data member in it is null, -1, where the zeroed storage
+	// holds 0 (the first member's offset). A dynamic initializer runs later.
+	if (CIR_NODE(init_node)->base.code == N_IGNORE && !is_extern && !is_ptr
+	    && !is_vla_local && (m_file_scope_decl || (v->flags & vfSTATIC))
+	    && holds_member_data_pointer(base_dd)) {
+		if (!v->is_fixed_array()
+		    && unqualified_type(base_dd)->is_member_data_pointer()) {
+			init_node = integer(-1, origin);
+		} else {
+			std::vector<carray_dim_t> dims;
+			if (v->is_fixed_array())
+				dims = v->array_dims();
+			node_t lst = list();
+			append_member_pointer_null_inits(lst, base_dd,
+				v->is_fixed_array() ? v->total_elements() : 1,
+				dims.size() > 1 ? &dims : NULL, origin);
+			init_node = lst;
 		}
 	}
 
@@ -12057,6 +12127,10 @@ node_t CirBuilder::member_pointer_conversion(node_t value, DataDef *to,
 					     TokenBase *src, bool both_ways,
 					     TokenBase *origin)
 {
+	// [conv.mem]/1: a null pointer constant converts to the null member
+	// pointer value — not 0, the first data member's offset.
+	if (is_null_pointer_constant(src))
+		return member_pointer_null(to, origin);
 	DataDefCLASS *tc = member_pointer_class(to);
 	DataDefCLASS *fc = member_pointer_class(src ? src->datadef() : NULL);
 	if (!tc || !fc || tc == fc)
@@ -12108,6 +12182,359 @@ node_t CirBuilder::member_pointer_conversion(node_t value, DataDef *to,
 			      origin), origin));
 	}
 	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+node_t CirBuilder::member_pointer_null(DataDef *to, TokenBase *origin)
+{
+	if (unqualified_type(to)->is_member_data_pointer())
+		return integer(-1, origin);
+	node_t spec = list();
+	append(spec, memfnptr_struct_ref());
+	node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
+	node_t inits = list();
+	append(inits, node2(N_INIT, list(),
+		node2(N_CAST, void_ptr_type(), integer(0, origin), origin)));
+	append(inits, node2(N_INIT, list(), integer(0, origin)));
+	return node2(N_COMPOUND_LITERAL, type_node, inits, origin);
+}
+
+node_t CirBuilder::member_pointer_truth(TokenBase *cond)
+{
+	DataDef *dd = cond ? unqualified_type(operand_value_type(cond)) : NULL;
+	if (!dd || !dd->is_member_pointer())
+		return NULL;
+	return member_pointer_truth_value(translate_expr(cond), dd, cond);
+}
+
+node_t CirBuilder::member_pointer_truth_value(node_t v, DataDef *dd,
+					      TokenBase *origin)
+{
+	if (unqualified_type(dd)->is_member_data_pointer())
+		return node2(N_NE, v, integer(-1, origin), origin);
+	return node2(N_NE, node2(N_FIELD, v, id("ptr", origin), origin),
+		     node2(N_CAST, void_ptr_type(), integer(0, origin), origin),
+		     origin);
+}
+
+node_t CirBuilder::member_fn_pointer_equality(node_t a, node_t b, bool ne,
+					      TokenBase *origin)
+{
+	// ({ struct __madc_memfnptr l = a, r = b;
+	//    l.ptr == r.ptr && (l.ptr == 0 || l.adj == r.adj); }) — each
+	// operand read once.
+	char ln[40], rn[40];
+	int n = m_strtmp_counter++;
+	snprintf(ln, sizeof(ln), "__madc_mfl_%d", n);
+	snprintf(rn, sizeof(rn), "__madc_mfr_%d", n);
+	node_t items = list();
+	auto declare = [&](const char *nm, node_t val) {
+		node_t spec = list();
+		append(spec, memfnptr_struct_ref());
+		node_t sd = simple(N_SPEC_DECL, origin);
+		append(sd, node1(N_SHARE, spec));
+		append(sd, node2(N_DECL, id(nm, origin), list()));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, val);
+		append(items, sd);
+	};
+	declare(ln, a);
+	declare(rn, b);
+	auto fld = [&](const char *nm, const char *f) -> node_t {
+		return node2(N_FIELD, id(nm, origin), id(f, origin), origin);
+	};
+	node_t null_l = node2(N_EQ, fld(ln, "ptr"),
+		node2(N_CAST, void_ptr_type(), integer(0, origin), origin), origin);
+	node_t same = node2(N_ANDAND,
+		node2(N_EQ, fld(ln, "ptr"), fld(rn, "ptr"), origin),
+		node2(N_OROR, null_l,
+		      node2(N_EQ, fld(ln, "adj"), fld(rn, "adj"), origin), origin),
+		origin);
+	append(items, node2(N_EXPR, list(),
+		ne ? node1(N_NOT, same, origin) : same, origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
+// One step of a designator chain from an object to a subobject: a member
+// name, or (empty name) an element index.
+struct MemberPointerStep {
+	std::string name;
+	size_t index;
+};
+
+// A scalar leaf of an object, by its designator chain.
+struct InitializerLeaf {
+	std::vector<MemberPointerStep> path;
+	bool member_pointer;	// a pointer to DATA member
+};
+
+// The scalar leaves of `count` objects of type `dd` (`dims` the extents,
+// outermost first, of a multi-dimensional run) in initialization order,
+// appended to `out` after `path`: only the pointers to data member, or with
+// `every_scalar` all of them (the order a brace-elided list fills).
+static void member_data_pointer_leaves(DataDef *dd, size_t count,
+				       const std::vector<carray_dim_t> *dims,
+				       std::vector<MemberPointerStep> &path,
+				       std::vector<InitializerLeaf> &out,
+				       bool every_scalar = false, int depth = 0)
+{
+	dd = unqualified_type(dd);
+	if (!dd || depth > 64 || (!every_scalar && !holds_member_data_pointer(dd)))
+		return;
+	if (count > 1) {
+		for (size_t i = 0; i < count; i++) {
+			size_t pushed = 0;
+			if (dims && dims->size() > 1) {
+				std::vector<size_t> idx(dims->size());
+				size_t rem = i;
+				for (size_t d = dims->size(); d-- > 0; ) {
+					size_t ext = (*dims)[d] ? (size_t)(*dims)[d] : 1;
+					idx[d] = rem % ext;
+					rem /= ext;
+				}
+				for (size_t d = 0; d < idx.size(); d++, pushed++)
+					path.push_back({std::string(), idx[d]});
+			} else {
+				path.push_back({std::string(), i});
+				pushed = 1;
+			}
+			member_data_pointer_leaves(dd, 1, NULL, path, out,
+						   every_scalar, depth + 1);
+			path.resize(path.size() - pushed);
+		}
+		return;
+	}
+	if (dd->is_member_data_pointer()) {
+		out.push_back({path, true});
+		return;
+	}
+	if (DataDefCArray *ca = dd->as_carray_dd()) {
+		member_data_pointer_leaves(ca->element_type, ca->count, NULL, path,
+					   out, every_scalar, depth + 1);
+		return;
+	}
+	DataDefSTRUCT *sdd = dd->is_complex() ? NULL : dd->as_struct_dd();
+	if (!sdd) {
+		if (every_scalar)
+			out.push_back({path, false});
+		return;
+	}
+	for (size_t i = 0; i < sdd->members.size(); i++) {
+		if (!sdd->member_is_zero_initialized(i))
+			continue;
+		size_t cnt = i < sdd->member_counts.size() ? sdd->member_counts[i] : 1;
+		const std::vector<carray_dim_t> *md =
+			i < sdd->member_dims.size() ? &sdd->member_dims[i] : NULL;
+		path.push_back({sdd->members[i].first, 0});
+		member_data_pointer_leaves(sdd->members[i].second, cnt, md, path,
+					   out, every_scalar, depth + 1);
+		path.pop_back();
+	}
+}
+
+// `= -1` designated by `path` (relative to the list's object), into `inits`.
+static void append_designated_null(CirBuilder &cb, node_t inits,
+				   const std::vector<MemberPointerStep> &path,
+				   TokenBase *origin)
+{
+	node_t des = cb.list();
+	for (const MemberPointerStep &s : path)
+		cb.append(des, s.name.empty()
+			  ? cb.integer((int64_t)s.index, origin)
+			  : cb.node1(N_FIELD_ID, cb.id(s.name.c_str(), origin)));
+	cb.append(inits, cb.node2(N_INIT, des, cb.integer(-1, origin)));
+}
+
+void CirBuilder::append_member_pointer_null_inits(node_t inits, DataDef *dd,
+		size_t count, const std::vector<carray_dim_t> *dims,
+		TokenBase *origin)
+{
+	std::vector<MemberPointerStep> path;
+	std::vector<InitializerLeaf> leaves;
+	member_data_pointer_leaves(dd, count, dims, path, leaves);
+	for (const InitializerLeaf &leaf : leaves)
+		append_designated_null(*this, inits, leaf.path, origin);
+}
+
+void CirBuilder::member_pointer_null_lvalue_stores(
+		const std::function<node_t()> &mint_lvalue, DataDef *dd,
+		size_t count, const std::vector<carray_dim_t> *dims,
+		std::vector<node_t> &out, TokenBase *origin)
+{
+	std::vector<MemberPointerStep> path;
+	std::vector<InitializerLeaf> leaves;
+	member_data_pointer_leaves(dd, count, dims, path, leaves);
+	for (const InitializerLeaf &leaf : leaves) {
+		node_t lv = mint_lvalue();
+		for (const MemberPointerStep &s : leaf.path)
+			lv = s.name.empty()
+			     ? node2(N_IND, lv, integer((int64_t)s.index, origin), origin)
+			     : node2(N_FIELD, lv, id(s.name.c_str(), origin), origin);
+		out.push_back(node2(N_EXPR, list(),
+			node2(N_ASSIGN, lv, integer(-1, origin), origin), origin));
+	}
+}
+
+void CirBuilder::member_pointer_null_stores(
+		const std::function<node_t()> &mint_addr, DataDef *dd,
+		const std::function<node_t()> &mint_count,
+		std::vector<node_t> &out, TokenBase *origin)
+{
+	if (!holds_member_data_pointer(dd))
+		return;
+	// One object, or each of `mint_count()` objects through a counter.
+	char ci[32];
+	snprintf(ci, sizeof(ci), "__mpi%d", m_strtmp_counter++);
+	std::vector<node_t> stores;
+	member_pointer_null_lvalue_stores([&]() -> node_t {
+		node_t a = mint_addr();
+		if (mint_count)
+			a = node2(N_ADD, a, id(ci, origin), origin);
+		return node1(N_DEREF, a, origin);
+	}, dd, 1, NULL, stores, origin);
+	if (!mint_count) {
+		out.insert(out.end(), stores.begin(), stores.end());
+		return;
+	}
+	node_t ispec = list();
+	append_i64(ispec, origin);
+	node_t init = simple(N_SPEC_DECL, origin);
+	append(init, node1(N_SHARE, ispec));
+	append(init, node2(N_DECL, id(ci, origin), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, origin));
+	node_t cond = node2(N_LT, id(ci, origin), mint_count(), origin);
+	node_t incr = node2(N_ADD_ASSIGN, id(ci, origin), integer(1, origin), origin);
+	node_t body_items = list();
+	for (node_t s : stores)
+		append(body_items, s);
+	out.push_back(node5(N_FOR, list(), init, cond, incr,
+			    node2(N_BLOCK, list(), body_items, origin), origin));
+}
+
+node_t CirBuilder::member_pointer_null_value(DataDef *dd, size_t count,
+		const std::vector<carray_dim_t> *dims, TokenBase *origin)
+{
+	if (!holds_member_data_pointer(dd))
+		return NULL;
+	if (count == 1 && unqualified_type(dd)->is_member_data_pointer())
+		return integer(-1, origin);
+	node_t lst = list();
+	append_member_pointer_null_inits(lst, dd, count, dims, origin);
+	return lst;
+}
+
+// A brace-elided run over an object holding pointers to data member that is
+// not one flat run of scalars: the leaf it reaches is not known here.
+static const char *const kElidedMemberPointerList =
+	"a brace-elided initializer over an object holding a pointer to data "
+	"member: brace each subobject";
+
+void CirBuilder::complete_member_pointer_struct_list(node_t lst,
+		const std::vector<TokenBase *> &inits, DataDef *dd,
+		TokenBase *origin)
+{
+	DataDef *du = unqualified_type(dd);
+	DataDefSTRUCT *sdd = (du && !du->is_complex()) ? du->as_struct_dd() : NULL;
+	if (!sdd || sdd->union_layout || !holds_member_data_pointer(du))
+		return;
+	// The first slot a flat scalar enters by brace elision (C11 6.7.9p20):
+	// past it, list positions no longer name members.
+	size_t elide = inits.size();
+	for (size_t i = 0; i < inits.size() && i < sdd->members.size(); i++) {
+		TokenBase *e = inits[i];
+		if (!e || dynamic_cast<TokenStructLit *>(e)
+		    || !init_slot_is_aggregate(dd, i))
+			continue;
+		DataDef *mt = unqualified_type(sdd->members[i].second);
+		bool char_array = i < sdd->member_counts.size()
+			&& sdd->member_counts[i] != 1 && mt && mt->is_integer()
+			&& mt->size == 1;
+		if (!fills_aggregate_slot(e, char_array)) {
+			elide = i;
+			break;
+		}
+	}
+	std::vector<MemberPointerStep> path;
+	std::vector<InitializerLeaf> leaves;
+	auto member_leaves = [&](size_t j, std::vector<InitializerLeaf> &out,
+				 bool every_scalar) {
+		if (!sdd->member_is_zero_initialized(j))
+			return;
+		size_t cnt = j < sdd->member_counts.size() ? sdd->member_counts[j] : 1;
+		const std::vector<carray_dim_t> *md =
+			j < sdd->member_dims.size() ? &sdd->member_dims[j] : NULL;
+		path.assign(1, MemberPointerStep{sdd->members[j].first, 0});
+		member_data_pointer_leaves(sdd->members[j].second, cnt, md, path,
+					   out, every_scalar);
+	};
+	if (elide == inits.size()) {
+		for (size_t j = inits.size(); j < sdd->members.size(); j++)
+			member_leaves(j, leaves, false);
+	} else {
+		// Nothing to place when no pointer to data member follows.
+		std::vector<InitializerLeaf> after;
+		for (size_t j = elide; j < sdd->members.size(); j++)
+			member_leaves(j, after, false);
+		if (after.empty())
+			return;
+		// Every initializer from the elided slot on fills one scalar
+		// leaf, in order; the leaves past the last one are unwritten.
+		for (size_t i = elide; i < inits.size(); i++) {
+			TokenBase *e = inits[i];
+			DataDef *ed = e ? e->datadef() : NULL;
+			if (!e || dynamic_cast<TokenStructLit *>(e)
+			    || e->type() == TokenType::ttString
+			    || (ed && (ed->is_struct() || ed->as_carray_dd()))) {
+				append(lst, node2(N_INIT, list(),
+					error_node(kElidedMemberPointerList, origin)));
+				return;
+			}
+		}
+		std::vector<InitializerLeaf> all;
+		for (size_t j = elide; j < sdd->members.size(); j++)
+			member_leaves(j, all, true);
+		for (size_t k = inits.size() - elide; k < all.size(); k++)
+			if (all[k].member_pointer)
+				leaves.push_back(all[k]);
+	}
+	for (const InitializerLeaf &leaf : leaves)
+		append_designated_null(*this, lst, leaf.path, origin);
+}
+
+void CirBuilder::complete_member_pointer_element_list(node_t lst,
+		const std::vector<TokenBase *> &inits, DataDef *elem,
+		size_t count, const std::vector<carray_dim_t> *dims,
+		TokenBase *origin)
+{
+	if (!holds_member_data_pointer(elem) || inits.size() >= count)
+		return;
+	DataDef *eu = unqualified_type(elem);
+	bool elem_aggregate = (eu->is_struct() && !eu->is_complex())
+			   || eu->as_carray_dd();
+	bool rows = dims && dims->size() > 1;
+	// One initializer per element: an aggregate element's braced list or
+	// object, a scalar element's value. Rows of a multi-dimensional array
+	// (nested braces) or elision across aggregate elements place their
+	// elements by a shape this does not follow.
+	for (TokenBase *e : inits) {
+		if (!e)
+			continue;
+		bool brace = dynamic_cast<TokenStructLit *>(e) != NULL;
+		if (elem_aggregate ? !(brace || fills_aggregate_slot(e, false))
+				   : (brace && rows)) {
+			append(lst, node2(N_INIT, list(),
+				error_node(kElidedMemberPointerList, origin)));
+			return;
+		}
+	}
+	std::vector<MemberPointerStep> path;
+	std::vector<InitializerLeaf> one, all;
+	member_data_pointer_leaves(elem, 1, NULL, path, one);
+	member_data_pointer_leaves(elem, count, dims, path, all);
+	for (size_t k = inits.size() * one.size(); k < all.size(); k++)
+		append_designated_null(*this, lst, all[k].path, origin);
 }
 
 static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the thunk path
@@ -14966,10 +15393,13 @@ bool CirBuilder::member_initializer_stmts(DataDefCLASS *cdd, FuncDef *fd,
 		// `_Vector_impl_data() : _M_start(), _M_finish(), ...` —
 		// skipping it left garbage that the dtor then freed).
 		// Class members took the ctor-call arm above.
+		// A pointer to member's zero value is its null.
+		bool mp = m.second && unqualified_type(m.second)->is_member_pointer();
 		if (m.second && (m.second->is_numeric()
-				 || m.second->is_pointer())) {
+				 || m.second->is_pointer() || mp)) {
 			node_t z = node2(N_ASSIGN, fld,
-					 integer(0L, origin), origin);
+					 mp ? member_pointer_null(m.second, origin)
+					    : integer(0L, origin), origin);
 			out.push_back(node2(N_EXPR, list(), z, origin));
 			return true;
 		}
@@ -15153,10 +15583,16 @@ bool CirBuilder::class_member_init_stmts(DataDefCLASS *cdd, FuncDef *ctor,
 		TokenBase *init = (!mem_init && default_inits)
 			? applied_member_default_init(cdd, mi, done_bases) : NULL;
 		if (init) {
+			// Copy-initialization from the default member initializer:
+			// the implicit conversions apply (`int B::*p = nullptr;`
+			// and `m{}`'s stored 0 are the null, -1).
 			node_t fld = node2(N_DEREF_FIELD, id(recv, origin),
 					   id(mn.c_str(), origin));
 			ms.push_back(node2(N_EXPR, list(),
-				node2(N_ASSIGN, fld, translate_expr(init), origin),
+				node2(N_ASSIGN, fld,
+				      upcast_class_ptr(translate_expr(init),
+						       cdd->members[mi].second, init,
+						       origin), origin),
 				origin));
 		} else if (!mem_init && construct)
 			member_default_construct_stmts(cdd, mi, recv, !ctor,
@@ -18574,6 +19010,15 @@ node_t CirBuilder::scalar_array_new_list_init(TokenNEW *tn, DataDef *et,
 	append(pdecl, node2(N_CAST, ptr_type(),
 			    node2(N_CALL, id("calloc", tb), cargs, tb), tb));
 	append(items, pdecl);
+	// Every element's pointers to data member hold their null, -1, before
+	// the clauses store theirs.
+	{
+		std::vector<node_t> nulls;
+		member_pointer_null_stores([&]() -> node_t { return id(ptmp, tb); },
+			et, [&]() -> node_t { return id(ntmp, tb); }, nulls, tb);
+		for (node_t s : nulls)
+			append(items, s);
+	}
 	const bool aggregate_elem = et->is_struct();
 	for (size_t i = 0; i < inits.size(); ++i) {
 		TokenBase *e = inits[i];
@@ -18588,13 +19033,14 @@ node_t CirBuilder::scalar_array_new_list_init(TokenNEW *tn, DataDef *et,
 				continue;	// `{}`: value-initialized (zero)
 			} else if (sl->inits.size() == 1 && sl->inits[0]
 				   && !sl->inits[0]->as_struct_lit_tok()) {
-				val = translate_expr(sl->inits[0]);
+				val = upcast_class_ptr(translate_expr(sl->inits[0]),
+						       et, sl->inits[0], tb);
 			} else {
 				return error_node("too many initializers for a scalar"
 						  " element of an array new", sl);
 			}
 		} else
-			val = translate_expr(e);
+			val = upcast_class_ptr(translate_expr(e), et, e, tb);
 		node_t store = node2(N_EXPR, list(),
 			node2(N_ASSIGN,
 			      node2(N_IND, id(ptmp, tb), integer((int64_t)i, tb), tb),
@@ -18964,7 +19410,8 @@ bool CirBuilder::aggregate_member_fill(
 			for (; arg && k < extent && pos < clauses.size(); ++k, ++pos)
 				assign_stmt(node2(N_IND, member_lvalue(mn),
 						  integer((int64_t)k, origin)),
-					    translate_expr(clauses[pos]));
+					    upcast_class_ptr(translate_expr(clauses[pos]),
+							     mt, clauses[pos], origin));
 			ai = own ? ai + 1 : (arg ? pos : ai);
 			if (k < extent)
 				stmts.push_back(zero_fill_stmt(
@@ -18976,6 +19423,11 @@ bool CirBuilder::aggregate_member_fill(
 							  integer(0, origin)),
 						    origin), origin),
 					origin));
+			for (size_t e = k; e < extent && holds_member_data_pointer(mt); ++e)
+				member_pointer_null_lvalue_stores([&]() -> node_t {
+					return node2(N_IND, member_lvalue(mn),
+						     integer((int64_t)e, origin));
+				}, mt, 1, NULL, stmts, origin);
 			continue;
 		}
 		// Any other array member keeps the arms below (one clause, as
@@ -19063,11 +19515,13 @@ bool CirBuilder::aggregate_member_fill(
 			// initializer's address — the one reference-bind owner,
 			// which also materializes a prvalue for a const referent
 			// (a bare N_ADDR of `5` is not an lvalue).
+			// Any other member is copy-initialized: the implicit
+			// conversions apply (a null constant to a member pointer).
 			DataDef *referent = ref_param_referent(mt);
 			node_t init = referent
 				? ref_param_arg_addr(arg, referent,
 						     unqualified_type(referent) != referent)
-				: translate_expr(arg);
+				: upcast_class_ptr(translate_expr(arg), mt, arg, origin);
 			if (!init)
 				return false;
 			assign_stmt(member_lvalue(mn), init);
@@ -19078,7 +19532,9 @@ bool CirBuilder::aggregate_member_fill(
 		// ([dcl.init.aggr]p8).
 		if (TokenBase *dinit = cdd ? applied_member_default_init(cdd, i, NULL)
 					   : NULL) {
-			assign_stmt(member_lvalue(mn), translate_expr(dinit));
+			assign_stmt(member_lvalue(mn),
+				    upcast_class_ptr(translate_expr(dinit), mt, dinit,
+						     origin));
 			continue;
 		}
 		if (DataDefCLASS *mc = as_class_instance(mt)) {
@@ -19105,7 +19561,8 @@ bool CirBuilder::aggregate_member_fill(
 		if (mt && (mt->is_numeric() || mt->is_pointer())) {
 			stmts.push_back(node2(N_EXPR, list(),
 				node2(N_ASSIGN, member_lvalue(mn),
-				      integer(0L, origin), origin), origin));
+				      integer(holds_member_data_pointer(mt) ? -1L : 0L,
+					      origin), origin), origin));
 			continue;
 		}
 		if (const DataDefSTRUCT *cst = as_plain_struct(mt)) {
@@ -19188,10 +19645,14 @@ void CirBuilder::zero_init_subobject_stmts(const std::function<node_t()> &mint_a
 					   TokenBase *origin)
 {
 	if (!cdd) return;
+	// A pointer to data member's zero value is its null, -1, not the 0
+	// the fill leaves (member_pointer_null_stores).
 	if (!base_subobject) {
 		out.push_back(zero_fill_stmt(mint_addr(),
 			node1(N_EXPR_SIZEOF, node1(N_DEREF, mint_addr(), origin),
 			      origin), origin));
+		member_pointer_null_stores(mint_addr, cdd,
+					   std::function<node_t()>(), out, origin);
 		return;
 	}
 	auto field = [&](const std::string &mn) -> node_t {
@@ -19201,17 +19662,27 @@ void CirBuilder::zero_init_subobject_stmts(const std::function<node_t()> &mint_a
 		if (cdd->member_vbase.count(i)) continue;
 		const std::string &mn = cdd->members[i].first;
 		DataDef *mt = cdd->members[i].second;
+		bool nulls = cdd->member_is_zero_initialized(i)
+			  && holds_member_data_pointer(mt);
 		// A scalar (a bit-field included — it has no address) stores 0;
 		// an array, struct or class member is filled over its own extent.
 		if (mt && !cdd->m_is_array_decl(mn) && !as_lowered_complex(mt)
 		    && (mt->is_numeric() || mt->is_pointer())) {
 			out.push_back(node2(N_EXPR, list(),
-				node2(N_ASSIGN, field(mn), integer(0L, origin),
+				node2(N_ASSIGN, field(mn),
+				      integer(nulls ? -1L : 0L, origin),
 				      origin), origin));
 			continue;
 		}
 		out.push_back(zero_fill_stmt(node1(N_ADDR, field(mn), origin),
 			node1(N_EXPR_SIZEOF, field(mn), origin), origin));
+		if (!nulls)
+			continue;
+		size_t cnt = i < cdd->member_counts.size() ? cdd->member_counts[i] : 1;
+		const std::vector<carray_dim_t> *md =
+			i < cdd->member_dims.size() ? &cdd->member_dims[i] : NULL;
+		member_pointer_null_lvalue_stores([&]() -> node_t { return field(mn); },
+						  mt, cnt, md, out, origin);
 	}
 }
 
@@ -22071,7 +22542,12 @@ node_t CirBuilder::zero_struct_compound(const DataDefSTRUCT *cst,
 	node_t type_node = node2(N_TYPE, spec,
 				 node2(N_DECL, ignore(), list()));
 	node_t inits = list();
-	append(inits, node2(N_INIT, list(), integer(0L, origin)));
+	// A pointer to data member in it is null, -1, not the zero the rest is.
+	DataDefSTRUCT *sd = const_cast<DataDefSTRUCT *>(cst);
+	if (holds_member_data_pointer(sd))
+		append_member_pointer_null_inits(inits, sd, 1, NULL, origin);
+	else
+		append(inits, node2(N_INIT, list(), integer(0L, origin)));
 	return node2(N_COMPOUND_LITERAL, type_node, inits, origin);
 }
 
@@ -23916,7 +24392,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				else if (tn->has_initializer && !tn->alloc_type->as_struct_dd())
 					construct = node2(N_ASSIGN,
 						node1(N_DEREF, typed_addr(), tb),
-						integer(0, tb), tb);
+						unqualified_type(tn->alloc_type)->is_member_pointer()
+						? member_pointer_null(tn->alloc_type, tb)
+						: integer(0, tb), tb);
 				else if (tn->has_initializer)
 					fill = zero_fill_stmt(typed_addr(),
 						node1(N_SIZEOF, node2(N_TYPE,
@@ -23929,8 +24407,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t items = list();
 			if (construct)
 				append(items, node2(N_EXPR, list(), construct, tb));
-			if (fill)
+			if (fill) {
 				append(items, fill);
+				std::vector<node_t> nulls;
+				member_pointer_null_stores([&]() -> node_t {
+					DataDef *t = tn->alloc_type;
+					node_t tptr = node2(N_TYPE, type_list(t),
+						node2(N_DECL, ignore(),
+						      node1(N_LIST, pointer())));
+					return node2(N_CAST, tptr, addr(), tb);
+				}, tn->alloc_type, std::function<node_t()>(), nulls, tb);
+				for (node_t s : nulls)
+					append(items, s);
+			}
 			append(items, node2(N_EXPR, list(), addr(), tb));
 			return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
 		}
@@ -23957,11 +24446,50 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					  { {N_UNSIGNED, N_LONG, N_LONG}, false } });
 				if (tn->array_init)
 					return scalar_array_new_list_init(tn, et, tb);
+				if (!holds_member_data_pointer(et)) {
+					node_t cargs = list();
+					append(cargs, translate_expr(tn->array_size));
+					append(cargs, t_sizeof());
+					node_t ccall = node2(N_CALL, id("calloc", tb), cargs, tb);
+					return node2(N_CAST, t_ptr_type(), ccall, tb);
+				}
+				// Elements holding pointers to data member: each one's
+				// null, -1, over the zeroed block.
+				//   ({ long __anN = n;
+				//      T *__newN = (T *)calloc(__anN, sizeof(T));
+				//      <null stores per element>; __newN; })
+				char ntmp[32], ptmp[32];
+				int k = m_strtmp_counter++;
+				snprintf(ntmp, sizeof(ntmp), "__an%d", k);
+				snprintf(ptmp, sizeof(ptmp), "__new%d", k);
+				node_t items = list();
+				node_t nspec = list();
+				append_i64(nspec, tb);
+				node_t ndecl = simple(N_SPEC_DECL, tb);
+				append(ndecl, node1(N_SHARE, nspec));
+				append(ndecl, node2(N_DECL, id(ntmp, tb), list()));
+				append(ndecl, ignore());
+				append(ndecl, ignore());
+				append(ndecl, translate_expr(tn->array_size));
+				append(items, ndecl);
 				node_t cargs = list();
-				append(cargs, translate_expr(tn->array_size));
+				append(cargs, id(ntmp, tb));
 				append(cargs, t_sizeof());
-				node_t ccall = node2(N_CALL, id("calloc", tb), cargs, tb);
-				return node2(N_CAST, t_ptr_type(), ccall, tb);
+				node_t pdecl = simple(N_SPEC_DECL, tb);
+				append(pdecl, node1(N_SHARE, type_list(et)));
+				append(pdecl, node2(N_DECL, id(ptmp, tb), node1(N_LIST, pointer())));
+				append(pdecl, ignore());
+				append(pdecl, ignore());
+				append(pdecl, node2(N_CAST, t_ptr_type(),
+					node2(N_CALL, id("calloc", tb), cargs, tb), tb));
+				append(items, pdecl);
+				std::vector<node_t> nulls;
+				member_pointer_null_stores([&]() -> node_t { return id(ptmp, tb); },
+					et, [&]() -> node_t { return id(ntmp, tb); }, nulls, tb);
+				for (node_t s : nulls)
+					append(items, s);
+				append(items, node2(N_EXPR, list(), id(ptmp, tb), tb));
+				return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
 			}
 			// new T / new T(v) -> ({ T *__newN = (T*)malloc(sizeof(T));
 			//                        [*__newN = v;] __newN; })
@@ -23995,10 +24523,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t sitems = list();
 			append(sitems, sdecl);
 			if (!tn->ctor_args.empty()) {
+				// Copy-initialized from the argument: the implicit
+				// conversions apply (a null constant to a member
+				// pointer, a derived to a base pointer).
 				node_t store = node2(N_ASSIGN,
 					node1(N_DEREF, id(stmp, tb), tb),
-					translate_expr(tn->ctor_args[0]), tb);
+					upcast_class_ptr(translate_expr(tn->ctor_args[0]),
+							 et, tn->ctor_args[0], tb), tb);
 				append(sitems, node2(N_EXPR, list(), store, tb));
+			} else if (value_init) {
+				std::vector<node_t> nulls;
+				member_pointer_null_stores([&]() -> node_t {
+					return id(stmp, tb);
+				}, et, std::function<node_t()>(), nulls, tb);
+				for (node_t s : nulls)
+					append(sitems, s);
 			}
 			append(sitems, node2(N_EXPR, list(), id(stmp, tb), tb));
 			return node1(N_STMTEXPR,
@@ -24092,6 +24631,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				append(items, node2(N_EXPR, list(),
 					node2(N_ASSIGN, cookie, id(ntmp, tb), tb), tb));
 			}
+			// The zeroed block's pointers to data member hold their
+			// null, -1, before any element is constructed.
+			{
+				std::vector<node_t> nulls;
+				member_pointer_null_stores([&]() -> node_t { return id(tmp, tb); },
+					cdd, [&]() -> node_t { return id(ntmp, tb); }, nulls, tb);
+				for (node_t s : nulls)
+					append(items, s);
+			}
 			if (tn->array_init) {
 				// new C[n]{...}: every element from the list, the
 				// rest value-initialized — the class array owner
@@ -24141,7 +24689,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			std::vector<node_t> cstmts;
 			// The new-initializer direct-initializes
 			// ([expr.new]/23); an EMPTY one needs no zero-fill,
-			// calloc's storage already is value-initialization's.
+			// calloc's storage already is value-initialization's
+			// — but for a pointer to data member, whose null (-1)
+			// it stores before construction.
+			if (tn->ctor_args.empty() && tn->has_initializer
+			    && class_value_init_zeroes(cdd))
+				member_pointer_null_stores([&]() -> node_t {
+					return id(tmp, tb);
+				}, cdd, std::function<node_t()>(), cstmts, tb);
 			if (tn->ctor_args.empty())
 				complete_object_construct_stmts([&]() -> node_t {
 					return id(tmp, tb);
@@ -25818,6 +26373,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				DataDef *crdd = top->right ? top->right->datadef() : NULL;
 				left  = upcast_class_ptr(left,  crdd, top->left,  tb, cldd);
 				right = upcast_class_ptr(right, cldd, top->right, tb, crdd);
+				// A member-function pointer is a {ptr, adj} pair, not
+				// a scalar: equality reads both fields.
+				DataDef *lv = unqualified_type(operand_value_type(top->left));
+				DataDef *rv = unqualified_type(operand_value_type(top->right));
+				if ((code == N_EQ || code == N_NE)
+				    && ((lv && lv->is_member_function_pointer())
+					|| (rv && rv->is_member_function_pointer())))
+					return member_fn_pointer_equality(left, right,
+									  code == N_NE, tb);
 			}
 			// GNU void*/func-ptr/incomplete-ptr arithmetic (element size 1).
 			// c2mir rejects it, so cast the size-1 pointer operand(s) to
@@ -26640,7 +27204,9 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// A pointer-to-member return (`int D::*f() { return &B::y; }`): the
 	// same implicit conversion ([conv.mem]/2).
 	else if (tr->returns && m_cur_func_ret_fd
-		 && member_pointer_class(&m_cur_func_ret_fd->return_value_type()))
+		 && (m_cur_func_ret_fd->return_value_type().unqualified()->is_member_pointer()
+		     || (operand_value_type(tr->returns)
+			 && operand_value_type(tr->returns)->unqualified()->is_member_pointer())))
 		expr = upcast_class_ptr(expr, &m_cur_func_ret_fd->return_value_type(),
 					tr->returns, tr);
 	// Pending `defer`red statements run between the return expression's
@@ -26793,6 +27359,8 @@ node_t CirBuilder::translate_cond(TokenBase *cond)
 {
 	if (node_t conv = cond_contextual_bool(cond))
 		return conv;
+	if (node_t mp = member_pointer_truth(cond))
+		return mp;
 	// A carrier has no contextual conversion to bool (its as_boolean /
 	// is_null / empty rows are explicit), and its storage is an array whose
 	// decayed address is never null: `if (v)` was ALWAYS taken, even for a
@@ -30891,7 +31459,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 							    id("__this", origin),
 							    id(p.name.c_str(), origin));
 					node_t zasgn = node2(N_ASSIGN, zfld,
-							     integer(0L, origin), origin);
+						integer(holds_member_data_pointer(mem)
+							? -1L : 0L, origin), origin);
 					meminit_stmts.push_back(TsubstMemInitStmt{ p.name,
 						node2(N_EXPR, list(), zasgn, origin) });
 					continue;
@@ -30901,7 +31470,8 @@ node_t CirBuilder::tsubst_method_body(TokenFunc *tf, FuncDef *fd,
 						   id(p.name.c_str(), origin));
 				node_t init;
 				if (p.value_init)
-					init = integer(0L, origin);
+					init = integer(holds_member_data_pointer(mem)
+						       ? -1L : 0L, origin);
 				else {
 					cir_node *ic = NULL;
 					try {

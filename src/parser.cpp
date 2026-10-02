@@ -21002,6 +21002,44 @@ Variable *DataDefCLASS::findMethodOverload(const std::string &name,
     return NULL;
 }
 
+bool DataDefSTRUCT::member_is_zero_initialized(size_t i) const
+{
+    if ( i >= members.size() || member_vbase.count(i) || members[i].first.empty() )
+	return false;
+    for ( const AnonymousAggregateInfo &ai : anonymous_aggregates )
+    {
+	if ( !ai.aggregate || i < ai.first_member
+	  || i >= ai.first_member + ai.member_count )
+	    continue;
+	if ( ai.aggregate->union_layout && i != ai.first_member )
+	    return false;
+	return !union_layout || ai.first_member == 0;
+    }
+    return !union_layout || i == 0;
+}
+
+static bool holds_member_data_pointer_at(const DataDef *dd, int depth)
+{
+    dd = dd ? dd->unqualified() : NULL;
+    if ( !dd || depth > 64 )
+	return false;
+    if ( dd->is_member_data_pointer() )
+	return true;
+    if ( const DataDefCArray *ca = dd->as_carray_dd() )
+	return holds_member_data_pointer_at(ca->element_type, depth + 1);
+    const DataDefSTRUCT *sdd = dd->is_complex() ? NULL : dd->as_struct_dd();
+    for ( size_t i = 0; sdd && i < sdd->members.size(); i++ )
+	if ( sdd->member_is_zero_initialized(i)
+	  && holds_member_data_pointer_at(sdd->members[i].second, depth + 1) )
+	    return true;
+    return false;
+}
+
+bool DataDef::holds_member_data_pointer() const
+{
+    return holds_member_data_pointer_at(this, 0);
+}
+
 // === type-domain identity (spec §2.1). Typedefs are already resolved to the
 // underlying DataDef before this is called; const/volatile never reach DataDef.
 // The DataType tag IS the representation for simple scalars (dtCHAR==dtINT8,
@@ -57188,6 +57226,16 @@ TokenCASE *Program::parse_switch_label(TokenSWITCH *sw, TokenBase *tn,
     return target;
 }
 
+bool is_null_pointer_constant(const TokenBase *t)
+{
+    if ( is_zero_integer_literal(t) )
+	return true;
+    TokenCast *tc = t ? const_cast<TokenBase *>(t)->as_cast_tok() : NULL;
+    const DataDefPTR *p = tc ? pointer_dd_of(tc->cast_type) : NULL;
+    return p && p->base_type && p->base_type->is_void()
+	&& is_zero_integer_literal(tc->expr);
+}
+
 // A DECLARATION-SPECIFIER keyword. These arrive with KEYWORD token ids, not as
 // ttDataType or ttIdentifier, so any "does a declaration start here" test that
 // looks only at those two token TYPES silently misses every declaration that
@@ -74098,6 +74146,11 @@ static bool initialize_static_fixed_array_data(Variable *var,
 					       bool allow_subobjects = false)
 {
     if ( !var || !var->is_fixed_array() || !var->data || !var->type )
+	return false;
+    // A pointer to data member's null is -1, not the 0 an unwritten element
+    // holds: the CIR builder's initializer list writes it
+    // (tests/testmemberptrnull).
+    if ( var->type->holds_member_data_pointer() )
 	return false;
     if ( allow_subobjects
       && (var->dims.size() > 1 || dynamic_cast<DataDefSTRUCT *>(var->type)) )

@@ -49,6 +49,9 @@
 - A class-pointer conversion (implicit via cir's `upcast_class_ptr`; a static or C-style
   cast): `base_subobject_ptr` up / `derived_object_ptr` down (null stays null).
 - A pointer-to-member conversion (`B::*` ↔ `D::*`): cir's `member_pointer_conversion`.
+  Its null (`-1` data, `{0,0}` function): `member_pointer_null`; its truth value:
+  `member_pointer_truth`; zero-initialization holding one (`holds_member_data_pointer`):
+  `member_pointer_null_stores` / `append_member_pointer_null_inits` — never a bare 0.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 

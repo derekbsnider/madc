@@ -1625,6 +1625,55 @@ public:
 	// B::* -> D::*; with `both_ways`, a static cast's D::* -> B::* too).
 	node_t member_pointer_conversion(node_t value, DataDef *to, TokenBase *src,
 					 bool both_ways, TokenBase *origin);
+	// The NULL value of pointer-to-member type `to` ([conv.mem]/1, Itanium
+	// C++ ABI 2.3): -1 for a data member, {ptr = 0, adj = 0} for a function.
+	node_t member_pointer_null(DataDef *to, TokenBase *origin);
+	// [conv.bool]: a pointer to member `cond` as a truth value (data:
+	// != -1; function: its ptr != 0); NULL when `cond` is not one.
+	node_t member_pointer_truth(TokenBase *cond);
+	// ... of the already-lowered member pointer `v` of type `dd`.
+	node_t member_pointer_truth_value(node_t v, DataDef *dd, TokenBase *origin);
+	// `a == b` / `a != b` over two member-function pointers (Itanium 2.3):
+	// ptr equal, and ptr null or adj equal.
+	node_t member_fn_pointer_equality(node_t a, node_t b, bool ne,
+					  TokenBase *origin);
+	// Zero-initialization of an object holding pointers to DATA member
+	// (cir's holds_member_data_pointer): a zero fill leaves 0 — the first
+	// member's offset — so each one also gets the null value, -1. As
+	// designated initializers appended to `inits` (`.s.p = -1`, `[1] = -1`,
+	// relative to `count` objects of type `dd`, `dims` the extents of a
+	// multi-dimensional run) ...
+	void append_member_pointer_null_inits(node_t inits, DataDef *dd,
+			size_t count, const std::vector<carray_dim_t> *dims,
+			TokenBase *origin);
+	// ... or as stores through `mint_addr()` (a typed `T *`, FRESH per call)
+	// into one object, or into each of `mint_count()` when it is set.
+	void member_pointer_null_stores(const std::function<node_t()> &mint_addr,
+			DataDef *dd, const std::function<node_t()> &mint_count,
+			std::vector<node_t> &out, TokenBase *origin);
+	// ... or as stores into the `count` objects (`dims` their extents) the
+	// lvalue `mint_lvalue()` (FRESH per call) denotes — an array member.
+	void member_pointer_null_lvalue_stores(
+			const std::function<node_t()> &mint_lvalue, DataDef *dd,
+			size_t count, const std::vector<carray_dim_t> *dims,
+			std::vector<node_t> &out, TokenBase *origin);
+	// The value of an UNWRITTEN slot holding pointers to data member — one
+	// object, or `count` elements (`dims` their extents): `-1` for a lone
+	// pointer, else the designated list. NULL when the slot holds none.
+	node_t member_pointer_null_value(DataDef *dd, size_t count,
+			const std::vector<carray_dim_t> *dims, TokenBase *origin);
+	// The brace list `lst`, built from `inits`, leaves the rest of its object
+	// unwritten: each pointer to data member there gets `= -1` designated
+	// after it — of a struct `dd`'s members, or of `count` elements of type
+	// `elem` (`dims` their extents). A brace-elided run whose leaves the
+	// list order cannot place refuses loudly.
+	void complete_member_pointer_struct_list(node_t lst,
+			const std::vector<TokenBase *> &inits, DataDef *dd,
+			TokenBase *origin);
+	void complete_member_pointer_element_list(node_t lst,
+			const std::vector<TokenBase *> &inits, DataDef *elem,
+			size_t count, const std::vector<carray_dim_t> *dims,
+			TokenBase *origin);
 	// (struct C){re, im} compound literal — re/im nodes are adopted.
 	node_t int_complex_compound(node_t re, node_t im, DataDefCOMPLEX *cdd,
 				    TokenBase *origin);
