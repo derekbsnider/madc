@@ -12664,6 +12664,8 @@ struct gen_ctx {
     VARR (MIR_var_t) * arg_vars;
   } proto_info;
   VARR (init_el_t) * init_els;
+  size_t init_els_start; /* the first element of the initializer being collected */
+  mir_size_t init_els_num; /* the next element's number: source order, never reused */
   MIR_item_t abort_proto, abort_item;
   MIR_item_t memcmp_proto, memcmp_item;
   MIR_item_t copysignf_proto, copysignf_item;
@@ -12700,6 +12702,8 @@ struct gen_ctx {
 #define stmtexpr_last_expr gen_ctx->stmtexpr_last_expr
 #define proto_info gen_ctx->proto_info
 #define init_els gen_ctx->init_els
+#define init_els_start gen_ctx->init_els_start
+#define init_els_num gen_ctx->init_els_num
 #define abort_proto gen_ctx->abort_proto
 #define abort_item gen_ctx->abort_item
 #define memcmp_proto gen_ctx->memcmp_proto
@@ -16619,6 +16623,81 @@ static mir_size_t get_object_path_offset (c2m_ctx_t c2m_ctx) {
   return offset;
 }
 
+/* The bits [*start, *end) of the object that init element EL initializes. */
+static void init_el_bits (c2m_ctx_t c2m_ctx, const init_el_t *el, mir_size_t *start,
+                          mir_size_t *end) {
+  if (el->member_decl != NULL && el->member_decl->bit_offset >= 0) {
+    *start = el->offset * MIR_CHAR_BIT + (mir_size_t) el->member_decl->bit_offset;
+    *end = *start + (mir_size_t) el->member_decl->width;
+  } else {
+    *start = el->offset * MIR_CHAR_BIT;
+    *end = *start
+           + (incomplete_type_p (c2m_ctx, el->el_type)
+                ? 0
+                : raw_type_size (c2m_ctx, el->el_type) * MIR_CHAR_BIT);
+  }
+}
+
+/* Write constant character EL into a copy of STR_EL's narrow string literal,
+   which holds it.  FALSE when EL is not a constant character. */
+static int patch_str_init_el (c2m_ctx_t c2m_ctx, init_el_t *str_el, const init_el_t *el) {
+  struct expr *e = el->init->attr;
+  node_t str = str_el->init;
+  mir_size_t pos = el->offset - str_el->offset, len = str->u.s.len;
+  VARR (char) * buf;
+  node_t patched;
+
+  if (str->code != N_STR || el->member_decl != NULL || e == NULL || !e->const_p
+      || !integer_type_p (e->type) || raw_type_size (c2m_ctx, el->el_type) != 1)
+    return FALSE;
+  VARR_CREATE (char, buf, c2m_alloc (c2m_ctx), len > pos ? len : pos + 1);
+  for (mir_size_t k = 0; k < len; k++) VARR_PUSH (char, buf, str->u.s.s[k]);
+  while (VARR_LENGTH (char, buf) <= pos) VARR_PUSH (char, buf, 0);
+  VARR_SET (char, buf, pos, (char) e->c.u_val);
+  patched = new_str_node (c2m_ctx, N_STR,
+                          uniq_str (c2m_ctx, VARR_ADDR (char, buf), VARR_LENGTH (char, buf)),
+                          POS (str));
+  patched->attr = str->attr;
+  str_el->init = patched;
+  VARR_DESTROY (char, buf);
+  return TRUE;
+}
+
+/* C11 6.7.9p19: each initializer overrides any earlier one for the same
+   subobject.  Drop the elements of the initializer being collected that the
+   bits [start, end) override: an element inside them, and a scalar
+   overlapping them (another member of a union).  An earlier string or
+   aggregate value holding them keeps its other parts: NEW_EL, a constant
+   character of a static initializer inside an earlier string, is written
+   into that string (static data lays out one element per byte range), and
+   TRUE says it was. */
+static int override_init_els (c2m_ctx_t c2m_ctx, mir_size_t start, mir_size_t end,
+                              const init_el_t *new_el) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  size_t j = init_els_start;
+  int patched_p = FALSE;
+
+  if (start >= end) return FALSE;
+  for (size_t i = init_els_start; i < VARR_LENGTH (init_el_t, init_els); i++) {
+    init_el_t el = VARR_GET (init_el_t, init_els, i);
+    mir_size_t s, e;
+
+    init_el_bits (c2m_ctx, &el, &s, &e);
+    if (s < end && start < e) {
+      if (start <= s && e <= end) continue;
+      if (el.init->code == N_STR || el.init->code == N_STR16 || el.init->code == N_STR32) {
+        if (new_el != NULL && !patched_p && s <= start && end <= e)
+          patched_p = patch_str_init_el (c2m_ctx, &el, new_el);
+      } else if (scalar_type_p (el.el_type)) {
+        continue;
+      }
+    }
+    VARR_SET (init_el_t, init_els, j++, el);
+  }
+  VARR_TRUNC (init_el_t, init_els, j);
+  return patched_p;
+}
+
 /* The function has the same structure as check_initializer.  Keep it this way. */
 static void collect_init_els (c2m_ctx_t c2m_ctx, decl_t member_decl, struct type **type_ptr,
                               node_t initializer, int const_only_p, int top_p MIR_UNUSED) {
@@ -16648,7 +16727,7 @@ check_one_value:
             || initializer->code == N_STR32 || !const_only_p || cexpr->const_p
             || cexpr->const_addr_p || (literal != NULL && addr_p));
     init_el.c2m_ctx = c2m_ctx;
-    init_el.num = VARR_LENGTH (init_el_t, init_els);
+    init_el.num = init_els_num++;
     init_el.offset = get_object_path_offset (c2m_ctx);
     init_el.member_decl = member_decl;
     init_el.el_type = type;
@@ -16656,6 +16735,12 @@ check_one_value:
                                ? NULL
                                : VARR_LAST (init_object_t, init_object_path).container_type;
     init_el.init = initializer;
+    {
+      mir_size_t start, end;
+
+      init_el_bits (c2m_ctx, &init_el, &start, &end);
+      if (override_init_els (c2m_ctx, start, end, const_only_p ? &init_el : NULL)) return;
+    }
     VARR_PUSH (init_el_t, init_els, init_el);
     return;
   }
@@ -16669,7 +16754,7 @@ check_one_value:
                || str->code == N_STR32)))
       && type->mode == TM_ARR && init_compatible_string_p (str, type->u.arr_type->el_type)) {
     init_el.c2m_ctx = c2m_ctx;
-    init_el.num = VARR_LENGTH (init_el_t, init_els);
+    init_el.num = init_els_num++;
     init_el.offset = get_object_path_offset (c2m_ctx);
     init_el.member_decl = NULL;
     init_el.el_type = type;
@@ -16677,8 +16762,26 @@ check_one_value:
                                ? NULL
                                : VARR_LAST (init_object_t, init_object_path).container_type;
     init_el.init = str;
+    {
+      mir_size_t start, end;
+
+      init_el_bits (c2m_ctx, &init_el, &start, &end);
+      override_init_els (c2m_ctx, start, end, NULL);
+    }
     VARR_PUSH (init_el_t, init_els, init_el);
     return;
+  }
+  if (!top_p && !incomplete_type_p (c2m_ctx, type)) {
+    /* A brace list for a subobject initializes all of it (6.7.9p19).  The path
+       offset leaves out an unnamed anonymous member's own offset (its members
+       carry adjusted ones), so a list for that member adds it. */
+    mir_size_t start = get_object_path_offset (c2m_ctx);
+
+    if (member_decl != NULL && type->unnamed_anon_struct_union_member_type_p)
+      start += member_decl->offset;
+    start *= MIR_CHAR_BIT;
+    override_init_els (c2m_ctx, start, start + raw_type_size (c2m_ctx, type) * MIR_CHAR_BIT,
+                       NULL);
   }
   if (init == NULL) return;
   assert (init->code == N_INIT);
@@ -17173,6 +17276,12 @@ static MIR_item_t get_string_data (c2m_ctx_t c2m_ctx, node_t n) {
   return data;
 }
 
+/* A local initializer's end so far never moves back: an element inside an
+   earlier string or aggregate value (6.7.9p19) ends before it. */
+static mir_size_t init_end_max (mir_size_t end, mir_size_t el_end) {
+  return el_end > end ? el_end : end;
+}
+
 static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
                              const char *global_name, mir_size_t size, int local_p) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
@@ -17225,9 +17334,10 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         MIR_type_t src_t = get_mir_type (c2m_ctx, src_type);
         val = gen (c2m_ctx, init_el.init, NULL, NULL, TRUE, NULL, NULL);
         val = scalar_to_complex (c2m_ctx, val, src_t, init_el.el_type->u.basic_type);
-        gen_memcpy (c2m_ctx, offset + rel_offset, base, val,
+        gen_memcpy (c2m_ctx, offset + init_el.offset, base, val,
                     raw_type_size (c2m_ctx, init_el.el_type));
-        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        rel_offset
+          = init_end_max (rel_offset, init_el.offset + raw_type_size (c2m_ctx, init_el.el_type));
         continue;
       }
       /* Complex local initialized from a complex of DIFFERENT component width
@@ -17242,9 +17352,10 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         val = gen (c2m_ctx, init_el.init, NULL, NULL, TRUE, NULL, NULL);
         val = complex_to_complex (c2m_ctx, val, src_type->u.basic_type,
                                   init_el.el_type->u.basic_type);
-        gen_memcpy (c2m_ctx, offset + rel_offset, base, val,
+        gen_memcpy (c2m_ctx, offset + init_el.offset, base, val,
                     raw_type_size (c2m_ctx, init_el.el_type));
-        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        rel_offset
+          = init_end_max (rel_offset, init_el.offset + raw_type_size (c2m_ctx, init_el.el_type));
         continue;
       }
       if (int128_type_p (init_el.el_type)) {
@@ -17253,11 +17364,12 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         val = materialize_int128_scalar_node (c2m_ctx, init_el.init, src_type);
         gen_memcpy (c2m_ctx, offset + init_el.offset, base, val,
                     raw_type_size (c2m_ctx, init_el.el_type));
-        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        rel_offset
+          = init_end_max (rel_offset, init_el.offset + raw_type_size (c2m_ctx, init_el.el_type));
         continue;
       }
       if (t == MIR_T_UNDEF)
-        val = new_op (NULL, MIR_new_mem_op (ctx, t, offset + rel_offset, base, 0, 1));
+        val = new_op (NULL, MIR_new_mem_op (ctx, t, offset + init_el.offset, base, 0, 1));
       val = gen (c2m_ctx, init_el.init, NULL, NULL, t != MIR_T_UNDEF,
                  t != MIR_T_UNDEF ? NULL : &val, NULL);
       val = bool_conversion (c2m_ctx, val, ((struct expr *) init_el.init->attr)->type,
@@ -17273,8 +17385,8 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
                        : init_el.init->code == N_STR16 ? init_el.init->u.s.len / 2
                        : init_el.init->code == N_STR32 ? init_el.init->u.s.len / 4
                                                        : raw_type_size (c2m_ctx, init_el.el_type);
-        gen_memcpy (c2m_ctx, offset + rel_offset, base, val, s);
-        rel_offset = init_el.offset + s;
+        gen_memcpy (c2m_ctx, offset + init_el.offset, base, val, s);
+        rel_offset = init_end_max (rel_offset, init_el.offset + s);
       } else {
         MIR_op_t mem
           = MIR_new_alias_mem_op (ctx, t, offset + init_el.offset, base, 0, 1,
@@ -17290,16 +17402,18 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         val = cast (c2m_ctx, val, get_mir_type (c2m_ctx, init_el.el_type), FALSE);
         emit_scalar_assign (c2m_ctx, new_op (init_el.member_decl, mem), &val, t,
                             i == init_start || rel_offset == init_el.offset);
-        rel_offset = init_el.offset + _MIR_type_size (ctx, t);
         if (init_el.member_decl != NULL && init_el.member_decl->bit_offset >= 0) {
           /* A bit-field ends at the byte after its last bit, not at its type's
              unit: a member after it in the unit (`char c; int x : 4; char d;`,
              d at byte 2) still takes the gap fill, and a byte-wise field's bits
              running past the unit are never reached by it. */
-          rel_offset = init_el.offset
-                       + ((mir_size_t) init_el.member_decl->bit_offset
-                          + init_el.member_decl->width + MIR_CHAR_BIT - 1)
-                           / MIR_CHAR_BIT;
+          rel_offset = init_end_max (rel_offset,
+                                     init_el.offset
+                                       + ((mir_size_t) init_el.member_decl->bit_offset
+                                          + init_el.member_decl->width + MIR_CHAR_BIT - 1)
+                                           / MIR_CHAR_BIT);
+        } else {
+          rel_offset = init_end_max (rel_offset, init_el.offset + _MIR_type_size (ctx, t));
         }
       }
     }
@@ -19315,7 +19429,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       _MIR_get_temp_item_name (ctx, module, buff, sizeof (buff));
       global_name = buff;
     }
-    init_start = VARR_LENGTH (init_el_t, init_els);
+    init_start = init_els_start = VARR_LENGTH (init_el_t, init_els);
     collect_init_els (c2m_ctx, NULL, &decl->decl_spec.type, NL_EL (r->u.ops, 1),
                       decl->scope == top_scope || decl->decl_spec.linkage == N_STATIC
                         || decl->decl_spec.linkage == N_EXTERN || decl->decl_spec.static_p
@@ -20017,7 +20131,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
             }
           }
         } else if (initializer->code != N_IGNORE) {  // ??? general code
-          init_start = VARR_LENGTH (init_el_t, init_els);
+          init_start = init_els_start = VARR_LENGTH (init_el_t, init_els);
           collect_init_els (c2m_ctx, NULL, &decl->decl_spec.type, initializer,
                             decl->decl_spec.linkage == N_STATIC
                               || decl->decl_spec.linkage == N_EXTERN || decl->decl_spec.static_p
@@ -20844,6 +20958,7 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   VARR_CREATE (MIR_op_t, switch_ops, alloc, 128);
   VARR_CREATE (case_t, switch_cases, alloc, 64);
   VARR_CREATE (init_el_t, init_els, alloc, 128);
+  init_els_start = init_els_num = 0;
   VARR_CREATE (node_t, node_stack, alloc, 8);
   VARR_CREATE (MIR_alias_t, union_alias_done, alloc, 8);
   abort_proto = abort_item = memcmp_proto = memcmp_item = copysignf_proto = copysignf_item
