@@ -1,0 +1,31 @@
+// A qualifier that names a data-only struct or union reaches its non-static
+// data members in an expression: `sizeof(S::t)`, `__alignof__(S::t)` and
+// `decltype(S::t)` read the member's type ([expr.prim.id]/2), `&S::t` is a
+// pointer to data member ([expr.unary.op]/3) — also through a union, a
+// typedef'd anonymous struct, a namespace-qualified struct, and a struct nested in a class
+// template (`sizeof(T2::t)`, the libstdc++ __aligned_membuf shape). madc keeps
+// a C++ struct with no member function, base or class-typed member a
+// DataDefSTRUCT, and the expression qualifier answered only a class: every
+// one was refused, "Unknown namespace or class 'S'".
+//
+// g++ 13 and clang++ 18 (-std=c++17) print the .expect lines.
+#include <cstdio>
+struct S { double t; char c[3]; };
+union U { int i; double d; };
+typedef struct { short a; long long b; } TS;
+namespace ns { struct N { int k; float f; }; }
+template <typename T> struct M { struct T2 { T t; }; unsigned char s[sizeof(T2::t)]; int f() { return 0; } };
+
+int main()
+{
+	double S::*pt = &S::t;
+	S s;
+	s.t = 2.5;
+	ns::N n;
+	n.k = 7;
+	decltype(S::t) x = 1.25;
+	std::printf("q %zu %zu %zu %zu %zu %zu %zu\n", sizeof(S::t), sizeof(S::c), sizeof(U::d),
+		    sizeof(TS::b), sizeof(ns::N::f), sizeof(M<double>), __alignof__(S::t));
+	std::printf("p %g %d %g\n", s.*pt, n.k, x);
+	return 0;
+}

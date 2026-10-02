@@ -8647,12 +8647,18 @@ public:
     // lookup (DelimDepth::lt_reads_as_less_than) must not register anything.
     DataDefCLASS *resolve_expression_class_scope(const std::string &name,
 						 bool lazy = true);
+    // The class, struct or union `name` names in expression scope (a
+    // data-only C++ aggregate stays a DataDefSTRUCT); the class form above
+    // is this answer when it is a DataDefCLASS.
+    DataDefSTRUCT *resolve_expression_aggregate_scope(const std::string &name,
+						      bool lazy = true);
     // What a qualifier names before `::` in an expression — THE one classify
     // policy for the expression arms (postfix chain, address-of, identifier
     // arm). Owns alias resolution and the collision diagnosis; each arm reads
     // the registry slice its continuation actually serves.
     struct QualifierScope {
-	DataDefCLASS *cls;	// non-NULL: names a class in expression scope
+	DataDefSTRUCT *agg;	// non-NULL: names a class, struct or union in expression scope
+	DataDefCLASS *cls;	// agg when it is a class
 	std::string ns_name;	// alias-resolved qualifier spelling
 	bool has_variable_ns;	// present in namespace_map
 	bool has_datatype_ns;	// present in namespace_datatype_map

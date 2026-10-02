@@ -263,7 +263,8 @@ struct AS { int f() { return x; } char c; alignas(16) int x; };                 
   `skip_member_attributes` reads and discards them, and the cv reads before
   and after the member's type (`skip_cv_qualifier_tokens`) take no
   attribute group.
-- Blocked on B77 and B78. Applying a member's attributes evaluates their
+- Was blocked on B77 and B78, both fixed now (B78 `86b36877b`, B77
+  2026-10-02). Applying a member's attributes evaluates their
   operands, and libstdc++'s `__aligned_membuf` declares
   `alignas(__alignof__(_Tp2::_M_t)) unsigned char _M_storage[...]`, a
   qualified name through a nested data-only struct. With B77 open that
@@ -638,25 +639,6 @@ int main()
 - Layer: the carrier list's element reader. A carrier list's `{` element
   should be read as a nested carrier literal (the same reader, recursive).
   A core parser change: its own focused session (owner, 2026-09-13).
-
-### B77. A data-only struct cannot qualify a name in an expression
-
-```cpp
-#include <cstdio>
-struct S { double t; };
-template<typename T> struct M { struct T2 { T t; }; unsigned char s[sizeof(T2::t)]; int f() { return 0; } };
-int main() { std::printf("q: %zu %zu\n", sizeof(S::t), sizeof(M<double>)); return 0; }
-```
-
-- g++ = clang++: `q: 8 8`. madc: `Unknown namespace or class 'S'` (and
-  `'T2'` for the nested one). Reducers: `tmp/b65r/v6.cpp`, `v2.cpp`.
-- Where: `classify_qualifier_before_scope` asks
-  `resolve_expression_class_scope`, which answers only a `DataDefCLASS`. A
-  C++ struct with no member function, base or object member stays a
-  `DataDefSTRUCT`, so the qualifier classifies as nothing and the
-  namespace arm throws. The same name used as a type resolves.
-- Found 2026-09-29 while tracing the B65 member regression. Core expression
-  parser: a focused session, with B78.
 
 ### B74. `std::make_shared` does not compile: its tag constructor is not a candidate
 

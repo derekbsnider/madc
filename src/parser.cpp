@@ -5053,6 +5053,16 @@ bool Program::current_method_class_has_member(const std::string &name)
 DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name,
 						      bool lazy)
 {
+    return dynamic_cast<DataDefCLASS *>(resolve_expression_aggregate_scope(name, lazy));
+}
+
+// The class, struct or union `name` designates in expression scope — every
+// one is a class in C++ ([class.pre]/1); madc keeps a data-only aggregate a
+// DataDefSTRUCT, so a qualifier through one (`sizeof(S::t)`, `&S::t`)
+// names it here and only here.
+DataDefSTRUCT *Program::resolve_expression_aggregate_scope(const std::string &name,
+							   bool lazy)
+{
     DataDef *dd = resolve_current_class_type_alias(name);
     if ( !dd && !compounds.empty() && compounds.top()
       && compounds.top()->method && compounds.top()->method->owner_class )
@@ -5071,7 +5081,7 @@ DataDefCLASS *Program::resolve_expression_class_scope(const std::string &name,
     }
     if ( !dd && lazy )
 	dd = lazy_resolve_type(name);
-    return dynamic_cast<DataDefCLASS *>(dd);
+    return dynamic_cast<DataDefSTRUCT *>(dd);
 }
 
 // THE one classify policy for "what does this qualifier name before `::` in
@@ -5087,7 +5097,8 @@ Program::QualifierScope Program::classify_qualifier_before_scope(
 	const std::string &name, TokenBase *at)
 {
     QualifierScope r;
-    r.cls = resolve_expression_class_scope(name);
+    r.agg = resolve_expression_aggregate_scope(name);
+    r.cls = dynamic_cast<DataDefCLASS *>(r.agg);
     r.ns_name = name;
     std::string resolved = resolve_namespace_name_in_scope(name);
     if ( !resolved.empty() )
@@ -5113,6 +5124,11 @@ Program::QualifierScope Program::classify_qualifier_before_scope(
     if ( r.cls && r.is_namespace() )
 	Throw(at) << "'" << name
 		  << "' names both a class and a namespace in this scope" << flush;
+    // A data-only aggregate beside a namespace of its name — a C tag, which
+    // a namespace does not collide with — leaves the qualifier the
+    // namespace's, as before a struct could name a scope.
+    if ( !r.cls && r.is_namespace() )
+	r.agg = NULL;
     return r;
 }
 
@@ -32462,6 +32478,28 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
 	Variable **var_out, TokenBase **tb_out,
 	DataDefCLASS **owner_out = NULL, std::string *member_out = NULL);
+static QualifiedClassExprAction resolve_aggregate_qualified_expression(
+	Program &pgm, DataDefSTRUCT *scope, const std::string &scope_name,
+	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase **tb_out);
+
+// `Scope::name` in an expression, Scope a class, struct or union: a class
+// through the class resolver, a data-only aggregate through its own (its
+// data members only — it never resolves a function). Every arm that reaches
+// a scope before `::` asks here.
+static QualifiedClassExprAction resolve_qualified_scope_expression(
+	Program &pgm, DataDefSTRUCT *scope, const std::string &scope_name,
+	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	Variable **var_out, TokenBase **tb_out,
+	DataDefCLASS **owner_out = NULL, std::string *member_out = NULL)
+{
+    if ( DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(scope) )
+	return resolve_class_qualified_expression(pgm, cls, scope_name, anchor_tb,
+						  exStack, var_out, tb_out,
+						  owner_out, member_out);
+    return resolve_aggregate_qualified_expression(pgm, scope, scope_name,
+						  anchor_tb, exStack, tb_out);
+}
 
 static Variable *postfix_expr_variable(TokenBase *result)
 {
@@ -32594,7 +32632,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	// explicit template args, access control and dependent surfaces, and
 	// reaches the identical resolve_class_static_member_value for the case
 	// the copy did cover.
-	if ( DataDefCLASS *class_scope = qscope.cls )
+	if ( DataDefSTRUCT *scope = qscope.agg )
 	{
 	    std::stack<TokenBase *> qstack;
 	    Variable *qvar = NULL;
@@ -32602,7 +32640,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    DataDefCLASS *qowner = NULL;
 	    std::string qmember;
 	    TokenBase *value = NULL;
-	    if ( resolve_class_qualified_expression(*this, class_scope, name,
+	    if ( resolve_qualified_scope_expression(*this, scope, name,
 			head, qstack, &qvar, &qtb, &qowner, &qmember)
 		 == QualifiedClassExprAction::PushedExpression )
 	    {
@@ -33553,6 +33591,24 @@ TokenBase *Program::build_address_of(TokenBase *operand, TokenBase *amp)
     return new TokenAddrExpr(operand, addressof_result_type(target_type));
 }
 
+// `&S::m` for a non-static DATA member m of the aggregate S: a pointer to
+// data member — its byte offset (DataDefMemberPtr, a ptrdiff_t), read back
+// through `obj.*pm` / `p->*pm`. NULL when S has no data member m. The class
+// arm and the data-only aggregate arm build it here.
+static TokenMemberPtrConst *data_member_pointer_constant(DataDefSTRUCT *agg,
+							 const std::string &aname,
+							 const std::string &member_name)
+{
+    std::string mname_key = member_name;
+    ssize_t moff = agg->m_offset(mname_key);
+    DataDef *mtype = moff != -1 ? agg->m_type(mname_key) : NULL;
+    if ( !mtype )
+	return NULL;
+    DataDefMemberPtr *dpt = new DataDefMemberPtr(agg, aname, *mtype);
+    return new TokenMemberPtrConst(dynamic_cast<DataDefCLASS *>(agg), NULL,
+				   member_name, moff, dpt);
+}
+
 TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 {
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk
@@ -33595,7 +33651,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 				      ? namespace_map.find(qscope.ns_name)
 				      : namespace_map.end();
 	DataDefCLASS *aclass = qscope.cls;
-	if ( nsi == namespace_map.end() && !aclass )
+	if ( nsi == namespace_map.end() && !qscope.agg )
 	    Throw(addr_tb) << "Unknown namespace or class '" << aname << "'" << flush;
 	// Resolution below uses the classifier's ALIAS/SCOPE-RESOLVED spelling
 	// (`detail` inside an instantiated `outer::` member-template body is
@@ -33655,6 +33711,17 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		}
 	}
 	Variable *ns_var = NULL;
+	// A data-only aggregate (a C++ struct or union madc keeps a
+	// DataDefSTRUCT): its members are its non-static data members, so
+	// `&S::m` is a pointer to data member.
+	if ( !aclass && qscope.agg )
+	{
+	    if ( TokenMemberPtrConst *dmp =
+		    data_member_pointer_constant(qscope.agg, aname, member_name) )
+		return dmp;
+	    Throw(member_tb) << "'" << member_name << "' is not a member of '"
+			     << aname << "'" << flush;
+	}
 	if ( aclass )
 	{
 	    // A static member FUNCTION first: `&S::f` / `&Tmpl<args>::entry` is
@@ -33687,23 +33754,14 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		    mfd && mfd->is_const_method);
 		return new TokenMemberPtrConst(aclass, method_var, member_name, 0, mpt);
 	    }
-	    // A NON-static DATA member: `&C::field` is a pointer to data member —
-	    // its byte offset (DataDefMemberPtr, a ptrdiff_t), read back through
-	    // `obj.*pm` / `p->*pm`. Checked before the static-data path, whose
-	    // diagnostics stay as they were for a name that is neither.
-	    {
-		std::string mname_key = member_name;
-		ssize_t moff = aclass->m_offset(mname_key);
-		if ( moff != -1 && !resolve_class_static_member_type(aclass, member_name) )
-		{
-		    DataDef *mtype = aclass->m_type(mname_key);
-		    if ( mtype )
-		    {
-			DataDefMemberPtr *dpt = new DataDefMemberPtr(aclass, aname, *mtype);
-			return new TokenMemberPtrConst(aclass, NULL, member_name, moff, dpt);
-		    }
-		}
-	    }
+	    // A NON-static DATA member: `&C::field` is a pointer to data member
+	    // (data_member_pointer_constant). Checked before the static-data
+	    // path, whose diagnostics stay as they were for a name that is
+	    // neither.
+	    if ( !resolve_class_static_member_type(aclass, member_name) )
+		if ( TokenMemberPtrConst *dmp =
+			data_member_pointer_constant(aclass, aname, member_name) )
+		    return dmp;
 	    // Deliberately NOT resolve_class_static_member_value(): that prefers a
 	    // folded in-class constant, and a constant has no address. An address is
 	    // the address of the STORAGE its out-of-class definition created.
@@ -33993,6 +34051,53 @@ static bool try_nested_type_construction(Program &pgm, DataDefCLASS *scope,
     return true;
 }
 
+// A qualified NON-STATIC data member named without an object: only an
+// unevaluated operand may name it ([expr.prim.id]/2 — sizeof, alignof,
+// decltype read its type). The member of an object of the aggregate keeps the
+// member's whole type: a double, a pointer, a class, an array's extents
+// (member_array_type). A TokenInt typed as the member kept only an integer
+// type.
+static TokenMember *qualified_member_without_object(DataDefSTRUCT *scope,
+						    const std::string &member_name,
+						    ssize_t member_ofs,
+						    TokenBase *member_tb)
+{
+    Variable *object = new Variable(scope->name, *scope, 1, NULL, false);
+    Variable *member = new Variable(member_name, *scope->m_type(member_name),
+				    1, NULL, false);
+    TokenMember *tm = new TokenMember(*object, *member, (size_t)member_ofs);
+    tm->file = member_tb->file;
+    tm->line = member_tb->line;
+    tm->column = member_tb->column;
+    return tm;
+}
+
+// `S::m` where S is a data-only aggregate — a C++ struct or union madc keeps a
+// DataDefSTRUCT (no member function, base or class-typed member). Its members
+// are its non-static data members, named here without an object; the class
+// arms (methods, static members, nested scopes, the implicit this) have
+// nothing to find in it.
+static QualifiedClassExprAction resolve_aggregate_qualified_expression(
+	Program &pgm, DataDefSTRUCT *scope, const std::string &scope_name,
+	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
+	TokenBase **tb_out)
+{
+    pgm.nextToken(); // consume '::'
+    TokenBase *member_tb = pgm.nextToken();
+    if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+	pgm.Throw(member_tb ? member_tb : anchor_tb)
+	    << "Expecting identifier after '" << scope_name << "::'" << flush;
+    std::string member_name = contextual_identifier_name(member_tb);
+    ssize_t member_ofs = scope->m_offset(member_name);
+    if ( member_ofs < 0 )
+	pgm.Throw(member_tb) << "'" << member_name << "' is not a member of '"
+			     << scope_name << "'" << flush;
+    exStack.push(qualified_member_without_object(scope, member_name,
+						  member_ofs, member_tb));
+    *tb_out = member_tb;
+    return QualifiedClassExprAction::PushedExpression;
+}
+
 static QualifiedClassExprAction resolve_class_qualified_expression(
 	Program &pgm, DataDefCLASS *scope, const std::string &scope_name,
 	TokenBase *anchor_tb, std::stack<TokenBase *> &exStack,
@@ -34277,22 +34382,8 @@ static QualifiedClassExprAction resolve_class_qualified_expression(
 		    }
 		}
 	    }
-	    // No object: only an unevaluated operand may name the member
-	    // ([expr.prim.id]/2 — sizeof, alignof, decltype read its type). The
-	    // member of an object of the class, as the arm above builds it over
-	    // __this, keeps the member's whole type: a double, a pointer, a
-	    // class, an array's extents (member_array_type). A TokenInt typed
-	    // as the member kept only an integer type.
-	    Variable *object = new Variable(scope->name, *scope, 1, NULL, false);
-	    Variable *member = new Variable(member_name,
-					    *scope->m_type(member_name), 1, NULL,
-					    false);
-	    TokenMember *tm = new TokenMember(*object, *member,
-					      (size_t)member_ofs);
-	    tm->file = member_tb->file;
-	    tm->line = member_tb->line;
-	    tm->column = member_tb->column;
-	    exStack.push(tm);
+	    exStack.push(qualified_member_without_object(scope, member_name,
+							  member_ofs, member_tb));
 	    *tb_out = member_tb;
 	    return QualifiedClassExprAction::PushedExpression;
 	}
@@ -39925,16 +40016,21 @@ Program::ExprStep Program::parseExpr_dataTypeArm(TokenBase *&tb,
     if ( peekToken() && peekToken()->id() == TokenID::tkNS )
     {
 	var = NULL;
-	DataDefCLASS *class_scope =
-	    dynamic_cast<DataDefCLASS *>(&bt->definition);
-	if ( !class_scope )
-	    class_scope = resolve_expression_class_scope(bt->spelling());
-	if ( class_scope )
+	// The token's class, else the aggregate its spelling names — the
+	// registry before the token's own definition: a struct promoted to a
+	// class (a base) is a new object, and a token minted before the
+	// promotion still holds the struct.
+	DataDefSTRUCT *scope = dynamic_cast<DataDefCLASS *>(&bt->definition);
+	if ( !scope )
+	    scope = resolve_expression_aggregate_scope(bt->spelling());
+	if ( !scope )
+	    scope = dynamic_cast<DataDefSTRUCT *>(&bt->definition);
+	if ( scope )
 	{
 	    DataDefCLASS *resolved_owner = NULL;
 	    std::string resolved_member;
 	    QualifiedClassExprAction action =
-		resolve_class_qualified_expression(*this, class_scope,
+		resolve_qualified_scope_expression(*this, scope,
 		    bt->spelling(), tb, exStack, &var, &tb,
 		    &resolved_owner, &resolved_member);
 	    if ( action == QualifiedClassExprAction::ResolvedFunction )
@@ -40512,13 +40608,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			// or class 'decltype'".
 			if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 			{
-			    if ( DataDefCLASS *dcls = dynamic_cast<DataDefCLASS *>(
+			    if ( DataDefSTRUCT *dcls = dynamic_cast<DataDefSTRUCT *>(
 					&resolved_type->definition) )
 			    {
 				DataDefCLASS *resolved_owner = NULL;
 				std::string resolved_member;
 				QualifiedClassExprAction action =
-				    resolve_class_qualified_expression(*this, dcls,
+				    resolve_qualified_scope_expression(*this, dcls,
 					resolved_type->spelling(), tb, exStack,
 					&var, &tb, &resolved_owner,
 					&resolved_member);
@@ -41869,10 +41965,10 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // classifier diagnoses a genuine collision instead).
 		    QualifierScope qscope =
 			classify_qualifier_before_scope(ns_name, tb);
-		    if ( DataDefCLASS *class_scope = qscope.cls )
+		    if ( DataDefSTRUCT *scope = qscope.agg )
 		    {
 			QualifiedClassExprAction action =
-			    resolve_class_qualified_expression(*this, class_scope,
+			    resolve_qualified_scope_expression(*this, scope,
 				ns_name, tb, exStack, &var, &tb,
 				&qstatic_owner, &qstatic_member);
 			if ( action == QualifiedClassExprAction::ResolvedFunction )
@@ -41980,13 +42076,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( inst )
 			    member_dd = &inst->definition;
 		    }
-		    if ( DataDefCLASS *member_scope =
-			    dynamic_cast<DataDefCLASS *>(member_dd) )
+		    if ( DataDefSTRUCT *member_scope =
+			    dynamic_cast<DataDefSTRUCT *>(member_dd) )
 		    {
 			if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 			{
 			    QualifiedClassExprAction action =
-				resolve_class_qualified_expression(*this,
+				resolve_qualified_scope_expression(*this,
 				    member_scope, member_name, member_tb,
 				    exStack, &var, &tb,
 				    &qstatic_owner, &qstatic_member);
@@ -41994,6 +42090,9 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				goto ns_resolved;
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
+		    }
+		    if ( dynamic_cast<DataDefCLASS *>(member_dd) )
+		    {
 			if ( TokenBase *type_expr =
 				parse_functional_type_expression(member_tb,
 				    member_dd) )
@@ -42011,13 +42110,13 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			if ( dti != nti->end() )
 			{
 			    DataDef *ns_member_dd = &dti->second->definition;
-			    if ( DataDefCLASS *member_scope =
-				    dynamic_cast<DataDefCLASS *>(ns_member_dd) )
+			    if ( DataDefSTRUCT *member_scope =
+				    dynamic_cast<DataDefSTRUCT *>(ns_member_dd) )
 			    {
 				if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 				{
 				    QualifiedClassExprAction action =
-					resolve_class_qualified_expression(*this,
+					resolve_qualified_scope_expression(*this,
 					    member_scope, member_name, member_tb,
 					    exStack, &var, &tb,
 					    &qstatic_owner, &qstatic_member);
