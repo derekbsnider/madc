@@ -1,0 +1,4 @@
+std::move(x)
+std::move(w)
+std::move(v)
+std::move(w) * 2

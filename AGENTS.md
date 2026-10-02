@@ -115,7 +115,11 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `canonical_path_for_compare()`; a library's platform spelling (the `lib`
    prefix, `.so` / `.dylib` / `.dll`, the real runtime image names) is
    `madc_module_library_spelling()` in `src/madc_modules.cpp` (gated by
-   `check-one-library-spelling.sh`); a module-bound namespace's members
+   `check-one-library-spelling.sh`); a parse over its own token run — an
+   isolated sub-stream or a run injected ahead of the live stream — is
+   `Program::NestedTokenStream`, which also returns the outer read context
+   (`curToken` / `prevToken` / `ParsePosition`) on every exit (gated by
+   `check-one-nested-stream.sh`); a module-bound namespace's members
    materialize in `Program::resolve_module_member()` — reached only
    through `find_namespace_member()`'s miss path (gated by
    `check-one-module-member-owner.sh`); the ui INPUT owners are

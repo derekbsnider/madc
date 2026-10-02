@@ -7536,10 +7536,7 @@ TokenDataType *Program::instantiate_shell_origin_replay(
 		replay.push_back(t);
     }
     replay.push_back(new TokenGT());
-    size_t replay_base = tokens.size();
-    for ( std::vector<TokenBase *>::reverse_iterator it = replay.rbegin();
-	  it != replay.rend(); ++it )
-	pushToken(*it);
+    NestedTokenStream replay_run(*this, replay, NestedTokenStream::Injected);
 
     // The args are concrete, so a trailing NON-TYPE pack (`template<int...
     // N>`) real-instantiates as a type pack does: the value-pack gate is
@@ -7564,13 +7561,12 @@ TokenDataType *Program::instantiate_shell_origin_replay(
 	static const char *shellc_probe = ::getenv("MADC_SHELLC_PROBE");
 	if ( shellc_probe )
 	    fprintf(stderr, "[shellc] replay %s base=%zu pushed=%zu now=%zu real=%d\n",
-		    org.tname.c_str(), replay_base, replay.size(), tokens.size(),
-		    real != NULL);
+		    org.tname.c_str(), replay_run.base_depth(), replay.size(),
+		    tokens.size(), real != NULL);
     }
     // Drain any unconsumed replay tokens so a failure never leaks stray
     // injected tokens into the caller's stream (the capture+replay lesson).
-    while ( tokens.size() > replay_base )
-	nextToken();
+    replay_run.close();
     dependent_parse_poisoned = saved_poisoned;
     return real;
 }
@@ -8912,10 +8908,8 @@ class BasicClassPatternResolver
 		    memo_arguments[i]->name.c_str(), *memo_arguments[i]));
 	}
 	replay.push_back(new TokenGT());
-	size_t replay_base = pgm.tokens.size();
-	for ( std::vector<TokenBase *>::reverse_iterator it = replay.rbegin();
-	      it != replay.rend(); ++it )
-	    pgm.pushToken(*it);
+	Program::NestedTokenStream replay_run(pgm, std::move(replay),
+	    Program::NestedTokenStream::Injected);
 
 	bool saved_vri = pgm.allow_variadic_real_inst;
 	pgm.allow_variadic_real_inst = true;
@@ -8928,13 +8922,10 @@ class BasicClassPatternResolver
 	catch ( ... )
 	{
 	    pgm.allow_variadic_real_inst = saved_vri;
-	    while ( pgm.tokens.size() > replay_base )
-		pgm.nextToken();
 	    throw;
 	}
 	pgm.allow_variadic_real_inst = saved_vri;
-	while ( pgm.tokens.size() > replay_base )
-	    pgm.nextToken();
+	replay_run.close();
 	return instantiated ? &instantiated->definition : NULL;
     }
 
@@ -9303,10 +9294,7 @@ static TokenBase *parse_basic_class_pattern_default(
     if ( seq.empty() )
 	return NULL;
     seq.push_back(new TokenClBrk());
-    TokenStream::State saved_tokens = pgm.tokens.swap_in(seq);
-    TokenBase *saved_cur = pgm.curToken();
-    TokenBase *saved_prv = pgm.prevToken();
-    pgm.setTokenContext(NULL, NULL);
+    Program::NestedTokenStream nested(pgm, seq);
     pgm.pushCompound();
     TokenCpnd *scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
     if ( scope )
@@ -9338,8 +9326,6 @@ static TokenBase *parse_basic_class_pattern_default(
 	    pgm.class_scope_stack.pop_back();
 	if ( scope && !pgm.compounds.empty() && pgm.compounds.top() == scope )
 	    pgm.popCompound();
-	pgm.setTokenContext(saved_cur, saved_prv);
-	pgm.tokens = saved_tokens;
 	throw;
     }
     if ( owner && !pgm.class_scope_stack.empty()
@@ -9347,8 +9333,6 @@ static TokenBase *parse_basic_class_pattern_default(
 	pgm.class_scope_stack.pop_back();
     if ( scope && !pgm.compounds.empty() && pgm.compounds.top() == scope )
 	pgm.popCompound();
-    pgm.setTokenContext(saved_cur, saved_prv);
-    pgm.tokens = saved_tokens;
     return expr;
 }
 
@@ -12365,14 +12349,14 @@ bool Program::alias_use_args_all_concrete(const TemplateAliasDef &td,
 	body.push_back(new TokenSemi());
 	size_t saved_diag_count = diagnostics.size();
 	Program::ErrorInfo saved_error = last_error;
-	TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
+	NestedTokenStream nested(*this, std::move(body));
 	TokenDataType *rt = NULL;
 	try
 	{
 	    rt = resolve_declared_type_token(nextToken(), true, true);
 	}
 	catch ( ... ) { rt = NULL; }
-	tokens.swap_back(std::move(saved_tokens));
+	nested.close();
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
 	if ( !rt ? !failure_is_substitution_failure(arg_tokens[i])
@@ -12749,7 +12733,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 
 	    size_t saved_diag_count = diagnostics.size();
 	    Program::ErrorInfo saved_error = last_error;
-	    TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
+	    NestedTokenStream nested(*this, std::move(body));
 
 	    bool pushed_owner_scope = false;
 	    if ( td.owner_class )
@@ -12803,7 +12787,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 	      && class_scope_stack.back() == td.owner_class )
 		class_scope_stack.pop_back();
 
-	    tokens.swap_back(std::move(saved_tokens));
+	    nested.close();
 	    DBG({
 		std::string aj;
 		for ( size_t i = 0; i < args.size(); ++i )
@@ -12905,7 +12889,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 		    probe.push_back(new TokenSemi());
 		    size_t sdc = diagnostics.size();
 		    Program::ErrorInfo se = last_error;
-		    TokenStream::State st = tokens.swap_in(std::move(probe));
+		    NestedTokenStream probe_stream(*this, std::move(probe));
 		    TokenDataType *art = NULL;
 		    try
 		    {
@@ -12915,7 +12899,7 @@ TokenDataType *Program::instantiate_template_alias_use(const std::string &tname,
 			    art = NULL;	// leftover before the sentinel = fail
 		    }
 		    catch ( ... ) { art = NULL; }
-		    tokens.swap_back(std::move(st));
+		    probe_stream.close();
 		    diagnostics.resize(sdc);
 		    last_error = se;
 		    if ( !art )
@@ -14345,11 +14329,7 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
 	if ( toks[i] )
 	    seq.push_back(toks[i]);
     seq.push_back(new TokenSemi());
-    TokenBase *saved_cur = _cur_token;
-    TokenBase *saved_prv = _prv_token;
-    TokenStream::State saved_tokens = tokens.swap_in(std::move(seq));
-    _cur_token = NULL;
-    _prv_token = NULL;
+    NestedTokenStream nested(*this, std::move(seq));
     DataDef *result = NULL;
     // This trap IS the SFINAE trap every caller relies on ("NULL on failure"),
     // but throwbuf::sync renders AND records a diagnostic BEFORE the catch
@@ -14415,9 +14395,6 @@ DataDef *Program::resolve_type_token_range(const std::vector<TokenBase *> &toks,
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
     }
-    tokens.swap_back(std::move(saved_tokens));
-    _cur_token = saved_cur;
-    _prv_token = saved_prv;
     return result;
 }
 
@@ -19027,10 +19004,7 @@ ConstValue Program::evaluate_constexpr_function_call(
     for ( TokenBase *t : func->constexpr_return_tokens )
 	if ( t )
 	    return_tokens.push_back(t->clone_origin());
-    TokenStream::State saved_tokens = tokens.swap_in(std::move(return_tokens));
-    TokenBase *saved_cur = _cur_token;
-    TokenBase *saved_prv = _prv_token;
-    ParsePosition saved_line_pos = ParsePosition::current();
+    NestedTokenStream nested(*this, std::move(return_tokens));
     constexpr_call_bindings.push_back(frame);
 
     madc_wide_int value = 0;
@@ -19045,17 +19019,10 @@ ConstValue Program::evaluate_constexpr_function_call(
     catch ( ... )
     {
 	constexpr_call_bindings.pop_back();
-	tokens.swap_back(std::move(saved_tokens));
-	_cur_token = saved_cur;
-	_prv_token = saved_prv;
-	saved_line_pos.restore();
 	throw;
     }
     constexpr_call_bindings.pop_back();
-    tokens.swap_back(std::move(saved_tokens));
-    _cur_token = saved_cur;
-    _prv_token = saved_prv;
-    saved_line_pos.restore();
+    nested.close();
     return apply_integer_cast_value(&func->return_value_type(), value);
 }
 
@@ -19310,11 +19277,9 @@ ConstValue Program::parse_constant_primary()
 		if ( !sub.empty() )
 		{
 		    sub.push_back(new TokenSemi());
-		    TokenStream::State saved = tokens.swap_in(std::move(sub));
-		    madc_wide_int v = 0;
-		    try { v = parse_constant_integer_expression(); }
-		    catch ( ... ) { tokens.swap_back(std::move(saved)); throw; }
-		    tokens.swap_back(std::move(saved));
+		    NestedTokenStream nested(*this, std::move(sub));
+		    madc_wide_int v = parse_constant_integer_expression();
+		    nested.close();
 		    return v;
 		}
 	    }
@@ -19349,11 +19314,9 @@ ConstValue Program::parse_constant_primary()
 		if ( !sub.empty() )
 		{
 		    sub.push_back(new TokenSemi());
-		    TokenStream::State saved = tokens.swap_in(std::move(sub));
-		    madc_wide_int v = 0;
-		    try { v = parse_constant_integer_expression(); }
-		    catch ( ... ) { tokens.swap_back(std::move(saved)); throw; }
-		    tokens.swap_back(std::move(saved));
+		    NestedTokenStream nested(*this, std::move(sub));
+		    madc_wide_int v = parse_constant_integer_expression();
+		    nested.close();
 		    return v ? 1 : 0;
 		}
 	    }
@@ -19882,7 +19845,7 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     for ( TokenBase *ct : cond_toks )
 	body.push_back(ct->clone_origin());
     body.push_back(new TokenSemi());
-    TokenStream::State saved_tokens = tokens.swap_in(std::move(body));
+    NestedTokenStream nested(*this, std::move(body));
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -19905,7 +19868,7 @@ bool Program::fold_if_constexpr_condition(int64_t &out)
     constexpr_recursion_limit_hit = false;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
-    tokens = saved_tokens;
+    nested.close();
     if ( !ok )
     {
 	diagnostics.resize(saved_diag_count);
@@ -28531,11 +28494,7 @@ void Program::flush_forest_pending_globals()
 		{
 		    // The live args loop stops at ')': plant it as the stop token.
 		    seq.push_back(new TokenClBrk());
-		    TokenStream::State saved = tokens.swap_in(seq);
-		    TokenBase *saved_cur = _cur_token;
-		    TokenBase *saved_prv = _prv_token;
-		    _cur_token = NULL;
-		    _prv_token = NULL;
+		    NestedTokenStream nested(*this, seq);
 		    TokenDecl *td = new TokenDecl(*gv);
 		    auto parse_args = [&]() {
 			// The ONE args-list reader (parse_ctor_args_list —
@@ -28556,9 +28515,7 @@ void Program::flush_forest_pending_globals()
 		    }
 		    else
 			parse_args();
-		    _cur_token = saved_cur;
-		    _prv_token = saved_prv;
-		    tokens = saved;
+		    nested.close();
 		    gtd.decl = td;
 		    DBG(std::cout << "flush_forest_pending_globals: ctor args for "
 			<< pg.name << " (" << td->ctor_args.size() << " arg(s), "
@@ -28810,11 +28767,9 @@ void Program::flush_forest_pending_globals()
 		// The live parse stopped at the parameter list's ',' / ')' —
 		// plant the ')' as the sub-stream's stop token.
 		seq.push_back(new TokenClBrk());
-		TokenStream::State saved = tokens.swap_in(seq);
-		TokenBase *saved_cur = _cur_token;
-		TokenBase *saved_prv = _prv_token;
-		_cur_token = NULL;	// a leading unary op judges as unary,
-		_prv_token = NULL;	// exactly as after the live `=`
+		// No previous token: a leading unary op judges as unary,
+		// exactly as after the live `=`.
+		NestedTokenStream nested(*this, seq);
 		// Live parses a default inside parseFunction's param-scope
 		// COMPOUND (pushCompound + method->owner_class): the identifier
 		// arm resolves a class-static (`= _S_max_align`) through
@@ -28874,9 +28829,7 @@ void Program::flush_forest_pending_globals()
 		    popCompound();
 		if ( pscope && !compounds.empty() && compounds.top() == pscope )
 		    popCompound();
-		_cur_token = saved_cur;
-		_prv_token = saved_prv;
-		tokens = saved;
+		nested.close();
 		rd.fd->param_defaults[pidx] = expr;
 		DBG(std::cout << "flush_forest_pending_globals: default arg "
 		    << (rd.owner ? rd.owner->name + "::" : std::string())
@@ -38271,10 +38224,9 @@ bool Program::confirm_dependent_member_type(DataDef *base,
     // Resolve in an ISOLATED stream (the probe is reached mid-instantiation;
     // draining the shared stream would desync the suspended parse), restoring the
     // diagnostics watermark on failure so a SFINAE miss leaves no error trail.
-    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
-    saved_tokens = tokens.swap_in(std::move(seq));
+    NestedTokenStream nested(*this, std::move(seq));
     TokenDataType *resolved = NULL;
     try
     {
@@ -38282,7 +38234,7 @@ bool Program::confirm_dependent_member_type(DataDef *base,
 	resolved = resolve_typename_type_token(head, true, NULL);
     }
     catch ( ... ) { resolved = NULL; }
-    tokens = saved_tokens;
+    nested.close();
     if ( !resolved )
     {
 	diagnostics.resize(saved_diag_count);
@@ -38956,7 +38908,6 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     // (a `Trait<int>::value` arg instantiates Trait) is self-contained. Mirror
     // capture_constant_initializer_value's save/try/restore idiom; require the
     // whole arg to fold (sentinel reached) so a partial parse can't masquerade.
-    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
     std::vector<TokenBase *> body;
@@ -38965,13 +38916,10 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
 	    body.push_back(t->clone_origin());
     TokenSemi *sentinel = new TokenSemi();
     body.push_back(sentinel);
-    // The parser's position rides beside the stream (_prv_token feeds the
-    // unary/postfix-position predicates): save and restore both, as every
-    // other isolated-stream owner does (resolve_type_token_range; the default
-    // resolver lost `declval<F>()(args)` to a stale sentinel — SFINAE T1).
-    TokenBase *saved_cur = _cur_token;
-    TokenBase *saved_prv = _prv_token;
-    saved_tokens = tokens.swap_in(std::move(body));
+    // NestedTokenStream also returns the parser's position (_prv_token feeds
+    // the unary/postfix-position predicates; the default resolver once lost
+    // `declval<F>()(args)` to a stale sentinel — SFINAE T1).
+    NestedTokenStream nested(*this, std::move(body));
     // A non-constant / still-dependent arg (`N` with N unbound, a pointer non-type
     // arg) makes parse_constant_integer_expression Throw, and throwbuf::sync()
     // prints to stderr BEFORE the exception we catch — so a legitimate "keep the
@@ -38998,9 +38946,7 @@ bool Program::fold_nontype_arg_constant(const std::vector<TokenBase *> &argtoks,
     constexpr_recursion_limit_hit = false;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
-    tokens = saved_tokens;
-    _cur_token = saved_cur;
-    _prv_token = saved_prv;
+    nested.close();
     if ( !ok )
     {
 	diagnostics.resize(saved_diag_count);
@@ -39024,7 +38970,6 @@ bool Program::constraint_expression_well_formed(
 	*out_type = NULL;
     if ( exprtoks.empty() )
 	return false;
-    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
     std::vector<TokenBase *> body;
@@ -39032,7 +38977,7 @@ bool Program::constraint_expression_well_formed(
 	if ( t )
 	    body.push_back(t->clone_origin());
     body.push_back(new TokenSemi());
-    saved_tokens = tokens.swap_in(std::move(body));
+    NestedTokenStream nested(*this, std::move(body));
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -39053,7 +38998,7 @@ bool Program::constraint_expression_well_formed(
     --unevaluated_operand_depth;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
-    tokens = saved_tokens;
+    nested.close();
     if ( !ok )
     {
 	diagnostics.resize(saved_diag_count);
@@ -39171,7 +39116,6 @@ int64_t Program::evaluate_requires_expression_constant()
     auto fold_isolated = [&](const std::vector<TokenBase *> &toks) -> int64_t {
 	if ( toks.empty() )
 	    return 0;
-	TokenStream::State saved;
 	size_t sd = diagnostics.size();
 	Program::ErrorInfo se = last_error;
 	std::vector<TokenBase *> body;
@@ -39179,7 +39123,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	    if ( t )
 		body.push_back(t->clone_origin());
 	body.push_back(new TokenSemi());
-	saved = tokens.swap_in(std::move(body));
+	NestedTokenStream nested(*this, std::move(body));
 	std::streambuf *sc = std::cerr.rdbuf();
 	std::ios::iostate ss = std::cerr.rdstate();
 	std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -39192,7 +39136,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	constexpr_recursion_limit_hit = false;
 	std::cerr.rdbuf(sc);
 	std::cerr.clear(ss);
-	tokens.swap_back(std::move(saved));
+	nested.close();
 	if ( !ok )
 	{ diagnostics.resize(sd); last_error = se; }
 	if ( recursion_limit_hit )
@@ -39203,7 +39147,6 @@ int64_t Program::evaluate_requires_expression_constant()
     auto type_resolves = [&](const std::vector<TokenBase *> &ty) -> bool {
 	if ( ty.empty() )
 	    return false;
-	TokenStream::State saved;
 	size_t sd = diagnostics.size();
 	Program::ErrorInfo se = last_error;
 	std::vector<TokenBase *> body;
@@ -39211,7 +39154,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	    if ( t )
 		body.push_back(t->clone_origin());
 	body.push_back(new TokenSemi());
-	saved = tokens.swap_in(std::move(body));
+	NestedTokenStream nested(*this, std::move(body));
 	std::streambuf *sc = std::cerr.rdbuf();
 	std::ios::iostate ss = std::cerr.rdstate();
 	std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -39251,7 +39194,7 @@ int64_t Program::evaluate_requires_expression_constant()
 	}
 	std::cerr.rdbuf(sc);
 	std::cerr.clear(ss);
-	tokens.swap_back(std::move(saved));
+	nested.close();
 	if ( !ok )
 	{ diagnostics.resize(sd); last_error = se; }
 	return ok;
@@ -39947,7 +39890,6 @@ Program::TemplateDef *Program::match_partial_specialization(
 	    bool satisfied = false;
 	    if ( !ctoks.empty() )
 	    {
-		TokenStream::State saved;
 		size_t sd = diagnostics.size();
 		Program::ErrorInfo se = last_error;
 		std::vector<TokenBase *> cbody;
@@ -39955,7 +39897,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 		    if ( t )
 			cbody.push_back(t->clone_origin());
 		cbody.push_back(new TokenSemi());
-		saved = tokens.swap_in(std::move(cbody));
+		NestedTokenStream nested(*this, std::move(cbody));
 		std::streambuf *sc = std::cerr.rdbuf();
 		std::ios::iostate sst = std::cerr.rdstate();
 		std::cerr.rdbuf(&g_madc_null_streambuf);
@@ -39966,7 +39908,7 @@ Program::TemplateDef *Program::match_partial_specialization(
 		constexpr_recursion_limit_hit = false;
 		std::cerr.rdbuf(sc);
 		std::cerr.clear(sst);
-		tokens.swap_back(std::move(saved));
+		nested.close();
 		if ( !satisfied )
 		{ diagnostics.resize(sd); last_error = se; }
 		if ( recursion_limit_hit )
@@ -46659,14 +46601,11 @@ static void parse_member_default_init(Program &pgm, DataDefSTRUCT *owner,
     for ( TokenBase *t : init_toks )
 	seq.push_back(t->clone_origin());
     seq.push_back(new TokenSemi());
-    TokenStream::State saved_stream = pgm.tokens.swap_in(std::move(seq));
-    // Fresh expression-position context: the live parse's last consumed token
-    // (the captured group's '}' / ';') is NOT this expression's previous
-    // token — without the reset a leading '-'/'&' judged postfix-binary
+    // Fresh expression-position context (NestedTokenStream): the live parse's
+    // last consumed token (the captured group's '}' / ';') is NOT this
+    // expression's previous token — a leading '-'/'&' judged postfix-binary
     // (`int32_t __precision_{-1};` → TokenNeg→TokenSub → "Missing operand").
-    TokenBase *saved_cur = pgm.curToken();
-    TokenBase *saved_prv = pgm.prevToken();
-    pgm.setTokenContext(NULL, NULL);
+    Program::NestedTokenStream nested(pgm, std::move(seq));
     TokenBase *parsed = NULL;
     // A benign failure (unstored member -> value-init) must not RENDER:
     // throwbuf::sync prints before the catch sees the throw, and the forest
@@ -46684,14 +46623,9 @@ static void parse_member_default_init(Program &pgm, DataDefSTRUCT *owner,
     {
 	parsed = NULL;
 	if ( strict )
-	{
-	    pgm.setTokenContext(saved_cur, saved_prv);
-	    pgm.tokens.swap_back(std::move(saved_stream));
 	    throw;
-	}
     }
-    pgm.setTokenContext(saved_cur, saved_prv);
-    pgm.tokens.swap_back(std::move(saved_stream));
+    nested.close();
     if ( parsed )
 	owner->member_default_inits[mname] = parsed;
 }
@@ -50117,10 +50051,8 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	return;
     DBG(std::cout << "parse_hoisted_friend_operator(): injecting "
 	<< inj.size() << " tokens" << std::endl);
-    size_t base_depth = pgm.tokens.size();
-    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	  it != inj.rend(); ++it )
-	pgm.pushToken(*it);
+    Program::NestedTokenStream friend_run(pgm, inj,
+	Program::NestedTokenStream::Injected);
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(pgm.compounds, saved_compounds);
     // Block-typedef shadow frames travel with the compound context (see
@@ -50152,8 +50084,7 @@ static void parse_hoisted_friend_operator(Program &pgm,
 	DBG(std::cerr << "parse_hoisted_friend_operator(): parse failed"
 	    << std::endl);
     }
-    while ( pgm.tokens.size() > base_depth )
-	pgm.nextToken();
+    friend_run.close();
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
     // Unwind the fresh context's frames FIRST (a swallowed throw leaves them
@@ -50394,17 +50325,10 @@ static bool try_parse_defaulted_member_template_constructor(
     for ( size_t i = open_idx + 1; i <= param_close_idx; ++i )
 	signature_tokens.push_back(pgm.tokens[i]);
     signature_tokens.push_back(new TokenSemi());
-    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(signature_tokens));
-    try
     {
+	Program::NestedTokenStream nested(pgm, std::move(signature_tokens));
 	pgm.parseFunction(ddVOID, mangled, ddc);
     }
-    catch(...)
-    {
-	pgm.tokens.swap_back(std::move(saved_tokens));
-	throw;
-    }
-    pgm.tokens.swap_back(std::move(saved_tokens));
     pgm.skip_template_nonclass_declaration(pgm.nextToken());
 
     Variable *mvar = pgm.tkProgram ? pgm.tkProgram->findVariable(pgm.strpool, mangled) : NULL;
@@ -57185,35 +57109,21 @@ TokenBase *TokenNEW::parse(Program &pgm)
 	    pgm.delimStepStream(part, depth, &seq);
 	}
 	seq.push_back(new TokenSemi());
-	TokenBase *saved_cur = pgm.curToken();
-	TokenBase *saved_prv = pgm.prevToken();
-	TokenStream::State saved = pgm.tokens.swap_in(std::move(seq));
-	pgm.setTokenContext(NULL, NULL);
-	try
-	{
-	    TokenBase *head = pgm.respell_braced_list_for_target(target, open);
-	    if ( !head )
-		pgm.Throw(open) << "Cannot list-initialize this new-expression type" << flush;
-	    copy_token_location(head, open);
-	    TokenBase *init = pgm.parseExpression(head, true);
-	    if ( !init )
-		pgm.Throw(open) << "Expected new-initializer" << flush;
-	    // Construct a class directly in the allocated storage, without
-	    // materializing and then copying a functional-form temporary.
-	    if ( TokenObjTemp *object = init->as_objtemp_tok() )
-		ctor_args = object->ctor_args;
-	    else
-		ctor_args.push_back(init);
-	    braced = true;
-	}
-	catch ( ... )
-	{
-	    pgm.tokens.swap_back(std::move(saved));
-	    pgm.setTokenContext(saved_cur, saved_prv);
-	    throw;
-	}
-	pgm.tokens.swap_back(std::move(saved));
-	pgm.setTokenContext(saved_cur, saved_prv);
+	Program::NestedTokenStream nested(pgm, std::move(seq));
+	TokenBase *head = pgm.respell_braced_list_for_target(target, open);
+	if ( !head )
+	    pgm.Throw(open) << "Cannot list-initialize this new-expression type" << flush;
+	copy_token_location(head, open);
+	TokenBase *init = pgm.parseExpression(head, true);
+	if ( !init )
+	    pgm.Throw(open) << "Expected new-initializer" << flush;
+	// Construct a class directly in the allocated storage, without
+	// materializing and then copying a functional-form temporary.
+	if ( TokenObjTemp *object = init->as_objtemp_tok() )
+	    ctor_args = object->ctor_args;
+	else
+	    ctor_args.push_back(init);
+	braced = true;
     }
     // [expr.new]: an abstract class, a reference or function type, or a
     // deleted default constructor with no arguments cannot be `new`ed — a
@@ -58890,23 +58800,11 @@ static void extract_inner_template_typeparams(
     for ( size_t i = 2; i <= close; ++i )
 	head.push_back(decl[i] ? decl[i]->clone_origin() : NULL);
 
-    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(head));
-    TokenBase *saved_cur = pgm.curToken();
-    TokenBase *saved_prv = pgm.prevToken();
-    pgm.setTokenContext(NULL, NULL);
     ParsedTemplateParameterList parsed;
-    try
     {
+	Program::NestedTokenStream nested(pgm, std::move(head));
 	parse_template_parameter_list(pgm, parsed);
     }
-    catch ( ... )
-    {
-	pgm.setTokenContext(saved_cur, saved_prv);
-	pgm.tokens = saved_tokens;
-	throw;
-    }
-    pgm.setTokenContext(saved_cur, saved_prv);
-    pgm.tokens = saved_tokens;
     names.swap(parsed.names);
     is_pack.swap(parsed.is_pack);
     is_type.swap(parsed.is_type);
@@ -59248,22 +59146,8 @@ static std::vector<DataDef *> explicit_instantiation_template_args(
 	if ( decl[i] )
 	    seq.push_back(decl[i]);
     seq.push_back(new TokenSemi());
-    TokenBase *saved_cur = pgm.curToken();
-    TokenBase *saved_prv = pgm.prevToken();
-    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(seq));
-    pgm.setTokenContext(NULL, NULL);
-    try
-    {
-	result = pgm.capture_call_template_args();
-    }
-    catch ( ... )
-    {
-	pgm.tokens.swap_back(std::move(saved_tokens));
-	pgm.setTokenContext(saved_cur, saved_prv);
-	throw;
-    }
-    pgm.tokens.swap_back(std::move(saved_tokens));
-    pgm.setTokenContext(saved_cur, saved_prv);
+    Program::NestedTokenStream nested(pgm, std::move(seq));
+    result = pgm.capture_call_template_args();
     return result;
 }
 
@@ -60400,12 +60284,10 @@ void Program::instantiate_outofline_nested_classes(
 	}
 	inj.push_back(new TokenSemi());
 	// The caller's pending tokens sit BELOW the injection; after the parse
-	// (success or failure) drain any leftover injected tokens so the
-	// use-site statement parse resumes exactly where it was.
-	size_t pre_size = tokens.size();
-	for ( std::vector<TokenBase *>::reverse_iterator ri = inj.rbegin();
-	      ri != inj.rend(); ++ri )
-	    pushToken(*ri);
+	// (success or failure) the run's owner drains any leftover injected
+	// tokens so the use-site statement parse resumes exactly where it was.
+	NestedTokenStream nested_class_run(*this, inj,
+					   NestedTokenStream::Injected);
 	// Same top-level isolation discipline as instantiate_template_use's
 	// pattern re-parse: the nested-class definition must not inherit the
 	// caller's function scope or parse mode.
@@ -60440,8 +60322,7 @@ void Program::instantiate_outofline_nested_classes(
 		// instantiation must not fail for a defective nested body.
 	    }
 	}
-	while ( tokens.size() > pre_size )
-	    nextToken();
+	nested_class_run.close();
 	std::swap(class_scope_stack, saved_class_scope_stack);
 	std::swap(compounds, saved_compounds);
 	unwind_block_typedef_shadows(0, "ool-nested");
@@ -63740,19 +63621,14 @@ DataDef *Program::resolve_template_param_default_type(
 	}
     }
 
-    TokenStream::State saved_tokens;
     size_t saved_diag_count = diagnostics.size();
     ErrorInfo saved_error = last_error;
-    // The parser's POSITION rides beside the stream: _prv_token feeds the
-    // unary/postfix-position predicates of the expression parser. Every other
-    // isolated-stream owner (resolve_type_token_range, ...) saves and restores
-    // both; this one restored only the stream, so once expression SFINAE made
-    // defaults substitute on every `declval<T>()`, the `(` following the call
-    // saw the default's sentinel as its previous token and stopped reading as
-    // a postfix CALL — `declval<F>()(args)` lost its type (testexplicitpack).
-    TokenBase *saved_cur = _cur_token;
-    TokenBase *saved_prv = _prv_token;
-    saved_tokens = tokens.swap_in(std::move(body));
+    // The parser's POSITION rides beside the stream (NestedTokenStream returns
+    // it): when this probe restored only the stream, once expression SFINAE
+    // made defaults substitute on every `declval<T>()`, the `(` following the
+    // call saw the default's sentinel as its previous token and stopped reading
+    // as a postfix CALL — `declval<F>()(args)` lost its type (testexplicitpack).
+    NestedTokenStream nested(*this, std::move(body));
 
     bool pushed_owner = false;
     if ( owner )
@@ -63811,9 +63687,7 @@ DataDef *Program::resolve_template_param_default_type(
       && class_scope_stack.back() == owner )
 	class_scope_stack.pop_back();
 
-    tokens = saved_tokens;
-    _cur_token = saved_cur;
-    _prv_token = saved_prv;
+    nested.close();
     if ( !resolved )
     {
 	if ( vri_debug_enabled() )
@@ -65146,27 +65020,29 @@ static bool instantiate_fn_template_binding(Program &pgm,
 		// namespace) is found — the body parse below establishes the same
 		// scope via its own NamespaceScope (line ~28287).
 		Program::NamespaceScope ns_scope(pgm, ft.ns);
-		size_t sandbox_base = pgm.tokens.size();
-		pgm.pushToken(new TokenSemi());
-		for ( size_t ri = rt_end; ri-- > rt_begin; )
-		    pgm.pushToken(inj[ri]->clone_origin());
+		std::vector<TokenBase *> rt_run;
+		for ( size_t ri = rt_begin; ri < rt_end; ++ri )
+		    rt_run.push_back(inj[ri]->clone_origin());
+		rt_run.push_back(new TokenSemi());
 		bool resolved = false;
-		try
 		{
-		    resolved = is_typename
-			? (pgm.resolve_typename_type_token(
-			       pgm.nextToken(), true, inj[head]) != NULL)
-			: (pgm.resolve_declared_type_token(
-			       pgm.nextToken(), true, true) != NULL);
+		    Program::NestedTokenStream sandbox(pgm, std::move(rt_run),
+			Program::NestedTokenStream::Injected);
+		    try
+		    {
+			resolved = is_typename
+			    ? (pgm.resolve_typename_type_token(
+				   pgm.nextToken(), true, inj[head]) != NULL)
+			    : (pgm.resolve_declared_type_token(
+				   pgm.nextToken(), true, true) != NULL);
+		    }
+		    catch ( ... ) { resolved = false; }
 		}
-		catch ( ... ) { resolved = false; }
 #if MADC_DIAG_SFINAE
 		fprintf(stderr, "[SFINAE-PRECHK] key=%s is_typename=%d "
 			"saw_angle=%d resolved=%d\n", inst_key.c_str(),
 			(int)is_typename, (int)saw_angle, (int)resolved);
 #endif
-		while ( pgm.tokens.size() > sandbox_base )
-		    pgm.nextToken();
 		if ( !resolved )
 		{
 		    DBG(std::cout << "fn-template " << inst_key
@@ -65222,33 +65098,28 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	    as_method = false;	// malformed — fall back to the free-fn parse
     }
 
-    size_t base_depth = pgm.tokens.size();
     // The OUTER parse's token context: an instantiation runs mid-expression
     // (a call or an operator resolving to a template, finish_expression's
     // free-operator lowering), and the body parse plus the boundary drain
-    // below move curToken/prevToken into the instantiated body. The outer
-    // parse resumes reading them: a statement's terminator check saw the
-    // body's `}` where its own consumed `;` was, and isUnaryPosition reads
-    // prevToken. Restored with the rest of the caller's state (the pattern
-    // builder, instantiate_free_operator_template's parseFunction path,
-    // restores the same pair).
-    TokenBase *saved_cur_token = pgm.curToken();
-    TokenBase *saved_prv_token = pgm.prevToken();
+    // move curToken/prevToken into the instantiated body. The outer parse
+    // resumes reading them: a statement's terminator check saw the body's
+    // `}` where its own consumed `;` was, and isUnaryPosition reads
+    // prevToken. The injected run's owner returns them.
+    std::vector<TokenBase *> body_tokens;
     if ( as_method )
     {
-	for ( size_t k = method_tail.size(); k-- > 0; )
-	    pgm.pushToken(method_tail[k]);
+	body_tokens = method_tail;
 	// RET .. name .. `(` and a nested declarator's return-type tokens are
-	// not pushed; free them.
+	// not injected; free them.
 	std::set<TokenBase *> pushed(method_tail.begin(), method_tail.end());
 	for ( size_t k = 0; k < inj.size(); ++k )
 	    if ( !pushed.count(inj[k]) )
 		delete inj[k];
     }
     else
-	for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	      it != inj.rend(); ++it )
-	    pgm.pushToken(*it);
+	body_tokens = inj;
+    Program::NestedTokenStream body_run(pgm, std::move(body_tokens),
+	Program::NestedTokenStream::Injected);
 #if MADC_DEBUG_FNTPL
     {
 	const char *dump = ::getenv("MADC_DEBUG_FNTPL_DUMP");
@@ -65395,22 +65266,21 @@ static bool instantiate_fn_template_binding(Program &pgm,
 	pgm.last_error = saved_last_error;
     }
 #if MADC_DEBUG_FNTPL
-    if ( pgm.tokens.size() != base_depth )
+    if ( pgm.tokens.size() != body_run.base_depth() )
 	std::cerr << "FNTPL inst " << inst_key << " STREAM IMBALANCE: tokens "
-		  << pgm.tokens.size() << " vs base " << base_depth
-		  << (pgm.tokens.size() > base_depth ? " (leftover inj)" : " (CONSUMED OUTER TOKENS)")
+		  << pgm.tokens.size() << " vs base " << body_run.base_depth()
+		  << (pgm.tokens.size() > body_run.base_depth() ? " (leftover inj)" : " (CONSUMED OUTER TOKENS)")
 		  << std::endl;
 #endif
-    // Restore the stream boundary UNCONDITIONALLY. The injected run is the
-    // whole instantiated declaration; any token the parse left behind is
-    // garbage for the OUTER context (an "ok" __hypot3<float> instantiation
-    // left 2 trailing inj tokens, which the resumed outer parse consumed —
-    // shifting every following declaration: "__z undeclared" two functions
-    // later in real <cmath>). A parse that consumed BEYOND the boundary
-    // cannot be repaired here; it is at least made visible above.
-    while ( pgm.tokens.size() > base_depth )
-	pgm.nextToken();
-    pgm.setTokenContext(saved_cur_token, saved_prv_token);
+    // Restore the stream boundary UNCONDITIONALLY (the run's owner drains).
+    // The injected run is the whole instantiated declaration; any token the
+    // parse left behind is garbage for the OUTER context (an "ok"
+    // __hypot3<float> instantiation left 2 trailing inj tokens, which the
+    // resumed outer parse consumed — shifting every following declaration:
+    // "__z undeclared" two functions later in real <cmath>). A parse that
+    // consumed BEYOND the boundary cannot be repaired here; it is at least
+    // made visible above.
+    body_run.close();
 
     std::swap(pgm.class_scope_stack, saved_class_scope_stack);
     std::swap(pgm.compounds, saved_compounds);
@@ -73639,23 +73509,21 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // mem-init arg must not discard a clean body tree).
     if ( !pattern_ctor_init_toks.empty() )
     {
-	size_t replay_base = tokens.size();
 	size_t ci_base = func->ctor_initializers.size();
 	bool replay_saved_poisoned = dependent_parse_poisoned;
 	dependent_parse_poisoned = false;
-	pushToken(new TokenOpBrc());
-	for ( std::vector<TokenBase *>::reverse_iterator it =
-		  pattern_ctor_init_toks.rbegin();
-	      it != pattern_ctor_init_toks.rend(); ++it )
-	    pushToken(*it);
+	std::vector<TokenBase *> ctor_init_run(pattern_ctor_init_toks);
+	ctor_init_run.push_back(new TokenOpBrc());
 	bool replay_ok = true;
-	try
 	{
-	    parse_ctor_initializer_list(func);
+	    NestedTokenStream replay_run(*this, std::move(ctor_init_run),
+					 NestedTokenStream::Injected);
+	    try
+	    {
+		parse_ctor_initializer_list(func);
+	    }
+	    catch ( ... ) { replay_ok = false; }
 	}
-	catch ( ... ) { replay_ok = false; }
-	while ( tokens.size() > replay_base )
-	    nextToken();
 	if ( !replay_ok || dependent_parse_poisoned )
 	    func->ctor_initializers.resize(ci_base);
 	dependent_parse_poisoned = replay_saved_poisoned;
@@ -74539,10 +74407,7 @@ static bool constexpr_eval_token_run(Program &pgm,
     for ( size_t i = 0; i < toks.size(); ++i )
 	if ( toks[i] )
 	    run.push_back(toks[i]->clone_origin());
-    TokenStream::State saved_tokens = pgm.tokens.swap_in(std::move(run));
-    TokenBase *saved_cur = pgm.curToken();
-    TokenBase *saved_prv = pgm.prevToken();
-    ParsePosition saved_line_pos = ParsePosition::current();
+    Program::NestedTokenStream nested(pgm, std::move(run));
     bool ok = true;
     // A SPECULATIVE fold: declining is the ordinary outcome for any argument
     // this slice does not model (a class object, an address-of), and the
@@ -74574,9 +74439,7 @@ static bool constexpr_eval_token_run(Program &pgm,
     {
 	ok = false;
     }
-    pgm.tokens.swap_back(std::move(saved_tokens));
-    pgm.setTokenContext(saved_cur, saved_prv);
-    saved_line_pos.restore();
+    nested.close();
     if ( !ok && constexpr_ctor_debug() )
 	fprintf(stderr, "[CXCTOR] argument run did not fold (%zu token(s))\n",
 		toks.size());

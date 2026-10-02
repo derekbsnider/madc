@@ -2852,8 +2852,9 @@ public:
     TokenStream &operator=(const Pos &p) { restore(p); return *this; }
 
     // -- sub-stream: install `seq` as the active buffer (moved), returning the
-    //    prior state (moved); swap_back restores it. No copy. Models the old
-    //    `saved = tokens; tokens = body; ...; tokens = saved;` idiom. --
+    //    prior state (moved); swap_back restores it. No copy. A parse over a
+    //    sub-stream goes through Program::NestedTokenStream, which also owns
+    //    the read context the outer parse resumes with. --
     struct State { std::vector<uint32_t> buf; size_t cursor; std::vector<TokenBase *> pushback; };
     State swap_in(std::vector<TokenBase *> seq)
     {
@@ -2868,9 +2869,6 @@ public:
     {
 	_buf.swap(prev.buf); _cursor = prev.cursor; _pushback.swap(prev.pushback);
     }
-    // Sugar so the body-replace restore `tokens = saved` reads unchanged too
-    // (mirrors operator=(Pos)); consumes the saved State.
-    TokenStream &operator=(State &s) { swap_back(std::move(s)); return *this; }
 
     // -- replace the next `remove` LOGICAL tokens at the front with `ins`:
     //    drain the pushback then advance the cursor, then inject `ins` reversed
@@ -6815,6 +6813,69 @@ public:
 	_cur_token = current;
 	_prv_token = previous;
     }
+    // A parse over its own token sequence — the ONE owner of a nested token
+    // run (TokenStream::swap_in / swap_back, or a run injected ahead of the
+    // live stream and drained back to its base) AND of the read context the
+    // outer parse resumes with: curToken / prevToken (isUnaryPosition reads
+    // prevToken; a statement's terminator check reads curToken) and
+    // ParsePosition (a token made afterwards takes it). The outer state
+    // returns on every exit, a throw included. A probe that left its `;`
+    // sentinel as the outer prevToken turned the caller's next `+` unary
+    // (B46: the SFINAE check of a dependent return type, at the first call).
+    class NestedTokenStream
+    {
+    public:
+	// Isolated: the run replaces the stream and starts with no previous
+	// token, as a construct's first token has none. Injected: the run is
+	// read ahead of the live stream and continues the outer context (a
+	// template-argument replay reads as if it followed its name, and a
+	// reader may look past the run); close() drains what the parse left.
+	enum Mode { Isolated, Injected };
+    private:
+	Program &pgm;
+	Mode mode;
+	TokenStream::State outer;	// allowed-exception: the owner
+	size_t base;
+	TokenBase *outer_cur;
+	TokenBase *outer_prv;
+	ParsePosition outer_pos;
+	bool open;
+    public:
+	NestedTokenStream(Program &p, std::vector<TokenBase *> seq,
+			  Mode m = Isolated)
+	  : pgm(p), mode(m), base(p.tokens.size()),
+	    outer_cur(p._cur_token), outer_prv(p._prv_token),
+	    outer_pos(ParsePosition::current()), open(true)
+	{
+	    if ( mode == Isolated )
+	    {
+		outer = pgm.tokens.swap_in(std::move(seq));	// allowed-exception: the owner
+		pgm.setTokenContext(NULL, NULL);
+	    }
+	    else
+		for ( size_t i = seq.size(); i-- > 0; )
+		    pgm.pushToken(seq[i]);
+	}
+	~NestedTokenStream() { close(); }
+	// The live stream's depth below an injected run.
+	size_t base_depth() const { return base; }
+	// Back to the outer stream before the scope ends (idempotent).
+	void close()
+	{
+	    if ( !open )
+		return;
+	    open = false;
+	    if ( mode == Isolated )
+		pgm.tokens.swap_back(std::move(outer));	// allowed-exception: the owner
+	    else
+		while ( pgm.tokens.size() > base )	// allowed-exception: the owner
+		    pgm.nextToken();
+	    pgm.setTokenContext(outer_cur, outer_prv);
+	    outer_pos.restore();
+	}
+	NestedTokenStream(const NestedTokenStream &) = delete;
+	NestedTokenStream &operator=(const NestedTokenStream &) = delete;
+    };
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
 
     inline bool keywordStartsUnaryOperandContext(TokenID id)

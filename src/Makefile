@@ -1117,6 +1117,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-fptr-predicate.sh
 	@cd .. && bash scripts/check-one-cstr-admission.sh
 	@cd .. && bash scripts/check-one-forwarding-test.sh
+	@cd .. && bash scripts/check-one-nested-stream.sh
 	@cd .. && bash scripts/check-one-return-declarator.sh
 	@cd .. && bash scripts/check-one-member-init-walk.sh
 	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh

@@ -1,0 +1,1 @@
+the REPL is JIT-only (plan §42 D19): -i runs the file in a live session, not an artifact
