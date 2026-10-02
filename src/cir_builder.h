@@ -2307,6 +2307,11 @@ public:
 	// resolved the CIR's way (call_target_funcdef). Feeds the reference
 	// bindings of select_ctor_overload and of every overload re-rank here.
 	ArgValueCategory arg_value_category(TokenBase *arg);
+	// Value category of a call argument the tsubst lane substitutes:
+	// `origin` the pattern's argument, `result_type` its substituted type
+	// (a call's or cast's result, its reference kept).
+	ArgValueCategory substituted_arg_value_category(TokenBase *origin,
+							DataDef *result_type);
 	// implicit_move: argument 0 is a `return` operand naming a local or a
 	// parameter ([class.copy.elision]/3) — ranked as an rvalue.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,

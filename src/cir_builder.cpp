@@ -1611,7 +1611,7 @@ static DataDef *subst_datadef(Program *prog, DataDef *dd,
 		DataDef *nb = subst_datadef(prog, rd->base_type, subst,
 					    packs, pack_params);
 		return (prog && nb != rd->base_type)
-			   ? (DataDef *)prog->getReferenceType(nb) : dd;
+			   ? (DataDef *)prog->getReferenceType(nb, rd->rvalue) : dd;
 	}
 	if (DataDefPTR *pd = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 		DataDef *nb = subst_datadef(prog, pd->base_type, subst,
@@ -2821,20 +2821,56 @@ static bool ref_return_class_binds_direct(DataDefCLASS *target,
 	return target && rc && (rc == target || rc->is_or_derives_from(target));
 }
 
-static TokenVar *tsubst_concrete_arg_token(DataDef *dd, size_t index,
-					   TokenBase *origin)
+// The stand-in for a substituted call argument: an expression of type `dd`
+// with the argument's value category. A named object is an lvalue; an
+// rvalue is spelled the way the language spells one — `static_cast<T&&>(v)`
+// (an xvalue) over a reference type, `T(v)` (a prvalue) otherwise — so
+// deduction ([temp.deduct.call]/3) and reference binding read it through
+// their own value-category readers.
+static TokenBase *tsubst_concrete_arg_token(DataDef *dd, size_t index,
+					    TokenBase *origin,
+					    ArgValueCategory cat)
 {
 	if (!dd)
 		dd = &ddVOID;
 	std::string name = "__madc_tsubst_arg" + std::to_string(index);
 	Variable *v = new Variable(name, *dd, 1, NULL, false);
-	TokenVar *tv = new TokenVar(*v);
+	TokenBase *tv = new TokenVar(*v);
+	if (cat == ArgValueCategory::Rvalue) {
+		TokenCast *rv = new TokenCast(dd, tv);
+		rv->to_rvalue_ref = dd->is_rvalue_reference();
+		tv = rv;
+	}
 	if (origin) {
 		tv->file = origin->file;
 		tv->line = origin->line;
 		tv->column = origin->column;
 	}
 	return tv;
+}
+
+// The value category ([basic.lval]/1) a substituted argument carries: a
+// call's or a cast's comes from its result type under THIS substitution
+// (`T&` an lvalue, `T&&` an xvalue, a non-reference a prvalue —
+// `std::forward<_Args>(__a)` is an xvalue for _Args = int, an lvalue for
+// int&); any other expression keeps its own (a named object is an lvalue
+// even when declared `T&&`).
+ArgValueCategory CirBuilder::substituted_arg_value_category(TokenBase *origin,
+							     DataDef *result_type)
+{
+	if (!origin)
+		return ArgValueCategory::Unknown;
+	if (origin->type() == TokenType::ttCallFunc
+	    || origin->type() == TokenType::ttCallMethod
+	    || origin->as_cast_tok()) {
+		if (!result_type)
+			return ArgValueCategory::Unknown;
+		if (!result_type->is_reference())
+			return ArgValueCategory::Rvalue;
+		return result_type->is_rvalue_reference()
+			? ArgValueCategory::Rvalue : ArgValueCategory::Lvalue;
+	}
+	return arg_value_category(origin);
 }
 
 Variable *CirBuilder::resolve_copied_dependent_call(
@@ -2943,18 +2979,25 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	std::vector<DataDef *> concrete_param_types;
 	std::vector<TokenBase *> param_origins;
 	std::vector<bool> zeros;
+	std::vector<ArgValueCategory> cats;
 	at.reserve(tcf->parameters.size());
 	concrete_param_types.reserve(tcf->parameters.size());
 	param_origins.reserve(tcf->parameters.size());
 	zeros.reserve(tcf->parameters.size());
+	cats.reserve(tcf->parameters.size());
+	// `result_type`: the argument's substituted result when it is not the
+	// substituted `pdd` itself (a re-resolved inner call is typed by its
+	// winner's referent, its category read from the winner's return).
 	auto append_substituted_param = [&](TokenBase *origin, DataDef *pdd,
 					    const std::map<DataDef *, DataDef *> &smap,
-					    bool zero) {
+					    bool zero, DataDef *result_type) {
 		DataDef *sdd = subst_datadef_active(pdd, smap);
 		at.push_back(tsubst_overload_arg_type(sdd));
 		concrete_param_types.push_back(sdd);
 		param_origins.push_back(origin);
 		zeros.push_back(zero);
+		cats.push_back(substituted_arg_value_category(origin,
+			result_type ? result_type : sdd));
 		if (sdd != pdd)
 			changed = true;
 	};
@@ -2984,7 +3027,8 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 							elems[m_tsubst_copy_pack_elem];
 						append_substituted_param(
 							pe->pattern, pdd, elem_subst,
-							is_zero_integer_literal(pe->pattern));
+							is_zero_integer_literal(pe->pattern),
+							NULL);
 					}
 					changed = true;
 					continue;
@@ -2997,7 +3041,8 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 					elem_subst[pmi->second] = elems[e];
 					append_substituted_param(
 						pe->pattern, pdd, elem_subst,
-						is_zero_integer_literal(pe->pattern));
+						is_zero_integer_literal(pe->pattern),
+						NULL);
 				}
 				changed = true;
 				continue;
@@ -3050,7 +3095,8 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 					if (ret != p->datadef())
 						changed = true;
 					append_substituted_param(p, ret, *subst,
-						is_zero_integer_literal(p));
+						is_zero_integer_literal(p),
+						&iwfd->returns);
 					continue;
 				}
 			}
@@ -3060,11 +3106,11 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		// operator the instance resolves, not the pattern's placeholder.
 		if (DataDef *odd = tsubst_dependent_operator_type(p, *subst)) {
 			changed = true;
-			append_substituted_param(p, odd, *subst, false);
+			append_substituted_param(p, odd, *subst, false, NULL);
 			continue;
 		}
 		append_substituted_param(p, p ? p->datadef() : NULL, *subst,
-					 is_zero_integer_literal(p));
+					 is_zero_integer_literal(p), NULL);
 	}
 	if (concrete_param_types_out)
 		*concrete_param_types_out = concrete_param_types;
@@ -3106,7 +3152,8 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		mat.reserve(concrete_param_types.size());
 		for (DataDef *pt : concrete_param_types)
 			mat.push_back(tsubst_overload_arg_type(pt));
-		Variable *winner = recv_class->findMethodOverload(mname, mat);
+		Variable *winner = recv_class->findMethodOverload(mname, mat, -1,
+								  NULL, &cats);
 		// Env-gated probe (MADC_MTI_PROBE=<substr>): receiver-class +
 		// winner identity for the restored-placeholder routing diagnostic.
 		{
@@ -3147,7 +3194,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 					synth.parameters.push_back(
 						tsubst_concrete_arg_token(
 							concrete_param_types[i], i,
-							param_origins[i]));
+							param_origins[i], cats[i]));
 				Variable *body = m_prog->
 					instantiate_member_fn_template_for_call(&synth);
 				if (!body)
@@ -3183,7 +3230,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 				synth.parameters.push_back(
 					tsubst_concrete_arg_token(
 						concrete_param_types[i], i,
-						param_origins[i]));
+						param_origins[i], cats[i]));
 			winner_instance =
 				m_prog->instantiate_member_fn_template_for_call(&synth);
 		}
@@ -3228,7 +3275,8 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		synth.parameters.reserve(concrete_param_types.size());
 		for (size_t i = 0; i < concrete_param_types.size(); ++i)
 			synth.parameters.push_back(tsubst_concrete_arg_token(
-				concrete_param_types[i], i, param_origins[i]));
+				concrete_param_types[i], i, param_origins[i],
+				cats[i]));
 		m_prog->instantiate_namespace_fn_template_for_call(&synth);
 		deduction = synth.deduction;
 	};
@@ -3243,10 +3291,15 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		if (!ld || !rd || template_param_under_type_layers(ld)
 		    || template_param_under_type_layers(rd))
 			return NULL;
-		TokenVar *lhs = tsubst_concrete_arg_token(ld, 0,
-							  tcf->parameters[0]);
-		TokenVar *rhs = tsubst_concrete_arg_token(rd, 1,
-							  tcf->parameters[1]);
+		// `cats` is index-aligned with the two operands unless one was
+		// a pack expansion (its element count is the window's).
+		bool aligned = cats.size() == 2;
+		TokenBase *lhs = tsubst_concrete_arg_token(ld, 0,
+			tcf->parameters[0],
+			aligned ? cats[0] : ArgValueCategory::Unknown);
+		TokenBase *rhs = tsubst_concrete_arg_token(rd, 1,
+			tcf->parameters[1],
+			aligned ? cats[1] : ArgValueCategory::Unknown);
 		Variable *op_callee = NULL;
 		if (!m_prog->instantiate_free_operator_template(
 			    fd->function_display_name, lhs, rhs, &op_callee))
@@ -3257,7 +3310,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	instantiate_concrete_call();
 	Variable *winner = m_prog->find_namespace_function_overload(
 		fd->namespace_name, fd->function_display_name, at, &zeros,
-		&explicit_args, NULL, NULL, &deduction);
+		&explicit_args, NULL, NULL, &deduction, &cats);
 	if (!winner) {
 		// A free OPERATOR template isn't a namespace function overload —
 		// it lives in the retained fn_template_map / free_operator_overloads
@@ -3413,7 +3466,28 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					const std::vector<DataDef *> &elems =
 						(*m_tsubst_active_type_arg_packs)
 							[tp->param_index];
+					std::map<unsigned, DataDef *>::iterator pmi =
+						m_tsubst_active_pack_params.find(
+							tp->param_index);
+					DataDef *pdd = pe->pattern->datadef();
 					for (DataDef *elem : elems) {
+						// The element's category is the
+						// PATTERN's under its binding
+						// (`std::forward<_Args>(__args)`:
+						// an xvalue for _Args = T).
+						ArgValueCategory cat =
+							ArgValueCategory::Unknown;
+						if (subst && pmi
+						    != m_tsubst_active_pack_params.end()
+						    && pmi->second) {
+							std::map<DataDef *, DataDef *>
+								elem_subst = *subst;
+							elem_subst[pmi->second] = elem;
+							cat = substituted_arg_value_category(
+								pe->pattern,
+								subst_datadef_active(
+									pdd, elem_subst));
+						}
 						// A forwarding-bound REFERENCE
 						// element ([temp.deduct.call]/3,
 						// produced by call deduction)
@@ -3426,7 +3500,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 							tsubst_concrete_arg_token(
 								elem,
 								expanded_ctor_args.size(),
-								pe->pattern));
+								pe->pattern, cat));
 					}
 					continue;
 				}
@@ -3456,7 +3530,9 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 						tsubst_concrete_arg_token(
 							sdd,
 							expanded_ctor_args.size(),
-							arg));
+							arg,
+							substituted_arg_value_category(
+								arg, sdd)));
 					continue;
 				}
 			}
