@@ -32,7 +32,7 @@
         MSVC 8-byte long double; mingw-gcc statically binds libmingwex's
         80-bit ones), ucrt "oldnames" aliases (strdup is an import-lib
         alias for _strdup -- link-time only, invisible to GetProcAddress),
-        and libmingwex-only POSIX-compat surfaces (<dirent.h>).
+        and libmingwex-only POSIX-compat surfaces (<dirent.h>, <unistd.h>).
    Signatures below are declared explicitly (extern-C) rather than trusting
    header guard states -- a drift from the real libmingwex prototypes fails
    the host build loudly instead of corrupting calls at run time.
@@ -95,6 +95,15 @@ long double __mingw_wcstold (const wchar_t *, wchar_t **);
 long double strtold (const char *, char **);
 float wcstof (const wchar_t *, wchar_t **);
 long double wcstold (const wchar_t *, wchar_t **);
+/* <unistd.h>'s libmingwex-only functions (useconds_t is unsigned int,
+   off32_t long, off64_t long long).  Parenthesized names: winpthreads may
+   define a function-like `sleep` macro. */
+unsigned int (sleep) (unsigned int);
+int (usleep) (unsigned int);
+int (ftruncate) (int, long);
+int (ftruncate64) (int, long long);
+int (truncate) (const char *, long);
+int (truncate64) (const char *, long long);
 #ifdef __cplusplus
 }
 #endif
@@ -225,6 +234,15 @@ static const struct {
   {"_wopendir", (void *) _wopendir},   {"_wreaddir", (void *) _wreaddir},
   {"_wclosedir", (void *) _wclosedir}, {"_wrewinddir", (void *) _wrewinddir},
   {"_wtelldir", (void *) _wtelldir},   {"_wseekdir", (void *) _wseekdir},
+  /* 3 (cont.): <unistd.h>'s own functions -- sleep, usleep and the
+     [f]truncate[64] family are implemented only in libmingwex (no CRT
+     export at any spelling: nm of libmingwex.a against the ucrt import
+     libs).  The complete own surface of the served header, same closure
+     rule as <dirent.h>; the io.h/process.h names it pulls in are CRT
+     exports or oldnames. */
+  {"sleep", (void *) sleep},           {"usleep", (void *) usleep},
+  {"ftruncate", (void *) ftruncate},   {"ftruncate64", (void *) ftruncate64},
+  {"truncate", (void *) truncate},     {"truncate64", (void *) truncate64},
 };
 
 static inline void *mir_mingw_ansi_stdio_lookup (const char *name) {
