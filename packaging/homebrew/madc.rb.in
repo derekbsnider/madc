@@ -10,6 +10,11 @@
 # keg by scripts/stage_install.sh (the packages' one staging owner). The
 # runpath of every program madc compiles names HOMEBREW_PREFIX/lib, where
 # `brew link` puts libmadc.so.0, so a program outlives `brew upgrade`.
+#
+# @BOTTLE@ is the bottle block, rendered by `scripts/brew_formula.sh --bottle`
+# for the bottle scripts/brew_bottle.sh built and poured (the release's
+# x86_64_linux bottle; the brew lane's local one). Without it, every install
+# builds from source.
 class Madc < Formula
   desc "C/C++ JIT compiler and native toolchain with a scripting dialect"
   homepage "https://github.com/derekbsnider/madc"
@@ -18,6 +23,7 @@ class Madc < Formula
   version "@VERSION@"
   license "MPL-2.0"
 
+  @BOTTLE@
   # configure is autoconf's output, untracked: a source tarball regenerates
   # it (automake for the aclocal brew's autoreconf runs).
   depends_on "autoconf" => :build
@@ -33,7 +39,10 @@ class Madc < Formula
   def install
     runpath = "MADC_RUNPATH_LIBDIR=#{HOMEBREW_PREFIX}/lib"
     system "autoreconf", "-i"
-    system "./configure", "--enable-madcdat=no"
+    # The forest rides as libmadc.so.0.forest beside the library, not
+    # appended to it: pouring a bottle rewrites each ELF file's RPATH, and
+    # the rewrite appends to the image, past an appended container's footer.
+    system "./configure", "--enable-madcdat=no", "--with-forest=sidecar"
     system "make", "-C", "src", "-j#{ENV.make_jobs}", runpath
     system "make", "-C", "src", "-j#{ENV.make_jobs}", "release", runpath
     mkdir_p "tmp"

@@ -8,15 +8,18 @@
 # Needs Homebrew (`brew` on PATH, or /home/linuxbrew/.linuxbrew/bin/brew).
 # Steps, each a gate:
 #   1. a source tarball of the tree as it stands (tracked files with their
-#      edits, and new files git does not ignore), and the formula rendered for it
-#      (scripts/brew_formula.sh) into a LOCAL tap with no remote
-#      (madc-local/madc: `brew tap-new --no-git`; nothing is published);
-#   2. `brew install --build-from-source` of that formula, then `brew test`;
+#      edits, and new files git does not ignore);
+#   2. scripts/brew_bottle.sh over it — the formula in a LOCAL tap with no
+#      remote (madc-local/madc; nothing is published), `brew install
+#      --build-bottle`, `brew bottle`, then the keg POURED back from that
+#      bottle file and `brew test` — the release workflow's bottle recipe, so
+#      what the suite runs on is a bottle install, as a user's is;
 #   3. the runpath a program compiled by the installed madc carries names
 #      HOMEBREW_PREFIX/lib, and with the keg's own directory unreachable (the
 #      state after `brew upgrade` removes it) the loader resolves libmadc.so.0
 #      there and the program runs;
 #   4. the packed suite (scripts/run_tests.sh) with MADC_BIN the linked madc.
+# The bottle and its formula stay in tmp/brew-lane/bottles.
 # The keg is uninstalled at the end (BREW_LANE_KEEP=1 keeps it, to rerun a
 # failing test against it); the local tap stays for the next run.
 set -e
@@ -37,24 +40,17 @@ TAP=madc-local/madc
 WORK=tmp/brew-lane
 mkdir -p "$WORK"
 
-# 1. The tarball and the formula: the tree as it stands — tracked files with
-# their edits, and new files git does not ignore.
+# 1. The tarball: the tree as it stands — tracked files with their edits, and
+# new files git does not ignore.
 tarball="$PWD/$WORK/madc-$VER.tar.gz"
 git ls-files --cached --others --exclude-standard -z |
 	tar --null -T - --transform "s|^|madc-$VER/|" -czf "$tarball"
 sum=$(sha256sum "$tarball" | awk '{ print $1 }')
-taproot="$("$BREW" --repository)/Library/Taps/madc-local/homebrew-madc"
-if [ ! -d "$taproot" ]; then
-	"$BREW" tap-new --no-git "$TAP" > /dev/null
-fi
-mkdir -p "$taproot/Formula"
-scripts/brew_formula.sh "file://$tarball" "$sum" "$VER" > "$taproot/Formula/madc.rb"
-echo "brew_lane: formula $taproot/Formula/madc.rb (the tree at $(git rev-parse --short HEAD), its edits included)"
+echo "brew_lane: source tarball of the tree at $(git rev-parse --short HEAD), its edits included"
 
-# 2. Build, install, test.
-"$BREW" uninstall --force "$TAP/madc" > /dev/null 2>&1 || true
-"$BREW" install --build-from-source "$TAP/madc"
-"$BREW" test "$TAP/madc"
+# 2. Built, bottled, poured back from the bottle and tested.
+bottles="$PWD/$WORK/bottles"
+scripts/brew_bottle.sh "file://$tarball" "$sum" "file://$bottles" "$bottles"
 madc="$BPREFIX/bin/madc"
 keg=$("$BREW" --cellar madc)/$VER
 

@@ -19,13 +19,14 @@
 #   promote_release.sh publish       flip the draft, verify the asset set
 #   promote_release.sh selftest      the negative control
 #
-# Env: MADC_PROMOTE_REMOTE (default origin), MADC_RELEASE_ASSETS (default 7:
-#      deb, rpm, linux tarball, windows zip, two macOS tarballs, SHA256SUMS)
+# Env: MADC_PROMOTE_REMOTE (default origin), MADC_RELEASE_ASSETS (default 9:
+#      deb, rpm, linux tarball, windows zip, two macOS tarballs, the
+#      x86_64_linux Homebrew bottle, madc.rb (the tap's formula), SHA256SUMS)
 set -u
 cd "$(dirname "$0")/.."
 
 REMOTE="${MADC_PROMOTE_REMOTE:-origin}"
-WANT_ASSETS="${MADC_RELEASE_ASSETS:-7}"
+WANT_ASSETS="${MADC_RELEASE_ASSETS:-9}"
 rc=0
 
 say()  { printf '%s\n' "$*"; }

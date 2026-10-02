@@ -54,6 +54,26 @@ install -m 755 bin/madc-release "$p/bin/madc"
 # file.
 install -m 644 lib/release/libmadc.so "$root/$libdir/libmadc.so.0"
 ln -sf libmadc.so.0 "$root/$libdir/libmadc.so"
+# The forest's carrier is the build's (configure --with-forest, recorded in
+# config.mk; the Makefile's default is embedded). Embedded, it rides inside
+# libmadc.so.0 and there is nothing more to stage. Sidecar, it is
+# libmadc.so.0.forest beside the library the CLI and every host load: the
+# discovery arm that probes <the loaded library>.forest, as `make install`
+# stages it. The Homebrew formula builds the sidecar: pouring a bottle
+# relocates each ELF file's RPATH, and the rewrite appends to the image, so
+# a container appended to libmadc.so.0 no longer ends the file where its
+# reader finds the footer.
+shape=embedded
+if [ -f config.mk ]; then
+	shape=$(sed -n 's/^WITH_FOREST = //p' config.mk)
+fi
+if [ "$shape" = sidecar ]; then
+	if [ ! -f lib/release/libmadc.so.forest ]; then
+		echo "stage_install: missing lib/release/libmadc.so.forest (a --with-forest=sidecar release build)" >&2
+		exit 1
+	fi
+	install -m 644 lib/release/libmadc.so.forest "$root/$libdir/libmadc.so.0.forest"
+fi
 # The emitted-C runtime (a few KB, static): what `madc --emit=c11` output
 # links on a box with no madc at all (cc prog.c -lmadc_rt) — try/catch
 # context stack + VLA scope-exit helpers, nothing else. Platform parity: the

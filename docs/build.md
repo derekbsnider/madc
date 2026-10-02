@@ -107,8 +107,14 @@ The full installed layout (madcide, its profiles, plugins and data,
 <prefix>`, which the deb, rpm and tarball (`scripts/package_release.sh`)
 and the Homebrew formula share. The formula is the template
 `packaging/homebrew/madc.rb.in`, rendered for a source tarball by
-`scripts/brew_formula.sh`; `scripts/brew_lane.sh` installs it from this
-tree through a local tap and runs the suite against the installed madc.
+`scripts/brew_formula.sh` (with `--bottle`, also for the bottle built from
+it). `scripts/brew_bottle.sh` is the bottle recipe: Homebrew builds the
+formula (`brew install --build-bottle`), `brew bottle` packs the keg, and
+the keg is poured back from that bottle file and `brew test`ed before the
+bottle and the formula naming it are handed on. The release workflow runs
+it over the tag's source archive and attaches the x86_64_linux bottle and
+`madc.rb`, the tap's formula; `scripts/brew_lane.sh` runs it over this tree
+through a local tap and runs the suite against the poured madc.
 
 ## Running a program
 

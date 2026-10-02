@@ -352,6 +352,24 @@ packaging shape, and all the proper build scripts and tests in order.
     and runs the suite against it: 1851/0 (ledger row `brew-linux`, release
     tier). Open: the macOS arm (madc REPL plan, release step 9), the tap
     repository and its bottle CI.
+  - **Progress 2026-10-02 (the Linux bottle, owner: in the master release;
+    the macOS bottle held):** `scripts/brew_bottle.sh` is the bottle recipe —
+    `brew install --build-bottle`, `brew bottle --json`, the bottle renamed to
+    the name its URL fetches (`madc-<ver>.x86_64_linux.bottle.tar.gz`), the keg
+    POURED back from that file (its install receipt must say so) and `brew
+    test`ed, and `madc.rb` rendered with the bottle block
+    (`scripts/brew_formula.sh --bottle`). The release workflow's
+    `linux-brew-bottle` job runs it over the tag's source archive and attaches
+    the bottle and `madc.rb` (eight assets + SHA256SUMS); the brew lane runs it
+    over this tree, so `brew-linux` is now a suite on a POURED bottle: 1911
+    passed, 0 failed, 0 timed out, 9 skipped. The formula builds the forest as
+    the `libmadc.so.0.forest` sidecar (`--with-forest=sidecar`, staged by
+    `scripts/stage_install.sh`): pouring relocates each ELF file's RPATH with
+    patchelf, which appends to the image, so a container appended to
+    libmadc.so.0 no longer ended the file and the poured madc found no forest
+    (73 `.expect_quiet` failures on the first poured run). Open, owner-gated:
+    publishing the tap (`derekbsnider/homebrew-madc`, its `Formula/madc.rb` the
+    release's `madc.rb` asset).
 - **PK7 — madcide-as-binary (a PK3 prerequisite, owner-ruled part of
   the packaging). ✅ EXECUTED 2026-09-01.** madcide AOT-compiles via
   `madc -o` into a 393 KB binary linked against the shared libmadc
