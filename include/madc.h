@@ -8788,6 +8788,10 @@ public:
     // The conversion-type-id tokens after `operator`, spelled and rewound.
     std::string peek_conversion_type_spelling();
     std::string unique_overload_symbol(std::string base);
+    // A template instance's symbol under `base`, keyed on the request's
+    // identity (deterministic across TUs — instances link linkonce).
+    std::string instance_overload_symbol(const std::string &base,
+					 const std::string &identity);
     // C++20 abbreviated function template ([dcl.fct]/18): token-level
     // desugar — `auto` parameter placeholders become invented identifiers
     // under a synthesized `template<...>` head pushed onto the stream, so

@@ -1,0 +1,17 @@
+// Multi-TU template instances keep their own bodies at link (--project).
+//
+// A template instance is emitted linkonce: a multi-TU link keeps the first
+// same-named copy, on the premise that copies sharing a name are one
+// specialization. madc named a member template's instance (`<placeholder>
+// __mti`, then `__mti__oN`) and a member constructor template's instance
+// (`Class__Class`, then `__oN`) by the ORDER the TU minted them, so two TUs
+// instantiating different specializations first gave them one name, and the
+// link ran the first TU's body in the second: S(double) built S(int) (v=4),
+// Box::count(int, double, char) answered 1, and std::map's lvalue-key
+// operator[] reached the rvalue overload's _M_emplace_hint_unique
+// instance and moved the key out of the vector.
+//
+// The build is the three .cpp TUs named in testprojectmtiorder.cc.json (the
+// --project flag in the .flags fixture); this file is an ignored positional.
+// Oracle: g++ 13 and clang++ 18 build the same three TUs and print the
+// .expect lines: a = 4*100 + 1*10 + 1, b = 8*1000 + 3*100 + 3*10 + 5.

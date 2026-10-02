@@ -3282,6 +3282,19 @@ static std::string namespace_function_symbol(const std::string &ns_name,
     return sym;
 }
 
+// FNV-1a 32 of a string: a stable, run-independent digest of an identity
+// spelling (the same text hashes the same in every TU and every process).
+static uint32_t fnv1a32(const std::string &s)
+{
+    uint32_t h = 2166136261u;
+    for ( size_t i = 0; i < s.size(); ++i )
+    {
+	h ^= (unsigned char)s[i];
+	h *= 16777619u;
+    }
+    return h;
+}
+
 // Deterministic, order-independent symbol suffix for a namespace-function
 // TEMPLATE-INSTANTIATION product, derived from the instantiated parameter-list
 // spelling (the overload's identity): live parse, pack drain, and bound
@@ -3304,14 +3317,8 @@ static std::string overload_spelling_symbol_suffix(const std::string &spelling)
 	    sfx += 'R';
 	// other chars (spaces, <>, ::, commas) drop from the readable head
     }
-    uint32_t h = 2166136261u;
-    for ( size_t i = 0; i < spelling.size(); ++i )
-    {
-	h ^= (unsigned char)spelling[i];
-	h *= 16777619u;
-    }
     char buf[16];
-    snprintf(buf, sizeof(buf), "_%08x", h);
+    snprintf(buf, sizeof(buf), "_%08x", fnv1a32(spelling));
     return sfx + buf;
 }
 
@@ -49148,6 +49155,29 @@ std::string Program::unique_overload_symbol(std::string base)
     }
 }
 
+// The symbol of a template INSTANCE minted under a shared member/ctor base
+// (`<placeholder>__mti`, `Class__Class`): base + "__o<N>", N derived from the
+// request's `identity` — never from the order the TU met it. An instance is
+// emitted linkonce (a multi-.o link keeps the first same-named copy), so an
+// order-assigned name let two TUs give DIFFERENT specializations one symbol
+// and the link ran one TU's body in the other. N carries its top bit, so it
+// never meets unique_overload_symbol's sequential __o2..; an N already taken
+// in this TU re-hashes with a salt. The numeric tail keeps
+// strip_overload_suffix's source-name recovery (parseFunction reads
+// Class__Class__oN as a constructor).
+std::string Program::instance_overload_symbol(const std::string &base,
+					      const std::string &identity)
+{
+    for ( unsigned salt = 0; ; ++salt )
+    {
+	uint32_t h = fnv1a32(salt ? identity + "#" + std::to_string(salt)
+				  : identity);
+	std::string cand = base + "__o" + std::to_string(h | 0x80000000u);
+	if ( !findVariable(cand) && !forest_deferred_funcs.count(cand) )
+	    return cand;
+    }
+}
+
 std::vector<TokenBase *> Program::collect_compound_body_tokens(TokenBase *open)
 {
     std::vector<TokenBase *> body;
@@ -67696,11 +67726,13 @@ Variable *Program::instantiate_member_fn_template_for_call(TokenCallFunc *tc)
     ft.ns = namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
     // The instantiated definition gets a DISTINCT name (so it keeps its real
     // parameters instead of colliding with the varargs declaration-only
-    // placeholder, which would drop them) — unique PER TYPE-SHAPE
-    // (unique_overload_symbol: the first shape keeps `__mti`, later shapes get
-    // `__mti__oN`), and each call binds its own shape's instance via the
-    // shape_key memo above + tc->mti_instance below.
-    inst_name = unique_overload_symbol(tc->var.name + "__mti");
+    // placeholder, which would drop them) — unique PER TYPE-SHAPE and
+    // candidate (instance_overload_symbol: `__mti__oN`, N keyed on the call
+    // shape, so every TU names a shape's instance alike), and each call binds
+    // its own shape's instance via the shape_key memo above +
+    // tc->mti_instance below.
+    inst_name = instance_overload_symbol(tc->var.name + "__mti",
+					 call_shape + "#c" + std::to_string(mci));
     for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
     {
 	TokenBase *t = fd->member_template_decl[i];
@@ -68149,7 +68181,14 @@ bool Program::instantiate_member_ctor_template_candidate(
 
     std::string ctor_decl_name =
 	skipped_template_function_declarator_name(fd->member_template_decl);
-    std::string inst_name = unique_overload_symbol(cdd->name + "__" + cdd->name);
+    // The instance's symbol is keyed on the memo key plus each argument's
+    // value category (a forwarding-reference parameter deduces A& from an
+    // lvalue), so every TU names one construction shape's instance alike.
+    std::string inst_identity = key;
+    for ( TokenBase *a : ctor_args )
+	inst_identity += fn_template_call_arg_is_lvalue(a, *this) ? "@L" : "@R";
+    std::string inst_name = instance_overload_symbol(cdd->name + "__" + cdd->name,
+						     inst_identity);
     for ( size_t i = 0; i < fd->member_template_decl.size(); ++i )
     {
 	TokenBase *t = fd->member_template_decl[i];
