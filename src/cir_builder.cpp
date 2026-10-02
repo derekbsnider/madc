@@ -6456,6 +6456,18 @@ static DataDefCLASS *pointee_user_class(DataDef *dd)
 	return as_user_class(p->base_type);
 }
 
+// The class a pointer to member belongs to (the `C` of `T C::*` /
+// `R (C::*)(A)`), or NULL for any other type.
+static DataDefCLASS *member_pointer_class(DataDef *dd)
+{
+	dd = unqualified_type(dd);
+	if (DataDefMemberPtr *m = dynamic_cast<DataDefMemberPtr *>(dd))
+		return as_user_class(m->owner_class);
+	if (DataDefMemberFnPtr *m = dynamic_cast<DataDefMemberFnPtr *>(dd))
+		return as_user_class(m->owner_class);
+	return NULL;
+}
+
 // The user-class a class-pointer-valued expression yields. `new B()` carries
 // its allocated class directly (TokenNEW::alloc_class, never reflected in
 // datadef()); any other expression is read through its `Cls *` datadef pointee.
@@ -24394,11 +24406,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// (TokenMemberPtrAccess). Every read of the member-pointer operand and of
 	// the receiver is its own translation (c2mir's single parent link).
 	if (TokenMemberPtrAccess *mpa = (tb ? tb->as_member_ptr_access_tok() : NULL)) {
+		// The object converts to the member pointer's class first
+		// ([expr.mptr.oper]/2-3): a base at a non-zero offset in the
+		// object's class moves the receiver to that subobject.
+		DataDefCLASS *mp_cls = member_pointer_class(mpa->mptr
+			? TokenSubscript::referent_type(mpa->mptr->datadef()) : NULL);
+		DataDefCLASS *obj_cls = NULL;
+		if (mpa->object && mpa->via_arrow)
+			obj_cls = expr_pointee_class(mpa->object);
+		else if (mpa->object) {
+			DataDef *odd = mpa->object->datadef();
+			obj_cls = as_user_class(odd);
+			if (!obj_cls)
+				obj_cls = pointee_user_class(odd);	// a reference
+		}
+		bool recv_to_base = mp_cls && obj_cls && obj_cls != mp_cls
+			&& obj_cls->is_or_derives_from(mp_cls);
 		// the receiver's address as char*: `.*` takes &obj, `->*` the pointer value
 		auto recv_bytes = [&]() -> node_t {
 			node_t a = mpa->via_arrow
 				? translate_expr(mpa->object)
 				: node1(N_ADDR, translate_expr(mpa->object), tb);
+			if (recv_to_base)
+				a = base_subobject_addr(a, obj_cls, mp_cls, tb);
 			return node2(N_CAST, char_ptr_type(), a, tb);
 		};
 		auto i64_type = [&]() -> node_t {

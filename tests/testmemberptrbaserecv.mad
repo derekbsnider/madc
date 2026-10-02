@@ -1,0 +1,32 @@
+// `obj.*pm` / `p->*pm` with a pointer to member of a BASE B: the object
+// converts to B first ([expr.mptr.oper]/2-3), so when B sits at a non-zero
+// offset in the object's class the member is read (or the member function
+// called) on that B subobject. madc used the object's own address, so
+// `d.*pb` read D's first member and `(d.*bf)()` ran with `this` pointing at
+// the D object instead of its B part.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct A0 { int pad[3]; };
+struct B { int y; int get() { return y; } };
+struct D : A0, B { int z; };
+struct E : B { int w; };
+
+int main()
+{
+	D d;
+	d.pad[0] = 1;
+	d.y = 7;
+	d.z = 9;
+	D *dp = &d;
+	D &dr = d;
+	E e;
+	e.y = 3;
+	int B::*pb = &B::y;
+	int (B::*bf)() = &B::get;
+	dp->*pb = 8;
+	printf("%d %d %d %d %d %d %d\n", d.*pb, dp->*pb, (d.*bf)(), (dp->*bf)(),
+	       dr.*pb, e.*pb, (e.*bf)());
+	return 0;
+}
