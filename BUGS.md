@@ -28,6 +28,80 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B144. A cast to an lvalue reference deduces a forwarding reference as an rvalue
+
+```cpp
+#include <cstdio>
+#include <utility>
+void f(int &) { puts("L"); }
+void f(int &&) { puts("R"); }
+template<class T> void g(T &&t) { f(std::forward<T>(t)); }
+int main() {
+	int x = 1;
+	g(static_cast<int &>(x));
+	g(static_cast<int &&>(x));
+	g((int &)x);
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `L R L`. madc (`--std=c++17`,
+  2026-10-02): `R R R`, exit 0.
+- Layer: deduction's lvalue test, `fn_template_call_arg_is_lvalue`
+  (`src/parser.cpp`), is a second value-category reader beside
+  `Program::argument_value_category`. It sends a `TokenCast` to
+  `is_addressable_expression`, which answers false for every cast, so
+  [temp.deduct.call]/3 deduces `T = int` for an lvalue. `argument_value_category`
+  reads the cast's kind (`static_cast<T&>` an lvalue) correctly. The fix is to
+  make the deduction reader defer to the one reader. The two also differ on a
+  string literal (an lvalue there, an rvalue here).
+- Found 2026-10-02 while fixing the vecbind gate (substituted call arguments'
+  value category). Off the release path, filed per owner 2026-09-30.
+
+### B145. A member template's direct-initialization picks its constructor once, for every instantiation
+
+```cpp
+#include <utility>
+#include <cstdio>
+struct S {
+	int v;
+	S(int x) : v(x) {}
+	S(const S &o) : v(o.v) { printf("copy "); }
+	S(S &&o) : v(o.v) { printf("move "); }
+};
+struct Relay {
+	template<class T> void make(T &&t) { S s(std::forward<T>(t)); (void)s; }
+};
+template<class T> void free_make(T &&t) { S s(std::forward<T>(t)); (void)s; }
+int main() {
+	Relay r;
+	S a(3);
+	printf("member: ");
+	r.make(a);
+	r.make(std::move(a));
+	printf("\nfree: ");
+	free_make(a);
+	free_make(std::move(a));
+	printf("\n");
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18: `member: copy move` / `free: copy move`. madc
+  (2026-10-02): `member: move move` / `free: copy move`, exit 0. It moves
+  from an lvalue.
+- Layer: a member template's body is lowered once as a Tree-1 pattern and
+  copied per instance. `translate_block` defers a local declaration's
+  construction (the decl marker that `tsubst_relower_deferred_construction`
+  relowers) only when its ctor args hold a pack expansion
+  (`tsubst_args_have_pack_expansion`). A non-pack dependent argument
+  (`std::forward<T>(t)`) gets its constructor picked in the PATTERN, where
+  `argument_value_category`'s identity-forward arm reads the dependent `T` as a
+  non-reference (an xvalue). `S(S&&)` is baked in for every `T`. The fix is to
+  defer the construction whenever an argument is type-dependent ([temp.dep.expr]:
+  overload resolution of a dependent call happens at instantiation).
+- Found 2026-10-02 with B144. Off the release path, filed per owner 2026-09-30.
+
 ### B121. A const object binds the non-const reference overload
 
 ```cpp
@@ -446,6 +520,40 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B146. `std::vector<S>::emplace_back(3)` is refused: tsubst bails on the converting placement construction
+
+```cpp
+#include <vector>
+#include <cstdio>
+struct S {
+	int v;
+	S(int x) : v(x) {}
+	S(const S &o) : v(o.v) {}
+	S(S &&o) : v(o.v) {}
+};
+int main() {
+	std::vector<S> v;
+	v.emplace_back(3);
+	std::printf("%d %d\n", (int)v.size(), v[0].v);
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `1 3`. madc (2026-10-02): `cir error:
+  parse-once internal: tsubst bailed on the covered instantiation
+  '__new_allocator_S__construct__mti' of std::__new_allocator::construct<_Up,_Args...>
+  [why: tsubst: dependent-arg object construction]` at `new_allocator.h:190`,
+  nothing compiled. `push_back(S(1))` and `push_back(s)` work.
+- Layer: `::new((void*)__p) _Up(std::forward<_Args>(__args)...)` with
+  `_Up = S`, `_Args = int`. At instantiation time the unexpanded
+  `TokenPackExpansion` (type `_Args*`) reaches `CirBuilder::object_arg_addr`'s
+  materializing tail, which refuses a dependent-typed argument
+  (`MADC_XTEST_DEPARG_DEBUG=1`: `[DEPARG-HIT] arg=TokenPackExpansion dd=_Args*
+  target=S in=__new_allocator_S__construct__mti`). The same `construct` lowers
+  for `push_back`'s copy and move (`_Args = S` / `const S&`); the converting
+  `S(int)` case fails. It is present before and after the vecbind-gate fix.
+- Found 2026-10-02 with B144. Off the release path, filed per owner 2026-09-30.
 
 ### B143. `&ns::C::m` is refused: the address-of arm walks no class after a namespace
 
