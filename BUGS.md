@@ -28,6 +28,39 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B147. `noexcept(std::__relocate_a(...))` answers false, and `--freeze` answers it true
+
+```cpp
+#include <vector>
+#include <string>
+#include <cstdio>
+int main() {
+	std::string *p = nullptr;
+	int *q = nullptr;
+	std::allocator<std::string> a;
+	std::allocator<int> b;
+	std::printf("%d %d\n", (int)noexcept(std::__relocate_a(p, p, p, a)),
+		(int)noexcept(std::__relocate_a(q, q, q, b)));
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `1 1`. madc (2026-10-02, at fda3b3019
+  with the subscript-operator fix in the tree): `0 0`, exit 0.
+- In `tests/testsubscript.mad`, `-v` (the `noexcept_eval: call` diagnostic)
+  shows `__relocate_a`'s specification as false (`spec=0`, no deferred
+  condition) in a plain compile and as true (`spec=1`) under `--freeze`. So
+  the two parses of one TU disagree, and a bound consumer loads the frozen
+  answer. Program output is unaffected: it is `vector`'s relocation path
+  (`_S_use_relocate()`) that differs.
+- Layer: not yet traced. The instantiated declarator's `noexcept(noexcept(
+  std::__relocate_a_1(...)))` folds to false at the declarator parse
+  (`fold_nontype_template_arg`) in a plain compile, and to true in the
+  `--freeze` compile of the same TU; what the forest recording changes on
+  that path is the open question.
+- Found 2026-10-02 while fixing the `[subbind]` bind gate. Off the release
+  path, filed per owner 2026-09-30.
+
 ### B144. A cast to an lvalue reference deduces a forwarding reference as an rvalue
 
 ```cpp
