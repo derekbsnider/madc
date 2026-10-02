@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### release: every released madc-release is archived, self-contained, and gated
+
+`scripts/release_bins.sh` keeps each release since v0.72.0 as `tmp/release-bins/vX.Y.Z/` — the binary, its `lib/` (since v0.98.0 `bin/madc-release` is a thin driver over `libmadc.so.0`) and a PROVENANCE note — verified where it runs (its version, a program, its own libmadc bound). The build container holds the archive and the NAS mirrors it. `backfill` recovers a release from its shipped tarball or by building its release commit; `run <tests>` prints a pass/fail matrix across releases. `lane_ledger.sh check --release` (the master push) refuses a release missing from the archive; `/release` archives with `release_bins.sh archive` + `sync`.
+
+### build: `make -C src release` links in a fresh clone
+
+The release and debug thin CLIs link `-lmadc` from their own mode's library directory (`lib/release/`, `lib/debug/`). It had searched `lib/`, binding the dev `libmadc.so` when a dev build had run, and otherwise the static archive, where the link failed (`undefined reference to c2mir_node_op`).
+
+### testing: the seam battery runs the full suite once, on the packed -O2 binary
+
+`scripts/seam_battery.sh` is Tier 3 in one command, cheapest stage first: pre-build every toolchain and the static gates, `make -C src gates` (unit tests and repository gates, no suite), the full tests/ suite on the shipped packed `madc-release` with no headers on disk (Linux, then win64 under wine), the headerless-skipped tests with headers on disk (`ondisk`, `ondisk-win`), `--exe --obj` on the same binary (`exeobj`), then the macOS and aarch64 builds. The -O0 dev binary no longer runs the full suite at the seam.
+
 ### parser: a fresh template instantiation's declarator is named from its specialization identity
 
 A fresh template instantiation's declarator was keyed on the first request's call shape (instance_overload_symbol base + call_shape + candidate), so different call paths reaching the same specialization through the same TU reused that instance. A forest producer and the live compile reach destroy<...> through different call paths, so the bound consumer (reusing the producer's frozen instance) and the live compile named one specialization differently. FnTemplateDef gains `inst_name_base`; instantiate_fn_template_binding checks it and calls instance_overload_symbol(inst_name_base, inst_key) to derive the final declarator name, so all routes to one specialization (another call shape, another TU, a forest consumer binding a producer's frozen instance) name it alike. The declarator's identifier and the name-keyed body-parse-skip entry (tsubst_skip_body_name) are updated together. scripts/forest_bind_gate.sh case [vecbind] before: RED (bound compile's destroy instance `..._destroy__mti__o2985472822` vs live `..._destroy__mti__o4178276364`, different call paths on first mint); after: GREEN (func/export/import sets == live, output sum=7 == live == g++).
