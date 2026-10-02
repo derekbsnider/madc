@@ -6531,6 +6531,56 @@ node_t CirBuilder::base_subobject_addr(node_t value, DataDefCLASS *derived,
 	return node2(N_CAST, class_ptr_type(base), adj, origin);
 }
 
+static int vbase_slot_index(DataDefCLASS *view, DataDefCLASS *owner,
+			    size_t &nv_extra);	// defined with vbase_dynamic_adjust
+static bool node_bottoms_at_this(node_t n);	// defined with vbase_dynamic_adjust
+
+// Does selecting `base` within `derived` move the address? Through a virtual
+// base it may (the offset is read at run time); otherwise by the static
+// subobject offset. A "yes" that turns out to be 0 costs only a null test.
+static bool base_subobject_moves(DataDefCLASS *derived, DataDefCLASS *base)
+{
+	size_t nv = 0;
+	if (vbase_slot_index(derived, base, nv) >= 0)
+		return true;
+	size_t off = derived->base_offset_of(base);
+	return off != 0 && off != (size_t)-1;
+}
+
+// The POINTER form of base_subobject_addr: a null pointer converts to a null
+// pointer ([conv.ptr]/3), so an upcast that moves the address tests the
+// operand first, read once through a temp —
+//   ({ struct D *__madc_upc_N = (struct D *)(value);
+//      __madc_upc_N ? <base_subobject_addr(__madc_upc_N)> : (struct B *)0; })
+// — g++'s and clang's lowering (a virtual base's offset is never read
+// through a null vptr). An object's address (`&d`) and the object under
+// construction (`__this`) are never null: they convert directly, as in g++.
+node_t CirBuilder::base_subobject_ptr(node_t value, DataDefCLASS *derived,
+				      DataDefCLASS *base, TokenBase *origin)
+{
+	if (!base_subobject_moves(derived, base) || value->code == N_ADDR
+	    || node_bottoms_at_this(value))
+		return base_subobject_addr(value, derived, base, origin);
+	char tmp[40];
+	snprintf(tmp, sizeof(tmp), "__madc_upc_%d", m_strtmp_counter++);
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, node1(N_LIST, class_tag_ref(derived))));
+	node_t sd_dl = list();
+	append(sd_dl, pointer());
+	append(sd, node2(N_DECL, id(tmp, origin), sd_dl));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, node2(N_CAST, class_ptr_type(derived), value, origin));
+	node_t items = list();
+	append(items, sd);
+	node_t sel = node3(N_COND, id(tmp, origin),
+			   base_subobject_addr(id(tmp, origin), derived, base, origin),
+			   node2(N_CAST, class_ptr_type(base), integer(0, origin), origin),
+			   origin);
+	append(items, node2(N_EXPR, list(), sel, origin));
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
+}
+
 node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rhs,
 				    TokenBase *origin, DataDef *rhs_dd)
 {
@@ -6540,7 +6590,7 @@ node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rh
 		derived = expr_pointee_class(rhs);
 	if (!base || !derived || base == derived) return value;
 	if (!derived->is_or_derives_from(base)) return value;
-	return base_subobject_addr(value, derived, base, origin);
+	return base_subobject_ptr(value, derived, base, origin);
 }
 
 // Derived->base reference return conversion. A C++ `Base& f() { return d; }`
@@ -26389,15 +26439,13 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			expr = upcast_class_ref_addr(expr, m_cur_func_returns_class_ptr,
 						     tr->returns, tr);
 	}
-	// Derived->base pointer return (`A *f() { return bptr; }`): make the
-	// implicit upcast explicit so c2mir does not warn.
-	else if (m_cur_func_returns_class_ptr && tr->returns) {
-		DataDefCLASS *base = m_cur_func_returns_class_ptr;
-		DataDefCLASS *derived = expr_pointee_class(tr->returns);
-		if (base && derived && base != derived
-		    && derived->is_or_derives_from(base))
-			expr = node2(N_CAST, class_ptr_type(base), expr, tr);
-	}
+	// Derived->base pointer return (`A *f() { return bptr; }`): the same
+	// conversion as any other implicit upcast — a secondary base moves the
+	// address, a null pointer stays null.
+	else if (m_cur_func_returns_class_ptr && tr->returns && m_prog)
+		expr = upcast_class_ptr(expr,
+			m_prog->getPointerType(m_cur_func_returns_class_ptr),
+			tr->returns, tr);
 	// Pending `defer`red statements run between the return expression's
 	// evaluation and the actual return (old-backend/Go ordering): hoist the
 	// value into a temp of the function's C return type, run the deferred

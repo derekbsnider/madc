@@ -731,6 +731,9 @@ class CirBuilder {
 	// receiver share it — never re-spell the offset/cast block.
 	node_t base_subobject_addr(node_t value, DataDefCLASS *derived,
 				   DataDefCLASS *base, class TokenBase *origin);
+	// Its POINTER form: a null `derived` pointer stays null ([conv.ptr]/3).
+	node_t base_subobject_ptr(node_t value, DataDefCLASS *derived,
+				  DataDefCLASS *base, class TokenBase *origin);
 	// Derived->base pointer/reference conversion. Returns `value` unchanged when
 	// no conversion applies; otherwise emits the same base-subobject adjustment
 	// recorded by class layout.
