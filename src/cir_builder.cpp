@@ -6621,6 +6621,11 @@ node_t CirBuilder::derived_object_ptr(node_t value, DataDefCLASS *base,
 node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rhs,
 				    TokenBase *origin, DataDef *rhs_dd)
 {
+	// A pointer to member converts the other way at the same sites — `B::*`
+	// to `D::*` ([conv.mem]/2) — so at most one operand of a comparison
+	// converts here too.
+	if (member_pointer_class(lhs_dd))
+		return member_pointer_conversion(value, lhs_dd, rhs, false, origin);
 	DataDefCLASS *base = pointee_user_class(lhs_dd);
 	DataDefCLASS *derived = pointee_user_class(rhs_dd);
 	if (!derived)
@@ -11991,6 +11996,113 @@ node_t CirBuilder::memfnptr_struct_ref()
 {
 	DataDefSTRUCT *sdd = memfnptr_struct_dd();
 	return node2(N_STRUCT, id(sdd ? sdd->name.c_str() : "__madc_memfnptr"), ignore());
+}
+
+// A pointer-to-member CONSTANT `&C::m`, its value moved by `delta` bytes (a
+// member-pointer conversion of a constant folds here, so a file-scope
+// initializer stays a constant). Data member: the byte offset (Itanium: a
+// ptrdiff_t). Member function: the Itanium {ptr, adj} pair as a compound
+// literal of struct __madc_memfnptr. ptr = 1 + the vtable byte offset of the
+// slot for a VIRTUAL member (odd marks it; resolved through the receiver's
+// __vptr at the call — madc's own vtable model, void*[] per group), else the
+// member's own address. adj = the declaring class's subobject offset within
+// the owner named in the constant.
+node_t CirBuilder::member_ptr_constant(TokenMemberPtrConst *mpc, int64_t delta,
+				       TokenBase *tb)
+{
+	if (!mpc->method)
+		return integer((int64_t)mpc->data_offset + delta, tb);
+	FuncDef *mfd = dynamic_cast<FuncDef *>(mpc->method->type);
+	node_t ptr_val;
+	size_t grp = 0;
+	int slot = -1;
+	if (mpc->owner && mpc->owner->is_virtual_method(mpc->member_name)
+	    && mpc->owner->find_vslot(mpc->member_name, grp, slot)) {
+		ptr_val = node2(N_CAST, void_ptr_type(),
+				integer((int64_t)(1 + slot * 8), tb), tb);
+	} else {
+		std::string sym = body_emit_symbol(*mpc->method, mfd);
+		referenced_funcs.insert(sym);
+		ptr_val = node2(N_CAST, void_ptr_type(), id(sym.c_str(), tb), tb);
+	}
+	int64_t adj = delta;
+	if (mpc->owner) {
+		Method *mm = (Method *)mpc->method->data;
+		DataDefCLASS *decl_cls = mm ? mm->owner_class : NULL;
+		if (decl_cls && decl_cls != mpc->owner)
+			adj += (int64_t)mpc->owner->base_offset_of(decl_cls);
+	}
+	node_t spec = list();
+	append(spec, memfnptr_struct_ref());
+	node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
+	node_t inits = list();
+	append(inits, node2(N_INIT, list(), ptr_val));
+	append(inits, node2(N_INIT, list(), integer(adj, tb)));
+	return node2(N_COMPOUND_LITERAL, type_node, inits, tb);
+}
+
+// A pointer-to-member conversion between related classes: `B::*` to `D::*`
+// ([conv.mem]/2 — implicit, and a static cast) or, for a static cast only
+// (`both_ways`), `D::*` to `B::*` ([expr.static.cast]/12). The value moves by
+// B's subobject offset in D: a data member's offset, the null value -1 kept;
+// a member function's pair, its adj (no null test — a null member-function
+// pointer is ptr == 0 whatever its adj — as in g++). A constant `&C::m` folds.
+// Unrelated or identical classes, or a virtual base (ill-formed), keep it.
+node_t CirBuilder::member_pointer_conversion(node_t value, DataDef *to,
+					     TokenBase *src, bool both_ways,
+					     TokenBase *origin)
+{
+	DataDefCLASS *tc = member_pointer_class(to);
+	DataDefCLASS *fc = member_pointer_class(src ? src->datadef() : NULL);
+	if (!tc || !fc || tc == fc)
+		return value;
+	size_t nv = 0;
+	int64_t delta = 0;
+	if (tc->is_or_derives_from(fc)) {
+		size_t off = tc->base_offset_of(fc);
+		if (vbase_slot_index(tc, fc, nv) >= 0 || off == (size_t)-1)
+			return value;
+		delta = (int64_t)off;
+	} else if (both_ways && fc->is_or_derives_from(tc)) {
+		size_t off = fc->base_offset_of(tc);
+		if (vbase_slot_index(fc, tc, nv) >= 0 || off == (size_t)-1)
+			return value;
+		delta = -(int64_t)off;
+	}
+	if (delta == 0)
+		return value;
+	if (TokenMemberPtrConst *mpc = src->as_member_ptr_const_tok())
+		return member_ptr_constant(mpc, delta, origin);
+	// ({ T t = value; <t moved>; }) — the operand read once.
+	bool fn = unqualified_type(to)->is_member_function_pointer();
+	char tmp[40];
+	snprintf(tmp, sizeof(tmp), "__madc_mpc_%d", m_strtmp_counter++);
+	node_t spec = list();
+	if (fn)
+		append(spec, memfnptr_struct_ref());
+	else
+		append_i64(spec);
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, node1(N_SHARE, spec));
+	append(sd, node2(N_DECL, id(tmp, origin), list()));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, value);
+	node_t items = list();
+	append(items, sd);
+	if (fn) {
+		node_t adj = node2(N_FIELD, id(tmp, origin), id("adj", origin), origin);
+		append(items, node2(N_EXPR, list(),
+			node2(N_ADD_ASSIGN, adj, integer(delta, origin), origin), origin));
+		append(items, node2(N_EXPR, list(), id(tmp, origin), origin));
+	} else {
+		node_t is_null = node2(N_EQ, id(tmp, origin), integer(-1, origin), origin);
+		append(items, node2(N_EXPR, list(),
+			node3(N_COND, is_null, id(tmp, origin),
+			      node2(N_ADD, id(tmp, origin), integer(delta, origin), origin),
+			      origin), origin));
+	}
+	return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, origin), origin);
 }
 
 static DataDefCLASS *class_behind(DataDef *dd); // defined below; used by the thunk path
@@ -24363,44 +24475,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	}
 
 	// C++ pointer-to-member CONSTANT `&C::m` (TokenMemberPtrConst).
-	if (TokenMemberPtrConst *mpc = (tb ? tb->as_member_ptr_const_tok() : NULL)) {
-		if (!mpc->method)
-			// Data member: the byte offset (Itanium: a ptrdiff_t).
-			return integer((int64_t)mpc->data_offset, tb);
-		// Member function: the Itanium {ptr, adj} pair as a compound literal of
-		// struct __madc_memfnptr. ptr = 1 + the vtable byte offset of the slot
-		// for a VIRTUAL member (odd marks it; resolved through the receiver's
-		// __vptr at the call — madc's own vtable model, void*[] per group),
-		// else the member's own address. adj = the declaring class's
-		// subobject offset within the owner named in the constant.
-		FuncDef *mfd = dynamic_cast<FuncDef *>(mpc->method->type);
-		node_t ptr_val;
-		size_t grp = 0;
-		int slot = -1;
-		if (mpc->owner && mpc->owner->is_virtual_method(mpc->member_name)
-		    && mpc->owner->find_vslot(mpc->member_name, grp, slot)) {
-			ptr_val = node2(N_CAST, void_ptr_type(),
-					integer((int64_t)(1 + slot * 8), tb), tb);
-		} else {
-			std::string sym = body_emit_symbol(*mpc->method, mfd);
-			referenced_funcs.insert(sym);
-			ptr_val = node2(N_CAST, void_ptr_type(), id(sym.c_str(), tb), tb);
-		}
-		int64_t adj = 0;
-		if (mpc->owner) {
-			Method *mm = (Method *)mpc->method->data;
-			DataDefCLASS *decl_cls = mm ? mm->owner_class : NULL;
-			if (decl_cls && decl_cls != mpc->owner)
-				adj = (int64_t)mpc->owner->base_offset_of(decl_cls);
-		}
-		node_t spec = list();
-		append(spec, memfnptr_struct_ref());
-		node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
-		node_t inits = list();
-		append(inits, node2(N_INIT, list(), ptr_val));
-		append(inits, node2(N_INIT, list(), integer(adj, tb)));
-		return node2(N_COMPOUND_LITERAL, type_node, inits, tb);
-	}
+	if (TokenMemberPtrConst *mpc = (tb ? tb->as_member_ptr_const_tok() : NULL))
+		return member_ptr_constant(mpc, 0, tb);
 
 	// `obj.*mp` / `p->*mp` and the call through a member-function pointer
 	// (TokenMemberPtrAccess). Every read of the member-pointer operand and of
@@ -25203,6 +25279,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// shape, which for an invisible-reference class is an address.
 			if (DataDefCLASS *cast_class = as_class_instance(cast_dd))
 				return class_object_value(tc->expr, cast_class);
+			// A cast to a pointer-to-member type: a static or C-style cast
+			// between related classes moves the value, both ways
+			// ([expr.static.cast]/12); reinterpret_cast / const_cast keep
+			// it. Never a C cast — a member-function pointer is a struct.
+			if (cast_dd && unqualified_type(cast_dd)->is_member_pointer()) {
+				node_t v = translate_expr(tc->expr);
+				return tc->kind == TokenCast::Kind::Static
+					? member_pointer_conversion(v, cast_dd, tc->expr,
+								    true, tb)
+					: v;
+			}
 			// Function-pointer cast `(RET (*)(params)) expr` (qsort comparator,
 			// atexit handler, ...). The generic scalar/pointer path below renders
 			// a DataDefFPTR via type_list as a bare `long`, so the cast emitted as
@@ -26506,6 +26593,12 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		expr = upcast_class_ptr(expr,
 			m_prog->getPointerType(m_cur_func_returns_class_ptr),
 			tr->returns, tr);
+	// A pointer-to-member return (`int D::*f() { return &B::y; }`): the
+	// same implicit conversion ([conv.mem]/2).
+	else if (tr->returns && m_cur_func_ret_fd
+		 && member_pointer_class(&m_cur_func_ret_fd->return_value_type()))
+		expr = upcast_class_ptr(expr, &m_cur_func_ret_fd->return_value_type(),
+					tr->returns, tr);
 	// Pending `defer`red statements run between the return expression's
 	// evaluation and the actual return (old-backend/Go ordering): hoist the
 	// value into a temp of the function's C return type, run the deferred

@@ -28,6 +28,54 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B136. A null pointer to member has no null value: data is 0, functions refuse
+
+```cpp
+#include <stdio.h>
+struct B { int y; int get() { return y; } };
+struct S { int B::*p; int q; };
+int B::*gp;
+int is_null(int B::*p) { return p == 0; }
+int (B::*gf)();
+int main()
+{
+	int B::*py = &B::y;
+	int B::*pn = 0;
+	int B::*vp{};
+	S s = {};
+	int B::*pa;
+	pa = 0;
+	int (B::*fn)() = 0;
+	int (B::*fy)() = &B::get;
+	printf("%d %d %d %d %d %d\n", gp == 0, py == 0, pn == nullptr, vp == 0, s.p == 0, pa == 0);
+	printf("%d %d %d %d %d\n", is_null(0), is_null(py), !pn, py ? 1 : 0, pn ? 1 : 0);
+	printf("%d %d %d %d\n", fn == 0, fy == 0, gf == nullptr, fy ? 1 : 0);
+	return 0;
+}
+```
+
+- g++ 13 = clang++ 18 (`-std=c++11`): `1 0 1 1 1 1` / `1 0 1 1 0` / `1 0 1 1`.
+  madc (`--std=c++11`, 2026-10-02 at `3b9397793`): refuses the program —
+  `int (B::*fn)() = 0;` "incompatible types in assignment to struct/union",
+  `fn == 0` and `fy == 0` "invalid types of comparison operands". With the
+  member-function lines removed, the data lines run:
+  `1 1 1 1 1 1` / `1 1 1 0 0` — `py == 0`, `is_null(py)` and `py ? 1 : 0`
+  are wrong: a pointer to a member at offset 0 reads as null.
+- The Itanium null member pointer value is -1 for a data member (0 is a
+  valid offset) and `{ptr = 0, adj}` for a member function. madc stores 0
+  for a null data member pointer and has no null for a function one.
+- Owed together: a null pointer constant converting to a member pointer type
+  ([conv.mem]/1; the conversion sites are `upcast_class_ptr`'s), a member
+  function pointer's equality (`a.ptr == b.ptr && (a.ptr == 0 || a.adj ==
+  b.adj)`), the contextual bool of both kinds ([conv.bool]: data `!= -1`,
+  function `ptr != 0`), and zero-initialization (a static, a value-init, an
+  aggregate's omitted member) as -1.
+- Found 2026-10-02 fixing member-pointer conversions between base and
+  derived classes: that conversion moves a data pointer unless it is -1 (the
+  Itanium null, g++'s lowering), so until this entry is fixed a 0 that
+  stands for null moves too (`int B::*pn = 0; int D::*pd = pn;` reads
+  non-null).
+
 ### B121. A const object binds the non-const reference overload
 
 ```cpp

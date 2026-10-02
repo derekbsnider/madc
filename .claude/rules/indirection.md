@@ -48,6 +48,7 @@
   cir's `reference_call_result` (gated: `check-one-reference-call-result.sh`).
 - A class-pointer conversion (implicit via cir's `upcast_class_ptr`; a static or C-style
   cast): `base_subobject_ptr` up / `derived_object_ptr` down (null stays null).
+- A pointer-to-member conversion (`B::*` ↔ `D::*`): cir's `member_pointer_conversion`.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 

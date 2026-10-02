@@ -31,6 +31,7 @@ class TokenDO;
 class TokenSWITCH;
 class TokenCASE;
 class TokenRETURN;
+class TokenMemberPtrConst;
 class TokenOperator;
 class Variable;
 class DataDef;
@@ -1617,6 +1618,13 @@ public:
 	node_t int_complex_struct_ref(DataDefCOMPLEX *cdd);
 	DataDefSTRUCT *memfnptr_struct_dd();	// the one C struct behind every DataDefMemberFnPtr (created + registered once)
 	node_t memfnptr_struct_ref();	// the one C struct behind every DataDefMemberFnPtr
+	// `&C::m` as its value, moved by `delta` bytes (a converted constant folds).
+	node_t member_ptr_constant(TokenMemberPtrConst *mpc, int64_t delta,
+				   TokenBase *tb);
+	// A pointer-to-member conversion between related classes ([conv.mem]/2
+	// B::* -> D::*; with `both_ways`, a static cast's D::* -> B::* too).
+	node_t member_pointer_conversion(node_t value, DataDef *to, TokenBase *src,
+					 bool both_ways, TokenBase *origin);
 	// (struct C){re, im} compound literal — re/im nodes are adopted.
 	node_t int_complex_compound(node_t re, node_t im, DataDefCOMPLEX *cdd,
 				    TokenBase *origin);
