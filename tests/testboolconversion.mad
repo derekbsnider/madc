@@ -1,0 +1,55 @@
+// A scalar converted to _Bool is 0 when it compares equal to 0, else 1
+// (C11 6.3.1.2) — whatever the conversion site: an initializer, an
+// assignment, a compound assignment or ++/--, a cast, an argument, a return
+// value, a constant — and whatever the source: an integer, a floating value,
+// a pointer, an array or function designator, a scalar __int128. MIR has no
+// boolean type (_Bool is U8), and c2mir's conversion only narrowed: it kept
+// the low byte, so 256, 0.5 and a 256-aligned pointer read as 0, -1 as 255.
+//
+// gcc 13 and clang 18 (-std=c17) print the .expect lines.
+#include <stdio.h>
+
+static _Bool ret(long v) { return v; }
+static int take(_Bool b) { return b; }
+static _Bool ret_d(double d) { return d; }
+static _Bool ret128(__int128 v) { return v; }
+static int g;
+static void fn(void) { }
+
+int main(void)
+{
+	long v = 256, w = -1;
+	double d = 0.5;
+	int *p = (int *)256;
+	_Bool b1 = v, b2 = w, b3 = d, b4 = p;
+	_Bool c1 = (_Bool)v, c2 = (_Bool)d, c3 = (_Bool)p;
+	_Bool k1 = 256, k2 = 0.25, k3 = (_Bool)512;
+	printf("init %d %d %d %d | %d %d %d | %d %d %d\n", b1, b2, b3, b4, c1, c2, c3, k1, k2, k3);
+
+	_Bool a, x;
+	a = v;
+	int y = (x = d);
+	_Bool m = 0, n = 0, q = 1, r = 0;
+	m += 2;
+	n -= 256;
+	q *= 512;
+	r--;
+	printf("assign %d %d %d | %d %d %d %d\n", a, x, y, m, n, q, r);
+
+	printf("call %d %d %d %d %d\n", take(v), take(d), ret(v), ret(512), ret_d(0.5));
+	static _Bool s1 = 256, s2 = 0.5;
+	_Bool z = 0;
+	printf("zero %d %d %d %d\n", s1, s2, z, (_Bool)0.0);
+
+	__int128 h = (__int128)1 << 64, l = 256;
+	_Bool i1 = h, i2 = l, a1;
+	a1 = h;
+	struct { _Bool b; } sb = { h };
+	printf("wide %d %d %d %d %d %d %d\n", i1, i2, a1, sb.b, take(h), ret128(h), ret128(l));
+
+	int arr[2];
+	_Bool p1 = arr, p2 = &g, p3 = fn, p4 = "x", v1 = 0;
+	v1 = arr;
+	printf("addr %d %d %d %d %d %d\n", p1, p2, p3, p4, v1, take(arr));
+	return 0;
+}

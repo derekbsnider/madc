@@ -7606,7 +7606,8 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
   case TP: to_e->c.mto = (cast) from_e->c.mfrom; break;
 #define BASIC_FROM_CONV(mfrom)                                                           \
   switch (to->u.basic_type) {                                                            \
-    CONV (TP_BOOL, mir_bool, u_val, mfrom) CONV (TP_UCHAR, mir_uchar, u_val, mfrom);     \
+  case TP_BOOL: to_e->c.u_val = from_e->c.mfrom != 0; break; /* C11 6.3.1.2 */      \
+    CONV (TP_UCHAR, mir_uchar, u_val, mfrom);                                            \
     CONV (TP_USHORT, mir_ushort, u_val, mfrom) CONV (TP_UINT, mir_uint, u_val, mfrom);   \
     CONV (TP_ULONG, mir_ulong, u_val, mfrom) CONV (TP_ULLONG, mir_ullong, u_val, mfrom); \
     CONV (TP_SCHAR, mir_schar, i_val, mfrom);                                            \
@@ -7725,7 +7726,7 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
     } else {
       assert (to->mode == TM_BASIC);
       switch (to->u.basic_type) {
-      case TP_BOOL: to_e->c.u_val = (mir_bool) low; break;
+      case TP_BOOL: to_e->c.u_val = low != 0 || from_e->c_u_hi_val != 0; break;
       case TP_UCHAR: to_e->c.u_val = (mir_uchar) low; break;
       case TP_USHORT: to_e->c.u_val = (mir_ushort) low; break;
       case TP_UINT: to_e->c.u_val = (mir_uint) low; break;
@@ -15135,6 +15136,51 @@ static void emit_int128_branch_lt_le (c2m_ctx_t c2m_ctx, MIR_label_t target, int
   emit_label_insn_opt (c2m_ctx, skip);
 }
 
+static int bool_type_p (struct type *type) {
+  return type != NULL && type->mode == TM_BASIC && type->u.basic_type == TP_BOOL;
+}
+
+/* C11 6.3.1.2: a scalar converted to _Bool is 0 when it compares equal to 0,
+   else 1.  MIR has no boolean type (_Bool is U8), so a conversion that only
+   narrows keeps the low byte: 256, 0.5 and a 256-aligned pointer were 0.  The
+   value OP (any scalar MIR type) as an I64 0/1. */
+static op_t scalar_truth_val (c2m_ctx_t c2m_ctx, op_t op) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_type_t t = get_op_type (c2m_ctx, op);
+  op_t res = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  if (t == MIR_T_F) {
+    emit3 (c2m_ctx, MIR_FNE, res.mir_op, op.mir_op, MIR_new_float_op (ctx, 0.0f));
+  } else if (t == MIR_T_D) {
+    emit3 (c2m_ctx, MIR_DNE, res.mir_op, op.mir_op, MIR_new_double_op (ctx, 0.0));
+  } else if (t == MIR_T_LD) {
+    emit3 (c2m_ctx, MIR_LDNE, res.mir_op, op.mir_op, MIR_new_ldouble_op (ctx, 0.0));
+  } else {
+    if (op.mir_op.mode == MIR_OP_MEM) { /* load (and extend) the narrow value */
+      op_t v = get_new_temp (c2m_ctx, MIR_T_I64);
+
+      emit2 (c2m_ctx, MIR_MOV, v.mir_op, op.mir_op);
+      op = v;
+    }
+    emit3 (c2m_ctx, MIR_NE, res.mir_op, op.mir_op, MIR_new_int_op (ctx, 0));
+  }
+  return res;
+}
+
+static op_t int128_scalar_truth_val (c2m_ctx_t c2m_ctx, op_t src);
+
+/* The value OP of C type FROM converted to C type TO is a truth value when TO
+   is _Bool and FROM is another scalar.  Apply it before any narrowing: a
+   scalar __int128 value (in memory) tests both halves. */
+static op_t bool_conversion (c2m_ctx_t c2m_ctx, op_t op, struct type *from, struct type *to) {
+  if (!bool_type_p (to) || from == NULL || bool_type_p (from) || !scalar_type_p (from)
+      || complex_type_p (from))
+    return op;
+  if (int128_type_p (from))
+    return op.mir_op.mode == MIR_OP_MEM ? int128_scalar_truth_val (c2m_ctx, op) : op;
+  return scalar_truth_val (c2m_ctx, op);
+}
+
 /* Scalar __int128 truth value: low|high != 0, as an I64 0/1. */
 static op_t int128_scalar_truth_val (c2m_ctx_t c2m_ctx, op_t src) {
   MIR_context_t ctx = c2m_ctx->ctx;
@@ -17115,6 +17161,8 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
     init_el = VARR_GET (init_el_t, init_els, init_start);
     val = val_gen (c2m_ctx, init_el.init);
     t = get_op_type (c2m_ctx, var);
+    val = bool_conversion (c2m_ctx, val, ((struct expr *) init_el.init->attr)->type,
+                           init_el.el_type);
     if (int128_type_p (((struct expr *) init_el.init->attr)->type)
         && val.mir_op.mode == MIR_OP_MEM)
       /* Register-class scalar initialized from a scalar __int128 value. */
@@ -17182,6 +17230,8 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         val = new_op (NULL, MIR_new_mem_op (ctx, t, offset + rel_offset, base, 0, 1));
       val = gen (c2m_ctx, init_el.init, NULL, NULL, t != MIR_T_UNDEF,
                  t != MIR_T_UNDEF ? NULL : &val, NULL);
+      val = bool_conversion (c2m_ctx, val, ((struct expr *) init_el.init->attr)->type,
+                             init_el.el_type);
       if (t != MIR_T_UNDEF && int128_type_p (((struct expr *) init_el.init->attr)->type)
           && val.mir_op.mode == MIR_OP_MEM)
         /* Narrower element initialized from a scalar __int128 value. */
@@ -18787,6 +18837,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     t = get_op_type (c2m_ctx, var);
     op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, t != MIR_T_UNDEF,
                t != MIR_T_UNDEF ? NULL : &var, NULL);
+    if (t != MIR_T_UNDEF)
+      op2 = bool_conversion (c2m_ctx, op2, ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type,
+                             ((struct expr *) r->attr)->type);
     if (t != MIR_T_UNDEF && int128_type_p (((struct expr *) NL_EL (r->u.ops, 1)->attr)->type)
         && op2.mir_op.mode == MIR_OP_MEM)
       /* Narrower lvalue assigned from a scalar __int128 value. */
@@ -18808,6 +18861,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   assign: /* t/val is promoted type/new value of assign expression */
     if (scalar_type_p (((struct expr *) r->attr)->type)) {
       assert (t != MIR_T_UNDEF);
+      /* A compound assignment or ++/-- of a _Bool stores the result's
+         truth value (C11 6.5.16.2p3, 6.5.2.4p2 — `E1 = E1 op E2`). */
+      if (r->code != N_ASSIGN && bool_type_p (((struct expr *) r->attr)->type))
+        val = scalar_truth_val (c2m_ctx, val);
       val = cast (c2m_ctx, val, get_mir_type (c2m_ctx, ((struct expr *) r->attr)->type), FALSE);
       emit_scalar_assign (c2m_ctx, var, &val, t, FALSE);
       if ((val_p || true_label != NULL) && r->code != N_POST_INC && r->code != N_POST_DEC)
@@ -19210,7 +19267,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       }
     } else {
       t = get_mir_type (c2m_ctx, type);
-      res = cast (c2m_ctx, op1, t, TRUE);
+      res = cast (c2m_ctx, bool_conversion (c2m_ctx, op1, from_type, type), t, TRUE);
     }
     break;
   }
@@ -19780,6 +19837,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
            hook spills that value into its by-reference argument slot. */
         op2 = gen (c2m_ctx, arg, NULL, NULL,
                    !memory_arg_p || scalar_type_p (arg_type), NULL, NULL);
+        op2 = bool_conversion (c2m_ctx, op2, e->type, arg_type);
         if (!memory_arg_p && int128_type_p (e->type) && op2.mir_op.mode == MIR_OP_MEM) {
           /* __int128 argument value for a narrower parameter: convert to the
              parameter's scalar shape so the ordinary promotion below works. */
@@ -20516,6 +20574,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                 : complex_to_complex (c2m_ctx, val, ret_expr_type->u.basic_type,
                                       ret_type->u.basic_type);
       if (scalar_return_p) {
+        val = bool_conversion (c2m_ctx, val, ret_expr_type, ret_type);
         if (int128_type_p (((struct expr *) NL_EL (r->u.ops, 1)->attr)->type)
             && val.mir_op.mode == MIR_OP_MEM) {
           /* Narrower return type from a scalar __int128 value. */
