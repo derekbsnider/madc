@@ -85,7 +85,8 @@
   over `glvalue_cv`; a call argument's type: `call_argument_type`.
 - A TYPE-ID (a template argument, a using-alias or alias-template target, a `_Generic` /
   `__builtin_types_compatible_p` type name, a spelled trait argument, a trailing return
-  type — `adopt_trailing_return_type`): `parse_type_id` — its leading/east/after-star cv
+  type — `adopt_trailing_return_type`, a named cast's `<...>` — `parse_named_cast_target`):
+  `parse_type_id` — its leading/east/after-star cv
   is the TYPE's; never a hand-rolled `*`/`[]` loop (gated: `check-one-ptr-operator-fold.sh`).
 - A type's cv levels in the emitted tree: `dd_peel_pointers(dd, &level_cv)` then
   `pointer(cv)` per level and `append_cv_specs` for the base (cir).

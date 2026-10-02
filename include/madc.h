@@ -8207,6 +8207,10 @@ public:
 					    madc_wide_int &out);
     TokenBase *parse_named_cpp_cast(TokenBase *cast_tb,
 				    const std::string &cast_name);
+    // The `< type-id >` both forms share, read by parse_type_id.
+    DataDef *parse_named_cast_target(TokenBase *cast_tb,
+				     const std::string &cast_name,
+				     TokenBase **type_head = NULL);
     // THE reader of a cast-expression operand (C11 6.5.3/6.5.4,
     // [expr.unary.op]/1, [expr.cast]): the operand of unary `*`, of a cast,
     // of an unparenthesized sizeof. `first` is its already-consumed first

@@ -15653,42 +15653,10 @@ static bool datadef_involves_placeholder(DataDef *dd, bool include_dependent_cla
 ConstValue Program::parse_constant_named_cpp_cast(TokenBase *cast_tb,
 						     const std::string &cast_name)
 {
-    if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
-	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
-    nextToken();
-
-    TokenBase *type_tb = skip_cv_qualifier_tokens(nextToken());
-    bool force_unsigned = false;
-    if ( type_tb && type_tb->type() == TokenType::ttIdentifier
-      && ((TokenIdent *)type_tb)->spelling_is("unsigned") )
-	force_unsigned = true;
-
-    TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
-    if ( !tdt )
-	Throw(type_tb ? type_tb : cast_tb)
-	    << cast_name << " target is not a type" << flush;
-    DataDef *cast_dd = &tdt->definition;
-    while ( peekToken()
-	 && (peekToken()->id() == TokenID::tkMul
-	  || peekToken()->id() == TokenID::tkCONST
-	  || peekToken()->id() == TokenID::tkVOLATILE
-	  || peekToken()->id() == TokenID::tkRESTRICT) )
-    {
-	TokenBase *pt = nextToken();
-	if ( pt->id() == TokenID::tkMul )
-	    cast_dd = getPointerType(cast_dd);
-    }
-    if ( peekToken()
-      && (peekToken()->id() == TokenID::tkBand
-       || peekToken()->id() == TokenID::tkLand) )
-    {
-	nextToken();
-	cast_dd = getPointerType(cast_dd);
-    }
-    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
-	Throw(cast_tb) << "Expecting '>' to close "
-			   << cast_name << "<...>" << flush;
-    nextToken();
+    TokenBase *type_tb = NULL;
+    DataDef *cast_dd = parse_named_cast_target(cast_tb, cast_name, &type_tb);
+    bool force_unsigned = type_tb && type_tb->type() == TokenType::ttIdentifier
+	&& ((TokenIdent *)type_tb)->spelling_is("unsigned");
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(cast_tb) << "Expecting '(' after "
 			   << cast_name << "<...>" << flush;
@@ -32328,52 +32296,49 @@ static TokenCast::Kind named_cpp_cast_kind(const std::string &name)
     return TokenCast::Kind::Static;
 }
 
-TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
-				       const std::string &cast_name)
+// The `< type-id >` of a named cast (static_cast / reinterpret_cast /
+// const_cast), consumed through the `>`. The TYPE-ID owner reads it, so a
+// pointer to member (`static_cast<int D::*>`), a reference (`&` / `&&`,
+// collapsed), a function pointer and a leading cv all spell the type the
+// cast converts to. ONE reader for the expression and the constant forms;
+// `type_head`, when given, receives the type-id's first type token.
+DataDef *Program::parse_named_cast_target(TokenBase *cast_tb,
+					  const std::string &cast_name,
+					  TokenBase **type_head)
 {
     skip_expression_whitespace();
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
     nextToken();
     skip_expression_whitespace();
-
-    TokenBase *type_tb = skip_cv_qualifier_tokens(nextToken());
-
+    unsigned lead_cv = skip_cv_qualifier_tokens();
+    TokenBase *type_tb = nextToken();
+    if ( type_head )
+	*type_head = type_tb;
     TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
     if ( !tdt )
 	Throw(type_tb ? type_tb : cast_tb) << cast_name << " target is not a type" << flush;
-    DataDef *cast_dd = &tdt->definition;
-    while ( peekToken()
-	 && (peekToken()->id() == TokenID::tkMul
-	  || peekToken()->id() == TokenID::tkCONST
-	  || peekToken()->id() == TokenID::tkVOLATILE
-	  || peekToken()->id() == TokenID::tkRESTRICT) )
-    {
-	TokenBase *pt = nextToken();
-	if ( pt->id() == TokenID::tkMul )
-	    cast_dd = getPointerType(cast_dd);
-    }
-    bool cast_to_rvalue_ref = false;
-    if ( peekToken()
-      && (peekToken()->id() == TokenID::tkBand
-       || peekToken()->id() == TokenID::tkLand) )
-    {
-	// A cast to REFERENCE type (`static_cast<T&&>(x)`, `static_cast<T&>(x)`)
-	// denotes the operand OBJECT itself ([expr.static.cast]p3) — mark the
-	// type as a reference so the CIR lowering keeps the operand lvalue
-	// instead of emitting a value cast (whose result has no address). Which
-	// reference kind of the collapsed type decides the cast's VALUE CATEGORY
-	// (xvalue for `T&&`, lvalue for `T&` — `L&&` with L = int& is int&),
-	// recorded on the TokenCast.
-	bool spelled_rvalue = peekToken()->id() == TokenID::tkLand;
-	nextToken();
-	cast_dd = getReferenceType(cast_dd, spelled_rvalue);
-	cast_to_rvalue_ref = cast_dd->is_rvalue_reference();
-    }
+    DeclaratorResult decl;
+    DataDef *cast_dd = parse_type_id(&tdt->definition, lead_cv, decl);
     skip_expression_whitespace();
     if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
 	Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
     nextToken();
+    return cast_dd;
+}
+
+TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
+				       const std::string &cast_name)
+{
+    DataDef *cast_dd = parse_named_cast_target(cast_tb, cast_name);
+    // A cast to REFERENCE type (`static_cast<T&&>(x)`, `static_cast<T&>(x)`)
+    // denotes the operand OBJECT itself ([expr.static.cast]p3): the type-id's
+    // DataDefREF keeps the CIR lowering on the operand lvalue instead of a
+    // value cast (whose result has no address). Which reference kind of the
+    // collapsed type decides the cast's VALUE CATEGORY (xvalue for `T&&`,
+    // lvalue for `T&` — `L&&` with L = int& is int&), recorded on the
+    // TokenCast.
+    bool cast_to_rvalue_ref = cast_dd->is_rvalue_reference();
     skip_expression_whitespace();
     if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 	Throw(cast_tb) << "Expecting '(' after " << cast_name << "<...>" << flush;

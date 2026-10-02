@@ -23,11 +23,13 @@ set -u
 cd "$(dirname "$0")/.."
 
 # 9 before B132 (2026-10-02); the two trailing-return readers moved to
-# parse_type_id. The rest: the named-cast and C-cast type stars, a
+# parse_type_id. 7 -> 5 the same day: a named cast's `< type-id >`, its
+# expression and its constant form, reads through parse_named_cast_target
+# over parse_type_id (tests/testnamedcasttypeid). The rest: a
 # template-argument spelling, the `T *` / `T &` member suffix, a pointer
 # base in a class-pattern spelling, a comma declarator's return type, and a
 # multi-return entry type (KG DupFamily hand_rolled_ptr_operator_fold).
-BASELINE=7
+BASELINE=5
 
 scan() {
 	awk '
