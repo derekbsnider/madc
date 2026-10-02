@@ -158,7 +158,7 @@ public:
     // The variable a narrow string literal is (Program::addLiteral): its text
     // is the name after the `__literal__` prefix.
     inline bool is_string_literal() const { return name.compare(0, 11, "__literal__") == 0; }
-    inline std::string string_literal_text() const { return is_string_literal() ? name.substr(11) : std::string(); }
+    inline std::string literal_text() const { return is_string_literal() ? name.substr(11) : std::string(); }
     // A reference variable (`T& r`, `auto& x`, a `T&` parameter, a `for(T& v:c)`
     // loop var): its type is a DataDefREF. The single source of truth for
     // reference-ness — first-class refs Phase 2 retired the parallel vfREFERENCE

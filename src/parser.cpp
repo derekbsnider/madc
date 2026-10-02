@@ -14746,7 +14746,7 @@ TokenStructLit *Program::parse_compound_struct_lit(const InitializerCursor::Shap
 		else if ( value_tok->type() == TokenType::ttString
 		       && (designated || cursor.member_indexed())
 		       && slot.char_array() )
-		    value = string_char_array((TokenStr *)value_tok, (size_t)slot.dims[0]);
+		    value = literal_char_array((TokenStr *)value_tok, (size_t)slot.dims[0]);
 		else
 		    value = parseExpression(value_tok);
 		cursor.positional(value);
@@ -74771,8 +74771,8 @@ TokenStructLit *Program::fit_char_array(TokenStructLit *chars, size_t count,
     return chars;
 }
 
-TokenStructLit *Program::string_char_array(TokenStr *strtok, size_t count,
-					   bool wide, bool pad)
+TokenStructLit *Program::literal_char_array(TokenStr *strtok, size_t count,
+					    bool wide, bool pad)
 {
     TokenStructLit *slit = new TokenStructLit();
     for ( TokenStr *lit = strtok; lit; )
@@ -74959,10 +74959,10 @@ bool InitializerCursor::fills_whole(TokenBase *value, const Shape &slot)
 	return true;
     if ( TokenStructLit *sl = dynamic_cast<TokenStructLit *>(value) )
 	return !sl->array_elem_dd || slot.kind == Shape::Elements;
-    bool string_slot = slot.kind == Shape::Elements && slot.dims.size() == 1
+    bool char_array_slot = slot.kind == Shape::Elements && slot.dims.size() == 1
 	&& slot.elem && slot.elem->is_integer();
     if ( value->type() == TokenType::ttString )
-	return string_slot;
+	return char_array_slot;
     if ( TokenVar *tv = value->as_var_tok() )
 	if ( tv->var.is_fixed_array() )
 	    return slot.kind == Shape::Elements;
@@ -74972,7 +74972,7 @@ bool InitializerCursor::fills_whole(TokenBase *value, const Shape &slot)
     // literal variable: on a character array the one whole-object
     // initializer that is not a brace is a string literal, so a pointer there
     // is one (the CIR's fills_aggregate_slot reads it the same way).
-    if ( vu && vu->is_pointer() && string_slot )
+    if ( vu && vu->is_pointer() && char_array_slot )
 	return true;
     return vu && slot.kind == Shape::Members && dynamic_cast<DataDefSTRUCT *>(vu) == slot.sdd;
 }
@@ -75045,7 +75045,7 @@ TokenStructLit *InitializerCursor::open_slot(size_t fi, size_t i, const Shape &s
 				  (size_t)slot.dims[0], true, cur);
     else if ( cur && cur->as_var_tok() && cur->as_var_tok()->var.is_string_literal()
 	   && slot.char_array() )
-	lit = pgm_.fit_char_array(char_list_of(cur->as_var_tok()->var.string_literal_text()),
+	lit = pgm_.fit_char_array(char_list_of(cur->as_var_tok()->var.literal_text()),
 				  (size_t)slot.dims[0], true, cur);
     else
 	lit = new TokenStructLit();
@@ -76757,7 +76757,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    {
 		// The characters and the NUL when there is room — the rest of
 		// the array zero-fills, so no padding.
-		TokenStructLit *chars = string_char_array((TokenStr *)nextToken(),
+		TokenStructLit *chars = literal_char_array((TokenStr *)nextToken(),
 		    (size_t)arr_dims[0], wide_string_array_init, false);
 		init_list.insert(init_list.end(), chars->inits.begin(), chars->inits.end());
 	    }
@@ -76868,7 +76868,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    }
 		    else if ( ni->type() == TokenType::ttString && by_slot
 			   && slot.char_array() )
-			cursor.positional(string_char_array((TokenStr *)ni,
+			cursor.positional(literal_char_array((TokenStr *)ni,
 			    (size_t)slot.dims[0]));
 		    else if ( !arr_dims.empty()
 			   && arr_dims.size() > 1
@@ -76884,13 +76884,13 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 			{
 			    // The string spells this row's characters (from the
 			    // cursor's place in it, once the row is member-indexed).
-			    TokenStructLit *nested = string_char_array((TokenStr *)ni,
+			    TokenStructLit *nested = literal_char_array((TokenStr *)ni,
 				cursor.member_indexed() ? 0 : target_count);
 			    for ( TokenBase *child : nested->inits )
 				cursor.positional(child);
 			}
 			else
-			    cursor.positional(string_char_array((TokenStr *)ni,
+			    cursor.positional(literal_char_array((TokenStr *)ni,
 				target_count));
 		    }
 		    else
@@ -76945,7 +76945,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		InitializerCursor::Shape slot = designated ? cursor.designate(designation)
 		    : cursor.member_indexed() ? cursor.next_shape()
 		    : InitializerCursor::Shape();
-		bool string_clause = next_init->type() == TokenType::ttString;
+		bool literal_clause = next_init->type() == TokenType::ttString;
 		DataDefSTRUCT *sdd = is_struct_init
 		    ? dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified()) : NULL;
 		size_t field_index = init_list.size();
@@ -76956,21 +76956,21 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 			? read_slot_list(slot)
 			: read_struct_lit(1, top_slot_type(init_list.size())));
 		}
-		else if ( string_clause && (designated || cursor.member_indexed())
+		else if ( literal_clause && (designated || cursor.member_indexed())
 		       && slot.char_array() )
-		    cursor.positional(string_char_array((TokenStr *)next_init,
+		    cursor.positional(literal_char_array((TokenStr *)next_init,
 			(size_t)slot.dims[0]));
-		else if ( string_clause && !designated && !cursor.member_indexed()
+		else if ( literal_clause && !designated && !cursor.member_indexed()
 		       && sdd && field_index < sdd->members.size()
 		       && field_index < sdd->member_counts.size()
 		       && sdd->member_counts[field_index] != 1
 		       && is_char_array_element_type(sdd->members[field_index].second) )
-		    cursor.positional(string_char_array((TokenStr *)next_init,
+		    cursor.positional(literal_char_array((TokenStr *)next_init,
 			sdd->member_counts[field_index]));
-		else if ( string_clause && !designated && !cursor.member_indexed()
+		else if ( literal_clause && !designated && !cursor.member_indexed()
 		       && !arr_dims.empty() && arr_dims.size() > 1
 		       && is_char_array_element_type(decl_type) )
-		    cursor.positional(string_char_array((TokenStr *)next_init, arr_dims[1]));
+		    cursor.positional(literal_char_array((TokenStr *)next_init, arr_dims[1]));
 		else
 		    cursor.positional(parseExpression(next_init));
 		finish_list_element(TokenID::tkClBrc, "}");

@@ -25007,7 +25007,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			    && !tv->var.is_fixed_array() && tb != m_object_designator)
 				return constant_value_literal(tv->var, tb);
 			if (tv->var.is_string_literal()) {
-				const std::string &content = tv->var.string_literal_text();
+				const std::string &content = tv->var.literal_text();
 				return str(content.c_str(), content.size() + 1, tb);
 			}
 			// The same fold for a set()-valued `const char *` constant —
@@ -25493,7 +25493,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t base;
 			node_t baked_base = baked_cstr_constant(tsub->object, tb);
 			if (tsub->object.is_string_literal()) {
-				const std::string &content = tsub->object.string_literal_text();
+				const std::string &content = tsub->object.literal_text();
 				base = str(content.c_str(), content.size() + 1, tb);
 			} else if (baked_base) {
 				// Host-installed const char* scope binding: this arm

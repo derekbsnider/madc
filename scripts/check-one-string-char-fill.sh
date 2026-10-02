@@ -1,6 +1,6 @@
 #!/bin/bash
 # DRIFT-PREVENTION GATE -- a string literal initializing a character array is
-# read and fitted by ONE owner (src/parser.cpp): Program::string_char_array
+# read and fitted by ONE owner (src/parser.cpp): Program::literal_char_array
 # reads the literal and the adjacent ones after it (narrow, or a wide one in
 # the target wchar_t's units) and Program::fit_char_array fits the characters
 # to the array (C11 6.7.9p14; C drops an excess with a warning as gcc does,
@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 # owner function bodies.
 hand_rolled() {
 	awk '
-		/^(TokenStructLit \*Program::(string_char_array|fit_char_array)|static void append_string_literal_chars)\(/ {
+		/^(TokenStructLit \*Program::(literal_char_array|fit_char_array)|static void append_string_literal_chars)\(/ {
 			owner = 1
 		}
 		owner && /^}/ { owner = 0; next }
@@ -53,7 +53,7 @@ static void append_string_literal_chars(TokenStructLit *slit, const std::string 
 	slit->inits.push_back(new TokenInt((int64_t)(unsigned char)c));
 }
 
-TokenStructLit *Program::string_char_array(TokenStr *strtok, size_t count,
+TokenStructLit *Program::literal_char_array(TokenStr *strtok, size_t count,
 					   bool wide, bool pad)
 {
 	lit = peekToken() && peekToken()->type() == TokenType::ttString
@@ -61,7 +61,7 @@ TokenStructLit *Program::string_char_array(TokenStr *strtok, size_t count,
 }
 
 	    {
-		TokenStructLit *chars = string_char_array((TokenStr *)nextToken(),
+		TokenStructLit *chars = literal_char_array((TokenStr *)nextToken(),
 		    (size_t)arr_dims[0], wide_string_array_init, false);
 	    }
 CTL
@@ -75,11 +75,11 @@ fi
 
 hr=$(hand_rolled src/parser.cpp)
 n=$(printf '%s' "$hr" | grep -c . || true)
-owners=$(grep -c 'string_char_array(\|fit_char_array(' src/parser.cpp)
+owners=$(grep -c 'literal_char_array(\|fit_char_array(' src/parser.cpp)
 echo "hand-rolled string-literal char fills: $n (target 0); owner references: $owners"
 if [ "$n" -ne 0 ]; then
 	printf '%s\n' "$hr"
-	echo "  -> read and fit the literal through Program::string_char_array /"
+	echo "  -> read and fit the literal through Program::literal_char_array /"
 	echo "     Program::fit_char_array."
 	exit 1
 fi

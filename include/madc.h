@@ -9026,8 +9026,8 @@ public:
     // the target wchar_t's units) as the element list of a character array
     // of `count` elements, fitted by fit_char_array. The ONE string-literal
     // reader of every char-array initializer.
-    TokenStructLit *string_char_array(TokenStr *strtok, size_t count,
-				      bool wide = false, bool pad = true);
+    TokenStructLit *literal_char_array(TokenStr *strtok, size_t count,
+				       bool wide = false, bool pad = true);
     // A character array's elements `chars` (no NUL) fitted to `count`
     // (C11 6.7.9p14, [dcl.init.string]): the NUL when there is room, zeros
     // to `count` after it when `pad` (a flattened row keeps its width);

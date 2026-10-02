@@ -602,7 +602,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		TokenVar *tv = dynamic_cast<TokenVar *>(ftok);
 		if ( tv && tv->var.is_string_literal() )
 		{
-			f = tv->var.string_literal_text();
+			f = tv->var.literal_text();
 			have_literal = true;
 		}
 	}
