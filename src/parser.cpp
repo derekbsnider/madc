@@ -32857,7 +32857,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 			// libc++ __compressed_pair's accessor shape) — denotes
 			// its referent ([expr.static.cast]p3): same owner the
 			// main dot arm uses for call/operator/subscript heads.
+			// The access's object is that referent too: typed as the
+			// reference, it read as a pointer and lowered to `->`.
 			obj_type = referent_if_reference(obj_type);
+			member_object_type = referent_if_reference(member_object_type);
 		    }
 		    if ( is_arrow )
 		    {
