@@ -247,7 +247,7 @@ inline bool spelling_is_forwarding_reference(const std::string &sp,
 	if ( !r.rvalue || r.referent_const )
 		return false;
 	for ( size_t i = 0; i < typeparams.size(); ++i )
-		if ( r.referent == typeparams[i] )
+		if ( r.referent == typeparams[i] )	// allowed-exception: the owner
 			return true;
 	return false;
 }

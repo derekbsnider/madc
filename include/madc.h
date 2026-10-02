@@ -341,22 +341,8 @@ public:
 	    return false;
 	if ( !is_member_template && template_param_names.empty() )
 	    return true;
-	std::string sp = param_cpp_spellings[i];
-	while ( !sp.empty() && sp[sp.size() - 1] == ' ' )
-	    sp.erase(sp.size() - 1);
-	if ( sp.size() >= 3 && sp.compare(sp.size() - 3, 3, "...") == 0 )
-	{
-	    sp.erase(sp.size() - 3);
-	    while ( !sp.empty() && sp[sp.size() - 1] == ' ' )
-		sp.erase(sp.size() - 1);
-	}
-	std::string base = sp.substr(0, sp.size() - 2);
-	while ( !base.empty() && base[base.size() - 1] == ' ' )
-	    base.erase(base.size() - 1);
-	for ( size_t t = 0; t < template_param_names.size(); t++ )
-	    if ( template_param_names[t] == base )
-		return false;                  // forwarding reference
-	return true;
+	return !spelling_is_forwarding_reference(param_cpp_spellings[i],
+						 template_param_names);
     }
     // Source typedef alias used for each parameter, when the declaration named
     // one. Index-aligned with `parameters`; empty means render from DataDef.
