@@ -1602,21 +1602,28 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
-### B130. A speculative rewind restores the cursor, not always the read context
+### B131. An injected token run parsed to its end has no owner
 
-- Found 2026-10-02 while consolidating the nested token streams (B46). A
-  nested parse now returns the outer read context through one owner,
-  `Program::NestedTokenStream` (gated by `check-one-nested-stream.sh`). A
-  REWIND has no such owner: `TokenStream::savepos()` / `tokens = saved`
-  returns the cursor and pushback only. The read context is `curToken`,
-  `prevToken` (which `isUnaryPosition` reads) and `ParsePosition`.
-- 33 `savepos()` sites in `src/parser.cpp`. By a ±6-line check, 14 save
-  `_prv_token` beside the rewind and 19 do not. A rewind that skips it
-  leaves the speculative parse's last tokens as the context, the bug class
-  B46 was. No reducer is measured yet.
-- Fix: one `Program` mark carrying the `Pos` and the context, restored
-  together, beside `NestedTokenStream`, with a gate (its own commit). KG
-  `DupFamily{token_stream_rewind_context}`.
+- Found 2026-10-02 while consolidating the rewinds (B130). A nested run
+  that ends in a swap back or a rewind is `Program::NestedTokenStream`'s
+  (B46, B130); a rewind is `Program::rewind_stream`'s. A run pushed with
+  `pushToken` and parsed to its end has neither, so nothing returns the
+  outer read context: about 25 hand-pushed runs in `src/parser.cpp` (a
+  template-argument `< args >` replay before `instantiate_template_use` /
+  `instantiate_template_id`, a default argument or alias target with a `;`
+  sentinel, a trailing return type, a class definition re-parse). Unreads
+  (consumed tokens pushed back: a rewind spelled as a push) and splices
+  that join the outer construct (a `>>` split, a declarator stash) share
+  the `pushToken` loop shape.
+- Measured with a temporary probe over tests/ (batch, 2026-10-02): binding
+  an expression's pending operators moved the read context 92 times in 45
+  tests, each time leaving a run's `>` as `curToken` (test3eqclass,
+  testcastarrow, testbarestring, testcontainerdtor, testforeach2, ...).
+  `finish_expression` restores its stop token around that loop, which
+  masks it there; no reducer outside it is measured yet.
+- Fix: a run parsed as its own construct goes through `NestedTokenStream`
+  (Injected); an unread becomes a mark and a rewind; a splice is marked as
+  one; gate (its own commit). KG `DupFamily{injected_token_run_context}`.
 
 ### B90. A declarator's top-level cv, restated three times
 

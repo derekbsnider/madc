@@ -2,7 +2,8 @@
 # DRIFT-PREVENTION GATE -- a parse over its own token run has ONE owner,
 # Program::NestedTokenStream (include/madc.h). It installs the run (Isolated:
 # TokenStream::swap_in; Injected: ahead of the live stream) and, on every
-# exit, returns the outer stream (swap_back, or a drain back to the base) AND
+# exit, returns the outer stream (swap_back, or a rewind to the mark the run
+# was injected at -- Program::rewind_stream, check-one-stream-rewind.sh) AND
 # the read context the outer parse resumes with: curToken / prevToken
 # (isUnaryPosition reads prevToken) and ParsePosition.
 #
@@ -17,9 +18,9 @@
 #
 # Rule, over src/*.cpp and include/*.h: no call of TokenStream::swap_in /
 # swap_back, no TokenStream::State holder, and no drain loop back to a base
-# (`while ( tokens.size() > base )`) outside the owner (its lines are marked
-# `// allowed-exception: the owner`) and TokenStream's own definitions. A
-# comment line is skipped.
+# (`while ( tokens.size() > base )`; the owner rewinds instead) outside the
+# owner (its lines are marked `// allowed-exception: the owner`) and
+# TokenStream's own definitions. A comment line is skipped.
 # Two-sided: the negative control proves the rule still bites.
 set -u
 cd "$(dirname "$0")/.."

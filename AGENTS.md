@@ -119,7 +119,10 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    isolated sub-stream or a run injected ahead of the live stream — is
    `Program::NestedTokenStream`, which also returns the outer read context
    (`curToken` / `prevToken` / `ParsePosition`) on every exit (gated by
-   `check-one-nested-stream.sh`); a module-bound namespace's members
+   `check-one-nested-stream.sh`); a speculative read's rewind is
+   `Program::mark_stream` / `rewind_stream`, which return the cursor AND
+   that read context together (gated by `check-one-stream-rewind.sh`);
+   a module-bound namespace's members
    materialize in `Program::resolve_module_member()` — reached only
    through `find_namespace_member()`'s miss path (gated by
    `check-one-module-member-owner.sh`); the ui INPUT owners are

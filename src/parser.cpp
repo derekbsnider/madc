@@ -15464,15 +15464,8 @@ static bool read_constant_subobject(Program &pgm, TokenBase *where,
     if ( !var || !(var->flags & vfCONSTBAKED) || !var->data
       || !var->type )
 	return false;
-    TokenStream::Pos saved_tokens = pgm.tokens.savepos();
-    TokenBase *saved_cur = pgm.curToken();
-    TokenBase *saved_prv = pgm.prevToken();
-    ParsePosition saved_line_pos = ParsePosition::current();
-    auto restore = [&]() {
-	pgm.tokens.restore(saved_tokens);
-	pgm.setTokenContext(saved_cur, saved_prv);
-	saved_line_pos.restore();
-    };
+    Program::StreamMark saved_tokens = pgm.mark_stream();
+    auto restore = [&]() { pgm.rewind_stream(saved_tokens); };
     auto walk = [&]() -> bool {
 	size_t offset = 0;
 	size_t depth = 0;
@@ -15631,9 +15624,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 	QualifierScope qscope = classify_qualifier_before_scope(name, tb);
 	if ( qscope.is_namespace() )
 	{
-	    TokenStream::Pos saved_tokens = tokens.savepos();
-	    TokenBase *saved_cur = _cur_token;
-	    TokenBase *saved_prv = _prv_token;
+	    StreamMark saved_tokens = mark_stream();
 	    std::string ns_name = qscope.ns_name;
 	    nextToken(); // consume '::'
 	    TokenBase *member_tb = nextToken();
@@ -15664,13 +15655,7 @@ bool Program::resolve_integer_constant(TokenBase *tb, madc_wide_int &out)
 			return true;
 		}
 	    }
-	    tokens = saved_tokens;
-	    _cur_token = saved_cur;
-	    _prv_token = saved_prv;
-	    if ( _cur_token )
-	    {
-		ParsePosition::set_from(_cur_token);
-	    }
+	    rewind_stream(saved_tokens);
 	    return false;
 	}
 	return false;
@@ -16116,7 +16101,7 @@ DataDef *Program::parenthesized_type_id_operand(const std::string &op_name,
     // Snapshot the operand here so the closing-paren check can REJECT the
     // type-id reading and leave the operand to be read as an expression
     // (TokenStream::savepos/restore is the parser's backtrack owner).
-    TokenStream::Pos operand_pos = tokens.savepos();
+    StreamMark operand_pos = mark_stream();
     TokenBase *type_tb = nextToken();
     bool have_value = false;
     size_t value = 0;
@@ -16150,7 +16135,7 @@ DataDef *Program::parenthesized_type_id_operand(const std::string &op_name,
 	|| (operand_list && (end->id() == TokenID::tkComma || ellipsis_ahead())));
     if ( !dd || !spans )
     {
-	tokens.restore(operand_pos);
+	rewind_stream(operand_pos);
 	return NULL;
     }
     if ( !operand_list )
@@ -18481,12 +18466,12 @@ void Program::consume_class_static_assert_declaration(TokenBase *tb)
 
 bool Program::try_parse_constant_offsetof_address(int64_t &out)
 {
-    auto saved_tokens = tokens.savepos();
+    StreamMark saved_tokens = mark_stream();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
 
     auto fail = [&]() -> bool {
-	tokens = saved_tokens;
+	rewind_stream(saved_tokens);
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
 	return false;
@@ -18607,18 +18592,10 @@ bool Program::try_parse_constant_offsetof_address(int64_t &out)
 // half-consumed here and could never reach the qualified var-template peel.
 bool Program::fold_constant_qualified_member(TokenBase *first, madc_wide_int &out)
 {
-    TokenStream::Pos saved_tokens = tokens.savepos();
-    TokenBase *saved_cur = _cur_token;
-    TokenBase *saved_prv = _prv_token;
+    StreamMark saved_tokens = mark_stream();
     if ( fold_constant_qualified_member_walk(first, out) )
 	return true;
-    tokens = saved_tokens;
-    _cur_token = saved_cur;
-    _prv_token = saved_prv;
-    if ( _cur_token )
-    {
-	ParsePosition::set_from(_cur_token);
-    }
+    rewind_stream(saved_tokens);
     return false;
 }
 
@@ -19121,9 +19098,7 @@ ConstValue Program::parse_constant_primary()
 	// templates, concepts, the qualified-trait folds).
 	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
-	    TokenStream::Pos qsaved = tokens.savepos();
-	    TokenBase *qcur = _cur_token;
-	    TokenBase *qprv = _prv_token;
+	    StreamMark qsaved = mark_stream();
 	    std::vector<std::string> qparts;
 	    qparts.push_back(name);
 	    TokenBase *leaf_tb = tb;
@@ -19172,22 +19147,14 @@ ConstValue Program::parse_constant_primary()
 	    }
 	    if ( folded )
 		return qval;
-	    tokens = qsaved;
-	    _cur_token = qcur;
-	    _prv_token = qprv;
-	    if ( _cur_token )
-	    {
-		ParsePosition::set_from(_cur_token);
-	    }
+	    rewind_stream(qsaved);
 	}
 	if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 	{
 	    QualifierScope qscope = classify_qualifier_before_scope(name, tb);
 	    if ( qscope.is_namespace() )
 	    {
-		TokenStream::Pos saved_tokens = tokens.savepos();
-		TokenBase *saved_cur = _cur_token;
-		TokenBase *saved_prv = _prv_token;
+		StreamMark saved_tokens = mark_stream();
 		std::string ns_name = qscope.ns_name;
 		nextToken(); // consume '::'
 		TokenBase *member_tb = nextToken();
@@ -19245,15 +19212,7 @@ ConstValue Program::parse_constant_primary()
 		  && peekToken()->id() == TokenID::tkLT )
 		    name = qkey;   // fall through to the arms below
 		else
-		{
-		    tokens = saved_tokens;
-		    _cur_token = saved_cur;
-		    _prv_token = saved_prv;
-		    if ( _cur_token )
-		    {
-			ParsePosition::set_from(_cur_token);
-		    }
-		}
+		    rewind_stream(saved_tokens);
 	    }
 	}
 	// C++14 VARIABLE TEMPLATE in a constant expression: `is_floating_point_v
@@ -19391,9 +19350,7 @@ madc_wide_int Program::evaluate_atomic_always_lock_free(TokenBase *tb)
 	Throw(comma ? comma : tb) << "Expecting ',' in __atomic_always_lock_free" << flush;
     madc_wide_int p = 0;
     bool p_const = false;
-    TokenStream::Pos saved = tokens.savepos();
-    TokenBase *saved_cur = curToken();
-    TokenBase *saved_prv = prevToken();
+    StreamMark saved = mark_stream();
     {
 	DiagnosticRenderMute mute;
 	try
@@ -19408,8 +19365,7 @@ madc_wide_int Program::evaluate_atomic_always_lock_free(TokenBase *tb)
     }
     if ( !p_const )
     {
-	tokens.restore(saved);
-	setTokenContext(saved_cur, saved_prv);
+	rewind_stream(saved);
 	parseExpression(nextToken(), false, false, false, 0, true);
     }
     TokenBase *close = nextToken();
@@ -20084,7 +20040,7 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 {
     if ( constant_initializer_has_runtime_access(*this) )
 	return false;
-    auto saved_tokens = tokens.savepos();
+    StreamMark saved_tokens = mark_stream();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
     // Brace-or-equal-init, brace spelling (`static constexpr int n{7};`):
@@ -20105,7 +20061,7 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 		out = 0;
 		return true;
 	    }
-	    tokens = saved_tokens;
+	    rewind_stream(saved_tokens);
 	    return false;
 	}
     }
@@ -20150,7 +20106,7 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 	out = v;
 	return true;                // keep the consumed position (stream at ';')
     }
-    tokens = saved_tokens;
+    rewind_stream(saved_tokens);
     diagnostics.resize(saved_diag_count);
     last_error = saved_error;
     if ( recursion_limit_hit )
@@ -20160,7 +20116,7 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 
 bool Program::bracket_dim_constant_expression_parses()
 {
-    auto saved_tokens = tokens.savepos();
+    StreamMark saved_tokens = mark_stream();
     size_t saved_diag_count = diagnostics.size();
     Program::ErrorInfo saved_error = last_error;
     constexpr_recursion_limit_hit = false;
@@ -20168,7 +20124,7 @@ bool Program::bracket_dim_constant_expression_parses()
     {
 	int64_t n = parse_constant_integer_expression();
 	TokenBase *cl = nextToken();
-	tokens = saved_tokens;
+	rewind_stream(saved_tokens);
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
 	return n >= 0 && cl && cl->id() == TokenID::tkClSqr;
@@ -20177,7 +20133,7 @@ bool Program::bracket_dim_constant_expression_parses()
     {
 	bool recursion_limit_hit = constexpr_recursion_limit_hit;
 	constexpr_recursion_limit_hit = false;
-	tokens = saved_tokens;
+	rewind_stream(saved_tokens);
 	diagnostics.resize(saved_diag_count);
 	last_error = saved_error;
 	if ( recursion_limit_hit )
@@ -22281,7 +22237,7 @@ std::string Program::peek_param_list_spelling()
     // serialized its defaults (stod's `size_t* __idx = 0` — the arity gate
     // then rejected a 1-arg bound call). v26 widened the tap over pushback
     // consumption too, but the rewind stays: it is the honest stream shape.
-    TokenStream::Pos peek_saved = tokens.savepos();
+    StreamMark peek_saved = mark_stream();
     std::string spelling;
     // Overload IDENTITY must be by RESOLVED type, not surface text. A
     // parameter named through a class-scope typedef (`_Self`, a nested
@@ -22328,7 +22284,7 @@ std::string Program::peek_param_list_spelling()
 	    if ( o )
 		append(o);
     }
-    tokens.restore(peek_saved);
+    rewind_stream(peek_saved);
     return spelling;
 }
 
@@ -22340,7 +22296,7 @@ std::string Program::peek_param_list_spelling()
 // encodes this type (bind_declared_cpp_symbol's user arm).
 std::string Program::peek_conversion_type_spelling()
 {
-    TokenStream::Pos peek_saved = tokens.savepos();
+    StreamMark peek_saved = mark_stream();
     std::string spelling;
     for ( ;; )
     {
@@ -22352,7 +22308,7 @@ std::string Program::peek_conversion_type_spelling()
 	    spelling += ' ';
 	spelling += overload_token_spelling(t);
     }
-    tokens.restore(peek_saved);
+    rewind_stream(peek_saved);
     return spelling;
 }
 
@@ -37280,10 +37236,6 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     set_token_spelling(static_cast<TokenIdent *>(injected[1]), identity);
     injected.push_back(new TokenSemi());
 
-    TokenStream::Pos saved_tokens = tokens.savepos();
-    TokenBase *saved_prv = _prv_token;
-    TokenBase *saved_cur = _cur_token;
-    ParsePosition saved_parse_line_pos = ParsePosition::current();
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
@@ -37356,9 +37308,7 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     std::streambuf *saved_cerr = std::cerr.rdbuf();
     std::ios::iostate saved_cerr_state = std::cerr.rdstate();
     std::cerr.rdbuf(&g_madc_null_streambuf);
-    for ( std::vector<TokenBase *>::reverse_iterator it = injected.rbegin();
-	  it != injected.rend(); ++it )
-	pushToken(*it);
+    NestedTokenStream class_run(*this, injected, NestedTokenStream::Injected);
     cur_func_name.clear();
     tkFunction = NULL;
     switch_stack.clear();
@@ -37491,13 +37441,10 @@ Program::ClassPatternId Program::capture_class_pattern(TemplateDef &td)
     last_skipped_template_typeparam_defaults.swap(saved_skipped_template_defaults);
     last_skipped_template_typeparam_constraints.swap(saved_skipped_template_constraints);
     stmt_callee_namespace = saved_stmt_callee_namespace;
-    tokens = saved_tokens;
-    _prv_token = saved_prv;
-    _cur_token = saved_cur;
-    // saved_parse_* were captured AFTER the body-origin stamp above, so they
-    // hold the stamped values — restore the caller's true statics instead.
+    class_run.close();
+    // The run's mark holds the body-origin stamp above — restore the
+    // caller's true statics instead.
     capture_pl_pos.restore();
-    (void)saved_parse_line_pos;
     std::cerr.rdbuf(saved_cerr);
     std::cerr.clear(saved_cerr_state);
     diagnostics.resize(saved_diag_count);
@@ -40969,9 +40916,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // must not RENDER — the same contract, and the same mute, as the
 		    // constexpr token-run fold.
 		    bool is_const = false;
-		    TokenStream::Pos cp_saved = tokens.savepos();
-		    TokenBase *cp_cur = curToken();
-		    TokenBase *cp_prv = prevToken();
+		    StreamMark cp_saved = mark_stream();
 		    {
 			DiagnosticRenderMute cp_mute;
 			try
@@ -40990,8 +40935,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    }
 		    if ( !is_const )
 		    {
-			tokens.restore(cp_saved);
-			setTokenContext(cp_cur, cp_prv);
+			rewind_stream(cp_saved);
 			TokenBase *first = nextToken();
 			TokenBase *expr = parseExpression(first, false, false, false, 0, true);
 			// A non-arithmetic LITERAL is still a constant: a string
@@ -49162,10 +49106,7 @@ void Program::capture_balanced_group_tokens(TokenID close_id,
 					    std::vector<TokenBase *> &out)
 {
     out.clear();
-    TokenStream::Pos saved_tokens = tokens.savepos();
-    TokenBase *saved_cur = _cur_token;
-    TokenBase *saved_prv = _prv_token;
-    ParsePosition saved_line_pos = ParsePosition::current();
+    StreamMark saved_tokens = mark_stream();
     DelimDepth d(this);
     while ( TokenBase *pk = peekToken() )
     {
@@ -49179,9 +49120,7 @@ void Program::capture_balanced_group_tokens(TokenID close_id,
 	    if ( optail[k] )
 		out.push_back(optail[k]->clone_origin());
     }
-    tokens.restore(saved_tokens);
-    setTokenContext(saved_cur, saved_prv);
-    saved_line_pos.restore();
+    rewind_stream(saved_tokens);
 }
 
 static FuncDef *clone_funcdef_with_return(FuncDef *src, DataDef &new_ret);
@@ -49696,18 +49635,13 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	DataDefCLASS *owner = body.method ? body.method->owner_class : NULL;
 	if ( !body.var || !owner )
 	    return NULL;
-	TokenStream::Pos saved_tokens = tokens.savepos();
-	TokenBase *saved_prv = _prv_token;
-	TokenBase *saved_cur = _cur_token;
 	std::string saved_func = cur_func_name;
 	std::string saved_canon = instantiating_canonical_spelling;
 	bool saved_ctor_init = parsing_defaulted_member_template_constructor;
 	size_t saved_compounds = compounds.size();
 	size_t saved_class_scopes = class_scope_stack.size();
-	for ( std::vector<TokenBase *>::reverse_iterator it2 =
-	      body.definition_tokens.rbegin();
-	      it2 != body.definition_tokens.rend(); ++it2 )
-	    pushToken(*it2);
+	NestedTokenStream lazy_run(*this, body.definition_tokens,
+				   NestedTokenStream::Injected);
 	cur_func_name = body.var->name;
 	std::string method_namespace =
 	    namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
@@ -49741,9 +49675,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	}
 	catch(...)
 	{
-	    tokens = saved_tokens;
-	    _prv_token = saved_prv;
-	    _cur_token = saved_cur;
+	    lazy_run.close();
 	    cur_func_name = saved_func;
 	    instantiating_canonical_spelling = saved_canon;
 	    parsing_defaulted_member_template_constructor = saved_ctor_init;
@@ -49763,9 +49695,7 @@ TokenFunc *Program::parse_deferred_lazy_body(const std::string &emit_symbol)
 	    }
 	    throw;
 	}
-	tokens = saved_tokens;
-	_prv_token = saved_prv;
-	_cur_token = saved_cur;
+	lazy_run.close();
 	cur_func_name = saved_func;
 	instantiating_canonical_spelling = saved_canon;
 	parsing_defaulted_member_template_constructor = saved_ctor_init;
@@ -56498,14 +56428,14 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    // type (`static ui::ui_host_ops ops`), a template-id, a class-member
 	    // type chain — exactly as `const` and a plain declaration head ask
 	    // it. The flat-map probe only decides the fallback default below.
-	    TokenStream::Pos type_saved = pgm.tokens.savepos();
+	    Program::StreamMark type_saved = pgm.mark_stream();
 	    TokenBase *type_tb = pgm.nextToken();
 	    TokenDataType *dt = pgm.resolve_declared_type_token(type_tb, true, true);
 	    if ( dt || tdmi != pgm.datatype_map.end() )
 		result = pgm.parseDeclaration(dt ? dt : (*tdmi), true);
 	    else
 	    {
-		pgm.tokens = type_saved;
+		pgm.rewind_stream(type_saved);
 		// C89 implicit int: `static funcname(...)` — treat as int
 		TokenBase *id_tok = pgm.nextToken();
 		TokenBase *peek2 = pgm.peekToken();
@@ -56693,7 +56623,7 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 		// declared-type resolver searches the namespace chains;
 		// restore the stream when it declines so the throw below
 		// still points at the extern's head.
-		TokenStream::Pos esaved = pgm.tokens.savepos();
+		Program::StreamMark esaved = pgm.mark_stream();
 		TokenBase *type_tb = pgm.nextToken();
 		if ( TokenDataType *dt =
 			pgm.resolve_declared_type_token(type_tb, true, true) )
@@ -56702,7 +56632,7 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 		    result = pgm.parseDeclaration(dt);
 		}
 		else
-		    pgm.tokens = esaved;
+		    pgm.rewind_stream(esaved);
 	    }
 	    }
 	}
@@ -57872,14 +57802,9 @@ void Program::consume_template_parameter_declarator(std::string &name_out,
 	}
 	if ( !is_contextual_identifier_token(pk) )
 	    break;
-	TokenStream::Pos saved = tokens.savepos();
-	TokenBase *saved_cur = _cur_token;
-	TokenBase *saved_prv = _prv_token;
-	ParsePosition saved_line_pos = ParsePosition::current();
+	StreamMark saved = mark_stream();
 	bool member_ptr = member_pointer_declarator_ahead(nextToken());
-	tokens.restore(saved);
-	setTokenContext(saved_cur, saved_prv);
-	saved_line_pos.restore();
+	rewind_stream(saved);
 	if ( !member_ptr )
 	    break;                       // a plain name: the declarator-id
 	while ( peekToken() && peekToken()->id() != TokenID::tkMul )
@@ -66968,16 +66893,12 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
     std::string parse_id = pattern_identity.symbol;
 
     size_t before = pending_funcs.size();
-    TokenStream::Pos saved_tokens = tokens.savepos();
-    TokenBase *saved_prv = _prv_token;
-    TokenBase *saved_cur = _cur_token;
     std::string saved_func = cur_func_name;
     std::string saved_canon = instantiating_canonical_spelling;
     bool saved_dep_parse = dependent_parse_in_progress;
 
-    for ( std::vector<TokenBase *>::reverse_iterator it = def_tokens.rbegin();
-	  it != def_tokens.rend(); ++it )
-	pushToken(*it);
+    NestedTokenStream pattern_run(*this, def_tokens,
+				  NestedTokenStream::Injected);
     cur_func_name = parse_id;
     std::string method_namespace =
 	namespace_scope_from_cpp_spelling(owner->canonical_cpp_spelling());
@@ -67055,9 +66976,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 
     if ( !parsed_pattern )
     {
-	tokens = saved_tokens;
-	_prv_token = saved_prv;
-	_cur_token = saved_cur;
+	pattern_run.close();
 	cur_func_name = saved_func;
 	instantiating_canonical_spelling = saved_canon;
 	dependent_parse_in_progress = saved_dep_parse;
@@ -67066,9 +66985,7 @@ TokenFunc *Program::build_dependent_pattern(FuncDef *fd)
 	funcdef_map.erase(parse_id);
 	return NULL;
     }
-    tokens = saved_tokens;
-    _prv_token = saved_prv;
-    _cur_token = saved_cur;
+    pattern_run.close();
     cur_func_name = saved_func;
     instantiating_canonical_spelling = saved_canon;
     dependent_parse_in_progress = saved_dep_parse;
@@ -67176,12 +67093,7 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     // class scope with the owner pushed, cleared parse-mode flags, the owner's
     // canonical spelling + namespace) plus the parse_deferred_lazy_body token
     // save/restore (this runs at CIR time, off the live parse).
-    TokenStream::Pos saved_tokens = tokens.savepos();
-    TokenBase *saved_prv = _prv_token;
-    TokenBase *saved_cur = _cur_token;
-    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin();
-	  it != inj.rend(); ++it )
-	pushToken(*it);
+    NestedTokenStream class_run(*this, inj, NestedTokenStream::Injected);
     std::stack<TokenCpnd *> saved_compounds;
     std::swap(compounds, saved_compounds);
     // Block-typedef shadow frames travel with the compound context (see
@@ -67234,9 +67146,7 @@ DataDefCLASS *Program::materialize_pattern_local_class(FuncDef *source,
     parsing_cpp_struct_class = saved_cpp_struct_class;
     parsing_cpp_union_class = saved_cpp_union_class;
     instantiating_canonical_spelling = saved_canon;
-    tokens = saved_tokens;
-    _prv_token = saved_prv;
-    _cur_token = saved_cur;
+    class_run.close();
     if ( !parsed )
 	return NULL;
     dmi = struct_map.find(concrete_name);
@@ -69935,7 +69845,7 @@ Variable *Program::find_method_definition_target(DataDefCLASS *owner,
     // consumes it), so step over it for the probe and rewind — otherwise the
     // `(` is collected as a parameter token, its `)` never reads as top-level,
     // and the probe silently fails for EVERY definition.
-    TokenStream::Pos saved = tokens.savepos();
+    StreamMark saved = mark_stream();
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 	nextToken();
     // [basic.scope.class]/1: an out-of-line member definition's parameter list
@@ -69946,7 +69856,7 @@ Variable *Program::find_method_definition_target(DataDefCLASS *owner,
     bool have_sigs = upcoming_param_signatures(sigs);
     if ( !class_scope_stack.empty() && class_scope_stack.back() == owner )
 	class_scope_stack.pop_back();
-    tokens = saved;
+    rewind_stream(saved);
     if ( !have_sigs )
 	return NULL;
     const std::string prefix = owner->name + "__";
@@ -70031,7 +69941,7 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
     if ( !peekToken() || peekToken()->id() != TokenID::tkNS )
 	return false;
 
-    TokenStream::Pos chain_start = tokens.savepos();
+    StreamMark chain_start = mark_stream();
     std::vector<std::string> scope_parts;
     scope_parts.push_back(contextual_identifier_name(first_tb));
     std::string member_name;
@@ -70078,7 +69988,7 @@ bool Program::parse_qualified_special_member_definition(TokenBase *first_tb,
 	// definition, so hand the tokens back to the statement parser.
 	if ( entry_top_level_statement_at(first_tb) )
 	{
-	    tokens = chain_start;
+	    rewind_stream(chain_start);
 	    return false;
 	}
 	Throw(first_tb) << "Qualified member definition requires a return type" << flush;
@@ -73579,15 +73489,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     if ( func->is_constexpr && peekToken()
       && peekToken()->id() == TokenID::tkRETURN )
     {
-	TokenStream::Pos saved_body_pos = tokens.savepos();
-	TokenBase *saved_body_cur = _cur_token;
-	TokenBase *saved_body_prv = _prv_token;
-	ParsePosition saved_body_line_pos = ParsePosition::current();
+	StreamMark saved_body_pos = mark_stream();
 	constexpr_raw_body = collect_compound_body_tokens(nt);
-	tokens = saved_body_pos;
-	_cur_token = saved_body_cur;
-	_prv_token = saved_body_prv;
-	saved_body_line_pos.restore();
+	rewind_stream(saved_body_pos);
     }
     // Phase-5 slice 4b (parse-once): a member-template INSTANTIATION whose
     // source carries a Tree-1 dependent_pattern takes its body from tsubst at
@@ -74865,7 +74769,7 @@ bool Program::paren_group_can_be_param_decl_clause()
     default:
 	break;
     }
-    TokenStream::Pos saved = tokens.savepos();
+    StreamMark saved = mark_stream();
     nextToken();			// the '('
     TokenBase *head = nextToken();	// the group's head token
     bool head_is_type = false;
@@ -74923,7 +74827,7 @@ bool Program::paren_group_can_be_param_decl_clause()
 	else
 	    result = true;
     }
-    tokens.restore(saved);
+    rewind_stream(saved);
     return result;
 }
 
@@ -74995,12 +74899,12 @@ bool Program::paren_group_is_nonclass_direct_init()
 	if ( tokens.size() > 2 && tokens[2]
 	  && tokens[2]->id() == TokenID::tkNS )
 	{
-	    TokenStream::Pos saved = tokens.savepos();
+	    StreamMark saved = mark_stream();
 	    nextToken();			// the '('
 	    TokenBase *head = nextToken();	// the qualified head identifier
 	    TokenDataType *resolved =
 		resolve_declared_type_token(head, true, true);
-	    tokens.restore(saved);
+	    rewind_stream(saved);
 	    return resolved == NULL;
 	}
     }
@@ -78480,7 +78384,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 					    dynamic_cast<DataDefCLASS *>(
 						&resolved->definition) )
 				    {
-					TokenStream::Pos qsaved = tokens.savepos();
+					StreamMark qsaved = mark_stream();
 					if ( TokenDataType *member =
 						resolve_class_member_type_chain(owner, tb) )
 					{
@@ -78493,7 +78397,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 					    if ( peekToken()
 					      && peekToken()->id() != TokenID::tkOpBrk )
 						return parseDeclaration(member);
-					    tokens = qsaved;
+					    rewind_stream(qsaved);
 					}
 					// `bs<0,0>::bs(...) {...}` — an out-of-line
 					// special member of an explicit specialization,
@@ -78609,7 +78513,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 				// An unqualified return type (`int Class::m()`)
 				// already worked — this is the qualified twin.
 				{
-				    TokenStream::Pos qsaved = tokens.savepos();
+				    StreamMark qsaved = mark_stream();
 				    DataDefCLASS *qowner =
 					dynamic_cast<DataDefCLASS *>(
 					    &(*dmi)->definition);
@@ -78626,7 +78530,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 				      && peekToken()->id() != TokenID::tkOpBrk )
 					return parseDeclaration(qmember);
 				    if ( qmember )
-					tokens = qsaved;
+					rewind_stream(qsaved);
 				}
 				if ( parse_qualified_special_member_definition(tb) )
 				    return NULL;

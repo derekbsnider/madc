@@ -2844,12 +2844,12 @@ public:
 	return i < _buf.size() ? madc_token_for_slot(_buf[i]) : NULL;
     }
 
-    // -- backtrack: save/restore is {cursor, pushback} — NEVER the buffer --
+    // -- backtrack: save/restore is {cursor, pushback} — NEVER the buffer. A
+    //    parser rewind goes through Program::mark_stream / rewind_stream,
+    //    which also return the read context the rewound parse resumes with. --
     struct Pos { size_t cursor; std::vector<TokenBase *> pushback; };
     Pos savepos() const { Pos p; p.cursor = _cursor; p.pushback = _pushback; return p; }
     void restore(const Pos &p) { _cursor = p.cursor; _pushback = p.pushback; }
-    // Sugar so the original `tokens = saved` restore idiom reads unchanged.
-    TokenStream &operator=(const Pos &p) { restore(p); return *this; }
 
     // -- sub-stream: install `seq` as the active buffer (moved), returning the
     //    prior state (moved); swap_back restores it. No copy. A parse over a
@@ -6813,15 +6813,40 @@ public:
 	_cur_token = current;
 	_prv_token = previous;
     }
+    // A rewind point for a speculative read — the ONE owner of a rewind: the
+    // cursor (TokenStream::Pos, the pushback LIFO included) together with the
+    // read context the stream had there — curToken / prevToken
+    // (isUnaryPosition and isMemberAccessPosition read prevToken once the
+    // next token is consumed; a terminator check reads curToken) and
+    // ParsePosition (a token made afterwards takes it; so does a diagnostic).
+    // rewind_stream() returns all of them, so the read after a rewind is the
+    // read the stream would have had without the speculative one (B130).
+    struct StreamMark
+    {
+	TokenStream::Pos pos;
+	TokenBase *cur;
+	TokenBase *prv;
+	ParsePosition at;
+    };
+    inline StreamMark mark_stream() const
+    {
+	StreamMark m = { tokens.savepos(), _cur_token, _prv_token,
+			 ParsePosition::current() };
+	return m;
+    }
+    inline void rewind_stream(const StreamMark &m)
+    {
+	tokens.restore(m.pos);	// allowed-exception: the owner
+	setTokenContext(m.cur, m.prv);
+	m.at.restore();
+    }
     // A parse over its own token sequence — the ONE owner of a nested token
     // run (TokenStream::swap_in / swap_back, or a run injected ahead of the
-    // live stream and drained back to its base) AND of the read context the
-    // outer parse resumes with: curToken / prevToken (isUnaryPosition reads
-    // prevToken; a statement's terminator check reads curToken) and
-    // ParsePosition (a token made afterwards takes it). The outer state
-    // returns on every exit, a throw included. A probe that left its `;`
-    // sentinel as the outer prevToken turned the caller's next `+` unary
-    // (B46: the SFINAE check of a dependent return type, at the first call).
+    // live stream) AND of the read context the outer parse resumes with,
+    // which it keeps as a StreamMark. The outer state returns on every exit,
+    // a throw included. A probe that left its `;` sentinel as the outer
+    // prevToken turned the caller's next `+` unary (B46: the SFINAE check of
+    // a dependent return type, at the first call).
     class NestedTokenStream
     {
     public:
@@ -6829,23 +6854,22 @@ public:
 	// token, as a construct's first token has none. Injected: the run is
 	// read ahead of the live stream and continues the outer context (a
 	// template-argument replay reads as if it followed its name, and a
-	// reader may look past the run); close() drains what the parse left.
+	// reader may look past the run); close() rewinds the live stream to
+	// its mark, so what the parse left of the run is discarded and a read
+	// past the run's end is undone.
 	enum Mode { Isolated, Injected };
     private:
 	Program &pgm;
 	Mode mode;
 	TokenStream::State outer;	// allowed-exception: the owner
+	StreamMark outer_mark;
 	size_t base;
-	TokenBase *outer_cur;
-	TokenBase *outer_prv;
-	ParsePosition outer_pos;
 	bool open;
     public:
 	NestedTokenStream(Program &p, std::vector<TokenBase *> seq,
 			  Mode m = Isolated)
-	  : pgm(p), mode(m), base(p.tokens.size()),
-	    outer_cur(p._cur_token), outer_prv(p._prv_token),
-	    outer_pos(ParsePosition::current()), open(true)
+	  : pgm(p), mode(m), outer_mark(p.mark_stream()),
+	    base(p.tokens.size()), open(true)
 	{
 	    if ( mode == Isolated )
 	    {
@@ -6865,13 +6889,11 @@ public:
 	    if ( !open )
 		return;
 	    open = false;
+	    // Isolated: swap_back reinstates the outer buffer at the mark's
+	    // cursor, so the rewind returns only the read context.
 	    if ( mode == Isolated )
 		pgm.tokens.swap_back(std::move(outer));	// allowed-exception: the owner
-	    else
-		while ( pgm.tokens.size() > base )	// allowed-exception: the owner
-		    pgm.nextToken();
-	    pgm.setTokenContext(outer_cur, outer_prv);
-	    outer_pos.restore();
+	    pgm.rewind_stream(outer_mark);
 	}
 	NestedTokenStream(const NestedTokenStream &) = delete;
 	NestedTokenStream &operator=(const NestedTokenStream &) = delete;
