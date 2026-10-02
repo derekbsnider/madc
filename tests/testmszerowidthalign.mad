@@ -1,0 +1,39 @@
+// A zero-width bit-field under the Microsoft bit-field layout (win64, mingw
+// -mms-bitfields): it acts only right after a non-zero bit-field (A4: after a
+// plain char it does nothing), moves the next member by its type's alignment
+// capped by the pack, and raises the AGGREGATE's alignment to its type's,
+// capped by #pragma pack alone -- `packed` on the struct does not cap it (A1:
+// c stays at offset 1, yet the struct is 4-aligned and 4 bytes; C1 under
+// #pragma pack(1) stays 1-aligned). madc capped the aggregate alignment by
+// `packed` too, so A1 read size 2 align 1. SysV (Linux) lays every case out
+// with the zero-width boundary on the next member and no alignment raise.
+// Oracle: gcc 13 and clang 18 print tests/testmszerowidthalign.expect;
+// x86_64-w64-mingw32 gcc 13 under wine prints the .win64_expect twin.
+#include <stdio.h>
+#include <stddef.h>
+#define P __attribute__((packed))
+struct P A1 { char a : 4; int : 0; char c; };
+struct P A2 { char a : 4; int : 0; };
+struct P A3 { char a : 4; int : 0; char c; char d; };
+struct P A4 { char a; int : 0; char c; };
+struct P A5 { char a : 4; short : 0; char c; };
+struct P A6 { char a : 4; int : 0; char c : 4; };
+struct P A7 { char a : 4; int : 0; int c; };
+struct P A8 { char a : 4; long long : 0; char c; };
+struct P A9 { short a : 4; int : 0; char c; };
+struct P B1 { char a : 4; int : 0; char c; int : 0; char d; };
+#pragma pack(1)
+struct C1 { char a : 4; int : 0; char c; };
+#pragma pack()
+#pragma pack(2)
+struct C2 { char a : 4; int : 0; char c; };
+#pragma pack()
+struct D1 { char a : 4; int : 0; char c; };
+#define R(T, m) printf(#T ": size %zu align %zu off %zu\n", sizeof(struct T), _Alignof(struct T), offsetof(struct T, m))
+#define S(T) printf(#T ": size %zu align %zu\n", sizeof(struct T), _Alignof(struct T))
+int main(void)
+{
+	R(A1, c); S(A2); R(A3, d); R(A4, c); R(A5, c); S(A6); R(A7, c);
+	R(A8, c); R(A9, c); R(B1, d); R(C1, c); R(C2, c); R(D1, c);
+	return 0;
+}

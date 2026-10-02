@@ -1337,14 +1337,19 @@ public:
 		// The boundary is the type's own alignment even under packing
 		// (`#pragma pack(2)`, `packed`): gcc = clang. Microsoft applies the
 		// boundary/alignment only when the preceding declaration was
-		// itself a bit-field (MinGW/MS layout oracle), capped by the pack.
+		// itself a bit-field (MinGW/MS layout oracle): the boundary capped
+		// by the pack, the aggregate's alignment by #pragma pack ALONE —
+		// `packed` on the aggregate does not cap it (MinGW gcc's ms-bitfield
+		// arm of update_alignment_for_field): `struct __attribute__((packed))
+		// { char a:4; int :0; char c; }` keeps c at 1 and is 4-aligned.
 		size_t fa = target_microsoft_bitfields()
 		    ? field_align(dd) : natural_field_align(dd);
 		if ( !target_microsoft_bitfields() || previous_was_nonzero_bitfield )
 		{
 		    size = align_up(size, fa);
-		    if ( target_microsoft_bitfields() && fa > max_align )
-			max_align = fa;
+		    size_t ra = cap_alignment(natural_field_align(dd), pragma_pack);
+		    if ( target_microsoft_bitfields() && ra > max_align )
+			max_align = ra;
 		}
 		info.storage_offset = size;
 	    }
@@ -1446,6 +1451,7 @@ public:
     void replay_own_members(DataDefSTRUCT &scratch, std::vector<size_t> &own) const
     {
 	scratch.pack = pack;
+	scratch.pragma_pack = pragma_pack;
 	scratch.union_layout = union_layout;
 	scratch.reverse_scalar_storage = reverse_scalar_storage;
 	size_t next_anon = 0;

@@ -1,0 +1,9 @@
+# Labels whose line legitimately DIFFERS from tests/testzerowidthpack.win64_expect
+# versus tests/testzerowidthpack.expect — the win64 domain's own answers (mingw lays
+# bit-fields out ms_struct: a zero-width field only acts after a bit-field, moves the
+# next member by the pack-capped boundary, and raises the aggregate's alignment capped
+# by #pragma pack alone; long is 4 bytes; the twin is x86_64-w64-mingw32 gcc's output
+# under wine). Every other labelled line must be identical in both
+# (scripts/check-expect-twins.sh).
+zs
+zo

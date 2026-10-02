@@ -1131,6 +1131,7 @@ static bool clone_local_aggregate_members(
 	dst->set_canonical_spelling(dst->name);
 	dst->runtime_size_expr = NULL;
 	dst->pack = src->pack;
+	dst->pragma_pack = src->pragma_pack;
 	dst->tag_explicit_align = src->tag_explicit_align;
 	dst->union_layout = src->union_layout;
 	dst->is_complete = true;
