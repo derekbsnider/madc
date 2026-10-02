@@ -446,6 +446,26 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B143. `&ns::C::m` is refused: the address-of arm walks no class after a namespace
+
+```cpp
+#include <cstdio>
+namespace ns { struct C { int k; int f() { return 0; } }; }
+int main() { int ns::C::*pk = &ns::C::k; ns::C c; c.k = 3; std::printf("%d\n", c.*pk); return 0; }
+```
+
+- g++ 13 (`-std=c++17`): `3`. madc (`--std=c++17`, 2026-10-02):
+  `error: 'C' is not a member of namespace 'ns'` at `&ns::C::k`, exit 1. The
+  value side (`sizeof(ns::C::k)`) resolves; a data-only `ns::N` fails the
+  same way.
+- Layer: `Program::parseAddressOfExpression`'s qualified-name arm reads ONE
+  qualifier before the member; after a namespace it walks only a template-id
+  (`&ns::Tmpl<args>::m`), never a class name. The value side's walk
+  (the identifier arm's `ns::C::` blocks into `resolve_qualified_scope_expression`)
+  is the owner to share.
+- Found 2026-10-02 while fixing B77. Off the release path, filed per owner
+  2026-10-02 (merge after B77).
+
 ### B142. c2m refuses a wide string literal for a `wchar_t` array, and an overlong string
 
 ```c
@@ -1379,38 +1399,6 @@ int main() { return t(); }        // and: return t<1 2>();
   `capture_call_template_args` bails silently on the non-type argument it
   can't fold. The fix must stay quiet in dependent parses, unevaluated
   operands and SFINAE contexts.
-
-### B8. The caret is misdrawn on a line with a tab or a multi-byte character
-
-- Found 2026-09-25, while measuring diagnostics for D26 (plan §42). This is
-  D26 part 1. Part 2, which cites the token's start column, rides the next
-  merge wave.
-
-```c
-int main(void) {
-	int x = 1 foo; return x; }
-```
-
-- gcc: `2:19`, with the caret under `foo`, the tab expanded and `^~~`.
-- madc: `2:14`. The line is printed with its tab raw, and the caret is
-  placed by counting bytes as spaces, so it lands 7 columns left of `foo`.
-  With `"éé"` earlier on the line, it lands 2 columns right.
-- Where: the caret renderer. It should expand tabs, count screen width and
-  underline the token.
-- Part 1 fixed 2026-09-30 (D26's first step): `show_error_source_line` lays
-  the echoed line out through `madc::line_layout` (tabs to 8-column stops,
-  code-point widths; moved into `madcdis/text_utf16.h`) and places the caret
-  under the cited byte's screen column (`tests/unit/test_diag_caret.cpp`,
-  gcc's columns). The cited byte is still the token's LAST: the reducer's
-  caret is under `foo`'s final `o` and the header says `2:14`.
-- Part 2 fixed 2026-10-01 (D26): a token's column is its START (the lexer
-  records it when it begins the token, and the token's end beside it), and
-  the header prints gcc's screen column: the reducer is `2:19` with the caret
-  under `foo`'s `f`. The `column - spelling` compensations are gone (the
-  highlighter, the code graph, the LSP's diagnostic range); forest format 51.
-- Part 3 fixed 2026-10-01 (D26): the caret underlines the token (`^~~`,
-  gcc's form): the diagnostic record carries the token's end, and the echo
-  draws a `~` under each further screen column of it. **B8 FIXED.**
 
 ### B9. madc wording where gcc and clang name the missing token
 
