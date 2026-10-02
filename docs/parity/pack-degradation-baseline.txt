@@ -196,5 +196,11 @@
 # manipulator operators take `basic_ostream& (*__pf)(basic_ostream&)` too)
 # and the parenthesized `->*` operand; both arches report 45 against the
 # same libc++ corpus.
-45 darwin pack-errors
+# darwin 45 -> 17 (2026-10-02, the REPL + chthonic release seam pre-build,
+# release-macos at 2e3a30db6; both arches): 8 "Malformed expression: 2
+# operands with no operator between them" (the TemplateId<...>()(args) body
+# re-parse, KG Gap instantiation_body_templateid_ctor_call), 4 "Unexpected
+# keyword in expression", 3 undeclared identifiers, 1 "expecting addressable
+# expression", 1 unidentified member.
+17 darwin pack-errors
 1 darwin mir-blob-skips
