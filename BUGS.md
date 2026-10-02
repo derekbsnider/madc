@@ -28,6 +28,30 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B150. win64 `--emit=c11` renders `packed` as `#pragma pack(1)`, which mingw lays out differently
+
+```c
+#include <stdio.h>
+struct __attribute__((packed)) A1 { char a : 4; int : 0; char c; };
+int main(void) { printf("%zu %zu\n", sizeof(struct A1), _Alignof(struct A1)); return 0; }
+```
+
+- x86_64-w64-mingw32 gcc 13 under wine: `4 4`. madc's win64 JIT gives
+  `4 4` once the MS zero-width record-alignment fix is in (2026-10-02).
+  madc's win64 `--emit=c11` output wraps the struct in `#pragma pack(push, 1)`
+  with no attribute. mingw gcc lays that form out as `2 1`, like
+  `#pragma pack(1) struct C1 {...}`, so the emitted C disagrees with the JIT.
+- Under SysV the two spellings lay out alike (gcc and clang: `5 1` for both),
+  so Linux output is unaffected.
+- Layer: the settled aggregate layout record carries only the effective
+  `pack` (`DataDefSTRUCT::pack`, 1 for the attribute), and
+  `cir_emit_c.cpp`'s `emit_pack_push` renders every pack as the pragma. The
+  record would need to say whether the pack came from `#pragma pack`
+  (`pragma_pack`) or the `packed` attribute.
+- Found 2026-10-02 while fixing the MS zero-width alignment
+  (tests/testmszerowidthalign). Off the release path, filed per owner
+  2026-09-30.
+
 ### B147. `noexcept(std::__relocate_a(...))` answers false, and `--freeze` answers it true
 
 ```cpp
@@ -558,6 +582,46 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B151. C11 `_Noreturn` is refused as a function specifier
+
+```c
+void exit(int);
+_Noreturn void f(void) { exit(0); }
+int main(void) { f(); return 1; }
+```
+
+- gcc 13 (`-std=c17`) compiles and exits 0. madc (2026-10-02, `--std=c17`):
+  `use of undeclared identifier '_Noreturn'`; `_Noreturn static void` gives
+  the same error, and `static _Noreturn void` gives `Expecting type after
+  'static'`. `<stdnoreturn.h>`'s `noreturn` therefore fails too.
+- No test in `tests/` uses `_Noreturn`. glibc's own declarations use
+  `__attribute__((__noreturn__))`, which parses.
+- Layer: `_Noreturn` is in the keyword registry (`src/madc_keywords.cpp`,
+  `KW_C("_Noreturn", STD_C11)`), but the declaration-specifier reader has no
+  function-specifier arm for it (C11 6.7.4: it may appear anywhere among the
+  specifiers, like `inline`).
+- Found 2026-10-02 while adding the embedded `<stdnoreturn.h>`
+  (tests/testfreestandingheaders checks the macro only). Off the release path,
+  and a core-parser change, filed per owner 2026-09-30.
+
+### B152. `offsetof` refuses a type defined in its operand
+
+```c
+#include <stddef.h>
+int printf(const char *, ...);
+int main(void) { printf("%zu\n", offsetof(struct { char c; int i; }, i)); return 0; }
+```
+
+- gcc 13 and clang 18 (`-std=c17`): `4`. madc (2026-10-02):
+  `Unexpected keyword in expression` at the `struct`.
+- C11 7.19p3 does not exclude a defined type (C23 7.21p3 makes it undefined),
+  and both canon compilers accept it.
+- Layer: not yet traced. The message suggests `offsetof`'s first operand is
+  read as an expression rather than a type-name that may carry a
+  struct-or-union-specifier (a guess).
+- Found 2026-10-02 with B151. Off the release path, filed per owner
+  2026-09-30.
 
 ### B148. A constructor template's mem-initializer that reads a member of a class temporary crashes c2mir
 
