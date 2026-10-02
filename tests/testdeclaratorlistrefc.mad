@@ -1,0 +1,9 @@
+// C has no references: a `&` cannot begin the declarator after a ',' (gcc 13
+// -std=c17: "expected identifier or '(' before '&' token"; clang 18: "expected
+// identifier or '('"). The comma continuation admits `&` / `&&` only in C++
+// (B133, tests/testdeclaratorlistref), so C still refuses here.
+int main(void)
+{
+	int a = 1, &b = a;
+	return b;
+}

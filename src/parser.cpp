@@ -55519,16 +55519,19 @@ DataDef *Program::parse_member_pointer_owner(TokenBase *owner_first,
 // dimension. Used by both parseFunction param-array scans (named and
 // anonymous declarators); c-testsuite 00162 is the gate.
 // Can `peek` begin the NEXT declarator after a ',' in a declaration list?
-// `*` (pointer), an identifier (plain name / typedef shadow), or `(` — a
+// `*` (pointer), in C++ a reference ptr-operator `&` / `&&` (`int &r1 = a,
+// &r2 = b;`), an identifier (plain name / typedef shadow), or `(` — a
 // parenthesized declarator like `char arr[2][4], (*p)[4], *q;`
 // (c-testsuite 00130): the comma continuation re-enters parseDeclaration
-// with the cloned base type, whose fn-ptr/ptr-array arm owns the parens.
+// with the cloned base type, whose declarator owner reads them.
 // ONE rule for both comma-continuation sites (ctor-syntax and general).
 bool Program::comma_continuation_starts_declarator(TokenBase *peek)
 {
     return peek
 	&& (peek->id() == TokenID::tkMul
 	 || peek->id() == TokenID::tkOpBrk
+	 || (is_cpp_mode() && (peek->id() == TokenID::tkBand
+			       || peek->id() == TokenID::tkLand))
 	 || peek->type() == TokenType::ttIdentifier
 	 || is_contextual_identifier_token(peek));
 }

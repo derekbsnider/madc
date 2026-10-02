@@ -241,7 +241,6 @@ g++.dg/cpp0x/decltype-mem-initializer1.C
 g++.dg/cpp0x/decltype-nonstatic1.C
 g++.dg/cpp0x/decltype1.C
 g++.dg/cpp0x/decltype12.C
-g++.dg/cpp0x/decltype23.C
 g++.dg/cpp0x/decltype25.C
 g++.dg/cpp0x/decltype30.C
 g++.dg/cpp0x/decltype33.C
