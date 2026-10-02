@@ -19,9 +19,11 @@
 #      a new hand-rolled reader cannot hide behind the builder. The named
 #      exceptions read no operand from the source: the REPL's result names
 #      (Program::keep_entry_value takes the address of the value an entry
-#      showed, Program::session_result_value dereferences the pointer it kept),
-#      which build a `*` / `&` over nodes the compiler made, with no `*` / `&`
-#      token behind them (rule 3's build_address_of calls likewise);
+#      showed, Program::session_result_value dereferences the pointer it kept)
+#      and the instance rebuild of a dependent `*v`
+#      (CirBuilder::tsubst_operator_plan re-derefs the substituted variable's
+#      stand-in), which build a `*` / `&` over nodes the compiler made, with no
+#      `*` / `&` token behind them (rule 3's build_address_of calls likewise);
 #   3. the `&` twin: an address-of node (TokenAddrOf / TokenAddrExpr) is built
 #      only by build_address_of, by parseAddressOfExpression's two kept arms (a
 #      compound literal; an UNPARENTHESIZED qualified-id, which
@@ -65,7 +67,7 @@ outside_owners() {
 
 # Builder calls (build_indirection / build_address_of, per $1) outside the
 # named synthesizers of rule 2, the definition line excluded.
-SYNTH='^TokenBase \*Program::(keep_entry_value|session_result_value)\('
+SYNTH='^(TokenBase \*Program::(keep_entry_value|session_result_value)|bool CirBuilder::tsubst_operator_plan)\('
 builder_calls() {
 	awk -v call="$1\\(" -v synth="$SYNTH" -v def="Program::$1" '
 		$0 ~ synth { inside = 1 }
