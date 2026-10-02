@@ -113,6 +113,9 @@
 # SHRUNK 2026-10-02 (452 -> 451), B127: a pointer-to-member parameter deduces
 #   its class and its member's type, and `&C::f`'s type is the member's function
 #   type without the hidden receiver — cpp0x/vt-55542 passes.
+# SHRUNK 2026-10-02 (451 -> 450), B141: the right operand of `.*` / `->*` is a
+#   cast-expression read by parseCastExpression — template/ptrmem1 passes
+#   (`(c.*M)` over a non-type template parameter).
 
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
@@ -547,7 +550,6 @@ g++.dg/template/pr84434.C
 g++.dg/template/pr88795.C
 g++.dg/template/pr96329.C
 g++.dg/template/pr97399.C
-g++.dg/template/ptrmem1.C
 g++.dg/template/ptrmem34.C
 g++.dg/template/sfinae-deleted-pr119343.C
 g++.dg/template/sfinae20.C

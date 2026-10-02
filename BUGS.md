@@ -446,23 +446,6 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
-### B141. The right operand of `.*` / `->*` is read as a postfix chain
-
-```cpp
-#include <cstdio>
-struct C { int d; int foo(int v) { return v + d; } };
-int main() { C c; c.d = 1; std::printf("%d\n", (c.*&C::foo)(9)); return 0; }
-```
-
-- g++ 13 (`-std=c++17`): `10`. madc (`--std=c++17`, 2026-10-02):
-  `error: Expecting a pointer-to-member after '.*'` at `&C::foo`, exit 1.
-- [expr.mptr.oper]/1: `pm-expression .* cast-expression` — the right operand
-  is a cast-expression, whose reader is `Program::parseCastExpression`. The
-  `.*` arm in the expression engine reads a parenthesized primary or a
-  `parsePostfixChain`, so a unary operator (`&C::foo`, `*pp`) or a cast there
-  is refused.
-- Found 2026-10-02 beside B127 (`&C::foo`'s member-pointer type).
-
 ### B142. c2m refuses a wide string literal for a `wchar_t` array, and an overlong string
 
 ```c

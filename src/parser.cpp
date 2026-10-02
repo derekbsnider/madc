@@ -42816,8 +42816,10 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		// `obj.*mp` / `p->*mp` ([expr.mptr.oper]): the `.` or `->` is
 		// followed by `*` — no other C or C++ construct spells that, so
 		// the pair is the pointer-to-member operator. The right operand
-		// is a pm-expression (an identifier or a member chain: `op`,
-		// `d.op`, `this->fn`), read through the postfix-chain owner. A
+		// is a cast-expression ([expr.mptr.oper]/1) — `op`, `d.op`,
+		// `(&T::x)`, `&C::f`, `*ppm`, `(int C::*)pm` — read by its one
+		// owner, parseCastExpression, which ends it before a binary
+		// operator (`p->*pm + 1`). A
 		// member-FUNCTION pointer's binding is only ever called: the
 		// `( args )` that follows lands on the node (is_call); a DATA
 		// member pointer's binding is the member lvalue.
@@ -42831,19 +42833,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		    if ( !mp_head )
 			Throw(tb) << "Expecting a pointer-to-member after '"
 				  << (is_arrow ? "->*" : ".*") << "'" << flush;
-		    TokenBase *mp;
-		    if ( mp_head->id() == TokenID::tkOpBrk )
-		    {
-			// A parenthesized pm-expression — `this->*(&time_get::do_get)`
-			// (libstdc++ locale_facets_nonio.tcc), `(o.*(&T::x))`: the parens
-			// are a primary-expression around the member pointer, read by the
-			// ONE parenthesized-expression owner (it consumes the `)`).
-			pushToken(mp_head);
-			mp = parse_parenthesized_expression(is_arrow ? "'->*' operand"
-								     : "'.*' operand", true);
-		    }
-		    else
-			mp = parsePostfixChain(mp_head);
+		    TokenBase *mp = parseCastExpression(mp_head);
 		    if ( !mp )
 			Throw(mp_head) << "Expecting a pointer-to-member after '"
 				       << (is_arrow ? "->*" : ".*") << "'" << flush;
