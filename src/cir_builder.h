@@ -1789,11 +1789,13 @@ public:
 	// than a member of it — the array case. madc types a fixed array as
 	// its ELEMENT type with the count on the Variable (`val_t a[2]` has
 	// dd == val_t), so without this an array OF a union would read its
-	// elements as that union's members.
+	// elements as that union's members. `dims` are the extents of a
+	// MULTI-dimensional array whose member-indexed slots are its rows.
 	node_t aggregate_init_list(const std::vector<TokenBase *> &inits,
 				   DataDef *dd, TokenBase *origin = NULL,
 				   bool slots_are_elements = false,
-				   bool has_field_designators = false);
+				   bool has_field_designators = false,
+				   const std::vector<carray_dim_t> *dims = NULL);
 	// The aggregate type a NESTED brace list at slot `idx` initializes, or
 	// NULL when the slot is not a whole struct/union member (so the nested
 	// list stays type-less, as it has always been).

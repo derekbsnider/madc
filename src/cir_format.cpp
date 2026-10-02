@@ -570,8 +570,7 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		bool a0_literal = a0 && a0->type() == TokenType::ttString;
 		if ( !a0_literal )
 			if ( TokenVar *a0v = dynamic_cast<TokenVar *>(a0) )
-				a0_literal = a0v->var.name.compare(
-					0, 11, "__literal__") == 0;
+				a0_literal = a0v->var.is_string_literal();
 		if ( !a0_literal && a0dd && a0dd->is_pointer() && !a0_char_ptr )
 		{
 			stream_tok = a0;
@@ -601,9 +600,9 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 	else if ( ftok && ftok->type() == TokenType::ttVariable )
 	{
 		TokenVar *tv = dynamic_cast<TokenVar *>(ftok);
-		if ( tv && tv->var.name.compare(0, 11, "__literal__") == 0 )
+		if ( tv && tv->var.is_string_literal() )
 		{
-			f = tv->var.name.substr(11);
+			f = tv->var.string_literal_text();
 			have_literal = true;
 		}
 	}

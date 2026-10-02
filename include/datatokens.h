@@ -155,6 +155,10 @@ public:
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    // The variable a narrow string literal is (Program::addLiteral): its text
+    // is the name after the `__literal__` prefix.
+    inline bool is_string_literal() const { return name.compare(0, 11, "__literal__") == 0; }
+    inline std::string string_literal_text() const { return is_string_literal() ? name.substr(11) : std::string(); }
     // A reference variable (`T& r`, `auto& x`, a `T&` parameter, a `for(T& v:c)`
     // loop var): its type is a DataDefREF. The single source of truth for
     // reference-ness — first-class refs Phase 2 retired the parallel vfREFERENCE
@@ -396,7 +400,7 @@ public:
     // Without this override, TokenBase::clone() minted a RAW TokenBase
     // (type 0, id 0 — untranslatable at CIR) wherever a variable leaf is
     // cloned: range designators (`[6 ... 10] = elt`, c-testsuite 00216)
-    // clone the value per slot via assign_initializer_range.
+    // clone the value per slot (InitializerCursor::positional).
     virtual TokenBase *clone() override
     {
 	TokenVar *tv = new TokenVar(var);

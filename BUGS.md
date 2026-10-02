@@ -28,55 +28,6 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
-### B139. A designated initializer list has no current object
-
-```c
-#include <stdio.h>
-struct S { long p; int q; };
-struct T { int k; struct S s; int z; };
-struct Q { int a, b, c, d; };
-union U { long l; char c; };
-union V { struct { int a, b; } s; long l; };
-struct Q q1 = { 1, 2, 3, .a = 9, 4 };
-int a2[6] = { 1, 2, 3, 4, [1] = 7, 8 };
-struct T e2 = { 1, 2, 3, .z = 9 };
-union U u3 = { .c = 5, .l = -1 };
-union V v2 = { .l = 2, .s.a = 1 };
-int main(void)
-{
-	struct Q cq = (struct Q){ 1, 2, 3, .a = 9, 4 };
-	printf("%d %d %d %d | %d %d %d %d %d %d | %d %ld %d %d | %ld %d | %d %d %d %d\n",
-	       q1.a, q1.b, q1.c, q1.d, a2[0], a2[1], a2[2], a2[3], a2[4], a2[5],
-	       e2.k, e2.s.p, e2.s.q, e2.z, u3.l, v2.s.a, cq.a, cq.b, cq.c, cq.d);
-	return 0;
-}
-```
-
-- gcc 13 = clang 18 (`-std=c17`):
-  `9 4 3 0 | 1 7 8 4 0 0 | 1 2 3 9 | -1 1 | 9 4 3 0`.
-- madc (`--std=c17`, 2026-10-02 at `06850da9d`), exit 0:
-  `9 2 3 4 | 1 7 3 4 8 0 | 1 2 9 0 | 5 2 | 9 2 3 4`. The automatic forms of
-  each are the same.
-- C11 6.7.9p17: a designator moves the CURRENT OBJECT, and the next positional
-  initializer fills the subobject after the designated one. madc's list
-  readers append a positional clause at the END of the slot vector, and the
-  vector is indexed two ways: by VALUE when braces are elided
-  (`{1, 2, 3, ...}` fills `k`, `s.p`, `s.q`) and by MEMBER when a designator
-  writes it (`.z` is slot 2) — so `.z = 9` overwrote `s.q`'s value. A union
-  given two designated members keeps the higher-numbered member's slot
-  (`aggregate_init_list`'s `filled.back()`), not the later designator
-  (p19); `.l = 2, .s.a = 1` keeps `.l`.
-- Same readers as B137 (a designator list read one designator long), which
-  `.s.p = 5, 6` (a positional clause after a NESTED designator) also needs:
-  madc refuses it, "excess elements in array/struct/union initializer".
-- Layer: the parser's three designated-list readers — `parse_compound_struct_lit`
-  (`(T){...}`), `read_struct_lit` (a nested brace in a declaration) and the
-  declaration's own list in `parseDeclaration` — each place designated and
-  positional clauses with no type-driven cursor. One current-object walker
-  (6.7.9p17–p20: brace elision, designator paths, union override) owes all
-  three; the slots it emits must be member-indexed.
-- Found 2026-10-02 measuring B138's override shapes against madc.
-
 ### B138. c2m: a static initializer's later designator does not override
 
 ```c
@@ -526,27 +477,6 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
-
-### B137. A designator chain with an array index is refused
-
-```c
-#include <stdio.h>
-struct S { long p; int q; };
-struct T { int k; struct S s[2]; long a[3]; };
-struct T g1 = { .a[1] = 4 };
-struct T g2 = { .s[1].q = 5 };
-struct S arr[2] = { [1].q = 6 };
-long m[2][2] = { [1][0] = 7 };
-int main(void) { struct T l1 = { .a[2] = 8 }; printf("%ld %d %d %ld %ld\n", g1.a[1], g2.s[1].q, arr[1].q, m[1][0], l1.a[2]); return 0; }
-```
-
-- gcc 13 = clang 18: `4 5 6 7 8`.
-- madc (`--std=c17`, 2026-10-02 at `4fea45aef`) refuses all four file-scope
-  initializers: `.a[1]` and `.s[1].q` "Expecting '=' after designated
-  initializer", `[1].q` and `[1][0]` "Expecting '=' after array designator".
-  A designator list ([C11 6.7.9p1] `designation: designator-list =`) is read
-  one designator long, except member after member: `.s.p = -1` is accepted.
-- Found 2026-10-02 probing designator chains for B136's zero-initialization.
 
 ### B127. `T1::*` over a class-template parameter is refused
 

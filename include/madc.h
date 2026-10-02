@@ -1173,15 +1173,95 @@ public:
     // The extent WRITTEN in `(T[N]){...}`; 0 for `(T[]){...}`, whose size the
     // initializer decides (a designator `[5] =` included).
     int64_t array_extent = 0;
-    // Did a `.field =` designator write any slot of THIS list? A union's slots
-    // are member indices when it did and plain VALUES when it did not, and the
-    // CIR builder cannot tell them apart afterwards: `{.i = 1, .p = 0}` and
-    // `{6, 5}` both arrive as two filled slots. Recorded here rather than
-    // guessed there (c-testsuite 00216).
+    // Are THIS list's slots MEMBER-indexed — one per member or element, placed
+    // by InitializerCursor once a designator was seen? Otherwise they are the
+    // clauses in order, brace elision left to the consumer: a union's slots are
+    // member indices when set and plain VALUES when not, and the CIR builder
+    // cannot tell them apart afterwards — `{.i = 1, .p = 0}` and `{6, 5}` both
+    // arrive as two filled slots. Recorded here rather than guessed there
+    // (c-testsuite 00216).
     bool has_field_designators = false;
     TokenStructLit() {}
     virtual TokenType type() const override { return TokenType::ttStructLit; }
     virtual TokenStructLit *as_struct_lit_tok() override { return this; }
+};
+
+// C11 6.7.9p17-p20, the CURRENT OBJECT of one brace-enclosed initializer
+// list: the slot each clause fills. Until the list's first designator its
+// clauses fill its own slots in order, as the list readers always placed them
+// (brace elision is left to the consumers). The first designator makes the
+// slots MEMBER-indexed — one per member or element, never brace-elided: the
+// clauses so far are replayed against the type, a brace-elided run becomes an
+// explicit nested list, a positional clause fills the subobject after the one
+// last written (p17), a later initializer of a subobject overrides an earlier
+// one (p19; for a union, every other member), and a designator list
+// (`.a[1].q =`) descends one subobject per designator.
+class InitializerCursor
+{
+public:
+    // What a list initializes: the MEMBERS of a struct or union, the
+    // ELEMENTS of an array of `elem` with extents `dims` (outermost first;
+    // 0 = unbounded), one SCALAR, or an UNKNOWN type (placed positionally).
+    struct Shape
+    {
+	enum Kind { Unknown, Scalar, Members, Elements } kind = Unknown;
+	DataDefSTRUCT *sdd = NULL;
+	DataDef *elem = NULL;
+	std::vector<carray_dim_t> dims;
+	bool aggregate() const { return kind == Members || kind == Elements; }
+	// One dimension of char / unsigned char: a string literal spells it.
+	bool char_array() const;
+	static Shape members(DataDefSTRUCT *s);
+	static Shape elements(DataDef *e, const std::vector<carray_dim_t> &d);
+	// The shape a value of type `dd` initializes (a typed array peels
+	// its extents; a non-aggregate class or a complex is one scalar).
+	static Shape of(DataDef *dd);
+    };
+    // One designator of a designation: `[first ... last]` or `.name`.
+    struct Designator
+    {
+	bool index = false;
+	size_t first = 0, last = 0;
+	std::string name;
+	TokenBase *where = NULL;
+    };
+    // `slots` is the list's own slot vector; `member_indexed` the list's
+    // flag that says its slots are member indices (TokenStructLit::
+    // has_field_designators, or a declaration's init_has_field_designators).
+    InitializerCursor(Program &pgm, std::vector<TokenBase *> &slots,
+		      const Shape &shape, bool &member_indexed);
+    // Moves to the subobject `designation` names (switching the list to
+    // member-indexed slots) and returns its shape; the next positional()
+    // writes it.
+    Shape designate(const std::vector<Designator> &designation);
+    // The shape of the slot the next positional clause fills.
+    Shape next_shape();
+    // Places one clause: at the designated subobject, or the next one.
+    void positional(TokenBase *value);
+    bool member_indexed() const { return member_indexed_; }
+private:
+    struct Frame
+    {
+	std::vector<TokenBase *> *slots;
+	Shape shape;
+	size_t cursor;
+	size_t limit;		// a positional clause fills a slot below it
+	TokenStructLit *lit;	// NULL: the list's own slots
+    };
+    std::vector<Frame> frames_;
+    Program &pgm_;
+    bool &flag_;
+    bool member_indexed_ = false;
+    bool pending_ = false;	// designate() named [pending_first, pending_last]
+    size_t pending_first_ = 0, pending_last_ = 0;
+    void switch_to_member_indexed();
+    void pop_exhausted();
+    void write(Frame &f, size_t i, TokenBase *value);
+    TokenStructLit *open_slot(size_t frame, size_t i, const Shape &slot);
+    void push_frame(std::vector<TokenBase *> *slots, const Shape &shape,
+		    TokenStructLit *lit);
+    static Shape slot_shape(const Shape &shape, size_t i);
+    static bool fills_whole(TokenBase *value, const Shape &slot);
 };
 
 // Tree-1 marker for a C++ pack expansion pattern (`expr...`) captured during a
@@ -8880,6 +8960,10 @@ public:
     // be NULL (element type unknown); `origin` anchors diagnostics.
     TokenStructLit *parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 					      TokenBase *origin);
+    // The same reader over a list of any shape (a nested list the cursor
+    // placed: an array member's elements too).
+    TokenStructLit *parse_compound_struct_lit(const InitializerCursor::Shape &shape,
+					      TokenBase *origin);
     TokenBase *parse_namespace_block(bool inline_namespace);
     void parse_namespace_body_members();	// the `{ members }` loop shared by named and unnamed namespaces
     TokenBase *parse_parenthesized_expression(const char *context,
@@ -8919,8 +9003,19 @@ public:
     // The method half: the HOST-flavor twin of a host-implemented class
     // method's Itanium symbol (madc::channel::readline under -stdlib=libc++).
     std::string host_flavor_method_symbol(FuncDef *fd);
-    bool parse_array_designator_initializer(TokenBase *&next_init,
-					    size_t &first_index, size_t &last_index);
+    // C11 6.7.9p1 `designation: designator-list =` — `[ constant ]` (GNU
+    // `[ a ... b ]`) and `. identifier`, as many as written; with `gnu_field`
+    // also the obsolete `identifier :`. `first` is a clause's first token; on a
+    // designation it is read through the `=` and `value` is the value's first
+    // token. The ONE designation reader of every brace-list reader.
+    bool parse_designation(TokenBase *first, bool gnu_field,
+			   std::vector<InitializerCursor::Designator> &out,
+			   TokenBase *&value);
+    // A string literal (the adjacent ones after it concatenated) as the
+    // element list of a character array of `count` elements: truncated or
+    // zero-padded to it; `count` 0 (unknown size) keeps every character and
+    // the NUL.
+    TokenStructLit *string_char_array(TokenStr *strtok, size_t count);
     // C11 _Generic: parse + select the association at parse time; the
     // controlling side renders through the same signature encoding as
     // parse_builtin_types_compatible_operand (with lvalue conversion and

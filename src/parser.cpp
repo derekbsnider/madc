@@ -291,6 +291,8 @@ TokenBase *madc_token_for_slot(uint32_t id)
 }
 
 static size_t find_struct_member_index(DataDefSTRUCT *sdd, const std::string &field_name);
+static bool is_char_array_element_type(DataDef *dd);
+static DataDef *aggregate_slot_member_type(DataDefSTRUCT *tsdd, size_t mi);
 
 namespace madc {
 bool internal_program_runtime_eval_source(::Program &self,
@@ -14675,8 +14677,21 @@ bool Program::paren_opens_call_on_receiver(std::stack<TokenBase *> &exStack)
 TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 						    TokenBase *origin)
 {
+	return parse_compound_struct_lit(current_sdd
+	    ? InitializerCursor::Shape::members(current_sdd)
+	    : InitializerCursor::Shape(), origin);
+}
+
+TokenStructLit *Program::parse_compound_struct_lit(const InitializerCursor::Shape &shape,
+						    TokenBase *origin)
+{
 	    nextToken(); // consume '{'
 	    TokenStructLit *slit = new TokenStructLit();
+	    DataDefSTRUCT *current_sdd = shape.kind == InitializerCursor::Shape::Members
+		? shape.sdd : NULL;
+	    // The clause → slot placement (designators, brace elision once a
+	    // designator is seen) is the cursor's.
+	    InitializerCursor cursor(*this, slit->inits, shape, slit->has_field_designators);
 	    while ( true )
 	    {
 		TokenBase *look = peekToken();
@@ -14687,120 +14702,38 @@ TokenStructLit *Program::parse_compound_struct_lit(DataDefSTRUCT *current_sdd,
 		    nextToken();
 		    break;
 		}
-		if ( look->id() == TokenID::tkOpBrc )
+		TokenBase *value_tok = NULL;
+		std::vector<InitializerCursor::Designator> designation;
+		bool designated = parse_designation(nextToken(), current_sdd != NULL,
+						    designation, value_tok);
+		InitializerCursor::Shape slot = designated ? cursor.designate(designation)
+		    : cursor.member_indexed() ? cursor.next_shape()
+		    : InitializerCursor::Shape();
+		TokenBase *value;
+		if ( value_tok->id() == TokenID::tkOpBrc )
 		{
-		    DataDefSTRUCT *elem_sdd = NULL;
-		    if ( current_sdd )
-		    {
-			size_t idx = slit->inits.size();
-			if ( idx < current_sdd->members.size() )
-			    elem_sdd = dynamic_cast<DataDefSTRUCT *>(current_sdd->members[idx].second);
-		    }
-		    slit->inits.push_back(parse_compound_struct_lit(elem_sdd,
-								    origin));
-		}
-		else if ( look->id() == TokenID::tkOpSqr )
-		{
-		    // `[idx] = value` array designator (C11 6.7.9; c-testsuite
-		    // 00150 `{[0] = 1, 1+1}`): the shared designator reader
-		    // owns the bracket grammar; positional elements resume
-		    // after the designated slot (inits.size() continues from
-		    // the resize).
-		    TokenBase *ni = nextToken();
-		    size_t first_index = 0, last_index = 0;
-		    parse_array_designator_initializer(ni, first_index, last_index);
-		    TokenBase *value_expr;
-		    if ( ni && ni->id() == TokenID::tkOpBrc )
-		    {
-			pushToken(ni);
-			value_expr = parse_compound_struct_lit(NULL, origin);
-		    }
+		    pushToken(value_tok);
+		    if ( designated || cursor.member_indexed() )
+			value = parse_compound_struct_lit(slot, origin);
 		    else
-			value_expr = parseExpression(ni);
-		    if ( slit->inits.size() <= last_index )
-			slit->inits.resize(last_index + 1, NULL);
-		    for ( size_t ai = first_index; ai <= last_index; ++ai )
-			slit->inits[ai] = value_expr;
+		    {
+			// By position: the member at the next slot, when it is a
+			// struct (an anonymous member's first slot is the whole
+			// anonymous aggregate).
+			DataDefSTRUCT *elem_sdd = current_sdd
+			    ? dynamic_cast<DataDefSTRUCT *>(aggregate_slot_member_type(
+				current_sdd, current_sdd->union_layout ? 0 : slit->inits.size()))
+			    : NULL;
+			value = parse_compound_struct_lit(elem_sdd, origin);
+		    }
 		}
+		else if ( value_tok->type() == TokenType::ttString
+		       && (designated || cursor.member_indexed())
+		       && slot.char_array() )
+		    value = string_char_array((TokenStr *)value_tok, (size_t)slot.dims[0]);
 		else
-		{
-		TokenBase *elem = nextToken();
-		if ( elem->id() == TokenID::tkDot
-		  || (current_sdd && is_contextual_identifier_token(elem)
-		   && peekToken() && peekToken()->id() == TokenID::tkTerC) )
-		{
-		    std::vector<std::string> field_path;
-		    TokenBase *field_tok = elem;
-		    if ( elem->id() == TokenID::tkDot )
-		    {
-			field_tok = nextToken();
-			if ( !is_contextual_identifier_token(field_tok) )
-			    Throw(field_tok) << "Expecting field name in compound literal designator" << flush;
-			field_path.push_back(contextual_identifier_name(field_tok));
-			while ( peekToken() && peekToken()->id() == TokenID::tkDot )
-			{
-			    nextToken();
-			    TokenBase *nested_field = nextToken();
-			    if ( !is_contextual_identifier_token(nested_field) )
-				Throw(nested_field) << "Expecting field name in compound literal designator" << flush;
-			    field_path.push_back(contextual_identifier_name(nested_field));
-			}
-			TokenBase *eq = nextToken();
-			if ( !eq || eq->id() != TokenID::tkAssign )
-			    Throw(eq ? eq : field_tok) << "Expecting '=' after compound literal designator" << flush;
-		    }
-		    else
-		    {
-			field_path.push_back(contextual_identifier_name(field_tok));
-			nextToken(); // consume ':'
-		    }
-		    TokenBase *value_tok = nextToken();
-		    std::vector<TokenBase *> *target_inits = &slit->inits;
-		    // The literal that OWNS the slot this designator writes —
-		    // the walk below descends into nested literals.
-		    TokenStructLit *target_lit = slit;
-		    DataDefSTRUCT *target_sdd = current_sdd;
-			size_t field_index = 0;
-			for ( size_t pi = 0; pi < field_path.size(); ++pi )
-			{
-			    const std::string &field_name = field_path[pi];
-			    field_index = find_struct_member_index(target_sdd, field_name);
-			    if ( !target_sdd || field_index >= target_sdd->members.size() )
-				Throw(field_tok) << "Unknown field '" << field_name << "' in compound literal designator" << flush;
-			    if ( target_inits->size() <= field_index )
-				target_inits->resize(field_index + 1, NULL);
-			    if ( pi + 1 == field_path.size() )
-				break;
-			    DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second);
-			    if ( !nested_sdd )
-				Throw(field_tok) << "Field '" << field_name << "' is not a struct in compound literal designator" << flush;
-			    TokenStructLit *nested_lit = dynamic_cast<TokenStructLit *>((*target_inits)[field_index]);
-			    if ( !nested_lit )
-			    {
-				nested_lit = new TokenStructLit();
-				(*target_inits)[field_index] = nested_lit;
-			    }
-			    target_inits = &nested_lit->inits;
-			    target_lit = nested_lit;
-			    target_sdd = nested_sdd;
-			}
-			if ( target_lit )
-			    target_lit->has_field_designators = true;
-			if ( value_tok && value_tok->id() == TokenID::tkOpBrc )
-			{
-			    pushToken(value_tok);
-			    DataDefSTRUCT *nested_sdd = target_sdd
-				? dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second)
-				: NULL;
-			    (*target_inits)[field_index] =
-				parse_compound_struct_lit(nested_sdd, origin);
-			}
-			else
-			    (*target_inits)[field_index] = parseExpression(value_tok);
-		    }
-		    else
-			slit->inits.push_back(parseExpression(elem));
-		}
+		    value = parseExpression(value_tok);
+		cursor.positional(value);
 		finish_list_element(TokenID::tkClBrc, "}");
 	    }
 	    return slit;
@@ -29800,7 +29733,7 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
 	return false;
     if ( var->name.compare(0, 7, "__madc_") == 0 )
 	return false;
-    if ( var->name.compare(0, 11, "__literal__") == 0 )
+    if ( var->is_string_literal() )
 	return false;
     if ( is_runtime_eval_scope_helper_name(var->name) )
 	return false;
@@ -44228,7 +44161,7 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 		      && var_call_base->var.type
 		      && var_call_base->var.type->as_fptr_dd()
 		      && !var_call_base->var.is_constant()
-		      && var_call_base->var.name.compare(0, 11, "__literal__") != 0 /* skip string literals */
+		      && !var_call_base->var.is_string_literal()
 		      && var_call_base->var.name[0] != '(' /* skip grouped exprs */ )
 		    {
 			TokenVar *tv = var_call_base;
@@ -71105,51 +71038,80 @@ bool Program::is_old_style_parameter_head(TokenBase *tb)
 	&& old_style_parameter_head_has_declaration_suffix();
 }
 
-bool Program::parse_array_designator_initializer(TokenBase *&next_init,
-					       size_t &first_index, size_t &last_index)
+bool Program::parse_designation(TokenBase *first, bool gnu_field,
+				std::vector<InitializerCursor::Designator> &out,
+				TokenBase *&value)
 {
-    if ( !next_init || next_init->id() != TokenID::tkOpSqr )
+    value = first;
+    if ( !first )
 	return false;
-
-    TokenBase *first_tok = nextToken();
-    if ( !first_tok )
-	Throw(next_init) << "Unexpected end of input in array designator" << flush;
-    pushToken(first_tok);
-
-    int64_t first = parse_constant_integer_expression();
-    if ( first < 0 )
-	Throw(next_init) << "Array designator index must be non-negative" << flush;
-
-    int64_t last = first;
-    if ( peekToken() && peekToken()->id() == TokenID::tkDot )
+    if ( gnu_field && is_contextual_identifier_token(first)
+      && peekToken() && peekToken()->id() == TokenID::tkTerC )
     {
-	TokenBase *dot1 = nextToken();
-	TokenBase *dot2 = nextToken();
-	TokenBase *dot3 = nextToken();
-	if ( !dot1 || !dot2 || !dot3
-	  || dot1->id() != TokenID::tkDot
-	  || dot2->id() != TokenID::tkDot
-	  || dot3->id() != TokenID::tkDot )
-	    Throw(dot1 ? dot1 : next_init) << "Expecting '...' in array designator range" << flush;
-	last = parse_constant_integer_expression();
-	if ( last < first )
-	    Throw(next_init) << "Array designator range end precedes start" << flush;
+	InitializerCursor::Designator d;
+	d.name = contextual_identifier_name(first);
+	d.where = first;
+	out.push_back(d);
+	nextToken(); // ':'
+	value = nextToken();
+	if ( !value )
+	    Throw(first) << "Expected value after designator" << flush;
+	return true;
     }
-
-    TokenBase *close = nextToken();
-    if ( !close || close->id() != TokenID::tkClSqr )
-	Throw(close ? close : next_init) << "Expecting ']' after array designator" << flush;
-
-    TokenBase *eq = nextToken();
-    if ( !eq || eq->id() != TokenID::tkAssign )
-	Throw(eq ? eq : close) << "Expecting '=' after array designator" << flush;
-
-    first_index = (size_t)first;
-    last_index = (size_t)last;
-    next_init = nextToken();
-    if ( !next_init )
-	Throw(eq) << "Expected value after array designator" << flush;
-
+    if ( first->id() != TokenID::tkDot && first->id() != TokenID::tkOpSqr )
+	return false;
+    TokenBase *t = first;
+    while ( true )
+    {
+	InitializerCursor::Designator d;
+	d.where = t;
+	if ( t->id() == TokenID::tkDot )
+	{
+	    TokenBase *name = nextToken();
+	    if ( !is_contextual_identifier_token(name) )
+		Throw(name ? name : t) << "Expecting field name in designated initializer" << flush;
+	    d.name = contextual_identifier_name(name);
+	    d.where = name;
+	}
+	else
+	{
+	    d.index = true;
+	    int64_t lo = parse_constant_integer_expression();
+	    if ( lo < 0 )
+		Throw(t) << "Array designator index must be non-negative" << flush;
+	    int64_t hi = lo;
+	    if ( peekToken() && peekToken()->id() == TokenID::tkDot )
+	    {
+		TokenBase *dot1 = nextToken();
+		TokenBase *dot2 = nextToken();
+		TokenBase *dot3 = nextToken();
+		if ( !dot1 || !dot2 || !dot3
+		  || dot1->id() != TokenID::tkDot
+		  || dot2->id() != TokenID::tkDot
+		  || dot3->id() != TokenID::tkDot )
+		    Throw(dot1 ? dot1 : t) << "Expecting '...' in array designator range" << flush;
+		hi = parse_constant_integer_expression();
+		if ( hi < lo )
+		    Throw(t) << "Array designator range end precedes start" << flush;
+	    }
+	    TokenBase *close = nextToken();
+	    if ( !close || close->id() != TokenID::tkClSqr )
+		Throw(close ? close : t) << "Expecting ']' after array designator" << flush;
+	    d.first = (size_t)lo;
+	    d.last = (size_t)hi;
+	}
+	out.push_back(d);
+	t = nextToken();
+	if ( !t )
+	    Throw(first) << "Unexpected end of input in designator" << flush;
+	if ( t->id() == TokenID::tkAssign )
+	    break;
+	if ( t->id() != TokenID::tkDot && t->id() != TokenID::tkOpSqr )
+	    Throw(t) << "Expecting '=' after designated initializer" << flush;
+    }
+    value = nextToken();
+    if ( !value )
+	Throw(t) << "Expected value after designator" << flush;
     return true;
 }
 
@@ -74513,12 +74475,22 @@ static bool is_char_array_element_type(DataDef *dd)
 	       || dd->rawtype() == DataType::dtUINT8);
 }
 
-static TokenStructLit *char_init_from_literal(TokenStr *strtok, bool include_null)
+static void append_string_literal_chars(TokenStructLit *slit, const std::string &s)
 {
-    TokenStructLit *slit = new TokenStructLit();
-    const std::string &s = strtok->str;
     for ( char c : s )
 	slit->inits.push_back(new TokenInt((int64_t)(unsigned char)c));
+}
+
+static TokenStructLit *char_list_of(const std::string &s)
+{
+    TokenStructLit *slit = new TokenStructLit();
+    append_string_literal_chars(slit, s);
+    return slit;
+}
+
+static TokenStructLit *char_init_from_literal(TokenStr *strtok, bool include_null)
+{
+    TokenStructLit *slit = char_list_of(strtok->str);
     if ( include_null )
 	slit->inits.push_back(new TokenInt(0));
     return slit;
@@ -74534,11 +74506,29 @@ static size_t find_struct_member_index(DataDefSTRUCT *sdd, const std::string &fi
     return sdd->members.size();
 }
 
-static void append_string_literal_chars(TokenStructLit *slit, TokenStr *strtok)
+// A character array of `count` elements from a string literal's characters:
+// truncated or zero-padded to it (no NUL when they fill it exactly, C11
+// 6.7.9p14); `count` 0, an array of unknown size, keeps them all and the NUL.
+static TokenStructLit *fit_char_array(TokenStructLit *chars, size_t count)
 {
-    const std::string &s = strtok->str;
-    for ( char c : s )
-	slit->inits.push_back(new TokenInt((int64_t)(unsigned char)c));
+    if ( count == 0 )
+	chars->inits.push_back(new TokenInt(0));
+    else
+    {
+	if ( chars->inits.size() > count )
+	    chars->inits.resize(count);
+	while ( chars->inits.size() < count )
+	    chars->inits.push_back(new TokenInt(0));
+    }
+    return chars;
+}
+
+TokenStructLit *Program::string_char_array(TokenStr *strtok, size_t count)
+{
+    TokenStructLit *slit = char_init_from_literal(strtok, false);
+    while ( peekToken() && peekToken()->type() == TokenType::ttString )
+	append_string_literal_chars(slit, ((TokenStr *)nextToken())->str);
+    return fit_char_array(slit, count);
 }
 
 // The positional-slot TYPE inside aggregate `tsdd` at member index `mi`:
@@ -74560,15 +74550,379 @@ static DataDef *aggregate_slot_member_type(DataDefSTRUCT *tsdd, size_t mi)
     return tsdd->members[mi].second;
 }
 
-static void assign_initializer_range(std::vector<TokenBase *> &inits,
-				     size_t first_index,
-				     size_t last_index,
-				     TokenBase *value)
+InitializerCursor::Shape InitializerCursor::Shape::members(DataDefSTRUCT *s)
 {
-    if ( inits.size() <= last_index )
-	inits.resize(last_index + 1, NULL);
-    for ( size_t idx = first_index; idx <= last_index; ++idx )
-	inits[idx] = (idx == first_index) ? value : (value ? value->clone_origin() : NULL);
+    Shape shape;
+    shape.kind = Members;
+    shape.sdd = s;
+    return shape;
+}
+
+InitializerCursor::Shape InitializerCursor::Shape::elements(
+    DataDef *e, const std::vector<carray_dim_t> &d)
+{
+    Shape shape;
+    shape.kind = Elements;
+    shape.elem = e;
+    shape.dims = d;
+    return shape;
+}
+
+bool InitializerCursor::Shape::char_array() const
+{
+    return kind == Elements && dims.size() == 1 && is_char_array_element_type(elem);
+}
+
+InitializerCursor::Shape InitializerCursor::Shape::of(DataDef *dd)
+{
+    Shape shape;
+    DataDef *u = dd ? dd->unqualified() : NULL;
+    if ( !u )
+	return shape;
+    if ( u->as_carray_dd() )
+    {
+	std::vector<carray_dim_t> dims;
+	DataDef *e = u;
+	while ( DataDefCArray *a = e ? e->unqualified()->as_carray_dd() : NULL )
+	{
+	    dims.push_back((carray_dim_t)a->count);
+	    e = a->element_type;
+	}
+	return elements(e, dims);
+    }
+    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(u);
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(u);
+    if ( sdd && !sdd->is_complex() && !u->is_simd() && !(cls && !cls->is_aggregate()) )
+	return members(sdd);
+    shape.kind = Scalar;
+    return shape;
+}
+
+InitializerCursor::InitializerCursor(Program &pgm, std::vector<TokenBase *> &slots,
+				     const Shape &shape, bool &member_indexed)
+    : pgm_(pgm), flag_(member_indexed)
+{
+    push_frame(&slots, shape, NULL);
+}
+
+// The anonymous aggregate member `i` of `sdd` belongs to, if any.
+static const DataDefSTRUCT::AnonymousAggregateInfo *anonymous_group_of(
+    const DataDefSTRUCT *sdd, size_t i)
+{
+    for ( const DataDefSTRUCT::AnonymousAggregateInfo &ai : sdd->anonymous_aggregates )
+	if ( ai.aggregate && ai.first_member <= i && i < ai.first_member + ai.member_count )
+	    return &ai;
+    return NULL;
+}
+
+// The slot after slot `i` of a list of `shape`. An anonymous member's members
+// are flattened into the members around it: an anonymous union takes one of
+// them, and a union's run ends with its member — or with the last member of
+// an anonymous struct it holds.
+static size_t slot_after(const InitializerCursor::Shape &shape, size_t i)
+{
+    if ( shape.kind != InitializerCursor::Shape::Members )
+	return i + 1;
+    const DataDefSTRUCT *sdd = shape.sdd;
+    const DataDefSTRUCT::AnonymousAggregateInfo *g = anonymous_group_of(sdd, i);
+    if ( sdd->union_layout )
+	return g && !g->aggregate->union_layout && i + 1 < g->first_member + g->member_count
+	    ? i + 1 : sdd->members.size();
+    if ( g && g->aggregate->union_layout )
+	return g->first_member + g->member_count;
+    return i + 1;
+}
+
+static size_t slot_capacity(const InitializerCursor::Shape &shape)
+{
+    if ( shape.kind == InitializerCursor::Shape::Members )
+	return shape.sdd->members.size();
+    if ( shape.kind == InitializerCursor::Shape::Elements
+      && !shape.dims.empty() && shape.dims[0] != 0 )
+	return (size_t)shape.dims[0];
+    return (size_t)-1;
+}
+
+void InitializerCursor::push_frame(std::vector<TokenBase *> *slots,
+				   const Shape &shape, TokenStructLit *lit)
+{
+    Frame f;
+    f.slots = slots;
+    f.shape = shape;
+    f.cursor = 0;
+    f.limit = slot_capacity(shape);
+    f.lit = lit;
+    frames_.push_back(f);
+}
+
+// The shape slot `i` of a list of `shape` initializes. A fixed-array member
+// keeps its ELEMENT type in members[] with its extents beside it.
+InitializerCursor::Shape InitializerCursor::slot_shape(const Shape &shape, size_t i)
+{
+    if ( shape.kind == Shape::Members )
+    {
+	DataDefSTRUCT *sdd = shape.sdd;
+	if ( i >= sdd->members.size() )
+	    return Shape();
+	DataDef *mt = sdd->members[i].second;
+	size_t cnt = i < sdd->member_counts.size() ? sdd->member_counts[i] : 1;
+	bool declared_array = i < sdd->member_array_flags.size() && sdd->member_array_flags[i];
+	if ( cnt == 1 && !declared_array )
+	    return Shape::of(mt);
+	std::vector<carray_dim_t> dims = i < sdd->member_dims.size() && !sdd->member_dims[i].empty()
+	    ? sdd->member_dims[i] : std::vector<carray_dim_t>(1, (carray_dim_t)cnt);
+	Shape e = Shape::of(mt);
+	if ( e.kind == Shape::Elements )
+	{
+	    dims.insert(dims.end(), e.dims.begin(), e.dims.end());
+	    return Shape::elements(e.elem, dims);
+	}
+	return Shape::elements(mt, dims);
+    }
+    if ( shape.kind == Shape::Elements )
+    {
+	if ( shape.dims.size() > 1 )
+	    return Shape::elements(shape.elem,
+		std::vector<carray_dim_t>(shape.dims.begin() + 1, shape.dims.end()));
+	return Shape::of(shape.elem);
+    }
+    return Shape();
+}
+
+// Does `value` initialize a whole `slot`, or begin its brace elision (p20)? A
+// braced list, a string literal on a character array, and an expression of
+// the slot's own struct type each fill it.
+bool InitializerCursor::fills_whole(TokenBase *value, const Shape &slot)
+{
+    if ( !value || !slot.aggregate() )
+	return true;
+    if ( TokenStructLit *sl = dynamic_cast<TokenStructLit *>(value) )
+	return !sl->array_elem_dd || slot.kind == Shape::Elements;
+    bool string_slot = slot.kind == Shape::Elements && slot.dims.size() == 1
+	&& slot.elem && slot.elem->is_integer();
+    if ( value->type() == TokenType::ttString )
+	return string_slot;
+    if ( TokenVar *tv = value->as_var_tok() )
+	if ( tv->var.is_fixed_array() )
+	    return slot.kind == Shape::Elements;
+    DataDef *vd = value->datadef();
+    DataDef *vu = vd ? vd->unqualified() : NULL;
+    // A string literal parsed as an expression is its `const char *`
+    // literal variable: on a character array the one whole-object
+    // initializer that is not a brace is a string literal, so a pointer there
+    // is one (the CIR's fills_aggregate_slot reads it the same way).
+    if ( vu && vu->is_pointer() && string_slot )
+	return true;
+    return vu && slot.kind == Shape::Members && dynamic_cast<DataDefSTRUCT *>(vu) == slot.sdd;
+}
+
+// Writes slot `i` of `f`, member-indexed. A union holds the member written
+// last (p19), and so does an anonymous union among a struct's members.
+void InitializerCursor::write(Frame &f, size_t i, TokenBase *value)
+{
+    std::vector<TokenBase *> &s = *f.slots;
+    if ( s.size() <= i )
+	s.resize(i + 1, NULL);
+    if ( f.shape.kind == Shape::Members )
+    {
+	const DataDefSTRUCT *sdd = f.shape.sdd;
+	const DataDefSTRUCT::AnonymousAggregateInfo *g = anonymous_group_of(sdd, i);
+	size_t lo = 0, hi = 0;		// the members [lo, hi) the write overrides
+	if ( sdd->union_layout )
+	{
+	    lo = 0;
+	    hi = s.size();
+	}
+	else if ( g && g->aggregate->union_layout )
+	{
+	    lo = g->first_member;
+	    hi = g->first_member + g->member_count;
+	}
+	// an anonymous struct's members are one union member
+	size_t keep_lo = i, keep_hi = i + 1;
+	if ( sdd->union_layout && g && !g->aggregate->union_layout )
+	{
+	    keep_lo = g->first_member;
+	    keep_hi = g->first_member + g->member_count;
+	}
+	for ( size_t j = lo; j < hi && j < s.size(); ++j )
+	    if ( j < keep_lo || j >= keep_hi )
+		s[j] = NULL;
+    }
+    s[i] = value;
+    if ( f.lit )
+	f.lit->has_field_designators = true;
+    else
+	flag_ = true;
+}
+
+// The nested list slot `i` of frame `fi` holds, member-indexed, ready for a
+// designator or a brace-elided run to write into: the list already there (its
+// clauses placed again, member-indexed, when its own reader placed them by
+// position), a string literal's characters, or a new list.
+TokenStructLit *InitializerCursor::open_slot(size_t fi, size_t i, const Shape &slot)
+{
+    std::vector<TokenBase *> &s = *frames_[fi].slots;
+    TokenBase *cur = i < s.size() ? s[i] : NULL;
+    TokenStructLit *lit = cur ? dynamic_cast<TokenStructLit *>(cur) : NULL;
+    if ( lit && lit->array_elem_dd )
+	lit = NULL;	// a typed array compound literal is a value
+    if ( lit )
+    {
+	if ( !lit->has_field_designators )
+	{
+	    std::vector<TokenBase *> clauses;
+	    clauses.swap(lit->inits);
+	    InitializerCursor replay(pgm_, lit->inits, slot, lit->has_field_designators);
+	    replay.switch_to_member_indexed();
+	    for ( TokenBase *clause : clauses )
+		replay.positional(clause);
+	}
+    }
+    else if ( cur && cur->type() == TokenType::ttString && slot.char_array() )
+	lit = fit_char_array(char_init_from_literal((TokenStr *)cur, false),
+			     (size_t)slot.dims[0]);
+    else if ( cur && cur->as_var_tok() && cur->as_var_tok()->var.is_string_literal()
+	   && slot.char_array() )
+	lit = fit_char_array(char_list_of(cur->as_var_tok()->var.string_literal_text()),
+			     (size_t)slot.dims[0]);
+    else
+	lit = new TokenStructLit();
+    if ( cur && lit != cur )
+    {
+	lit->file = cur->file;
+	lit->line = cur->line;
+	lit->column = cur->column;
+    }
+    lit->has_field_designators = true;
+    write(frames_[fi], i, lit);
+    return lit;
+}
+
+void InitializerCursor::switch_to_member_indexed()
+{
+    if ( member_indexed_ )
+	return;
+    member_indexed_ = true;
+    flag_ = true;
+    std::vector<TokenBase *> clauses;
+    clauses.swap(*frames_[0].slots);
+    frames_.resize(1);
+    frames_[0].cursor = 0;
+    for ( TokenBase *clause : clauses )
+	positional(clause);
+}
+
+void InitializerCursor::pop_exhausted()
+{
+    while ( frames_.size() > 1 && frames_.back().cursor >= frames_.back().limit )
+	frames_.pop_back();
+}
+
+InitializerCursor::Shape InitializerCursor::designate(
+    const std::vector<Designator> &designation)
+{
+    if ( !frames_[0].shape.aggregate() )
+    {
+	// No type to resolve against: an index places by position, a field
+	// name is skipped (the next clause fills the next slot).
+	const Designator &d = designation.front();
+	if ( designation.size() != 1 )
+	    pgm_.Throw(d.where) << "A designator list needs an initializer of known type" << flush;
+	if ( !d.index )
+	    return Shape();
+	switch_to_member_indexed();
+	frames_.resize(1);
+	pending_ = true;
+	pending_first_ = d.first;
+	pending_last_ = d.last;
+	return Shape();
+    }
+    switch_to_member_indexed();
+    frames_.resize(1);
+    for ( size_t k = 0; k < designation.size(); ++k )
+    {
+	const Designator &d = designation[k];
+	size_t fi = frames_.size() - 1;
+	const Shape shape = frames_[fi].shape;
+	size_t first = d.first, last = d.last;
+	if ( !d.index )
+	{
+	    if ( shape.kind != Shape::Members )
+		pgm_.Throw(d.where) << "Field designator '." << d.name
+			       << "' in an initializer for a non-struct" << flush;
+	    first = last = find_struct_member_index(shape.sdd, d.name);
+	    if ( first >= shape.sdd->members.size() )
+		pgm_.Throw(d.where) << "Unknown field '" << d.name
+			       << "' in designated initializer" << flush;
+	}
+	else if ( shape.kind == Shape::Elements && !shape.dims.empty()
+	       && shape.dims[0] != 0 && last >= (size_t)shape.dims[0] )
+	    pgm_.Throw(d.where) << "Array designator index " << last
+			   << " is past the end of the array" << flush;
+	if ( k + 1 == designation.size() )
+	{
+	    pending_ = true;
+	    pending_first_ = first;
+	    pending_last_ = last;
+	    return slot_shape(shape, first);
+	}
+	if ( first != last )
+	    pgm_.Throw(d.where) << "A designator range followed by another designator is not supported" << flush;
+	Shape slot = slot_shape(shape, first);
+	if ( !slot.aggregate() )
+	    pgm_.Throw(d.where) << "Designator names a member of a non-aggregate" << flush;
+	frames_[fi].cursor = slot_after(shape, first);
+	TokenStructLit *sub = open_slot(fi, first, slot);
+	push_frame(&sub->inits, slot, sub);
+    }
+    return Shape();
+}
+
+InitializerCursor::Shape InitializerCursor::next_shape()
+{
+    if ( pending_ )
+	return slot_shape(frames_.back().shape, pending_first_);
+    if ( !member_indexed_ )
+	return slot_shape(frames_[0].shape, frames_[0].slots->size());
+    pop_exhausted();
+    return slot_shape(frames_.back().shape, frames_.back().cursor);
+}
+
+void InitializerCursor::positional(TokenBase *value)
+{
+    if ( pending_ )
+    {
+	pending_ = false;
+	Frame &f = frames_.back();
+	for ( size_t i = pending_first_; i <= pending_last_; ++i )
+	    write(f, i, i == pending_first_ ? value : (value ? value->clone_origin() : NULL));
+	f.cursor = slot_after(f.shape, pending_last_);
+	return;
+    }
+    if ( !member_indexed_ )
+    {
+	frames_[0].slots->push_back(value);
+	return;
+    }
+    while ( true )
+    {
+	pop_exhausted();
+	size_t fi = frames_.size() - 1;
+	size_t i = frames_[fi].cursor;
+	Shape slot = slot_shape(frames_[fi].shape, i);
+	frames_[fi].cursor = slot_after(frames_[fi].shape, i);
+	if ( !fills_whole(value, slot) )
+	{
+	    // Brace elision (p20): the clause begins the slot's subaggregate.
+	    TokenStructLit *sub = open_slot(fi, i, slot);
+	    push_frame(&sub->inits, slot, sub);
+	    continue;
+	}
+	if ( value )
+	    write(frames_[fi], i, value);
+	return;
+    }
 }
 
 // The unsized-array count inference divides by DataDef::brace_elision_width
@@ -76191,18 +76545,6 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    saw_brace_init = true;
 	    // parse comma-separated elements up to '}'. Each element may itself
 	    // be a brace-list (for array-of-structs or nested struct members).
-	    auto padded_char_string_literal = [&](TokenStr *strtok,
-						  size_t target_count) -> TokenStructLit * {
-		TokenStructLit *slit = char_init_from_literal(strtok, false);
-		while ( peekToken() && peekToken()->type() == TokenType::ttString )
-		    append_string_literal_chars(slit, (TokenStr *)nextToken());
-		if ( target_count == 0 )
-		    slit->inits.push_back(new TokenInt(0));
-		else
-		    while ( slit->inits.size() < target_count )
-			slit->inits.push_back(new TokenInt(0));
-		return slit;
-	    };
 	    auto zero_array_initializer = [&](size_t depth) -> TokenBase * {
 		if ( depth + 1 >= arr_dims.size() )
 		    return new TokenInt(0);
@@ -76215,6 +76557,18 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		return slit;
 	    };
 	    std::function<TokenStructLit *(size_t, DataDef *)> read_struct_lit;
+	    // The list a nested `{` reads when the cursor names its shape: a
+	    // level of the declared array (a row), a struct, or — an array
+	    // member's elements — a list of no tracked type.
+	    auto read_slot_list = [&](const InitializerCursor::Shape &s) -> TokenStructLit * {
+		if ( s.kind == InitializerCursor::Shape::Members )
+		    return read_struct_lit(arr_dims.size(), s.sdd);
+		if ( s.kind == InitializerCursor::Shape::Elements && s.elem == decl_type
+		  && s.dims.size() <= arr_dims.size()
+		  && std::equal(s.dims.begin(), s.dims.end(), arr_dims.end() - s.dims.size()) )
+		    return read_struct_lit(arr_dims.size() - s.dims.size(), NULL);
+		return read_struct_lit(arr_dims.size() + 1, NULL);
+	    };
 	    read_struct_lit = [&](size_t depth, DataDef *target_dd) -> TokenStructLit * {
 		nextToken(); // consume '{'
 		TokenStructLit *slit = new TokenStructLit();
@@ -76236,6 +76590,18 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 			return decl_type;
 		    return NULL;
 		};
+		// What this list initializes, for the cursor: the target
+		// struct, a level of the declared array, or its element.
+		InitializerCursor::Shape list_shape;
+		if ( target_dd )
+		    list_shape = InitializerCursor::Shape::of(target_dd);
+		else if ( !arr_dims.empty() && depth < arr_dims.size() )
+		    list_shape = InitializerCursor::Shape::elements(decl_type,
+			std::vector<carray_dim_t>(arr_dims.begin() + depth, arr_dims.end()));
+		else if ( !arr_dims.empty() && depth == arr_dims.size() )
+		    list_shape = InitializerCursor::Shape::of(decl_type);
+		InitializerCursor cursor(*this, slit->inits, list_shape,
+					 slit->has_field_designators);
 		while ( true )
 		{
 		    TokenBase *iln = peekToken();
@@ -76246,103 +76612,49 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 			nextToken(); // consume '}'
 			break;
 		    }
-		    if ( iln->id() == TokenID::tkOpBrc )
-			slit->inits.push_back(read_struct_lit(depth + 1,
-			    nested_slot_type(slit->inits.size())));
-		    else
+		    TokenBase *ni = NULL;
+		    std::vector<InitializerCursor::Designator> designation;
+		    bool designated = parse_designation(nextToken(),
+			list_shape.kind == InitializerCursor::Shape::Members, designation, ni);
+		    InitializerCursor::Shape slot = designated ? cursor.designate(designation)
+			: cursor.member_indexed() ? cursor.next_shape()
+			: InitializerCursor::Shape();
+		    bool by_slot = designated || cursor.member_indexed();
+		    if ( ni->id() == TokenID::tkOpBrc )
 		    {
-			TokenBase *ni = nextToken();
-			size_t design_first = 0;
-			size_t design_last = 0;
-			bool array_designator = false;
-			bool field_designator = false;
-			size_t design_field = 0;
-			DataDef *value_dd = NULL;
-			if ( ni->id() == TokenID::tkDot )
-			{
-			    // `.field = value` in a NESTED brace: resolve
-			    // against the slot's struct type when known —
-			    // the anonymous-struct-in-union reorder
-			    // (c-testsuite 00216, `guv2 = {{.b=7,.a=8}}`)
-			    // silently filled POSITIONALLY before. Unknown
-			    // target keeps the old positional skip.
-			    TokenBase *field_tok = nextToken(); // field name
-			    nextToken(); // '='
-			    DataDefSTRUCT *tsdd = dynamic_cast<DataDefSTRUCT *>(
-				target_dd ? target_dd->unqualified() : NULL);
-			    if ( tsdd && field_tok
-			      && is_contextual_identifier_token(field_tok) )
-			    {
-				std::string fname =
-				    contextual_identifier_name(field_tok);
-				for ( size_t mi2 = 0; mi2 < tsdd->members.size(); ++mi2 )
-				    if ( tsdd->members[mi2].first == fname )
-				    {
-					field_designator = true;
-					design_field = mi2;
-					if ( !(mi2 < tsdd->member_counts.size()
-					    && tsdd->member_counts[mi2] != 1) )
-					    value_dd = tsdd->members[mi2].second;
-					break;
-				    }
-			    }
-			    ni = nextToken();
-			}
-			else
-			    array_designator = parse_array_designator_initializer(ni,
-				design_first, design_last);
-			auto place_slot = [&](TokenBase *value) {
-			    if ( array_designator )
-				assign_initializer_range(slit->inits, design_first, design_last, value);
-			    else if ( field_designator )
-			    {
-				if ( slit->inits.size() <= design_field )
-				    slit->inits.resize(design_field + 1, NULL);
-				slit->inits[design_field] = value;
-				slit->has_field_designators = true;
-			    }
-			    else
-				slit->inits.push_back(value);
-			};
-			if ( ni->id() == TokenID::tkOpBrc )
-			{
-			    pushToken(ni);
-			    TokenBase *nested = read_struct_lit(depth + 1,
-				field_designator ? value_dd
-				: array_designator ? NULL
-				: nested_slot_type(slit->inits.size()));
-			    place_slot(nested);
-			}
-			else
-			{
-			    bool handled_string_subarray = false;
-			    if ( !arr_dims.empty()
-			      && arr_dims.size() > 1
-			      && ni->type() == TokenType::ttString
-			      && is_char_array_element_type(decl_type) )
-			    {
-				size_t target_count = 0;
-				if ( depth + 1 < arr_dims.size() )
-				    target_count = arr_dims[depth + 1];
-				else if ( depth < arr_dims.size() )
-				    target_count = arr_dims[depth];
-				TokenBase *nested = padded_char_string_literal((TokenStr *)ni,
-				    target_count);
-				if ( !array_designator && !field_designator
-				  && depth + 1 >= arr_dims.size() )
-				{
-				    TokenStructLit *nested_lit = (TokenStructLit *)nested;
-				    for ( TokenBase *child : nested_lit->inits )
-					slit->inits.push_back(child);
-				}
-				else
-				    place_slot(nested);
-				handled_string_subarray = true;
-			    }
-			    if ( !handled_string_subarray )
-				place_slot(parseExpression(ni));
-			}
+			pushToken(ni);
+			cursor.positional(by_slot ? read_slot_list(slot)
+			    : read_struct_lit(depth + 1, nested_slot_type(slit->inits.size())));
 		    }
+		    else if ( ni->type() == TokenType::ttString && by_slot
+			   && slot.char_array() )
+			cursor.positional(string_char_array((TokenStr *)ni,
+			    (size_t)slot.dims[0]));
+		    else if ( !arr_dims.empty()
+			   && arr_dims.size() > 1
+			   && ni->type() == TokenType::ttString
+			   && is_char_array_element_type(decl_type) )
+		    {
+			size_t target_count = 0;
+			if ( depth + 1 < arr_dims.size() )
+			    target_count = arr_dims[depth + 1];
+			else if ( depth < arr_dims.size() )
+			    target_count = arr_dims[depth];
+			if ( !designated && depth + 1 >= arr_dims.size() )
+			{
+			    // The string spells this row's characters (from the
+			    // cursor's place in it, once the row is member-indexed).
+			    TokenStructLit *nested = string_char_array((TokenStr *)ni,
+				cursor.member_indexed() ? 0 : target_count);
+			    for ( TokenBase *child : nested->inits )
+				cursor.positional(child);
+			}
+			else
+			    cursor.positional(string_char_array((TokenStr *)ni,
+				target_count));
+		    }
+		    else
+			cursor.positional(parseExpression(ni));
 		    finish_list_element(TokenID::tkClBrc, "}");
 		}
 		// A row's missing clauses read as `0` for scalar elements. A C++
@@ -76368,6 +76680,12 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		return aggregate_slot_member_type(tsdd,
 		    tsdd->union_layout ? 0 : slot_idx);
 	    };
+	    // The clause -> slot placement (designators, brace elision once a
+	    // designator is seen) is the cursor's.
+	    InitializerCursor cursor(*this, init_list, !arr_dims.empty()
+		? InitializerCursor::Shape::elements(decl_type, arr_dims)
+		: is_struct_init ? InitializerCursor::Shape::of(decl_type)
+		: InitializerCursor::Shape(), init_has_field_designators);
 	    while ( true )
 	    {
 		TokenBase *look = peekToken();
@@ -76378,182 +76696,43 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    nextToken(); // consume '}'
 		    break;
 		}
-		if ( look->id() == TokenID::tkOpBrc )
+		// C99 designated initializer: `.field = value`, `[index] = value`
+		// GNU legacy designated initializer: `field: value`
+		TokenBase *next_init = NULL;
+		std::vector<InitializerCursor::Designator> designation;
+		bool designated = parse_designation(nextToken(), is_struct_init,
+						    designation, next_init);
+		InitializerCursor::Shape slot = designated ? cursor.designate(designation)
+		    : cursor.member_indexed() ? cursor.next_shape()
+		    : InitializerCursor::Shape();
+		bool string_clause = next_init->type() == TokenType::ttString;
+		DataDefSTRUCT *sdd = is_struct_init
+		    ? dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified()) : NULL;
+		size_t field_index = init_list.size();
+		if ( next_init->id() == TokenID::tkOpBrc )
 		{
-		    init_list.push_back(read_struct_lit(1,
-			top_slot_type(init_list.size())));
+		    pushToken(next_init);
+		    cursor.positional(designated || cursor.member_indexed()
+			? read_slot_list(slot)
+			: read_struct_lit(1, top_slot_type(init_list.size())));
 		}
+		else if ( string_clause && (designated || cursor.member_indexed())
+		       && slot.char_array() )
+		    cursor.positional(string_char_array((TokenStr *)next_init,
+			(size_t)slot.dims[0]));
+		else if ( string_clause && !designated && !cursor.member_indexed()
+		       && sdd && field_index < sdd->members.size()
+		       && field_index < sdd->member_counts.size()
+		       && sdd->member_counts[field_index] != 1
+		       && is_char_array_element_type(sdd->members[field_index].second) )
+		    cursor.positional(string_char_array((TokenStr *)next_init,
+			sdd->member_counts[field_index]));
+		else if ( string_clause && !designated && !cursor.member_indexed()
+		       && !arr_dims.empty() && arr_dims.size() > 1
+		       && is_char_array_element_type(decl_type) )
+		    cursor.positional(string_char_array((TokenStr *)next_init, arr_dims[1]));
 		else
-		{
-		    // C99 designated initializer: `.field = value`
-		    // GNU legacy designated initializer: `field: value`
-		    // Skip the designator and use the value expression.
-		    TokenBase *next_init = nextToken();
-		    if ( next_init->id() == TokenID::tkDot
-		      || (is_struct_init && is_contextual_identifier_token(next_init)
-		       && peekToken() && peekToken()->id() == TokenID::tkTerC) )
-		    {
-			std::vector<std::string> field_path;
-			TokenBase *field_tok = next_init;
-			if ( next_init->id() == TokenID::tkDot )
-			{
-			    field_tok = nextToken(); // consume field name
-			    if ( !is_contextual_identifier_token(field_tok) )
-				Throw(field_tok) << "Expecting field name in designated initializer" << flush;
-			    field_path.push_back(contextual_identifier_name(field_tok));
-			    while ( peekToken() && peekToken()->id() == TokenID::tkDot )
-			    {
-				nextToken();
-				TokenBase *nested_field = nextToken();
-				if ( !is_contextual_identifier_token(nested_field) )
-				    Throw(nested_field) << "Expecting field name in designated initializer" << flush;
-				field_path.push_back(contextual_identifier_name(nested_field));
-			    }
-			    TokenBase *eq = nextToken(); // consume '='
-			    if ( eq->id() != TokenID::tkAssign )
-				Throw(eq) << "Expecting '=' after designated initializer" << flush;
-			}
-			else
-			{
-			    field_path.push_back(contextual_identifier_name(field_tok));
-			    nextToken(); // consume ':'
-			}
-			next_init = nextToken();
-			if ( is_struct_init )
-			{
-			    DataDefSTRUCT *target_sdd = dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified());
-			    std::vector<TokenBase *> *target_inits = &init_list;
-			    // NULL while the target is the declaration's OWN
-			    // list; set once the walk descends into a nested
-			    // literal. Same fact as TokenStructLit's flag.
-			    TokenStructLit *target_lit = NULL;
-			    size_t field_index = 0;
-			    for ( size_t pi = 0; pi < field_path.size(); ++pi )
-			    {
-				const std::string &field_name = field_path[pi];
-				field_index = target_sdd ? target_sdd->members.size() : 0;
-				if ( target_sdd )
-				{
-				    for ( size_t mi = 0; mi < target_sdd->members.size(); ++mi )
-				    {
-					if ( target_sdd->members[mi].first == field_name )
-					{
-					    field_index = mi;
-					    break;
-					}
-				    }
-				}
-				if ( !target_sdd || field_index >= target_sdd->members.size() )
-				    Throw(field_tok) << "Unknown field '" << field_name << "' in designated initializer" << flush;
-				if ( target_inits->size() <= field_index )
-				    target_inits->resize(field_index + 1, NULL);
-				if ( pi + 1 == field_path.size() )
-				    break;
-				DataDefSTRUCT *nested_sdd = dynamic_cast<DataDefSTRUCT *>(target_sdd->members[field_index].second->unqualified());
-				if ( !nested_sdd )
-				    Throw(field_tok) << "Field '" << field_name << "' is not a struct in designated initializer" << flush;
-				TokenStructLit *nested_lit = dynamic_cast<TokenStructLit *>((*target_inits)[field_index]);
-				if ( !nested_lit )
-				{
-				    nested_lit = new TokenStructLit();
-				    (*target_inits)[field_index] = nested_lit;
-				}
-				target_inits = &nested_lit->inits;
-				target_lit = nested_lit;
-				target_sdd = nested_sdd;
-			    }
-			    if ( target_lit )
-				target_lit->has_field_designators = true;
-			    else
-				init_has_field_designators = true;
-			    if ( next_init && next_init->id() == TokenID::tkOpBrc )
-			    {
-				pushToken(next_init);
-				(*target_inits)[field_index] = read_struct_lit(1,
-				    (target_sdd && field_index < target_sdd->members.size())
-					? target_sdd->members[field_index].second : NULL);
-				finish_list_element(TokenID::tkClBrc, "}");
-				continue;
-			    }
-			    (*target_inits)[field_index] = parseExpression(next_init);
-			    finish_list_element(TokenID::tkClBrc, "}");
-			    continue;
-			}
-		    }
-		    // Array designator: [index] = value
-		    else if ( next_init->id() == TokenID::tkOpSqr )
-		    {
-			size_t first_index = 0;
-			size_t last_index = 0;
-			parse_array_designator_initializer(next_init,
-			    first_index, last_index);
-			TokenBase *design_value = NULL;
-			if ( next_init->id() == TokenID::tkOpBrc )
-			{
-			    pushToken(next_init);
-			    design_value = read_struct_lit(1,
-				arr_dims.size() == 1 ? decl_type : NULL);
-			}
-			else
-			    design_value = parseExpression(next_init);
-			assign_initializer_range(init_list, first_index, last_index, design_value);
-			finish_list_element(TokenID::tkClBrc, "}");
-			continue;
-		    }
-		    if ( is_struct_init && next_init->type() == TokenType::ttString )
-		    {
-			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(decl_type->unqualified());
-			size_t field_index = init_list.size();
-			if ( sdd && field_index < sdd->members.size()
-			  && field_index < sdd->member_counts.size()
-			  && sdd->member_counts[field_index] != 1
-			  && is_char_array_element_type(sdd->members[field_index].second) )
-			{
-			    TokenStructLit *slit = char_init_from_literal((TokenStr *)next_init, false);
-			    while ( peekToken() && peekToken()->type() == TokenType::ttString )
-				append_string_literal_chars(slit, (TokenStr *)nextToken());
-			    size_t member_count = sdd->member_counts[field_index];
-			    if ( member_count == 0 )
-				slit->inits.push_back(new TokenInt(0));
-			    else
-			    {
-				if ( member_count > 0 && slit->inits.size() > member_count )
-				    slit->inits.resize(member_count);
-				while ( slit->inits.size() < member_count )
-				    slit->inits.push_back(new TokenInt(0));
-			    }
-			    init_list.push_back(slit);
-			    finish_list_element(TokenID::tkClBrc, "}");
-			    continue;
-			}
-		    }
-		    if ( !arr_dims.empty()
-		      && arr_dims.size() > 1
-		      && next_init->type() == TokenType::ttString
-		      && is_char_array_element_type(decl_type) )
-		    {
-			TokenStructLit *slit = char_init_from_literal((TokenStr *)next_init, false);
-			while ( peekToken() && peekToken()->type() == TokenType::ttString )
-			    append_string_literal_chars(slit, (TokenStr *)nextToken());
-			size_t inner_count = arr_dims[1];
-			if ( inner_count == 0 )
-			    slit->inits.push_back(new TokenInt(0));
-			else
-			{
-			    // C89/C99: truncate excess characters when the
-			    // string literal is longer than the array dimension.
-			    if ( inner_count > 0 && slit->inits.size() > inner_count )
-				slit->inits.resize(inner_count);
-			    while ( slit->inits.size() < inner_count )
-				slit->inits.push_back(new TokenInt(0));
-			}
-			init_list.push_back(slit);
-			finish_list_element(TokenID::tkClBrc, "}");
-			continue;
-		    }
-		    TokenBase *expr = parseExpression(next_init);
-		    init_list.push_back(expr);
-		}
+		    cursor.positional(parseExpression(next_init));
 		finish_list_element(TokenID::tkClBrc, "}");
 	    }
 	    }

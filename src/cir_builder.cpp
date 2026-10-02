@@ -5407,7 +5407,7 @@ bool CirBuilder::is_class_object_value(TokenBase *arg)
 			    || is_array_object(tm->datadef());
 	if (arg && arg->type() == TokenType::ttVariable)
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
-			if (tv->var.name.compare(0, 11, "__literal__") == 0)
+			if (tv->var.is_string_literal())
 				return false;
 			// A reference variable denotes its referent: a user
 			// class OR the carrier (`value &v` — carrier_behind; the
@@ -10324,10 +10324,9 @@ node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate,
 			      DataDef *slot_dd)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
-	// `.field`/`[index]` designators into positional slots at parse time
-	// (parser.cpp: assign_initializer_range / field_index resolution),
-	// NULL-filling the slots between explicit values. C semantics zero-fill
-	// those gaps.
+	// `.field`/`[index]` designators into member-indexed slots at parse time
+	// (InitializerCursor), NULL-filling the slots between explicit values.
+	// C semantics zero-fill those gaps.
 	//
 	// The emitted gap value MUST match the target slot's shape so c2mir
 	// consumes exactly one slot and advances. For a scalar member a dense
@@ -10399,6 +10398,9 @@ node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i,
 	// A slot holding pointers to data member: unwritten, it holds their
 	// null; a counted array's braced list completes its unwritten
 	// elements the same way.
+	// A fixed-array member's braced list is its ELEMENTS (members[] holds
+	// the element type): when member-indexed (InitializerCursor) its
+	// unwritten elements and rows take their own shape.
 	DataDef *du = unqualified_type(dd);
 	DataDefSTRUCT *sdd = (du && !du->is_complex()) ? du->as_struct_dd() : NULL;
 	// A braced clause in an anonymous member's first slot of a list placed
@@ -10414,20 +10416,24 @@ node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i,
 				return aggregate_init_list(al->inits,
 					const_cast<DataDefSTRUCT *>(ai.aggregate), elem,
 					false, al->has_field_designators);
-	if (sdd && i < sdd->members.size()
-	    && holds_member_data_pointer(sdd->members[i].second)) {
+	if (sdd && i < sdd->members.size()) {
 		DataDef *mt = sdd->members[i].second;
+		bool memptr = holds_member_data_pointer(mt);
 		size_t cnt = i < sdd->member_counts.size() ? sdd->member_counts[i] : 1;
 		const std::vector<carray_dim_t> *md =
 			i < sdd->member_dims.size() ? &sdd->member_dims[i] : NULL;
-		if (!elem)
+		if (!elem && memptr)
 			return member_pointer_null_value(mt, cnt, md, NULL);
 		TokenStructLit *sl = dynamic_cast<TokenStructLit *>(elem);
-		if (sl && cnt != 1 && !sl->array_elem_dd) {
+		if (sl && cnt != 1 && !sl->array_elem_dd
+		    && (memptr || sl->has_field_designators)) {
 			node_t lst = aggregate_init_list(sl->inits, mt, elem, true,
-							 sl->has_field_designators);
-			complete_member_pointer_element_list(lst, sl->inits, mt, cnt,
-							     md, elem);
+							 sl->has_field_designators,
+							 !memptr && md && md->size() > 1
+							 ? md : NULL);
+			if (memptr)
+				complete_member_pointer_element_list(lst, sl->inits, mt,
+								     cnt, md, elem);
 			return lst;
 		}
 	}
@@ -10451,11 +10457,14 @@ node_t CirBuilder::init_slot_value(TokenBase *elem, DataDef *dd, size_t i,
 // value into that member's positional SLOT, so the slot index IS the member
 // index. It only has to be spelled back as the N_FIELD_ID designator the
 // grammar above takes. A later initializer for the same union overrides an
-// earlier one, so the LAST filled slot is the one that survives.
+// earlier one (6.7.9p19) — the parser's InitializerCursor clears the member
+// it overrides, so a designated union arrives with one member filled (or
+// one anonymous struct's members).
 node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 				       DataDef *dd, TokenBase *origin,
 				       bool slots_are_elements,
-				       bool has_field_designators)
+				       bool has_field_designators,
+				       const std::vector<carray_dim_t> *dims)
 {
 	node_t lst = list();
 	if (slots_are_elements) {
@@ -10470,6 +10479,29 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 		bool elem_aggregate = eu && ((eu->is_struct() && !eu->is_complex())
 					     || eu->as_carray_dd() != NULL);
 		for (size_t i = 0; i < inits.size(); i++) {
+			// The member-indexed slots of a multi-dimensional array
+			// are its ROWS: an unwritten row is an empty brace (a
+			// scalar 0 would brace-elide into the row before it), and
+			// a row the cursor placed takes the row's extents.
+			if (has_field_designators && dims && dims->size() > 1) {
+				std::vector<carray_dim_t> row(dims->begin() + 1, dims->end());
+				TokenStructLit *rl = inits[i]
+					? dynamic_cast<TokenStructLit *>(inits[i]) : NULL;
+				if (!inits[i]) {
+					size_t n = 1;
+					for (carray_dim_t d : row)
+						n *= (size_t)d;
+					node_t mp = member_pointer_null_value(dd, n, &row, origin);
+					append(lst, node2(N_INIT, list(), mp ? mp : list()));
+					continue;
+				}
+				if (rl && !rl->array_elem_dd && rl->has_field_designators) {
+					append(lst, node2(N_INIT, list(),
+						aggregate_init_list(rl->inits, dd, origin,
+								    true, true, &row)));
+					continue;
+				}
+			}
 			// An unwritten element holding pointers to data
 			// member holds their null.
 			node_t gap = inits[i] ? NULL
@@ -10570,8 +10602,8 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 			}
 			return lst;
 		}
-		// Different members: the LAST designator is the one that
-		// survives (6.7.9p17).
+		// Different members: only a list the cursor did not place
+		// arrives so; its highest slot is taken.
 		size_t chosen = filled.back();
 		node_t des = list();
 		if (chosen > 0 && chosen < sdd->members.size()
@@ -10583,6 +10615,37 @@ node_t CirBuilder::aggregate_init_list(const std::vector<TokenBase *> &inits,
 		return lst;
 	}
 	for (size_t i = 0; i < inits.size(); i++) {
+		// MEMBER-indexed slots (InitializerCursor) hold an anonymous
+		// union's members flattened among the struct's, one slot each;
+		// in C the anonymous union is ONE member, so its slots emit as
+		// one braced initializer naming the member written.
+		const DataDefSTRUCT::AnonymousAggregateInfo *anon_union = NULL;
+		if (has_field_designators && sdd && !sdd->is_complex())
+			for (const DataDefSTRUCT::AnonymousAggregateInfo &ai
+			     : sdd->anonymous_aggregates)
+				if (ai.aggregate && ai.aggregate->union_layout
+				    && ai.first_member == i && ai.member_count > 0) {
+					anon_union = &ai;
+					break;
+				}
+		if (anon_union) {
+			size_t end = anon_union->first_member + anon_union->member_count;
+			node_t inner = list();
+			for (size_t m = i; m < end && m < inits.size(); m++) {
+				if (!inits[m])
+					continue;
+				node_t des = list();
+				if (m > i && !sdd->members[m].first.empty())
+					append(des, node1(N_FIELD_ID,
+							  id(sdd->members[m].first.c_str())));
+				append(inner, node2(N_INIT, des,
+						    init_slot_value(inits[m], dd, m, has_field_designators)));
+				break;
+			}
+			append(lst, node2(N_INIT, list(), inner));
+			i = end - 1;
+			continue;
+		}
 		// A lowered-complex slot with a constant complex initializer
 		// folds to a nested {re, im} list — the runtime stmt-expr
 		// lowering is not a constant expression (testcomplexushort's
@@ -11225,9 +11288,15 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			// (gcc warns, c2mir refuses — see unwrap_scalar_braces).
 			unwrap_scalar_braces_list(tdecl->init_list, base_dd,
 						  elem_slots);
+			std::vector<carray_dim_t> var_dims;
+			if (elem_slots)
+				var_dims = v->array_dims();
 			lst = aggregate_init_list(tdecl->init_list, base_dd,
 						  origin, elem_slots,
-						  tdecl->init_has_field_designators);
+						  tdecl->init_has_field_designators,
+						  var_dims.size() > 1
+						  && !holds_member_data_pointer(base_dd)
+						  ? &var_dims : NULL);
 			if (elem_slots) {
 				std::vector<carray_dim_t> dims = v->array_dims();
 				complete_member_pointer_element_list(lst,
@@ -24937,8 +25006,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			    && tv->var.type->is_integer() && !tv->var.type->is_pointer()
 			    && !tv->var.is_fixed_array() && tb != m_object_designator)
 				return constant_value_literal(tv->var, tb);
-			if (tv->var.name.compare(0, 11, "__literal__") == 0) {
-				const std::string &content = tv->var.name.substr(11);
+			if (tv->var.is_string_literal()) {
+				const std::string &content = tv->var.string_literal_text();
 				return str(content.c_str(), content.size() + 1, tb);
 			}
 			// The same fold for a set()-valued `const char *` constant —
@@ -25423,8 +25492,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// literal itself, not a reference to an undefined symbol.
 			node_t base;
 			node_t baked_base = baked_cstr_constant(tsub->object, tb);
-			if (tsub->object.name.compare(0, 11, "__literal__") == 0) {
-				const std::string &content = tsub->object.name.substr(11);
+			if (tsub->object.is_string_literal()) {
+				const std::string &content = tsub->object.string_literal_text();
 				base = str(content.c_str(), content.size() + 1, tb);
 			} else if (baked_base) {
 				// Host-installed const char* scope binding: this arm
