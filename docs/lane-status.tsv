@@ -3,15 +3,15 @@ darwin-suite	release	b025833d039c	2026-09-22	arm64 1533/0/0TO/30skip, Intel 1534
 libcxx	release	b025833d039c	2026-09-22	jit 1547/0/0TO/16skip; exe 1451/0; obj 1451/0 (+4 vs the previous 1543 = the variadic-sibling-paint reducer and siblings)
 genuine-win	release	697c3338b12b	2026-09-22	1494/0/0TO/69skip — the FULL suite on the owner Windows 11 box over the W0.2 channel (scripts/win_suite.sh from the container; the packed madc-release-x86-64-windows.exe REBUILT from current content at 09:11 with DLLs + tests/tools/examples staged, MADC_SKIP_EXT="win64 win", 60 tests carry a domain skip fixture). +14 vs the 2026-09-21 row (1480/0/0TO/69skip) = the variadic-sibling-paint fix and its reducer. win_suite rc=0
 brew-linux	release	328b13c09126	2026-10-02	1911/0/0TO/9skip - scripts/brew_lane.sh on the container (Homebrew 7.0.7, Ubuntu 24.04): brew install --build-bottle + brew bottle + the keg POURED back from the bottle (receipt poured_from_bottle) + brew test; forest as the libmadc.so.0.forest sidecar; loader check (unmasked from the keg, keg lib masked from HOMEBREW_PREFIX/lib, runs 42); the suite with MADC_BIN the poured madc
-linux-battery	yes	9419e7f4a9f9	2026-10-02	seam_battery.sh: gates rc=0 (69 unit binaries 0 failed, 87 static gates, smaug_gate OK, forest_bind 32/32, project_gate); headerless 1880/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 1914/0/0TO/9skip, EXE 1744/0, OBJ 1744/0
-headerless-win	yes	9419e7f4a9f9	2026-10-02	1841/0/0TO/82skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine, seam_battery.sh
-wine64	yes	9419e7f4a9f9	2026-10-02	the packed PE under wine: headerless-win 1841/0/0TO/82skip + ondisk-win 1/0 — seam_battery.sh (owner 10-02: one full-suite run per platform, on the shipped artifact)
-aarch64-ld	yes	9419e7f4a9f9	2026-10-02	aarch64_ldouble_lane GREEN (aot + jit on every fixture) — seam_battery.sh
-macos	yes	9419e7f4a9f9	2026-10-02	BUILD lane: hosted builds + release-macos rc=0 on both arches, package-macos rc=0; darwin pack gate OK (58 headers, 837 units arm64) — seam_battery.sh
-tests-jit	batch	9419e7f4a9f9	2026-10-02	1914 passed, 0 failed, 0 timed out, 9 skipped — the tests/ suite JIT on packed -O2 madc-release (seam exeobj)
 c-testsuite	commit	028e31c36929	2026-10-03	c-testsuite: 220 passed, 0 failed (0 outside baseline)
 c-torture	commit	028e31c36929	2026-10-03	c-torture: 1613 passed, 11 failing, 0 outside baseline
 c2mir-tests	commit	028e31c36929	2026-10-03	c2mir-tests: 314 passed, 50 failed (0 outside baseline)
 gui	commit	028e31c36929	2026-10-03	gui: 25/25 JIT, 25 EXE, 25 OBJ
 gxx-c++11	no	028e31c36929	2026-10-03	gxx-c++11: 1501 passed, 445 failing, 0 outside baseline
 index-c	yes	028e31c36929	2026-10-03	index-c: 50/50 tasks OK [-O2]
+linux-battery	yes	c3a0b621c754	2026-10-03	seam_battery.sh: gates rc=0 (unit binaries + static gates, smaug_gate, forest_bind 32/32, project_gate GREEN); headerless 1883/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 1917/0/0TO/9skip, EXE 1747/0, OBJ 1747/0
+headerless-win	yes	c3a0b621c754	2026-10-03	1844/0/0TO/82skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine, seam_battery.sh
+wine64	yes	c3a0b621c754	2026-10-03	the packed PE under wine: headerless-win 1844/0/0TO/82skip + ondisk-win 1/0 — seam_battery.sh
+aarch64-ld	yes	c3a0b621c754	2026-10-03	aarch64_ldouble_lane GREEN (aot + jit on every fixture) — seam_battery.sh
+macos	yes	c3a0b621c754	2026-10-03	BUILD lane: hosted builds + release-macos rc=0 on both arches, package-macos rc=0; verify_macho_release OK (837 units arm64 + x86_64) — seam_battery.sh
+tests-jit	batch	c3a0b621c754	2026-10-03	1917 passed, 0 failed, 0 timed out, 9 skipped — the tests/ suite JIT on packed -O2 madc-release (seam exeobj)
