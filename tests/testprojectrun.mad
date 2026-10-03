@@ -1,0 +1,15 @@
+// madc::project_run on EVERY domain (testprojectapi's artifact half is
+// POSIX-shaped and skips win64): POSIX runs the --project JIT lane in a
+// fork child; Windows spawns a child OF SELF that serves the run its parent
+// named (MADC_RUN_CHILD) — the madc CLI under the JIT, THIS program under
+// --exe. stdio is inherited, so the guest's line prints here; the return
+// is its exit status. Oracle: the CLI's own --project lane over the same
+// manifest prints "a_secret=100 from_b=300" and exits 0.
+int main()
+{
+    long rc = madc::project_run("tests/testprojectnative.prj.json");
+    println("run-rc={}", rc);
+    // An unreadable manifest never reaches a child: -1.
+    println("bad-run: {}", madc::project_run("tests/no_such.prj.json"));
+    return 0;
+}

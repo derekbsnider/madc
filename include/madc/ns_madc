@@ -291,8 +291,9 @@ namespace madc {
     //       with argv[0] = the handle's filename; stdio is INHERITED —
     //       suspend a tui first). Returns the guest's exit status
     //       (128+signal on a signal death); negative = it never ran:
-    //       -1 bad handle, -2 the parse has errors, -3 fork failed or
-    //       no fork on this platform (win64). ^C reaches the guest
+    //       -1 bad handle, -2 the parse has errors, -3 the child did
+    //       not start (fork failed; Windows: the snapshot or the spawn of
+    //       the child of self, serve_run_child). ^C reaches the guest
     //       alone while it runs (the system(3) discipline).
     // Thread contract: the runtime-eval confinement — a handle is used
     // only from the thread/program that opened it.
@@ -360,6 +361,16 @@ namespace madc {
     // process lifetime; "" = the platform probe failed. Concurrent reads
     // are safe.
     const char *compiler_path();
+    // A Run child of self. Windows has no fork, so parse_run, project_run
+    // and the madcrun:// / madcproj:// channels spawn THIS executable with
+    // the run named in its environment (MADC_RUN_CHILD); serve_run_child
+    // runs that request and exits with the guest's status, and answers -1
+    // in every other process. The initializer below calls it, so a program
+    // that can make the request serves it before its main runs (the
+    // <iostream> ios_base::Init idiom).
+    // Thread contract: process start, before the program's threads.
+    int64_t serve_run_child();
+    static const int64_t __madc_run_child = serve_run_child();
 
     // Value channels between cooperative tasks (MT-2; the Go contract —
     // src/madc_task_chan.cpp carries the full semantics). capacity 0 =

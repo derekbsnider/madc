@@ -54,6 +54,7 @@ extern thread_local bool madc_verbose;
 				// madcrun:// / madcproj://: Process child_body
 #include "madc_datachannel_internal.h"	// set_channel_error — the run channel factories
 #include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
+#include "madc_run_child.h"	// the Windows Run: a child OF SELF serves the request
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
@@ -5131,9 +5132,9 @@ static void graph_forget_tag(const parse_tu_state *st);
 // pump a program's output into its Output tab while the editor stays live
 // (the terminal keeps parse_run's inherited-stdio handoff; the owner
 // ruling holds: the tree is forked, nothing execs, nothing re-parses).
-// Windows: no fork — parse_run's own arm, the snapshot + --run-frozen (or
-// --project) child of self, as an ordinary exec:// spawn; the owner
-// removes the snapshot once the child is reaped (cleanup_paths). The
+// Windows: no fork — parse_run's own arm, the snapshot (or the manifest)
+// run by a child of self (madc_run_child.h), as an ordinary exec:// spawn;
+// the owner removes the snapshot once the child is reaped (cleanup_paths). The
 // project lane needs an engine and the forest policy: the Program that
 // opened the handles registers them (the IDE's own Program).
 namespace {
@@ -5227,10 +5228,9 @@ public:
 	    detail::set_channel_error(err, "madcrun: cannot freeze the parse for the child");
 	    return std::unique_ptr<DataChannel>();
 	}
-	options.args.push_back("--run-frozen=" + snapshot_path);
 	options.cleanup_paths.push_back(snapshot_path);
-	std::unique_ptr<Process> process(
-	    new Process(DataSource("exec://" + madc_self_exe_path()), options));
+	std::unique_ptr<Process> process =
+	    madc_run_child_process(rckFrozen, snapshot_path, options);
 #else
 	options.pty = pty;
 	::Program *child = st->child;
@@ -5286,10 +5286,8 @@ public:
 	options.inherit_stderr = true;
 #ifdef _WIN32
 	(void)pty;		// pipes: ConPTY is the named residue (the owner refuses pty here)
-	options.args.push_back("--project");
-	options.args.push_back(manifest_path);
-	std::unique_ptr<Process> process(
-	    new Process(DataSource("exec://" + madc_self_exe_path()), options));
+	std::unique_ptr<Process> process =
+	    madc_run_child_process(rckProject, manifest_path, options);
 #else
 	options.pty = pty;
 	MadcEngine *engine = policy.engine;
@@ -7682,13 +7680,35 @@ bool internal_program_parse_build(int64_t handle,
 // docs/plans/2026-08-27-madcide-ide-controls.md §Benchmarks): no fork,
 // so the handle's ALREADY-PARSED tree is FROZEN to a temp container
 // (the forest arena recorded at parse time — parse_handle_child_init;
-// LOADED == parsed, never a re-parse) and run by a fresh child madc via
-// --run-frozen — the CLI's --freeze-run pipeline as a library verb. The
-// MIR cache rides so the child skips c2mir, the measured per-Run
-// dominator. stdio is INHERITED (Process::run_and_wait's contract) —
-// the caller owns the terminal handoff exactly as on POSIX. Cosmetic
-// residue: the guest's argv[0] is the container path (--run-frozen's
-// argv shape), not the display name.
+// LOADED == parsed, never a re-parse) and run by a child OF SELF that
+// thaws it (madc_run_child.h: the CLI, madcide.exe or any program on the
+// engine serves the request). The MIR cache rides so the child skips
+// c2mir, the measured per-Run dominator. stdio is INHERITED — the caller
+// owns the terminal handoff exactly as on POSIX. Cosmetic residue: the
+// guest's argv[0] is the container path (--run-frozen's argv shape), not
+// the display name.
+#ifdef _WIN32
+// The Windows run verbs' child: this executable, serving `kind` over
+// `path` with the caller's stdin, stdout and stderr, waited for. Returns
+// the guest's status, -3 when the spawn or the wait failed. `snapshot`:
+// `path` is the run's own temp container, removed after the reap.
+static int64_t run_child_and_wait(MadcRunChildKind kind,
+				  const std::string &path, bool snapshot)
+{
+    ProcessOptions options;
+    options.inherit_stdin = true;
+    options.inherit_stdout = true;
+    options.inherit_stderr = true;
+    if ( snapshot )
+	options.cleanup_paths.push_back(path);
+    std::unique_ptr<Process> child = madc_run_child_process(kind, path, options);
+    madc::error err;
+    if ( !child->start(&err) || !child->wait(&err) )
+	return -3;
+    return child->exit_status();
+}
+#endif
+
 int64_t internal_program_parse_run(int64_t handle)
 {
     parse_tu_state *st = parse_tu_get(handle);
@@ -7714,14 +7734,7 @@ int64_t internal_program_parse_run(int64_t handle)
 	std::remove(snapshot_path.c_str());
 	return -3;
     }
-    std::string selfexe = madc_self_exe_path();
-    std::vector<std::string> cargv;
-    cargv.push_back(selfexe);				// the madc argv[0]
-    cargv.push_back("--run-frozen=" + snapshot_path);
-    madc::error rerr;
-    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
-    std::remove(snapshot_path.c_str());
-    return rc < 0 ? -3 : rc;
+    return run_child_and_wait(rckFrozen, snapshot_path, true);
 #else
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child
@@ -7956,9 +7969,8 @@ bool internal_program_project_build(::Program &self,
 // negative = it never ran: -1 unreadable manifest, -2 empty manifest,
 // -3 fork/spawn failed.
 // Windows arm: no fork — a child OF SELF runs the --project lane
-// (madc_self_exe_path + Process::run_and_wait, design (b)'s
-// child-of-self shape; the frozen-project twin of parse_run's
-// --run-frozen optimization is a named residue).
+// (run_child_and_wait, design (b)'s child-of-self shape; the
+// frozen-project twin of parse_run's frozen snapshot is a named residue).
 int64_t internal_program_project_run(::Program &self,
 				     const std::string &manifest_path)
 {
@@ -7973,16 +7985,7 @@ int64_t internal_program_project_run(::Program &self,
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child's console
     std::cerr.flush();
-    std::string selfexe = madc_self_exe_path();
-    if ( selfexe.empty() )
-	return -3;
-    std::vector<std::string> cargv;
-    cargv.push_back(selfexe);
-    cargv.push_back("--project");
-    cargv.push_back(manifest_path);
-    madc::error rerr;
-    int rc = madc::Process::run_and_wait(selfexe, cargv, &rerr);
-    return rc < 0 ? -3 : rc;
+    return run_child_and_wait(rckProject, manifest_path, false);
 #else
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child

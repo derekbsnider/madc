@@ -290,9 +290,10 @@ int64_t madc_graph_route(int64_t handle, int64_t id);
 // madc IS the compiler): madc_parse_build emits a native artifact from
 // the handle's EXISTING parsed tree (no re-parse; kind/outpath =
 // std::string*, result = diagnostics rows — a false always carries an
-// error row); madc_parse_run runs that tree in a fork() child and
-// returns the guest's exit status (negative = never ran: -1 bad handle,
-// -2 parse errors, -3 fork failed / no fork on this platform).
+// error row); madc_parse_run runs that tree in a fork() child (Windows:
+// a child of self, madc_run_child.h) and returns the guest's exit status
+// (negative = never ran: -1 bad handle, -2 parse errors, -3 the child did
+// not start).
 bool madc_parse_build(void *result, int64_t handle, void *kind,
 		      void *outpath);
 int64_t madc_parse_run(int64_t handle);

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### engine: madc::parse_run and madc::project_run spawn a child on Windows
+
+Windows has no fork: madc::parse_run on a frozen parse and madc::project_run on a project manifest now spawn a child OF SELF (the same executable) to run the guest, with the request in MADC_RUN_CHILD. The child serves the request via madc_serve_run_child (called from the CLI's main and a namespace-scope initializer in <ns_madc>, matching Python's multiprocessing.freeze_support idiom) before the program's threads start. Behaviour: the child inherits stdio, executes the guest, and exits with its status (-1 is never reached from the child; 1 exits if the request is unreadable). Validation: testparserunfrozen (POSIX + Windows JIT/EXE) and testprojectrun (Windows JIT/EXE, project_run probe) pass on wine (3 tests each, 3/0); project_run oracle (tests/testprojectnative.prj.json, gcc/clang/madc --project) outputs "a_secret=100 from_b=300" rc=0; project_run probe after: "a_secret=100 from_b=300 / run-rc=0 / bad-run: -1". Tier 1 11 EXE/OBJ tests (gui + three run tests); Tier 2 fast_lanes.sh all six lanes green (220+1613+314+25+1501+50, 0 outside baseline).
+
 ### madcide: toolbar icons, dropdowns and dividers from menu data; `new` and `menushow`
 
 A menu row may name an icon after its command — `toolbar save {save} Save` — and a menu its button drops down — `toolbar replrun {run Run} Run`. A misspelled icon or an unclosed brace refuses the menu at load with the file and line, and a drop naming a menu the file never makes refuses it too. `toolbar -` is a divider (never leading or trailing). Chthonia's toolbar is New, Open, Save | Run ▾, Stop, drawn as icons with their names as tooltips. The `new` command (File ▸ New) opens an untitled buffer. The `menushow MENU` command lists a menu's enabled items as a choice list (the ▾ beside Run), and an unknown menu answers `No menu 'X'.`. Tests: `gui/madcide_toolbar` (icons, the drop, the divider), `gui/madcide_chthonia` (clicks by name), `testmadcide_chthonia` (toolbar, dropdown, unknown menu, `new`).
