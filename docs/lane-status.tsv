@@ -14,4 +14,4 @@ c2mir-tests	commit	a7651101146e	2026-10-03	c2mir-tests: 314 passed, 50 failed (0
 gui	commit	a7651101146e	2026-10-03	gui: 25 passed, 0 failed, 0 timed out, 0 skipped | EXE: 25 passed, 0 failed (of 25 JIT-passing tests) | OBJ: 25 passed, 0 failed (of 25 JIT-passing tests) — fast tier (container)
 gxx-c++11	no	a7651101146e	2026-10-03	gxx-c++11: 1501 passed, 445 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 445 failing, 0 outside baseline, 0 baseline tests now passing — fast tier (container)
 index-c	yes	a7651101146e	2026-10-03	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 83.1609s, 50, 50, 0 — fast tier (container)
-tests-jit	batch	b78d888220d0	2026-10-03	1924 passed, 0 failed, 0 timed out, 9 skipped — batch (container, -O2 madc-release)
+tests-jit	batch	24bf66489d35	2026-10-03	1924 passed, 0 failed, 0 timed out, 9 skipped — batch (container, bin/madc -O0; this branch predates the -O2 batch switch)
