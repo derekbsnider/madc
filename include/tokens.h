@@ -577,8 +577,13 @@ public:
     // built-in pointer/arithmetic heuristics so `obj + x` reports the class type,
     // not pointer/int. NULL for ordinary scalar/pointer operators.
     DataDef *resolved_type;
-    TokenOperator() : TokenBase() { left = NULL; right = NULL; resolved_type = NULL; _datatype = &ddINT; }
-    TokenOperator(int t) : TokenBase(t) { left = NULL; right = NULL; resolved_type = NULL; _datatype = &ddINT; }
+    // That operator function returns a REFERENCE (resolved_type is then its
+    // referent): the expression is an lvalue designating an existing object
+    // ([expr.call]/14) — `cout << x` is `cout`, never a new stream. Set with
+    // resolved_type by resolve_object_operator_type (a member operator).
+    bool resolved_reference;
+    TokenOperator() : TokenBase() { left = NULL; right = NULL; resolved_type = NULL; resolved_reference = false; _datatype = &ddINT; }
+    TokenOperator(int t) : TokenBase(t) { left = NULL; right = NULL; resolved_type = NULL; resolved_reference = false; _datatype = &ddINT; }
     void set_resolved_type(DataDef *d) { resolved_type = d; }
     virtual DataDef *datadef() const override
     { return resolved_type ? resolved_type : (_datatype ? _datatype : &ddVOID); }
@@ -586,7 +591,7 @@ public:
     // — bool in C++, int in C (Program::resolve_object_operator_type records
     // which, by the language, as the token's own type).
     virtual bool yields_truth_value() const { return false; }
-    virtual TokenBase *clone() override { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual int64_t ival() const override { return 0; }
     virtual size_t argc() const override { return 2; }
     virtual bool is_operator() const override { return true; }
@@ -614,7 +619,7 @@ public:
     TokenMultiOp() : TokenOperator() {}
     TokenMultiOp(const char *s)  : TokenOperator() { str = s; }
     TokenMultiOp(std::string &s) : TokenOperator() { str = s; }
-    virtual TokenBase *clone() override { TokenMultiOp *to = new TokenMultiOp(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenMultiOp *to = new TokenMultiOp(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenType type() const override { return TokenType::ttMultiOp; }
     virtual TokenID   id()   const override { return TokenID::tkMultiOp; }
     virtual inline int precedence() const override { return 16; }
@@ -792,7 +797,7 @@ class TokenNeg: public TokenOperator
 {
 public:
     TokenNeg() : TokenOperator('-') {}
-    virtual TokenBase *clone() override { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenID id() const override { return TokenID::tkNeg; }
     virtual inline int precedence() const override { return 2; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
@@ -821,7 +826,7 @@ class TokenUnaryPlus: public TokenOperator
 {
 public:
     TokenUnaryPlus() : TokenOperator('+') {}
-    virtual TokenBase *clone() override { TokenUnaryPlus *to = new TokenUnaryPlus(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenUnaryPlus *to = new TokenUnaryPlus(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenID id() const override { return TokenID::tkUnaryPlus; }
     virtual inline int precedence() const override { return 2; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
@@ -905,7 +910,7 @@ class TokenInc: public TokenMultiOp
 {
 public:
     TokenInc() : TokenMultiOp("++") {}
-    virtual TokenBase *clone() override { TokenInc *to = new TokenInc(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenInc *to = new TokenInc(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenID id() const override { return TokenID::tkInc; }
     virtual DataDef *datadef() const override
     {
@@ -924,7 +929,7 @@ class TokenDec: public TokenMultiOp
 {
 public:
     TokenDec() : TokenMultiOp("--") {}
-    virtual TokenBase *clone() override { TokenDec *to = new TokenDec(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenDec *to = new TokenDec(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual TokenID id() const override { return TokenID::tkDec; }
     virtual DataDef *datadef() const override
     {
@@ -1096,7 +1101,7 @@ class TokenBnot: public TokenOperator
 public:
     TokenBnot() : TokenOperator('~') {}
     virtual TokenID id() const override { return TokenID::tkBnot; }
-    virtual TokenBase *clone() override { TokenBnot *to = new TokenBnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenBnot *to = new TokenBnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     // [expr.unary.op]/10, C11 6.5.3.3: the PROMOTED operand's type — ~uc is
     // int, ~0U unsigned; a complex operand is its own result (~z is the
     // conjugate, GNU), and so is a vector.
@@ -1119,7 +1124,7 @@ class TokenLnot: public TokenOperator
 public:
     TokenLnot() : TokenOperator('!') {}
     virtual TokenID id() const override { return TokenID::tkLnot; }
-    virtual TokenBase *clone() override { TokenLnot *to = new TokenLnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenLnot *to = new TokenLnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual inline int precedence()   const override { return 2; }
     virtual bool yields_truth_value() const override { return true; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
@@ -1341,7 +1346,7 @@ class TokenBSL: public TokenMultiOp
 {
     public: TokenBSL() : TokenMultiOp("<<") {}
     virtual TokenID id() const override { return TokenID::tkBSL; }
-    virtual TokenBase *clone() override { TokenBSL *to = new TokenBSL(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenBSL *to = new TokenBSL(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual inline int precedence() const override { return 5; }
     // C99 6.5.7#3: a shift's type is the PROMOTED LEFT operand's — the
     // right operand never participates (unlike the usual arithmetic
@@ -1365,7 +1370,7 @@ class TokenBSR: public TokenMultiOp
 {
     public: TokenBSR() : TokenMultiOp(">>") {}
     virtual TokenID id() const override { return TokenID::tkBSR; }
-    virtual TokenBase *clone() override { TokenBSR *to = new TokenBSR(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenBase *clone() override { TokenBSR *to = new TokenBSR(); to->left = left; to->right = right; to->resolved_type = resolved_type; to->resolved_reference = resolved_reference; return to; }
     virtual inline int precedence() const override { return 5; }
     // C99 6.5.7#3 — see TokenBSL (operator>> stays via resolved_type).
     virtual DataDef *datadef() const override

@@ -21284,6 +21284,12 @@ DataDef *Program::type_from_id(uint32_t id)
 
 DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 {
+    FuncDef *fd = binary_operator_function(opname);
+    return fd ? &fd->return_value_type() : NULL;
+}
+
+FuncDef *DataDefCLASS::binary_operator_function(const std::string &opname)
+{
     // Prefer a binary (params > 1 incl. __this) overload. Search the source
     // operator name first, then the mangled ClassName__operatorX family, then
     // the base chain.
@@ -21295,7 +21301,7 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd ) continue;
 	if ( !any ) any = fd;
-	if ( fd->parameters.size() > 1 ) return &fd->return_value_type();
+	if ( fd->parameters.size() > 1 ) return fd;
     }
     std::string mangled = name + "__" + opname;
     std::string mangled_overload_prefix = mangled + "__o";
@@ -21308,9 +21314,9 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
 	FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
 	if ( !fd ) continue;
 	if ( !any ) any = fd;
-	if ( fd->parameters.size() > 1 ) return &fd->return_value_type();
+	if ( fd->parameters.size() > 1 ) return fd;
     }
-    if ( any ) return &any->return_value_type();
+    if ( any ) return any;
     // Multiple/virtual inheritance: the operator may be inherited from ANY direct
     // base, not only the primary. basic_iostream inherits operator<< from its
     // SECOND base (basic_ostream); the first (basic_istream) has none — so a
@@ -21319,12 +21325,12 @@ DataDef *DataDefCLASS::binary_operator_return_type(const std::string &opname)
     // primary included), so this subsumes the legacy single-`base_class` walk.
     for ( const BaseSpec &b : bases )
 	if ( b.base )
-	    if ( DataDef *rt = b.base->binary_operator_return_type(opname) )
-		return rt;
+	    if ( FuncDef *bfd = b.base->binary_operator_function(opname) )
+		return bfd;
     // Legacy single-base path: a class that set base_class without populating
     // bases (then base_class is the sole parent).
     if ( bases.empty() && base_class )
-	return base_class->binary_operator_return_type(opname);
+	return base_class->binary_operator_function(opname);
     return NULL;
 }
 
@@ -21372,6 +21378,13 @@ bool DataDefCLASS::binary_operator_only_takes_nonclass(const std::string &opname
 DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
 						  bool postfix)
 {
+    FuncDef *fd = unary_operator_function(opname, postfix);
+    return fd ? &fd->return_value_type() : NULL;
+}
+
+FuncDef *DataDefCLASS::unary_operator_function(const std::string &opname,
+					       bool postfix)
+{
     FuncDef *fallback = NULL;
     std::string mangled = name + "__" + opname;
     std::string mangled_un = mangled + "_un";
@@ -21392,14 +21405,14 @@ DataDef *DataDefCLASS::unary_operator_return_type(const std::string &opname,
 	    continue;
 	bool parameterized = fd->parameters.size() > 1;
 	if ( postfix == parameterized )
-	    return &fd->return_value_type();
+	    return fd;
 	if ( !fallback )
 	    fallback = fd;
     }
     if ( fallback )
-	return &fallback->return_value_type();
+	return fallback;
     if ( base_class )
-	return base_class->unary_operator_return_type(opname, postfix);
+	return base_class->unary_operator_function(opname, postfix);
     return NULL;
 }
 
@@ -21707,10 +21720,16 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	return;
     std::string opname = std::string("operator") + opsym;
     DataDef *rt = NULL;
+    bool reference = false;
     if ( lc )
     {
-	rt = unary ? lc->unary_operator_return_type(opname, postfix)
-		   : lc->binary_operator_return_type(opname);
+	FuncDef *ofd = unary ? lc->unary_operator_function(opname, postfix)
+			     : lc->binary_operator_function(opname);
+	if ( ofd )
+	{
+	    rt = &ofd->return_value_type();
+	    reference = ofd->returns_reference();
+	}
 	if ( !rt && !unary )
 	    rt = free_binary_operator_return_class(lc, opname, to->right);
     }
@@ -21734,7 +21753,12 @@ void Program::resolve_object_operator_type(TokenOperator *to)
 	    rt = free_binary_operator_return_class_nonclass_lhs(to->left, opname,
 								to->right);
     }
-    if ( rt ) to->set_resolved_type(rt);
+    if ( rt )
+    {
+	to->set_resolved_type(rt);
+	// The free-operator sets above answer by-value returns only.
+	to->resolved_reference = reference;
+    }
 }
 
 // Cfront lowering for a retained free-operator template: `a @ b` becomes a
@@ -33590,6 +33614,12 @@ bool Program::is_addressable_expression(TokenBase *expr) const
 	if ( tcf->call_returns_reference() )
 	    return true;
     }
+    // An overloaded operator is a call of its operator function
+    // ([over.match.oper]/2): one returning a reference is an lvalue the same
+    // way — `&(cout << x)` is cout's address.
+    if ( TokenOperator *to = expr->as_operator_tok() )
+	if ( to->resolved_reference )
+	    return true;
     // [expr.cond]/4: a C++ conditional is an LVALUE when both arms are
     // lvalues (a plain variable arm counts). The CIR lowering distributes
     // the address into the arms (CirBuilder::node1's N_ADDR-over-N_COND

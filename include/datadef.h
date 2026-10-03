@@ -1946,7 +1946,11 @@ public:
     // operator's declared result type.
     // Prefers a parameterized (binary) overload; searches the unmangled name then
     // the mangled ClassName__operatorX family, then the base chain. NULL if none.
+    // The type is the function's return VALUE type (a reference's referent);
+    // binary_operator_function is the lookup itself, whose returns_reference()
+    // says whether the expression is an lvalue ([expr.call]/14).
     DataDef *binary_operator_return_type(const std::string &opname);
+    FuncDef *binary_operator_function(const std::string &opname);
     // True iff this class declares at least one binary `opname` member AND every
     // such member's explicit parameter is a NON-class (arithmetic/pointer) type —
     // i.e. no member can bind a class-object rhs. The iterator signature
@@ -1958,6 +1962,7 @@ public:
     // `operator++`, etc.). `postfix` selects the parameterized postfix form for
     // ++/-- and the nullary form otherwise.
     DataDef *unary_operator_return_type(const std::string &opname, bool postfix);
+    FuncDef *unary_operator_function(const std::string &opname, bool postfix);
     void register_extern_ctor_dtor(void *ctor, void *dtor) {
 	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
     }
