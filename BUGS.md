@@ -682,6 +682,36 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B164. The forest pack's header compile refuses libstdc++ 13 template bodies (28 errors, the build stays green)
+
+`make -C src release` runs `scripts/forest_pack.sh --image
+lib/release/libmadc.so bin/madc-release`, which compiles
+`tmp/forest_pack_tu.cpp` (the `scripts/forest_pack_headers.txt` set) and
+prints 28 errors from GCC 13's headers before packing anyway (rc=0):
+
+- `bits/basic_string.h:1085` `_Alloc_traits::max_size(...)`: "use of
+  undeclared identifier 'max_size'" (8 times): a static member reached
+  through a dependent typedef.
+- `bits/fstream.tcc:184` `_M_file.open(__s, __mode)`: "undeclared
+  identifier '__mode'", the enclosing member function's own parameter.
+  The same shape: `istream.tcc:713` `eofbit` and `locale_facets_nonio.tcc:725`
+  `__state`.
+- `bits/basic_string.tcc:191/242` `~_Guard() { _M_guarded->_M_dispose(); }`:
+  "'_M_dispose' is a private member", where `_Guard` is a LOCAL class of a
+  `basic_string` member function, which has that function's access
+  ([class.local]/3, [class.access]/2). `fstream.tcc:263` `__fb->_M_mode`:
+  "'_M_mode' is a protected member of basic_filebuf".
+- g++ 13 and clang++ 18 compile these headers without a diagnostic. The
+  count is 28 in this log (2026-10-03, `tmp/logs/build-rel.log`) and in an
+  earlier release build's (`rb-release-qb.log`); the v0.101.0 macOS build
+  printed 34. The suite is green on the packed binary, so whatever the
+  pack keeps of these bodies is either unused or re-instantiated cleanly.
+- Layer not yet traced: the pack's priming compile of out-of-line member
+  bodies (parameters and dependent-base names not in scope; a local class
+  without its enclosing member's access).
+- Found 2026-10-03 rebuilding the container's release binary for the
+  chthonia GUI. Off the item in hand, filed per owner 2026-09-30.
+
 ### B162. `&(c += 4)` / `&(a = b)` on a class is refused although the operator returns a reference
 
 ```cpp
