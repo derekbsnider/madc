@@ -249,7 +249,10 @@ bool emit(value &out, value &out_map, const char *source, const char *filename,
 // state without re-running the front end. The <ns_madc> declarations
 // carry the row shapes and the thread contract.
 int64_t parse_open(const char *source, const char *filename)
-	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_parse_open(&s, &f); }
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_parse_open(&s, &f, 0); }
+// The same under `standard` (a <bits/file_kinds> standard code; 0 = the default).
+int64_t parse_open(const char *source, const char *filename, int64_t standard)
+	{ std::string s = source ? source : "", f = filename ? filename : ""; return madc_parse_open(&s, &f, standard); }
 int64_t parse_open_file(const char *path)
 	{ std::string p = path ? path : ""; return madc_parse_open_file(&p); }
 bool parse_refresh(int64_t handle, const char *source)

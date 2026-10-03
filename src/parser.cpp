@@ -356,7 +356,8 @@ bool internal_program_code_close(int64_t code);
 // handle groups a cc.json manifest's TUs.
 int64_t internal_program_parse_open(::Program &self,
 				    const std::string &source_text,
-				    const std::string &display_name);
+				    const std::string &display_name,
+				    int64_t standard);
 int64_t internal_program_parse_open_file(::Program &self,
 					 const std::string &path);
 bool internal_program_parse_refresh(::Program &self, int64_t handle,
@@ -1141,7 +1142,7 @@ bool madc_code_close(int64_t code)
 // source/filename/path = std::string*, result = madc::value*. The handle
 // registries live beside the child pipeline in madc_program.cpp.
 
-int64_t madc_parse_open(void *source, void *filename)
+int64_t madc_parse_open(void *source, void *filename, int64_t standard)
 {
     std::unique_ptr<Program> owned;
     Program *active = require_runtime_eval_program(owned);
@@ -1151,7 +1152,8 @@ int64_t madc_parse_open(void *source, void *filename)
     const std::string &disp = *(const std::string *)filename;
     return madc::internal_program_parse_open(*active, src,
 					     disp.empty() ? "<source>"
-							  : disp);
+							  : disp,
+					     standard);
 }
 
 int64_t madc_parse_open_file(void *path)

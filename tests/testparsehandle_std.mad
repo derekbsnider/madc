@@ -1,0 +1,52 @@
+// madc::parse_open under a STANDARD (the editor's --std=): the handle
+// compiles under the <bits/file_kinds> standard code it was given and keeps
+// it through a refresh; a code that names no standard (a family head, a text
+// kind) is refused. The preprocessor picks one function per standard, so the
+// outline says which standard the parse saw — gcc/clang -E agree: c17 =>
+// side_c17, c11 => side_c11, c++20 => side_cxx20, c++17 => side_cxx.
+
+// The one function the handle's outline holds.
+void show(const char *label, long h)
+{
+    var o;
+    madc::parse_outline(o, h);
+    var name = "none";
+    for ( var fn : o )
+	name = fn["name"];
+    println("{}: {}", label, name);
+}
+
+int main()
+{
+    var src = "#if defined(__cplusplus) && __cplusplus >= 202002L\n"
+	      "long side_cxx20(void) { return 1; }\n"
+	      "#elif defined(__cplusplus)\n"
+	      "long side_cxx(void) { return 1; }\n"
+	      "#elif __STDC_VERSION__ == 201710L\n"
+	      "long side_c17(void) { return 1; }\n"
+	      "#elif __STDC_VERSION__ == 201112L\n"
+	      "long side_c11(void) { return 1; }\n"
+	      "#else\n"
+	      "long side_other(void) { return 1; }\n"
+	      "#endif\n";
+    long hc17 = madc::parse_open(src.c_str(), "std.c", madc::fkC17);
+    show("c17", hc17);
+    show("c11", madc::parse_open(src.c_str(), "std.c", madc::fkC11));
+    show("c++20", madc::parse_open(src.c_str(), "std.c", madc::fkCPP20));
+    show("c++17", madc::parse_open(src.c_str(), "std.c", madc::fkCPP17));
+    long hdef = madc::parse_open(src.c_str(), "std.c", 0);
+    long hmadc = madc::parse_open(src.c_str(), "std.c", madc::fkMADC);
+    long htwo = madc::parse_open(src.c_str(), "std.c");
+    show("default", hdef);
+    show("madc", hmadc);
+    show("two-argument", htwo);
+
+    // The refresh rebuilds the child under the handle's standard.
+    println("refresh: {}", madc::parse_refresh(hc17, src.c_str()) ? 1 : 0);
+    show("c17 after refresh", hc17);
+
+    // A family head and a text kind name no standard: no handle.
+    println("family head: {}", madc::parse_open(src.c_str(), "std.c", madc::fkC));
+    println("text kind: {}", madc::parse_open(src.c_str(), "std.c", madc::fkJSON));
+    return 0;
+}

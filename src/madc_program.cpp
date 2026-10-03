@@ -5080,19 +5080,26 @@ struct parse_tu_state
     // this handle mints carries it (graph_id_stamp); an id from an older
     // generation is refused as stale by every verb (design §6.3).
     uint32_t generation;
-    parse_tu_state() : child((::Program *)0), generation(0) {}
+    // The standard the handle compiles under (a <bits/file_kinds> standard
+    // code; 0 = the engine's default): every child the handle builds — the
+    // open, each refresh, a checked refresh's candidate — takes it.
+    int64_t standard;
+    parse_tu_state() : child((::Program *)0), generation(0), standard(0) {}
     ~parse_tu_state() { delete child; }
 };
 
 // Every parse handle's child starts here — the one init for the three
-// handle constructors (open-from-text, open-from-file, refresh): IDE
-// fidelity (comment spans ride leading trivia), and on Windows the
-// forest arena records DURING the parse — Run has no fork there, so
-// parse_run freezes the tree for a child madc (design (b), owner ruling
-// 2026-08-28), and the arena is the freezable type graph: it must exist
-// before tokenize, exactly like the CLI's --freeze-run lane.
-static void parse_handle_child_init(::Program &child)
+// handle constructors (open-from-text, open-from-file, refresh): the
+// handle's standard, IDE fidelity (comment spans ride leading trivia),
+// and on Windows the forest arena records DURING the parse — Run has no
+// fork there, so parse_run freezes the tree for a child madc (design (b),
+// owner ruling 2026-08-28), and the arena is the freezable type graph: it
+// must exist before tokenize, exactly like the CLI's --freeze-run lane.
+static void parse_handle_child_init(::Program &child, const parse_tu_state &st)
 {
+    if ( st.standard != 0 )
+	child.set_language_standard(
+	    ::Program::standard_canonical_name((::Program::LanguageStd)st.standard));
     child.keep_trivia = true;
 #ifdef _WIN32
     child.forest_arena_enabled = true;
@@ -5401,15 +5408,23 @@ void register_run_channel_factories(::Program &self)
 
 int64_t internal_program_parse_open(::Program &self,
 				    const std::string &source_text,
-				    const std::string &display_name)
+				    const std::string &display_name,
+				    int64_t standard)
 {
+    // A standard is a code the --std= table spells; a family head (madc::fkC)
+    // or a text kind names none — refused, as an unknown --std= is.
+    if ( standard != 0
+      && (standard < 0 || standard > 0xFFFF
+	  || !*::Program::standard_canonical_name((::Program::LanguageStd)standard)) )
+	return 0;
     register_run_channel_factories(self);	// madcrun:// serves this handle
     self.clear_diagnostics();
     self.clear_error();
     parse_tu_state *st = new parse_tu_state();
     st->display_name = display_name;
+    st->standard = standard;
     st->child = new ::Program(self.engine);
-    parse_handle_child_init(*st->child);
+    parse_handle_child_init(*st->child, *st);
     compile_source_child_frontend(self, *st->child, source_text,
 				  display_name);
     return parse_tu_handles().open(st);
@@ -5434,7 +5449,7 @@ static int64_t parse_open_file_with(::Program &self, const std::string &path,
     parse_tu_state *st = new parse_tu_state();
     st->display_name = path;
     st->child = new ::Program(self.engine);
-    parse_handle_child_init(*st->child);
+    parse_handle_child_init(*st->child, *st);
     st->child->registration_policy =
 	runtime_eval_registration_policy_for_source_child(self.registration_policy);
     if ( tu )
@@ -5475,7 +5490,7 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
     // fresh child in the same slot — the handle's identity survives.
     delete st->child;
     st->child = new ::Program(self.engine);
-    parse_handle_child_init(*st->child);
+    parse_handle_child_init(*st->child, *st);
     compile_source_child_frontend(self, *st->child, source_text,
 				  st->display_name);
     // L1b: the old body-node registry points at the just-deleted child's
@@ -5541,7 +5556,7 @@ bool internal_program_parse_refresh_checked(::Program &self, int64_t handle,
     self.clear_error();
     // Owned until accepted: a throw out of the candidate's parse/compile frees it.
     std::unique_ptr< ::Program > cand(new ::Program(self.engine));
-    parse_handle_child_init(*cand);
+    parse_handle_child_init(*cand, *st);
     compile_source_child_frontend(self, *cand, source_text, st->display_name);
     diagnostic_rows_from_child(*cand, out_diags);
     if ( child_error_count(*cand) > child_error_count(*st->child) )
@@ -5946,7 +5961,7 @@ int64_t internal_program_parse_open_tagged(::Program &self,
 					   const std::string &source_text,
 					   const std::string &display_name)
 {
-    int64_t h = internal_program_parse_open(self, source_text, display_name);
+    int64_t h = internal_program_parse_open(self, source_text, display_name, 0);
     if ( h <= 0 )
 	return h;
     parse_tu_state *st = parse_tu_get(h);

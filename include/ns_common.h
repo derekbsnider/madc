@@ -242,7 +242,7 @@ bool madc_code_close(int64_t code);
 // parsed state; a project handle groups a cc.json manifest's TUs. Handles
 // are int64 (>= 1; 0 = failure); result = madc::value*, strings =
 // std::string*.
-int64_t madc_parse_open(void *source, void *filename);
+int64_t madc_parse_open(void *source, void *filename, int64_t standard);
 int64_t madc_parse_open_file(void *path);
 bool madc_parse_refresh(int64_t handle, void *source);
 bool madc_parse_close(int64_t handle);
