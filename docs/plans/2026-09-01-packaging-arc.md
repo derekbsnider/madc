@@ -342,7 +342,7 @@ packaging shape, and all the proper build scripts and tests in order.
     include tables, the forest's paths and the `/usr/local/lib` runpath
     fallback under `/home/linuxbrew/.linuxbrew`) and a full-suite lane
     on a Homebrew Linux install (no CI home yet). The Microsoft Store
-    carries `chthonic` only, in the release after master.
+    carries `chthonia` only, in the release after master.
   - **Progress 2026-10-01 (Linux):** the formula is the template
     `packaging/homebrew/madc.rb.in` (rendered by `scripts/brew_formula.sh`),
     built from source and staged by `scripts/stage_install.sh`, the

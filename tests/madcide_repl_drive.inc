@@ -1,7 +1,7 @@
 // madcide_repl_drive.inc — driving an IdeSession's REPL pane from a test:
 // the event builders a client sends (text, key, action) and the settle that
 // lets the session's pump answer. Shared by tests/testmadcide_repl.mad and
-// tests/testmadcide_chthonic.mad; included after madcide_core.inc.
+// tests/testmadcide_chthonia.mad; included after madcide_core.inc.
 
 void ev_text(var &e, const char *t)
 {

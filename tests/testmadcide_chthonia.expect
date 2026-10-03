@@ -1,8 +1,8 @@
-chthonic-open: doc=1 bundle=chthonic keys=thonny
-chthonic-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=1
-chthonic-menu: [File Edit Run View Tools Help] run=[replrun replstop repllang]
-chthonic-repl: live=1 running=1
-chthonic-toolbar: Open=editfile Save=save Run=replrun Stop=replstop codes=1
+chthonia-open: doc=1 bundle=chthonia keys=thonny
+chthonia-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=1
+chthonia-menu: [File Edit Run View Tools Help] run=[replrun replstop repllang]
+chthonia-repl: live=1 running=1
+chthonia-toolbar: Open=editfile Save=save Run=replrun Stop=replstop codes=1
 keystyle-list: tools=[keystyle] listed=true marked=true
 keystyle-choose: keys=vscode msg=Keys: VS Code. kept=vscode
 variables-code: transport-source=1

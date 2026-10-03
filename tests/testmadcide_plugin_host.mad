@@ -17,7 +17,7 @@
 //      status line says the child started again, and its command works again;
 //      after the fourth end the plugin stops and its command says it is not
 //      running;
-//   5. settings.json's "plugins.isolate" runs chthonic's code in a child: its
+//   5. settings.json's "plugins.isolate" runs chthonia's code in a child: its
 //      Variables view fills after F5 as it does in madcide's process.
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env).
@@ -172,14 +172,14 @@ int main()
     println("host-gone: msg={}", msg);
     S.close();
 
-    // 5. chthonic's code in a child, under "plugins.isolate".
+    // 5. chthonia's code in a child, under "plugins.isolate".
     php::file_put_contents(stp.c_str(), "{\"plugins.isolate\": true}\n");
     IdeSession C;
     const char *cpath = "madc_ide_plugin_host_c.c";
     php::file_put_contents(cpath, "int main() { return 0; }\n");
-    long cdoc = C.open(cpath, false, "chthonic");
+    long cdoc = C.open(cpath, false, "chthonia");
     println("isolate-open: transport-host={}",
-	    plugin_active_transport(C.w, "chthonic") == ptHOST ? 1 : 0);
+	    plugin_active_transport(C.w, "chthonia") == ptHOST ? 1 : 0);
     ui::text_load(C.w, cdoc, "#include <stdio.h>\n"
 	"int count = 3;\n"
 	"int square(int n) { return n * n; }\n"
@@ -191,7 +191,7 @@ int main()
     var rows;
     for ( long waited = 0; waited < 20000; waited = waited + 10 )
     {
-	ui::get(rows, C.w, C.es, "chthonic.vars");
+	ui::get(rows, C.w, C.es, "chthonia.vars");
 	if ( rows.is_array() && php::count(rows) > 0 )
 	    break;
 	madc::sleep_ms(10);

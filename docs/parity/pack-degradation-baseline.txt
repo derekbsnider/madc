@@ -76,7 +76,7 @@
 # An exposure of a filed gap, not a new class: lower to 50 when the sentry
 # gap closes (all 20 __cerb entries go together).
 # linux 70 -> 28, dk-none 45 -> 59 (2026-10-02, the develop seam pre-build of
-# the REPL + chthonic release, feature/repl-teaching-ide-claude at 8066d0f49):
+# the REPL + chthonia release, feature/repl-teaching-ide-claude at 8066d0f49):
 # all twenty `use of undeclared identifier '__cerb'` entries are GONE (the
 # sentry local the 2026-09-20 note above filed; KG Gap
 # istream_sentry_local_in_pack), and 22 more. Left: 8 `max_size`
@@ -196,7 +196,7 @@
 # manipulator operators take `basic_ostream& (*__pf)(basic_ostream&)` too)
 # and the parenthesized `->*` operand; both arches report 45 against the
 # same libc++ corpus.
-# darwin 45 -> 17 (2026-10-02, the REPL + chthonic release seam pre-build,
+# darwin 45 -> 17 (2026-10-02, the REPL + chthonia release seam pre-build,
 # release-macos at 2e3a30db6; both arches): 8 "Malformed expression: 2
 # operands with no operator between them" (the TemplateId<...>()(args) body
 # re-parse, KG Gap instantiation_body_templateid_ctor_call), 4 "Unexpected

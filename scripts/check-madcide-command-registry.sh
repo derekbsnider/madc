@@ -399,7 +399,7 @@ fi
 	mkdir -p "$tmpplug/$(dirname "$f")"
 	cat "$PLUGINS/$f" > "$tmpplug/$f"
 done
-echo "Help zzgreet Greet" >> "$tmpplug/chthonic/chthonic.menu"
+echo "Help zzgreet Greet" >> "$tmpplug/chthonia/chthonia.menu"
 if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control" 2>/dev/null; then
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — negative control: a bundle menu" \
@@ -426,8 +426,8 @@ fresh_plugins()
 	done
 }
 fresh_plugins
-echo "Help zzown Own" >> "$tmpplug/chthonic/chthonic.menu"
-printf '%s\n' '    long zz = ide::command(w, "zzown", "Own", zz_own);' >> "$tmpplug/chthonic/chthonic.mad"
+echo "Help zzown Own" >> "$tmpplug/chthonia/chthonia.menu"
+printf '%s\n' '    long zz = ide::command(w, "zzown", "Own", zz_own);' >> "$tmpplug/chthonia/chthonia.mad"
 if ! check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control"; then
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — positive control: a bundle menu" \
@@ -444,7 +444,7 @@ if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control"
 	exit 1
 fi
 fresh_plugins
-printf '%s\n' '    long zz = ide::command(w, "save", "Save", zz_save);' >> "$tmpplug/chthonic/chthonic.mad"
+printf '%s\n' '    long zz = ide::command(w, "save", "Save", zz_save);' >> "$tmpplug/chthonia/chthonia.mad"
 if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control" 2>/dev/null; then
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — negative control: a plugin's code" \

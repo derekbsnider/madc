@@ -1729,7 +1729,7 @@ long plugin_verb_of(var &word)
 
 // A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds
 // name a file in its existing format, and the kind's word IS the file's
-// extension (`"layout": "chthonic"` is chthonic.layout); `settings` carries
+// extension (`"layout": "chthonia"` is chthonia.layout); `settings` carries
 // the plugin's setting defaults. Stage A serves these; the code kinds
 // (commands, views, events) join with the contribution points.
 enum contribution_kind : unsigned char { cbNONE = 0, cbKEYS, cbLAYOUT, cbMENU, cbTHEME, cbSTATUS, cbSETTINGS, cbLAST };

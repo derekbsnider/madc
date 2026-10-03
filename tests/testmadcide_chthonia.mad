@@ -1,11 +1,11 @@
-// The chthonic profile (plan §41.11a step 1; plugins Stage A): the teaching
-// bundle madcide ships, tools/madcide/plugins/chthonic — Thonny's keys,
-// chthonic.layout (the editor, and below it the REPL as the visible panel's
+// The chthonia profile (plan §41.11a step 1; plugins Stage A): the teaching
+// bundle madcide ships, tools/madcide/plugins/chthonia — Thonny's keys,
+// chthonia.layout (the editor, and below it the REPL as the visible panel's
 // first tab with Problems beside it; the Variables view in the right
-// sidebar), chthonic.menu (the
-// beginner's subset of the command vocabulary) and chthonic.mad (its code,
+// sidebar), chthonia.menu (the
+// beginner's subset of the command vocabulary) and chthonia.mad (its code,
 // the Variables view). Pins:
-//   1. `open(path, ro, "chthonic")` (the command line's --profile) loads the
+//   1. `open(path, ro, "chthonia")` (the command line's --profile) loads the
 //      shipped bundle: the runner's MADCIDE_CONFIG_DIR names no user
 //      directory, so nothing overrides it;
 //   2. its keys are Thonny's, and its layout shows the REPL, with no Outline,
@@ -16,14 +16,14 @@
 //   4. a REPL session is running at open, because the layout shows it;
 //   5. the default profile, over the same file, starts none (its layout
 //      keeps the REPL hidden) and keeps its own menu bar;
-//   6. the toolbar (menu_place): chthonic.menu's `toolbar` rows are the
+//   6. the toolbar (menu_place): chthonia.menu's `toolbar` rows are the
 //      composed root's `toolbar` hint — Open, Save, Run, each carrying its
 //      command's code — and the default menu places none;
 //   7. Tools ▸ Key bindings… (plan §41.11a step 3e): the six styles listed by
 //      their @title names (JOE, Vim, Emacs, Pico, Thonny, VS Code) with the
 //      current one, Thonny, marked; choosing VS Code rebinds and keeps it
 //      for this bundle in settings.json (this test's configuration
-//      directory, its .env), so the next chthonic session opens with it
+//      directory, its .env), so the next chthonia session opens with it
 //      while the default bundle keeps its own keys;
 //   8. the Variables view (plan §41.11a step 6), its code activated from
 //      source: after F5 on §34's program plus a global its rows read
@@ -131,7 +131,7 @@ void variables_gate(IdeSession &S, long doc, const char *label)
     var vn = "variables";
     long kind = view_of_w(w, vn);
     var rows;
-    ui::get(rows, w, es, "chthonic.vars");
+    ui::get(rows, w, es, "chthonia.vars");
     long opt = 0;
     long i = 1;
     for ( var r : rows )
@@ -158,21 +158,21 @@ void variables_gate(IdeSession &S, long doc, const char *label)
 
 int main()
 {
-    const char *path = "madc_ide_chthonic.c";
+    const char *path = "madc_ide_chthonia.c";
     php::file_put_contents(path, "int main(void) { return 0; }\n");
     var cfg0;			// a run that stopped early left its choice
     madcide_config_dir(cfg0);
     php::unlink(format("{}/settings.json", cfg0));
 
-    // 1-4. The chthonic profile.
+    // 1-4. The chthonia profile.
     IdeSession S;
-    long doc = S.open(path, false, "chthonic");
+    long doc = S.open(path, false, "chthonia");
     var b;
     ui::get(b, S.w, S.es, "bundle");
     var k;
     ui::get(k, S.w, S.es, "profile");
-    println("chthonic-open: doc={} bundle={} keys={}", doc > 0 ? 1 : 0, b, k);
-    println("chthonic-views: repl={} problems-tab={} outline={} project={} terminal={} sidebar={}",
+    println("chthonia-open: doc={} bundle={} keys={}", doc > 0 ? 1 : 0, b, k);
+    println("chthonia-views: repl={} problems-tab={} outline={} project={} terminal={} sidebar={}",
 	    view_shown(S.w, S.es, repl_view(S.w)) ? 1 : 0,
 	    view_shown(S.w, S.es, viewPROBLEMS) ? 1 : 0,
 	    view_shown(S.w, S.es, viewOUTLINE) ? 1 : 0,
@@ -182,13 +182,13 @@ int main()
     var titles;
     var ids;
     menu_bar(titles, ids, S.w, S.es, "Run");
-    println("chthonic-menu: [{}] run=[{}]", titles, ids);
+    println("chthonia-menu: [{}] run=[{}]", titles, ids);
     long h = es_int(S.w, S.es, "replh", 0);
-    println("chthonic-repl: live={} running={}", es_int(S.w, S.es, "repllive", 0),
+    println("chthonia-repl: live={} running={}", es_int(S.w, S.es, "repllive", 0),
 	    h != 0 && madc::session_running(h) ? 1 : 0);
     var tbr;
     toolbar_rows(tbr, S, doc);
-    println("chthonic-toolbar: {}", tbr);
+    println("chthonia-toolbar: {}", tbr);
 
     // 7. Tools ▸ Key bindings….
     menu_bar(titles, ids, S.w, S.es, "Tools");
@@ -217,16 +217,16 @@ int main()
     var kept;
     var why;
     json_object_read(kept, why, spath);
-    println("keystyle-choose: keys={} msg={} kept={}", k, msg, kept["keys"]["chthonic"]);
+    println("keystyle-choose: keys={} msg={} kept={}", k, msg, kept["keys"]["chthonia"]);
 
     // 8. The Variables view, its code from source.
     println("variables-code: transport-source={}",
-	    plugin_active_transport(S.w, "chthonic") == ptSOURCE ? 1 : 0);
+	    plugin_active_transport(S.w, "chthonia") == ptSOURCE ? 1 : 0);
     variables_gate(S, doc, "variables");
     S.close();
 
     IdeSession S2;
-    S2.open(path, false, "chthonic");
+    S2.open(path, false, "chthonia");
     ui::get(k, S2.w, S2.es, "profile");
     println("keystyle-reopen: keys={}", k);
     S2.close();
@@ -249,12 +249,12 @@ int main()
     // 9. The same from the library --build-plugin built, in a copy of the
     // bundle that the search path finds first.
     var pdir = format("{}/plugins", cfg);
-    var bdir = format("{}/chthonic", pdir);
+    var bdir = format("{}/chthonia", pdir);
     php::mkdir(pdir.c_str());
     php::mkdir(bdir.c_str());
     var shipped;
-    plugin_find(shipped, "chthonic");
-    var parts = { "chthonic.plugin", "chthonic.layout", "chthonic.menu", "chthonic.mad" };
+    plugin_find(shipped, "chthonia");
+    var parts = { "chthonia.plugin", "chthonia.layout", "chthonia.menu", "chthonia.mad" };
     for ( var f : parts )
     {
 	var text;
@@ -265,18 +265,18 @@ int main()
     var brows;
     bool built = plugin_build(bwhy, brows, bdir.c_str());
     IdeSession L;
-    long ldoc = L.open(path, false, "chthonic");
+    long ldoc = L.open(path, false, "chthonia");
     if ( built )
 	bwhy = "";		// the library's path: its suffix is the platform's
     println("variables-lib: built={}{} transport-library={}", built ? 1 : 0, bwhy,
-	    plugin_active_transport(L.w, "chthonic") == ptLIBRARY ? 1 : 0);
+	    plugin_active_transport(L.w, "chthonia") == ptLIBRARY ? 1 : 0);
     variables_gate(L, ldoc, "variables-lib");
     L.close();
     for ( var f : parts )
 	php::unlink(format("{}/{}", bdir, f));
     var lib;
     var vb = bdir;
-    plugin_library_path(lib, vb, "chthonic");
+    plugin_library_path(lib, vb, "chthonia");
     php::unlink(lib.c_str());
     php::rmdir(bdir.c_str());
     php::rmdir(pdir.c_str());

@@ -1,4 +1,4 @@
-# chthonic time travel: scrubbing a program's execution (Phase 7's stepper)
+# chthonia time travel: scrubbing a program's execution (Phase 7's stepper)
 
 Design, 2026-10-01. The owner's idea: scrub back and forth through a program's
 run with a scrubbing wheel, as in a video editor, and watch the line, the
@@ -13,7 +13,7 @@ stepping in both directions as the model itself.
 
 ## 1. Precedents, and what each one gives
 
-| Precedent | What it does | What chthonic takes |
+| Precedent | What it does | What chthonia takes |
 |---|---|---|
 | Thonny's "nicer" debugger | Step over (F6), Step into (F7), Step out, Resume, Run to cursor, and **Step back**: it keeps every intermediate state, so a step can be undone as often as wanted (`thonny/plugins/help/debuggers.rst`, since Thonny 2.2) | The commands, their names and keys. A Thonny user already knows stepping backwards |
 | Python Tutor (pythontutor.com) | A slider under the code over a recorded execution; each step shows the line, the frames, the heap and the output; it stops at 1,000 steps on purpose, because it is meant for blackboard-sized programs (Guo, SIGCSE 2013) | The scrubber, record-then-browse, and a stated cap |
@@ -41,11 +41,11 @@ stepping in both directions as the model itself.
 5. **The UI stays simple and clean:** one new element, the timeline strip,
    shown only after Debug, one lane unless the program has tasks (§3).
 6. **Placement: after the master release** (plan §41.11a steps 0-9), as the
-   headline of the chthonic product release that follows it.
+   headline of the chthonia product release that follows it.
 
 ## 3. The UI
 
-The mockup (`inbox/chthonic-mockup.png`: editor tabs, Variables and Call Stack
+The mockup (`inbox/chthonia-mockup.png`: editor tabs, Variables and Call Stack
 on the right, Shell and Build below, a toolbar of file actions, Run ▾,
 Debug ▾, Stop and the step buttons) gains one element, a strip between the
 editor and the bottom panel:
@@ -75,7 +75,7 @@ editor and the bottom panel:
   same keys. A GUI drag reaches it through the pointer phases `ui_enums`
   already carries (down / drag / up).
 
-The Variables view is chthonic's step-6 view. After F5 it can show globals
+The Variables view is chthonia's step-6 view. After F5 it can show globals
 only, because `main` has returned; the recording is what gives it the
 mockup's `n` and `result` while `fact` recurses.
 
@@ -169,7 +169,7 @@ mockup's `n` and `result` while `fact` recurses.
 - **T1 — the trace build and runtime, headless.** `madc --trace=FILE prog`
   writes the record as JSON lines (steps, deltas, keyframes, output, input,
   enter / leave). Measure the cost per step and set K and the cap from it.
-- **T2 — the debug run in chthonic, one lane.** The backend's debug op, the
+- **T2 — the debug run in chthonia, one lane.** The backend's debug op, the
   stream, madcide's record and index, the timeline strip (a new `uinode` role
   with arms in `tui_model.h`, `web_model.h` and `page.js`), the step commands
   as playhead moves, and the Variables view, the Call Stack and the Shell
@@ -188,7 +188,7 @@ mockup's `n` and `result` while `fact` recurses.
   `--exe`; the same program's `--emit=c11 --trace` output built by gcc and by
   clang gives the same record (madc's oracle rule); a normal build has no
   probe symbol (a `fulltest` gate).
-- T2: the session op in `test_session_backend`; `testmadcide_chthonic` gains a
+- T2: the session op in `test_session_backend`; `testmadcide_chthonia` gains a
   debug section (a debug run of §34's program, Step back, a scrub to step k
   showing that step's rows and output); a `tests/gui` case drags the playhead.
 - T3: a traced `go` program's lanes and marks, golden.

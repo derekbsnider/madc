@@ -837,7 +837,7 @@ bool repl_cmd_newer(long w, long es, long doc, const char *arg)
 // the session value a new REPL session takes (replstd; "" = the engine's
 // default), and the session starts when the layout SHOWS the pane — a
 // visible pane whose active View is the REPL, as Thonny starts its backend
-// with its window (chthonic.layout). Layout data decides, never the bundle's
+// with its window (chthonia.layout). Layout data decides, never the bundle's
 // name; the default layout keeps the REPL hidden, so it forks nothing.
 void repl_on_open(long w, long es, long doc, var &event)
 {

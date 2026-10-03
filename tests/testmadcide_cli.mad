@@ -19,8 +19,8 @@
 //      with the reason — at launch on stderr with verdict 1, at ^K E on the
 //      status line with the buffer table untouched;
 //   5. the command line is ONE reader (ide_args_parse, madcide_args.inc):
-//      flags anywhere, the first non-flag word the file (`--profile chthonic
-//      f.c` and `f.c --profile chthonic` alike), `--` ending the flags,
+//      flags anywhere, the first non-flag word the file (`--profile chthonia
+//      f.c` and `f.c --profile chthonia` alike), `--` ending the flags,
 //      --attach's optional address; an unknown flag, a missing value and a
 //      second file refused with the reason; the usage names --profile;
 //   6. the file is optional for the editor faces (the TUI, --gui, --line
@@ -160,9 +160,9 @@ int main()
     //    first word that is not a flag is the file, a later `ro` opens it
     //    read-only; an unknown flag, a flag missing its value and a second
     //    file are refused (main prints the reason and the usage, exit 2).
-    const char *v1[4] = { "madcide", "--profile", "chthonic", "f.c" };
+    const char *v1[4] = { "madcide", "--profile", "chthonia", "f.c" };
     show_args("cli-args-profile-first", 4, v1);
-    const char *v2[5] = { "madcide", "f.c", "--profile", "chthonic", "ro" };
+    const char *v2[5] = { "madcide", "f.c", "--profile", "chthonia", "ro" };
     show_args("cli-args-profile-after", 5, v2);
     const char *v3[4] = { "madcide", "f.c", "--lsp", "--attach" };
     show_args("cli-args-attach-discover", 4, v3);

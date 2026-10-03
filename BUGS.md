@@ -1787,7 +1787,7 @@ int g(void);
 - gcc 13 and clang 18 (`-std=c17`, the type in an `-Wint-conversion`
   diagnostic of `int x = f;`): `int ()` for `f` (no prototype, C17 6.7.6.3/14)
   and `int (void)` for `g`. madc's REPL (`--std=c17`, `bin/madc` at
-  `d2e801a72`): `int (void)` for both. chthonic's Variables view shows
+  `d2e801a72`): `int (void)` for both. chthonia's Variables view shows
   `main int (void)` for `int main() {…}` the same way. Display only; exit 0.
 - Found 2026-10-01 writing the Variables view's gate (plan §41.11a step 6).
 - Layer (suspected): `TypeSpeller::parameter_list`

@@ -1,10 +1,10 @@
-// The toolbar in the window (plan §41.11a, step 2): chthonic.menu places
+// The toolbar in the window (plan §41.11a, step 2): chthonia.menu places
 // Open, Save and Run on the toolbar (the placement word `toolbar`); the
 // composed root carries them as its `toolbar` hint, web_model passes them
 // with their codes, and the page draws a button per row in the workbench's
 // top row. A click on Save posts the row's action by name, which arrives as
 // the session's action event carrying its command's code (the headless
-// pins: tests/testmadcide_chthonic.mad, test_web_model). Runs under Xvfb
+// pins: tests/testmadcide_chthonia.mad, test_web_model). Runs under Xvfb
 // through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
@@ -19,12 +19,12 @@ int main()
     long es = ui::entity_by_name(w, "editor-state");
     builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
-    bundle_select(w, es, "chthonic");	// the shipped bundle: its menu
+    bundle_select(w, es, "chthonia");	// the shipped bundle: its menu
     plugins_activate(w, es);		// its code first: the menu names its Variables
     ui::set(w, es, "profile", "pico");
     load_status(w, es, "joe");
     load_theme(w, es, "default");
-    load_menu(w, es, "chthonic");
+    load_menu(w, es, "chthonia");
     IdeSession S;
     S.attach(w, es);
     push_buffer_row(w, es, doc, path);

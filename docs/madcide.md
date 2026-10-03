@@ -48,15 +48,15 @@ Windows, WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
 Every key binding is data in `tools/madcide/profiles/*.keys`: `joe` (the
 default — the full JOE/WordStar set), `pico`, `emacs`, `neovim` (a modal
 personality that starts in normal mode), `thonny` (Thonny's keys: Ctrl+S,
-Ctrl+Z/Y, Ctrl+X/C/V, Ctrl+A, F5 to run, Ctrl+F2 to stop; chthonic's
+Ctrl+Z/Y, Ctrl+X/C/V, Ctrl+A, F5 to run, Ctrl+F2 to stop; chthonia's
 default) and `vscode` (VS Code's default keymap; Ctrl+K opens its chords).
 Each lists, in its header, the keys whose command madcide does not have
 yet. `^T` opens Options; its Keymap
 row cycles profiles for the session; `^K H` shows the loaded profile's own
-bindings. View ▸ Key Bindings… (chthonic's Tools ▸ Key bindings…, the
+bindings. View ▸ Key Bindings… (chthonia's Tools ▸ Key bindings…, the
 `keystyle` command) lists the profiles by their display names and keeps the
 one chosen for the bundle in use, in `settings.json`'s `"keys"` object
-(`"keys": { "chthonic": "emacs" }`), so the next session of that bundle
+(`"keys": { "chthonia": "emacs" }`), so the next session of that bundle
 opens with it. A profile's display name is its `@title NAME` line; a
 `.keys` file dropped into the profile directory joins the list.
 The JOE defaults most worth knowing:
@@ -329,7 +329,7 @@ madcide's own REPL pane is a plugin compiled into madcide: its commands
 `@repl` scope) and its view `repl` register the way a plugin's do, so a key
 profile, a menu or a layout names them as it names any plugin's.
 
-The shipped `chthonic` plugin carries code: the Variables view in chthonic's
+The shipped `chthonia` plugin carries code: the Variables view in chthonia's
 right sidebar (View ▸ Variables), Thonny's. It lists the names the REPL session
 defined, each with its type and value (`count int 3`, `square int (int)`),
 refreshed after every entry and every F5 run and emptied when the session

@@ -1,11 +1,11 @@
-// chthonic in the window (plan §41.11a step 6): the chthonic bundle opened
+// chthonia in the window (plan §41.11a step 6): the chthonia bundle opened
 // as the command line's --profile opens it, its code active (the Variables
 // view in the right sidebar). A click on the toolbar's Run posts replrun:
 // the editor's buffer runs into a fresh session, main's output reaches the
 // REPL tab on the pump's wakes, and the sidebar draws the program's names.
 // A click on Stop posts replstop: the session stops (a fresh one starts, as
 // Thonny's Stop restarts its backend) and the view empties (the headless
-// pins: tests/testmadcide_chthonic.mad). Runs under Xvfb
+// pins: tests/testmadcide_chthonia.mad). Runs under Xvfb
 // through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
@@ -40,18 +40,18 @@ void probe(long t, const char *out, const char *row)
 
 int main()
 {
-    const char *path = "madc_ide_chthonic_gui.c";
+    const char *path = "madc_ide_chthonia_gui.c";
     php::file_put_contents(path, "#include <stdio.h>\n"
 	"int count = 3;\n"
 	"int square(int n) { return n * n; }\n"
 	"int main() { printf(\"main says %d\\n\", square(5)); }\n");
     IdeSession S;
-    long doc = S.open(path, false, "chthonic");
+    long doc = S.open(path, false, "chthonia");
     long t = ui::open(ui::WEB);
     if ( !t )
 	return 1;
     S.panel(true);			// what run_ide pushes for a window
-    println("CHTHONIC open");
+    println("CHTHONIA open");
     var ev;
     int stage = 0;
     while ( ui::event(ev, t, S.w) )
@@ -69,7 +69,7 @@ int main()
 	{
 	    var an;
 	    cmd_name_w(an, S.world(), ev_code(ev));
-	    println("CHTHONIC click: action={}", an);
+	    println("CHTHONIA click: action={}", an);
 	    S.apply_ide_event(doc, ev);
 	    render(S, t, doc);
 	    if ( stage == 1 )
@@ -77,7 +77,7 @@ int main()
 	    else if ( stage == 4 )
 	    {
 		stage = 5;
-		println("CHTHONIC stopped: running={}", es_int(S.w, S.es, "replrunning", -1));
+		println("CHTHONIA stopped: running={}", es_int(S.w, S.es, "replrunning", -1));
 		probe(t, "[stopped; a new session started]", "(empty)");
 	    }
 	}
@@ -94,7 +94,7 @@ int main()
 	}
 	else if ( ev["event"] == "snapshot" )
 	{
-	    println("CHTHONIC {}", ev["text"]);
+	    println("CHTHONIA {}", ev["text"]);
 	    if ( stage == 3 )
 	    {
 		stage = 4;
@@ -107,6 +107,6 @@ int main()
     S.close();				// stops the pump and the session
     ui::close(t);
     remove(path);
-    println("CHTHONIC closed");
+    println("CHTHONIA closed");
     return 0;
 }

@@ -356,7 +356,7 @@ bool user_settings_save(long w, long es)
 }
 
 // The key style a bundle keeps (plan §41.11a step 3e): settings.json's
-// "keys" object, by bundle name (`"keys": { "chthonic": "vscode" }`), so a
+// "keys" object, by bundle name (`"keys": { "chthonia": "vscode" }`), so a
 // choice made in one bundle leaves the others' keys as they ship. "" when
 // the bundle has none.
 void keys_choice(var &out, long w, long es)
@@ -408,8 +408,8 @@ bool keys_choice_save(long w, long es, const char *name0)
 void path_sans_ext(var &out, var &p);	// madcide_core.inc: THE {base} rule
 
 // The name the program was invoked by: madc::sys.argv[0]'s last path
-// component without its extension, so /usr/bin/chthonic, chthonic.exe and
-// the script tools/madcide/madcide.mad read chthonic, chthonic and madcide.
+// component without its extension, so /usr/bin/chthonia, chthonia.exe and
+// the script tools/madcide/madcide.mad read chthonia, chthonia and madcide.
 // A symbolic or hard link is invoked under its own name.
 void program_name(var &out)
 {
@@ -423,7 +423,7 @@ void program_name(var &out)
 
 // WHICH bundle (§5.2): the command line's --profile (`cli`, "" = not
 // given), then the program's own name when a bundle of that name exists (a
-// `chthonic` binary, or a link named chthonic, opens the chthonic bundle
+// `chthonia` binary, or a link named chthonia, opens the chthonia bundle
 // with no flag; owner 2026-09-30), then settings.json's "profile", then
 // `default`, so nothing changes without one of them.
 void active_profile(var &out, long w, long es, const char *cli)
@@ -523,7 +523,7 @@ bool bundle_select(long w, long es, const char *name0)
     return base_ok;
 }
 
-// One manifest's name for a data kind (`"layout": "chthonic"`); null when
+// One manifest's name for a data kind (`"layout": "chthonia"`); null when
 // it names none.
 void manifest_word(var &out, var &m, long kind)
 {

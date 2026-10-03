@@ -1,10 +1,10 @@
-# Labels whose line legitimately DIFFERS from tests/testmadcide_chthonic.win64_expect
-# versus tests/testmadcide_chthonic.expect — the win64 domain's own answers: the
+# Labels whose line legitimately DIFFERS from tests/testmadcide_chthonia.win64_expect
+# versus tests/testmadcide_chthonia.expect — the win64 domain's own answers: the
 # REPL session backend forks the running madc and Windows has no fork yet
-# (plan 41.9a; the Windows REPL backend is the chthonic product release), so
+# (plan 41.9a; the Windows REPL backend is the chthonia product release), so
 # no session runs, F5 runs nothing and the Variables view stays empty. Every
 # other labelled line must be identical in both (scripts/check-expect-twins.sh).
-chthonic-repl
+chthonia-repl
 variables-f5
 variables-goto
 variables-entry

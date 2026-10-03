@@ -1,12 +1,12 @@
 {
-  "name": "chthonic",
+  "name": "chthonia",
   "title": "Learning",
   "api": 2,
-  "code": "chthonic.mad",
+  "code": "chthonia.mad",
   "contributes": {
     "keys": "thonny",
-    "layout": "chthonic",
-    "menu": "chthonic",
+    "layout": "chthonia",
+    "menu": "chthonia",
     "settings": {
       "repl.std": ""
     }
