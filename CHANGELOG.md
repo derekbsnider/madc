@@ -8,6 +8,10 @@ The REPL release: `madc` with no program file is an interactive C/C++
 session, madcide gains plugins and Chthonia, a Thonny-style teaching IDE,
 and the B-series burn-down fixes silent wrong answers first.
 
+### repl: Stop of a running entry restarts at once instead of waiting the grace
+
+Stopping a session whose entry is computing (madcide's Stop, Thonny's Stop/Restart) now terminates the backend process immediately instead of waiting 2 seconds for it to exit gracefully. SessionClient gains `busy()` to detect whether the backend still owes a reply to an outstanding request (answered_seq + 1 < next_seq); SessionClient::stop() calls process->terminate() at once if busy (the backend never reads the socket), then process->wait_or_kill(2000) as usual for idle backends. The grace is correct for idle backends exiting on EOF; a busy backend is instead SIGTERM'd immediately. Reducer tests/testsession_stop verifies: wall-clock time 2.11 s before, 0.11 s after (php::time is whole seconds; grace waits 2+ s, prompt restart reads 0 or 1).
+
 ### repl: session bindings list doesn't dangle through CompletionOffer
 
 The session's binding list (`%whos`) uses a CompletionOffer rule object constructed with an empty-string temporary. CompletionOffer held a reference member `const std::string &word` bound to that temporary, which ended at the end of the full-expression, creating a dangling reference. Reads from the dangling pointer returned uninitialized data (empty on Linux, garbage on macOS). The fix: change the reference member to a value copy `const std::string word`, which owns its data and outlives the temporary. Reducer tests/testsession_bindings, testmadcide_repl, testmadcide_chthonia, testmadcide_plugin_host — all FAIL on macOS before, PASS after. Validation: Tier 1 targeted tests (46 session/repl/complete/interactive tests; JIT 46/0, EXE 34/0, OBJ 34/0). Tier 2 scripts/fast_lanes.sh: all six lanes green (c-testsuite 220/0, c-torture 1613 baseline, c2mir-tests 314 baseline, gui 25/0, gxx-c++11 1501 baseline, index-c 50/50).

@@ -173,12 +173,16 @@ private:
     int wait_reply(unsigned seq, Reply &reply, std::string &output,
 		   int timeout_ms, const InteractiveSession::TakenHook &taken);
     void release_waiters() const;	// before the streams close
+    // A request still waits for its reply: the backend is computing (an
+    // entry runs) and reads no more of the socket until it answers.
+    bool busy() const;
 
     std::unique_ptr<madc::Process> process;
     int fd;				// the parent's end of the socketpair
     std::string inbuf;			// reply bytes not yet a whole line
     bool output_done;			// the output pipe reached its end
     unsigned next_seq;
+    unsigned answered_seq;		// the last request whose reply came back
     std::string std_option;
     ProgramFactory make_program;
     std::string error_text;
