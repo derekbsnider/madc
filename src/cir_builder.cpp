@@ -10041,7 +10041,6 @@ const char *CirBuilder::builtin_output_runtime(const std::string &name)
 	if (name == "putu")     return "madc_putu";
 	if (name == "putd")     return "madc_putd";
 	if (name == "putf")     return "madc_putf";
-	if (name == "puts")     return "madc_puts";
 	if (name == "printstr") return "madc_printstr";
 	return "";
 }
@@ -26777,14 +26776,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					{"madc_putu",     {{N_UNSIGNED, N_LONG, N_LONG}, false}},
 					{"madc_putd",     {{N_DOUBLE}, false}},
 					{"madc_putf",     {{N_FLOAT}, false}},
-					{"madc_puts",     {{N_CHAR}, true}},
 					{"madc_printstr", {{N_CHAR}, true}},
 				};
 				need_output_extern(rt, false, { sigs.at(rt) });
 				node_t a = list();
 				for (size_t i = 0; i < tcf->parameters.size(); i++) {
 					TokenBase *p = tcf->parameters[i];
-					// printstr/puts take char*: object values need a
+					// printstr takes char*: object values need a
 					// character-pointer view; literals are already const char*.
 					if (is_class_object_expr(p))
 						append(a, object_cstr_arg(p));

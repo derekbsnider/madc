@@ -1,0 +1,6 @@
+// madc -i: an entry's value is shown, and puts's value is C's int (C11
+// 7.21.7.9: non-negative on success). A void puts builtin made the shown
+// entry `puts("hi")` fail c2mir's check ("incompatible types in assignment to
+// an arithmetic type lvalue"). The number itself is the C library's (glibc:
+// length + 1, the UCRT: 0), so the entries show only its sign.
+println("loaded");

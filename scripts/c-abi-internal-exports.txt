@@ -34,7 +34,7 @@ madc_printstr	print runtime entry (CIR-emitted)
 madc_putd	print runtime entry (CIR-emitted)
 madc_putf	print runtime entry (CIR-emitted)
 madc_puti	print runtime entry (CIR-emitted)
-madc_puts	print runtime entry (CIR-emitted)
+madc_puts	print runtime entry (no longer emitted; images built by v0.101.0 and earlier import it)
 madc_putu	print runtime entry (CIR-emitted)
 madc_static_libmadc	engine global: -static-libmadc flag
 madc_stdlib_flavors	engine global: stdlib flavor set

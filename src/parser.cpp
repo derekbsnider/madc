@@ -25490,7 +25490,11 @@ void Program::populate_builtin_registry()
     if ( builtin_registry.defaults_loaded )
 	return;
 
-    builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)puts);
+    // puts is the C library's: `int puts(const char *)` (C11 7.21.7.9), bound
+    // to libc's. Its value is usable (`int n = puts(s);`, a REPL entry shows
+    // it); the madc-only void shape it had is the private dialect ruled out
+    // for getenv below.
+    builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtINT32, ptr_of(ddCHAR)}, (fVOIDFUNC)puts);
     builtin_registry.add_core_function("printstr", datatype_vec_t{DataType::dtVOID, ptr_of(ddCHAR)}, (fVOIDFUNC)NULL);
     builtin_registry.add_core_function("puti",	 datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
     builtin_registry.add_core_function("putu",	 datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);

@@ -99,6 +99,8 @@ void madc_puti(int64_t i)    { std::cout << i << std::endl; }
 void madc_putu(uint64_t i)   { std::cout << i << std::endl; }
 void madc_putd(double d)     { std::cout << d << std::endl; }
 void madc_putf(float f)      { std::cout << f << std::endl; }
+// No longer emitted (puts binds to the C library's own); kept exported
+// because images built by v0.101.0 and earlier import it from libmadc.so.0.
 void madc_puts(const char *s) { if (s) puts(s); }
 void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
 
