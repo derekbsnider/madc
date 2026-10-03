@@ -58171,6 +58171,14 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
     // extraction still sees the full operator-id.
     DelimDepth d(this);
     TokenBase *t = first;
+    // A top-level `=` begins the declaration's INITIALIZER (a variable
+    // template's `= init`, `= default`, `= delete`): from there on no
+    // requires-clause and no function body can follow — a `requires` begins
+    // a requires-expression ([expr.prim.req]) and a `{` is a brace inside the
+    // initializer (`requires { E; }`, `T{1}`, a lambda), which the `;` that
+    // ends the declaration must wait out. (An `operator=` declarator's `=` is
+    // consumed opaquely by delimStepStream, never seen here.)
+    bool in_initializer = false;
     while ( t )
     {
 	if ( seen )
@@ -58181,7 +58189,7 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	// are never mistaken for the body brace below. Constraint tokens are
 	// deliberately not appended to `seen` (signature extraction must not
 	// see them).
-	if ( d.top() && is_contextual_identifier_token(t)
+	if ( d.top() && !in_initializer && is_contextual_identifier_token(t)
 	  && contextual_identifier_name(t) == "requires" )
 	{
 	    if ( seen && !seen->empty() && seen->back() == t )
@@ -58193,8 +58201,8 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	if ( t->id() == TokenID::tkOpBrc )
 	{
 	    // Decided BEFORE the depth update: a `{` at top level is the body,
-	    // anything deeper is nested.
-	    if ( !d.top() )
+	    // anything deeper — or inside the initializer — is nested.
+	    if ( !d.top() || in_initializer )
 	    {
 		d.update(t);
 		t = nextToken();
@@ -58216,6 +58224,8 @@ void Program::skip_template_nonclass_declaration(TokenBase *first,
 	}
 	if ( t->id() == TokenID::tkSemi && d.top() )
 	    return;
+	if ( t->id() == TokenID::tkAssign && d.top() )
+	    in_initializer = true;
 	delimStepStream(t, d, seen);
 	t = nextToken();
     }
@@ -58629,13 +58639,20 @@ static bool skipped_template_variable(
 	return false;                                // function, or name not before '='/';'
     name_out = last_ident;
     init_out.clear();
+    // The INIT is the rest of the declaration: the skipper that captured
+    // `tokens` (skip_template_nonclass_declaration) ended it at its
+    // top-level `;`, so a `;` inside the initializer's own braces
+    // (`requires { E; }`, a lambda body) is part of the init, not its end.
     if ( stop < tokens.size() && tokens[stop]
       && tokens[stop]->id() == TokenID::tkAssign )
-	for ( size_t i = stop + 1; i < tokens.size(); ++i )
-	{
-	    if ( tokens[i] && tokens[i]->id() == TokenID::tkSemi ) break;
+    {
+	size_t end = tokens.size();
+	if ( end > stop + 1 && tokens[end - 1]
+	  && tokens[end - 1]->id() == TokenID::tkSemi )
+	    --end;
+	for ( size_t i = stop + 1; i < end; ++i )
 	    if ( tokens[i] ) init_out.push_back(tokens[i]);
-	}
+    }
     return true;
 }
 
