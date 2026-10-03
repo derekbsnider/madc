@@ -124,7 +124,6 @@
 g++.dg/cpp0x/addressof3.C
 g++.dg/cpp0x/alias-decl-15.C
 g++.dg/cpp0x/alias-decl-32.C
-g++.dg/cpp0x/alias-decl-38.C
 g++.dg/cpp0x/alias-decl-46.C
 g++.dg/cpp0x/alias-decl-50.C
 g++.dg/cpp0x/alias-decl-52.C

@@ -54501,9 +54501,21 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // every tail declarator of a C typedef list, in every arm.
     auto finish_alias = [&](const std::string &alias_name, TokenBase *atok,
 			    DataDef *dd, size_t vec_bytes) -> TokenBase * {
+	// The aliased type's own cv (`typedef volatile int vi;`, `typedef
+	// volatile _Tp type;`) belongs to the alias: the scalar-alias arms
+	// below test and mint over the UNQUALIFIED type and the minted alias
+	// takes the cv back — a plain DataDef copy of the qualified type would
+	// drop it (__is_same(add_volatile<int>::type, volatile int) was false).
+	const unsigned alias_cv = dd ? dd->cv_quals() : cvNONE;
+	DataDef *const qualified_dd = dd;
+	auto dd_identity_spelling = [](const DataDef *d) -> const std::string & {
+	    return d->canonical_cpp_spelling().empty() ? d->name : d->canonical_cpp_spelling();
+	};
+	if ( dd )
+	    dd = dd->unqualified();
 	// register in datatype_map
 	if ( vec_bytes > 0 )
-	    dd = new DataDefSIMD(dd, alias_name, vec_bytes);
+	    dd = new DataDefSIMD(qualified_dd, alias_name, vec_bytes);
 	// An ENUM typedef (ios_base::openmode = _Ios_Openmode) keeps the enum dd
 	// itself, exactly like a class typedef: wrapping it in a plain DataDef
 	// alias would lose enum-ness (DataDefENUM casts miss, and the alias dd's
@@ -54517,7 +54529,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	// for char16_t/char32_t) and a typedef of a namespace-scope alias dd
 	// (std::streamsize). The comparison is against the dd's IDENTITY
 	// spelling — canonical spelling, else display name — the one rule
-	// every identity former uses. Against the display name alone it minted
+	// every identity former uses — with and without the alias's cv: a
+	// spelled base names the unqualified type (`typedef volatile int t`),
+	// a substituted `_Tp` its qualified binding (remove_volatile's `typedef
+	// _Tp type` over `volatile int`). Against the display name alone it minted
 	// `typedef _Tp type` with _Tp = long as a NEW type the moment the
 	// pinned ddINT64 carried the canonical spelling `long` (darwin, where
 	// its display name int64_t is another type's source spelling):
@@ -54530,12 +54545,12 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	       && dd->basetype() == BaseType::btSimple
 	       && !dynamic_cast<DataDefENUM *>(dd)
 	       && !base_source_spelling.empty()
-	       && base_source_spelling != (dd->canonical_cpp_spelling().empty()
-					   ? dd->name : dd->canonical_cpp_spelling()) )
+	       && base_source_spelling != dd_identity_spelling(dd)
+	       && base_source_spelling != dd_identity_spelling(qualified_dd) )
 	{
 	    DataDef *alias_dd = new DataDef(alias_name, dd->size, dd->type());
 	    alias_dd->set_canonical_spelling(base_source_spelling);
-	    dd = alias_dd;
+	    dd = alias_cv ? pgm.getQualifiedType(alias_dd, alias_cv) : alias_dd;
 	}
 	// A NAMESPACE-scope scalar typedef keeps a distinct alias dd naming
 	// it — never a BLOCK-scope one (pgm.compounds open): `typedef int
@@ -54555,8 +54570,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    // identity can desugar (std::streamsize must select the spec keyed
 	    // on long) — see template_type_arg_spelling.
 	    alias_dd->scalar_alias_of = dd;
-	    dd = alias_dd;
+	    dd = alias_cv ? pgm.getQualifiedType(alias_dd, alias_cv) : alias_dd;
 	}
+	else
+	    dd = qualified_dd;
 	if ( dd && is_incomplete_class_datadef(dd) )
 	    pgm.template_completion_requested.insert(dd->name);
 	TokenDataType *tdt = new TokenDataType(alias_name.c_str(), *dd);

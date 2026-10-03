@@ -1,0 +1,29 @@
+// A member typedef's own top-level volatile is part of the type it names
+// ([dcl.typedef], [basic.type.qualifier]): `typedef volatile int type;` in a
+// class, or `typedef volatile T type;` in a class template, names
+// `volatile int` — and a partial specialization matching `volatile T` still
+// strips it (remove_volatile's shape). libc++'s add_volatile is the second
+// form; std::is_same<add_volatile<int>::type, volatile int> read it as int.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+struct n1 { typedef volatile int type; };
+struct n2 { typedef int volatile type; };
+struct n3 { typedef volatile int *type; };
+template <class T> struct av { typedef volatile T type; };
+template <class T> struct rv { typedef T type; };
+template <class T> struct rv<volatile T> { typedef T type; };
+int main()
+{
+	printf("member: %d %d %d %d\n", (int)__is_same(n1::type, volatile int),
+	       (int)__is_same(n2::type, volatile int),
+	       (int)__is_same(n3::type, volatile int *),
+	       (int)__is_same(n1::type, int));
+	printf("template: %d %d %d\n", (int)__is_same(av<int>::type, volatile int),
+	       (int)__is_same(rv<volatile int>::type, int),
+	       (int)__is_same(rv<av<long>::type>::type, long));
+	n1::type x = 3;
+	volatile int *p = &x;
+	*p = 4;
+	printf("object: %d\n", x);
+	return 0;
+}
