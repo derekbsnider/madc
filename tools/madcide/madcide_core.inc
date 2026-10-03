@@ -60,7 +60,7 @@ class IdeSession
 	long w;		// the ui world (documents + state entity live in it)
 	long es;	// the editor-state entity — the bags
 
-	long open(const char *path0, bool ro, const char *profile = "");
+	long open(const char *path0, bool ro, const char *profile = "", long std = 0);
 						// full session startup
 						// under the profile named
 						// ("" = settings.json's,
@@ -164,6 +164,7 @@ void action_event(var &e, long code, const char *arg)
 
 #include "madcide_plugin_code.inc"	// plugin code: the API table, activation, --build-plugin
 #include "madcide_plugin_host.inc"	// the host transport: a plugin's code in a child process
+#include "madcide_lang.inc"		// the session's language standard (--std=, `language`)
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -1831,7 +1832,7 @@ long ensure_phandle(long w, long es, long doc)
     ui::text(t, w, doc);
     var p;
     doc_name(p, w, doc);		// the unit's name (`untitled` without a file)
-    h = madc::parse_open(t.c_str(), p.c_str());
+    h = madc::parse_open(t.c_str(), p.c_str(), doc_standard(w, doc));
     // Stage-2: parse_open YIELDS between slices, so two flows can overlap
     // on one doc (the spawned background parse and a synchronous check).
     // ONE handle owner: whoever finds the bag already filled closes its
@@ -5560,16 +5561,23 @@ void save_as_ask(long w, long es, long doc, bool then_quit)
 	start_prompt(w, es, "Save as", then_quit ? pmSAVEASQUIT : pmSAVEAS);
 }
 
+// The document's parse handle goes; the next need opens it again (under
+// the document's name and the session's standard, both read at the open).
+void doc_forget_parse(long w, long doc)
+{
+    long ph = es_int(w, doc, "phandle", 0);
+    if ( ph != 0 )
+	madc::parse_close(ph);
+    ui::set(w, doc, "phandle", 0);
+}
+
 // The document's name moved (Save As): the caches keyed on the old one go —
 // the parse handle names its unit (the diagnostics rows carry that name) and
 // the git handle answers for the old file's directory. The next need opens
 // both under the new name.
 void doc_forget_name(long w, long doc)
 {
-    long ph = es_int(w, doc, "phandle", 0);
-    if ( ph != 0 )
-	madc::parse_close(ph);
-    ui::set(w, doc, "phandle", 0);
+    doc_forget_parse(w, doc);
     ui::set(w, doc, "ghandle", -1);
     ui::set(w, doc, "grelpath", "");
 }
@@ -6069,13 +6077,12 @@ void build_choose(long w, long es, long doc, long option)
 // family (doc_kind — stamped once at open from the file name, never
 // re-derived here): its render is source-shaped (madc::emit for madc::fkCPP
 // echoes the retained source), and a madc-dialect buffer has no C++
-// respelling yet (the named seat, design doc §3.2). A range test on the
-// one file-kind vocabulary, never an extension ladder.
+// respelling yet (the named seat, design doc §3.2). The family is
+// kind_family's (madcide_lang.inc), never an extension ladder.
 bool cxx_view_applies(long w, long es, long doc)
 {
-    long k = doc_kind(w, doc);
-    return (k >= madc::fkC && k <= madc::fkC_LAST)
-	|| (k >= madc::fkCPP && k <= madc::fkCPP_LAST);
+    long f = kind_family(doc_kind(w, doc));
+    return f == madc::fkC || f == madc::fkCPP;
 }
 
 // ^K A (IDE-9e moved it off ^K N, now nextw): original -> mc11 -> c11
@@ -7497,6 +7504,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		key_style(w, es, ks.c_str());
 		return true;
 	    }
+	    case cmdLANGUAGE:
+	    {
+		// Run ▸ Language…: its argument (a choice row's, the seat's,
+		// -c's) or the choice list.
+		var la;
+		keyed_get(la, ev, "arg");
+		var ls = "";
+		if ( !la.is_null() )
+		    ls = format("{}", la);
+		lang_command(w, es, ls.c_str());
+		return true;
+	    }
 	    case cmdBUFSEL:
 	    {
 		// Switch to a buffer (polish P4): by ring index when the command
@@ -8669,7 +8688,7 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 // Returns false ONLY when the startup profile AND the built-in rescue
 // bindings both fail (fatal; the caller reports the exit).
 bool init_view_es(long w, long es, long doc, const char *path,
-		  const char *profile)
+		  const char *profile, long std)
 {
     var p = path;		// ring discipline: own the text first — the
 				// data loads below cycle the ring, so a bare
@@ -8692,6 +8711,10 @@ bool init_view_es(long w, long es, long doc, const char *path,
     var want;
     active_profile(want, w, es, prof.c_str());
     bundle_select(w, es, want.c_str());
+    // The session's language standard, before anything parses or the open
+    // starts a module (madcide_lang.inc): the command line's, else the
+    // "std" setting, else each file's own.
+    lang_open(w, es, std);
     // Plugin CODE activates before any data loads, so a key profile, a menu
     // or a layout can name what it registers (madcide_plugin_code.inc).
     plugins_activate(w, es);
@@ -8812,7 +8835,7 @@ long spawn_view_es(long w, long doc, const char *path, const char *profile = "")
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "adoc", doc);
     derive_access(w, es);
-    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str(), 0) )
 	return 0;
     return es;
 }
@@ -8849,10 +8872,11 @@ bool IdeSession::take_spawn(long &doc)
 // for the key table. The launch document comes through THE open rule
 // (open_buffer_doc, the one ^K E uses): a missing path opens as a new
 // file and says so on the status line. `profile` is the command line's
-// --profile ("" = settings.json's, else default). > 0 = the launch doc;
+// --profile ("" = settings.json's, else default), `std` its --std= (a
+// standard's kind; 0 = not given — madcide_lang.inc). > 0 = the launch doc;
 // -1 = refused (a path that exists but cannot be read) or fatal, already
 // reported on stderr.
-long IdeSession::open(const char *path0, bool ro, const char *profile)
+long IdeSession::open(const char *path0, bool ro, const char *profile, long std)
 {
     var p = path0;		// ring discipline: own the text first
     var pr = profile;
@@ -8867,7 +8891,7 @@ long IdeSession::open(const char *path0, bool ro, const char *profile)
     if ( !setup_editor_state(w, doc) )
 	return -1;		// the verbs (already reported)
     es = ui::entity_by_name(w, "editor-state");
-    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str(), std) )
 	return -1;		// the profile AND rescue bindings both failed
     if ( strlen(note.c_str()) > 0 )
 	msg_beside(w, es, note.c_str());	// New file <path>.

@@ -1,0 +1,15 @@
+args: ok=true std=c++17
+args-misspelt: ok=false why=--std=fortran names no standard (c89 ... c23, c++98 ... c++26, madc)
+args-family: ok=false
+args-gnu: ok=false
+file-c: side=side_c17 repl=c17
+file-cpp: side=side_cxx repl=c++17
+file-mad: side=side_cxx repl=madc
+cli-c11: side=side_c11 repl=c11
+lang-c++20: side=side_cxx20 msg=The language is c++20. kept=true
+lang-file: side=side_c17 msg=The language follows each file. kept=true
+lang-unknown: Unknown language 'fortran' (file, c17, c++17, madc, or any --std= standard).
+lang-same: The language is already the file's.
+setting: side=side_cxx20 repl=c++20
+setting-bad: side=side_c17 said=true
+setting-cli: side=side_cxx

@@ -41,14 +41,14 @@
 // load and run requests, and the path main runs under), replbseq (a
 // pending bindings request, replbindings), replin (the input
 // buffer, a field: its caret is the field's own), replhist / replhpos /
-// repldraft (the history), replstd (the `--std=` spelling a new session
-// takes; "" = the engine's default).
+// repldraft (the history). Its standard is the session's (madcide_lang.inc):
+// a new backend takes the one the buffer it starts for compiles under.
 //
 // Thread contract: session-thread bag state; the pump is a cooperative task
 // on the same thread (term_pump's contract).
 
-// The pane's own registrations in a world (its view's kind, Run ▸
-// Language…'s code), kept at its activation on the world's `repl-pane`
+// The pane's own registrations in a world (its view's kind), kept at its
+// activation on the world's `repl-pane`
 // entity: a code converted once, never a name looked up at use.
 long repl_world(long w)
 {
@@ -231,6 +231,17 @@ void repl_clear_marks(long w, long es)
     ui::set(w, es, "replbseq", 0);
 }
 
+// The `--std=` spelling a backend for `doc` takes: the standard the buffer
+// compiles under (doc_standard — the session's, else its file's), "" for
+// the engine's default.
+void repl_std_of(var &out, long w, long doc)
+{
+    out = "";
+    long k = doc_standard(w, doc);
+    if ( k != 0 )
+	out = madc::file_kind_name(k);
+}
+
 void repl_start(long w, long es)
 {
     if ( es_int(w, es, "repllive", 0) != 0 )
@@ -239,8 +250,8 @@ void repl_start(long w, long es)
     if ( h == 0 )
     {
 	var sp;
-	ui::get(sp, w, es, "replstd");
-	h = madc::session_open(sp.is_null() ? "" : sp.c_str());
+	repl_std_of(sp, w, active_doc(w, es, 0));
+	h = madc::session_open(sp.c_str());
 	ui::set(w, es, "replh", h);
     }
     if ( !madc::session_running(h) )
@@ -560,20 +571,17 @@ void repl_show(long w, long es)
     ui::set(w, es, "consolefocus", repl_view(w));
 }
 
-// A fresh backend for the tab's session: F5's, Stop's and Language's one
-// restart (Thonny's Stop/Restart), under the tab's standard (replstd), so a
-// language change restarts through it too. The old state is gone, so no
-// reply is owed and the stopped event is published, as when a backend ends
-// (a plugin's rows of the old state clear). False = the restart failed; the
-// transcript says why.
-bool repl_restart(long w, long es)
+// A fresh backend for the tab's session: F5's, Stop's and the language's
+// one restart (Thonny's Stop/Restart), under the standard `doc` compiles
+// under (repl_std_of), so a language change restarts through it too. The old
+// state is gone, so no reply is owed and the stopped event is published, as
+// when a backend ends (a plugin's rows of the old state clear). False = the
+// restart failed; the transcript says why.
+bool repl_restart(long w, long es, long doc)
 {
     long h = es_int(w, es, "replh", 0);
-    var sp;
-    ui::get(sp, w, es, "replstd");
-    var spelling = "";
-    if ( !sp.is_null() )
-	spelling = sp;
+    var spelling;
+    repl_std_of(spelling, w, doc);
     if ( !madc::session_restart(h, spelling.c_str()) )
     {
 	var why = madc::session_error(h);
@@ -596,106 +604,33 @@ void repl_stop_restart(long w, long es)
 	ui::set(w, es, "msg", "The shell has no session to stop.");
 	return;
     }
-    if ( repl_restart(w, es) )
+    if ( repl_restart(w, es, active_doc(w, es, 0)) )
 	repl_feed(w, es, "[stopped; a new session started]\n");
 }
 
-// Run ▸ Language… (`repllang`, plan §41.11a; decided 2026-09-30): the
-// standards the tab offers, by the spelling a session takes and the title a
-// row shows — the one table the choice list and an argument read.
-void repl_lang_rows(var &out)
+// The session's language changed (seLANGUAGE, madcide_lang.inc): a live
+// backend restarts under the standard the active buffer now compiles under
+// (its state is lost, as Stop's is) and the transcript says so; without one,
+// the next session opens under it.
+void repl_on_language(long w, long es, long doc, var &event)
 {
-    var rows = {};
-    rows[] = { "std": "c17", "title": "C17" };
-    rows[] = { "std": "c++17", "title": "C++17" };
-    rows[] = { "std": "madc", "title": "madc" };
-    out = rows;
-}
-
-// The tab's standard now: the running session's (its canonical name), else
-// the one the next session opens under ("" = the engine's default).
-void repl_lang_current(var &out, long w, long es)
-{
-    long h = es_int(w, es, "replh", 0);
-    if ( h != 0 && madc::session_running(h) )
-    {
-	out = madc::session_standard(h);
-	return;
-    }
-    var sp;
-    ui::get(sp, w, es, "replstd");
-    out = "";
-    if ( !sp.is_null() )
-	out = sp;
-}
-
-// The tab's standard becomes `spelling` (one of repl_lang_rows'): a live
-// session restarts under it (its state is lost, as Stop's is) and the
-// transcript says so; without one, the next session opens under it. An
-// unknown spelling is refused with the choices.
-void repl_set_lang(long w, long es, const char *spelling0)
-{
-    var spelling = spelling0;	// ring discipline: own the text first
-    var rows;
-    repl_lang_rows(rows);
-    var names = "";
-    bool known = false;
-    for ( var r : rows )
-    {
-	if ( r["std"] == spelling )
-	    known = true;
-	if ( strlen(names.c_str()) > 0 )
-	    names = format("{}, ", names);
-	names = format("{}{}", names, r["std"]);
-    }
-    if ( !known )
-    {
-	ui::set(w, es, "msg", format("Unknown language '{}' ({}).", spelling, names));
-	return;
-    }
-    ui::set(w, es, "replstd", spelling);
     if ( es_int(w, es, "replh", 0) == 0 )
-    {
-	ui::set(w, es, "msg", format("The shell's language is {}.", spelling));
 	return;
-    }
-    if ( repl_restart(w, es) )
-	repl_feed(w, es, format("[the language is {}; a new session started]\n", spelling));
-}
-
-// `repllang`: with an argument (the seat's, -c's, a choice row's) the
-// language becomes it; without one the choice list opens, the current
-// standard marked, each row carrying repllang and its standard.
-void repl_lang(long w, long es, const char *arg0)
-{
-    var arg = arg0;
-    if ( strlen(arg.c_str()) > 0 )
-    {
-	repl_set_lang(w, es, arg.c_str());
+    if ( !repl_restart(w, es, active_doc(w, es, 0)) )
 	return;
-    }
-    var rows;
-    repl_lang_rows(rows);
-    var cur;
-    repl_lang_current(cur, w, es);
-    var crows = {};
-    long lang = es_int(w, repl_world(w), "lang", cmdNONE);
-    for ( var r : rows )
-    {
-	long mark = 0;
-	if ( r["std"] == cur )
-	    mark = 1;
-	crows[] = { "title": r["title"], "code": lang, "arg": r["std"],
-		    "current": mark };
-    }
-    choice_show(w, es, "Language", crows);
+    var sp;
+    repl_std_of(sp, w, active_doc(w, es, 0));
+    if ( strlen(sp.c_str()) == 0 )
+	sp = "madc";
+    repl_feed(w, es, format("[the language is {}; a new session started]\n", sp));
+    repl_pane_sync(w, es);
 }
 
 // F5, `replrun` (plan §41.10a; Thonny's F5, IPython's %run): the buffer
 // `doc` run into the tab's session. A session that already existed is
 // restarted, so the run is clean and an entry still running stops with the
 // old one. The buffer's live text runs, unsaved edits included, under its
-// path and the tab's standard; its main runs once the load is answered
+// path and the standard it compiles under (repl_std_of); its main runs once the load is answered
 // (repl_reply), with argv [path]. An untitled buffer runs under the unit
 // name `untitled` (doc_name), as Thonny's runs its <untitled>.
 void repl_run(long w, long es, long doc)
@@ -720,7 +655,7 @@ void repl_run(long w, long es, long doc)
     long h = es_int(w, es, "replh", 0);
     if ( !madc::session_running(h) )
 	return;				// repl_start said why
-    if ( had && !repl_restart(w, es) )
+    if ( had && !repl_restart(w, es, doc) )
 	return;
     repl_clear_marks(w, es);		// a fresh session owes nothing either
     var name = php::basename(p.c_str());
@@ -779,15 +714,6 @@ bool repl_cmd_bindings(long w, long es, long doc, const char *arg)
     return true;
 }
 
-// Run ▸ Language…: its argument (the seat's, -c's, a choice row's) or the
-// choice list.
-bool repl_cmd_lang(long w, long es, long doc, const char *arg)
-{
-    repl_lang(w, es, arg);
-    repl_pane_sync(w, es);
-    return true;
-}
-
 // The @repl scope's own: offer the input, complete, the history, the
 // keyboard back to the editor.
 bool repl_cmd_enter(long w, long es, long doc, const char *arg)
@@ -833,18 +759,12 @@ bool repl_cmd_newer(long w, long es, long doc, const char *arg)
 }
 
 // ---- the session's events (event_handler) ----
-// The open: the REPL's standard (repl.std, the setting's first home) seeds
-// the session value a new REPL session takes (replstd; "" = the engine's
-// default), and the session starts when the layout SHOWS the pane — a
+// The open: the session starts when the layout SHOWS the pane — a
 // visible pane whose active View is the REPL, as Thonny starts its backend
 // with its window (chthonia.layout). Layout data decides, never the bundle's
 // name; the default layout keeps the REPL hidden, so it forks nothing.
 void repl_on_open(long w, long es, long doc, var &event)
 {
-    var rs;
-    setting_get(rs, w, es, "repl.std");
-    if ( !rs.is_null() && rs.is_string() && strlen(rs.c_str()) > 0 )
-	ui::set(w, es, "replstd", rs);
     if ( view_shown(w, es, repl_view(w)) )
 	repl_start(w, es);
     repl_pane_sync(w, es);
@@ -868,13 +788,11 @@ void repl_on_close(long w, long es, long doc, var &event)
 bool repl_activate(long w)
 {
     long show = plugin_command(w, "repl", "REPL", repl_cmd_show);
-    long lang = plugin_command(w, "repllang", "REPL language", repl_cmd_lang);
     long view = plugin_view_shaped(w, "repl", "REPL", "repl.pane", show, vsCONSOLE);
-    if ( show == 0 || lang == 0 || view == viewNONE )
+    if ( show == 0 || view == viewNONE )
 	return false;
     long rw = repl_world(w);
     ui::set(w, rw, "view", view);
-    ui::set(w, rw, "lang", lang);
     return plugin_command(w, "replrun", "Run in REPL", repl_cmd_run) != 0
 	&& plugin_command(w, "replstop", "Stop the REPL", repl_cmd_stop) != 0
 	&& plugin_command(w, "replbindings", "REPL bindings", repl_cmd_bindings) != 0
@@ -885,5 +803,6 @@ bool repl_activate(long w)
 	&& plugin_command(w, "replunfocus", "REPL unfocus", repl_cmd_unfocus) != 0
 	&& plugin_event(w, seOPEN, repl_on_open)
 	&& plugin_event(w, seSTOP, repl_on_stop)
-	&& plugin_event(w, seCLOSE, repl_on_close);
+	&& plugin_event(w, seCLOSE, repl_on_close)
+	&& plugin_event(w, seLANGUAGE, repl_on_language);
 }

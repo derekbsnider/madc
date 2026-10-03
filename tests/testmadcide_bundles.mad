@@ -15,7 +15,7 @@
 //   5. settings.json's "profile" selects a user bundle: its own directory
 //      holds its layout, its keys word (pico) is the shared profiles' file,
 //      the word it leaves unset (theme) is the default bundle's, and its
-//      settings' default seeds repl.std;
+//      settings' default seeds the session's standard ("std");
 //   6. the command line's profile beats settings.json's;
 //   7. a user setting beats the bundle's default;
 //   8. a user bundle overrides a shipped one by name (a user default/ with
@@ -77,14 +77,13 @@ void probe(var &out, const char *path, const char *profile)
 	ui::get(lo, S.w, S.es, "layout");
 	var sc;
 	ui::get(sc, S.w, S.es, "scheme");
-	var rs;
-	ui::get(rs, S.w, S.es, "replstd");
+	var rs = madc::file_kind_name(lang_session(S.w));
 	var bd;
 	ui::get(bd, S.w, S.es, "bundledir");
 	var msg;
 	ui::get(msg, S.w, S.es, "msg");
 	r = { "doc": doc, "bundle": b, "keys": k, "window": lo["window"],
-	      "scheme": sc, "replstd": rs, "dir": bd, "msg": msg };
+	      "scheme": sc, "std": rs, "dir": bd, "msg": msg };
 	S.close();
     }
     out = r;
@@ -166,14 +165,14 @@ int main()
     var mp = format("{}/mine.plugin", mine);
     put(files, mp, "{ \"name\": \"mine\", \"title\": \"Mine\", \"api\": 2,"
 		   " \"contributes\": { \"keys\": \"pico\", \"layout\": \"mine\","
-		   " \"settings\": { \"repl.std\": \"c11\" } } }");
+		   " \"settings\": { \"std\": \"c11\" } } }");
     var ml = format("{}/mine.layout", mine);
     put(files, ml, "@window mine\npane editor tabs views source focus\npane panel bottom 30% tabs views problems repl\n");
     var sp = format("{}/settings.json", cfg);
     put(files, sp, "{ \"profile\": \"mine\" }");
     probe(r, path, "");
-    println("bundles-settings: bundle={} keys={} window={} scheme={} replstd={} user-dir={}",
-	    r["bundle"], r["keys"], r["window"], r["scheme"], r["replstd"], r["dir"] == mine ? 1 : 0);
+    println("bundles-settings: bundle={} keys={} window={} scheme={} std={} user-dir={}",
+	    r["bundle"], r["keys"], r["window"], r["scheme"], r["std"], r["dir"] == mine ? 1 : 0);
 
     // 6. The command line beats settings.json.
     probe(r, path, "default");
@@ -196,9 +195,9 @@ int main()
     println("bundles-progname: link={} exe={} cli={} unknown={}", pl, pe, pc, pu);
 
     // 7. A user setting beats the bundle's default.
-    php::file_put_contents(sp.c_str(), "{ \"profile\": \"mine\", \"repl.std\": \"c17\" }");
+    php::file_put_contents(sp.c_str(), "{ \"profile\": \"mine\", \"std\": \"c17\" }");
     probe(r, path, "");
-    println("bundles-user-setting: replstd={}", r["replstd"]);
+    println("bundles-user-setting: std={}", r["std"]);
     php::file_put_contents(sp.c_str(), "{ }");
 
     // 8. A user bundle overrides a shipped one by name.

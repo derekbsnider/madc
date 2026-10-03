@@ -1,4 +1,4 @@
-.TH MADCIDE 1 "2026-10-01" "madc" "User Commands"
+.TH MADCIDE 1 "2026-10-03" "madc" "User Commands"
 .SH NAME
 madcide \- terminal IDE built on the live madc compiler
 .SH SYNOPSIS
@@ -7,6 +7,7 @@ madcide \- terminal IDE built on the live madc compiler
 .RI [ ro ]
 .RB [ \-\-profile
 .IR name ]
+.RB [ \-\-std= \fIstd\fR]
 .br
 .B madcide \-\-build\-plugin
 .I dir
@@ -82,6 +83,33 @@ else
 .B chthonia
 is the learning profile, laid out as Thonny is: Thonny's keys, the editor
 with the REPL below it, and a beginner's menu.
+.TP
+.BI \-\-std= std
+The language standard every buffer compiles under (its diagnostics, outline,
+colours, Build and Run) and the REPL runs: a standard
+.BR madc (1)
+names canonically \(em
+.BR c17 ,
+.BR c++20 ,
+.BR madc .
+Without the option, the
+.I std
+setting in
+.I settings.json
+decides; without that, each file's own family does: a
+.I .c
+file is C17 (and its REPL a C one), a
+.I .cpp
+file C++17, a
+.I .mad
+file madc. Run \(-> Language\(hellip (the
+.B language
+command) changes it in a running session, re-parses every buffer, restarts
+the REPL and keeps the choice in
+.IR settings.json ;
+its
+.B By file
+row returns to each file's own.
 .TP
 .BI \-\-build\-plugin " dir"
 Build the plugin in
@@ -183,8 +211,9 @@ names the profile,
 .B "plugins"
 lists plugins whose code loads beside the profile's, and any other key is
 a setting, which beats the profile's own default (for example
-.BR "repl.std" ,
-the REPL's language standard).
+.BR "std" ,
+the language standard; see
+.BR \-\-std= ).
 .PP
 A plugin with code names its source in its manifest
 .RB ( """code"": ""name.mad""" ),

@@ -3327,6 +3327,8 @@ Then the seam battery, every platform lane's full suite, and the master release.
 3. **chthonia follows Thonny's look, layout, menus, keys and features, in C/C++ form, GUI first,** so someone who learned Python in Thonny can use it with little relearning. Thonny's documented or source behaviour is the precedent every teaching-IDE command is checked against.
 4. **The key style is a menu choice** (step 3e): JOE, Vim, Emacs, Pico, Thonny and VS Code. chthonia opens with Thonny's keys, and the choice persists.
 
+**Superseded (owner, 2026-10-03), item 2:** the standard is the SESSION's, not the REPL's. A buffer named hello.c opened a `madc>` REPL, so unset, each file's family now decides (hello.c is C17 and its REPL a C one). `--std=` on madcide's command line and settings.json's `"std"` set it, and the `language` command replaces `repllang` (a By file row returns to the file's). Every buffer's parse and Build/Run use it as well as the REPL and F5. `tools/madcide/madcide_lang.inc`; `docs/madcide.md`, "The language standard".
+
 ## 42. Decisions (owner, 2026-09-25)
 
 **The aim (owner, 2026-09-25):** there is a future "ideal C/C++ REPL", and everyone is headed toward it, madc included. madc bets it can get there faster. It is designed to work more like a script language (Python, PHP), and it doesn't carry gcc's or clang's baggage. So the idea is to mimic Julia + IPython. madc follows cling and clang-repl only where their functionality is to its benefit and makes sense, never to mimic them.

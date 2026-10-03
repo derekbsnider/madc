@@ -3,14 +3,18 @@
 // the file, and a later `ro` opens it read-only. The strings are compared
 // only here, at the input boundary: main reads the parsed record.
 //
-//   madcide [<file>] [ro] [--profile NAME] [--gui|--line] [-c "<command> [arg]"]
-//           [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
+//   madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--line]
+//           [-c "<command> [arg]"] [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
 //           [--no-serve] [--sessions] [--build-plugin DIR] [--help] [--] [<file>]
 //
 // No file opens the editor on an untitled buffer (decided 2026-09-30); the
 // headless faces (-c, --mcp, --lsp, --serve) act on a file and need one.
 // --build-plugin DIR builds the plugin in DIR into its library and exits
 // (plan §41.11a step 4); like --sessions it needs no file.
+//
+// --std=STD is the session's language standard (madcide_lang.inc), converted
+// here to its kind: a standard madc's own --std= names canonically (c17,
+// c++20, madc); unset, each file's family decides.
 //
 // `--` ends the flags (a file whose name starts with '-'). An unknown flag, a
 // flag missing its value and a second file are refused with the reason and
@@ -25,6 +29,7 @@ struct ide_args
 {
     const char *file;		// NULL = none given
     const char *profile;	// --profile NAME; NULL = not given
+    long std;			// --std=STD: a standard's kind; 0 = not given
     const char *once;		// -c "<command> [arg]"
     const char *serve;		// --serve <host:port>
     const char *attach_addr;	// --attach's address; NULL = discover
@@ -42,12 +47,13 @@ struct ide_args
 // The usage text (printed for --help, and after a refusal).
 const char *ide_usage()
 {
-    return "usage: madcide [<file>] [ro] [--profile NAME] [--gui|--line] [--no-serve]  (no file = an untitled buffer)\n"
-	   "       madcide <file> [ro] [--profile NAME] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
+    return "usage: madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--line] [--no-serve]  (no file = an untitled buffer)\n"
+	   "       madcide <file> [ro] [--profile NAME] [--std=STD] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
 	   "       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n"
 	   "       madcide --sessions                                 (what is running, and how to join it)\n"
 	   "       madcide --build-plugin DIR                         (build the plugin in DIR into its library)\n"
-	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n";
+	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n"
+	   "       --std=STD        the language standard (c17, c++17, madc, ...; default: settings.json's \"std\", else each file's own)\n";
 }
 
 // A flag's value: the index of the next word, or 0 when there is none (`why`
@@ -80,6 +86,7 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 {
     a.file = NULL;
     a.profile = NULL;
+    a.std = 0;
     a.once = NULL;
     a.serve = NULL;
     a.attach_addr = NULL;
@@ -114,6 +121,15 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 		a.sessions = true;
 	    else if ( strcmp(w, "--help") == 0 || strcmp(w, "-h") == 0 )
 		a.help = true;
+	    else if ( strncmp(w, "--std=", 6) == 0 )
+	    {
+		a.std = lang_kind_of(w);
+		if ( a.std == madc::fkUNKNOWN )
+		{
+		    why = format("{} names no standard (c89 ... c23, c++98 ... c++26, madc)", w);
+		    return false;
+		}
+	    }
 	    else if ( strcmp(w, "-c") == 0 || strcmp(w, "--serve") == 0
 		      || strcmp(w, "--profile") == 0
 		      || strcmp(w, "--build-plugin") == 0 )

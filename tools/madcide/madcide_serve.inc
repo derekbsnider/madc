@@ -119,10 +119,10 @@ long serve_listen(IdeSession &S, long doc, const char *addr, var &endpoint, var 
 // the file or the listener could not open; the serve loop runs until the
 // listener dies (the process is stopped).
 long run_serve(const char *path, bool ro, const char *addr,
-	       const char *profile = "")
+	       const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     S.terminal(false);			// headless: no interactive terminal
@@ -167,10 +167,10 @@ long run_serve(const char *path, bool ro, const char *addr,
 // parked accept would hang that drain). The client loop therefore closes its
 // frontends and returns, and the session closes here, after the join.
 long run_tui(const char *path, bool ro, ui::level lvl, const char *addr,
-	     const char *profile = "")
+	     const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     long w = S.world();
@@ -405,10 +405,10 @@ long run_attach(const char *addr, bool framed)
 }
 
 long run_lsp(const char *path, bool ro, const char *serve,
-	     const char *profile = "")
+	     const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;
     S.terminal(false);				// headless: no interactive terminal

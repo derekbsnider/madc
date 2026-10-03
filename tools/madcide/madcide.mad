@@ -107,8 +107,9 @@ int main(int argc, char **argv)
     // opens the file read-only. The client loop and the composer are
     // identical for every level (the workbench layout rides layout hints
     // the terminal ignores; the one-shot typesets the same tree). The
-    // profile (--profile NAME; "" = settings.json's, else default) selects
-    // no face: every face opens its session under it.
+    // profile (--profile NAME; "" = settings.json's, else default) and the
+    // standard (--std=, a kind; 0 = settings.json's, else each file's) select
+    // no face: every face opens its session under them.
     const char *file = a.file == NULL ? "" : a.file;	// "" = untitled
     bool ro = a.ro;
     ui::level lvl = a.level;
@@ -157,7 +158,7 @@ int main(int argc, char **argv)
     if ( once != NULL )
     {
 	var out;
-	long rc = run_once(out, file, ro, once, profile);
+	long rc = run_once(out, file, ro, once, profile, a.std);
 	print("{}", out);
 	return rc;
     }
@@ -167,7 +168,7 @@ int main(int argc, char **argv)
 	// JSON-RPC 2.0 — a tool call is an `api` command by name (run_mcp is an
 	// adapter over the SAME command core the --serve api seat drives). The
 	// standard MCP deployment: an editor / agent host spawns this process.
-	return run_mcp(file, ro, profile);
+	return run_mcp(file, ro, profile, a.std);
     }
     if ( lsp )
     {
@@ -182,7 +183,7 @@ int main(int argc, char **argv)
 	// browser) that joins the very same buffers. Two processes would be
 	// two sessions on one file — two carets, two undo histories, last save
 	// wins.
-	return run_lsp(file, ro, serve, profile);
+	return run_lsp(file, ro, serve, profile, a.std);
     }
     if ( serve != NULL )
     {
@@ -191,14 +192,14 @@ int main(int argc, char **argv)
 	// page.js over the socket) and plain HTTP GETs for the page — the SAME
 	// session and registry the local windows drive (run_serve classifies
 	// each connection with serve_web).
-	return run_serve(file, ro, serve, profile);
+	return run_serve(file, ro, serve, profile, a.std);
     }
     if ( lvl == ui::LINE )
     {
 	// The ex / edlin client (V2.5): stdin lines in, the level-0
 	// projection out — its own loop, as the one-shot has its own, but
 	// the SAME session and composer (run_line).
-	run_line(file, ro, profile);
+	run_line(file, ro, profile, a.std);
 	return 0;
     }
     // The editor — which LISTENS by default (V6c-4 ruling R2) on a loopback
@@ -206,5 +207,5 @@ int main(int argc, char **argv)
     // or a browser joins THIS session instead of opening a second one on the
     // same file. `--no-serve` opts out. ⚠️ NO AUTH, NO TLS: loopback only.
     const char *listen_at = no_serve ? NULL : "127.0.0.1:0";
-    return run_tui(file, ro, lvl, listen_at, profile);
+    return run_tui(file, ro, lvl, listen_at, profile, a.std);
 }

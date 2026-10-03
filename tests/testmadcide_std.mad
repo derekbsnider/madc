@@ -1,0 +1,152 @@
+// madcide's language standard (tools/madcide/madcide_lang.inc; owner
+// 2026-10-03): one standard per session, read by every buffer's parse and
+// by the REPL. Pins:
+//   1. the command line: --std=c++17 converts to its kind; a spelling that
+//      names no standard (a misspelling, the C family's alias, a GNU dialect)
+//      is refused with the reason;
+//   2. unset, the FILE decides: a .c buffer compiles as C17 and the REPL
+//      backend for it takes c17 (not madc), a .cpp buffer C++17, a .mad
+//      buffer madc;
+//   3. --std= decides for every buffer: the .c buffer under --std=c11 is C11;
+//   4. `language c++20` re-parses the buffer under C++20, says so and keeps
+//      it in settings.json's "std"; `language file` returns to the file's,
+//      kept as "file"; an unknown one is refused with the choices; the
+//      current one is said to be current;
+//   5. the "std" setting opens the next session under it; one that names no
+//      standard is ignored, the status line says so and the file decides;
+//      the command line beats the setting.
+// The preprocessor picks one function per standard — gcc/clang -E agree:
+// c17 => side_c17, c11 => side_c11, c++17 => side_cxx, c++20 =>
+// side_cxx20 — so a buffer's outline says which standard its parse saw. The
+// configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
+// testmadcide_std.env).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_args.inc"
+
+// The function the buffer's parse handle outlines: one per standard.
+void side_of(var &out, long w, long es, long doc)
+{
+    long h = ensure_phandle(w, es, doc);
+    var o;
+    madc::parse_outline(o, h);
+    out = "none";
+    for ( var fn : o )
+	out = fn["name"];
+}
+
+// One session on `path` under the command line's `std` (0 = not given): the
+// side its buffer parses as, the REPL's spelling for it, the status line.
+void probe(var &out, const char *path, long std)
+{
+    IdeSession S;
+    long doc = S.open(path, false, "", std);
+    var side;
+    side_of(side, S.w, S.es, doc);
+    var rs;
+    repl_std_of(rs, S.w, doc);
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    out = { "side": side, "repl": rs, "msg": msg };
+    S.close();
+}
+
+// The command line's verdict on one --std= word.
+void args_of(var &out, const char *word)
+{
+    const char *av[] = { "madcide", word, "f.c" };
+    ide_args a;
+    var why = "";
+    bool ok = ide_args_parse(a, why, 3, av);
+    out = { "ok": ok, "std": madc::file_kind_name(a.std), "why": why };
+}
+
+int main()
+{
+    var src = "#if defined(__cplusplus) && __cplusplus >= 202002L\n"
+	      "long side_cxx20(void) { return 1; }\n"
+	      "#elif defined(__cplusplus)\n"
+	      "long side_cxx(void) { return 1; }\n"
+	      "#elif __STDC_VERSION__ == 201710L\n"
+	      "long side_c17(void) { return 1; }\n"
+	      "#elif __STDC_VERSION__ == 201112L\n"
+	      "long side_c11(void) { return 1; }\n"
+	      "#else\n"
+	      "long side_other(void) { return 1; }\n"
+	      "#endif\n";
+    var files = { "madc_ide_std.c", "madc_ide_std.cpp", "madc_ide_std.mad" };
+    for ( var f : files )
+	php::file_put_contents(f.c_str(), src);
+
+    // 1. The command line.
+    var r;
+    args_of(r, "--std=c++17");
+    println("args: ok={} std={}", r["ok"], r["std"]);
+    args_of(r, "--std=fortran");
+    println("args-misspelt: ok={} why={}", r["ok"], r["why"]);
+    args_of(r, "--std=c");
+    println("args-family: ok={}", r["ok"]);
+    args_of(r, "--std=gnu17");
+    println("args-gnu: ok={}", r["ok"]);
+
+    // 2. Unset: the file decides.
+    probe(r, "madc_ide_std.c", 0);
+    println("file-c: side={} repl={}", r["side"], r["repl"]);
+    probe(r, "madc_ide_std.cpp", 0);
+    println("file-cpp: side={} repl={}", r["side"], r["repl"]);
+    probe(r, "madc_ide_std.mad", 0);
+    println("file-mad: side={} repl={}", r["side"], r["repl"]);
+
+    // 3. --std= decides.
+    probe(r, "madc_ide_std.c", madc::fkC11);
+    println("cli-c11: side={} repl={}", r["side"], r["repl"]);
+
+    // 4. The language command.
+    var cfg;
+    madcide_config_dir(cfg);
+    var sp = format("{}/settings.json", cfg);
+    IdeSession S;
+    long doc = S.open("madc_ide_std.c", false, "", 0);
+    bool lc = true;
+    var side;
+    var msg;
+    var kept;
+    S.command(doc, cmdLANGUAGE, "c++20", lc);
+    side_of(side, S.w, S.es, doc);
+    ui::get(msg, S.w, S.es, "msg");
+    php::file_get_contents(kept, sp.c_str());
+    println("lang-c++20: side={} msg={} kept={}", side, msg,
+	    rust::contains(kept.c_str(), "\"std\": \"c++20\"") != 0);
+    S.command(doc, cmdLANGUAGE, "file", lc);
+    side_of(side, S.w, S.es, doc);
+    ui::get(msg, S.w, S.es, "msg");
+    php::file_get_contents(kept, sp.c_str());
+    println("lang-file: side={} msg={} kept={}", side, msg,
+	    rust::contains(kept.c_str(), "\"std\": \"file\"") != 0);
+    S.command(doc, cmdLANGUAGE, "fortran", lc);
+    ui::get(msg, S.w, S.es, "msg");
+    println("lang-unknown: {}", msg);
+    S.command(doc, cmdLANGUAGE, "file", lc);
+    ui::get(msg, S.w, S.es, "msg");
+    println("lang-same: {}", msg);
+    S.close();
+
+    // 5. The setting.
+    php::file_put_contents(sp.c_str(), "{ \"std\": \"c++20\" }");
+    probe(r, "madc_ide_std.c", 0);
+    println("setting: side={} repl={}", r["side"], r["repl"]);
+    php::file_put_contents(sp.c_str(), "{ \"std\": \"fortran\" }");
+    probe(r, "madc_ide_std.c", 0);
+    println("setting-bad: side={} said={}", r["side"],
+	    rust::contains(r["msg"].c_str(), "names no standard") != 0);
+    php::file_put_contents(sp.c_str(), "{ \"std\": \"c11\" }");
+    probe(r, "madc_ide_std.c", madc::fkCPP17);
+    println("setting-cli: side={}", r["side"]);
+
+    php::unlink(sp.c_str());
+    php::rmdir(cfg.c_str());
+    for ( var f : files )
+	php::unlink(f.c_str());
+    return 0;
+}

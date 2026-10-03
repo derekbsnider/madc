@@ -702,10 +702,39 @@ if [ "$(count_action_events "$tmp")" -ne 2 ]; then
 fi
 rm -f "$tmp"
 
+# The C / C++ / madc RANGES of <bits/file_kinds> have ONE reader in madcide:
+# kind_family (madcide_lang.inc; DupFamily madcide_file_kind_family,
+# consolidated 2026-10-03). kind_compiler_range, cxx_view_applies and
+# kind_is_standard each spelled the ranges by hand; they ask kind_family now.
+# Marker: a range bound (fkC_LAST / fkCPP_LAST / fkMADC_LAST) anywhere in
+# tools/madcide or tools/texteditor outside madcide_lang.inc.
+count_family_ranges()
+{
+	grep -lE 'fk(C|CPP|MADC)_LAST' "$@" | grep -vc '/madcide_lang\.inc$'
+}
+
+n=$(count_family_ranges "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc)
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n file(s) read the file-kind" \
+	     "family ranges outside madcide_lang.inc (ask kind_family):" >&2
+	grep -nE 'fk(C|CPP|MADC)_LAST' "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc \
+		| grep -v '/madcide_lang\.inc:' >&2
+	exit 1
+fi
+tmpd=$(mktemp -d)
+echo '    return k >= madc::fkC && k <= madc::fkC_LAST;	// synthetic' > "$tmpd/synthetic.inc"
+if [ "$(count_family_ranges "$TOOLS"/*.inc "$tmpd/synthetic.inc")" -ne 1 ]; then
+	rm -rf "$tmpd"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic family range read (the marker went blind)." >&2
+	exit 1
+fi
+rm -rf "$tmpd"
+
 echo "check-madcide-single-owners: OK (one data-location owner: resolve_data_dir;" \
      "one data-file path: bundle_data_path; one action-event builder: action_event;" \
      "one document minter: new_document; one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \
-     "validator seat: graph_edit_apply)"
+     "validator seat: graph_edit_apply; one file-kind family reader: kind_family)"
 exit 0

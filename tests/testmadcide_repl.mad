@@ -23,11 +23,15 @@
 //   8. Stop (`replstop`, plan §41.11a): with no session there is nothing to
 //      stop; during an entry that never ends, the entry stops with its
 //      session, the transcript says so, and the next entry runs in a new one;
-//   9. Run ▸ Language… (`repllang`): the choice list shows the three
+//   9. Run ▸ Language… (`language`, the session's standard,
+//      madcide_lang.inc): the choice list shows By file and the three
 //      standards; choosing C++17 restarts the session under it (a reference
-//      entry is taken) and the list then marks it current; esc closes it; an
-//      argument (the seat's, -c's) sets the language directly; an unknown
-//      one is refused with the choices.
+//      entry is taken), keeps it in settings.json's "std", and the list then
+//      marks it current; esc closes it; an argument (the seat's, -c's) sets
+//      the language directly; an unknown one is refused with the choices.
+//      The session sets c11 at the start, as `--std=c11` would (the buffer
+//      is a .mad file, which would be madc); the configuration directory is
+//      this test's fixture (MADCIDE_CONFIG_DIR in testmadcide_repl.env).
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -76,7 +80,7 @@ int main()
     builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
-    ui::set(w, es, "replstd", "c11");
+    ui::set(w, lang_world(w), "std", (long)madc::fkC11);	// as --std=c11 sets it
     IdeSession S;
     S.attach(w, es);
     ui::set(w, es, "caret", 5);
@@ -278,7 +282,7 @@ int main()
 	    rust::contains(got.c_str(), "undeclared") != 0);
 
     // 9. Run ▸ Language….
-    ev_action(e, "repllang", "");
+    ev_action(e, "language", "");
     S.apply_ide_event(doc, e);
     var ltree;
     S.compose_ide_tree(ltree, doc);
@@ -286,22 +290,28 @@ int main()
     ui::render_tree(ltext, w, ltree);
     const char *lt = ltext.c_str();
     println("lang: pane={} listed={}", pane_name(cur_pane(w, es)),
-	    rust::contains(lt, "Language") != 0 && rust::contains(lt, "C17") != 0
+	    rust::contains(lt, "Language") != 0 && rust::contains(lt, "By file") != 0
+	    && rust::contains(lt, "C17") != 0
 	    && rust::contains(lt, "C++17") != 0 && rust::contains(lt, "madc") != 0);
     mark = transcript_size(w, es);
     var lch = { "event": "choose", "event_code": ui::event_kind::choose,
-		"option": 2, "action": "", "action_code": cmdCHOICE };
+		"option": 3, "action": "", "action_code": cmdCHOICE };
     S.apply_ide_event(doc, lch);
     var lstd = madc::session_standard(es_int(w, es, "replh", 0));
     enter_line(S, doc, w, es, "int v = 5; int &rv = v;");
     transcript_since(got, w, es, mark);
-    var lcur;
-    repl_lang_current(lcur, w, es);
+    var lcur = madc::file_kind_name(lang_session(w));
+    var kept;
+    var cfg;
+    madcide_config_dir(cfg);
+    var setp = format("{}/settings.json", cfg);
+    php::file_get_contents(kept, setp.c_str());
+    println("lang kept: {}", rust::contains(kept.c_str(), "\"std\": \"c++17\"") != 0);
     println("lang pick: closed={} std={} said={} taken={} current={}",
 	    cur_pane(w, es) == paneNONE, lstd,
 	    rust::contains(got.c_str(), "[the language is c++17; a new session started]") != 0,
 	    rust::contains(got.c_str(), "error") == 0, lcur);
-    ev_action(e, "repllang", "");
+    ev_action(e, "language", "");
     S.apply_ide_event(doc, e);
     S.compose_ide_tree(ltree, doc);
     ui::render_tree(ltext, w, ltree);
@@ -310,10 +320,9 @@ int main()
     S.apply_ide_event(doc, e);
     println("lang again: marked={} closed={}", marked, cur_pane(w, es) == paneNONE);
     bool lc = true;
-    long langc = cmd_of_w(w, "repllang");
-    S.command(doc, langc, "c17", lc);
+    S.command(doc, cmdLANGUAGE, "c17", lc);
     println("lang arg: std={}", madc::session_standard(es_int(w, es, "replh", 0)));
-    S.command(doc, langc, "fortran", lc);
+    S.command(doc, cmdLANGUAGE, "fortran", lc);
     ui::get(msg, w, es, "msg");
     println("lang unknown: {}", msg);
 
@@ -329,5 +338,7 @@ int main()
     println("bindings: subscribed={} rows={}", subscribed, rows);
     S.close();				// stops the pump and the session
     php::unlink(path);
+    php::unlink(setp.c_str());		// the Language choice's settings.json
+    php::rmdir(cfg.c_str());
     return 0;
 }

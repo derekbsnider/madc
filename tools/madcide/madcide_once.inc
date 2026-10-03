@@ -26,7 +26,7 @@
 // line inside the projection and reads as 0 until the api seat's per-reply
 // verdicts land (design §2.7, V6).
 long run_once(var &out, const char *path, bool ro, const char *cmdline,
-	      const char *profile = "")
+	      const char *profile = "", long std = 0)
 {
     out = "";
     var line = php::trim(cmdline);
@@ -46,7 +46,7 @@ long run_once(var &out, const char *path, bool ro, const char *cmdline,
     // opens the session first and asks the world.
     long code = cmd_of(name.c_str());
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;			// -1 already reported on stderr
     if ( code == cmdNONE )

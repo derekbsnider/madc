@@ -29,7 +29,7 @@ enum ide_cmd : unsigned short
     cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
-    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
+    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
     cmdREFRESH, cmdSAVE, cmdSAVEAS,
@@ -87,6 +87,7 @@ void cmd_table(var &t)
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
     rows[] = { "name": "keystyle", "code": cmdKEYSTYLE };
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
+    rows[] = { "name": "language", "code": cmdLANGUAGE };
     rows[] = { "name": "mark", "code": cmdMARK };
     rows[] = { "name": "modes", "code": cmdMODES };
     rows[] = { "name": "nextw", "code": cmdNEXTW };
@@ -392,12 +393,13 @@ long menu_place_of(var &word)
 #include "include/madcide/plugin_api"
 
 // The session's own events (plan §41.11a step 8): its open (after the layout
-// loads), its tasks' stop (IdeSession::stop_tasks) and its close (after the
-// drain), published to the handlers subscribed to them (plugin_event), so a
-// module with a task or a process starts and ends it with the session. Their
+// loads), its tasks' stop (IdeSession::stop_tasks), its close (after the
+// drain) and its language standard's change (madcide_lang.inc), published to
+// the handlers subscribed to them (plugin_event), so a module with a task or
+// a process starts and ends it with the session. Their
 // range is disjoint from repl_event's; builtin form first: they join
 // <madcide/plugin_api> when a plugin outside madcide needs them.
-enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLAST };
+enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLANGUAGE, seLAST };
 
 // A kind plugin_event subscribes to: a repl_event or a session_event.
 bool event_kind_ok(long kind)
@@ -588,12 +590,13 @@ long view_show_cmd(long kind)
 // the -c line's, a choice list row's) instead of answering a prompt they
 // open: IdeSession::command hands them the argument directly, as it hands a
 // contributed command its own. Without an argument keystyle opens its own
-// choice list, and paste pastes the clipboard.
+// choice list (language too), and paste pastes the clipboard.
 bool cmd_takes_arg(long code)
 {
     switch ( code )
     {
 	case cmdKEYSTYLE:
+	case cmdLANGUAGE:
 	case cmdPASTE:		// the text to paste (a client's platform read)
 	    return true;
     }
@@ -718,6 +721,7 @@ long cmd_min_tier(long code)
     case cmdSAVE:
     case cmdSAVEAS:
     case cmdKEYSTYLE:	// it writes settings.json, as a save writes
+    case cmdLANGUAGE:	// settings.json, and every buffer re-parses
     case cmdSAVEQUIT:
     // editor — project mutation / opening
     case cmdOPENPROJECT:

@@ -141,6 +141,19 @@ A gui project's Windows executable gets the GUI subsystem (no console
 window at start — what `-mwindows` does for a single file), and Run sends
 its output to the window's Output tab instead of the Terminal.
 
+## The language standard
+
+A session has one language standard. Every buffer compiles under it (its
+diagnostics, outline, colours, Build and Run), and the REPL runs it.
+`--std=c17` (any standard `madc --std=` names canonically: `c11`, `c++20`,
+`madc`, …) sets it on the command line; without that, settings.json's
+`"std"` does. Unset, each file's family decides: `hello.c` is C17 and its
+REPL a C one, `x.cpp` is C++17 and a `.mad` file is madc. Language… (the
+`language` command, in the Build menu and chthonia's Run menu) changes it in
+a running session. It re-parses every buffer, restarts the REPL and keeps
+the choice in settings.json, and its **By file** row returns to each file's
+own (`language file`).
+
 ## Build and Run
 
 `^B` (Build…) lists the commands: Check (in-process, the live parse),
@@ -324,7 +337,7 @@ each row with `name`, `kind`, `type`, `value`, `file` and `line`) and
 there.
 
 madcide's own REPL pane is a plugin compiled into madcide: its commands
-(`repl`, `replrun`, `replstop`, `repllang`, `replbindings`, and the input's
+(`repl`, `replrun`, `replstop`, `replbindings`, and the input's
 `replenter`, `replcomplete`, `replolder`, `replnewer`, `replunfocus` in the
 `@repl` scope) and its view `repl` register the way a plugin's do, so a key
 profile, a menu or a layout names them as it names any plugin's.

@@ -11,7 +11,7 @@
 //   2. its keys are Thonny's, and its layout shows the REPL, with no Outline,
 //      Project or Terminal pane, and a sidebar;
 //   3. the menu bar is File, Edit, Run, View, Tools, Help: Run's rows are
-//      replrun (F5's), replstop and repllang, and there is no Build or
+//      replrun (F5's), replstop and language, and there is no Build or
 //      Window menu;
 //   4. a REPL session is running at open, because the layout shows it;
 //   5. the default profile, over the same file, starts none (its layout

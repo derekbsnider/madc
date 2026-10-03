@@ -1731,10 +1731,10 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 // client is the operator: self_id -1 (untracked -> owner via eff_tier, the -c
 // seat's rule), so it may edit and save. Drives mcp_handle over the SAME
 // api_run core the --serve api seat uses.
-long run_mcp(const char *path, bool ro, const char *profile = "")
+long run_mcp(const char *path, bool ro, const char *profile = "", long std = 0)
 {
     IdeSession S;
-    long doc = S.open(path, ro, profile);
+    long doc = S.open(path, ro, profile, std);
     if ( doc <= 0 )
 	return 1;
     S.terminal(false);			// headless: no interactive terminal
