@@ -1864,6 +1864,14 @@ public:
 	void native_func_shape(FuncDef *fd, bool &ret_ptr,
 			       std::vector<c2mir_node_code_t> &ret_specs,
 			       std::vector<ExternParam> &params);
+	// The typed extern for a DECLARATION-ONLY callee called under its bound
+	// external symbol (an Itanium export, or a row's emit_symbol), in
+	// native_func_shape's shape. No prototype pass declares those (the <new>
+	// allocation operators; the carrier's free operator rows, outside
+	// funcdef_map), and an implicit declaration types the result int and
+	// passes a hidden result address as a plain first argument. The flush
+	// skips a symbol a pass already typed (typed_proto_syms).
+	void declare_bound_callee(FuncDef *cdf, const std::string &sym);
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
 	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
 	// return base type when non-empty (e.g. {N_LONG} for a long-returning

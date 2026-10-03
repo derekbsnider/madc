@@ -8,6 +8,10 @@ The REPL release: `madc` with no program file is an interactive C/C++
 session, madcide gains plugins and Chthonia, a Thonny-style teaching IDE,
 and the B-series burn-down fixes silent wrong answers first.
 
+### cir: by-value carrier operator calls pass a hidden result address
+
+A number or text on the left of a `var` operator (`1 + v`, `"x" + v`) crashed on Apple Silicon with SIGSEGV at address 0x1. The carrier's free operator rows are FuncDefs outside funcdef_map, so no prototype pass declared them; c2mir received an implicit variadic declaration. On AArch64, the callee madarray_radd_int expects the result address in x8, but madc's unprototyped call passed it as x0 (the first plain argument), so the callee read x1 (the numeric 1) as its `var` operand and dereferenced 0x1. The fix: CirBuilder::declare_bound_callee registers the typed extern for each bound callee (an Itanium export or a row's emit_symbol) so every by-value carrier operator call passes an rblk result address. Gate: scripts/sret_abi_gate.sh [carrier] leg passes on the fixed build (RED on v0.101.0 release binary); 5 by-value carrier operator calls each pass an rblk result address; no unprototyped callee in the module. Arm64 confirmation: the darwin lane pending.
+
 ### repl: Stop of a running entry restarts at once instead of waiting the grace
 
 Stopping a session whose entry is computing (madcide's Stop, Thonny's Stop/Restart) now terminates the backend process immediately instead of waiting 2 seconds for it to exit gracefully. SessionClient gains `busy()` to detect whether the backend still owes a reply to an outstanding request (answered_seq + 1 < next_seq); SessionClient::stop() calls process->terminate() at once if busy (the backend never reads the socket), then process->wait_or_kill(2000) as usual for idle backends. The grace is correct for idle backends exiting on EOF; a busy backend is instead SIGTERM'd immediately. Reducer tests/testsession_stop verifies: wall-clock time 2.11 s before, 0.11 s after (php::time is whole seconds; grace waits 2+ s, prompt restart reads 0 or 1).

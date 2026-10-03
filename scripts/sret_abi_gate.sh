@@ -158,5 +158,47 @@ MADC_DUMP_MIR=1 timeout 240 "$MADC" --forest-bind="$snap" "$src" 2>tmp/sret_abi_
 	|| fail "madc failed on $src under --forest-bind"
 check_lane bound tmp/sret_abi_bind.mir
 
-rm -f "$src" "$snap" tmp/sret_abi_live.mir tmp/sret_abi_bind.mir
+# The carrier leg (plan §42 D28). A script `var` is madc::value, returned by
+# value through the same hidden result address. Its FREE operator rows
+# (`1 + v`, `"x" + v`) are FuncDefs no prototype pass sweeps, so a call to one
+# reached c2mir as an IMPLICIT declaration: an unprototyped variadic `int f()`
+# taking the result address as a plain first argument. The audit above cannot
+# see that — there is no __retbuf prototype to audit — and AArch64 read the
+# `1` as the carrier's address (SIGSEGV at 0x1, testvararith on the arm64
+# Mac). Dialect code calls no unprototyped function, so the leg asserts the
+# mechanism: every by-value carrier operator call passes an rblk result
+# address, and no prototype in the module has the variadic shape an implicit
+# declaration gets.
+csrc=tmp/sret_abi_gate_carrier.mad
+cmir=tmp/sret_abi_carrier.mir
+cat > "$csrc" <<'EOF'
+int main()
+{
+	var a = 5;
+	var s = "ab";
+	var r1 = 1 + a;
+	var r2 = 2.5 * a;
+	var r3 = "x" + s;
+	var r4 = a + 1;
+	var r5 = -a;
+	println("{} {} {} {} {}", r1, r2, r3, r4, r5);
+	return 0;
+}
+EOF
+cout="$(MADC_DUMP_MIR=1 timeout 240 "$MADC" "$csrc" 2>"$cmir")" \
+	|| fail "madc failed on $csrc"
+[ "$cout" = "6 12.5 xab 6 -5" ] || fail "[carrier] wrong output: $cout"
+res="$(audit "$cmir")"
+[ "$(printf '%s' "$res" | head -1 | cut -d' ' -f2)" = "0" ] \
+	|| fail "[carrier] a __retbuf prototype is not rblk:$(printf '%s' "$res" | tail -n +2)"
+implicit="$(grep -E '^proto[0-9]+:.*\.\.\.' "$cmir")"
+[ -z "$implicit" ] \
+	|| fail "[carrier] a call reached c2mir without a prototype (the implicit variadic shape):
+$(printf '%s\n' "$implicit" | sed 's/^/      /')"
+nrblk="$(grep -cE '^[[:space:]]*call[[:space:]].*rblk:' "$cmir")"
+[ "$nrblk" -eq 5 ] \
+	|| fail "[carrier] $nrblk of the reducer's 5 by-value carrier operator calls pass an rblk result address"
+echo "sret_abi_gate: [carrier] OK — 5 by-value carrier operator calls ride an rblk result address; no unprototyped callee"
+
+rm -f "$src" "$snap" tmp/sret_abi_live.mir tmp/sret_abi_bind.mir "$csrc" "$cmir"
 echo "sret_abi_gate: OK"
