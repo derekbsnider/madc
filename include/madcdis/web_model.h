@@ -649,12 +649,16 @@ class web_model
 		    op["tabs"] = true;
 	    }
 	    // The toolbar (plan §41.11a): a `toolbar` hint (madcide puts it on
-	    // the root) is an array of {label, action, code?, enabled?}; the
-	    // page draws a button per row and a click posts the action by name
-	    // (the S1 rule). Each row gains the chord the LOADED profile binds
-	    // (`key`, omitted when unbound — the menu items' rule) and
-	    // `enabled` made explicit; its code joins the action map. A row
-	    // with no label or no action is dropped.
+	    // the root) is an array of {label, action, code?, enabled?, icon?,
+	    // drop?} and {sep} rows; the page draws a button per row, a divider
+	    // per separator, and a click posts the action by name (the S1
+	    // rule). Each row gains the chord the LOADED profile binds (`key`,
+	    // omitted when unbound — the menu items' rule) and `enabled` made
+	    // explicit; its code joins the action map. `icon` (a ui::icon code)
+	    // goes out as its name (ui_icon_name), the picture the page draws;
+	    // `drop` ({action, code, arg}) is the button's dropdown arrow, whose
+	    // click posts that action with that argument. A row with no label or
+	    // no action is dropped.
 	    if ( n.hints.is_object() )
 	    {
 		const std::map<std::string, madc::value> &tbo = n.hints.as_object();
@@ -667,6 +671,16 @@ class web_model
 		    {
 			if ( !rows[k].is_object() )
 			    continue;
+			if ( hint_of(rows[k], "sep", 0) )
+			{
+			    if ( !bar.empty() )
+			    {
+				nlohmann::json sp = nlohmann::json::object();
+				sp["sep"] = true;
+				bar.push_back(sp);
+			    }
+			    continue;
+			}
 			const std::string label = hint_str(rows[k], "label");
 			const std::string action = hint_str(rows[k], "action");
 			if ( label.empty() || action.empty() )
@@ -684,8 +698,33 @@ class web_model
 			if ( !key.empty() )
 			    bt["key"] = key;
 			bt["enabled"] = hint_of(rows[k], "enabled", 1) != 0;
+			const long icode = hint_of(rows[k], "icon", 0);
+			if ( icode > 0 )
+			{
+			    const std::string iname = ui_icon_name((ui_icon)icode);
+			    if ( !iname.empty() )
+				bt["icon"] = iname;
+			}
+			const std::map<std::string, madc::value> &ro = rows[k].as_object();
+			std::map<std::string, madc::value>::const_iterator di = ro.find("drop");
+			if ( di != ro.end() && di->second.is_object() )
+			{
+			    const std::string dact = hint_str(di->second, "action");
+			    if ( !dact.empty() )
+			    {
+				nlohmann::json dr = nlohmann::json::object();
+				dr["action"] = dact;
+				dr["arg"] = hint_str(di->second, "arg");
+				const long dcode = hint_of(di->second, "code", 0);
+				if ( dcode )
+				    _action_codes[dact] = dcode;
+				bt["drop"] = dr;
+			    }
+			}
 			bar.push_back(bt);
 		    }
+		    while ( !bar.empty() && bar.back().contains("sep") )
+			bar.erase(bar.end() - 1);	// no trailing divider
 		    if ( !bar.empty() )
 			op["toolbar"] = bar;
 		}

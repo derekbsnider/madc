@@ -309,21 +309,70 @@
     }
   }
 
-  // The toolbar's buttons (plan §41.11a): one per row, its label shown and
-  // its chord (the loaded profile's, from web_model) as the tooltip; a
-  // disabled row's button is disabled. The slot is the workbench's.
+  // The toolbar's icons (the chthonia mockup): one 16-unit SVG picture per
+  // ui::icon name (web_model sends the name); strokes and fills take the
+  // button's colour class (tb-ic-<name> in page.css). An unknown name draws
+  // nothing and the button keeps its label.
+  var TB_ICONS = {
+    'new': '<path d="M4 1.5h5.5L13 5v9.5H4z" fill="none"/><path d="M9.5 1.5V5H13" fill="none"/>',
+    'open': '<path d="M1.5 4V13h11.5l1.5-6H4.5L3 13" fill="none"/><path d="M1.5 4V2.5h4l1.5 1.5h5V7" fill="none"/>',
+    'save': '<path d="M2 2h9.5L14 4.5V14H2z" fill="none"/><path d="M4.5 2v3.5h6V2M4.5 14v-4.5h7V14" fill="none"/>',
+    'run': '<path d="M4 2.5v11l9.5-5.5z" class="fill"/>',
+    'debug': '<ellipse cx="8" cy="9.5" rx="3.5" ry="4.5" class="fill"/><path d="M6 4.5l-1.5-2M10 4.5l1.5-2M4.5 8H1.5M11.5 8h3M4.5 11.5l-2.5 1.5M11.5 11.5l2.5 1.5" fill="none"/>',
+    'stop': '<rect x="3" y="3" width="10" height="10" rx="1" class="fill"/>',
+    'step-over': '<path d="M3 9a5 5 0 0 1 9.5-2.5" fill="none"/><path d="M13 3.5v3.5H9.5" fill="none"/><circle cx="8" cy="13" r="1.3" class="fill"/>',
+    'step-into': '<path d="M2 6.5h9M8 3.5l3 3-3 3" fill="none"/><path d="M4 13.5h8" fill="none"/>',
+    'step-out': '<path d="M8 1.5v8M5 6.5l3 3 3-3" fill="none"/><path d="M4 13.5h8" fill="none"/>',
+    'breakpoints': '<path d="M2 2h2M7 2h2M12 2h2M2 14h2M7 14h2M12 14h2M2 7v2M14 7v2M5 5l6 6M11 5l-6 6" fill="none"/>'
+  };
+  function tbIcon(name) {
+    var body = TB_ICONS[name];
+    if (!body) return null;
+    var i = document.createElement('span');
+    i.className = 'tb-ic tb-ic-' + name;
+    i.innerHTML = '<svg viewBox="0 0 16 16" width="20" height="20" aria-hidden="true">' + body + '</svg>';
+    return i;
+  }
+
+  // The toolbar's buttons (plan §41.11a): one per row; a row with an icon
+  // shows the picture (and its label too when it drops a menu down, the
+  // mockup's Run ▾), else its label; the label and its chord (the loaded
+  // profile's, from web_model) are the tooltip; a disabled row's button is
+  // disabled. A row's `drop` is a ▾ beside it posting its action and
+  // argument; a separator row is a divider. The slot is the workbench's.
   function toolbar(el, rows) {
     var s = slotOf(el, 'toolbar');
     s.textContent = '';
     for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.sep) { s.appendChild(span('tb-sep', '')); continue; }
       var b = document.createElement('button');
       b.type = 'button';
       b.className = 'cf-btn tb-btn';
-      b.dataset.action = rows[i].action || '';
-      b.textContent = rows[i].label || '';
-      if (rows[i].key) b.title = (rows[i].label || '') + ' (' + rows[i].key + ')';
-      if (rows[i].enabled === false) b.disabled = true;
+      b.dataset.action = r.action || '';
+      var ic = r.icon ? tbIcon(r.icon) : null;
+      if (ic) {
+        b.classList.add('tb-has-icon');
+        b.appendChild(ic);
+        if (r.drop) b.appendChild(span('tb-label', r.label || ''));
+      } else {
+        b.textContent = r.label || '';
+      }
+      b.title = (r.label || '') + (r.key ? ' (' + r.key + ')' : '');
+      b.setAttribute('aria-label', r.label || '');
+      if (r.enabled === false) b.disabled = true;
       s.appendChild(b);
+      if (r.drop && r.drop.action) {
+        var d = document.createElement('button');
+        d.type = 'button';
+        d.className = 'cf-btn tb-btn tb-drop';
+        d.dataset.action = r.drop.action;
+        if (r.drop.arg != null) d.dataset.arg = r.drop.arg;
+        d.title = (r.label || '') + ' \u2026';
+        d.setAttribute('aria-label', d.title);
+        d.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none"/></svg>';
+        s.appendChild(d);
+      }
     }
   }
 
@@ -969,7 +1018,9 @@
     }
     if (b && b.dataset.action) {
       e.preventDefault();
-      post({ kind: 'action', action: b.dataset.action });
+      var bmsg = { kind: 'action', action: b.dataset.action };
+      if (b.dataset.arg != null) bmsg.arg = b.dataset.arg;
+      post(bmsg);
       kb.focus();
       return;
     }

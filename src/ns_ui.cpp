@@ -2180,6 +2180,21 @@ const char *side_name(int64_t code)
     return madc::hub::ui_side_name((ui::side)code);
 }
 
+int64_t icon_code(const char *name)
+{
+    madc::hub::ui_icon ic;
+    if ( !name || !madc::hub::ui_icon_from_name(name, ic) )
+	return (int64_t)ui::icon::none;
+    return (int64_t)ic;
+}
+
+const char *icon_name(int64_t code)
+{
+    if ( code < (int64_t)ui::icon::none || code > (int64_t)ui::icon::breakpoints )
+	return "";
+    return madc::hub::ui_icon_name((ui::icon)code);
+}
+
 // ---- level-1 TUI (R5): the "term" target's spellings ------------------
 // The original grid-frontend API, kept as the terminal target's names over
 // the same handles: tui_open() IS open("term").

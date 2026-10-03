@@ -429,6 +429,11 @@ namespace ui {
     int64_t side_code(const char *name);
     const char *split_name(int64_t code);
     const char *side_name(int64_t code);
+    // The ICON vocabulary's (<bits/ui_enums> ui::icon) the same way: a menu
+    // row's `{ICON}` word -> its code (none for a word that is not one), and
+    // a code -> its name.
+    int64_t icon_code(const char *name);
+    const char *icon_name(int64_t code);
 
     // ---- script-hosted targets (the web target is one; a test fake is
     // another). A host is a table of C function pointers a madc fragment
