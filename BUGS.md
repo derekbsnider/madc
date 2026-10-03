@@ -2099,6 +2099,30 @@ int main(void) { return x; }
 - Off the release path (owner 2026-09-30: the neovim personality's key
   review is an open question to the owner); filed.
 
+### B165. In a built madcide, `{madc}` and the test runner name madcide itself
+
+- `madc::compiler_path()` is the running executable
+  (`madc_self_exe_path()`). Under the JIT (`madc tools/madcide/madcide.mad`)
+  that is the madc CLI. In the packaged madcide (`madcide.exe`, the Linux
+  package's `madcide`, chthonia) it is madcide, which does not take madc's
+  command line. Two consumers pass it a madc command line:
+  - `build_subst`'s `{madc}` (`tools/madcide/madcide_core.inc`), for
+    manifest-declared commands such as `{madc} -o {base} {path}`;
+  - the test runner (`tools/madcide/madcide_tests.inc`,
+    `env MADC_BIN={self} ... run_tests.sh`), which would run every test
+    through madcide.
+- Run itself is not affected: since the run-child fix (MADC_RUN_CHILD,
+  `include/madc_run_child.h`) every program on the engine serves its own Run
+  child, so Run never needs a madc CLI.
+- Open for the owner: these two need a madc CLI, which is not the running
+  program. The installation ships one (`bin/madc.exe` beside
+  `libmadc-0.dll`; the standalone chthonia package ships libmadc and madc,
+  plugin design §9.3). Should a packaged madcide name the installation's
+  madc for these two? Or should they refuse there? The 2026-08-27 ruling
+  (never exec a madc) covers Build and Run, not these.
+- Found 2026-10-03 while fixing the Windows Run recursion (the audit of
+  `madc_self_exe_path()` callers).
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++
@@ -2130,6 +2154,26 @@ int main() { return __builtin_types_compatible_p(enum E, int); }
   as a `void *` conversion when either answers `is_void()`
   (`cir_builder.cpp`, the `[conv.ptr]` arm). A focused session: give a
   function type its own tag, then run the lanes.
+
+### B166. No lane runs tests as Windows executables
+
+- The win64 lanes (`remote_build.sh wine`, `headerless-win`,
+  `scripts/win_suite.sh` on genuine Windows) run the JIT pass only; the
+  `--exe` / `--obj` passes run on Linux (`exeobj`). So a defect that only a
+  Windows native image shows has no lane. The Run recursion did: from
+  7225fa035 (2026-09-08) a Windows executable that called `parse_run` or
+  opened `madcrun://` (madcide.exe included) spawned itself with
+  `--run-frozen=`. `testparserunfrozen` runs on every domain, and its win64
+  `--exe` pass was red throughout (measured 2026-10-03: JIT 1/0, EXE 0/1),
+  but nothing ran that pass.
+- The owner's 2026-10-03 lane rule is "one runner pass per lane (--exe
+  --obj)". Should the win64 full-suite lane run `--exe --obj` under wine?
+  That costs the seam roughly one more win64 suite of wall time. Until it
+  does, the Windows Run tests (`testparserunfrozen`, `testprojectrun`,
+  `testmadcide`'s `run-window`) are run by hand with
+  `MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine
+  MADC_SKIP_EXT='win64 wine64' run_tests.sh --exe <names>`.
+- Found 2026-10-03 with B165.
 
 ## Duplication families (divergent, open)
 
