@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### package: the Windows zip's plugins are built by the staged madcide.exe
+
+`package_release_windows.sh` built the shipped plugins with `tmp/madcide-pkg.exe`, which sits apart from `libmadc-0.dll`; under wine it exited 53 with no output, and the v0.101.0 tag-push release run failed in windows-package. The plugins are now built after `bin/` holds the DLLs and the plugin API headers, by the staged `bin/madcide.exe`. The v0.101.0 assets were rebuilt from the tag tree plus this fix (workflow_dispatch, tag unmoved).
+
+### seam: package-win stage
+
+`remote_build.sh package-win` builds `release-windows` and runs the Windows packager with its install gate; `seam_battery.sh` runs it after the win64 twins.
+
+### tests: every full suite runs the -O2 build, one runner pass per lane
+
+The batch checkpoint, the seam battery and `make -C src fulltest` run `bin/madc-release`; the whole tests/ suite (JIT) takes 190 s on it against 693 s on the -O0 dev binary. `remote_build.sh` drops its exe, obj, libcxx, libcxxjit and packed stages; `tests-all` is one `--exe --obj` pass. The Linux libcxx lane is retired: the libc++ suite is darwin-suite on the macOS -O2 packed binary.
+
 ## [v0.101.0] — 2026-10-03
 
 The REPL release: `madc` with no program file is an interactive C/C++
