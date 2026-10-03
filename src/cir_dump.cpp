@@ -1856,6 +1856,45 @@ node_t CirBuilder::show_bounded_tail(node_t n, TokenBase *origin)
 		     node2(N_BLOCK, list(), items, origin), ignore(), origin);
 }
 
+// A class whose data members are not all public, its bases' included: those
+// members are its implementation, not its value.
+static bool class_has_nonpublic_members(DataDefCLASS *cls, int depth = 0)
+{
+	if (!cls || depth > 32)
+		return false;
+	for (size_t i = 0; i < cls->members.size(); i++)
+		if (i < cls->member_access.size()
+		    && (cls->member_access[i] & (vfPRIVATE | vfPROTECTED)))
+			return true;
+	for (const BaseSpec &b : cls->bases)
+		if (class_has_nonpublic_members(b.base, depth + 1))
+			return true;
+	if (cls->bases.empty() && cls->base_class)
+		return class_has_nonpublic_members(cls->base_class, depth + 1);
+	return false;
+}
+
+// The show of such a class (a stream: its buffer, flags and locale) names the
+// object by its type and address, as cling's value printer does —
+// `(std::ostream &) 0x…` — instead of walking its implementation. Its members
+// are not re-enterable syntax (D10) either: only a constructor makes one.
+bool CirBuilder::dump_show_object(const DumpAccess &acc, DataDefCLASS *cls,
+				  std::vector<node_t> &out, TokenBase *origin)
+{
+	const bool cxx = m_prog && m_prog->is_cpp_mode();
+	std::string word = dump_class_type_word(cls) + " &";
+	need_dump_extern("__madc_dump_sh_ptr",
+			 { { {N_CHAR}, true }, { {N_VOID}, true },
+			   { {N_INT}, false } });
+	node_t a = list();
+	append(a, str(word.c_str(), word.size() + 1, origin));
+	append(a, node2(N_CAST, void_ptr_type(), node1(N_ADDR, acc(), origin),
+			origin));
+	append(a, integer(cxx ? 1 : 0, origin));
+	out.push_back(dump_call_stmt("__madc_dump_sh_ptr", a, origin));
+	return true;
+}
+
 bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 				   std::vector<node_t> &out, TokenBase *origin)
 {
@@ -2390,6 +2429,8 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 					    + dump_class_type_word(ccls) + "' yet";
 					return false;
 				}
+				if (class_has_nonpublic_members(ccls))
+					return dump_show_object(acc, ccls, out, origin);
 			}
 			return dump_struct(fl, acc, sdd, depth, nested, out, origin,
 					   why);

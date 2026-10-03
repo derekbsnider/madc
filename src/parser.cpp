@@ -81157,6 +81157,11 @@ static EntryValueRoot entry_value_root(TokenBase *e)
     if ( TokenCallFunc *tcf = e->as_callfunc_tok() )
 	return tcf->call_returns_reference() ? EntryValueRoot::Referenced
 					     : EntryValueRoot::Temporary;
+    // An overloaded operator returning a reference designates an existing
+    // object the same way (`cout << x` is cout).
+    if ( TokenOperator *to = e->as_operator_tok() )
+	if ( to->resolved_reference )
+	    return EntryValueRoot::Referenced;
     if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(e) )
     {
 	EntryValueRoot a = entry_value_root(tq->true_expr);

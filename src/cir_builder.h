@@ -961,6 +961,9 @@ private:
 	// dfShow's pointer: its type and address, never its pointee (§6.4).
 	bool dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 			       std::vector<node_t> &out, TokenBase *origin);
+	// dfShow's class with non-public members: its type and address.
+	bool dump_show_object(const DumpAccess &acc, class DataDefCLASS *cls,
+			      std::vector<node_t> &out, TokenBase *origin);
 	// The walk. Each returns false with `why` set when the type has no dumper
 	// yet — a refusal, never a guess. `depth` is a COMPILE-TIME nesting level:
 	// the walk is EXPANDED per level, so every column is a literal and no

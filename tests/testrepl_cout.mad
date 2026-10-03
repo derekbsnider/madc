@@ -1,0 +1,14 @@
+// madc -i: an entry whose value is a stream reference. `std::cout << x <<
+// std::endl` returns std::ostream& ([ostream.inserters]), an lvalue: the
+// session keeps a reference to std::cout, never a copy (basic_ostream's copy
+// constructor is deleted — the entry failed with "use of deleted copy
+// constructor"), and `ans` is std::cout. A class whose members are not public
+// shows as its type and address, as cling's value printer does; a class
+// whose members are public shows them.
+#include <iostream>
+
+int main()
+{
+    std::cout << "loaded" << std::endl;
+    return 0;
+}
