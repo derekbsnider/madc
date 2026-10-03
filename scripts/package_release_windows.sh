@@ -75,10 +75,6 @@ export WINEDEBUG=-all
 wineserver -p || true
 rm -f tmp/madcide-pkg.exe
 ( ulimit -t 600; timeout 600 wine "$BIN" -o tmp/madcide-pkg.exe tools/madcide/madcide.mad )
-# The shipped plugins: a plugin with code carries its library (a .dll),
-# built by this madcide.exe under wine (plan §41.11a step 6).
-echo "== madcide plugins (each with code built by the packaged madcide.exe) =="
-scripts/build_shipped_plugins.sh tmp/plugins-pkg-win wine tmp/madcide-pkg.exe
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/$ROOT/bin" "$STAGE/$ROOT/lib" "$STAGE/$ROOT/THIRD_PARTY_NOTICES"
@@ -88,10 +84,6 @@ install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
 # madcide's profile search ends at <exedir>/profiles (resolve_profile_dir).
 mkdir -p "$STAGE/$ROOT/bin/profiles"
 install -m 644 tools/madcide/profiles/* "$STAGE/$ROOT/bin/profiles/"
-# The shipped plugins (bundles; a plugin's code as source plus its .dll),
-# beside the exe the same way.
-mkdir -p "$STAGE/$ROOT/bin/plugins"
-cp -R tmp/plugins-pkg-win/. "$STAGE/$ROOT/bin/plugins/"
 # The plugin API headers (<madcide/plugin>), beside the exe the same way:
 # --build-plugin's include directory (resolve_data_dir's last arm).
 mkdir -p "$STAGE/$ROOT/bin/include/madcide"
@@ -116,6 +108,15 @@ install -m 755 bin/madcwebview.dll "$STAGE/$ROOT/bin/madcwebview.dll"
 # minimal read-only libgit2 is STATIC-linked inside it; nothing named libgit2
 # ships.
 install -m 755 bin/madcgit.dll "$STAGE/$ROOT/bin/madcgit.dll"
+# The shipped plugins: a plugin with code carries its library (a .dll),
+# built under wine by the STAGED madcide.exe (plan §41.11a step 6) — after
+# the DLLs and the plugin API headers are beside it, because a PE binds
+# libmadc-0.dll by adjacency only: run from tmp/ it exits 53 with no output.
+echo "== madcide plugins (each with code built by the staged madcide.exe) =="
+scripts/build_shipped_plugins.sh tmp/plugins-pkg-win wine "$STAGE/$ROOT/bin/madcide.exe"
+# Beside the exe the same way (bundles; a plugin's code as source plus its .dll).
+mkdir -p "$STAGE/$ROOT/bin/plugins"
+cp -R tmp/plugins-pkg-win/. "$STAGE/$ROOT/bin/plugins/"
 install -m 644 lib/libmadc.dll.a "$STAGE/$ROOT/lib/libmadc.dll.a"
 install -m 644 lib/libmadc_rt-hosted-x86-64-windows.a "$STAGE/$ROOT/lib/libmadc_rt.a"
 install -m 644 LICENSE "$STAGE/$ROOT/LICENSE"
