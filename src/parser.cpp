@@ -59348,7 +59348,7 @@ void Program::capture_explicit_template_instantiation(bool extern_declaration)
 	for ( int p = 0; p < sig.pointer_depth; ++p )
 	    arg_type = getPointerType(arg_type);
 	if ( sig.is_ref )
-	    arg_type = getReferenceType(arg_type);
+	    arg_type = getReferenceType(arg_type, sig.is_rvalue_ref);
 	TokenDataType *arg = new TokenDataType(arg_type->name.c_str(), *arg_type);
 	arg->file = decl[name_idx]->file;
 	arg->line = decl[name_idx]->line;
@@ -70078,6 +70078,25 @@ bool Program::parse_param_sig_from_tokens(std::vector<TokenBase *> param,
     sig.base = resolve_param_type_from_tokens(param, idx);
     if ( !sig.base )
 	return false;
+    // A type NAME may itself denote a reference, with the referent's cv
+    // ([dcl.typedef]: libc++'s `const_reference` is `const value_type&`):
+    // decompose it into the same facts the spelled `const T&` tokens give —
+    // reference, its kind, the referent's const, the unqualified referent —
+    // or a definition written with the typedef matches no declaration, and
+    // its sibling's binds the wrong overload.
+    if ( sig.base->is_reference() )
+    {
+	sig.is_ref = true;
+	sig.is_rvalue_ref = sig.base->is_rvalue_reference();
+	DataDefREF *rd = sig.base->as_reference_dd();
+	if ( rd && rd->base_type )
+	    sig.base = rd->base_type;
+	if ( sig.base->is_const() )
+	{
+	    sig.is_const = true;
+	    sig.base = sig.base->unqualified();
+	}
+    }
 
     while ( idx < param.size() )
     {
@@ -70086,8 +70105,17 @@ bool Program::parse_param_sig_from_tokens(std::vector<TokenBase *> param,
 	    continue;
 	if ( t->id() == TokenID::tkMul || t->id() == TokenID::tkStar )
 	    ++sig.pointer_depth;
-	else if ( t->id() == TokenID::tkBand || t->id() == TokenID::tkLand )
+	else if ( t->id() == TokenID::tkBand )
+	{
+	    sig.is_ref = true;		// `&` on any reference: an lvalue one
+	    sig.is_rvalue_ref = false;	// ([dcl.ref]/6)
+	}
+	else if ( t->id() == TokenID::tkLand )
+	{
+	    if ( !sig.is_ref )		// `&&` on a reference keeps its kind
+		sig.is_rvalue_ref = true;
 	    sig.is_ref = true;
+	}
 	else if ( t->id() == TokenID::tkCONST )
 	    sig.is_const = true;
     }
@@ -70135,10 +70163,17 @@ static bool function_explicit_params_match(FuncDef *fd,
     {
 	size_t pi = i + 1;
 	bool expected_ref = fd->is_ref_param(pi);
-	bool expected_const = pi < fd->const_params.size() && fd->const_params[pi];
+	// The referent's const and the reference's kind are the declared
+	// parameter TYPE's (param_referent_is_const; an rvalue reference is its
+	// own type) — a declaration spelled through a typedef carries them on
+	// the type, not on const_params.
+	bool expected_const = fd->param_referent_is_const(pi);
 	if ( expected_ref != sigs[i].is_ref )
 	    return false;
 	if ( expected_ref && expected_const != sigs[i].is_const )
+	    return false;
+	if ( expected_ref
+	  && fd->parameters[pi]->is_rvalue_reference() != sigs[i].is_rvalue_ref )
 	    return false;
 
 	DataDef *expected = fd->parameters[pi];

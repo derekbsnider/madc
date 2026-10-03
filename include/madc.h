@@ -2794,9 +2794,11 @@ struct ParsedParamSig
 {
     DataDef *base;
     bool is_ref;
+    bool is_rvalue_ref;	// `&&` (after [dcl.ref]/6 collapsing)
     bool is_const;
     int pointer_depth;
-    ParsedParamSig() : base(NULL), is_ref(false), is_const(false), pointer_depth(0) {}
+    ParsedParamSig() : base(NULL), is_ref(false), is_rvalue_ref(false),
+		       is_const(false), pointer_depth(0) {}
 };
 
 // ---------------------------------------------------------------------------
