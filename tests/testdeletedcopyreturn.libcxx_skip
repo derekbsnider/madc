@@ -1,0 +1,1 @@
+libc++'s unique_ptr copy constructor is implicitly deleted (not spelled = delete) and madc accepts returning an lvalue unique_ptr (clang++ -stdlib=libc++ rejects it); every archived release since v0.72.0 the same; BUGS.md B158

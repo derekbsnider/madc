@@ -1,0 +1,1 @@
+libstdc++-internal by construction: std::_RequireInputIter is libstdc++'s alias; libc++ defines no such name, and the real toolchain rejects this source (clang++ -std=c++17 -stdlib=libc++: no template named '_RequireInputIter' in namespace 'std')

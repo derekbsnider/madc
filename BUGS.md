@@ -28,6 +28,64 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B156. `__is_same` is false for a namespace-scope scalar typedef and its type
+
+```cpp
+#include <type_traits>
+#include <cstddef>
+#include <cstdio>
+namespace w { typedef int i; }
+int main() {
+	std::printf("%d %d %d %d\n", (int)std::is_same<std::size_t, unsigned long>::value,
+		    (int)std::is_same<w::i, int>::value,
+		    (int)std::is_same<std::ptrdiff_t, long>::value,
+		    (int)__is_same(std::size_t, unsigned long));
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18 (libstdc++ and libc++): `1 1 1 1`. madc
+  (2026-10-03, libstdc++): `0 0 0 0`; under `-stdlib=libc++`: `1 0 1 1`.
+  v0.100.1 gives the same answers.
+- Layer: `TraitTypeArg::same_as` (src/parser.cpp) compares `dd->name`. The
+  namespace-scope arm of `TokenTYPEDEF::parse`'s `finish_alias` mints an
+  alias dd named for the typedef, linked to its type by `scalar_alias_of`.
+  `proven_scalar_identity` walks that link; `same_as` does not.
+- Found 2026-10-03 while fixing the libc++ `add_volatile` regression
+  (tests/testvolatiletypetraitscxx). Off the release path (shipped in
+  v0.100.1), filed per owner 2026-09-30.
+
+### B157. libc++: `std::vector::push_back(std::move(x))` copies instead of moving
+
+```cpp
+#include <vector>
+#include <utility>
+#include <cstdio>
+struct S { int v; S(int x) : v(x) {}
+	S(const S &o) : v(o.v) { std::printf("copy "); }
+	S(S &&o) : v(o.v) { std::printf("move "); } };
+int main() { std::vector<S> v; v.reserve(4); S s(1);
+	v.push_back(std::move(s)); std::printf("| ");
+	v.emplace_back(std::move(s)); std::printf("| ");
+	v.push_back(s); std::printf("\n"); return 0; }
+```
+
+- clang++ 18 `-stdlib=libc++`: `move | move | copy`. madc `-stdlib=libc++`
+  (2026-10-03): `copy | move | copy`. libstdc++ is correct. v0.100.1 libc++
+  prints the same as madc today (tests/testtsubstargcategory's `vec:` line:
+  `copy copy copy`; expected `move copy move`).
+- The emitted C's `main` calls `vector<S>::push_back` (the `const_reference`
+  overload) for the xvalue; the `value_type&&` overload (`push_back__o2`)
+  is never emitted. Both out-of-line definitions bind their own overload
+  (`MADC_OOL_PROBE=vector`). `std::allocator_traits::construct` and
+  `std::__construct_at` forward an xvalue correctly, and a user class
+  template with the same `const_reference` / `value_type&&` pair resolves
+  correctly. Layer not yet traced: the call-site overload choice between
+  libc++'s two declarations.
+- Found 2026-10-03 in the libc++ release-tier lane. Off the release path
+  (shipped in v0.100.1), filed per owner 2026-09-30.
+  tests/testtsubstargcategory carries `.libcxx_skip` until this is fixed.
+
 ### B150. win64 `--emit=c11` renders `packed` as `#pragma pack(1)`, which mingw lays out differently
 
 ```c
@@ -489,6 +547,31 @@ int main(void)
 
 ## Accepts invalid code
 
+### B158. libc++: returning an lvalue `std::unique_ptr` (a deleted copy) is accepted
+
+```cpp
+#include <memory>
+std::unique_ptr<int> bad(std::unique_ptr<int> &p)
+{
+	return p;
+}
+int main() { return 0; }
+```
+
+- clang++ 18 `-stdlib=libc++`: `error: call to implicitly-deleted copy
+  constructor of 'std::unique_ptr<int>'`. g++ 13: `use of deleted
+  function`. madc rejects it under libstdc++ (`use of deleted copy
+  constructor`, tests/testdeletedcopyreturn). madc `-stdlib=libc++`
+  (2026-10-03): compiles, exit 0. Every archived release since v0.72.0
+  behaves the same.
+- libc++ declares the copy constructor implicitly deleted (a user move
+  constructor, [class.copy.ctor]/6), where libstdc++ spells `= delete`.
+  Layer not yet traced: the return-statement copy-initialization check
+  sees no deleted constructor in the implicit case.
+- Found 2026-10-03 in the libc++ release-tier lane. Off the release path,
+  filed per owner 2026-09-30. tests/testdeletedcopyreturn carries
+  `.libcxx_skip` until this is fixed.
+
 ### B101. A cast from a pointer to a narrower integer type is accepted: `(int)p`, and `(long)p` on Windows
 
 ```cpp
@@ -582,6 +665,88 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B154. A namespace-qualified variable template is refused inside a function body
+
+```cpp
+namespace ns {
+template <class T>
+inline constexpr bool ev = sizeof(T) > 1;
+}
+static_assert(ns::ev<int>, "x");
+int main() { constexpr bool b = ns::ev<int>; return b ? 0 : 1; }
+```
+
+- g++ 13 and clang++ 18 (`-std=c++20`): exit 0. madc (2026-10-03): the
+  `static_assert` passes; the use in `main` is refused, `'ev' is not a
+  member of namespace 'ns'`, exit 1. The unqualified form (no namespace)
+  compiles. v0.100.1 refuses it the same way.
+- Layer not yet traced: the qualified-name arm of the function-body
+  expression parser misses the namespace's variable templates, which the
+  constant-expression reader finds.
+- Found 2026-10-02 while fixing the libc++ `testifconstexpr` regression
+  (tests/testvartemplaterequires). Off the release path, filed per owner
+  2026-09-30.
+
+### B155. A requires-expression in a variable template's initializer is refused when used at run time
+
+```cpp
+template <class T>
+inline constexpr bool ev = sizeof(T) > 1 || requires { (T*)nullptr; };
+int main() { return ev<int> ? 0 : 1; }
+```
+
+- g++ 13 and clang++ 18 (`-std=c++20`): exit 0. madc (2026-10-03): `use of
+  undeclared identifier 'requires'`, exit 1. v0.100.1 compiled it and
+  returned 1 (a silent wrong answer); today's refusal is loud.
+- The same initializer in a `static_assert` folds correctly
+  (tests/testvartemplaterequires). Layer: the runtime expression parser has
+  no requires-expression primary; the constant-expression reader has one.
+- Found 2026-10-02 with B154. Off the release path, filed per owner
+  2026-09-30.
+
+### B159. libc++: a `std::tuple` of two or more elements cannot be constructed
+
+```cpp
+#include <tuple>
+#include <cstdio>
+int main() { std::tuple<int, double> t(3, 2.5);
+	std::printf("%d %g\n", std::get<0>(t), std::get<1>(t)); return 0; }
+```
+
+- clang++ 18 `-stdlib=libc++`: `3 2.5`. madc `-stdlib=libc++` (2026-10-03):
+  `cir error: no matching constructor for call to '__tuple_impl<...>(
+  __tuple_indices<0,1>, __tuple_types<int32_t,double>, __tuple_indices<>,
+  __tuple_types<>, int32_t*, double*)'` at libc++ `tuple:587`. A
+  one-element `std::make_tuple(3)` works. libstdc++ is correct.
+- `__tuple_impl`'s constructor is a variadic template over two index packs
+  and two type packs; the arguments arrive as pointers (`int32_t*`), so the
+  forwarding `_Up&&...` parameters are not matched. Layer not yet traced.
+- tests/testmaketuple and tests/testrvaluereftype fail this way under
+  libc++ on every archived release since v0.72.0; both carry
+  `.libcxx_skip` until this is fixed. Found 2026-10-03 in the libc++
+  release-tier lane, filed per owner 2026-09-30.
+
+### B160. libc++: `std::vector`'s iterator-pair constructor does not compile
+
+```cpp
+#include <vector>
+#include <cstdio>
+int main() { std::vector<int> r(3, 7); std::vector<int> c(r.begin(), r.end());
+	std::printf("%zu %d\n", c.size(), c[0]); return 0; }
+```
+
+- clang++ 18 `-stdlib=libc++`: `3 7`. madc `-stdlib=libc++` (2026-10-03):
+  c2mir refuses the instantiated libc++ bodies: `pointer to incomplete type
+  as an operand of +` (`__memory/uninitialized_algorithms.h:579`) and
+  `incompatible types in assignment to an arithmetic type lvalue`
+  (`__memory/construct_at.h:52`). libstdc++ is correct.
+- Layer not yet traced: an iterator type in `__uninitialized_allocator_copy`
+  substitutes as an incomplete type.
+- tests/testvectoriterpairctor fails this way under libc++ on every
+  archived release since v0.72.0 and carries `.libcxx_skip` until this is
+  fixed. Found 2026-10-03 in the libc++ release-tier lane, filed per owner
+  2026-09-30.
 
 ### B151. C11 `_Noreturn` is refused as a function specifier
 
@@ -1458,6 +1623,31 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
   (`lowering-vs-raising.md` Tier 2/3), not only the check.
 
 ## Diagnostics
+
+### B161. libc++: copying a `std::unique_ptr` is reported as "no matching constructor"
+
+```cpp
+#include <memory>
+int main()
+{
+	std::unique_ptr<int> p(new int(3));
+	auto q = p;
+	return *q;
+}
+```
+
+- clang++ 18 `-stdlib=libc++`: `call to implicitly-deleted copy constructor
+  of 'std::unique_ptr<int>'`. madc rejects it under libstdc++ with `use of
+  deleted copy constructor` (tests/testdeletedcopyunique). madc
+  `-stdlib=libc++` (2026-10-03) rejects it too, as `cir error: no matching
+  constructor for call to 'unique_ptr_int32_t_...'`, which names neither
+  the deleted constructor nor the user's type spelling (B108).
+- Probably the same root as B158: libc++'s copy constructor is implicitly
+  deleted (a user move constructor), where libstdc++ spells `= delete`.
+  Not yet traced.
+- tests/testdeletedcopyunique carries `.libcxx_skip` until this is fixed.
+  Found 2026-10-03 in the libc++ release-tier lane, filed per owner
+  2026-09-30.
 
 ### B114. A call whose function-template deduction fails is reported as an undefined MIR import
 

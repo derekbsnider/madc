@@ -1,0 +1,1 @@
+linux libc++ only: an rvalue std::vector::push_back resolves the const_reference overload and copies (clang++ -stdlib=libc++: move copy move; madc: copy copy copy, the same as v0.100.1); libstdc++ correct; BUGS.md B157
