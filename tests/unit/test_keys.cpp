@@ -20,6 +20,7 @@ thread_local bool madc_verbose = false;
 #include "madcdis/keys.h"
 #include "madcdis/ui_focus.h"
 #include "madcdis/tui_model.h"	// the consumer, for the through-the-model chord cases
+#include "madcdis/ui_input.h"	// ui_apply_keys: a chord printable never types
 
 using madc::hub::tui_key;
 using madc::hub::tui_keyev;
@@ -72,6 +73,183 @@ TEST_CASE("key spelling — one owner, both directions")
     CHECK(k.ch == '\\');
     REQUIRE(tui_key_from_name("^]", k));
     CHECK(k.ch == ']');
+
+    // Function keys: "f1".."f12", the number in ch; "f" alone is a printable.
+    CHECK(tui_key_name(tui_keyev(tui_key::fkey, 5)) == "f5");
+    CHECK(tui_key_name(tui_keyev(tui_key::fkey, 12)) == "f12");
+    CHECK(tui_key_name(tui_keyev(tui_key::fkey, 13)).empty());
+    for ( int n = 1; n <= 12; ++n )
+    {
+	CAPTURE(n);
+	std::string name = tui_key_name(tui_keyev(tui_key::fkey, (char)n));
+	REQUIRE(tui_key_from_name(name, k));
+	CHECK(k.kind == tui_key::fkey);
+	CHECK((int)k.ch == n);
+    }
+    REQUIRE(tui_key_from_name("f", k));
+    CHECK(k.kind == tui_key::ch);
+    CHECK(!tui_key_from_name("f0", k));
+    CHECK(!tui_key_from_name("f13", k));
+    CHECK(!tui_key_from_name("f05", k));
+    CHECK(!tui_key_from_name("fx", k));
+}
+
+// Modifiers (plan §41.11a step 3e): Shift, Alt, Ctrl and Cmd on any key,
+// spelled by the one owner in both directions.
+TEST_CASE("modified keys — spelling round-trips; primary is the platform's")
+{
+    const char *names[] = {
+	"ctrl+shift+s", "ctrl+f2", "shift+right", "alt+f4", "ctrl+space",
+	"ctrl+plus", "ctrl+-", "ctrl+3", "cmd+s", "shift+tab",
+	"ctrl+alt+del", "ctrl+shift+w", "shift+f5", "ctrl+f8",
+    };
+    for ( size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i )
+    {
+	CAPTURE(names[i]);
+	tui_keyev k;
+	REQUIRE(tui_key_from_name(names[i], k));
+	CHECK(k.mods != 0);
+	CHECK(tui_key_name(k) == names[i]);
+    }
+    tui_keyev k;
+    // Generous on input, canonical on output: a plain Ctrl+letter is ^s.
+    REQUIRE(tui_key_from_name("ctrl+s", k));
+    CHECK(tui_key_name(k) == "^s");
+    CHECK(k.kind == tui_key::ctrl);
+    CHECK(k.mods == 0);
+    REQUIRE(tui_key_from_name("Ctrl+Shift+S", k));
+    CHECK(tui_key_name(k) == "ctrl+shift+s");
+    REQUIRE(tui_key_from_name("ctrl++", k));
+    CHECK(tui_key_name(k) == "ctrl+plus");
+    REQUIRE(tui_key_from_name("shift+a", k));		// a shifted printable
+    CHECK(k.kind == tui_key::ch);			// is its own character
+    CHECK(k.mods == 0);
+    REQUIRE(tui_key_from_name("+", k));
+    CHECK(k.kind == tui_key::ch);
+    CHECK(k.ch == '+');
+    CHECK(!tui_key_from_name("super+s", k));		// not a modifier word
+    CHECK(!tui_key_from_name("ctrl+", k));
+    CHECK(!tui_key_from_name("ctrl+nope", k));
+    // `primary` is Ctrl, or Cmd on macOS.
+    REQUIRE(tui_key_from_name("primary+s", k));
+#ifdef __APPLE__
+    CHECK(tui_key_name(k) == "cmd+s");
+#else
+    CHECK(tui_key_name(k) == "^s");
+#endif
+    // Typing: a printable with no Ctrl, Alt or Cmd.
+    CHECK(madc::hub::key_types(tui_keyev(tui_key::ch, 'a')));
+    REQUIRE(tui_key_from_name("ctrl+3", k));
+    CHECK(!madc::hub::key_types(k));
+}
+
+TEST_CASE("modified keys — bound apart, else read as their key")
+{
+    tui_bindings b;
+    REQUIRE(b.bind("^s", "save"));
+    REQUIRE(b.bind("ctrl+shift+s", "saveas"));
+    REQUIRE(b.bind("^w", "close"));
+    REQUIRE(b.bind("right", "cright"));
+    REQUIRE(b.bind("ctrl+f2", "restart"));
+    REQUIRE(b.bind("ctrl+3", "comment"));	// a chord printable may head
+    REQUIRE(b.bind("^k s", "blocksave"));
+    std::string err;
+    REQUIRE(b.finalize(err));
+    key_resolver r;
+    r.set_bindings(b);
+    tui_keyev k;
+    REQUIRE(tui_key_from_name("ctrl+shift+s", k));
+    CHECK(r.step(k).action_name == "saveas");
+    CHECK(r.step(tui_keyev(tui_key::ctrl, 's')).action_name == "save");
+    REQUIRE(tui_key_from_name("ctrl+f2", k));
+    CHECK(r.step(k).action_name == "restart");
+    REQUIRE(tui_key_from_name("ctrl+3", k));
+    CHECK(r.step(k).action_name == "comment");
+    // Unbound modified keys read as their key: Ctrl+Shift+W is ^w, and
+    // Shift+Right is right (what they were before modifiers were read).
+    REQUIRE(tui_key_from_name("ctrl+shift+w", k));
+    key_step w = r.step(k);
+    CHECK(w.action_name == "close");
+    CHECK(w.seq == "^w");
+    REQUIRE(tui_key_from_name("shift+right", k));
+    CHECK(r.step(k).action_name == "cright");
+    // A modified continuation reads as its key too: ^K then Shift+S.
+    CHECK(r.step(tui_keyev(tui_key::ctrl, 'k')).k == key_step::kind::pending);
+    REQUIRE(tui_key_from_name("alt+s", k));
+    CHECK(r.step(k).action_name == "blocksave");
+    // A chord printable nothing binds never falls back to typing.
+    REQUIRE(tui_key_from_name("ctrl+4", k));
+    CHECK(r.step(k).k == key_step::kind::passthrough);
+    // A printable-headed sequence is still refused: Shift+A is typing.
+    tui_bindings bad;
+    REQUIRE(bad.bind("shift+a", "x"));
+    CHECK(!bad.finalize(err));
+    // Through the one keys -> events loop: Ctrl+4 is a key event carrying
+    // its modifiers, never part of the text run around it.
+    focus_state f;
+    std::vector<tui_keyev> keys;
+    keys.push_back(tui_keyev(tui_key::ch, 'a'));
+    keys.push_back(k);
+    keys.push_back(tui_keyev(tui_key::ch, 'b'));
+    std::vector<tui_event> ev = madc::hub::ui_apply_keys(r, f, keys);
+    REQUIRE(ev.size() == 3u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    CHECK(ev[0].text == "a");
+    CHECK(ev[1].kind == tui_event_kind::key);
+    CHECK(ev[1].mods == (unsigned char)ui::key_mod::ctrl);
+    CHECK(ev[2].text == "b");
+}
+
+TEST_CASE("modified keys — Shift reaches a binding without it, and the action keeps it")
+{
+    // Shift on a bound motion (plan §41.11a step 3e): Ctrl+Shift+Left finds
+    // Ctrl+Left's binding before Left's, and the action says Shift was
+    // held, so the application extends a selection by that motion.
+    tui_bindings b;
+    REQUIRE(b.bind("ctrl+left", "wordleft"));
+    REQUIRE(b.bind("left", "cleft"));
+    REQUIRE(b.bind("ctrl+shift+z", "redo"));
+    REQUIRE(b.bind("^z", "undo"));
+    REQUIRE(b.bind("^k left", "blockleft"));
+    std::string err;
+    REQUIRE(b.finalize(err));
+    key_resolver r;
+    r.set_bindings(b);
+    const unsigned char shift = (unsigned char)ui::key_mod::shift;
+    const unsigned char ctrl = (unsigned char)ui::key_mod::ctrl;
+    tui_keyev k;
+    REQUIRE(tui_key_from_name("ctrl+shift+left", k));
+    key_step s = r.step(k);
+    CHECK(s.action_name == "wordleft");
+    CHECK(s.seq == "ctrl+left");
+    CHECK(s.mods == (unsigned char)(ctrl | shift));
+    REQUIRE(tui_key_from_name("shift+left", k));
+    s = r.step(k);
+    CHECK(s.action_name == "cleft");
+    CHECK(s.mods == shift);
+    // A binding WITH Shift wins over the one without it.
+    REQUIRE(tui_key_from_name("ctrl+shift+z", k));
+    CHECK(r.step(k).action_name == "redo");
+    s = r.step(tui_keyev(tui_key::ctrl, 'z'));
+    CHECK(s.action_name == "undo");
+    CHECK(s.mods == 0);
+    // A continuation: ^K then Shift+Left reads as ^K left, Shift kept.
+    CHECK(r.step(tui_keyev(tui_key::ctrl, 'k')).k == key_step::kind::pending);
+    REQUIRE(tui_key_from_name("shift+left", k));
+    s = r.step(k);
+    CHECK(s.action_name == "blockleft");
+    CHECK(s.seq == "^k left");
+    CHECK(s.mods == shift);
+    // Through the one keys -> events loop: the action event carries them.
+    focus_state f;
+    std::vector<tui_keyev> keys;
+    REQUIRE(tui_key_from_name("ctrl+shift+left", k));
+    keys.push_back(k);
+    std::vector<tui_event> ev = madc::hub::ui_apply_keys(r, f, keys);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "wordleft");
+    CHECK(ev[0].mods == (unsigned char)(ctrl | shift));
 }
 
 TEST_CASE("bindings — build validation is loud and whole-table")
@@ -436,4 +614,43 @@ TEST_CASE("focus_state — tab cycles, arrows select, enter chooses, keys ride t
     CHECK(!f.navigate(tui_keyev(tui_key::tab), e));
     CHECK(e.kind == tui_event_kind::key);
     CHECK(e.choice_focused);
+}
+
+TEST_CASE("focus_state — a focused field that takes tab gets it as a key")
+{
+    // A menu, an editor and a REPL input (the `tabkey` hint): tab cycles
+    // from the menu and the editor, and on the REPL input it is the
+    // application's key (the completion key); the field's own binding
+    // hands the keyboard back.
+    focus_state f;
+    f.begin_compose();
+    focusable menu;
+    menu.k = focusable::kind::choice;
+    menu.option_count = 2;
+    menu.option_actions.assign(2, (name_id)0);
+    f.add(menu);
+    focusable ed;
+    ed.k = focusable::kind::edit;
+    f.add(ed);
+    focusable repl;
+    repl.k = focusable::kind::edit;
+    repl.takes_tab = true;
+    f.set_focus(f.count());
+    f.add(repl);
+    f.end_compose();
+    REQUIRE(f.focus() == 2u);
+    CHECK(f.on_tab_field());
+    tui_event e;
+    CHECK(!f.navigate(tui_keyev(tui_key::tab), e));
+    CHECK(e.kind == tui_event_kind::key);
+    CHECK(e.key == tui_key::tab);
+    CHECK(f.focus() == 2u);			// focus stayed on the field
+    // Off the field, tab cycles as before.
+    f.set_focus(1);
+    CHECK(!f.on_tab_field());
+    e = tui_event();
+    CHECK(f.navigate(tui_keyev(tui_key::tab), e));
+    CHECK(e.kind == tui_event_kind::focus);
+    CHECK(f.focus() == 2u);
+    CHECK(!ed.takes_tab);			// the default: tab is a cycle
 }

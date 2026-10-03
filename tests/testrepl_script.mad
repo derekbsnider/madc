@@ -1,0 +1,8 @@
+// madc -i on a madc script (plan §41.5a, slice 2): the script's statements
+// are its main, as script mode makes it. They run, then the entries in
+// testrepl_script.input run on its names.
+var greeting = "hi";
+int total = 0;
+for (int i = 1; i <= 4; ++i)
+	total += i;
+println("script total={}", total);

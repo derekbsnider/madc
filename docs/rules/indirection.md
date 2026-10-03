@@ -70,6 +70,46 @@ referent and `deref_type_for_variable` would type `*rp` as the pointer.
   `a[i]`" must go through `build_fixed_array_query_type`, or it answers the
   element where C answers the row.
 
+## Why a function's return type has one declarator owner (2026-09-28)
+
+A function's C return type is spelled in six places: its definition, its
+prototype, the extern for a function only declared, a pointer to it
+(`fnptr_decl_pieces`), a pointer-to-member call's cast, and
+`translate_return`'s temps. They are declarations of one type and must
+agree. Each was a hand-rolled copy: peel the pointer levels, spell the base,
+append one `N_POINTER` per level. The copies diverged three ways. The
+declared-only extern had no function-pointer case, so `int (*get(void))(void);`
+was prototyped `extern long long get(void)` (BUGS.md B25). None of them spelled
+a pointer-to-array return's extent: `int (*g(void))[3]` became `int *g(void)`,
+and `g()[1][0]` subscripted an int. The pointer-to-member cast read a
+`const int *&` return at the wrong depth. `append_return_declarator` builds all
+six from the existing pointer-piece owners (`peel_pointer_declarator`,
+`append_pointer_declarator`, `pointer_to_fnptr_pieces`). A reference return's
+address pointer comes first, before the referent's own levels, because the
+address is the outermost derivation.
+
+The runtime and library-method extern (`need_output_extern`) still spells its
+own return from `ret_ptr` / `ret_specs` / `ret_cls`, with no FuncDef. It is
+marked in the gate and recorded as the family's open member.
+
+## Why a folded const object's address has one owner (2026-10-02)
+
+A read of a `const int cx = 2;` whose initializer is an integral constant
+expression (vfCONSTBAKED) translates as the literal `2`. That is what lets
+`const int H = cx + 3;` emit a constant file-scope initializer c2mir accepts.
+Taking an address applies no lvalue-to-rvalue conversion ([conv.lval]/1), so
+`&cx`, and every reference binding of `cx` ([dcl.init.ref]/5.1), designates the
+object. madc folded first and took the address of the literal, so c2mir refused
+`&2` (BUGS.md B129). The address is built at about ten binding sites, and also
+at the arms of a conditional (`node1` distributes `&` into them) and at an
+aggregate's reference member. A guard at one site left the others refusing.
+`folded_read_object` runs at `node1`'s N_ADDR, where every address is born. It
+recognizes the fold's product (a single integer literal whose origin token is
+the variable) and re-translates the variable with the fold suppressed, so
+captures, references and emitted names follow the ordinary variable path. An
+enumerator has no object (no vfCONSTBAKED): binding one still materializes a
+temporary.
+
 ## Symbol counting
 
 Counting `(` `[` `{` `<` is solved by `DelimDepth`. Whether a `<` opens a
@@ -164,7 +204,14 @@ yet measured.
   member-row subscript. `Program::array_operand_type` (the array with its
   extents; `array_operand_element_type` is its element) is the owner, a
   variable operand goes to the one expression measure, and the fast paths are
-  deleted. Reducer `tests/testsizeofoperand`.
+  deleted. Reducer `tests/testsizeofoperand`. (2026-09-27, `?name`: a NAMED
+  object or member has no operand token, so its array type is
+  `object_array_type` / `member_array_type`, and the one-extent fallback the
+  operand arms each spelled is `Variable::array_dims` /
+  `DataDefSTRUCT::m_array_dims`, which all four read. Two older copies of the
+  member rule remain, recorded as a DupFamily: cir_builder's brace-init layout,
+  which skips a zero count, and the postfix subscript's element type, which
+  has no m_count fallback.)
 - ~~`arithmetic_operand_value_and_promotion`~~ — consolidated 2026-09-23 (the
   handoff's Gap `unary_operator_integer_promotion`, measured at 3x its recon).
   Every operator's parse-side type read its children as `left->datadef()` and
@@ -534,7 +581,12 @@ yet measured.
   `type == &ddINT`, so a qualified int stored nothing and `int arr[N]` with
   `const int N = 4` folded to `int arr[0]` (sizeof refused) — they read
   `slot_type()`, the unqualified type, now; so do libmadc's host value
-  marshallers. Reducers `tests/testvolatileobjecttypec`,
+  marshallers. The five accessors' identity ladders had also drifted from
+  one another (get() had no bool row, none had the character types or the
+  LLP64 `long`), so on 2026-09-25 they consolidated onto
+  `Variable::slot_kind()`: the special rows, then every other integer
+  scalar by its storage (`tests/testconstslotkindscxx`,
+  `check-one-slot-dispatch.sh`). Reducers `tests/testvolatileobjecttypec`,
   `tests/testvolatilelvaluecxx`, `tests/testconstobjecttypec`. Residues: a
   function-pointer OBJECT's own volatile (`int (*volatile fp)(int)`) is not
   modeled (it was spelled nowhere either); a volatile PARAMETER object
@@ -753,6 +805,31 @@ yet measured.
   `resolve_canonical_type_spelling` (candidate).
 - `overload_sig_pointer_depth_probe`: `ParsedParamSig.pointer_depth` plus
   `unwrap_pointer_depth` (candidate).
+- ~~`reference_return_call_lvalue`~~ — consolidated 2026-10-02: madc lowers
+  `T&` as `T*`, so a call to a reference-returning function yields the
+  referent's address and the call expression is `*call`. That rule was inlined
+  at 18 sites (every call, method, operator, subscript and postfix arm, the dump
+  walker, the manipulator bind) with no owner, and the host-call shim was the
+  copy that lacked it: it passed the address to the integer / real / text
+  setters. c2mir warned on an `int &` return and refused the whole program on a
+  `double &` one, and a host `program::call` returned the address as the value
+  (B134). `CirBuilder::reference_call_result` is the owner. Reducers
+  `tests/testrefreturnshim` (`.expect_quiet`) and the unit case "call returns
+  the referent of a reference-returning function". Gate
+  `check-one-reference-call-result.sh` (fulltest, two-sided).
+- `hand_rolled_ptr_operator_fold` (verified 2026-10-02, ratchet at 7): a loop
+  that tests a token for `*` and folds `getPointerType` by hand reads only part
+  of the declarator grammar, and drops what it does not read. The trailing
+  return type was read that way twice: in parseFunction's eager path and in
+  the deferred body replay. Neither read a leading cv, `(&)[N]` or
+  `(*)(params)`. `-> int (*)(int)` became `int` (sizeof 4, gcc 8), and a
+  member's `-> const int (&)[3]` fell back to body deduction (sizeof 8,
+  gcc 12). Both now read through `adopt_trailing_return_type` over
+  `parse_type_id` (B132, `tests/testtrailingreturntypeid`). Seven sites remain:
+  the named-cast and C-cast type stars (two identical copies), a
+  template-argument spelling, the member `T *` / `T &` suffix, a class-pattern
+  pointer base, a comma declarator's return type, and a multi-return entry
+  type. Gate `check-one-ptr-operator-fold.sh` (fulltest, two-sided).
 - Doc drift: `parse_member_fnptr_declarator` and `parse_fnptr_member_tail` are
   named as owners in five comments and gate headers, but neither exists
   (verified).

@@ -1,0 +1,12 @@
+{
+  "name": "default",
+  "title": "Workbench",
+  "api": 2,
+  "contributes": {
+    "keys": "joe",
+    "status": "joe",
+    "theme": "default",
+    "menu": "default",
+    "layout": "default"
+  }
+}

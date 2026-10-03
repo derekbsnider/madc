@@ -1,0 +1,29 @@
+// Every host-callable function gets a host-call shim (__madc_shim_<sym>) that
+// converts its result into a madc_value. A reference return lowers to the
+// referent's address, so the shim must read through it as every call site
+// does (CirBuilder::reference_call_result). Before B134 it passed the
+// `int *` to madc_value_set_integer: c2mir warned "using pointer without
+// cast for integer type parameter" on every such function, and a host
+// program::call returned the address as the value (tests/unit
+// test_libmadc_program: "call returns the referent ...").
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line; the JIT run's
+// stderr must be empty (.expect_quiet).
+#include <stdio.h>
+
+int gi = 41;
+double gd = 2.5;
+const char *gs = "ref";
+int &int_ref() { return gi; }
+double &real_ref() { return gd; }
+const char *&text_ref() { return gs; }
+bool gb = true;
+bool &bool_ref() { return gb; }
+
+int main()
+{
+	int_ref() += 1;
+	real_ref() *= 2;
+	printf("%d %.1f %s %d\n", int_ref(), real_ref(), text_ref(), (int)bool_ref());
+	return 0;
+}

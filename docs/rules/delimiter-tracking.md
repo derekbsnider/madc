@@ -120,6 +120,8 @@ See `.claude/rules/delimiter-tracking.md` for the bare rules.
 
 ## The family is closed (round 6, 2026-07-27)
 
+(It was not. The gate could not see token scans; see round 8.)
+
 The ratchet baseline is **0**: `DelimDepth` is the only token-delimiter tracker
 in `src/` and `include/`. Thirteen scanners were migrated over six rounds.
 
@@ -229,3 +231,77 @@ type token, so the reducer's shape is covered.
 
 Reducers: `tests/testtplargless.mad`, `tests/testlessthanqualified.mad`
 (g++ == clang++).
+
+## Round 8 (2026-09-28): the gate was blind to token scans
+
+Round 6 closed the family on the gate's word, and the gate was wrong. Its two
+markers were a counter NAME (`int *angle*|*paren*|*square*|*brace* = 0`) and a
+BEHAVIOR check that matched only a raw character scan (`== '('` … `++X` …
+`== ')'` … `--X`). The behavior half was added precisely because a name
+check undercounts, and then it was written for characters only. A token scan,
+`if ( t->id() == TokenID::tkLT ) ++depth;`, matched neither, whatever its
+counter was called. The gate printed "GREEN — DelimDepth is the only delimiter
+tracker" over 74 of them.
+
+It surfaced through a `/dupaudit` finding: `member_ctor_param_count`, the
+member-template constructor arity counter, tracks only `<` `>` `>>`, so a
+`void (*)(int, int)` parameter ends its count at the inner `)`, and two
+member-template constructors that differ only in arity are told apart wrongly.
+madc refused the reducer that g++ and clang++ accept (BUGS.md B58).
+
+What round 8 changes:
+
+- A third marker, the behavior on tokens and characters alike: an equality test
+  on any delimiter (token id, character or string literal, or a bare variable,
+  the `tsubst_matching_close(v, i, open_id, close_id)` shape) that increments a
+  counter, then a test on any delimiter that decrements the same counter.
+  "Any delimiter on either side" is deliberate: three backward walks count `>`
+  up and `<` down and are the same tracker.
+- The marker carries a negative control: three planted counters (one named
+  nothing like a delimiter, one over variable ids, one walking backwards) must
+  match, and `DelimDepth`'s own `update()` and a `?`/`:` nesting counter must
+  not.
+- The baseline is the honest count, 74, and every migration lowers it. The
+  sites are filed one entry per delimiter (BUGS.md B58 `<`, B59 `(`, B60 `[`,
+  B61 `{`), with the fix order: the helpers other code calls
+  (`template_id_suffix_end`, `template_list_close_index`, `paren_close_index`,
+  `consume_balanced_parenthesized_suffix`, `tsubst_matching_close`) first,
+  since each one that moves carries its callers with it.
+
+The lesson is the one the gate's own header already stated: a green gate
+stops you looking. Before a gate's green closes a family, point its marker at
+a planted copy of every shape the family has taken, not just the shape that
+made you write the gate.
+
+## Round 9: the argument split gets its own owner and gate (2026-09-29)
+
+The B58 burndown moved every hand-rolled angle counter onto `DelimDepth`, and
+then found that seven readers which already used `DelimDepth` still split
+their template-argument lists by hand, each deciding for itself what a
+depth-one comma is (KG DupFamily `template_argument_list_split`). They had
+drifted: one split without the paren test, so a comma inside `( )` ended an
+argument, and the two clang builtin arms (`__make_integer_seq`,
+`__type_pack_element`) built a bare tracker over the live stream. Without the
+Program handle a `<` after any name opens a list, so `lim < 4 ? 5 : 1` never
+closed, the builtin declined, and the use read 0 with exit 0
+(tests/testbuiltinseqlessthan).
+
+A tracker shared by every scanner does not stop each scanner from re-deriving
+what to do with its depth. The split is a rule of its own ([temp.arg]: an
+argument ends at a comma outside every delimiter the list opened, and a `>>`
+that closes the last argument's list leaves that argument its `>`), so it has
+one owner, `scan_template_argument_list`, with `template_argument_runs` as the
+run view. The gate's new marker fails on a comma test beside `angle == 1`
+anywhere outside that owner. Its negative control plants the owner's body,
+which must not match, and one hand split, which must. The char-level twin in
+`include/spelling_delim.h` is the spelling alphabet's own owner and is outside
+the marker by design.
+
+The same round found the token marker's other hole. Its decrement window was
+`[^;]{0,60}`, so a counter whose decrement follows a statement in the same arm
+(`{ if ( depth <= 0 ) return j + 1; --depth; }`) was invisible:
+`pack_pattern_start`, a backward walk over `<` `>` `(` `[` `{`, and three more
+lines. The window now crosses one statement, the control plants that shape,
+and the baseline rose 51 -> 55 to the honest count. The count had not grown;
+the gate had been undercounting.
+

@@ -119,6 +119,44 @@ public:
     bool operator==(const value &other) const;
     bool operator!=(const value &other) const { return !(*this == other); }
 
+    // Arithmetic and ordering (plan §42 D28): the ONE rule behind the C++
+    // operators below and the script's `var` operators (the madarray_*
+    // entries). The numbers are the integer and real kinds; a boolean is
+    // not a number, as operator== keeps kinds apart.
+    //   - integer op integer is an integer, wrapping (two's complement) —
+    //     except `/`, which is real: 5 / 2 is 2.5;
+    //   - an integer with a real is a real;
+    //   - `%` is the remainder of truncated division (C's, Julia's rem); an
+    //     integer `%` by zero is refused, a real one is fmod's NaN;
+    //   - string + string concatenates;
+    //   - every other pair is refused.
+    // Each returns NULL and writes `out`, or returns the refusal (static
+    // text) and leaves `out` alone. Thread safety: reads its operands only.
+    enum class arith { add, sub, mul, div, mod };
+    static const char *arithmetic(arith op, const value &a, const value &b,
+				  value &out);
+    static const char *negate(const value &a, value &out);
+    // Numbers order by value (an integer against a real exactly), strings
+    // bytewise; a NaN operand is unordered (every ordering is false).
+    enum class ordering { less, equal, greater, unordered };
+    static const char *compare(const value &a, const value &b,
+			       ordering &out);
+
+    // The C++ spellings. Hidden friends, found only through a value
+    // operand, so `"a" + "b"` does not become a concatenation through the
+    // implicit const char * constructor. A refusal throws
+    // std::domain_error.
+    friend value operator+(const value &a, const value &b);
+    friend value operator-(const value &a, const value &b);
+    friend value operator*(const value &a, const value &b);
+    friend value operator/(const value &a, const value &b);
+    friend value operator%(const value &a, const value &b);
+    friend value operator-(const value &a);
+    friend bool operator<(const value &a, const value &b);
+    friend bool operator<=(const value &a, const value &b);
+    friend bool operator>(const value &a, const value &b);
+    friend bool operator>=(const value &a, const value &b);
+
     // Freeze: mark this value read-only (MADC_VF_CONST — the value-ABI
     // design's reserved read-only bit; first consumer: the immutability
     // primitive behind madc::sys facts and embedding hosts handing

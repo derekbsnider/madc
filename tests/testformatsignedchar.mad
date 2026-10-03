@@ -1,0 +1,21 @@
+// format / println format only plain `char` as a character; `signed char`,
+// `unsigned char` and an enum whose underlying type is one of them are
+// integers ([format.formatter.spec]/2). madc sent every 8-bit type to the
+// character formatter: `uchar=[A] schar=[A]`, and the enumerator printed as
+// the raw byte \001 (exit 0).
+// Oracle: g++ 13 and clang++ 18 (-std=c++20, std::format, the enumerator as
+// `+sB`) print exactly the .expect lines.
+enum small_e : unsigned char { sA = 0, sB, sC };
+enum class wide_e : long { wA = 5 };
+
+int main()
+{
+	unsigned char u = 65;
+	signed char sc = 65;
+	char c = 65;
+	println("uchar=[{}] schar=[{}] char=[{}] enumlit=[{}]", u, sc, c, sB);
+	println("hex=[{:x}] char-hex=[{:x}] char-pad=[{:>3}]", u, c, c);
+	small_e e = sC;
+	println("enumvar=[{}]", e);
+	return 0;
+}

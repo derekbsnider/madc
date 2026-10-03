@@ -1,0 +1,47 @@
+// C++11 `alignas` ([dcl.align]): on a member, on a class head, on an object
+// at namespace and block scope, after a declarator-id, with a type-id operand
+// (a function pointer type too) or a constant expression -- `alignas(T::v)`
+// names a VALUE, so it reads as the expression -- several on one entity
+// (the strictest wins), and with a dependent operand in a class template's
+// data members and a function template's local, read per instantiation.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+#include <cstdint>
+#include <cstddef>
+
+struct A { char c; alignas(16) int x; };
+struct B { char c; alignas(double) char d; };
+struct alignas(16) H { char c; };
+struct D { char c; alignas(4) alignas(16) char d; };
+struct F { char c; alignas(void (*)()) char d; };
+struct T { char c; int x alignas(8); };
+struct K { static constexpr int v = 16; };
+struct Q { char c; alignas(K::v) char d; };
+alignas(16) char g1;
+namespace ns { alignas(16) char g2; }
+
+template<class U> struct S { char c; alignas(U) char b[sizeof(U)]; };
+template<int N> struct V { char c; alignas(N) char d; };
+template<class U> std::size_t local_align()
+{
+	alignas(U) unsigned char buf[sizeof(U)];
+	buf[0] = 0;
+	return __alignof__(buf) + buf[0];
+}
+
+static int mis(const void *p) { return (int)((std::uintptr_t)p % 16); }
+
+int main()
+{
+	char q0 = 1;
+	alignas(16) char l1 = 2;
+	alignas(16) static char s1;
+	std::printf("cx: %zu %zu %zu %zu %zu\n", sizeof(A), alignof(A), sizeof(B), alignof(B), __alignof__(l1));
+	std::printf("cy: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(H), alignof(H), sizeof(D), sizeof(F), sizeof(T),
+		    sizeof(Q), __alignof__(g1));
+	std::printf("cz: %zu %zu %d %d %d %d\n", __alignof__(s1), __alignof__(ns::g2), mis(&l1), mis(&s1),
+		    mis(&ns::g2), q0 + l1 - 3);
+	std::printf("ct: %zu %zu %zu %zu %zu\n", sizeof(S<double>), sizeof(S<char>), sizeof(V<8>),
+		    local_align<double>(), local_align<char>());
+	return 0;
+}

@@ -1,0 +1,16 @@
+/* An out-of-line member and nested class of a partial specialization whose
+   class-head ends in `>>` (`Z<A<T>>::f`, `Z<A<T>>::N`) are defined for
+   Z<A<short>>, as in g++: the head's last argument is the whole
+   template-id `A<T>`, whose `>` is the first half of the shared `>>`.
+   Before, that argument lost its `>`, never matched the specialization's
+   pattern, and f was an undefined import (N had no member g).
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     zb: 1 4 40 */
+#include <cstdio>
+template<class X> struct A {};
+template<class T> struct Z { int f(); };
+template<class T> int Z<T>::f() { return 1; }
+template<class T> struct Z<A<T>> { int f(); struct N; };
+template<class T> int Z<A<T>>::f() { return 2 + (int)sizeof(T); }
+template<class T> struct Z<A<T>>::N { int g() { return 40; } };
+int main() { printf("zb: %d %d %d\n", Z<int>().f(), Z<A<short>>().f(), Z<A<short>>::N().g()); return 0; }

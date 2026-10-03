@@ -33,16 +33,8 @@ bool kind_compiler_range(long k)
     return false;
 }
 
-// An ASSET is a file; a pseudo-buffer ([build], [terminal]) is bytes only.
-bool path_is_asset(var &p)
-{
-    if ( p.is_null() )
-	return false;
-    const char *s = p.c_str();
-    if ( strlen(s) == 0 )
-	return false;
-    return s[0] != '[';
-}
+// An ASSET is a file; a pseudo-buffer is bytes only: path_is_asset, the one
+// test, lives in madcide_core.inc (projadd and F5 read it too).
 
 // The runner THIS node has for a test family ("" = none): the canonical
 // runner for the mad family (bash, under the project root = the cwd; posix
@@ -101,18 +93,21 @@ bool tests_runnable_here(long w)
 // above the file and the file is inside its work tree; lexing and parsing by
 // the compiler's kinds; on THIS node (0) execution = what madc parses it
 // runs, testing = live test records with a runner here. Another node has no
-// offers yet (v1): its node-relative layers are 0.
+// offers yet (v1): its node-relative layers are 0. The UNTITLED buffer is
+// source with no file: lexed, parsed and run, never tracked or versioned.
 long asset_layers_of(long w, long es, long doc, long node)
 {
     long layers = alTEXT;
     var p;
     ui::get(p, w, doc, "path");
-    if ( !path_is_asset(p) )
-	return layers;
-    layers = layers | alMANAGED;
+    bool file = path_is_asset(p);
+    if ( !file && !doc_untitled(w, doc) )
+	return layers;		// a pseudo-buffer: bytes only
+    if ( file )
+	layers = layers | alMANAGED;
     if ( kind_compiler_range(doc_kind(w, doc)) )
 	layers = layers | alLEXABLE | alPARSEABLE;
-    if ( git_handle_of(w, es, doc) > 0 )
+    if ( file && git_handle_of(w, es, doc) > 0 )
     {
 	var rel;
 	git_relpath_of(rel, w, doc);

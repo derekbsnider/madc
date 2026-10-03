@@ -1,0 +1,33 @@
+// A reference to a class object denotes the object ([expr.type]/1), so `*r`
+// on a reference variable calls the class's operator* ([over.match.oper]).
+// madc dereferenced the reference's pointer representation instead and
+// applied a second builtin `*` to the struct ("invalid type argument of
+// unary *").
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+struct It {
+	int *p;
+	int operator*() const { return *p; }
+};
+
+struct Cell {
+	int v;
+	int &operator*() { return v; }
+};
+
+static int read(const It &i) { return *i; }
+static void bump(Cell &c) { *c += 10; }
+
+int main()
+{
+	int a[2] = {5, 9};
+	It it{a + 1};
+	printf("const-ref: %d %d\n", read(It{a}), read(it));
+	Cell c{1};
+	bump(c);
+	Cell &rc = c;
+	*rc += 100;
+	printf("ref-lvalue: %d\n", c.v);
+	return 0;
+}

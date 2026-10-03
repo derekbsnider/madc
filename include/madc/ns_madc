@@ -19,6 +19,7 @@
 
 #include <bits/diag_enums>	// diag_severity / diag_phase: the rows' enum codes
 #include <bits/file_kinds>	// madc::fk*: the ONE file-kind vocabulary (a View's lang, emit's target)
+#include <bits/session_enums>	// session_reply / offer_state: a session reply's enum codes
 
 namespace madc {
     // Full-program eval: the source must define (or be wrapped into)
@@ -161,8 +162,8 @@ namespace madc {
     //   parse_spans: highlight classification rows for the TU's OWN
     //       tokens from the retained state — { line, column, length,
     //       class } in source coordinates (1-based line; column = the
-    //       span's START, 0-based — note diagnostics columns elsewhere
-    //       are end-anchored); class names: keyword, ident, number,
+    //       span's START, 0-based — a diagnostic's column names the same
+    //       place 1-based); class names: keyword, ident, number,
     //       string, comment (from retained trivia), type, function (an
     //       identifier the tree defines as a function, on its head
     //       line). Data, not styling: a theme maps names to colours.
@@ -270,7 +271,8 @@ namespace madc {
     //   parse_build: emit a native artifact from the handle's EXISTING
     //       parsed tree — the buffer the handle was last (re)parsed
     //       from, unsaved edits included, is what compiles. kind: "exe"
-    //       = PIE executable | "obj" = relocatable object. out_diags
+    //       = PIE executable | "obj" = relocatable object | "shared" = a
+    //       shared object. out_diags
     //       gets diagnostics rows either way (a false always carries at
     //       least one error row; a handle whose parse has error rows
     //       never reaches the emitter). Build rows ride out_diags only —
@@ -306,9 +308,10 @@ namespace madc {
     // Build = the --project build):
     //   project_build: the --project AOT lane IN-PROCESS — every TU
     //       compiled with its manifest options, ONE MIR-assembled native
-    //       image ("exe"; "obj" = per-TU objects, so an explicit outpath
-    //       with more than one TU is refused — the CLI's rule). Empty
-    //       outpath = a.out ("exe") / per-TU naming ("obj"). out_diags
+    //       image ("exe", or "shared" a shared object; "obj" = per-TU
+    //       objects, so an explicit outpath with more than one TU is
+    //       refused — the CLI's rule). Empty outpath = a.out ("exe",
+    //       "shared", gcc's) / per-TU naming ("obj"). out_diags
     //       gets rows either way; a false always carries at least one
     //       error row — per-TU DETAIL comes from a project CHECK
     //       (project_open + parse_check per TU), run one first. The
@@ -331,15 +334,20 @@ namespace madc {
     // IN-PROCESS — parse `path` in a child Program (relative #includes
     // resolve as the CLI's do), emit a native artifact at `outpath`.
     // kind: "exe" = PIE executable (the CLI -o default), "obj" =
-    // relocatable object (-r -o). out_diags gets diagnostics rows (the
-    // diagnostics() shape) either way; a failure ALWAYS carries at least
-    // one error row. True = the artifact was written. The parse phase
-    // cooperates with `go` tasks; the emit phase runs without yield
-    // points (it briefly blocks a cooperative scheduler).
+    // relocatable object (-r -o), "shared" = a shared object (-shared;
+    // name it with library_suffix). include_dirs, when given, are the
+    // CLI's -I directories in order (an array of text). out_diags gets
+    // diagnostics rows (the diagnostics() shape) either way; a failure
+    // ALWAYS carries at least one error row. True = the artifact was
+    // written. The parse phase cooperates with `go` tasks; the emit phase
+    // runs without yield points (it briefly blocks a cooperative
+    // scheduler).
     // Thread contract: the runtime-eval confinement — each call owns
     // its child Program.
     bool build_native(value &out_diags, const char *path, const char *kind,
 		      const char *outpath);
+    bool build_native(value &out_diags, const char *path, const char *kind,
+		      const char *outpath, const value &include_dirs);
     // The running compiler's own resolved executable path — "run this
     // program" spawns a child OF SELF, never a PATH madc. Stable for the
     // process lifetime; "" = the platform probe failed. Concurrent reads
@@ -374,6 +382,12 @@ namespace madc {
     // all). Best-effort — a dead peer is skipped, never fatal. The hub
     // fan-out a serve task calls after its command appends change events.
     void conn_broadcast(int64_t except_id, const char *line);
+    // Write `line` to the ONE shared channel `id`; false = no such
+    // connection (it left) or the write failed.
+    bool conn_send(int64_t id, const char *line);
+    // Cancel the ONE shared channel `id`'s source (a child process: its
+    // SIGTERM), so a task parked in its readline wakes to the end.
+    void conn_cancel(int64_t id);
 
     // Per-connection cookie (V6a tiers): an OPAQUE int the application stores
     // against a share() id — madcide keeps the permission tier there. The
@@ -435,6 +449,54 @@ namespace madc {
     // when it cannot be. A LAZY module row (madcwebview) compiles and
     // runs without its library — ask this before the first call.
     bool module_available(const char *name);
+    // A shared library opened at run time by PATH — a madcide plugin's
+    // library, or any madc-built one (plan §41.11a step 4):
+    //   library_open: every reference binds at open, so a library whose
+    //       names cannot all bind is refused there, never at its first
+    //       call; its names stay local (two libraries' same-named
+    //       functions never meet). Its handle, or 0 with the loader's
+    //       reason in `why`.
+    //   library_symbol: the address of `name` in it; 0 = no such name.
+    //       An extern "C" name is its spelling; a C++ name is mangled.
+    //   library_close: close a library nothing of which is still in use.
+    //   library_suffix: this target's shared-library suffix (".so",
+    //       ".dylib", ".dll"), the library spelling owner's — name a
+    //       library file with it, never with a spelled suffix.
+    // Thread contract: the loader's — every call is safe from any thread;
+    // a handle is the process's.
+    int64_t library_open(const char *path, value &why);
+    int64_t library_symbol(int64_t lib, const char *name);
+    void library_close(int64_t lib);
+    const char *library_suffix();
+    // Code compiled into THIS process from a source file — a madcide
+    // plugin's `source` form (plan §41.11a step 5), the library verbs'
+    // source twin:
+    //   code_open: compile `path` (build_native's inputs: the -I
+    //       directories, an array of text) and keep it: its references
+    //       bind what this process already loaded (the one engine), and
+    //       its dynamic initializers have run once. Its handle, or 0 with
+    //       the diagnostics rows in `out_diags` (build_native's shape).
+    //   code_symbol: the address of `name` (a function or an object) in
+    //       it; 0 = no such name. An extern "C" name is its spelling.
+    //   code_close: free the code; none of its addresses may be called
+    //       after.
+    // Thread contract: the runtime-eval confinement — a code handle is
+    // used only from the thread that opened it; its code runs on the
+    // caller's thread.
+    int64_t code_open(value &out_diags, const char *path, const value &include_dirs);
+    int64_t code_symbol(int64_t code, const char *name);
+    void code_close(int64_t code);
+    // A fork child running a function of this program: fork_uri(entry) is
+    // the URI a madc::channel opens (`madc::channel ch(fork_uri(f));`). The
+    // child runs `entry` with its stdin and stdout as the channel (what it
+    // writes, its stderr folded in, is read here; what is written here it
+    // reads), and exits with entry's return; it inherits the
+    // program's code and data at the fork. A child that ends (an exit or a
+    // crash) ends the channel: readline answers false. Refused on Windows
+    // (no fork): the channel is not ok().
+    // Thread contract: the channel is the opener's (one thread); the child
+    // is its own process.
+    const char *fork_uri(int (*entry)());
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)
     // std::string conveniences — present only because <string> precedes
@@ -653,4 +715,74 @@ namespace madc {
     // outlive it. Throws when the channel has no waitable read side
     // (memory/file reads never block, so there is nothing to wait on).
     int64_t chan_readable(channel &c);
+
+    // Interactive sessions in a backend process (plan §41.9a): the running
+    // madc forks (nothing execs) and the child serves one session, so a
+    // crash in an entry loses that session's state, never the caller. Every
+    // verb returns at once; replies come through session_poll.
+    //   session_open(std): a handle (>= 1), always. `std` is a --std=
+    //     spelling, with or without the prefix ("" = the default). A backend
+    //     that could not start (a refused standard; Windows, no fork yet) is
+    //     the handle's state: session_running false, session_error the text.
+    //     session_standard(h): the backend's standard by its canonical name
+    //     ("c17", "madc"), the prompt's; "" until a backend began.
+    //   session_offer(h, text, final) / session_complete(h, text, caret):
+    //     the request's seq, 0 when the backend is not running. A completion
+    //     is answered once a running entry ends.
+    //   session_load(h, path, text): load a program file into the session
+    //     as one unit (its statics are session names); with text, the text
+    //     is the unit and path names it (an editor's buffer), with "" the
+    //     file at path. session_run(h, argv): call its main with argv (an
+    //     array of strings: the path, then the arguments). Each returns its
+    //     seq; the replies are `load` (ok, rendered) and `run` (ok, rendered,
+    //     status: main's return value) rows. The cores of %load and %run
+    //     (D25), and madcide's F5 (plan §41.10a).
+    //   session_bindings(h): the names the session defined (%whos's rows;
+    //     madcide's Variables view, plan §41.11a step 3d). Its seq; the
+    //     reply is a `bindings` row whose rows are {name, kind (a
+    //     madc::name_kind code), type (the source's spelling), value (an
+    //     object's: no pointer followed, at most 16 elements, 80 columns),
+    //     file, line (where an entry or a loaded file declared it)}, sorted
+    //     by name. Answered between entries.
+    //   session_poll(reply, h): 1 with a reply, 0 when none waits, -1 when
+    //     the backend stopped (reply is its row; the backend is restarted,
+    //     its state empty, and the row's `restarted` says whether the new one
+    //     started). A reply row: kind (a
+    //     madc::session_reply code) and seq. An offered entry that is taken
+    //     first sends a `running` row (Jupyter's execute_input): what it
+    //     prints comes after it, then its offer row. An offer's state (a
+    //     madc::offer_state code), ok, shown, rendered (the diagnostics as the
+    //     CLI prints them), submitted, diagnostics (the rows parse_check
+    //     returns); a load's ok, rendered and diagnostics; a run's ok,
+    //     rendered, status (main's) and diagnostics (the rows recorded since
+    //     the last entry or load began, the run's own included); a
+    //     completion's start and names; a bindings reply's rows; a stop's
+    //     exit_status (128 + signal for a signal) and signal (0 when the
+    //     backend exited).
+    //   session_output(out, h): what the program printed since the last call.
+    //   session_input(h, text): text for the program's stdin.
+    //   session_restart(h): a new backend; its state starts empty.
+    //   session_restart(h, std): the same under another standard (`c17` or
+    //     `--std=c17`, as session_open takes it): the language changes.
+    //   session_readable(h): a chan_select case that fires when a reply or
+    //     output waits. Made once per handle and reused; it follows restarts,
+    //     and a closed session's case is dead.
+    //   session_close(h): stop the backend and free the handle.
+    // Thread contract: a handle is confined to the thread that opened it.
+    int64_t session_open(const char *std);
+    bool session_running(int64_t handle);
+    const char *session_error(int64_t handle);
+    const char *session_standard(int64_t handle);
+    int64_t session_offer(int64_t handle, const char *text, bool final);
+    int64_t session_complete(int64_t handle, const char *text, int64_t caret);
+    int64_t session_load(int64_t handle, const char *path, const char *text);
+    int64_t session_run(int64_t handle, value &argv);
+    int64_t session_bindings(int64_t handle);
+    int64_t session_poll(value &reply, int64_t handle);
+    value &session_output(value &out, int64_t handle);
+    bool session_input(int64_t handle, const char *text);
+    bool session_restart(int64_t handle);
+    bool session_restart(int64_t handle, const char *standard);
+    int64_t session_readable(int64_t handle);
+    bool session_close(int64_t handle);
 }

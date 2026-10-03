@@ -1,0 +1,31 @@
+/* A constant's parse-time value slot holds every integer scalar. The slot
+   was chosen by comparing the type against a list of builtin identities,
+   and the five accessors had drifted apart: get() had no bool row, so
+   `constexpr bool B = false;` read true, and wchar_t / char16_t / char32_t
+   (like the win64 `long`) stored nothing, so `constexpr wchar_t W = 5;
+   int a[W];` was 0 bytes. Silent wrong answers.
+   Oracle: g++ and clang++ -std=c++17 print "bool 0 0 8 1",
+   "chars 20 12 24" and "wide 7 -3 9". */
+#include <cstdio>
+
+constexpr bool B = false;
+const bool C = false;
+constexpr bool T = true;
+constexpr wchar_t W = 5;
+constexpr char16_t H = 3;
+constexpr char32_t U = 6;
+constexpr __int128 I = 7;
+constexpr signed char S = -3;
+constexpr unsigned short US = 9;
+int aw[W];
+int ah[H];
+int au[U];
+
+int main()
+{
+    std::printf("bool %d %d %d %d\n", (int)B, (int)C, B ? 7 : 8, (int)T);
+    std::printf("chars %d %d %d\n", (int)sizeof(aw), (int)sizeof(ah),
+		(int)sizeof(au));
+    std::printf("wide %lld %d %d\n", (long long)I, (int)S, (int)US);
+    return 0;
+}

@@ -1,0 +1,7 @@
+// madc -i with a crash in an entry (plan §41.9a slice 4, D2): the session
+// runs in a backend process, so a segfault ends the backend, not madc. The
+// CLI says so, a fresh session starts with its state empty (`base` is gone),
+// and the next entries run in it: `int base = 1234` is a new name there, not
+// a refused redefinition. Thonny and Jupyter restart the same way.
+int base = 4321;
+println("loaded");

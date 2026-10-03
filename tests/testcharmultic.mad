@@ -1,0 +1,23 @@
+// C11 6.4.4.4p10 / [lex.ccon]/2: a character constant with several c-chars
+// is a multi-character constant of type int. gcc and clang shift each byte
+// in from the right and keep the last four. madc took only the FIRST byte:
+// 'ab' was 97, not 24930 (exit 0 with the wrong value). The #if evaluator
+// folded the bytes but read '\xff' as 255, where plain char is signed and it
+// is -1 in #if as in code. Both now read one rule
+// (narrow_char_constant_value).
+// Oracle: gcc and clang print exactly the .expect lines (both also warn
+// "multi-character character constant" / "character constant too long").
+#include <stdio.h>
+int main(void)
+{
+	int two = 'ab';
+	int four = 'abcd';
+	int five = 'abcde';
+	int neg = '\xff';
+	int esc = 'a\x42';
+	printf("two=%d four=%d five=%d neg=%d esc=%d\n", two, four, five, neg, esc);
+#if 'ab' == 24930 && '\xff' < 0
+	printf("#if: 'ab' is 24930 and '\\xff' is negative\n");
+#endif
+	return 0;
+}

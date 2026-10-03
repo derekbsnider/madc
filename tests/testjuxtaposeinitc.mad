@@ -1,0 +1,6 @@
+// C11 6.7.9: initializer-clauses are separated by `,`. The brace reader
+// consumed a `,` only when one was next, so a juxtaposed clause read as the
+// next element: `int z[2] = {a b};` initialized z = {1, 2}. The reader now
+// ends each clause at its `,` or `}` (Program::finish_list_element).
+// Oracle: gcc "error: expected '}' before 'b'", clang "error: expected '}'".
+int main(void) { int a = 1, b = 2; int z[2] = {a b}; return z[0] * 10 + z[1]; }

@@ -1,0 +1,24 @@
+/* A member template of a plain class declared with default template
+   arguments and defined out of class ([temp.param]/10): the defaults
+   available are the merge of both declarations, so the definition's bare
+   head keeps the in-class defaults, in the definition's own parameter
+   names (U and M below rename T and N). A non-type default, a type default
+   and an explicit argument beside a defaulted call to the same template.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     merge: 9 10 4 7 8 */
+#include <cstdio>
+struct E {
+	template<class T, int N = 5> int h();
+	template<class T = char, int N = 3> int k();
+	template<class T = long> int s();
+};
+template<class U, int M> int E::h() { return M + (int)sizeof(U); }
+template<class U, int M> int E::k() { return M + (int)sizeof(U); }
+template<class U> int E::s() { return (int)sizeof(U); }
+int main()
+{
+	E e;
+	printf("merge: %d %d %d %d %d\n", e.h<int>(), e.h<char, 9>(), e.k(),
+	       e.k<int>(), e.s());
+	return 0;
+}

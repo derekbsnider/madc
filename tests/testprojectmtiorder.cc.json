@@ -1,0 +1,5 @@
+[
+  {"directory":"tests","file":"testprojectmtiorder_main.cpp","command":"c++ -c testprojectmtiorder_main.cpp"},
+  {"directory":"tests","file":"testprojectmtiorder_a.cpp","command":"c++ -c testprojectmtiorder_a.cpp"},
+  {"directory":"tests","file":"testprojectmtiorder_b.cpp","command":"c++ -c testprojectmtiorder_b.cpp"}
+]

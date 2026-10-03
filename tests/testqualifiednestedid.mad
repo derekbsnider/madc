@@ -1,0 +1,34 @@
+/* A QUALIFIED declarator-id inside a parenthesized declarator ([dcl.decl]/4,
+   [dcl.meaning]/1): an out-of-line member returning a function pointer, a
+   pointer to an array, a static member, a namespace member, and a class
+   template's members (one const-qualified) defined out of line.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     qual: 8 6 4 5 6 14 */
+#include <cstdio>
+int a[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+static int twice(int x) { return 2 * x; }
+struct C {
+	int k = 1;
+	int (*get())(int);
+	int (*rows())[3];
+	static int (*srows())[3];
+};
+int (*C::get())(int) { return twice; }
+int (*C::rows())[3] { return a + k; }
+int (*C::srows())[3] { return a; }
+namespace N { int (*pick(int))[3]; }
+int (*N::pick(int r))[3] { return a + r; }
+template <class T> struct B {
+	T (*first())[3];
+	int (*get() const)(int);
+};
+template <class T> T (*B<T>::first())[3] { return a; }
+template <class T> int (*B<T>::get() const)(int) { return twice; }
+int main()
+{
+	C c;
+	B<int> b;
+	printf("qual: %d %d %d %d %d %d\n", c.get()(4), c.rows()[0][2], C::srows()[1][0],
+	       N::pick(1)[0][1], b.first()[1][2], b.get()(7));
+	return 0;
+}

@@ -1,0 +1,5 @@
+vec copy
+impl move
+returned v=7 a=7
+impl move
+declared w=7 moved-from=1

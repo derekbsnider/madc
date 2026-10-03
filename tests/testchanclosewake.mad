@@ -1,0 +1,30 @@
+// A select parked on a byte channel must wake when its owner closes it.
+// On Linux epoll silently drops a closed descriptor, so the closer must
+// announce the teardown before the descriptor is released.
+long waited = -2;
+
+void waiter(long c, long done)
+{
+	var cases;
+	cases[0] = c;
+	var received;
+	waited = madc::chan_select(received, cases);
+	var one = 1;
+	madc::chan_send(done, one);
+}
+
+int main()
+{
+	madc::channel listener("listen://127.0.0.1:0");
+	if ( !listener.ok() )
+		return 1;
+	long c = madc::chan_readable(listener);
+	long done = madc::chan_make(1);
+	go waiter(c, done);
+	madc::sleep_ms(100);
+	listener.close();
+	var received;
+	madc::chan_recv(received, done);
+	println("waiter returned {}", waited);
+	return 0;
+}

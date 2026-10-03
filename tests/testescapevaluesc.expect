@@ -1,0 +1,9 @@
+L-hex: len=1 unit=1234
+lead-zero hex: len=1 byte=65
+char hex: 65
+ucn: len=3 c3 a9 78
+ucn8: len=4 first=f0
+L-ucn: len=1 unit=e9
+gnu esc: 27
+octal: A02
+#if escapes: ok

@@ -39,8 +39,7 @@ int main()
     long doc = S.open(path, false);
     if ( doc <= 0 )
     {
-	println(stderr, "madcide: cannot read {}", path);
-	php::unlink(path);
+	php::unlink(path);		// open reported why on stderr
 	return 1;
     }
     S.terminal(false);

@@ -33,7 +33,11 @@ cleanup()
 }
 trap cleanup EXIT
 
-if ! ssh -o BatchMode=yes "$WIN_SSH" "mkdir -p '$STAGE/bin'"; then
+# The stage is the runner's working directory, so it has the repo root's
+# shape: bin/ for the product and tmp/, the scratch directory tests write
+# under (.claude/rules/scratch-files.md) — testbuild_shared and testcode_open
+# mkdir tmp/<name> non-recursively and failed without it.
+if ! ssh -o BatchMode=yes "$WIN_SSH" "mkdir -p '$STAGE/bin' '$STAGE/tmp'"; then
 	echo "win_suite: channel down ($WIN_SSH)" >&2
 	exit 3
 fi

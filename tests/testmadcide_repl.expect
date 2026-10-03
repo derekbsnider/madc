@@ -1,0 +1,41 @@
+show: tab=repl live=1 focus=1 standard=c11
+typed: input=int x = 6 * 7; editor untouched=true editor caret=5 field caret=14
+motion: field caret=13 editor caret=5
+c11> printf("hi %d\n", x);
+hi 42
+unfinished: input="int f(void) {\n"
+c11> int f(void) {
+     return 3; }
+c11> f()
+refused: error shown=true
+older: int y = ;
+older again: f()
+newer: int y = ;
+newer to the draft: []
+completed: twice_it caret=8
+running: 1
+c11> int n = 0; scanf("%d", &n); printf("%d\n", n + 1);
+41
+42
+crash: said=true fresh=true
+compose: ends="\nc11> 1 +" caret at end=true focus=1 subject is input=true
+unfocus: focus=0
+f5: focus=1 busy=0
+c11> %run madc_ide_repl.mad
+main ran: madc_ide_repl.mad
+c11> triple(14)
+c11> int kept = 9;
+f5 again: ran=true fresh=true names again=true
+f5 refused: cites the path=true busy=0
+f5 problems: rows=true goto line3=true
+f5 problems clean: rows=0
+f5 pseudo: Not a file: [repl]
+f5 empty: The buffer is empty.
+stop before: The shell has no session to stop.
+stop: running=1 then=0 said=true fresh=true
+lang: pane=choice listed=true
+lang pick: closed=true std=c++17 said=true taken=true current=c++17
+lang again: marked=true closed=true
+lang arg: std=c17
+lang unknown: Unknown language 'fortran' (c17, c++17, madc).
+bindings: subscribed=true rows=answer int = 42 @ REPL[1]:1;

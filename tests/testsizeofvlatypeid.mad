@@ -1,0 +1,15 @@
+// sizeof and _Alignof of type-ids built on a VLA typedef (C11 6.5.3.4,
+// 6.7.6.2): the VLA type itself and an array of it measure at run time; a
+// pointer to it is an ordinary pointer; its alignment is its element's.
+// Oracle: gcc 13 and clang 18 print the line below.
+#include <stdio.h>
+#include <stddef.h>
+
+static int f(int n)
+{
+	typedef int c[n + 2];
+	printf("vt: %zu %zu %zu %zu %zu\n", sizeof(c), sizeof(c *), sizeof(c[3]), _Alignof(c), sizeof(const c));
+	return 0;
+}
+
+int main(void) { return f(3); }

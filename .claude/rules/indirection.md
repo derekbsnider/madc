@@ -14,6 +14,9 @@
   `Program::build_address_of` (the reader keeps only the compound literal and
   the unparenthesized qualified-id, [expr.unary.op]/4). Result type:
   `addressof_result_type`. "Is this `*x`": `TokenBase::is_indirection()`.
+- The address of a const object whose reads fold to their value (`&cx`, any
+  reference binding of `cx`): cir's `folded_read_object`, from `node1`'s N_ADDR —
+  never a guard on the fold at one site.
 - Function vs function pointer: `as_funcdef_dd()` / `as_fptr_dd()` (const-safe) —
   never `is_function() && is_numeric()` or an unmarked `dynamic_cast<DataDefFPTR *>`
   (gated: `check-one-fptr-predicate.sh`); bare `is_function()` means "either". Its
@@ -25,6 +28,8 @@
   `Program::array_operand_type`; its element (the ROW): `array_operand_element_type`
   — never the operand's `datadef()` (flattened). sizeof of an expression
   (`type_query_expression_value`), decay (`array_decay_pointer`), `*a`, `a->m` ask them.
+  A named OBJECT's or MEMBER's array type: `object_array_type` / `member_array_type`;
+  the extents under all of them: `Variable::array_dims` / `DataDefSTRUCT::m_array_dims`.
 - An operand's VALUE (a reference is its referent) and its integer promotions:
   `operand_value_type` / `promoted_operand_type` (tokens.h) — every operator's type
   reads its children through them; `=`/`@=` are the left operand's (`TokenAssign`,
@@ -39,6 +44,14 @@
   `Program::finish_expression` — every exit of `parseExpression`.
 - Binding a reference (an argument, an aggregate's reference MEMBER slot): cir's
   `ref_param_arg_addr` (a const referent materializes a prvalue).
+- A reference-returning call's result (`*call`, every call arm and the host-call shim):
+  cir's `reference_call_result` (gated: `check-one-reference-call-result.sh`).
+- A class-pointer conversion (implicit via cir's `upcast_class_ptr`; a static or C-style
+  cast): `base_subobject_ptr` up / `derived_object_ptr` down (null stays null).
+- A pointer-to-member conversion (`B::*` ↔ `D::*`): cir's `member_pointer_conversion`.
+  Its null (`-1` data, `{0,0}` function): `member_pointer_null`; its truth value:
+  `member_pointer_truth`; zero-initialization holding one (`holds_member_data_pointer`):
+  `member_pointer_null_stores` / `append_member_pointer_null_inits` — never a bare 0.
 - Class prvalue receiver/argument: `class_operator_value_result` → `object_arg_addr`;
   a postfix step's overload: `class_postfix_step_operator` (cir).
 
@@ -64,18 +77,25 @@
   `leading_cv` mask, never dropped; the bits `modeled_cv()` names qualify each
   pointee — volatile in every mode, const in C only); `[dims]`:
   `parse_array_dimensions` + `nest_carray_dims` (gated).
+- A `C::*` chain ahead (its head a class name, a class or dependent type token):
+  `member_pointer_declarator_ahead`; its owner: `parse_member_pointer_owner`.
 - An object's top-level cv (`modeled_cv()`'s bits) is its declared TYPE's — a variable's
   (parseDeclaration), a member's (incl. a class body's), a typedef's, a parameter
   OBJECT's (the definition's, never the function type's), a reference's referent (the
   `&`); never a flag — all through `declarator_object_cv`. A qualified array: its
-  ELEMENTS (`qualify_array_elements`). A value slot dispatches on `Variable::slot_type()`. A declarator list's tail re-pushes it:
+  ELEMENTS (`qualify_array_elements`). A value slot dispatches on `Variable::slot_kind()` (gated: `check-one-slot-dispatch.sh`). A declarator list's tail re-pushes it:
   `push_declarator_list_tail`. Member access merges the object's cv: `member_access_type`
   over `glvalue_cv`; a call argument's type: `call_argument_type`.
 - A TYPE-ID (a template argument, a using-alias or alias-template target, a `_Generic` /
-  `__builtin_types_compatible_p` type name, a spelled trait argument): `parse_type_id`
-  — its leading/east/after-star cv is the TYPE's; never a hand-rolled `*`/`[]` loop.
+  `__builtin_types_compatible_p` type name, a spelled trait argument, a trailing return
+  type — `adopt_trailing_return_type`, a named cast's `<...>` — `parse_named_cast_target`):
+  `parse_type_id` — its leading/east/after-star cv
+  is the TYPE's; never a hand-rolled `*`/`[]` loop (gated: `check-one-ptr-operator-fold.sh`).
 - A type's cv levels in the emitted tree: `dd_peel_pointers(dd, &level_cv)` then
   `pointer(cv)` per level and `append_cv_specs` for the base (cir).
+- A function's RETURN type in an emitted declarator (a definition, a prototype, an
+  extern, a function pointer's target, a return temp): cir's `append_return_declarator`
+  (gated: `check-one-return-declarator.sh`).
 - `(` `[` `{` `<` counting, `>>` splitting, whether a `<` opens: `delimiter-tracking.md`.
 - A non-type template argument spliced into a cloned body (one operand):
   `splice_nontype_template_arg` (gated: `check-one-nontype-splice.sh`).

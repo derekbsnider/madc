@@ -10,10 +10,11 @@
 # extracted/zipped ARTIFACT bytes run their installed binaries, every
 # probe with its negative control.
 #
-# ASSET OWNERSHIP: this workflow builds and attaches ALL SIX release
+# ASSET OWNERSHIP: this workflow builds and attaches ALL EIGHT release
 # assets — the artifacts PK6's ecosystem repos consume at stable
 # versioned URLs (releases/download/<tag>/<file>): Linux (.deb, .rpm,
-# tarball) and Windows (.zip, mingw cross + wine smoke) on ubuntu, and the
+# tarball, and the Homebrew x86_64_linux bottle with madc.rb, the tap's
+# formula naming it) and Windows (.zip, mingw cross + wine smoke) on ubuntu, and the
 # two macOS tarballs NATIVELY on GitHub's mac runners (macos-14 = arm64,
 # macos-15-intel = x86_64) — the darwin-host build port
 # (docs/plans/2026-09-01-darwin-host-port.md, D3). On a mac runner the
@@ -327,9 +328,55 @@ jobs:
           path: dist/madc-*-macos-*.tar.gz
           if-no-files-found: error
 
+  linux-brew-bottle:
+    # The Homebrew bottle for Linux (owner 2026-10-02; the macOS bottle is
+    # held): Homebrew builds madc from the TAG's source archive — the tarball
+    # the tap's formula names, so `brew install --build-from-source` builds the
+    # same bytes the bottle holds (whatever build_ref says: the formula must
+    # name a tarball that exists) — then bottles it, pours it back from the
+    # bottle file and runs `brew test` (scripts/brew_bottle.sh, the brew lane's
+    # recipe). Attached: the bottle under the name Homebrew fetches
+    # (<release>/madc-<ver>.x86_64_linux.bottle.tar.gz) and madc.rb, the tap's
+    # formula naming it. Publishing the tap is the owner's step.
+    runs-on: ubuntu-24.04
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
+      - name: guard — tag matches VERSION
+        run: |
+          ver=$(cat VERSION)
+          if [ "$RELEASE_TAG" != "v$ver" ]; then
+            echo "tag $RELEASE_TAG != v$ver (VERSION at the built ref)" >&2
+            exit 1
+          fi
+      - name: Homebrew (preinstalled on the ubuntu image, not on PATH)
+        run: |
+          if [ ! -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+          fi
+          echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+      - name: build from the tag's source archive, bottle, pour back + brew test
+        run: |
+          src="https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$RELEASE_TAG.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/madc-src.tar.gz" "$src"
+          sum=$(sha256sum "$RUNNER_TEMP/madc-src.tar.gz" | awk '{ print $1 }')
+          bash scripts/brew_bottle.sh "$src" "$sum" \
+            "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG" \
+            dist/brew
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-brew-bottle
+          path: |
+            dist/brew/madc-*.x86_64_linux.bottle.tar.gz
+            dist/brew/madc.rb
+          if-no-files-found: error
+
   attach-release:
     runs-on: ubuntu-24.04
-    needs: [linux-packages, windows-package, macos-package]
+    needs: [linux-packages, windows-package, macos-package, linux-brew-bottle]
     steps:
       - uses: actions/download-artifact@v8
         with:
@@ -343,7 +390,8 @@ jobs:
           cd dist
           files=$(ls madc_*.deb madc-*.x86_64.rpm \
                      madc-*-linux-x86_64.tar.gz madc-*-windows-x86_64.zip \
-                     madc-*-macos-arm64.tar.gz madc-*-macos-x86_64.tar.gz)
+                     madc-*-macos-arm64.tar.gz madc-*-macos-x86_64.tar.gz \
+                     madc-*.x86_64_linux.bottle.tar.gz madc.rb)
           echo "attaching to $RELEASE_TAG:"; echo "$files"
           if ! gh release view "$RELEASE_TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
             # CI never publishes: the DRAFT holds the stable asset set until

@@ -61,6 +61,27 @@ void client_service(IdeSession &S, long t)
 	    S.dialog_fallback(req);
 	return;
     }
+    // The platform clipboard (plan §41.11a step 3e): a copy published, and
+    // a paste read and handed back as the paste command's argument — the
+    // session's own copy when the platform will not answer. An empty text
+    // pastes nothing (and parks nothing again).
+    if ( kind == rqCLIPSET )
+    {
+	ui::clipboard_set(t, req["text"].c_str());
+	return;
+    }
+    if ( kind == rqPASTE )
+    {
+	var txt;
+	if ( !ui::clipboard_get(txt, t) )
+	    txt = req["own"];
+	if ( txt.is_null() || strlen(txt.c_str()) == 0 )
+	    return;
+	var e;
+	action_event(e, cmdPASTE, txt.c_str());	// as the page's paste arrives
+	S.apply_ide_event(S.active(0), e);
+	return;
+    }
     if ( !ui::suspend(t) )
     {
 	S.request_refused(req);		// never a silent drop (P3b-1)
@@ -148,6 +169,7 @@ void spawn_client(var &clients, IdeSession &S, long w, ui::level lvl,
     bool ht = ui::level_of(nt) <= ui::TUI;
     S.terminal(ht);
     S.dialogs(ui::dialogs(nt));
+    S.clipboard(ui::clipboards(nt));
     S.panel(!ht);
     var cN;
     make_client(cN, nextid, nt, nes, trLOCAL, lvl, tierOWNER);
@@ -172,6 +194,7 @@ void run_ide(IdeSession &S, long doc, ui::level lvl)
     bool has_term = ui::level_of(t) <= ui::TUI;
     S.terminal(has_term);
     S.dialogs(ui::dialogs(t));	// a window's host may draw native file dialogs
+    S.clipboard(ui::clipboards(t));	// ... and reach the platform's clipboard
     S.panel(!has_term);		// a window renders regions: the bottom panel (P3a)
     // Client 0 = the launching window/terminal over open()'s es. `clients`
     // is a dialect var array of the general records; ONE IdeSession is
@@ -242,11 +265,17 @@ void run_ide(IdeSession &S, long doc, ui::level lvl)
     // caller (run_tui), AFTER it has joined any serve task it spawned — a task
     // parked in accept would hang IdeSession::close()'s task_drain. A frontend
     // is not something a serve task touches, so handing the terminal back
-    // first is safe, and prompter. Per-spawned-es parse-handle close + a live
-    // build's stop on a non-attached client ride the window-close hardening
-    // follow-up (the process exits here, so the OS reclaims them; task_drain
-    // is the safety).
+    // first is safe, and prompter. Per-spawned-es parse-handle close rides the
+    // window-close hardening follow-up (the process exits here, so the OS
+    // reclaims them).
+    // Each client's background tasks (its REPL tab's pump, its build, its
+    // Terminal's program) stop HERE: they were spawned inside the caller's
+    // scope, whose join comes before IdeSession::close() (run_tui).
     long nc = php::count(clients);
     for ( long i = 0; i < nc; i = i + 1 )
+    {
+	S.attach(w, clients[i]["es"].as_integer());
+	S.stop_tasks();
 	ui::close(clients[i]["t"].as_integer());
+    }
 }

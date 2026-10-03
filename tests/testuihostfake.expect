@@ -17,6 +17,12 @@ menu calls after changed render: 2
 dialogs -> yes
 fake dialog: {"mode":"open","title":"Open File","path":""}
 dialog -> shown
+clipboards -> yes
+clipboard set (none yet) -> refused
+clipboard get (none yet) -> refused
+fake clip_set: one|two
+clipboard set -> taken
+clipboard get -> answered [one|two] no CR
 event dialog open /tmp/picked.mad code 0
 event text hi
 event focus

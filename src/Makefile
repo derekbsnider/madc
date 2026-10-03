@@ -132,7 +132,7 @@ RT_OFILES := $(notdir $(RT_LEDGER_SRCS:.c=.o))
 ifeq ($(strip $(RT_OFILES)),)
 $(error scripts/ledger_sources.txt lists no C-lane runtime sources)
 endif
-CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_project.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_config.o madc_config_file.o madc_globals.o madc_dl.o madc_modules.o madc_guards.o madc_crash.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_madc.o ns_ui.o ui_term.o va_helpers.o $(RT_OFILES) pch.o madc_posix_io.o madc_datachannel.o madc_socket_channel.o madc_channel_stream.o madc_websocket_channel.o madc_header_channel.o madc_process.o madc_channel_object.o madcdis_driver.o madcdis_query.o madcdis_source_adapter.o madcdis_snapshot.o madcdis_storage.o embedded_headers.o sys_include_paths.o predefined_macros.o precompiled_headers.o madc_mir_backend.o madc_mangle.o libc_signatures.o madc_cir.o cir_builder.o cir_dump.o madc_type_spelling.o rt_dump_value.o cir_format.o rt_format_value.o rt_task.o madc_task_chan.o madc_io_reactor.o cir_freeze.o cir_emit_c.o file_kinds.o madc_capabilities.o madc_project.o madc_complete.o madc_keywords.o madc_session.o madc_session_client.o madc_session_verbs.o madc_repl.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 # embedded_headers.cpp regeneration (EMBED_GEN) happens below, AFTER the
@@ -596,6 +596,13 @@ DEFINES += -DMADC_ENABLE_CONFIG_FILE
 endif
 SYSCONFDIR ?= $(if $(sysconfdir),$(sysconfdir),$(PREFIX)/etc)
 DEFINES += -DMADC_SYSCONFDIR='"$(SYSCONFDIR)"'
+# The stable library directory a produced program's runpath names last
+# (cir_native_link_env), after its own ../lib and the compiling madc's: where
+# an installed libmadc.so.0 is found once that madc's directory is gone (a
+# package manager's versioned keg, removed by an upgrade). A Homebrew build
+# passes its prefix's lib, where `brew link` puts libmadc.
+MADC_RUNPATH_LIBDIR ?= /usr/local/lib
+DEFINES += -DMADC_RUNPATH_LIBDIR='"$(MADC_RUNPATH_LIBDIR)"'
 # Same baked-define hazard as the forest shape above (-MMD tracks headers, not
 # flags): switching the axis without a clean would keep the previous shape's
 # madc_config.o. Stamp it per obj tree the same way.
@@ -890,6 +897,7 @@ $(MIRBUILD)/arm64-macos/libmir.a: FORCE
 machogate: cross-arm64-macos cross-x86-64-macos
 	@cd .. && bash scripts/macho_obj_gate.sh
 	@cd .. && bash scripts/macho_exe_dylib_gate.sh
+	@cd .. && bash scripts/macho_dylib_gate.sh
 
 # macOS release artifacts (macos-release-lane plan W1): the darwin twin of
 # `release`. The hosted binaries are ALREADY -O2 and forest-packed at link
@@ -938,11 +946,16 @@ endif
 # madc hosted on macOS (Route 1): full madc binaries for the Macs. The
 # emitted-C runtime archive (W3) builds beside each binary from the same
 # per-mode objects; package_release_macos.sh ships it as lib/libmadc_rt.a.
+# libmadc-0.dylib (D5) builds beside them too; on a darwin host (one arch,
+# the binary that runs here) it is also placed as lib/libmadc-0.dylib.
+ifeq ($(DARWIN_HOST),1)
+DARWIN_DEV_RT_DYLIB = ../lib/libmadc-0.dylib
+endif
 hosted-x86-64-macos:
-	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos ../lib/libmadc_rt-hosted-x86-64-macos.a
+	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos ../lib/libmadc_rt-hosted-x86-64-macos.a ../obj/hosted-x86-64-macos/libmadc-0.dylib $(DARWIN_DEV_RT_DYLIB)
 
 hosted-arm64-macos:
-	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a
+	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a ../obj/hosted-arm64-macos/libmadc-0.dylib $(DARWIN_DEV_RT_DYLIB)
 
 # darwin-HOST MIR variant libs: built BY the darwin compiler, so host
 # detection selects the Apple arms natively — no MIR_TARGET knobs.
@@ -1089,19 +1102,40 @@ test: $(TESTBINS)
 		fi; \
 	done
 
-fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
-	@cd .. && bash scripts/run_tests.sh
+# The seam battery's first stage (scripts/seam_battery.sh): the unit tests and
+# every repository gate, WITHOUT the tests/ suite — the battery runs that on the
+# shipped -O2 packed artifact (owner 2026-10-02). fulltest = gates + the suite
+# on the dev binary, for a local all-in-one run.
+gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@python3 ../scripts/gen_webview_header.py --check
 	@cd .. && bash scripts/check-no-std-hardcoding.sh
 	@cd .. && bash scripts/check-call-emit-symbol.sh
 	@cd .. && bash scripts/check-var-emit-name-bypass.sh
 	@cd .. && bash scripts/check-alias-symbol-emission.sh
 	@cd .. && bash scripts/check-one-void-predicate.sh
+	@cd .. && bash scripts/check-one-slot-dispatch.sh
+	@cd .. && bash scripts/check-one-top-decl-position.sh
+	@cd .. && bash scripts/check-one-selection-rule.sh
 	@cd .. && bash scripts/check-one-deref-builder.sh
 	@cd .. && bash scripts/check-one-fptr-predicate.sh
+	@cd .. && bash scripts/check-one-cstr-admission.sh
+	@cd .. && bash scripts/check-one-forwarding-test.sh
+	@cd .. && bash scripts/check-one-nested-stream.sh
+	@cd .. && bash scripts/check-one-stream-rewind.sh
+	@cd .. && bash scripts/check-one-token-run.sh
+	@cd .. && bash scripts/check-one-ptr-operator-fold.sh
+	@cd .. && bash scripts/check-one-reference-call-result.sh
+	@cd .. && bash scripts/check-one-return-declarator.sh
+	@cd .. && bash scripts/check-one-member-init-walk.sh
+	@cd .. && bash scripts/check-one-error-diagnostic-scan.sh
+	@cd .. && bash scripts/check-one-lexer-type-token.sh
+	@cd .. && bash scripts/check-one-mir-def-to-import.sh
+	@cd .. && bash scripts/check-one-symbol-trap.sh
+	@cd .. && bash scripts/check-one-c-escape.sh
 	@cd .. && bash scripts/check-one-pointee-accessor.sh
 	@cd .. && bash scripts/check-one-operand-promotion.sh
 	@cd .. && bash scripts/check-one-nontype-splice.sh
+	@cd .. && bash scripts/check-one-string-char-fill.sh
 	@cd .. && bash scripts/check-volatile-accesses.sh
 	@cd .. && bash scripts/check-one-delim-tracker.sh
 	@cd .. && bash scripts/check-one-declarator-reader.sh
@@ -1115,6 +1149,8 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-mmap-owner.sh
 	@cd .. && bash scripts/check-one-handle-table.sh
 	@cd .. && bash scripts/check-one-parse-error-recorder.sh
+	@cd .. && bash scripts/check-one-block-comment-reader.sh
+	@cd .. && bash scripts/check-one-escape-decoder.sh
 	@cd .. && bash scripts/check-one-subject-doc.sh
 	@cd .. && bash scripts/check-one-mingw-stdio-map.sh
 	@cd .. && bash scripts/check-policy-fanout.sh
@@ -1122,6 +1158,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-dialect-literals.sh
 	@cd .. && bash scripts/check-embedded-headers-stub.sh
 	@cd .. && bash scripts/check-one-library-spelling.sh
+	@cd .. && bash scripts/check-one-alignof-spelling.sh
 	@cd .. && bash scripts/check-one-module-member-owner.sh
 	@cd .. && bash scripts/check-one-key-owner.sh
 	@cd .. && bash scripts/check-one-anchor-owner.sh
@@ -1173,6 +1210,8 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-engine-app-purity.sh
 	@cd .. && bash scripts/tui_smoke_gate.sh
 	@cd .. && bash scripts/tui_scroll_gate.sh
+	@cd .. && bash scripts/madcide_quit_gate.sh
+	@cd .. && bash scripts/madcide_save_quit_gate.sh
 	@cd .. && bash scripts/despace_cache_gate.sh
 	@cd .. && bash scripts/forest_selfexe_gate.sh
 	@cd .. && bash scripts/forest_bind_gate.sh
@@ -1186,6 +1225,7 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/unprototyped_call_abi_gate.sh
 	@cd .. && bash scripts/sret_abi_gate.sh
 	@cd .. && bash scripts/vector_abi_gate.sh
+	@cd .. && bash scripts/c2m_initializer_override_gate.sh
 	@cd .. && bash scripts/mangle_abi_gate.sh --selftest --interop
 	@cd .. && bash scripts/emitc_sret_gate.sh
 	@cd .. && bash scripts/emitcxx_roundtrip_gate.sh
@@ -1195,6 +1235,9 @@ fulltest: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/forest_index_oracle.sh
 	@cd .. && bash scripts/forest_dm_oracle.sh
 	@cd .. && timeout 1500 bash scripts/win_posix_archive_gate.sh
+
+fulltest: gates
+	@cd .. && bash scripts/run_tests.sh
 
 # CIR renderer fidelity gate over the whole corpus (diagnostic; localizes
 # missing renderer constructs and gcc-vs-emitted asm divergences).
@@ -1262,7 +1305,11 @@ endif
 # instead — its dynamic table already carries every one of them.
 ifeq ($(ENABLE_SHARED_CLI),1)
 CLI_LIB_DEP = $(LIBMADC_SHARED)
-CLI_LINK = -L$(LIBDIR) -lmadc $(CLI_RPATH)
+# -lmadc resolves in THIS mode's library directory (lib/ for dev,
+# lib/$(MODE)/ for release and debug — the per-mode-names law above).
+# -L$(LIBDIR) bound a release link to the DEV libmadc.so, and in a tree with
+# no dev build to lib/libmadc.a (no MIR inside: undefined c2mir symbols).
+CLI_LINK = -L$(patsubst %/,%,$(dir $(LIBMADC_SHARED))) -lmadc $(CLI_RPATH)
 else
 CLI_LIB_DEP = $(LIBMADC_STATIC)
 CLI_LINK = $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB)
@@ -1452,6 +1499,26 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 ../bin/libmadc-0.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
 	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc.def $(MIRDIR)/mir-int128-helper.h
 	$(CXX) -shared -o $@ $(OBJDIR)/libmadc.def -Wl,--out-implib,../lib/libmadc.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+endif
+
+# libmadc-0.dylib (D5, PK3-mac-runtime): the darwin twin of libmadc-0.dll
+# and libmadc.so.0 — the FULL engine, the runtime provider a runtime-needing
+# AOT image or shared object (a madcide plugin library) loads by its install
+# name @rpath/libmadc-0.dylib (cir_apple_runtime_dylib), the image's
+# LC_RPATHs naming @executable_path/../lib and the compiling madc's lib dir.
+# Whole-archive (-force_load): the loading images reference these symbols,
+# the dylib itself does not. A dylib exports its globals (the
+# --export-all-symbols analogue). Built per mode in the obj tree, where
+# forest.bin lives (the container builds both arches in one tree);
+# package_release_macos.sh ships it as lib/libmadc-0.dylib, and a darwin
+# host also places it there in the dev tree (bin/../lib, which the
+# LC_RPATHs reach).
+ifdef HOSTED_DARWIN_TARGET
+$(OBJDIR)/libmadc-0.dylib: $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -dynamiclib -o $@ -Wl,-install_name,@rpath/libmadc-0.dylib $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+
+../lib/libmadc-0.dylib: $(OBJDIR)/libmadc-0.dylib
+	cp -p $< $@
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the

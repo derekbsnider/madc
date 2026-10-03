@@ -14,9 +14,9 @@ void *madcdl_open_global(const char *path, bool bind_now)
 	return dlopen(path, (bind_now ? RTLD_NOW : RTLD_LAZY) | RTLD_GLOBAL);
 }
 
-void *madcdl_open_local(const char *path)
+void *madcdl_open_local(const char *path, bool bind_now)
 {
-	return dlopen(path, RTLD_LAZY);
+	return dlopen(path, bind_now ? RTLD_NOW : RTLD_LAZY);
 }
 
 void *madcdl_open_self(void)
@@ -127,8 +127,9 @@ void *madcdl_open_global(const char *path, bool bind_now)
 	return (void *)h;
 }
 
-void *madcdl_open_local(const char *path)
+void *madcdl_open_local(const char *path, bool bind_now)
 {
+	(void)bind_now;	// PE binds imports at load; NOW vs LAZY has no analogue
 	HMODULE h = LoadLibraryA(path);
 	if (!h)
 		madcdl_set_error("LoadLibrary", path);

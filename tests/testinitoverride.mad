@@ -1,0 +1,48 @@
+// A later initializer overrides any earlier one for the same subobject (C11
+// 6.7.9p19), in static and automatic storage alike: a designator naming an
+// initialized member (`.s.p = -1` after `{ 0, 2 }`), a brace list that
+// re-initializes a whole member (`.s = { 9 }` after `.s.q = 2` — s.q is 0),
+// another member of a union (`.c = 5` after `.l = -1` — l reads 5), one
+// character of a string (`.a[1] = 'z'` after `.a = "abc"`), a string over an
+// earlier character (`.a = "ab"` after `.a[3] = 'q'`), and a bit-field.
+//
+// madc places every clause through InitializerCursor before emission; the
+// in-tree c2m driver collects the clauses as written and kept the FIRST
+// initializer of a static subobject, re-initialized nothing for a brace list,
+// and zeroed the rest of a local string after a patched character.
+// scripts/c2m_initializer_override_gate.sh runs this file through c2m.
+//
+// gcc 13 and clang 18 (-std=c17) print the .expect lines.
+#include <stdio.h>
+
+struct S { long p; int q; };
+struct T { int k; struct S s; int z; };
+union U { long l; char c; };
+struct C { char a[4]; int n; };
+struct B { unsigned x : 3, y : 5; int w; };
+
+struct T g4 = { .s = { 0 }, .s.p = -1 };
+struct T g6 = { 1, { 0, 2 }, .s.p = -1 };
+struct T g7 = { 1, { 3, 2 }, 4, .s.p = -1 };
+struct S h1 = { 5, 6, .p = 7 };
+struct T g8 = { .s.q = 2, .s = { 9 } };
+union U u1 = { .l = -1, .c = 5 };
+struct C c1 = { .a = "abc", .a[1] = 'z' };
+struct C c2 = { .a[3] = 'q', .a = "ab" };
+struct B b1 = { 1, 2, 3, .y = 9, .x = 4 };
+
+int main(void)
+{
+	struct T l4 = { .s = { 0 }, .s.p = -1 };
+	struct T l8 = { .s.q = 2, .s = { 9 } };
+	union U lu1 = { .l = -1, .c = 5 };
+	struct C lc1 = { .a = "abc", .a[1] = 'z' };
+	struct C lc2 = { .a[3] = 'q', .a = "ab" };
+	struct B lb1 = { 1, 2, 3, .y = 9, .x = 4 };
+	printf("g %ld | %ld %d | %ld %d %d | %ld %d | %ld %d | %ld\n", g4.s.p, g6.s.p, g6.s.q,
+	       g7.s.p, g7.s.q, g7.z, h1.p, h1.q, g8.s.p, g8.s.q, u1.l);
+	printf("c %s %d | %s %d | %u %u %d\n", c1.a, c1.a[3], c2.a, c2.a[3], b1.x, b1.y, b1.w);
+	printf("l %ld | %ld %d | %ld | %s %d | %s %d | %u %u %d\n", l4.s.p, l8.s.p, l8.s.q, lu1.l,
+	       lc1.a, lc1.a[3], lc2.a, lc2.a[3], lb1.x, lb1.y, lb1.w);
+	return 0;
+}

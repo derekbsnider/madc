@@ -1,0 +1,7 @@
+// A std::string member's default member initializer — `= "abc"` and the brace
+// form `{ "de" }` — constructs the member ([class.mem]/10) in a class's implicit
+// default constructor. Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+#include <string>
+struct K { std::string s = "abc"; std::string t{ "de" }; int n = 4; };
+int main() { K k; std::printf("str: [%s] [%s] %d\n", k.s.c_str(), k.t.c_str(), k.n); return 0; }

@@ -1,0 +1,24 @@
+/* A DEFAULTED copy constructor bound through a conversion function: both
+   standard libraries declare `basic_string_view(const basic_string_view &)
+   = default`, and a std::string converts to a string_view through its
+   conversion operator. The argument binds the defaulted constructor the way
+   it binds any copy constructor: convert first, then copy.
+   madc bound the unconverted string's address and emitted a struct
+   assignment between two different struct types, which c2mir refused
+   ("incompatible types in assignment to struct/union") in the return, in
+   the declaration, and inside basic_string::compare(const _Tp &).
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print `5 5 e` and exit 0. */
+#include <cstdio>
+#include <string>
+#include <string_view>
+
+static std::string_view view(const std::string &s) { return s; }
+
+int main()
+{
+	std::string s = "hello";
+	std::string_view v = view(s);
+	std::string_view w = s;
+	printf("%zu %zu %c\n", v.size(), w.size(), w[1]);
+	return s.compare(w);
+}

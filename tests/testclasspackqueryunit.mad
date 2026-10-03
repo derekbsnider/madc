@@ -1,0 +1,26 @@
+// A type-query operator over a pack, expanded in a class template body:
+// `sizeof(T)...` / `alignof(T)...` repeat per element, and an empty pack
+// drops the unit with one separating comma on either side. An alignment
+// specifier in the class head expands the same way; the instantiations
+// must compile (alignof of a variadic class template-id is BUGS.md B69).
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+template<typename... T> struct Z
+{
+	unsigned long count() { unsigned long s[] = { 1, sizeof(T)... }; return sizeof(s) / sizeof(s[0]); }
+	unsigned long last() { unsigned long s[] = { sizeof(T)..., 7 }; return s[sizeof(s) / sizeof(s[0]) - 1] + s[0]; }
+	unsigned long al() { unsigned long s[] = { 0, alignof(T)... }; unsigned long m = 0; for (unsigned long v : s) if (v > m) m = v; return m; }
+};
+template<typename... T> struct alignas(alignof(T)...) A { char k; };
+struct alignas(16) W { char c; };
+int main()
+{
+	Z<> z0; Z<int> z1; Z<char, W> z2;
+	std::printf("pz: %lu %lu %lu\n", z0.count(), z1.count(), z2.count());
+	std::printf("pl: %lu %lu %lu\n", z0.last(), z1.last(), z2.last());
+	std::printf("pm: %lu %lu %lu\n", z0.al(), z1.al(), z2.al());
+	A<> a0; A<char> a1; A<char, W> a2;
+	a0.k = 1; a1.k = 2; a2.k = 3;
+	std::printf("ph: %d\n", a0.k + a1.k + a2.k);
+	return 0;
+}

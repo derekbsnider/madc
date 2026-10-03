@@ -1,0 +1,172 @@
+// Selection and the clipboard (plan §41.11a step 3e, slice 3b): Shift with a
+// motion extends a GUI selection over the block markers (the one rule,
+// selection_range); typing, Backspace and a paste replace it, and a motion
+// without Shift drops it; a block the block keys make keeps its own rules.
+// Cut, Copy, Paste and Select all are commands: over the session's own copy
+// where the client reaches no platform clipboard, and through the parked
+// clipset / paste requests where it does (the client answers a paste with
+// the command and the platform's text as its argument). Oracle: Thonny (Tk's
+// text widget) and VS Code, the same keys over "hello world" from offset 0:
+// Shift+Right three times selects "hel"; typing J gives "Jlo world"; Shift+End
+// selects to the line's end; a Right without Shift leaves no selection; Select
+// all then Backspace empties the buffer; Paste puts back what Copy took.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void key(IdeSession &S, long doc, const char *name, ui::key code, long mods)
+{
+    var e = { "event": "key", "event_code": ui::event_kind::key, "key": name,
+	      "key_code": code, "mods": mods };
+    S.apply_ide_event(doc, e);
+}
+
+// A bound chord's action, with the modifiers its last key held.
+void chord(IdeSession &S, long doc, long code, const char *seq, long mods)
+{
+    var e = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": "", "action_code": code, "seq": seq, "mods": mods };
+    S.apply_ide_event(doc, e);
+}
+
+void type(IdeSession &S, long doc, const char *text)
+{
+    var e = { "event": "text", "event_code": ui::event_kind::text, "text": text };
+    S.apply_ide_event(doc, e);
+}
+
+void show(const char *label, IdeSession &S, long doc)
+{
+    var t;
+    ui::text(t, S.w, doc);
+    long caret = es_int(S.w, S.es, "caret", 0);
+    var r;
+    var sel = "none";
+    if ( selection_range(r, S.w, S.es, caret) )
+	sel = format("{}..{}", r["lo"], r["hi"]);
+    var clip;
+    ui::get(clip, S.w, S.es, "clip");
+    var cs = "";
+    if ( !clip.is_null() )
+	cs = php::str_replace("\n", "|", clip);
+    println("{}: [{}] caret={} sel={} gui={} clip=[{}]", label,
+	    php::str_replace("\n", "|", t), caret, sel,
+	    es_flag(S.w, S.es, "selgui") ? 1 : 0, cs);
+}
+
+int main()
+{
+    const char *path = "madc_ide_select.txt";
+    php::file_put_contents(path, "hello world\nsecond line\n");
+    long shift = (long)ui::key_mod::shift;
+    long ctrlshift = (long)ui::key_mod::ctrl | shift;
+
+    // Thonny's keys: a one-point personality (no block end). The open's
+    // argument names a bundle; the key style loads as Tools ▸ Key bindings…
+    // loads it.
+    IdeSession S;
+    long doc = S.open(path, false);
+    load_profile(S.w, S.es, "thonny");
+    var kp;
+    ui::get(kp, S.w, S.es, "profile");
+    println("keys: {} two-point={}", kp, es_flag(S.w, S.es, "selblock") ? 1 : 0);
+    key(S, doc, "shift+right", ui::key::right, shift);
+    key(S, doc, "shift+right", ui::key::right, shift);
+    key(S, doc, "shift+right", ui::key::right, shift);
+    show("shift-right-x3", S, doc);
+    type(S, doc, "J");
+    show("typed-over", S, doc);
+    key(S, doc, "shift+end", ui::key::end, shift);
+    show("shift-end", S, doc);
+    key(S, doc, "right", ui::key::right, 0);
+    show("plain-right", S, doc);
+    // A bound motion with Shift on its chord (Ctrl+Shift+Right reaching
+    // Ctrl+Right's word motion) extends by that motion.
+    chord(S, doc, cmdWORDRIGHT, "ctrl+right", ctrlshift);
+    show("shift-word", S, doc);
+    S.post(doc, cmdCOPY);
+    show("copy", S, doc);
+    S.post(doc, cmdSELECTALL);
+    show("select-all", S, doc);
+    key(S, doc, "backspace", ui::key::backspace, 0);
+    show("backspace-over", S, doc);
+    S.post(doc, cmdPASTE);
+    show("paste", S, doc);
+    S.post(doc, cmdUNDO);
+    show("undo-paste", S, doc);
+    S.post(doc, cmdCUT);
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    println("cut-nothing: msg={}", msg);
+    // Cut over a Shift selection: the text goes to the clipboard.
+    type(S, doc, "alpha beta\ngamma\n");
+    S.post(doc, cmdTOP);
+    key(S, doc, "shift+down", ui::key::down, shift);
+    S.post(doc, cmdCUT);
+    show("cut", S, doc);
+
+    // A client that reaches the platform clipboard (its pushed fact): a copy
+    // parks a clipset request with the text; a paste parks a paste request
+    // carrying the session's own copy, and the client's answer (the paste
+    // command with the platform's text) lands over the selection.
+    S.clipboard(true);
+    S.post(doc, cmdSELECTALL);
+    S.post(doc, cmdCOPY);
+    var rq;
+    var rk = "";
+    var rt = "";
+    bool got = S.take_request(rq);
+    if ( got )
+    {
+	rk = req_name(rq["kind"].as_integer());
+	rt = php::str_replace("\n", "|", rq["text"]);
+    }
+    println("clipset: parked={} kind={} text=[{}]", got ? 1 : 0, rk, rt);
+    S.post(doc, cmdPASTE);
+    var rq2;
+    rk = "";
+    rt = "";
+    got = S.take_request(rq2);
+    if ( got )
+    {
+	rk = req_name(rq2["kind"].as_integer());
+	rt = php::str_replace("\n", "|", rq2["own"]);
+    }
+    println("paste-request: parked={} kind={} own=[{}]", got ? 1 : 0, rk, rt);
+    bool cont = true;
+    S.command(doc, cmdPASTE, "from the platform\n", cont);
+    show("paste-answered", S, doc);
+    S.clipboard(false);
+    S.close();
+
+    // JOE's keys: a TWO-POINT personality. A Shift selection sets both
+    // markers (so the highlight and the block keys see it); ^K B makes a
+    // block, which typing does not replace; ^K Y's delete fills the
+    // clipboard Paste reads.
+    php::file_put_contents(path, "hello world\n");
+    IdeSession J;
+    long jd = J.open(path, false);
+    load_profile(J.w, J.es, "joe");
+    ui::get(kp, J.w, J.es, "profile");
+    println("keys: {} two-point={}", kp, es_flag(J.w, J.es, "selblock") ? 1 : 0);
+    key(J, jd, "shift+right", ui::key::right, shift);
+    key(J, jd, "shift+right", ui::key::right, shift);
+    println("joe-shift: mark={} bend={}", es_int(J.w, J.es, "mark", -1), es_int(J.w, J.es, "bend", -1));
+    show("joe-shift", J, jd);
+    J.post(jd, cmdMARK);
+    key(J, jd, "right", ui::key::right, 0);
+    key(J, jd, "right", ui::key::right, 0);
+    J.post(jd, cmdBEND);
+    type(J, jd, "X");
+    show("joe-block-typed", J, jd);
+    J.post(jd, cmdBLOCKDEL);
+    show("joe-blockdel", J, jd);
+    J.post(jd, cmdBOTTOM);
+    J.post(jd, cmdPASTE);
+    show("joe-paste", J, jd);
+    J.close();
+
+    // a test leaves nothing in its working directory
+    php::unlink(path);
+    return 0;
+}

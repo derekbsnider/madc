@@ -1,0 +1,30 @@
+// A designator inside an anonymous member's own braces names one of its
+// members (C11 6.7.2.1p13: they are members of the containing aggregate,
+// 6.7.9p17: the brace list initializes the anonymous member):
+// `{ 0, { .f = 2.5f }, 4 }` for `struct { int x; union { int a; float f; };
+// int y; }`. An unnamed anonymous struct or union opens no scope of its own
+// in c2mir — its members are declared in the containing aggregate's scope —
+// so c2mir looked the name up in an empty scope and refused it, "unknown field
+// f in initializer". madc read those braces against the anonymous member but
+// emitted them for its first member, positionally (`{ 0, 2.5 }` for `.f`),
+// and c2mir refused that, "excess elements in array/struct/union initializer".
+//
+// gcc 13 and clang 18 (-std=c17) print the .expect lines.
+#include <stdio.h>
+
+struct AU { int x; union { int a; float f; }; int y; };
+union UA { struct { int a, b; }; long l; };
+struct N { int k; union { struct { short p, q; }; int w; }; };
+
+struct AU g1 = { 1, { .f = 2.5f }, 4 };
+union UA g2 = { { .b = 7 } };
+struct N g3 = { 1, { { .q = 9 } } };
+
+int main(void)
+{
+	struct AU l1 = { 1, { .f = 2.5f }, 4 };
+	union UA l2 = { { .b = 7, .a = 6 } };
+	printf("g %d %g %d | %d %d | %d %d %d\n", g1.x, g1.f, g1.y, g2.a, g2.b, g3.k, g3.p, g3.q);
+	printf("l %d %g %d | %d %d\n", l1.x, l1.f, l1.y, l2.a, l2.b);
+	return 0;
+}

@@ -3,6 +3,9 @@
 # The adapter is data all the way down; a swap is one ui::tui_bind_keys
 # call. (No ^h/^i/^j/^m: those bytes ARE backspace/tab/enter. Arrows,
 # home/end, pgup/pgdn serve motion here — the diamond is JOE's.)
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title Pico
+
 ^s save
 ^q quit
 ^x discard
@@ -23,6 +26,9 @@
 ^d delword
 ^t gotoline
 ^r insertfile
+# F5 runs the buffer into the REPL tab's session: a fresh one, its main
+# run, its names left for the prompt (plan §41.10a).
+f5 replrun
 # The project window (^F here: ^P is this profile's keymap toggle; the
 # JOE diamond is not pico's) + its @project keys as DATA (the baked
 # defaults add esc/backspace).

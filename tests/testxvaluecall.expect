@@ -1,0 +1,4 @@
+deduce: T=U T=U T=U& T=U
+collapse: T=U& T=U
+bind-w: const int& int& const int&
+bind-r: int&& const int& int&& const int&

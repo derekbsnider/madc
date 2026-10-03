@@ -42,6 +42,13 @@ extern thread_local bool madc_no_warnings;
 // DataDefs born in that scope retain speculative provenance after rollback.
 extern thread_local bool madc_class_pattern_capture_active;
 
+// An argument expression's value category for reference binding
+// ([basic.lval]); a prvalue and an xvalue bind a reference alike
+// ([dcl.init.ref]/5), so both are Rvalue. Unknown: the tree cannot state it,
+// and overload ranking neither refuses nor prefers on it. The one reader is
+// Program::argument_value_category.
+enum class ArgValueCategory { Unknown, Lvalue, Rvalue };
+
 // The TARGET's 64-bit data model (task #46, owner decision 2026-08-13:
 // win64 = the PLATFORM model, LLP64). ONE owner for every "how wide is
 // long / which Itanium letter is size_t on this target" question — never
@@ -153,8 +160,8 @@ class FuncDef;
 std::string madc_self_exe_path();
 
 // The relocatable install's library directory beside the running executable:
-// <exe dir>/../lib (bin/madc pairs with lib/; an installed madc with
-// /usr/local/lib). Empty when the executable is unresolvable. The one owner
+// <exe dir>/../lib (bin/madc pairs with lib/; an installed madc with the
+// build's MADC_RUNPATH_LIBDIR). Empty when the executable is unresolvable. The one owner
 // of that shape — the native lanes' runpath and the module opener both read
 // it.
 std::string madc_self_lib_dir();
@@ -365,6 +372,10 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // storage-class SPECIFIER, not a
 			                        // duration of its own in madc's model)
 			                        // and lowers to c2mir's N_THREAD_LOCAL
+			  vfDEFINED    =16777216, // an object DEFINITION of this variable
+			                        // has been declared in this TU (C11 6.9.2,
+			                        // [basic.def]/2) — Program::declare_object
+			                        // sets it; a second definition is refused
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:
@@ -527,6 +538,13 @@ public:
     // value domain? Spec: docs/superpowers/specs/2026-06-11-strict-equality-design.md
     // §2.1. Defined in src/parser.cpp (needs the DataDef subclass set).
     bool same_representation(DataDef &d);
+    // How many initializer-clauses ONE object of this type takes under brace
+    // elision (C11 6.7.9p20, [dcl.init.aggr]/12): an array its count x its
+    // element's, a struct one per scalar leaf (a union its first member's),
+    // a scalar one — and a C++ class that is not an aggregate ONE: it is
+    // initialized through a constructor from a single clause, never by
+    // elision into its members.
+    size_t brace_elision_width() const;
     // Canonical typeid: index into the segmented type table
     // (include/madc_typeid.h; docs/plans/2026-06-12-type-table-value-abi-design.md
     // §2). 0 = not yet registered. Primitives carry fixed ABI slots
@@ -668,6 +686,13 @@ public:
     {
 	return false;
     }
+    // True only for an RVALUE reference type (`T&&`): a distinct type from
+    // `T&` ([dcl.ref]/2), minted only by Program::getReferenceType, which owns
+    // the collapse ([dcl.ref]/6). Same lowering as `T&`.
+    virtual bool is_rvalue_reference() const
+    {
+	return false;
+    }
     // True only for a DataDefQUAL whose mask has cvCONST: a const-qualified
     // type (`const T`). Lowered identically to T (const has no runtime/ABI
     // effect — same size, DataType, codegen), but the type keeps its const-ness
@@ -733,6 +758,16 @@ public:
     {
 	return false;
     }
+    // A pointer to DATA member (`T C::*`): its null value is -1 (Itanium),
+    // not the all-zero bytes a member-function pointer's null shares.
+    bool is_member_data_pointer() const
+    {
+	return is_member_pointer() && !is_member_function_pointer();
+    }
+    // Does an object of this type hold one (itself, an element, a member
+    // zero-initialization reaches)? Its zero-initialization is not all-zero
+    // bytes then: each such pointer is null, -1.
+    bool holds_member_data_pointer() const;
     virtual bool is_struct() const
     {
 	if ( basetype() == BaseType::btStruct )
@@ -934,14 +969,24 @@ public:
     // member_explicit_align map pattern (index-keyed, no parallel-vector burden).
     std::map<size_t, DataDefCLASS *> member_vbase;
     std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
+    std::set<size_t> member_packed; // member index -> __attribute__((packed)) on the member itself
     // C++11 default member initializer (NSDMI): member NAME -> the PARSED init
-    // expression (`int x = 5;` -> TokenInt(5)). Applied at default construction as
-    // `__this->member = expr` for any member not explicitly initialized. Absent =
-    // no in-class initializer (or one that did not parse — object members then take
-    // the existing value-init construction). Name-keyed (survives MI reordering).
+    // expression (`int x = 5;` -> TokenInt(5)). A scalar member applies it at
+    // default construction as `__this->member = expr`, a class-type member
+    // direct-initializes from it, for any member not explicitly initialized.
+    // Absent = no in-class initializer (or one that did not parse — the member is
+    // then default-initialized). Name-keyed (survives MI reordering).
     std::map<std::string, TokenBase *> member_default_inits;
+    // The BRACE form of a default member initializer ([class.mem]
+    // brace-or-equal-initializer), absent for `= expr`: `m{e}` is List (the
+    // entry above holds e), `m{}` is Empty (the entry above holds the scalar
+    // application's 0). A class-type member list-initializes from List and
+    // value-initializes from Empty.
+    enum class NsdmiBraces : uint8_t { List, Empty };
+    std::map<std::string, NsdmiBraces> member_nsdmi_braces;
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
+    size_t pragma_pack;	// the #pragma pack(N) part of `pack` (0 = none): a class's base subobjects take only this cap
     size_t max_align;	// largest member alignment (for finalizing struct size)
     size_t tag_explicit_align;	// __attribute__((aligned(N))) on the struct TAG (0 = none)
     bool union_layout;	// true: all members start at offset 0; size is max member size
@@ -980,13 +1025,35 @@ public:
 
     static size_t align_up(size_t v, size_t a) { return a ? ((v + a - 1) & ~(a - 1)) : v; }
 
-    // compute alignment for a field: natural alignment capped by pack setting
-    size_t field_align(const DataDef &dd) const
+    // A field type's own alignment, before any packing caps it.
+    static size_t natural_field_align(const DataDef &dd)
     {
 	size_t natural = dd.alignment();
-	if ( natural == 0 ) natural = 1;
-	if ( pack == 0 ) return natural;              // C ABI default
-	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
+	return natural ? natural : 1;
+    }
+
+    // compute alignment for a field: natural alignment capped by pack setting
+    // An alignment under a pack: N caps it at N; 0 is the C ABI default.
+    static size_t cap_alignment(size_t align, size_t cap)
+    {
+	return cap != 0 && cap < align ? cap : align;
+    }
+    // A member's and a class's vptr alignment under this aggregate's pack
+    // (#pragma pack(N), or `packed` on the aggregate).
+    size_t pack_capped(size_t align) const
+    {
+	return cap_alignment(align, pack);
+    }
+    // A class's base subobject's alignment: only #pragma pack caps it —
+    // `packed` on a class packs its own members and its vptr, never a base
+    // (g++ = clang++).
+    size_t base_capped(size_t align) const
+    {
+	return cap_alignment(align, pragma_pack);
+    }
+    size_t field_align(const DataDef &dd) const
+    {
+	return pack_capped(natural_field_align(dd));
     }
 
     size_t field_storage_size(const DataDef &dd) const
@@ -1027,13 +1094,13 @@ public:
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
-	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
+	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
-	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0),
+	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), pragma_pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), previous_was_nonzero_bitfield(false),
 	  definition_origin(AggregateDefinitionOrigin::Unknown), bitfield_unit_offset(0),
@@ -1172,13 +1239,22 @@ public:
 	    // SysV/gcc bitfield packing (task #76): a bitfield is placed at the
 	    // next free BIT; the only constraint is that it must not cross a
 	    // sizeof(T)-aligned window of its OWN declared type. Consecutive
-	    // bitfields of DIFFERENT types share bytes when they fit.
+	    // bitfields of DIFFERENT types share bytes when they fit. Under any
+	    // packing (a packed aggregate or member, any #pragma pack) there is
+	    // no window: the field straddles (gcc place_field), and is recorded
+	    // from the byte holding its first bit — its bits then run past its
+	    // type's unit, which c2mir reads and writes byte by byte. Reverse
+	    // scalar storage numbers bits within a unit, so it keeps windows.
 	    size_t next_bit = union_layout ? 0 : bitfield_active
 		? bitfield_unit_offset * 8 + bitfield_next_bit
 		: size * 8;
-	    if ( next_bit % storage_bits + width > storage_bits )
+	    const bool straddle = pack != 0 && !reverse_scalar_storage;
+	    if ( !straddle && next_bit % storage_bits + width > storage_bits )
 		next_bit = align_up(next_bit, storage_bits);
-	    size_t window_offset = next_bit / storage_bits * storage_size;
+	    size_t window_offset = straddle
+		&& next_bit % storage_bits + width > storage_bits
+		? next_bit / 8
+		: next_bit / storage_bits * storage_size;
 	    size_t fa = field_align(dd);
 	    if ( fa > max_align ) max_align = fa;
 	    bitfield_active = true;
@@ -1256,16 +1332,24 @@ public:
 	    info.reverse_storage = reverse_scalar_storage;
 	    if ( !union_layout )
 	    {
-		size_t fa = field_align(dd);
 		// SysV uses the zero-width field's declared type as a boundary for
 		// the NEXT member, but it does not raise the aggregate alignment.
-		// Microsoft applies the boundary/alignment only when the preceding
-		// declaration was itself a bit-field (MinGW/MS layout oracle).
+		// The boundary is the type's own alignment even under packing
+		// (`#pragma pack(2)`, `packed`): gcc = clang. Microsoft applies the
+		// boundary/alignment only when the preceding declaration was
+		// itself a bit-field (MinGW/MS layout oracle): the boundary capped
+		// by the pack, the aggregate's alignment by #pragma pack ALONE —
+		// `packed` on the aggregate does not cap it (MinGW gcc's ms-bitfield
+		// arm of update_alignment_for_field): `struct __attribute__((packed))
+		// { char a:4; int :0; char c; }` keeps c at 1 and is 4-aligned.
+		size_t fa = target_microsoft_bitfields()
+		    ? field_align(dd) : natural_field_align(dd);
 		if ( !target_microsoft_bitfields() || previous_was_nonzero_bitfield )
 		{
 		    size = align_up(size, fa);
-		    if ( target_microsoft_bitfields() && fa > max_align )
-			max_align = fa;
+		    size_t ra = cap_alignment(natural_field_align(dd), pragma_pack);
+		    if ( target_microsoft_bitfields() && ra > max_align )
+			max_align = ra;
 		}
 		info.storage_offset = size;
 	    }
@@ -1311,6 +1395,8 @@ public:
 	    member_origin.push_back(i < agg.member_origin.size() ? agg.member_origin[i] : -1);
 	    if ( agg.member_explicit_align.find(i) != agg.member_explicit_align.end() )
 		member_explicit_align[members.size() - 1] = agg.member_explicit_align.at(i);
+	    if ( agg.member_packed.count(i) )
+		member_packed.insert(members.size() - 1);
 	}
 	size_t end = base_offset + agg.size;
 	if ( union_layout )
@@ -1343,12 +1429,137 @@ public:
 	    size = 1;
 	size = align_up(size, max_align);
     }
+    // __attribute__((aligned(N))) on the aggregate itself: its tag or its `}`.
+    void apply_tag_alignment(size_t align)
+    {
+	if ( align > max_align ) max_align = align;
+	if ( align > tag_explicit_align ) tag_explicit_align = align;
+    }
+    // Is member i inherited — a base's member flattened into a class
+    // (member_origin = its base's index)? A class lays its OWN members out
+    // from 0 as one block, which DataDefCLASS::compute_layout places; an
+    // inherited member keeps its offset within its base.
+    bool member_is_inherited(size_t i) const
+    {
+	return i < member_origin.size() && member_origin[i] >= 0;
+    }
+    // Replay the own members through the same add* primitives into
+    // `scratch` (a fresh aggregate given this one's packing): an anonymous
+    // aggregate as one unit, a packed member under a pack of 1, a member's
+    // own aligned(N) re-applied. `own[k]` is the member scratch's member k
+    // replays.
+    void replay_own_members(DataDefSTRUCT &scratch, std::vector<size_t> &own) const
+    {
+	scratch.pack = pack;
+	scratch.pragma_pack = pragma_pack;
+	scratch.union_layout = union_layout;
+	scratch.reverse_scalar_storage = reverse_scalar_storage;
+	size_t next_anon = 0;
+	for ( size_t i = 0; i < members.size(); ++i )
+	{
+	    if ( member_is_inherited(i) )
+		continue;
+	    while ( next_anon < anonymous_aggregates.size()
+		 && anonymous_aggregates[next_anon].first_member < i )
+		++next_anon;
+	    if ( next_anon < anonymous_aggregates.size()
+	      && anonymous_aggregates[next_anon].first_member == i )
+	    {
+		const AnonymousAggregateInfo &ai = anonymous_aggregates[next_anon++];
+		scratch.addAnonymousAggregate(*ai.aggregate);
+		for ( size_t k = 0; k < ai.member_count; ++k )
+		    own.push_back(i + k);
+		i += ai.member_count - 1;
+		continue;
+	    }
+	    if ( member_packed.count(i) )
+		scratch.pack = 1;
+	    if ( member_bitfields[i].is_bitfield )
+		scratch.addBitField(members[i].first, *members[i].second,
+				    member_bitfields[i].bit_width);
+	    else
+		scratch.addMember(members[i].first, *members[i].second,
+				  member_counts[i], member_count_exprs[i],
+				  member_array_flags[i], &member_dims[i]);
+	    scratch.pack = pack;
+	    own.push_back(i);
+	    std::map<size_t, size_t>::const_iterator ea = member_explicit_align.find(i);
+	    if ( ea != member_explicit_align.end() )
+		scratch.apply_member_alignment(ea->second);
+	}
+    }
+    // Re-run the layout over the members already added, after an attribute that
+    // follows the body (`} __attribute__((packed))`) changed `pack`, or one on a
+    // member (apply_member_packing). Layout is otherwise computed member by
+    // member as each is added; gcc lays a record out once, at its end
+    // (finish_struct). Only the own members' layout comes back — offsets,
+    // bit-field placement, size, alignment — so a class body, whose size is
+    // its own block's until compute_layout, replays the same way. `start` is
+    // where the own members begin (a class's data after its vptr and bases,
+    // DataDefCLASS::compute_layout): they are placed from there and recorded
+    // relative to it.
+    void relayout(size_t start = 0)
+    {
+	DataDefSTRUCT scratch(name, 0);
+	scratch.size = start;
+	std::vector<size_t> own;
+	replay_own_members(scratch, own);
+	for ( size_t k = 0; k < own.size(); ++k )
+	{
+	    member_offsets[own[k]] = scratch.member_offsets[k] - start;
+	    member_bitfields[own[k]] = scratch.member_bitfields[k];
+	    if ( member_bitfields[own[k]].is_bitfield )
+		member_bitfields[own[k]].storage_offset -= start;
+	}
+	anonymous_aggregates = scratch.anonymous_aggregates;
+	for ( size_t j = 0; j < anonymous_aggregates.size(); ++j )
+	{
+	    anonymous_aggregates[j].first_member = own[anonymous_aggregates[j].first_member];
+	    anonymous_aggregates[j].offset -= start;
+	}
+	size = scratch.size - start;
+	max_align = scratch.max_align > tag_explicit_align
+	    ? scratch.max_align : tag_explicit_align;
+	bitfield_active = scratch.bitfield_active;
+	previous_was_nonzero_bitfield = scratch.previous_was_nonzero_bitfield;
+	bitfield_unit_offset = scratch.bitfield_unit_offset >= start
+	    ? scratch.bitfield_unit_offset - start : 0;
+	bitfield_unit_size = scratch.bitfield_unit_size;
+	bitfield_next_bit = scratch.bitfield_next_bit;
+    }
+    // The strongest alignment among the own members — `max_align` without the
+    // tag's aligned(N), which raises the aggregate's alignment but places no
+    // member (a class's own block begins at this alignment).
+    size_t own_member_alignment() const
+    {
+	if ( tag_explicit_align < max_align )
+	    return max_align;
+	DataDefSTRUCT scratch(name, 0);
+	std::vector<size_t> own;
+	replay_own_members(scratch, own);
+	return scratch.max_align;
+    }
+    // Apply __attribute__((packed)) to the most recently added member: it is
+    // laid out as if the aggregate were packed for that member alone —
+    // alignment 1 unless its own aligned(N) raises it, and no contribution to
+    // the aggregate's alignment (gcc = clang). Its natural alignment already
+    // placed it and raised the aggregate's, so the layout replays.
+    void apply_member_packing()
+    {
+	if ( members.empty() ) return;
+	if ( !member_packed.insert(members.size() - 1).second ) return;
+	relayout();
+    }
     // Apply __attribute__((aligned(N))) to the most recently added member.
     // Updates the member's offset (re-aligns it to N) and the struct's
-    // overall alignment requirement.
+    // overall alignment requirement. aligned never lowers an alignment: a
+    // member aligned both before and after its declarator keeps the larger.
     void apply_member_alignment(size_t align)
     {
 	if ( align == 0 || members.empty() ) return;
+	std::map<size_t, size_t>::const_iterator cur =
+	    member_explicit_align.find(members.size() - 1);
+	if ( cur != member_explicit_align.end() && cur->second >= align ) return;
 	if ( align > max_align ) max_align = align;
 	// Record the requested per-member alignment so the CIR emitter can place
 	// an _Alignas(N) on this member's spec (c2mir lays the field out; this
@@ -1410,12 +1621,26 @@ public:
 		return (i < member_array_flags.size()) ? member_array_flags[i] : false;
 	return false;
     }
+    // Member `i` is one zero-initialization reaches ([dcl.init]/6): named,
+    // not a virtual base's (the complete object's, laid out apart), and of a
+    // union — this one or an anonymous one flattened in — only the first.
+    bool member_is_zero_initialized(size_t i) const;
     const std::vector<carray_dim_t> *m_dims(const std::string &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
 	    if ( !member.compare(members[i].first) )
 		return (i < member_dims.size()) ? &member_dims[i] : NULL;
 	return NULL;
+    }
+    // A fixed-array member's extents, outermost first (no recorded shape is
+    // one extent of m_count), as Variable::array_dims gives an object's.
+    std::vector<carray_dim_t> m_array_dims(const std::string &member)
+    {
+	const std::vector<carray_dim_t> *md = m_dims(member);
+	if ( md && !md->empty() )
+	    return *md;
+	std::string name = member;
+	return std::vector<carray_dim_t>(1, m_count(name));
     }
     bool has_runtime_size() const
     {
@@ -1449,7 +1674,7 @@ public:
 	    }
 	return false;
     }
-    DataDef *m_type(std::string &member)
+    DataDef *m_type(const std::string &member)
     {
 	std::vector<memberpair_t>::iterator dvpi;
 	DBG(std::cout << "DataDefSTRUCT::type(" << member << ')' << std::endl);
@@ -1502,12 +1727,11 @@ public:
     // defaulted/deleted special member). Record the fact so __is_assignable can
     // report the class as NOT copy-assignable (a wrong "true" would corrupt SFINAE).
     bool has_deleted_copy_assign = false;
-    // Same recording for the dropped SPECIAL-MEMBER CONSTRUCTORS, consumed by
-    // __is_constructible: a deleted default/copy(move) ctor makes the class not
-    // so-constructible; an explicitly-defaulted default ctor keeps the class
-    // default-constructible even beside other user ctors ([class.default.ctor]).
+    // Same recording for the dropped DEFAULT constructor, consumed by
+    // __is_constructible: an explicitly-defaulted default ctor keeps the class
+    // default-constructible beside other user ctors ([class.default.ctor]).
+    // Deleted copy/move constructors remain in the real ctor overload set.
     bool has_deleted_default_ctor = false;
-    bool has_deleted_copy_ctor = false;
     bool has_defaulted_default_ctor = false;
     // And for the dropped DESTRUCTOR, consumed by __is_destructible: a class
     // whose `~X() = delete` never registers must still answer 0.
@@ -1556,6 +1780,12 @@ public:
     // (has_vptr_slot only — Itanium still gives it a prologue-only vtable of
     // [vbase offsets, offset_to_top, RTTI] per group).
     bool has_any_vptr() const { return has_vtable || has_vptr_slot; }
+    // [dcl.init.aggr]/1 as madc models it: no user-declared constructor, no
+    // virtual function, no base class. A braced list initializes an
+    // aggregate member-wise (brace elision included); any other class only
+    // through a constructor.
+    bool is_aggregate() const
+    { return !has_user_ctor && !has_any_vptr() && bases.empty() && !base_class; }
     // A class's alignment is the strongest of its members, bases, and (if
     // polymorphic) the vptr — computed by compute_layout and cached in
     // class_align. Until then, fall back to the own-member alignment (max_align).
@@ -1696,10 +1926,21 @@ public:
     // cv-rejections, and scalar/enum/typedef-opaque score failures mark it
     // false: those verdicts are not yet trustworthy enough to hard-fail a
     // call on. Consumers use it to decide whether a scored miss may THROW.
+    // categories (optional, index-aligned with argtypes): each argument's
+    // value category — a reference parameter's binding reads it
+    // (reference_param_binding_rank); NULL ranks every argument Unknown.
     Variable *findMethodOverload(const std::string &name,
 				 const std::vector<const DataDef *> &argtypes,
 				 int obj_cv = -1,
-				 bool *all_rejections_proven = 0);
+				 bool *all_rejections_proven = 0,
+				 const std::vector<ArgValueCategory> *categories = 0);
+    // The operator[] a subscript of this class calls ([over.sub]): the
+    // operator[] overloads ranked on the index's type and value category (an
+    // lvalue index never binds a `K&&` parameter). A NULL index_type (a
+    // synthesized loop counter, a braced list) takes findMethod's pick, as
+    // does a set nothing ranks strictly better.
+    Variable *subscript_operator(const DataDef *index_type,
+				 ArgValueCategory category = ArgValueCategory::Unknown);
     // Return type of the BINARY operator method `opname` (e.g. "operator+") this
     // class declares; used to type a class-object operator expression with the
     // operator's declared result type.
@@ -1874,8 +2115,13 @@ class DataDefLPSTR : public DataDefPTR { public: DataDefLPSTR(); };
 class DataDefREF : public DataDefPTR
 {
 public:
-    DataDefREF(DataDef &base) : DataDefPTR(base) {}
+    // `T&&` (true) or `T&` (false): part of the type's identity, fixed at
+    // construction — one DataDefREF per (referent, kind).
+    const bool rvalue;
+    DataDefREF(DataDef &base, bool is_rvalue = false)
+	: DataDefPTR(base), rvalue(is_rvalue) {}
     virtual bool is_reference() const override { return true; }
+    virtual bool is_rvalue_reference() const override { return rvalue; }
     // A reference's reftype is rtReference — STRUCTURAL, overriding DataDefPTR's
     // rtPointer. (Historically a DataDefREF's _type sat in the POINTER band
     // because the ctor chains through DataDefPTR/rtPtr, so the inherited tag
@@ -1928,6 +2174,7 @@ public:
     virtual bool is_complex() const override { return base_type->is_complex(); }
     virtual bool is_pointer() const override { return base_type->is_pointer(); }
     virtual bool is_reference() const override { return base_type->is_reference(); }
+    virtual bool is_rvalue_reference() const override { return base_type->is_rvalue_reference(); }
     virtual bool is_member_pointer() const override { return base_type->is_member_pointer(); }
     virtual bool is_struct() const override { return base_type->is_struct(); }
     virtual bool is_object() const override { return base_type->is_object(); }
@@ -2080,15 +2327,31 @@ public:
     // declaration — readers fall back to int. Serves __underlying_type,
     // which both libstdc++'s and libc++'s std::underlying_type are built
     // on. A FIXED base also drives the enum's LAYOUT via set_underlying
-    // below; the computed base is recorded by direct assignment and keeps
-    // madc's historical int layout (gcc without -fshort-enums: unfixed
-    // enums are int-sized).
+    // below. A computed base is recorded by direct assignment; the layout of
+    // an unfixed enum is chosen separately (set_layout — TokenENUM::parse):
+    // in C its computed base; in C++ int unless its values need more (gcc
+    // without -fshort-enums), or the packed base.
     DataDef *underlying = NULL;
     // Was the base DECLARED (`enum E : short`)? [conv.prom]/4 promotes a
     // fixed enum to its underlying type; an unfixed one promotes by its
     // VALUE range ([conv.prom]/3), not by the computed base — the two
     // readers (overload ranking) need to tell them apart.
     bool fixed_base = false;
+    // Defined in C. C11 6.7.2.2p4 makes an enumerated type COMPATIBLE with
+    // its underlying integer type (gcc's choice, which clang shares:
+    // unsigned int with no negative enumerator, int with one, the 64-bit
+    // twin past 32 bits, the smallest that holds the range when packed). It
+    // is laid out as that type and has its rank, so it promotes as that type
+    // does: C has no [conv.prom]/3 value-range rule, and `enum U { A }`
+    // arithmetic is unsigned (`(enum U)-1 > 0` holds).
+    bool c_compatible = false;
+
+    // Does the enum promote as its underlying type (a declared base, or C's
+    // compatible type), rather than by its value range?
+    bool promotes_as_underlying() const
+    {
+	return underlying && (fixed_base || c_compatible);
+    }
 
     // The tag's OWN enumerators, in DECLARATION order — the one live owner of
     // "which enumerators belong to this enum, and what are their values".
@@ -2119,11 +2382,35 @@ public:
     {
 	underlying = u;
 	fixed_base = (u != NULL);
-	if ( u && u->size )
+	set_layout(u);
+    }
+    // The enum's STORAGE: what its objects are laid out and lowered as (size
+    // and raw type). A fixed base is its own storage, and so is a C enum's
+    // computed one; an unfixed C++ enum keeps the constructor's int unless
+    // its values need a wider type, or it is packed. The storage never
+    // changes what the base IS, nor whether it was declared.
+    void set_layout(DataDef *storage)
+    {
+	if ( storage && storage->size )
 	{
-	    size = u->size;
-	    _type = (uint32_t)u->rawtype();
+	    size = storage->size;
+	    _type = (uint32_t)storage->rawtype();
 	}
+    }
+    // The forest restore's twin of set_layout: the recorded size and raw type.
+    void restore_layout(size_t storage_size, uint32_t storage_rawtype)
+    {
+	size = storage_size;
+	_type = storage_rawtype;
+    }
+    // A PACKED enum with no declared base (GNU `__attribute__((packed))`):
+    // its computed base is the smallest integer type that holds the range,
+    // and that base drives the layout as a fixed one does. It was not
+    // DECLARED, so promotion stays by value range ([conv.prom]/3).
+    void set_packed_underlying(DataDef *u)
+    {
+	set_underlying(u);
+	fixed_base = false;
     }
     virtual DataDefENUM *as_enum_dd() override { return this; }
     virtual DataDef *enum_underlying() override { return underlying; }
@@ -2305,6 +2592,30 @@ public:
     virtual bool is_template_param() const override { return true; }
     virtual DataDefTemplateParam *as_template_param_dd() override { return this; }
 };
+
+// The template parameter a type depends on through its cv / reference /
+// pointer / array layers (`T`, `const T`, `T *`, `T &`, `T[2]`), or NULL for
+// a type none of whose layers ends at one. The ONE owner of the question for
+// the parser (a type query in a parse-once pattern defers on it) and the CIR
+// builder (tsubst substitutes what it finds).
+inline DataDefTemplateParam *template_param_under_type_layers(DataDef *dd)
+{
+    for ( int guard = 0; dd && guard < 8; ++guard )
+    {
+	if ( DataDefTemplateParam *tp = dd->as_template_param_dd() )
+	    return tp;
+	if ( DataDefQUAL *cd = dd->as_qualified_dd() )
+	    { dd = cd->base_type; continue; }
+	if ( DataDefREF *rd = dd->as_reference_dd() )
+	    { dd = rd->base_type; continue; }
+	if ( DataDefPTR *pd = dd->as_pointer_dd() )
+	    { dd = pd->base_type; continue; }
+	if ( DataDefCArray *ad = dd->as_carray_dd() )
+	    { dd = ad->element_type; continue; }
+	break;
+    }
+    return NULL;
+}
 
 // Type table identity layer — slot <-> global-primitive mapping (the single
 // source of truth; defined in src/parser.cpp next to same_representation).

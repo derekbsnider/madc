@@ -1,0 +1,35 @@
+// A member's attribute groups among its specifiers -- before its type
+// (`AL int x;`), between its cv-qualifiers and its type (`const AL int x;`),
+// after its type -- align every declarator of the line; one after a
+// declarator aligns that declarator only. Both member loops read them: the
+// struct body and a nested aggregate's body. Of several `aligned` groups the
+// strictest wins. Oracle: gcc 13 and clang 18 print the lines below.
+#include <stdio.h>
+#include <stddef.h>
+#define AL __attribute__((aligned(16)))
+
+struct L { char c; AL int x; };
+struct C { char c; const AL int x; };
+struct V { char c; volatile AL const int x; };
+struct B { char c; AL int x, y; char d; };
+struct T { char c; int x, y AL; };
+struct N { char c; AL struct { char k; } in; };
+struct G { char c; __attribute__((aligned(4))) __attribute__((aligned(16))) char d; };
+struct H { char c; __attribute__((aligned(16), aligned(4))) char d; };
+struct O1 { char k; struct { char c; AL int x; } in; };
+struct O2 { char k; struct { char c; int AL x; } in; };
+struct O3 { char k; struct { char c; int x AL; } in; };
+struct O4 { char k; struct { char c; const AL int x; } in; };
+struct O5 { char k; struct { char c; int y, x AL; char d; } in; };
+struct O6 { char k; union { char c; AL int x; } in; };
+
+int main(void)
+{
+	printf("ml: %zu %zu %zu %zu %zu %zu\n", sizeof(struct L), sizeof(struct C), sizeof(struct V),
+	       sizeof(struct B), offsetof(struct B, y), offsetof(struct B, d));
+	printf("mt: %zu %zu %zu %zu %zu\n", sizeof(struct T), offsetof(struct T, y), sizeof(struct N),
+	       sizeof(struct G), sizeof(struct H));
+	printf("mn: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(struct O1), sizeof(struct O2), sizeof(struct O3),
+	       sizeof(struct O4), sizeof(struct O5), offsetof(struct O5, in.d), sizeof(struct O6));
+	return 0;
+}

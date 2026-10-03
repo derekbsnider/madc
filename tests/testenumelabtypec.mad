@@ -1,0 +1,34 @@
+/* `enum TAG` spelled in a cast, a parameter, a K&R parameter declaration
+   and va_arg names the tag's type. Those four readers typed it int, so a
+   64-bit enum's value was truncated (`(enum Big)x` read 5; a parameter
+   read 1): silent wrong answers.
+   Oracle: gcc and clang -std=c17 print "cast 4294967301 8",
+   "param 4294967297 kr 4294967297 va 4294967297", "ptr 4294967301"
+   and "packed 1 1". */
+#include <stdio.h>
+#include <stdarg.h>
+
+enum Big { BA = 0x100000000LL, BB };
+enum __attribute__((packed)) Small { SA, SB };
+
+long long byparam(enum Big b) { return b; }
+long long bykr(b) enum Big b; { return b; }
+long long byva(int n, ...)
+{
+    va_list ap;
+    va_start(ap, n);
+    enum Big b = va_arg(ap, enum Big);
+    va_end(ap);
+    return b;
+}
+int smallsize(enum Small s) { return (int)sizeof(s); }
+
+int main(void)
+{
+    long long x = 0x100000005LL;
+    printf("cast %lld %zu\n", (long long)(enum Big)x, sizeof((enum Big)x));
+    printf("param %lld kr %lld va %lld\n", byparam(BB), bykr(BB), byva(1, BB));
+    printf("ptr %lld\n", (long long)*(enum Big *)&x);
+    printf("packed %d %zu\n", smallsize(SB), sizeof((enum Small)1));
+    return 0;
+}

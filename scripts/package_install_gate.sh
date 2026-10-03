@@ -27,7 +27,10 @@
 #            installed madcide on a real pty (scripts/install_gate_pty.py)
 #            = NORESCUE + probe file rendered, profiles found through the
 #            share/madcide layout [control: hide share/madcide/profiles
-#            => RESCUE banner].
+#            => RESCUE banner]; installed madcide SAVES and QUITS from a
+#            foreign cwd (scripts/madcide_save_quit_pty.py: joe's keys, then
+#            the rescue keys with the profiles hidden) [control: hide
+#            share/madcide/verbs => it refuses to start, with the reason].
 #   tar      same probes with NO LD_LIBRARY_PATH at all (env -u) — the
 #            run-time $ORIGIN proof (the packager's ldd check is static;
 #            this one executes) [control: hide lib/libmadc.so.0 => madc
@@ -36,8 +39,9 @@
 #   winzip   unzip; the zipped madc.exe under wine compiles a
 #            runtime-needing probe with -o INTO bin/ (PE binding is
 #            adjacency) and the emitted exe runs (output asserted);
-#            zipped madcide.exe prints its usage line [control: hide
-#            bin/libmadc-0.dll => both must fail].
+#            zipped `madcide.exe --help` prints its usage line; bin/verbs and
+#            bin/checks sit beside it [control: hide bin/libmadc-0.dll =>
+#            both must fail].
 #
 #   mactar   (darwin host only — the release.yml mac jobs; the container
 #            cannot execute darwin binaries and prints a stated SKIP) tar
@@ -95,11 +99,13 @@ run_linux() {
     [ -x "$madc" ]    || fail "$kind" "no executable $madc in the artifact"
     [ -x "$madcide" ] || fail "$kind" "no executable $madcide in the artifact"
 
+    # MADCIDE_CONFIG_DIR: no ambient user settings.json or plugins/ (the
+    # run_tests.sh hermeticity); the artifact's own data is what is gated.
     local -a runenv
     if [ -n "$libdir" ]; then
-        runenv=(env "LD_LIBRARY_PATH=$libdir")
+        runenv=(env "LD_LIBRARY_PATH=$libdir" "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     else
-        runenv=(env -u LD_LIBRARY_PATH)
+        runenv=(env -u LD_LIBRARY_PATH "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     fi
 
     # 1. installed madc runs a program
@@ -138,6 +144,19 @@ run_linux() {
     # 4. negative control: hide the installed profiles => RESCUE banner.
     local pdir="$root/${libdir:+usr/}share/madcide/profiles"
     [ -d "$pdir" ] || fail "$kind" "no profiles dir at $pdir in the artifact"
+    local gdir="$root/${libdir:+usr/}share/madcide/plugins"
+    [ -f "$gdir/default/default.plugin" ] \
+        || fail "$kind" "no plugins/default/default.plugin at $gdir in the artifact"
+    # Every shipped plugin with code carries its built library beside its
+    # source (scripts/build_shipped_plugins.sh; plan §41.11a step 6).
+    local pg pn
+    for pg in "$gdir"/*/; do
+        pg="${pg%/}"
+        pn=$(basename "$pg")
+        grep -q '"code"' "$pg/$pn.plugin" 2>/dev/null || continue
+        [ -f "$pg/$pn.so" ] \
+            || fail "$kind" "plugin '$pn' ships no library ($pn.so) at $pg in the artifact"
+    done
     mv "$pdir" "$pdir.hidden"
     out=$( ( ulimit -t 120; timeout 90 "${runenv[@]}" \
              python3 scripts/install_gate_pty.py "$madcide" "$probe" pk4probe ) 2>&1 )
@@ -145,6 +164,40 @@ run_linux() {
     case "$out" in
         RESCUE\ *) ok "$kind" "negative control: hidden profiles => RESCUE banner ($out)" ;;
         *) fail "$kind" "negative control broken: profiles hidden but no RESCUE (got: $out)" ;;
+    esac
+
+    # 5. installed madcide SAVES and QUITS from a foreign cwd (B85: its
+    #    save and quit are the line editor's verbs, shipped under
+    #    share/madcide/verbs): joe's ^K D, ^K Q; then with the profiles
+    #    hidden, the rescue ^S, ^Q; then with the verbs hidden it must
+    #    refuse to start, with the reason.
+    local sq="$GATE_TMP/$kind-savequit.c"
+    printf 'int main(void) { return 0; }\n' > "$sq"
+    out=$( ( ulimit -t 120; timeout 120 "${runenv[@]}" \
+             python3 scripts/madcide_save_quit_pty.py "$sq" 0b640b71 "$madcide" ) 2>&1 )
+    case "$out" in
+        "SAVED EXITED rc=0 NORESCUE VERBSOK"*) ok "$kind" "installed madcide saves and quits ($out)" ;;
+        *) fail "$kind" "installed madcide did not save and quit from a foreign cwd (got: $out)" ;;
+    esac
+    printf 'int main(void) { return 0; }\n' > "$sq"
+    mv "$pdir" "$pdir.hidden"
+    out=$( ( ulimit -t 120; timeout 120 "${runenv[@]}" \
+             python3 scripts/madcide_save_quit_pty.py "$sq" 1311 "$madcide" ) 2>&1 )
+    mv "$pdir.hidden" "$pdir"
+    case "$out" in
+        "SAVED EXITED rc=0 RESCUE VERBSOK"*) ok "$kind" "hidden profiles: the rescue keys save and quit ($out)" ;;
+        *) fail "$kind" "hidden profiles: the rescue keys did not save and quit (got: $out)" ;;
+    esac
+    local vdir="$root/${libdir:+usr/}share/madcide/verbs"
+    [ -d "$vdir" ] || fail "$kind" "no verbs dir at $vdir in the artifact"
+    printf 'int main(void) { return 0; }\n' > "$sq"
+    mv "$vdir" "$vdir.hidden"
+    out=$( ( ulimit -t 120; timeout 120 "${runenv[@]}" \
+             python3 scripts/madcide_save_quit_pty.py "$sq" "" "$madcide" ) 2>&1 )
+    mv "$vdir.hidden" "$vdir"
+    case "$out" in
+        *"EXITED rc=1 "*"VERBSMISSING"*) ok "$kind" "negative control: hidden verbs => refused to start ($out)" ;;
+        *) fail "$kind" "negative control broken: verbs hidden but madcide did not refuse (got: $out)" ;;
     esac
 }
 
@@ -222,12 +275,23 @@ gate_winzip() {
         *) fail winzip "emitted pk4hello.exe did not produce '$MARKER' (got: $out)" ;;
     esac
 
-    # 3. the zipped madcide.exe loads, binds, and runs (usage line)
-    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe ) 2> /dev/null | tr -d '\r' )
+    # 3. the zipped madcide.exe loads, binds, and runs (--help prints the usage line)
+    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe --help ) 2> /dev/null | tr -d '\r' )
     case "$out" in
         *"usage: madcide"*) ok winzip "zipped madcide.exe prints its usage line" ;;
         *) fail winzip "zipped madcide.exe usage smoke failed (got: $out)" ;;
     esac
+    # The line editor's verbs and checks ride beside the exe (B85: save and
+    # quit are verbs; resolve_data_dir's <exedir>/verbs arm). wine has no
+    # pty here, so the layout is checked; the save/quit run is the Linux
+    # gate's and the genuine-Windows lane's.
+    [ -f "$bindir/verbs/w.madv" ] && [ -f "$bindir/verbs/q.madv" ] \
+        && [ -f "$bindir/verbs/_subject.madv" ] && [ -f "$bindir/checks/editable.madv" ] \
+        || fail winzip "the zip carries no bin/verbs or bin/checks (madcide could not save or quit)"
+    ok winzip "zipped madcide's verbs and checks sit beside the exe"
+    [ -f "$bindir/plugins/default/default.plugin" ] \
+        || fail winzip "the zip carries no bin/plugins/default/default.plugin"
+    ok winzip "zipped madcide's plugins sit beside the exe"
 
     # 4. negative control: hide the engine DLL => both must fail
     #    (proves the green runs above were bound by adjacency to the
@@ -238,7 +302,7 @@ gate_winzip() {
         *"$MARKER"*) mv "$bindir/libmadc-0.dll.hidden" "$bindir/libmadc-0.dll"
                      fail winzip "negative control broken: emitted exe ran without libmadc-0.dll" ;;
     esac
-    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe ) 2> /dev/null | tr -d '\r' )
+    out=$( ( cd "$bindir" && ulimit -t 120 && timeout 60 wine madcide.exe --help ) 2> /dev/null | tr -d '\r' )
     mv "$bindir/libmadc-0.dll.hidden" "$bindir/libmadc-0.dll"
     case "$out" in
         *"usage: madcide"*) fail winzip "negative control broken: madcide.exe ran without libmadc-0.dll" ;;

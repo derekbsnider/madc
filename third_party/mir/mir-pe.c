@@ -790,8 +790,24 @@ fail:
      forest carrier:      the ELF trailer model -- appended bytes after the
                           image (W3.0(c) probe: loader-transparent);
                           params->extra_* stay Apple-only.
-     shared_p:            refused loudly -- no DLL emission by design (the
-                          Mach-O writer's posture).
+     shared_p:            a DLL (plan §41.11a step 4, the plugin design's
+                          G2): IMAGE_FILE_DLL, preferred base 0x180000000
+                          (DYNAMIC_BASE: the loader may place it anywhere;
+                          .reloc rebases it), no entry symbol.  The entry is
+                          pex_dll_stub (DllMain's contract): at
+                          DLL_PROCESS_ATTACH it runs the import-addend
+                          fixups, then the init array with the HOST CRT's
+                          argc/argv/envp (__p___argc / __p___argv /
+                          _get_initial_narrow_environment -- the host already
+                          ran the CRT start-up, so the executable stub's
+                          _configure_narrow_argv and
+                          _initialize_narrow_environment are not called; ld.so
+                          hands an ELF shared object's init array the same
+                          three), and returns TRUE.  Every defined, named,
+                          non-local symbol is exported by name (the ELF
+                          -shared dynamic-symbol rule), through an export
+                          directory in .rdata named after
+                          params->identifier.
 
    No code signature, no checksum (unsigned images verify neither), no
    .pdata/.xdata (the W3.1 posture note); subsystem CONSOLE, or WINDOWS_GUI
@@ -801,18 +817,21 @@ fail:
    .reloc. */
 
 #define PEX_IMAGE_BASE 0x140000000ull
+#define PEX_DLL_IMAGE_BASE 0x180000000ull
 #define PEX_SEC_ALIGN 0x1000u
 #define PEX_FILE_ALIGN 0x200u
 
 /* IMAGE_FILE_* characteristics for the image header */
 #define PEX_FILE_EXECUTABLE_IMAGE 0x0002u
 #define PEX_FILE_LARGE_ADDRESS_AWARE 0x0020u
+#define PEX_FILE_DLL 0x2000u
 /* IMAGE_DLLCHARACTERISTICS_* */
 #define PEX_DLLCHARS \
   (0x0020u /* HIGH_ENTROPY_VA */ | 0x0040u /* DYNAMIC_BASE */ | 0x0100u /* NX_COMPAT */ \
    | 0x8000u /* TERMINAL_SERVER_AWARE */)
 #define PEX_SUBSYSTEM_WINDOWS_GUI 2u
 #define PEX_SUBSYSTEM_CONSOLE 3u
+#define PEX_DIR_EXPORT 0
 #define PEX_DIR_IMPORT 1
 #define PEX_DIR_BASERELOC 5
 #define PEX_N_DIRS 16
@@ -898,6 +917,66 @@ static const char *const pex_stub_import[6]
 /* prologue + stub = the synthesized entry region ahead of captured text */
 #define PEX_ENTRY_SIZE (PEX_FIX_SIZE + PEX_STUB_SIZE)
 
+/* The DLL entry stub (DllMain's contract: rcx = the module, edx = the
+   reason, r8 = reserved; gas-oracle encodings, tmp/plug/dllstub.s).  At
+   DLL_PROCESS_ATTACH it walks the import-addend fixup table (the
+   executable prologue's loop, inline: the reason in edx is read first),
+   reads the host CRT's argc/argv/envp through three UCRT slots, calls each
+   init-array entry (argc, argv, envp), and returns TRUE; every other
+   reason returns TRUE at once.  rbx, rsi, rdi, r12 and r13 are saved (the
+   Win64 callee-saved set it uses); 5 pushes + 0x20 keep rsp 16-aligned at
+   each call.  131 bytes, int3-padded to 144 so the captured text keeps
+   its alignment.  Patch points are rip-relative disp32 fields (rip = the
+   field + 4). */
+static const uint8_t pex_dll_stub[144]
+  = {0x83, 0xfa, 0x01,                   /* cmp  $1,%edx */
+     0x75, 0x78,                         /* jne  ret_true */
+     0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, /* push rbx rsi rdi r12 r13 */
+     0x48, 0x83, 0xec, 0x20,             /* sub  $0x20,%rsp */
+     0x48, 0x8d, 0x05, 0, 0, 0, 0,       /* lea  fixtab(%rip),%rax  @0x13 */
+     0x48, 0x8d, 0x15, 0, 0, 0, 0,       /* lea  fixend(%rip),%rdx  @0x1a */
+     0x48, 0x39, 0xd0,                   /* loop: cmp %rdx,%rax */
+     0x73, 0x10,                         /* jae  fixed */
+     0x48, 0x8b, 0x08,                   /* mov  (%rax),%rcx */
+     0x4c, 0x8b, 0x40, 0x08,             /* mov  8(%rax),%r8 */
+     0x4c, 0x01, 0x01,                   /* add  %r8,(%rcx) */
+     0x48, 0x83, 0xc0, 0x10,             /* add  $16,%rax */
+     0xeb, 0xeb,                         /* jmp  loop */
+     0xff, 0x15, 0, 0, 0, 0,             /* fixed: call *pargc(%rip) @0x35 */
+     0x8b, 0x18,                         /* mov  (%rax),%ebx */
+     0xff, 0x15, 0, 0, 0, 0,             /* call *pargv(%rip)  @0x3d */
+     0x48, 0x8b, 0x30,                   /* mov  (%rax),%rsi */
+     0xff, 0x15, 0, 0, 0, 0,             /* call *genv(%rip)   @0x46 */
+     0x48, 0x89, 0xc7,                   /* mov  %rax,%rdi */
+     0x4c, 0x8d, 0x25, 0, 0, 0, 0,       /* lea  initarr(%rip),%r12 @0x50 */
+     0x4c, 0x8d, 0x2d, 0, 0, 0, 0,       /* lea  initend(%rip),%r13 @0x57 */
+     0x4d, 0x39, 0xec,                   /* init: cmp %r13,%r12 */
+     0x73, 0x12,                         /* jae  ran */
+     0x89, 0xd9,                         /* mov  %ebx,%ecx */
+     0x48, 0x89, 0xf2,                   /* mov  %rsi,%rdx */
+     0x49, 0x89, 0xf8,                   /* mov  %rdi,%r8 */
+     0x41, 0xff, 0x14, 0x24,             /* call *(%r12) */
+     0x49, 0x83, 0xc4, 0x08,             /* add  $8,%r12 */
+     0xeb, 0xe9,                         /* jmp  init */
+     0x48, 0x83, 0xc4, 0x20,             /* ran: add $0x20,%rsp */
+     0x41, 0x5d, 0x41, 0x5c, 0x5f, 0x5e, 0x5b, /* pop r13 r12 rdi rsi rbx */
+     0xb8, 0x01, 0x00, 0x00, 0x00,       /* ret_true: mov $1,%eax */
+     0xc3,                               /* ret (offset 0x82) */
+     0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc,
+     0xcc /* pad 0x83..0x8f = 144 bytes */};
+#define PEX_DLL_STUB_SIZE 144
+#define PEX_DLL_FIX_TAB_AT 0x13
+#define PEX_DLL_FIX_END_AT 0x1a
+#define PEX_DLL_INITARR_AT 0x50
+#define PEX_DLL_INITEND_AT 0x57
+/* {patch offset, pool-slot index} for the stub's three UCRT slot calls */
+static const struct {
+  uint8_t at;
+  uint8_t slot;
+} pex_dll_stub_slots[3] = {{0x35, 0}, {0x3d, 1}, {0x46, 2}};
+static const char *const pex_dll_stub_import[3]
+  = {"__p___argc", "__p___argv", "_get_initial_narrow_environment"};
+
 /* one import-slot record: the address slot the loader must fill */
 typedef struct {
   uint32_t slot_rva;  /* where the resolved address lands (pool or data) */
@@ -932,7 +1011,7 @@ static const char *pex_attribute (const char *name, const char *const *needed, s
 
 static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params, void **buf,
                                size_t *size) {
-  if (params->shared_p) return -1;                     /* no DLL emission by design */
+  int dll_p = params->shared_p != 0;                  /* a DLL (see the header note) */
   if (obj->debug != NULL || obj->dbg_raw_p) return -1; /* no debug image yet: say so */
 
   int rc = -1;
@@ -947,6 +1026,8 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   uint32_t *afix_words = NULL;
   int64_t *afix_addends = NULL;
   size_t n_afix = 0, cap_afix = 0;
+  size_t *exports = NULL; /* a DLL's exported symbols, by name */
+  size_t n_exports = 0;
   dwbuf_t rdata = {0}, relsec = {0};
 
 #define PEX_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
@@ -959,16 +1040,22 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       entry_i = i;
       break;
     }
-  if (entry_i == n) return -1; /* the driver prints "is main() defined?" */
+  if (!dll_p && entry_i == n) return -1; /* the driver prints "is main() defined?" */
+  /* the flavor: an executable's entry region is the fixup prologue + the
+     CRT stub (six UCRT slots); a DLL's is pex_dll_stub (three) */
+  uint64_t image_base = dll_p ? PEX_DLL_IMAGE_BASE : PEX_IMAGE_BASE;
+  uint64_t entry_size = dll_p ? PEX_DLL_STUB_SIZE : PEX_ENTRY_SIZE;
+  int n_stub = dll_p ? 3 : 6;
+  const char *const *stub_import = dll_p ? pex_dll_stub_import : pex_stub_import;
 
   /* ---- RVA layout.  Region sizes are known up front except .rdata and
      .reloc, whose content depends on the import/fixup sets -- both are
      built into side buffers first, then placed. */
   uint64_t text_rva = PEX_SEC_ALIGN;
-  uint64_t text_size = PEX_ENTRY_SIZE + obj->text.len;
-  /* the six stub slots ride the pool's tail (8-aligned) */
+  uint64_t text_size = entry_size + obj->text.len;
+  /* the stub's slots ride the pool's tail (8-aligned) */
   uint64_t pool_stub_off = PEX_ALIGN (obj->pool.len, 8);
-  uint64_t pool_size = pool_stub_off + 6 * 8;
+  uint64_t pool_size = pool_stub_off + (uint64_t) n_stub * 8;
   uint64_t init_size = obj->initarr.len;
   uint64_t data_size = obj->data.len;   /* .bss rides as the virtual tail */
   uint64_t bss_size = obj->bss_size;
@@ -996,7 +1083,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
 
   /* region base RVA for a defined symbol */
 #define PEX_SEC_RVA(sec) \
-  ((sec) == MIR_OBJ_SEC_TEXT       ? text_rva + PEX_ENTRY_SIZE \
+  ((sec) == MIR_OBJ_SEC_TEXT       ? text_rva + entry_size \
    : (sec) == MIR_OBJ_SEC_ADDRPOOL ? pool_rva \
    : (sec) == MIR_OBJ_SEC_INITARR  ? init_rva \
    : (sec) == MIR_OBJ_SEC_DATA     ? data_rva \
@@ -1057,17 +1144,17 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       n_imports++;
     }
   }
-  /* the six stub slots are imports by contract (ucrtbase.dll) */
+  /* the stub's slots are imports by contract (ucrtbase.dll) */
   {
-    void *np = realloc (imports, (n_imports + 6) * sizeof (pex_import_t));
+    void *np = realloc (imports, (n_imports + (size_t) n_stub) * sizeof (pex_import_t));
     if (np == NULL) goto done;
     imports = np;
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < n_stub; k++) {
       memset (&imports[n_imports], 0, sizeof (pex_import_t));
       imports[n_imports].slot_rva = (uint32_t) (pool_rva + pool_stub_off + (uint64_t) k * 8);
       imports[n_imports].sec = MIR_OBJ_SEC_ADDRPOOL;
       imports[n_imports].off = pool_stub_off + (uint64_t) k * 8;
-      imports[n_imports].name = pex_stub_import[k];
+      imports[n_imports].name = stub_import[k];
       imports[n_imports].dll = "ucrtbase.dll";
       n_imports++;
     }
@@ -1158,10 +1245,57 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       cap_fixups = c;
     }
     fixups[n_fixups++] = (uint32_t) (rdata_rva + rdata.len);
-    buf_u64 (&rdata, PEX_IMAGE_BASE + afix_words[i]);
+    buf_u64 (&rdata, image_base + afix_words[i]);
     buf_u64 (&rdata, (uint64_t) afix_addends[i]);
   }
   uint32_t fixend_rva = (uint32_t) (rdata_rva + rdata.len);
+  /* a DLL's export directory: every defined, named, non-local symbol (the
+     ELF -shared dynamic-symbol rule), its names in ascending byte order
+     (the loader binary-searches them), ordinal = position, base 1 */
+  uint32_t edir_rva = 0, edir_size = 0;
+  if (dll_p) {
+    exports = malloc ((n ? n : 1) * sizeof (size_t));
+    if (exports == NULL) goto done;
+    for (size_t i = 0; i < n; i++) {
+      objsym_t *s = &obj->syms[i];
+      if (s->name == NULL || !s->defined_p || s->local_p || s->section_p) continue;
+      size_t j = n_exports++;
+      for (; j > 0 && strcmp (obj->syms[exports[j - 1]].name, s->name) > 0; j--)
+        exports[j] = exports[j - 1];
+      exports[j] = i;
+    }
+    const char *dll_name = params->identifier != NULL ? params->identifier : "mir.dll";
+    while (rdata.len % 4 != 0) buf_u8 (&rdata, 0);
+    edir_rva = (uint32_t) (rdata_rva + rdata.len);
+    uint32_t eat_rva = edir_rva + 40;
+    uint32_t enpt_rva = eat_rva + 4 * (uint32_t) n_exports;
+    uint32_t eot_rva = enpt_rva + 4 * (uint32_t) n_exports;
+    uint32_t str_rva = eot_rva + 2 * (uint32_t) n_exports;
+    buf_u32 (&rdata, 0);       /* Characteristics */
+    buf_u32 (&rdata, 0);       /* TimeDateStamp: deterministic */
+    buf_u16 (&rdata, 0);       /* MajorVersion */
+    buf_u16 (&rdata, 0);       /* MinorVersion */
+    buf_u32 (&rdata, str_rva); /* Name: the DLL's own */
+    buf_u32 (&rdata, 1);       /* Base */
+    buf_u32 (&rdata, (uint32_t) n_exports); /* NumberOfFunctions */
+    buf_u32 (&rdata, (uint32_t) n_exports); /* NumberOfNames */
+    buf_u32 (&rdata, eat_rva);
+    buf_u32 (&rdata, enpt_rva);
+    buf_u32 (&rdata, eot_rva);
+    for (size_t k = 0; k < n_exports; k++) { /* EAT: each export's RVA */
+      objsym_t *s = &obj->syms[exports[k]];
+      buf_u32 (&rdata, (uint32_t) (PEX_SEC_RVA (s->sec) + s->value));
+    }
+    uint32_t name_rva = str_rva + (uint32_t) strlen (dll_name) + 1;
+    for (size_t k = 0; k < n_exports; k++) { /* the name pointer table */
+      buf_u32 (&rdata, name_rva);
+      name_rva += (uint32_t) strlen (obj->syms[exports[k]].name) + 1;
+    }
+    for (size_t k = 0; k < n_exports; k++) buf_u16 (&rdata, (uint16_t) k); /* ordinals */
+    buf_str (&rdata, dll_name);
+    for (size_t k = 0; k < n_exports; k++) buf_str (&rdata, obj->syms[exports[k]].name);
+    edir_size = (uint32_t) (rdata_rva + rdata.len) - edir_rva;
+  }
   uint64_t rdata_size = rdata.len;
   uint64_t reloc_rva = PEX_ALIGN (rdata_rva + (rdata_size ? rdata_size : 1), PEX_SEC_ALIGN);
 
@@ -1206,14 +1340,20 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   if (p == NULL) goto done;
 
   /* ---- bodies */
-  memcpy (p + text_fo, pex_fixup_prologue, PEX_FIX_SIZE);
-  memcpy (p + text_fo + PEX_FIX_SIZE, pex_stub, PEX_STUB_SIZE);
-  if (obj->text.len != 0) memcpy (p + text_fo + PEX_ENTRY_SIZE, obj->text.p, obj->text.len);
-  { /* the prologue's fixup-table bounds (rip = end of each lea) */
-    int32_t d32 = (int32_t) ((int64_t) fixtab_rva - (int64_t) (text_rva + PEX_FIX_TAB_AT + 4));
-    memcpy (p + text_fo + PEX_FIX_TAB_AT, &d32, 4);
-    d32 = (int32_t) ((int64_t) fixend_rva - (int64_t) (text_rva + PEX_FIX_END_AT + 4));
-    memcpy (p + text_fo + PEX_FIX_END_AT, &d32, 4);
+  if (dll_p) {
+    memcpy (p + text_fo, pex_dll_stub, PEX_DLL_STUB_SIZE);
+  } else {
+    memcpy (p + text_fo, pex_fixup_prologue, PEX_FIX_SIZE);
+    memcpy (p + text_fo + PEX_FIX_SIZE, pex_stub, PEX_STUB_SIZE);
+  }
+  if (obj->text.len != 0) memcpy (p + text_fo + entry_size, obj->text.p, obj->text.len);
+  { /* the fixup-table bounds (rip = end of each lea) */
+    uint64_t tab_at = dll_p ? PEX_DLL_FIX_TAB_AT : PEX_FIX_TAB_AT;
+    uint64_t end_at = dll_p ? PEX_DLL_FIX_END_AT : PEX_FIX_END_AT;
+    int32_t d32 = (int32_t) ((int64_t) fixtab_rva - (int64_t) (text_rva + tab_at + 4));
+    memcpy (p + text_fo + tab_at, &d32, 4);
+    d32 = (int32_t) ((int64_t) fixend_rva - (int64_t) (text_rva + end_at + 4));
+    memcpy (p + text_fo + end_at, &d32, 4);
   }
   if (obj->pool.len != 0) memcpy (p + pool_fo, obj->pool.p, obj->pool.len);
   if (init_size != 0) memcpy (p + init_fo, obj->initarr.p, init_size);
@@ -1221,31 +1361,36 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   if (rdata_size != 0) memcpy (p + rdata_fo, rdata.p, rdata_size);
   if (reloc_size != 0) memcpy (p + reloc_fo, relsec.p, reloc_size);
 
-  /* ---- patch the stub: six slot disps, init-array bounds, main rel32 */
-  for (int k = 0; k < 6; k++) {
-    uint64_t slot_rva = pool_rva + pool_stub_off + (uint64_t) k * 8;
-    int64_t d = (int64_t) slot_rva
-                - (int64_t) (text_rva + PEX_FIX_SIZE + pex_stub_slots[k].at + 4); /* rip = insn end */
-    int32_t d32 = (int32_t) d;
-    memcpy (p + text_fo + PEX_FIX_SIZE + pex_stub_slots[k].at, &d32, 4);
-  }
+  /* ---- patch the stub: its slot disps, init-array bounds and (an
+     executable's) main rel32; `base` = where the stub starts in .text */
   {
-    int32_t d32 = (int32_t) ((int64_t) init_rva
-                             - (int64_t) (text_rva + PEX_FIX_SIZE + PEX_STUB_INITARR_AT + 4));
-    memcpy (p + text_fo + PEX_FIX_SIZE + PEX_STUB_INITARR_AT, &d32, 4);
-    d32 = (int32_t) ((int64_t) (init_rva + init_size)
-                     - (int64_t) (text_rva + PEX_FIX_SIZE + PEX_STUB_INITEND_AT + 4));
-    memcpy (p + text_fo + PEX_FIX_SIZE + PEX_STUB_INITEND_AT, &d32, 4);
-    d32 = (int32_t) ((int64_t) (text_rva + PEX_ENTRY_SIZE + obj->syms[entry_i].value)
-                     - (int64_t) (text_rva + PEX_FIX_SIZE + PEX_STUB_MAIN_AT + 4));
-    memcpy (p + text_fo + PEX_FIX_SIZE + PEX_STUB_MAIN_AT, &d32, 4);
+    uint64_t base = dll_p ? 0 : PEX_FIX_SIZE;
+    for (int k = 0; k < n_stub; k++) {
+      uint64_t at = dll_p ? pex_dll_stub_slots[k].at : pex_stub_slots[k].at;
+      uint64_t slot = dll_p ? pex_dll_stub_slots[k].slot : pex_stub_slots[k].slot;
+      uint64_t slot_rva = pool_rva + pool_stub_off + slot * 8;
+      int64_t d = (int64_t) slot_rva - (int64_t) (text_rva + base + at + 4); /* rip = insn end */
+      int32_t d32 = (int32_t) d;
+      memcpy (p + text_fo + base + at, &d32, 4);
+    }
+    uint64_t arr_at = base + (dll_p ? PEX_DLL_INITARR_AT : PEX_STUB_INITARR_AT);
+    uint64_t end_at = base + (dll_p ? PEX_DLL_INITEND_AT : PEX_STUB_INITEND_AT);
+    int32_t d32 = (int32_t) ((int64_t) init_rva - (int64_t) (text_rva + arr_at + 4));
+    memcpy (p + text_fo + arr_at, &d32, 4);
+    d32 = (int32_t) ((int64_t) (init_rva + init_size) - (int64_t) (text_rva + end_at + 4));
+    memcpy (p + text_fo + end_at, &d32, 4);
+    if (!dll_p) {
+      d32 = (int32_t) ((int64_t) (text_rva + entry_size + obj->syms[entry_i].value)
+                       - (int64_t) (text_rva + base + PEX_STUB_MAIN_AT + 4));
+      memcpy (p + text_fo + base + PEX_STUB_MAIN_AT, &d32, 4);
+    }
   }
 
   /* ---- apply relocations into the copied bodies */
   for (size_t i = 0; i < obj->n_rels; i++) {
     objreloc_t *r = &obj->rels[i];
     objsym_t *s = &obj->syms[r->sym];
-    uint64_t sec_fo = r->sec == MIR_OBJ_SEC_TEXT       ? text_fo + PEX_ENTRY_SIZE
+    uint64_t sec_fo = r->sec == MIR_OBJ_SEC_TEXT       ? text_fo + entry_size
                       : r->sec == MIR_OBJ_SEC_ADDRPOOL ? pool_fo
                       : r->sec == MIR_OBJ_SEC_INITARR  ? init_fo
                                                        : data_fo;
@@ -1255,13 +1400,13 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
          PC32 from text (rip-relative pool references). */
       if (r->sec != MIR_OBJ_SEC_TEXT) goto done;
       uint64_t s_rva = PEX_SEC_RVA (s->sec) + s->value;
-      uint64_t p_rva = text_rva + PEX_ENTRY_SIZE + r->offset;
+      uint64_t p_rva = text_rva + entry_size + r->offset;
       int64_t d = (int64_t) (s_rva + (uint64_t) r->addend) - (int64_t) p_rva;
       int32_t d32 = (int32_t) d;
       if (d != (int64_t) d32) goto done;
       memcpy (slot, &d32, 4);
     } else if (s->defined_p) { /* internal ABS64: bake base + RVA */
-      uint64_t val = PEX_IMAGE_BASE + PEX_SEC_RVA (s->sec) + s->value + (uint64_t) r->addend;
+      uint64_t val = image_base + PEX_SEC_RVA (s->sec) + s->value + (uint64_t) r->addend;
       memcpy (slot, &val, 8);
     } else {
       /* import slot: the IAT-prefill pass below owns these bytes */
@@ -1298,7 +1443,8 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     buf_u32 (&h, 0); /* PointerToSymbolTable */
     buf_u32 (&h, 0); /* NumberOfSymbols */
     buf_u16 (&h, 240);
-    buf_u16 (&h, PEX_FILE_EXECUTABLE_IMAGE | PEX_FILE_LARGE_ADDRESS_AWARE);
+    buf_u16 (&h, PEX_FILE_EXECUTABLE_IMAGE | PEX_FILE_LARGE_ADDRESS_AWARE
+                   | (dll_p ? PEX_FILE_DLL : 0));
     /* optional header, PE32+ */
     buf_u16 (&h, 0x20b);
     buf_u8 (&h, 14); /* linker versions: cosmetic */
@@ -1306,9 +1452,9 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     buf_u32 (&h, (uint32_t) text_size);              /* SizeOfCode */
     buf_u32 (&h, (uint32_t) (pool_size + init_size + data_size + rdata_size + reloc_size));
     buf_u32 (&h, (uint32_t) bss_size);               /* SizeOfUninitializedData */
-    buf_u32 (&h, (uint32_t) text_rva);               /* AddressOfEntryPoint = the stub */
+    buf_u32 (&h, (uint32_t) text_rva);               /* AddressOfEntryPoint = the stub (a DLL's DllMain) */
     buf_u32 (&h, (uint32_t) text_rva);               /* BaseOfCode */
-    buf_u64 (&h, PEX_IMAGE_BASE);
+    buf_u64 (&h, image_base);
     buf_u32 (&h, PEX_SEC_ALIGN);
     buf_u32 (&h, PEX_FILE_ALIGN);
     buf_u16 (&h, 6); /* OS versions: 6.0 = Vista+, the mingw default */
@@ -1330,7 +1476,10 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     buf_u32 (&h, 0);                       /* LoaderFlags */
     buf_u32 (&h, PEX_N_DIRS);
     for (int k = 0; k < PEX_N_DIRS; k++) {
-      if (k == PEX_DIR_IMPORT) {
+      if (k == PEX_DIR_EXPORT && edir_size != 0) {
+        buf_u32 (&h, edir_rva);
+        buf_u32 (&h, edir_size);
+      } else if (k == PEX_DIR_IMPORT) {
         buf_u32 (&h, idt_rva);
         buf_u32 (&h, idt_size);
       } else if (k == PEX_DIR_BASERELOC && reloc_size != 0) {
@@ -1398,6 +1547,7 @@ done:
   free (fixups);
   free (afix_words);
   free (afix_addends);
+  free (exports);
   free (rdata.p);
   free (relsec.p);
   return rc;

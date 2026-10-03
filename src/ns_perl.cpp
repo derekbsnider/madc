@@ -26,8 +26,35 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "ns_common.h"
+#include <cmath>	// perl_real_text: Inf / NaN
+#include <cstdio>
 
 using namespace std;
+
+// Perl's text for a number that is a real: %.15g, with Perl's Inf, -Inf and
+// NaN. Every perl:: function that reads a value as text renders a real with
+// it, as Perl stringifies one (substr, uc, reverse, ...).
+static std::string perl_real_text(double v)
+{
+	if ( std::isnan(v) )
+		return "NaN";
+	if ( std::isinf(v) )
+		return v < 0 ? "-Inf" : "Inf";
+	char buf[64];
+	snprintf(buf, sizeof buf, "%.15g", v);
+	return buf;
+}
+
+// ns_common's text slot and in-place adapter, with Perl's real text.
+static std::string &perl_text_slot(const madc::value *v)
+{
+	return ns_common::value_text_slot(v, perl_real_text);
+}
+
+static const char *perl_apply(const madc::value *v, std::string *(*core)(std::string *))
+{
+	return ns_common::ring_apply(v, core, perl_real_text);
+}
 
 static std::string perl_text_arg(const char *ptr)
 {
@@ -324,15 +351,15 @@ const char *perl_join_cstr(const char *sep, madc::value *arr)
 }
 
 const char *perl_reverse_cstr(const char *s)	{ return ring_apply(s, perl_reverse); }
-const char *perl_reverse_value(const madc::value *v)	{ return ring_apply(v, perl_reverse); }
+const char *perl_reverse_value(const madc::value *v)	{ return perl_apply(v, perl_reverse); }
 const char *perl_lc_cstr(const char *s)	{ return ring_apply(s, perl_lc); }
-const char *perl_lc_value(const madc::value *v)	{ return ring_apply(v, perl_lc); }
+const char *perl_lc_value(const madc::value *v)	{ return perl_apply(v, perl_lc); }
 const char *perl_uc_cstr(const char *s)	{ return ring_apply(s, perl_uc); }
-const char *perl_uc_value(const madc::value *v)	{ return ring_apply(v, perl_uc); }
+const char *perl_uc_value(const madc::value *v)	{ return perl_apply(v, perl_uc); }
 const char *perl_ucfirst_cstr(const char *s)	{ return ring_apply(s, perl_ucfirst); }
-const char *perl_ucfirst_value(const madc::value *v)	{ return ring_apply(v, perl_ucfirst); }
+const char *perl_ucfirst_value(const madc::value *v)	{ return perl_apply(v, perl_ucfirst); }
 const char *perl_lcfirst_cstr(const char *s)	{ return ring_apply(s, perl_lcfirst); }
-const char *perl_lcfirst_value(const madc::value *v)	{ return ring_apply(v, perl_lcfirst); }
+const char *perl_lcfirst_value(const madc::value *v)	{ return perl_apply(v, perl_lcfirst); }
 
 const char *perl_substr_cstr(const char *text, int64_t offset, int64_t length)
 {
@@ -343,7 +370,7 @@ const char *perl_substr_cstr(const char *text, int64_t offset, int64_t length)
 const char *perl_substr_value(const madc::value *v, int64_t offset,
 			      int64_t length)
 {
-	std::string &subj = ns_common::value_text_slot(v);
+	std::string &subj = perl_text_slot(v);
 	std::string &slot = ns_common::ring_slot();
 	perl_substr(&slot, subj.c_str(), offset, length);
 	return slot.c_str();

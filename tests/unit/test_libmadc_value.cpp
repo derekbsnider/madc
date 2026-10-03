@@ -12,6 +12,8 @@ thread_local bool madc_verbose = false;
 #include "libmadc/value.h"
 
 #include <map>
+#include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 #include <string>
@@ -253,6 +255,139 @@ TEST_SUITE("madc::value") {
 	value va;
 	va.array();
 	CHECK(va == value::make_array());
+    }
+
+    // A NULL refusal means the operation was accepted (doctest cannot
+    // decompose `const char * == NULL`).
+    static bool accepted(const char *refusal) { return refusal == NULL; }
+
+    // Arithmetic and ordering (plan §42 D28): value::arithmetic / negate /
+    // compare are the one rule behind the script's var operators.
+    TEST_CASE("integer arithmetic stays integer and wraps; / is real") {
+	value out;
+	CHECK(accepted(value::arithmetic(value::arith::add, value(int64_t(5)),
+				value(int64_t(2)), out)));
+	CHECK(out.is_integer());
+	CHECK(out.as_integer() == 7);
+	CHECK(accepted(value::arithmetic(value::arith::mul, value(int64_t(5)),
+				value(int64_t(2)), out)));
+	CHECK(out.as_integer() == 10);
+	CHECK(accepted(value::arithmetic(value::arith::add, value(INT64_MAX),
+				value(int64_t(1)), out)));
+	CHECK(out.as_integer() == INT64_MIN);
+	CHECK(accepted(value::arithmetic(value::arith::div, value(int64_t(5)),
+				value(int64_t(2)), out)));
+	CHECK(out.is_real());
+	CHECK(out.as_real() == 2.5);
+	CHECK(accepted(value::arithmetic(value::arith::div, value(int64_t(6)),
+				value(int64_t(3)), out)));
+	CHECK(out.is_real());
+	CHECK(out.as_real() == 2.0);
+    }
+
+    TEST_CASE("an integer with a real is a real") {
+	value out;
+	CHECK(accepted(value::arithmetic(value::arith::add, value(int64_t(5)),
+				value(0.5), out)));
+	CHECK(out.is_real());
+	CHECK(out.as_real() == 5.5);
+	CHECK(accepted(value::arithmetic(value::arith::sub, value(9.0),
+				value(int64_t(1)), out)));
+	CHECK(out.is_real());
+	CHECK(out.as_real() == 8.0);
+    }
+
+    TEST_CASE("% truncates; an integer % by zero is refused") {
+	value out;
+	CHECK(accepted(value::arithmetic(value::arith::mod, value(int64_t(-7)),
+				value(int64_t(3)), out)));
+	CHECK(out.as_integer() == -1);
+	CHECK(accepted(value::arithmetic(value::arith::mod, value(INT64_MIN),
+				value(int64_t(-1)), out)));
+	CHECK(out.as_integer() == 0);
+	CHECK(accepted(value::arithmetic(value::arith::mod, value(3.5),
+				value(int64_t(2)), out)));
+	CHECK(out.as_real() == 1.5);
+	value keep(int64_t(42));
+	const char *e = value::arithmetic(value::arith::mod,
+					  value(int64_t(1)), value(int64_t(0)),
+					  keep);
+	REQUIRE_FALSE(accepted(e));
+	CHECK(std::string(e) == "integer remainder by zero");
+	CHECK(keep.as_integer() == 42);	// a refusal leaves out alone
+    }
+
+    TEST_CASE("text joins text; every other mixed pair is refused") {
+	value out;
+	CHECK(accepted(value::arithmetic(value::arith::add, value("ab"), value("cd"),
+				out)));
+	CHECK(out == value("abcd"));
+	const char *e = value::arithmetic(value::arith::add, value("ab"),
+					  value(int64_t(1)), out);
+	REQUIRE_FALSE(accepted(e));
+	CHECK(std::string(e)
+	      == "unsupported operand kinds for +: string and integer");
+	e = value::arithmetic(value::arith::sub, value("a"), value("b"), out);
+	REQUIRE_FALSE(accepted(e));
+	CHECK(std::string(e)
+	      == "unsupported operand kinds for -: string and string");
+	e = value::arithmetic(value::arith::add, value(true),
+			      value(int64_t(1)), out);
+	REQUIRE_FALSE(accepted(e));	// a boolean is not a number
+	CHECK(std::string(e)
+	      == "unsupported operand kinds for +: boolean and integer");
+    }
+
+    TEST_CASE("negate wraps an integer and refuses text") {
+	value out;
+	CHECK(accepted(value::negate(value(int64_t(5)), out)));
+	CHECK(out.as_integer() == -5);
+	CHECK(accepted(value::negate(value(INT64_MIN), out)));
+	CHECK(out.as_integer() == INT64_MIN);
+	CHECK(accepted(value::negate(value(1.5), out)));
+	CHECK(out.as_real() == -1.5);
+	const char *e = value::negate(value("s"), out);
+	REQUIRE_FALSE(accepted(e));
+	CHECK(std::string(e) == "unsupported operand kind for unary -: string");
+    }
+
+    TEST_CASE("ordering: numbers exactly, text bytewise, NaN unordered") {
+	value::ordering o = value::ordering::unordered;
+	CHECK(accepted(value::compare(value(int64_t(5)), value(2.5), o)));
+	CHECK(o == value::ordering::greater);
+	// (double)INT64_MAX rounds to 2^63: exactly, INT64_MAX is less.
+	CHECK(accepted(value::compare(value(INT64_MAX), value(9223372036854775807.0),
+			     o)));
+	CHECK(o == value::ordering::less);
+	CHECK(accepted(value::compare(value(9223372036854775807.0), value(INT64_MAX),
+			     o)));
+	CHECK(o == value::ordering::greater);
+	CHECK(accepted(value::compare(value(int64_t(3)), value(3.0), o)));
+	CHECK(o == value::ordering::equal);
+	CHECK(accepted(value::compare(value(int64_t(1)), value(std::nan("")), o)));
+	CHECK(o == value::ordering::unordered);
+	CHECK(accepted(value::compare(value("ab"), value("b"), o)));
+	CHECK(o == value::ordering::less);
+	CHECK(accepted(value::compare(value("ab"), value("a"), o)));
+	CHECK(o == value::ordering::greater);
+	const char *e = value::compare(value("s"), value(int64_t(1)), o);
+	REQUIRE_FALSE(accepted(e));
+	CHECK(std::string(e)
+	      == "unsupported operand kinds for ordering: string and integer");
+    }
+
+    TEST_CASE("the C++ operator spellings share the rule and throw on refusal") {
+	CHECK((value(int64_t(5)) + value(int64_t(2))) == value(int64_t(7)));
+	CHECK((value(int64_t(5)) / value(int64_t(2))) == value(2.5));
+	CHECK((value("a") + value("b")) == value("ab"));
+	CHECK((-value(int64_t(3))) == value(int64_t(-3)));
+	CHECK(value(int64_t(1)) < value(1.5));
+	CHECK(value(int64_t(2)) <= value(int64_t(2)));
+	CHECK_FALSE(value(std::nan("")) >= value(0.0));
+	CHECK_THROWS_AS(value("a") + value(int64_t(1)), std::domain_error);
+	CHECK_THROWS_AS(value(int64_t(1)) % value(int64_t(0)),
+			std::domain_error);
+	CHECK_THROWS_AS(value("a") < value(int64_t(1)), std::domain_error);
     }
 }
 

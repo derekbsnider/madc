@@ -1,0 +1,22 @@
+// A carrier PRVALUE coerces into a const char* position exactly like a named
+// carrier: a functional-cast temporary `value("t")`, a by-value `var` return,
+// and a varargs argument each pass the carrier's text (madarray_cstr), never
+// the temporary's storage words. The call lowering admitted only LVALUE
+// carriers to the c_str coercion: the three prvalue lines printed empty
+// strings (c2mir "incompatible pointer types of argument and parameter" on
+// the two declared-parameter calls, no diagnostic at all on the varargs one).
+// .expect_quiet gates the warning.
+// Oracle — the explicit-c_str C++ analogue (a class with c_str();
+// f(value("temp").c_str()), f(make().c_str()),
+// printf("%s\n", value("vararg").c_str())): g++ -std=c++17 and
+// clang++ -std=c++17 both print named / temp / made / vararg.
+void f(const char *s) { println("{}", s); }
+var make() { var r = "made"; return r; }
+int main() {
+	var v = "named";
+	f(v);
+	f(value("temp"));
+	f(make());
+	printf("%s\n", value("vararg"));
+	return 0;
+}

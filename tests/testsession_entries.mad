@@ -1,0 +1,87 @@
+// An interactive session in a backend process, from the dialect (plan
+// §41.9a slice 2): entries persist in the backend, the program's output
+// arrives before the entry's reply, an unfinished entry is incomplete, a
+// refused one comes back with its diagnostics rows, a completion asks the
+// backend's names, and the program's stdin is the caller's to write.
+
+long running_notices = 0;
+
+// The next reply: poll, and park on the session's select case between polls.
+// The program's output printed before the reply is appended to `out`. A
+// running notice (the entry was taken) is counted and passed over.
+long next_reply(var &r, long h, var &out)
+{
+    var cases;
+    cases[0] = madc::session_readable(h);
+    for ( ;; )
+    {
+	long got = madc::session_poll(r, h);
+	var o;
+	madc::session_output(o, h);
+	out = format("{}{}", out, o);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	{
+	    running_notices = running_notices + 1;
+	    continue;
+	}
+	if ( got != 0 )
+	    return got;
+	var fired;
+	madc::chan_select(fired, cases);
+    }
+}
+
+int main()
+{
+    long h = madc::session_open("c11");
+    println("running: {} standard: {}", madc::session_running(h), madc::session_standard(h));
+    var r;
+    var out = "";
+    madc::session_offer(h, "#include <stdio.h>", true);
+    next_reply(r, h, out);
+    madc::session_offer(h, "int twice(int v) { return 2 * v; }", true);
+    next_reply(r, h, out);
+    println("define: offer={} taken={} ok={}", r["kind"] == madc::session_reply::offer,
+	    r["state"] == madc::offer_state::taken, r["ok"]);
+
+    out = "";
+    long seq = madc::session_offer(h, "printf(\"first\\n\"); printf(\"%d\\n\", twice(21));", true);
+    next_reply(r, h, out);
+    print("output: {}", out);
+    println("reply: seq matches={} submitted={}", r["seq"] == seq, r["submitted"]);
+
+    madc::session_offer(h, "twice(5)", true);
+    next_reply(r, h, out);
+    println("shown: {}", r["shown"]);
+
+    long before = running_notices;
+    madc::session_offer(h, "int f(void) {", false);
+    next_reply(r, h, out);
+    println("unfinished: incomplete={} running notices={}",
+	    r["state"] == madc::offer_state::incomplete, running_notices - before);
+
+    madc::session_offer(h, "int x = ;", true);
+    next_reply(r, h, out);
+    var rows = r["diagnostics"];
+    var first = rows[0];
+    println("refused: ok={} error row={}", r["ok"], first["severity_code"] == madc::diag_severity::error);
+
+    madc::session_complete(h, "twi", 3);
+    next_reply(r, h, out);
+    var names = r["names"];
+    println("complete: kind={} start={} first={}", r["kind"] == madc::session_reply::complete,
+	    r["start"], names[0]);
+
+    out = "";
+    madc::session_input(h, "41\n");
+    madc::session_offer(h, "int n = 0; scanf(\"%d\", &n); printf(\"%d\\n\", n + 1);", true);
+    next_reply(r, h, out);
+    print("stdin: {}", out);
+    println("running notices: {}", running_notices);
+    madc::session_close(h);
+
+    long bad = madc::session_open("c99x");
+    println("bad standard: running={} error={}", madc::session_running(bad), madc::session_error(bad));
+    madc::session_close(bad);
+    return 0;
+}

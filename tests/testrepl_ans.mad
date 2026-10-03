@@ -1,0 +1,6 @@
+// madc -i with D12's result names (plan §41.6a): after the script, the
+// entries in testrepl_ans.input name the values they showed. IPython 9.17.1
+// on the same values gives the same lines (its numbers start one later: the
+// script is its In[1]), so `_2` here is its `_3`.
+int base = 40;
+println("loaded");

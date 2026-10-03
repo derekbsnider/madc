@@ -1,0 +1,12 @@
+contrib-register: above-base=1 again=0 builtin-name=0 bad-name=0 no-handler=0
+contrib-names: of=1 name=greet builtin-table=none
+contrib-command: cont=1 msg=Hello, world.
+contrib-byname: msg=Hello, by name.
+contrib-keys: with-world=1 without=0 why=line 1: unknown action 'greet'
+contrib-seat: ok=1 msg=Hello, seat. tier=editor
+contrib-mcp: listed=1 lsp=1
+contrib-view-register: above-base=1 again=0 builtin-name=0 bad-key=0 bad-show=0
+contrib-view-layout: with-world=1 without=0 why=line 3: unknown view 'variables' round-trip=same
+contrib-view-compose: shown=1 label=Variables rows=a = 1|b = 2|(no line)| verbs=3 tab=variables empty=(empty)
+contrib-view-goto: line2=1 no-line=stays
+contrib-events: subscribed=1 bad-kind=0 no-handler=0 heard=taken,stopped,bindings owed=0

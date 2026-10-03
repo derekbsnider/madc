@@ -1,0 +1,35 @@
+/* A using-declaration may name a base by its template-id: `using IT<T>::IT;`
+   inherits IT<T>'s constructors ([namespace.udecl]/3, [class.inhctor]).
+   madc read only `using Name::member;`, skipped the template-id form, and
+   the class had no constructor taking the pointer. libstdc++'s
+   __uniq_ptr_data inherits exactly so (`using __uniq_ptr_impl<_Tp,
+   _Dp>::__uniq_ptr_impl;`), so every std::unique_ptr built from a pointer,
+   make_unique's included, held null (B36): `p ? *p : -1` read -1.
+   Oracle: g++ and clang++ -std=c++17 print every line below. */
+#include <cstdio>
+#include <memory>
+
+struct I1 { int *p; I1() : p(0) {} I1(int *q) : p(q) {} };
+struct D1 : I1 { using I1::I1; };
+template<class T> struct IT { T *p; IT() : p(0) {} IT(T *q) : p(q) {} };
+template<class T> struct DT : IT<T> { using IT<T>::IT; };
+template<class T> struct DTm : IT<T> { using IT<T>::IT; DTm(DTm &&) = default; };
+template<class T> struct UP { DTm<T> t; UP(T *q) : t(q) {} };
+
+std::unique_ptr<int> gp(new int(3));
+std::unique_ptr<int> gq = std::make_unique<int>(4);
+
+int main()
+{
+	int a = 1, b = 2, c = 3, d = 4;
+	D1 x(&a);
+	DT<int> z(&b);
+	DTm<int> w(&c);
+	UP<int> u(&d);
+	printf("inherited %d %d %d %d\n", *x.p, *z.p, *w.p, *u.t.p);
+	std::unique_ptr<int> p(new int(5));
+	auto m = std::make_unique<int>(6);
+	printf("unique_ptr %d %d\n", p ? *p : -1, m ? *m : -1);
+	printf("global %d %d\n", gp ? *gp : -1, gq ? *gq : -1);
+	return 0;
+}

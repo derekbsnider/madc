@@ -1,0 +1,121 @@
+// <madcide/plugin> — the header a madcide plugin's code includes (plugin
+// design §5.4; plan §41.11a step 4): the shared types (<madcide/plugin_api>),
+// the ide:: calls a plugin makes into madcide, and the entry a plugin
+// library records its API version in.
+//
+// A plugin's code is one translation unit, named by its manifest's "code"
+// (`"code": "hello.mad"`), built into its library by
+// `madcide --build-plugin <dir>` (or `madc -shared -I <madcide>/include`).
+// It defines its activation, the entry madcide looks up when it loads the
+// library:
+//
+//     extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
+//     {
+//         ide::bind(api);
+//         return ide::command(w, "greet", "Greet", greet) != 0;
+//     }
+//
+// which binds the API and registers the plugin's commands, views and event
+// handlers in world `w`. False refuses the plugin, and what it registered
+// is taken back. A handler's contract is its slot's type, so the compiler
+// checks it when the plugin is built.
+//
+// Thread contract: activation and every handler run on the session's
+// thread, between events, never during composition. ide::bind is the one
+// write to the plugin's API pointer, at activation; a plugin's own globals
+// are its own.
+#ifndef __MADCIDE_PLUGIN_H
+#define __MADCIDE_PLUGIN_H 1
+
+#include "plugin_api"
+
+namespace ide
+{
+    const ide_api *api = 0;	// the table madcide handed this plugin
+
+    void bind(const ide_api *a)
+    {
+	api = a;
+    }
+
+    long command(long w, const char *name, const char *title, cmd_handler h)
+    {
+	return api->command(w, name, title, h);
+    }
+
+    long view(long w, const char *name, const char *title, const char *key,
+	      long show)
+    {
+	return api->view(w, name, title, key, show);
+    }
+
+    bool event(long w, long kind, event_handler h)
+    {
+	return api->event(w, kind, h);
+    }
+
+    bool run(long w, long es, long doc, long code, const char *arg)
+    {
+	return api->run(w, es, doc, code, arg);
+    }
+
+    long command_id(long w, const char *name)
+    {
+	return api->command_id(w, name);
+    }
+
+    void get(var &out, long w, long scope, const char *key)
+    {
+	api->get(out, w, scope, key);
+    }
+
+    void set(long w, long scope, const char *key, const var &value)
+    {
+	api->set(w, scope, key, value);
+    }
+
+    // ui::set's overloads, so a handler writes text, a number or a truth
+    // value as it would with ui::set; each goes through the one slot.
+    void set(long w, long scope, const char *key, const char *text)
+    {
+	var v = text;
+	api->set(w, scope, key, v);
+    }
+
+    void set(long w, long scope, const char *key, long n)
+    {
+	var v = n;
+	api->set(w, scope, key, v);
+    }
+
+    void set(long w, long scope, const char *key, bool b)
+    {
+	var v = b;
+	api->set(w, scope, key, v);
+    }
+
+    void set(long w, long scope, const char *key, double d)
+    {
+	var v = d;
+	api->set(w, scope, key, v);
+    }
+
+    bool show(long w, long es, long kind)
+    {
+	return api->show(w, es, kind);
+    }
+}
+
+// The plugin API version this library was built against, read by madcide
+// before it activates the library (a library built against another version
+// is refused with both numbers).
+extern "C" long madcide_plugin_api()
+{
+    return MADCIDE_PLUGIN_API;
+}
+
+// The activation the plugin defines (plugin_activate_fn's contract), declared
+// here so a definition of another shape is refused when the plugin is built.
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w);
+
+#endif

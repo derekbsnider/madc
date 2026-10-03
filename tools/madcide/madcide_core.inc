@@ -18,6 +18,7 @@
 // shapes).
 
 #include "madcide_enums.inc"	// ide_cmd + the state discriminators, as codes
+#include "madcide_plugins.inc"	// bundles: the manifest, the search path, settings
 
 // The bag's discriminator slots — ONE reader and ONE writer each (V0.5d):
 // integers on the bag, an enumerator at every site, a name only where text
@@ -59,10 +60,14 @@ class IdeSession
 	long w;		// the ui world (documents + state entity live in it)
 	long es;	// the editor-state entity — the bags
 
-	long open(const char *path0, bool ro);	// full session startup;
-						// > 0 = the launch doc,
-						// 0 = unreadable path,
-						// -1 = reported fatal
+	long open(const char *path0, bool ro, const char *profile = "");
+						// full session startup
+						// under the profile named
+						// ("" = settings.json's,
+						// else default); > 0 = the
+						// launch doc, -1 = refused
+						// or fatal, reported on
+						// stderr
 	void attach(long w0, long es0);	// a session over an EXISTING
 					// world + state entity (the
 					// headless harness, embedders)
@@ -117,6 +122,10 @@ class IdeSession
 	void dialogs(bool has);		// the client can show native file
 					// dialogs (S4): open / save-as park a
 					// filedialog request instead of a prompt
+	void clipboard(bool has);	// the client reaches the platform's
+					// clipboard (plan §41.11a step 3e): a
+					// copy parks a clipset request, a
+					// paste a paste request
 	void panel(bool has);		// the client renders REGIONS (a
 					// window): runs and the shell go to a
 					// pty in the Terminal tab; the panel
@@ -134,9 +143,27 @@ class IdeSession
 					// false = none
 	void term_exec(var &req);	// run the guest between the
 					// client's suspend and resume
-	void close();			// stop builds, drain tasks, close
+	void stop_tasks();		// tell the session's pumps to stop
+					// (a host joins them before close)
+	void close();			// stop_tasks, drain tasks, close
 					// parse handles, close the world
 };
+
+// THE action event for a command: what a key bound to `code` produces, with
+// `arg` as its argument ("" = none) for a command that reads one off the
+// event. Every synthesized command event is this one shape: post, command,
+// a choice list's row, a client's paste answer, a plugin's ide::run.
+void action_event(var &e, long code, const char *arg)
+{
+    var a = arg;		// ring discipline: own the text first
+    e = { "event": "action", "event_code": ui::event_kind::action,
+	  "action": "", "action_code": code };
+    if ( strlen(a.c_str()) > 0 )
+	e["arg"] = a;
+}
+
+#include "madcide_plugin_code.inc"	// plugin code: the API table, activation, --build-plugin
+#include "madcide_plugin_host.inc"	// the host transport: a plugin's code in a child process
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -150,6 +177,18 @@ bool profile_line(var &out, array &lines, long i)
     if ( ls[0] == '#' )
 	return false;
     out = line;
+    return true;
+}
+
+// A key profile's display name (plan §41.11a step 3e): its `@title NAME`
+// line, which Tools ▸ Key bindings… lists. The one reader of the directive:
+// the binding parser and help pass over it, the style list reads it.
+bool keys_title_line(var &title, var &line)
+{
+    const char *ls = line.c_str();
+    if ( strncmp(ls, "@title ", 7) != 0 )
+	return false;
+    title = php::trim(ls + 7);
     return true;
 }
 
@@ -204,32 +243,14 @@ void proj_layout_path(var &out, var &pf)
     out = format("{}.layout", base);
 }
 
-// Where the profile/theme/status data lives (packaging arc PK7): the
-// source tree keeps profiles beside THIS file (__FILE__ is the
-// include-resolved path — from any cwd, and php::dirname splits both
-// separators for a Windows launch). An INSTALLED madcide is an AOT
-// binary whose __FILE__ names a build tree that box never had, so the
-// running binary's own directory (madc::compiler_path — the process's
-// resolved executable, madcide itself in the AOT shape) anchors the
-// install layouts: <exedir>/../share/madcide/profiles (the Linux/mac
-// package layout) then <exedir>/profiles (the Windows zip: data beside
-// the exe). First existing directory wins; nothing found keeps the
-// source-tree spelling so the rescue report names a real place to fix.
+// Where the profile/theme/status data lives (packaging arc PK7): beside
+// THIS file in the source tree, else the install layouts
+// (share/madcide/profiles, then profiles beside the exe) — the one rule,
+// resolve_data_dir (tools/texteditor/lined_core.inc), which the line
+// editor's verbs and checks read too.
 void resolve_profile_dir(var &dir)
 {
-    dir = format("{}/profiles", php::dirname(__FILE__));
-    if ( php::file_exists(dir) )
-	return;
-    var exedir = php::dirname(madc::compiler_path());
-    var share = format("{}/../share/madcide/profiles", exedir);
-    if ( php::file_exists(share) )
-    {
-	dir = share;
-	return;
-    }
-    var beside = format("{}/profiles", exedir);
-    if ( php::file_exists(beside) )
-	dir = beside;
+    resolve_data_dir(dir, "madcide", php::dirname(__FILE__), "profiles");
 }
 
 // One binding per line: "SEQ ACTION" — the action is the LAST word, the
@@ -275,12 +296,12 @@ bool scope_line_parts(var &line, var &scope, var &name, var &value)
 // scoped tables' values are codes), and an unknown name REFUSES the whole
 // text — false, `err` naming the line and the word — so a misspelt binding
 // is a load-time error the status line reports, never a dead key.
-bool parse_keys(var &table, var &scopes, const char *text, var &err)
+bool parse_keys(var &table, var &scopes, const char *text, var &err, long w = 0)
 {
     var t;
     var sc = scopes;		// accumulate over what the caller seeded
     var ct;
-    cmd_table(ct);
+    cmd_table_w(ct, w);		// the world's names: contributed commands too (0 = built-ins)
     array lines;
     php::explode(lines, "\n", text);
     long n = php::count(lines);
@@ -288,6 +309,9 @@ bool parse_keys(var &table, var &scopes, const char *text, var &err)
     {
 	var line;
 	if ( !profile_line(line, lines, i) )
+	    continue;
+	var title;
+	if ( keys_title_line(title, line) )
 	    continue;
 	const char *ls = line.c_str();
 	if ( ls[0] == '@' )
@@ -365,7 +389,12 @@ const char *modal_default_keys_text()
 	   "@modes enter modesopen\n"
 	   "@modes esc modesclose\n"
 	   "@pane esc paneclose\n"
-	   "@terminal ^] termunfocus\n";
+	   "@terminal ^] termunfocus\n"
+	   "@repl enter replenter\n"
+	   "@repl tab replcomplete\n"
+	   "@repl up replolder\n"
+	   "@repl down replnewer\n"
+	   "@repl ^] replunfocus\n";
 }
 
 // Modal key->action lookup over the bag's "modekeys" (the @scope tables).
@@ -393,7 +422,7 @@ void modal_keys(var &mk, long w, long es)
     {
 	var t0;
 	var err;
-	if ( !parse_keys(t0, mk, modal_default_keys_text(), err) )
+	if ( !parse_keys(t0, mk, modal_default_keys_text(), err, w) )
 	    ui::set(w, es, "msg", format("Baked modal keys rejected: {}.", err));
 	ui::set(w, es, "modekeys", mk);
     }
@@ -433,6 +462,10 @@ bool scoped_action(var &out, long w, long es, const char *scope, var &ev)
 	var lk = php::strtolower(k.c_str());
 	a = sc[lk.c_str()];		// lowercase spellings match either case
     }
+    var uk;				// a modified key the scope does not
+    if ( a.is_null() && kind == ui::event_kind::key	// bind reads as its
+	 && ui::key_unmodified(uk, k.c_str()) )		// key (the engine's rule)
+	a = sc[uk.c_str()];
     if ( a.is_null() )
 	return false;
     out = a;
@@ -479,41 +512,64 @@ void vi_enter(long w, long es, long mode);
 // client rebinds when the generation moves). The raw profile text stays
 // on the bag — the help pane (^K H) composes FROM it. False + a status
 // message on failure (the previous table and its data stay).
+// The startup hint (IDE-9b, JOE's -xmsg) names the chords the LOADED
+// table binds to quit and help, chosen by the engine's accelerator rule
+// (ui::key_sequence_for: the chord a menu bar shows for the command), so a
+// profile or the rescue set is never told JOE's chords. Every key-table
+// store calls it; the composer only reads `hinttext`. Empty when the table
+// binds neither (a modal personality quits through its colon line).
+void store_key_hint(long w, long es, var &table)
+{
+    var q;
+    var h;
+    bool hq = ui::key_sequence_for(q, table, cmdQUIT);
+    bool hh = ui::key_sequence_for(h, table, cmdHELP);
+    var text = "";
+    if ( hq && hh )
+	text = format(" madcide ** {} exits / {} shows the loaded profile's help **", q, h);
+    else if ( hq )
+	text = format(" madcide ** {} exits **", q);
+    else if ( hh )
+	text = format(" madcide ** {} shows the loaded profile's help **", h);
+    ui::set(w, es, "hinttext", text);
+}
+
 bool load_profile(long w, long es, const char *name)
 {
     // Ring discipline: `name` may lend a ring slot (a caller's .c_str());
     // the parse below makes hundreds of ring calls, so OWN the text
     // FIRST — the stored profile name rotted to garbage without this.
     var pname = name;
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var kpath;
+    bundle_data_path(kpath, w, es, pname.c_str(), cbKEYS);
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.keys", dir, pname)) )
+    if ( !php::file_get_contents(txt, kpath.c_str()) )
     {
-	ui::set(w, es, "msg", format("No profile '{}'.", pname));
+	ui::set(w, es, "msg", format("No keys '{}'.", pname));
 	return false;
     }
     // The baked modal defaults ride UNDER every profile (same parser,
     // later lines win): a profile respells a modal key by carrying its
     // own @scope line; one that says nothing keeps the defaults. Parsed
     // FIRST, the profile over them — so a refusal names the PROFILE's own
-    // line: "Profile 'x' line 12: unknown action 'svae'."
+    // line: "Keys 'x' line 12: unknown action 'svae'."
     var full = format("{}\n{}", modal_default_keys_text(), txt);
     var table;
     var scopes;
     var err;
-    parse_keys(table, scopes, modal_default_keys_text(), err);
-    if ( !parse_keys(table, scopes, txt.c_str(), err) )
+    parse_keys(table, scopes, modal_default_keys_text(), err, w);
+    if ( !parse_keys(table, scopes, txt.c_str(), err, w) )
     {
-	ui::set(w, es, "msg", format("Profile '{}' {}.", pname, err));
+	ui::set(w, es, "msg", format("Keys '{}' {}.", pname, err));
 	return false;
     }
     if ( !ui::tui_validate_keys(table) )
     {
-	ui::set(w, es, "msg", format("Profile '{}' rejected.", pname));
+	ui::set(w, es, "msg", format("Keys '{}' rejected.", pname));
 	return false;
     }
     ui::set(w, es, "keytable", table);
+    store_key_hint(w, es, table);
     ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);
     // The selection MODEL rides the profile's own vocabulary (owner
@@ -561,12 +617,13 @@ bool bind_rescue_keys(long w, long es)
     var table;
     var scopes;
     var err;
-    parse_keys(table, scopes, modal_default_keys_text(), err);
-    if ( !parse_keys(table, scopes, rescue_keys_text(), err) )
+    parse_keys(table, scopes, modal_default_keys_text(), err, w);
+    if ( !parse_keys(table, scopes, rescue_keys_text(), err, w) )
 	return false;
     if ( !ui::tui_validate_keys(table) )
 	return false;
     ui::set(w, es, "keytable", table);
+    store_key_hint(w, es, table);
     ui::set(w, es, "keysgen", es_int(w, es, "keysgen", 0) + 1);
     ui::set(w, es, "modekeys", scopes);	// prompts stay usable in rescue
     ui::set(w, es, "selblock", false);	// no bend in the rescue set
@@ -653,7 +710,7 @@ long layout_depth_of(var &raw)
 }
 
 // One `pane` line's words (after the keyword) into a flat row. False + err.
-bool layout_pane_row(var &row, var &words, long lineno, var &err)
+bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 {
     long nw = php::count(words);
     if ( nw < 2 )
@@ -670,7 +727,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err)
     }
     long side = ui::side_code("");
     long size = 0;
-    long mode = lmNONE;
+    long mode = pnNONE;
     bool collecting = false;
     bool focus = false;
     bool hidden = false;
@@ -697,7 +754,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err)
 	}
 	if ( collecting )
 	{
-	    long k = view_of(wd);
+	    long k = view_of_w(w, wd);	// contributed views too
 	    if ( k == viewNONE )
 	    {
 		err = format("line {}: unknown view '{}'", lineno, wd);
@@ -727,7 +784,7 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err)
 	    continue;
 	}
 	long pm = pmode_of(wd);
-	if ( pm != lmNONE )
+	if ( pm != pnNONE )
 	{
 	    mode = pm;
 	    continue;
@@ -760,8 +817,8 @@ bool layout_pane_row(var &row, var &words, long lineno, var &err)
 	size = 20;
     if ( size == 0 && slot == slotPANEL )
 	size = 25;
-    if ( mode == lmNONE )
-	mode = lmTABS;
+    if ( mode == pnNONE )
+	mode = pnTABS;
     long f = focus ? 1 : 0;
     long h = hidden ? 1 : 0;
     row = { "kind": ctPANE, "slot": slot, "side": side, "size": size,
@@ -831,7 +888,7 @@ void layout_build(var &node, var &rows, long idx)
 }
 
 // The parser: text -> the layout tree. False + err (the line and the word).
-bool parse_layout(var &layout, const char *text, var &err)
+bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 {
     var window = "";
     var rows = {};		// flat: every pane / split with depth + parent
@@ -908,7 +965,7 @@ bool parse_layout(var &layout, const char *text, var &err)
 	var row;
 	if ( ct == ctPANE )
 	{
-	    if ( !layout_pane_row(row, words, lineno, err) )
+	    if ( !layout_pane_row(row, words, lineno, err, w) )
 		return false;
 	    if ( parent >= 0 && row["slot"] != slotEDITOR )
 	    {
@@ -1017,7 +1074,7 @@ const char *default_layout_text()
 	   "@window main\n"
 	   "pane editor tabs views source focus\n"
 	   "pane sidebar left 20% tabs views outline hidden\n"
-	   "pane panel bottom 25% tabs views problems output terminal hidden\n";
+	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
 // Load a named layout from the profile directory onto the bag ("layout");
@@ -1027,21 +1084,21 @@ const char *default_layout_text()
 bool load_layout(long w, long es, const char *name)
 {
     var lname = name;		// ring discipline: own the text first
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var lpath;
+    bundle_data_path(lpath, w, es, lname.c_str(), cbLAYOUT);
     var txt;
     var layout;
     var err;
-    bool ok = php::file_get_contents(txt, format("{}/{}.layout", dir, lname));
+    bool ok = php::file_get_contents(txt, lpath.c_str());
     if ( ok )
-	ok = parse_layout(layout, txt.c_str(), err);
+	ok = parse_layout(layout, txt.c_str(), err, w);
     else
 	err = "no such file";
     if ( !ok )
     {
 	var fallback;
 	var ferr;
-	parse_layout(fallback, default_layout_text(), ferr);
+	parse_layout(fallback, default_layout_text(), ferr, w);
 	ui::set(w, es, "layout", fallback);
 	ui::set(w, es, "msg", format("Layout '{}' {} — the default layout is in use.", lname, err));
 	return false;
@@ -1075,7 +1132,7 @@ void layout_indent(var &out, long depth)
 // the `views` list stops at a flag), the exact word order parse_layout reads.
 // An editor pane persists as a SOURCE pane (its tabs' Views are session
 // state); a chrome pane persists its tool tabs (fixed kinds).
-void layout_emit_pane(var &out, var &node, long depth)
+void layout_emit_pane(var &out, var &node, long depth, long w)
 {
     var ind;
     layout_indent(ind, depth);
@@ -1092,7 +1149,11 @@ void layout_emit_pane(var &out, var &node, long depth)
 	line = format("{} {}", line, view_name(viewSOURCE));
     else
 	for ( var t : node["tabs"] )
-	    line = format("{} {}", line, view_name(t["kind"].as_integer()));
+	{
+	    var vn;
+	    view_name_w(vn, w, t["kind"].as_integer());
+	    line = format("{} {}", line, vn);
+	}
     if ( node["focus"].as_integer() != 0 )
 	line = format("{} focus", line);
     if ( node["hidden"].as_integer() != 0 )
@@ -1115,7 +1176,7 @@ void layout_emit_split(var &out, var &node, long depth)
 
 // A node (a pane or a split subtree) -> its text, children recursed one level
 // deeper.
-void layout_emit_node(var &out, var &node, long depth)
+void layout_emit_node(var &out, var &node, long depth, long w)
 {
     if ( node["kind"] == ctSPLIT )
     {
@@ -1124,28 +1185,28 @@ void layout_emit_node(var &out, var &node, long depth)
 	for ( var c : node["children"] )
 	{
 	    var cs;
-	    layout_emit_node(cs, c, depth + 1);
+	    layout_emit_node(cs, c, depth + 1, w);
 	    body = format("{}{}", body, cs);
 	}
 	out = body;
 	return;
     }
-    layout_emit_pane(out, node, depth);
+    layout_emit_pane(out, node, depth, w);
 }
 
 // The whole tree -> text: `@window`, the editor region (a top-level pane or
 // split), then the chrome panes (top-level).
-void layout_to_text(var &out, var &lo)
+void layout_to_text(var &out, var &lo, long w = 0)
 {
     var s = "# madcide layout — written by the session; edit or delete freely\n";
     s = format("{}@window {}\n", s, lo["window"]);
     var ed;
-    layout_emit_node(ed, lo["editor"], 0);
+    layout_emit_node(ed, lo["editor"], 0, w);
     s = format("{}{}", s, ed);
     for ( var c : lo["chrome"] )
     {
 	var cs;
-	layout_emit_pane(cs, c, 0);
+	layout_emit_pane(cs, c, 0, w);
 	s = format("{}{}", s, cs);
     }
     out = s;
@@ -1159,7 +1220,7 @@ void layout_get(var &lo, long w, long es)
     if ( lo.is_null() )
     {
 	var err;
-	parse_layout(lo, default_layout_text(), err);
+	parse_layout(lo, default_layout_text(), err, w);
 	ui::set(w, es, "layout", lo);
     }
 }
@@ -1238,8 +1299,10 @@ bool show_view(long w, long es, long kind)
     long ci = chrome_hosting(lo, kind, tab);
     if ( ci < 0 )
     {
+	var vn;
+	view_name_w(vn, w, kind);
 	ui::set(w, es, "msg", format("No pane of the layout hosts the {} view.",
-				     view_name(kind)));
+				     vn));
 	return false;
     }
     var ch = lo["chrome"];
@@ -1327,10 +1390,10 @@ void toggle_slot(long w, long es, long slot)
 bool load_theme(long w, long es, const char *name)
 {
     var tname = name;		// ring discipline: own the text first
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var tpath;
+    bundle_data_path(tpath, w, es, tname.c_str(), cbTHEME);
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.theme", dir, tname)) )
+    if ( !php::file_get_contents(txt, tpath.c_str()) )
 	return false;
     var th;
     var gth;			// the @gui scope: CSS custom properties
@@ -1404,15 +1467,15 @@ bool load_theme(long w, long es, const char *name)
 bool load_menu(long w, long es, const char *name)
 {
     var mname = name;		// ring discipline: own the text first
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var mpath;
+    bundle_data_path(mpath, w, es, mname.c_str(), cbMENU);
     var txt;
-    if ( !php::file_get_contents(txt, format("{}/{}.menu", dir, mname)) )
+    if ( !php::file_get_contents(txt, mpath.c_str()) )
 	return false;
     var menus = {};
     var at;			// menu title -> index into menus
     var ct;
-    cmd_table(ct);		// ids resolve to codes HERE (the input boundary)
+    cmd_table_w(ct, w);		// ids resolve to codes HERE (the input boundary)
     array lines;
     php::explode(lines, "\n", txt.c_str());
     long n = php::count(lines);
@@ -1470,7 +1533,8 @@ bool load_menu(long w, long es, const char *name)
 	{
 	    var items = {};
 	    items.push(item);
-	    menus[] = { "title": menu, "items": items };
+	    long place = menu_place_of(menu);	// palette / toolbar, else the bar
+	    menus[] = { "title": menu, "place": place, "items": items };
 	    at[menu.c_str()] = php::count(menus) - 1;
 	}
 	else
@@ -1539,10 +1603,10 @@ bool when_holds(var &ctx, var &when)
 }
 
 // The menu BAR as the composed tree carries it: the bar's menus in order
-// (the "palette" menu is palette-only and stays off the bar), each item
-// { id, title } plus `enabled: 0` when its [when] fails now. Titles and
-// ids only — profile-independent by construction. (compose_menu is the
-// shared editor helpers' vised-style menu LINE — a different node.)
+// (the palette's and the toolbar's rows are placed elsewhere — menu_place),
+// each item { id, title } plus `enabled: 0` when its [when] fails now.
+// Titles and ids only — profile-independent by construction. (compose_menu
+// is the shared editor helpers' vised-style menu LINE — a different node.)
 bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 {
     var def;
@@ -1554,9 +1618,10 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
     var bar = {};
     for ( var m : def )
     {
-	if ( m["title"] == "palette" )
+	if ( m["place"].as_integer() != mpBAR )
 	    continue;
 	var items = {};
+	bool palette_rows = false;
 	for ( var it : m["items"] )
 	{
 	    if ( !it["sep"].is_null() )
@@ -1569,15 +1634,19 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 	    if ( !when_holds(ctx, when) )
 		row["enabled"] = 0;
 	    items.push(row);
+	    if ( it["code"].as_integer() == cmdBUILD )
+		palette_rows = true;
 	}
-	// The Build menu carries the ^B palette's rows as DIRECT items
+	// The menu that carries the ^B palette's command (`build`, the Build
+	// menu in default.menu) lists the palette's rows as DIRECT items
 	// (owner 2026-09-08: Build -> Run runs, no overlay): the same
 	// `buildcmds` data the palette lists — the built-ins for the
 	// buffer or the project, plus a manifest's own commands — one item
 	// per row, id `build-<n>` (its 1-based row, the palette's choose
 	// contract), after a separator. Stop is enabled only while a build
 	// runs, the rest only while none does (what the palette's rows do).
-	if ( m["title"] == "Build" )
+	// Which menu is DATA (the command it carries), never its title.
+	if ( palette_rows )
 	{
 	    ensure_build_cmds(w, es);
 	    var brows;
@@ -1605,6 +1674,42 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
     return true;
 }
 
+// The TOOLBAR as the composed tree carries it (plan §41.11a): the rows the
+// menu data places on it (MENU word `toolbar`), in order, each { label,
+// action, code } plus `enabled: 0` when its [when] fails now; a separator
+// row places nothing. Profile-independent like the bar: a renderer shows
+// the chord the loaded profile binds to the code (web_model, tui_model).
+// False = nothing placed on it (the default menu places nothing).
+bool compose_toolbar(var &out, long w, long es, long doc, long nav)
+{
+    var def;
+    ui::get(def, w, es, "menudef");
+    if ( def.is_null() )
+	return false;
+    var rows = {};
+    for ( var m : def )
+    {
+	if ( m["place"].as_integer() != mpTOOLBAR )
+	    continue;
+	var ctx;
+	menu_context(ctx, w, es, doc, nav);
+	for ( var it : m["items"] )
+	{
+	    if ( !it["sep"].is_null() )
+		continue;
+	    var row = { "label": it["title"], "action": it["id"], "code": it["code"] };
+	    var when = it["when"];
+	    if ( !when_holds(ctx, when) )
+		row["enabled"] = 0;
+	    rows.push(row);
+	}
+    }
+    if ( php::count(rows) == 0 )
+	return false;
+    out = rows;
+    return true;
+}
+
 // ---- status line as data (IDE-9a): JOE's joerc format vocabulary ------
 // profiles/<name>.status: "lmsg FMT" / "rmsg FMT" lines (the profile_line
 // comment/blank rule; the value is everything after the FIRST space,
@@ -1617,10 +1722,10 @@ void load_status(long w, long es, const char *name)
     var sname = name;		// ring discipline: own the text first
     var lmsg = "\\i%k%T%W%I%X %n %m%y%R %M %x";	// joerc's defaults
     var rmsg = " %S Row %4r Col %3c";		// first char = fill
-    var dir;
-    ui::get(dir, w, es, "profile_dir");
+    var spath;
+    bundle_data_path(spath, w, es, sname.c_str(), cbSTATUS);
     var txt;
-    if ( php::file_get_contents(txt, format("{}/{}.status", dir, sname)) )
+    if ( php::file_get_contents(txt, spath.c_str()) )
     {
 	array lines;
 	php::explode(lines, "\n", txt.c_str());
@@ -1706,7 +1811,7 @@ void lex_first_spans(long w, long es, long doc)
     var t;
     ui::text(t, w, doc);
     var p;
-    ui::get(p, w, doc, "path");
+    doc_name(p, w, doc);		// the unit's name (`untitled` without a file)
     var rows;
     madc::lex_spans(rows, t.c_str(), p.c_str());
     spans_to_hspans(w, es, doc, rows, es);
@@ -1725,7 +1830,7 @@ long ensure_phandle(long w, long es, long doc)
     var t;
     ui::text(t, w, doc);
     var p;
-    ui::get(p, w, doc, "path");
+    doc_name(p, w, doc);		// the unit's name (`untitled` without a file)
     h = madc::parse_open(t.c_str(), p.c_str());
     // Stage-2: parse_open YIELDS between slices, so two flows can overlap
     // on one doc (the spawned background parse and a synchronous check).
@@ -1847,21 +1952,19 @@ void refresh_outline(long w, long es, long doc)
 // ladder (Rule #7; emacs joined joe/pico, and a user-dropped profile
 // joins the cycle with zero code). An unknown current name lands on
 // the first profile. The status format rides the profile.
-void toggle_profile(long w, long es)
+// The key profiles there are (plan §41.11a step 3e): the .keys files in the
+// profile directory by name, alphabetically. The one list: the cycle below
+// and Tools ▸ Key bindings… both read it.
+void key_profile_names(var &out, long w, long es)
 {
     var dir;
     ui::get(dir, w, es, "profile_dir");
     array g;
     perl::glob(g, format("{}/*.keys", dir));
-    php::sort(g);	// glob answers readdir order — the cycle must be
+    php::sort(g);	// glob answers readdir order — the list must be
 			// deterministic (alphabetical) on every filesystem
-    long n = php::count(g);
-    if ( n == 0 )
-	return;
-    var cur;
-    ui::get(cur, w, es, "profile");
-    long at = -1;
     var names = {};
+    long n = php::count(g);
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var p = php::array_get_cstr(g, i);
@@ -1869,12 +1972,99 @@ void toggle_profile(long w, long es)
 	var base;
 	path_sans_ext(base, nm);
 	names.push(base);
-	if ( base == cur )
-	    at = i;
     }
+    out = names;
+}
+
+void toggle_profile(long w, long es)
+{
+    var names;
+    key_profile_names(names, w, es);
+    long n = php::count(names);
+    if ( n == 0 )
+	return;
+    var cur;
+    ui::get(cur, w, es, "profile");
+    long at = -1;
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( names[i] == cur )
+	    at = i;
     var nx = format("{}", names[(at + 1) % n]);
     load_profile(w, es, nx.c_str());
     load_status(w, es, nx.c_str());	// the format rides the profile
+}
+
+// A key profile's display name: its @title line, else its name.
+void key_profile_title(var &out, long w, long es, const char *name0)
+{
+    var name = name0;		// ring discipline: own the text first
+    out = name;
+    var kpath;
+    bundle_data_path(kpath, w, es, name.c_str(), cbKEYS);
+    var txt;
+    if ( !php::file_get_contents(txt, kpath.c_str()) )
+	return;
+    array lines;
+    php::explode(lines, "\n", txt.c_str());
+    long n = php::count(lines);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var line;
+	if ( !profile_line(line, lines, i) )
+	    continue;
+	var title;
+	if ( keys_title_line(title, line) )
+	{
+	    out = title;
+	    return;
+	}
+    }
+}
+
+void choice_show(long w, long es, const char *label, var &rows);	// below
+
+// `keystyle`, Tools ▸ Key bindings… (plan §41.11a step 3e): with an
+// argument (a choice row's, the seat's, -c's) the key style becomes that
+// profile and the choice is kept for this bundle (keys_choice_save); without
+// one the choice list opens, a row per profile, the current one marked.
+// The `profile` cycle stays the session's own: it saves nothing.
+void key_style(long w, long es, const char *arg0)
+{
+    var arg = arg0;
+    var names;
+    key_profile_names(names, w, es);
+    if ( strlen(arg.c_str()) > 0 )
+    {
+	bool known = false;
+	for ( var nm : names )
+	    if ( nm == arg )
+		known = true;
+	if ( !known || !load_profile(w, es, arg.c_str()) )
+	{
+	    if ( !known )
+		ui::set(w, es, "msg", format("No key style '{}'.", arg));
+	    return;
+	}
+	load_status(w, es, arg.c_str());
+	var title;
+	key_profile_title(title, w, es, arg.c_str());
+	if ( keys_choice_save(w, es, arg.c_str()) )
+	    ui::set(w, es, "msg", format("Keys: {}.", title));
+	return;
+    }
+    var cur;
+    ui::get(cur, w, es, "profile");
+    var crows = {};
+    for ( var nm : names )
+    {
+	var title;
+	key_profile_title(title, w, es, nm.c_str());
+	long mark = 0;
+	if ( nm == cur )
+	    mark = 1;
+	crows[] = { "title": title, "code": cmdKEYSTYLE, "arg": nm, "current": mark };
+    }
+    choice_show(w, es, "Key bindings", crows);
 }
 
 // A choose on the pane: move the caret to the chosen row's line. The
@@ -1884,25 +2074,33 @@ void toggle_profile(long w, long es)
 // owner — then the caret lands in the now-active buffer.
 void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
+bool save_as_quit(long w, long es, long doc, const char *path0);	// ^K X, untitled
 long active_doc(long w, long es, long fallback);
-void goto_pane_row(long w, long es, long doc, long option, bool outline)
+void goto_pane_row(long w, long es, long doc, long option, long view)
 {
+    var key;
+    view_rows_key(key, w, view);
+    if ( strlen(key.c_str()) == 0 )
+	return;
     var rows;
-    if ( outline )
-	ui::get(rows, w, es, "outline");
-    else
-	ui::get(rows, w, es, "diags");
+    ui::get(rows, w, es, key.c_str());
+    if ( rows.is_null() )
+	return;
     long i = 1;
     for ( var row : rows )
     {
 	if ( i == option )
 	{
+	    var ln;
+	    keyed_get(ln, row, "line");
+	    if ( ln.is_null() )
+		return;		// a row that names no line goes nowhere
 	    long target = doc;
 	    var f = row["file"];
 	    if ( !f.is_null() )
 	    {
 		var cp;
-		ui::get(cp, w, doc, "path");
+		doc_name(cp, w, doc);	// the rows name the unit the parse was given
 		if ( !(f == cp.c_str()) )
 		{
 		    var ff = format("{}", f);
@@ -1911,7 +2109,7 @@ void goto_pane_row(long w, long es, long doc, long option, bool outline)
 		}
 	    }
 	    ui::set(w, es, "caret",
-		    caret_to_line(w, target, row["line"].as_integer(), 0));
+		    caret_to_line(w, target, ln.as_integer(), 0));
 	    return;
 	}
 	i = i + 1;
@@ -2117,7 +2315,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	if ( e == 'n' )
 	{
 	    var p;
-	    ui::get(p, w, doc, "path");
+	    doc_name(p, w, doc);
 	    seat = p;
 	}
 	if ( e == 'm' )
@@ -2171,7 +2369,7 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	    if ( lens_name(vw, w, es) )
 		seat = format("({}) ", vw);
 	}
-	long pad = width - strlen(seat.c_str());
+	long pad = width - ui::text_columns(seat.c_str());	// columns (B87)
 	if ( pad > 0 )
 	    s = format("{}{}", s, php::str_repeat(" ", pad));
 	s = format("{}{}", s, seat);
@@ -2233,7 +2431,7 @@ void confirm_choices(var &out, long w, long es)
 	if ( bound )
 	{
 	    var nm;
-	    cmd_name(nm, want.as_integer());
+	    cmd_name_w(nm, w, want.as_integer());
 	    t["action"] = nm;		// the wire id the page posts back
 	    rows.push(t);
 	}
@@ -2292,7 +2490,7 @@ void dialog_hints(var &box, long w, long es, const char *scope,
 	// The scope's cancel CODE; its name is the wire id the page posts
 	// (the engine converts it back to the code at that boundary).
 	var cname;
-	cmd_name(cname, cancel.as_integer());
+	cmd_name_w(cname, w, cancel.as_integer());
 	var cb = { "label": "Close" };
 	cb["action"] = cname;
 	cb["code"] = cancel;
@@ -2420,7 +2618,8 @@ void compose_joe_statusline(var &status, long w, long es, long doc,
 	cols = 80;
     // The renderer's status arm prepends one space — the usable width is
     // cols - 1. A gap that would go negative just joins with one fill.
-    long gap = cols - 1 - strlen(lout.c_str()) - strlen(rout.c_str());
+    long gap = cols - 1 - ui::text_columns(lout.c_str())
+	       - ui::text_columns(rout.c_str());	// columns, not bytes (B87)
     if ( gap < 1 )
 	gap = 1;
     st["content"] = format("{}{}{}", lout, php::str_repeat(fill.c_str(), gap),
@@ -2567,6 +2766,8 @@ bool finish_prompt(long w, long es, long doc, long caret)
     }
     if ( mode == pmSAVEAS )
 	return save_as(w, es, doc, in.c_str());
+    if ( mode == pmSAVEASQUIT )
+	return save_as_quit(w, es, doc, in.c_str());
     if ( mode == pmOPENPROJECT )
     {
 	proj_open(w, es, doc, in.c_str());
@@ -2581,7 +2782,8 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	long nb = php::count(bufs);
 	for ( long i = 0; i < nb; i = i + 1 )
 	{
-	    var bp = format("{}", bufs[i]["path"]);
+	    var bp;
+	    doc_name(bp, w, bufs[i]["doc"].as_integer());	// `untitled` without a file
 	    var bn = php::basename(bp);
 	    if ( bp == in.c_str() || bn == in.c_str() )
 	    {
@@ -2723,27 +2925,16 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 }
 
 // ---- the block model (JOE ^K B / ^K K / ^K C / ^K M / ^K Y) -----------
-// begin = es "mark", end = es "bend"; when the end is unset the block
-// runs mark..caret — the SAME rule the shared selection highlight
-// projects. `r` answers {lo, hi}; false = no block, and this owner
-// spells the ONE refusal message.
+// begin = es "mark", end = es "bend"; the shared selection rule
+// (selection_range, editor_events.inc) reads them, so a block and the
+// highlight agree. `r` answers {lo, hi}; false = no block, and this owner
+// spells the block keys' ONE refusal message.
 bool block_range(var &r, long w, long es, long caret)
 {
-    long mark = es_int(w, es, "mark", -1);
-    long bend = es_int(w, es, "bend", -1);
-    long e = bend >= 0 ? bend : caret;
-    if ( bend < 0 && es_flag(w, es, "selblock") )
-	e = mark;	// two-point personality: no end yet = no block
-    long lo = mark < e ? mark : e;
-    long hi = mark < e ? e : mark;
-    var b = { "lo": lo, "hi": hi };
-    r = b;
-    if ( mark < 0 || lo >= hi )
-    {
-	ui::set(w, es, "msg", "No block (^K B, ^K K).");
-	return false;
-    }
-    return true;
+    if ( selection_range(r, w, es, caret) )
+	return true;
+    ui::set(w, es, "msg", "No block (^K B, ^K K).");
+    return false;
 }
 
 // ^K C: copy the block's text to the caret (the cursor stays on the
@@ -2809,37 +3000,91 @@ void block_move(long w, long es, long doc, long caret)
     ui::set(w, doc, "modified", true);
 }
 
-// ^K Y: delete the block (the clip takes its text — read-only copies,
-// like the shared cut rule); the caret lands on the cut point.
+void clip_publish(long w, long es);	// the clipboard commands, below
+
+// ^K Y: delete the block — the shared cut rule (cut_selection): the
+// clipboard takes its text (read-only, it is only copied) and the caret
+// lands on the cut point.
 void block_del(long w, long es, long doc, long caret)
 {
     var r;
     if ( !block_range(r, w, es, caret) )
 	return;
-    long lo = r["lo"].as_integer();
-    long hi = r["hi"].as_integer();
-    var t;
-    ui::text(t, w, doc);
-    ui::set(w, es, "clip", perl::substr(t, lo, hi - lo));
-    ui::set(w, es, "mark", -1);
-    ui::set(w, es, "bend", -1);
-    if ( !es_flag(w, es, "editable") )
+    cut_selection(w, es, doc, caret, es_flag(w, es, "editable"));
+    clip_publish(w, es);
+}
+
+// ---- the clipboard commands (plan §41.11a step 3e: Thonny's Edit menu) --
+// Cut, Copy and Paste over the shared cut / copy / paste rules
+// (editor_events.inc) and the session's own copy (es "clip"). Where the
+// client reaches the platform's clipboard (its pushed fact, es "hasclip"),
+// a copy is published there through the parked-request slot, and a paste
+// asks the client for the platform's text: the client answers with
+// cmdPASTE carrying the text as its argument. Without that fact the
+// session's own copy is the clipboard (the terminal, a browser page, a
+// headless session).
+void clip_publish(long w, long es)
+{
+    if ( !es_flag(w, es, "hasclip") )
+	return;
+    var c;
+    ui::get(c, w, es, "clip");
+    if ( c.is_null() )
+	c = "";
+    var rq = { "kind": rqCLIPSET, "text": c, "pause": 0 };
+    ui::set(w, es, "termreq", rq);
+}
+
+void clip_cut(long w, long es, long doc, long caret)
+{
+    if ( !cut_selection(w, es, doc, caret, es_flag(w, es, "editable")) )
     {
-	var ro;
-	ui::get(ro, w, es, "ro_msg");
-	var m = format("{} (Copied.)", ro);
-	ui::set(w, es, "msg", m.c_str());
+	ui::set(w, es, "msg", "Nothing selected.");
 	return;
     }
-    edit_checkpoint(w, es, doc, caret);
-    ed_text_erase(w, es, doc, lo, hi - lo);
-    long nc = caret;
-    if ( nc > hi )
-	nc = nc - (hi - lo);
-    else if ( nc > lo )
-	nc = lo;
-    ui::set(w, es, "caret", nc);
-    ui::set(w, doc, "modified", true);
+    clip_publish(w, es);
+}
+
+void clip_copy(long w, long es, long doc, long caret)
+{
+    if ( !copy_selection(w, es, doc, caret) )
+    {
+	ui::set(w, es, "msg", "Nothing selected.");
+	return;
+    }
+    clip_publish(w, es);
+}
+
+// Paste: `arg` is the text the client read from the platform's clipboard;
+// none came (null) = ask the client for it when it reaches one (the
+// session's own copy rides along, for a platform that will not answer),
+// else paste the session's own copy.
+void clip_paste(long w, long es, long doc, long caret, var &arg)
+{
+    if ( !arg.is_null() )
+    {
+	paste_text(w, es, doc, caret, arg.c_str());
+	return;
+    }
+    if ( !es_flag(w, es, "hasclip") )
+    {
+	paste_clip(w, es, doc, caret);
+	return;
+    }
+    var own;
+    ui::get(own, w, es, "clip");
+    if ( own.is_null() )
+	own = "";
+    var rq = { "kind": rqPASTE, "own": own, "pause": 0 };
+    ui::set(w, es, "termreq", rq);
+}
+
+// Select all: the whole text as a GUI selection, the caret at its end.
+void select_all(long w, long es, long doc)
+{
+    long n = ui::text_size(w, doc);
+    ui::set(w, es, "caret", n);
+    select_span(w, es, 0, n);
 }
 
 // ---- direct editing (^Y delete line, ^W delete word right) ------------
@@ -2873,7 +3118,9 @@ void delete_word(long w, long es, long doc, long caret)
 	refuse_edit(w, es);
 	return;
     }
-    long e = ui::text_word_right(w, doc, caret);
+    // JOE's delwr: the run of the caret byte's class (the whitespace alone
+    // on whitespace), never the ^X motion's extent through the next word.
+    long e = ui::text_class_run_right(w, doc, caret);
     if ( e <= caret )
 	return;
     edit_checkpoint(w, es, doc, caret);
@@ -2912,7 +3159,7 @@ bool enter_lens(long w, long es, long doc, long lang)
     var t;
     ui::text(t, w, doc);
     var p;
-    ui::get(p, w, doc, "path");
+    doc_name(p, w, doc);
     var emitted;
     var vmap;			// V5: the source↔display coordinate map, beside the text
     if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
@@ -2998,7 +3245,7 @@ long make_code_view(long w, long es, long subject, long lang)
     var t;
     ui::text(t, w, subject);
     var p;
-    ui::get(p, w, subject, "path");
+    doc_name(p, w, subject);
     var emitted;
     var vmap;			// V5: the source↔display coordinate map
     if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
@@ -3059,21 +3306,48 @@ long active_doc(long w, long es, long fallback)
     return ad != 0 ? ad : fallback;
 }
 
-// Open a document for the buffer table: an unreadable path is a NEW
-// EMPTY file (JOE's "New File"), not a refusal — setup_document's
-// 0-on-missing contract stays what vised/lined need.
-long open_buffer_doc(long w, long es, const char *path)
+// THE open rule (B86), one for the launch and ^K E: a missing path is a
+// NEW file (JOE's "New File": an empty document under that name); an
+// existing path that cannot be read (a directory, no permission) is
+// REFUSED. `note` is the status-line text: `New file <path>.` for a new
+// file, the refusal's reason when the answer is 0, empty for a plain load.
+// setup_document's 0-on-missing contract stays what vised/lined need. No
+// path at all (a launch without a file, decided 2026-09-30) is the UNTITLED
+// buffer (new_document's): nothing to announce, Save asks for its name.
+long open_buffer_doc(var &note, long w, const char *path0, bool ro)
 {
-    long nd = setup_document(w, path, false);
-    if ( nd != 0 )
+    var p = path0;		// ring discipline: own the text first
+    note = "";
+    if ( strlen(p.c_str()) == 0 )
     {
-	clog_adopt(w, nd);	// a project member opened later: its restored records attach (Nexus L4c)
-	return nd;
+	long untitled = new_document(w, "", "");
+	if ( ro )
+	    ui::set(w, untitled, "read_only", true);
+	return untitled;
     }
-    nd = ui::create(w, "document");
-    ui::text_load(w, nd, "");
-    doc_set_path(w, nd, path);
-    ui::set(w, nd, "modified", false);
+    if ( !php::file_exists(p) )
+    {
+	long fresh = new_document(w, p.c_str(), "");
+	if ( ro )
+	    ui::set(w, fresh, "read_only", true);
+	note = format("New file {}.", p);
+	return fresh;
+    }
+    if ( php::is_dir(p) )
+    {
+	note = format("{} is a directory.", p);
+	return 0;
+    }
+    long nd = setup_document(w, p.c_str(), ro);
+    if ( nd == 0 )
+    {
+	if ( php::is_readable(p) )
+	    note = format("Cannot read {}.", p);
+	else
+	    note = format("{}: permission denied.", p);
+	return 0;
+    }
+    clog_adopt(w, nd);	// a project member opened later: its restored records attach (Nexus L4c)
     return nd;
 }
 
@@ -3114,6 +3388,7 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     row["caret"] = es_int(w, es, "caret", 0);
     row["mark"] = es_int(w, es, "mark", -1);
     row["bend"] = es_int(w, es, "bend", -1);
+    row["selgui"] = es_flag(w, es, "selgui");	// a GUI selection stays one
     bufs[cur] = row;
     ui::set(w, es, "buffers", bufs);
     var t = bufs[idx];
@@ -3125,6 +3400,9 @@ void switch_buffer(long w, long es, long olddoc, long idx)
     ui::set(w, es, "caret", t["caret"].as_integer());
     ui::set(w, es, "mark", t["mark"].as_integer());
     ui::set(w, es, "bend", t["bend"].as_integer());
+    var tsg;
+    keyed_get(tsg, t, "selgui");		// a fresh row has none: a block
+    ui::set(w, es, "selgui", !tsg.is_null() && tsg.as_boolean());
     derive_access(w, es);
     lex_first_spans(w, es, nd);
     ui::set(w, es, "pending_parse", 1);
@@ -3146,8 +3424,10 @@ void push_buffer_row(long w, long es, long nd, const char *path)
     }
     long vid = view_new(w, es, nd, viewSOURCE, doc_kind(w, nd));	// the tab's
 				// View: the source View over its document
-    bufs[] = { "doc": nd, "path": path, "caret": 0,
-	       "mark": -1, "bend": -1, "view": vid };
+    var row = { "doc": nd, "caret": 0, "mark": -1, "bend": -1, "view": vid };
+    if ( strlen(path) > 0 )
+	row["path"] = path;	// an untitled buffer's row has none (doc_name)
+    bufs[] = row;
     ui::set(w, es, "buffers", bufs);
 }
 
@@ -3181,30 +3461,44 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     long n = php::count(bufs);
     // Two spellings of one file are one BUFFER (V6c-2): same_file, or
     // `^K E /abs/path/x.mad` opens a second buffer on the file already open
-    // as `x.mad` and the two then edit past each other.
+    // as `x.mad` and the two then edit past each other. An empty name is the
+    // UNTITLED buffer: the one already open, else a new one.
+    bool untitled = strlen(p.c_str()) == 0;
     for ( long i = 0; i < n; i = i + 1 )
     {
 	var r = bufs[i];
 	var rp = r["path"];
-	if ( same_file(rp.is_null() ? "" : rp.c_str(), p.c_str()) )
+	bool same = untitled ? rp.is_null()
+			     : !rp.is_null() && same_file(rp.c_str(), p.c_str());
+	if ( same )
 	{
+	    var nm;
+	    doc_name(nm, w, r["doc"].as_integer());
 	    if ( i == es_int(w, es, "bufidx", 0) )
 	    {
-		ui::set(w, es, "msg", format("Already editing {}.", p));
+		ui::set(w, es, "msg", format("Already editing {}.", nm));
 		return;
 	    }
 	    switch_buffer(w, es, olddoc, i);
-	    ui::set(w, es, "msg", format("Editing {}.", p));
+	    ui::set(w, es, "msg", format("Editing {}.", nm));
 	    return;
 	}
     }
-    bool fresh = !php::file_exists(p);
-    long nd = open_buffer_doc(w, es, p.c_str());
+    var note;
+    long nd = open_buffer_doc(note, w, p.c_str(), false);
+    if ( nd == 0 )
+    {
+	ui::set(w, es, "msg", note.c_str());	// the refusal's reason; the
+	return;					// buffer table is untouched
+    }
     push_buffer_row(w, es, nd, p.c_str());
     switch_buffer(w, es, olddoc, n);
-    ui::set(w, es, "msg",
-	    fresh ? format("New file {}.", p)
-		  : format("Editing {}.", p));
+    var nm;
+    doc_name(nm, w, nd);
+    if ( strlen(note.c_str()) > 0 )
+	ui::set(w, es, "msg", note.c_str());	// New file <path>.
+    else
+	ui::set(w, es, "msg", format("Editing {}.", nm));
 }
 
 // ---- IDE-9e: windows (^K O split) --------------------------------------
@@ -3490,6 +3784,37 @@ void proj_launch_path(var &out, long w, long es, long doc)
     ui::get(out, w, doc, "path");
 }
 
+// The launch has no file (an untitled launch): nothing anchors the implicit
+// project, and a manifest has no file to sit beside.
+bool launch_untitled(long w, long es, long doc)
+{
+    var lp;
+    proj_launch_path(lp, w, es, doc);
+    return lp.is_null() || strlen(lp.c_str()) == 0;
+}
+
+// A project change on an untitled launch: refused, and the status line says
+// what to do. True = refused.
+bool launch_untitled_refused(long w, long es, long doc)
+{
+    if ( !launch_untitled(w, es, doc) )
+	return false;
+    ui::set(w, es, "msg", "Save the buffer first: a project starts from its file.");
+    return true;
+}
+
+// A command that needs the buffer's FILE (a build writes beside it, a
+// build command's {file} names it), on an untitled buffer: refused, and the
+// status line says so. True = refused. Check and Run need no file (the live
+// parse).
+bool untitled_refused(long w, long es, long doc, const char *what)
+{
+    if ( !doc_untitled(w, doc) )
+	return false;
+    ui::set(w, es, "msg", format("Save the buffer first: {} needs its file.", what));
+    return true;
+}
+
 // The project's TUs as {path, ti} rows (ti = the tus-array index; -1 =
 // the implicit TU). A native TU entry is a bare string or an object
 // carrying "file" — only that field is interpreted here; the rest rides.
@@ -3500,9 +3825,12 @@ void proj_tu_rows(var &out, long w, long es, long doc)
     ui::get(proj, w, es, "proj");
     if ( proj.is_null() )
     {
-	var lp;
-	proj_launch_path(lp, w, es, doc);
-	rows[] = { "path": lp, "ti": -1 };
+	if ( !launch_untitled(w, es, doc) )
+	{
+	    var lp;
+	    proj_launch_path(lp, w, es, doc);
+	    rows[] = { "path": lp, "ti": -1 };
+	}
 	out = rows;
 	return;
     }
@@ -3583,6 +3911,19 @@ void clog_persist(long w, long es, long doc)
 // manifest or no file. ONE stream: loading a file over a session that already
 // logged events would drop the other documents' records (and collide their
 // seqs) -- refused with the reason, never silently (Nexus L4c).
+// A note BESIDE the status line's current message, never over it: a
+// startup announcement and a later note both survive.
+void msg_beside(long w, long es, const char *note0)
+{
+    var note = note0;		// ring discipline: own the text first
+    var prior;
+    ui::get(prior, w, es, "msg");
+    if ( prior.is_null() || strlen(prior.c_str()) == 0 )
+	ui::set(w, es, "msg", note.c_str());
+    else
+	ui::set(w, es, "msg", format("{} {}", prior, note));
+}
+
 void clog_restore(long w, long es, long doc)
 {
     var path;
@@ -3594,13 +3935,7 @@ void clog_restore(long w, long es, long doc)
     if ( clog_head(w, doc) > 0 )
     {
 	// Beside the caller's message (the project announcement), never over it.
-	var prior;
-	ui::get(prior, w, es, "msg");
-	var note = "Events not restored: this session already logged events.";
-	if ( prior.is_null() || strlen(prior.c_str()) == 0 )
-	    ui::set(w, es, "msg", note.c_str());
-	else
-	    ui::set(w, es, "msg", format("{} {}", prior, note));
+	msg_beside(w, es, "Events not restored: this session already logged events.");
 	return;
     }
     long le = changelog_of(w, doc);
@@ -3662,6 +3997,8 @@ bool proj_write(long w, long es, long doc)
     var pf;
     ui::get(pf, w, es, "projfile");
     bool fresh = !proj_has_manifest(w, es);
+    if ( fresh && launch_untitled_refused(w, es, doc) )
+	return false;
     if ( fresh )
     {
 	var lp;
@@ -3699,8 +4036,21 @@ void layout_persist(long w, long es)
     var lo;
     layout_get(lo, w, es);
     var txt;
-    layout_to_text(txt, lo);
+    layout_to_text(txt, lo, w);
     php::file_put_contents(lf.c_str(), txt.c_str());
+}
+
+// An ASSET is a file; a pseudo-buffer ([build], [terminal], [repl]) is
+// named in brackets — a view the IDE writes, bytes only. The one test: the
+// layer owner (asset_layers_of), projadd and F5 (the REPL pane's replrun) read it.
+bool path_is_asset(var &p)
+{
+    if ( p.is_null() )
+	return false;
+    const char *s = p.c_str();
+    if ( strlen(s) == 0 )
+	return false;
+    return s[0] != '[';
 }
 
 // projadd — the argument-taking membership verb (a prompt collects the
@@ -3711,8 +4061,7 @@ void proj_add(long w, long es, long doc, const char *path0)
     var p = path0;		// ring discipline: own the text
     if ( strlen(p.c_str()) == 0 )
 	return;
-    const char *pc = p.c_str();
-    if ( pc[0] == '[' )
+    if ( !path_is_asset(p) )
     {
 	// [build]-style pseudo-buffers are not files.
 	ui::set(w, es, "msg", format("Not a file: {}", p));
@@ -3727,6 +4076,8 @@ void proj_add(long w, long es, long doc, const char *path0)
     ui::get(proj, w, es, "proj");
     if ( proj.is_null() )
     {
+	if ( launch_untitled_refused(w, es, doc) )
+	    return;
 	var np;
 	var lp;
 	proj_launch_path(lp, w, es, doc);
@@ -3753,10 +4104,10 @@ void proj_add(long w, long es, long doc, const char *path0)
 // projaddcur — add the ACTIVE buffer's file (^K J's proposed joe seat).
 void proj_addcur(long w, long es, long doc)
 {
+    if ( untitled_refused(w, es, doc, "a project member") )
+	return;
     var p;
     ui::get(p, w, doc, "path");
-    if ( p.is_null() || strlen(p.c_str()) == 0 )
-	return;
     proj_add(w, es, doc, p.c_str());
 }
 
@@ -3855,7 +4206,7 @@ bool proj_load(long w, long es, var &pf)
 	{
 	    var newlo;
 	    var lerr;
-	    if ( parse_layout(newlo, ltxt.c_str(), lerr) )
+	    if ( parse_layout(newlo, ltxt.c_str(), lerr, w) )
 		ui::set(w, es, "layout", newlo);
 	}
     }
@@ -3866,9 +4217,12 @@ bool proj_load(long w, long es, var &pf)
 
 // Startup manifest read (run_ide): a <base>.prj.json beside the launch
 // file IS the project — persistence would be pointless if nothing read
-// it back. No file = the implicit single-file project.
+// it back. No file = the implicit single-file project; an untitled launch
+// has no file to find a manifest beside.
 void proj_startup(long w, long es, long doc)
 {
+    if ( launch_untitled(w, es, doc) )
+	return;
     var lp;
     proj_launch_path(lp, w, es, doc);
     var base;
@@ -3940,6 +4294,8 @@ void project_rows(long w, long es, long doc)
     // [open] — buffers not in the project, dirty-marked.
     for ( var b : bufs )
     {
+	if ( b["path"].is_null() )
+	    continue;			// an untitled buffer is not a file
 	var p = format("{}", b["path"]);
 	var cp;
 	madc::canonical_path(cp, p.c_str());
@@ -4252,6 +4608,51 @@ bool modes_active(long w, long es)
     return cur_pane(w, es) == paneMODES;
 }
 
+// The choice list (plan §41.11a step 3): one value for a command, picked
+// from rows — Run ▸ Language…'s standards, step 3e's key styles. A row is
+// {title, code, arg, current}: choosing it runs `code` with `arg` as the
+// command's argument (cmd_takes_arg), and the current row is marked. The
+// rows and the label live on the bag; one row verb (cmdCHOICE) serves every
+// list, as cmdGOTO serves Problems, so no pane is specific to one choice.
+void choice_show(long w, long es, const char *label, var &rows)
+{
+    ui::set(w, es, "choicelabel", label);
+    ui::set(w, es, "choicerows", rows);
+    set_pane(w, es, paneCHOICE);
+}
+
+// A choose on the list: the list closes, and `act` becomes the chosen row's
+// command as an action event carrying its argument. False = no such row
+// (the list still closes).
+bool choice_action(var &act, long w, long es, long option)
+{
+    set_pane(w, es, paneNONE);
+    var rows;
+    ui::get(rows, w, es, "choicerows");
+    long i = option - 1;		// 1-based wire
+    if ( rows.is_null() || i < 0 || i >= php::count(rows) )
+	return false;
+    var r = rows[i];
+    var ra;
+    keyed_get(ra, r, "arg");
+    var at = "";
+    if ( !ra.is_null() )
+	at = format("{}", ra);
+    action_event(act, r["code"].as_integer(), at.c_str());
+    return true;
+}
+
+// The editor window has the keyboard: no other owner holds it — the
+// terminal, a console's input (the REPL pane's), a prompt, the project window or the modes
+// palette (apply_ide_event's routing order, read as one fact).
+bool editor_has_keyboard(long w, long es)
+{
+    return es_int(w, es, "termfocus", 0) == 0
+	&& es_int(w, es, "consolefocus", 0) == 0
+	&& !prompt_active(w, es) && !project_active(w, es)
+	&& !modes_active(w, es);
+}
+
 // Enter the mode a palette row (or a @modes key) names. The palette
 // closes first — a mode takes the whole stage. False = quit (none of
 // the current modes quit; the contract rides the dispatch).
@@ -4270,7 +4671,7 @@ bool modes_dispatch(long w, long es, long doc, long caret, long a)
 	return true;
     }
     var an;
-    cmd_name(an, a);
+    cmd_name_w(an, w, a);
     ui::set(w, es, "msg", format("Unknown mode action '{}'.", an));
     return true;
 }
@@ -4416,7 +4817,7 @@ long build_doc(long w, long es)
     long existing = build_doc_if_any(w, es);	// ONE finder, no duplicate scan
     if ( existing != 0 )
 	return existing;
-    long nd = open_buffer_doc(w, es, "[build]");
+    long nd = new_document(w, "[build]", "");
     push_buffer_row(w, es, nd, "[build]");
     return nd;
 }
@@ -4569,7 +4970,7 @@ long term_doc(long w, long es)
     long existing = term_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = open_buffer_doc(w, es, "[terminal]");
+    long nd = new_document(w, "[terminal]", "");
     push_buffer_row(w, es, nd, "[terminal]");
     return nd;
 }
@@ -4683,6 +5084,19 @@ void start_terminal(long w, long es, const char *title, const char *uri)
     ui::set(w, es, "msg", format("{} — in the Terminal (^] returns the keyboard).", t));
 }
 
+// The Terminal's program stopped with the session (IdeSession::stop_tasks):
+// the pump cancels its channel, so the close SIGTERMs the child and SIGKILLs
+// it after the grace. Sent once: the handle is spent.
+void term_stop(long w, long es)
+{
+    long stopc = es_int(w, es, "termstop", 0);
+    if ( es_int(w, es, "termlive", 0) == 0 || stopc == 0 )
+	return;
+    var sv = 1;
+    madc::chan_send(stopc, sv);
+    ui::set(w, es, "termstop", 0);
+}
+
 // Send bytes to the running program (the pump writes them to the pty).
 void term_send(long w, long es, var &bytes)
 {
@@ -4737,6 +5151,235 @@ bool terminal_event(long w, long es, var &ev)
 	return true;
     }
     return false;
+}
+
+// ---- the console view (plan §41.11a step 8) --------------------------------
+// A contributed view of shape vsCONSOLE (the REPL pane's, madcide_repl.inc):
+// its key holds { transcript, input, prompt, editable } — the transcript's
+// and the input's documents, the prompt the input follows ("" = none), and
+// whether the input takes edits now — which its plugin keeps current.
+// Composition renders it (console_node) and never calls the plugin. Which
+// console has the keyboard is the es `consolefocus` (its kind; 0 = none).
+// Its input is a FIELD: a document edited under the editor's own interaction
+// state, the editor's parked while the field's is live (field_enter /
+// field_leave) and the field's own kept on its document.
+
+// A console view's state (null when its plugin has set none).
+void console_state(var &out, long w, long es, long kind)
+{
+    var key;
+    view_rows_key(key, w, kind);
+    if ( strlen(key.c_str()) > 0 )
+	ui::get(out, w, es, key.c_str());
+}
+
+// One document of a console's state ("transcript" or "input"; 0 = none yet).
+long console_doc(long w, long es, long kind, const char *field)
+{
+    var st;
+    console_state(st, w, es, kind);
+    var d;
+    keyed_get(d, st, field);
+    return d.is_null() ? 0 : d.as_integer();
+}
+
+// Does a console's input take edits now (true when its plugin says nothing)?
+bool console_editable(long w, long es, long kind)
+{
+    var st;
+    console_state(st, w, es, kind);
+    var e;
+    keyed_get(e, st, "editable");
+    return e.is_null() || e.as_boolean();
+}
+
+// The console view whose input is `doc` (viewNONE = none).
+long console_of_input(long w, long es, long doc)
+{
+    if ( doc == 0 )
+	return viewNONE;
+    var rows;
+    contributed_views(rows, w);
+    for ( var r : rows )
+    {
+	var shape;
+	keyed_get(shape, r, "shape");
+	if ( shape.is_null() || shape.as_integer() != vsCONSOLE )
+	    continue;
+	long k = r["kind"].as_integer();
+	if ( console_doc(w, es, k, "input") == doc )
+	    return k;
+    }
+    return viewNONE;
+}
+
+// A field's caret moved to `caret` with no mark, block or selection (its
+// text replaced: a history recall, a taken entry's clearing).
+void field_reset(long w, long fdoc, long caret)
+{
+    ui::set(w, fdoc, "caret", caret);
+    ui::set(w, fdoc, "mark", -1);
+    ui::set(w, fdoc, "bend", -1);
+    ui::set(w, fdoc, "selgui", false);
+}
+
+// A FIELD's document: not a buffer-table row, its own caret, mark and
+// selection kept on it while the field is not live.
+long field_document(long w, const char *name)
+{
+    long d = new_document(w, name, "");
+    ui::set(w, d, "field", true);
+    field_reset(w, d, 0);
+    return d;
+}
+
+bool field_doc(long w, long doc)
+{
+    if ( doc == 0 )
+	return false;
+    var f;
+    ui::get(f, w, doc, "field");
+    return !f.is_null() && f.as_boolean();
+}
+
+// A field's caret while it is not live.
+long field_caret(long w, long fdoc)
+{
+    var c;
+    ui::get(c, w, fdoc, "caret");
+    return c.is_null() ? 0 : c.as_integer();
+}
+
+// The field's state made live, the editor's parked in `parked`: the
+// session's editing commands then run on the field's document without
+// touching the editor's caret, selection or colour.
+void field_enter(var &parked, long w, long es, long fdoc)
+{
+    var ed;
+    ui::get(ed, w, es, "editable");
+    var ro;
+    ui::get(ro, w, es, "ro_msg");
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    parked = { "caret": es_int(w, es, "caret", 0), "mark": es_int(w, es, "mark", -1),
+	       "bend": es_int(w, es, "bend", -1), "selgui": es_flag(w, es, "selgui"),
+	       "fview": es_int(w, es, "fview", 0),
+	       "anchor": es_int(w, es, "anchor", -1), "editable": ed,
+	       "ro_msg": ro, "hspans": hs };
+    var none = {};
+    ui::set(w, es, "caret", field_caret(w, fdoc));
+    ui::set(w, es, "mark", es_int(w, fdoc, "mark", -1));
+    ui::set(w, es, "bend", es_int(w, fdoc, "bend", -1));
+    ui::set(w, es, "selgui", es_flag(w, fdoc, "selgui"));
+    ui::set(w, es, "fview", 0);		// no View: nav_doc is the field itself
+    ui::set(w, es, "anchor", -1);
+    ui::set(w, es, "editable", true);
+    ui::set(w, es, "ro_msg", "");
+    ui::set(w, es, "hspans", none);
+}
+
+// The field's live state kept on its document, the editor's restored.
+void field_leave(var &parked, long w, long es, long fdoc)
+{
+    ui::set(w, fdoc, "caret", es_int(w, es, "caret", 0));
+    ui::set(w, fdoc, "mark", es_int(w, es, "mark", -1));
+    ui::set(w, fdoc, "bend", es_int(w, es, "bend", -1));
+    ui::set(w, fdoc, "selgui", es_flag(w, es, "selgui"));
+    ui::set(w, es, "caret", parked["caret"]);
+    ui::set(w, es, "mark", parked["mark"]);
+    ui::set(w, es, "bend", parked["bend"]);
+    ui::set(w, es, "selgui", parked["selgui"]);
+    ui::set(w, es, "fview", parked["fview"]);
+    ui::set(w, es, "anchor", parked["anchor"]);
+    ui::set(w, es, "editable", parked["editable"]);
+    ui::set(w, es, "ro_msg", parked["ro_msg"]);
+    ui::set(w, es, "hspans", parked["hspans"]);
+}
+
+// Replace `del` bytes at `off` with `ins` in a field, its caret after the
+// insertion (through the text-mutation owners, under the field's state).
+void field_edit(long w, long es, long fdoc, long off, long del, const char *ins)
+{
+    var t = ins;
+    var parked;
+    field_enter(parked, w, es, fdoc);
+    if ( del > 0 )
+	ed_text_erase(w, es, fdoc, off, del);
+    if ( strlen(t.c_str()) > 0 )
+	ed_text_insert(w, es, fdoc, off, t.c_str());
+    ui::set(w, es, "caret", off + strlen(t.c_str()));
+    field_leave(parked, w, es, fdoc);
+}
+
+// Text as a console shows an entry: the prompt, then the text, each line
+// after the first indented to the prompt's width (the CLI's rule).
+void console_entry_display(var &out, const char *prompt, const char *text)
+{
+    var p = prompt;
+    var t = text;
+    var pad = php::str_repeat(" ", ui::text_columns(p.c_str()));	// columns (B87)
+    array lines;
+    php::explode(lines, "\n", t.c_str());
+    long n = php::count(lines);
+    var s = p;
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var one = php::array_get_cstr(lines, i);
+	if ( i == 0 )
+	    s = format("{}{}", s, one);
+	else
+	    s = format("{}\n{}{}", s, pad, one);
+    }
+    out = s;
+}
+
+// Where the input's caret falls in that display.
+long console_display_caret(const char *prompt, const char *text, long caret)
+{
+    long pl = strlen(prompt);
+    long nl = 0;
+    for ( long i = 0; i < caret && text[i] != 0; i = i + 1 )
+	if ( text[i] == '\n' )
+	    nl = nl + 1;
+    return pl + caret + nl * pl;
+}
+
+// Where an event goes while a console's input has the keyboard.
+enum console_route : unsigned char { crPASS = 0, crHANDLED, crFIELD, crCOMMAND };
+
+// Route one event while console `kind`'s input has the keyboard: a binding
+// in the scope the view names is its command (crCOMMAND for a contributed
+// one, the console's own; a built-in one is the event's action from here
+// on), text and the field's commands edit the input, the rest passes on.
+long console_route_event(long w, long es, long kind, var &ev)
+{
+    var ek = ev["event_code"];
+    if ( ek != ui::event_kind::text && ek != ui::event_kind::key
+	 && ek != ui::event_kind::action )
+	return crPASS;
+    var scope;
+    view_name_w(scope, w, kind);
+    var a;
+    if ( scoped_action(a, w, es, scope.c_str(), ev) )
+    {
+	long code = a.as_integer();
+	// The binding's command, as an action event (the key's own spelling
+	// stays in `seq`, the one a scope looks up).
+	var an;
+	cmd_name_w(an, w, code);
+	ev["event"] = "action";
+	ev["event_code"] = ui::event_kind::action;
+	ev["action"] = an;
+	ev["action_code"] = code;
+	if ( cmd_contributed(code) )
+	    return crCOMMAND;
+	if ( !cmd_edits_field(code) )
+	    return crPASS;
+	return console_editable(w, es, kind) ? crFIELD : crHANDLED;
+    }
+    if ( ek == ui::event_kind::action && !cmd_edits_field(ev_code(ev)) )
+	return crPASS;
+    return console_editable(w, es, kind) ? crFIELD : crHANDLED;
 }
 
 void stop_build(long w, long es)
@@ -4834,6 +5477,8 @@ void native_build_task(long w, long es)
 // ring calls rots (the ring-lifetime contract).
 void start_native_build(long w, long es, long doc, var &kind, var &outtmpl)
 {
+    if ( untitled_refused(w, es, doc, "a build") )
+	return;
     if ( es_int(w, es, "buildlive", 0) != 0 )
     {
 	ui::set(w, es, "msg", "A build is already running.");
@@ -4902,6 +5547,33 @@ bool dialog_request(long w, long es, long dlg, const char *title,
     return true;
 }
 
+// Ask for the name a save writes under (Save As…): the native dialog when
+// the client has one, else JOE's prompt. `then_quit` is ^K X on a buffer
+// with no file yet: the answer saves, then quits (the request's own kind
+// carries it, so a cancel leaves nothing behind).
+void save_as_ask(long w, long es, long doc, bool then_quit)
+{
+    var cur = "";
+    if ( !doc_untitled(w, doc) )
+	ui::get(cur, w, doc, "path");
+    if ( !dialog_request(w, es, then_quit ? dlgSAVEQUIT : dlgSAVE, "Save As", cur) )
+	start_prompt(w, es, "Save as", then_quit ? pmSAVEASQUIT : pmSAVEAS);
+}
+
+// The document's name moved (Save As): the caches keyed on the old one go —
+// the parse handle names its unit (the diagnostics rows carry that name) and
+// the git handle answers for the old file's directory. The next need opens
+// both under the new name.
+void doc_forget_name(long w, long doc)
+{
+    long ph = es_int(w, doc, "phandle", 0);
+    if ( ph != 0 )
+	madc::parse_close(ph);
+    ui::set(w, doc, "phandle", 0);
+    ui::set(w, doc, "ghandle", -1);
+    ui::set(w, doc, "grelpath", "");
+}
+
 // Save the buffer under a NEW path (Save As…): the document's path moves,
 // its buffer row follows (the ring addresses buffers by path), then the
 // one write verb runs — the same `w` every save uses.
@@ -4910,7 +5582,9 @@ bool save_as(long w, long es, long doc, const char *path0)
     var p = path0;			// ring discipline: own the text first
     if ( strlen(p.c_str()) == 0 )
 	return true;
+    bool untitled_launch = launch_untitled(w, es, doc);	// before the name moves
     doc_set_path(w, doc, p.c_str());	// the kind follows the new name
+    doc_forget_name(w, doc);
     var bufs;
     ui::get(bufs, w, es, "buffers");
     if ( !bufs.is_null() )
@@ -4923,6 +5597,10 @@ bool save_as(long w, long es, long doc, const char *path0)
 	    {
 		r["path"] = p;
 		bufs[i] = r;
+		// The untitled LAUNCH buffer (row 0) named: it is the launch
+		// file now, the implicit project's anchor.
+		if ( i == 0 && untitled_launch )
+		    ui::set(w, es, "launchpath", p);
 	    }
 	}
 	ui::set(w, es, "buffers", bufs);
@@ -4930,30 +5608,47 @@ bool save_as(long w, long es, long doc, const char *path0)
     return save_and_check(w, es, doc);
 }
 
+// Save As, then quit once the file is written (^K X's answer on a buffer
+// that had no file). False = the session ends.
+bool save_as_quit(long w, long es, long doc, const char *path0)
+{
+    var p = path0;			// ring discipline: own the text first
+    if ( strlen(p.c_str()) == 0 )
+	return true;
+    if ( !save_as(w, es, doc, p.c_str()) )
+	return false;
+    if ( doc_modified(w, doc) )
+	return true;			// the write failed; its message stands
+    return do_verb(w, es, "q");
+}
+
 // A native file dialog answered (the dialog event, S4): open edits the
 // chosen file (the same path editfile's prompt takes), save writes the
-// buffer under it; an empty path is the user's cancel.
-void dialog_result(long w, long es, long doc, var &ev)
+// buffer under it; an empty path is the user's cancel. False = the session
+// ends (a save-and-quit's answer).
+bool dialog_result(long w, long es, long doc, var &ev)
 {
     long dlg = es_int(w, es, "dlgkind", dlgOPEN);	// the request this answers
     var path = ev["path"];
     if ( path.is_null() || strlen(path.c_str()) == 0 )
     {
 	ui::set(w, es, "msg", "Cancelled.");
-	return;
+	return true;
     }
     switch ( dlg )
     {
 	case dlgSAVE:
-	    save_as(w, es, doc, path.c_str());
-	    return;
+	    return save_as(w, es, doc, path.c_str());
+	case dlgSAVEQUIT:
+	    return save_as_quit(w, es, doc, path.c_str());
 	case dlgOPENPROJECT:
 	    proj_open(w, es, doc, path.c_str());
-	    return;
+	    return true;
 	default:
 	    break;
     }
     edit_file(w, es, doc, path.c_str());
+    return true;
 }
 
 // The Run row (owner ruling 2026-08-27: the running madc IS the
@@ -4990,7 +5685,7 @@ void run_buffer(long w, long es, long doc)
 	// window and its stdout/stderr stream into Output. The terminal
 	// below keeps the inherited-stdio handoff.
 	var rp;
-	ui::get(rp, w, doc, "path");
+	doc_name(rp, w, doc);
 	var title = format("Run {}", rp);
 	if ( proj_kind(w, es) == pkGUI )
 	{
@@ -5359,6 +6054,8 @@ void build_choose(long w, long es, long doc, long option)
 	default:
 	    break;			// cmdBLD_RUN_CMD: the row's own command
     }
+    if ( untitled_refused(w, es, doc, "a build command") )
+	return;
     var cmd0 = format("{}", r["cmd"]);
     var cmd;
     build_subst(cmd, cmd0.c_str(), w, es, doc);
@@ -5441,6 +6138,11 @@ void open_shell(long w, long es)
 // the DISPATCHER, zero duplicated verb logic (verbs never re-enter act).
 bool save_quit(long w, long es, long doc)
 {
+    if ( doc_untitled(w, doc) )
+    {
+	save_as_ask(w, es, doc, true);	// the name first; the answer quits
+	return true;
+    }
     if ( !do_verb(w, es, "w") )
 	return false;
     if ( !doc_modified(w, doc) )
@@ -5449,9 +6151,15 @@ bool save_quit(long w, long es, long doc)
 }
 
 // Save + a silent diagnostics refresh (check-on-save): the verb's own
-// answer ("Wrote N bytes." or the refusal) stays the status message.
+// answer ("Wrote N bytes." or the refusal) stays the status message. A
+// buffer with no file yet asks for its name (Save As), as Thonny's does.
 bool save_and_check(long w, long es, long doc)
 {
+    if ( doc_untitled(w, doc) )
+    {
+	save_as_ask(w, es, doc, false);
+	return true;
+    }
     bool run = do_verb(w, es, "w");
     refresh_diags(w, es, doc);
     return run;
@@ -5600,9 +6308,19 @@ void IdeSession::pointer_event(long doc, long nav, var &ev)
     if ( tdoc != 0 && tsubj == tdoc )
     {
 	ui::set(w, es, "termfocus", 1);
+	ui::set(w, es, "consolefocus", 0);
 	return;
     }
     ui::set(w, es, "termfocus", 0);
+    // A console likewise (the REPL pane's): a press on its node (its input
+    // is the subject) gives the input the keyboard.
+    long ck = console_of_input(w, es, tsubj);
+    if ( ck != viewNONE )
+    {
+	ui::set(w, es, "consolefocus", ck);
+	return;
+    }
+    ui::set(w, es, "consolefocus", 0);
     long idx = -1;
     long tag = ev["tag"].is_null() ? -1 : ev["tag"].as_integer();
     if ( tag >= 0 && tag < window_count(w, es) )
@@ -5952,7 +6670,7 @@ void view_split(long w, long es, long doc, long dir, long lang)
     tabs.push(tab);
     long snone = ui::side_code("");
     long ksed = slotEDITOR;
-    long mtabs = lmTABS;
+    long mtabs = pnTABS;
     var newleaf = { "kind": ctPANE, "slot": ksed, "side": snone, "size": 0,
 		    "mode": mtabs, "tabs": tabs, "active": 0, "focus": 0,
 		    "hidden": 0, "pcaret": pcar, "pmark": -1, "pbend": -1 };
@@ -5984,6 +6702,7 @@ void editor_enter_leaf(long w, long es, var &tree, long arriving)
     ui::set(w, es, "caret", tleaf["pcaret"].as_integer());
     ui::set(w, es, "mark", tleaf["pmark"].as_integer());
     ui::set(w, es, "bend", tleaf["pbend"].as_integer());
+    ui::set(w, es, "selgui", false);	// a window's parked markers are a block
     var v;
     view_row(v, w, es, vid);
     if ( !v.is_null() && v["kind"].as_integer() == viewCODE )
@@ -6189,6 +6908,8 @@ void view_dock(long w, long es, long slot, long side)
 		"Open a pane (a sidebar or a panel view) before docking it.");
 	return;
     }
+    var vn;
+    view_name_w(vn, w, k);
     var lo;
     layout_get(lo, w, es);
     long tab = -1;
@@ -6196,7 +6917,7 @@ void view_dock(long w, long es, long slot, long side)
     if ( ci < 0 )
     {
 	ui::set(w, es, "msg",
-		format("No chrome pane hosts the {} view.", view_name(k)));
+		format("No chrome pane hosts the {} view.", vn));
 	return;
     }
     var ch = lo["chrome"];
@@ -6207,7 +6928,7 @@ void view_dock(long w, long es, long slot, long side)
     lo["chrome"] = ch;
     ui::set(w, es, "layout", lo);
     layout_persist(w, es);
-    ui::set(w, es, "msg", format("Docked {} to the {}.", view_name(k),
+    ui::set(w, es, "msg", format("Docked {} to the {}.", vn,
 				 ui::side_name(side)));
 }
 
@@ -6301,6 +7022,19 @@ void view_window(long w, long es, long doc)
 // session surface. False = quit.
 bool IdeSession::apply_ide_event(long doc, var &ev_in)
 {
+    // An event on a FIELD's document runs under the field's state (a
+    // console's input: its routing below, a handler's ide::run on it), the
+    // editor's parked around it; inside, the field is live already.
+    if ( field_doc(w, doc) && es_int(w, es, "infield", 0) != doc )
+    {
+	var parked;
+	field_enter(parked, w, es, doc);
+	ui::set(w, es, "infield", doc);
+	bool fcont = apply_ide_event(doc, ev_in);
+	ui::set(w, es, "infield", 0);
+	field_leave(parked, w, es, doc);
+	return fcont;
+    }
     // The startup hint yields to the first event of any kind — the same
     // "first event returns the row" rule run_ide's loop used to apply.
     ui::set(w, es, "hint", 0);
@@ -6321,7 +7055,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	{
 	    var an = ev["action"];
 	    if ( !an.is_null() && strlen(an.c_str()) > 0 )
-		ev["action_code"] = cmd_of(an.c_str());
+		ev["action_code"] = cmd_of_w(w, an.c_str());
 	}
     }
     // Stage-2: cooperative background tasks drained — the spawned parse
@@ -6356,6 +7090,28 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( modes_active(w, es) )
 	return modes_event(w, es, nav, caret, ev);
 
+    // A console's input has the keyboard (plan §41.11a step 8; the REPL
+    // pane's, §41.9a): a binding in the scope the view names runs its
+    // command, text and the field's commands edit the input — the session's
+    // own dispatch on the input document, under the field's state (the
+    // field rule above) — and every other command keeps its target (save
+    // saves the file). The modals above keep theirs.
+    long cfocus = es_int(w, es, "consolefocus", 0);
+    if ( cfocus != 0 )
+    {
+	long fin = console_doc(w, es, cfocus, "input");
+	if ( fin != 0 && doc != fin )
+	{
+	    long route = console_route_event(w, es, cfocus, ev);
+	    if ( route == crHANDLED )
+		return true;
+	    if ( route == crCOMMAND )
+		return run_contributed(w, es, doc, ev_code(ev), "");
+	    if ( route == crFIELD )
+		return apply_ide_event(fin, ev);
+	}
+    }
+
     // vi MODES-AS-SCOPES (owner 2026-08-31): while a vi mode is active,
     // this arm routes printable keys through the @normal/@insert scope
     // tables and the count/operator grammar; what it does not consume
@@ -6373,8 +7129,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( kind == ui::event_kind::dialog )
     {
 	// A native file dialog answered (S4): open or save-as by the path.
-	dialog_result(w, es, doc, ev);
-	return true;
+	return dialog_result(w, es, doc, ev);
     }
     if ( kind == ui::event_kind::pointer )
     {
@@ -6395,6 +7150,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    else
 		ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	    return true;
+	}
+	// A CONTRIBUTED command (plugins Stage B1): its handler runs, with the
+	// argument the event carries (a tab's, the seat's, the -c line's).
+	if ( cmd_contributed(code) )
+	{
+	    var carg;
+	    keyed_get(carg, ev, "arg");
+	    var cs = "";
+	    if ( !carg.is_null() )
+		cs = format("{}", carg);
+	    return run_contributed(w, es, doc, code, cs.c_str());
 	}
 	// Stored-space interaction state (block markers) and history are
 	// meaningless against a displayed view: the one refusal, up front
@@ -6511,13 +7277,34 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdMARK:
 	    {
 		ui::set(w, es, "mark", caret);
+		ui::set(w, es, "selgui", false);	// a block, not a GUI selection
 		return true;
 	    }
 	    case cmdBEND:
 	    {
 		ui::set(w, es, "bend", caret);
+		ui::set(w, es, "selgui", false);
 		return true;
 	    }
+	    // The clipboard (Thonny's Edit menu, plan §41.11a step 3e): over
+	    // the NAV target, so a displayed View copies what it shows (cut
+	    // and paste refuse there through the editable gate).
+	    case cmdCUT:
+		clip_cut(w, es, nav, caret);
+		return true;
+	    case cmdCOPY:
+		clip_copy(w, es, nav, caret);
+		return true;
+	    case cmdPASTE:
+	    {
+		var parg;
+		keyed_get(parg, ev, "arg");
+		clip_paste(w, es, nav, caret, parg);
+		return true;
+	    }
+	    case cmdSELECTALL:
+		select_all(w, es, nav);
+		return true;
 	    case cmdBLOCKCOPY:
 	    {
 		block_copy(w, es, doc, caret);
@@ -6553,24 +7340,30 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		delete_word(w, es, doc, caret);
 		return true;
 	    }
+	    // The motions this dispatcher owns: Shift held on the chord
+	    // extends the GUI selection (motion_select), as edit_key's do.
 	    case cmdWORDLEFT:
 	    {
 		ui::set(w, es, "caret", ui::text_word_left(w, nav, caret));
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdWORDRIGHT:
 	    {
 		ui::set(w, es, "caret", ui::text_word_right(w, nav, caret));
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdTOP:
 	    {
 		ui::set(w, es, "caret", 0);
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdBOTTOM:
 	    {
 		ui::set(w, es, "caret", ui::text_size(w, nav));
+		motion_select(w, es, caret, ev);
 		return true;
 	    }
 	    case cmdCHECK:
@@ -6654,13 +7447,8 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    }
 	    case cmdSAVEAS:
-	    {
-		var cur;
-		ui::get(cur, w, doc, "path");
-		if ( !dialog_request(w, es, dlgSAVE, "Save As", cur) )
-		    start_prompt(w, es, "Save as", pmSAVEAS);
+		save_as_ask(w, es, doc, false);
 		return true;
-	    }
 	    case cmdOPENPROJECT:
 	    {
 		// File -> Open Project… (polish P2b): the native Open over the
@@ -6691,7 +7479,22 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    {
 		show_view(w, es, viewTERMINAL);
 		if ( es_int(w, es, "termlive", 0) != 0 )
+		{
 		    ui::set(w, es, "termfocus", 1);
+		    ui::set(w, es, "consolefocus", 0);
+		}
+		return true;
+	    }
+	    case cmdKEYSTYLE:
+	    {
+		// Tools ▸ Key bindings…: its argument (a choice row's, the
+		// seat's, -c's) or the choice list.
+		var ka;
+		keyed_get(ka, ev, "arg");
+		var ks = "";
+		if ( !ka.is_null() )
+		    ks = format("{}", ka);
+		key_style(w, es, ks.c_str());
 		return true;
 	    }
 	    case cmdBUFSEL:
@@ -6799,14 +7602,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	if ( mk != ui::key::none )
 	{
 	    var kn;
-	    cmd_name(kn, code);
+	    cmd_name_w(kn, w, code);
 	    var ke = { "event": "key", "event_code": ui::event_kind::key,
 		       "key": kn, "key_code": mk };
+	    var em;
+	    keyed_get(em, ev, "mods");
+	    if ( !em.is_null() )
+		ke["mods"] = em;	// Shift on the chord selects
 	    if ( edit_key(w, es, nav, caret, ke) )
 		return true;
 	}
 	if ( strlen(a.c_str()) == 0 )
-	    cmd_name(a, code);
+	    cmd_name_w(a, w, code);
 	ui::set(w, es, "msg", format("Unknown action '{}'.", a));
 	return true;
     }
@@ -6818,7 +7625,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( kind == ui::event_kind::choose )
     {
 	// The chosen row's verb: its `code` hint (a code-stamped row) or the
-	// name a client posted, converted at the entry above.
+	// name a client posted, converted at the entry above. A contributed
+	// VIEW's row verb is a range, not a case: the same navigation owner
+	// reads that view's rows, as a Problems row's cmdGOTO does.
+	if ( cmd_view_row(ev_code(ev)) )
+	{
+	    if ( viewing )
+		refuse_edit(w, es);
+	    else
+		goto_pane_row(w, es, doc, ev["option"].as_integer(),
+			      view_of_row_cmd(ev_code(ev)));
+	    return true;
+	}
 	switch ( ev_code(ev) )
 	{
 	    // Build-pane rows dispatch by ROW (act + command + mode are the
@@ -6844,7 +7662,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		    refuse_edit(w, es);
 		else
 		    goto_pane_row(w, es, doc, ev["option"].as_integer(),
-				  ev_code(ev) == cmdGOTODEF);
+				  view_of_row_cmd(ev_code(ev)));
 		return true;
 	    // The shared editor menu's rows (compose_menu: Save / Find / Quit).
 	    case cmdW:
@@ -6867,6 +7685,15 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdOPT_PROJKIND:
 		proj_toggle_kind(w, es, doc);
 		return true;
+	    // The choice list's rows (choice_show): the chosen row's command,
+	    // run with its argument.
+	    case cmdCHOICE:
+	    {
+		var act;
+		if ( choice_action(act, w, es, ev["option"].as_integer()) )
+		    return apply_ide_event(doc, act);
+		return true;
+	    }
 	    default:
 		break;
 	}
@@ -6914,13 +7741,13 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 // Returns the row count (0 = the caller adds its empty-state line).
 long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 {
+    long view = outline_pane ? viewOUTLINE : viewPROBLEMS;
+    var key;
+    view_rows_key(key, w, view);
     var rows;
-    if ( outline_pane )
-	ui::get(rows, w, es, "outline");
-    else
-	ui::get(rows, w, es, "diags");
+    ui::get(rows, w, es, key.c_str());
     var dpath;
-    ui::get(dpath, w, doc, "path");
+    doc_name(dpath, w, doc);	// the rows name the unit the parse was given
     long nrows = 0;
     for ( var row : rows )
     {
@@ -6937,7 +7764,7 @@ long diag_items(var &items, long w, long es, long doc, bool outline_pane)
 	    it["content"] = format("{}:{} {} {}", row["line"],
 				   row["column"], row["severity"],
 				   row["message"]);
-	long verb = outline_pane ? cmdGOTODEF : cmdGOTO;
+	long verb = view_row_cmd(view);
 	var gh = { "code": verb };	// a navigable row: its verb as a code
 	it["hints"] = gh;
 	items[] = it;
@@ -6976,6 +7803,95 @@ void view_lens_hints(var &eh, long w, long es, var &v)
 	eh["spans"] = vhs;
 }
 
+// A contributed view's projection (§5.3): the rows on its bag key as item
+// rows under a choice, as Problems shows `diags` — each row's `content`, and
+// the view's row verb as its code (a choose goes to the row's line through
+// goto_pane_row). The rows are the plugin's; this renders them and never
+// calls plugin code.
+void contributed_view_node(var &out, long w, long es, long kind, bool focus)
+{
+    var title;
+    view_title_w(title, w, kind);
+    var key;
+    view_rows_key(key, w, kind);
+    var rows;
+    if ( strlen(key.c_str()) > 0 )
+	ui::get(rows, w, es, key.c_str());
+    long verb = view_row_cmd(kind);
+    var items = {};
+    if ( !rows.is_null() )
+	for ( var r : rows )
+	{
+	    var ct;
+	    keyed_get(ct, r, "content");
+	    var it = { "role": "item" };
+	    it["content"] = "";
+	    if ( !ct.is_null() )
+		it["content"] = format("{}", ct);
+	    var gh = { "code": verb };	// a navigable row: the view's verb
+	    it["hints"] = gh;
+	    items[] = it;
+	}
+    if ( php::count(items) == 0 )
+	items[] = { "role": "item", "content": "(empty)" };
+    var cb = { "role": "choice" };
+    cb["label"] = title;
+    cb["children"] = items;
+    var ch = { "list": 1 };
+    if ( focus )
+	ch["focus"] = 1;
+    cb["hints"] = ch;
+    out = cb;
+}
+
+// A console view's node (vsCONSOLE): one edit node over the transcript, then
+// the prompt and the input (no prompt while its plugin shows none: an entry
+// that runs reads the input as its standard input), the caret in the input.
+// Its subject is the input: a press on it gives the input the keyboard
+// (pointer_event). The state is the plugin's; this renders it.
+void console_node(var &out, long w, long es, long kind)
+{
+    var st;
+    console_state(st, w, es, kind);
+    var tt = "";
+    long tdoc = console_doc(w, es, kind, "transcript");
+    if ( tdoc != 0 )
+	ui::text(tt, w, tdoc);
+    long tlen = strlen(tt.c_str());
+    if ( tlen > 0 && tt.c_str()[tlen - 1] != '\n' )
+    {
+	tt = format("{}\n", tt);		// a fresh row after output with no newline
+	tlen = tlen + 1;
+    }
+    long fin = console_doc(w, es, kind, "input");
+    var content = tt;
+    long caret = tlen;
+    if ( fin != 0 && console_editable(w, es, kind) )
+    {
+	var in;
+	ui::text(in, w, fin);
+	var p = "";
+	var pv;
+	keyed_get(pv, st, "prompt");
+	if ( !pv.is_null() )
+	    p = pv;
+	var disp;
+	console_entry_display(disp, p.c_str(), in.c_str());
+	content = format("{}{}", tt, disp);
+	caret = tlen + console_display_caret(p.c_str(), in.c_str(), field_caret(w, fin));
+    }
+    var hints = { "caret": caret, "console": 1 };
+    if ( es_int(w, es, "consolefocus", 0) == kind )
+    {
+	hints["focus"] = 1;
+	hints["tabkey"] = 1;		// tab completes; ^] hands the keyboard back
+    }
+    var node = { "role": "edit", "content": content, "hints": hints };
+    if ( fin != 0 )
+	node["subject"] = fin;
+    out = node;
+}
+
 // ---- the chrome panes (V2): composed FROM the layout ----------------------
 // A visible chrome pane is a group docked by its slot (`region`, the wire
 // word), placed by its `side` and `size` (the grid carves a band; the page
@@ -6983,8 +7899,10 @@ void view_lens_hints(var &eh, long w, long es, var &v)
 // than one (each tab posts the command that shows its View — the S1 rule),
 // and holding the active tab's projection: Problems = the diagnostics rows,
 // Outline = the definitions (both through diag_items, the one builder),
-// Output = the [build] text (its tail), Terminal = the [terminal] screen. A
-// kind with no builder yet names itself. The pane's `focus` autofocuses its
+// Output = the [build] text (its tail), Terminal = the [terminal] screen, a
+// contributed view = its rows (contributed_view_node) or its console
+// (console_node). A kind with no
+// builder yet names itself. The pane's `focus` autofocuses its
 // list; Tab reaches it as ever.
 void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 {
@@ -6998,11 +7916,11 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	long k = t["kind"].as_integer();
 	if ( ti == active )
 	    shown = k;
-	var nm = view_name(k);
-	var title = php::ucfirst(nm);
-	long sc = view_show_cmd(k);
+	var title;
+	view_title_w(title, w, k);
+	long sc = view_show_cmd_w(w, k);
 	var an;
-	cmd_name(an, sc);
+	cmd_name_w(an, w, sc);
 	var tb = { "title": title, "action": an, "code": sc };
 	if ( ti == active )
 	    tb["active"] = 1;
@@ -7034,7 +7952,10 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    var th = { "terminal": 1 };
 	    th["caret"] = tsz;
 	    if ( es_int(w, es, "termfocus", 0) != 0 )
+	    {
 		th["focus"] = 1;
+		th["tabkey"] = 1;	// the shell's tab; ^] hands the keyboard back
+	    }
 	    term["hints"] = th;
 	    pkids.push(term);
 	    break;
@@ -7072,6 +7993,16 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	}
 	default:
 	{
+	    if ( view_contributed(shown) )
+	    {
+		var cv;
+		if ( view_shape_w(w, shown) == vsCONSOLE )
+		    console_node(cv, w, es, shown);
+		else
+		    contributed_view_node(cv, w, es, shown, focus);
+		pkids.push(cv);
+		break;
+	    }
 	    var nn = { "role": "content" };
 	    nn["content"] = format("({} view)", view_name(shown));
 	    pkids.push(nn);
@@ -7127,7 +8058,8 @@ void compose_editor_flat(var &kids, long w, long es, var &ed, var &status,
 	    for ( long i = 0; i < nb; i = i + 1 )
 	    {
 		var b = bufs[i];
-		var bp = format("{}", b["path"]);
+		var bp;
+		doc_name(bp, w, b["doc"].as_integer());	// `untitled` without a file
 		var bn = php::basename(bp);
 		var title = bn;
 		if ( doc_modified(w, b["doc"].as_integer()) )
@@ -7402,6 +8334,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     long tabw = es_int(w, es, "tabwidth", 0);
     if ( tabw > 0 )
 	eh["tabwidth"] = tabw;
+    // While the editor has the keyboard, tab is the editor's key — it types
+    // a tab (edit_key), never a focus cycle (B55; the terminal's and the
+    // REPL input's `tabkey` precedent).
+    if ( editor_has_keyboard(w, es) )
+	eh["tabkey"] = 1;
 
     // The status line's enclosing-function seat (%x, AST-1): a RETAINED-
     // state read of the buffer's parse handle — stored-space only (a
@@ -7489,6 +8426,9 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var line;
 		if ( !profile_line(line, lines, i) )
 		    continue;
+		var title;
+		if ( keys_title_line(title, line) )
+		    continue;
 		items[] = { "role": "item", "content": line };
 		nrows = nrows + 1;
 	    }
@@ -7573,6 +8513,31 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	    var nofilter;
 	    dialog_hints(box, w, es, "modes", "Select", nofilter);
 	}
+	else if ( pane == paneCHOICE )
+	{
+	    // The choice list (choice_show): its rows as items, the current
+	    // one marked; every row's verb is cmdCHOICE, whose choose arm runs
+	    // the row's command with its argument (choice_action).
+	    var crows;
+	    ui::get(crows, w, es, "choicerows");
+	    var clabel;
+	    ui::get(clabel, w, es, "choicelabel");
+	    box["label"] = clabel;
+	    box["hints"] = { "list": 1, "focus": 1 };
+	    for ( var row : crows )
+	    {
+		var it = { "role": "item" };
+		it["content"] = row["title"];
+		if ( row["current"].as_integer() != 0 )
+		    it["content"] = format("{}  (current)", row["title"]);
+		var gh = { "code": cmdCHOICE };	// the list's one row verb
+		it["hints"] = gh;
+		items[] = it;
+		nrows = nrows + 1;
+	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "Select", nofilter);
+	}
 	else if ( pane == panePROJECT )
 	{
 	    // IDE-10a ^P — the PROJECT window (owner rulings 2026-08-31):
@@ -7645,10 +8610,13 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 	kids.push(ovl);
     else if ( es_int(w, es, "hint", 0) != 0 )
     {
-	var hn = { "role": "content" };
-	hn["content"] =
-	    " madcide ** ^K Q exits / ^K H shows the loaded profile's help **";
-	kids.push(hn);
+	var ht;
+	ui::get(ht, w, es, "hinttext");
+	if ( !ht.is_null() && strlen(ht.c_str()) > 0 )
+	{
+	    var hn = { "role": "content", "content": ht };
+	    kids.push(hn);
+	}
     }
     r["children"] = kids;
     // The @gui theme (slice 3): the loaded scheme's CSS custom properties
@@ -7676,6 +8644,11 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var menu;
     if ( compose_menu_bar(menu, w, es, doc, nav) )
 	rh["menu"] = menu;
+    // The toolbar (plan §41.11a): the rows the menu data places on it, a
+    // root hint beside the menu; the page draws buttons, the grid one line.
+    var tbar;
+    if ( compose_toolbar(tbar, w, es, doc, nav) )
+	rh["toolbar"] = tbar;
     if ( !rh.is_null() )
 	r["hints"] = rh;
     root = r;
@@ -7684,20 +8657,26 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 // ---- the session lifecycle (the gateway seam) ---------------------------
 
 // The per-CLIENT view initialisation (client-server V3b-2). Everything a
-// client's editor-state bag needs once its world + document exist: its own
-// profile / theme / menu / layout, the buffer table's launch row, the
-// project read-back, and the first lexical colour. open() runs it for
+// client's editor-state bag needs once its world + document exist: its
+// profile (the BUNDLE `profile` names — "" = settings.json's, else
+// default) and the keys / theme / menu / layout / status it names, the
+// buffer table's launch row, the project read-back, and the first lexical
+// colour. open() runs it for
 // client 0 over the es setup_editor created; spawn_view_es runs it for
 // every additional window onto the SAME session (viewwindow). ONE builder,
 // so a spawned window's bag is constructed by the same code as the launch
 // window's — a second window that renders the shared document identically.
 // Returns false ONLY when the startup profile AND the built-in rescue
 // bindings both fail (fatal; the caller reports the exit).
-bool init_view_es(long w, long es, long doc, const char *path)
+bool init_view_es(long w, long es, long doc, const char *path,
+		  const char *profile)
 {
     var p = path;		// ring discipline: own the text first — the
 				// data loads below cycle the ring, so a bare
 				// `path` pointer read empty at launchpath.
+    var prof = "";
+    if ( profile != 0 )
+	prof = profile;
     // resolve_profile_dir owns the search: source tree (beside this
     // file, from any cwd — php::dirname splits both separators; '/'
     // alone cost the first genuine-Win validation its keybindings),
@@ -7705,30 +8684,86 @@ bool init_view_es(long w, long es, long doc, const char *path)
     var pdir;
     resolve_profile_dir(pdir);
     ui::set(w, es, "profile_dir", pdir.c_str());
-    load_status(w, es, "joe");	// the status FORMAT rides the profile
-    if ( !load_theme(w, es, "default") )
-	ui::set(w, es, "msg", "No theme 'default' — colours off.");
-    load_menu(w, es, "default");	// the menu/command data (optional, S1)
-    load_layout(w, es, "default");	// WHERE Views live (V2): the client's
-					// layout; the baked default when the
-					// file is missing or refused
-    // The profile loads LAST of the three data loads: a broken layout
-    // fails the theme too, and its message must not bury the rescue
-    // announcement — the status line has to SAY the fallback is active.
-    if ( !load_profile(w, es, "joe") )
+    // The BUNDLE (plugins Stage A, madcide_plugins.inc): settings.json,
+    // then the active profile's manifest. Every data load below takes its
+    // name from it, and a word the bundle leaves unset is the default
+    // bundle's.
+    user_settings_load(w, es);
+    var want;
+    active_profile(want, w, es, prof.c_str());
+    bundle_select(w, es, want.c_str());
+    // Plugin CODE activates before any data loads, so a key profile, a menu
+    // or a layout can name what it registers (madcide_plugin_code.inc).
+    plugins_activate(w, es);
+    var sw;
+    bundle_word(sw, w, es, cbSTATUS);
+    load_status(w, es, sw.c_str());	// the status FORMAT rides the profile
+    var tw;
+    bundle_word(tw, w, es, cbTHEME);
+    if ( !load_theme(w, es, tw.c_str()) )
     {
+	var dt;
+	base_word(dt, w, es, cbTHEME);
+	if ( dt != tw && load_theme(w, es, dt.c_str()) )
+	    ui::set(w, es, "msg", format("No theme '{}' — the default theme '{}' is in use.", tw, dt));
+	else
+	    ui::set(w, es, "msg", format("No theme '{}' — colours off.", tw));
+    }
+    var mw;
+    bundle_word(mw, w, es, cbMENU);
+    if ( !load_menu(w, es, mw.c_str()) )	// the menu/command data (optional, S1)
+    {
+	var dm;
+	base_word(dm, w, es, cbMENU);
+	if ( dm != mw && load_menu(w, es, dm.c_str()) )
+	    ui::set(w, es, "msg", format("No menu '{}' — the default menu is in use.", mw));
+    }
+    var lw;
+    bundle_word(lw, w, es, cbLAYOUT);
+    if ( !load_layout(w, es, lw.c_str()) )	// WHERE Views live (V2): the
+    {						// client's layout; the baked
+	var dl;					// default when the file is
+	base_word(dl, w, es, cbLAYOUT);		// missing or refused (and
+	if ( dl != lw )				// load_layout says so)
+	    load_layout(w, es, dl.c_str());
+    }
+    // The keys load LAST of the data loads: a broken layout fails the theme
+    // too, and its message must not bury the fallback announcement — the
+    // status line has to SAY the fallback is active. THE key fallback chain:
+    // the style this bundle keeps (Tools ▸ Key bindings…, settings.json),
+    // then the bundle's keys, then the default bundle's, then the built-in
+    // rescue set.
+    var kw;
+    bundle_word(kw, w, es, cbKEYS);
+    var kc;
+    keys_choice(kc, w, es);
+    if ( strlen(kc.c_str()) > 0 && kc != kw && load_profile(w, es, kc.c_str()) )
+	load_status(w, es, kc.c_str());	// the format rides the profile
+    else if ( !load_profile(w, es, kw.c_str()) )
+    {
+	var why;
+	ui::get(why, w, es, "msg");	// load_profile's refusal
+	var dk;
+	base_word(dk, w, es, cbKEYS);
+	if ( dk != kw && load_profile(w, es, dk.c_str()) )
+	    ui::set(w, es, "msg", format("{} The default keys '{}' are in use.", why, dk));
 	// No profile file = NO bindings at all (they are pure data), so a
 	// silent continue traps the session in a bindingless editor (the
 	// first genuine-Win validation hit exactly this). The baked-in
 	// rescue set keeps the session usable — only ITS failure is fatal.
-	if ( !bind_rescue_keys(w, es) )
+	else if ( !bind_rescue_keys(w, es) )
 	{
-	    var dir;
-	    ui::get(dir, w, es, "profile_dir");
-	    println(stderr, "madcide: cannot load the startup profile {}/joe.keys and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", dir);
+	    var kpath;
+	    bundle_data_path(kpath, w, es, kw.c_str(), cbKEYS);
+	    println(stderr, "madcide: cannot load the startup keys {} and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", kpath);
 	    return false;
 	}
     }
+    // The session is open, its data loaded: the modules subscribed to its
+    // open start what they own (the REPL pane its session, when the layout
+    // shows the pane).
+    var opened = {};
+    publish_event(w, es, doc, seOPEN, opened);
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
     // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
@@ -7766,18 +8801,18 @@ bool init_view_es(long w, long es, long doc, const char *path)
 // in either window mutates the one document and the other window shows it
 // on its next compose. Mirrors setup_editor's es half (the world verbs are
 // already bound and the document already loaded), then the SAME per-client
-// init open() runs. Returns the new es, or 0 if the profile + rescue both
-// failed.
-long spawn_view_es(long w, long doc, const char *path)
+// init open() runs, under the requesting client's profile. Returns the new
+// es, or 0 if the profile + rescue both failed.
+long spawn_view_es(long w, long doc, const char *path, const char *profile = "")
 {
     var p = path;		// ring discipline: own before the ring-using
-				// derive_access / init below clobber the slot
+    var pr = profile;		// derive_access / init below clobber the slot
     long es = ui::create(w, "editor-state");
     ui::set(w, es, "caret", 0);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "adoc", doc);
     derive_access(w, es);
-    if ( !init_view_es(w, es, doc, p.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
 	return 0;
     return es;
 }
@@ -7790,7 +8825,9 @@ long IdeSession::spawn_view(long doc)
 {
     var dp;
     ui::get(dp, w, doc, "path");
-    return spawn_view_es(w, doc, dp.c_str());
+    var bn;
+    ui::get(bn, w, es, "bundle");
+    return spawn_view_es(w, doc, dp.c_str(), bn.c_str());
 }
 
 // Drain a parked viewwindow spawn: the doc a new window should view, left
@@ -7809,24 +8846,39 @@ bool IdeSession::take_spawn(long &doc)
 // (status format, theme, keybinding profile — all validated handle-free),
 // the buffer table, the project read-back, and the first lexical colour.
 // No terminal anywhere: the TUI client opens its own AFTER this and asks
-// for the key table. > 0 = the launch doc; 0 = unreadable path (the
-// caller reports); -1 = fatal, already reported on stderr.
-long IdeSession::open(const char *path0, bool ro)
+// for the key table. The launch document comes through THE open rule
+// (open_buffer_doc, the one ^K E uses): a missing path opens as a new
+// file and says so on the status line. `profile` is the command line's
+// --profile ("" = settings.json's, else default). > 0 = the launch doc;
+// -1 = refused (a path that exists but cannot be read) or fatal, already
+// reported on stderr.
+long IdeSession::open(const char *path0, bool ro, const char *profile)
 {
     var p = path0;		// ring discipline: own the text first
+    var pr = profile;
     w = ui::world_new();
-    long doc = setup_editor(w, p.c_str(), ro);
+    var note;
+    long doc = open_buffer_doc(note, w, p.c_str(), ro);
     if ( doc == 0 )
-	return 0;
+    {
+	println(stderr, "madcide: {}", note);
+	return -1;
+    }
+    if ( !setup_editor_state(w, doc) )
+	return -1;		// the verbs (already reported)
     es = ui::entity_by_name(w, "editor-state");
-    if ( !init_view_es(w, es, doc, p.c_str()) )
+    if ( !init_view_es(w, es, doc, p.c_str(), pr.c_str()) )
 	return -1;		// the profile AND rescue bindings both failed
+    if ( strlen(note.c_str()) > 0 )
+	msg_beside(w, es, note.c_str());	// New file <path>.
     return doc;
 }
 
 // A session over an EXISTING world + state entity: the headless harness
 // (tests/testmadcide.mad) and embedders seed their own documents and
-// drive the surface directly.
+// drive the surface directly. A world made outside open() has madcide's
+// own modules once builtins_activate(w, es) runs (before its profiles and
+// menus load, which name their commands); attach only re-points.
 void IdeSession::attach(long w0, long es0)
 {
     w = w0;
@@ -7875,6 +8927,11 @@ void IdeSession::dialogs(bool has)
     ui::set(w, es, "hasdialogs", has);
 }
 
+void IdeSession::clipboard(bool has)
+{
+    ui::set(w, es, "hasclip", has);
+}
+
 void IdeSession::panel(bool has)
 {
     ui::set(w, es, "haspanel", has);
@@ -7893,6 +8950,9 @@ void IdeSession::dialog_fallback(var &req)
     {
 	case dlgSAVE:
 	    start_prompt(w, es, "Save as", pmSAVEAS);
+	    return;
+	case dlgSAVEQUIT:
+	    start_prompt(w, es, "Save as", pmSAVEASQUIT);
 	    return;
 	case dlgOPENPROJECT:
 	    start_prompt(w, es, "Project file to open", pmOPENPROJECT);
@@ -8008,19 +9068,29 @@ void IdeSession::term_exec(var &req)
 // it writes to. A live build pump gets its stop FIRST (IDE-10b): the
 // send fires its select case, it SIGTERMs the child and exits — the
 // drain never hangs on it.
-void IdeSession::close()
+// The session's background tasks told to stop: a build (stop_build, both
+// kinds), each module's subscribed to the stop (seSTOP: the REPL pane's
+// pump), the Terminal tab's program, the plugin hosts. ONE owner, for
+// close() and for a host that ends a `scope` around the session's loop
+// before close() (run_tui): a pump spawned inside that scope is a member of
+// it, so the join waits on it, and only a stop sent here ends it. Each stop
+// is sent once.
+void IdeSession::stop_tasks()
 {
     if ( es_int(w, es, "buildlive", 0) != 0 )
-    {
-	long stopc = es_int(w, es, "buildstop", 0);
-	if ( stopc != 0 )
-	{
-	    var sv;
-	    sv = 1;
-	    madc::chan_send(stopc, sv);
-	}
-    }
+	stop_build(w, es);
+    var stopping = {};
+    publish_event(w, es, active_doc(w, es, 0), seSTOP, stopping);	// the REPL pane's pump
+    term_stop(w, es);
+    plugin_hosts_stop(w);
+}
+
+void IdeSession::close()
+{
+    stop_tasks();
     madc::task_drain();
+    var closing = {};
+    publish_event(w, es, active_doc(w, es, 0), seCLOSE, closing);	// the REPL pane's session
     // Every buffer's parse handle closes with the session.
     var bufs;
     ui::get(bufs, w, es, "buffers");
@@ -8031,7 +9101,10 @@ void IdeSession::close()
 	if ( ph != 0 )
 	    madc::parse_close(ph);
     }
+    var active;
+    registry_rows(active, w, "active");	// the plugins' code outlives no world
     ui::world_close(w);
+    plugins_close(active);
 }
 
 // ---- the vi arm (modes-as-scopes — the session owns mode routing) -------
@@ -8044,8 +9117,8 @@ void IdeSession::close()
 // the session ended (a quit propagates).
 bool IdeSession::post(long doc, long code)
 {
-    var e = { "event": "action", "event_code": ui::event_kind::action,
-	      "action": "", "action_code": code };
+    var e;
+    action_event(e, code, "");
     return apply_ide_event(doc, e);
 }
 
@@ -8072,13 +9145,22 @@ bool IdeSession::vi_exec(long doc, long code, long n)
 bool IdeSession::command(long doc, long code, const char *arg, bool &cont)
 {
     var a = arg;			// ring discipline: own the text first
+    if ( cmd_contributed(code) || (cmd_takes_arg(code) && strlen(a.c_str()) > 0) )
+    {
+	// A contributed command, or one that reads its argument off the event
+	// (cmd_takes_arg), takes its argument itself: no prompt between.
+	var e;
+	action_event(e, code, a.c_str());
+	cont = apply_ide_event(doc, e);
+	return true;
+    }
     cont = post(doc, code);
     if ( !cont || strlen(a.c_str()) == 0 )
 	return true;
     if ( !prompt_active(w, es) )
     {
 	var nm;
-	cmd_name(nm, code);
+	cmd_name_w(nm, w, code);
 	ui::set(w, es, "msg", format("'{}' takes no argument.", nm));
 	return false;
     }
@@ -8183,6 +9265,10 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     // a pending count/operator (nothing pending: the pane's, or inert).
     if ( kind == ui::event_kind::key )
     {
+	// Tab types text and NORMAL mode types none: vim's normal-mode Tab
+	// (^I) walks the jump list, which madcide does not keep — inert.
+	if ( ev["key_code"] == ui::key::tab )
+	    return true;
 	if ( ev["key_code"] != ui::key::esc || !vi_pending(w, es) )
 	    return false;
 	vi_pending_clear(w, es);
@@ -8326,4 +9412,19 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
     // dispatcher.
     cont = vi_exec(doc, a.as_integer(), n);
     return true;
+}
+
+// ---- madcide's builtin modules (plan §41.11a step 8) ----------------------
+// Compiled in (transport `builtin`) after everything they call. Each one
+// registers its commands, views and event handlers through the plugin points
+// at its activation (builtins_activate), and nothing above names its
+// functions (check-madcide-command-registry.sh).
+#include "madcide_repl.inc"	// the panel's REPL tab (plan §41.9a)
+
+void builtin_plugins(var &out)
+{
+    builtin_activate_fn repl = repl_activate;
+    int64_t ra = (int64_t)repl;
+    out = {};
+    out[] = { "name": "repl", "activate": ra };
 }

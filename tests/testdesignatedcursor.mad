@@ -1,0 +1,87 @@
+// A designator moves the CURRENT OBJECT of an initializer list (C11
+// 6.7.9p17): the next positional initializer fills the subobject after the
+// designated one, a brace-elided run fills a subaggregate member by member
+// (p20), a later initializer of a subobject overrides an earlier one (p19) —
+// for a union, the member written last — and a designator list descends one
+// subobject per designator (`.a[1]`, `.s[1].q`, `[1][0]`). madc placed a
+// positional clause after a designator at the END of the list, read a
+// brace-elided value and a designated member as the same slot, kept a union's
+// higher-numbered member, refused a designator list holding an index,
+// refused a gap beside an anonymous union, and refused a designator inside a
+// compound literal's braces for an anonymous member.
+//
+// gcc 13 and clang 18 (-std=c17) print the .expect lines.
+#include <stdio.h>
+
+struct S { long p; int q; };
+struct T { int k; struct S s; int z; };
+struct Q { int a, b, c, d; };
+union U { long l; char c; };
+union V { struct { int a, b; } s; long l; };
+struct A { int k; struct S s[2]; long a[3]; };
+struct C { char a[4]; int n; };
+struct AU { int x; union { int a; float f; }; int y; };
+struct W { struct C c; int z; };
+struct M { int k; int m[2][3]; };
+
+struct Q q1 = { 1, 2, 3, .a = 9, 4 };
+int a2[6] = { 1, 2, 3, 4, [1] = 7, 8 };
+struct T e2 = { 1, 2, 3, .z = 9 };
+struct T e4 = { .z = 9, .k = 1, 2, 3 };
+struct T n1 = { .s.p = 5, 6, 7 };
+union U u3 = { .c = 5, .l = -1 };
+union V v2 = { .l = 2, .s.a = 1 };
+struct A g1 = { .a[1] = 4, 5 };
+struct A g2 = { .s[1].q = 5 };
+struct S arr[2] = { [1].q = 6 };
+long m[2][2] = { [1][0] = 7 };
+struct C c1 = { .a = "abc", .a[1] = 'z' };
+struct C c2 = { .a = "abc", .a[1] = 'z', 'y', .n = 3 };
+struct AU au1 = { .x = 1, .y = 3 };
+struct AU au2 = { .f = 2.5f, 4 };
+struct S sa[] = { [1] = { 1, 2 }, 3, 4 };
+int m2[3][2] = { [2][1] = 5, [0] = { 1, 2 } };
+struct M mm = { .m[1][2] = 5, .k = 1 };
+struct W w1 = { { "abc", .a[1] = 'z' }, 4 };
+
+int main(void)
+{
+	struct Q lq1 = { 1, 2, 3, .a = 9, 4 };
+	int la2[6] = { 1, 2, 3, 4, [1] = 7, 8 };
+	struct T le2 = { 1, 2, 3, .z = 9 };
+	struct T ln1 = { .s.p = 5, 6, 7 };
+	union V lv2 = { .l = 2, .s.a = 1 };
+	struct A lg1 = { .a[1] = 4, 5 };
+	struct C lc1 = { .a = "abc", .a[1] = 'z' };
+	struct C lc2 = { .a = "abc", .a[1] = 'z', 'y', .n = 3 };
+	struct AU lau1 = { .x = 1, .y = 3 };
+	struct Q cq = (struct Q){ 1, 2, 3, .a = 9, 4 };
+	struct T ct = (struct T){ 1, 2, 3, .z = 9 };
+	struct C cc = (struct C){ "abc", .a[1] = 'z' };
+	struct W lw1 = { { "abc", .a[1] = 'z' }, 4 };
+	struct AU cau = (struct AU){ 1, { .f = 2.5f }, 4 };
+	struct AU cau3 = (struct AU){ 1, { 3 }, 4 };
+
+	printf("q %d %d %d %d | %d %d %d %d | %d %d %d %d\n", q1.a, q1.b, q1.c, q1.d,
+	       lq1.a, lq1.b, lq1.c, lq1.d, cq.a, cq.b, cq.c, cq.d);
+	printf("a %d %d %d %d %d %d | %d %d %d %d %d %d\n", a2[0], a2[1], a2[2], a2[3], a2[4],
+	       a2[5], la2[0], la2[1], la2[2], la2[3], la2[4], la2[5]);
+	printf("e %d %ld %d %d | %d %ld %d %d | %d %ld %d %d | %d %ld %d %d\n", e2.k, e2.s.p,
+	       e2.s.q, e2.z, e4.k, e4.s.p, e4.s.q, e4.z, le2.k, le2.s.p, le2.s.q, le2.z,
+	       ct.k, ct.s.p, ct.s.q, ct.z);
+	printf("n %d %ld %d %d | %d %ld %d %d\n", n1.k, n1.s.p, n1.s.q, n1.z,
+	       ln1.k, ln1.s.p, ln1.s.q, ln1.z);
+	printf("u %ld %d %d | %d %d\n", u3.l, v2.s.a, v2.s.b, lv2.s.a, lv2.s.b);
+	printf("i %ld %ld %ld %d %d %ld | %ld %ld\n", g1.a[1], g1.a[2], g1.a[0], g2.s[1].q,
+	       arr[1].q, m[1][0], lg1.a[1], lg1.a[2]);
+	printf("c %s %d %s %d | %s %d %s %d\n", c1.a, c1.n, c2.a, c2.n, lc1.a, lc1.n, lc2.a, lc2.n);
+	printf("anon %d %d %d | %g %d | %d %d %d\n", au1.x, au1.a, au1.y, au2.f, au2.y,
+	       lau1.x, lau1.a, lau1.y);
+	printf("sa %d %ld %d %ld %d %ld %d\n", (int)(sizeof sa / sizeof sa[0]), sa[0].p, sa[0].q,
+	       sa[1].p, sa[1].q, sa[2].p, sa[2].q);
+	printf("d %d %d %d %d %d %d | %d %d %d %d | %s %d | %s %d %d | %s %d\n", m2[0][0], m2[0][1],
+	       m2[1][0], m2[1][1], m2[2][0], m2[2][1], mm.k, mm.m[0][0], mm.m[1][2], mm.m[1][1],
+	       cc.a, cc.n, w1.c.a, w1.c.n, w1.z, lw1.c.a, lw1.z);
+	printf("cl %d %g %d | %d %d %d\n", cau.x, cau.f, cau.y, cau3.x, cau3.a, cau3.y);
+	return 0;
+}

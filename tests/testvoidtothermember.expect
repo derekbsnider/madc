@@ -1,0 +1,3 @@
+detect: 0 1 1
+deleter-pointer: 1
+deleter-get: hi hi!

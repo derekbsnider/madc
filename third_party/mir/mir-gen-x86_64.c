@@ -3513,6 +3513,10 @@ static void store_call_ref (gen_ctx_t gen_ctx, MIR_item_t ref_func_item, uint8_t
   call_ref_t call_ref;
 
   if (MIR_get_func_redef_permission_p (gen_ctx->ctx)) return;
+  /* madc fork: a later strong definition may replace a weak one and take its
+     thunk (mir.c, replaced_weak_func), so a call to a weak definition keeps
+     going through the thunk, never straight to the weak body's code. */
+  if (ref_func_item->binding == MIR_ITEM_BIND_WEAK) return;
   call_ref.ref_func_item = ref_func_item;
   call_ref.call_addr = call_addr;
   VARR_PUSH (call_ref_t, gen_ctx->target_ctx->call_refs, call_ref);

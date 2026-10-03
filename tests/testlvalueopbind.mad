@@ -1,0 +1,35 @@
+// In C++ a prefix ++/-- and every (compound) assignment yield their left
+// operand as an LVALUE ([expr.pre.incr]/1, [expr.ass]/1): a non-const
+// reference binds one, `&` takes its address, the left operand is evaluated
+// ONCE (`a[i++] = 7` steps i once), and overload resolution ranks it as an
+// lvalue (f(int&) over f(int&&)); a postfix ++ stays a prvalue. madc refused
+// `int &r = (y = 5)` ("Reference initializer must be an lvalue") and lowered
+// every call argument below to `&(x = v)`, which C rejects ("lvalue required
+// as unary & operand"), exit 1.
+// Oracle: g++ 13.3 and clang++ 18.1 (-std=c++17 -Wall, warning-free) print the
+// .expect lines. tests/testlvalueopc is the C-mode twin (still refused).
+#include <cstdio>
+static void g(int &r) { r += 10; }
+static int &h(int &r) { return r; }
+static int &cat(int &r, int v) { return r = r * 10 + v; }
+static const char *k(int &) { return "int&"; }
+static const char *k(int &&) { return "int&&"; }
+int main()
+{
+	int x = 1, y = 0;
+	int a[2] = { 5, 6 };
+	int i = 0;
+	g(++x); printf("pre-inc: %d\n", x);
+	g(x = 3); printf("assign: %d\n", x);
+	g(x += 4); printf("compound: %d\n", x);
+	g(--x); printf("pre-dec: %d\n", x);
+	g(a[i++] = 7); printf("once: %d %d %d\n", a[0], a[1], i);
+	int &r = (y = 5); r = 9; printf("bind: %d\n", y);
+	h(++y) = 2; printf("ret: %d\n", y);
+	int *p = &(y *= 3); *p += 1; printf("addr: %d\n", y);
+	int c = 1;
+	cat(c, 2); cat(cat(c, 3), 4); printf("refret: %d\n", c);
+	int q = 1, s = 1, t = 1, u = 1;
+	printf("rank: %s %s %s %s\n", k(++q), k(s = 1), k(t *= 2), k(u++));
+	return 0;
+}

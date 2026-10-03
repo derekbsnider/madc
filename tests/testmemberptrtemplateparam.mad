@@ -1,0 +1,55 @@
+// A pointer-to-member declarator over a class-template parameter
+// ([dcl.mptr]/1: `T1::*` — the nested-name-specifier names a class through
+// the parameter). Inside an instantiated class body the parameter reads as a
+// TYPE token, not an identifier; before B127 the member-pointer lookahead
+// admitted only an identifier head, so `typedef T2 (T1::*m)(T3);` was
+// "Expecting identifier in declarator" and `typedef int T1::*dm;` was
+// "Expecting type in class definition". The data form, the function form
+// (with a const signature), a data-member-pointer member and a member of the
+// class's own member-pointer typedef (the g++.dg/template/ptrmem19.C shape)
+// are covered.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct C
+{
+	int x;
+	int y;
+	int foo(int v) { return v + 1; }
+	int bar(int v) const { return v * 2; }
+};
+
+template <class T1, class T2, class T3> struct Fn { typedef T2 (T1::*m)(T3); };
+template <class T1, class R> struct CFn { typedef R (T1::*m)(int) const; };
+template <class T1> struct Data { typedef int T1::*dm; };
+template <class T1> struct Holder
+{
+	int T1::*field;
+	int get(T1 &o) { return o.*field; }
+};
+
+struct B;
+struct D { int hits; void take(B *) { ++hits; } };
+template <class T1, class T2, class T3> struct Bind
+{
+	typedef T2 (T1::*m)(T3);
+	m pm;
+	Bind(m p) : pm(p) {}
+};
+
+int main()
+{
+	C c = {1, 42};
+	Fn<C, int, int>::m pf = &C::foo;
+	CFn<C, int>::m pc = &C::bar;
+	Data<C>::dm pd = &C::y;
+	Holder<C> h;
+	h.field = &C::x;
+	Bind<D, void, B *> bd(&D::take);
+	D d = {0};
+	(d.*bd.pm)(0);
+	(d.*bd.pm)(0);
+	printf("%d %d %d %d %d\n", (c.*pf)(41), (c.*pc)(21), c.*pd, h.get(c), d.hits);
+	return 0;
+}

@@ -122,6 +122,11 @@ struct cir_node {
 	// CirBuilder::copy_cir_subtree consumes them by repeating this subtree into
 	// the parent list using the concrete FuncDef::tsubst_type_arg_packs entry.
 	bool         tsubst_pack_expand;
+	// Two-tree tsubst marker: this CALL ARGUMENT was lowered in a pattern
+	// with no formal to convert to (the callee was still a function-template
+	// placeholder). copy_cir_subtree converts it against the instantiated
+	// winner's formal (copied_call_arg_for_formal).
+	bool         tsubst_arg_uncoerced;
 	uint32_t     tsubst_pack_index;
 	uint32_t     tsubst_pack_value_id;  // pack value spelling, strpool handle
 

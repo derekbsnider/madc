@@ -27,13 +27,14 @@ enum ide_cmd : unsigned short
     cmdNONE = 0,			// unbound chord / unknown name
     // ---- the command registry (profiles/default.menu) ----
     cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
-    cmdBUILD, cmdCHECK, cmdCOLON, cmdDELLINE, cmdDELWORD, cmdDISCARD,
+    cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
-    cmdINSERTFILE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
-    cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPREVW,
+    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
+    cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdSAVE, cmdSAVEAS, cmdSAVEQUIT, cmdSHELL, cmdSHRINKW,
-    cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
+    cmdREFRESH, cmdSAVE, cmdSAVEAS,
+    cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
+    cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
     cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
     cmdVIMODE, cmdWORDLEFT, cmdWORDRIGHT,
@@ -48,9 +49,9 @@ enum ide_cmd : unsigned short
     cmdVIDELETE, cmdVICHANGE, cmdVIGOTO, cmdVIINSERT, cmdVIINSERTBOL, cmdVIAPPEND,
     cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
     // ---- pane-row verbs: diagnostics/outline goto, the editor menu's w f q,
-    //      the ^T Options rows, the ^B palette's rows ----
+    //      the ^T Options rows, the choice list's rows, the ^B palette's rows ----
     cmdGOTO, cmdGOTODEF, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
-    cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
+    cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdCHOICE, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
     cmdBLD_STOP, cmdBLD_PROJ_CHECK, cmdBLD_PROJ_BUILD, cmdBLD_PROJ_RUN,
     cmdBUILDROW				// a Build MENU row "build-<n>": the
 					// NAME carries the 1-based row (an
@@ -72,6 +73,8 @@ void cmd_table(var &t)
     rows[] = { "name": "build", "code": cmdBUILD };
     rows[] = { "name": "check", "code": cmdCHECK };
     rows[] = { "name": "colon", "code": cmdCOLON };
+    rows[] = { "name": "copy", "code": cmdCOPY };
+    rows[] = { "name": "cut", "code": cmdCUT };
     rows[] = { "name": "delline", "code": cmdDELLINE };
     rows[] = { "name": "delword", "code": cmdDELWORD };
     rows[] = { "name": "discard", "code": cmdDISCARD };
@@ -82,6 +85,7 @@ void cmd_table(var &t)
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
+    rows[] = { "name": "keystyle", "code": cmdKEYSTYLE };
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
     rows[] = { "name": "mark", "code": cmdMARK };
     rows[] = { "name": "modes", "code": cmdMODES };
@@ -92,6 +96,7 @@ void cmd_table(var &t)
     rows[] = { "name": "outline", "code": cmdOUTLINE };
     rows[] = { "name": "output", "code": cmdOUTPUT };
     rows[] = { "name": "panel", "code": cmdPANEL };
+    rows[] = { "name": "paste", "code": cmdPASTE };
     rows[] = { "name": "prevw", "code": cmdPREVW };
     rows[] = { "name": "problems", "code": cmdPROBLEMS };
     rows[] = { "name": "profile", "code": cmdPROFILE };
@@ -103,6 +108,7 @@ void cmd_table(var &t)
     rows[] = { "name": "save", "code": cmdSAVE };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
+    rows[] = { "name": "selectall", "code": cmdSELECTALL };
     rows[] = { "name": "shell", "code": cmdSHELL };
     rows[] = { "name": "shrinkw", "code": cmdSHRINKW };
     rows[] = { "name": "splitw", "code": cmdSPLITW };
@@ -165,6 +171,7 @@ void cmd_table(var &t)
     rows[] = { "name": "opt-scheme", "code": cmdOPT_SCHEME };
     rows[] = { "name": "opt-keymap", "code": cmdOPT_KEYMAP };
     rows[] = { "name": "opt-projkind", "code": cmdOPT_PROJKIND };
+    rows[] = { "name": "choice", "code": cmdCHOICE };
     rows[] = { "name": "bld-check", "code": cmdBLD_CHECK };
     rows[] = { "name": "bld-native", "code": cmdBLD_NATIVE };
     rows[] = { "name": "bld-run", "code": cmdBLD_RUN };
@@ -265,7 +272,7 @@ ui::key motion_key_of(long code)
 // show_view.
 enum ide_pane : unsigned char
 {
-    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT
+    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT, paneCHOICE
 };
 const char *pane_name(long p)
 {
@@ -276,6 +283,7 @@ const char *pane_name(long p)
 	case paneBUILD: return "build";
 	case paneMODES: return "modes";
 	case panePROJECT: return "project";
+	case paneCHOICE: return "choice";
     }
     return "";
 }
@@ -284,7 +292,8 @@ const char *pane_name(long p)
 enum ide_prompt : unsigned char
 {
     pmNONE = 0, pmCONFIRM, pmFIND, pmGOTOLINE, pmINSERTFILE, pmEDITFILE,
-    pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON
+    pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON,
+    pmSAVEASQUIT
 };
 const char *prompt_name(long m)
 {
@@ -302,6 +311,7 @@ const char *prompt_name(long m)
 	case pmTABWIDTH: return "tabwidth";
 	case pmTHEME: return "theme";
 	case pmCOLON: return "colon";
+	case pmSAVEASQUIT: return "saveasquit";
     }
     return "";
 }
@@ -322,7 +332,9 @@ const char *vimode_name(long m)
 // client executes it).
 enum ide_req : unsigned char
 {
-    rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL
+    rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL,
+    rqCLIPSET,		// put the session's copy on the platform clipboard
+    rqPASTE		// read the platform clipboard and paste it
 };
 const char *req_name(long k)
 {
@@ -334,6 +346,8 @@ const char *req_name(long k)
 	case rqPROJRUN: return "projrun";
 	case rqCMD: return "cmd";
 	case rqSHELL: return "shell";
+	case rqCLIPSET: return "clipset";
+	case rqPASTE: return "paste";
     }
     return "";
 }
@@ -341,14 +355,63 @@ const char *req_name(long k)
 // The IDE's own dialog kind: what a native file dialog's answer MEANS. The
 // host speaks only the dialog MODE (ui::dialog_mode's names, open | save) —
 // dlg_host_mode is that wire word; the kind waits on the bag for the answer.
-enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT };
+// dlgSAVEQUIT is a save whose answer then quits (^K X on an untitled buffer).
+enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT, dlgSAVEQUIT };
 const char *dlg_host_mode(long d)
 {
-    return d == dlgSAVE ? "save" : "open";
+    return d == dlgSAVE || d == dlgSAVEQUIT ? "save" : "open";
+}
+
+// Where a menu file's rows go (plan §41.11a, the toolbar): a row's MENU word
+// names the bar menu it joins, except the two PLACEMENT words — `palette`
+// (the command palette only, never the bar) and `toolbar` (the toolbar's
+// buttons) — converted once, at load, onto the menu entry.
+enum menu_place : unsigned char { mpBAR = 0, mpPALETTE, mpTOOLBAR, mpLAST };
+const char *menu_place_name(long p)
+{
+    switch ( p )
+    {
+	case mpPALETTE: return "palette";
+	case mpTOOLBAR: return "toolbar";
+    }
+    return "";
+}
+long menu_place_of(var &word)
+{
+    for ( long k = mpPALETTE; k < mpLAST; k = k + 1 )
+	if ( word == menu_place_name(k) )
+	    return k;
+    return mpBAR;
 }
 
 // The project's kind — the manifest's `kind` word (console | gui) converted
 // where the manifest is READ; written back as the file's word.
+// The REPL pane's reply events (plan §41.11a), repl_event: their one text is
+// the plugin API's, since a plugin names the kinds it subscribes to
+// (plugin_event).
+#include "include/madcide/plugin_api"
+
+// The session's own events (plan §41.11a step 8): its open (after the layout
+// loads), its tasks' stop (IdeSession::stop_tasks) and its close (after the
+// drain), published to the handlers subscribed to them (plugin_event), so a
+// module with a task or a process starts and ends it with the session. Their
+// range is disjoint from repl_event's; builtin form first: they join
+// <madcide/plugin_api> when a plugin outside madcide needs them.
+enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLAST };
+
+// A kind plugin_event subscribes to: a repl_event or a session_event.
+bool event_kind_ok(long kind)
+{
+    return (kind > reNONE && kind < reLAST) || (kind > seNONE && kind < seLAST);
+}
+
+// A contributed view's shape (plan §41.11a step 8): `vsROWS` renders its
+// key's rows {content, file?, line?} as a choice; `vsCONSOLE` renders its
+// key's {transcript, input, prompt, editable} as a console (a transcript, then
+// the prompt and an input field with the keyboard). Composition reads the
+// key; the plugin keeps it current.
+enum view_shape : unsigned char { vsROWS = 0, vsCONSOLE };
+
 enum ide_projkind : unsigned char { pkCONSOLE = 0, pkGUI };
 const char *projkind_name(long k)
 {
@@ -429,24 +492,24 @@ long container_of(var &name)
 // A pane's stacking MODE: `tabs` shows one View at a time behind a strip;
 // `stack` shows every View one above the other, each with its header (the
 // S5 window stack's shape).
-enum ide_pmode : unsigned char { lmNONE = 0, lmTABS, lmSTACK };
+enum ide_pmode : unsigned char { pnNONE = 0, pnTABS, pnSTACK };
 const char *pmode_name(long m)
 {
     switch ( m )
     {
-	case lmTABS: return "tabs";
-	case lmSTACK: return "stack";
+	case pnTABS: return "tabs";
+	case pnSTACK: return "stack";
     }
     return "";
 }
 long pmode_of(var &name)
 {
     if ( name.is_null() )
-	return lmNONE;
-    for ( long k = lmTABS; k <= lmSTACK; k = k + 1 )
+	return pnNONE;
+    for ( long k = pnTABS; k <= pnSTACK; k = k + 1 )
 	if ( name == pmode_name(k) )
 	    return k;
-    return lmNONE;
+    return pnNONE;
 }
 
 // ---- Views (client-server arc V1; design doc §2.1) -------------------------
@@ -477,6 +540,23 @@ const char *view_name(long k)
     }
     return "";
 }
+// The view's title on its tab (the display spelling; the name above is the
+// profile's word).
+const char *view_title(long k)
+{
+    switch ( k )
+    {
+	case viewSOURCE: return "Source";
+	case viewCODE: return "Code";
+	case viewPROBLEMS: return "Problems";
+	case viewOUTPUT: return "Output";
+	case viewTERMINAL: return "Terminal";
+	case viewPROJECT: return "Project";
+	case viewOUTLINE: return "Outline";
+	case viewHELP: return "Help";
+    }
+    return "";
+}
 long view_of(var &name)
 {
     if ( name.is_null() )
@@ -502,6 +582,42 @@ long view_show_cmd(long kind)
 	case viewHELP: return cmdHELP;
     }
     return cmdNONE;
+}
+
+// The commands that read their ARGUMENT off the action event (the seat's,
+// the -c line's, a choice list row's) instead of answering a prompt they
+// open: IdeSession::command hands them the argument directly, as it hands a
+// contributed command its own. Without an argument keystyle opens its own
+// choice list, and paste pastes the clipboard.
+bool cmd_takes_arg(long code)
+{
+    switch ( code )
+    {
+	case cmdKEYSTYLE:
+	case cmdPASTE:		// the text to paste (a client's platform read)
+	    return true;
+    }
+    return false;
+}
+
+// The commands a text FIELD honours (the REPL pane's input, plan §41.9a):
+// the caret's motions, the deletions and the edit history — what edits one
+// buffer in place. Every other command keeps its own target while a field
+// has the keyboard (save saves the file, build builds it: Thonny's shell
+// does the same). A new editing verb that belongs in a field goes here.
+bool cmd_edits_field(long code)
+{
+    switch ( code )
+    {
+	case cmdLEFT: case cmdRIGHT: case cmdUP: case cmdDOWN:
+	case cmdHOME: case cmdEND: case cmdPGUP: case cmdPGDN:
+	case cmdBACKSPACE: case cmdDEL: case cmdENTER:
+	case cmdWORDLEFT: case cmdWORDRIGHT: case cmdDELLINE: case cmdDELWORD:
+	case cmdTOP: case cmdBOTTOM: case cmdUNDO: case cmdREDO:
+	case cmdCUT: case cmdCOPY: case cmdPASTE: case cmdSELECTALL:
+	    return true;
+    }
+    return false;
 }
 
 // A rendered View's GENERATOR — the compiler that produced its text: genNONE
@@ -601,6 +717,7 @@ long cmd_min_tier(long code)
     // editor — file writes
     case cmdSAVE:
     case cmdSAVEAS:
+    case cmdKEYSTYLE:	// it writes settings.json, as a save writes
     case cmdSAVEQUIT:
     // editor — project mutation / opening
     case cmdOPENPROJECT:
@@ -711,7 +828,9 @@ long proposal_status_of(var &word)
 // message. Sniffing the params would be a guess; the relay is madcide's own
 // code on both ends, so it can simply say. A connection that never sends one
 // stays MCP — the behaviour every existing client already has.
-enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC, envHELLO };
+// envPLUGIN {"plugin": <verb>, ...} is the fourth: the plugin envelope
+// (plugin_verb), a plugin host's calls and G6's get / set for any client.
+enum ide_envelope : unsigned char { envNONE = 0, envAPI, envRPC, envHELLO, envPLUGIN };
 long envelope_of(var &req)
 {
     if ( !req["jsonrpc"].is_null() )
@@ -720,6 +839,8 @@ long envelope_of(var &req)
 	return envAPI;
     if ( !req["madc"].is_null() )
 	return envHELLO;
+    if ( !req["plugin"].is_null() )
+	return envPLUGIN;
     return envNONE;
 }
 
@@ -1508,4 +1629,134 @@ long tool_family_of(const char *name)
 	    return k;
     }
     return tfREGISTRY;
+}
+
+// ---- plugins (docs/plans/2026-09-30-madcide-plugins.md §5.1-5.3) ----------
+// A plugin MANIFEST (<name>/<name>.plugin, JSON) is an input boundary: its
+// words convert once, at load (plugin_manifest_read, madcide_plugins.inc),
+// and an unknown word refuses the plugin with its reason. The field words
+// of the manifest object:
+// "code" names the plugin's source file (one name in its directory), built
+// into its library <name><library_suffix> (madcide_plugin_code.inc).
+enum plugin_field : unsigned char { pfNONE = 0, pfNAME, pfTITLE, pfVERSION, pfAPI, pfCONTRIBUTES, pfCODE, pfTRANSPORT, pfLAST };
+const char *plugin_field_name(long f)
+{
+    switch ( f )
+    {
+	case pfNAME: return "name";
+	case pfTITLE: return "title";
+	case pfVERSION: return "version";
+	case pfAPI: return "api";
+	case pfCONTRIBUTES: return "contributes";
+	case pfCODE: return "code";
+	case pfTRANSPORT: return "transport";
+    }
+    return "";
+}
+long plugin_field_of(var &word)
+{
+    if ( word.is_null() )
+	return pfNONE;
+    for ( long k = pfNAME; k < pfLAST; k = k + 1 )
+	if ( word == plugin_field_name(k) )
+	    return k;
+    return pfNONE;
+}
+
+// How a plugin's CODE reached madcide's process (§5.4): compiled into
+// madcide, its library loaded, its source compiled in when it activates, or a
+// child process speaking over the seat. An active plugin's row records it.
+enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLAST };
+const char *plugin_transport_name(long t)
+{
+    switch ( t )
+    {
+	case ptBUILTIN: return "builtin";
+	case ptLIBRARY: return "library";
+	case ptSOURCE: return "source";
+	case ptHOST: return "host";
+    }
+    return "";
+}
+long plugin_transport_of(var &word)
+{
+    if ( word.is_null() )
+	return ptNONE;
+    for ( long t = ptBUILTIN; t < ptLAST; t = t + 1 )
+	if ( word == plugin_transport_name(t) )
+	    return t;
+    return ptNONE;
+}
+
+// A plugin host's state (§5.4's host transport): its child running, being
+// started again after it ended, being stopped with its session, or stopped
+// for good (it ended too often, or would not start).
+enum plugin_host_state : unsigned char { hsNONE = 0, hsRUNNING, hsRESTARTING, hsSTOPPING, hsSTOPPED, hsLAST };
+
+// A message of the PLUGIN envelope ({"plugin": <verb>, ...}; §5.4's `host`
+// transport): what a plugin host's child asks of madcide — the API table's
+// calls (command, view, event at activation; run, command_id, get, set,
+// show) and its activation's end (activated) — and what madcide sends it
+// (start, invoke). The word is read once, at the line.
+enum plugin_verb : unsigned char { plvNONE = 0, plvSTART, plvCOMMAND, plvVIEW, plvEVENT, plvRUN, plvCOMMAND_ID, plvGET, plvSET, plvSHOW, plvACTIVATED, plvINVOKE, plvLAST };
+const char *plugin_verb_name(long v)
+{
+    switch ( v )
+    {
+	case plvSTART: return "start";
+	case plvCOMMAND: return "command";
+	case plvVIEW: return "view";
+	case plvEVENT: return "event";
+	case plvRUN: return "run";
+	case plvCOMMAND_ID: return "command_id";
+	case plvGET: return "get";
+	case plvSET: return "set";
+	case plvSHOW: return "show";
+	case plvACTIVATED: return "activated";
+	case plvINVOKE: return "invoke";
+    }
+    return "";
+}
+long plugin_verb_of(var &word)
+{
+    if ( word.is_null() )
+	return plvNONE;
+    for ( long v = plvSTART; v < plvLAST; v = v + 1 )
+	if ( word == plugin_verb_name(v) )
+	    return v;
+    return plvNONE;
+}
+
+// A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds
+// name a file in its existing format, and the kind's word IS the file's
+// extension (`"layout": "chthonia"` is chthonia.layout); `settings` carries
+// the plugin's setting defaults. Stage A serves these; the code kinds
+// (commands, views, events) join with the contribution points.
+enum contribution_kind : unsigned char { cbNONE = 0, cbKEYS, cbLAYOUT, cbMENU, cbTHEME, cbSTATUS, cbSETTINGS, cbLAST };
+const char *contribution_kind_name(long k)
+{
+    switch ( k )
+    {
+	case cbKEYS: return "keys";
+	case cbLAYOUT: return "layout";
+	case cbMENU: return "menu";
+	case cbTHEME: return "theme";
+	case cbSTATUS: return "status";
+	case cbSETTINGS: return "settings";
+    }
+    return "";
+}
+long contribution_kind_of(var &word)
+{
+    if ( word.is_null() )
+	return cbNONE;
+    for ( long k = cbKEYS; k < cbLAST; k = k + 1 )
+	if ( word == contribution_kind_name(k) )
+	    return k;
+    return cbNONE;
+}
+// A data kind names a FILE (every kind but settings).
+bool contribution_is_data(long k)
+{
+    return k >= cbKEYS && k <= cbSTATUS;
 }

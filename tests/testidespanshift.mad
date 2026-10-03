@@ -21,6 +21,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     load_theme(w, es, "default");
     long h = ensure_phandle(w, es, doc);
@@ -70,5 +71,7 @@ int main()
     println("after-erase mark={} bend={} unset={}",
 	    es_int(w, es, "mark", -1), es_int(w, es, "bend", -1),
 	    es_int(w, es, "sel_unset", 0));
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

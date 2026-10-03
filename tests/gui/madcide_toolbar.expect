@@ -1,0 +1,5 @@
+TOOLBAR open
+TOOLBAR buttons=Open,Save,Run,Stop
+TOOLBAR event action save code=1
+TOOLBAR saved=1
+TOOLBAR closed

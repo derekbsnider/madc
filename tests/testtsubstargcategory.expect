@@ -1,0 +1,4 @@
+vec: move copy move
+member: sinkL sinkR sinkR
+free: sinkL sinkR
+n=3

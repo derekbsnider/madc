@@ -2,5 +2,17 @@
   "statusLine": {
     "type": "command",
     "command": "sh /workspace/madc/.claude/statusline-command.sh"
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "sh /workspace/madc/.claude/hooks/context-gauge.sh"
+          }
+        ]
+      }
+    ]
   }
 }

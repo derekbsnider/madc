@@ -1,0 +1,47 @@
+// A `var` passed BY VALUE is the callee's own copy: the caller constructs
+// the parameter object (a copy of an lvalue; a by-value result IS the
+// object) and passes its address, as g++ and clang pass madc::value.
+
+void g(var v) { v = 9; println("in: {}", v); }
+long peek(var v) { return v.count(); }
+var f() { return "made"; }
+void keep(const var &v) { println("ref: {}", v); }
+
+struct S {
+	var k;
+	void set(var v) { k = v; v = "gone"; }
+};
+
+struct T {
+	var k;
+	T(var v) { k = v; v = 0; }
+};
+
+void outer(var &r) { g(r); }
+
+int main()
+{
+	var a = 5;
+	g(a);
+	println("a: {}", a);
+	var o = { "k": "slot" };
+	g(o["k"]);
+	println("o: {}", o["k"]);
+	S s;
+	var b = "bee";
+	s.set(b);
+	println("s: {} {}", s.k, b);
+	var c = 7;
+	T t(c);
+	println("t: {} {}", t.k, c);
+	outer(a);
+	println("outer: {}", a);
+	g(f());
+	println("peek: {}", peek(f()));
+	keep(a);
+	var l = { 1, 2 };
+	println("peek list: {}", peek(l));
+	println("peek lit: {}", peek("lit"));
+	println("done");
+	return 0;
+}

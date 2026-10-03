@@ -1,0 +1,83 @@
+// chthonia's code (plan §41.11a step 6): the Variables view, Thonny's — the
+// names the REPL session defined, each with its type and its value, kept
+// current after every entry and every F5 run and emptied when the session
+// stops. A row the program's file defined goes to its definition when it is
+// chosen; a row an entry defined names no line.
+//
+// It is plugin code: it reaches madcide only through <madcide/plugin> (the
+// API table), so it runs whichever way madcide loads it — its library, or
+// this source compiled into madcide's process.
+//
+// Thread contract: activation and every handler run on the session's
+// thread, between events (<madcide/plugin>). The one state of its own is
+// each world's view kind, written at that world's activation.
+#include <madcide/plugin>
+
+var chthonia_kinds;	// world -> the Variables view's kind (an object from the first activation)
+
+// The bag key the view's rows live on (the plugin's own: `chthonia.`).
+const char *chthonia_rows_key()
+{
+    return "chthonia.vars";
+}
+
+// View ▸ Variables: show the view.
+bool chthonia_show(long w, long es, long doc, const char *arg)
+{
+    var k = chthonia_kinds[format("{}", w)];
+    if ( !k.is_null() )
+	ide::show(w, es, k.as_integer());
+    return true;
+}
+
+// An entry ran or F5's program returned: ask the session for its names.
+void chthonia_refresh(long w, long es, long doc, var &event)
+{
+    ide::run(w, es, doc, ide::command_id(w, "replbindings"), "");
+}
+
+// The session's names answered: one row each, `name type value`.
+void chthonia_bound(long w, long es, long doc, var &event)
+{
+    var rows = {};
+    for ( var b : event["reply"]["rows"] )
+    {
+	var v = b["value"];
+	var text = format("{} {} {}", b["name"], b["type"], v);
+	if ( strlen(v.c_str()) == 0 )
+	    text = format("{} {}", b["name"], b["type"]);
+	var row = { "content": text };
+	var f = b["file"];
+	if ( f.is_string() && strncmp(f.c_str(), "REPL[", 5) != 0 )
+	{
+	    row["file"] = f;
+	    row["line"] = b["line"];
+	}
+	rows[] = row;
+    }
+    ide::set(w, es, chthonia_rows_key(), rows);
+}
+
+// The session stopped: its names are gone.
+void chthonia_cleared(long w, long es, long doc, var &event)
+{
+    var none = {};
+    ide::set(w, es, chthonia_rows_key(), none);
+}
+
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
+{
+    ide::bind(api);
+    long show = ide::command(w, "variables", "Variables", chthonia_show);
+    if ( show == 0 )
+	return false;
+    long kind = ide::view(w, "variables", "Variables", chthonia_rows_key(),
+			  show);
+    if ( kind == 0 )
+	return false;
+    chthonia_kinds[format("{}", w)] = kind;
+    return ide::event(w, reTAKEN, chthonia_refresh)
+	&& ide::event(w, reRAN, chthonia_refresh)
+	&& ide::event(w, reBINDINGS, chthonia_bound)
+	&& ide::event(w, reSTOPPED, chthonia_cleared);
+}

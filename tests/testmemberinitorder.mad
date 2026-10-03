@@ -1,0 +1,34 @@
+// Non-static data members initialize in declaration order ([class.base.init]/13)
+// whatever the order of the mem-initializer list: each member from its
+// mem-initializer, else its default member initializer, else its default
+// constructor. The same order holds in the implicit default constructor, through
+// `new`, and in a constructor template instantiated from its pattern (a
+// substituted mem-initializer list). Every initializer bumps one counter, so
+// the values record the order. Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+int ctr = 0;
+struct Tr { int v; Tr() : v(++ctr) { } Tr(int) : v(100 + ++ctr) { } };
+struct Ord { Tr a; int b = ++ctr; Tr c{ 0 }; int d; Ord() : d(++ctr) { } };
+struct OrdI { Tr a; int b = ++ctr; Tr c{ 0 }; int d = ++ctr; };
+struct OrdR { int x; Tr y; int z; OrdR() : z(++ctr), y(0), x(++ctr) { } };
+template<class T> struct OrdT { Tr a; T b = ++ctr; Tr c{ 0 }; T d; OrdT() : d(++ctr) { } };
+struct OrdNC { Tr a; int b = ++ctr; Tr c; int d;
+	template<class U> OrdNC(U u) : c(u), d(++ctr) { } };
+struct TS { int x; int y; template<class U> TS(U u) : y(u + ++ctr), x(++ctr) { } };
+struct B { int bv; B() : bv(++ctr) { } };
+struct D : B { int m = ++ctr; Tr t; D() { } };
+int main()
+{
+	ctr = 0; Ord o; std::printf("user: %d %d %d %d\n", o.a.v, o.b, o.c.v, o.d);
+	ctr = 0; OrdI i; std::printf("implicit: %d %d %d %d\n", i.a.v, i.b, i.c.v, i.d);
+	ctr = 0; OrdI *h = new OrdI;
+	std::printf("new: %d %d %d %d\n", h->a.v, h->b, h->c.v, h->d);
+	delete h;
+	ctr = 0; OrdR r; std::printf("reordered: %d %d %d\n", r.x, r.y.v, r.z);
+	ctr = 0; OrdT<int> t; std::printf("template: %d %d %d %d\n", t.a.v, t.b, t.c.v, t.d);
+	ctr = 0; OrdNC nc(7);
+	std::printf("ctor-template: %d %d %d %d\n", nc.a.v, nc.b, nc.c.v, nc.d);
+	ctr = 0; TS s(1000); std::printf("substituted: %d %d\n", s.x, s.y);
+	ctr = 0; D d; std::printf("base: %d %d %d\n", d.bv, d.m, d.t.v);
+	return 0;
+}

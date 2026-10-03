@@ -1,0 +1,3 @@
+uchar=[65] schar=[65] char=[A] enumlit=[1]
+hex=[41] char-hex=[41] char-pad=[  A]
+enumvar=[2]

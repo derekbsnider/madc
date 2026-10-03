@@ -104,6 +104,50 @@ TEST_CASE("intern-keyed map transaction rolls back touched keys")
     CHECK(map.size() == 2u);
 }
 
+// Transactions nest (an interactive entry's holds the class journals opened
+// inside it): an inner rollback undoes only its own writes, and an inner
+// commit leaves them to the enclosing transaction's rollback.
+TEST_CASE("intern-keyed map transactions nest")
+{
+    madc::dis::intern_table p;
+    madc::dis::intern_keyed_map<std::string> map;
+    map.set_pool(&p);
+    map["before"] = "one";
+    map["gone"] = "two";
+
+    madc::dis::intern_keyed_map<std::string>::transaction_state outer, inner;
+    map.begin_transaction(outer);
+    map["outer"] = "outer";
+    map.begin_transaction(inner);
+    *map.find("before") = "changed";
+    map["inner"] = "inner";
+    CHECK(map.erase("outer") == 1u);
+    map.rollback_transaction(inner);
+    CHECK(*map.find("before") == "one");
+    CHECK(map.find("inner") == map.end());
+    REQUIRE(map.find("outer") != map.end());
+    CHECK(*map.find("outer") == "outer");
+    CHECK(map.size() == 3u);
+
+    map.begin_transaction(inner);
+    *map.find("before") = "changed";
+    *map.find("outer") = "changed";
+    map["inner"] = "inner";
+    CHECK(map.erase("gone") == 1u);
+    map.commit_transaction(inner);
+    CHECK(*map.find("before") == "changed");
+    CHECK(*map.find("inner") == "inner");
+    CHECK(map.find("gone") == map.end());
+
+    map.rollback_transaction(outer);
+    CHECK(*map.find("before") == "one");
+    REQUIRE(map.find("gone") != map.end());
+    CHECK(*map.find("gone") == "two");
+    CHECK(map.find("outer") == map.end());
+    CHECK(map.find("inner") == map.end());
+    CHECK(map.size() == 2u);
+}
+
 TEST_CASE("intern-keyed map transaction restores clear and can commit")
 {
     madc::dis::intern_table p;

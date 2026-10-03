@@ -1,0 +1,76 @@
+// The LSP process EXITS with a REPL tab live (plan §41.10a; the 2026-09-28
+// quit hang). `madcide <file> --lsp` runs its stdio loop inside a `scope`,
+// and a command the client runs through workspace/executeCommand starts the
+// REPL tab's pump as a task inside that scope, so the scope's join waits on
+// it. IdeSession::stop_tasks, called before the join, is what ends it. This
+// test drives the real --lsp child: madcide.repl, then shutdown + exit, then
+// the child's exit status (a pump nothing stopped would hang to the timeout).
+#include "../tools/texteditor/lined_core.inc"
+
+void send(madc::channel &c, var &msg)
+{
+	var js = js::stringify(msg);
+	c.write(js.c_str());
+}
+
+// The next reply off the framed channel, passing over notifications.
+bool read_reply(var &out, madc::channel &c)
+{
+	var line;
+	for ( ;; )
+	{
+		if ( !c.readline(line) )
+			return false;
+		var msg;
+		if ( !js::parse(msg, line.c_str()) )
+			return false;
+		if ( msg["id"].is_null() )
+			continue;
+		out = msg;
+		return true;
+	}
+}
+
+int main()
+{
+	const char *path = "madc_ide_lsprepl.c";
+	php::file_put_contents(path, "int main(void) { return 0; }\n");
+	var self = madc::compiler_path();
+	var uri = format("exec://{} --no-config tools/madcide/madcide.mad {} --lsp", self, path);
+	madc::channel c(uri.c_str());
+	println("open: {}", c.ok() ? 1 : 0);
+	println("framed: {}", c.frame_headers() ? 1 : 0);
+
+	var noparams;
+	var init = { "jsonrpc": "2.0", "id": 1, "method": "initialize" };
+	send(c, init);
+	var reply;
+	read_reply(reply, c);
+	var ready = { "jsonrpc": "2.0", "method": "initialized", "params": noparams };
+	send(c, ready);
+
+	// The REPL tab: its session starts and its pump is a task from now on.
+	var rargs = {};
+	var rp = { "command": "madcide.repl", "arguments": rargs };
+	var rreq = { "jsonrpc": "2.0", "id": 2, "method": "workspace/executeCommand",
+		     "params": rp };
+	send(c, rreq);
+	read_reply(reply, c);
+	println("repl-ok: {}", reply["result"]["ok"]);
+
+	var down = { "jsonrpc": "2.0", "id": 3, "method": "shutdown" };
+	send(c, down);
+	read_reply(reply, c);
+	println("shutdown-result-null: {}", reply["result"].is_null() ? 1 : 0);
+	var bye = { "jsonrpc": "2.0", "method": "exit", "params": noparams };
+	send(c, bye);
+	c.close_write();
+	var tail;
+	while ( c.readline(tail) )
+		;				// drain any trailing notifications
+	c.close();
+	println("exit-status: {}", c.exit_status());
+
+	php::unlink(path);
+	return 0;
+}

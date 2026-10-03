@@ -1,0 +1,4 @@
+// GCC C17: expected expression before '=' token.
+// Clang C17: expected expression.
+// `:=` belongs to the madc dialect, even when its receiver is undeclared.
+int main(void) { x := 3; return x; }

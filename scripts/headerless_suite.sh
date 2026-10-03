@@ -3,6 +3,13 @@
 #
 #   bash scripts/headerless_suite.sh [test-glob ...]
 #   MADC_HEADERLESS_PROFILE=win64 bash scripts/headerless_suite.sh
+#   MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh
+#
+# COMPLEMENT mode runs the SAME profile's binary over exactly the tests this
+# lane skips (every tests/<base>.headerless_skip), with the headers ON DISK and
+# no mask: together the two runs cover the whole suite once on the shipped
+# artifact (owner 2026-10-02: the full barrage runs one way — headerless,
+# packed, -O2 — and the on-disk include path rides a small subset).
 #
 # WHY THIS LANE EXISTS. Serving the standard headers out of the artifact's own
 # frozen corpus — so a machine with no compiler installation can still compile
@@ -85,6 +92,45 @@ if [ ! -f "$MADC_BIN" ]; then
 	echo "headerless_suite: $MADC_BIN missing — build the packed artifact first" >&2
 	echo "  (this lane tests the PACKED binary; bin/madc carries no forest)" >&2
 	exit 1
+fi
+
+# --- Complement: the profile's binary over the headerless-skipped tests. ----
+# Headers stay on disk (no namespace, no mask); the profile's other domains
+# still apply (win64/wine64 skips under the win64 profile). The test list comes
+# from the fixture files, never from this script.
+if [ "${MADC_HEADERLESS_COMPLEMENT:-0}" = "1" ]; then
+	COMP=()
+	for f in tests/*.headerless_skip; do
+		[ -e "$f" ] || continue
+		b=$(basename "$f" .headerless_skip)
+		COMP+=("$b")
+	done
+	if [ "${#COMP[@]}" -eq 0 ]; then
+		echo "headerless_suite: complement — no .headerless_skip fixtures" >&2
+		exit 1
+	fi
+	export MADC_BIN
+	OTHER_DOMAINS=""
+	for d in $PROFILE_DOMAINS; do
+		[ "$d" = headerless ] || OTHER_DOMAINS="$OTHER_DOMAINS${OTHER_DOMAINS:+ }$d"
+	done
+	if [ -n "$OTHER_DOMAINS$MADC_SKIP_EXT" ]; then
+		export MADC_SKIP_EXT="$OTHER_DOMAINS${MADC_SKIP_EXT:+ $MADC_SKIP_EXT}"
+	fi
+	[ -n "$PROFILE_WRAPPER" ] && export MADC_WRAPPER="$PROFILE_WRAPPER"
+	export WINEDEBUG=-all
+	[ "$PROFILE_WRAPPER" = "wine" ] && { WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1 || true; }
+	echo "headerless_suite: COMPLEMENT profile=$PROFILE bin=$MADC_BIN — ${#COMP[@]} headerless-skipped test(s), headers on disk"
+	CTL=$(mktemp -d)
+	trap 'rm -rf "$CTL"' EXIT
+	set -o pipefail
+	bash scripts/run_tests.sh "${COMP[@]}" 2>&1 | tee "$CTL/suite.out"
+	suite_rc=${PIPESTATUS[0]}
+	if ! grep -qE '^[1-9][0-9]* passed,' "$CTL/suite.out"; then
+		echo "headerless_suite: VACUOUS COMPLEMENT RUN — no test executed." >&2
+		exit 1
+	fi
+	exit "$suite_rc"
 fi
 
 # The wineserver must already be running OUTSIDE the namespace. If wine had to

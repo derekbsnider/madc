@@ -1,0 +1,17 @@
+#!/usr/bin/env madc
+#include <cstdio>
+
+// An anonymous aggregate in a class body takes its attributes before its `{`
+// and after its `}`, as in g++.
+struct K1 { int f() { return b; } char c; union __attribute__((packed)) { char a; int b; char d[5]; }; };
+struct K2 { int f() { return y; } char c; struct { char x; int y; } __attribute__((packed)); };
+
+int main()
+{
+	K1 k1;
+	k1.b = 11;
+	K2 k2;
+	k2.y = 22;
+	std::printf("kc: %zu %zu %d %d\n", sizeof(K1), sizeof(K2), k1.f(), k2.f());
+	return 0;
+}

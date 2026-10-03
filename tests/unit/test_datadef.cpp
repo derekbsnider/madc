@@ -257,6 +257,32 @@ TEST_SUITE("Variable") {
         CHECK(v.cmp(99));
         CHECK(!v.cmp(100));
     }
+
+    // The slot is chosen by storage, not by a list of identities: a bool
+    // reads back false, and the character types and the LLP64 platform long
+    // (a distinct identity with int storage) hold their values.
+    TEST_CASE("Variable slot holds bool, character types and platform long") {
+        Variable b("b", ddBOOL, 1);
+        b.set(0);
+        CHECK(b.get<int64_t>() == 0);
+        b.inc();
+        CHECK(b.get<int64_t>() == 1);
+        Variable w("w", *dd_platform_wchar(), 1);
+        w.set(5);
+        CHECK(w.get<int64_t>() == 5);
+        Variable u("u", *dd_char32(), 1);
+        u.set(6);
+        CHECK(u.get<int64_t>() == 6);
+        TargetDataModel saved = madc_target_data_model;
+        madc_target_data_model = TargetDataModel::LLP64;
+        Variable l("l", *dd_platform_long(), 1);
+        l.set(-4);
+        CHECK(l.get<int64_t>() == -4);
+        Variable ul("ul", *dd_platform_ulong(), 1);
+        ul.set(4294967295LL);
+        CHECK(ul.get<int64_t>() == 4294967295LL);
+        madc_target_data_model = saved;
+    }
 }
 
 static std::string write_temp_mad_source(const char *tag, const char *source)

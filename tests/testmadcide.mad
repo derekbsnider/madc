@@ -140,6 +140,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
     load_theme(w, es, "default");	// spans need the theme (open's step)
@@ -157,7 +158,7 @@ int main()
     var joe;
     var joesc;
     var perr;
-    parse_keys(joe, joesc, txt.c_str(), perr);
+    parse_keys(joe, joesc, txt.c_str(), perr, w);
     var p1;
     nm(p1, joe, "^k s");
     var p2;
@@ -169,7 +170,7 @@ int main()
     php::file_get_contents(txt, "tools/madcide/profiles/pico.keys");
     var pico;
     var picosc;
-    parse_keys(pico, picosc, txt.c_str(), perr);
+    parse_keys(pico, picosc, txt.c_str(), perr, w);
     var p4;
     nm(p4, pico, "^s");
     var p5;
@@ -218,7 +219,7 @@ int main()
     var ssc;
     parse_keys(st, ssc,
 	       format("{}\n@confirm y pcancel\n@confirm Y pyes\n@myscope INS projadd\nx save\n",
-		      modal_default_keys_text()), perr);
+		      modal_default_keys_text()), perr, w);
     var sy, sY, sins, sx, spe;
     nm2(sy, ssc, "confirm", "y");
     nm2(sY, ssc, "confirm", "Y");
@@ -1591,6 +1592,7 @@ int main()
     long w2 = ui::world_new();
     long doc2 = setup_editor(w2, cpath, false);
     long es2 = ui::entity_by_name(w2, "editor-state");
+    builtins_activate(w2, es2);	// madcide's own modules, as IdeSession::open activates them
     IdeSession S2;
     S2.attach(w2, es2);
     ev_action(e, "view", "^k n");	// -> mc11
@@ -1782,6 +1784,7 @@ int main()
     long w3 = ui::world_new();
     long doc3 = setup_editor(w3, vpath, false);
     long es3 = ui::entity_by_name(w3, "editor-state");
+    builtins_activate(w3, es3);	// madcide's own modules, as IdeSession::open activates them
     IdeSession S3;
     S3.attach(w3, es3);
     ui::set(w3, es3, "profile_dir", "tools/madcide/profiles");
@@ -2191,7 +2194,7 @@ int main()
     // size come back from the FILE, not the live state we just reset.
     var vdef;
     var vderr;
-    parse_layout(vdef, default_layout_text(), vderr);
+    parse_layout(vdef, default_layout_text(), vderr, w);
     ui::set(V.w, V.es, "layout", vdef);
     var vpf;
     ui::get(vpf, V.w, V.es, "projfile");
@@ -2207,5 +2210,14 @@ int main()
     remove(vlay);
 
     ui::world_close(w);
+    // a test leaves nothing in its working directory
+    remove(path);
+    remove("madc_ide_test.prj.events");
+    remove("madc_ide_build.mad");
+    remove("madc_ide_build");
+    remove("madc_ide_second.mad");
+    remove("madc_ide_frag.txt");
+    remove("madc_ide_view.cpp");
+    remove("madc_ide_vi.txt");
     return 0;
 }

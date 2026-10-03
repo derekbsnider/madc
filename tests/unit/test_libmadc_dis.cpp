@@ -110,6 +110,42 @@ TEST_CASE("dis::id_table<T> transactions commit and state can be reused")
     CHECK(tab.get(ic) == (int *)0);
 }
 
+// Transactions nest (an interactive entry's holds the class journals opened
+// inside it): an inner rollback undoes only its own writes, and an inner
+// commit leaves them to the enclosing transaction's rollback.
+TEST_CASE("dis::id_table<T> transactions nest")
+{
+    int a = 10, b = 20, c = 30, d = 40;
+    madc::dis::id_table<int> tab(0x400u);
+    uint32_t ia = tab.add(&a);
+    madc::dis::id_table<int>::transaction_state outer, inner;
+
+    tab.begin_transaction(outer);
+    uint32_t ib = tab.add(&b);
+    tab.begin_transaction(inner);
+    CHECK(tab.set(ia, &c));
+    CHECK(tab.set(ib, &c));
+    tab.add(&d);
+    tab.rollback_transaction(inner);
+    CHECK(tab.size() == 2u);
+    CHECK(tab.get(ia) == &a);
+    CHECK(tab.get(ib) == &b);
+
+    tab.begin_transaction(inner);
+    CHECK(tab.set(ia, &c));
+    CHECK(tab.set(ib, &d));
+    tab.add(&d);
+    tab.commit_transaction(inner);
+    CHECK(tab.size() == 3u);
+    CHECK(tab.get(ia) == &c);
+    REQUIRE(outer.saved.size() == 1u);		// ib is the outer's own tail
+    CHECK(outer.saved[0].value == &a);
+
+    tab.rollback_transaction(outer);
+    CHECK(tab.size() == 1u);
+    CHECK(tab.get(ia) == &a);
+}
+
 TEST_CASE("dis::value_pool — wide-value handle dedup + limb round-trip")
 {
     madc::dis::value_pool p;

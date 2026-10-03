@@ -65,6 +65,12 @@
 # runner capability — lets the suite run against e.g. a forest-packed
 # copy (tmp/madc_packed) without touching the tree's binary.
 #
+# MADC_TEST_SAVE_DIR (env): a directory that receives each test's JIT
+# output — <base>.out (stdout; stdout+stderr for an .expect_err test) and
+# <base>.err (stderr) — for an A/B of two builds over the whole suite
+# (`diff -r` of two such directories). Generic runner capability; unset, the
+# outputs are discarded as before.
+#
 # MADC_WRAPPER (env): command prefix that runs the binary on its execution
 # domain — `wine` for the PE madc.exe on the build container. Word-split
 # deliberately (a wrapper may carry flags). Same generic-capability rule
@@ -208,9 +214,34 @@ TEST_GLOBS="$*"
 # must run unguarded says so in its .env fixture.
 export MADC_MEM_LIMIT="${MADC_MEM_LIMIT:-auto}"
 
+# A test that crashes leaves no core: a core is never a test product. Where
+# the kernel's core_pattern pipes to a helper (WSL's /wsl-capture-crash),
+# `ulimit -c 0` does not stop it — a piped dump ignores RLIMIT_CORE except
+# for a limit of exactly one byte, the kernel's "skip this dump" value — and
+# each crash streams the whole process to the helper, seconds apiece (a
+# plugin host test's deliberately crashing children: 10-24 s against 1.7 s).
+# Set once here, every test process inherits it. The one-byte limit goes
+# first: `ulimit -c 0` lowers the HARD limit too, and an unprivileged
+# process cannot raise it back to one.
+if [ -r /proc/sys/kernel/core_pattern ] \
+   && [ "$(head -c 1 /proc/sys/kernel/core_pattern)" = "|" ] \
+   && command -v prlimit > /dev/null 2>&1 \
+   && prlimit --pid $$ --core=1:1 2>/dev/null; then
+	:
+else
+	ulimit -c 0 2>/dev/null
+fi
+
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
 EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
+
+# madcide's user configuration (settings.json and the user's plugins/) is the
+# developer's, never the suite's — the same hermeticity as --no-config: point it
+# at a directory that does not exist, so no test reads an ambient
+# ~/.config/madcide. A test that needs one names its own fixture directory in
+# its .env (MADCIDE_CONFIG_DIR=tmp/…), which env(1) applies over this.
+export MADCIDE_CONFIG_DIR="$REPO_ROOT/tmp/madcide-no-config"
 
 # A separate fixture directory uses the same runner (GUI, etc.).
 TEST_DIR="${MADC_TEST_DIR:-tests}"
@@ -322,6 +353,12 @@ for t in "$TEST_DIR"/*.mad; do
     tmo=10
     [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
 
+    # A test leaves nothing behind in the directory it runs in
+    # (.claude/rules/scratch-files.md): a name the JIT run adds to the working
+    # directory fails the test. The native passes run the same program, so the
+    # JIT run is the one that answers. Snapshot the entries now.
+    cwd_before=$(LC_ALL=C ls -A)
+
     t0=$SECONDS
     if [ -f "$expect_err_file" ]; then
         # Compile-error test: capture stderr — the diagnostics ARE the
@@ -332,6 +369,7 @@ for t in "$TEST_DIR"/*.mad; do
             out=$(env "${envs[@]}" timeout "$tmo" $MADC_WRAPPER "$MADC" $HERMETIC_FLAGS $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>&1)
         fi
         rc=$?
+        [ -n "$MADC_TEST_SAVE_DIR" ] && printf '%s\n' "$out" > "$MADC_TEST_SAVE_DIR/$base.out"
         ok=1
         timed_out=0
         if [ $rc -eq 124 ]; then
@@ -388,7 +426,19 @@ for t in "$TEST_DIR"/*.mad; do
         fi
         err=""
         [ "$MADC_FAIL_DETAIL" -gt 0 ] && [ -s "$errf" ] && err=$(head -n "$MADC_FAIL_DETAIL" "$errf")
+        if [ -n "$MADC_TEST_SAVE_DIR" ]; then
+            printf '%s\n' "$out" > "$MADC_TEST_SAVE_DIR/$base.out"
+            cp "$errf" "$MADC_TEST_SAVE_DIR/$base.err" 2>/dev/null
+        fi
         rm -f "$errf"
+    fi
+    if [ $ok -eq 1 ]; then
+        leaked=$(LC_ALL=C comm -13 <(printf '%s\n' "$cwd_before") <(LC_ALL=C ls -A) | tr '\n' ' ')
+        if [ -n "$leaked" ]; then
+            [ "$REPORT" = json ] || echo "LEAK(files): $t left ${leaked% } in $PWD"
+            unmet="left in the working directory: ${leaked% }"
+            ok=0
+        fi
     fi
 
     secs=$((SECONDS - t0))

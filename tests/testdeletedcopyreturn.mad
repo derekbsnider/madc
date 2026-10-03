@@ -1,0 +1,6 @@
+#include <memory>
+std::unique_ptr<int> bad(std::unique_ptr<int> &p)
+{
+	return p;
+}
+int main() { return 0; }

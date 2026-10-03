@@ -1,0 +1,23 @@
+// std::vector's iterator-pair constructor over class iterators: libstdc++
+// tag-dispatches to a member template _M_range_initialize whose body applies
+// `!=`, `++` and `*` to its _InputIterator parameters and calls
+// emplace_back(*__first). madc kept those operators builtin in the instance and
+// typed the emplace_back argument by the pattern's placeholder (B111: "tsubst
+// body calls un-emittable symbol").
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <string>
+#include <vector>
+
+int main()
+{
+	std::vector<int> range(3, 7);
+	std::vector<int> copy(range.begin(), range.end());
+	printf("vector: %zu %d\n", copy.size(), copy[0]);
+	std::string s = "hey";
+	std::vector<char> chars(s.begin(), s.end());
+	printf("string: %zu %c%c%c\n", chars.size(), chars[0], chars[1], chars[2]);
+	std::vector<int> back(copy.rbegin(), copy.rend());
+	printf("reverse: %zu %d\n", back.size(), back[2]);
+	return 0;
+}

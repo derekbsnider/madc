@@ -1,6 +1,6 @@
 // GCC/clang inline the `__atomic_*` builtins; c2mir cannot, so madc lowers
-// __atomic_thread_fence / __atomic_signal_fence / __atomic_fetch_add to real
-// gcc-compiled runtime wrappers (__madc_atomic_*). libstdc++'s <ext/atomicity.h>
+// every one (include/atomic_builtins.h) to a real gcc-compiled runtime
+// wrapper (__madc_atomic_*). libstdc++'s <ext/atomicity.h>
 // refcount path (the memory barriers + __exchange_and_add) reaches them through
 // <memory>, the vector reallocation chain.
 #include <iostream>

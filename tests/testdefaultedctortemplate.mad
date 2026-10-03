@@ -1,0 +1,22 @@
+/* A member-template constructor whose template parameters all have defaults
+   ([temp.param]/9): a `>` or `>>` inside a default's parentheses is an
+   operator, not the head's close, so every parameter after it is still a
+   template parameter (V below, the only one the constructor names).
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     dctor: 9 2 */
+#include <cstdio>
+struct S {
+	int v;
+	template<class U = int, int N = (3 > 2), class V = short> S() : v(7 + (int)sizeof(V)) {}
+};
+struct T {
+	int v;
+	template<int A = (3 > 2), int B = (A >> 0) + 1> T() : v(B) {}
+};
+int main()
+{
+	S s;
+	T t;
+	printf("dctor: %d %d\n", s.v, t.v);
+	return 0;
+}

@@ -1,0 +1,32 @@
+// A variable-length array typedef's size is fixed where the typedef is
+// reached (C11 6.7.8p3): assigning to `n` afterwards changes neither
+// `sizeof` of the alias nor the size of an object declared with it. Each
+// size expression is evaluated once there (`next()` runs once), a list
+// tail's and a pointer-to-VLA group's too, and a typedef reached again in
+// a loop is evaluated again.
+// Oracle: gcc 13 and clang 18 print the lines below.
+#include <stdio.h>
+#include <stddef.h>
+
+static int k;
+static int next(void) { return ++k; }
+
+static int f(int n)
+{
+	typedef int c[n + 2];
+	typedef char r[n][next() + 1];
+	typedef int e[n], g[n + 1];
+	typedef int (*pv)[n];
+	n = 10;
+	c x;
+	pv p = 0;
+	printf("vn: %zu %zu %zu %d\n", sizeof(c), sizeof(x), sizeof(r), k);
+	printf("vt: %zu %zu %zu\n", sizeof(e), sizeof(g), sizeof(*p));
+	for (int i = 0; i < 3; ++i) {
+		typedef int d[i + 1];
+		printf("vl%d: %zu\n", i, sizeof(d));
+	}
+	return (int)sizeof(x[0]) - 4;
+}
+
+int main(void) { return f(3); }

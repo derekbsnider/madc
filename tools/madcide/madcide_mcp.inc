@@ -469,10 +469,10 @@ long test_verb_of(const char *name)
 // input schema — a single optional `args` string (IdeSession::command takes one
 // argument string) — and a description that names the tier the command needs,
 // so the client knows which tools mutate before it calls them.
-void mcp_tools(var &out)
+void mcp_tools(var &out, long w)
 {
     var ct;
-    cmd_table(ct);
+    cmd_table_w(ct, w);		// contributed commands too
     var argprop = { "type": "string",
 	"description": "the command's argument text (optional)" };
     var props = { "args": argprop };
@@ -481,7 +481,7 @@ void mcp_tools(var &out)
     for ( var r : ct )
     {
 	var nm = r["name"];
-	long tier = cmd_min_tier(r["code"].as_integer());
+	long tier = cmd_min_tier_w(w, r["code"].as_integer());
 	var desc = format("madcide '{}' command (requires {} tier)",
 		nm, tier_name(tier));
 	var tool = { "name": nm, "description": desc, "inputSchema": schema };
@@ -1675,7 +1675,7 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 	case mmTOOLSLIST:
 	{
 	    var tools;
-	    mcp_tools(tools);
+	    mcp_tools(tools, S.world());
 	    var result = { "tools": tools };
 	    jsonrpc_reply(out, idv, result);
 	    return true;
@@ -1731,12 +1731,10 @@ bool mcp_handle(IdeSession &S, long doc, long self_id, var &req, var &out)
 // client is the operator: self_id -1 (untracked -> owner via eff_tier, the -c
 // seat's rule), so it may edit and save. Drives mcp_handle over the SAME
 // api_run core the --serve api seat uses.
-long run_mcp(const char *path, bool ro)
+long run_mcp(const char *path, bool ro, const char *profile = "")
 {
     IdeSession S;
-    long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
+    long doc = S.open(path, ro, profile);
     if ( doc <= 0 )
 	return 1;
     S.terminal(false);			// headless: no interactive terminal

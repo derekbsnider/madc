@@ -1,0 +1,23 @@
+/* A `>` or `>>` inside parentheses in a template-argument list is an
+   operator, not the list's close ([temp.names]/3). A class template that
+   names itself with such an argument inside its own body names a DIFFERENT
+   specialization: the list's extent is template_id_suffix_end's answer and
+   its arguments scan_template_argument_list's. The class template's default
+   argument with a `>` is the control.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     tid: 6 1 9 4 */
+#include <cstdio>
+template<int N> struct C {
+	int v() { return N; }
+	int w() { return C<(N > 1) + 5>().v(); }
+	int s() { return C<(N >> 1)>().v(); }
+	int t() { return C<(N > 1 ? 9 : 0)>().v(); }
+};
+template<class T, int N = (sizeof(T) > 2) + 3> struct D { int g(); };
+template<class T, int N> int D<T, N>::g() { return N; }
+int main()
+{
+	printf("tid: %d %d %d %d\n", C<3>().w(), C<3>().s(), C<3>().t(),
+	       D<int>().g());
+	return 0;
+}

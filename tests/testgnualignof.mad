@@ -1,0 +1,16 @@
+// Every alignof spelling is the alignof operator: GNU `__alignof` and
+// `__alignof__`, C11 `_Alignof`, over a type and over an expression.
+// Oracle: gcc 13 and clang 18 print the lines below.
+#include <stdio.h>
+
+struct S { char c; double d; };
+
+int main(void)
+{
+	double d = 0;
+	struct S s;
+	printf("ga: %zu %zu %zu %zu\n", __alignof(double), __alignof(d),
+	       __alignof(struct S), __alignof(s.c));
+	printf("gb: %zu %zu %zu\n", __alignof__(long), _Alignof(short), __alignof__(s));
+	return (int)d;
+}

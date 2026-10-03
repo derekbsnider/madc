@@ -1,0 +1,6 @@
+// An east const (`int const x`) qualifies the object as a leading one does
+// (declarator_written_cv's base_const), so the write is refused. g++ 13
+// (-std=c++17): "assignment of read-only variable 'x'"; clang++ 18: "cannot
+// assign to variable 'x' with const-qualified type 'const int'". Before the
+// fix madc compiled it and the program returned 2.
+int main() { int const x = 1; x = 2; return x; }

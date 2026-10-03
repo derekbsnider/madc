@@ -1,0 +1,12 @@
+shared: ok=1 rows=0
+noinc: ok=0 Failed to open include file: madc_bs.h
+open: 1 why-null=1
+answer 42
+greet hello, plugin
+nothing: 1
+parse_build: ok=1 twice 42
+badkind: ok=0 rows=1 unknown build kind 'dll' (expected "exe", "obj" or "shared")
+notarray: ok=0 rows=1 the include directories must be an array of directory names
+nottext: ok=0 rows=1 an include directory must be text
+missing: 1 why=1
+notlib: 1 why=1

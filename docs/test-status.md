@@ -1,5 +1,54 @@
 # Test Status
 
+Frozen-forest const_param restoration (2026-10-01): `const_param` flag (`PF_CONST_PARAM`) is now restored from `paramrec` records when materializing function/method parameters from bound forests, fixing copy constructor selection on forest-bound classes. Reducer: forest_bind_gate constcopy case prints `v=101 live=2 after=0` (matches g++/clang++). Also: `testimplcopy` (string member copy) aborted with double-free before (forest bound), passes after. Tier 1: 5/5 JIT, 2/2 EXE, 2/2 OBJ. forest_bind_gate: 31/31 GREEN. Packed suite: 1850 passed, 0 failed, 9 skipped, 1 timeout (unrelated testmadcide_plugin_host). Tier 2: all six lanes at baselines.
+
+B37 deleted copy/move constructors (2026-09-28):
+`testdeletedcopyunique`, `testdeletedcopyreturn`, and `testdeletedmovector`
+require the same rejection as g++ and clang++ under C++17. Eleven focused
+construction tests pass in JIT, with eight positive cases also passing EXE
+and OBJ. The forest bind gate adds a deleted/defaulted copy/move case and
+passes 30/30 on the build target; `test_cir_freeze` passes 36 cases and 773
+assertions. Six Tier 2 fast lanes remain at their recorded baselines.
+
+B54 channel-close wakeup (2026-09-28): `testchanclosewake` parks a selector
+on a loopback listener and closes it from the owner task. The pre-fix Linux
+build timed out after five seconds; the fixed build prints
+`waiter returned -1` in JIT, EXE, and OBJ. `test_channel_object` also
+exercises replacement of an accepted endpoint through the close path.
+
+Range-for standard gate (2026-09-28): `testrangeforstdc` and
+`testrangeforstdcpp98` require diagnostics; `testrangeforstdcpp11`
+keeps the C++11 form, alongside the existing madc-dialect range-for tests.
+
+B15 for-initializer standard gate (2026-09-28): `testforinitc89` requires
+a diagnostic for a typed initializer; `testforinitc99` keeps the C99 form.
+
+B14 short-declaration standard gate (2026-09-28):
+`testshortdeclstdc` and `testshortdeclstdcpp` require C17 and C++17 to
+reject `:=`, while existing dialect tests such as `testcolon` keep it.
+
+B2 stray closing brace (2026-09-28): `teststrayclosec` requires a source
+diagnostic for a top-level `}`. GCC and Clang reject the reducer; madc had
+accepted it.
+
+B35 array compound literal typing (2026-09-28):
+`testarraycompoundtypec` checks sized and inferred bounds, designators,
+`sizeof *&literal`, pointer decay, and pointer-to-array address formation.
+GCC and Clang output `8 12 20 20 12 6 9`; madc matches. Sixteen nearby
+compound-literal tests passed in JIT, EXE, and OBJ modes.
+
+B50 array address typing (2026-09-28): `testarrayaddressofc` and
+`testarrayaddressofcpp` check global, local, member, multidimensional and
+qualified namespace arrays, including `sizeof *&a`, indexing and `&a + 1`
+stride. GCC/Clang and g++/clang++ match the fixtures; madc's JIT, EXE and
+OBJ modes passed both.
+
+B24 weak-function binding (2026-09-28): `testprojectweakfn` checks weak
+definitions before and after the decl-specifiers, a weak prototype followed
+by a definition, opposite TU order, cross-TU calls, and function address
+identity. GCC and Clang both produce `f=2 g=3 gb=3 h=6 p=8 same=1`;
+the madc project test passes in JIT, executable, and object modes.
+
 Standard-C regression sweep (2026-09-20, `7488a39cf`): a multi-standard
 coverage measurement run for the documentation found gcc c-torture at
 **1587/1624**, against **1614** at the 2026-08-12 baseline on identical scope.

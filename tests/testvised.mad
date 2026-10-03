@@ -171,5 +171,7 @@ int main()
     ui::get(m2, w2, es2, "msg");
     printf("ro-save-msg=[%s]\n", m2);
     ui::world_close(w2);
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

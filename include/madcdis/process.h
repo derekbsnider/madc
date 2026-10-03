@@ -21,6 +21,9 @@ namespace madc {
 // fork-Run reap (parse_run) all route through it. -1 = neither exited nor
 // signaled.
 int map_child_status(int child_status);
+// The signal that ended a reaped child, 0 when it exited (what the 128+signal
+// shape folds away: exit(139) and SIGSEGV map alike). Beside its sibling.
+int child_term_signal(int child_status);
 #endif
 
 struct ProcessOptions
@@ -34,6 +37,12 @@ struct ProcessOptions
 	// When set, stderr_channel() reports itself unreadable and
 	// pump_process skips its stderr leg.
 	bool inherit_stderr = false;
+	// The same for stdin and stdout: the child reads the parent's fd 0 and
+	// writes its fd 1 (a REPL's backend on the host's terminal, plan
+	// §41.9a slice 4). An inherited stream's channel reports itself
+	// unusable (stdin unwritable, stdout unreadable). Ignored with `pty`.
+	bool inherit_stdin = false;
+	bool inherit_stdout = false;
 	// Fork-as-isolation THROUGH the one spawn owner (madcide polish P3b):
 	// when set, the forked child runs this body instead of exec'ing the
 	// source — the pipes, the reap and the cancel are the owner's — and
@@ -80,6 +89,9 @@ public:
 	bool started() const;
 	bool exited() const;
 	int exit_status() const;
+	// The signal that ended the child, 0 when it exited (or on Windows,
+	// which has no exited/killed split).
+	int term_signal() const;
 	// The child runs on a pseudo-terminal (the pty option honoured by
 	// start()); false on pipes — and always on Windows for now.
 	bool is_pty() const;

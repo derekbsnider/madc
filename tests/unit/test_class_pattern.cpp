@@ -505,6 +505,83 @@ TEST_CASE("B3 ClassPattern arena references survive recursive materialization")
 	CHECK(outer_ref->identity == "outer");
 }
 
+// An interactive entry's transaction holds the class journals opened inside
+// it (plan §41.3), so a registry's transactions nest. An inner rollback
+// undoes only its own writes; an inner commit leaves them to the enclosing
+// transaction, whose rollback restores the value at ITS begin.
+TEST_CASE("registration transactions nest")
+{
+	registration_map<std::string, int> values;
+	values["before"] = 1;
+	registration_map<std::string, int>::transaction_state outer, inner;
+	values.begin_transaction(outer);
+	values["outer"] = 2;
+	values.begin_transaction(inner);
+	values["before"] = 3;
+	values["inner"] = 4;
+	values.rollback_transaction(inner);
+	CHECK(values["before"] == 1);
+	CHECK(values.count("inner") == 0);
+	CHECK(values["outer"] == 2);
+	CHECK(values.transaction_active());
+	values.begin_transaction(inner);
+	values["before"] = 5;
+	values["outer"] = 6;
+	values["inner"] = 7;
+	values.commit_transaction(inner);
+	CHECK(values["before"] == 5);
+	CHECK(values["inner"] == 7);
+	values.rollback_transaction(outer);
+	CHECK_FALSE(values.transaction_active());
+	REQUIRE(values.size() == 1);
+	CHECK(values["before"] == 1);
+
+	registration_set<std::string> names;
+	names.insert("before");
+	registration_set<std::string>::transaction_state outer_names, inner_names;
+	names.begin_transaction(outer_names);
+	names.insert("outer");
+	names.begin_transaction(inner_names);
+	names.erase("before");
+	names.insert("inner");
+	names.rollback_transaction(inner_names);
+	CHECK(names.count("before") == 1);
+	CHECK(names.count("inner") == 0);
+	CHECK(names.count("outer") == 1);
+	names.begin_transaction(inner_names);
+	names.erase("before");
+	names.erase("outer");
+	names.insert("inner");
+	names.commit_transaction(inner_names);
+	CHECK(names.count("before") == 0);
+	CHECK(names.count("inner") == 1);
+	names.rollback_transaction(outer_names);
+	CHECK(names.size() == 1);
+	CHECK(names.count("before") == 1);
+
+	Program program;
+	program.struct_map.set("before", &ddINT32);
+	StructRegistry::transaction_state outer_structs, inner_structs;
+	program.struct_map.begin_transaction(outer_structs);
+	program.struct_map.set("outer", &ddINT64);
+	program.struct_map.begin_transaction(inner_structs);
+	program.struct_map.set("before", &ddINT64);
+	program.struct_map.set("inner", &ddINT64);
+	program.struct_map.rollback_transaction(inner_structs);
+	CHECK(program.struct_map.find("before")->second == &ddINT32);
+	CHECK(program.struct_map.count("inner") == 0);
+	CHECK(program.struct_map.count("outer") == 1);
+	program.struct_map.begin_transaction(inner_structs);
+	program.struct_map.set("before", &ddINT64);
+	program.struct_map.set("inner", &ddINT64);
+	program.struct_map.commit_transaction(inner_structs);
+	CHECK(program.struct_map.find("before")->second == &ddINT64);
+	program.struct_map.rollback_transaction(outer_structs);
+	CHECK(program.struct_map.find("before")->second == &ddINT32);
+	CHECK(program.struct_map.count("inner") == 0);
+	CHECK(program.struct_map.count("outer") == 0);
+}
+
 TEST_CASE("B3 structural registration transactions restore first writes")
 {
 	registration_map<std::string, int> values;

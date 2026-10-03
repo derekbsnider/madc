@@ -1,0 +1,66 @@
+// `T&&` and `T&` are distinct types ([dcl.ref]/2), and a reference to a
+// reference collapses to `&` unless both are `&&` ([dcl.ref]/6). madc's type
+// model had one reference type per referent: is_rvalue_reference<int&> and
+// is_same<int&, int&&> answered 1, a `T&&` partial specialization matched
+// `int&`, and the two template lanes named `tuple<int&&>` differently
+// (tuple_int32_tR vs tuple_int32_tRR), so `std::forward_as_tuple(3)` failed
+// c2mir with "incompatible return-expr type".
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <type_traits>
+#include <tuple>
+#include <utility>
+#include <cstdio>
+
+template<typename T> struct W { T v; };
+template<typename T> struct isrr { enum { value = 0 }; };
+template<typename T> struct isrr<T&&> { enum { value = 1 }; };
+template<typename T> struct islr { enum { value = 0 }; };
+template<typename T> struct islr<T&> { enum { value = 1 }; };
+template<typename T> struct H { using rref = T&&; using lref = T&; };
+
+using L = int &;
+using R = int &&;
+
+int &&mv(int &x) { return static_cast<int&&>(x); }
+int &lv(int &x) { return x; }
+
+int main()
+{
+    int k = 3;
+    printf("std: %d %d %d %d\n",
+	   (int)std::is_rvalue_reference<int&&>::value,
+	   (int)std::is_rvalue_reference<int&>::value,
+	   (int)std::is_lvalue_reference<int&&>::value,
+	   (int)std::is_lvalue_reference<int&>::value);
+    printf("same: %d %d %d\n",
+	   (int)std::is_same<int&, int&&>::value,
+	   (int)std::is_same<int&&, int&&>::value,
+	   (int)std::is_same<std::tuple<int&>, std::tuple<int&&> >::value);
+    printf("user: %d %d %d %d %d\n", (int)isrr<int&&>::value,
+	   (int)isrr<int&>::value, (int)islr<int&&>::value,
+	   (int)islr<int&>::value,
+	   (int)std::is_same<W<int&>, W<int&&> >::value);
+    printf("collapse: %d %d %d %d\n",
+	   (int)std::is_same<L&&, int&>::value,
+	   (int)std::is_same<R&, int&>::value,
+	   (int)std::is_same<R&&, int&&>::value,
+	   (int)std::is_same<L&, int&>::value);
+    printf("alias: %d %d %d %d\n",
+	   (int)std::is_same<H<int>::rref, int&&>::value,
+	   (int)std::is_same<H<int&>::rref, int&>::value,
+	   (int)std::is_same<H<int&&>::lref, int&>::value,
+	   (int)std::is_same<std::add_rvalue_reference<int>::type, int&&>::value);
+    printf("decltype: %d %d %d %d\n",
+	   (int)std::is_same<decltype(mv(k)), int&&>::value,
+	   (int)std::is_same<decltype(mv(k)), int&>::value,
+	   (int)std::is_same<decltype(lv(k)), int&>::value,
+	   (int)std::is_same<decltype(std::declval<int>()), int&&>::value);
+    // forward_as_tuple over an rvalue builds tuple<int&&>: its return type
+    // and its body must name ONE struct (the instance alone used to fail).
+    (void)std::forward_as_tuple(3);
+    double d = 4.5;
+    auto t = std::forward_as_tuple(static_cast<int&&>(k), d);
+    printf("tuple: %d %.1f %d\n", std::get<0>(t), std::get<1>(t),
+	   (int)std::is_same<decltype(t), std::tuple<int&&, double&> >::value);
+    return 0;
+}

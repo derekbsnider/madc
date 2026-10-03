@@ -1,0 +1,32 @@
+/* C11 6.7.2.3 / 6.7.8: `typedef enum Tag {...} Alias;` declares the tag AND
+   the alias, and the alias names the tag's type. The typedef reader used to
+   consume the tag itself and hand the enum parser only the body, so `Tag`
+   was never registered: a later `enum Tag` decayed to plain int, and a
+   2-bit bit-field of it holding 3 read back -1 (signed) where the enum's
+   unsigned underlying type gives 3. `typedef enum Tag Alias;` (a reference,
+   no body) minted a fresh enum instead of naming the tag's.
+   Oracle: gcc/clang -std=c17 print a=3 b=3 c=3 d=1. */
+#include <stdio.h>
+
+typedef enum Color { RED = 1, GREEN = 2, BLUE = 3 } Color_t;
+enum Shade { DARK = 1, LIGHT = 3 };
+typedef enum Shade Shade_t;
+
+struct bits {
+    enum Color tag_field : 2;	/* through the tag the typedef declared */
+    Color_t alias_field : 2;	/* through the alias */
+    Shade_t ref_field : 2;	/* through an alias of an earlier tag */
+};
+
+int main(void)
+{
+    struct bits b;
+    b.tag_field = BLUE;
+    b.alias_field = BLUE;
+    b.ref_field = LIGHT;
+    enum Color c = GREEN;
+    Color_t *p = &c;	/* the alias and the tag are one type */
+    printf("a=%d b=%d c=%d d=%d\n", (int)b.tag_field, (int)b.alias_field,
+	   (int)b.ref_field, *p == GREEN);
+    return 0;
+}

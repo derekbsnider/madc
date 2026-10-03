@@ -13,6 +13,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
     load_status(w, es, "joe");
@@ -54,5 +55,17 @@ int main()
     for ( var sg : left )
 	lseats = format("{}{}", lseats, sg["seat"]);
     println("chord+modified-seats={}", lseats);
+    // The combined string fills the width in COLUMNS (B87): a UTF-8 file
+    // name (é is one column, two bytes) still ends flush at cols - 1 (the
+    // renderer's status arm prepends one space). Aligning by strlen left it
+    // one column short per extra byte.
+    ui::set(w, es, "pendingchord", "");
+    doc_set_path(w, doc, "caf\xc3\xa9.mad");
+    ui::set(w, es, "vcols", 80);
+    S.compose_ide_tree(tree, doc);
+    var wide = tree["children"][0]["content"];
+    println("utf8-status-columns={}", ui::text_columns(wide.c_str()));
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

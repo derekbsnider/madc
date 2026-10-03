@@ -1,0 +1,6 @@
+int n = 0; scanf("%d", &n);
+4321
+n * 2
+if (n > 4000) printf("big %d\n", n);
+else printf("small\n");
+printf("after %d\n", n + 1);

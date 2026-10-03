@@ -26,6 +26,28 @@ std::string scratch_uri(const char *tag, std::string &path_out)
 	return "file://" + path_out;
 }
 
+int64_t accept_with_wait(madc::channel &listener, madc::channel &client)
+{
+	int64_t accepted = 0;
+	for ( int attempt = 0; attempt < 100 && accepted == 0; ++attempt )
+	{
+		accepted = listener.accept(client);
+		if ( accepted != 0 )
+			break;
+		int handle = static_cast<int>(listener.read_wait_handle());
+		if ( handle < 0 )
+			break;
+		fd_set readable;
+		FD_ZERO(&readable);
+		FD_SET(handle, &readable);
+		timeval timeout;
+		timeout.tv_sec = 1;
+		timeout.tv_usec = 0;
+		::select(handle + 1, &readable, nullptr, nullptr, &timeout);
+	}
+	return accepted;
+}
+
 } // namespace
 
 TEST_CASE("channel writes then reads a file with line semantics")
@@ -124,24 +146,7 @@ TEST_CASE("channel listens, accepts a client, and round-trips as a listener face
 
 	// accept() takes the pending connection into an empty channel.
 	madc::channel client;
-	int64_t accepted = 0;
-	for ( int attempt = 0; attempt < 100 && accepted == 0; ++attempt )
-	{
-		accepted = listener.accept(client);
-		if ( accepted != 0 )
-			break;
-		int handle = static_cast<int>(listener.read_wait_handle());
-		if ( handle < 0 )
-			break;
-		fd_set readable;
-		FD_ZERO(&readable);
-		FD_SET(handle, &readable);
-		timeval timeout;
-		timeout.tv_sec = 1;
-		timeout.tv_usec = 0;
-		::select(handle + 1, &readable, nullptr, nullptr, &timeout);
-	}
-	REQUIRE(accepted == 1);
+	REQUIRE(accept_with_wait(listener, client) == 1);
 	REQUIRE(client.ok());
 
 	// raw client -> accepted channel (line semantics on the accepted side).
@@ -159,7 +164,22 @@ TEST_CASE("channel listens, accepts a client, and round-trips as a listener face
 	REQUIRE(got == static_cast<ssize_t>(std::strlen("object-response\n")));
 	CHECK(std::string(buffer, got) == "object-response\n");
 
+	// Reusing the accept target closes its old endpoint through channel::close.
+	int64_t old_handle = client.read_wait_handle();
+	int fd2 = ::socket(AF_INET, SOCK_STREAM, 0);
+	REQUIRE(fd2 >= 0);
+	REQUIRE(::connect(fd2, reinterpret_cast<sockaddr *>(&address),
+			  sizeof(address)) == 0);
+	REQUIRE(accept_with_wait(listener, client) == 1);
+	CHECK(client.read_wait_handle() != old_handle);
+	const char second[] = "second-request\n";
+	REQUIRE(::send(fd2, second, sizeof(second) - 1, 0)
+		== static_cast<ssize_t>(sizeof(second) - 1));
+	REQUIRE(client.readline(line));
+	CHECK(line == "second-request");
+
 	::close(fd);
+	::close(fd2);
 	client.close();
 	listener.close();
 

@@ -578,8 +578,19 @@ extern MIR_item_t MIR_new_forward (MIR_context_t ctx, const char *name);
    - MIR_ITEM_BIND_LINKONCE is C++ vague linkage (template instantiations,
      inline bodies, vtables): every copy is identical by ODR, so calls inline
      freely.
-   JIT multi-module linking is unaffected (use MIR_set_func_redef_permission
-   for the in-memory analogue). */
+   madc fork: MIR_load_module applies the same rule in memory.  A WEAK or
+   LINKONCE func/data/ref_data/bss/expr_data definition whose name the context
+   already holds (from an earlier module, or an external) is not defined
+   again: the loader turns it into an import bound to the definition already
+   there, so every module shares one copy (one vtable and type_info address,
+   one static member).  A func definition that is not weak (strong or
+   LINKONCE) after a WEAK one replaces it, as ld's strong definition replaces
+   a weak one: it takes the weak one's address, so references already bound
+   reach it and the function keeps one address (calls to a weak func are never
+   made direct, as they are never inlined).  A strong func definition after a
+   LINKONCE one is still a redefinition (MIR_set_func_redef_permission governs
+   funcs).  Weak data is not replaced: references already bound keep the weak
+   object. */
 typedef enum {
   MIR_ITEM_BIND_GLOBAL = 0, /* strong definition (the default) */
   MIR_ITEM_BIND_WEAK,       /* interposable weak: STB_WEAK, never inlined */
@@ -751,6 +762,23 @@ extern MIR_item_t MIR_get_global_item (MIR_context_t ctx, const char *name);
    privatized. */
 extern size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
                                              const char *const *unexport_names, size_t n);
+/* madc fork: would MIR_load_module and MIR_link accept module M, loaded ALONE into
+   the context as it stands?  A pure query of the context's own tables, run before
+   the load, since both calls change the context before they can fail (a loaded
+   export joins the environment; a failed link leaves its module queued).  It
+   applies their rules: each import resolves (the environment holds it, or
+   IMPORT_RESOLVER returns an address), and no exported func redefines an
+   environment item (a WEAK or LINKONCE one does not: the load binds it to the
+   item already there).  Calls REPORT (when not NULL) once per failing item, with
+   MIR_undeclared_op_ref_error or MIR_repeated_decl_error and the item's name, and
+   returns the number of failures; 0 means the load and the link's resolution
+   will succeed.  An incremental host (a REPL) refuses a failing module this way
+   and keeps its context intact. */
+extern size_t MIR_module_link_check (MIR_context_t ctx, MIR_module_t m,
+                                     void *(*import_resolver) (const char *),
+                                     void (*report) (MIR_error_type_t error_type,
+                                                     const char *name, void *arg),
+                                     void *arg);
 extern void MIR_load_module (MIR_context_t ctx, MIR_module_t m);
 extern void MIR_load_external (MIR_context_t ctx, const char *name, void *addr);
 extern void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_item_t item),
@@ -782,6 +810,7 @@ extern MIR_context_t _MIR_init (MIR_alloc_t alloc, MIR_code_alloc_t code_alloc);
 extern const char *_MIR_uniq_string (MIR_context_t ctx, const char *str);
 extern int _MIR_reserved_ref_name_p (MIR_context_t ctx, const char *name);
 extern int _MIR_reserved_name_p (MIR_context_t ctx, const char *name);
+extern MIR_item_t _MIR_weak_func_replacement (MIR_context_t ctx, MIR_item_t item);
 extern int64_t _MIR_addr_offset (MIR_context_t ctx, MIR_insn_code_t code);
 extern void _MIR_free_insn (MIR_context_t ctx, MIR_insn_t insn);
 extern MIR_reg_t _MIR_new_temp_reg (MIR_context_t ctx, MIR_type_t type,

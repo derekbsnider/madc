@@ -58,6 +58,7 @@ class TokenCpnd;
 class TokenFunc;
 class TokenInt;
 class TokenDecl;
+class TokenGlobalInit;
 class TokenCallFunc;
 class TokenMember;
 class TokenCallMethod;
@@ -131,8 +132,9 @@ enum class TokenID {
 			      // same contextual discipline as tkGO/tkYIELD:
 			      // `scope { ... }` structured-concurrency block
 			      // and `await <chan-expr>` channel receive.
-  tkUnaryPlus                 // unary `+` ([expr.unary.op]/7) — built by the engine in
+  tkUnaryPlus,                // unary `+` ([expr.unary.op]/7) — built by the engine in
 			      // unary position; the lexer always says tkAdd
+  tkEndOfEntry                // the end of one interactive entry (TokenEndOfEntry)
 };
 
 enum class TokenAssoc {
@@ -268,15 +270,23 @@ public:
     //   head_tok   — the FIRST source token of the construct (the token
     //                parseStatement was handed); its START is the extent start
     //   end_line / end_column — the END of the LAST consumed token: the static
-    //                parse position when the construct finished (a simple
-    //                statement's ';', a compound's '}'). Columns are END-
-    //                anchored (the byte after the token's last char).
+    //                parse END position when the construct finished (a simple
+    //                statement's ';', a compound's '}'): the column of that
+    //                token's last byte.
     // NULL / 0 = no extent (a leaf, an expression node, a synthesized token).
     // TokenCpnd's former end_line (the closing-brace line) lives here now.
     // Replaced the never-read, never-written `std::streampos pos`.
     TokenBase *head_tok;
     int end_line;
     int end_column;
+    // `line` / `column` are where the token STARTS (D26: gcc's caret, the
+    // byte its first character is; 1-based, a byte count). Its lexical END —
+    // the line and the column of its last byte — is recorded beside it when
+    // it is read from source text (Program::getToken); 0 = not recorded (a
+    // parser-built or injected token, a prelude-image token), and
+    // madc_token_end() then derives it from the start and the spelling.
+    int lex_end_line = 0;
+    int lex_end_column = 0;
     // Flat POD data record (Phase 2). See TokenRec above.
     TokenRec rec;
     // Diagnostic: how many times the parser has CONSUMED this token via
@@ -301,10 +311,15 @@ public:
     std::string leading_trivia;
     // Current parse position — updated by nextToken(), inherited by
     // all new tokens so synthetic parser-created tokens automatically
-    // get the position of the most recently consumed source token.
+    // get the position of the most recently consumed source token: its
+    // START (line / column). _parse_end_* is that token's END, where a
+    // construct's extent ends. Saved and restored together through
+    // ParsePosition, never one static at a time.
     static const char *_parse_file;
     static int _parse_line;
     static int _parse_column;
+    static int _parse_end_line;
+    static int _parse_end_column;
     // Active interned-spelling pool for spelling() (interning Step 4). Bound to the
     // currently-processing Program's strpool at lex/parse entry (compile is
     // sequential per-Program, incl. --project per-TU). Lets the arg-less spelling()
@@ -345,6 +360,8 @@ public:
 	    c->file = file;
 	    c->line = line;
 	    c->column = column;
+	    c->lex_end_line = lex_end_line;
+	    c->lex_end_column = lex_end_column;
 	    // The ud-suffix is part of the literal's IDENTITY, not its
 	    // position — a cloned `123_w` is still `123_w`. Propagated here
 	    // (the sanctioned copier) because clone() is per-class.
@@ -433,6 +450,7 @@ public:
     virtual TokenFunc          *as_func_tok()       { return NULL; }
     virtual TokenInt           *as_int_tok()        { return NULL; }
     virtual TokenDecl          *as_decl_tok()       { return NULL; }
+    virtual TokenGlobalInit    *as_global_init_tok() { return NULL; }
     virtual TokenCallFunc      *as_callfunc_tok()   { return NULL; }
     virtual TokenMember        *as_member_tok()     { return NULL; }
     virtual TokenCallMethod    *as_callmethod_tok() { return NULL; }
@@ -456,6 +474,55 @@ public:
     // (a call arm that knew TokenDerefExpr alone lost `(*t)(i)`).
     bool is_indirection()
     { return as_deref_tok() || as_deref_expr_tok() || as_deref_step_tok(); }
+};
+
+// The parse position as ONE value (D26): the last consumed token's file, its
+// START (what a token the parser builds inherits) and its END (where a
+// construct's extent ends). A nested parse saves it, moves it and restores it
+// whole, so a start from one token never sits beside another token's end.
+struct ParsePosition
+{
+    const char *file;
+    int line;
+    int column;
+    int end_line;
+    int end_column;
+    static ParsePosition current()
+    {
+	ParsePosition p = { TokenBase::_parse_file, TokenBase::_parse_line,
+			    TokenBase::_parse_column, TokenBase::_parse_end_line,
+			    TokenBase::_parse_end_column };
+	return p;
+    }
+    // No position: a unit's lexing starts here, so its tokens take their
+    // positions from its own text.
+    static void reset()
+    {
+	ParsePosition none = { NULL, 0, 0, 0, 0 };
+	none.restore();
+    }
+    void restore() const
+    {
+	TokenBase::_parse_file = file;
+	TokenBase::_parse_line = line;
+	TokenBase::_parse_column = column;
+	TokenBase::_parse_end_line = end_line;
+	TokenBase::_parse_end_column = end_column;
+    }
+    // The position of token `t` as a value: its file, start and end (the
+    // recorded lexical end, else the one derived from its spelling). A copy
+    // outlives the token (throwbuf keeps one for its diagnostic).
+    static ParsePosition of(TokenBase *t)
+    {
+	ParsePosition p = { t->file, t->line, t->column, t->lex_end_line,
+		    t->lex_end_column };
+	if ( !t->lex_end_column )
+	    end_from_spelling(t, p);
+	return p;
+    }
+    // The parser's position becomes token `t`'s.
+    static void set_from(TokenBase *t) { of(t).restore(); }
+    static void end_from_spelling(TokenBase *t, ParsePosition &p);	// parser.cpp
 };
 
 // whitespace
@@ -1397,6 +1464,11 @@ class TokenSemi:  public TokenSymbol   { public: TokenSemi()   :   TokenSymbol('
 class TokenColEq: public TokenSymbol   { public: TokenColEq()  :  TokenSymbol(':') {} virtual TokenID id() const override { return TokenID::tkColEq; } virtual TokenBase *clone() override { return new TokenColEq(); } };
 class TokenQuote: public TokenSymbol   { public: TokenQuote()  :   TokenSymbol('"') {} virtual TokenID id() const override { return TokenID::tkQuote; }  virtual TokenBase *clone() override { return new TokenQuote(); } };
 class TokenApost: public TokenSymbol   { public: TokenApost()  :  TokenSymbol('\'') {} virtual TokenID id() const override { return TokenID::tkApost; }  virtual TokenBase *clone() override { return new TokenApost(); } };
+// The end of ONE interactive entry (Program::ParseMode::InteractiveEntry):
+// Clang-Repl's annot_repl_input_end, Python's ENDMARKER. Only
+// Program::finish_interactive_entry makes one, after the entry's last token;
+// a TranslationUnit parse never sees it.
+class TokenEndOfEntry: public TokenSymbol { public: TokenEndOfEntry() : TokenSymbol(0) {} virtual TokenID id() const override { return TokenID::tkEndOfEntry; } virtual TokenBase *clone() override { return new TokenEndOfEntry(); } };
 
 
 // base numerics
@@ -1463,6 +1535,11 @@ inline bool is_zero_integer_literal(const TokenBase *t)
     return t && t->id() == TokenID::tkInt && t->ival() == 0;
 }
 
+// A null pointer constant ([conv.ptr]/1): a zero integer literal or `nullptr`
+// (a TokenNullptr is a zero TokenInt), and madc's own NULL, `((void *)0)` in
+// every mode (include/madc/stddef.h).
+bool is_null_pointer_constant(const TokenBase *t);
+
 class TokenNullptr: public TokenInt
 {
 public:
@@ -1514,6 +1591,10 @@ public:
     // the subscript index expressions of a deferred row sizeof, emitted
     // (values discarded) ahead of the runtime size computation.
     std::vector<TokenBase *> operand_side_effects;
+    // The least value a deferred measure answers: the alignment a named
+    // object's declaration requests (`alignas(8) V x;` then `alignof(x)`),
+    // which its type's alignment only raises. 0 for a type operand.
+    size_t measure_floor = 0;
 
     TokenTypeQuery(DataDef *dd = NULL, bool want_align = false,
 		   bool use_cached_size = true)
@@ -1527,6 +1608,7 @@ public:
 	TokenTypeQuery *c = new TokenTypeQuery(query_type, want_alignof,
 					       use_cached_runtime_size);
 	c->operand_side_effects = operand_side_effects;
+	c->measure_floor = measure_floor;
 	return c;
     }
     virtual TokenID id() const override { return TokenID::tkInt; }
@@ -1997,6 +2079,10 @@ public:
     DataDefCLASS *alloc_class;
     std::vector<TokenBase *> ctor_args;
     bool braced = false; // list-initialization selects braced constructor overloads
+    // A new-initializer `( ... )` / `{ ... }` was written ([expr.new]/23):
+    // omitted, the object is default-initialized; `()` value-initializes
+    // (zero for a scalar or a plain struct) — empty ctor_args are both.
+    bool has_initializer = false;
     // Placement new: `new (placement) Type(args)` constructs at the given
     // address instead of allocating. `placement` is the address expression
     // (NULL for ordinary `new`); `alloc_type` is the constructed type when it
@@ -2004,12 +2090,15 @@ public:
     TokenBase *placement;
     DataDef *alloc_type;
     TokenBase *array_size;	// `new T[n]` — the element count expr (NULL for scalar new)
+    // `new T[n]{...}`: the braced list that initializes the elements
+    // ([expr.new]/18, [dcl.init.aggr]); NULL when the array new has none.
+    class TokenStructLit *array_init;
     // The expression's TYPE ([expr.new]/1: a prvalue of type `T *`), set by
     // parse() for both the scalar and the array form. A new-expression is the
     // keyword token itself, so without this datadef() answered the keyword
     // default and `auto c = new T(...)` deduced `char`.
     DataDef *result_type;
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; result_type = NULL; }
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; array_init = NULL; result_type = NULL; }
     virtual TokenID id() const override { return TokenID::tkNEW; }
     virtual TokenBase *clone() override { return new TokenNEW(); }
     virtual TokenBase *parse(Program &) override;

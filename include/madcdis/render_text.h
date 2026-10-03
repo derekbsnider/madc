@@ -14,6 +14,7 @@
 
 #include "madcdis/uinode.h"
 #include "madcdis/prose.h"
+#include "madcdis/text_utf16.h"	// line_width: a word's width in columns
 
 namespace madc {
 namespace hub {
@@ -37,7 +38,9 @@ inline std::string wrap_text(const std::string &text, size_t width)
 	while ( end < text.size() && text[end] != ' ' && text[end] != '\n' )
 	    ++end;
 	size_t word_len = end - i;
-	if ( line_len > 0 && line_len + 1 + word_len > width )
+	// Columns, not bytes: a UTF-8 character is one column (B87).
+	size_t word_w = madc::line_width(text.substr(i, word_len));
+	if ( line_len > 0 && line_len + 1 + word_w > width )
 	{
 	    out += '\n';
 	    line_len = 0;
@@ -48,7 +51,7 @@ inline std::string wrap_text(const std::string &text, size_t width)
 	    ++line_len;
 	}
 	out.append(text, i, word_len);
-	line_len += word_len;
+	line_len += word_w;
 	i = end;
 	while ( i < text.size() && text[i] == ' ' )
 	    ++i;

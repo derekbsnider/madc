@@ -1,0 +1,65 @@
+// An operator whose operand is type-dependent is resolved when the template
+// is instantiated, on the operand's substituted type ([temp.dep.res]). In a
+// member function template, `b != e`, `*b` and `++b` on a parameter of type I
+// are builtin for a pointer and the class's operators for an iterator class;
+// madc kept the builtin form in every instance ("invalid types of comparison
+// operands"), and typed `put(*b)` by the pattern's placeholder, so the member
+// pack call never instantiated (B111). An iterator with a user copy
+// constructor is passed by invisible reference, so the instance's parameter
+// already holds the object's address: binding it to `const I &` must not
+// take `&` of it again.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+struct It {
+	int *p;
+	bool operator!=(const It &o) const { return p != o.p; }
+	int operator*() const { return *p; }
+	It &operator++() { ++p; return *this; }
+};
+
+struct CopyIt {
+	int *p;
+	CopyIt(int *q) : p(q) {}
+	CopyIt(const CopyIt &o) : p(o.p) {}
+	bool operator!=(const CopyIt &o) const { return p != o.p; }
+	int operator*() const { return *p; }
+	CopyIt &operator++() { ++p; return *this; }
+};
+
+template<class T> struct Sum {
+	T total = 0;
+	template<class I> static T first(const I &i) { return *i; }
+	template<class... A> void put(A &&... a) { total += (0 + ... + a); }
+	template<class I> void add(I b, I e)
+	{
+		while (b != e) {
+			total += *b;
+			++b;
+		}
+	}
+	template<class I> void each(I b, I e)
+	{
+		for (; b != e; ++b)
+			put(*b);
+	}
+	template<class I> T head(I b) { return first(b); }
+};
+
+int main()
+{
+	int a[3] = {1, 2, 3};
+	Sum<int> s;
+	s.add(a, a + 3);
+	printf("pointer: %d\n", s.total);
+	s.add(It{a}, It{a + 3});
+	printf("member-ops: %d\n", s.total);
+	s.add(CopyIt(a), CopyIt(a + 3));
+	printf("invisible-ref: %d\n", s.total);
+	Sum<int> t;
+	t.each(It{a}, It{a + 3});
+	t.each(CopyIt(a + 1), CopyIt(a + 3));
+	printf("pack-call: %d\n", t.total);
+	printf("head: %d %d\n", s.head(It{a + 2}), s.head(CopyIt(a + 1)));
+	return 0;
+}

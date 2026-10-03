@@ -1,13 +1,14 @@
 // madcwebview_chrome.cc — madc's native chrome around the webview (API in
 // madcwebview_chrome.h): the menu bar over the window (madcide GUI chrome
-// S2) and the platform's file dialogs (S4), on all three platforms the
-// library builds for.
+// S2), the platform's file dialogs (S4) and its clipboard (plan §41.11a step
+// 3e), on all three platforms the library builds for.
 //
 //   GTK4:  a GtkPopoverMenuBar fed by a GMenu model, its items bound to a
 //          GSimpleActionGroup inserted on the window under the `menu.`
 //          prefix; the webview widget is re-parented into a vertical box
 //          under the bar (upstream sets the widget as the window's child
 //          and never touches it again). Dialogs: GtkFileDialog (4.10+).
+//          Clipboard: the window's GdkClipboard.
 //   Cocoa: the application's main menu (NSMenu on NSApp — the bar lives at
 //          the top of the screen, the window is untouched); each item
 //          targets one runtime-registered object whose action reads the
@@ -15,11 +16,13 @@
 //          application menu macOS names after the process; its Quit is the
 //          window's own close (performClose:), the close button's path.
 //          Dialogs: NSOpenPanel / NSSavePanel as a sheet on the window.
+//          Clipboard: the general NSPasteboard.
 //   Win32: an HMENU bar set on the window (SetMenu; the client area shrinks
 //          and the frame change re-lays the webview's child), WM_COMMAND
 //          read through a comctl32 subclass of upstream's window procedure.
 //          Dialogs: IFileOpenDialog / IFileSaveDialog (COM), shown from a
 //          message the subclass posts to itself so the call returns first.
+//          Clipboard: CF_UNICODETEXT, opened on the window.
 //
 // Every menu call rebuilds the model from scratch — the engine sends the
 // whole menu whenever any item changed, so there is no per-item state to
@@ -30,6 +33,7 @@
 #include "webview/webview.h"
 #include "madcwebview_chrome.h"
 
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -466,6 +470,72 @@ WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn c
 }
 } // extern "C"
 
+// The clipboard: the window's GdkClipboard. GTK4 reads it asynchronously,
+// so get turns the default main context — the one webview_run iterates —
+// until the read answers; a two-second timer cancels a read the owner
+// never answers, and the cancelled read still completes, so the wait ends.
+namespace {
+struct clip_read {
+	bool done;
+	bool expired;
+	GCancellable *cancel;
+	std::string text;
+};
+void on_clip_read(GObject *source, GAsyncResult *result, gpointer data)
+{
+	clip_read *r = static_cast<clip_read *>(data);
+	GError *err = 0;
+	char *t = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(source), result, &err);
+	if (t) {
+		r->text = t;
+		g_free(t);
+	}
+	if (err)
+		g_error_free(err);
+	r->done = true;
+}
+gboolean clip_expire(gpointer data)
+{
+	clip_read *r = static_cast<clip_read *>(data);
+	r->expired = true;
+	g_cancellable_cancel(r->cancel);
+	return G_SOURCE_REMOVE;
+}
+} // namespace
+
+extern "C" {
+WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	gdk_clipboard_set_text(gtk_widget_get_clipboard(st->win), text ? text : "");
+	return 0;
+}
+
+WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
+					  void *arg)
+{
+	menu_state *st = state_of(w);
+	if (!st || !cb)
+		return 1;
+	clip_read r;
+	r.done = false;
+	r.expired = false;
+	r.cancel = g_cancellable_new();
+	gdk_clipboard_read_text_async(gtk_widget_get_clipboard(st->win), r.cancel,
+				      on_clip_read, &r);
+	guint timer = g_timeout_add(2000, clip_expire, &r);
+	while (!r.done)
+		g_main_context_iteration(NULL, TRUE);
+	if (!r.expired)
+		g_source_remove(timer);
+	g_object_unref(r.cancel);
+	cb(r.text.c_str(), arg);
+	return 0;
+}
+} // extern "C"
+
 #elif defined(__APPLE__)
 
 // ======================================================================
@@ -826,6 +896,43 @@ WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn c
 		return 1;
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)ms * 1000000LL),
 		       dispatch_get_main_queue(), ^{ cb(arg); });
+	return 0;
+}
+} // extern "C"
+
+// The clipboard: the general NSPasteboard, plain text (the UTI that
+// NSPasteboardTypeString names). Synchronous both ways.
+namespace {
+const char *const pasteboard_text = "public.utf8-plain-text";
+} // namespace
+
+extern "C" {
+WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text)
+{
+	if (!w)
+		return 1;
+	pool arp;
+	id pb = send<id>(klass("NSPasteboard"), sel("generalPasteboard"));
+	if (!pb)
+		return 1;
+	send<long>(pb, sel("clearContents"));
+	BOOL ok = send<BOOL>(pb, sel("setString:forType:"), nsstr(text),
+			     nsstr(pasteboard_text));
+	return ok ? 0 : 1;
+}
+
+WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
+					  void *arg)
+{
+	if (!w || !cb)
+		return 1;
+	pool arp;
+	id pb = send<id>(klass("NSPasteboard"), sel("generalPasteboard"));
+	if (!pb)
+		return 1;
+	id s = send<id>(pb, sel("stringForType:"), nsstr(pasteboard_text));
+	const char *u = s ? send<const char *>(s, sel("UTF8String")) : 0;
+	cb(u ? u : "", arg);
 	return 0;
 }
 } // extern "C"
@@ -1241,6 +1348,68 @@ WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn c
 		st->tick_arg = 0;
 		return 1;
 	}
+	return 0;
+}
+
+// The clipboard: CF_UNICODETEXT, opened on the window. Windows text keeps
+// "\r\n" line ends, so set writes them; get passes on what it holds.
+WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	std::string crlf;
+	for (const char *p = text ? text : ""; *p; p++) {
+		if (*p == '\n' && (crlf.empty() || crlf[crlf.size() - 1] != '\r'))
+			crlf += '\r';
+		crlf += *p;
+	}
+	std::wstring ws = widen(crlf);
+	HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, (ws.size() + 1) * sizeof(wchar_t));
+	if (!g)
+		return 1;
+	wchar_t *dst = static_cast<wchar_t *>(GlobalLock(g));
+	if (!dst) {
+		GlobalFree(g);
+		return 1;
+	}
+	if (!ws.empty())
+		memcpy(dst, ws.c_str(), ws.size() * sizeof(wchar_t));
+	dst[ws.size()] = L'\0';
+	GlobalUnlock(g);
+	if (!OpenClipboard(st->win)) {
+		GlobalFree(g);
+		return 1;
+	}
+	EmptyClipboard();
+	if (!SetClipboardData(CF_UNICODETEXT, g)) {
+		CloseClipboard();
+		GlobalFree(g);
+		return 1;
+	}
+	CloseClipboard();	// the clipboard owns `g` now
+	return 0;
+}
+
+WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
+					  void *arg)
+{
+	menu_state *st = state_of(w);
+	if (!st || !cb)
+		return 1;
+	if (!OpenClipboard(st->win))
+		return 1;
+	std::string text;
+	HANDLE h = GetClipboardData(CF_UNICODETEXT);
+	if (h) {
+		const wchar_t *src = static_cast<const wchar_t *>(GlobalLock(h));
+		if (src) {
+			text = narrow(src);
+			GlobalUnlock(h);
+		}
+	}
+	CloseClipboard();
+	cb(text.c_str(), arg);
 	return 0;
 }
 

@@ -1,0 +1,45 @@
+// A class-type member's default member initializer ([class.mem]/10) initializes
+// it whenever no mem-initializer names the member — in a user constructor and
+// in the implicit one — and a default-constructed class member is a complete
+// object, virtual bases included. The stack is dirtied first so a skipped
+// initializer reads 0xA5 bytes. Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+struct FB { int i; int j; };
+struct P : FB { P() : FB{ 1, 2 } { } };		// FB becomes a ctor-less class
+struct S { int v; S(int x) : v(x) { } S() : v(-1) { } };
+struct T { const char *p; T(const char *s) : p(s) { } };
+struct V { int v; V() : v(5) { } };
+struct C : virtual V { int c; };
+struct Z { FB q = FB{ 7, 8 }; FB z = FB(); S s{ 9 }; S t = S(10); T w = "w"; int k = 3; C c; Z() { } };
+struct ZI { FB q = FB{ 7, 8 }; FB z = FB(); S s{ 9 }; S t = S(10); T w = "w"; int k = 3; C c; };
+struct ZM { S s{ 9 }; S t = S(10); ZM() : s(11) { } };
+struct Agg { int a; S s = S(12); FB f = FB{ 13, 14 }; };
+__attribute__((noinline)) void dirty()
+{
+	volatile unsigned char junk[4096];
+	for (int k = 0; k < 4096; k++) junk[k] = 0xA5;
+}
+__attribute__((noinline)) void user_ctor()
+{
+	Z z;
+	std::printf("user: %d %d %d %d %d %d %s %d %d\n", z.q.i, z.q.j, z.z.i, z.z.j, z.s.v, z.t.v,
+		z.w.p, z.k, z.c.v);
+}
+__attribute__((noinline)) void implicit_ctor()
+{
+	ZI z;
+	std::printf("implicit: %d %d %d %d %d %d %s %d %d\n", z.q.i, z.q.j, z.z.i, z.z.j, z.s.v, z.t.v,
+		z.w.p, z.k, z.c.v);
+}
+__attribute__((noinline)) void overridden()
+{
+	ZM m; Agg a{ 1 };
+	std::printf("override: %d %d | %d %d %d %d\n", m.s.v, m.t.v, a.a, a.s.v, a.f.i, a.f.j);
+}
+int main()
+{
+	dirty(); user_ctor();
+	dirty(); implicit_ctor();
+	dirty(); overridden();
+	return 0;
+}

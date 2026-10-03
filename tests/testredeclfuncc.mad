@@ -1,0 +1,16 @@
+// C11 6.9p3/p5: one body per function per TU. C has no overloading, so a
+// second body for a C-linkage name is a redefinition whatever its spelling —
+// `int f(void) {...}` twice reached MIR as two definitions and died there
+// ("MIR fatal error: Repeated item declaration f", no location, process exit).
+// Now refused beside parseFunction's C-linkage signature-clash check, from
+// FuncDef::body_parsed. testredeclfuncokc is the allowed twin; the C++-linkage
+// same-signature case stays fold_same_signature_overload's (type-model twins).
+// Oracle: gcc and clang "redefinition of 'f'" (g++ / clang++ likewise).
+#include <stdio.h>
+int f(void) { return 1; }
+int f(void) { return 2; }
+int main(void)
+{
+	printf("%d\n", f());
+	return 0;
+}

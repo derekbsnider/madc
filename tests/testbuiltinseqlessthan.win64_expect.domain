@@ -1,0 +1,5 @@
+# Labels whose line legitimately DIFFERS from tests/testbuiltinseqlessthan.win64_expect
+# versus tests/testbuiltinseqlessthan.expect — the win64 domain's own answers (long is 4 bytes on LLP64 and mingw lays bit-fields out ms_struct by default;
+# a clang-only builtin: the value is sizeof(long) on LLP64, 4). Every other
+# labelled line must be identical in both (scripts/check-expect-twins.sh).
+tp

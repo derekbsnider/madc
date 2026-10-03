@@ -1,0 +1,21 @@
+// A value-initialized TEMPORARY of a ctor-less class — `T()` / `T{}` as an
+// argument, a member-access operand or a return operand — is zero-filled
+// before its default member initializers apply ([dcl.init]/8). The stack is
+// dirtied first so a skipped zero-fill reads 0xA5 bytes.
+// Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+struct FB { int i; int j; };
+struct P : FB { P() : FB{ 1, 2 } { } };		// FB becomes a ctor-less class
+struct FN { int i = 11; int j; };
+__attribute__((noinline)) void dirty() { volatile unsigned char junk[4096]; for (int k = 0; k < 4096; k++) junk[k] = 0xA5; }
+__attribute__((noinline)) int take(FB b) { return b.i * 10 + b.j; }
+__attribute__((noinline)) int takeref(const FB &b) { return b.i * 10 + b.j; }
+__attribute__((noinline)) FB make() { return FB(); }
+__attribute__((noinline)) FN makefn() { return FN{}; }
+__attribute__((noinline)) void probe()
+{
+	FB m = make(); FN n = makefn();
+	std::printf("temps: %d %d %d %d | %d %d | %d %d\n", take(FB()), takeref(FB{}), FB().j, FN().j,
+		m.i, m.j, n.i, n.j);
+}
+int main() { dirty(); probe(); return 0; }

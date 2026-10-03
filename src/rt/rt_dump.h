@@ -39,8 +39,15 @@ extern "C" {
  * the one boundary (enum-over-strings: convert at the edge, once). */
 enum madc_dump_flavor {
 	MADC_DUMP_PRINT_R  = 0,
-	MADC_DUMP_VAR_DUMP = 1
+	MADC_DUMP_VAR_DUMP = 1,
+	MADC_DUMP_SHOW     = 2,	/* the REPL's value (plan §41.4a, D10) */
+	MADC_DUMP_SHOW_ROW = 3	/* a binding row's: the show, bounded (§41.11a) */
 };
+
+/* A binding row shows at most this many elements of an aggregate, then `…`
+ * (plan §41.11a step 3d). The one number the generated walk and the runtime
+ * walk share. */
+enum { MADC_DUMP_ROW_ELEMENTS = 16 };
 
 /* The column of an aggregate's own frame — print_r's "(" and ")" lines,
  * var_dump's head and tail. print_r steps 8 per level, var_dump 2. */
@@ -111,6 +118,12 @@ void __madc_dump_anc_pop(void);
  * arc refuses. */
 void __madc_dump_fail(void *sink, const char *what);
 
+/* PHP's `(string)$f` (precision=14, with the mantissa's `.` in an exponent
+ * form): the ONE owner of that text — print_r below renders it, php::sort
+ * compares a number against a non-numeric string by it. */
+#define MADC_PHP_REAL_TEXT_CAP 72
+char *__madc_php_real_text(char *out, double v);
+
 /* --- print_r ----------------------------------------------------------- */
 void __madc_dump_pr_i64(void *sink, long long v, int is_unsigned);
 void __madc_dump_pr_f64(void *sink, double v);
@@ -168,6 +181,54 @@ void __madc_dump_vd_text_open(void *sink, int col, const char *ty,
 void __madc_dump_vd_enum(void *sink, int col, const char *tag,
 			 const char *name, long long v);
 void __madc_dump_vd_text_close(void *sink);
+
+/* --- THE C-literal escape rule ------------------------------------------ */
+/* dupaudit family c_string_literal_escape. The BODY of a C literal quoted with
+ * QUOTE ('"' or '\'') holding the bytes S[0..N): canonical escapes (\\, \n,
+ * \t, \r, the quote itself), a well-formed UTF-8 sequence as itself, and
+ * octal for any other non-printable byte (octal caps at three digits; a hex
+ * escape is maximal-munch and would swallow a hex digit after it). Writes at
+ * most CAP - 1 bytes plus a NUL into OUT (OUT may
+ * be NULL when CAP is 0) and returns the FULL length, as snprintf does. The
+ * runtime's value display (below) and the compiler's literal spellings
+ * (madc_c_escape_string, lexer.cpp) both read it, so a REPL's `"a\n"` and an
+ * emitted C literal cannot disagree. */
+size_t __madc_c_escape(const char *s, size_t n, int quote, char *out,
+		       size_t cap);
+
+/* --- show: the REPL's value (plan §41.4a, D10) ------------------------- */
+/* Re-enterable spellings: the text, entered again, yields the value. One line,
+ * no framing, no newline. A pointer is never followed (§6.4); CXX picks C++'s
+ * null (`nullptr`) over C's (`NULL`). TYPE is the compile-time spelling of the
+ * pointer or enum type (`int *`, `enum E`). */
+void __madc_dump_sh_i64(void *sink, long long v, int is_unsigned);
+void __madc_dump_sh_f64(void *sink, double v, int is_float);
+void __madc_dump_sh_ldbl(void *sink, long double v);
+void __madc_dump_sh_bool(void *sink, int v);
+void __madc_dump_sh_char(void *sink, int c);
+void __madc_dump_sh_cstr(void *sink, const char *s, int cxx);
+/* Exactly N bytes as a quoted C literal (a NUL among them is escaped): a
+ * string whose length is explicit, a madc value's text or bytes. */
+void __madc_dump_sh_text(void *sink, const char *p, long long n);
+void __madc_dump_sh_ptr(void *sink, const char *type, const void *p, int cxx);
+/* An enum: NAME is the enumerator the value names, written after SCOPE (C++'s
+ * `Tag::`, empty in C), or empty when it names none, which shows as a cast of
+ * the number, `(TYPE) v`. */
+void __madc_dump_sh_enum(void *sink, const char *scope, const char *name,
+			 const char *type, long long v);
+/* A char array of extent N: its text as a string literal when a NUL ends it
+ * within N (`.name = "abc"` initializes char[8]), else each char in a brace
+ * list, since a literal would need a NUL the array does not hold. */
+void __madc_dump_sh_chars(void *sink, const char *p, long long n);
+/* An array element's separator: nothing before element 0, `, ` before the
+ * rest (the element loop is a real loop, so the test is at run time). */
+void __madc_dump_sh_sep(void *sink, long long i);
+/* One character of a quoted text, escaped, with no quotes (a container whose
+ * characters are reached one at a time, a std::string). */
+void __madc_dump_sh_textchar(void *sink, int c);
+/* A container's close after N elements: ` }`, or `}` when it had none, so an
+ * empty one reads `{ }`. */
+void __madc_dump_sh_close(void *sink, long long n);
 
 /* --- the C++ half: the madc::value walk (src/rt_dump_value.cpp) --------- */
 /* NOT part of the strict-C11 ledger lane, and it cannot be: a value's `array`

@@ -1,0 +1,36 @@
+// A string literal initializing a char array (C11 6.7.9p14): its characters,
+// adjacent literals concatenated, then the NUL when there is room and zeros
+// after it; an exact fit drops the NUL, an unknown size keeps it. One owner
+// fits the literal for every reader — the unbraced declaration (narrow and
+// wide), a braced row of a multi-dimensional array, a struct member, a
+// compound literal's member and a designated member.
+//
+// gcc 13 and clang 18 (-std=c17) print the .expect lines.
+#include <stdio.h>
+#include <stddef.h>
+
+struct P { char c[4]; int n; };
+
+char e[3] = "abc";
+char s[5] = "ab" "c";
+char u[] = "xy";
+char m[2][3] = { "ab", "cde" };
+wchar_t w[3] = L"ab";
+wchar_t we[2] = L"xy";
+wchar_t wu[] = L"pq" L"r";
+struct P p = { "de", 7 };
+struct P pd = { .c = "fgh", .n = 8 };
+
+int main(void)
+{
+	char le[3] = "abc";
+	struct P cp = (struct P){ "ij", 9 };
+	printf("n %c%c%c | %s %d %d | %s %d | %c%c%d %c%c%c\n", e[0], e[1], e[2], s,
+	       s[3], s[4], u, (int)sizeof u, m[0][0], m[0][1], m[0][2], m[1][0], m[1][1], m[1][2]);
+	printf("w %d %d %d | %d %d | %d %d %d %d %d\n", (int)w[0], (int)w[1], (int)w[2],
+	       (int)we[0], (int)we[1], (int)wu[0], (int)wu[1], (int)wu[2], (int)wu[3],
+	       (int)(sizeof wu / sizeof wu[0]));
+	printf("m %s %d %d | %s %d | %c%c%c | %s %d\n", p.c, p.c[3], p.n, pd.c, pd.n,
+	       le[0], le[1], le[2], cp.c, cp.n);
+	return 0;
+}

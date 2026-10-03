@@ -1,0 +1,69 @@
+// The startup hint names the LOADED table's chords (B85): quit and help as
+// the loaded profile binds them, chosen by ui::key_sequence_for (the rule a
+// menu accelerator uses), never JOE's chords under another profile. Each
+// shipped personality, then the baked rescue set, then a table binding
+// neither (no hint line). The oracle is the profiles' own data
+// (tools/madcide/profiles/*.keys, rescue_keys_text), in the table's canonical
+// spelling: a chord's continuation drops its ctrl (JOE's ^K ^Z == ^K Z,
+// include/madcdis/keys.h cont_spelling), so emacs's `^x ^c` reads `^x c`,
+// as the menu bar's accelerator does.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_hint.mad";
+    php::file_put_contents(path, "long id(long x) { return x; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    load_status(w, es, "joe");
+    IdeSession S;
+    S.attach(w, es);
+
+    // Each personality: its table stored, then the composed bottom line.
+    const char *names[4] = { "joe", "pico", "emacs", "neovim" };
+    for ( int k = 0; k < 4; k = k + 1 )
+    {
+	bool ok = load_profile(w, es, names[k]);
+	ui::set(w, es, "msg", "");
+	ui::set(w, es, "hint", 1);
+	var t;
+	S.compose_ide_tree(t, doc);
+	long n = php::count(t["children"]);
+	println("{}: loaded={} [{}]", names[k], ok ? 1 : 0,
+		t["children"][n - 1]["content"]);
+    }
+
+    // The rescue set (no profile file): its own chords.
+    bind_rescue_keys(w, es);
+    ui::set(w, es, "msg", "");
+    ui::set(w, es, "hint", 1);
+    var tr;
+    S.compose_ide_tree(tr, doc);
+    long nr = php::count(tr["children"]);
+    println("rescue: [{}]", tr["children"][nr - 1]["content"]);
+
+    // A table that binds neither quit nor help: the verb answers false and
+    // empty, and no hint line is composed.
+    var tbl = { "^k d": cmdSAVE };
+    var q;
+    bool bound = ui::key_sequence_for(q, tbl, cmdQUIT);
+    println("unbound: bound={} seq=[{}]", bound ? 1 : 0, q);
+    var sv;
+    ui::key_sequence_for(sv, tbl, cmdSAVE);
+    println("save: seq=[{}]", sv);
+    store_key_hint(w, es, tbl);
+    var tn;
+    S.compose_ide_tree(tn, doc);
+    long nn = php::count(tn["children"]);
+    var last = tn["children"][nn - 1]["content"];
+    println("none: hint-line={}", last.index(" madcide **") >= 0 ? 1 : 0);
+
+    // a test leaves nothing in its working directory
+    php::unlink(path);
+    return 0;
+}

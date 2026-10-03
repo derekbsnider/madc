@@ -1,0 +1,5 @@
+// C11 6.8: no statement starts with `)`. madc's engine read a head `)` as
+// the end of an empty operand list, so `);` was an empty statement (exit 0).
+// Oracle: gcc "error: expected statement before ')' token", clang "error:
+// expected expression".
+int main(void) { ); return 0; }

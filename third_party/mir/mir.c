@@ -940,23 +940,26 @@ static void remove_func_insns (MIR_context_t ctx, MIR_item_t func_item,
   }
 }
 
+/* madc fork: free a func item's payload (item->u.func), leaving the item. */
+static void free_func_payload (MIR_context_t ctx, MIR_item_t item) {
+  remove_func_insns (ctx, item, &item->u.func->insns);
+  remove_func_insns (ctx, item, &item->u.func->original_insns);
+  /* Guard NULL vars/internal: a func removed before being fully built (e.g.
+     teardown of a partially-created module) has NULL vars/internal -> the
+     unguarded VARR_DESTROY / func_regs_finish deref NULL.
+     ADOPTED-FROM: github.com/theMackabu/mir @ fab2727c0
+     ("fix: guard against NULL vars/internal during module teardown"). */
+  if (item->u.func->vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->vars);
+  if (item->u.func->global_vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->global_vars);
+  if (item->u.func->line_map != NULL) MIR_free (ctx->alloc, item->u.func->line_map);
+  if (item->u.func->reg_locs != NULL) MIR_free (ctx->alloc, item->u.func->reg_locs);
+  if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
+  MIR_free (ctx->alloc, item->u.func);
+}
+
 static void remove_item (MIR_context_t ctx, MIR_item_t item) {
   switch (item->item_type) {
-  case MIR_func_item:
-    remove_func_insns (ctx, item, &item->u.func->insns);
-    remove_func_insns (ctx, item, &item->u.func->original_insns);
-    /* Guard NULL vars/internal: a func removed before being fully built (e.g.
-       teardown of a partially-created module) has NULL vars/internal -> the
-       unguarded VARR_DESTROY / func_regs_finish deref NULL.
-       ADOPTED-FROM: github.com/theMackabu/mir @ fab2727c0
-       ("fix: guard against NULL vars/internal during module teardown"). */
-    if (item->u.func->vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->vars);
-    if (item->u.func->global_vars != NULL) VARR_DESTROY (MIR_var_t, item->u.func->global_vars);
-    if (item->u.func->line_map != NULL) MIR_free (ctx->alloc, item->u.func->line_map);
-    if (item->u.func->reg_locs != NULL) MIR_free (ctx->alloc, item->u.func->reg_locs);
-    if (item->u.func->internal != NULL) func_regs_finish (ctx, item->u.func);
-    MIR_free (ctx->alloc, item->u.func);
-    break;
+  case MIR_func_item: free_func_payload (ctx, item); break;
   case MIR_proto_item:
     VARR_DESTROY (MIR_var_t, item->u.proto->args);
     MIR_free (ctx->alloc, item->u.proto);
@@ -2138,6 +2141,27 @@ static int privatize_dataish_p (MIR_item_type_t t) {
          || t == MIR_lref_data_item || t == MIR_expr_data_item;
 }
 
+/* madc fork: turn the unloaded definition ITEM (a func or a data kind) into an
+   import of its own name, in place.  Its identity is kept, so everything that
+   points at it keeps resolving: insn REF operands, ref_data targets, the
+   ref_def of its module's export/forward items, and its module item-table entry
+   (names are ctx-interned and the table hashes the name POINTER, which becomes
+   the import id).  Shared by MIR_module_privatize_for_link and the loader's
+   vague-linkage rule. */
+static void def_item_to_import (MIR_context_t ctx, MIR_item_t item) {
+  const char *nm = MIR_item_name (ctx, item);
+
+  mir_assert (item->addr == NULL); /* must run before MIR_load_module */
+  if (item->item_type == MIR_func_item)
+    free_func_payload (ctx, item);
+  else
+    MIR_free (ctx->alloc, item->u.bss); /* union: frees whichever payload is live */
+  item->item_type = MIR_import_item; /* allowed-exception: the owner */
+  item->u.import_id = nm;
+  item->export_p = FALSE;
+  item->ref_def = NULL;
+}
+
 static int privatize_anon_tail_p (MIR_item_t item) {
   MIR_item_t next = DLIST_NEXT (MIR_item_t, item);
   return next != NULL && privatize_dataish_p (next->item_type)
@@ -2188,12 +2212,7 @@ size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
         skipped++;
         break;
       }
-      mir_assert (item->addr == NULL); /* must run before MIR_load_module */
-      MIR_free (ctx->alloc, item->u.bss); /* union: frees whichever payload is live */
-      item->item_type = MIR_import_item;
-      item->u.import_id = nm; /* ctx-interned: table hash/eq by pointer stay valid */
-      item->export_p = FALSE;
-      item->ref_def = NULL;
+      def_item_to_import (ctx, item);
       break;
     default: break;
     }
@@ -2201,19 +2220,126 @@ size_t MIR_module_privatize_for_link (MIR_context_t ctx, MIR_module_t m,
   return skipped;
 }
 
+/* madc fork: MIR_load_module's refusal rule, shared with MIR_module_link_check.
+   An exported func whose name the environment already holds is a redefinition,
+   refused unless func redefinition is permitted. */
+static int func_redef_prohibited_p (MIR_context_t ctx, MIR_item_t item) {
+  return item->item_type == MIR_func_item && !func_redef_permission_p
+#if MIR_TARGET_APPLE_P /* target-code semantics: darwin SDK sources carry these */
+         /* macosx can have multiple equal external inline definitions of the same function: */
+         && strncmp (item->u.func->name, "__darwin", 8) != 0
+#endif
+    ;
+}
+
+/* madc fork: does label-address data of module M take a label of FUNC_ITEM? */
+static int func_labels_taken_p (MIR_module_t m, MIR_item_t func_item) {
+  for (MIR_item_t it = DLIST_HEAD (MIR_item_t, m->items); it != NULL;
+       it = DLIST_NEXT (MIR_item_t, it)) {
+    if (it->item_type != MIR_lref_data_item) continue;
+    for (MIR_insn_t insn = DLIST_HEAD (MIR_insn_t, func_item->u.func->insns); insn != NULL;
+         insn = DLIST_NEXT (MIR_insn_t, insn))
+      if (insn == it->u.lref_data->label || insn == it->u.lref_data->label2) return TRUE;
+  }
+  return FALSE;
+}
+
+/* madc fork: ld's rule that a strong definition replaces a weak one, shared by
+   MIR_load_module and MIR_module_link_check.  A func definition that is not
+   itself weak (strong, or a LINKONCE copy) whose name the environment holds as
+   a WEAK func definition replaces it: the loader gives it the weak one's
+   address (its thunk), so every reference already bound -- a call through an
+   import, a function pointer, a vtable slot -- reaches the new definition, and
+   the function keeps one address.  (A LINKONCE copy replaces a weak definition
+   too: ld keeps the first of two weak symbols, but no valid program has an
+   inline definition and a different weak one of the same function, so only
+   the weak one can be a placeholder.)  Returns the weak func item ITEM
+   replaces, NULL otherwise.  Weak data is not replaced: data references hold
+   the object's own storage, which a later object cannot take over. */
+static MIR_item_t replaced_weak_func (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t env_item, weak;
+
+  if (item->item_type != MIR_func_item || !item->export_p || item->binding == MIR_ITEM_BIND_WEAK)
+    return NULL;
+  if ((env_item = item_tab_find (ctx, item->u.func->name, &environment_module)) == NULL
+      || (weak = env_item->ref_def) == NULL || weak == item || weak->item_type != MIR_func_item
+      || weak->binding != MIR_ITEM_BIND_WEAK)
+    return NULL;
+  return weak;
+}
+
+/* madc fork: the strong definition that replaced WEAK func ITEM
+   (replaced_weak_func, at that definition's load), NULL when ITEM is not one.
+   The replacement took over ITEM's address, so the environment names it, not
+   ITEM, and ITEM's body is dead: MIR_link gives it no interface (it links
+   modules in reverse load order, and the weak body would re-point the shared
+   thunk at itself), and the object writer binds ITEM's references to the
+   replacement's symbol. */
+MIR_item_t _MIR_weak_func_replacement (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t env_item;
+
+  if (item->item_type != MIR_func_item || !item->export_p || item->binding != MIR_ITEM_BIND_WEAK)
+    return NULL;
+  env_item = item_tab_find (ctx, item->u.func->name, &environment_module);
+  if (env_item == NULL || env_item->ref_def == NULL || env_item->ref_def == item) return NULL;
+  return env_item->ref_def;
+}
+
+/* madc fork: vague linkage in the loader, shared by MIR_load_module and
+   MIR_module_link_check.  A LINKONCE or WEAK definition whose name the
+   environment already holds (an earlier module's definition, or an external) is
+   not defined again: the first definition is kept, as ld keeps the first
+   COMDAT / weak copy.  Returns that environment item for such a definition of
+   module M, NULL otherwise.  A strong definition is not one (it redefines), nor
+   is a LINKONCE func that replaces a weak one (replaced_weak_func).  A func
+   whose labels M's label-address data takes is kept whole, and so is
+   label-address data itself: both belong to a body that cannot be dropped. */
+static MIR_item_t vague_duplicate_env_item (MIR_context_t ctx, MIR_module_t m, MIR_item_t item) {
+  MIR_item_t env_item;
+
+  if (!item->export_p
+      || (item->binding != MIR_ITEM_BIND_LINKONCE && item->binding != MIR_ITEM_BIND_WEAK))
+    return NULL;
+  switch (item->item_type) {
+  case MIR_func_item:
+  case MIR_bss_item:
+  case MIR_data_item:
+  case MIR_ref_data_item:
+  case MIR_expr_data_item: break;
+  default: return NULL;
+  }
+  if ((env_item = item_tab_find (ctx, MIR_item_name (ctx, item), &environment_module)) == NULL)
+    return NULL;
+  if (item->item_type == MIR_func_item
+      && (func_labels_taken_p (m, item) || replaced_weak_func (ctx, item) != NULL))
+    return NULL;
+  return env_item;
+}
+
 void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
   int lref_p = FALSE;
   mir_assert (m != NULL);
   for (MIR_item_t item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
        item = DLIST_NEXT (MIR_item_t, item)) {
-    MIR_item_t first_item = item;
+    MIR_item_t first_item = item, env_item, weak_item = NULL;
 
+    if ((env_item = vague_duplicate_env_item (ctx, m, item)) != NULL) {
+      /* Bound now, not at MIR_link: the module's forward and export items copy
+         this item's address there, in item order.  A data head's anonymous
+         continuation items stay, loaded as a section of their own: an operand
+         may still reference one directly. */
+      def_item_to_import (ctx, item);
+      item->addr = env_item->addr;
+      item->ref_def = env_item;
+      continue;
+    }
     if (item->item_type == MIR_bss_item || item->item_type == MIR_data_item
         || item->item_type == MIR_ref_data_item || item->item_type == MIR_lref_data_item
         || item->item_type == MIR_expr_data_item) {
       if (item->item_type == MIR_lref_data_item) lref_p = TRUE;
       item = load_bss_data_section (ctx, item, FALSE);
     } else if (item->item_type == MIR_func_item) {
+      if ((weak_item = replaced_weak_func (ctx, item)) != NULL) item->addr = weak_item->addr;
       if (item->addr == NULL) {
         item->addr = _MIR_get_thunk (ctx);
 #if defined(MIR_DEBUG)
@@ -2227,13 +2353,7 @@ void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
                   && first_item->item_type != MIR_import_item
                   && first_item->item_type != MIR_forward_item);
       if (setup_global (ctx, MIR_item_name (ctx, first_item), first_item->addr, first_item)
-          && item->item_type == MIR_func_item
-          && !func_redef_permission_p
-#if MIR_TARGET_APPLE_P /* target-code semantics: darwin SDK sources carry these */
-          /* macosx can have multiple equal external inline definitions of the same function: */
-          && strncmp (item->u.func->name, "__darwin", 8) != 0
-#endif
-      )
+          && weak_item == NULL && func_redef_prohibited_p (ctx, item))
         MIR_get_error_func (ctx) (MIR_repeated_decl_error, "func %s is prohibited for redefinition",
                                   item->u.func->name);
     }
@@ -2249,6 +2369,52 @@ void MIR_load_external (MIR_context_t ctx, const char *name, void *addr) {
   if (strcmp (name, SETJMP_NAME) == 0 || (SETJMP_NAME2 != NULL && strcmp (name, SETJMP_NAME2) == 0))
     setjmp_addr = addr;
   setup_global (ctx, name, addr, NULL);
+}
+
+/* madc fork: where MIR_link binds import NAME, shared with MIR_module_link_check.
+   Returns the environment's item for it; when the environment has none, returns
+   NULL with *ADDR_P set to IMPORT_RESOLVER's address (NULL: it has none either,
+   and the import is undefined). */
+static MIR_item_t import_binding (MIR_context_t ctx, const char *name,
+                                  void *import_resolver (const char *), void **addr_p) {
+  MIR_item_t tab_item = item_tab_find (ctx, name, &environment_module);
+
+  *addr_p = NULL;
+  if (tab_item == NULL && import_resolver != NULL) *addr_p = import_resolver (name);
+  return tab_item;
+}
+
+size_t MIR_module_link_check (MIR_context_t ctx, MIR_module_t m,
+                              void *import_resolver (const char *),
+                              void (*report) (MIR_error_type_t error_type, const char *name,
+                                              void *arg),
+                              void *arg) {
+  MIR_error_type_t error_type;
+  const char *name;
+  void *addr;
+  size_t failures = 0;
+
+  mir_assert (m != NULL);
+  for (MIR_item_t item = DLIST_HEAD (MIR_item_t, m->items); item != NULL;
+       item = DLIST_NEXT (MIR_item_t, item)) {
+    if (item->item_type == MIR_import_item) {
+      if (import_binding (ctx, item->u.import_id, import_resolver, &addr) != NULL || addr != NULL)
+        continue;
+      error_type = MIR_undeclared_op_ref_error;
+      name = item->u.import_id;
+    } else if (item->export_p && func_redef_prohibited_p (ctx, item)
+               && item_tab_find (ctx, item->u.func->name, &environment_module) != NULL
+               && vague_duplicate_env_item (ctx, m, item) == NULL
+               && replaced_weak_func (ctx, item) == NULL) {
+      error_type = MIR_repeated_decl_error;
+      name = item->u.func->name;
+    } else {
+      continue;
+    }
+    failures++;
+    if (report != NULL) report (error_type, name, arg);
+  }
+  return failures;
 }
 
 static void simplify_module_init (MIR_context_t ctx);
@@ -2282,8 +2448,8 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
         assert (item->data == NULL);
         if (simplify_func (ctx, item, TRUE)) item->data = (void *) 1; /* flag inlining */
       } else if (item->item_type == MIR_import_item) {
-        if ((tab_item = item_tab_find (ctx, item->u.import_id, &environment_module)) == NULL) {
-          if (import_resolver == NULL || (addr = import_resolver (item->u.import_id)) == NULL)
+        if ((tab_item = import_binding (ctx, item->u.import_id, import_resolver, &addr)) == NULL) {
+          if (addr == NULL)
             MIR_get_error_func (ctx) (MIR_undeclared_op_ref_error, "import of undefined item %s",
                                       item->u.import_id);
           MIR_load_external (ctx, item->u.import_id, addr);
@@ -2354,7 +2520,7 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
            item = DLIST_NEXT (MIR_item_t, item))
         if (item->item_type == MIR_func_item) {
           finish_func_interpretation (item, ctx->alloc); /* in case if it was used for expr data */
-          set_interface (ctx, item);
+          if (_MIR_weak_func_replacement (ctx, item) == NULL) set_interface (ctx, item);
         }
     }
     set_interface (ctx, NULL); /* finish interface setting */

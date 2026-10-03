@@ -1,0 +1,52 @@
+// A by-value class parameter is copy-initialized from its argument
+// ([dcl.init]/17.6, [over.match.copy]): a derived object is sliced, an int
+// goes through a converting constructor, and a class with a non-trivial copy
+// constructor is copied (an lvalue) or IS the parameter (a prvalue). Here
+// every call sits in a member template's body and its callee is a function
+// template no other call has instantiated yet, so the pattern lowered the
+// arguments with no formal to convert to; madc passed them unconverted (c2mir:
+// "incompatible argument type for struct/union type parameter"), which also
+// refused std::vector<int>(int *, int *) (B111) — libstdc++ tag-dispatches
+// with a random_access_iterator_tag to a forward_iterator_tag parameter.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <vector>
+
+struct A { int a = 5; };
+struct B : A { };
+struct C : B { };
+struct N { int v; N(int x) : v(x) { } N(const N &o) : v(o.v + 100) { } ~N() { } };
+
+template<class T> int free_slice(T, A x) { return x.a; }
+template<class T> int free_conv(T, N n) { return n.v; }
+
+struct V {
+	template<class T> int slice(T, A x) { return x.a; }
+	template<class T> int conv(T, N n) { return n.v; }
+	template<class T> int top(T t)
+	{
+		C c;
+		c.a = 7;
+		N n(1);
+		return slice(t, c) * 1000 + slice(t, C()) * 100 + conv(t, N(8)) * 10
+		     + conv(t, n) + conv(t, 2);
+	}
+	template<class T> int top_free(T t)
+	{
+		C c;
+		c.a = 9;
+		N n(3);
+		return free_slice(t, c) * 1000 + free_conv(t, n) + free_conv(t, 4);
+	}
+};
+
+int main()
+{
+	V v;
+	int a[3] = { 4, 5, 6 };
+	std::vector<int> range(a, a + 3);
+	printf("member: %d\n", v.top(1));
+	printf("free-in-member: %d\n", v.top_free(1));
+	printf("vector-range: %zu %d %d\n", range.size(), range[0], range[2]);
+	return 0;
+}

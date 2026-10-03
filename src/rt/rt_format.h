@@ -103,6 +103,16 @@ void __madc_fmt_bool(void *sink, const char *spec, long long spec_n, int v);
 void __madc_fmt_ptr(void *sink, const char *spec, long long spec_n,
 		    const void *p);
 
+/* The `{}` default float text with no spec: the SHORTEST ROUND-TRIP digits,
+ * presented fixed or scientific by rendered length (fixed wins ties), the one
+ * digit rule std::format uses. The REPL's value display (plan §41.4a, D10)
+ * reads it. AS_FLOAT takes a float's own shortest digits. Finite values
+ * only. Writes at most CAP - 1 bytes plus a NUL into OUT and returns the
+ * length. */
+long long __madc_fmt_shortest_text(char *out, long long cap, double v,
+				   int as_float);
+long long __madc_fmt_shortest_text_ld(char *out, long long cap, long double v);
+
 /* --- the C++ half (src/rt_format_value.cpp) ------------------------------ */
 /* NOT part of the strict-C11 ledger lane, same split as rt_dump.h's
  * __madc_dump_value: these touch std::string / madc::value, so a program

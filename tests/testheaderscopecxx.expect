@@ -1,0 +1,9 @@
+if-cond int c=7
+if-cond double c=2.5
+if-init int c=7
+if-init str c=seven
+switch int s=7
+switch long s=40000000000
+for int i=0
+for double i=0.5
+outer c=99

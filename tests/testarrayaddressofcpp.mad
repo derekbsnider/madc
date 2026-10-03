@@ -1,0 +1,10 @@
+#include <stdio.h>
+
+namespace N { int values[3] = {3, 5, 7}; }
+
+int main()
+{
+	printf("%zu %d %td\n", sizeof *&N::values, (*&N::values)[2],
+	       (char *)(&N::values + 1) - (char *)&N::values);
+	return 0;
+}

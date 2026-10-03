@@ -112,6 +112,8 @@ namespace ui {
     typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
+    typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
+    typedef const char *(*ui_host_clip_get_fn)(void *host);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -132,6 +134,13 @@ namespace ui {
 				// event did (run() returns 0, nothing posted)
 				// — the cooperative scheduler's bounded wait
 				// while tasks are live; nonzero = no timer
+				// here; optional
+	ui_host_clip_set_fn clip_set; // put plain text on the platform's
+				// clipboard (plan §41.11a step 3e); 0 = taken;
+				// nonzero = no clipboard here; optional
+	ui_host_clip_get_fn clip_get; // the platform clipboard's text, read
+				// now ("" = it holds none); the host owns it
+				// until its next call; NULL = no clipboard
 				// here; optional
     };
 }
@@ -231,6 +240,12 @@ struct ui_frontend
     // grid has none: false.
     virtual bool dialogs() const { return false; }
     virtual bool dialog(const char *) { return false; }
+    // The platform clipboard (plan §41.11a step 3e): does this surface
+    // reach one, and put or read plain text. A grid reaches none: false
+    // (the application keeps its own).
+    virtual bool clipboards() const { return false; }
+    virtual bool clipboard_set(const char *) { return false; }
+    virtual bool clipboard_get(std::string &) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -424,7 +439,13 @@ struct ui_dom_frontend : ui_frontend
 			   "<style>";
 	if ( css )
 	    html += *css;
-	html += "</style></head><body><div id=\"root\"></div>"
+	// The engine's primary modifier (plan §41.11a step 3e): where it is
+	// Cmd the page sends Cmd with a printable as a key; elsewhere Cmd
+	// keys stay the browser's (its Cmd+C / Cmd+V).
+	html += "</style></head><body data-primary=\"";
+	html += madc::hub::key_primary_mod()
+		== madc::hub::key_mod_bits(::ui::key_mod::cmd) ? "cmd" : "ctrl";
+	html += "\"><div id=\"root\"></div>"
 		"<span id=\"measure\">M</span>"
 		"<input id=\"kb\" autofocus autocomplete=\"off\" spellcheck=\"false\">"
 		"<script>";
@@ -570,6 +591,21 @@ struct ui_dom_frontend : ui_frontend
     {
 	return host && ops->dialog && ops->dialog(host, json ? json : "") == 0;
     }
+    bool clipboards() const { return host && ops->clip_set && ops->clip_get; }
+    bool clipboard_set(const char *text)
+    {
+	return host && ops->clip_set && ops->clip_set(host, text ? text : "") == 0;
+    }
+    bool clipboard_get(std::string &out)
+    {
+	if ( !host || !ops->clip_get )
+	    return false;
+	const char *t = ops->clip_get(host);
+	if ( !t )
+	    return false;
+	out = t;
+	return true;
+    }
 };
 
 // The live DOM frontends — post_event's key is a `ctx` a host hands back,
@@ -594,9 +630,9 @@ ui_frontend *ui_frontend_get(int64_t handle)
 // Key spelling at the value boundary: the model's tui_key_name is the one
 // spelling owner (both directions — the bindings tables parse with its
 // inverse), adopted here.
-std::string ui_key_name(madc::hub::tui_key k, char ch)
+std::string ui_key_name(madc::hub::tui_key k, char ch, unsigned char mods)
 {
-    return madc::hub::tui_key_name(madc::hub::tui_keyev(k, ch));
+    return madc::hub::tui_key_name(madc::hub::tui_keyev(k, ch, mods));
 }
 
 ui_session *ui_get(int64_t handle)
@@ -668,7 +704,9 @@ bool ui_script_executor(action_env &env, const invocation &inv,
 // every target — a key on the terminal and the same key in a window arrive
 // at the application as the same object:
 //   { event:"text",   text:"..." }       a coalesced printable run
-//   { event:"key",    key:"up"|"^s"|.. } a non-printable key; carries
+//   { event:"key",    key:"up"|"^s"|"shift+up"|.. } a non-printable key,
+//       or a printable under Ctrl/Alt/Cmd ("ctrl+3"); `mods` carries its
+//       ui::key_mod bits (0 = none) and `key` spells them; carries
 //       option:N (1-based, the choose contract) when a focused choice
 //       existed — the focused row for keys the widget does not consume
 //   { event:"action", action:"name", seq:"^k s" }  a bound sequence
@@ -707,8 +745,9 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 	    break;
 	case madc::hub::tui_event_kind::key:
 	    fields["event"] = madc::value(std::string("key"));
-	    fields["key"] = madc::value(ui_key_name(e.key, e.ch));
+	    fields["key"] = madc::value(ui_key_name(e.key, e.ch, e.mods));
 	    fields["key_code"] = madc::value((int64_t)e.key);	// ui::key
+	    fields["mods"] = madc::value((int64_t)e.mods);	// ui::key_mod bits
 	    // A focused choice's live selection rides along (1-based, the
 	    // choose contract) so the application can act on the focused
 	    // row for keys the widget does not consume (ins/del); absent
@@ -732,6 +771,11 @@ madc::value ui_event_value(const madc::hub::tui_event &e, ui_session *s,
 						// code, or the code the control
 						// posting this name carried
 	    fields["seq"] = madc::value(e.seq);
+	    // The modifiers held on the chord's last key (Shift reaches a
+	    // binding without it: a motion extends a selection); absent when
+	    // none were, or a control posted the name.
+	    if ( e.mods != 0 )
+		fields["mods"] = madc::value((int64_t)e.mods);
 	    // The command's argument a native control carried (a buffer
 	    // tab's ring index — polish P4); absent for a chord.
 	    if ( !e.text.empty() )
@@ -1531,6 +1575,16 @@ int64_t text_word_right(int64_t w, int64_t entity, int64_t from)
     return (int64_t)b->word_right((size_t)from);
 }
 
+// JOE ^W's deletion extent: a read like the word motions
+// (text_buffer::class_run_right, beside the one word rule).
+int64_t text_class_run_right(int64_t w, int64_t entity, int64_t from)
+{
+    const madc::hub::text_buffer *b = ui_text_component(w, entity);
+    if ( !b || from < 0 )
+	return -1;
+    return (int64_t)b->class_run_right((size_t)from);
+}
+
 // UTF-16 column conversion over one line (V6c-2): the dialect face of the
 // ONE owner in madcdis/text_utf16.h — no byte walking here, or the LSP face
 // and the web hit test would answer differently on the same line. `line` is
@@ -1553,6 +1607,13 @@ int64_t text_col16(int64_t w, int64_t entity, int64_t line, int64_t bytecol)
     if ( bytecol < 0 )
 	bytecol = 0;
     return (int64_t)madc::col16_of_byte(b->slice(off, len), (size_t)bytecol);
+}
+
+// A text's width in columns: the dialect face of the ONE layout rule the
+// terminal target paints with (madc::line_width).
+int64_t text_columns(const char *text)
+{
+    return text ? (int64_t)madc::line_width(text) : 0;
 }
 
 // ---- the view seam's coordinate map (madcide AST-3) --------------------
@@ -1764,6 +1825,40 @@ bool dialog(int64_t t, const char *json)
     return f && f->dialog(json);
 }
 
+// The platform clipboard a target reaches (plan §41.11a step 3e). A read
+// answers with '\n' line ends whatever the platform keeps ("\r\n" on
+// Windows, a lone '\r' from an old Mac application).
+bool clipboards(int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->clipboards();
+}
+
+bool clipboard_set(int64_t t, const char *text)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->clipboard_set(text);
+}
+
+bool clipboard_get(madc::value &out, int64_t t)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    std::string raw;
+    if ( !f || !f->clipboard_get(raw) )
+	return false;
+    std::string lf;
+    lf.reserve(raw.size());
+    for ( size_t i = 0; i < raw.size(); ++i )
+    {
+	if ( raw[i] != '\r' )
+	    lf += raw[i];
+	else if ( i + 1 >= raw.size() || raw[i + 1] != '\n' )
+	    lf += '\n';
+    }
+    out = madc::value(lf);
+    return true;
+}
+
 int64_t rows(int64_t t)
 {
     ui_frontend *f = ui_frontend_get(t);
@@ -1905,6 +2000,22 @@ bool validate_keys(madc::value &table)
     return table_to_bindings(table, b, err);
 }
 
+// The sequence a table binds to a command code: the same converter as
+// bind_keys, then the accelerator's own ranking (tui_bindings::
+// seq_for_code, which the web model's menu bar reads), so a hint and a
+// menu name the same chord for a command.
+bool key_sequence_for(madc::value &out, madc::value &table, int64_t code)
+{
+    out = madc::value(std::string());
+    madc::hub::tui_bindings b;
+    std::string err;
+    if ( !table_to_bindings(table, b, err) )
+	return false;
+    const std::string seq = b.seq_for_code(code);
+    out = madc::value(seq);
+    return !seq.empty();
+}
+
 // The next SEMANTIC event as a value object (the shapes ui_event_value
 // documents). Blocks until input arrives; false = the input source ended
 // (out is a null value). Events are interpreted against the LAST render's
@@ -2006,6 +2117,24 @@ int64_t key_code(const char *name)
     if ( !name || !madc::hub::tui_key_from_name(name, k) )
 	return (int64_t)madc::hub::tui_key::none;
     return (int64_t)k.kind;
+}
+
+// A key spelling without its modifiers ("shift+up" -> "up"), the
+// fallback a binding lookup takes (key_unmodified, the key owner's): a
+// scope table the application keeps reads a modified key it does not bind
+// as its key, as the engine's own table does. False (out "") when the name
+// is not a modified key spelling, or its key alone would type.
+bool key_unmodified(madc::value &out, const char *name)
+{
+    out = madc::value(std::string());
+    madc::hub::tui_keyev k;
+    if ( !name || !madc::hub::tui_key_from_name(name, k) || k.mods == 0 )
+	return false;
+    madc::hub::tui_keyev u = madc::hub::key_unmodified(k);
+    if ( madc::hub::key_types(u) )
+	return false;
+    out = madc::value(madc::hub::tui_key_name(u));
+    return true;
 }
 
 bool key_bytes(madc::value &out, const char *name)

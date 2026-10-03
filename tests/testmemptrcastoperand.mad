@@ -1,0 +1,29 @@
+// The right operand of `.*` / `->*` is a cast-expression ([expr.mptr.oper]/1:
+// `pm-expression .* cast-expression`): `&C::foo` and `&C::d` (a unary `&`),
+// `*ppd` (a unary `*` over a pointer to a member pointer), `(int C::*)pd` (a
+// cast). The operand ends where a cast-expression ends: `p->*&C::d + 1` adds
+// after the access, `c.**ppd * 3` multiplies after it. madc read the operand
+// as a postfix chain and refused every one of them, "Expecting a
+// pointer-to-member after '.*'".
+//
+// g++ 13 and clang++ 18 (-std=c++17) print the .expect line.
+#include <cstdio>
+struct C { int d; int foo(int v) { return v + d; } };
+int main()
+{
+	C c;
+	c.d = 1;
+	C *p = &c;
+	int C::*pd = &C::d;
+	int C::**ppd = &pd;
+	int (C::*pf)(int) = &C::foo;
+	int (C::**ppf)(int) = &pf;
+	int a = (c.*&C::foo)(9);
+	int b = c.*&C::d;
+	int e = p->*&C::d + 1;
+	int f = c.**ppd * 3;
+	int g = (p->**ppf)(4);
+	int h = c.*(int C::*)pd;
+	std::printf("mp %d %d %d %d %d %d\n", a, b, e, f, g, h);
+	return 0;
+}

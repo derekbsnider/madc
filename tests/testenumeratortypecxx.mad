@@ -1,0 +1,34 @@
+/* A C++ enumerator has the type of its enumeration once the closing brace is
+   seen ([dcl.enum]/5). An ANONYMOUS enum's stayed int in madc even when its
+   values need more, or its base is fixed, so sizeof read 4 where g++ and
+   clang++ read 8 (a value past int) or the fixed base's size: at namespace
+   scope and inside a class (B1). An anonymous enum whose values fit int keeps
+   int (the libstdc++ `enum { __value = N };` trait idiom). Overloads still
+   pick by promotion ([conv.prom]/3): BIG promotes to long, SMALL to int
+   (on LLP64, where long is 4 bytes, BIG promotes to long long instead).
+   Oracle: g++ and clang++ -std=c++17 print every line below; mingw-w64 g++
+   prints "overloads 3 1" (tests/testenumeratortypecxx.win64_expect). */
+#include <stdio.h>
+
+enum { BIG = 0x100000000 };
+enum : unsigned char { FA = 1 };
+enum { SMALL = 1 };
+enum Named { NB = 0x100000000 };
+struct S { enum { CBIG = 0x100000000 }; enum : short { CFIX = 2 }; enum { __value = 7 }; };
+
+int which(int) { return 1; }
+int which(long) { return 2; }
+int which(long long) { return 3; }
+
+int main()
+{
+	printf("anon big %zu %d\n", sizeof(BIG), (int)(BIG >> 32));
+	printf("anon fixed %zu\n", sizeof(FA));
+	printf("anon small %zu\n", sizeof(SMALL));
+	printf("named big %zu\n", sizeof(NB));
+	printf("class anon big %zu\n", sizeof(S::CBIG));
+	printf("class anon fixed %zu\n", sizeof(S::CFIX));
+	printf("trait %zu %d\n", sizeof(S::__value), S::__value);
+	printf("overloads %d %d\n", which(BIG), which(SMALL));
+	return 0;
+}

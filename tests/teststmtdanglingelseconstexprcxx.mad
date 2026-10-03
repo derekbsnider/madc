@@ -1,0 +1,13 @@
+// The `if constexpr` twin of teststmtdanglingelsec: the taken branch pays its
+// own `;` and the discarded one is skipped through its `;`, so a stray `;`
+// after either ends the if and the `else` has none ([stmt.if]).
+// Oracle: g++ refuses it ("'else' without a previous 'if'"), clang++ too
+// ("expected expression" at the `else`).
+#include <stdio.h>
+int main()
+{
+	int x = 0;
+	if constexpr (true) x = 1;; else x = 2;
+	printf("%d\n", x);
+	return 0;
+}

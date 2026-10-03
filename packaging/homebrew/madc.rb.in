@@ -1,0 +1,70 @@
+# The Homebrew formula for madc (packaging arc PK6; plan §41.11a step 9).
+# A TEMPLATE: scripts/brew_formula.sh renders it with the source tarball's
+# URL, its checksum and the version — the tap's Formula/madc.rb at a release,
+# and scripts/brew_lane.sh's local build from this tree. Edit here, never in a
+# rendered copy.
+#
+# Built the way the packages are (scripts/package_release.sh): the
+# distribution configuration (madcdat off), the release compiler, madcide
+# compiled by it, the shipped plugins built by that madcide, staged into the
+# keg by scripts/stage_install.sh (the packages' one staging owner). The
+# runpath of every program madc compiles names HOMEBREW_PREFIX/lib, where
+# `brew link` puts libmadc.so.0, so a program outlives `brew upgrade`.
+#
+# @BOTTLE@ is the bottle block, rendered by `scripts/brew_formula.sh --bottle`
+# for the bottle scripts/brew_bottle.sh built and poured (the release's
+# x86_64_linux bottle; the brew lane's local one). Without it, every install
+# builds from source.
+class Madc < Formula
+  desc "C/C++ JIT compiler and native toolchain with a scripting dialect"
+  homepage "https://github.com/derekbsnider/madc"
+  url "@URL@"
+  sha256 "@SHA256@"
+  version "@VERSION@"
+  license "MPL-2.0"
+
+  @BOTTLE@
+  # configure is autoconf's output, untracked: a source tarball regenerates
+  # it (automake for the aclocal brew's autoreconf runs).
+  depends_on "autoconf" => :build
+  depends_on "automake" => :build
+  # pkg-config finds libgit2 for the madcgit module (the IDE's git layer, as
+  # the packages ship it); the GUI's webview module needs webkitgtk, which
+  # Homebrew does not carry, so it is left out.
+  depends_on "pkgconf" => :build
+  depends_on "libgit2"
+  depends_on "zstd"
+  uses_from_macos "zlib"
+
+  def install
+    runpath = "MADC_RUNPATH_LIBDIR=#{HOMEBREW_PREFIX}/lib"
+    system "autoreconf", "-i"
+    # The forest rides as libmadc.so.0.forest beside the library, not
+    # appended to it: pouring a bottle rewrites each ELF file's RPATH, and
+    # the rewrite appends to the image, past an appended container's footer.
+    system "./configure", "--enable-madcdat=no", "--with-forest=sidecar"
+    system "make", "-C", "src", "-j#{ENV.make_jobs}", runpath
+    system "make", "-C", "src", "-j#{ENV.make_jobs}", "release", runpath
+    mkdir_p "tmp"
+    system "bin/madc-release", "-o", "tmp/madcide-pkg", "tools/madcide/madcide.mad"
+    system "scripts/build_shipped_plugins.sh", "tmp/plugins-pkg", "tmp/madcide-pkg"
+    system "scripts/stage_install.sh", prefix, "lib", ""
+  end
+
+  test do
+    (testpath/"hello.c").write <<~C
+      #include <stdio.h>
+      int main(void) { printf("hello from madc\\n"); return 0; }
+    C
+    assert_equal "hello from madc\n", shell_output("#{bin}/madc hello.c")
+    system bin/"madc", "-o", "hello", "hello.c"
+    assert_equal "hello from madc\n", shell_output("./hello")
+    (testpath/"hello.cpp").write <<~CPP
+      #include <iostream>
+      #include <string>
+      int main() { std::string s = "c++"; std::cout << "hello from " << s << "\\n"; }
+    CPP
+    assert_equal "hello from c++\n", shell_output("#{bin}/madc hello.cpp")
+    assert_match "madcide", shell_output("#{bin}/madcide --help 2>&1", 0)
+  end
+end

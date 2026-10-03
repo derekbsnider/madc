@@ -1,0 +1,25 @@
+/* A partial specialization's pattern names a nested template-id's
+   arguments by IDENTITY ([temp.type]/1): `Z<T, B<int> >` is the
+   instantiation spelled canonically `B<int32_t>`, `A<true>` is `A<1>`, and
+   `IC<int, 7>` / `IC<bool, false>` match their own arguments only. Before,
+   each inner argument was compared by spelling and every one of these
+   specializations was silently passed over for the primary.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     ni: 2 1 3 4 1 5 */
+#include <cstdio>
+template<bool B> struct A {};
+template<class X> struct B {};
+template<class T, T v> struct IC {};
+template<class T, class U> struct Z { enum { k = 1 }; };
+template<class T> struct Z<T, A<true> > { enum { k = 2 }; };
+template<class T> struct Z<T, B<int> > { enum { k = 3 }; };
+template<class T> struct Z<T, IC<int, 7> > { enum { k = 4 }; };
+template<class T> struct Z<T, IC<bool, false> > { enum { k = 5 }; };
+int main()
+{
+	printf("ni: %d %d %d %d %d %d\n", (int)Z<int, A<true> >::k,
+	       (int)Z<int, A<false> >::k, (int)Z<int, B<int> >::k,
+	       (int)Z<int, IC<int, 7> >::k, (int)Z<int, IC<int, 8> >::k,
+	       (int)Z<int, IC<bool, false> >::k);
+	return 0;
+}

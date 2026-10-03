@@ -1,0 +1,7 @@
+CHTHONIA open
+CHTHONIA click: action=replrun
+CHTHONIA output=1 row=1
+CHTHONIA click: action=replstop
+CHTHONIA stopped: running=0
+CHTHONIA output=1 row=1
+CHTHONIA closed

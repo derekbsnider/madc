@@ -1,0 +1,20 @@
+/* A partial specialization deduces a non-type parameter from inside a
+   template-id ([temp.deduct.type]/8): `Z<T, C<N> >` against Z<int, C<8> >
+   binds N to 8, which its body reads, and `P<C<N>, C<N> >` matches only
+   when both values agree. Before, the parameter was never recorded, the
+   match failed as undeduced, and the primary answered silently.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     nd: 108 100 1 53 1 */
+#include <cstdio>
+template<int N> struct C {};
+template<class T, class U> struct Z { enum { k = 1 }; };
+template<class T, int N> struct Z<T, C<N> > { enum { k = 100 + N }; };
+template<class T, class U> struct P { enum { k = 1 }; };
+template<int N> struct P<C<N>, C<N> > { enum { k = 50 + N }; };
+int main()
+{
+	printf("nd: %d %d %d %d %d\n", (int)Z<int, C<8> >::k,
+	       (int)Z<int, C<0> >::k, (int)Z<int, int>::k,
+	       (int)P<C<3>, C<3> >::k, (int)P<C<3>, C<4> >::k);
+	return 0;
+}

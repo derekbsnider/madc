@@ -1,0 +1,18 @@
+// A mem-initializer of a class-type MEMBER constructs a complete object: the
+// member's virtual bases are constructed too (Itanium C1), before its own
+// constructor runs. Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+struct V { int v; V() : v(5) { } };
+struct B : virtual V { int b; B(int x) : b(x) { } };
+struct H { B m; H() : m(1) { } };
+struct C : virtual V { int c; };
+struct HC { C m; HC() : m() { } };
+struct D : virtual V { int d; D() : d(9) { } };
+struct HD { D m; HD() : m{} { } };
+int main()
+{
+	H h; HC hc; HD hd;
+	std::printf("vmember: %d %d | %d %d | %d %d\n", h.m.v, h.m.b, hc.m.v, hc.m.c,
+		hd.m.v, hd.m.d);
+	return 0;
+}

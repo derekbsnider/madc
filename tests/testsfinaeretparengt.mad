@@ -1,0 +1,32 @@
+/* A function template whose return type is an alias or class template-id
+   with a `>` (or `>>`) in parentheses inside its argument list,
+   `EI_t<(N > 2) && yes(0), int> f()`, is selected by SFINAE as in g++:
+   the parenthesized `>` is greater-than, not the list's close
+   ([temp.names]/3). Before, the return-type SFINAE check found the
+   declarator name with an angle-only counter, took `yes` (followed by
+   `(`) as the name, resolved the truncated `EI_t<(5 > 2) &&`, and
+   discarded the viable overload; f<5>() had no candidate left.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     sr: 5 -1 30 -20 1 0 */
+#include <cstdio>
+template<bool B, class T = void> struct EI {};
+template<class T> struct EI<true, T> { typedef T type; };
+template<bool B, class T = void> using EI_t = typename EI<B, T>::type;
+constexpr bool yes(int) { return true; }
+template<int N> EI_t<(N > 2) && yes(0), int> f() { return N; }
+template<int N> EI_t<(N <= 2) && yes(0), int> f() { return -N; }
+template<int N> typename EI<(N > 2) && yes(1), long>::type g() { return 10 * N; }
+template<int N> typename EI<(N <= 2) && yes(1), long>::type g() { return -10 * N; }
+template<int N> EI_t<((N >> 1) == 2) && yes(0), int> h() { return 1; }
+template<int N> EI_t<((N >> 1) != 2) && yes(0), int> h() { return 0; }
+int main()
+{
+	int a = f<5>();
+	int b = f<1>();
+	long c = g<3>();
+	long d = g<2>();
+	int e = h<4>();
+	int k = h<9>();
+	printf("sr: %d %d %ld %ld %d %d\n", a, b, c, d, e, k);
+	return 0;
+}

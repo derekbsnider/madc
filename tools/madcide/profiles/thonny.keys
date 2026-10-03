@@ -1,0 +1,49 @@
+# madcide keybinding profile: Thonny's keys (plan §41.11a step 3e) — each
+# command's `default_sequence` in Thonny's source (github.com/thonny/thonny,
+# master, read 2026-09-30) onto the one action vocabulary. `primary` is
+# Ctrl, or Cmd on macOS: Thonny binds each command both ways. Thonny's
+# editor is Tk's text widget: Ctrl+arrows move by word, Ctrl+Home and
+# Ctrl+End go to the ends, and Shift with any motion selects (the engine's
+# rule, so it needs no lines here). Those motions keep their Ctrl keys on
+# macOS too (Tk's Option-arrow word motion there is not bound: a profile
+# has one key per binding).
+#
+# Thonny's keys whose command madcide does not have yet are listed, not
+# invented: File ▸ New (Ctrl+N), Close (Ctrl+W), Close all (Ctrl+Shift+W),
+# Save All (Ctrl+Alt+S); Edit ▸ Replace (Thonny's Find & Replace is one
+# dialog; Ctrl+F finds here), Toggle comment (Ctrl+3), Auto-complete
+# (Ctrl+Space); Run ▸ Interrupt (Ctrl+C in the Shell — here Ctrl+C copies
+# everywhere and Ctrl+F2 stops), Send EOF (Ctrl+D), the debugger (F6, F7,
+# F8, Ctrl+F5, Shift+F5, Ctrl+F8); View ▸ the font size (Ctrl+plus,
+# Ctrl+minus) and Full screen (F11).
+@title Thonny
+
+# File
+primary+o editfile
+primary+s save
+primary+shift+s saveas
+primary+q quit
+alt+f4 quit
+# Edit
+primary+z undo
+primary+y redo
+primary+x cut
+primary+c copy
+primary+v paste
+primary+a selectall
+primary+f find
+primary+g gotoline
+# Run: F5 runs the script into the Shell's session (a fresh one, its
+# names left for the prompt); Ctrl+F2 is Stop/Restart backend.
+f5 replrun
+primary+f2 replstop
+# Tk's text motions
+ctrl+left wordleft
+ctrl+right wordright
+ctrl+home top
+ctrl+end bottom
+# The project window's keys (@project scope — profile data; the baked
+# defaults add esc/backspace).
+@project ins projadd
+@project del projdel
+@project enter projopen

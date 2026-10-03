@@ -131,5 +131,7 @@ int main()
     println("viewwindow-refused: {}", S.take_spawn(sdoc) ? "spawned" : "refused");
 
     S.close();
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

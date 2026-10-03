@@ -1,0 +1,38 @@
+// Of two derived-to-base conversions of one argument, the one to the base
+// that derives from the other is better ([over.ics.rank]/4.4): with C : B : A,
+// C to B (by value or binding const B&) beats C to A, and C* to B* beats C* to
+// A*. madc ranked every derived-to-base conversion alike, so the first
+// declared overload won: each line below printed 1, exit 0.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+struct A {};
+struct B : A {};
+struct C : B {};
+
+int href(const A &) { return 1; }
+int href(const B &) { return 2; }
+int hptr(A *) { return 1; }
+int hptr(B *) { return 2; }
+int hval(A) { return 1; }
+int hval(B) { return 2; }
+int hrev(const B &) { return 2; }
+int hrev(const A &) { return 1; }
+
+struct S {
+    int m(const A &) { return 1; }
+    int m(const B &) { return 2; }
+    int p(A *) const { return 1; }
+    int p(B *) const { return 2; }
+};
+
+int main()
+{
+    C c;
+    B b;
+    S s;
+    printf("free: %d %d %d %d\n", href(c), hptr(&c), hval(c), hrev(c));
+    printf("member: %d %d\n", s.m(c), s.p(&c));
+    printf("exact: %d %d\n", href(b), s.m(b));
+    return 0;
+}

@@ -134,6 +134,11 @@ public:
     // "not a recorded fn-ptr-base declarator" -> emitter uses its legacy path.
     int fnptr_explicit_stars = -1;
     std::vector<carray_dim_t> dims; // C fixed-size array shape; empty = scalar
+    // The alignment the declaration requests (`_Alignas`, `alignas`,
+    // `aligned(N)`), 0 when it requests none. It never lowers the type's
+    // alignment: the object's is the larger of the two
+    // (Program::object_alignment); the CIR emits it as `_Alignas`.
+    size_t explicit_align = 0;
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a
@@ -150,6 +155,10 @@ public:
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    // The variable a narrow string literal is (Program::addLiteral): its text
+    // is the name after the `__literal__` prefix.
+    inline bool is_string_literal() const { return name.compare(0, 11, "__literal__") == 0; }
+    inline std::string literal_text() const { return is_string_literal() ? name.substr(11) : std::string(); }
     // A reference variable (`T& r`, `auto& x`, a `T&` parameter, a `for(T& v:c)`
     // loop var): its type is a DataDefREF. The single source of truth for
     // reference-ness — first-class refs Phase 2 retired the parallel vfREFERENCE
@@ -161,6 +170,11 @@ public:
 	size_t n = 1;
 	for ( auto d : dims ) n *= d;
 	return n;
+    }
+    // A fixed array's extents, outermost first (no recorded shape is one
+    // extent of total_elements()).
+    inline std::vector<carray_dim_t> array_dims() const {
+	return dims.empty() ? std::vector<carray_dim_t>(1, total_elements()) : dims;
     }
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
     // The ONLY way to change `name` after the variable may have been registered
@@ -180,62 +194,126 @@ public:
     // not type->size, or set() writes 4 bytes past the block (a heap
     // overflow valgrind caught on every enum-constant parse). Array
     // allocations keep type->size elements (C layout).
+    // An ENUM-typed constant (a C++ enumerator, a folded enum object) carries
+    // its value the same way: an enumerator past 32 bits
+    // (`enum { B = 0x100000000 }`) was stored as int32 and folded to 0.
     static size_t slot_size(const DataDef &d)
     {
 	const DataDef *u = d.unqualified();
+	if ( dynamic_cast<const DataDefENUM *>(u) )
+	    return 8;
 	return (u == &ddINT && u->size < 8) ? 8 : u->size;
     }
     // The type the value slot is laid out and dispatched by: the variable's
     // UNQUALIFIED type. An object's top-level cv is its declared type's
-    // (`const int N = 4` is QUAL(int)), and the identity ladders below asked
-    // `slot_type() == &ddINT` — a qualified int matched no arm, set() stored nothing,
-    // and `int arr[N]` folded to `int arr[0]`.
+    // (`const int N = 4` is QUAL(int)); the identity ladders slot_kind()
+    // replaced tested the QUALIFIED type against ddINT, so a qualified int
+    // matched no arm, set() stored nothing, and `int arr[N]` folded to
+    // `int arr[0]`.
     const DataDef *slot_type() const { return type ? type->unqualified() : type; }
+    // A CONSTANT whose type is settled after its value: a C enumerator is int
+    // while its enum's list is read, and takes the enumerated type at the
+    // close (TokenENUM::parse). The value is kept, so the new slot must fit
+    // in the old block and have a slot kind; otherwise the constant
+    // keeps its type (false).
+    bool retype_constant(DataDef &t)
+    {
+	int64_t v = get<int64_t>();
+	DataDef *was = type;
+	type = &t;
+	if ( was && slot_size(t) <= slot_size(*was) && set(v)
+	  && get<int64_t>() == v )
+	    return true;
+	type = was;
+	set(v);
+	return false;
+    }
+    // The value slot's STORAGE KIND: the ONE dispatch set() / cmp() / dec() /
+    // inc() / get() switch on, from the unqualified type. The special rows
+    // come first: madc's `int` (ddINT) and an enum carry int64 (slot_size),
+    // plain char and bool are their own types, and the legacy 24-bit rows are
+    // 16-bit slots. Every other integer scalar is chosen by its STORAGE (size
+    // and signedness). The five ladders compared type IDENTITIES against a
+    // list, and had drifted apart; an identity missing from one stored
+    // nothing and read `true`. So the LLP64 `long` (win64: `const long N = 4;
+    // int a[N];` was 0 bytes), wchar_t / char16_t / char32_t (`constexpr
+    // wchar_t W = 5; int a[W];` 0 bytes on every target) were lost, and get()
+    // had no bool row, so `constexpr bool B = false;` read true.
+    enum class SlotKind { None, Char, Bool, I8, I16, I32, I64, U8, U16, U32,
+			  U64, I128, U128, Float, Double };
+    static SlotKind slot_kind_of(const DataDef *u)
+    {
+	if ( !u ) return SlotKind::None;
+	if ( u == &ddCHAR ) return SlotKind::Char;
+	if ( u == &ddBOOL ) return SlotKind::Bool;
+	if ( u == &ddINT || dynamic_cast<const DataDefENUM *>(u) ) return SlotKind::I64;
+	if ( u == &ddINT24 ) return SlotKind::I16;
+	if ( u == &ddUINT24 ) return SlotKind::U16;
+	if ( u == &ddFLOAT ) return SlotKind::Float;
+	if ( u == &ddDOUBLE ) return SlotKind::Double;
+	if ( u->is_pointer() || u->is_function() || u->as_fptr_dd()
+	  || u->is_simd() || u->is_complex() || !u->is_integer() )
+	    return SlotKind::None;
+	bool uns = u->is_unsigned();
+	switch ( u->size )
+	{
+	    case 1:  return uns ? SlotKind::U8 : SlotKind::I8;
+	    case 2:  return uns ? SlotKind::U16 : SlotKind::I16;
+	    case 4:  return uns ? SlotKind::U32 : SlotKind::I32;
+	    case 8:  return uns ? SlotKind::U64 : SlotKind::I64;
+	    case 16: return uns ? SlotKind::U128 : SlotKind::I128;
+	    default: return SlotKind::None;
+	}
+    }
+    SlotKind slot_kind() const { return slot_kind_of(slot_type()); }
     bool set(int64_t c)
     {
 	if ( !data ) { return false; }
-	/**/ if (slot_type() == &ddCHAR)   *((char *)data) = c;
-	else if (slot_type() == &ddBOOL)   *((bool *)data) = c;
-	// madc's `int` is 64-bit by design.  Writing only the low 4 bytes
-	// via `(int *)` left the high half at zero (calloc'd 0), so e.g.
-	// `enum { WEAR_NONE = -1 }; if (x == WEAR_NONE)` failed because
-	// WEAR_NONE round-tripped as 0x00000000FFFFFFFF, not 0xFFFF..FFFF.
-	else if (slot_type() == &ddINT)    *((int64_t *)data) = c;
-	else if (slot_type() == &ddINT64)  *((int64_t *)data) = c;
-	else if (slot_type() == &ddINT8)   *((int8_t *)data) = c;
-	else if (slot_type() == &ddINT16)  *((int16_t *)data) = c;
-	else if (slot_type() == &ddINT24)  *((int16_t *)data) = c;
-	else if (slot_type() == &ddINT32)  *((int32_t *)data) = c;
-	else if (slot_type() == &ddUINT8)  *((uint8_t *)data) = c;
-	else if (slot_type() == &ddUINT16) *((uint16_t *)data) = c;
-	else if (slot_type() == &ddUINT24) *((uint16_t *)data) = c;
-	else if (slot_type() == &ddUINT32) *((uint32_t *)data) = c;
-	else if (slot_type() == &ddUINT64) *((uint64_t *)data) = c;
-	else if (slot_type() == &ddFLOAT)  *((float *)data) = c;
-	else if (slot_type() == &ddDOUBLE) *((double *)data) = c;
-	else if (dynamic_cast<const DataDefENUM *>(slot_type())) *((int32_t *)data) = c;
-	else 	     { return false; }
+	switch ( slot_kind() )
+	{
+	    case SlotKind::Char:   *((char *)data) = c; break;
+	    case SlotKind::Bool:   *((bool *)data) = c; break;
+	    // madc's `int` is 64-bit by design.  Writing only the low 4 bytes
+	    // via `(int *)` left the high half at zero (calloc'd 0), so e.g.
+	    // `enum { WEAR_NONE = -1 }; if (x == WEAR_NONE)` failed because
+	    // WEAR_NONE round-tripped as 0x00000000FFFFFFFF, not 0xFFFF..FFFF.
+	    case SlotKind::I64:    *((int64_t *)data) = c; break;
+	    case SlotKind::I8:     *((int8_t *)data) = c; break;
+	    case SlotKind::I16:    *((int16_t *)data) = c; break;
+	    case SlotKind::I32:    *((int32_t *)data) = c; break;
+	    case SlotKind::U8:     *((uint8_t *)data) = c; break;
+	    case SlotKind::U16:    *((uint16_t *)data) = c; break;
+	    case SlotKind::U32:    *((uint32_t *)data) = c; break;
+	    case SlotKind::U64:    *((uint64_t *)data) = c; break;
+	    case SlotKind::I128:   *((madc_wide_int *)data) = c; break;
+	    case SlotKind::U128:   *((madc_wide_uint *)data) = (madc_wide_int)c; break;
+	    case SlotKind::Float:  *((float *)data) = c; break;
+	    case SlotKind::Double: *((double *)data) = c; break;
+	    case SlotKind::None:   return false;
+	}
 	return true;
     }
     template<typename T> int cmp(T c)
     {
 	if ( !data ) { return 0; }
-	if (slot_type() == &ddCHAR)   return *((char *)data) == c;
-	if (slot_type() == &ddBOOL)   return *((bool *)data) == c;
-	if (slot_type() == &ddINT)    return *((int64_t *)data) == c;
-	if (slot_type() == &ddINT64)  return *((int64_t *)data) == c;
-	if (slot_type() == &ddINT8)   return *((int8_t *)data) == c;
-	if (slot_type() == &ddINT16)  return *((int16_t *)data) == c;
-	if (slot_type() == &ddINT24)  return *((int16_t *)data) == c;
-	if (slot_type() == &ddINT32)  return *((int32_t *)data) == c;
-	if (slot_type() == &ddUINT8)  return *((uint8_t *)data) == static_cast<uint8_t>(c);
-	if (slot_type() == &ddUINT16) return *((uint16_t *)data) == static_cast<uint16_t>(c);
-	if (slot_type() == &ddUINT24) return *((uint16_t *)data) == static_cast<uint16_t>(c);
-	if (slot_type() == &ddUINT32) return *((uint32_t *)data) == static_cast<uint32_t>(c);
-	if (slot_type() == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
-	if (slot_type() == &ddFLOAT)  return *((float *)data) == c;
-	if (slot_type() == &ddDOUBLE) return *((double *)data) == c;
-	if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int32_t *)data) == c;
+	switch ( slot_kind() )
+	{
+	    case SlotKind::Char:   return *((char *)data) == c;
+	    case SlotKind::Bool:   return *((bool *)data) == c;
+	    case SlotKind::I64:    return *((int64_t *)data) == c;
+	    case SlotKind::I8:     return *((int8_t *)data) == c;
+	    case SlotKind::I16:    return *((int16_t *)data) == c;
+	    case SlotKind::I32:    return *((int32_t *)data) == c;
+	    case SlotKind::U8:     return *((uint8_t *)data) == static_cast<uint8_t>(c);
+	    case SlotKind::U16:    return *((uint16_t *)data) == static_cast<uint16_t>(c);
+	    case SlotKind::U32:    return *((uint32_t *)data) == static_cast<uint32_t>(c);
+	    case SlotKind::U64:    return *((uint64_t *)data) == static_cast<uint64_t>(c);
+	    case SlotKind::I128:   return *((madc_wide_int *)data) == (madc_wide_int)c;
+	    case SlotKind::U128:   return *((madc_wide_uint *)data) == (madc_wide_uint)(madc_wide_int)c;
+	    case SlotKind::Float:  return *((float *)data) == c;
+	    case SlotKind::Double: return *((double *)data) == c;
+	    case SlotKind::None:   return 0;
+	}
 	return 0;
     }
     int cmp(std::string &s)
@@ -247,64 +325,54 @@ public:
 	}
 	return 0;
     }
-    bool dec()
+    // One step of `--` / `++` on the slot. A bool steps as C's `b - 1` /
+    // `b + 1` converted back to bool.
+    bool step(int delta)
     {
 	if ( !data ) { return false; }
-	/**/ if (slot_type() == &ddCHAR)   --*((char *)data);
-	else if (slot_type() == &ddINT)    --*((int64_t *)data);
-	else if (slot_type() == &ddINT64)  --*((int64_t *)data);
-	else if (slot_type() == &ddINT8)   --*((int8_t *)data);
-	else if (slot_type() == &ddINT16)  --*((int16_t *)data);
-	else if (slot_type() == &ddINT24)  --*((int16_t *)data);
-	else if (slot_type() == &ddINT32)  --*((int32_t *)data);
-	else if (slot_type() == &ddUINT8)  --*((uint8_t *)data);
-	else if (slot_type() == &ddUINT16) --*((uint16_t *)data);
-	else if (slot_type() == &ddUINT24) --*((uint16_t *)data);
-	else if (slot_type() == &ddUINT32) --*((uint32_t *)data);
-	else if (slot_type() == &ddUINT64) --*((uint64_t *)data);
-	else if (slot_type() == &ddFLOAT)  --*((float *)data);
-	else if (slot_type() == &ddDOUBLE) --*((double *)data);
+	switch ( slot_kind() )
+	{
+	    case SlotKind::Char:   *((char *)data) += delta; break;
+	    case SlotKind::Bool:   *((bool *)data) = (*((bool *)data) + delta) != 0; break;
+	    case SlotKind::I64:    *((int64_t *)data) += delta; break;
+	    case SlotKind::I8:     *((int8_t *)data) += delta; break;
+	    case SlotKind::I16:    *((int16_t *)data) += delta; break;
+	    case SlotKind::I32:    *((int32_t *)data) += delta; break;
+	    case SlotKind::U8:     *((uint8_t *)data) += delta; break;
+	    case SlotKind::U16:    *((uint16_t *)data) += delta; break;
+	    case SlotKind::U32:    *((uint32_t *)data) += delta; break;
+	    case SlotKind::U64:    *((uint64_t *)data) += delta; break;
+	    case SlotKind::I128:   *((madc_wide_int *)data) += delta; break;
+	    case SlotKind::U128:   *((madc_wide_uint *)data) += (madc_wide_int)delta; break;
+	    case SlotKind::Float:  *((float *)data) += delta; break;
+	    case SlotKind::Double: *((double *)data) += delta; break;
+	    case SlotKind::None:   break;
+	}
 	return true;
     }
-    bool inc()
-    {
-	if ( !data ) { return false; }
-	/**/ if (slot_type() == &ddCHAR)   ++*((char *)data);
-	else if (slot_type() == &ddINT)    ++*((int64_t *)data);
-	else if (slot_type() == &ddINT64)  ++*((int64_t *)data);
-	else if (slot_type() == &ddINT8)   ++*((int8_t *)data);
-	else if (slot_type() == &ddINT16)  ++*((int16_t *)data);
-	else if (slot_type() == &ddINT24)  ++*((int16_t *)data);
-	else if (slot_type() == &ddINT32)  ++*((int32_t *)data);
-	else if (slot_type() == &ddUINT8)  ++*((uint8_t *)data);
-	else if (slot_type() == &ddUINT16) ++*((uint16_t *)data);
-	else if (slot_type() == &ddUINT24) ++*((uint16_t *)data);
-	else if (slot_type() == &ddUINT32) ++*((uint32_t *)data);
-	else if (slot_type() == &ddUINT64) ++*((uint64_t *)data);
-	else if (slot_type() == &ddFLOAT)  ++*((float *)data);
-	else if (slot_type() == &ddDOUBLE) ++*((double *)data);
-	return true;
-    }
+    bool dec() { return step(-1); }
+    bool inc() { return step(1); }
     template<typename T> T get()
     {
 	if ( !data ) { return false; }
-	/**/ if (slot_type() == &ddCHAR)   return *((char *)data);
-	else if (slot_type() == &ddINT)    return *((int64_t *)data);
-	else if (slot_type() == &ddINT64)  return *((int64_t *)data);
-	else if (slot_type() == &ddINT8)   return *((int8_t *)data);
-	else if (slot_type() == &ddINT16)  return *((int16_t *)data);
-	else if (slot_type() == &ddINT24)  return *((int16_t *)data);
-	else if (slot_type() == &ddINT32)  return *((int32_t *)data);
-	else if (slot_type() == &ddUINT8)  return *((uint8_t *)data);
-	else if (slot_type() == &ddUINT16) return *((uint16_t *)data);
-	else if (slot_type() == &ddUINT24) return *((uint16_t *)data);
-	else if (slot_type() == &ddUINT32) return *((uint32_t *)data);
-	else if (slot_type() == &ddUINT64) return *((uint64_t *)data);
-	else if (slot_type() == &ddINT128)  return *((madc_wide_int *)data);
-	else if (slot_type() == &ddUINT128) return *((madc_wide_uint *)data);
-	else if (slot_type() == &ddFLOAT)  return *((float *)data);
-	else if (slot_type() == &ddDOUBLE) return *((double *)data);
-	else if (dynamic_cast<const DataDefENUM *>(slot_type())) return *((int32_t *)data);
+	switch ( slot_kind() )
+	{
+	    case SlotKind::Char:   return *((char *)data);
+	    case SlotKind::Bool:   return *((bool *)data);
+	    case SlotKind::I64:    return *((int64_t *)data);
+	    case SlotKind::I8:     return *((int8_t *)data);
+	    case SlotKind::I16:    return *((int16_t *)data);
+	    case SlotKind::I32:    return *((int32_t *)data);
+	    case SlotKind::U8:     return *((uint8_t *)data);
+	    case SlotKind::U16:    return *((uint16_t *)data);
+	    case SlotKind::U32:    return *((uint32_t *)data);
+	    case SlotKind::U64:    return *((uint64_t *)data);
+	    case SlotKind::I128:   return *((madc_wide_int *)data);
+	    case SlotKind::U128:   return *((madc_wide_uint *)data);
+	    case SlotKind::Float:  return *((float *)data);
+	    case SlotKind::Double: return *((double *)data);
+	    case SlotKind::None:   break;
+	}
 	return true;
     }
 };
@@ -332,7 +400,7 @@ public:
     // Without this override, TokenBase::clone() minted a RAW TokenBase
     // (type 0, id 0 — untranslatable at CIR) wherever a variable leaf is
     // cloned: range designators (`[6 ... 10] = elt`, c-testsuite 00216)
-    // clone the value per slot via assign_initializer_range.
+    // clone the value per slot (InitializerCursor::positional).
     virtual TokenBase *clone() override
     {
 	TokenVar *tv = new TokenVar(var);

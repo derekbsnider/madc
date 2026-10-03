@@ -223,6 +223,12 @@ namespace ui {
     // word; both clamp, -1 = no text component.
     int64_t text_word_left(int64_t w, int64_t entity, int64_t from);
     int64_t text_word_right(int64_t w, int64_t entity, int64_t from);
+    // JOE ^W's deletion extent (delwr): the offset just past the run of
+    // the byte class at `from` (word bytes to the word's end, whitespace to
+    // the run's end across line ends, any other byte alone); clamps, -1 =
+    // no text component. Not the motion: text_word_right passes the NEXT
+    // word too.
+    int64_t text_class_run_right(int64_t w, int64_t entity, int64_t from);
     // UTF-16 column conversion over ONE line (madcdis/text_utf16.h is the
     // owner; the web hit test and the LSP face are its two consumers). A
     // protocol whose positions are UTF-16 code units — LSP's default — needs
@@ -235,6 +241,11 @@ namespace ui {
     // -1 = no text component, or `line` is not a line of this text.
     int64_t text_bytecol(int64_t w, int64_t entity, int64_t line, int64_t col16);
     int64_t text_col16(int64_t w, int64_t entity, int64_t line, int64_t bytecol);
+    // A text's width in terminal columns, by the terminal target's own
+    // layout rule (madcdis/text_utf16.h line_width: tab stops, code-point
+    // widths, an East Asian wide character two columns). Aligning by strlen
+    // counts a UTF-8 character's bytes as columns (B87).
+    int64_t text_columns(const char *text);
     // History (undo/redo): text_checkpoint snapshots the buffer BEFORE a
     // mutation, carrying an OPAQUE application payload (store the caret
     // there — it rides with the state it belongs to); one semantic edit,
@@ -291,7 +302,9 @@ namespace ui {
     //       completed (empty action + code 0 = unbound miss; seq says
     //       which), or a control that posted the command by name —
     //       action_code = the integer the table bound, or the `code` hint
-    //       the control carried
+    //       the control carried; `mods` (ui::key_mod bits) when the chord's
+    //       last key held modifiers — Shift reaches a binding without it,
+    //       so Shift with a bound motion arrives as that motion plus Shift
     //   {event:"focus"} {event:"resize"}  recompose and re-render
     //   {event:"pointer", phase, offset, subject, tag}  a pointing-device
     //       gesture on an edit node (a web target's hit test): offset is a
@@ -375,6 +388,12 @@ namespace ui {
     void    render(int64_t t, int64_t w, value &tree);
     bool    bind_keys(int64_t t, value &table);
     bool    validate_keys(value &table);
+    // The sequence a keybinding table binds to a command CODE, as the table
+    // spells it ("^k q"), chosen by the ONE rule a menu accelerator uses
+    // (fewest keys, then shortest, then first). False with out "" when the
+    // code is unbound or the table is invalid. Handle-free, as
+    // validate_keys; a pure read of the table.
+    bool    key_sequence_for(value &out, value &table, int64_t code);
     bool    event(value &out, int64_t t, int64_t w);
     // The multi-client blocking decision (V3b): the next event from ANY of
     // `targets` (an array of ui handles), tagged with out["target"] = the
@@ -395,6 +414,12 @@ namespace ui {
     // terminal's pty when the user types at it. False (out empty) when the
     // name is not a key spelling. A text run is its own bytes already.
     bool    key_bytes(value &out, const char *name);
+    // A modified key spelling without its modifiers ("shift+up" -> "up";
+    // a key event's `mods` holds ui::key_mod bits): what a scope table the
+    // application keeps reads for a modified key it does not bind, as the
+    // engine's own bindings do. False (out "") when the name is not a
+    // modified key, or its key alone would type (Ctrl+3 is not "3").
+    bool    key_unmodified(value &out, const char *name);
     // The LAYOUT vocabulary's boundary converters (client-server arc V2,
     // <bits/ui_enums> ui::split / ui::side): a `.layout` profile's word ->
     // its code (none for a word that is not one — the loader's refusal),
@@ -431,7 +456,12 @@ namespace ui {
     // Output) before running the loop again. Asked only while tasks are
     // live, so an idle window still blocks for free. 0 = armed; nonzero =
     // no timer on this host (the engine cannot bound the wait); optional.
-    // LAYOUT CONTRACT with src/ns_ui.cpp — the same seven pointers in the
+    // clip_set(host, text): put plain text on the platform's clipboard
+    // (plan §41.11a step 3e); 0 = taken, nonzero = no clipboard here;
+    // clip_get(host): the platform clipboard's text, read now ("" = it
+    // holds none), the host's own until its next call; 0 (NULL) = no
+    // clipboard here. Both optional.
+    // LAYOUT CONTRACT with src/ns_ui.cpp — the same nine pointers in the
     // same order, append-only, keep both in sync.
     typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
     typedef void  (*ui_host_close_fn)(void *host);
@@ -440,6 +470,8 @@ namespace ui {
     typedef int64_t (*ui_host_menu_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_dialog_fn)(void *host, const char *json);
     typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
+    typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
+    typedef const char *(*ui_host_clip_get_fn)(void *host);
     struct ui_host_ops {
 	ui_host_open_fn  open;
 	ui_host_close_fn close;
@@ -448,6 +480,8 @@ namespace ui {
 	ui_host_menu_fn  menu;
 	ui_host_dialog_fn dialog;
 	ui_host_tick_fn  tick;
+	ui_host_clip_set_fn clip_set;
+	ui_host_clip_get_fn clip_get;
     };
     // A host registers under a target name AND declares the UI level it
     // serves (ui::WEB for a page in a webview); open(level) picks the first
@@ -480,4 +514,15 @@ namespace ui {
     // not available here — the application falls back to its own prompt.
     bool    dialogs(int64_t t);
     bool    dialog(int64_t t, const char *json);
+    // The PLATFORM clipboard a target reaches (plan §41.11a step 3e):
+    // plain text. clipboards(t) — does this target reach one (a window
+    // whose host has the clip ops); clipboard_set(t, text) — true = the
+    // platform's clipboard took it; clipboard_get(out, t) — true = the
+    // platform answered, `out` its text with '\n' line ends ("" when it
+    // holds none). False = this target reaches no platform clipboard (the
+    // terminal, a browser page, a bad handle): the application keeps its
+    // own copy, and pastes that.
+    bool    clipboards(int64_t t);
+    bool    clipboard_set(int64_t t, const char *text);
+    bool    clipboard_get(value &out, int64_t t);
 }

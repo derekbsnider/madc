@@ -1,0 +1,68 @@
+// A trailing return type is one type-id ([dcl.fct]/2): a leading cv, any
+// declarator shape (`(&)[N]`, `(*)(params)`), and a template argument list
+// whose comma is inside the angle. It ends where a type-id ends, so a pure-,
+// defaulted- or deleted-specifier and a virt-specifier stay the function's.
+//
+// Free functions and lambdas resolve it while parsing (parseFunction); a
+// member function resolves it when its deferred body is replayed. Both read
+// it through Program::adopt_trailing_return_type. Before (B132): `-> const
+// int *` was "Could not resolve trailing return type" on the eager path,
+// `-> int (*)(int)` became `int` (sizeof 4, and the call was refused), a
+// member's `-> const int (&)[3]` fell back to body deduction (sizeof 8),
+// `-> P<int, int>` was refused at the comma, and `= 0` / `= default` were
+// read into the return type (undefined B::f and S::operator= at link).
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect lines.
+#include <stdio.h>
+
+const int g[3] = {1, 2, 3};
+int gm[3] = {4, 5, 6};
+int sq(int x) { return x * x; }
+template <class A, class B> struct P { A a; B b; };
+
+auto f_cptr() -> const int * { return g; }
+auto f_arref() -> const int (&)[3] { return g; }
+auto f_fptr() -> int (*)(int) { return sq; }
+auto f_pair() -> P<int, int> { P<int, int> p = {3, 4}; return p; }
+auto f_ref() -> int & { return gm[0]; }
+auto f_proto() -> const int *;
+const int *f_proto() { return g + 2; }
+
+struct S {
+	int v = 6;
+	auto m_cptr() -> const int * { return g; }
+	auto m_arref() const -> const int (&)[3] { return g; }
+	auto m_fptr() -> int (*)(int) { return sq; }
+	auto m_pair() -> P<int, int> { P<int, int> p = {5, 7}; return p; }
+	auto operator=(const S &) -> S & = default;
+};
+
+struct B { virtual auto f() -> int = 0; virtual ~B() {} };
+struct D : B { auto f() -> int override { return 7; } };
+struct E : B { auto f() -> int final { return 8; } };
+
+auto f_del(int) -> int { return 5; }
+auto f_del(double) -> int = delete;
+
+int main()
+{
+	printf("free: %d %d %d %d %d\n", f_cptr()[1], f_arref()[2],
+	       (int)sizeof(f_arref()), f_fptr()(4), (int)sizeof(f_fptr()));
+	f_ref() = 9;
+	printf("free2: %d %d %d\n", f_pair().b, gm[0], *f_proto());
+	S s, t;
+	s.v = 11;
+	t = s;
+	printf("member: %d %d %d %d %d %d %d\n", s.m_cptr()[1], s.m_arref()[2],
+	       (int)sizeof(s.m_arref()), s.m_fptr()(5), (int)sizeof(s.m_fptr()),
+	       s.m_pair().b, t.v);
+	D d;
+	E e;
+	B &bd = d;
+	B &be = e;
+	printf("virtual: %d %d %d\n", bd.f(), be.f(), f_del(1));
+	auto l1 = [](int x) -> const int * { return g + x; };
+	auto l2 = []() -> int (*)(int) { return sq; };
+	printf("lambda: %d %d %d\n", *l1(1), l2()(6), (int)sizeof(l2()));
+	return 0;
+}

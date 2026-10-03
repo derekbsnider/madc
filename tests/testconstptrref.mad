@@ -1,0 +1,51 @@
+// A reference's REFERENT is const only when the declarator's TOP-LEVEL const
+// says so: `const T &` and `char *const &` refer to a const object, and
+// `const char *&` refers to a mutable pointer (the const qualifies the char).
+// One owner, Program::declarator_written_cv, for the three readers of that
+// flag: a parameter (its read-only marking and FuncDef::const_params, which
+// reference binding and overload ranking read), a type trait's operand, and a
+// declared object (`int const x`).
+//
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+// Before the fix madc refused `set` ("assignment of read-only variable
+// 'out'"), answered the traits `0 1 0 1 1`, minted one symbol for both
+// `which` overloads, and accepted the east-const write in testconsteast_err.
+#include <stdio.h>
+
+static void set(const char *&out, const char *v) { out = v; }
+static void set_east(char const *&out, const char *v) { out = v; }
+template<typename T> static void tset(const T *&out, const T *v) { out = v; }
+struct R { void take(const char *&out) { out = "method"; } };
+
+// The two overloads are two functions: `const char *&` mangles RPKc and
+// `const char *const &` RKPKc (before the fix both spelled RPKc, a MIR
+// "Repeated item declaration"). An lvalue binds the less cv-qualified
+// referent ([over.ics.rank]/3.2.6).
+static const char *which(const char *&) { return "ref-to-pointer"; }
+static const char *which(const char *const &) { return "ref-to-const-pointer"; }
+
+int main()
+{
+    const char *p = "a";
+    set(p, "param");
+    printf("%s\n", p);
+    set_east(p, "east");
+    printf("%s\n", p);
+    tset<char>(p, "template");
+    printf("%s\n", p);
+    R r;
+    r.take(p);
+    printf("%s\n", p);
+    const char *q = "x";
+    const char *&rq = q;
+    rq = "local";
+    printf("%s\n", q);
+    printf("lvalue: %s\n", which(p));
+    printf("traits: %d %d %d %d %d\n",
+	   __is_assignable(const char *&, const char *),
+	   __is_constructible(const char *&, const char *),
+	   __is_assignable(char *const &, char *),
+	   __is_constructible(const int &, int),
+	   __is_assignable(char const *&, char *));
+    return 0;
+}

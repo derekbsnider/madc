@@ -51,7 +51,8 @@ if [ "$shape_owners" -ne 1 ]; then
 	exit 1
 fi
 
-shape_delegates=$(grep -c 'fn_template_call_shape_suffix(tc)' src/parser.cpp)
+# The call, whatever follows its first argument (b84cb6334 added the Program).
+shape_delegates=$(grep -c -E 'fn_template_call_shape_suffix\(tc[,)]' src/parser.cpp)
 echo "member-template call-shape computations: $shape_delegates (target 1)"
 if [ "$shape_delegates" -ne 1 ]; then
 	echo "  -> compute the shared member-template call shape exactly once."

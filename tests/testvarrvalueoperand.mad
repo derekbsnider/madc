@@ -1,0 +1,27 @@
+// A `var` rvalue (a returned var, a braced literal) binds the carrier's
+// `const var &` parameters: its copy constructor, its copy assignment and the
+// value-operand operator rows. Their registrations marked const one slot past
+// the parameter, so each looked like a `var &` that no rvalue may bind; once
+// a temporary's value category counted, `return { "k": 1 };` constructed the
+// result through var(const char *) with the literal as the text and aborted
+// on the first keyed read. The C++ rule is [dcl.init.ref]/5: g++ and clang++
+// bind a prvalue to `const T &` and select the copy constructor over a
+// conversion to `const char *`.
+
+var num(long n) { var x = n; return x; }
+var obj() { return { "k": 1, "m": "two" }; }
+
+int main()
+{
+	var o = obj();
+	println("return-literal: k={} m={}", o["k"], o["m"]);
+	var s = 0;
+	s = num(5);
+	println("assign-rvalue: {}", s);
+	println("add-rvalues: {}", num(3) + num(4));
+	println("compare-rvalues: {}", num(8) == num(8));
+	var acc = num(1);
+	acc += num(2);
+	println("compound-rvalue: {}", acc);
+	return 0;
+}

@@ -31,7 +31,7 @@ int64_t __php_array_push_int(madc::value *, int64_t);
 int64_t __php_array_push_real(madc::value *, double);
 int64_t __php_array_push_bool(madc::value *, bool);
 int64_t __php_array_push_array(madc::value *, madc::value *);
-int64_t __php_array_push_value(madc::value *, madc::value *);
+int64_t __php_array_push_value(madc::value *, const madc::value *);
 std::string *__php_array_pop(std::string *, madc::value *);
 std::string *__php_array_get(std::string *, madc::value *, int64_t);
 int64_t __php_array_get_int(madc::value *, int64_t);
@@ -78,7 +78,7 @@ inline int64_t array_push(madc::value &values, int64_t v) { return __php_array_p
 inline int64_t array_push(madc::value &values, int v) { return __php_array_push_int(&values, v); }
 inline int64_t array_push(madc::value &values, double v) { return __php_array_push_real(&values, v); }
 inline int64_t array_push(madc::value &values, bool v) { return __php_array_push_bool(&values, v); }
-inline int64_t array_push(madc::value &values, madc::value &v) { return __php_array_push_value(&values, &v); }
+inline int64_t array_push(madc::value &values, const madc::value &v) { return __php_array_push_value(&values, &v); }
 inline int64_t array_push(madc::value &values, std::string &text) { return __php_array_push(&values, text.c_str()); }
 inline std::string &array_pop(std::string &result, madc::value &values) { return *__php_array_pop(&result, &values); }
 inline std::string &array_get(std::string &result, madc::value &values, int64_t index) { return *__php_array_get(&result, &values, index); }

@@ -75,8 +75,20 @@
 # refused a parenthesized operand (2 entries, GONE — testmemptrparenoperand).
 # An exposure of a filed gap, not a new class: lower to 50 when the sentry
 # gap closes (all 20 __cerb entries go together).
-70 linux pack-errors
-45 linux dk-none
+# linux 70 -> 28, dk-none 45 -> 59 (2026-10-02, the develop seam pre-build of
+# the REPL + chthonia release, feature/repl-teaching-ide-claude at 8066d0f49):
+# all twenty `use of undeclared identifier '__cerb'` entries are GONE (the
+# sentry local the 2026-09-20 note above filed; KG Gap
+# istream_sentry_local_in_pack), and 22 more. Left: 8 `max_size`
+# (basic_string.h:1085), 12 `'_M_dispose' is a private member` and 2
+# `'_M_mode' is a protected member` (basic_string.tcc:191/242, fstream.tcc:263),
+# 2 each of `__state`, `eofbit`, `__mode`. dk-none RISES because more bodies
+# now freeze: the 59 are 28 `polymorphic_allocator<_Up>*` + 28
+# `allocator<_Tp1>*` + `_ValueT*` + `_Tp*` x2, every one a pointer to a
+# template parameter — the census's legitimate shape (no record by
+# construction); zero concrete types, so no task #64 shape.
+28 linux pack-errors
+59 linux dk-none
 0 linux closure-drops
 # win64 68 -> 70 (2026-09-20): the same libstdc++ 13.2 corpus as linux, the
 # same six exposed __cerb entries (istream.tcc, the mingw stage's line
@@ -84,8 +96,12 @@
 # mingw's `_bittest64(__int64 const *a, __int64 b)` prototype no longer
 # "conflicts" with its `const __int64 *Base` macro definition
 # (tests/testprotoconstplacement.mad). Lower to 50 with linux.
-70 win64 pack-errors
-46 win64 dk-none
+# win64 70 -> 28, dk-none 46 -> 60 (2026-10-02, the same seam pre-build,
+# release-win's own pack run): the same 28 entries as linux, class for class
+# (mingw ships the same libstdc++ 13.2); the 60 are linux's 59 dependent
+# operands plus the one `ptr funcptr*` the old 46-vs-45 split already carried.
+28 win64 pack-errors
+60 win64 dk-none
 0 win64 closure-drops
 # darwin 64 -> 58 (2026-08-24): the six libc++ <filesystem> "no matching
 # overload ... error_code**" entries (raised 58 -> 64 on 2026-08-23 when the
@@ -180,5 +196,11 @@
 # manipulator operators take `basic_ostream& (*__pf)(basic_ostream&)` too)
 # and the parenthesized `->*` operand; both arches report 45 against the
 # same libc++ corpus.
-45 darwin pack-errors
+# darwin 45 -> 17 (2026-10-02, the REPL + chthonia release seam pre-build,
+# release-macos at 2e3a30db6; both arches): 8 "Malformed expression: 2
+# operands with no operator between them" (the TemplateId<...>()(args) body
+# re-parse, KG Gap instantiation_body_templateid_ctor_call), 4 "Unexpected
+# keyword in expression", 3 undeclared identifiers, 1 "expecting addressable
+# expression", 1 unidentified member.
+17 darwin pack-errors
 1 darwin mir-blob-skips

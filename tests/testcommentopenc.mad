@@ -1,0 +1,8 @@
+// C11 6.4.9p1: a block comment runs to its `*/`; input that ends first is an
+// unterminated comment. madc swallowed the rest of the file into the comment
+// and ran the program (exit 0). The lexer's one block-comment reader
+// (Source::consume_block_comment) now refuses it at the `/*`.
+// Oracle: gcc "8:1: error: unterminated comment",
+//         clang "8:1: error: unterminated /* comment".
+int main(void) { return 0; }
+/* the closing delimiter never comes

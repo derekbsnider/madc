@@ -110,14 +110,24 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .node.group.workbench {
   display: grid;
   grid-template-columns: auto auto 1fr;
-  grid-template-rows: 1fr auto auto auto;
+  grid-template-rows: auto 1fr auto auto auto;
   grid-template-areas:
+    "toolbar toolbar toolbar"
     "rail sidebar editor"
     "rail sidebar panel"
     "statusbar statusbar statusbar"
     "foot foot foot";
   flex: 1 1 auto; min-height: 0;
 }
+/* The toolbar (plan §41.11a): the root's `toolbar` rows as a row of
+   buttons across the top; empty (the default menu places none), the slot
+   takes no space. */
+.workbench > .slot[data-slot="toolbar"] { grid-area: toolbar; flex-direction: row;
+  gap: 4px; padding: 3px 8px; background: var(--sb-bg, #22252f); }
+.workbench > .slot[data-slot="toolbar"] > .tb-btn { padding: 2px 12px; }
+.workbench > .slot[data-slot="toolbar"] > .tb-btn:first-child { background: #3b4a6b;
+  border-color: #4a5a80; color: #f2f4ff; }	/* no primary button on a toolbar */
+.workbench > .slot[data-slot="toolbar"] > .tb-btn:disabled { opacity: 0.45; cursor: default; }
 .slot { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .slot:empty { display: none; }
 .workbench > .slot[data-slot="rail"]      { grid-area: rail; background: #22252f; }

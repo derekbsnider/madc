@@ -58,6 +58,11 @@ const char *madc_target_dso_suffix(TargetOS os)
 	return ".so";
 }
 
+const char *madc_target_dso_suffix()
+{
+	return madc_target_dso_suffix(madc_target_os);
+}
+
 // "Already spelled": the name ends with the target's suffix (libfoo.so) or
 // carries it as an inner component (a versioned soname, libfoo.so.2) — ld's
 // -l rule wraps neither.

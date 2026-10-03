@@ -1,0 +1,26 @@
+/* A function returning a pointer to an array (`int (*f(void))[3]`, C11
+   6.7.6.3): its definition, a prototype ahead of it, a static one, a call
+   through a pointer to it, and the typedef spelling (`row *f(void)`).
+   madc emitted the declarator-spelled ones as `int *f(void)`: the pointee's
+   extent was dropped, so c2mir refused the returns ("incompatible return-expr
+   type in function returning a pointer") and `f()[1][0]` ("subscripted value
+   is neither array nor pointer nor vector"). Every declarator of a
+   function's return type now has one owner in the CIR builder.
+   Oracle: gcc 13 and clang 18 -std=c17 -Wall print the line below. */
+#include <stdio.h>
+
+int a[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+
+int (*rows(void))[3];
+int (*rows(void))[3] { return a; }
+static int (*second(void))[3] { return a + 1; }
+typedef int row[3];
+row *third(void) { return a; }
+
+int main(void)
+{
+	int (*(*fp)(void))[3] = rows;
+	printf("rows: %d %d %zu %d %d\n", rows()[1][0], fp()[0][2],
+	       sizeof *rows(), second()[0][1], third()[1][2]);
+	return 0;
+}

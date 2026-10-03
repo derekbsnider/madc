@@ -46,10 +46,22 @@ if [ "$raw" -ne 0 ]; then
 	exit 1
 fi
 
-legacy=$(grep -c 'return node1(N_ADDR, value, arg);' src/cir_builder.cpp)
+# The legacy copy took a copied value's address for a REFERENCE formal. The one
+# named exception binds no reference: copied_class_value_arg (d0e860b73) passes
+# a class prvalue of the parameter's own class as the by-value parameter object
+# of an invisible-reference class ([class.temporary]) -- the class by-value
+# ABI, object_arg_value's concern, not this owner's.
+legacy_sites() {
+	awk '
+		/^node_t CirBuilder::copied_class_value_arg\(/ { skip = 1 }
+		!skip && /return node1\(N_ADDR, value, arg\);/ { print FNR ": " $0 }
+		skip && /^}/ { skip = 0 }
+	' src/cir_builder.cpp
+}
+legacy=$(legacy_sites | grep -c . || true)
 echo "legacy copied-value address implementations: $legacy (target 0)"
 if [ "$legacy" -ne 0 ]; then
-	grep -n 'return node1(N_ADDR, value, arg);' src/cir_builder.cpp
+	legacy_sites
 	echo "  -> route copied reference values through ref_param_arg_addr_from_value."
 	exit 1
 fi

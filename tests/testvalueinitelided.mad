@@ -1,0 +1,21 @@
+// `T x = T();` and `T x = T{};` value-initialize a ctor-less class — zero it,
+// then apply its default member initializers — as `T x{};` does. The stack is
+// dirtied first so a skipped zero-fill reads 0xA5 bytes.
+// Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+struct FB { int i; int j; };
+struct P : FB { P() : FB{ 1, 2 } { } };		// FB becomes a ctor-less class
+struct FN { int i = 11; int j; };
+__attribute__((noinline)) void dirty()
+{
+	volatile unsigned char junk[4096];
+	for (int k = 0; k < 4096; k++) junk[k] = 0xA5;
+}
+__attribute__((noinline)) void probe()
+{
+	FB a = FB(); FB b = FB{}; FB c{};
+	FN e = FN(); FN f = FN{}; FN g{};
+	std::printf("valueinit: %d %d | %d %d | %d %d | %d %d | %d %d | %d %d\n",
+		a.i, a.j, b.i, b.j, c.i, c.j, e.i, e.j, f.i, f.j, g.i, g.j);
+}
+int main() { dirty(); probe(); return 0; }

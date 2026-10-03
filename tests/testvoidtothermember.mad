@@ -1,0 +1,45 @@
+// A void_t detection specialization whose argument names ANOTHER template's
+// member — `typename std::iterator_traits<T>::iterator_category`, libstdc++'s
+// `typename remove_reference<_Ep>::type::pointer` in unique_ptr — matches iff
+// that substituted type is well-formed ([temp.deduct]/8). madc required the
+// argument's first name to be a deduced parameter, so the specialization never
+// matched: `detect: 0 0 0`, `deleter-pointer: 0`, and unique_ptr<T, D>::pointer
+// ignored D::pointer — all exit 0.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <iterator>
+#include <memory>
+#include <type_traits>
+
+template<typename T, typename = void> struct has_category { static const int v = 0; };
+template<typename T>
+struct has_category<T, std::void_t<typename std::iterator_traits<T>::iterator_category>>
+{ static const int v = 1; };
+
+struct Iter {
+    typedef std::input_iterator_tag iterator_category;
+    typedef int value_type;
+    typedef long difference_type;
+    typedef int *pointer;
+    typedef int &reference;
+};
+struct Handle { int id; };
+struct HandleDeleter {
+    typedef Handle *pointer;
+    void operator()(Handle *h) const { delete h; }
+};
+struct CharDeleter {
+    typedef char *pointer;
+    void operator()(char *p) const { delete[] p; }
+};
+
+int main()
+{
+    printf("detect: %d %d %d\n", has_category<int>::v, has_category<int *>::v,
+           has_category<Iter>::v);
+    printf("deleter-pointer: %d\n",
+           (int)std::is_same<std::unique_ptr<int, HandleDeleter>::pointer, Handle *>::value);
+    std::unique_ptr<void, CharDeleter> u(new char[4]{ 'h', 'i', '!', 0 });
+    printf("deleter-get: %c%c %s\n", u.get()[0], u.get()[1], u.get());
+    return 0;
+}

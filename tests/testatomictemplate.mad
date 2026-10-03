@@ -1,0 +1,57 @@
+// The __atomic_* builtins inside class templates (the parse-once pattern
+// path: the object size and result type are the instantiation's), on a
+// pointer member, on a struct through the object forms, and
+// __atomic_always_lock_free as a constant expression. Oracle: g++ 13 and
+// clang++ 18 (with -latomic) print the lines below.
+#include <cstdio>
+template<typename T> struct A {
+	T v;
+	T load() const { return __atomic_load_n(&v, __ATOMIC_ACQUIRE); }
+	T add(T d) { return __atomic_add_fetch(&v, d, __ATOMIC_SEQ_CST); }
+	T swap(T d) { return __atomic_exchange_n(&v, d, __ATOMIC_SEQ_CST); }
+	void put(T d) { __atomic_store_n(&v, d, __ATOMIC_RELEASE); }
+	bool cas(T &e, T d) { return __atomic_compare_exchange_n(&v, &e, d, false, 5, 5); }
+};
+template<typename T> struct B {
+	T *p;
+	T *bump(long n) { return __atomic_fetch_add(&p, n * sizeof(T), 5); }
+};
+struct S { int a; short b; };
+template<typename T> struct G {
+	T v;
+	T get() const { T r; __atomic_load(&v, &r, 5); return r; }
+	void set(T n) { __atomic_store(&v, &n, 5); }
+};
+constexpr bool lf8 = __atomic_always_lock_free(sizeof(long), 0);
+static_assert(__atomic_always_lock_free(4, 0), "lock-free int");
+int main()
+{
+	A<int> a{5};
+	A<long> l{-3};
+	A<unsigned char> c{250};
+	int r1 = a.load();
+	int r2 = a.add(3);
+	long r3 = l.add(-7);
+	unsigned r4 = c.add(10);
+	std::printf("ta: %d %d %ld %u\n", r1, r2, r3, r4);
+	int e = 8;
+	bool ok = a.cas(e, 1);
+	int e2 = 7;
+	bool ok2 = a.cas(e2, 2);
+	std::printf("tc: %d %d %d %d\n", ok, ok2, e2, a.load());
+	int s1 = a.swap(40);
+	a.put(41);
+	std::printf("tx: %d %d\n", s1, a.load());
+	int arr[4];
+	B<int> b{arr};
+	int *old = b.bump(2);
+	std::printf("tp: %d %d\n", (int)(old - arr), (int)(b.p - arr));
+	G<S> g{{1, 2}};
+	S n = {3, 4};
+	S before = g.get();
+	g.set(n);
+	S after = g.get();
+	std::printf("tg: %d %d %d %d\n", before.a, before.b, after.a, after.b);
+	std::printf("tl: %d\n", lf8);
+	return 0;
+}

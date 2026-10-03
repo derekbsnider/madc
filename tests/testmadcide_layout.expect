@@ -1,7 +1,7 @@
 shipped: ok=1 window=main chrome=2
 editor: editor  0% tabs [source] focus=1 hidden=0
 chrome0: sidebar left 20% tabs [outline] focus=0 hidden=1
-chrome1: panel bottom 25% tabs [problems,output,terminal] focus=0 hidden=1
+chrome1: panel bottom 25% tabs [problems,output,terminal,repl] focus=0 hidden=1
 baked: ok=1 identical=1
 nested: ok=1 window=dev chrome=1 err=
 nested-editor: split(vertical 0%)[editor  60% tabs [source] focus=1 hidden=0 | split(horizontal 40%)[editor  0% tabs [source] focus=0 hidden=0 | editor  30% stack [source,code] focus=0 hidden=0]]

@@ -1,0 +1,21 @@
+// std::basic_string's iterator-pair constructor is a member constructor
+// template, template<class _InputIterator, class = _RequireInputIter<...>>
+// basic_string(_InputIterator, _InputIterator, const _Alloc & = _Alloc())
+// ([string.cons]/14). Pointers, the string's own const iterators and its
+// reverse iterators all deduce it; madc refused every one (B110: "no matching
+// constructor for call to 'basic_string...(char*, char*)'").
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <string>
+
+int main()
+{
+	const char *p = "abc";
+	std::string t(p, p + 3);
+	printf("pointer: %s\n", t.c_str());
+	std::string u(t.cbegin(), t.cend());
+	printf("iterator: %s\n", u.c_str());
+	std::string r(t.rbegin(), t.rend());
+	printf("reverse: %s\n", r.c_str());
+	return 0;
+}

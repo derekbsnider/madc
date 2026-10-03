@@ -1,0 +1,40 @@
+// sizeof and alignof of a type-id that depends on a member function
+// template's parameter, in its parse-once (tsubst) body: the bare parameter,
+// and under cv, pointer, reference and array layers. Each measures the
+// substituted type per instantiation. A free function template and the
+// enclosing class template's own parameter are the neighbours.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+#include <cstddef>
+
+struct alignas(16) W { char c; };
+
+template<class U> struct Box
+{
+	U v;
+	template<class V> std::size_t al() { return alignof(V); }
+	template<class V> std::size_t al2() { return __alignof__(V); }
+	template<class V> std::size_t sz() { return sizeof(V); }
+	template<class V> std::size_t sp() { return sizeof(V *); }
+	template<class V> std::size_t sa() { return sizeof(V[2]); }
+	template<class V> std::size_t sc() { return sizeof(const V); }
+	template<class V> std::size_t sr() { return sizeof(V &); }
+	template<class V> std::size_t ap() { return alignof(V *); }
+	template<class V> std::size_t aa() { return alignof(V[2]); }
+	template<class V> std::size_t ac() { return alignof(const V); }
+	template<class V> std::size_t ar() { return alignof(V &); }
+	template<class V> std::size_t au() { return alignof(U) + alignof(V); }
+};
+
+template<class V> std::size_t fal() { return alignof(V); }
+
+int main()
+{
+	Box<char> b;
+	Box<W> bw;
+	std::printf("da: %zu %zu %zu %zu %zu\n", b.al<W>(), b.al<double>(), b.al2<W>(), b.sz<W>(), b.sz<double>());
+	std::printf("ds: %zu %zu %zu %zu\n", b.sp<W>(), b.sa<W>(), b.sc<W>(), b.sr<W>());
+	std::printf("dl: %zu %zu %zu %zu\n", b.ap<W>(), b.aa<W>(), b.ac<W>(), b.ar<W>());
+	std::printf("dn: %zu %zu %zu %zu\n", b.au<W>(), bw.au<char>(), b.aa<short>(), fal<W>());
+	return 0;
+}

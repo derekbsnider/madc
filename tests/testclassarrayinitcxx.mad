@@ -1,0 +1,72 @@
+// [dcl.init.aggr]/3-5 and [dcl.init.list]: a braced list on an ARRAY of class
+// type initializes EVERY element — element i from the i-th initializer-clause
+// (a braced clause list-initializes it, a same-class temporary is elided into
+// it, an aggregate element takes its members by brace elision), and the rest
+// are value-initialized. madc read the list's FIRST clause as the whole
+// array's initializer: `Foo a[3] = {4, 7}` ran one constructor on &a with 4,
+// dropped the 7 and never constructed a[1] or a[2] (garbage, exit 0), and an
+// aggregate element's std::string member was bit-copied from the literal.
+// Local, global and try-body arrays share one owner (class_array_list_init).
+// An UNSIZED array's extent counts one element per clause for a class that is
+// not an aggregate (DataDef::brace_elision_width): `Two t[] = {1, 2, 3}` was
+// sized by its two data members as if brace elision applied.
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+#include <string>
+#include <initializer_list>
+struct Foo {
+	int v;
+	Foo() : v(-1) { printf("Foo()\n"); }
+	Foo(int x) : v(x) { printf("Foo(%d)\n", x); }
+	Foo(int x, int y) : v(x * 10 + y) { printf("Foo(%d,%d)\n", x, y); }
+	~Foo() { printf("~Foo(%d)\n", v); }
+};
+struct S { std::string s; int n; };
+struct L {
+	int sum;
+	L() : sum(-7) {}
+	L(std::initializer_list<int> il) : sum(0) { for (int x : il) sum += x; }
+	L(int a, int b) : sum(1000 + a + b) {}
+};
+struct B { virtual int id() const { return 1; } int k; };
+struct Two { int a, b; Two(int x) : a(x), b(-x) {} };
+Foo g[3] = {4, 5};
+int main()
+{
+	printf("global: %d %d %d\n", g[0].v, g[1].v, g[2].v);
+	{
+		Foo a[3] = {4, 7};
+		printf("convert: %d %d %d\n", a[0].v, a[1].v, a[2].v);
+	}
+	{
+		Foo two[3] = {{1, 2}, Foo(3, 4), {}};
+		printf("braced: %d %d %d\n", two[0].v, two[1].v, two[2].v);
+	}
+	Foo deduced[] = {5, 6};
+	printf("deduced: %d %d n=%d\n", deduced[0].v, deduced[1].v,
+	       (int)(sizeof deduced / sizeof deduced[0]));
+	Two nt[] = {1, 2, 3};
+	printf("deduced-ctor: n=%d %d %d %d\n", (int)(sizeof nt / sizeof nt[0]),
+	       nt[0].a, nt[1].a, nt[2].b);
+	S ds[] = {"p", 1, "q", 2};
+	printf("deduced-elision: n=%d %s %d %s %d\n", (int)(sizeof ds / sizeof ds[0]),
+	       ds[0].s.c_str(), ds[0].n, ds[1].s.c_str(), ds[1].n);
+	S el[3] = {"a", 1, "b"};
+	printf("elision: %s %d %s %d [%s] %d\n", el[0].s.c_str(), el[0].n,
+	       el[1].s.c_str(), el[1].n, el[2].s.c_str(), el[2].n);
+	S ve[3] = {{}, {"z", 9}};
+	printf("value-init: [%s] %d %s %d [%s] %d\n", ve[0].s.c_str(), ve[0].n,
+	       ve[1].s.c_str(), ve[1].n, ve[2].s.c_str(), ve[2].n);
+	L ls[3] = {{1, 2}, {1, 2, 3}, {}};
+	printf("init-list: %d %d %d\n", ls[0].sum, ls[1].sum, ls[2].sum);
+	B bs[2] = {B(), B()};
+	printf("virtual: %d %d\n", bs[0].id(), bs[1].id());
+	try {
+		Foo t[2] = {6, 7};
+		printf("try: %d %d\n", t[0].v, t[1].v);
+		throw 1;
+	} catch (int) {
+		printf("caught\n");
+	}
+	return 0;
+}

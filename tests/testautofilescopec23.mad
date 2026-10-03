@@ -1,0 +1,14 @@
+// C23's `auto` at file scope defines its object (6.7.10): `auto x = 5;` read
+// "MIR error: import of undefined item x" (plan §41.6a, B; see
+// testautofilescope for the C++ forms). gcc 13 -std=c2x: `5 4`.
+#include <stdio.h>
+
+auto x = 5;
+int k = 3;
+
+int main(void)
+{
+	auto y = k + 1;
+	printf("%d %d\n", x, y);
+	return 0;
+}

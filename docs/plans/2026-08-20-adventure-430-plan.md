@@ -189,7 +189,10 @@ open owner call):
   php::array_key_exists (one overloaded script name; `_int` only on the
   extern-C shim, the array_push pattern). Contracts pinned in
   tests/testvaluekeys.mad; 147/147 blast-radius subset green.
-  **L3 (value BY-VALUE returns) is NOT done** — its recon is in the A1
+  **L3 LANDED 2026-09-26** (option (a) below, `struct __madc_value`; the
+  script lane, tests/testvarreturn.mad; a host mangled-direct
+  `madc::value` return rides the same admission, untested). Before that,
+  **L3 (value BY-VALUE returns) was NOT done** — its recon is in the A1
   STATUS block below (one admission point, but the carrier needs a
   C-VISIBLE slot type; decide with both the script lane and the future
   mangled-direct `madc::value ui::get()` lane in view). Until L3, ui::

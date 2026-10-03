@@ -1,0 +1,31 @@
+// A member type of a template-id with concrete arguments (`typename
+// strip<int&>::type`) is the type it denotes ([temp.type]): a template-id over
+// it names the same specialization as one spelled with that type. madc keyed
+// the body's `box<typename strip<E>::type...>` (and libstdc++ make_tuple's
+// `tuple<typename __decay_and_strip<_Elements>::__type...>`) by the raw member
+// spelling, a second empty struct beside the return type's: c2mir
+// "incompatible return-expr type", so std::make_tuple never compiled.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <tuple>
+#include <cstdio>
+
+template<class T> struct strip { typedef T type; };
+template<class T> struct strip<T&> { typedef T type; };
+template<class... T> struct box { int n = sizeof...(T); };
+template<class... E> box<typename strip<E>::type...> mk(E&&...)
+{
+    typedef box<typename strip<E>::type...> R;
+    return R();
+}
+
+int main()
+{
+    int k = 4;
+    box<int, double> b = mk(k, 2.5);
+    auto t = std::make_tuple(3);
+    auto u = std::make_tuple(k, 2.5, 'c');
+    printf("box: %d\n", b.n);
+    printf("tuple: %d %d %.1f %c\n", std::get<0>(t), std::get<0>(u),
+	   std::get<1>(u), std::get<2>(u));
+    return 0;
+}

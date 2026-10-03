@@ -109,9 +109,12 @@ counts the assets:
         address) when the Mac is reachable as additional evidence — a
         darwin regression blocks too.
    - **Release-asset ownership (PK5 2026-09-01; macOS joined at the
-     darwin-host port D3, 2026-09-02): CI owns ALL SIX assets.** The
+     darwin-host port D3, 2026-09-02; the Linux Homebrew bottle
+     2026-10-02): CI owns ALL EIGHT assets.** The
      tag push triggers `.github/workflows/release.yml`, which builds
-     the .deb/.rpm/linux-tarball/win-zip on ubuntu and the two macOS
+     the .deb/.rpm/linux-tarball/win-zip and the x86_64_linux bottle with
+     its tap formula `madc.rb` (`scripts/brew_bottle.sh`: built from the
+     tag's source archive, poured back, `brew test`) on ubuntu and the two macOS
      tarballs NATIVELY on GitHub's arm64 + Intel mac runners (pinned
      inputs, self-frozen groves — release-equivalent to the container's
      cross build by construction), smokes every one with the PK4
@@ -130,10 +133,14 @@ counts the assets:
         --title "vX.Y.Z — <one-line theme>"
         --notes-file docs/release-notes/vX.Y.Z-master.md`; otherwise
         `gh release create` with the same title/notes/`--latest`.
-     3. Confirm the asset set: `gh release view vX.Y.Z` lists SIX
+     3. Confirm the asset set: `gh release view vX.Y.Z` lists EIGHT
         assets + SHA256SUMS (deb, rpm, linux tarball, windows zip, two
-        macOS tarballs). Nothing is uploaded from the container — the
-        local `dist/` describes container bytes and stays local.
+        macOS tarballs, the x86_64_linux bottle, `madc.rb`). Nothing is
+        uploaded from the container — the local `dist/` describes
+        container bytes and stays local.
+     4. The Homebrew tap (`derekbsnider/homebrew-madc`, owner-gated):
+        its `Formula/madc.rb` is the release's `madc.rb` asset, copied
+        as is — the bottle block already names this release.
      (If gh is not authed, note it in the report and continue.)
 
    (MIR needs nothing separate: it lives in-tree at `third_party/mir`,

@@ -1904,6 +1904,13 @@ SDK/cross facts).
   in the mac tarball + its install-gate pty probe. Thread-safety
   contract: unchanged (the engine's existing contract; the dylib is a
   packaging of the same objects).
+  **Built 2026-10-01** (plugin design §8 Stage B item 2, part 5): the
+  dylib, the emit lane (`cir_apple_runtime_dylib`, `LC_RPATH`s), tarball
+  staging, gated structurally on the container by
+  `scripts/macho_dylib_gate.sh`; the five D5 darwin skips removed.
+  Open: running on a Mac (the darwin lane at the seam, then lifting the
+  exe advisory), and madcide in the mac tarball, which the native
+  release job must build (the cross madc serves libstdc++).
 
 ## Risks / opens
 

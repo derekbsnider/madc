@@ -324,11 +324,10 @@ bool lsp_name_span(long &from, long &to, long w, long doc, long line,
 }
 
 // ---- diagnostics --------------------------------------------------------
-// parse_check rows carry a 1-based line and an END-anchored 1-based column
-// (the span rows are start-anchored — the two conventions differ, and the
-// engine's header says so). The range therefore ends AT the column and starts
-// at the beginning of the word ending there; a column that names no word
-// (a call's paren, say) falls back to the single character before it.
+// parse_check rows carry a 1-based line and a 1-based START column (gcc's
+// anchor, a byte count: the place a span row's 0-based start names). The
+// range is the word starting there; a column that starts no word (a call's
+// paren, say) covers the single character there.
 
 void lsp_diag_range(var &out, long w, long doc, long enc, var &row)
 {
@@ -342,17 +341,19 @@ void lsp_diag_range(var &out, long w, long doc, long enc, var &row)
 	return;
     }
     long llen = ui::text_line_len(w, doc, line);
-    long col = row["column"].as_integer();		// 1-based, end-anchored
+    long col = row["column"].as_integer();		// 1-based, the start
     if ( col < 1 || col > llen )
     {
 	lsp_range_of(out, w, doc, enc, lstart, lstart + llen);
 	return;						// no usable column: the line
     }
-    long endoff = lstart + col;
-    long s = ui::text_word_left(w, doc, endoff);
-    if ( s < lstart || s >= endoff )
-	s = endoff > lstart ? endoff - 1 : lstart;
-    lsp_range_of(out, w, doc, enc, s, endoff);
+    long at = lstart + col - 1;
+    long a = 0;
+    long b = 0;
+    if ( lsp_word_span(a, b, w, doc, at) && a == at )
+	lsp_range_of(out, w, doc, enc, a, b);
+    else
+	lsp_range_of(out, w, doc, enc, at, at + 1);
 }
 
 // The severity as the protocol's number, from the row's ENUMERATOR (never its
@@ -848,10 +849,10 @@ long lsp_negotiate_encoding(var &params)
 // SAME table the profiles, the menus, the -c one-shot and the MCP tool list
 // load through), each wearing the wire prefix. What is advertised is exactly
 // what dispatch accepts, because both read this one list.
-void lsp_command_ids(var &out)
+void lsp_command_ids(var &out, long w)
 {
     var ct;
-    cmd_table(ct);
+    cmd_table_w(ct, w);		// contributed commands too
     var ids = {};
     for ( var r : ct )
     {
@@ -862,7 +863,7 @@ void lsp_command_ids(var &out)
     out = ids;
 }
 
-void lsp_capabilities(var &out, long enc)
+void lsp_capabilities(var &out, long enc, long w)
 {
     long incremental = lsp_sync_number(lsINCREMENTAL);
     var save = { "includeText": false };
@@ -872,7 +873,7 @@ void lsp_capabilities(var &out, long enc)
     var semantic = { "legend": legend, "full": true };
     var encoding = pos_encoding_name(enc);
     var ids;
-    lsp_command_ids(ids);
+    lsp_command_ids(ids, w);
     var exec = { "commands": ids };
     out = { "positionEncoding": encoding, "textDocumentSync": sync,
 	    "hoverProvider": true, "definitionProvider": true,
@@ -948,7 +949,7 @@ void lsp_initialize(var &out, IdeSession &S, long self_id, var &idv, var &params
     long enc = lsp_negotiate_encoding(params);
     lsp_set_encoding(S.world(), S.es, self_id, enc);
     var caps;
-    lsp_capabilities(caps, enc);
+    lsp_capabilities(caps, enc, S.world());
     var info;
     madcide_self_info(info);
     var result = { "capabilities": caps, "serverInfo": info };

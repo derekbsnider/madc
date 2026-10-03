@@ -1,0 +1,43 @@
+// `#pragma pack` lays out a C++ class as it does a C struct: its own members,
+// its vptr and its base subobjects take at most the pack's alignment. A class
+// template is laid out with the pack in effect where it is DEFINED, never
+// where it is instantiated.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <stdio.h>
+#include <stddef.h>
+
+struct B { char b; int bi; };
+struct L { char l; long ll; };
+template<typename T> struct W { char c; T t; int f() { return c; } };
+template<typename T> struct O { struct In { char c; int x; }; In in; T t; };
+#pragma pack(1)
+struct PP { int f() { return x; } char c; int x; };
+struct V1 { virtual int f() { return x; } char c; int x; };
+struct D1 : B { char c; int x; };
+struct E1 : L { char c; };
+struct U { char a; W<int> w; O<char> o; };
+template<typename T> struct Y { char c; T t; };
+#pragma pack(2)
+struct D2 : L { char c; int x; };
+struct V2 { virtual int f() { return x; } char c; int x; };
+#pragma pack()
+struct N { char c; Y<int> y; };
+
+int main()
+{
+	printf("pa: %zu %zu %zu %zu %zu %zu\n", sizeof(PP), alignof(PP), offsetof(PP, x),
+	       sizeof(V1), alignof(V1), sizeof(D1));
+	printf("pb: %zu %zu %zu %zu %zu %zu %zu\n", alignof(D1), offsetof(D1, x),
+	       sizeof(E1), alignof(E1), sizeof(D2), alignof(D2), offsetof(D2, x));
+	printf("pc: %zu %zu %zu %zu %zu %zu\n", sizeof(V2), alignof(V2), sizeof(W<int>),
+	       sizeof(O<char>::In), sizeof(U), offsetof(U, o));
+	printf("pd: %zu %zu %zu %zu\n", sizeof(Y<int>), alignof(Y<int>), sizeof(N), offsetof(N, y));
+	PP p; p.c = 1; p.x = 0x11223344;
+	V1 v; v.c = 2; v.x = -5;
+	D1 d; d.b = 3; d.bi = 7; d.c = 4; d.x = 1 << 20;
+	Y<int> y; y.c = 5; y.t = 0x55667788;
+	V1 *pv = &v;
+	printf("pv: %d %x %d %d %d %d %d %d %d %x\n", p.c, p.f(), v.c, pv->f(),
+	       d.b, d.bi, d.c, d.x, y.c, y.t);
+	return 0;
+}

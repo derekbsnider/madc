@@ -1,0 +1,203 @@
+// madcide's REPL tab in the window (plan §41.9a slice 3; §37 item 9): the
+// `repl` action shows the tab in the bottom panel with its prompt, typing and
+// keys reach the input through the page's one input path (the text and key
+// posts a keyboard makes), enter offers the entry to the session in its own
+// process, and the transcript shows the entry and its value WITHOUT a
+// further keystroke — the reply arrives on the pump, the engine wakes the
+// application. Tab completes from the session, the same way. F5 (plan
+// §41.10a), pressed on the page with the joe profile's table installed,
+// runs the editor's buffer into a fresh session: its main's output reaches
+// the tab on the pump's wakes. Runs under Xvfb through the gui lane.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+void render(IdeSession &S, long t, long w, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, w, tree);
+}
+
+// The bottom panel as the page shows it: the active tab's label and whether
+// its edit node carries each needle.
+void probe_panel(long t, const char *needle)
+{
+    ui::eval_page(t, format(
+	"(function(){{var p=document.querySelector('.slot[data-slot=\"panel\"]');"
+	"var a=p?p.querySelector('.tab.active'):null;"
+	"var e=p?p.querySelector('.edit'):null;var tx=e?e.textContent:'';"
+	"window.madc(JSON.stringify({{kind:'snapshot',text:'tab='+(a?a.textContent.trim():'none')"
+	"+' prompt='+(tx.indexOf('c11> ')>=0?1:0)+' has={}='+(tx.indexOf('{}')>=0?1:0)}}));}})()",
+	needle, needle));
+}
+
+void post_text(long t, const char *s)
+{
+    ui::eval_page(t, format("window.madc(JSON.stringify({{kind:'text',text:'{}'}}))", s));
+}
+
+void post_key(long t, const char *k)
+{
+    ui::eval_page(t, format("window.madc(JSON.stringify({{kind:'key',key:'{}'}}))", k));
+}
+
+// A key as the browser delivers it: a keydown on the page's keyboard
+// element, spelled by the page's own key map ('F5' -> 'f5').
+void press_key(long t, const char *k)
+{
+    ui::eval_page(t, format("document.getElementById('kb').dispatchEvent("
+	"new KeyboardEvent('keydown',{{key:'{}',bubbles:true,cancelable:true}}))", k));
+}
+
+int main()
+{
+    const char *path = "madc_ide_repl_gui.mad";
+    php::file_put_contents(path, "long add(long a, long b) { return a + b; }\n");
+    remove("madc_ide_repl_gui.prj.json");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    ui::set(w, es, "replstd", "c11");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    S.panel(true);			// the window renders regions (the client's fact)
+    println("REPL open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    var pe = { "event": "action", "event_code": ui::event_kind::action,
+		       "action": "repl", "seq": "" };
+	    S.apply_ide_event(doc, pe);
+	    render(S, t, w, doc);
+	    probe_panel(t, "c11> ");
+	}
+	else if ( ev["event"] == "snapshot" )
+	{
+	    println("REPL {}", ev["text"]);
+	    if ( stage == 1 )
+	    {
+		// A keyboard's posts: the entry's text, then enter.
+		stage = 2;
+		post_text(t, "6 * 7");
+		post_key(t, "enter");
+	    }
+	    else if ( stage == 4 )
+	    {
+		stage = 5;
+		post_text(t, "int twice_it(int v) { return 2 * v; }");
+		post_key(t, "enter");
+	    }
+	    else if ( stage == 9 )
+	    {
+		// ^] hands the keyboard back to the editor.
+		stage = 10;
+		post_key(t, "^]");
+	    }
+	    else if ( stage == 11 )
+	    {
+		// F5 through the profile's table, on a buffer with a main.
+		stage = 12;
+		load_profile(w, es, "joe");
+		var kt;
+		S.key_table(kt);
+		ui::bind_keys(t, kt);
+		ui::text_load(w, doc, "#include <stdio.h>\n"
+		    "int main(int argc, char **argv)\n"
+		    "{\n"
+		    "    printf(\"main ran: %s\\n\", argv[0]);\n"
+		    "    return 0;\n"
+		    "}\n");
+		press_key(t, "F5");
+	    }
+	    else if ( stage == 14 )
+		break;
+	}
+	else if ( ev["event"] == "key" || ev["event"] == "text" || ev["event"] == "action"
+		  || ev["event"] == "choose" || ev["event"] == "pointer" )
+	{
+	    S.apply_ide_event(doc, ev);
+	    render(S, t, w, doc);
+	    if ( stage == 12 && ev["event"] == "action" )
+	    {
+		stage = 13;			// F5 applied: the replies come on the pump
+		var an;
+		cmd_name_w(an, w, ev_code(ev));	// a code-bound chord carries its code
+		println("REPL f5: action={} focus={}", an, (es_int(w, es, "consolefocus", 0) == repl_view(w) ? 1 : 0));
+	    }
+	    if ( ev["event"] != "key" )
+		continue;
+	    if ( stage == 2 || stage == 5 )
+		stage = stage + 1;		// offered: the reply comes on the pump
+	    else if ( stage == 7 )
+	    {
+		stage = 8;
+		println("REPL completing: pending={}", es_int(w, es, "replcseq", 0) != 0 ? 1 : 0);
+	    }
+	    else if ( stage == 10 )
+	    {
+		stage = 11;
+		var in;
+		ui::text(in, w, repl_input_doc(w, es));
+		println("REPL unfocused: focus={} input={}", (es_int(w, es, "consolefocus", 0) == repl_view(w) ? 1 : 0), in);
+		probe_panel(t, "twice_it");
+	    }
+	}
+	else if ( ev["event"] == "wake" )
+	{
+	    // A reply arrived on the pump: the page shows it, no keystroke sent.
+	    render(S, t, w, doc);
+	    if ( es_int(w, es, "replbusy", 0) != 0 || es_int(w, es, "replcseq", 0) != 0 )
+		continue;
+	    if ( stage == 3 )
+	    {
+		stage = 4;
+		probe_panel(t, "42");
+	    }
+	    else if ( stage == 6 )
+	    {
+		stage = 7;
+		post_text(t, "twi");
+		post_key(t, "tab");
+	    }
+	    else if ( stage == 8 )
+	    {
+		stage = 9;
+		var in;
+		ui::text(in, w, repl_input_doc(w, es));
+		println("REPL completed: {}", in);
+		probe_panel(t, "twice_it");
+	    }
+	    else if ( stage == 13 )
+	    {
+		stage = 14;
+		probe_panel(t, "main ran: madc_ide_repl_gui.mad");
+	    }
+	}
+    }
+    S.close();				// stops the pump and the session
+    ui::close(t);
+    ui::world_close(w);
+    remove(path);
+    println("REPL closed");
+    return 0;
+}

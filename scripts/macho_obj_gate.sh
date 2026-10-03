@@ -54,6 +54,9 @@ rm -rf "$D"
 mkdir -p "$D"
 
 # --- fixtures -------------------------------------------------------------
+# The .c fixtures are C, so madc compiles them --std=c17: madc's default is
+# --std=madc whatever the extension, which mangles a free function
+# (owner 2026-09-16), and legs [4]/[6] link and look up the C names.
 # rich.c exercises every relocation the capture can emit: a switch table
 # (pool ABS64 against .text), string/array data (pool ABS64 against .data),
 # a bss global (pool ABS64 against .bss), an import (pool ABS64 undefined),
@@ -154,7 +157,7 @@ for arch in arm64 x86_64; do
 	mkdir -p "$P"
 
 	# --- leg 1: -c writes a parseable MH_OBJECT with our sections
-	run "$MADC" -c -o "$P/rich.o" "$D/rich.c" >"$P/c.log" 2>&1
+	run "$MADC" --std=c17 -c -o "$P/rich.o" "$D/rich.c" >"$P/c.log" 2>&1
 	if [ $? -ne 0 ]; then
 		fail "[1] -c failed: $(tail -1 "$P/c.log")"
 		continue
@@ -213,7 +216,7 @@ sys.exit(0 if any(want <= v < want + max(size, 1) for v in slots) else 1)
 	fi
 
 	# --- leg 4: mixed link with a clang TU, both directions of the call
-	run "$MADC" -c -o "$P/mlib.o" "$D/mlib.c" >/dev/null 2>&1
+	run "$MADC" --std=c17 -c -o "$P/mlib.o" "$D/mlib.c" >/dev/null 2>&1
 	clang-18 --target="$TRIPLE" -isysroot "$SDK" -O1 -c -o "$P/mmain.o" \
 		"$D/mmain.c" >/dev/null 2>&1
 	if ld64 "$arch" "$P/mixed" "$P/mmain.o" "$P/mlib.o"; then
@@ -231,7 +234,7 @@ sys.exit(0 if any(want <= v < want + max(size, 1) for v in slots) else 1)
 	if [ $? -ne 0 ]; then
 		fail "[5] madc link of its own .o failed: $(tail -1 "$P/link.log")"
 	else
-		run "$MADC" -o "$P/direct" "$D/rich.c" >/dev/null 2>&1
+		run "$MADC" --std=c17 -o "$P/direct" "$D/rich.c" >/dev/null 2>&1
 		llvm-objdump-18 --macho -d --no-show-raw-insn "$P/from_o" 2>/dev/null \
 			| tail -n +2 > "$P/d1"
 		llvm-objdump-18 --macho -d --no-show-raw-insn "$P/direct" 2>/dev/null \
@@ -250,8 +253,8 @@ sys.exit(0 if any(want <= v < want + max(size, 1) for v in slots) else 1)
 	fi
 
 	# --- leg 6: two-TU merge through the reader
-	run "$MADC" -c -o "$P/parta.o" "$D/parta.c" >/dev/null 2>&1
-	run "$MADC" -c -o "$P/partb.o" "$D/partb.c" >/dev/null 2>&1
+	run "$MADC" --std=c17 -c -o "$P/parta.o" "$D/parta.c" >/dev/null 2>&1
+	run "$MADC" --std=c17 -c -o "$P/partb.o" "$D/partb.c" >/dev/null 2>&1
 	run "$MADC" -o "$P/two" "$P/parta.o" "$P/partb.o" >"$P/two.log" 2>&1
 	if [ $? -ne 0 ]; then
 		fail "[6] two-TU link failed: $(tail -1 "$P/two.log")"

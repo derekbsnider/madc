@@ -1,0 +1,37 @@
+// A named cast's target is a type-id ([expr.static.cast]/1, [expr.const.cast],
+// [expr.reinterpret.cast]): a pointer to member, a function pointer, a
+// reference and a cv-qualified pointer all spell the type converted to. The
+// named cast read its `< ... >` with a loop that knew only `*`, cv and a
+// trailing `&` / `&&`, so `static_cast<int D::*>(&B::y)` and
+// `static_cast<int (*)(int)>(f)` were "Expecting '>' to close static_cast<...>",
+// and the constant form (an array bound) read `&` as a pointer.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct A0 { int pad[3]; };
+struct B { int y; };
+struct D : A0, B { int z; };
+
+static int twice(int v) { return v * 2; }
+
+int main()
+{
+	D d;
+	d.pad[0] = 1;
+	d.y = 7;
+	d.z = 9;
+	B &br = d;
+	int D::*pd = static_cast<int D::*>(&B::y);
+	int B::*pb = static_cast<int B::*>(&D::z);
+	int (*fp)(int) = static_cast<int (*)(int)>(twice);
+	int x = 5;
+	const int *cp = &x;
+	int *mp = const_cast<int *>(cp);
+	*mp = 6;
+	int &rx = static_cast<int &>(x);
+	rx += 1;
+	char buf[static_cast<unsigned char>(260)];
+	printf("%d %d %d %d %d\n", d.*pd, br.*pb, fp(21), x, (int) sizeof(buf));
+	return 0;
+}

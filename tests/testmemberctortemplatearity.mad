@@ -1,0 +1,34 @@
+/* Two member-template constructors that differ by arity are told apart by
+   their PARAMETER counts, and a function-pointer parameter
+   `void (*f)(int, int)` is one parameter: its inner `( )` nests. Before,
+   the count stopped at the inner `)`, so S picked its one-parameter
+   candidate for (cb, 7) and R found no constructor for (cb, 8).
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     cb 1 2
+     cb 3 4
+     mct: 107 5 208 6 */
+#include <cstdio>
+static void cb(int a, int b) { printf("cb %d %d\n", a, b); }
+struct S {
+	int v;
+	void (*fp)(int, int);
+	template<class T> S(void (*f)(int, int), T t) : v(100 + (int)t), fp(f) {}
+	template<class T> S(T t) : v((int)t), fp(0) {}
+};
+struct R {
+	int v;
+	void (*fp)(int, int);
+	template<class T> R(T t) : v((int)t), fp(0) {}
+	template<class T> R(void (*f)(int, int), T t) : v(200 + (int)t), fp(f) {}
+};
+int main()
+{
+	S a(cb, 7);
+	S b(5);
+	R c(cb, 8);
+	R d(6);
+	a.fp(1, 2);
+	c.fp(3, 4);
+	printf("mct: %d %d %d %d\n", a.v, b.v, c.v, d.v);
+	return 0;
+}

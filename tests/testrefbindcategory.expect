@@ -1,0 +1,12 @@
+w: int& const int& const int&
+w-lvalues: int& int& int&
+w-rvalues: const int& const int& const int&
+w2: int& const int&
+pw: char*& char*const&
+r: const int& int&& int&&
+q: const int& int&&
+c: A& const A& const A&
+m: const A& A&& A&&
+S::f: int& const int&
+S::g: const int& int&&
+forwarding: 1 1 2 2

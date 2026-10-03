@@ -1,0 +1,16 @@
+// C23 has the `alignas` keyword (6.7.6): no <stdalign.h> needed. Oracle:
+// gcc 13 (-std=c2x) and clang 18 (-std=c23) print the line below.
+#include <stdio.h>
+#include <stdint.h>
+
+struct P { char c; alignas(16) int x; };
+alignas(double) char g;
+
+int main(void)
+{
+	char k = 1;
+	alignas(16) char l = 2;
+	printf("c23: %zu %zu %zu %d %d\n", sizeof(struct P), __alignof__(g), __alignof__(l),
+	       (int)((uintptr_t)&l % 16), k + l - 3);
+	return 0;
+}

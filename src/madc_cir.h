@@ -113,6 +113,37 @@ public:
 		      const char *module_name);
     bool built() const { return mod != 0; }
 
+    // Live mode (plan §41.2a): ONE MIR context that modules are APPENDED to,
+    // an interactive session's entries. begin_live() initializes the context
+    // once. append() translates the Program as it stands into a new module
+    // (whatever an earlier module defines is declared, not defined:
+    // Program::session_defined), loads and links it into the context, and
+    // records its exports into session_defined. run_entry_init runs its TU
+    // init.
+    // A module the context would refuse (plan §41.3) is refused before it
+    // loads, with a diagnostic per failing symbol on the Program, and
+    // leaves the context as the earlier entries left it.
+    // function_code / data_address then search every appended module, the
+    // newest first. The context lives until the session is destroyed.
+    // A function the entry names and nothing defines does not refuse it: the
+    // entry links against a stub, and the use fails when it runs (plan §42
+    // D27). A later definition replaces the stub.
+    bool begin_live(const char *session_name);
+    bool append(Program *prog, const char *entry_name);
+    // The last appended entry's TU init, then a function of its (the entry's
+    // run), each at the entry's BOUNDARY: a use of a symbol no entry defines
+    // returns there, with its diagnostic on the Program, and the call is
+    // false. The entry stays linked either way (plan §42 D27).
+    bool run_entry_init(Program *prog, const char *entry_name);
+    bool run_entry_function(Program *prog, const char *entry_name,
+			    const char *emitted_name);
+    // The session's main(argc, argv) (plan §41.5a, slice 2: `madc -i file`),
+    // at the same boundary, then main's root-scope join as run_main's. False
+    // when there is no main or a use of an undefined symbol returned; its
+    // return value goes to *status.
+    bool run_session_main(Program *prog, const char *unit_name, int argc,
+			  char **argv, int *status);
+
     // The generated code address for a module function by its EMITTED name
     // (plain madc functions emit under their source name; the eval entry is
     // "__madc_eval"). Generates on first use, memoized. NULL when absent.
@@ -122,6 +153,14 @@ public:
     // name (globals emit under their source identifier). Valid after
     // build() (module loaded + linked). NULL when absent.
     void *data_address(const char *emitted_name);
+
+    // Run the module's dynamic initialization (__madc_global_init: its
+    // file-scope class objects constructed), as main's prologue runs it, for
+    // a module called without its main (libmadc's program::call, a
+    // madc::code_open). Once-guarded inside the function, so a later
+    // run_main stays single-shot. False when the module has none. Valid
+    // after build().
+    bool run_global_init();
 
     // Generate and run main(argc, argv); returns main's return value.
     // `ok` (when non-null) reports whether main was found and invoked.
@@ -157,6 +196,29 @@ private:
     MIR_module_t cache_mod;	// build(): the container's MIR cache module,
 				// loaded beside `mod` (rung 3); NULL = no cache
     std::map<std::string, void *> gen_cache;
+    // Live mode: the appended modules (oldest first) and the builders whose
+    // node arenas back them. `mod` is the newest.
+    bool live_mode;
+    std::vector<MIR_module_t> live_mods;
+    std::vector<CirBuilder *> live_builders;
+    // Plan §42 D27: the admitted entry's function stubs, loaded with it by
+    // load_and_link; the stubs no definition has replaced yet, by name; the
+    // last appended entry's TU init.
+    MIR_module_t stub_mod;
+    size_t stub_modules;
+    std::map<std::string, MIR_item_t> late_stubs;
+    std::string live_init;
+    // Slice 2: the cells late-bound objects are read through, by cell symbol
+    // (a node-stable map: an import binds to a value's address), and the
+    // object each unbound cell waits for.
+    std::map<std::string, void *> late_cell_slots;
+    std::map<std::string, std::string> late_cell_waits;
+    void bind_late_cells(Program *prog);
+    MIR_item_t find_item(const char *name, bool func) const;
+    bool admits(MIR_module_t m, Program *prog, const char *entry_name,
+		CirBuilder *b);
+    void make_function_stubs(const std::vector<std::string> &names);
+    void rebind_late_stubs(MIR_module_t m, Program *prog);
     bool init_contexts(const char *source_name, bool dump_checked);
     bool load_and_link(const char *source_name, Program *prog);
     void teardown();

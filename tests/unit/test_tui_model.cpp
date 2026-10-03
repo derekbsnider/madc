@@ -100,10 +100,11 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     CHECK(k[4].kind == tui_key::end);
     CHECK(k[5].kind == tui_key::ins);
 
-    // A modifier-parameterized arrow resolves to the unmodified key.
+    // A modifier-parameterized arrow is the arrow with its modifiers.
     k = parse("\x1b[1;2A");
     REQUIRE(k.size() == 1u);
     CHECK(k[0].kind == tui_key::up);
+    CHECK(k[0].mods == (unsigned char)ui::key_mod::shift);
 
     // Bare ESC resolves only at the input pause (flush).
     tui_keyparse p;
@@ -130,6 +131,128 @@ TEST_CASE("keyparse — CSI and SS3 escape sequences, tilde codes, bare ESC")
     q.feed("x", 1, out);
     REQUIRE(out.size() == 1u);
     CHECK(out[0].ch == 'x');
+}
+
+// xterm's modified keys (plan §41.11a step 3e): each decodes to its key
+// with ui::key_mod bits, spelled by the one key owner, and tui_key_bytes
+// writes each back as the bytes the parser reads.
+TEST_CASE("keyparse — xterm's modified keys decode, and their bytes round-trip")
+{
+    struct { const char *bytes; const char *name; } rows[] = {
+	{ "\x1b[1;5A", "ctrl+up" },		// the cursor keys' 1;m
+	{ "\x1b[1;2C", "shift+right" },
+	{ "\x1b[1;6H", "ctrl+shift+home" },
+	{ "\x1b[3;5~", "ctrl+del" },		// the tilde keys' n;m
+	{ "\x1b[15;2~", "shift+f5" },
+	{ "\x1b[12;5~", "ctrl+f2" },
+	{ "\x1b[1;3P", "alt+f1" },		// a modified F1..F4
+	{ "\x1b[Z", "shift+tab" },		// back-tab
+	{ "\x1b[27;6;83~", "ctrl+shift+s" },	// modifyOtherKeys
+	{ "\x1b[27;5;51~", "ctrl+3" },
+	{ "\x1b[27;5;43~", "ctrl+plus" },
+	{ "\x1b[115;5u", "^s" },		// CSI u: plain Ctrl+S stays ^s
+	{ "\x1b[119;6u", "ctrl+shift+w" },
+    };
+    for ( size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); ++i )
+    {
+	CAPTURE(rows[i].name);
+	std::vector<tui_keyev> k = parse(rows[i].bytes);
+	REQUIRE(k.size() == 1u);
+	CHECK(madc::hub::tui_key_name(k[0]) == rows[i].name);
+	std::string back = madc::hub::tui_key_bytes(k[0]);
+	std::vector<tui_keyev> again = parse(back.c_str());
+	REQUIRE(again.size() == 1u);
+	CHECK(madc::hub::tui_key_name(again[0]) == rows[i].name);
+    }
+    // NUL is the terminals' Ctrl+Space; its bytes are NUL again.
+    tui_keyparse p;
+    std::vector<tui_keyev> out;
+    p.feed("\0", 1, out);
+    REQUIRE(out.size() == 1u);
+    CHECK(madc::hub::tui_key_name(out[0]) == "ctrl+space");
+    CHECK(madc::hub::tui_key_bytes(out[0]) == std::string(1, '\0'));
+    // The unmodified keys' bytes are unchanged.
+    CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::up)) == "\x1b[A");
+    CHECK(madc::hub::tui_key_bytes(tui_keyev(tui_key::ctrl, 's')) == "\x13");
+}
+
+TEST_CASE("keyparse — function keys: xterm's tilde codes and SS3, the Linux console's")
+{
+    // F1..F12 as xterm sends them: SS3 P..S for F1..F4, CSI n ~ above
+    // (15, 17-21, 23, 24); a modifier parameter is dropped, as on arrows.
+    std::vector<tui_keyev> k = parse("\x1bOP\x1bOQ\x1bOR\x1bOS\x1b[15~\x1b[17~"
+				     "\x1b[18~\x1b[19~\x1b[20~\x1b[21~\x1b[23~\x1b[24~");
+    REQUIRE(k.size() == 12u);
+    for ( int n = 1; n <= 12; ++n )
+    {
+	CAPTURE(n);
+	CHECK(k[n - 1].kind == tui_key::fkey);
+	CHECK((int)k[n - 1].ch == n);
+    }
+    k = parse("\x1b[11~\x1b[14~\x1b[15;2~");	// the VT tilde forms of F1/F4; Shift+F5
+    REQUIRE(k.size() == 3u);
+    CHECK((int)k[0].ch == 1);
+    CHECK((int)k[1].ch == 4);
+    CHECK(k[2].kind == tui_key::fkey);
+    CHECK((int)k[2].ch == 5);
+    // The Linux console: CSI [ A..E is F1..F5; another letter is dropped,
+    // and the next byte is itself.
+    k = parse("\x1b[[A\x1b[[E\x1b[[Zx");
+    REQUIRE(k.size() == 3u);
+    CHECK((int)k[0].ch == 1);
+    CHECK((int)k[1].ch == 5);
+    CHECK(k[2].kind == tui_key::ch);
+    CHECK(k[2].ch == 'x');
+    // A tilde code that names no key stays dropped.
+    CHECK(parse("\x1b[16~").empty());
+}
+
+TEST_CASE("keyparse — UTF-8 bytes are text; a bracketed paste is literal text")
+{
+    // UTF-8 (plan §41.7a): each byte a `ch`, one text event for the run.
+    std::vector<tui_keyev> k = parse("a\xc3\xa9");
+    REQUIRE(k.size() == 3u);
+    CHECK(k[1].kind == tui_key::ch);
+    CHECK((unsigned char)k[1].ch == 0xc3);
+    CHECK((unsigned char)k[2].ch == 0xa9);
+    madc::hub::key_resolver keys;
+    madc::hub::focus_state focus;
+    std::vector<tui_event> ev = madc::hub::ui_apply_keys(keys, focus, k);
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::text);
+    CHECK(ev[0].text == "a\xc3\xa9");
+
+    // A paste: a tab and a line break are text; CR LF is one '\n'; the
+    // markers are not keys.
+    k = parse("\x1b[200~a\tb\r\nc\rd\x1b[201~\t");
+    REQUIRE(k.size() == 8u);
+    for ( size_t i = 0; i < 7; ++i )
+	CHECK(k[i].kind == tui_key::ch);
+    CHECK(k[1].ch == '\t');
+    CHECK(k[3].ch == '\n');
+    CHECK(k[5].ch == '\n');
+    CHECK(k[7].kind == tui_key::tab);		// after the paste: a key again
+
+    // A pause inside a paste keeps pasting; a broken end marker was text.
+    tui_keyparse p;
+    std::vector<tui_keyev> out;
+    p.feed("\x1b[200~x", 7, out);
+    CHECK_FALSE(p.pending());
+    p.flush(out);
+    p.feed("\x1b[2y\x1b[20", 8, out);
+    p.flush(out);
+    p.feed("1~", 2, out);
+    std::string text;
+    for ( size_t i = 0; i < out.size(); ++i )
+    {
+	CHECK(out[i].kind == tui_key::ch);
+	text += out[i].ch;
+    }
+    CHECK(text == "x\x1b[2y");
+    out.clear();
+    p.feed("\x1b[A", 3, out);
+    REQUIRE(out.size() == 1u);
+    CHECK(out[0].kind == tui_key::up);
 }
 
 // A world exists only to intern the role/action vocabulary.
@@ -300,6 +423,61 @@ TEST_CASE("compose — tabs expand to 8-column stops; the caret, shift and "
     raw.resize(2, 10);
     raw.put(0, 0, std::string("a\x01") + "b\x7f" + "c");
     CHECK(raw.row_text(0) == "a?b?c");
+}
+
+TEST_CASE("compose — a UTF-8 character is one column, a wide one two (B87)")
+{
+    // Before the fix the display map counted a character's bytes as
+    // columns and put() wrote a byte per cell: on "\xc3\xa9!" (é!) with the
+    // caret at the end, the grid cursor sat on column 3 where the terminal
+    // draws column 2 (measured on a pty: the cursor landed one column right
+    // per extra byte). The terminal draws é in one column, 中 in two.
+    world w;
+    roles r = roles::standard(w);
+
+    tui_model m;
+    const tui_grid &g = m.compose(r, editor_tree(w, "\xc3\xa9!", 3), 6, 40);
+    CHECK(g.cursor_col == 2u);
+    CHECK(g.row_text(1) == "\xc3\xa9!");
+    CHECK(g.at(1, 0).ch == 0xA9C3u);		// é's bytes, first byte lowest
+    CHECK(g.at(1, 1).ch == '!');
+
+    // A wide glyph takes its cell and a tail; the caret after it is col 3.
+    tui_model m2;
+    const tui_grid &h = m2.compose(r, editor_tree(w, "\xe4\xb8\xadx", 4), 6, 40);
+    CHECK(h.cursor_col == 3u);
+    CHECK(h.at(1, 1).tail);
+    CHECK(h.at(1, 2).ch == 'x');
+    CHECK(h.row_text(1) == "\xe4\xb8\xadx");
+
+    // A selection after a UTF-8 character lands on its columns: "é!" with
+    // bytes [2, 3) selected reverses column 1 only.
+    tui_model m3;
+    const tui_grid &s = m3.compose(r, editor_tree(w, "\xc3\xa9!", 3, 2, 3), 6, 40);
+    CHECK(s.at(1, 1).attr == ui_style::reverse());
+    CHECK(s.at(1, 0).attr == ui_style::normal());
+
+    // Horizontal scrolling cuts by columns: a wide glyph cut by the left
+    // edge shows as a space, never half a character.
+    tui_model m4;
+    std::string wide_line;
+    for ( int i = 0; i < 12; ++i )
+	wide_line += "\xe4\xb8\xad";		// 12 wide glyphs = 24 columns
+    const tui_grid &sh = m4.compose(r, editor_tree(w, wide_line, 36), 6, 10);
+    CHECK(sh.cursor_col == 9u);
+    std::string row = sh.row_text(1);
+    CHECK(row.find('\xe4') != std::string::npos);
+    CHECK((unsigned char)row[0] != 0xb8);		// no stray continuation byte
+    CHECK((unsigned char)row[0] != 0xad);
+
+    // Overwriting half of a wide glyph clears its other half.
+    tui_grid raw;
+    raw.resize(1, 6);
+    raw.put(0, 0, "\xe4\xb8\xad");
+    raw.put(0, 1, "z");
+    CHECK(raw.at(0, 0).ch == ' ');
+    CHECK(!raw.at(0, 1).tail);
+    CHECK(raw.row_text(0) == " z");
 }
 
 TEST_CASE("compose — the tabwidth hint changes the stops (IDE-9d ^T option)")
@@ -563,6 +741,50 @@ TEST_CASE("compose — a left sidebar carves a full-height column band")
     CHECK(g.at(0, 12).ch == ' ');			// centre status " main.mad"
     CHECK(g.at(0, 13).ch == 'm');
     CHECK(g.at(1, 12).ch == 'x');			// the editor edit, centre cols
+}
+
+TEST_CASE("compose — a root toolbar hint takes the top row as [Label chord] buttons; the bands lay out below it")
+{
+    // Plan §41.11a: the rows madcide places on the toolbar ride the root's
+    // `toolbar` hint; the grid draws them as one line, each with the chord
+    // the LOADED profile binds to its code (else nothing), and the sidebar
+    // and the centre start on the row after it. The sidebar case above,
+    // with no hint, starts at row 0 (the negative control).
+    world w;
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    root.add(status_node(w, "main.mad"));
+    root.add(edit_node(w, "x\ny", 0));
+    uinode content(r.content);
+    content.content = madc::value(std::string("def"));
+    root.add(chrome_pane(w, "sidebar", "left", 25, content, false));
+    std::vector<madc::value> rows;
+    std::map<std::string, madc::value> run;
+    run["label"] = madc::value(std::string("Run"));
+    run["action"] = madc::value(std::string("replrun"));
+    run["code"] = madc::value((int64_t)77);
+    rows.push_back(madc::value::make_object(run));
+    std::map<std::string, madc::value> save;
+    save["label"] = madc::value(std::string("Save"));
+    save["action"] = madc::value(std::string("save"));
+    rows.push_back(madc::value::make_object(save));
+    std::map<std::string, madc::value> bad;
+    bad["label"] = madc::value(std::string("Nothing"));	// no action: dropped
+    rows.push_back(madc::value::make_object(bad));
+    std::map<std::string, madc::value> h;
+    h["toolbar"] = madc::value::make_array(rows);
+    root.hints = madc::value::make_object(h);
+    tui_bindings b;
+    b.bind("f5", "replrun", 77);
+    std::string err;
+    REQUIRE(b.finalize(err));
+    tui_model m;
+    m.set_bindings(b);
+    const tui_grid &g = m.compose(r, root, 6, 40);
+    CHECK(g.row_text(0) == "[Run f5] [Save]");
+    CHECK(g.at(1, 0).ch == 'd');			// the sidebar, one row down
+    CHECK(g.at(1, 13).ch == 'm');			// the centre status " main.mad"
+    CHECK(g.at(2, 12).ch == 'x');			// the editor edit
 }
 
 // One span row { s, e, c } for the hints["spans"] array.
@@ -1037,6 +1259,23 @@ TEST_CASE("keybytes — the inverse of the parser: every key round-trips through
 	REQUIRE(out.size() == 1u);
 	CHECK(out[0].kind == tui_key::ctrl);
 	CHECK(out[0].ch == 'k');
+    }
+    // Function keys: xterm's forms, and each parses back to itself.
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 1)) == std::string("\x1bOP"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 5)) == std::string("\x1b[15~"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 12)) == std::string("\x1b[24~"));
+    CHECK(tui_key_bytes(tui_keyev(tui_key::fkey, 13)).empty());
+    for ( int n = 1; n <= 12; ++n )
+    {
+	CAPTURE(n);
+	std::string b = tui_key_bytes(tui_keyev(tui_key::fkey, (char)n));
+	tui_keyparse p;
+	std::vector<tui_keyev> out;
+	p.feed(b.data(), b.size(), out);
+	p.flush(out);
+	REQUIRE(out.size() == 1u);
+	CHECK(out[0].kind == tui_key::fkey);
+	CHECK((int)out[0].ch == n);
     }
     // A printable is itself; none is nothing.
     CHECK(tui_key_bytes(tui_keyev(tui_key::ch, 'x')) == "x");

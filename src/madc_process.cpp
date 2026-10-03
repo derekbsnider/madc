@@ -428,7 +428,7 @@ struct Process::impl
 		  stdin_pipe("process stdin", false, true),
 		  stdout_pipe("process stdout", true, false),
 		  stderr_pipe("process stderr", true, false),
-		  has_started(false), has_exited(false), status(-1)
+		  has_started(false), has_exited(false), status(-1), term_signal(0)
 	{
 #ifdef _WIN32
 		child = NULL;
@@ -450,6 +450,16 @@ struct Process::impl
 	bool has_started;
 	bool has_exited;
 	int status;
+	int term_signal;	// the signal that ended the child; 0 = it exited
+#ifndef _WIN32
+	// A reaped waitpid status, recorded through its two owners.
+	void reaped(int child_status)
+	{
+		has_exited = true;
+		status = map_child_status(child_status);
+		term_signal = child_term_signal(child_status);
+	}
+#endif
 };
 
 Process::Process(const DataSource &source, const ProcessOptions &options)
@@ -549,8 +559,10 @@ bool Process::start(error *err)
 	HANDLE parent_stdin = NULL, child_stdin = NULL;
 	HANDLE parent_stdout = NULL, child_stdout = NULL;
 	HANDLE parent_stderr = NULL, child_stderr = NULL;
-	bool piped = make_process_pipe(parent_stdin, child_stdin, true, err)
-		  && make_process_pipe(parent_stdout, child_stdout, false, err)
+	bool piped = (_->options.inherit_stdin
+		   || make_process_pipe(parent_stdin, child_stdin, true, err))
+		  && (_->options.inherit_stdout
+		   || make_process_pipe(parent_stdout, child_stdout, false, err))
 		  && (_->options.inherit_stderr
 		   || make_process_pipe(parent_stderr, child_stderr, false, err));
 	if ( !piped )
@@ -568,16 +580,28 @@ bool Process::start(error *err)
 		// same tolerance as a closed fd 2 there.
 		child_stderr = duplicate_inheritable(GetStdHandle(STD_ERROR_HANDLE));
 	}
+	if ( _->options.inherit_stdin )
+		child_stdin = duplicate_inheritable(GetStdHandle(STD_INPUT_HANDLE));
+	if ( _->options.inherit_stdout )
+		child_stdout = duplicate_inheritable(GetStdHandle(STD_OUTPUT_HANDLE));
 
 	// Parent ends become CRT fds so the pipe channels stay fd-shaped; a
 	// converted handle belongs to its fd from here on.
-	int stdin_fd = ::_open_osfhandle((intptr_t)parent_stdin, _O_BINARY);
-	if ( stdin_fd >= 0 )
-		parent_stdin = NULL;
-	int stdout_fd = ::_open_osfhandle((intptr_t)parent_stdout,
-					  _O_RDONLY | _O_BINARY);
-	if ( stdout_fd >= 0 )
-		parent_stdout = NULL;
+	int stdin_fd = -1;
+	if ( parent_stdin )
+	{
+		stdin_fd = ::_open_osfhandle((intptr_t)parent_stdin, _O_BINARY);
+		if ( stdin_fd >= 0 )
+			parent_stdin = NULL;
+	}
+	int stdout_fd = -1;
+	if ( parent_stdout )
+	{
+		stdout_fd = ::_open_osfhandle((intptr_t)parent_stdout,
+					      _O_RDONLY | _O_BINARY);
+		if ( stdout_fd >= 0 )
+			parent_stdout = NULL;
+	}
 	int stderr_fd = -1;
 	if ( parent_stderr )
 	{
@@ -586,7 +610,8 @@ bool Process::start(error *err)
 		if ( stderr_fd >= 0 )
 			parent_stderr = NULL;
 	}
-	if ( stdin_fd < 0 || stdout_fd < 0
+	if ( (!_->options.inherit_stdin && stdin_fd < 0)
+	  || (!_->options.inherit_stdout && stdout_fd < 0)
 	  || (!_->options.inherit_stderr && stderr_fd < 0) )
 	{
 		set_process_error(err, "process pipe fd conversion failed");
@@ -699,8 +724,8 @@ bool Process::start(error *err)
 			return false;
 		}
 	}
-	else if ( !make_cloexec_pipe(input_fds, err)
-	  || !make_cloexec_pipe(output_fds, err)
+	else if ( (!_->options.inherit_stdin && !make_cloexec_pipe(input_fds, err))
+	  || (!_->options.inherit_stdout && !make_cloexec_pipe(output_fds, err))
 	  || (!_->options.inherit_stderr && !make_cloexec_pipe(error_fds, err))
 	  || !make_cloexec_pipe(exec_fds, err) )
 	{
@@ -754,8 +779,8 @@ bool Process::start(error *err)
 			if ( pty_slave > STDERR_FILENO )
 				close_fd(pty_slave);
 		}
-		else if ( ::dup2(input_fds[0], STDIN_FILENO) < 0
-		  || ::dup2(output_fds[1], STDOUT_FILENO) < 0
+		else if ( (input_fds[0] >= 0 && ::dup2(input_fds[0], STDIN_FILENO) < 0)
+		  || (output_fds[1] >= 0 && ::dup2(output_fds[1], STDOUT_FILENO) < 0)
 		  || (error_fds[1] >= 0 && ::dup2(error_fds[1], STDERR_FILENO) < 0) )
 		{
 			int number = errno;
@@ -868,6 +893,13 @@ int map_child_status(int child_status)
 		return 128 + WTERMSIG(child_status);
 	return -1;
 }
+
+// The signal that ended a reaped child, 0 when it exited: the half of the
+// status map_child_status folds away (exit(139) and SIGSEGV both map to 139).
+int child_term_signal(int child_status)
+{
+	return WIFSIGNALED(child_status) ? WTERMSIG(child_status) : 0;
+}
 #endif
 
 bool Process::wait(error *err)
@@ -902,8 +934,7 @@ bool Process::wait(error *err)
 		set_process_errno(err, "process wait failed", errno);
 		return false;
 	}
-	_->has_exited = true;
-	_->status = map_child_status(child_status);
+	_->reaped(child_status);
 #endif
 	return true;
 }
@@ -945,8 +976,7 @@ bool Process::wait_or_kill(int grace_ms, error *err)
 		}
 		if ( result > 0 )
 		{
-			_->has_exited = true;
-			_->status = map_child_status(child_status);
+			_->reaped(child_status);
 			return true;
 		}
 		if ( waited_ms >= grace_ms )
@@ -963,6 +993,7 @@ bool Process::wait_or_kill(int grace_ms, error *err)
 bool Process::started() const { return _->has_started; }
 bool Process::exited() const { return _->has_exited; }
 int Process::exit_status() const { return _->status; }
+int Process::term_signal() const { return _->term_signal; }
 
 void Process::terminate()
 {

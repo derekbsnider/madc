@@ -1,0 +1,28 @@
+/* Copying an object of a polymorphic class with no user constructor,
+   here from a derived object: `P p = q;` selects P's implicit copy
+   constructor, and the copy is a complete P whatever the source's dynamic
+   type, so p.f() is P's.
+   madc's memberwise copy refused a polymorphic class, and the no-user-ctor
+   declaration path then fell through to P's implicit default constructor,
+   dropping q: p.x printed garbage and the program exited 0. The copy now
+   stamps P's own vtable after the memberwise copy.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print `1 9`. */
+#include <cstdio>
+
+struct P {
+	virtual int f() const { return 1; }
+	int x = 5;
+};
+
+struct Q : P {
+	int f() const override { return 2; }
+};
+
+int main()
+{
+	Q q;
+	q.x = 9;
+	P p = q;
+	printf("%d %d\n", p.f(), p.x);
+	return 0;
+}

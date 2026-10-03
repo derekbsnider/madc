@@ -12,7 +12,15 @@
 #   sync      rsync the madc tree to the container (third_party/mir rides along)
 #   build     configure (once) + make -C src (which builds libmir into obj/mir/)
 #   unittest  make -C src test
-#   fulltest  make -C src fulltest
+#   fulltest  make -C src fulltest (gates + the tests/ suite on the dev binary)
+#   gates     make -C src gates — unit tests + every repository gate, no tests/
+#             suite: the seam battery's first stage (scripts/seam_battery.sh)
+#   ondisk    the packed binary over the headerless-skipped tests, headers on
+#             disk (headerless_suite.sh complement) — with `headerless`, the
+#             whole suite once on the shipped artifact
+#   ondisk-win  the win64 twin of ondisk (the packed PE under wine)
+#   exeobj    the native-artifact lanes on the SHIPPED binary:
+#             MADC_BIN=bin/madc-release run_tests.sh --exe --obj
 #   gui       build libmadcwebview; run tests/gui under Xvfb (JIT/exe/obj).
 #             a GUI-module test lifts the runner's memory guard itself;
 #             ordinary compiler runs keep their existing memory guard.
@@ -21,6 +29,12 @@
 #             MADC_FAST_NO_RECORD=1 — the ledger that gates a push is the
 #             NAS checkout's, so record the printed tallies HERE, never on
 #             the rsync copy where nothing would read them
+#   fix       the PER-FIX gate (scripts/fix_lanes.sh): Tier 1 over TESTS='<glob>
+#             ...' (JIT + exe + obj), then Tier 2 (fast_lanes.sh). ~5 minutes;
+#             the ONE command a fix runs. No-record, as for fastlanes
+#   batch     the BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
+#             JIT only, once per batch of fixes; MADC_BATCH_NO_RECORD=1, so
+#             record its printed tests-jit tally HERE, as for fastlanes
 #   exe       bash scripts/run_tests.sh --exe
 #   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
 #   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
@@ -59,7 +73,8 @@
 #             (tarballs into dist/), then pull the tarballs back
 #   pull      rsync container-built bin/madc (+ madc-release) back to
 #             the NAS (ABI-identical userlands; QNAP never compiles)
-#   battery   fulltest + exe + obj + release + packed + headerless (the push gate)
+#   battery   release + gates + headerless + ondisk + exeobj — the Linux seam set on
+#             the shipped packed binary (scripts/seam_battery.sh adds the platforms)
 #   shell     print the ssh command and exit
 #
 # Every remote invocation is one ssh call running a generated script, so
@@ -123,7 +138,13 @@ fi
 # GREEN. Task #58 broke that promise on real Windows and unrelated work fixed it
 # days later, and NO lane noticed either event, because this one was
 # hand-invoked. A lane nobody runs is a lane that does not exist.
-stages=${stages/battery/sync build fulltest exe obj release packed headerless}
+# Owner 2026-10-02: the full tests/ suite runs ONE way at the seam — on the
+# shipped -O2 packed artifact, headerless — and the on-disk include path and
+# the native-artifact lanes ride the same binary (ondisk = the headerless-
+# skipped subset; exeobj = --exe --obj). The gates run first, without the
+# suite; the -O0 dev binary's full-suite runs (fulltest, exe, obj, packed) are
+# no longer seam stages. scripts/seam_battery.sh adds the platform lanes.
+stages=${stages/battery/sync build release gates headerless ondisk exeobj}
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
 esac
@@ -146,7 +167,10 @@ container_busy_check() {
 		echo "=== container busy-check SKIPPED (MADC_ALLOW_CONCURRENT=1) ==="
 		return 0
 	fi
-	busy=$($SSH 'pgrep -fa "run_tests\.sh|make -C .*/src|make -C /workspace/madc" 2>/dev/null | grep -v pgrep' 2>/dev/null)
+	# A release build for the archive (scripts/release_bins.sh backfill)
+	# runs in its own exported tree under tmp/relbuild/ — its own obj/ and
+	# bin/, nothing shared with this tree — so it never counts as busy.
+	busy=$($SSH 'pgrep -fa "run_tests\.sh|make -C .*/src|make -C /workspace/madc" 2>/dev/null | grep -v pgrep | grep -v "/tmp/relbuild/"' 2>/dev/null)
 	if [ -n "$busy" ]; then
 		echo "REFUSING: a build or test run is already live in the container." >&2
 		printf '%s\n' "$busy" | sed 's/^/  /' >&2
@@ -261,6 +285,21 @@ for stage in $stages; do
 	fulltest)
 		run_remote "fulltest" "make -C $REMOTE_MADC/src -j20 fulltest"
 		;;
+	gates)
+		run_remote "gates" "make -C $REMOTE_MADC/src -j20 gates"
+		;;
+	ondisk)
+		run_remote "ondisk" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
+		;;
+	ondisk-win)
+		run_remote "ondisk-win" "make -C $REMOTE_MADC/src -j20 release-windows; cd $REMOTE_MADC; MADC_HEADERLESS_PROFILE=win64 MADC_HEADERLESS_COMPLEMENT=1 bash scripts/headerless_suite.sh"
+		;;
+	exeobj)
+		# The seam's native-artifact lanes run the SHIPPED -O2 packed binary
+		# (owner 2026-10-02): same coverage as exe + obj on the dev binary, at
+		# a fraction of the compile time.
+		run_remote "exeobj" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh --exe --obj"
+		;;
 	gui)
 		# ONE body, in scripts/gui_lane.sh — the webview build, the Xvfb
 		# display, the three passes and the zero-tests guard all live there,
@@ -273,6 +312,24 @@ for stage in $stages; do
 		# one command from the NAS. No-record on purpose: see the usage
 		# note above — a row written on the rsync copy gates nothing.
 		run_remote "fastlanes" "cd $REMOTE_MADC; MADC_FAST_NO_RECORD=1 bash scripts/fast_lanes.sh"
+		;;
+	fix)
+		# The PER-FIX gate (scripts/fix_lanes.sh): Tier 1 over TESTS, then
+		# Tier 2. `set -f`: the globs are run_tests.sh's to match against
+		# tests/, never the remote shell's against the repo root. No-record
+		# for the fastlanes reason.
+		if [ -z "$TESTS" ]; then
+			echo "stage 'fix' needs TESTS='<glob> [glob...]'" >&2
+			note_stage "fix" 1
+		else
+			run_remote "fix" "cd $REMOTE_MADC; set -f; MADC_FAST_NO_RECORD=1 bash scripts/fix_lanes.sh $TESTS"
+		fi
+		;;
+	batch)
+		# The BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
+		# JIT only, once per batch of fixes. No-record for the fastlanes
+		# reason; record tests-jit on the NAS from its summary line.
+		run_remote "batch" "cd $REMOTE_MADC; MADC_BATCH_NO_RECORD=1 bash scripts/batch_lane.sh"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.
@@ -397,7 +454,11 @@ for stage in $stages; do
 		#                      2026-09-03 after a power failure). When a
 		#                      server already runs, wineserver -p exits at
 		#                      once and the redirect is inert.
-		run_remote "wine" "cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		#   make hosted-x86-64-windows first: the lane builds what it
+		#                      VALIDATES (the `packed` rule) — without it the
+		#                      suite ran whatever hosted PE the last `win`
+		#                      stage left, however old.
+		run_remote "wine" "make -C $REMOTE_MADC/src -j20 hosted-x86-64-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
 		# Accepts lane labels: remote_build.sh 'warnscan host win64'

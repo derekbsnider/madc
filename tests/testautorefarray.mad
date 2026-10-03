@@ -1,0 +1,23 @@
+/* `auto&` bound to an array deduces the ARRAY ([temp.deduct.call]/3: P is
+   a reference, so A is the argument's own type): a two-dimensional one, a
+   one-dimensional one, and a `const auto&` to a row. Writes through the
+   reference reach the array.
+   madc stores an array flattened, and deduced its element type: `auto &ra
+   = a;` bound an `int&` ("incompatible types in assignment to a pointer",
+   then "subscripted value is neither array nor pointer nor vector"), where
+   the spelled `int (&r)[2][3] = a;` was already right.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the line below. */
+#include <stdio.h>
+int a[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+int one[3] = { 7, 8, 9 };
+int main()
+{
+	auto &ra = a;
+	auto &ro = one;
+	const auto &cr = a[1];
+	ra[1][0] = 40;
+	ro[2] = 90;
+	printf("ref: %zu %d %zu %d %zu %d %d\n", sizeof ra, ra[1][2], sizeof ro, ro[1],
+	       sizeof cr, cr[0], a[1][0] + one[2]);
+	return 0;
+}

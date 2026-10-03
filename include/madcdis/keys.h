@@ -21,6 +21,7 @@
 // distinct objects safe, shared mutation needs synchronization).
 
 #include <cstdint>		// int64_t — a binding's action CODE
+#include <cstdlib>		// atoi — a function key's number
 #include <map>
 #include <set>
 #include <string>
@@ -43,16 +44,111 @@ struct tui_keyev
 {
     tui_key kind;
     char    ch;
-    tui_keyev() : kind(tui_key::none), ch(0) {}
-    explicit tui_keyev(tui_key k, char c = 0) : kind(k), ch(c) {}
+    unsigned char mods;		// ui::key_mod bits held with it (0 = none)
+    tui_keyev() : kind(tui_key::none), ch(0), mods(0) {}
+    explicit tui_keyev(tui_key k, char c = 0, unsigned char m = 0)
+	: kind(k), ch(c), mods(m) {}
 };
+
+// ---------------------------------------------------------------- modifiers
+// (plan §41.11a step 3e) A key carries the modifiers held with it as
+// ui::key_mod bits. The canonical form: Ctrl on a letter or one of the four
+// control punctuations is the `ctrl` key (so a plain Ctrl+S stays `^s`,
+// every profile's spelling), a shifted printable is its own character, and
+// a letter under Ctrl, Alt or Cmd is lower-case (chords ignore its case).
+inline unsigned char key_mod_bits(::ui::key_mod m) { return (unsigned char)m; }
+
+// A chord, not typing: Ctrl, Alt or Cmd held (the `ctrl` key is one too).
+inline bool key_holds_chord_mods(const tui_keyev &k)
+{
+    return k.kind == tui_key::ctrl
+	|| (k.mods & (key_mod_bits(::ui::key_mod::alt) | key_mod_bits(::ui::key_mod::ctrl)
+		      | key_mod_bits(::ui::key_mod::cmd))) != 0;
+}
+
+// A printable that types: a character with no chord modifier held.
+inline bool key_types(const tui_keyev &k)
+{
+    return k.kind == tui_key::ch && !key_holds_chord_mods(k);
+}
+
+// The same key without its modifiers: a binding lookup's fallback, so a
+// modified key nothing binds acts as its key did before modifiers were read
+// (a terminal's Ctrl+arrow, the page's Ctrl+Shift+S).
+inline tui_keyev key_unmodified(const tui_keyev &k)
+{
+    return tui_keyev(k.kind, k.ch);
+}
+
+// The same key without Shift: the FIRST fallback, before key_unmodified, so
+// Shift with a bound key reaches that binding (Ctrl+Shift+Left finds
+// Ctrl+Left's) while the event still says Shift was held — Shift on a
+// motion extends a selection (plan §41.11a step 3e).
+inline tui_keyev key_without_shift(const tui_keyev &k)
+{
+    return tui_keyev(k.kind, k.ch,
+		     (unsigned char)(k.mods & ~key_mod_bits(::ui::key_mod::shift)));
+}
+
+// The lookups a key makes, in order: as pressed; without Shift; without
+// any modifier. `out` holds up to three; the count is returned, duplicates
+// left out. A HEAD skips a fallback that types (Ctrl+3 never types a 3); a
+// chord's continuation takes it (^K then Alt+S is ^K s).
+inline size_t key_lookups(const tui_keyev &k, tui_keyev out[3])
+{
+    size_t n = 0;
+    out[n++] = k;
+    if ( k.mods & key_mod_bits(::ui::key_mod::shift) )
+	out[n++] = key_without_shift(k);
+    if ( k.mods != 0 && out[n - 1].mods != 0 )
+	out[n++] = key_unmodified(k);
+    return n;
+}
+
+// `primary` in a binding: Ctrl, or Cmd on macOS (Thonny binds each command
+// both ways). The engine's platform decides.
+inline unsigned char key_primary_mod()
+{
+#ifdef __APPLE__
+    return key_mod_bits(::ui::key_mod::cmd);
+#else
+    return key_mod_bits(::ui::key_mod::ctrl);
+#endif
+}
+
+// The canonical form above, from any producer's key.
+inline tui_keyev key_normalized(tui_keyev k)
+{
+    const unsigned char ctrl = key_mod_bits(::ui::key_mod::ctrl);
+    const unsigned char shift = key_mod_bits(::ui::key_mod::shift);
+    if ( k.kind == tui_key::ctrl )
+	k.mods &= (unsigned char)~ctrl;
+    if ( k.kind == tui_key::ch && (k.mods & ctrl) )
+    {
+	char c = k.ch;
+	if ( c >= 'A' && c <= 'Z' )
+	    c = (char)(c - 'A' + 'a');
+	if ( (c >= 'a' && c <= 'z') || c == '\\' || c == ']' || c == '^' || c == '_' )
+	{
+	    k.kind = tui_key::ctrl;
+	    k.ch = c;
+	    k.mods &= (unsigned char)~ctrl;
+	}
+    }
+    if ( k.kind == tui_key::ch && key_holds_chord_mods(k) && k.ch >= 'A' && k.ch <= 'Z' )
+	k.ch = (char)(k.ch - 'A' + 'a');
+    if ( k.kind == tui_key::ch && k.mods == shift )
+	k.mods = 0;
+    return k;
+}
 
 // The ONE key-spelling owner, both directions (ids/enums inside, names at
 // the value boundary): what a tui_event's `key` field carries to the
 // script, and what a bindings table's sequences are written in. Control
 // chords spell "^"+letter; a printable spells as itself ("space" for the
 // blank, which cannot stand alone in a space-separated sequence).
-inline std::string tui_key_name(const tui_keyev &k)
+// The unmodified key's spelling (a modified key's base).
+inline std::string tui_key_base_name(const tui_keyev &k)
 {
     switch ( k.kind )
     {
@@ -73,13 +169,42 @@ inline std::string tui_key_name(const tui_keyev &k)
 	case tui_key::pgdn:	 return "pgdn";
 	case tui_key::del:	 return "del";
 	case tui_key::ins:	 return "ins";
+	case tui_key::fkey:
+	    return k.ch >= 1 && k.ch <= 12
+		? std::string("f") + std::to_string((int)k.ch) : std::string();
 	default:		 return "";
     }
 }
 
-// Spelling -> key. Generous on input (an upper-case letter after "^"
-// lowers), canonical on output via tui_key_name. False = not a spelling.
-inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
+// A key's spelling: the base, after its modifiers in one order (ctrl,
+// shift, alt, cmd; VS Code's): "ctrl+shift+s", "ctrl+f2", "shift+right",
+// "alt+f4", "cmd+s". A plain Ctrl+letter keeps its `^s` form. `+` as a
+// modified key spells "plus" (Ctrl+plus), the separator being `+`.
+inline std::string tui_key_name(const tui_keyev &k)
+{
+    if ( k.mods == 0 )
+	return tui_key_base_name(k);
+    std::string out;
+    if ( k.kind == tui_key::ctrl || (k.mods & key_mod_bits(::ui::key_mod::ctrl)) )
+	out += "ctrl+";
+    if ( k.mods & key_mod_bits(::ui::key_mod::shift) )
+	out += "shift+";
+    if ( k.mods & key_mod_bits(::ui::key_mod::alt) )
+	out += "alt+";
+    if ( k.mods & key_mod_bits(::ui::key_mod::cmd) )
+	out += "cmd+";
+    std::string base;
+    if ( k.kind == tui_key::ctrl )
+	base = std::string(1, k.ch);
+    else if ( k.kind == tui_key::ch && k.ch == '+' )
+	base = "plus";
+    else
+	base = tui_key_base_name(tui_keyev(k.kind, k.ch));
+    return base.empty() ? std::string() : out + base;
+}
+
+// An unmodified spelling -> its key (a modified spelling's base).
+inline bool tui_key_base_from_name(const std::string &name, tui_keyev &out)
 {
     if ( name.empty() )
 	return false;
@@ -99,6 +224,17 @@ inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
 	out = tui_keyev(tui_key::ch, name[0]);
 	return true;
     }
+    // A function key: "f1".."f12" (a bare "f" is the printable, above).
+    if ( (name.size() == 2 || name.size() == 3) && name[0] == 'f'
+	 && name[1] >= '1' && name[1] <= '9'
+	 && (name.size() == 2 || (name[2] >= '0' && name[2] <= '9')) )
+    {
+	int n = atoi(name.c_str() + 1);
+	if ( n < 1 || n > 12 )
+	    return false;
+	out = tui_keyev(tui_key::fkey, (char)n);
+	return true;
+    }
     static const struct { const char *n; tui_key k; } named[] = {
 	{ "space", tui_key::ch }, { "enter", tui_key::enter },
 	{ "tab", tui_key::tab }, { "backspace", tui_key::backspace },
@@ -116,6 +252,53 @@ inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
 	    return true;
 	}
     return false;
+}
+
+// A modifier word before a `+`: ctrl, shift, alt, cmd, or primary (Ctrl, or
+// Cmd on macOS). 0 = not one. Any case.
+inline unsigned char key_mod_of_word(std::string w)
+{
+    for ( size_t i = 0; i < w.size(); ++i )
+	if ( w[i] >= 'A' && w[i] <= 'Z' )
+	    w[i] = (char)(w[i] - 'A' + 'a');
+    if ( w == "ctrl" )	  return key_mod_bits(::ui::key_mod::ctrl);
+    if ( w == "shift" )	  return key_mod_bits(::ui::key_mod::shift);
+    if ( w == "alt" )	  return key_mod_bits(::ui::key_mod::alt);
+    if ( w == "cmd" )	  return key_mod_bits(::ui::key_mod::cmd);
+    if ( w == "primary" ) return key_primary_mod();
+    return 0;
+}
+
+// Spelling -> key. Generous on input (an upper-case letter after "^" or a
+// modifier lowers; `ctrl+s` is `^s`; `plus` or a bare `+` after a modifier
+// is the `+` key), canonical on output via tui_key_name. False = not a
+// spelling.
+inline bool tui_key_from_name(const std::string &name, tui_keyev &out)
+{
+    unsigned char mods = 0;
+    size_t at = 0;
+    for ( ;; )
+    {
+	size_t plus = name.find('+', at);
+	if ( plus == std::string::npos || plus == at )
+	    break;
+	unsigned char bit = key_mod_of_word(name.substr(at, plus - at));
+	if ( !bit )
+	    break;
+	mods |= bit;
+	at = plus + 1;
+    }
+    if ( mods == 0 )
+	return tui_key_base_from_name(name, out);
+    std::string base = name.substr(at);
+    tui_keyev k;
+    if ( base == "plus" || base == "+" )
+	k = tui_keyev(tui_key::ch, '+');
+    else if ( !tui_key_base_from_name(base, k) )
+	return false;
+    k.mods |= mods;
+    out = key_normalized(k);
+    return true;
 }
 
 // ------------------------------------------------------------- the bindings
@@ -151,7 +334,7 @@ public:
     // bindings). Key EVENTS keep tui_key_name's exact spelling.
     static std::string seq_spelling(const tui_keyev &k)
     {
-	if ( k.kind == tui_key::ch && k.ch >= 'A' && k.ch <= 'Z' )
+	if ( k.kind == tui_key::ch && k.mods == 0 && k.ch >= 'A' && k.ch <= 'Z' )
 	    return std::string(1, (char)(k.ch - 'A' + 'a'));
 	return tui_key_name(k);
     }
@@ -220,7 +403,7 @@ public:
 	    const std::string &seq = it->first;
 	    tui_keyev head;
 	    tui_key_from_name(seq.substr(0, seq.find(' ')), head);
-	    if ( head.kind == tui_key::ch )
+	    if ( key_types(head) )
 	    {
 		err = "printable-headed sequence: " + seq;
 		return false;
@@ -295,6 +478,17 @@ public:
 	return best;
     }
 
+    // The chord a client SHOWS beside a command (a menu item's accelerator,
+    // a toolbar button's): the shortest sequence bound to its code, else to
+    // its name (a tools-shaped binding). "" = unbound.
+    std::string chord_for(int64_t code, const std::string &action) const
+    {
+	std::string key = seq_for_code(code);
+	if ( key.empty() )
+	    key = seq_for_action(action);
+	return key;
+    }
+
     bool bound(const std::string &canon_seq) const
 	{ return _actions.count(canon_seq) != 0; }
     bool prefix(const std::string &canon_seq) const
@@ -331,7 +525,9 @@ struct key_step
     kind k;
     std::string action_name, seq;
     int64_t action_code;	// the bound code (0 = none), beside the name
-    key_step() : k(kind::passthrough), action_code(0) {}
+    unsigned char mods;		// action: the modifiers held on the last key
+				// (Shift reaches a binding without it)
+    key_step() : k(kind::passthrough), action_code(0), mods(0) {}
 };
 
 class key_resolver
@@ -366,8 +562,16 @@ public:
 		s.k = key_step::kind::cancelled;
 		return s;
 	    }
+	    // A modified continuation nothing binds reads as its key without
+	    // Shift, then as its key (key_lookups).
+	    tui_keyev look[3];
+	    size_t nl = key_lookups(k, look);
 	    std::string candidate = _pending + " "
 				  + tui_bindings::cont_spelling(k);
+	    for ( size_t i = 1; i < nl && !_bindings.prefix(candidate)
+				    && !_bindings.bound(candidate); ++i )
+		candidate = _pending + " "
+			  + tui_bindings::cont_spelling(look[i]);
 	    if ( _bindings.prefix(candidate) )
 	    {
 		_pending = candidate;
@@ -378,31 +582,49 @@ public:
 	    s.action_name = _bindings.action_of(candidate).name;
 	    s.action_code = _bindings.action_of(candidate).code;
 	    s.seq = candidate;
+	    s.mods = k.mods;
 	    _pending.clear();
 	    return s;
 	}
-	if ( k.kind == tui_key::ch )
+	if ( key_types(k) )
 	    return s;		// printable runs are the model's (§7.5)
 	if ( !_bindings.empty() && k.kind != tui_key::resize
 	     && k.kind != tui_key::wake )
 	{
-	    std::string head = tui_bindings::seq_spelling(k);
-	    if ( _bindings.bound(head) )
-	    {
-		s.k = key_step::kind::action;
-		s.action_name = _bindings.action_of(head).name;
-		s.action_code = _bindings.action_of(head).code;
-		s.seq = head;
-		return s;
-	    }
-	    if ( _bindings.prefix(head) )
-	    {
-		_pending = head;
-		s.k = key_step::kind::pending;
-		return s;
-	    }
+	    // A modified key nothing binds reads as its key without Shift,
+	    // then as its key, unless that key types (key_lookups).
+	    tui_keyev look[3];
+	    size_t nl = key_lookups(k, look);
+	    for ( size_t i = 0; i < nl; ++i )
+		if ( !(i > 0 && key_types(look[i])) && head_step(look[i], s) )
+		{
+		    s.mods = k.mods;
+		    return s;
+		}
 	}
 	return s;
+    }
+
+private:
+    // A head key: a bound one fires, a prefix opens a chord. False = neither.
+    bool head_step(const tui_keyev &k, key_step &s)
+    {
+	std::string head = tui_bindings::seq_spelling(k);
+	if ( _bindings.bound(head) )
+	{
+	    s.k = key_step::kind::action;
+	    s.action_name = _bindings.action_of(head).name;
+	    s.action_code = _bindings.action_of(head).code;
+	    s.seq = head;
+	    return true;
+	}
+	if ( _bindings.prefix(head) )
+	{
+	    _pending = head;
+	    s.k = key_step::kind::pending;
+	    return true;
+	}
+	return false;
     }
 };
 

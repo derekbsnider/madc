@@ -1,0 +1,36 @@
+// An implicit derived-to-base pointer conversion to a SECONDARY base moves the
+// address by the base subobject's offset, and a null pointer stays null
+// ([conv.ptr]/3). g++ and clang++ lower it as `p ? p + off : 0` (the address
+// of an object, never null, without the test). madc's upcast owner added the
+// offset unconditionally, so a null D* became a non-null B*; the return
+// statement re-derived the conversion as a bare cast, so `return p;` from a
+// B*-returning function handed back the D address unadjusted.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct A0 { int pad[3]; };
+struct B { int y; };
+struct D : A0, B { int z; };
+
+B *up(D *p) { return p; }
+int is_null(B *p) { return p == 0; }
+int read_y(B *p) { return p->y; }
+
+int main()
+{
+	D d;
+	d.pad[0] = 1;
+	d.y = 7;
+	d.z = 9;
+	D *dn = 0;
+	D *dp = &d;
+	B *b1 = dn;			// init from a null pointer
+	B *b2;
+	b2 = dn;			// assignment from a null pointer
+	B *b3 = dp;			// init from a non-null pointer
+	B *b4 = &d;			// an object's address
+	printf("%d %d %d %d %d %d %d %d %d\n", b1 == 0, b2 == 0, b3->y, b4->y,
+	       up(dp)->y, up(dn) == 0, is_null(dn), read_y(dp), b3 == dp);
+	return 0;
+}

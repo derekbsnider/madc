@@ -1,0 +1,33 @@
+// The noexcept operator over a built-in indirection and an explicit
+// destructor call ([expr.unary.noexcept], [except.spec]/8): `*p` cannot
+// throw; `x.~T()` is as noexcept as T's destructor. A class operator* stays
+// the operator function's own specification. The libstdc++
+// is_nothrow_destructible trait probes `declval<T&>().~T()`.
+// Oracle: g++ 13 and clang++ 18 print the same three lines.
+#include <type_traits>
+#include <string>
+#include <utility>
+#include <cstdio>
+struct S { int v; };
+struct T { ~T() noexcept(false) {} };
+struct It { int v; int &operator*() { return v; } };
+struct Nt { int v; int &operator*() noexcept { return v; } };
+int main() {
+	int x = 1;
+	int *p = &x;
+	S s = { 2 };
+	S *ps = &s;
+	int a[2] = { 3, 4 };
+	int *q = a;
+	It it = { 5 };
+	Nt nt = { 6 };
+	std::printf("deref: %d %d %d %d\n", (int)noexcept(*p), (int)noexcept(*ps),
+		(int)noexcept(*(q + 1)), (int)noexcept(*q++));
+	std::printf("classop: %d %d\n", (int)noexcept(*it), (int)noexcept(*nt));
+	std::printf("dtor: %d %d %d %d\n",
+		(int)std::is_nothrow_destructible<std::string>::value,
+		(int)std::is_nothrow_destructible<int>::value,
+		(int)std::is_nothrow_destructible<T>::value,
+		(int)noexcept(std::declval<std::string &>().~basic_string()));
+	return 0;
+}

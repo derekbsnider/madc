@@ -541,10 +541,7 @@ class web_model
 		    }
 		    // The accelerator: the chord the LOADED profile binds to
 		    // the item's code, else to its name (the tools' shape).
-		    std::string key = mcode ? _keys.bindings().seq_for_code(mcode)
-					    : std::string();
-		    if ( key.empty() )
-			key = _keys.bindings().seq_for_action(id);
+		    const std::string key = _keys.bindings().chord_for(mcode, id);
 		    if ( !key.empty() )
 			item["key"] = key;
 		    items.push_back(item);
@@ -650,6 +647,48 @@ class web_model
 		}
 		else if ( hint_of(n.hints, "tabs", 0) )
 		    op["tabs"] = true;
+	    }
+	    // The toolbar (plan §41.11a): a `toolbar` hint (madcide puts it on
+	    // the root) is an array of {label, action, code?, enabled?}; the
+	    // page draws a button per row and a click posts the action by name
+	    // (the S1 rule). Each row gains the chord the LOADED profile binds
+	    // (`key`, omitted when unbound — the menu items' rule) and
+	    // `enabled` made explicit; its code joins the action map. A row
+	    // with no label or no action is dropped.
+	    if ( n.hints.is_object() )
+	    {
+		const std::map<std::string, madc::value> &tbo = n.hints.as_object();
+		std::map<std::string, madc::value>::const_iterator tbi = tbo.find("toolbar");
+		if ( tbi != tbo.end() && tbi->second.is_array() )
+		{
+		    nlohmann::json bar = nlohmann::json::array();
+		    const std::vector<madc::value> &rows = tbi->second.as_array();
+		    for ( size_t k = 0; k < rows.size(); ++k )
+		    {
+			if ( !rows[k].is_object() )
+			    continue;
+			const std::string label = hint_str(rows[k], "label");
+			const std::string action = hint_str(rows[k], "action");
+			if ( label.empty() || action.empty() )
+			    continue;
+			nlohmann::json bt = nlohmann::json::object();
+			bt["label"] = label;
+			bt["action"] = action;
+			const long bcode = hint_of(rows[k], "code", 0);
+			if ( bcode )
+			{
+			    bt["code"] = bcode;
+			    _action_codes[action] = bcode;
+			}
+			const std::string key = _keys.bindings().chord_for(bcode, action);
+			if ( !key.empty() )
+			    bt["key"] = key;
+			bt["enabled"] = hint_of(rows[k], "enabled", 1) != 0;
+			bar.push_back(bt);
+		    }
+		    if ( !bar.empty() )
+			op["toolbar"] = bar;
+		}
 	    }
 	    // The @gui theme (slice 3 Task 4): the root's `theme` hint is a
 	    // bag of CSS custom-property name -> value strings; emit them so
@@ -895,12 +934,13 @@ class web_model
 	{
 	    // The editable region: the SAME hints the grid model reads
 	    // (caret / sel_start / sel_end byte offsets, tabwidth, rows,
-	    // focus, spans rows {s, e, c}) — rendered as the line-DOM.
+	    // focus, tabkey, spans rows {s, e, c}) — rendered as the line-DOM.
 	    size_t slot = _focus.count();
 	    if ( hint_of(n.hints, "focus", 0) )
 		_focus.set_focus(slot);
 	    focusable f;
 	    f.k = focusable::kind::edit;
+	    f.takes_tab = hint_of(n.hints, "tabkey", 0) != 0;
 	    _focus.add(f);
 	    const std::string text = prose::text_of(n.content);
 	    long caret = hint_of(n.hints, "caret", 0);

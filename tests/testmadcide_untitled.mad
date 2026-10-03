@@ -1,0 +1,130 @@
+// No file opens an UNTITLED buffer (plan §41.11a step 1d; owner decision
+// 2026-09-30, Thonny's behaviour and JOE's Unnamed). `open("")` — the
+// command line with no file — gives a document with no path. Pins:
+//   1. it is untitled: no path, the name `untitled` (doc_name), the madc
+//      dialect's kind, unmodified, its buffer row carrying no path;
+//   2. it is source without a file: lexed and parsed, never tracked or
+//      versioned (asset_layers_of); no running session holds it;
+//   3. F5 runs it under the unit name `untitled` (repl_run);
+//   4. a build, a project change and adding the buffer to the project are
+//      refused with what to do, and nothing is written;
+//   5. Save asks for the name (the Save As prompt): the answer writes the
+//      file, the document takes that path and its kind, and it becomes the
+//      launch file;
+//   6. ^K X asks for the name too, and the answer saves, then quits;
+//   7. with native dialogs the save parks a Save As request with no
+//      initial path, and its answer saves the buffer.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"	// the layer owner (asset_layers_of)
+#include "../tools/madcide/madcide_discover.inc"	// session_find
+
+void type_text(IdeSession &S, long doc, const char *t)
+{
+    var e = { "event": "text", "event_code": ui::event_kind::text, "text": t };
+    S.apply_ide_event(doc, e);
+}
+
+int main()
+{
+    const char *saved = "madc_ide_untitled.mad";
+    const char *saved2 = "madc_ide_untitled2.mad";
+    const char *saved3 = "madc_ide_untitled3.mad";
+    const char *text = "int main() { println(\"hi\"); return 0; }\n";
+
+    // 1. The untitled buffer.
+    IdeSession S;
+    long doc = S.open("", false);
+    var nm;
+    doc_name(nm, S.w, doc);
+    var bufs;
+    ui::get(bufs, S.w, S.es, "buffers");
+    var row = bufs[0];
+    println("untitled-open: doc={} untitled={} name={} kind-madc={} modified={} row-path={}",
+	    doc > 0 ? 1 : 0, doc_untitled(S.w, doc) ? 1 : 0, nm,
+	    doc_kind(S.w, doc) == madc::fkMADC ? 1 : 0,
+	    doc_modified(S.w, doc) ? 1 : 0, row["path"].is_null() ? "none" : "set");
+
+    // 2. Its layers, and no session holds it.
+    long L = asset_layers_of(S.w, S.es, doc, 0);
+    var other;
+    println("untitled-layers: lexable={} parseable={} managed={} versioned={} session={}",
+	    (L & alLEXABLE) != 0 ? 1 : 0, (L & alPARSEABLE) != 0 ? 1 : 0,
+	    (L & alMANAGED) != 0 ? 1 : 0, (L & alVERSIONED) != 0 ? 1 : 0,
+	    session_find(other, "") ? 1 : 0);
+
+    // 3. F5 under the unit name `untitled`.
+    type_text(S, doc, text);
+    repl_run(S.w, S.es, doc);
+    var rp;
+    ui::get(rp, S.w, S.es, "replrunpath");
+    println("untitled-f5: runpath={}", rp);
+
+    // 4. A build and a project change need the file.
+    var k = "exe";
+    var ot = "{base}";
+    start_native_build(S.w, S.es, doc, k, ot);
+    var m;
+    ui::get(m, S.w, S.es, "msg");
+    println("untitled-build: {}", m);
+    proj_add(S.w, S.es, doc, "madc_ide_untitled_other.c");
+    ui::get(m, S.w, S.es, "msg");
+    var proj;
+    ui::get(proj, S.w, S.es, "proj");
+    println("untitled-projadd: {} proj={} manifest={}", m, proj.is_null() ? "none" : "set",
+	    php::file_exists(".prj.json") ? 1 : 0);
+    S.post(doc, cmdPROJADDCUR);
+    ui::get(m, S.w, S.es, "msg");
+    println("untitled-projaddcur: {}", m);
+
+    // 5. Save asks for the name; the answer writes the file.
+    bool cont = true;
+    bool ran = S.command(doc, cmdSAVE, saved, cont);
+    var got;
+    bool read = php::file_get_contents(got, saved);
+    doc_name(nm, S.w, doc);
+    var lp;
+    ui::get(lp, S.w, S.es, "launchpath");
+    ui::get(bufs, S.w, S.es, "buffers");
+    row = bufs[0];
+    println("untitled-save: prompt={} cont={} written={} name={} untitled={} kind-madc={} modified={} launch={} row={}",
+	    ran ? 1 : 0, cont ? 1 : 0, read && got == text ? 1 : 0, nm,
+	    doc_untitled(S.w, doc) ? 1 : 0, doc_kind(S.w, doc) == madc::fkMADC ? 1 : 0,
+	    doc_modified(S.w, doc) ? 1 : 0, lp, row["path"]);
+    S.close();
+
+    // 6. ^K X on an untitled buffer: the name, then save, then quit.
+    IdeSession Q;
+    long qd = Q.open("", false);
+    type_text(Q, qd, text);
+    cont = true;
+    ran = Q.command(qd, cmdSAVEQUIT, saved2, cont);
+    println("untitled-savequit: prompt={} cont={} written={}", ran ? 1 : 0, cont ? 1 : 0,
+	    php::file_exists(saved2) ? 1 : 0);
+    Q.close();
+
+    // 7. With native dialogs: a Save As request, answered by a dialog event.
+    IdeSession D;
+    long dd = D.open("", false);
+    D.dialogs(true);
+    type_text(D, dd, text);
+    D.post(dd, cmdSAVE);
+    var req;
+    bool parked = D.take_request(req);
+    var ip = req["path"];
+    var dlg = { "event": "dialog", "event_code": ui::event_kind::dialog,
+		"mode": "save", "path": saved3 };
+    cont = D.apply_ide_event(dd, dlg);
+    doc_name(nm, D.w, dd);
+    println("untitled-dialog: parked={} mode={} initial=[{}] cont={} written={} name={}",
+	    parked ? 1 : 0, req["mode"], ip, cont ? 1 : 0,
+	    php::file_exists(saved3) ? 1 : 0, nm);
+    D.close();
+
+    php::unlink(saved);
+    php::unlink(saved2);
+    php::unlink(saved3);
+    return 0;
+}

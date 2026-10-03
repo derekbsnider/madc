@@ -12,6 +12,9 @@
 # each containing
 #   madc-<ver>-macos-<arch>/bin/madc          stripped, forest-packed hosted binary
 #   madc-<ver>-macos-<arch>/lib/libmadc_rt.a  emitted-C runtime (W3: try/catch + VLA)
+#   madc-<ver>-macos-<arch>/lib/libmadc-0.dylib  the madc runtime (D5): what a
+#                                             runtime-needing program madc -o builds
+#                                             loads (@rpath/libmadc-0.dylib)
 #   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
 #                                             (WKWebView + native chrome; GUI programs:
 #                                             import madcwebview) — macOS 13.3+
@@ -118,6 +121,14 @@ package_arch() {
         echo "package_release_macos: $webview missing — run 'make -C src release-macos' first (it builds webview-${bin_arch}-macos)" >&2
         exit 1
     fi
+    # The madc runtime (D5): libmadc-0.dylib, built per arch beside forest.bin;
+    # a runtime-needing image loads it as @rpath/libmadc-0.dylib, its
+    # LC_RPATH @executable_path/../lib reaching this lib/ next to bin/.
+    local rtdylib="obj/hosted-${bin_arch}-macos/libmadc-0.dylib"
+    if [ ! -f "$rtdylib" ]; then
+        echo "package_release_macos: $rtdylib missing — run 'make -C src release-macos' first" >&2
+        exit 1
+    fi
     # The madcgit module (a program that says `git::…`, e.g. madcide's nexus) —
     # release-<arch>-macos builds it beside the webview library (madcgit-<arch>-macos);
     # the minimal read-only libgit2 is STATIC-linked inside it. The loader finds
@@ -137,6 +148,7 @@ package_arch() {
     # try/catch + VLA runtime when those features are used; on a Mac with no
     # madc library installed this archive is what `cc emitted.c` links.
     install -m 644 "$rtlib" "$stage/$root/lib/libmadc_rt.a"
+    install -m 755 "$rtdylib" "$stage/$root/lib/libmadc-0.dylib"
     install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
     install -m 755 "$madcgit" "$stage/$root/lib/libmadcgit.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
@@ -193,11 +205,11 @@ VLA, it references madc's small C runtime. Link the shipped archive:
 
     cc -std=c11 program.c -L<this-dir>/lib -lmadc_rt -lc++
 
-Programs that used <ns_madc> (the madc dialect surface) additionally need
-the full madc runtime, which this tarball does not ship: madc -o refuses
-such programs on macOS with a clear error. (This is also why madcide,
-the IDE the Linux and Windows packages ship as a binary, is not in this
-tarball yet — it arrives with the macOS madc runtime library.)
+Programs that use the madc dialect surface (print, format, var, the
+php:: and other namespaces) need the full madc runtime: lib/libmadc-0.dylib.
+A program built with madc -o (or a library built with madc -shared) loads
+it as @rpath/libmadc-0.dylib, and finds it in the lib/ next to its own
+bin/ (or next to the madc that built it), so keep bin/ and lib/ together.
 
 GUI programs: lib/libmadcwebview.dylib is madc's binding of the platform
 webview (WKWebView) with the native menu bar and file dialogs. A program

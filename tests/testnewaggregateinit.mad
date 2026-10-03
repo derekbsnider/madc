@@ -1,0 +1,20 @@
+// A new-expression's braced list aggregate-initializes a ctor-less class, on
+// the heap and at a placement address; members past the list value-initialize.
+// Oracle: g++ 13 and clang++ 18 print the line below.
+#include <cstdio>
+#include <new>
+struct FB { int i; int j; };
+struct P : FB { P() : FB{ 1, 2 } { } };		// FB becomes a ctor-less class
+struct Out { int a; FB f; int k; };
+int main()
+{
+	FB *h = new FB{ 3, 4 };
+	Out *o = new Out{ 5, 6, 7 };
+	Out *e = new Out{ 8, 9, 10, 11 };
+	alignas(FB) unsigned char buf[sizeof(FB)];
+	FB *pl = new (buf) FB{ 12, 13 };
+	std::printf("new: %d %d | %d %d %d %d | %d %d %d %d | %d %d\n", h->i, h->j,
+		o->a, o->f.i, o->f.j, o->k, e->a, e->f.i, e->f.j, e->k, pl->i, pl->j);
+	delete h; delete o; delete e;
+	return 0;
+}

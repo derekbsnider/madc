@@ -1,0 +1,98 @@
+// Thonny's clipboard keys in a REAL window (plan §41.11a step 3e, slice 4):
+// the page sends Ctrl+A, Ctrl+C, Ctrl+End and Ctrl+V as a user would type
+// them (its keydown handler spells them); the engine resolves them through
+// thonny.keys (selectall, copy, bottom, paste); the session parks the
+// clipboard requests and the client serves them against the window's
+// platform clipboard (GTK's, under Xvfb). Copy puts the buffer's text on
+// the system clipboard, and Paste reads it back from there. Oracle:
+// Thonny on the same keys — Select all, Copy, to the end, Paste doubles
+// the text.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+#include "../../tools/madcide/madcide_args.inc"
+#include "../../tools/madcide/madcide_discover.inc"
+#include "../../tools/madcide/madcide_client.inc"
+
+// A key pressed in the page: its keydown handler spells it and posts it.
+void press(long t, const char *key, bool ctrl)
+{
+    ui::eval_page(t, "window.__press=function(k,c){document.getElementById('kb')"
+		     ".dispatchEvent(new KeyboardEvent('keydown',"
+		     "{key:k,ctrlKey:c,bubbles:true,cancelable:true}));};");
+    var js = format("window.__press('{}',{})", key, ctrl ? "true" : "false");
+    ui::eval_page(t, js.c_str());
+}
+
+void show(IdeSession &S, long t, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, S.world(), tree);
+}
+
+int main()
+{
+    const char *path = "madc_ide_clip_gui.txt";
+    php::file_put_contents(path, "hello\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    load_profile(S.w, S.es, "thonny");	// as Tools ▸ Key bindings… loads it
+    long w = S.world();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    S.clipboard(ui::clipboards(t));
+    var table;
+    S.key_table(table);
+    ui::bind_keys(t, table);
+    println("CLIP open clipboards={}", ui::clipboards(t) ? 1 : 0);
+    var ev;
+    int started = 0;
+    int acts = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	var kind = ev["event_code"];
+	if ( kind == ui::event_kind::resize )
+	{
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    show(S, t, doc);
+	    if ( !started )
+	    {
+		started = 1;
+		press(t, "a", true);
+	    }
+	    continue;
+	}
+	if ( kind != ui::event_kind::action )
+	    continue;
+	long adoc = S.active(doc);
+	S.apply_ide_event(adoc, ev);
+	client_service(S, t);
+	show(S, t, adoc);
+	acts = acts + 1;
+	if ( acts == 1 )
+	    press(t, "c", true);
+	else if ( acts == 2 )
+	{
+	    var got;
+	    bool ok = ui::clipboard_get(got, t);
+	    println("CLIP copied {} [{}]", ok ? "system" : "none", php::str_replace("\n", "|", got));
+	    press(t, "End", true);
+	}
+	else if ( acts == 3 )
+	    press(t, "v", true);
+	else
+	{
+	    var txt;
+	    ui::text(txt, w, adoc);
+	    println("CLIP pasted [{}]", php::str_replace("\n", "|", txt));
+	    break;
+	}
+    }
+    ui::close(t);
+    S.close();
+    php::unlink(path);
+    println("CLIP closed");
+    return 0;
+}

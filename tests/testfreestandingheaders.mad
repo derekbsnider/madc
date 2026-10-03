@@ -1,0 +1,48 @@
+// The nine C11 freestanding headers (C11 4p6) are compiler-provided: madc
+// serves them itself, from the slot gcc's resource dir occupies, so they
+// resolve with no headers on disk (the headerless lanes). madc lacked
+// stdalign.h, iso646.h and stdnoreturn.h, and `#include <stdalign.h>` failed
+// to open with the include roots masked.
+// Oracle: gcc 13 and clang 18 (-std=c17) print the .expect lines.
+#include <float.h>
+#include <iso646.h>
+#include <limits.h>
+#include <stdalign.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdnoreturn.h>
+
+int printf(const char *, ...);
+
+static alignas(16) char buf[4];
+struct pair { char c; int i; };
+#ifdef noreturn
+static const int noreturn_defined = 1;	/* the macro only: B151 */
+#else
+static const int noreturn_defined = 0;
+#endif
+
+static int sum(int n, ...)
+{
+	va_list ap;
+	int s = 0;
+	va_start(ap, n);
+	for (int i = 0; i < n; i++)
+		s += va_arg(ap, int);
+	va_end(ap);
+	return s;
+}
+
+int main(void)
+{
+	bool t = true;
+	int a = 6, b = 3;
+	printf("align: %d %d %d\n", (int)alignof(int64_t), (int)((uintptr_t)buf % 16), __alignas_is_defined + __alignof_is_defined);
+	printf("iso646: %d %d %d %d\n", (a and b) bitor 0, not t, a xor b, compl 0);
+	printf("limits: %d %d %d\n", CHAR_BIT, FLT_RADIX, (int)(SIZE_MAX > 0));
+	printf("stdarg: %d %zu\n", sum(3, 1, 2, 3), offsetof(struct pair, i));
+	printf("stdnoreturn: %d\n", noreturn_defined);
+	return 0;
+}
