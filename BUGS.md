@@ -547,6 +547,22 @@ int main(void)
 
 ## Accepts invalid code
 
+### B163. C++ keywords are accepted as variable names under `--std=c++NN`
+
+```cpp
+int main(void) { int new = 3; return new - 3; }
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `expected unqualified-id before
+  'new'`, exit 1; the same for `int class = 3;`. madc `--std=c++17`
+  (2026-10-03): compiles and runs, exit 0, for `new` and for `class`.
+  Under `--std=c17` they are ordinary identifiers, as gcc has them.
+- Layer not yet traced: the C++ keyword set reaches the declarator-id
+  reader as an identifier under a C++ standard.
+- Found 2026-10-03 while choosing a reducer for madcide's `--std=`. Off
+  the item in hand (owner rule 2026-09-13: parser behaviour changes get
+  their own session), filed per owner 2026-09-30.
+
 ### B158. libc++: returning an lvalue `std::unique_ptr` (a deleted copy) is accepted
 
 ```cpp
