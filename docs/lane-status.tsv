@@ -1,17 +1,17 @@
 # lane	promote	last_green_commit	date	tally
 darwin-suite	release	b025833d039c	2026-09-22	arm64 1533/0/0TO/30skip, Intel 1534/0/0TO/29skip — gh run 35694459245 (darwin-probe.yml, head_branch=feature/mir-builtin-import-adopt-claude, head_sha=b025833d0: BOTH the workflow file and the source from the branch under test). +13 each vs the 2026-09-20 record = the variadic-sibling-paint fix (58727ac0a) restoring every test that reaches a real macOS SDK header (sys/qos.h). +1 skip each = tests/testasmlabelmirbuiltin.darwin_skip (mir.arg_memcpy is a SysV-x86-64 event). verify_macho_release OK on both arches, 835 units. Runner mac battery 10/1 both — the include-free value intrinsic standing known-open, unchanged. Exe lane ADVISORY (arm64 1166/273, Intel 1140/299) until the darwin runtime dylib (D5); suite rc=0 both
 brew-linux	release	328b13c09126	2026-10-02	1911/0/0TO/9skip - scripts/brew_lane.sh on the container (Homebrew 7.0.7, Ubuntu 24.04): brew install --build-bottle + brew bottle + the keg POURED back from the bottle (receipt poured_from_bottle) + brew test; forest as the libmadc.so.0.forest sidecar; loader check (unmasked from the keg, keg lib masked from HOMEBREW_PREFIX/lib, runs 42); the suite with MADC_BIN the poured madc
-c-testsuite	commit	028e31c36929	2026-10-03	c-testsuite: 220 passed, 0 failed (0 outside baseline)
-c-torture	commit	028e31c36929	2026-10-03	c-torture: 1613 passed, 11 failing, 0 outside baseline
-c2mir-tests	commit	028e31c36929	2026-10-03	c2mir-tests: 314 passed, 50 failed (0 outside baseline)
-gui	commit	028e31c36929	2026-10-03	gui: 25/25 JIT, 25 EXE, 25 OBJ
-gxx-c++11	no	028e31c36929	2026-10-03	gxx-c++11: 1501 passed, 445 failing, 0 outside baseline
-index-c	yes	028e31c36929	2026-10-03	index-c: 50/50 tasks OK [-O2]
-linux-battery	yes	c3a0b621c754	2026-10-03	seam_battery.sh: gates rc=0 (unit binaries + static gates, smaug_gate, forest_bind 32/32, project_gate GREEN); headerless 1883/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 1917/0/0TO/9skip, EXE 1747/0, OBJ 1747/0
-headerless-win	yes	c3a0b621c754	2026-10-03	1844/0/0TO/82skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine, seam_battery.sh
-wine64	yes	c3a0b621c754	2026-10-03	the packed PE under wine: headerless-win 1844/0/0TO/82skip + ondisk-win 1/0 — seam_battery.sh
-aarch64-ld	yes	c3a0b621c754	2026-10-03	aarch64_ldouble_lane GREEN (aot + jit on every fixture) — seam_battery.sh
-macos	yes	c3a0b621c754	2026-10-03	BUILD lane: hosted builds + release-macos rc=0 on both arches, package-macos rc=0; verify_macho_release OK (837 units arm64 + x86_64) — seam_battery.sh
-tests-jit	batch	c3a0b621c754	2026-10-03	1917 passed, 0 failed, 0 timed out, 9 skipped — the tests/ suite JIT on packed -O2 madc-release (seam exeobj)
-libcxx	release	dda50a1dabc2	2026-10-03	jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content)
-genuine-win	release	dda50a1dabc2	2026-10-03	1845/0/0TO/81skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed madc-release-x86-64-windows.exe built at 028e31c36 content, MADC_SKIP_EXT="win64 win", 72 tests carry a domain skip fixture). win_suite rc=0
+c-testsuite	commit	96b3358a3d8a	2026-10-03	c-testsuite: 220 passed, 0 failed (0 outside baseline) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+c-torture	commit	96b3358a3d8a	2026-10-03	c-torture: 1613 passed, 11 failing, 0 outside baseline [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+c2mir-tests	commit	96b3358a3d8a	2026-10-03	c2mir-tests: 314 passed, 50 failed (0 outside baseline) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+gui	commit	96b3358a3d8a	2026-10-03	gui: 25/25 JIT, 25 EXE, 25 OBJ [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+gxx-c++11	no	96b3358a3d8a	2026-10-03	gxx-c++11: 1501 passed, 445 failing, 0 outside baseline [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+index-c	yes	96b3358a3d8a	2026-10-03	index-c: 50/50 tasks OK [-O2] [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+linux-battery	yes	96b3358a3d8a	2026-10-03	seam_battery.sh: gates rc=0 (unit binaries + static gates, smaug_gate, forest_bind 32/32, project_gate GREEN); headerless 1883/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 1917/0/0TO/9skip, EXE 1747/0, OBJ 1747/0 [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+headerless-win	yes	96b3358a3d8a	2026-10-03	1844/0/0TO/82skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine, seam_battery.sh [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+wine64	yes	96b3358a3d8a	2026-10-03	the packed PE under wine: headerless-win 1844/0/0TO/82skip + ondisk-win 1/0 — seam_battery.sh [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+aarch64-ld	yes	96b3358a3d8a	2026-10-03	aarch64_ldouble_lane GREEN (aot + jit on every fixture) — seam_battery.sh [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+macos	yes	96b3358a3d8a	2026-10-03	BUILD lane: hosted builds + release-macos rc=0 on both arches, package-macos rc=0; verify_macho_release OK (837 units arm64 + x86_64) — seam_battery.sh [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+tests-jit	batch	96b3358a3d8a	2026-10-03	1917 passed, 0 failed, 0 timed out, 9 skipped — the tests/ suite JIT on packed -O2 madc-release (seam exeobj) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+libcxx	release	96b3358a3d8a	2026-10-03	jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
+genuine-win	release	96b3358a3d8a	2026-10-03	1845/0/0TO/81skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed madc-release-x86-64-windows.exe built at 028e31c36 content, MADC_SKIP_EXT="win64 win", 72 tests carry a domain skip fixture). win_suite rc=0 [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
