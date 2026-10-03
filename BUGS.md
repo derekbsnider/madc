@@ -666,6 +666,39 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B162. `&(c += 4)` / `&(a = b)` on a class is refused although the operator returns a reference
+
+```cpp
+#include <iostream>
+struct Counter { int n; Counter &operator+=(int k) { n += k; return *this; } };
+int main()
+{
+    Counter c = { 1 };
+    Counter *q = &(c += 4);
+    std::cout << "compound: " << (q == &c) << " " << c.n << std::endl;
+    return 0;
+}
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `compound: 1 5`, exit 0. madc
+  (2026-10-03, after f380392f3): `expecting addressable expression after
+  '&'`, exit 1. The implicit copy assignment returns `T &` too, so `&(a = b)`
+  on any class is the same case.
+- Layer: `Program::is_addressable_expression` → `builtin_operator_yields_lvalue`
+  answers `=` / `@=` for built-in operands only ("a class … operand assigns
+  through its operator=, whose return type decides" — nothing decides it).
+  f380392f3 records `TokenOperator::resolved_reference` for operators in
+  `object_operator_symbol`'s table, which has no assignment operators.
+- The operator-spelling table exists twice: the parser's
+  `object_operator_symbol` (unary + binary, no assignment) and the CIR's
+  `binop_overload_symbol` (`src/cir_builder.cpp`, assignment + compound +
+  bitwise + logical, no unary). The fix starts by consolidating them into one
+  owner; adding assignment operators to the parser's typing then changes how
+  every class `=`, `@=`, `&`, `|`, `&&` expression is typed, so it is its own
+  focused session (owner rule, 2026-09-13).
+- Found 2026-10-03 fixing the REPL's `cout << x << endl` entry
+  (tests/testaddr_opref covers the stream and prefix `++` forms).
+
 ### B154. A namespace-qualified variable template is refused inside a function body
 
 ```cpp
