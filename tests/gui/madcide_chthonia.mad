@@ -18,12 +18,13 @@ void render(IdeSession &S, long t, long doc)
     ui::render(t, S.w, tree);
 }
 
-// Click the toolbar button labelled `label`.
+// Click the toolbar button labelled `label` (its aria-label: an icon
+// button shows a picture, not its label; a dropdown arrow is not one).
 void click_button(long t, const char *label)
 {
     ui::eval_page(t, format(
-	"(function(){{var bs=document.querySelectorAll('.slot[data-slot=toolbar] .tb-btn');"
-	"for(var k=0;k<bs.length;k++)if(bs[k].textContent==='{}')bs[k].click();}})()", label));
+	"(function(){{var bs=document.querySelectorAll('.slot[data-slot=toolbar] .tb-btn:not(.tb-drop)');"
+	"for(var k=0;k<bs.length;k++)if(bs[k].getAttribute('aria-label')==='{}')bs[k].click();}})()", label));
 }
 
 // What the page shows: whether the panel's edit node carries `out`, and

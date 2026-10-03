@@ -102,7 +102,14 @@ window's, the vi `@normal` alphabet's actions).
 Menus are data too (`profiles/default.menu`): the window's menu bar, and
 any command palette, read the same command registry the profiles bind; a
 menu row's command id resolves the same way and an unknown id refuses the
-menu naming its line.
+menu naming its line. A row may name its picture, `{ICON}` after the
+command (`new`, `open`, `save`, `run`, `debug`, `stop`, `step-over`,
+`step-into`, `step-out`, `breakpoints`); an unknown icon refuses the menu
+the same way. The `toolbar` menu places the window's toolbar buttons
+(chthonia's: New, Open, Save, Run, Stop). A button with an icon shows the
+picture, with its label and key as the tooltip. `{run Run}` adds an arrow
+that drops the file's Run menu down as a list (the `menushow Run` command),
+and a `toolbar -` row is a divider.
 
 ## Colour schemes
 

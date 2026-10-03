@@ -2,7 +2,10 @@ chthonia-open: doc=1 bundle=chthonia keys=thonny
 chthonia-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=1
 chthonia-menu: [File Edit Run View Tools Help] run=[replrun replstop language]
 chthonia-repl: live=0 running=0
-chthonia-toolbar: Open=editfile Save=save Run=replrun Stop=replstop codes=1
+chthonia-toolbar: New=new:new Open=editfile:open Save=save:save | Run=replrun:run>Run Stop=replstop:stop codes=1
+chthonia-dropdown: pane=choice label=Run rows=[Run][Stop][Language…]
+chthonia-dropdown-unknown: No menu 'Debug'.
+chthonia-new: untitled=1 differs=1
 keystyle-list: tools=[keystyle] listed=true marked=true
 keystyle-choose: keys=vscode msg=Keys: VS Code. kept=vscode
 variables-code: transport-source=1

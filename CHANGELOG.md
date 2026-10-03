@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+### madcide: toolbar icons, dropdowns and dividers from menu data; `new` and `menushow`
+
+A menu row may name an icon after its command — `toolbar save {save} Save` — and a menu its button drops down — `toolbar replrun {run Run} Run`. A misspelled icon or an unclosed brace refuses the menu at load with the file and line, and a drop naming a menu the file never makes refuses it too. `toolbar -` is a divider (never leading or trailing). Chthonia's toolbar is New, Open, Save | Run ▾, Stop, drawn as icons with their names as tooltips. The `new` command (File ▸ New) opens an untitled buffer. The `menushow MENU` command lists a menu's enabled items as a choice list (the ▾ beside Run), and an unknown menu answers `No menu 'X'.`. Tests: `gui/madcide_toolbar` (icons, the drop, the divider), `gui/madcide_chthonia` (clicks by name), `testmadcide_chthonia` (toolbar, dropdown, unknown menu, `new`).
+
 ### ui: toolbar icon vocabulary — ui::icon enum, name converters, and page rendering
 
-The toolbar displays command icons (plan §41.11a): ui::icon enumeration names 11 command pictures (file_new, open, save, run, debug, stop, step_over, step_into, step_out, breakpoints, none). ui_icon_name and ui_icon_from_name in ui_events.h are the one spelling owner. Menu data's `{ICON}` word resolves to a code; web_model compose sends it as the name the page draws. page.js TB_ICONS dict names SVG path definitions per icon; tbIcon renders them with colour classes. A row's `drop` ({action, arg}) is a ▾ arrow posting its action and argument. A separator row (`{sep: 1}`) is a divider. An icon code with no name sends none (label only). Validation: Tier 1 `make -C src test` rc=0 (test_web_model "toolbar row's icon" PASS); `run_tests.sh --exe --obj testmadcide*` 36/0 JIT, 31/0 EXE, 31/0 OBJ; gui tests 5/0. Tier 2 scripts/fast_lanes.sh GREEN.
+The toolbar displays command icons (plan §41.11a): ui::icon enumeration names 10 command pictures (file_new, open, save, run, debug, stop, step_over, step_into, step_out, breakpoints) and `none` (text only). ui_icon_name and ui_icon_from_name in ui_events.h are the one spelling owner. Menu data's `{ICON}` word resolves to a code; web_model compose sends it as the name the page draws. page.js TB_ICONS dict names SVG path definitions per icon; tbIcon renders them with colour classes. A row's `drop` ({action, arg}) is a ▾ arrow posting its action and argument. A separator row (`{sep: 1}`) is a divider. An icon code with no name sends none (label only). Validation: Tier 1 `make -C src test` rc=0 (test_web_model "toolbar row's icon" PASS); `run_tests.sh --exe --obj testmadcide*` 36/0 JIT, 31/0 EXE, 31/0 OBJ; gui tests 5/0. Tier 2 scripts/fast_lanes.sh GREEN.
 
 ### madcide: one language standard per session — `--std=`, the `"std"` setting, the `language` command
 

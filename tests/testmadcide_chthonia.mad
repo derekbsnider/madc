@@ -17,8 +17,11 @@
 //   5. the default profile, over the same file, starts none (its layout
 //      keeps the REPL hidden) and keeps its own menu bar;
 //   6. the toolbar (menu_place): chthonia.menu's `toolbar` rows are the
-//      composed root's `toolbar` hint — Open, Save, Run, each carrying its
-//      command's code — and the default menu places none;
+//      composed root's `toolbar` hint — New, Open, Save, a divider, Run (its
+//      arrow dropping the Run menu down) and Stop, each with its picture and
+//      command's code — and the default menu places none; Run's arrow
+//      (`menushow Run`) lists the Run menu as a choice, an unknown menu is
+//      said, and File ▸ New (`new`) opens the untitled buffer;
 //   7. Tools ▸ Key bindings… (plan §41.11a step 3e): the six styles listed by
 //      their @title names (JOE, Vim, Emacs, Pico, Thonny, VS Code) with the
 //      current one, Thonny, marked; choosing VS Code rebinds and keeps it
@@ -67,8 +70,10 @@ void menu_bar(var &titles, var &ids, long w, long es, const char *menu)
     }
 }
 
-// The composed root's toolbar hint: each row's label=action, and whether
-// every row's code is its action's (cmd_of); "none" without a toolbar.
+// The composed root's toolbar hint: each row's label=action:icon (the
+// icon's name, ui::icon_name) and >menu when its arrow drops a menu down, a
+// divider as `|`, and whether every row's code is its action's (cmd_of);
+// "none" without a toolbar.
 void toolbar_rows(var &out, IdeSession &S, long doc)
 {
     var root;
@@ -83,7 +88,18 @@ void toolbar_rows(var &out, IdeSession &S, long doc)
     long ok = 1;
     for ( var r : tb )
     {
-	out = format("{}{}={} ", out, r["label"], r["action"]);
+	if ( !r["sep"].is_null() )
+	{
+	    out = format("{}| ", out);
+	    continue;
+	}
+	var ic = "";
+	if ( !r["icon"].is_null() )
+	    ic = format(":{}", ui::icon_name(r["icon"].as_integer()));
+	var dr = "";
+	if ( !r["drop"].is_null() )
+	    dr = format(">{}", r["drop"]["arg"]);
+	out = format("{}{}={}{}{} ", out, r["label"], r["action"], ic, dr);
 	var a = r["action"];
 	if ( r["code"].as_integer() != cmd_of_w(S.w, a.c_str()) )
 	    ok = 0;
@@ -189,6 +205,28 @@ int main()
     var tbr;
     toolbar_rows(tbr, S, doc);
     println("chthonia-toolbar: {}", tbr);
+    // Run's arrow (`menushow Run`): the Run menu's items as a choice list;
+    // an unknown menu is said. File ▸ New: the untitled buffer.
+    bool mc = true;
+    S.command(doc, cmdMENUSHOW, "Run", mc);
+    var mrows;
+    ui::get(mrows, S.w, S.es, "choicerows");
+    var mtitles = "";
+    for ( var mr : mrows )
+	mtitles = format("{}[{}]", mtitles, mr["title"]);
+    var mlabel;
+    ui::get(mlabel, S.w, S.es, "choicelabel");
+    println("chthonia-dropdown: pane={} label={} rows={}", pane_name(cur_pane(S.w, S.es)),
+	    mlabel, mtitles);
+    set_pane(S.w, S.es, paneNONE);
+    S.command(doc, cmdMENUSHOW, "Debug", mc);
+    var mmsg;
+    ui::get(mmsg, S.w, S.es, "msg");
+    println("chthonia-dropdown-unknown: {}", mmsg);
+    S.command(doc, cmdNEW, "", mc);
+    long nd = S.active(0);
+    println("chthonia-new: untitled={} differs={}", doc_untitled(S.w, nd) ? 1 : 0, nd != doc ? 1 : 0);
+    switch_buffer(S.w, S.es, nd, 0);	// back to the launch file for the pins below
 
     // 7. Tools ▸ Key bindings….
     menu_bar(titles, ids, S.w, S.es, "Tools");

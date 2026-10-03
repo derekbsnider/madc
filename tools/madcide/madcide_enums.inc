@@ -29,7 +29,8 @@ enum ide_cmd : unsigned short
     cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
-    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMODES, cmdNEXTW, cmdONLYWIN,
+    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
+    cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
     cmdREFRESH, cmdSAVE, cmdSAVEAS,
@@ -89,7 +90,9 @@ void cmd_table(var &t)
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
     rows[] = { "name": "language", "code": cmdLANGUAGE };
     rows[] = { "name": "mark", "code": cmdMARK };
+    rows[] = { "name": "menushow", "code": cmdMENUSHOW };
     rows[] = { "name": "modes", "code": cmdMODES };
+    rows[] = { "name": "new", "code": cmdNEW };
     rows[] = { "name": "nextw", "code": cmdNEXTW };
     rows[] = { "name": "onlywin", "code": cmdONLYWIN };
     rows[] = { "name": "openproject", "code": cmdOPENPROJECT };
@@ -597,6 +600,7 @@ bool cmd_takes_arg(long code)
     {
 	case cmdKEYSTYLE:
 	case cmdLANGUAGE:
+	case cmdMENUSHOW:	// the menu's title (a toolbar arrow's)
 	case cmdPASTE:		// the text to paste (a client's platform read)
 	    return true;
     }
@@ -726,6 +730,7 @@ long cmd_min_tier(long code)
     // editor — project mutation / opening
     case cmdOPENPROJECT:
     case cmdEDITFILE:
+    case cmdNEW:
     case cmdPROJADDCUR:
     case cmdPROJADD:
     case cmdPROJDEL:

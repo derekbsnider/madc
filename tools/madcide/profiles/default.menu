@@ -3,7 +3,7 @@
 # natively shows. The TUI reads none of it (JOE has no menu bar); the
 # composed tree carries it as the root's `menu` hint.
 #
-# One line per item:    MENU  COMMAND  TITLE...  [WHEN]
+# One line per item:    MENU  COMMAND  [{ICON [DROP]}]  TITLE...  [WHEN]
 # A separator:          MENU  -
 # MENU is the top-level menu the item belongs to (first appearance orders
 # the bar). COMMAND is an action id from the ONE vocabulary the key
@@ -13,12 +13,17 @@
 # the context that must hold for the item to be enabled: a context key,
 # `!key` to negate, `a && b` to join. Context keys: editable dirty
 # selection split buffers project building modal viewing.
+# An optional {ICON} is the picture a renderer draws for the item (ui::icon:
+# new open save run debug stop step-over step-into step-out breakpoints); an
+# unknown word refuses the menu. On a `toolbar` row a second word, {ICON
+# DROP}, names the menu of this file the button's arrow drops down.
 # The menu "palette" lists commands that live only in the command palette
 # (a title for every command the bar does not carry).
 # The Build menu's items after its separator are COMPOSED, not listed here:
 # the ^B palette's rows (buildcmds — the built-ins for the buffer or the
 # project, plus a manifest's own commands), one item per row, id build-<n>.
 
+File new New
 File editfile Open File…
 File insertfile Insert File… [editable]
 File -

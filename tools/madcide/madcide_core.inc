@@ -1505,6 +1505,39 @@ bool load_menu(long w, long es, const char *name)
 		id = perl::substr(rest, 0, sp2 - rs);
 		title = php::trim(sp2 + 1);
 	    }
+	    // An optional {ICON [MENU]} first: the picture a renderer draws
+	    // for the item (ui::icon's vocabulary, converted HERE — an unknown
+	    // word refuses the menu) and, on a toolbar button, the menu its
+	    // arrow drops down (checked once the file is read).
+	    long icon = 0;
+	    var drop = "";
+	    if ( strncmp(title.c_str(), "{", 1) == 0 )
+	    {
+		const char *tb = title.c_str();
+		const char *close = strchr(tb, '}');
+		if ( close == 0 )
+		{
+		    ui::set(w, es, "msg", format("Menu '{}' line {}: an icon brace that never closes.", mname, i + 1));
+		    return false;
+		}
+		var inner = php::trim(perl::substr(title, 1, close - tb - 1));
+		var after = php::trim(close + 1);
+		var iw = inner;
+		const char *ib = inner.c_str();
+		const char *isp = strchr(ib, ' ');
+		if ( isp != 0 )
+		{
+		    iw = perl::substr(inner, 0, isp - ib);
+		    drop = php::trim(isp + 1);
+		}
+		icon = ui::icon_code(iw.c_str());
+		if ( icon == 0 )		// ui::icon::none: no such picture
+		{
+		    ui::set(w, es, "msg", format("Menu '{}' line {}: unknown icon '{}'.", mname, i + 1, iw));
+		    return false;
+		}
+		title = after;
+	    }
 	    var when = "";
 	    // A trailing [when] clause: the context that enables the item.
 	    const char *ts = title.c_str();
@@ -1528,6 +1561,10 @@ bool load_menu(long w, long es, const char *name)
 		return false;
 	    }
 	    item = { "id": id, "code": code, "title": title, "when": when };
+	    if ( icon != 0 )
+		item["icon"] = icon;
+	    if ( strlen(drop.c_str()) > 0 )
+		item["drop"] = drop;
 	}
 	var idx = at[menu.c_str()];
 	if ( idx.is_null() )
@@ -1548,6 +1585,19 @@ bool load_menu(long w, long es, const char *name)
 	    menus[k] = m;
 	}
     }
+    // A dropdown names a menu of this file: one the file never makes is
+    // refused like an unknown command.
+    for ( var m : menus )
+	for ( var it : m["items"] )
+	{
+	    var dn;
+	    keyed_get(dn, it, "drop");
+	    if ( dn.is_null() || !at[dn.c_str()].is_null() )
+		continue;
+	    ui::set(w, es, "msg", format("Menu '{}': '{}' drops down '{}', which it never makes.",
+					 mname, it["id"], dn));
+	    return false;
+	}
     ui::set(w, es, "menudef", menus);
     return true;
 }
@@ -1677,10 +1727,13 @@ bool compose_menu_bar(var &out, long w, long es, long doc, long nav)
 
 // The TOOLBAR as the composed tree carries it (plan §41.11a): the rows the
 // menu data places on it (MENU word `toolbar`), in order, each { label,
-// action, code } plus `enabled: 0` when its [when] fails now; a separator
-// row places nothing. Profile-independent like the bar: a renderer shows
-// the chord the loaded profile binds to the code (web_model, tui_model).
-// False = nothing placed on it (the default menu places nothing).
+// action, code } plus `enabled: 0` when its [when] fails now, `icon` (a
+// ui::icon code) when the row names one, and `drop` — the `menushow`
+// command with the menu's title — when the row drops a menu down; a
+// separator row is { sep }. Profile-independent like the bar: a renderer
+// shows the chord the loaded profile binds to the code (web_model,
+// tui_model). False = nothing placed on it (the default menu places
+// nothing).
 bool compose_toolbar(var &out, long w, long es, long doc, long nav)
 {
     var def;
@@ -1697,11 +1750,28 @@ bool compose_toolbar(var &out, long w, long es, long doc, long nav)
 	for ( var it : m["items"] )
 	{
 	    if ( !it["sep"].is_null() )
+	    {
+		var sep = { "sep": 1 };
+		rows.push(sep);
 		continue;
+	    }
 	    var row = { "label": it["title"], "action": it["id"], "code": it["code"] };
 	    var when = it["when"];
 	    if ( !when_holds(ctx, when) )
 		row["enabled"] = 0;
+	    var ic;
+	    keyed_get(ic, it, "icon");
+	    if ( !ic.is_null() )
+		row["icon"] = ic;
+	    var dn;
+	    keyed_get(dn, it, "drop");
+	    if ( !dn.is_null() )
+	    {
+		var dact;
+		cmd_name(dact, cmdMENUSHOW);
+		var dr = { "action": dact, "code": (long)cmdMENUSHOW, "arg": dn };
+		row["drop"] = dr;
+	    }
 	    rows.push(row);
 	}
     }
@@ -2066,6 +2136,40 @@ void key_style(long w, long es, const char *arg0)
 	crows[] = { "title": title, "code": cmdKEYSTYLE, "arg": nm, "current": mark };
     }
     choice_show(w, es, "Key bindings", crows);
+}
+
+long nav_doc(long w, long es, long doc);	// below
+
+// `menushow MENU` (a toolbar button's arrow, plan §41.11a; the mockup's
+// Run ▾): the menu's items as a choice list, each row running its command —
+// the items the bar shows, in its order. A separator, an item whose [when]
+// fails now and a composed Build row are left out. An unknown menu is said.
+void menu_show(long w, long es, long doc, const char *arg0)
+{
+    var arg = arg0;		// ring discipline: own the text first
+    var def;
+    ui::get(def, w, es, "menudef");
+    if ( !def.is_null() )
+	for ( var m : def )
+	{
+	    if ( !(m["title"] == arg) )
+		continue;
+	    var ctx;
+	    menu_context(ctx, w, es, doc, nav_doc(w, es, doc));
+	    var crows = {};
+	    for ( var it : m["items"] )
+	    {
+		if ( !it["sep"].is_null() )
+		    continue;
+		var when = it["when"];
+		if ( !when_holds(ctx, when) )
+		    continue;
+		crows[] = { "title": it["title"], "code": it["code"], "arg": "", "current": 0 };
+	    }
+	    choice_show(w, es, arg.c_str(), crows);
+	    return;
+	}
+    ui::set(w, es, "msg", format("No menu '{}'.", arg));
 }
 
 // A choose on the pane: move the caret to the chosen row's line. The
@@ -7516,6 +7620,22 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		lang_command(w, es, ls.c_str());
 		return true;
 	    }
+	    case cmdMENUSHOW:
+	    {
+		// A toolbar button's arrow: its menu as a choice list.
+		var ma;
+		keyed_get(ma, ev, "arg");
+		var ms = "";
+		if ( !ma.is_null() )
+		    ms = format("{}", ma);
+		menu_show(w, es, doc, ms.c_str());
+		return true;
+	    }
+	    case cmdNEW:
+		// File ▸ New (Thonny's): the untitled buffer — the one already
+		// open, else a new one (edit_file's empty name).
+		edit_file(w, es, doc, "");
+		return true;
 	    case cmdBUFSEL:
 	    {
 		// Switch to a buffer (polish P4): by ring index when the command

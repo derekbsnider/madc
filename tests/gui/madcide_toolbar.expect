@@ -1,5 +1,5 @@
 TOOLBAR open
-TOOLBAR buttons=Open,Save,Run,Stop
+TOOLBAR buttons=New,Open,Save,Run,Stop icons=new,open,save,run,stop text=,,,Run, drop=menushow:Run seps=1
 TOOLBAR event action save code=1
 TOOLBAR saved=1
 TOOLBAR closed
