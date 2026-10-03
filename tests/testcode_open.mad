@@ -1,0 +1,118 @@
+// madc::code_open / code_symbol / code_close: a source file compiled into
+// the RUNNING process and kept (plan §41.11a step 5, the plugin design's
+// G3: a madcide `source` plugin activates this way).
+// Pins:
+//   1. a TU that includes a header from another directory compiles into
+//      this process when that directory is given (-I), and is refused, the
+//      missing header named, when it is not;
+//   2. code_symbol finds its extern "C" functions, which run (one through
+//      the value runtime) and see a file-scope `var` whose dynamic
+//      initializer ran at open; an object's address is found too; a name
+//      the code does not define answers 0;
+//   3. two opened codes keep their own same-named statics apart;
+//   4. refusals, each with its row: a missing file, include directories
+//      that are not an array, a source that does not compile (its row
+//      positioned);
+//   5. a source compiled, then closed, or refused is no longer held open:
+//      it can be removed (Windows refuses to remove an open file — a
+//      compile that kept its main file open left a madcide plugin's source
+//      locked for the life of the process). Oracle: g++ 13 and clang++ 18
+//      close a translation unit's files once they are read; under wine the
+//      three removals then succeed.
+// Oracle: g++ 13 and clang++ 18 over the same TU (std::format in place of
+// format, a std::string global) linked into a host that calls the three
+// functions print `answer 42`, `greet hello, plugin`, `count 3 then 4`.
+typedef long (*answer_fn)(long x);
+typedef const char *(*greet_fn)(const char *who);
+typedef long (*count_fn)();
+
+// The first row's message of a refusal's diagnostics ("" = no rows).
+void first_message(var &out, var &rows)
+{
+	out = "";
+	if ( php::count(rows) > 0 )
+		out = rows[0]["message"];
+}
+
+int main()
+{
+	var dir = "tmp/testcode_open";
+	var inc = format("{}/inc", dir);
+	php::mkdir(dir.c_str());
+	php::mkdir(inc.c_str());
+	var hdr = format("{}/madc_co.h", inc);
+	php::file_put_contents(hdr.c_str(), "#define MADC_CO_BASE 40\n");
+	var src = format("{}/madc_co.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"#include <madc_co.h>\n"
+		"var co_greeting = format(\"hello, {}\", \"plugin\");\n"
+		"long co_calls = 3;\n"
+		"extern \"C\" long madc_co_answer(long x)\n"
+		"{\n\treturn MADC_CO_BASE + x;\n}\n"
+		"extern \"C\" const char *madc_co_greet(const char *who)\n"
+		"{\n\treturn co_greeting.c_str();\n}\n"
+		"extern \"C\" long madc_co_count()\n"
+		"{\n\tco_calls = co_calls + 1;\n\treturn co_calls;\n}\n");
+
+	// 1. -I reaches the header; without it the compile is refused.
+	var incs = { inc };
+	var d;
+	int64_t h = madc::code_open(d, src.c_str(), incs);
+	println("open: {} rows={}", h != 0 ? 1 : 0, php::count(d));
+	var none;
+	int64_t h0 = madc::code_open(d, src.c_str(), none);
+	var m;
+	first_message(m, d);
+	println("noinc: {} {}", h0 == 0 ? 1 : 0, m);
+
+	// 2. Its functions run; its initializer ran at open.
+	answer_fn af = (answer_fn)madc::code_symbol(h, "madc_co_answer");
+	greet_fn gf = (greet_fn)madc::code_symbol(h, "madc_co_greet");
+	count_fn cf = (count_fn)madc::code_symbol(h, "madc_co_count");
+	long a = af(2);
+	println("answer {}", a);
+	var g = gf("plugin");
+	println("greet {}", g);
+	int64_t calls = madc::code_symbol(h, "co_calls");
+	long before = *(long *)calls;
+	long after = cf();
+	println("count {} then {}", before, after);
+	int64_t nothing = madc::code_symbol(h, "madc_co_nothing");
+	println("nothing: {}", nothing == 0 ? 1 : 0);
+
+	// 3. A second code keeps its own statics.
+	int64_t h2 = madc::code_open(d, src.c_str(), incs);
+	count_fn cf2 = (count_fn)madc::code_symbol(h2, "madc_co_count");
+	long second = cf2();
+	long first = cf();
+	println("apart: {} {}", second, first);
+
+	// 4. Refusals, each with its row.
+	var gone = format("{}/madc_co_gone.mad", dir);
+	int64_t h3 = madc::code_open(d, gone.c_str(), incs);
+	first_message(m, d);
+	println("missing: {} {}", h3 == 0 ? 1 : 0, m);
+	var five = 5;
+	int64_t h4 = madc::code_open(d, src.c_str(), five);
+	first_message(m, d);
+	println("notarray: {} {}", h4 == 0 ? 1 : 0, m);
+	var bad = format("{}/madc_co_bad.mad", dir);
+	php::file_put_contents(bad.c_str(), "extern \"C\" long madc_co_bad()\n{\n\treturn 1\n}\n");
+	int64_t h5 = madc::code_open(d, bad.c_str(), incs);
+	long line0 = 0;
+	if ( php::count(d) > 0 )
+		line0 = d[0]["line"].as_integer();
+	println("broken: {} line-pos={}", h5 == 0 ? 1 : 0, line0 > 0 ? 1 : 0);
+
+	// 5. Closed or refused, a source is not held open.
+	madc::code_close(h2);
+	madc::code_close(h);
+	bool rb = php::unlink(bad.c_str());
+	bool rs = php::unlink(src.c_str());
+	bool rh = php::unlink(hdr.c_str());
+	println("released: refused={} closed={} header={}", rb ? 1 : 0, rs ? 1 : 0,
+		rh ? 1 : 0);
+	php::rmdir(inc.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

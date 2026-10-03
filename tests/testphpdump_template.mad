@@ -1,0 +1,25 @@
+// var_dump and print_r name an aggregate a template instantiated by its
+// template-id, as the show and %type do (TypeSpeller::aggregate_name), never
+// by madc's internal tag (`Box_int32_t_4`).
+// Oracle: g++ 13 and clang++ 18 name these types `Box<int>`,
+// `Box<int, 8>` and `Two<int, long int>` / `Two<int, long>` (an
+// incomplete `show<decltype(x)>`'s diagnostic); madc writes the separator
+// without a space, as its show always has. A plain struct keeps its name.
+template <class T, int N = 4> struct Box { T v[N]; };
+template <class T, class U = T> struct Two { T a; U b; };
+struct Plain { int x; };
+
+Box<int> b;
+Box<int, 8> b8;
+Two<int, long> t;
+Plain p;
+
+int main()
+{
+	php::var_dump(b);
+	php::print_r(t);
+	println("");
+	php::var_dump(b8);
+	php::var_dump(p);
+	return 0;
+}

@@ -59,7 +59,7 @@ TEST_SUITE("DataType enum") {
     // The pointer/reference tag-arithmetic cases (dt*ptr == base+10000,
     // dt*ref == base+20000, and the rtPtr/rtRef/rtDePtr/rtDeRef macro
     // inverses) were removed with the encoding itself (tag-arithmetic
-    // retirement). Derivation is now the DataDefPTR/DataDefREF/DataDefCONST
+    // retirement). Derivation is now the DataDefPTR/DataDefREF/DataDefQUAL
     // object graph — see the is_cstr() and DataDefPTR/REF suites and
     // is_pointer()/is_reference()/rawtype() for the structural contract.
 }
@@ -256,6 +256,32 @@ TEST_SUITE("Variable") {
         v.set(99);
         CHECK(v.cmp(99));
         CHECK(!v.cmp(100));
+    }
+
+    // The slot is chosen by storage, not by a list of identities: a bool
+    // reads back false, and the character types and the LLP64 platform long
+    // (a distinct identity with int storage) hold their values.
+    TEST_CASE("Variable slot holds bool, character types and platform long") {
+        Variable b("b", ddBOOL, 1);
+        b.set(0);
+        CHECK(b.get<int64_t>() == 0);
+        b.inc();
+        CHECK(b.get<int64_t>() == 1);
+        Variable w("w", *dd_platform_wchar(), 1);
+        w.set(5);
+        CHECK(w.get<int64_t>() == 5);
+        Variable u("u", *dd_char32(), 1);
+        u.set(6);
+        CHECK(u.get<int64_t>() == 6);
+        TargetDataModel saved = madc_target_data_model;
+        madc_target_data_model = TargetDataModel::LLP64;
+        Variable l("l", *dd_platform_long(), 1);
+        l.set(-4);
+        CHECK(l.get<int64_t>() == -4);
+        Variable ul("ul", *dd_platform_ulong(), 1);
+        ul.set(4294967295LL);
+        CHECK(ul.get<int64_t>() == 4294967295LL);
+        madc_target_data_model = saved;
     }
 }
 
@@ -1506,9 +1532,9 @@ TEST_SUITE("DataDef::same_representation (=== type-domain identity)") {
         DataDef i32("int", 4, DataType::dtINT32);
         DataDefPTR pc(ch);                              // char*
         DataDefPTR pp(static_cast<DataDef &>(pc));      // char**
-        DataDefCONST cc(ch);                            // const char
+        DataDefQUAL cc(ch, cvCONST);                    // const char
         DataDefPTR pcc(static_cast<DataDef &>(cc));     // const char*
-        DataDefCONST ccp(static_cast<DataDef &>(pc));   // char* const
+        DataDefQUAL ccp(static_cast<DataDef &>(pc), cvCONST); // char* const
         DataDefPTR pi(i32);                             // int*
         DataDefPTR pv(ddVOID);                          // void*
         DataDefREF rc(ch);                              // char& (lowers as char*)

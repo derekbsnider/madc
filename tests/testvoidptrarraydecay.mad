@@ -1,0 +1,41 @@
+/* Arithmetic on an ARRAY of void pointers scales by sizeof(void *).
+ *
+ * `void *a[3]; a + 3` is pointer arithmetic on the DECAYED operand
+ * ([conv.array] / C11 6.3.2.1p3): `a` becomes a `void **`, whose pointee is a
+ * complete 8-byte object, so `a + 3` is 24 bytes on. madc's GNU void*-arithmetic
+ * rewrite (cast a size-1 operand to `char *`) asked the operand's datadef(),
+ * and a C-array Variable's datadef() is its ELEMENT — the array-ness is a
+ * Variable flag, not a DataDefCArray. So it saw `void *`, cast the ARRAY to
+ * `char *`, and `a + 3` advanced three BYTES: exit 0, a pointer 21 bytes short,
+ * on every build. Local, global and struct-member arrays all took the path.
+ * The fix adopts Program::array_decay_pointer, the one owner of the decay.
+ *
+ * `int *a[3]` never took the rewrite (its element is not void) and is the
+ * control; so is plain `void *` arithmetic, the GNU extension itself, which
+ * must KEEP its size-1 scaling.
+ *
+ * gcc -std=gnu17 and clang -std=gnu17 both print the asserted lines.
+ */
+#include <stdio.h>
+
+void *gslots[3];
+struct M { void *slots[3]; };
+
+static long dist (void *a, void *b) { return (long) ((char *) b - (char *) a); }
+
+int main (void)
+{
+	void *lslots[3];
+	struct M m;
+	int *islots[3];
+	char buf[8];
+	void *vp = buf;
+
+	printf ("local-voidp-arr %ld\n", dist (lslots, lslots + 3));
+	printf ("global-voidp-arr %ld\n", dist (gslots, gslots + 3));
+	printf ("member-voidp-arr %ld\n", dist (m.slots, m.slots + 3));
+	printf ("sub-voidp-arr %ld\n", (long) ((lslots + 3) - lslots));
+	printf ("local-intp-arr-control %ld\n", dist (islots, islots + 3));
+	printf ("gnu-voidp-control %ld\n", dist (vp, vp + 3));
+	return 0;
+}

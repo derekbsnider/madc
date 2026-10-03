@@ -18,6 +18,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
     load_status(w, es, "joe");
@@ -188,5 +189,7 @@ int main()
     ea["action"] = "pcancel";
     S.apply_ide_event(doc, ea);
     println("confirm-button: prompt-off={}", prompt_active(w, es) ? 0 : 1);
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

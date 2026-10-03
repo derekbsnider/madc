@@ -48,6 +48,8 @@ void madcdis_mapwrite_trap_hit(const char *key)
 } }
 #include "cir_freeze.h"	// Phase 6: CirFrozenForest — parse-time grove binding
 #include "rt/rt_task.h"	// MT-3b: the token pumps honor task cancellation
+#include "rt/rt_dump.h"	// __madc_c_escape: THE C-literal escape rule
+#include "madcdis/text_utf16.h"	// line_layout: THE screen layout of a line (B8)
 
 // Stage-2 cooperative parse: yield-point cadence for the token pumps (a
 // power of two — the pump check is one mask-and-compare). ~1k tokens is
@@ -220,7 +222,7 @@ struct MadcSharedPreludeCache
     {
 	if ( !pgm.compile_group || pgm.pack_recording || pgm.keep_trivia
 	  || pgm.suppress_auto_include_scan || !pgm._pending_pack_ops.empty()
-	  || !pgm.ifdef_stack.empty() || !pgm.ifdef_done_stack.empty()
+	  || !pgm.ifdef_stack.empty() || !pgm.cond_groups.empty()
 	  || !pgm._macro_save_stack.empty() )
 	    return false;
 	const std::string *embedded = find_embedded_header(header);
@@ -496,7 +498,7 @@ struct MadcSharedPreludeCache
 	{
 	    const TokenImage &image = entry.tokens[i];
 	    if ( image.type == TokenType::ttDataType
-	      && pgm.datatype_map.find(image.spelling) == pgm.datatype_map.end() )
+	      && pgm.datatype_map.find(image.spelling) == pgm.datatype_map.end() )	// allowed-exception: a recorded type token's type still exists
 		return false;
 	}
 	return true;
@@ -530,7 +532,7 @@ struct MadcSharedPreludeCache
 	    break;
 	case TokenType::ttDataType:
 	{
-	    flat_datatype_map_iter di = pgm.datatype_map.find(image.spelling);
+	    flat_datatype_map_iter di = pgm.datatype_map.find(image.spelling);	// allowed-exception: replays a recorded type token
 	    if ( di == pgm.datatype_map.end() )
 		return NULL;
 	    tb = pgm.make_datatype(image.spelling.c_str(), (*di)->definition);
@@ -626,7 +628,7 @@ struct MadcSharedPreludeCache
 	Entry &entry)
     {
 	if ( !pgm._pending_pack_ops.empty() || !pgm._macro_save_stack.empty()
-	  || !pgm.ifdef_stack.empty() || !pgm.ifdef_done_stack.empty() )
+	  || !pgm.ifdef_stack.empty() || !pgm.cond_groups.empty() )
 	    return false;
 	entry.tokens.reserve(pgm.tokens.size() - begin);
 	for ( size_t i = begin; i < pgm.tokens.size(); ++i )
@@ -708,76 +710,110 @@ static uint32_t read_utf8_codepoint(Source &source, unsigned char first)
     return cp;
 }
 
-static uint32_t read_literal_escape_value(Source &source, char esc)
+// One escape sequence of a string or character literal (C11 6.4.4.4,
+// [lex.ccon], [lex.string]). A simple, octal or hex escape is a code-unit
+// VALUE; a universal-character-name is a CODE POINT, which the literal encodes
+// in its own encoding (UTF-8 in a narrow or u8 literal, one unit in a wide one).
+enum class EscapeKind : unsigned char { Simple, Octal, Hex, Ucn };
+struct LiteralEscape
 {
+    EscapeKind kind;
+    uint32_t value;
+};
+
+// The characters of an escape read from text already captured (the #if
+// condition) rather than from the live Source: the same good/peek/get shape.
+struct CapturedTextReader
+{
+    const std::string &text;
+    size_t &pos;
+    bool good() const { return pos < text.size(); }
+    int peek() const { return (unsigned char)text[pos]; }
+    int get() { return (unsigned char)text[pos++]; }
+};
+
+// Decode the escape whose `\` the caller consumed, `esc` being the character
+// after it: THE escape reader for every literal kind, over the live Source or
+// captured text (`in`; `at` places the warning). `unit_max` is the largest code
+// unit of the literal's element type; an octal or hex escape must fit it (C11
+// 6.4.4.4p9, clang's error). A hex escape takes every hex digit that follows
+// (6.4.4.4p7), an octal one at most three, `\u` / `\U` exactly four / eight.
+// `\e` is the GNU escape for ESC (gcc and clang). Any other character after
+// the backslash is gcc's "unknown escape sequence" warning, and the escape
+// denotes that character.
+template <class Reader>
+static LiteralEscape read_literal_escape(Program &pgm, Reader &in, Source &at,
+					 char esc, uint32_t unit_max)
+{
+    auto hex_digit = [](int c) -> int {
+	return (c >= '0' && c <= '9') ? c - '0'
+	     : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+	     : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+    };
+    LiteralEscape e = { EscapeKind::Simple, (unsigned char)esc };
     switch ( esc )
     {
-	case 'n':  return '\n';
-	case 't':  return '\t';
-	case 'r':  return '\r';
-	case '\\': return '\\';
-	case '"':  return '"';
-	case '\'': return '\'';
-	case 'a':  return '\a';
-	case 'b':  return '\b';
-	case 'f':  return '\f';
-	case 'v':  return '\v';
-	case '?':  return '\?';
-	case 'x': case 'X': {
-	    uint32_t val = 0;
+	case 'n':  e.value = '\n'; return e;
+	case 't':  e.value = '\t'; return e;
+	case 'r':  e.value = '\r'; return e;
+	case 'a':  e.value = '\a'; return e;
+	case 'b':  e.value = '\b'; return e;
+	case 'f':  e.value = '\f'; return e;
+	case 'v':  e.value = '\v'; return e;
+	case 'e': case 'E': e.value = 0x1B; return e;
+	case '\\': case '"': case '\'': case '?':
+	    return e;
+	case 'x': {
+	    e.kind = EscapeKind::Hex;
+	    uint64_t val = 0;
 	    int dig = 0;
-	    while ( dig < 2 && source.good() )
+	    bool over = false;
+	    while ( in.good() && hex_digit(in.peek()) >= 0 )
 	    {
-		int c = source.peek();
-		int d = (c >= '0' && c <= '9') ? c - '0'
-		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
-		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
-		if ( d < 0 )
-		    break;
-		val = (val << 4) | (uint32_t)d;
-		source.get();
+		val = (val << 4) | (uint64_t)hex_digit(in.get());
+		if ( val > unit_max )
+		    over = true;
 		++dig;
 	    }
-	    return val;
+	    if ( !dig )
+		throw "\\x used with no following hex digits";
+	    if ( over )
+		throw "hex escape sequence out of range";
+	    e.value = (uint32_t)val;
+	    return e;
 	}
 	case 'u': case 'U': {
-	    // Universal-character-name ([lex.charset]): \uXXXX / \UXXXXXXXX.
-	    // Only the wide/prefixed-literal reader routes escapes here, so
-	    // narrow-string escape handling is untouched.
+	    e.kind = EscapeKind::Ucn;
 	    int need = esc == 'u' ? 4 : 8;
 	    uint32_t val = 0;
-	    int dig = 0;
-	    while ( dig < need && source.good() )
+	    for ( int dig = 0; dig < need; ++dig )
 	    {
-		int c = source.peek();
-		int d = (c >= '0' && c <= '9') ? c - '0'
-		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
-		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
-		if ( d < 0 )
-		    break;
-		val = (val << 4) | (uint32_t)d;
-		source.get();
-		++dig;
+		if ( !in.good() || hex_digit(in.peek()) < 0 )
+		    throw "incomplete universal character name";
+		val = (val << 4) | (uint32_t)hex_digit(in.get());
 	    }
-	    return val;
+	    e.value = val;
+	    return e;
 	}
 	case '0': case '1': case '2': case '3':
 	case '4': case '5': case '6': case '7': {
+	    e.kind = EscapeKind::Octal;
 	    uint32_t val = (uint32_t)(esc - '0');
-	    int dig = 1;
-	    while ( dig < 3 && source.good() )
-	    {
-		int c = source.peek();
-		if ( c < '0' || c > '7' )
-		    break;
-		val = (val << 3) | (uint32_t)(c - '0');
-		source.get();
-		++dig;
-	    }
-	    return val;
+	    for ( int dig = 1; dig < 3 && in.good()
+		  && in.peek() >= '0' && in.peek() <= '7'; ++dig )
+		val = (val << 3) | (uint32_t)(in.get() - '0');
+	    if ( val > unit_max )
+		throw "octal escape sequence out of range";
+	    e.value = val;
+	    return e;
 	}
 	default:
-	    return (unsigned char)esc;
+	    pgm.report_warning(Program::DiagnosticPhase::lexer,
+			       std::string("unknown escape sequence: '\\")
+				   + esc + '\'',
+			       at.fname(), at.line(), at.column());
+	    pgm.print_last_diagnostic(pgm.error());
+	    return e;
     }
 }
 
@@ -822,6 +858,89 @@ static void append_utf8_codepoint(std::string &out, uint32_t cp)
     }
 }
 
+// A narrow or u8 literal's escape, appended as bytes: a code point (a UCN) in
+// UTF-8, a code-unit value as the one byte it is.
+static void append_byte_escape(std::string &out, const LiteralEscape &e)
+{
+    if ( e.kind == EscapeKind::Ucn )
+	append_utf8_codepoint(out, e.value);
+    else
+	out += (char)e.value;
+}
+
+// The value of a narrow character constant from its c-char BYTES (escapes
+// decoded, a UCN already UTF-8): C11 6.4.4.4p10, [lex.ccon]/2. THE rule the
+// tokenizer and the #if evaluator share, gcc's (narrow_str_to_charconst). One
+// byte is a plain char's value, sign-extended while char is signed. Several
+// are a multi-character constant of type int, each byte shifted in from the
+// right with the last four surviving — gcc's and clang's "multi-character
+// character constant" warning, and past four gcc's "character constant too
+// long for its type". No c-char at all is an error. Diagnostics point at
+// `row`/`col` (the opening quote).
+static int32_t narrow_char_constant_value(Program &pgm, Source &at,
+					  const std::string &bytes,
+					  int row, int col)
+{
+    if ( bytes.empty() )
+    {
+	at.setpos(row, col);
+	throw "empty character constant";
+    }
+    uint32_t v = 0;
+    for ( unsigned char b : bytes )
+	v = (v << 8) | b;
+    if ( bytes.size() == 1 )
+	return ddCHAR.is_unsigned() ? (int32_t)(uint8_t)v : (int32_t)(int8_t)v;
+    pgm.report_warning(Program::DiagnosticPhase::lexer,
+		       bytes.size() > 4
+			   ? "character constant too long for its type"
+			   : "multi-character character constant",
+		       at.fname(), row, col);
+    pgm.print_last_diagnostic(pgm.error());
+    return (int32_t)v;
+}
+
+// The largest code unit of an encoding-prefixed literal's element type — the
+// range an octal or hex escape must fit (C11 6.4.4.4p9): u8 is a byte, u is
+// char16_t, U is char32_t, and L is wchar_t (2-byte UTF-16 on the LLP64
+// target, 4-byte elsewhere).
+static uint32_t prefixed_literal_unit_max(const std::string &prefix, bool llp64)
+{
+    if ( prefix == "u8" )
+	return 0xFF;
+    if ( prefix == "u" || (prefix == "L" && llp64) )
+	return 0xFFFF;
+    return 0xFFFFFFFF;
+}
+
+// A quoted literal (a string or character literal, any encoding prefix)
+// whose closing quote never comes: no s-char or c-char is a new-line (C11
+// 6.4.5p1, 6.4.4.4p1; [lex.string], [lex.ccon]), so a raw new-line or the
+// end of input before the quote is gcc's and clang's "missing terminating
+// quote". A `\`-new-line splice never reaches a literal reader (Source folds
+// it). The position rewinds to the opening quote at `row`/`col`.
+[[noreturn]] static void refuse_unterminated_literal(Source &source, char quote,
+						     int row, int col)
+{
+    source.setpos(row, col);
+    throw quote == '"' ? "missing terminating \" character"
+		       : "missing terminating ' character";
+}
+
+// Does a quoted literal's body continue — is the next character not its
+// closing `quote`? The one loop test every literal reader shares; it refuses
+// a raw new-line or the end of input before the quote
+// (refuse_unterminated_literal).
+static bool literal_body_continues(Source &source, char quote, int row, int col)
+{
+    if ( !source.good() )
+	refuse_unterminated_literal(source, quote, row, col);
+    int c = source.peek();
+    if ( c == '\n' || c == '\r' )
+	refuse_unterminated_literal(source, quote, row, col);
+    return c != quote;
+}
+
 static std::string narrow_string_as_wide(const std::string &narrow)
 {
     std::string out;
@@ -846,7 +965,8 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 	if ( prefix == "U" && target_llp64() )
 	    throw "char32_t string literals (U\"...\") are not supported on the LLP64 target";
 	std::string bytes;
-	while ( source.good() && source.peek() != '"' )
+	uint32_t unit_max = prefixed_literal_unit_max(prefix, target_llp64());
+	while ( literal_body_continues(source, '"', row, col) )
 	{
 	    uint32_t cp;
 	    if ( source.peek() == '\\' )
@@ -854,7 +974,16 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 		source.get();
 		if ( !source.good() )
 		    break;
-		cp = read_literal_escape_value(source, source.get());
+		LiteralEscape e = read_literal_escape(*this, source, source, source.get(),
+						      unit_max);
+		// A u8 literal's code-unit escape is the byte it names, never
+		// a code point to encode (C11 6.4.5p6).
+		if ( prefix == "u8" )
+		{
+		    append_byte_escape(bytes, e);
+		    continue;
+		}
+		cp = e.value;
 	    }
 	    else
 		cp = read_utf8_codepoint(source, (unsigned char)source.get());
@@ -870,10 +999,7 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
 		append_wide_codepoint(bytes, cp);
 	}
 	if ( !source.good() )
-	{
-	    source.setpos(row, col);
-	    throw "Unterminated wide string";
-	}
+	    refuse_unterminated_literal(source, '"', row, col);
 	source.get();
 	{
 	    TokenBase *stok = make_str(bytes, prefix != "u8");
@@ -895,23 +1021,21 @@ TokenBase *Program::read_wide_literal(const std::string &prefix)
     }
 
     uint32_t cp = 0;
-    while ( source.good() && source.peek() != '\'' )
+    uint32_t unit_max = prefixed_literal_unit_max(prefix, target_llp64());
+    while ( literal_body_continues(source, '\'', row, col) )
     {
 	if ( source.peek() == '\\' )
 	{
 	    source.get();
 	    if ( !source.good() )
 		break;
-	    cp = read_literal_escape_value(source, source.get());
+	    cp = read_literal_escape(*this, source, source, source.get(), unit_max).value;
 	}
 	else
 	    cp = read_utf8_codepoint(source, (unsigned char)source.get());
     }
     if ( !source.good() )
-    {
-	source.setpos(row, col);
-	throw "Unterminated wide character literal";
-    }
+	refuse_unterminated_literal(source, '\'', row, col);
     source.get();
     TokenInt *ti = (TokenInt *)make_int((int64_t)cp);
     // [lex.ccon] literal types: L'' -> wchar_t (target-shaped:
@@ -1117,10 +1241,13 @@ static bool is_identifier_spelling(const std::string &s)
     return true;
 }
 
-static bool identifier_matches_gnu_attribute_name(const std::string &id,
-						  const std::string &name)
+bool madc_gnu_attribute_word_is(const std::string &id, const char *word)
 {
-    return id == name || id == "__" + name + "__";
+    const size_t n = strlen(word);
+    if ( id.size() == n )
+	return id == word;
+    return id.size() == n + 4 && id.compare(0, 2, "__") == 0
+	&& id.compare(2, n, word) == 0 && id.compare(n + 2, 2, "__") == 0;
 }
 
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
@@ -1138,10 +1265,11 @@ GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
 	{ "alias", GnuAttributeKind::Alias },
 	{ "no_instrument_function", GnuAttributeKind::NoInstrumentFunction },
 	{ "optimize", GnuAttributeKind::Optimize },
-	{ "using_if_exists", GnuAttributeKind::UsingIfExists }
+	{ "using_if_exists", GnuAttributeKind::UsingIfExists },
+	{ "weak", GnuAttributeKind::Weak }
     };
     for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
-	if ( identifier_matches_gnu_attribute_name(name, entries[i].name) )
+	if ( madc_gnu_attribute_word_is(name, entries[i].name) )
 	    return entries[i].kind;
     return GnuAttributeKind::Unsupported;
 }
@@ -1259,7 +1387,10 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
     return saw_any;
 }
 
-static const char *auto_include_header_for_identifier(const std::string &word)
+// THE identifier -> header table of the auto-include scan (madc dialect only;
+// auto_includes_enabled gates the scan). The scan's lookup below and the
+// REPL's completion (Program::auto_include_words, plan §41.7a) read it.
+static const std::map<std::string, std::string> &auto_include_identifier_headers()
 {
     static const std::map<std::string, std::string> identifier_headers = {
 	{"string", "string"},
@@ -1380,11 +1511,24 @@ static const char *auto_include_header_for_identifier(const std::string &word)
 	{"DBL_EPSILON", "float.h"},
 	{"LDBL_EPSILON", "float.h"}
     };
+    return identifier_headers;
+}
 
+static const char *auto_include_header_for_identifier(const std::string &word)
+{
+    const std::map<std::string, std::string> &identifier_headers =
+	auto_include_identifier_headers();
     std::map<std::string, std::string>::const_iterator it = identifier_headers.find(word);
     if ( it == identifier_headers.end() )
 	return NULL;
     return it->second.c_str();
+}
+
+// A dialect fragment's MEMBER row: the word is not the fragment's own head
+// (`WEB` for ns_ui_web), so it answers only QUALIFIED by a dialect head.
+static bool auto_include_member_row(const std::string &word, const char *header)
+{
+    return strncmp(header, "ns_", 3) == 0 && word != header + 3;
 }
 
 static std::vector<std::string> ordered_auto_include_headers(const std::set<std::string> &headers)
@@ -1632,7 +1776,7 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     // own, `madc::getline` never pulls <string>, a user qualifier
     // (`Counter::set`) pulls nothing, as before.
     const bool fragment_row = strncmp(header, "ns_", 3) == 0;
-    const bool member_row = fragment_row && word != header + 3;
+    const bool member_row = auto_include_member_row(word, header);
     if ( member_row && dialect_qualifier.empty() )
 	return false;
     if ( !dialect_qualifier.empty() )
@@ -1656,18 +1800,43 @@ bool Program::auto_include_standard_identifier(const std::string &word,
     // one; the name stays unknown and the parse-time diagnostic ("Unknown
     // namespace or class 'php'") is the host's contract
     // (test_libmadc_program security_policy case).
-    if ( find_embedded_header(header) && !is_embedded_header_allowed(header) )
-	return false;
-    // The namespace-head table entries additionally respect the per-namespace
-    // registration policy (security_policy.allow_*_namespace) — the check
-    // answers true for every non-namespace word, so the std-surface entries
-    // are unaffected.
-    if ( !is_namespace_registration_enabled(word) )
+    if ( !auto_include_permitted(word, header) )
 	return false;
 
     pending_auto_include_headers.insert(header);
     pending_auto_include_identifiers.insert(word);
     return false;
+}
+
+// Host policy is never bypassed by the auto-include convenience: an embedded
+// stub the policy disallows is never queued by an identifier match (the
+// literal include path falls through to the filesystem on purpose, and
+// include/madc/ can exist on disk, so a queued disallowed header would serve
+// anyway), and a namespace-head row also respects the per-namespace
+// registration policy (security_policy.allow_*_namespace; true for every
+// non-namespace word, so the std-surface rows are unaffected).
+bool Program::auto_include_permitted(const std::string &word, const char *header)
+{
+    if ( find_embedded_header(header) && !is_embedded_header_allowed(header) )
+	return false;
+    return is_namespace_registration_enabled(word);
+}
+
+// The words the auto-include scan answers for unqualified, at a use (plan
+// §41.7a, completion): the table's rows, less a fragment's member rows,
+// which answer only qualified, and less what the host's policy disallows.
+// Empty outside the madc dialect, where the scan never runs.
+void Program::auto_include_words(std::vector<std::string> &out)
+{
+    if ( !auto_includes_enabled() )
+	return;
+    const std::map<std::string, std::string> &rows =
+	auto_include_identifier_headers();
+    for ( std::map<std::string, std::string>::const_iterator it = rows.begin();
+	  it != rows.end(); ++it )
+	if ( !auto_include_member_row(it->first, it->second.c_str())
+	     && auto_include_permitted(it->first, it->second.c_str()) )
+	    out.push_back(it->first);
 }
 
 std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string &value,
@@ -1694,6 +1863,8 @@ std::vector<TokenBase *> Program::tokenize_auto_include_define(const std::string
 		rt->file = origin->file;
 		rt->line = origin->line;
 		rt->column = origin->column;
+		rt->lex_end_line = origin->lex_end_line;
+		rt->lex_end_column = origin->lex_end_column;
 		// The replacement spelling is not the source's bytes at the
 		// origin position (`NULL` -> `((void *)0)`): coordinate
 		// consumers (parse_spans) must skip these (tfSYNTHPOS).
@@ -1938,11 +2109,13 @@ void Program::tokenize_embedded_header_text(const std::string &name,
 		pack_unit_subtree[interned].insert(interned);
 		pack_unit_stack.push_back(interned);
 	}
+	size_t groups_at_entry = cond_groups.size();
 	while ( (itb = getRealToken()) )
 	{
 		itb->file = interned;
 		push_token_with_literal_concat(itb);
 	}
+	refuse_open_conditional_groups(groups_at_entry);
 	if ( pack_recording && !protocol_visit )
 		pack_unit_stack.pop_back();
 	source = std::move(saved);
@@ -2810,7 +2983,9 @@ static std::string read_macro_body(Source &source)
 	}
 	if ( ch == '/' )
 	{
+	    int row = source.line();
 	    source.get();
+	    int col = source.column();
 	    if ( source.peek() == '/' )
 	    {
 		source.get();
@@ -2821,15 +2996,7 @@ static std::string read_macro_body(Source &source)
 	    if ( source.peek() == '*' )
 	    {
 		source.get();
-		while ( source.good() && !source.eof() )
-		{
-		    ch = source.get();
-		    if ( ch == '*' && source.peek() == '/' )
-		    {
-			source.get();
-			break;
-		    }
-		}
+		source.consume_block_comment(row, col);
 		if ( !body.empty() && body.back() != ' ' && body.back() != '\t' )
 		    body += ' ';
 		continue;
@@ -3088,9 +3255,7 @@ void Program::_tokenizer_init()
     // otherwise keeps the previous unit's stale nonzero position on every
     // token (madcide IDE-3 found it: every child diagnostic carried the
     // HOST program's last line).
-    TokenBase::_parse_file = NULL;
-    TokenBase::_parse_line = 0;
-    TokenBase::_parse_column = 0;
+    ParsePosition::reset();
     deferred_function_body_sink = NULL;
     parsing_cpp_struct_class = false;
     _include_iostream = false;
@@ -3111,6 +3276,7 @@ void Program::_tokenizer_init()
     lazy_module_spelling.clear();
     _lazy_module_tokens.clear();
     pending_no_strict_aliasing = false;
+    pending_weak_binding = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();
     _pack_current = 0;
@@ -3148,13 +3314,18 @@ void Program::_tokenizer_init()
     // would split into two macro arguments ("Too many parameters"). It is
     // stripped by balanced-paren consumption in getToken() instead.
     define_map["__extension__"] = "";
-    // _Alignas(N) (C11) / alignas(N) (C++11) are alignment specifiers — consume
-    // like __attribute__. The lexer strips the specifier and its parens (or, when
-    // the argument names a layout attribute, preserves it for the parser). Both
-    // spellings map to the same path; libstdc++ uses the bare `alignas` keyword
-    // (e.g. __aligned_membuf's `alignas(__alignof__(_Tp)) unsigned char ...`).
-    define_map["_Alignas"] = "__attribute__";
-    define_map["alignas"] = "__attribute__";
+    // The alignment specifier (C11 6.7.5 `_Alignas`, [dcl.align] `alignas`)
+    // reaches the parser, which reads it with the attribute groups
+    // (consume_gnu_attributes). `_Alignas` is kept in every mode, as gcc and
+    // clang accept it; `alignas` is its keyword spelling where the standard
+    // has the keyword (C23, C++11, the madc dialect) and a plain identifier
+    // elsewhere (C17's <stdalign.h> defines it as a macro).
+    {
+	const KeywordOrigin *k = keyword_origin("alignas");
+	if ( cpp_keyword_active(k->cpp_since)
+	  || (is_c_mode() && language_std >= k->c_since) )
+	    define_map["alignas"] = "_Alignas";
+    }
     define_map["__restrict"] = "";
     define_map["__restrict__"] = "";
     define_map["__signed__"] = "signed";
@@ -5897,16 +6068,14 @@ static bool push_precompiled_header_tokens(Program &pgm,
 	    keyword_map_iter ki = pgm.keyword_map.find(ident->spelling());
 	    if ( ki != pgm.keyword_map.end() )
 		replacement = (*ki)->clone();
-	    else
-	    {
-		flat_datatype_map_iter di = pgm.datatype_map.find(ident->spelling());
-		if ( di != pgm.datatype_map.end() )
-		    replacement = (*di)->clone();
-	    }
+	    else if ( TokenDataType *lt = pgm.lexer_type_token(ident->spelling()) )
+		replacement = lt->clone();
 	    if ( replacement )
 	    {
 		replacement->line = itb->line;
 		replacement->column = itb->column;
+		replacement->lex_end_line = itb->lex_end_line;
+		replacement->lex_end_column = itb->lex_end_column;
 		delete itb;
 		itb = replacement;
 	    }
@@ -5979,8 +6148,9 @@ void Program::add_keywords()
     // `constinit` are registered below AFTER being removed from the erase map,
     // and need decl-specifier consume handling; `inline` and `noexcept` keep
     // their erasure in NON-C++ modes only.
-    struct CppReservedKw { const char *kw; LanguageStd min_std; };
-    static const CppReservedKw cpp_reserved[] = {
+    // The version each is reserved from is its C++ standard in the keyword
+    // lists (keyword_origin, src/madc_keywords.cpp): one home for the fact.
+    static const char *const cpp_reserved[] = {
 	// STAGED — see DESIGN NOTE / the plan. The complete reserved set (below,
 	// commented) is validated-but-not-yet-activated: hard-reserving them is a
 	// genuine multi-site de-shim (every direct `type()==ttIdentifier` check
@@ -6009,7 +6179,7 @@ void Program::add_keywords()
 	// labels on declarations go through consume_gnu_asm_label (dynamic_cast
 	// to TokenIdent, works for the keyword token). The GNU spellings
 	// `__asm__`/`__asm` stay contextual (double-underscore impl-reserved).
-	{ "asm",              STD_CPP98 },
+	"asm",
 	// Slice 2 (declaration keywords): access specifiers and member/base
 	// specifiers. Every parse site reads them via
 	// is_contextual_identifier_token / contextual_identifier_name (base-spec
@@ -6019,13 +6189,13 @@ void Program::add_keywords()
 	// handler (export-template was removed in C++11; C++20 module `export`
 	// does not appear in the classic headers madc parses), so it is reserved
 	// for completeness only.
-	{ "explicit",         STD_CPP98 },
-	{ "mutable",          STD_CPP98 },
-	{ "virtual",          STD_CPP98 },
-	{ "export",           STD_CPP98 },
-	{ "public",           STD_CPP98 },
-	{ "private",          STD_CPP98 },
-	{ "protected",        STD_CPP98 },
+	"explicit",
+	"mutable",
+	"virtual",
+	"export",
+	"public",
+	"private",
+	"protected",
 	// Slice 3 (typename) — DEFERRED (staged, NOT reserved). Every direct
 	// parse site already reads contextual_identifier_name / TokenIdent::str
 	// (so `template<typename T>` and `typename X::type{...}` are fine), but
@@ -6042,66 +6212,68 @@ void Program::add_keywords()
 	// ignored decl-specifier it is consumed by TokenCppKeyword::parse (leading
 	// and storage-delegated `static constexpr` / `const constexpr`) and the
 	// member-specifier loop; is_ignored_cpp_specifier_token recognizes it.
-	{ "constexpr",        STD_CPP11 },
+	"constexpr",
 	// Slice 8 (thread_local, C++11 — self-host arc 2026-09-17): a real
 	// storage-class specifier, NOT ignored: TokenCppKeyword::parse records it
 	// (parsing_thread_local_decl, consumed by parseDeclaration exactly like
 	// parsing_static_decl) and the variable carries vfTHREADLOCAL, which the
 	// CIR builder lowers to c2mir's N_THREAD_LOCAL (`_Thread_local`). The C11
 	// spelling `_Thread_local` is registered below, gated on C11.
-	{ "thread_local",     STD_CPP11 },
+	"thread_local",
 	// Slice 6 (consteval/constinit, C++20): ignored decl-specifiers, handled
 	// by the same is_ignored_cpp_specifier_token path as constexpr.
-	{ "consteval",        STD_CPP20 },
-	{ "constinit",        STD_CPP20 },
+	"consteval",
+	"constinit",
 	// inline (un-erased 2026-07-24, ELF-completion S4 follow-through): a
 	// real decl-specifier consumed by TokenCppKeyword::parse (which also
 	// owns `inline namespace`) and the member-specifier loop; it carries
 	// vague linkage — bodied external-linkage functions/variables it
 	// qualifies emit linkonce (STB_WEAK) so per-TU header copies merge at
 	// native links. C modes keep the erasure (see _tokenizer_init).
-	{ "inline",           STD_CPP98 },
+	"inline",
 	// Slice 4 (expression keywords) — validating subset first. The named
 	// casts / typeid / decltype / alignof are recognized by spelling in
 	// parse_constant_primary and the expression parser (de-shimmed), and are
 	// implausible as identifiers. `this`, `sizeof`, `nullptr`, `true`,
 	// `false` are staged separately (SESSION-16 §4 flagged semantic regressions).
-	{ "static_cast",      STD_CPP98 },
-	{ "const_cast",       STD_CPP98 },
-	{ "reinterpret_cast", STD_CPP98 },
-	{ "dynamic_cast",     STD_CPP98 },
-	{ "typeid",           STD_CPP98 },
-	{ "decltype",         STD_CPP11 },
-	{ "alignof",          STD_CPP11 },
+	"static_cast",
+	"const_cast",
+	"reinterpret_cast",
+	"dynamic_cast",
+	"typeid",
+	"decltype",
+	"alignof",
 	// noexcept — BOTH surfaces ([expr.unary.noexcept] operator and the
 	// [except.spec] specifier — un-erased 2026-08-04): the operator folds by
 	// spelling in parse_constant_primary and the expression parser (like
 	// sizeof/alignof); the specifier is captured by parseFunction's
 	// trailing-qualifier walk (NxTrue/NxNone/NxUnknown). Non-C++ modes keep
 	// the getToken() balanced-paren erasure (mirror of inline's C-mode split).
-	{ "noexcept",         STD_CPP11 },
+	"noexcept",
 	// Slice 4b: boolean / pointer literals.
-	{ "true",             STD_CPP98 },
-	{ "false",            STD_CPP98 },
-	{ "nullptr",          STD_CPP11 },
+	"true",
+	"false",
+	"nullptr",
 	// Slice 4c: sizeof (bisecting — SESSION-16 §4 flagged the expr-keyword set).
-	{ "sizeof",           STD_CPP98 },
+	"sizeof",
 	// Slice 4d: this (bisecting — madc models the receiver as __this).
-	{ "this",             STD_CPP98 },
-	{ 0,                  STD_CPP98 }
+	"this",
+	0
     };
     for ( size_t i = 0; i < sizeof(cpp_reserved)/sizeof(cpp_reserved[0]); ++i )
-	if ( cpp_reserved[i].kw
-	  && cpp_keyword_active(cpp_reserved[i].min_std)
-	  && keyword_map.find(cpp_reserved[i].kw) == keyword_map.end() )
-	    keyword_map[cpp_reserved[i].kw] =
-		new TokenCppKeyword(cpp_reserved[i].kw);
+    {
+	const KeywordOrigin *k = cpp_reserved[i] ? keyword_origin(cpp_reserved[i]) : NULL;
+	if ( k && k->in_cpp && cpp_keyword_active(k->cpp_since)
+	  && keyword_map.find(cpp_reserved[i]) == keyword_map.end() )
+	    keyword_map[cpp_reserved[i]] = new TokenCppKeyword(cpp_reserved[i]);
+    }
     // C11 `_Thread_local` ([6.7.1]): the C spelling of the same storage-class
     // specifier — one parse arm (TokenCppKeyword::parse, by spelling), one
     // variable flag, one lowering. Reserved from C11 on, and in every C++ /
     // madc mode (an implementation-reserved identifier there; clang++ honours
     // it as an extension). Never in C89/C99, where it is a valid identifier.
-    if ( language_std == STD_MADC || language_std >= STD_C11 )
+    if ( language_std == STD_MADC
+      || language_std >= keyword_origin("_Thread_local")->c_since )
 	if ( keyword_map.find("_Thread_local") == keyword_map.end() )
 	    keyword_map["_Thread_local"] = new TokenCppKeyword("_Thread_local");
     // GNU `__thread`: the same specifier's pre-standard spelling, an
@@ -6283,19 +6455,14 @@ static void skip_directive_line_tail(Source &source)
 	    break;
 	if ( c == '/' )
 	{
+	    int row = source.line();
 	    source.get();
+	    int col = source.column();
 	    int n = source.peek();
 	    if ( n == '*' )
 	    {
 		source.get();
-		int prev = 0;
-		while ( source.good() && !source.eof() )
-		{
-		    int cc = source.get();
-		    if ( prev == '*' && cc == '/' )
-			break;
-		    prev = cc;
-		}
+		source.consume_block_comment(row, col);
 		continue;
 	    }
 	    if ( n == '/' )
@@ -6355,7 +6522,13 @@ TokenBase *Program::make_str(const std::string &bytes, bool wide)
 
 TokenBase *Program::make_char(int code)
 {
-    return new TokenChar(code);
+    TokenChar *tc = new TokenChar(code);
+    // The literal's TYPE is the language's: an integer character constant is
+    // an int in C (C11 6.4.4.4p10 — sizeof 'a' is sizeof(int)), a
+    // single-c-char literal a char in C++ and the madc dialect ([lex.ccon]/2).
+    if ( is_c_mode() )
+	tc->setDataType(&ddINT32);
+    return tc;
 }
 
 // [lex.ext]/1 — capture the ud-suffix of a user-defined-literal onto the
@@ -6394,6 +6567,26 @@ TokenBase *Program::make_datatype(const char *name, DataDef &dd)
     return t;
 }
 
+// A file lexes its whole text before any of it is parsed, so the only types
+// its lexer knows are madc's own (add_datatypes marks them builtin): a class,
+// typedef or enum the file declares reaches the parser as an identifier, and
+// the parser resolves it by lookup, scope included. An interactive session
+// lexes each entry after the earlier entries' declarations are registered.
+// If the lexer read those, `int T = 3;` shadowing an earlier entry's class T
+// would lex as two types, and `int S::get() const` / `S::S(int)` would open
+// with a type-name where every declarator-id reader expects an identifier.
+// So the entry's lexer knows what a file's lexer knows, and its entry text
+// parses as that text would at the same place in one file.
+TokenDataType *Program::lexer_type_token(const std::string &word)
+{
+    flat_datatype_map_iter di = datatype_map.find(word);	// allowed-exception: the owner
+    if ( di == datatype_map.end() || !*di )
+	return NULL;
+    if ( interactive_session && !(*di)->builtin )
+	return NULL;
+    return *di;
+}
+
 TokenBase *Program::make_rem(const std::string &text)
 {
     return new TokenREM(text);
@@ -6410,7 +6603,6 @@ TokenBase *Program::make_eol(int cnt)   { return new TokenEOL(cnt); }
 TokenBase *Program::_getToken()
 {
     keyword_map_iter kmi;
-    flat_datatype_map_iter bmi = nullptr;
     string word;
     int ch, cnt, row, col;
 
@@ -6514,19 +6706,11 @@ TokenBase *Program::_getToken()
 	    }
 	    if (source.peek() == '*')					// /*
 	    {
+		row = source.line();
+		col = source.column();
 		source.get();
 		word = "/*";
-		while ( source.good() && !source.eof() )
-		{
-		    ch = source.get();
-		    if ( ch == '*' && source.peek() == '/' )		// */
-		    {
-			word += ch;
-			word += source.get();
-			break;
-		    }
-		    word += ch;
-		}
+		source.consume_block_comment(row, col, &word);
 		return make_rem(word);
 	    }
 	    return make_token(TokenID::tkSlash);
@@ -6573,6 +6757,10 @@ TokenBase *Program::_getToken()
 	    // #include directive
 	    if ( isalpha(source.peek()) )
 	    {
+		// Where the directive's name starts: a conditional group
+		// records it as its opening position.
+		int dir_line = source.line();
+		int dir_col = source.column() + 1;
 		std::string directive;
 		// '_' is accepted so the compound directive #include_next is
 		// read whole (no standard directive but include_next uses '_').
@@ -6953,11 +7141,13 @@ TokenBase *Program::_getToken()
 			pack_unit_subtree[_interned2].insert(_interned2);
 			pack_unit_stack.push_back(_interned2);
 		    }
+		    size_t groups_at_entry = cond_groups.size();
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
 			push_token_with_literal_concat(itb);
 		    }
+		    refuse_open_conditional_groups(groups_at_entry);
 		    if ( pack_recording && !protocol_visit )
 			pack_unit_stack.pop_back();
 		    source = std::move(saved);
@@ -7170,7 +7360,9 @@ TokenBase *Program::_getToken()
 		    pack_record_branch_macro(name);
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
-		    ifdef_done_stack.push(active);
+		    cond_groups.push({ active, directive == "ifdef" ? CondDirective::Ifdef
+							: CondDirective::Ifndef,
+				       dir_line, dir_col });
 		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -7185,7 +7377,7 @@ TokenBase *Program::_getToken()
 			source.get();
 		    bool active = evaluateIfCondition();
 		    ifdef_stack.push(active);
-		    ifdef_done_stack.push(active);
+		    cond_groups.push({ active, CondDirective::If, dir_line, dir_col });
 		    DBG(std::cout << "#if -> " << (active ? "true" : "false") << std::endl);
 		    if ( !active )
 			return skipConditionalBlock();
@@ -7195,7 +7387,8 @@ TokenBase *Program::_getToken()
 		{
 		    if ( ifdef_stack.empty() )
 			Throw << "#elif without matching #if/#ifdef" << flush;
-		    bool already_done = ifdef_done_stack.top();
+		    cond_groups.top().directive = CondDirective::Elif;
+		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
 		    if ( already_done )
 		    {
@@ -7207,7 +7400,7 @@ TokenBase *Program::_getToken()
 		    bool active = evaluateIfCondition();
 		    ifdef_stack.push(active);
 		    if ( active )
-			ifdef_done_stack.top() = true;
+			cond_groups.top().taken = true;
 		    DBG(std::cout << "#elif -> " << (active ? "true" : "false") << std::endl);
 		    if ( !active )
 			return skipConditionalBlock();
@@ -7217,12 +7410,13 @@ TokenBase *Program::_getToken()
 		{
 		    if ( ifdef_stack.empty() )
 			Throw << "#else without matching #if/#ifdef" << flush;
-		    bool already_done = ifdef_done_stack.top();
+		    cond_groups.top().directive = CondDirective::Else;
+		    bool already_done = cond_groups.top().taken;
 		    ifdef_stack.pop();
 		    bool active = !already_done;
 		    ifdef_stack.push(active);
 		    if ( active )
-			ifdef_done_stack.top() = true;
+			cond_groups.top().taken = true;
 		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -7236,7 +7430,7 @@ TokenBase *Program::_getToken()
 		    if ( ifdef_stack.empty() )
 			Throw << "#endif without matching #if/#ifdef" << flush;
 		    ifdef_stack.pop();
-		    ifdef_done_stack.pop();
+		    cond_groups.pop();
 		    DBG(std::cout << "#endif" << std::endl);
 		    // discard the directive's trailing tokens via the lexer, so a
 		    // multi-line /* */ comment here is handled by the lexer's case '/'
@@ -7310,7 +7504,8 @@ TokenBase *Program::_getToken()
 	case '?': return make_token(TokenID::tkQmark);					// ?
 	case ':':
 	    if (source.peek() == ':') { source.get(); return make_token(TokenID::tkNS); }   // ::
-	    if (source.peek() == '=') { source.get(); return make_token(TokenID::tkColEq); } // :=
+	    if (source.peek() == '=' && short_declaration_enabled())
+		{ source.get(); return make_token(TokenID::tkColEq); } // :=
 	    return make_token(TokenID::tkColon);                                               // :
 	case ';': return make_token(TokenID::tkSemi);					// ,
 	case ',': return make_token(TokenID::tkComma);				// .
@@ -7357,69 +7552,27 @@ TokenBase *Program::_getToken()
 	    word = "";
 	    row = source.line();
 	    col = source.column();
-	    while ( source.good() && source.peek() != '"' )
+	    while ( literal_body_continues(source, '"', row, col) )
 	    {
 		if ( source.peek() == '\\' )
 		{
 		    source.get(); // consume backslash
 		    if ( !source.good() ) break;
-		    char esc = source.get();
-		    switch (esc) {
-			case 'n':  word += '\n'; break;
-			case 't':  word += '\t'; break;
-			case 'r':  word += '\r'; break;
-			case '\\': word += '\\'; break;
-			case '"':  word += '"';  break;
-			case '\'': word += '\''; break;
-			case 'a':  word += '\a'; break;
-			case 'b':  word += '\b'; break;
-			case 'f':  word += '\f'; break;
-			case 'v':  word += '\v'; break;
-			case '?':  word += '\?'; break;
-			case 'x': case 'X': {
-			    // hex escape: \xHH (1-2 hex digits)
-			    int val = 0; int dig = 0;
-			    while ( dig < 2 && source.good() ) {
-				int c = source.peek();
-				int d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
-				if ( d < 0 ) break;
-				val = (val << 4) | d;
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			case '0': case '1': case '2': case '3':
-			case '4': case '5': case '6': case '7': {
-			    // octal escape: \NNN (1-3 octal digits, including the one already consumed)
-			    int val = esc - '0'; int dig = 1;
-			    while ( dig < 3 && source.good() ) {
-				int c = source.peek();
-				if ( c < '0' || c > '7' ) break;
-				val = (val << 3) | (c - '0');
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			default:   word += '\\'; word += esc; break;
-		    }
+		    append_byte_escape(word, read_literal_escape(*this, source, source,
+								 source.get(), 0xFF));
 		}
 		else
 		    word += source.get();
 	    }
 	    if ( !source.good() )
-	    {
-		source.setpos(row, col);
-		Throw << "Unterminated string" << flush;
-	    }
+		refuse_unterminated_literal(source, '"', row, col);
 	    source.get();
 	    {
 		TokenBase *stok = make_str(word);
 		lex_ud_suffix(stok);
 		// Source extent of this piece (see TokenStr::SrcPiece): from
 		// the opening quote through the closing quote, single-line
-		// only — a line-spanning literal (scanner-tolerated) keeps no
+		// only — a literal spliced across lines (`\`-new-line) keeps no
 		// piece and the consumer falls back.
 		if ( source.line() == row )
 		{
@@ -7435,63 +7588,29 @@ TokenBase *Program::_getToken()
 	    word = "";
 	    row = source.line();
 	    col = source.column();
-	    while ( source.good() && source.peek() != '\'' )
+	    while ( literal_body_continues(source, '\'', row, col) )
 	    {
 		if ( source.peek() == '\\' )
 		{
 		    source.get(); // consume backslash
 		    if ( !source.good() ) break;
-		    char esc = source.get();
-		    switch (esc) {
-			case 'n':  word += '\n'; break;
-			case 't':  word += '\t'; break;
-			case 'r':  word += '\r'; break;
-			case '\\': word += '\\'; break;
-			case '\'': word += '\''; break;
-			case '"':  word += '"';  break;
-			case 'a':  word += '\a'; break;
-			case 'b':  word += '\b'; break;
-			case 'f':  word += '\f'; break;
-			case 'v':  word += '\v'; break;
-			case '?':  word += '\?'; break;
-			case 'x': case 'X': {
-			    int val = 0; int dig = 0;
-			    while ( dig < 2 && source.good() ) {
-				int c = source.peek();
-				int d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
-				if ( d < 0 ) break;
-				val = (val << 4) | d;
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			case '0': case '1': case '2': case '3':
-			case '4': case '5': case '6': case '7': {
-			    int val = esc - '0'; int dig = 1;
-			    while ( dig < 3 && source.good() ) {
-				int c = source.peek();
-				if ( c < '0' || c > '7' ) break;
-				val = (val << 3) | (c - '0');
-				source.get(); ++dig;
-			    }
-			    word += (char)val;
-			    break;
-			}
-			default:   word += '\\'; word += esc; break;
-		    }
+		    append_byte_escape(word, read_literal_escape(*this, source, source,
+								 source.get(), 0xFF));
 		    continue;
 		}
 		word += source.get();
 	    }
 	    if ( !source.good() )
-	    {
-		source.setpos(row, col);
-		Throw << "Unterminated string" << flush;
-	    }
+		refuse_unterminated_literal(source, '\'', row, col);
 	    source.get();
 	    {
-		TokenBase *ctok = make_char(word[0]);
+		int32_t cval = narrow_char_constant_value(*this, source, word,
+							  row, col);
+		// A multi-character constant has type int in C and C++ alike
+		// ([lex.ccon]/2); a single c-char stays the char token.
+		TokenBase *ctok = word.size() == 1 ? make_char(cval) : make_int(cval);
+		if ( word.size() > 1 )
+		    ((TokenInt *)ctok)->setDataType(&ddINT32);
 		lex_ud_suffix(ctok);
 		return ctok;
 	    }
@@ -8749,8 +8868,8 @@ TokenBase *Program::_getToken()
 		    if ( oi != cpp_operator_map.end() )
 			return (*oi)->clone();
 		}
-		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
-		    return (*bmi)->clone();
+		if ( TokenDataType *lt = lexer_type_token(word) )
+		    return lt->clone();
 		if ( auto_include_standard_identifier(word) )
 		    return getToken();
 		TokenIdent *ti = (TokenIdent *)make_ident(word);
@@ -8807,7 +8926,7 @@ TokenBase *Program::skipConditionalBlock()
 	    {
 		// this #endif closes our block
 		ifdef_stack.pop();
-		ifdef_done_stack.pop();
+		cond_groups.pop();
 		DBG(std::cout << "skipConditionalBlock: popped, stack now=" << ifdef_stack.size() << std::endl);
 		return getToken();
 	    }
@@ -8817,12 +8936,13 @@ TokenBase *Program::skipConditionalBlock()
 	{
 	    // consume the rest of the directive line (comment-aware)
 	    skip_directive_line_tail(source);
-	    bool already_done = ifdef_done_stack.top();
+	    cond_groups.top().directive = CondDirective::Else;
+	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
 	    bool active = !already_done;
 	    ifdef_stack.push(active);
 	    if ( active )
-		ifdef_done_stack.top() = true;
+		cond_groups.top().taken = true;
 	    if ( active )
 		return getToken();
 	    // still false, keep skipping
@@ -8830,7 +8950,8 @@ TokenBase *Program::skipConditionalBlock()
 	else if ( depth == 0 && dir == "elif" )
 	{
 	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
-	    bool already_done = ifdef_done_stack.top();
+	    cond_groups.top().directive = CondDirective::Elif;
+	    bool already_done = cond_groups.top().taken;
 	    ifdef_stack.pop();
 	    if ( already_done )
 	    {
@@ -8845,7 +8966,7 @@ TokenBase *Program::skipConditionalBlock()
 		bool active = evaluateIfCondition();
 		ifdef_stack.push(active);
 		if ( active )
-		    ifdef_done_stack.top() = true;
+		    cond_groups.top().taken = true;
 		DBG(std::cout << "#elif (in skip) -> " << (active ? "true" : "false") << std::endl);
 		if ( active )
 		    return getToken();
@@ -8859,8 +8980,28 @@ TokenBase *Program::skipConditionalBlock()
 		source.get();
 	}
     }
-    Throw << "Unterminated conditional compilation block" << flush;
+    // The file ended inside a skipped group: the group is still open.
+    refuse_open_conditional_groups(cond_groups.empty() ? 0 : cond_groups.size() - 1);
     return NULL;
+}
+
+void Program::refuse_open_conditional_groups(size_t groups_at_entry)
+{
+    if ( cond_groups.size() <= groups_at_entry )
+	return;
+    const ConditionalGroup &g = cond_groups.top();
+    const char *name = "if";
+    switch ( g.directive )
+    {
+	case CondDirective::If:     name = "if";     break;
+	case CondDirective::Ifdef:  name = "ifdef";  break;
+	case CondDirective::Ifndef: name = "ifndef"; break;
+	case CondDirective::Elif:   name = "elif";   break;
+	case CondDirective::Else:   name = "else";   break;
+    }
+    source.setpos(g.line, g.column);
+    source.refusal_cause = ::madc::diag_cause::end_of_input;
+    Throw << "unterminated #" << name << flush;
 }
 
 // evaluate #if condition: supports defined(NAME), !, &&, ||, ?:, the
@@ -9243,19 +9384,14 @@ bool Program::evaluateIfCondition()
 	    break;
 	if ( !in_str && !in_chr && ch == '/' )
 	{
+	    int row = source.line();
 	    source.get();
+	    int col = source.column();
 	    int nx = source.peek();
 	    if ( nx == '*' )
 	    {
 		source.get();
-		int prev = 0;
-		while ( source.good() && !source.eof() )
-		{
-		    int c2 = source.get();
-		    if ( prev == '*' && c2 == '/' )
-			break;
-		    prev = c2;
-		}
+		source.consume_block_comment(row, col);
 		raw_expr += ' ';
 		continue;
 	    }
@@ -9320,50 +9456,13 @@ bool Program::evaluateIfCondition()
     std::function<int64_t()> parse_unary;
     std::function<int64_t()> parse_primary;
 
-    auto read_char_escape = [&]() -> int64_t {
-	if ( pos >= expr.size() )
-	    return 0;
-	char esc = expr[pos++];
-	switch ( esc )
-	{
-	    case 'n':  return '\n';
-	    case 't':  return '\t';
-	    case 'r':  return '\r';
-	    case '\\': return '\\';
-	    case '"':  return '"';
-	    case '\'': return '\'';
-	    case 'a':  return '\a';
-	    case 'b':  return '\b';
-	    case 'f':  return '\f';
-	    case 'v':  return '\v';
-	    case '?':  return '\?';
-	    case 'x': case 'X': {
-		int64_t val = 0;
-		while ( pos < expr.size() && isxdigit((unsigned char)expr[pos]) )
-		{
-		    char c = expr[pos++];
-		    int d = (c >= '0' && c <= '9') ? c - '0'
-			: (c >= 'a' && c <= 'f') ? c - 'a' + 10
-			: (c >= 'A' && c <= 'F') ? c - 'A' + 10 : 0;
-		    val = (val << 4) | d;
-		}
-		return val;
-	    }
-	    case '0': case '1': case '2': case '3':
-	    case '4': case '5': case '6': case '7': {
-		int64_t val = esc - '0';
-		int dig = 1;
-		while ( dig < 3 && pos < expr.size()
-		     && expr[pos] >= '0' && expr[pos] <= '7' )
-		{
-		    val = (val << 3) | (expr[pos++] - '0');
-		    ++dig;
-		}
-		return val;
-	    }
-	    default:
-		return (unsigned char)esc;
-	}
+    // A character constant's escape in the condition: the one escape
+    // decoder, over the captured condition text.
+    auto read_char_escape = [&](bool wide) -> LiteralEscape {
+	CapturedTextReader in = { expr, pos };
+	char esc = (char)in.get();
+	return read_literal_escape(*this, in, source, esc,
+				   wide ? 0xFFFFFFFFu : 0xFFu);
     };
 
     auto read_char_literal = [&](bool wide) -> int64_t {
@@ -9372,24 +9471,31 @@ bool Program::evaluateIfCondition()
 	if ( pos >= expr.size() || expr[pos] != '\'' )
 	    return 0;
 	++pos;
+	// A wide constant is its last c-char (gcc); a narrow one is its
+	// bytes, valued by the tokenizer's own rule.
 	int64_t value = 0;
+	std::string bytes;
 	while ( pos < expr.size() && expr[pos] != '\'' )
 	{
-	    int64_t ch;
-	    if ( expr[pos] == '\\' )
+	    if ( expr[pos] == '\\' && pos + 1 < expr.size() )
 	    {
 		++pos;
-		ch = read_char_escape();
+		LiteralEscape e = read_char_escape(wide);
+		value = e.value;
+		append_byte_escape(bytes, e);
 	    }
 	    else
-		ch = (unsigned char)expr[pos++];
-	    value = (value << 8) | (ch & 0xff);
-	    if ( wide )
-		value = ch;
+	    {
+		value = (unsigned char)expr[pos];
+		bytes += expr[pos++];
+	    }
 	}
 	if ( pos < expr.size() && expr[pos] == '\'' )
 	    ++pos;
-	return value;
+	if ( wide )
+	    return value;
+	return narrow_char_constant_value(*this, source, bytes,
+					  source.line(), source.column());
     };
 
     parse_primary = [&]() -> int64_t {
@@ -9759,7 +9865,26 @@ bool Program::evaluateIfCondition()
 
 TokenBase *Program::getToken()
 {
+    // The token's START (D26: gcc's anchor) is the cursor before this call
+    // reads its first byte, and its END the cursor when the call returns. A
+    // directive, a macro expansion or a lookahead re-enters getToken, and the
+    // call that reads a token stamps it first, so an outer call leaves an
+    // already-stamped token alone. A token that arrives positioned (an
+    // injected or a pragma's token) keeps its own position. A
+    // macro-synthesized token's position is getRealToken's to set.
+    // A line splice at the cursor belongs before the token: peek() consumes
+    // it (as the first get() would), so the start is the token's own line.
+    source.peek();
+    int start_line = source.line();
+    int start_column = source.cursor_column() + 1;
     TokenBase *tb = _getToken();
+    if ( tb && tb->column == 0 )
+    {
+	tb->line = start_line;
+	tb->column = start_column;
+	tb->lex_end_line = source.line();
+	tb->lex_end_column = source.column();
+    }
 
     // Step 4: identifier spelling_id is now interned AT CREATION (make_ident and
     // the TokenIdent ctors), so the old getToken() stamp-from-str fallback is gone
@@ -9800,7 +9925,7 @@ void Program::handle_pragma_body()
 	source.get();
     std::string pragma;
     int pragma_line = source.line();
-    int pragma_col = source.column();
+    int pragma_col = source.column() + 1;	// the pragma word's start
     while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
 	pragma += source.get();
     if ( pragma == "pack" )
@@ -10082,6 +10207,13 @@ TokenBase *Program::getRealToken()
 		// own spelling. Coordinate consumers (parse_spans) skip it.
 		tb->setFlag(tfSYNTHPOS);
 		synth_mark = source.synth_reads();
+		// Synthesized bytes advance no column: the token stands at
+		// the invocation's end, today's frozen stamp (citing the
+		// invocation's start is a follow-on, D26).
+		tb->line = source.line();
+		tb->column = source.column();
+		tb->lex_end_line = tb->line;
+		tb->lex_end_column = tb->column;
 	    }
 	    if ( tb->line == 0 )
 		tb->line = source.line(); //_line;
@@ -10118,6 +10250,24 @@ TokenBase *Program::getRealToken()
 // preserved — true byte-faithful reconstruction needs tokens to retain raw
 // source text (a follow-on). Sufficient to demonstrate trivia retention on
 // plain source. Keywords/identifiers/types/comments are all TokenIdent-derived.
+void madc_token_end(TokenBase *tb, int &line, int &column)
+{
+    if ( !tb )
+    {
+	line = column = 0;
+	return;
+    }
+    if ( tb->lex_end_column )
+    {
+	line = tb->lex_end_line;
+	column = tb->lex_end_column;
+	return;
+    }
+    line = tb->line;
+    size_t n = madc_token_spelling(tb).size();
+    column = tb->column + (n ? (int)n - 1 : 0);
+}
+
 std::string madc_token_spelling(TokenBase *tb)
 {
     switch ( tb->type() )
@@ -10195,36 +10345,17 @@ HighlightClass madc_token_highlight_class(TokenBase *tb)
     return HighlightClass::hcNone;
 }
 
-// THE C-string-literal escape rule (declared in madc.h; dupaudit family
-// c_string_literal_escape): the cooked bytes as a double-quoted literal's
-// BODY. Canonical escapes; octal for non-printables (octal caps at 3
-// digits — hex is maximal-munch and would swallow following hex digits).
+// The cooked bytes as a double-quoted C literal's BODY (declared in madc.h).
 // The token-spelling owner above and cir_emit_c's N_STR case both read it.
+// The rule itself (dupaudit family c_string_literal_escape) is the runtime's
+// __madc_c_escape (rt/rt_dump.c), which the REPL's value display reads too, so
+// a compiled literal and a shown one cannot disagree.
 std::string madc_c_escape_string(const char *s, size_t len)
 {
-    std::string out;
-    for ( size_t i = 0; s && i < len; ++i )
-    {
-	unsigned char c = (unsigned char)s[i];
-	switch ( c )
-	{
-	    case '"':  out += "\\\""; break;
-	    case '\\': out += "\\\\"; break;
-	    case '\n': out += "\\n"; break;
-	    case '\t': out += "\\t"; break;
-	    case '\r': out += "\\r"; break;
-	    default:
-		if ( c >= 0x20 && c <= 0x7e )
-		    out += (char)c;
-		else
-		{
-		    char buf[8];
-		    snprintf(buf, sizeof(buf), "\\%03o", c);
-		    out += buf;
-		}
-	}
-    }
-    return out;
+    size_t n = __madc_c_escape(s, len, '"', NULL, 0);
+    std::vector<char> buf(n + 1);
+    __madc_c_escape(s, len, '"', &buf[0], buf.size());
+    return std::string(&buf[0], n);
 }
 
 // Reconstruct source text from the token stream (full-fidelity mode): each
@@ -10368,21 +10499,28 @@ void Program::printt(TokenBase *tb)
     } // end switch
 }
 
-void Source::showerror(int row, int col)
+void Source::consume_block_comment(int row, int col, std::string *keep)
 {
-//	std::cout << "showerror(" << row << ", " << col << ')' << std::endl;
-	std::string ln;
+    int prev = 0;
+    while ( good() && !eof() )
+    {
+	int c = get();
+	if ( keep )
+	    *keep += (char)c;
+	if ( prev == '*' && c == '/' )
+	    return;
+	prev = c;
+    }
+    setpos(row, col);
+    refuse_at_end_of_input("unterminated comment");
+}
 
-	if ( !row || !col )
-	{
-	    row = line();
-	    col = column();
-	}
-
-	// This display walk MUST be position-neutral: a WARNING resumes lexing
-	// right after it prints, so the cursor state is saved here and restored
-	// before every return. (It was destructive-only before — every caller
-	// was a fatal error path, so the clobbered cursor never mattered.)
+// Line `row` of this Source's text, for a diagnostic's header and echo.
+// Position-neutral: a WARNING resumes lexing right after it prints, so the
+// cursor state is saved and restored.
+void Source::line_text(int row, std::string &ln)
+{
+	ln.clear();
 	size_t saved_gpos = _gpos;
 	int saved_cr = _cr, saved_lf = _lf, saved_column = _column;
 
@@ -10394,44 +10532,118 @@ void Source::showerror(int row, int col)
 	while ( peek() != -1 )
 	{
 	    getline(ln);
-	    //cout << "line()-1 " << (line()-1) << "  row " << row << endl;
 	    if ( line()-1 >= row )
 		break;
         }
 
 	_gpos = saved_gpos;
 	_cr = saved_cr; _lf = saved_lf; _column = saved_column;
+}
 
-	show_error_source_line(ln, col);
+void Source::showerror(int row, int col, std::ostream &os, int end_line,
+		       int end_col)
+{
+	std::string ln;
+
+	if ( !row || !col )
+	{
+	    row = line();
+	    col = column();
+	    end_line = end_col = 0;
+	}
+	line_text(row, ln);
+	show_error_source_line(ln, col, os,
+			   madc_underline_end(ln, row, col, end_line, end_col));
+}
+
+int madc_underline_end(const std::string &ln, int row, int col, int end_line,
+		       int end_col)
+{
+    if ( end_line == row && end_col >= col )
+	return end_col;
+    if ( end_line > row )
+	return (int)ln.length();	// gcc underlines a run-on token to the line's end
+    return 0;
+}
+
+// The 1-based SCREEN column of 1-based byte column `col` in line `ln` — gcc's
+// column (madc::line_layout: tabs to 8-column stops, code-point widths), the
+// one a diagnostic's header prints (D26). The stored unit stays bytes.
+int madc_screen_column(const std::string &ln, int col)
+{
+    if ( col <= 1 )
+	return col;
+    // screen[i] = the screen column byte i starts at; screen[length] = the
+    // line's end. A position past the end (an end-of-input cite) continues
+    // one column per byte from there.
+    size_t at = std::min((size_t)(col - 1), ln.length());
+    std::vector<size_t> screen;
+    madc::line_layout(ln, 0, screen);
+    if ( at >= screen.size() )
+	return col;
+    return (int)screen[at] + 1 + (col - 1 - (int)at);
+}
+
+// The screen column a diagnostic's header prints for (fname, row, col): the
+// line read where its echo reads it — the live Source when `fname` is its
+// file, else the file on disk — and the byte column when neither has it.
+int madc_diag_screen_column(Source *src, const char *fname, int row, int col)
+{
+    if ( row <= 0 || col <= 0 )
+	return col;
+    std::string ln;
+    if ( src && fname && src->fname() && strcmp(fname, src->fname()) == 0 )
+	src->line_text(row, ln);
+    else if ( !madc_file_line(fname, row, ln) )
+	return col;
+    return madc_screen_column(ln, col);
 }
 
 // Shared display tail for a diagnostic source echo: the offending line and a
 // caret under the column, truncated to the terminal width — one formatter for
-// both the live-Source echo and the reread-from-disk echo.
-void show_error_source_line(const std::string &ln, int col)
+// both the live-Source echo and the reread-from-disk echo. `col` is a 1-based
+// BYTE column; the line echoes laid out by THE screen-layout rule
+// (madc::line_layout: tabs to 8-column stops, code-point widths — gcc's
+// screen columns) and the caret sits under that byte's screen column, as gcc
+// and clang draw it. A raw tab or a byte counted as a column misplaced it (B8).
+// Bytes col+1 .. end_col (1-based, the token's rest on this line) are
+// underlined with `~` across their screen columns: gcc's `^~~` (D26).
+void show_error_source_line(const std::string &ln, int col, std::ostream &os,
+			    int end_col)
 {
     char *env_columns = getenv("COLUMNS");
     size_t term_columns = env_columns ? (size_t)atoi(env_columns) : 80;
+    // The column can exceed the fetched line (a token inside a macro
+    // expansion carries post-expansion provenance). A diagnostic must never
+    // throw — the caret's byte is clamped to the line's end instead of
+    // letting substr raise out_of_range mid-print (which surfaced as "tree
+    // build failed (basic_string::substr...)" and MASKED the real error).
+    size_t at = col > 1 ? std::min((size_t)(col - 1), ln.length()) : 0;
+    // One past the token's last byte on this line (a byte index).
+    size_t stop = end_col > 0 ? std::min((size_t)end_col, ln.length()) : 0;
+    std::vector<size_t> screen;
+    std::string shown = madc::line_layout(ln, 0, screen);
+    // `^` then a `~` for each further screen column the token covers.
+    auto mark = [](const std::vector<size_t> &cols, size_t from, size_t to) {
+	size_t width = to > from ? cols[to] - cols[from] : 0;
+	return std::string("\e[1;32m^")
+	       + std::string(width > 1 ? width - 1 : 0, '~') + "\e[m";
+    };
 
-    if ( ln.length()+5 > term_columns )
+    if ( screen.back() + 5 > term_columns )
     {
-	// The column can exceed the fetched line (a token inside a macro
-	// expansion carries post-expansion provenance). A diagnostic must
-	// never throw — clamp the tail slice to the line's end instead of
-	// letting substr raise out_of_range mid-print (which surfaced as
-	// "tree build failed (basic_string::substr...)" and MASKED the
-	// real error).
-	size_t start = (col > 0 && (size_t)col <= ln.length())
-		     ? (size_t)col : ln.length();
-	std::string trunc = "  ..." + ln.substr(start);
-	std::cerr << trunc << std::endl;
-	std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
+	// Too wide: the tail from the caret's byte, laid out where it prints
+	// (after the 5-column "  ..."), the caret under its first column.
+	const size_t lead = 5;
+	std::vector<size_t> tail_screen;
+	os << "  ..." << madc::line_layout(ln.substr(at), lead, tail_screen)
+	   << std::endl;
+	os << std::string(lead, ' ')
+	   << mark(tail_screen, 0, stop > at ? stop - at : 0) << std::endl;
 	return;
     }
-    std::cerr << ln << std::endl;
-    if ( col > 1 )
-	std::cerr << std::setw(col-1) << ' ';
-    std::cerr << "\e[1;32m^\e[m" << std::endl;
+    os << shown << std::endl;
+    os << std::string(screen[at], ' ') << mark(screen, at, stop) << std::endl;
 }
 
 // Echo line `row` of a file that is NOT the live Source buffer — a token from
@@ -10439,20 +10651,27 @@ void show_error_source_line(const std::string &ln, int col)
 // false (echo skipped) when the file cannot be opened or is shorter than
 // `row` — e.g. an embedded header with no on-disk presence, or stale
 // provenance; skipping beats echoing the wrong file's text.
-bool madc_show_file_error(const char *fname, int row, int col)
+bool madc_file_line(const char *fname, int row, std::string &ln)
 {
     if ( !fname || !*fname || row <= 0 )
 	return false;
     std::ifstream f(fname);
     if ( !f.is_open() )
 	return false;
-    std::string ln;
     int i = 0;
     while ( i < row && std::getline(f, ln) )
 	++i;
-    if ( i != row )
+    return i == row;
+}
+
+bool madc_show_file_error(const char *fname, int row, int col, std::ostream &os,
+		  int end_line, int end_col)
+{
+    std::string ln;
+    if ( !madc_file_line(fname, row, ln) )
 	return false;
-    show_error_source_line(ln, col);
+    show_error_source_line(ln, col, os,
+			   madc_underline_end(ln, row, col, end_line, end_col));
     return true;
 }
 
@@ -10461,21 +10680,24 @@ int throwbuf::sync()
     if ( DiagnosticRenderMute::active )
 	throw std::exception();	// captured as data — render nothing
     cerr << endl;
-    if ( _tb )
+    if ( _has_at )
     {
 	// file, line, column, AND the echoed source line must all come from
 	// the SAME provenance — the token's. Before this, an error inside an
 	// #included file printed the top-level file's NAME with the header's
 	// LINE and echoed the top-level file's text (three-way inconsistent).
-	const char *tok_file = (_tb->file && *_tb->file) ? _tb->file : NULL;
+	const char *tok_file = (_at.file && *_at.file) ? _at.file : NULL;
 	const char *fname = tok_file ? tok_file
 			  : (_src ? _src->fname() : "???");
-	cerr << ANSI_WHITE << fname << ':' << _tb->line << ':' << _tb->column
+	cerr << ANSI_WHITE << fname << ':' << _at.line << ':'
+	     << madc_diag_screen_column(_src, fname, _at.line, _at.column)
 	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
 	if ( _src && (!tok_file || strcmp(tok_file, _src->fname()) == 0) )
-	    _src->showerror(_tb->line, _tb->column);
+	    _src->showerror(_at.line, _at.column, cerr, _at.end_line,
+			    _at.end_column);
 	else
-	    madc_show_file_error(fname, _tb->line, _tb->column);
+	    madc_show_file_error(fname, _at.line, _at.column, cerr, _at.end_line,
+				 _at.end_column);
     }
     else
     if ( _src )
@@ -10492,35 +10714,6 @@ int throwbuf::sync()
     return -1;
 }
 
-
-#if 0
-void Program::showerror(istream &is)
-{
-    char *env_columns = getenv("COLUMNS");
-    string line;
-    size_t term_columns;
-
-    if ( env_columns )
-	term_columns = atoi(env_columns);
-    else
-	term_columns = 80;
-
-    is.clear();
-    is.seekg(_pos, is.beg);
-    if ( !is.good() )
-	cerr << " seekfail";
-    getline(is, line);
-    if ( line.length()+5 > term_columns )
-    {
-	line = "  ..." + line.substr(_column);
-	cerr << line << endl;
-	cerr << setw(4) << ' ' << "\e[1;32m^\e[m" << endl;
-	return;
-    }
-    cerr << line << endl;
-    cerr << setw(_column-1) << ' ' << "\e[1;32m^\e[m" << endl;
-}
-#endif
 
 #if 0
 // tokenize stream of data TODO -- do all the same as tokenize(file), except set up filename
@@ -10542,10 +10735,92 @@ void Program::tokenize(istream &ss)
 #endif
 
 
+// Lex the main unit whose text the Source holds — the ONE lex loop of
+// tokenize (a file) and tokenize_buffer (a buffer). Every token goes into the
+// stream, with a yield point every LEX_YIELD_GRAIN tokens (the token pump's
+// chunk grain — sub-millisecond slices; the check is one counter compare, and
+// parse_yield_point itself no-ops without tasks; it is the pump the IDE's
+// parse handles ride). Then the refusals only the unit's END can make: an
+// open conditional group, and an interactive entry's own end
+// (finish_interactive_entry). False after a refusal, recorded as a lexer
+// diagnostic whose cause add_diagnostic reads off the Source.
+bool Program::lex_main_unit(const char *fname)
+{
+    TokenBase *tb;
+    try
+    {
+	uint32_t pump = 0;
+	size_t groups_at_entry = cond_groups.size();
+	while ( (tb=getRealToken()) )
+	{
+	    tb->file = fname;
+	    push_token_with_literal_concat(tb);
+	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
+	    {
+		parse_yield_point();
+		lex_abort_if_task_cancelled();	// MT-3b: clean abort
+	    }
+	}
+	refuse_open_conditional_groups(groups_at_entry);
+	if ( interactive_entry() )
+	    finish_interactive_entry(fname);
+    }
+    catch(const char *err_msg)
+    {
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      err_msg ? err_msg : "(null error message)",
+			      fname, source.line(), source.column());
+	return false;
+    }
+    catch(TokenIdent *ti)
+    {
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("use of undeclared identifier '")
+				  + ti->spelling() + '\'',
+			      fname, source.line(), source.column());
+	return false;
+    }
+    catch(TokenBase *tb)
+    {
+	record_frontend_error(Program::DiagnosticPhase::lexer,
+			      std::string("unexpected token type ")
+				  + std::to_string((int)tb->type()),
+			      fname, source.line(), source.column());
+	return false;
+    }
+    catch(std::exception &e)
+    {
+	if ( !last_error.has_error )
+	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
+				    fname, source.line(), source.column());
+	print_unrendered_diagnostic();
+	return false;
+    }
+    return true;
+}
+
+// The end of one interactive entry (ParseMode::InteractiveEntry). A line
+// splice that ends the text continues onto a line not yet typed: refused as
+// the input's end, so the entry reads Incomplete (a `#define` still being
+// written); gcc accepts it at the end of a FILE, and TranslationUnit mode
+// never gets here. Then the end-of-entry token closes the stream — Clang-
+// Repl's annot_repl_input_end, Python's ENDMARKER — positioned past every
+// token of the text, so a diagnostic that cites it cites nothing else.
+void Program::finish_interactive_entry(const char *fname)
+{
+    if ( source.ends_in_line_splice() )
+	source.refuse_at_end_of_input("backslash-newline at end of input");
+    TokenBase *eoe = new TokenEndOfEntry();
+    eoe->file = fname;
+    eoe->line = source.line();
+    eoe->column = source.column() + 1;
+    tokens.push_back(eoe);	// no lexed token: the pop-1 factory never sees it
+    entry_end_token = eoe;
+}
+
 // tokenize a file
 TokenProgram *Program::tokenize(const char *fname)
 {
-    TokenBase *tb;
     ifstream file(fname);
 
     DBG(cout << "Program::tokenize(" << fname << ") START" << endl);
@@ -10585,56 +10860,8 @@ TokenProgram *Program::tokenize(const char *fname)
     pack_note_unit(pack_recording ? intern_file(fname) : NULL);	// B4a: main unit first
     Throw.source(source);
 
-    try
-    {
-	// Stage-2: yield every LEX_YIELD_GRAIN tokens (the token pump's
-	// chunk grain — sub-millisecond slices; the check is one counter
-	// compare, and parse_yield_point itself no-ops without tasks).
-	uint32_t pump = 0;
-	while ( (tb=getRealToken()) )
-	{
-	    tb->file = fname;
-//	    tb->line = source.line();
-//	    tb->column = source.column();
-	    push_token_with_literal_concat(tb);
-	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
-	    {
-		parse_yield_point();
-		lex_abort_if_task_cancelled();	// MT-3b: clean abort
-	    }
-        }
-    }
-    catch(const char *err_msg)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      err_msg ? err_msg : "(null error message)",
-			      fname, source.line(), source.column());
+    if ( !lex_main_unit(fname) )
 	return NULL;
-    }
-    catch(TokenIdent *ti)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("use of undeclared identifier '")
-				  + ti->spelling() + '\'',
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(TokenBase *tb)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("unexpected token type ")
-				  + std::to_string((int)tb->type()),
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(std::exception &e)
-    {
-	if ( !last_error.has_error )
-	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
-				    fname, source.line(), source.column());
-	print_unrendered_diagnostic();
-	return NULL;
-    }
 
     DBG(std::cout << "Program::tokenize() finished tokenizing" << std::endl);
 
@@ -10655,7 +10882,6 @@ TokenProgram *Program::tokenize(const char *fname)
     file.clear();
 
     tkProgram->source = fname;
-    tkProgram->is = new ifstream(fname);
     tkProgram->lines = source.line()-1;
     tkProgram->bytes = file.tellg();
 
@@ -10665,7 +10891,6 @@ TokenProgram *Program::tokenize(const char *fname)
 TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 				       const std::string &display_name)
 {
-    TokenBase *tb;
     std::string effective_name = display_name.empty() ? "<memory>" : display_name;
     const char *fname = intern_file(effective_name);
 
@@ -10675,60 +10900,8 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
 
     _tokenizer_init();
 
-    forest_root_file = fname;	// v24 (see tokenize)
-    source.fname(fname);
-    { ReadTimer _rt(_read_seconds); source.str(source_text); }
-    _input_bytes += source_text.size();	// --show-stats: load_buffer main-source bytes
-    pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
-    Throw.source(source);
-
-    try
-    {
-	// Stage-2: the same yield grain as tokenize() — this is the pump
-	// the IDE's parse handles ride (parse_open -> tokenize_buffer).
-	uint32_t pump = 0;
-	while ( (tb=getRealToken()) )
-	{
-	    tb->file = fname;
-	    push_token_with_literal_concat(tb);
-	    if ( (++pump & (LEX_YIELD_GRAIN - 1)) == 0 )
-	    {
-		parse_yield_point();
-		lex_abort_if_task_cancelled();	// MT-3b: clean abort
-	    }
-	}
-    }
-    catch(const char *err_msg)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      err_msg ? err_msg : "(null error message)",
-			      fname, source.line(), source.column());
+    if ( !lex_unit_text(fname, source_text) )
 	return NULL;
-    }
-    catch(TokenIdent *ti)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("use of undeclared identifier '")
-				  + ti->spelling() + '\'',
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(TokenBase *tb)
-    {
-	record_frontend_error(Program::DiagnosticPhase::lexer,
-			      std::string("unexpected token type ")
-				  + std::to_string((int)tb->type()),
-			      fname, source.line(), source.column());
-	return NULL;
-    }
-    catch(std::exception &e)
-    {
-	if ( !last_error.has_error )
-	    record_throw_diagnostic(e, Program::DiagnosticPhase::lexer,
-				    fname, source.line(), source.column());
-	print_unrendered_diagnostic();
-	return NULL;
-    }
 
     DBG(std::cout << "Program::tokenize_buffer() finished tokenizing" << std::endl);
 
@@ -10740,9 +10913,51 @@ TokenProgram *Program::tokenize_buffer(const std::string &source_text,
     flush_forest_pending_globals();	// v13: globals staged during #include bind
 
     tkProgram->source = effective_name;
-    tkProgram->is = new std::stringstream(source_text);
     tkProgram->lines = source.line()-1;
     tkProgram->bytes = source_text.size();
 
     return tkProgram;
+}
+
+// Read one main unit's text and lex it: tokenize_buffer's unit, and each
+// entry of an interactive session (lex_entry). The unit's name, its text from
+// line 1, its tokens.
+bool Program::lex_unit_text(const char *fname, const std::string &text)
+{
+    forest_root_file = fname;	// v24 (see tokenize)
+    source.fname(fname);
+    { ReadTimer _rt(_read_seconds); source.start_unit(text); }
+    _input_bytes += text.size();	// --show-stats: load_buffer main-source bytes
+    pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
+    Throw.source(source);
+    return lex_main_unit(fname);
+}
+
+// Lex one unit of the interactive session into THIS Program (plan §41.2a):
+// the unit lex tokenize_buffer runs, WITHOUT _tokenizer_init — the session's
+// macros, include guards, auto-include state and tkProgram carry over from
+// the units before. The unit is whole lines. An entry's lex (ParseMode::
+// InteractiveEntry) ends in the end-of-entry token lex_main_unit appends; a
+// loaded file's (TranslationUnit, plan §41.5a) ends where its text does.
+bool Program::lex_entry(const std::string &text, const std::string &display_name)
+{
+    std::string entry = text;
+    if ( entry.empty() || entry[entry.size() - 1] != '\n' )
+	entry += '\n';
+    const char *fname = intern_file(display_name.empty() ? "<entry>" : display_name);
+
+    DBG(cout << "Program::lex_entry(" << fname << ") START" << endl);
+    activate_token_pools();
+    // An entry's tokens take their positions from its own text, never the
+    // previous entry's (the _tokenizer_init reset, per unit).
+    ParsePosition::reset();
+    if ( !lex_unit_text(fname, entry) )
+	return false;
+    inject_pending_auto_includes();
+    flush_forest_pending_globals();
+    // The entry is the unit being parsed: its own tokens are the "main
+    // source" token_is_tu_origin tells from an included header's.
+    if ( tkProgram )
+	tkProgram->source = fname;
+    return true;
 }

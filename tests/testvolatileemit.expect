@@ -1,0 +1,9 @@
+int volatile g = 1;
+static int volatile sg = 2;
+int volatile acc = 0;
+int volatile post = 3;
+int volatile a = 4;
+int volatile b = 5;
+int *volatile p = &x;
+int x = 6;
+int after = 8;

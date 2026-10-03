@@ -18,7 +18,7 @@
 #include <sys/time.h>
 #ifdef __APPLE__
 #include <mach-o/getsect.h>	// self-image forest carrier: __MADC,__forest section
-#include <mach-o/ldsyms.h>	// _mh_execute_header (MH_EXECUTE self-probe)
+#include <mach-o/dyld.h>	// _dyld_get_image_header (the main executable's header)
 #endif
 #include "madc_posix_io.h"	// map_file_readonly — the one file-mapping owner
 				// (also why no <sys/mman.h> here: MIR's
@@ -186,7 +186,8 @@ static bool cir_fill_record(cir_node *n, cir_frozen_record &r)
 	r.tree1_origin         = n->tree1_origin;
 	r.src_lang             = (uint8_t)n->src_lang;
 	r.flags                = (n->synth_from_origin ? CIR_FROZEN_SYNTH_FROM_ORIGIN : 0)
-			       | (n->tsubst_pack_expand ? CIR_FROZEN_PACK_EXPAND : 0);
+			       | (n->tsubst_pack_expand ? CIR_FROZEN_PACK_EXPAND : 0)
+			       | (n->tsubst_arg_uncoerced ? CIR_FROZEN_ARG_UNCOERCED : 0);
 	return true;
 }
 
@@ -821,12 +822,16 @@ bool cir_forest_map_image(const char *path, const void *&image, size_t &len)
 		// time (-sectcreate) or by the post-link packer. The section
 		// data IS the container (footer at its end), already mapped
 		// and slid in the running image — zero-copy, process-lifetime.
-		// _mh_execute_header limits this probe to the executable
-		// image; the shared-library shape (forest-in-dylib) gets its
-		// own dladdr-based arm in the carriers track S4.
+		// The probe reads the main executable's image (dyld's image 0),
+		// whether the engine is linked into it or loaded from
+		// libmadc-0.dylib: the link-time _mh_execute_header exists only
+		// in an executable, so the dylib could not name it. The
+		// forest-in-dylib shape gets its own dladdr-based arm in the
+		// carriers track S4.
 		unsigned long seclen = 0;
-		uint8_t *sec = getsectiondata(&_mh_execute_header, "__MADC",
-					      "__forest", &seclen);
+		uint8_t *sec = getsectiondata(
+			(const struct mach_header_64 *)_dyld_get_image_header(0),
+			"__MADC", "__forest", &seclen);
 		if (sec && seclen) {
 			image = sec;
 			len = (size_t)seclen;
@@ -998,6 +1003,7 @@ cir_node *CirFrozenSegment::shell(uint32_t idx)
 	cn->src_lang             = (CirSourceLang)r.src_lang;
 	cn->synth_from_origin    = (r.flags & CIR_FROZEN_SYNTH_FROM_ORIGIN) != 0;
 	cn->tsubst_pack_expand   = (r.flags & CIR_FROZEN_PACK_EXPAND) != 0;
+	cn->tsubst_arg_uncoerced = (r.flags & CIR_FROZEN_ARG_UNCOERCED) != 0;
 	cn->self.seg = _seg;
 	cn->self.idx = idx;
 
@@ -2096,6 +2102,21 @@ const std::vector<CirRestoredType> &CirFrozenForest::materialize_for(
 	return _restored;
 }
 
+// One recorded parameter back onto the function a DK_FUNC record rebuilds, as
+// it was parsed (LOADED == parsed): its type, its const flag
+// (FuncDef::const_params, which a copy constructor's selection reads) and its
+// C++ spelling, index-aligned with the parameters. Every arm that rebuilds a
+// FuncDef from a paramrec run pushes through here.
+static void restore_param(FuncDef *fd, DataDef *pd,
+			  const madc::dis::paramrec &pr,
+			  const madc::dis::FrozenDefArena &a)
+{
+	fd->parameters.push_back(pd);
+	fd->const_params.push_back((pr.flags & madc::dis::PF_CONST_PARAM) != 0);
+	const char *sp = pr.cpp_spelling_id ? a.c_str(pr.cpp_spelling_id) : NULL;
+	fd->param_cpp_spellings.push_back(sp ? sp : "");
+}
+
 void CirFrozenForest::materialize_pass()
 {
 	ForestWorkFrame _fw(_work_secs, _work_depth);
@@ -2577,15 +2598,25 @@ void CirFrozenForest::materialize_pass()
 		if (!nm || !*nm)
 			continue;
 		DataDefENUM *edd = new DataDefENUM(std::string(nm));
-		if (r.size)
-			edd->size = r.size;
-		// v27: re-adopt the FIXED underlying base (ref0, a pinned
-		// primitive id) — set_underlying restores size AND raw type
-		// so the restored enum lowers to the same C type the live
-		// parse emitted ([dcl.enum]p8; libc++ `enum class : uint8_t`).
+		// v48: the underlying type (ref0, a pinned primitive id) and
+		// whether it was DECLARED (DF_ENUM_FIXED_BASE) restore apart —
+		// promotion reads them apart ([conv.prom]/3-4); v27-v47 re-adopted
+		// every recorded base as declared. The STORAGE (size + raw type)
+		// restores verbatim, so the restored enum lowers to the same C
+		// type the live parse emitted ([dcl.enum]p8; libc++
+		// `enum class : uint8_t`, a packed enum, a 64-bit range).
 		if (r.ref0)
 			if (DataDef *u = arena_swizzle(r.ref0, by_id))
-				edd->set_underlying(u);
+			{
+				edd->underlying = u;
+				edd->fixed_base =
+					(r.flags & madc::dis::DF_ENUM_FIXED_BASE) != 0;
+			}
+		// v49: defined in C, so compatible with that underlying type.
+		edd->c_compatible = (r.flags & madc::dis::DF_ENUM_C_COMPATIBLE) != 0;
+		if (r.size)
+			edd->restore_layout(r.size, r.datatype ? r.datatype
+						     : (uint32_t)edd->rawtype());
 		if (r.canon_id)
 			if (const char *cn = a.c_str(r.canon_id))
 				edd->set_canonical_spelling(cn);
@@ -2622,10 +2653,10 @@ void CirFrozenForest::materialize_pass()
 					continue;	// not ready this round
 				bool pok = true;
 				std::vector<DataDef *> ps(fr.params_count);
+				std::vector<madc::dis::paramrec> prs(fr.params_count);
 				for (uint32_t p = 0; p < fr.params_count; ++p) {
-					madc::dis::paramrec pr;
-					if (!a.get_payload(fr.params_begin, p, pr)
-					    || !(ps[p] = arena_swizzle(pr.type_id, by_id))) {
+					if (!a.get_payload(fr.params_begin, p, prs[p])
+					    || !(ps[p] = arena_swizzle(prs[p].type_id, by_id))) {
 						pok = false;
 						break;
 					}
@@ -2635,7 +2666,7 @@ void CirFrozenForest::materialize_pass()
 				FuncDef *tfd = new FuncDef(*ret);
 				_mat_storage.push_back(tfd);
 				for (uint32_t p = 0; p < fr.params_count; ++p)
-					tfd->parameters.push_back(ps[p]);
+					restore_param(tfd, ps[p], prs[p], a);
 				tfd->is_varargs =
 					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
 				tfd->is_void_params =
@@ -2664,9 +2695,10 @@ void CirFrozenForest::materialize_pass()
 				continue;	// not ready this round (or dropped aggregate)
 			DataDef *d;
 			if (r.kind == madc::dis::DK_REF)
-				d = new DataDefREF(*operand);
+				d = new DataDefREF(*operand, (r.flags & 1u) != 0);
 			else if (r.kind == madc::dis::DK_CONST)
-				d = new DataDefCONST(*operand);
+				// The cv mask rides flags; a pre-mask record (0) was const.
+				d = new DataDefQUAL(*operand, r.flags ? r.flags : cvCONST);
 			else if (r.kind == madc::dis::DK_CARRAY) {
 				// v25: rebuild the fixed-size array VERBATIM (name +
 				// folded count; a runtime-sized array is never recorded).
@@ -3144,8 +3176,9 @@ void CirFrozenForest::materialize_pass()
 					_mat_storage.push_back(thisp);
 					fd->parameters.push_back(thisp);
 					// hidden __this — excluded from mangling, but the
-					// spelling array must stay index-aligned with
-					// parameters (parseFunction parity).
+					// const and spelling arrays stay index-aligned
+					// with parameters (parseFunction parity).
+					fd->const_params.push_back(false);
 					fd->param_cpp_spellings.push_back(std::string());
 				}
 				bool pok = true;
@@ -3163,7 +3196,6 @@ void CirFrozenForest::materialize_pass()
 					}
 					DataDef *pd = arena_swizzle(pr.type_id, by_id);
 					if (!pd) { pok = false; break; }
-					fd->parameters.push_back(pd);
 					// The C++ param spelling rides the paramrec exactly
 					// as on the free-function arm below: without it a
 					// restored method's signature is NOT the parsed
@@ -3171,9 +3203,7 @@ void CirFrozenForest::materialize_pass()
 					// (bind_external_class_symbols) fabricates a
 					// parameter-less symbol (C1Ev) for a ctor whose
 					// pack-side binding stayed empty.
-					const char *psp = pr.cpp_spelling_id
-						        ? a.c_str(pr.cpp_spelling_id) : NULL;
-					fd->param_cpp_spellings.push_back(psp ? psp : "");
+					restore_param(fd, pd, pr, a);
 					const uint8_t *db =
 						a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
 					if (db && pr.def_tok_count) {
@@ -3196,8 +3226,14 @@ void CirFrozenForest::materialize_pass()
 						fd->emit_symbol = es;
 				fd->is_const_method =
 					(fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
+				fd->is_volatile_method =
+					(fr.flags & madc::dis::DF_IS_VOLATILE_METHOD) != 0;
 				fd->pure_virtual =
 					(fr.flags & madc::dis::DF_PURE_VIRTUAL) != 0;
+				fd->defaulted_or_deleted =
+					(fr.flags & madc::dis::DF_FUNC_DEFAULTED_OR_DELETED) != 0;
+				fd->is_deleted =
+					(fr.flags & madc::dis::DF_FUNC_IS_DELETED) != 0;
 				fd->noexcept_spec =
 					(fr.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
 					: (fr.flags & madc::dis::DF_NOEXCEPT_UNKNOWN) ? FuncDef::NxUnknown
@@ -3723,13 +3759,10 @@ void CirFrozenForest::materialize_pass()
 			}
 			DataDef *pd = arena_swizzle(pr.type_id, by_id);
 			if (!pd) { pok = false; break; }
-			fd->parameters.push_back(pd);
 			// v21: the C++ param spelling rides the record — the
 			// Itanium mangle of a declaration-only ns function
 			// (storage_alias_name at flush) reads it.
-			const char *ps = pr.cpp_spelling_id
-				       ? a.c_str(pr.cpp_spelling_id) : NULL;
-			fd->param_cpp_spellings.push_back(ps ? ps : "");
+			restore_param(fd, pd, pr, a);
 			const uint8_t *db = a.tok_run(pr.def_tok_off, pr.def_tok_bytes);
 			if (db && pr.def_tok_count) {
 				CirRestoredTemplateRun run;
@@ -3746,6 +3779,9 @@ void CirFrozenForest::materialize_pass()
 			if (const char *es = a.c_str(r.emit_symbol_id))
 				fd->emit_symbol = es;
 		fd->is_varargs       = (r.flags & madc::dis::DF_IS_VARARGS) != 0;
+		fd->defaulted_or_deleted =
+			(r.flags & madc::dis::DF_FUNC_DEFAULTED_OR_DELETED) != 0;
+		fd->is_deleted = (r.flags & madc::dis::DF_FUNC_IS_DELETED) != 0;
 		fd->is_void_params   = (r.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
 		fd->c_linkage        = (r.flags & madc::dis::DF_FUNC_C_LINKAGE) != 0;
 		fd->noexcept_spec    = (r.flags & madc::dis::DF_NOEXCEPT_TRUE) ? FuncDef::NxTrue
@@ -3772,8 +3808,12 @@ void CirFrozenForest::materialize_pass()
 		fd->template_return_deduce_arg_index   = (int)r.tret_arg_index;
 		fd->template_return_deduce_from_pointer =
 			(r.flags & madc::dis::DF_TRET_FROM_POINTER) != 0;
+		fd->template_return_deduce_forwarding =
+			(r.flags & madc::dis::DF_TRET_FWD) != 0;
 		fd->template_return_ref =
-			(r.flags & madc::dis::DF_TRET_REF) != 0;
+			!(r.flags & madc::dis::DF_TRET_REF) ? RefKind::None
+			: (r.flags & madc::dis::DF_TRET_RREF) ? RefKind::Rvalue
+			: RefKind::Lvalue;
 		// v46: the overload-set DECLARATION IDENTITY — the parameter
 		// spelling and an instantiation product's template-argument
 		// identity spellings — so the restored member ranks exactly as
@@ -4414,7 +4454,8 @@ bool cir_trees_structurally_identical(node_t a, node_t b)
 		    || !(cx->tree1_origin == cy->tree1_origin)
 		    || cx->src_lang != cy->src_lang
 		    || cx->synth_from_origin != cy->synth_from_origin
-		    || cx->tsubst_pack_expand != cy->tsubst_pack_expand)
+		    || cx->tsubst_pack_expand != cy->tsubst_pack_expand
+		    || cx->tsubst_arg_uncoerced != cy->tsubst_arg_uncoerced)
 			return false;
 		// Extension STRING ids compare by CONTENT via the accessors,
 		// not by raw id — a forest thaw legitimately re-interns them

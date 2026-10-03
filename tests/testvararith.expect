@@ -1,0 +1,24 @@
+add 7 sub 3 mul 10
+div 2.5 mod 1
+neg -5 int-real 5.5
+left 6 5 3.5
+chain 8 group 14
+real 4.5 7.5
+rem -1 1
+wrap -9223372036854775808
+cat abcd xab abab
+lt true false true
+gt true false true
+text order true false
+exact false
+compound 14
+compound div 3.5
+compound mod 1.5
+text abab
+acc 6
+c int 2
+caught unsupported operand kinds for +: string and integer
+caught integer remainder by zero
+caught unsupported operand kind for unary -: string
+caught unsupported operand kinds for ordering: string and integer
+caught unsupported operand kinds for +: boolean and integer

@@ -7,15 +7,60 @@
 //      command (IdeSession driven directly, typeset by ui::render_tree);
 //   2. the verdict: 0 clean, 1 when the problems projection carries an
 //      error after the command (the check's verdict), 2 for a line the
-//      client refuses — an unknown command (before a session opens; stderr
+//      client refuses — an unknown command (before anything runs; stderr
 //      says why) or an argument for a command that opened no prompt;
 //   3. the argument feeds the prompt the command opens (gotoline, find)
-//      and commits it by CODE — the same commit a key reaches.
+//      and commits it by CODE — the same commit a key reaches;
+//   4. ONE open rule for the launch and ^K E (B86; JOE, vim, pico and
+//      emacs all open a missing path as a new, empty buffer): a missing
+//      path — its directory missing too — opens as a new file and the
+//      status line says `New file <path>.`, with nothing written until a
+//      save; a path that exists but cannot be read (a directory) is refused
+//      with the reason — at launch on stderr with verdict 1, at ^K E on the
+//      status line with the buffer table untouched;
+//   5. the command line is ONE reader (ide_args_parse, madcide_args.inc):
+//      flags anywhere, the first non-flag word the file (`--profile chthonia
+//      f.c` and `f.c --profile chthonia` alike), `--` ending the flags,
+//      --attach's optional address; an unknown flag, a missing value and a
+//      second file refused with the reason; the usage names --profile;
+//   6. the file is optional for the editor faces (the TUI, --gui, --line
+//      open an untitled buffer); the headless faces (-c, --mcp, --lsp,
+//      --serve) need one, and the usage says so.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_api.inc"
 #include "../tools/madcide/madcide_once.inc"
+#include "../tools/madcide/madcide_args.inc"
+
+// One command line through THE argv reader (madcide_args.inc): its verdict
+// and the record's words, or the refusal's reason.
+void show_args(const char *label, int argc, const char **argv)
+{
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, argv) )
+    {
+	println("{}: refused: {}", label, why);
+	return;
+    }
+    println("{}: file={} profile={} ro={} lsp={} attach={} addr={} help={}", label,
+	    a.file == NULL ? "-" : a.file, a.profile == NULL ? "-" : a.profile,
+	    a.ro ? 1 : 0, a.lsp ? 1 : 0, a.attach ? 1 : 0,
+	    a.attach_addr == NULL ? "-" : a.attach_addr, a.help ? 1 : 0);
+}
+
+// The face a command line with no file asks for needs one: its flag, or "-"
+// for an editor face.
+const char *face_needs(int argc, const char **argv)
+{
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, argv) )
+	return "refused";
+    const char *f = ide_face_needs_file(a);
+    return f == NULL ? "-" : f;
+}
 
 int main()
 {
@@ -58,7 +103,8 @@ int main()
     rc = run_once(out, path, false, "find add");
     print("--- -c find add ---\n{}--- end rc={} ---\n", out, rc);
 
-    // 2. The refusals: an unknown command (2, nothing on stdout, no session);
+    // 2. The refusals: an unknown command (2, nothing on stdout, nothing run;
+    //    a contributed name is known only to the session's world);
     //    an argument for a command that opened no prompt (2, the status
     //    line says so); a command that needs a terminal this client has not
     //    (the session's own refusal on the status line; the verdict stays
@@ -72,9 +118,95 @@ int main()
     // A quit is a command too: the session ends, the verdict is 0.
     rc = run_once(out, path, false, "quit");
     println("cli-quit: rc={}", rc);
-    // A one-shot on a path nobody can read: 1, the reason on stderr.
-    rc = run_once(out, "no/such/dir/madc_ide_cli_none.mad", false, "check");
-    println("cli-noread: rc={} out-empty={}", rc, strlen(out.c_str()) == 0 ? 1 : 0);
+    // 4. The open rule. A missing path — even under a missing directory —
+    //    is a new file: the session opens and its status line says so (the
+    //    launch's first frame; the message is transient, so a -c command's
+    //    own event clears it), and the disk is untouched (nothing exists
+    //    until a save).
+    IdeSession N;
+    long nd = N.open("madc_ide_cli_new.mad", false);
+    var nmsg;
+    ui::get(nmsg, N.world(), N.es, "msg");
+    N.close();
+    println("cli-new: opened={} said={} unwritten={}", nd > 0 ? 1 : 0,
+	    nmsg.index("New file madc_ide_cli_new.mad.") >= 0 ? 1 : 0,
+	    php::file_exists("madc_ide_cli_new.mad") ? 0 : 1);
+    IdeSession D;
+    nd = D.open("no/such/dir/madc_ide_cli_none.mad", false);
+    ui::get(nmsg, D.world(), D.es, "msg");
+    D.close();
+    println("cli-new-nodir: opened={} said={}", nd > 0 ? 1 : 0,
+	    nmsg.index("New file no/such/dir/madc_ide_cli_none.mad.") >= 0 ? 1 : 0);
+    rc = run_once(out, "madc_ide_cli_new.mad", false, "outline");
+    println("cli-new-once: rc={} unwritten={}", rc,
+	    php::file_exists("madc_ide_cli_new.mad") ? 0 : 1);
+    // A path that exists but cannot be read: refused, 1, nothing on stdout
+    // (the reason on stderr: `madcide: madc_ide_cli_dir is a directory.`).
+    php::mkdir("madc_ide_cli_dir");
+    rc = run_once(out, "madc_ide_cli_dir", false, "check");
+    println("cli-dir: rc={} out-empty={}", rc, strlen(out.c_str()) == 0 ? 1 : 0);
+    // ^K E follows the same rule: a directory is refused on the status line,
+    // a missing path is a new file.
+    rc = run_once(out, path, false, "editfile madc_ide_cli_dir");
+    println("cli-editdir: rc={} said={}", rc,
+	    out.index("madc_ide_cli_dir is a directory.") >= 0 ? 1 : 0);
+    rc = run_once(out, path, false, "editfile madc_ide_cli_new.mad");
+    println("cli-editnew: rc={} said={} unwritten={}", rc,
+	    out.index("New file madc_ide_cli_new.mad.") >= 0 ? 1 : 0,
+	    php::file_exists("madc_ide_cli_new.mad") ? 0 : 1);
+    php::rmdir("madc_ide_cli_dir");
+
+    // 5. The command line (plan §41.11a step 1): flags come anywhere, the
+    //    first word that is not a flag is the file, a later `ro` opens it
+    //    read-only; an unknown flag, a flag missing its value and a second
+    //    file are refused (main prints the reason and the usage, exit 2).
+    const char *v1[4] = { "madcide", "--profile", "chthonia", "f.c" };
+    show_args("cli-args-profile-first", 4, v1);
+    const char *v2[5] = { "madcide", "f.c", "--profile", "chthonia", "ro" };
+    show_args("cli-args-profile-after", 5, v2);
+    const char *v3[4] = { "madcide", "f.c", "--lsp", "--attach" };
+    show_args("cli-args-attach-discover", 4, v3);
+    const char *v4[5] = { "madcide", "f.c", "--lsp", "--attach", "127.0.0.1:9" };
+    show_args("cli-args-attach-addr", 5, v4);
+    const char *v5[4] = { "madcide", "--lsp", "--attach", "f.c" };
+    show_args("cli-args-attach-file", 4, v5);
+    const char *v6[4] = { "madcide", "--", "-dash.c", "ro" };
+    show_args("cli-args-dashdash", 4, v6);
+    const char *v7[2] = { "madcide", "--help" };
+    show_args("cli-args-help", 2, v7);
+    const char *v8[3] = { "madcide", "f.c", "--bogus" };
+    show_args("cli-args-unknown", 3, v8);
+    const char *v9[3] = { "madcide", "f.c", "--profile" };
+    show_args("cli-args-novalue", 3, v9);
+    const char *v10[3] = { "madcide", "a.c", "b.c" };
+    show_args("cli-args-twofiles", 3, v10);
+    // --build-plugin DIR (plan §41.11a step 4) takes a directory and needs
+    // no file; without its directory it is refused.
+    const char *b1[3] = { "madcide", "--build-plugin", "plugins/hello" };
+    ide_args ba;
+    var bwhy;
+    bool bok = ide_args_parse(ba, bwhy, 3, b1);
+    println("cli-args-build-plugin: ok={} dir={} file={}", bok ? 1 : 0,
+	    ba.build_plugin == NULL ? "-" : ba.build_plugin,
+	    ba.file == NULL ? "-" : ba.file);
+    const char *b2[2] = { "madcide", "--build-plugin" };
+    show_args("cli-args-build-plugin-novalue", 2, b2);
+    const char *n1[1] = { "madcide" };
+    show_args("cli-args-nofile", 1, n1);
+    const char *n2[2] = { "madcide", "--gui" };
+    const char *n3[2] = { "madcide", "--line" };
+    const char *n4[3] = { "madcide", "-c", "check" };
+    const char *n5[2] = { "madcide", "--mcp" };
+    const char *n6[2] = { "madcide", "--lsp" };
+    const char *n7[3] = { "madcide", "--serve", "127.0.0.1:0" };
+    println("cli-needs-file: tui={} gui={} line={} once={} mcp={} lsp={} serve={}",
+	    face_needs(1, n1), face_needs(2, n2), face_needs(2, n3),
+	    face_needs(3, n4), face_needs(2, n5), face_needs(2, n6),
+	    face_needs(3, n7));
+    var usage = ide_usage();
+    println("cli-usage: names-profile={} file-optional={}",
+	    usage.index("--profile NAME") >= 0 ? 1 : 0,
+	    usage.index("usage: madcide [<file>]") >= 0 ? 1 : 0);
     remove(path);
     return 0;
 }

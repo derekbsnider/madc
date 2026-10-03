@@ -2554,10 +2554,6 @@ struct MIR_object_loaded {
 extern char mir_objload_va_arg asm ("mir.va_arg") __attribute__ ((weak));
 extern char mir_objload_va_block_arg asm ("mir.va_block_arg") __attribute__ ((weak));
 extern char mir_objload_arg_memcpy asm ("mir.arg_memcpy") __attribute__ ((weak));
-extern char mir_objload_ui2f asm ("mir.ui2f") __attribute__ ((weak));
-extern char mir_objload_ui2d asm ("mir.ui2d") __attribute__ ((weak));
-extern char mir_objload_ui2ld asm ("mir.ui2ld") __attribute__ ((weak));
-extern char mir_objload_ld2i asm ("mir.ld2i") __attribute__ ((weak));
 
 static void *objload_builtin (const char *name) {
   static const struct {
@@ -2567,10 +2563,9 @@ static void *objload_builtin (const char *name) {
     {"mir.va_arg", &mir_objload_va_arg},
     {"mir.va_block_arg", &mir_objload_va_block_arg},
     {"mir.arg_memcpy", &mir_objload_arg_memcpy},
-    {"mir.ui2f", &mir_objload_ui2f},
-    {"mir.ui2d", &mir_objload_ui2d},
-    {"mir.ui2ld", &mir_objload_ui2ld},
-    {"mir.ld2i", &mir_objload_ld2i},
+    /* mir.ui2f / ui2d / ui2ld / ld2i were here: those conversions are
+       generated inline now (mir-gen-x86_64.c), so no emitted object imports
+       them any more. */
   };
   for (size_t i = 0; i < sizeof (tab) / sizeof (tab[0]); i++)
     if (strcmp (name, tab[i].name) == 0) return tab[i].addr;

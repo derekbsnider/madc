@@ -42,7 +42,13 @@ if ! command -v perl >/dev/null 2>&1; then
 	exit 1
 fi
 
-BASELINE=0
+# 74 on 2026-09-28, when the token marker below first saw the token scans
+# (BUGS.md B58-B61). Each migration lowers it.
+# 55 on 2026-09-29, when the token marker's decrement window learned to cross
+# one statement (four counters it had never seen; round 9).
+# 19 on 2026-10-02: parseFunction's trailing-return capture (three counters,
+# no angle axis) now runs on DelimDepth (B132).
+BASELINE=19
 
 # A hand-rolled tracker always declares at least one delimiter-depth local.
 #
@@ -79,6 +85,124 @@ behavior_hits=$(find src include -type f \( -name '*.cpp' -o -name '*.h' \) -pri
 if [ -n "$behavior_hits" ]; then
 	hits="${hits}${hits:+$'\n'}${behavior_hits}"
 fi
+
+# Name-independent TOKEN form, all four delimiters.  ...and the two markers
+# above still had a hole, the one this whole comment is about: the behavior
+# check matched only a raw `'('` CHARACTER scan, so a TOKEN scan
+# (`id() == TokenID::tkLT` ... `++depth`) with a counter named anything but
+# angle/paren/square/brace was invisible. The gate reported "GREEN, 0" on
+# 2026-09-28 over 73 of them (BUGS.md B58-B61). This marker matches the
+# behavior on tokens and characters alike: an equality test on an OPEN
+# delimiter (or on a bare variable, the `tsubst_matching_close(v, i, open_id,
+# close_id)` shape) that increments a counter, then a test on a CLOSE
+# delimiter (or a variable) that decrements the SAME counter. DelimDepth's own
+# body is the owner and is skipped.
+token_marker='
+  next if $ARGV =~ m{(^|/)(madc_program\.cpp|spelling_delim\.h|doctest\.h|json\.hpp)$};
+  my ($os, $oe) = (-1, -1);
+  if (/^struct DelimDepth \{.*?^\};/ms) { ($os, $oe) = ($-[0], $+[0]); }
+  my $open  = qr/TokenID::tk(?:LT|OpBrk|OpSqr|OpBrc)\b|\x27[(\[{<]\x27|"[(\[{<]"/;
+  my $close = qr/TokenID::tk(?:GT|BSR|ClBrk|ClSqr|ClBrc)\b|\x27[)\]}>]\x27|">>?"|"[)\]}]"/;
+  my $var   = qr/==\s*[A-Za-z_]\w*\s*\)/;
+  # Either delimiter on either side: a BACKWARD walk counts `>` up and `<`
+  # down, and is the same tracker.
+  my $test  = qr/(?:$open|$close|$var)/;
+  my %seen;
+  while (/$test[^;]{0,60}?(?:\+\+\s*([A-Za-z_]\w*)|\b([A-Za-z_]\w*)\s*(?:\+\+|\+=))/sg) {
+      my $nm = defined $1 ? $1 : $2;
+      my ($at, $end) = ($-[0], $+[0]);
+      next if $at >= $os && $at < $oe;
+      # The decrement may follow ONE statement in the same arm: the
+      # `{ if ( depth <= 0 ) return j + 1; --depth; }` shape a `[^;]` window
+      # stopped at (pack_pattern_start and three more, 2026-09-29).
+      next unless substr($_, $end, 1500) =~ /$test(?:[^;]{0,60}?|[^;]{0,60};[^;]{0,60}?)(?:--\s*\Q$nm\E\b|\b\Q$nm\E\s*(?:--|-=))/s;
+      my $line = 1 + (substr($_, 0, $at) =~ tr/\n/\n/);
+      print "$ARGV:$line:token balanced-delimiter counter $nm\n" unless $seen{$line}++;
+  }'
+
+# Negative control: four hand-rolled token counters (one named nothing like a
+# delimiter, one over variable ids, one walking backwards, one whose decrement
+# follows a `return` in the same arm) must be caught;
+# DelimDepth's own update() and a non-delimiter nesting counter (`?` / `:`)
+# must not.
+ctl_dir=$(mktemp -d)
+trap 'rm -rf "$ctl_dir"' EXIT
+cat > "$ctl_dir/ctl.cpp" <<'CTL'
+struct DelimDepth {
+    void update(TokenBase *t)
+    {
+	switch ( t->id() )
+	{
+	    case TokenID::tkOpBrk: ++paren; break;
+	    case TokenID::tkClBrk: if ( paren > 0 )  --paren;  break;
+	}
+    }
+};
+static size_t arity(const std::vector<TokenBase *> &decl)
+{
+    int q = 0;
+    for ( size_t i = 0; i < decl.size(); ++i )
+    {
+	if ( decl[i]->id() == TokenID::tkLT ) ++q;
+	else if ( decl[i]->id() == TokenID::tkGT ) --q;
+    }
+    return q;
+}
+static size_t matching(const std::vector<TokenBase *> &v, TokenID open_id, TokenID close_id)
+{
+    int k = 0;
+    for ( size_t i = 0; i < v.size(); ++i )
+    {
+	if ( v[i]->id() == open_id ) ++k;
+	else if ( v[i]->id() == close_id ) { if ( --k == 0 ) return i; }
+    }
+    return v.size();
+}
+static size_t backward(const std::vector<TokenBase *> &v, size_t k)
+{
+    int b = 0;
+    for ( ;; --k )
+    {
+	if ( v[k]->id() == TokenID::tkGT ) ++b;
+	else if ( v[k]->id() == TokenID::tkLT ) { if ( --b == 0 ) return k; }
+    }
+}
+static size_t pattern_start(const std::vector<TokenBase *> &v)
+{
+    int w = 0;
+    for ( size_t j = v.size(); j-- > 0; )
+    {
+	if ( v[j]->id() == TokenID::tkGT )
+	    ++w;
+	else if ( v[j]->id() == TokenID::tkLT )
+	{ if ( w <= 0 ) return j + 1; --w; }
+    }
+    return 0;
+}
+static int ternaries(const std::vector<TokenBase *> &v)
+{
+    int nested = 0;
+    for ( TokenBase *t : v )
+    {
+	if ( t->id() == TokenID::tkQmark ) ++nested;
+	else if ( t->id() == TokenID::tkColon ) --nested;
+    }
+    return nested;
+}
+CTL
+ctl=$(perl -0777 -ne "$token_marker" "$ctl_dir/ctl.cpp" | grep -c .)
+if [ "$ctl" -ne 4 ]; then
+	echo "check-one-delim-tracker: NEGATIVE CONTROL FAILED -- the token marker matched"
+	echo "  $ctl of the 4 planted counters (DelimDepth and the ?: counter must not match)"
+	exit 1
+fi
+
+token_hits=$(find src include -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
+  | xargs -0 perl -0777 -ne "$token_marker")
+if [ -n "$token_hits" ]; then
+	hits="${hits}${hits:+$'\n'}${token_hits}"
+fi
+hits=$(printf '%s\n' "$hits" | grep . | sort -t: -k1,1 -k2,2n -u)
 n=$(printf '%s' "$hits" | grep -c . )
 
 # --- the Program handle on every STREAM scan ---------------------------------
@@ -121,6 +245,59 @@ if [ -n "$stream_hits" ]; then
 	echo "Construct it with the Program (DelimDepth d(this) / DelimDepth d(&pgm)) so the"
 	echo "[temp.names]/3 lookup reading of '<' reaches it. See .claude/rules/delimiter-tracking.md"
 	printf '%s\n' "$stream_hits" | sed 's/^/  /'
+	exit 1
+fi
+
+# --- the ONE template-argument split ----------------------------------------
+# A comma at depth-one angle, outside every delimiter the list opened, is an
+# argument boundary; scan_template_argument_list is the one reader that
+# splits there (template_argument_runs gives the runs, a nested `>>`'s `>`
+# included). KG DupFamily template_argument_list_split was consolidated on
+# 2026-09-29: seven readers had split by hand on DelimDepth, one without the
+# paren test and two without the Program handle, which read `lim <` as a list
+# open and answered 0 (tests/testbuiltinseqlessthan). A tracker without a gate
+# regrows, so any comma test beside `angle == 1` outside the owner fails. The
+# char-level twin in include/spelling_delim.h is the spelling alphabet's own
+# owner (delimiter-tracking.md) and is not this shape.
+split_marker='
+  next if $ARGV =~ m{(^|/)(spelling_delim\.h|doctest\.h|json\.hpp)$};
+  my ($os, $oe) = (-1, -1);
+  if (/^static bool scan_template_argument_list\(.*?^\}/ms) { ($os, $oe) = ($-[0], $+[0]); }
+  my $comma = qr/TokenID::tkComma\b|\x27,\x27/;
+  while (/$comma[^;{}]{0,160}?\bangle\s*==\s*1\b|\bangle\s*==\s*1\b[^;{}]{0,160}?$comma/sg) {
+      my $at = $-[0];
+      next if $at >= $os && $at < $oe;
+      my $line = 1 + (substr($_, 0, $at) =~ tr/\n/\n/);
+      print "$ARGV:$line:hand-split template-argument list\n";
+  }'
+cat > "$ctl_dir/split.cpp" <<'CTL'
+template<typename Seq>
+static bool scan_template_argument_list(const Seq &tokens, size_t lt_index,
+					TemplateArgumentList &out, Program *pgm = NULL)
+{
+	if ( t && t->id() == TokenID::tkComma && d.angle == 1
+	  && !d.paren && !d.square && !d.brace )
+	    out.args.push_back(std::make_pair(arg_begin, i));
+}
+static void hand_split(const std::vector<TokenBase *> &v)
+{
+	if ( v[i]->id() == TokenID::tkComma && d.angle == 1 && !d.paren )
+	    args.push_back(std::vector<TokenBase *>());
+}
+CTL
+split_ctl=$(perl -0777 -ne "$split_marker" "$ctl_dir/split.cpp" | grep -c .)
+if [ "$split_ctl" -ne 1 ]; then
+	echo "check-one-delim-tracker: NEGATIVE CONTROL FAILED -- the argument-split marker"
+	echo "  matched $split_ctl of the 1 planted split (the owner's own body must not match)"
+	exit 1
+fi
+split_hits=$(find src include -type f \( -name '*.cpp' -o -name '*.h' \) -print0 \
+  | xargs -0 perl -0777 -ne "$split_marker")
+if [ -n "$split_hits" ]; then
+	echo "REGRESSION — a template-argument list is split by hand."
+	echo "Use scan_template_argument_list (+ template_argument_runs for the argument"
+	echo "runs). See .claude/rules/delimiter-tracking.md"
+	printf '%s\n' "$split_hits" | sed 's/^/  /'
 	exit 1
 fi
 

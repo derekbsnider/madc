@@ -1,0 +1,46 @@
+// Emacs's region, kill-ring and Meta keys in profiles/emacs.keys. The
+// profile's header said Meta and C-SPC had no key spelling, so it bound
+// none of them; the engine spells them `alt+` and `ctrl+space` since plan
+// §41.11a step 3e (slice 2), and the profile now binds them. Oracle: GNU
+// Emacs's default bindings (the Emacs manual): C-SPC set-mark-command, C-w
+// kill-region, M-w kill-ring-save, C-y yank, C-x h mark-whole-buffer, M-v
+// scroll-down-command, M-f forward-word, M-b backward-word, M-<
+// beginning-of-buffer, M-> end-of-buffer, M-g g goto-line. Each line is the
+// sequence the loaded table binds to the command, as a menu accelerator
+// reads it.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void bound(var &table, const char *what, long code)
+{
+    var seq;
+    if ( !ui::key_sequence_for(seq, table, code) )
+	seq = "(unbound)";
+    println("{}: {}", what, seq);
+}
+
+int main()
+{
+    const char *path = "madc_ide_emacs_keys.txt";
+    php::file_put_contents(path, "hello\n");
+    IdeSession S;
+    S.open(path, false);
+    load_profile(S.w, S.es, "emacs");
+    var table;
+    S.key_table(table);
+    bound(table, "set-mark", cmdMARK);
+    bound(table, "kill-region", cmdCUT);
+    bound(table, "kill-ring-save", cmdCOPY);
+    bound(table, "yank", cmdPASTE);
+    bound(table, "mark-whole-buffer", cmdSELECTALL);
+    bound(table, "scroll-down", cmdPGUP);
+    bound(table, "forward-word", cmdWORDRIGHT);
+    bound(table, "backward-word", cmdWORDLEFT);
+    bound(table, "beginning-of-buffer", cmdTOP);
+    bound(table, "end-of-buffer", cmdBOTTOM);
+    bound(table, "goto-line", cmdGOTOLINE);
+    S.close();
+    php::unlink(path);
+    return 0;
+}

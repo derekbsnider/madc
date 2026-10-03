@@ -9,7 +9,8 @@
 # --compare measures ARBITRARY binaries side by side and appends NOTHING to
 # the trend files. The trend answers "is this tree improving over time"; the
 # comparison answers "which of these binaries is faster, right now" — e.g. an
-# archived tmp/release-bins/madc-release-vX.Y.Z against a candidate build.
+# archived tmp/release-bins/vX.Y.Z/bin/madc-release (scripts/release_bins.sh)
+# against a candidate build.
 # Both questions share ONE measurement implementation (metrics5 / ir_count /
 # derive_count) so a methodology change lands in a single place; only the
 # lane labelling differs, and the trend's lane names keep their meaning.

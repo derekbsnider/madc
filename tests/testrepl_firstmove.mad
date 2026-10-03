@@ -1,0 +1,13 @@
+// madc -i: an entry that is the FIRST call of a function template with a
+// dependent return type (std::move: `remove_reference<_Tp>::type &&`) shows
+// its value, as every later call does. Each entry in testrepl_firstmove.input
+// is std::move's first instantiation for its type (int&, long&,
+// vector<int>&). madc showed nothing for those three and only the last
+// entry's 144 (B46: the SFINAE check of the dependent return type left its
+// `;` sentinel as the parser's previous token). The values are the entries'
+// own: g++ 13.3 and clang++ 18.1 compute 31, 72, { 5, 6 } and 144 for them.
+#include <utility>
+#include <vector>
+int x = 31;
+long w = 72;
+std::vector<int> v = { 5, 6 };

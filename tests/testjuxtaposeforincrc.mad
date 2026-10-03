@@ -1,0 +1,4 @@
+// C11 6.8.5.3: the for increment is one expression; only `,` continues it.
+// `for (...; x++ a)` ran as `x++, a`, the same lenient loop as the init.
+// Oracle: gcc "error: expected ')' before 'a'", clang "error: expected ')'".
+int main(void) { int a = 1, x; for (x = 0; x < 3; x++ a) ; return x; }

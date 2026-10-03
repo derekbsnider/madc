@@ -1,0 +1,6 @@
+// [class.mem]: a member-declaration ends in `;`. After an enum body the class
+// reader took the `;` as optional, so `struct S { enum { A } };` compiled.
+// Oracle: g++ "error: expected unqualified-id before '}' token", clang++
+// "error: expected ';' after enum".
+struct S { enum { A, B } };
+int main() { return S::B; }

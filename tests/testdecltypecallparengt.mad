@@ -1,0 +1,20 @@
+/* A function template whose return is `decltype` of a template-id call with
+   a `>` in parentheses or a `>>` in its arguments
+   (`-> decltype(make<A<(N > 2)>>(0))`) reads its type through the
+   explicit-argument return lane, as in g++. Guards the lane's argument
+   split, which is the one template-argument list scan (BUGS.md B58).
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     dc: 5 3 5 3 5 */
+#include <cstdio>
+template<bool B> struct A { char c[B ? 5 : 3]; };
+template<class T> T make(int);
+template<class T, class U> U pick(int);
+template<int N> auto g() -> decltype(make<A<(N > 2)>>(0));
+template<int N> auto h() -> decltype(pick<A<true>, A<(N > 2)> >(0));
+template<int N> auto k() -> decltype(make<A<(N >> 1) == 2> >(0));
+int main()
+{
+	printf("dc: %zu %zu %zu %zu %zu\n", sizeof(decltype(g<5>())), sizeof(decltype(g<1>())),
+	       sizeof(decltype(h<7>())), sizeof(decltype(h<0>())), sizeof(decltype(k<4>())));
+	return 0;
+}

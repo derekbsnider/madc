@@ -10,6 +10,8 @@
 
 #include <string>
 #include <cstring>
+#include <cerrno>	// php_numeric_text: an overflowing integer's text
+#include <cstdlib>
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -35,8 +37,29 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "ns_common.h"
+#include "rt/rt_dump.h"	// __madc_php_real_text: PHP's (string)$float
 
 using namespace std;
+
+// PHP's (string)$float: precision 14, the one text rt_dump.c owns (print_r's
+// too). Every php:: function that reads a value as text renders a real with
+// it, as PHP converts one (implode, str_repeat, strtoupper, ...).
+static std::string php_real_text(double v)
+{
+	char buf[MADC_PHP_REAL_TEXT_CAP];
+	return __madc_php_real_text(buf, v);
+}
+
+// ns_common's text slot and in-place adapter, with PHP's real text.
+static std::string &php_text_slot(const madc::value *v)
+{
+	return ns_common::value_text_slot(v, php_real_text);
+}
+
+static const char *php_apply(const madc::value *v, std::string *(*core)(std::string *))
+{
+	return ns_common::ring_apply(v, core, php_real_text);
+}
 
 // ---- C++ wrapper functions called by JIT ----
 
@@ -252,7 +275,7 @@ void php_explode(madc::value *arr, const char *delim, const char *str)
 // php::implode — join array elements with glue string
 std::string *php_implode(std::string *result, const char *glue, madc::value *arr)
 {
-	ns_common::join_with_sep(*result, *arr, std::string(glue ? glue : ""));
+	ns_common::join_with_sep(*result, *arr, std::string(glue ? glue : ""), php_real_text);
 	return result;
 }
 
@@ -355,9 +378,9 @@ int64_t php_array_push_bool(madc::value *arr, bool val)
 
 // carrier push — a value of ANY kind, kind-preserving deep copy (the value
 // copy ctor); pushing an array-kind carrier nests it. Serves both the
-// script's (array&, value&) overload and the legacy __php_array_push_array
+// script's (array&, const value&) overload and the legacy __php_array_push_array
 // plumbing symbol.
-int64_t php_array_push_value(madc::value *arr, madc::value *value)
+int64_t php_array_push_value(madc::value *arr, const madc::value *value)
 {
 	ns_common::value_array_for_write(*arr, "php::array_push")
 		.push_back(*value);
@@ -416,7 +439,7 @@ std::string *php_array_get(std::string *result, madc::value *arr, int64_t index)
 	const std::vector<madc::value> &data = arr->as_array();
 	if ( index < 0 || (size_t)index >= data.size() )
 		return result;
-	ns_common::value_to_string(data[(size_t)index], res);
+	ns_common::value_to_string(data[(size_t)index], res, php_real_text);
 	return result;
 }
 
@@ -459,7 +482,7 @@ const char *php_array_get_cstr(madc::value *arr, int64_t index)
 	std::string &res = ns_common::ring_slot();
 	res.clear();
 	if ( const madc::value *v = php_container_nth(arr, index) )
-		ns_common::value_to_string(*v, res);
+		ns_common::value_to_string(*v, res, php_real_text);
 	return res.c_str();
 }
 
@@ -537,7 +560,7 @@ static const char *php_case_cstr(const char *s, bool up)
 }
 static const char *php_case_value(const madc::value *v, bool up)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_ascii_case_inplace(slot, up);
 	return slot.c_str();
 }
@@ -561,7 +584,7 @@ const char *php_ucfirst_cstr(const char *s)
 }
 const char *php_ucfirst_value(const madc::value *v)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	if ( !slot.empty() && slot[0] >= 'a' && slot[0] <= 'z' )
 		slot[0] = (char)(slot[0] - 32);
 	return slot.c_str();
@@ -603,14 +626,59 @@ int64_t php_file_exists(const char *path)
 	struct stat st;
 	return ::stat(path, &st) == 0 ? 1 : 0;
 }
-int64_t php_file_exists_value(const madc::value *v)
+
+// A path-taking php:: function's value form: the string payload as a path.
+// The payload is not NUL-terminated by contract, so it is copied to a
+// bounded C string. False for a null, non-string or empty value — the
+// functions answer false for it, warning-free like PHP. ONE conversion for
+// every path-taking function (file_exists, is_dir, is_readable, unlink).
+static bool php_value_path(const madc::value *v, std::string &path)
 {
 	if ( !v || !v->is_string() || v->size() == 0 )
+		return false;
+	path.assign((const char *)v->data(), v->size());
+	return true;
+}
+
+int64_t php_file_exists_value(const madc::value *v)
+{
+	std::string p;
+	return php_value_path(v, p) ? php_file_exists(p.c_str()) : 0;
+}
+
+// php::is_dir — PHP parity: true iff the path names an existing DIRECTORY
+// (stat, so a symlink to a directory counts, as in PHP). A missing path, a
+// regular file and an empty path answer false.
+int64_t php_is_dir(const char *path)
+{
+	if ( !path || !*path )
 		return 0;
-	// The payload is not NUL-terminated by contract — copy to a bounded
-	// C string for stat.
-	std::string p((const char *)v->data(), v->size());
-	return php_file_exists(p.c_str());
+	struct stat st;
+	return ::stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 1 : 0;
+}
+int64_t php_is_dir_value(const madc::value *v)
+{
+	std::string p;
+	return php_value_path(v, p) ? php_is_dir(p.c_str()) : 0;
+}
+
+// php::is_readable — PHP parity: true iff the file or directory exists and
+// the process may read it, checked against the REAL uid/gid as PHP does
+// (access(2); win64 UCRT spells it _access, mode 4 = read).
+int64_t php_is_readable(const char *path)
+{
+	if ( !path || !*path )
+		return 0;
+#ifdef _WIN32
+	return ::_access(path, 4) == 0 ? 1 : 0;
+#else
+	return ::access(path, R_OK) == 0 ? 1 : 0;
+#endif
+}
+int64_t php_is_readable_value(const madc::value *v)
+{
+	std::string p;
+	return php_value_path(v, p) ? php_is_readable(p.c_str()) : 0;
 }
 
 // php::unlink — PHP parity: delete a FILE (unlink fails on a directory,
@@ -630,12 +698,8 @@ int64_t php_unlink(const char *path)
 }
 int64_t php_unlink_value(const madc::value *v)
 {
-	if ( !v || !v->is_string() || v->size() == 0 )
-		return 0;
-	// The payload is not NUL-terminated by contract — copy to a bounded
-	// C string (as php_file_exists_value does).
-	std::string p((const char *)v->data(), v->size());
-	return php_unlink(p.c_str());
+	std::string p;
+	return php_value_path(v, p) ? php_unlink(p.c_str()) : 0;
 }
 
 // php::file_get_contents — PHP parity: the whole file as a string
@@ -695,7 +759,7 @@ int64_t php_file_put_contents_value(const char *path, const madc::value *v)
 					     v->size());
 	if ( !v || v->is_object() || v->is_array() || v->is_instance() )
 		return -1;
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_file_put_contents(path, slot.c_str(), slot.size());
 }
 
@@ -740,17 +804,17 @@ int64_t php_intval_value(const madc::value *v)
 using ns_common::ring_apply;
 
 const char *php_trim_cstr(const char *s)	{ return ring_apply(s, php_trim); }
-const char *php_trim_value(const madc::value *v)	{ return ring_apply(v, php_trim); }
+const char *php_trim_value(const madc::value *v)	{ return php_apply(v, php_trim); }
 const char *php_ltrim_cstr(const char *s)	{ return ring_apply(s, php_ltrim); }
-const char *php_ltrim_value(const madc::value *v)	{ return ring_apply(v, php_ltrim); }
+const char *php_ltrim_value(const madc::value *v)	{ return php_apply(v, php_ltrim); }
 const char *php_rtrim_cstr(const char *s)	{ return ring_apply(s, php_rtrim); }
-const char *php_rtrim_value(const madc::value *v)	{ return ring_apply(v, php_rtrim); }
+const char *php_rtrim_value(const madc::value *v)	{ return php_apply(v, php_rtrim); }
 const char *php_lcfirst_cstr(const char *s)	{ return ring_apply(s, php_lcfirst); }
-const char *php_lcfirst_value(const madc::value *v)	{ return ring_apply(v, php_lcfirst); }
+const char *php_lcfirst_value(const madc::value *v)	{ return php_apply(v, php_lcfirst); }
 const char *php_nl2br_cstr(const char *s)	{ return ring_apply(s, php_nl2br); }
-const char *php_nl2br_value(const madc::value *v)	{ return ring_apply(v, php_nl2br); }
+const char *php_nl2br_value(const madc::value *v)	{ return php_apply(v, php_nl2br); }
 const char *php_str_rot13_cstr(const char *s)	{ return ring_apply(s, php_str_rot13); }
-const char *php_str_rot13_value(const madc::value *v)	{ return ring_apply(v, php_str_rot13); }
+const char *php_str_rot13_value(const madc::value *v)	{ return php_apply(v, php_str_rot13); }
 
 const char *php_str_repeat_cstr(const char *s, int64_t count)
 {
@@ -761,7 +825,7 @@ const char *php_str_repeat_cstr(const char *s, int64_t count)
 }
 const char *php_str_repeat_value(const madc::value *v, int64_t count)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_str_repeat(&slot, count);
 	return slot.c_str();
 }
@@ -779,7 +843,7 @@ const char *php_str_replace_value(const char *search, const char *replace,
 				  const madc::value *subject)
 {
 	std::string se(search ? search : ""), re(replace ? replace : "");
-	std::string &slot = ns_common::value_text_slot(subject);
+	std::string &slot = php_text_slot(subject);
 	php_str_replace(&se, &re, &slot);
 	return slot.c_str();
 }
@@ -796,7 +860,7 @@ const char *php_str_pad_value(const madc::value *v, int64_t length,
 			      const char *pad)
 {
 	std::string p(pad ? pad : "");
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_str_pad(&slot, length, &p);
 	return slot.c_str();
 }
@@ -808,7 +872,7 @@ int64_t php_str_word_count_cstr(const char *s)
 }
 int64_t php_str_word_count_value(const madc::value *v)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_str_word_count(&slot);
 }
 
@@ -825,7 +889,7 @@ const char *php_chunk_split_value(const madc::value *v, int64_t chunklen,
 				  const char *sep)
 {
 	std::string sp(sep ? sep : "");
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_chunk_split(&slot, chunklen, &sp);
 	return slot.c_str();
 }
@@ -850,7 +914,7 @@ const char *php_wordwrap_value(const madc::value *v, int64_t width,
 			       const char *brk)
 {
 	std::string b(brk ? brk : "");
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	php_wordwrap(&slot, width, &b);
 	return slot.c_str();
 }
@@ -858,7 +922,7 @@ const char *php_wordwrap_value(const madc::value *v, int64_t width,
 const char *php_implode_cstr(const char *glue, madc::value *arr)
 {
 	std::string &slot = ns_common::ring_slot();
-	ns_common::join_with_sep(slot, *arr, std::string(glue ? glue : ""));
+	ns_common::join_with_sep(slot, *arr, std::string(glue ? glue : ""), php_real_text);
 	return slot.c_str();
 }
 
@@ -939,7 +1003,7 @@ const char *php_dirname_cstr(const char *path, int64_t levels)
 }
 const char *php_dirname_value(const madc::value *v, int64_t levels)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_dirname_slot(slot, levels);
 }
 
@@ -982,7 +1046,7 @@ const char *php_basename_cstr(const char *path, const char *suffix)
 }
 const char *php_basename_value(const madc::value *v, const char *suffix)
 {
-	std::string &slot = ns_common::value_text_slot(v);
+	std::string &slot = php_text_slot(v);
 	return php_basename_slot(slot, suffix);
 }
 
@@ -1050,33 +1114,263 @@ void php_array_unshift(madc::value *arr, const char *str)
 	data.insert(data.begin(), madc::value(std::string(s ? s : "")));
 }
 
-// php::sort / php::rsort — sort array (string comparison). The comparator
-// pass is shared; each entry acquires the container ONCE through
-// value_array_for_write so a frozen array reports a single diagnostic
-// naming the function the script actually called.
-static void php_sort_data(std::vector<madc::value> &data)
+// ---- PHP 8's standard comparison, $a <=> $b -------------------------------
+// The manual's "Comparison with Various Types", which sort() and rsort()
+// apply under their default flags (SORT_REGULAR). Not madc's value::compare,
+// which is strict by design (D21, D28): this is PHP parity.
+
+// A number as PHP compares it: an integer while it is one, else a double.
+struct php_number
 {
-	std::sort(data.begin(), data.end(), [](const madc::value &a, const madc::value &b) {
-		if ( a.is_string() && b.is_string() )
-			return a.as_string() < b.as_string();
-		if ( a.is_integer() && b.is_integer() )
-			return a.as_integer() < b.as_integer();
+	bool is_int;
+	int64_t i;
+	double d;
+};
+
+static bool php_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+static bool php_digit(char c)
+{
+	return c >= '0' && c <= '9';
+}
+
+// PHP 8's numeric string: optional whitespace, a sign, digits with an
+// optional fraction and exponent, optional whitespace. Leading-numeric text
+// ("12abc") is not one. An integer's text that overflows is a double.
+static bool php_numeric_text(const std::string &s, php_number &n)
+{
+	size_t i = 0, len = s.size();
+	while ( i < len && php_space(s[i]) )
+		i++;
+	size_t start = i;
+	if ( i < len && (s[i] == '+' || s[i] == '-') )
+		i++;
+	size_t digits = 0;
+	while ( i < len && php_digit(s[i]) )
+	{
+		i++;
+		digits++;
+	}
+	bool integral = true;
+	if ( i < len && s[i] == '.' )
+	{
+		integral = false;
+		i++;
+		while ( i < len && php_digit(s[i]) )
+		{
+			i++;
+			digits++;
+		}
+	}
+	if ( digits == 0 )
 		return false;
+	if ( i < len && (s[i] == 'e' || s[i] == 'E') )
+	{
+		size_t e = i + 1;
+		if ( e < len && (s[e] == '+' || s[e] == '-') )
+			e++;
+		if ( e < len && php_digit(s[e]) )
+		{
+			while ( e < len && php_digit(s[e]) )
+				e++;
+			i = e;
+			integral = false;
+		}
+	}
+	size_t end = i;
+	while ( i < len && php_space(s[i]) )
+		i++;
+	if ( i != len )
+		return false;
+	std::string t = s.substr(start, end - start);
+	if ( integral )
+	{
+		errno = 0;
+		long long v = strtoll(t.c_str(), NULL, 10);
+		if ( errno != ERANGE )
+		{
+			n.is_int = true;
+			n.i = v;
+			n.d = (double)v;
+			return true;
+		}
+	}
+	n.is_int = false;
+	n.i = 0;
+	n.d = strtod(t.c_str(), NULL);
+	return true;
+}
+
+// An integer, a real or a numeric string, as a number.
+static bool php_number_of(const madc::value &v, php_number &n)
+{
+	if ( v.is_integer() )
+	{
+		n.is_int = true;
+		n.i = v.as_integer();
+		n.d = (double)n.i;
+		return true;
+	}
+	if ( v.is_real() )
+	{
+		n.is_int = false;
+		n.i = 0;
+		n.d = v.as_real();
+		return true;
+	}
+	return v.is_string() && php_numeric_text(v.as_string(), n);
+}
+
+static int php_compare_numbers(const php_number &x, const php_number &y)
+{
+	if ( x.is_int && y.is_int )
+		return x.i == y.i ? 0 : (x.i < y.i ? -1 : 1);
+	// ZEND_THREEWAY_COMPARE: a NaN is neither equal nor less, so it is 1.
+	return x.d == y.d ? 0 : (x.d < y.d ? -1 : 1);
+}
+
+// A scalar's text as PHP converts it for a string comparison.
+static std::string php_text_of(const madc::value &v)
+{
+	if ( v.is_integer() )
+		return std::to_string(v.as_integer());
+	if ( v.is_real() )
+		return php_real_text(v.as_real());
+	if ( v.is_string() || v.is_bytes() )
+		return v.as_string();
+	return std::string();
+}
+
+// PHP's boolean conversion: "" and "0" are false, an empty array is false.
+static bool php_truthy(const madc::value &v)
+{
+	if ( v.is_boolean() )
+		return v.as_boolean();
+	if ( v.is_integer() )
+		return v.as_integer() != 0;
+	if ( v.is_real() )
+		return v.as_real() != 0.0;
+	if ( v.is_string() )
+	{
+		std::string s = v.as_string();
+		return !s.empty() && s != "0";
+	}
+	if ( v.is_array() )
+		return !v.as_array().empty();
+	if ( v.is_object() )
+		return !v.as_object().empty();
+	return !v.is_null();
+}
+
+static int php_compare(const madc::value &a, const madc::value &b);
+
+// Two arrays (a madc list's keys are its indices, an object's its keys): the
+// one with fewer entries is smaller; else entry by entry, and a key of `a`
+// missing from `b` makes them uncomparable, which PHP answers with 1.
+static int php_compare_arrays(const madc::value &a, const madc::value &b)
+{
+	size_t na = a.is_array() ? a.as_array().size() : a.as_object().size();
+	size_t nb = b.is_array() ? b.as_array().size() : b.as_object().size();
+	if ( na != nb )
+		return na < nb ? -1 : 1;
+	if ( a.is_array() && b.is_array() )
+	{
+		for ( size_t i = 0; i < na; i++ )
+		{
+			int c = php_compare(a.as_array()[i], b.as_array()[i]);
+			if ( c != 0 )
+				return c;
+		}
+		return 0;
+	}
+	// A list against an object, or two objects: `a`'s entries in its order.
+	std::vector<std::pair<std::string, const madc::value *> > entries;
+	if ( a.is_array() )
+		for ( size_t i = 0; i < na; i++ )
+			entries.push_back(std::make_pair(std::to_string(i), &a.as_array()[i]));
+	else
+		for ( auto &kv : a.as_object() )
+			entries.push_back(std::make_pair(kv.first, &kv.second));
+	for ( auto &e : entries )
+	{
+		const madc::value *bv = NULL;
+		if ( b.is_object() )
+		{
+			auto found = b.as_object().find(e.first);
+			if ( found != b.as_object().end() )
+				bv = &found->second;
+		}
+		else
+		{
+			php_number k;
+			if ( php_numeric_text(e.first, k) && k.is_int && k.i >= 0 && (size_t)k.i < nb )
+				bv = &b.as_array()[(size_t)k.i];
+		}
+		if ( !bv )
+			return 1;
+		int c = php_compare(*e.second, *bv);
+		if ( c != 0 )
+			return c;
+	}
+	return 0;
+}
+
+static int php_compare(const madc::value &a, const madc::value &b)
+{
+	// null <=> string: null is "", which no numeric string equals.
+	if ( a.is_null() && b.is_string() )
+		return b.as_string().empty() ? 0 : -1;
+	if ( a.is_string() && b.is_null() )
+		return a.as_string().empty() ? 0 : 1;
+	// bool or null <=> anything: both as booleans.
+	if ( a.is_null() || a.is_boolean() || b.is_null() || b.is_boolean() )
+	{
+		bool x = php_truthy(a), y = php_truthy(b);
+		return x == y ? 0 : (x ? 1 : -1);
+	}
+	bool a_arr = a.is_array() || a.is_object();
+	bool b_arr = b.is_array() || b.is_object();
+	if ( a_arr && b_arr )
+		return php_compare_arrays(a, b);
+	if ( a_arr )
+		return 1;			// an array is greater than anything else
+	if ( b_arr )
+		return -1;
+	// Numbers, and numeric strings, compare numerically; anything else
+	// compares as text (a number by its PHP text).
+	php_number x, y;
+	if ( php_number_of(a, x) && php_number_of(b, y) )
+		return php_compare_numbers(x, y);
+	int c = php_text_of(a).compare(php_text_of(b));
+	return c == 0 ? 0 : (c < 0 ? -1 : 1);
+}
+
+// php::sort / php::rsort — PHP's sort() and rsort(): the standard comparison,
+// and a stable sort (PHP 8), so equal elements keep their order in both.
+// Each entry acquires the container ONCE through value_array_for_write so a
+// frozen array reports a single diagnostic naming the function the script
+// actually called.
+void php_sort(madc::value *arr)
+{
+	std::vector<madc::value> &data
+		= ns_common::value_array_for_write(*arr, "php::sort");
+	std::stable_sort(data.begin(), data.end(), [](const madc::value &a, const madc::value &b) {
+		return php_compare(a, b) < 0;
 	});
 }
 
-void php_sort(madc::value *arr)
-{
-	php_sort_data(ns_common::value_array_for_write(*arr, "php::sort"));
-}
-
-// php::rsort — sort array in reverse
+// php::rsort — the same comparison, arguments swapped (never a reversal,
+// which would turn equal elements around).
 void php_rsort(madc::value *arr)
 {
 	std::vector<madc::value> &data
 		= ns_common::value_array_for_write(*arr, "php::rsort");
-	php_sort_data(data);
-	std::reverse(data.begin(), data.end());
+	std::stable_sort(data.begin(), data.end(), [](const madc::value &a, const madc::value &b) {
+		return php_compare(b, a) < 0;
+	});
 }
 
 // php::array_slice — extract a slice of the array
@@ -1123,7 +1417,7 @@ void php_array_column(madc::value *dest, madc::value *src, int64_t column_index)
 		if ( idx >= row_arr.size() )
 			continue;
 		std::string value;
-		if ( ns_common::value_to_string(row_arr[idx], value) )
+		if ( ns_common::value_to_string(row_arr[idx], value, php_real_text) )
 			d.push_back(madc::value(value));
 	}
 }
@@ -1183,7 +1477,7 @@ int64_t __php_array_push_int(madc::value *a, int64_t b) { return php_array_push_
 int64_t __php_array_push_real(madc::value *a, double b) { return php_array_push_real(a, b); }
 int64_t __php_array_push_bool(madc::value *a, bool b) { return php_array_push_bool(a, b); }
 int64_t __php_array_push_array(madc::value *a, madc::value *b) { return php_array_push_value(a, b); }
-int64_t __php_array_push_value(madc::value *a, madc::value *b) { return php_array_push_value(a, b); }
+int64_t __php_array_push_value(madc::value *a, const madc::value *b) { return php_array_push_value(a, b); }
 std::string *__php_array_pop(std::string *a, madc::value *b) { return php_array_pop(a, b); }
 std::string *__php_array_get(std::string *a, madc::value *b, int64_t c) { return php_array_get(a, b, c); }
 int64_t __php_array_get_int(madc::value *a, int64_t b) { return php_array_get_int(a, b); }
@@ -1235,6 +1529,10 @@ int64_t __php_ctype_digit(madc::value *a) { return php_ctype_digit_value(a); }
 int64_t __php_ctype_digit_cstr(const char *a) { return php_ctype_digit(a); }
 int64_t __php_file_exists(madc::value *a) { return php_file_exists_value(a); }
 int64_t __php_file_exists_cstr(const char *a) { return php_file_exists(a); }
+int64_t __php_is_dir(madc::value *a) { return php_is_dir_value(a); }
+int64_t __php_is_dir_cstr(const char *a) { return php_is_dir(a); }
+int64_t __php_is_readable(madc::value *a) { return php_is_readable_value(a); }
+int64_t __php_is_readable_cstr(const char *a) { return php_is_readable(a); }
 int64_t __php_unlink(madc::value *a) { return php_unlink_value(a); }
 int64_t __php_unlink_cstr(const char *a) { return php_unlink(a); }
 int64_t __php_file_get_contents(madc::value *a, const char *b) { return php_file_get_contents(a, b); }

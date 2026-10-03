@@ -37,6 +37,11 @@ File quit Quit
 Edit undo Undo [editable && !viewing]
 Edit redo Redo [editable && !viewing]
 Edit -
+Edit cut Cut [selection && editable]
+Edit copy Copy [selection]
+Edit paste Paste [editable]
+Edit selectall Select All
+Edit -
 Edit mark Mark Block Start [!viewing]
 Edit bend Mark Block End [!viewing]
 Edit blockcopy Copy Block [selection && editable]
@@ -54,12 +59,14 @@ View outline Outline
 View view AST Views
 View -
 View options Options…
+View keystyle Key Bindings…
 View modes Modes…
 View -
 View panel Toggle Panel
 View problems Problems
 View output Output
 View terminal Terminal
+View repl REPL
 View -
 View refresh Refresh Screen
 
@@ -74,6 +81,9 @@ Window killwin Close Window [split]
 Window onlywin Only Window [split]
 
 Build build Build…
+Build replrun Run in REPL
+Build replstop Stop the REPL
+Build repllang REPL Language…
 
 Help help Keyboard Help
 

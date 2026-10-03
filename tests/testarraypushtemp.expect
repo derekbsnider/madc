@@ -1,0 +1,12 @@
+array(5) {
+  [0]=>
+  real(2.5)
+  [1]=>
+  real(3.5)
+  [2]=>
+  string(4) "text"
+  [3]=>
+  integer(7)
+  [4]=>
+  string(3) "lit"
+}

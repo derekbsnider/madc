@@ -20,8 +20,9 @@
 #define __MADC_TASK_IO_H 1
 
 #include <stdint.h>
+#include <vector>
 
-#include "madcdis/datachannel.h"	// poll_handle_kind — the channel contract owns it
+#include "madcdis/datachannel.h"	// poll_handle(_kind) — the channel contract owns it
 
 namespace madc {
 namespace taskio {
@@ -56,6 +57,38 @@ enum class host_wake {
 // anyway. The host IS the terminal's standard input — a descriptor by
 // definition, so no kind parameter.
 host_wake host_wait_readable(intptr_t handle, long long timeout_ms = -1);
+
+// A select case's readiness (plan §41.9a slice 2): the byte case's contract
+// for ANY source — a madc::channel (its one read handle), an interactive
+// session (its reply socket and its output pipe). poll_state(): 1 = progress
+// now, 0 = it would wait, -1 = dead (the case disables for that select).
+// wait_handles(): the handles whose readability can change that state, read
+// at EVERY select, so a source may replace them between selects (a session's
+// restart). A dead source's handles are never registered.
+class readiness_source
+{
+public:
+	virtual ~readiness_source() {}
+	virtual int64_t poll_state() = 0;
+	virtual void wait_handles(std::vector<poll_handle> &out) = 0;
+};
+
+// Register a source RESOLVED BY ID at every select, so the case registry
+// never holds a pointer that can dangle: a closed source resolves to NULL and
+// its case is dead, like a closed-and-drained channel's. Returns the case's
+// chan handle for chan_select (never freed, like chan_readable's; make it
+// once per source and reuse it). The ids must never be reused while a case
+// can name them (handle_table's rule).
+typedef readiness_source *(*readiness_resolver)(int64_t id);
+int64_t chan_readiness(readiness_resolver resolve, int64_t id);
+
+// A handle a task may be parked on is about to close: wake every such task
+// so its wait re-reads its sources (a select rescans — a close's verb, like
+// chan_close's — never reporting a fired case). The poll() path sees a
+// closed descriptor as POLLNVAL; epoll forgets one silently, so the closer
+// says so first (an interactive session's restart, plan §41.9a). No waiter:
+// a no-op.
+void handle_closing(intptr_t handle, poll_handle_kind kind);
 
 } // namespace taskio
 } // namespace madc

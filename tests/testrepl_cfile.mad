@@ -1,0 +1,15 @@
+// madc -i on a C file (plan §41.5a, slice 2; python -i): the file loads
+// into the session, its main runs, then the entries in testrepl_cfile.input
+// run on its names. The file and the session are one unit, so its statics
+// are session names (owner, 2026-09-27; cling 1.2 and clang-repl-20 agree).
+#include <stdio.h>
+
+static int count = 1;
+static int helper(void) { return count * 10; }
+
+int main(int argc, char **argv)
+{
+	printf("main ran, argc=%d\n", argc);
+	count = 7;
+	return 3;
+}

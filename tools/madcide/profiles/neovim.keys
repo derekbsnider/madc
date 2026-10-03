@@ -16,6 +16,9 @@
 # w/b are the shared end-of-word motions (dw is vim's `de` shape).
 #
 # vim's control chords
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title Vim
+
 ^r redo
 ^f pgdn
 ^b pgup
@@ -39,6 +42,9 @@
 ^k i outline
 ^k a view
 ^k b build
+# F5 runs the buffer into the REPL tab's session: a fresh one, its main
+# run, its names left for the prompt (plan §41.10a).
+f5 replrun
 ^k e editfile
 # vi NORMAL mode — motions
 @normal h left

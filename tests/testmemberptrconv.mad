@@ -1,0 +1,49 @@
+// A pointer to member of a base B converts to a pointer to member of a class
+// D derived from it ([conv.mem]/2, implicit), and a static or C-style cast
+// converts either way ([expr.static.cast]/12). When B sits at a non-zero
+// offset in D the value moves by that offset: a data member's offset
+// (null kept), a member function's {ptr, adj} pair's adj. g++ and clang++
+// lower `int D::*f(int B::*p) { return p; }` as `p == -1 ? p : p + 12` and
+// the member-function form as `{ptr, adj + 12}`. madc moved nothing — a
+// converted pointer read D's first member — and a cast to a member-function
+// pointer type lowered to a C cast to a struct, which c2mir refused
+// ("conversion to non-scalar type requested").
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct A0 { int pad[3]; };
+struct B { int y; int get() { return y; } };
+struct D : A0, B { int z; int getz() { return z; } };
+typedef int (B::*BF)();
+typedef int (D::*DF)();
+
+int D::*g_pd = &B::y;			// file scope: the converted constant folds
+DF g_df = &B::get;
+
+int D::*data_up(int B::*p) { return p; }
+DF fn_up(BF p) { return p; }
+int D::*const_up() { return &B::y; }
+
+int main()
+{
+	D d;
+	d.pad[0] = 1;
+	d.y = 7;
+	d.z = 9;
+	B &br = d;
+	BF bf = (BF) &B::get;			// identity cast
+	DF df1 = static_cast<DF>(&B::get);	// B::* -> D::*, explicit
+	DF df2 = &B::get;			// B::* -> D::*, implicit
+	int D::*pd = &B::y;			// data, implicit
+	BF bf2 = static_cast<BF>(&D::getz);	// D::* -> B::*, explicit
+	int B::*pb = &B::y;
+	int D::*pd2 = pb;			// data, not a constant
+	BF bf3 = &B::get;
+	DF df3 = bf3;				// function, not a constant
+	printf("%d %d %d %d %d %d %d\n", (d.*bf)(), (d.*df1)(), (d.*df2)(),
+	       d.*pd, (br.*bf2)(), d.*pd2, (d.*df3)());
+	printf("%d %d %d %d %d\n", d.*data_up(&B::y), (d.*fn_up(&B::get))(),
+	       d.*const_up(), d.*g_pd, (d.*g_df)());
+	return 0;
+}

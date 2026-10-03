@@ -1,0 +1,29 @@
+/* Calls through pointers to member functions whose return type is a
+   reference to a pointer (`const int *&`), a pointer, and a reference to
+   the object's own member (assigned through).
+   madc spelled the call's cast type by hand, and read a `const int *&`
+   return as a pointer of the wrong depth: c2mir refused `*(c.*pf)()`
+   ("invalid type argument of unary *"). Every declarator of a function's
+   return type now has one owner in the CIR builder.
+   Oracle: g++ 13 and clang++ 18 -std=c++17 print the line below. */
+#include <cstdio>
+
+int a[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+
+struct C {
+	int k = 7;
+	const int *&ref() { static const int *p = &a[1][1]; return p; }
+	int *ptr() { return &a[0][2]; }
+	int &val() { return k; }
+};
+
+int main()
+{
+	C c;
+	const int *&(C::*pf)() = &C::ref;
+	int *(C::*pp)() = &C::ptr;
+	int &(C::*pv)() = &C::val;
+	(c.*pv)() = 9;
+	printf("pmf: %d %d %d\n", *(c.*pf)(), *(c.*pp)(), c.k);
+	return 0;
+}

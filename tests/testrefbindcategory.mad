@@ -1,0 +1,63 @@
+// An argument's value category decides which reference overload binds it
+// ([dcl.init.ref]/5, [over.ics.rank]/3.2.3): a non-const `T&` binds no
+// rvalue, a `T&&` binds no lvalue of its type, an rvalue prefers `T&&` over
+// `const T&`, and a non-const lvalue prefers `T&` over `const T&` — whatever
+// order the overloads are declared in. madc ranked argument TYPES only, so
+// the first declared candidate took every tie: `w(1)` called w(int&),
+// `r(x)` called r(int&&) and `q(2)` called q(const int&) (exit 0).
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+static const char *w(int &) { return "int&"; }
+static const char *w(const int &) { return "const int&"; }
+static const char *w2(const int &) { return "const int&"; }
+static const char *w2(int &) { return "int&"; }
+static const char *pw(char *&) { return "char*&"; }
+static const char *pw(char *const &) { return "char*const&"; }
+static const char *r(int &&) { return "int&&"; }
+static const char *r(const int &) { return "const int&"; }
+static const char *q(const int &) { return "const int&"; }
+static const char *q(int &&) { return "int&&"; }
+
+struct A { int v; };
+static const char *c(A &) { return "A&"; }
+static const char *c(const A &) { return "const A&"; }
+static const char *m(A &&) { return "A&&"; }
+static const char *m(const A &) { return "const A&"; }
+static A make() { A a = { 3 }; return a; }
+// A forwarding reference binds both: its instance's `&&` is already bound.
+template<class T> static int kk(T &&) { return 1; }
+
+struct S {
+	const char *f(int &) { return "int&"; }
+	const char *f(const int &) { return "const int&"; }
+	const char *g(const int &) { return "const int&"; }
+	const char *g(int &&) { return "int&&"; }
+	template<class T> int h(T &&) { return 2; }
+};
+
+static char buf[2];
+static int one() { return 1; }
+
+int main()
+{
+	int x = 1;
+	int arr[2] = { 0, 0 };
+	int *ip = &x;
+	char *p = buf;
+	printf("w: %s %s %s\n", w(x), w(1), w(one()));
+	printf("w-lvalues: %s %s %s\n", w(*ip), w(arr[1]), w(x ? x : arr[0]));
+	printf("w-rvalues: %s %s %s\n", w(static_cast<int &&>(x)), w(x + 1), w((int)x));
+	printf("w2: %s %s\n", w2(x), w2(2));
+	printf("pw: %s %s\n", pw(p), pw((char *)buf));
+	printf("r: %s %s %s\n", r(x), r(2), r(static_cast<int &&>(x)));
+	printf("q: %s %s\n", q(x), q(2));
+	A a = { 1 };
+	printf("c: %s %s %s\n", c(a), c(make()), c(A()));
+	printf("m: %s %s %s\n", m(a), m(make()), m(static_cast<A &&>(a)));
+	S s;
+	printf("S::f: %s %s\n", s.f(x), s.f(2));
+	printf("S::g: %s %s\n", s.g(x), s.g(2));
+	printf("forwarding: %d %d %d %d\n", kk(x), kk(2), s.h(x), s.h(2));
+	return 0;
+}

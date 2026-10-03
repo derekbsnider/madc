@@ -1,0 +1,25 @@
+// A non-type template argument substituted into a class template's body is ONE
+// operand ([temp.param]/8): a postfix step the body applies to the parameter
+// applies to the whole argument. The body clone splices the argument's tokens,
+// so `P()` over `&g` read `&(g())` ("expecting addressable expression after
+// '&'") and `O->m` over `&obj` read `&(obj->m)`. The splice now groups a
+// multi-token argument before a postfix step — and only then, so `Other<P>`
+// keeps the spelling that keys the instantiation.
+// Oracle: g++ and clang++ -std=c++11 print the lines of the .expect file.
+extern "C" int printf(const char *, ...);
+int g() { return 3; }
+struct S { int m; int f() { return m + 1; } };
+S obj = { 5 };
+int arr[3] = { 7, 8, 9 };
+template <int (*P)()> struct FnPtr { static int call() { return P(); } static int twice(); };
+template <int (*P)()> int FnPtr<P>::twice() { return P() + P(); }
+template <int (*P)()> struct Wrap { static int both() { return FnPtr<P>::call() * 10 + FnPtr<P>::twice(); } };
+template <int (&A)[3]> struct Arr { static int at(int i) { return A[i]; } };
+template <int (*A)[3]> struct ArrP { static int at(int i) { return (*A)[i] + A[0][i]; } };
+template <S *O> struct Obj { static int get() { return O->m + O->f() + (*O).m; } };
+int main() {
+    printf("fn: %d %d %d\n", FnPtr<&g>::call(), FnPtr<&g>::twice(), Wrap<&g>::both());
+    printf("arr: %d %d\n", Arr<arr>::at(2), ArrP<&arr>::at(1));
+    printf("obj: %d\n", Obj<&obj>::get());
+    return 0;
+}

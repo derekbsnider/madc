@@ -13,5 +13,7 @@ int main()
     run_session(path, false);
     printf("-- read-only session --\n");
     run_session(path, true);
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

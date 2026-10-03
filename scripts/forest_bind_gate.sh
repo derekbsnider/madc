@@ -871,6 +871,90 @@ fi
 rm -f "$strbind_snap" "$strbind_gcc" "$strbind_vlog" "$strbind_mir" "$strbind_live_mir"
 echo "forest_bind_gate: [strbind] OK — std::string bound from <string> grove (no re-parse); whole-TU MIR byte-identical to live (#23), output == live == g++"
 
+# --- case: quietbind — a bound container adds NOTHING to a consumer's stderr ---
+#     The flush re-derives a restored function's default arguments from their
+#     frozen token runs, and a FREE function's re-derive waits until this TU
+#     registers the function (forest_settle_param_defaults). A container frozen
+#     from a <string> producer holds basic_string<wchar_t>'s iterator-pair
+#     constructor instance — a compiler-derived identity, deferred until named
+#     — whose `= allocator<wchar_t>()` names a product no consumer declares
+#     until something promotes it. Re-derived at bind, EVERY consumer (a C file
+#     with only <stdio.h> among them) printed "use of undeclared identifier
+#     'allocator_wchar_t'" (stringfwd.h:71), and the packed release failed
+#     every .expect_quiet test. The <string> consumer constructs std::string
+#     and std::wstring from iterator pairs, taking the defaulted allocator: the
+#     promoted instance's default re-derives then, and resolves.
+qb_prod="tmp/fbgate_quietbind_producer.cpp"
+qb_snap="tmp/fbgate_quietbind.msnap"
+qb_c="tmp/fbgate_quietbind_c.c"
+qb_cpp="tmp/fbgate_quietbind_cpp.cpp"
+qb_str="tmp/fbgate_quietbind_str.cpp"
+qb_gcc="tmp/fbgate_quietbind_gcc"
+qb_err="tmp/fbgate_quietbind.err"
+qb_clean() { rm -f "$qb_snap" "$qb_gcc" "$qb_err"; }
+cat > "$qb_prod" <<'QBEOF'
+#include <string>
+#include <cstdio>
+int main() { std::string s("x"); std::puts(s.c_str()); return 0; }
+QBEOF
+cat > "$qb_c" <<'QBEOF'
+#include <stdio.h>
+int main(void) { puts("c"); return 0; }
+QBEOF
+cat > "$qb_cpp" <<'QBEOF'
+#include <cstdio>
+int main() { std::puts("cpp"); return 0; }
+QBEOF
+cat > "$qb_str" <<'QBEOF'
+#include <string>
+#include <cstdio>
+int main() {
+    const char a[] = "abc";
+    const wchar_t w[] = L"wxyz";
+    std::string s(a, a + 3);
+    std::wstring ws(w, w + 4);
+    std::printf("s=%s ws=%d\n", s.c_str(), (int)ws.size());
+    return 0;
+}
+QBEOF
+if ! timeout 180 "$BIN" --freeze="$qb_snap" "$qb_prod" >/dev/null 2>&1; then
+    qb_clean
+    fail "[quietbind] --freeze <string> FAILED"
+fi
+[ -f "$qb_snap" ] || fail "[quietbind] --freeze produced no container"
+if command -v g++ >/dev/null 2>&1; then
+    if ! timeout 120 g++ "$qb_str" -o "$qb_gcc" >/dev/null 2>&1; then
+        qb_clean
+        fail "[quietbind] g++ compile FAILED"
+    fi
+    qb_gcc_out=$("$qb_gcc" 2>/dev/null)
+    if [ "$qb_gcc_out" != "s=abc ws=4" ]; then
+        qb_clean
+        fail "[quietbind] g++ output '$qb_gcc_out' != 's=abc ws=4'"
+    fi
+fi
+for qb in "$qb_c:c" "$qb_cpp:cpp" "$qb_str:s=abc ws=4"; do
+    qb_src="${qb%%:*}"
+    qb_exp="${qb#*:}"
+    qb_live=$(timeout 60 "$BIN" "$qb_src" 2>/dev/null)
+    if [ "$qb_live" != "$qb_exp" ]; then
+        qb_clean
+        fail "[quietbind] live-parse output of $qb_src '$qb_live' != '$qb_exp'"
+    fi
+    qb_out=$(timeout 60 "$BIN" --forest-bind="$qb_snap" "$qb_src" 2>"$qb_err")
+    if [ "$qb_out" != "$qb_exp" ]; then
+        qb_clean
+        fail "[quietbind] bind output of $qb_src '$qb_out' != '$qb_exp' (== live)"
+    fi
+    if [ -s "$qb_err" ]; then
+        sed 's/\x1b\[[0-9;]*m//g' "$qb_err" | head -6 >&2
+        qb_clean
+        fail "[quietbind] binding the <string> container wrote to $qb_src's stderr (above)"
+    fi
+done
+qb_clean
+echo "forest_bind_gate: [quietbind] OK — a bound <string> container leaves a C, a C++ and a <string> consumer's stderr empty; output == live == g++"
+
 # --- case: strops (widening: restored-method OVERLOAD fidelity) ---
 # A consumer exercising an overload SET on a bound class: append has 9 parsed
 # overloads (const string&, const char*, initializer_list<char>, ...).
@@ -1189,6 +1273,86 @@ int main() {
 }
 EOF
 run_case traitfold "1 0 1"
+
+# --- case: deletedctor — deleted copy/move metadata must survive freeze/bind.
+#     FuncDef keeps the two special-member declarations distinct because its
+#     DataDefREF parameter type intentionally erases `&` versus `&&`. The
+#     consumer exercises both positive and negative constructibility results
+#     after the class declarations are restored from the grove.
+cat > tmp/fbgate_deletedctor.h <<'EOF'
+#ifndef FBGATE_DELETEDCTOR_H
+#define FBGATE_DELETEDCTOR_H
+struct FbgCopyDeleted {
+	int n;
+	FbgCopyDeleted() : n(1) { }
+	FbgCopyDeleted(const FbgCopyDeleted&) = delete;
+	FbgCopyDeleted(FbgCopyDeleted&&) = default;
+};
+struct FbgMoveDeleted {
+	int n;
+	FbgMoveDeleted() : n(2) { }
+	FbgMoveDeleted(const FbgMoveDeleted&) = default;
+	FbgMoveDeleted(FbgMoveDeleted&&) = delete;
+};
+#endif
+EOF
+cat > tmp/fbgate_deletedctor_producer.cpp <<'EOF'
+#include <fbgate_deletedctor.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_deletedctor_consumer.cpp <<'EOF'
+#include <fbgate_deletedctor.h>
+#include <cstdio>
+int main() {
+	printf("%d %d %d %d\n",
+	       (int)__is_constructible(FbgCopyDeleted, FbgCopyDeleted&),
+	       (int)__is_constructible(FbgCopyDeleted, FbgCopyDeleted&&),
+	       (int)__is_constructible(FbgMoveDeleted, FbgMoveDeleted&),
+	       (int)__is_constructible(FbgMoveDeleted, FbgMoveDeleted&&));
+	return 0;
+}
+EOF
+run_case deletedctor "0 1 1 0"
+
+# --- case: constcopy — a bound class's `const X&` copy constructor stays one.
+#     A restored parameter keeps its recorded const flag (paramrec
+#     PF_CONST_PARAM -> FuncDef::const_params), which the copy constructor's
+#     selection reads: without it a member's `X(const X&)` cannot bind the
+#     const source of an implicit memberwise copy, no constructor is chosen,
+#     and the member is bit-copied — exit 0 with "v=1 live=1 after=-1" here
+#     (std::string as such a member: a double free, tests/testimplcopy).
+cat > tmp/fbgate_constcopy.h <<'EOF'
+#ifndef FBGATE_CONSTCOPY_H
+#define FBGATE_CONSTCOPY_H
+struct FbgCounted {
+	int *live;
+	int v;
+	FbgCounted(int *l, int x) : live(l), v(x) { ++*live; }
+	FbgCounted(const FbgCounted &o) : live(o.live), v(o.v + 100) { ++*live; }
+	~FbgCounted() { --*live; }
+};
+#endif
+EOF
+cat > tmp/fbgate_constcopy_producer.cpp <<'EOF'
+#include <fbgate_constcopy.h>
+int main() { return 0; }
+EOF
+cat > tmp/fbgate_constcopy_consumer.cpp <<'EOF'
+#include <fbgate_constcopy.h>
+#include <cstdio>
+struct Holder { FbgCounted c; int n; Holder(int *l, int k) : c(l, k), n(k) { } ~Holder() { } };
+int main() {
+	int live = 0;
+	{
+		Holder a(&live, 1);
+		Holder b(a);	// implicit copy: FbgCounted(const FbgCounted&) runs
+		printf("v=%d live=%d", b.c.v, live);
+	}
+	printf(" after=%d\n", live);
+	return 0;
+}
+EOF
+run_case constcopy "v=101 live=2 after=0"
 
 # --- case: subbind (THE OWNER'S BAR: a REAL integration test on the forest) ---
 # tests/testsubscript.mad (string/array subscripting, <string> + <map> whole)
@@ -1641,5 +1805,5 @@ run_case patternalias "1 2"
 # coverage. Worse in the other direction: deleting a case would leave this line
 # still claiming it runs. Deriving it from run_case would need the ~12 bespoke
 # cases below to register too; until then, update it when you add a case.
-echo "forest_bind_gate: GREEN 29/29 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias"
+echo "forest_bind_gate: GREEN 32/32 — typedef + struct + nested + bitfield + class + method + fwd + ptr + nestedenumfn + ldouble + ns + anon + declonlymt + flavorgate + strbind + strops + vecbind + vecnewspec + mapbind + mapnewspec + iobind + traitfold + deletedctor + constcopy + subbind + redecl + husk + silbody grove headers bound (unit-granular husk recovery only), output == live == g++ + secvptr + friendgrant + patternalias + quietbind"
 exit 0

@@ -10,6 +10,8 @@
 
 #include <string>
 #include <cstring>
+#include <utility>
+#include <vector>
 
 extern "C" {
 #include "mir.h"
@@ -36,9 +38,8 @@ static void *test_import_resolver(const char *name) {
     return nullptr;
 }
 
-// Compile C text, generate, and return function pointer
-static void *compile_c_func(MIR_context_t ctx, const char *c_source,
-			     const char *func_name) {
+// Compile C text into a new module, neither loaded nor linked
+static MIR_module_t compile_c_module(MIR_context_t ctx, const char *c_source) {
     struct c2mir_options opts;
     memset(&opts, 0, sizeof(opts));
     opts.message_file = stderr;
@@ -48,19 +49,13 @@ static void *compile_c_func(MIR_context_t ctx, const char *c_source,
 			    "test.c", nullptr);
     if (!ok) return nullptr;
 
-    // Find and load the module
-    MIR_module_t mod = nullptr;
-    for (MIR_module_t m = DLIST_HEAD(MIR_module_t, *MIR_get_module_list(ctx));
-	 m != nullptr;
-	 m = DLIST_NEXT(MIR_module_t, m)) {
-	mod = m;  // take the last module
-    }
-    if (!mod) return nullptr;
+    // The module the compile made is the last one
+    return DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+}
 
-    MIR_load_module(ctx, mod);
-    MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
-
-    // Find the function
+// A module's function by name, generated
+static void *module_func_code(MIR_context_t ctx, MIR_module_t mod,
+			      const char *func_name) {
     for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
 	 item != nullptr;
 	 item = DLIST_NEXT(MIR_item_t, item)) {
@@ -70,6 +65,28 @@ static void *compile_c_func(MIR_context_t ctx, const char *c_source,
 	}
     }
     return nullptr;
+}
+
+// Compile C text, generate, and return function pointer
+static void *compile_c_func(MIR_context_t ctx, const char *c_source,
+			     const char *func_name) {
+    MIR_module_t mod = compile_c_module(ctx, c_source);
+    if (!mod) return nullptr;
+
+    MIR_load_module(ctx, mod);
+    MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+    return module_func_code(ctx, mod, func_name);
+}
+
+// MIR_module_link_check's report, collected
+struct LinkRefusals {
+    std::vector<std::pair<MIR_error_type_t, std::string> > seen;
+};
+
+static void collect_link_refusal(MIR_error_type_t error_type,
+				 const char *name, void *arg) {
+    ((LinkRefusals *)arg)->seen.push_back(std::make_pair(error_type,
+							 std::string(name)));
 }
 
 TEST_SUITE("c2mir → MIR pipeline") {
@@ -234,6 +251,128 @@ TEST_SUITE("c2mir → MIR pipeline") {
 	CHECK(fn(3, 5) == 5);
 	CHECK(fn(10, 2) == 10);
 	CHECK(fn(7, 7) == 7);
+
+	MIR_gen_finish(ctx);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+    }
+
+    // madc fork: an incremental host (the REPL) asks before it loads. Loading
+    // a module that redefines a live func, or linking one with an undefined
+    // import, changes the context before MIR's error, and every later link
+    // fails with it; the check answers first and changes nothing.
+    TEST_CASE("MIR_module_link_check: a refused module leaves the context intact") {
+	MIR_context_t ctx = MIR_init();
+	c2mir_init(ctx);
+	MIR_gen_init(ctx);
+
+	MIR_module_t first = compile_c_module(ctx,
+	    "int f(void) { return 7; }\n");
+	REQUIRE(first != nullptr);
+	CHECK(MIR_module_link_check(ctx, first, test_import_resolver,
+				    nullptr, nullptr) == 0);
+	MIR_load_module(ctx, first);
+	MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+
+	// A second definition of f, and a call of g, which nothing defines
+	MIR_module_t refused = compile_c_module(ctx,
+	    "int g(void);\n"
+	    "int f(void) { return 8; }\n"
+	    "int calls_g(void) { return g(); }\n");
+	REQUIRE(refused != nullptr);
+	LinkRefusals r;
+	CHECK(MIR_module_link_check(ctx, refused, test_import_resolver,
+				    collect_link_refusal, &r) == 2);
+	REQUIRE(r.seen.size() == 2);
+	bool redef = false, undef = false;
+	for (size_t i = 0; i < r.seen.size(); i++) {
+	    if (r.seen[i].first == MIR_repeated_decl_error && r.seen[i].second == "f")
+		redef = true;
+	    if (r.seen[i].first == MIR_undeclared_op_ref_error && r.seen[i].second == "g")
+		undef = true;
+	}
+	CHECK(redef);
+	CHECK(undef);
+
+	// An import the resolver answers (printf) passes the check.
+	MIR_module_t next = compile_c_module(ctx,
+	    "int f(void);\n"
+	    "int printf(const char *, ...);\n"
+	    "int twice(void) { if (f() < 0) printf(\"-\"); return 2 * f(); }\n");
+	REQUIRE(next != nullptr);
+	CHECK(MIR_module_link_check(ctx, next, test_import_resolver,
+				    nullptr, nullptr) == 0);
+	MIR_load_module(ctx, next);
+	MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+	typedef int (*fn_t)(void);
+	fn_t twice = (fn_t)module_func_code(ctx, next, "twice");
+	REQUIRE(twice != nullptr);
+	CHECK(twice() == 14);	// the live f, not the refused module's
+
+	MIR_gen_finish(ctx);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+    }
+
+    // madc fork: vague linkage in the loader. A later module's LINKONCE or
+    // WEAK copy of a func or a datum the context already defines is not
+    // defined again: it binds to the first definition, as ld keeps the first
+    // COMDAT / weak copy. Before, the func copy was a fatal redefinition and
+    // the datum's copy took the name over, so the two modules had two
+    // addresses for one object (a C++ vtable or type_info split in two).
+    TEST_CASE("MIR_load_module: a linkonce or weak copy binds to the definition already there") {
+	MIR_context_t ctx = MIR_init();
+	c2mir_init(ctx);
+	MIR_gen_init(ctx);
+
+	MIR_module_t first = compile_c_module(ctx,
+	    "__attribute__((linkonce)) int shared_n = 5;\n"
+	    "__attribute__((linkonce)) int bump(void) { return ++shared_n; }\n"
+	    "__attribute__((weak)) int which(void) { return 1; }\n"
+	    "int *first_p(void) { return &shared_n; }\n");
+	REQUIRE(first != nullptr);
+	MIR_load_module(ctx, first);
+	MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+
+	// The same linkonce pair again, and a weak copy with another body.
+	MIR_module_t second = compile_c_module(ctx,
+	    "__attribute__((linkonce)) int shared_n = 5;\n"
+	    "__attribute__((linkonce)) int bump(void) { return ++shared_n; }\n"
+	    "__attribute__((weak)) int which(void) { return 2; }\n"
+	    "int *second_p(void) { return &shared_n; }\n"
+	    "int bump_twice(void) { bump(); return bump(); }\n"
+	    "int which_here(void) { return which(); }\n");
+	REQUIRE(second != nullptr);
+	CHECK(MIR_module_link_check(ctx, second, test_import_resolver,
+				    nullptr, nullptr) == 0);
+	MIR_load_module(ctx, second);
+	MIR_link(ctx, MIR_set_gen_interface, test_import_resolver);
+
+	typedef int *(*ptr_fn_t)(void);
+	typedef int (*fn_t)(void);
+	ptr_fn_t first_p = (ptr_fn_t)module_func_code(ctx, first, "first_p");
+	ptr_fn_t second_p = (ptr_fn_t)module_func_code(ctx, second, "second_p");
+	fn_t bump_twice = (fn_t)module_func_code(ctx, second, "bump_twice");
+	fn_t which_here = (fn_t)module_func_code(ctx, second, "which_here");
+	REQUIRE(first_p != nullptr);
+	REQUIRE(second_p != nullptr);
+	REQUIRE(bump_twice != nullptr);
+	REQUIRE(which_here != nullptr);
+	CHECK(first_p() == second_p());	// one object
+	CHECK(bump_twice() == 7);
+	CHECK(*first_p() == 7);
+	CHECK(which_here() == 1);	// the first weak definition is kept
+
+	// A strong definition of a name the context holds still redefines it.
+	MIR_module_t strong = compile_c_module(ctx,
+	    "int bump(void) { return 0; }\n");
+	REQUIRE(strong != nullptr);
+	LinkRefusals r;
+	CHECK(MIR_module_link_check(ctx, strong, test_import_resolver,
+				    collect_link_refusal, &r) == 1);
+	REQUIRE(r.seen.size() == 1);
+	CHECK(r.seen[0].first == MIR_repeated_decl_error);
+	CHECK(r.seen[0].second == "bump");
 
 	MIR_gen_finish(ctx);
 	c2mir_finish(ctx);

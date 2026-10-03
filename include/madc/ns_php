@@ -24,7 +24,7 @@ extern "C" {
     int64_t __php_array_push_int(array *, int64_t);
     int64_t __php_array_push_real(array *, double);
     int64_t __php_array_push_bool(array *, bool);
-    int64_t __php_array_push_value(array *, value *);
+    int64_t __php_array_push_value(array *, const value *);
     int64_t __php_array_get_int(array *, int64_t);
     const char *__php_array_get_cstr(array *, int64_t);
     void __php_array_reverse(array *);
@@ -41,6 +41,10 @@ extern "C" {
     int64_t __php_ctype_digit_cstr(const char *);
     int64_t __php_file_exists(value *);
     int64_t __php_file_exists_cstr(const char *);
+    int64_t __php_is_dir(value *);
+    int64_t __php_is_dir_cstr(const char *);
+    int64_t __php_is_readable(value *);
+    int64_t __php_is_readable_cstr(const char *);
     int64_t __php_unlink(value *);
     int64_t __php_unlink_cstr(const char *);
     int64_t __php_file_get_contents(value *, const char *);
@@ -112,7 +116,7 @@ namespace php {
     int64_t array_push(array &values, int64_t v) { return __php_array_push_int(&values, v); }
     int64_t array_push(array &values, double v) { return __php_array_push_real(&values, v); }
     int64_t array_push(array &values, bool v) { return __php_array_push_bool(&values, v); }
-    int64_t array_push(array &values, value &v) { return __php_array_push_value(&values, &v); }
+    int64_t array_push(array &values, const value &v) { return __php_array_push_value(&values, &v); }
     int64_t array_get_int(array &values, int64_t index) { return __php_array_get_int(&values, index); }
     const char *array_get_cstr(array &values, int64_t index) { return __php_array_get_cstr(&values, index); }
     void array_reverse(array &values) { __php_array_reverse(&values); }
@@ -140,6 +144,13 @@ namespace php {
     // no stat-cache emulation, madc answers the live filesystem).
     bool file_exists(value &filename) { return __php_file_exists(&filename) != 0; }
     bool file_exists(const char *filename) { return __php_file_exists_cstr(filename) != 0; }
+    // is_dir — true iff the path names an existing directory; is_readable —
+    // true iff the file or directory exists and may be read (the real
+    // uid/gid, as PHP checks). PHP parity; the live filesystem.
+    bool is_dir(value &filename) { return __php_is_dir(&filename) != 0; }
+    bool is_dir(const char *filename) { return __php_is_dir_cstr(filename) != 0; }
+    bool is_readable(value &filename) { return __php_is_readable(&filename) != 0; }
+    bool is_readable(const char *filename) { return __php_is_readable_cstr(filename) != 0; }
 
     // unlink — delete a FILE (PHP parity: fails on a directory). true on
     // success. A real host-side builtin, so it is win64-portable: the libc

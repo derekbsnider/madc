@@ -1,0 +1,4 @@
+extern int printf(
+extern int sprintf(
+extern int snprintf(
+sscanf(

@@ -1,0 +1,34 @@
+// An explicit cast between pointers to related classes ([expr.static.cast]/11,
+// [expr.cast]/4: a C-style cast takes static_cast's conversions first) moves
+// the address by the base subobject's offset — up to a SECONDARY base adds
+// it, down to the derived class subtracts it — and a null pointer stays null.
+// reinterpret_cast keeps the address. g++ and clang++ lower the static forms
+// as `p ? p +/- off : 0`. madc's cast lowering emitted a bare C cast for
+// every class pointer, so `(B *) &d` read D's first member and
+// `static_cast<D *>(bp)` read past the object.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct A0 { int pad[3]; };
+struct B { int y; };
+struct D : A0, B { int z; };
+
+int main()
+{
+	D d;
+	d.pad[0] = 1;
+	d.y = 7;
+	d.z = 9;
+	D *dp = &d;
+	D *dn = 0;
+	B *bp = (B *) dp;
+	B *bn = 0;
+	const B *cb = (const B *) &d;
+	printf("%d %d %d %d %d\n", ((B *) &d)->y, static_cast<B *>(&d)->y,
+	       bp->y, cb->y, (B *) dn == 0);
+	printf("%d %d %d %d\n", static_cast<D *>(bp)->z, ((D *) bp)->z,
+	       static_cast<D *>(bn) == 0,
+	       (void *) reinterpret_cast<B *>(dp) == (void *) dp);
+	return 0;
+}

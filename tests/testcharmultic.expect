@@ -1,0 +1,2 @@
+two=24930 four=1633837924 five=1650680933 neg=-1 esc=24898
+#if: 'ab' is 24930 and '\xff' is negative

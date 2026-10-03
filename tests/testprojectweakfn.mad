@@ -1,0 +1,4 @@
+// Project-mode test: a weak function definition yields to a strong one in
+// another TU, in either order. The real build is driven by
+// testprojectweakfn.cc.json via the --project flag in testprojectweakfn.flags.
+// This file is an ignored positional.

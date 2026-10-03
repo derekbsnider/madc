@@ -22,11 +22,11 @@ struct Node(1) {
   int(1)
 }
 --- self-referential TEMPLATE container: the word path
-Box_int32_t Object
+Box<int> Object
 (
     [v] => 7
 )
-struct Box_int32_t(1) {
+struct Box<int>(1) {
   ["v"]=>
   int(7)
 }

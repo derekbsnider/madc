@@ -1,0 +1,9 @@
+untitled-open: doc=1 untitled=1 name=untitled kind-madc=1 modified=0 row-path=none
+untitled-layers: lexable=1 parseable=1 managed=0 versioned=0 session=0
+untitled-f5: runpath=untitled
+untitled-build: Save the buffer first: a build needs its file.
+untitled-projadd: Save the buffer first: a project starts from its file. proj=none manifest=0
+untitled-projaddcur: Save the buffer first: a project member needs its file.
+untitled-save: prompt=1 cont=1 written=1 name=madc_ide_untitled.mad untitled=0 kind-madc=1 modified=0 launch=madc_ide_untitled.mad row=madc_ide_untitled.mad
+untitled-savequit: prompt=1 cont=0 written=1
+untitled-dialog: parked=1 mode=save initial=[] cont=1 written=1 name=madc_ide_untitled3.mad

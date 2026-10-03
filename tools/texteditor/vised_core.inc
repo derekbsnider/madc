@@ -82,7 +82,10 @@ bool apply_event(long w, long es, long doc, var &ev)
     }
     if ( k == "^k" )
     {
-	cut_selection(w, es, doc, caret, editable);
+	if ( es_int(w, es, "mark", -1) < 0 )
+	    ui::set(w, es, "msg", "No mark set (^B).");
+	else if ( !cut_selection(w, es, doc, caret, editable) )
+	    select_clear(w, es);	// an empty region: the mark drops
 	return true;
     }
     if ( k == "^u" )
@@ -130,10 +133,11 @@ void run_visual(const char *path, bool ro, ui::level lvl)
 {
     long w = ui::world_new();
     long doc = setup_editor(w, path, ro);
-    if ( doc == 0 )
+    if ( doc <= 0 )
     {
-	printf("cannot read %s\n", path);
-	return;
+	if ( doc == 0 )
+	    printf("cannot read %s\n", path);
+	return;			// -1: the verbs, already reported
     }
     long es = ui::entity_by_name(w, "editor-state");
     // The level-generic loop (compose-as-data -> render -> event -> apply):

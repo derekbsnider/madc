@@ -1,0 +1,42 @@
+/* __attribute__((alias("T"))) DEFINES a second symbol at T's address.
+ *
+ * madc long implemented the attribute as a REDIRECT only — a reference to the
+ * alias resolved to the target's storage, which is what binds a system-header
+ * class static to its real Itanium symbol — but never emitted the alias's own
+ * symbol. gcc and clang emit both halves, and the defining half is what a
+ * madc-built libmir needs: its generated code imports `mir.va_arg`,
+ * `mir.ui2f`, `__mir_addoti` and five more that exist ONLY as asm-labelled
+ * alias exports (mir-x86_64.c:154, mir-gen-x86_64.c:783,
+ * mir-int128-helper.h:302).
+ *
+ * This test pins the REFERENCE half, which is all a running program can see:
+ * an alias and its target must name one object and one function. The
+ * DEFINING half is a symbol-table fact, gated by
+ * scripts/check-alias-symbol-emission.sh (`nm` against the gcc oracle) —
+ * a running program cannot tell the two apart, which is exactly how the gap
+ * survived.
+ *
+ * The asm-labelled form is the one MIR actually writes: the declaration names
+ * `labelled_alias`, the emitted symbol is `alias.test_fn`, and the address is
+ * real_fn's. Plain -std=c17 REJECTS an asm label in gcc and clang (madc is
+ * the permissive one), so the oracle for the whole file is -std=gnu17:
+ * `gcc -std=gnu17` and `clang -std=gnu17` both print the three asserted lines.
+ */
+#include <stdio.h>
+
+int real_var = 42;
+long real_fn(long x) { return x * 3; }
+
+extern int var_alias __attribute__((alias("real_var")));
+extern long fn_alias(long) __attribute__((alias("real_fn")));
+extern __typeof (real_fn) labelled_alias asm ("alias.test_fn")
+  __attribute__ ((alias ("real_fn"), used));
+
+int main (void)
+{
+	printf ("var %d %d\n", real_var, var_alias);
+	real_var = 7;
+	printf ("shared %d\n", var_alias);
+	printf ("fn %ld %ld\n", real_fn (5), fn_alias (5));
+	return 0;
+}

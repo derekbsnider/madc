@@ -1,0 +1,32 @@
+/* The clang builtins __make_integer_seq<S, T, N> and __type_pack_element<I,
+   Ts...> read an argument holding a less-than, `lim < 4 ? 5 : 1`, as the
+   value it is ([temp.names]/3: `lim` names a variable, so its `<` is
+   less-than), and a `>` in parentheses, `(5 > 2) + 3`, as greater-than, as
+   clang does. Before, both builtins split their arguments with a scanner that
+   opened a list at every `<` after a name: the arguments never closed, the
+   builtin declined, and the use was an empty shell whose sum() read 0 and
+   whose size read 0, exit 0.
+   Oracle (clang++ 18, -std=c++17; g++ 13 has neither builtin):
+     mi: 6 10
+     tp: 8 2 */
+extern "C" int printf(const char *, ...);
+template <class T, T... V> struct IS {
+	static long sum()
+	{
+		long a[] = { V..., 0 };
+		long s = 0;
+		for ( unsigned long i = 0; i < sizeof(a) / sizeof(a[0]); ++i )
+			s += a[i];
+		return s;
+	}
+};
+constexpr int lim = 3;
+int main()
+{
+	printf("mi: %ld %ld\n", __make_integer_seq<IS, long, (5 > 2) + 3>::sum(),
+	       __make_integer_seq<IS, long, lim < 4 ? 5 : 1>::sum());
+	__type_pack_element<(2 > 1), char, long, short> x = 0;
+	__type_pack_element<lim < 4 ? 2 : 0, char, long, short> y = 0;
+	printf("tp: %d %d\n", (int)sizeof(x), (int)sizeof(y));
+	return 0;
+}

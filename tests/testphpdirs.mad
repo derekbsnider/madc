@@ -1,5 +1,10 @@
 // PHP parity (Nexus L4d task 0): array_keys over a map and a list; mkdir /
-// rmdir round trip; the failures answer false, never throw.
+// rmdir round trip; the failures answer false, never throw. is_dir /
+// is_readable (B86): a directory, a file, a missing path and the empty path,
+// in both the const char* and the value form. Oracle (php 8):
+//   mkdir("d"); file_put_contents("d/a.txt","a");
+//   is_dir: d=true d/a.txt=false d/nope=false ""=false
+//   is_readable: d=true d/a.txt=true d/nope=false
 int main()
 {
     var m;
@@ -22,6 +27,19 @@ int main()
     println("exists: {}", php::file_exists("madc_php_dirs_tmp") ? 1 : 0);
     println("mkdir-again: {}", php::mkdir("madc_php_dirs_tmp") ? 1 : 0);
     php::file_put_contents("madc_php_dirs_tmp/a.txt", "a");
+    println("is_dir: dir={} file={} missing={} empty={}",
+	    php::is_dir("madc_php_dirs_tmp") ? 1 : 0,
+	    php::is_dir("madc_php_dirs_tmp/a.txt") ? 1 : 0,
+	    php::is_dir("madc_php_dirs_tmp/nope") ? 1 : 0,
+	    php::is_dir("") ? 1 : 0);
+    println("is_readable: dir={} file={} missing={}",
+	    php::is_readable("madc_php_dirs_tmp") ? 1 : 0,
+	    php::is_readable("madc_php_dirs_tmp/a.txt") ? 1 : 0,
+	    php::is_readable("madc_php_dirs_tmp/nope") ? 1 : 0);
+    var dv = "madc_php_dirs_tmp";
+    var fv = "madc_php_dirs_tmp/a.txt";
+    println("value-form: is_dir={}/{} is_readable={}", php::is_dir(dv) ? 1 : 0,
+	    php::is_dir(fv) ? 1 : 0, php::is_readable(fv) ? 1 : 0);
     println("rmdir-nonempty: {}", php::rmdir("madc_php_dirs_tmp") ? 1 : 0);
     php::unlink("madc_php_dirs_tmp/a.txt");
     println("rmdir: {}", php::rmdir("madc_php_dirs_tmp") ? 1 : 0);

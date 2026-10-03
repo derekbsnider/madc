@@ -1,0 +1,11 @@
+// Project-mode test: C++ vague linkage across TUs. The real build is driven by
+// testprojectvague.cc.json via the --project flag in testprojectvague.flags.
+// This file is an ignored positional.
+//
+// Both TUs include testprojectvague.h, so each module carries its own linkonce
+// copy of C's vtable and type_info and of counter() with its static local.
+// MIR's loader keeps the first copy and binds the later module's to it, as ld
+// keeps the first COMDAT copy. Before, the later copy of a data item took the
+// name over while each module kept using its own, so an object built in TU a
+// failed typeid(*bp) == typeid(C) in TU b, and the two TUs counted with two
+// statics. g++/clang++ oracle: same=1 okc=1 c1=1 c2=2 (madc was same=0 c2=1).

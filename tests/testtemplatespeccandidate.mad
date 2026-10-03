@@ -1,0 +1,35 @@
+// B112: a function-template specialization is a candidate only for the call
+// whose template-argument deduction produced it ([temp.over]/1). k(1L, 1L)
+// instantiates k<long>; k(1, 2L) deduces T as both int and long, so its
+// deduction fails, the template contributes nothing, and the call takes
+// k(double, double). madc ranked every instantiated specialization as an
+// ordinary overload and called k<long> — in a global, a namespace and a
+// template-body call alike, whichever call came first.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+template<typename T> int k(T, T) { return 1; }
+int k(double, double) { return 2; }
+
+namespace ns {
+template<typename T> int k(T, T) { return 1; }
+int k(double, double) { return 2; }
+}
+
+template<typename T> int q(T, T) { return 1; }
+int q(double, double) { return 2; }
+int use_long() { return q(1L, 1L); }
+
+template<class U> int use(U u) { return k(1, u); }
+
+int main()
+{
+	printf("global: %d %d\n", k(1L, 1L), k(1, 2L));
+	printf("namespace: %d %d\n", ns::k(1L, 1L), ns::k(1, 2L));
+	printf("order: %d %d\n", q(1, 2L), use_long());
+	printf("template-body: %d\n", use(2L));
+	printf("explicit: %d\n", k<long>(1, 2));
+	printf("own: %d\n", k(2, 3));
+	printf("tie: %d\n", k(1.0, 2.0));
+	return 0;
+}

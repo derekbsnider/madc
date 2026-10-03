@@ -12,7 +12,7 @@
 # breaks mid-chain and LOSES a star. Eight copies existed on 2026-08-29;
 # the divergence emitted `char *flagarray` for SMAUG's `char * const
 # *flagarray` (smaug_gate RED, c2mir pointer-assignment warnings). The
-# owner steps via as_pointer_dd() — which DataDefCONST forwards — and
+# owner steps via as_pointer_dd() — which DataDefQUAL forwards — and
 # unqualifies the final base.
 #
 # Marker: the CONCEPT — a while loop stepping on is_pointer() — not one

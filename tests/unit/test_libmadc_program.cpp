@@ -1413,6 +1413,38 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
+    // A reference return lowers to the referent's address; the host receives the
+    // referent's VALUE, as a script call reads it ([expr.call]: the call is an
+    // lvalue of the referred type). The shim passed the address to the integer
+    // setter (B134).
+    TEST_CASE("call returns the referent of a reference-returning function") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int gi = 41;\n"
+		   "double gd = 2.5;\n"
+		   "const char *gs = \"ref\";\n"
+		   "int &int_ref() { return gi; }\n"
+		   "double &real_ref() { return gd; }\n"
+		   "const char *&text_ref() { return gs; }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+	madc::value result;
+	REQUIRE(pgm.call("int_ref", {}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 41);
+	REQUIRE(pgm.call("real_ref", {}, &result));
+	REQUIRE(result.is_real());
+	CHECK(result.as_real() == 2.5);
+	REQUIRE(pgm.call("text_ref", {}, &result));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "ref");
+	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
+    }
+
     TEST_CASE("call passes string values to char pointer parameters") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();

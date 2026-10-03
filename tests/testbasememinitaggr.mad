@@ -1,0 +1,71 @@
+// A mem-initializer for a ctor-less class-type SUBOBJECT — a base (`B{a, b}`,
+// `B()`) or a member of a class type (`m{a, b}`, `m()`): the list
+// aggregate-initializes it and an empty one value-initializes it (zero first,
+// then any default member initializers and member constructors). The stack is
+// dirtied first so a dropped initializer reads 0xA5 bytes, never a lucky zero.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+struct FB { int i; int j; };
+struct P : FB { P(int b) : FB{ b, 2 } { } };
+struct Q : FB { Q(int b) : FB() { i = b; } };
+struct M { FB m; M(int b) : m{ b, b + 1 } { } };
+struct N { FB m; N() : m() { } };
+struct S { int v; S() : v(71) { } S(const char *) : v(72) { } };
+struct FS { int i; S s; };
+struct PS : FS { PS() : FS() { } };
+struct PT : FS { PT() : FS{ 7, "seven" } { } };
+struct FN { int i = 11; int j; };
+struct PN : FN { PN() : FN() { } };
+struct PM : FN { PM() : FN{ 12 } { } };
+struct A1 { int x; };
+struct A2 { int y; int z; };
+struct MI : A1, A2 { MI() : A1{ 21 }, A2{ 22, 23 } { } };
+template<class T> struct W : FB { W(T b) : FB{ (int)b, 2 } { } };
+template<class T> struct WM { FB m; T t; WM(T b) : m(), t(b) { } };
+struct X { int a; X() = default; X(int v) : a(v) { } };
+struct XD : X { XD() : X() { } };
+struct U { union { int ua; float uf; }; int k; };
+struct UD : U { UD() : U() { } };
+struct V { int v; };
+struct VBs : virtual V { int b; };
+struct VD : VBs { VD() : VBs() { v = 31; } };
+struct E { };
+struct D2 : A1, E { D2() : A1{ 5 }, E() { } };
+struct VB { virtual int f() { return 41; } int q; };
+struct DV : VB { DV() : VB() { } };
+struct NM { int n = 51; int o; };
+struct HM { NM m; HM() : m{} { } };
+struct AR { int a[3]; char c; };
+struct DA : AR { DA() : AR() { } };
+__attribute__((noinline)) void dirty()
+{
+	volatile unsigned char junk[4096];
+	for (int k = 0; k < 4096; k++) junk[k] = 0xA5;
+}
+__attribute__((noinline)) void bases()
+{
+	P p(4); Q q(5); PS ps; PT pt; PN pn; PM pm; MI mi;
+	std::printf("bases: %d %d | %d %d | %d %d | %d %d | %d %d | %d %d | %d %d %d\n",
+		p.i, p.j, q.i, q.j, ps.i, ps.s.v, pt.i, pt.s.v, pn.i, pn.j,
+		pm.i, pm.j, mi.x, mi.y, mi.z);
+}
+__attribute__((noinline)) void members()
+{
+	M m(3); N n; WM<int> wm(8); HM hm;
+	std::printf("members: %d %d | %d %d | %d %d %d | %d %d\n",
+		m.m.i, m.m.j, n.m.i, n.m.j, wm.m.i, wm.m.j, wm.t, hm.m.n, hm.m.o);
+}
+__attribute__((noinline)) void shapes()
+{
+	W<long> w(9); XD xd; UD ud; VD vd; D2 d2; DV dv; DA da;
+	std::printf("shapes: %d %d | %d | %d %d | %d %d | %d | %d %d | %d %d %d %d\n",
+		w.i, w.j, xd.a, ud.ua, ud.k, vd.v, vd.b, d2.x, dv.f(), dv.q,
+		da.a[0], da.a[1], da.a[2], da.c);
+}
+int main()
+{
+	dirty(); bases();
+	dirty(); members();
+	dirty(); shapes();
+	return 0;
+}

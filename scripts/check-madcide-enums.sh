@@ -26,6 +26,13 @@
 # _mcpclient / _layers.inc) are checked by the same rules (Nexus L4c–L4e):
 # the tier, proposal-status, intent-vocabulary, layer, test-result and
 # node-serve words joined the converter list.
+#   7. every unscoped enumerator of madcide's sources (tools/madcide/*.inc,
+#      the plugin API <madcide/plugin_api>, the shared editor core
+#      tools/texteditor/*.inc — one translation unit) is declared ONCE: C11
+#      6.7.2.2 and [dcl.enum] make a second declaration of the name in one
+#      scope an error, which gcc, g++ and clang report and madc does not yet
+#      (BUGS.md B104: the later declaration silently wins, as plugin_verb's
+#      pvEVENT once renumbered provenance's).
 # Each rule carries a negative control.
 set -u
 
@@ -110,7 +117,68 @@ check()
 	return $rc
 }
 
+# Rule 7's files: madcide's translation unit.
+ENUM_FILES=$(ls "$ROOT"/tools/madcide/*.inc "$ROOT"/tools/madcide/include/madcide/* \
+	"$ROOT"/tools/texteditor/*.inc 2>/dev/null)
+
+# Every unscoped enumerator the given files declare, one name per line: the
+# body of each `enum NAME [: TYPE] {` that starts a line (its brace on that
+# line or the next), `enum class` / `enum struct` skipped (their names are
+# the enum's own), comments stripped, each item's name before any `=`.
+enumerators()
+{
+	awk '
+	{ sub(/\/\/.*/, "") }
+	function take(body,   n, i, items, it) {
+		n = split(body, items, ",")
+		for ( i = 1; i <= n; i++ ) {
+			it = items[i]
+			sub(/=.*/, "", it)
+			gsub(/[ \t\r]/, "", it)
+			if ( it ~ /^[A-Za-z_][A-Za-z0-9_]*$/ )
+				print it
+		}
+	}
+	on {
+		if ( index($0, "}") ) { body = body " " substr($0, 1, index($0, "}") - 1); take(body); on = 0 }
+		else body = body " " $0
+		next
+	}
+	pend {
+		pend = 0
+		if ( $0 ~ /^[ \t]*\{/ ) { line = substr($0, index($0, "{") + 1) }
+		else next
+		if ( index(line, "}") ) { take(substr(line, 1, index(line, "}") - 1)); next }
+		on = 1; body = line; next
+	}
+	/^[ \t]*enum[ \t]+[A-Za-z_]/ && !/^[ \t]*enum[ \t]+(class|struct)[ \t]/ {
+		if ( !index($0, "{") ) { if ( !index($0, ";") ) pend = 1; next }
+		line = substr($0, index($0, "{") + 1)
+		if ( index(line, "}") ) { take(substr(line, 1, index(line, "}") - 1)); next }
+		on = 1; body = line
+	}' "$@"
+}
+
+# Rule 7: the names declared more than once (empty = none).
+twice_declared()
+{
+	enumerators "$@" | sort | uniq -d
+}
+
 if ! check "$CORE" "$CLIENT" "$ENUMS" "live" "$ONCE"; then
+	exit 1
+fi
+nenum=$(enumerators $ENUM_FILES | wc -l)
+if [ "$nenum" -lt 200 ]; then
+	echo "check-madcide-enums: FAIL — rule 7 read only $nenum enumerators" \
+	     "(the enum reader went blind)." >&2
+	exit 1
+fi
+twice=$(twice_declared $ENUM_FILES)
+if [ -n "$twice" ]; then
+	echo "check-madcide-enums: FAIL — an enumerator is declared twice (gcc," \
+	     "g++ and clang refuse it; madc lets the later one win, B104):" >&2
+	echo "$twice" >&2
 	exit 1
 fi
 
@@ -158,6 +226,14 @@ if check "$tmpcore" "$CLIENT" "$ENUMS" "control" "$ONCE" 2>/dev/null; then
 	     "against a method word went undetected (rule 6 went blind)." >&2
 	exit 1
 fi
-rm -f "$tmpcore"
+tmpenum=$(mktemp)
+printf 'enum zz_control : unsigned char\n{\n    zzNONE = 0, cmdNONE\n};\n' > "$tmpenum"
+if [ -z "$(twice_declared $ENUM_FILES "$tmpenum")" ]; then
+	rm -f "$tmpcore" "$tmpenum"
+	echo "check-madcide-enums: FAIL — negative control: an enumerator declared" \
+	     "twice went undetected (rule 7 went blind)." >&2
+	exit 1
+fi
+rm -f "$tmpcore" "$tmpenum"
 n=$(name_words "$ENUMS" | wc -l)
-echo "check-madcide-enums: OK ($n discriminator names stay behind the converters; no slot takes text; controls bite)"
+echo "check-madcide-enums: OK ($n discriminator names stay behind the converters; no slot takes text; $nenum enumerators each declared once; controls bite)"

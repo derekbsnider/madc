@@ -34,6 +34,7 @@
 #include <unistd.h>		// getpid — sys.pid's POSIX spelling
 #endif
 #include "madc_modules.h"	// module_available: the module map + the one dl seam
+#include "madc_dl.h"		// library_open: the one dl seam
 
 // ---- madc::sys — the system object (task #91) ----------------------------
 namespace madc {
@@ -367,7 +368,17 @@ bool build_native(value &out_diags, const char *path, const char *kind,
 	{
 	    std::string p = path ? path : "", k = kind ? kind : "";
 	    std::string o = outpath ? outpath : "";
-	    return madc_build_native(&out_diags, &p, &k, &o);
+	    return madc_build_native(&out_diags, &p, &k, &o, NULL);
+	}
+// The same build with the CLI's -I directories (an array of text, in
+// order): a TU that includes a header outside its own directory (a
+// madcide plugin's <madcide/plugin>).
+bool build_native(value &out_diags, const char *path, const char *kind,
+		  const char *outpath, const value &include_dirs)
+	{
+	    std::string p = path ? path : "", k = kind ? kind : "";
+	    std::string o = outpath ? outpath : "";
+	    return madc_build_native(&out_diags, &p, &k, &o, &include_dirs);
 	}
 
 // The running compiler's own resolved executable path (madcide IDE-10c:
@@ -586,5 +597,91 @@ bool module_available(const char *name)
 	return false;
     std::string err;
     return madc_module_open(madc_module_library_spelling(name), err) != NULL;
+}
+
+// A shared library opened at run time by PATH (a madcide plugin's, plan
+// §41.11a step 4), through the one dl seam: every reference binds at open,
+// so a library whose names cannot all bind is refused here with the
+// loader's reason, never at its first call; its names stay local, so two
+// libraries' same-named functions never meet. 0 = refused, `why` the reason.
+int64_t library_open(const char *path, value &why)
+{
+    why = value();
+    if ( !path || !*path )
+    {
+	why = value("no library path");
+	return 0;
+    }
+    void *h = madcdl_open_local(path, true);
+    if ( !h )
+    {
+	const char *e = madcdl_error();
+	why = value(e ? e : "the library cannot be opened");
+    }
+    return (int64_t)h;
+}
+
+// The address of `name` in an opened library; 0 = it defines no such name.
+int64_t library_symbol(int64_t lib, const char *name)
+{
+    if ( !lib || !name )
+	return 0;
+    void *p = madcdl_sym((void *)lib, name);
+    if ( !p )
+	(void)madcdl_error();	// consume the pending failure: 0 says it
+    return (int64_t)p;
+}
+
+// Close an opened library (a refused one; a library whose functions are
+// still registered stays open).
+void library_close(int64_t lib)
+{
+    if ( lib )
+	madcdl_close((void *)lib);
+}
+
+// A source file compiled into THIS process and kept (a madcide `source`
+// plugin, plan §41.11a step 5): the source twin of library_open. Its
+// imports bind what the process already loaded (the one engine), and its
+// dynamic initializers have run once. 0 = refused, `out_diags` the rows
+// (build_native's shape, its include directories too).
+int64_t code_open(value &out_diags, const char *path, const value &include_dirs)
+{
+	std::string p = path ? path : "";
+	return madc_code_open(&out_diags, &p, &include_dirs);
+}
+
+// The address of `name` (a function or an object, by its emitted name: an
+// extern "C" name is its spelling) in opened code; 0 = no such name.
+int64_t code_symbol(int64_t code, const char *name)
+{
+	std::string n = name ? name : "";
+	return madc_code_symbol(code, &n);
+}
+
+// Free opened code: none of its addresses may be called after.
+void code_close(int64_t code)
+{
+	madc_code_close(code);
+}
+
+// The URI a madc::channel opens to fork a child running `entry`, a function
+// of this program (the madcfork:// scheme, madc_program.cpp, registered
+// here at its first spelling). Ring text, the c_str() contract.
+void register_fork_channel_factory();	// madc_program.cpp
+const char *fork_uri(int (*entry)())
+{
+    register_fork_channel_factory();
+    std::string &slot = ns_common::ring_slot();
+    slot = "madcfork://" + std::to_string((unsigned long long)(uintptr_t)entry);
+    return slot.c_str();
+}
+
+// This target's shared-library suffix, the library spelling owner's
+// (madc_target_dso_suffix): a script names its library file with it, never
+// with a spelled suffix.
+const char *library_suffix()
+{
+    return madc_target_dso_suffix();
 }
 } // namespace madc

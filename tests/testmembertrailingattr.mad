@@ -1,0 +1,21 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+#include <stddef.h>
+
+// A member's own attributes after its declarator align it, as the ones
+// before its type do; in a declarator list, only that declarator's member.
+struct T1 { char c; int x __attribute__((aligned(16))); };
+struct T2 { char c; int a, b __attribute__((aligned(8))); };
+struct T3 { char c; char buf[3] __attribute__((aligned(2 * 4))); int z; };
+struct T4 { char c; int x __attribute__((unused)) __attribute__((aligned(16))); };
+union  U1 { char c; int x __attribute__((aligned(16))); };
+struct T6 { char c; int __attribute__((aligned(16))) x __attribute__((aligned(8))); };
+
+int main(void)
+{
+	printf("mt: %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu\n",
+	       sizeof(struct T1), offsetof(struct T1, x), sizeof(struct T2), offsetof(struct T2, b),
+	       sizeof(struct T3), offsetof(struct T3, buf), offsetof(struct T3, z),
+	       sizeof(struct T4), sizeof(union U1), sizeof(struct T6), offsetof(struct T6, x));
+	return 0;
+}

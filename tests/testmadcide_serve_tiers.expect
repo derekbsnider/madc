@@ -1,3 +1,5 @@
 observer-edit: ok=0 error='delline' requires editor (you are observer)
+observer-run: 'replrun' requires editor (you are observer) / 'replenter' requires editor (you are observer) / 'repl' requires editor (you are observer)
+plugin-envelope: owner-set=1 observer-set=0 error='set' requires editor (you are observer) observer-get=the owner's seq=16
 promote: ok=1 tier=editor
 editor-edit: ok=1

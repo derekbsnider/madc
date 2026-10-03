@@ -1,0 +1,23 @@
+/* A requires-expression's parameter list is split at its top-level commas
+   only ([expr.prim.req]): `(A<(1 < 2)> a, T b)` declares two parameters.
+   The `<` inside `( )` opens nothing, and the template-id's `>` closes the
+   list. Before, one counter took `(`, `[` and `<` together, never came
+   back to zero at the comma, and read one parameter, so C1<S> was
+   silently unsatisfied. (std::declval is declared as the evaluator's
+   parameter lowering needs it.)
+   Oracle (g++ 13 and clang++ 18, -std=c++20):
+     rs: 1 0 1 0 */
+#include <cstdio>
+namespace std { template<typename T> T&& declval() noexcept; }
+template<bool B> struct A { int x; };
+struct S { int y; };
+struct N {};
+template<class T> concept C1 = requires (A<(1 < 2)> a, T b) { a.x; b.y; };
+template<class T> concept C2 = requires (A<true> a, T b) { a.x; b.y; };
+template<class T> int c1() { if constexpr (C1<T>) return 1; else return 0; }
+template<class T> int c2() { if constexpr (C2<T>) return 1; else return 0; }
+int main()
+{
+	printf("rs: %d %d %d %d\n", c1<S>(), c1<N>(), c2<S>(), c2<N>());
+	return 0;
+}

@@ -2,6 +2,3243 @@
 
 ## [Unreleased]
 
+## [v0.101.0] — 2026-10-03
+
+The REPL release: `madc` with no program file is an interactive C/C++
+session, madcide gains plugins and Chthonia, a Thonny-style teaching IDE,
+and the B-series burn-down fixes silent wrong answers first.
+
+### cir: by-value carrier operator calls pass a hidden result address
+
+A number or text on the left of a `var` operator (`1 + v`, `"x" + v`) crashed on Apple Silicon with SIGSEGV at address 0x1. The carrier's free operator rows are FuncDefs outside funcdef_map, so no prototype pass declared them; c2mir received an implicit variadic declaration. On AArch64, the callee madarray_radd_int expects the result address in x8, but madc's unprototyped call passed it as x0 (the first plain argument), so the callee read x1 (the numeric 1) as its `var` operand and dereferenced 0x1. The fix: CirBuilder::declare_bound_callee registers the typed extern for each bound callee (an Itanium export or a row's emit_symbol) so every by-value carrier operator call passes an rblk result address. Gate: scripts/sret_abi_gate.sh [carrier] leg passes on the fixed build (RED on v0.101.0 release binary); 5 by-value carrier operator calls each pass an rblk result address; no unprototyped callee in the module. Arm64 confirmation: the darwin lane pending.
+
+### repl: Stop of a running entry restarts at once instead of waiting the grace
+
+Stopping a session whose entry is computing (madcide's Stop, Thonny's Stop/Restart) now terminates the backend process immediately instead of waiting 2 seconds for it to exit gracefully. SessionClient gains `busy()` to detect whether the backend still owes a reply to an outstanding request (answered_seq + 1 < next_seq); SessionClient::stop() calls process->terminate() at once if busy (the backend never reads the socket), then process->wait_or_kill(2000) as usual for idle backends. The grace is correct for idle backends exiting on EOF; a busy backend is instead SIGTERM'd immediately. Reducer tests/testsession_stop verifies: wall-clock time 2.11 s before, 0.11 s after (php::time is whole seconds; grace waits 2+ s, prompt restart reads 0 or 1).
+
+### repl: session bindings list doesn't dangle through CompletionOffer
+
+The session's binding list (`%whos`) uses a CompletionOffer rule object constructed with an empty-string temporary. CompletionOffer held a reference member `const std::string &word` bound to that temporary, which ended at the end of the full-expression, creating a dangling reference. Reads from the dangling pointer returned uninitialized data (empty on Linux, garbage on macOS). The fix: change the reference member to a value copy `const std::string word`, which owns its data and outlives the temporary. Reducer tests/testsession_bindings, testmadcide_repl, testmadcide_chthonia, testmadcide_plugin_host — all FAIL on macOS before, PASS after. Validation: Tier 1 targeted tests (46 session/repl/complete/interactive tests; JIT 46/0, EXE 34/0, OBJ 34/0). Tier 2 scripts/fast_lanes.sh: all six lanes green (c-testsuite 220/0, c-torture 1613 baseline, c2mir-tests 314 baseline, gui 25/0, gxx-c++11 1501 baseline, index-c 50/50).
+
+### parser: typedef's top-level cv qualifiers are preserved in the alias type
+
+A member typedef's own cv qualifiers (e.g., `typedef volatile int type;`) belong to the alias type. finish_alias lambda (TokenTYPEDEF::parse) compared a source spelling (e.g., "int") against the identity spelling of the already cv-qualified type; for `typedef volatile int type;` these spellings differ, so the scalar-alias arms minted a fresh DataDef(alias_name, size, type) — capturing size and storage type only, no qualifier — leaving the alias as plain int. The fix: compare the source spelling against both the unqualified and qualified identity spellings; peel to unqualified before minting; and re-apply the alias's cv to the minted alias via getQualifiedType(alias_dd, alias_cv), so spelled `typedef volatile int t` and substituted `typedef _Tp type` (with _Tp = volatile int) each match correctly. A namespace-scope scalar typedef similarly re-qualifies its minted alias, but __is_same(w::vi, volatile int) stays false because TraitTypeArg::same_as compares DataDef names — filed as B156. Reducer tests/testvolatilememberalias: g++ 13 and clang++ 18 (-std=c++17) print "member: 1 1 1 0", "template: 1 1 1", "object: 4", exit 0; madc v0.100.1 printed "member: 1 1 1 1" (cv not preserved); madc with this fix prints same as g++ 13 / clang++ 18, exit 0. tests/testvolatiletypetraitscxx under -stdlib=libc++: parent commit 03acb17a8 printed "traits: 1 0 1 0" (regression on branch; v0.100.1 printed the correct "traits: 1 0 1 1"); with this fix prints "traits: 1 0 1 1", "cv: 1 1 1", "same: 0 0" under both libstdc++ and libc++. gxx-c++11 lane: alias-decl-38.C (template's `typedef volatile F<T> type;`) now passes. Per-fix Tier 1 (85 targeted tests incl. testvolatile*, testtypedef*, testtrait*, testtypetrait*; JIT 85/85, EXE 77/77, OBJ 77/77). Tier 2 (scripts/fast_lanes.sh, all six lanes): green.
+
+### parser: out-of-line template member definitions match their in-class declarations by decomposed typedef reference signatures
+
+A class template's member-function overload pair (std::vector::push_back's shape: one parameter a typedef `const_reference` = `const T&`, the other `value_type&&`) needs each out-of-line definition to match its in-class declaration. parse_param_sig_from_tokens, which extracts a definition's parameter signature from tokens for matching, did not decompose a typedef that names a reference. A definition spelled `void R<T>::push(const_reference x)` parsed `const_reference` as an opaque base with is_ref=false, so it didn't match the in-class declaration's is_ref=true; the typedef'd reference read as a non-reference, so the `const_reference` definition matched nothing and the `value_type&&` definition was attached to the `const_reference` declaration instead — lvalue arguments moved when they should copy. The fix: after resolving the parameter's base type, if the base is a reference, extract the referent's const and the reference kind (`&` vs `&&`) into sig.is_const and sig.is_rvalue_ref, peel the reference to get the unqualified referent, and pass sig.is_rvalue_ref to getReferenceType. The two declarator `&` and `&&` scanning arms now track reference kind per [dcl.ref]/6: `&` on a reference yields lvalue reference; `&&` on a reference preserves its kind. function_explicit_params_match now checks sig.is_rvalue_ref against the declaration's reference kind. Reducer tests/testoutoflinerefoverload: g++ 13, clang++ 18 (-std=c++17) and madc with this fix all print "const& copy | W lvalue x.v=1 / && move | W rvalue / const& copy | R lvalue x.v=1 / && move | R xvalue x.v=0", exit 0. v0.100.1 printed the `&&` definition on both lvalue calls, moving the source (x.v=0). Per-fix Tier 1 (85 targeted tests incl. testoutofline*, testvectorpush*, testtsubst*; JIT 85/85, EXE 77/77, OBJ 77/77). Tier 2 (scripts/fast_lanes.sh, all six lanes): green.
+
+### parser: template-declaration skipper distinguishes requires-expressions in initializers from trailing requires-clauses
+
+A variable template's initializer may contain a requires-expression (`inline constexpr bool has_ptr = ... requires { ... };`), where the `requires` keyword opens a braced requirement body. The template-declaration skipper (Program::skip_template_nonclass_declaration) treated any top-level `requires` as a trailing requires-clause, so it ended the declaration at the first `;` inside the requires-expression, leaving `};` to close the enclosing namespace wrongly (libc++'s __ranges/enable_view.h: "extraneous closing brace" at _LIBCPP_END_NAMESPACE_STD). The fix: skip_template_nonclass_declaration tracks in_initializer (set when `=` is seen at depth 0), and only treats `requires` as a trailing clause when !in_initializer. Once in_initializer is set, any `{` is treated as a nested brace, never the body, so it increments the depth the same way as nested braces. The skipped_template_variable helper that extracts the initializer (init_out) takes every token from after the top-level `=` up to the end of the captured run, dropping only the final `;` (the skipper already ended the run at its top-level `;`), so semicolons inside the initializer's braces remain in init. Reducer tests/testvartemplaterequires: g++ 13, clang++ 18 and madc with this fix all print `after 7`, exit 0. v0.100.1 printed `error: requires-expression initializer` (static_assert failed). Per-fix Tier 1 (85 targeted tests incl. testvartemplate*, testrequires*, testifconstexpr): JIT 85/85, EXE 77/77, OBJ 77/77. Tier 2 (scripts/fast_lanes.sh, all six lanes): green.
+
+### release: every released madc-release is archived, self-contained, and gated
+
+`scripts/release_bins.sh` keeps each release since v0.72.0 as `tmp/release-bins/vX.Y.Z/` — the binary, its `lib/` (since v0.98.0 `bin/madc-release` is a thin driver over `libmadc.so.0`) and a PROVENANCE note — verified where it runs (its version, a program, its own libmadc bound). The build container holds the archive and the NAS mirrors it. `backfill` recovers a release from its shipped tarball or by building its release commit; `run <tests>` prints a pass/fail matrix across releases. `lane_ledger.sh check --release` (the master push) refuses a release missing from the archive; `/release` archives with `release_bins.sh archive` + `sync`.
+
+### build: `make -C src release` links in a fresh clone
+
+The release and debug thin CLIs link `-lmadc` from their own mode's library directory (`lib/release/`, `lib/debug/`). It had searched `lib/`, binding the dev `libmadc.so` when a dev build had run, and otherwise the static archive, where the link failed (`undefined reference to c2mir_node_op`).
+
+### testing: the seam battery runs the full suite once, on the packed -O2 binary
+
+`scripts/seam_battery.sh` is Tier 3 in one command, cheapest stage first: pre-build every toolchain and the static gates, `make -C src gates` (unit tests and repository gates, no suite), the full tests/ suite on the shipped packed `madc-release` with no headers on disk (Linux, then win64 under wine), the headerless-skipped tests with headers on disk (`ondisk`, `ondisk-win`), `--exe --obj` on the same binary (`exeobj`), then the macOS and aarch64 builds. The -O0 dev binary no longer runs the full suite at the seam.
+
+### parser: a fresh template instantiation's declarator is named from its specialization identity
+
+A fresh template instantiation's declarator was keyed on the first request's call shape (instance_overload_symbol base + call_shape + candidate), so different call paths reaching the same specialization through the same TU reused that instance. A forest producer and the live compile reach destroy<...> through different call paths, so the bound consumer (reusing the producer's frozen instance) and the live compile named one specialization differently. FnTemplateDef gains `inst_name_base`; instantiate_fn_template_binding checks it and calls instance_overload_symbol(inst_name_base, inst_key) to derive the final declarator name, so all routes to one specialization (another call shape, another TU, a forest consumer binding a producer's frozen instance) name it alike. The declarator's identifier and the name-keyed body-parse-skip entry (tsubst_skip_body_name) are updated together. scripts/forest_bind_gate.sh case [vecbind] before: RED (bound compile's destroy instance `..._destroy__mti__o2985472822` vs live `..._destroy__mti__o4178276364`, different call paths on first mint); after: GREEN (func/export/import sets == live, output sum=7 == live == g++).
+
+### embedded headers: add stdalign.h, iso646.h, stdnoreturn.h (C11 4p6 freestanding set)
+
+The nine C11 freestanding headers (C11 4p6) are compiler-provided. madc's embedded set in `include/madc/` occupied the resource-dir slot and carried six (float.h, limits.h, stdarg.h, stdbool.h, stddef.h, stdint.h), lacking stdalign.h, iso646.h, and stdnoreturn.h. When include roots are masked (headerless lanes), `#include <stdalign.h>` failed with "Failed to open include file". After this change, headerless native and win64 lanes both include testalignasc and testfreestandingheaders passing (6 passed headerless native, 24 passed headerless win64). The headers follow gcc 13's gating: all three are C only; stdalign.h is also empty from C23 on (__STDC_VERSION__ > 201710L), where alignas and alignof are keywords. Reducer tests/testfreestandingheaders includes all nine and uses a macro or type from each; gcc 13, clang 18, x86_64-w64-mingw32-gcc 13 under wine, and madc print identical output (md5 match). Validation: Tier 1 subset (33 tests incl. testfreestandingheaders) 32 JIT 32 EXE 32 OBJ passed, wine subset 31 passed; Tier 2 six lanes green: c-testsuite 220/220, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gui 25/25, gxx-c++11 1500 (446 baseline), index-c 50/50.
+
+### mir-mingw-stdio: add libmingwex-only <unistd.h> functions to Windows map
+
+The six libmingwex-only POSIX-compat functions (sleep, usleep, ftruncate, ftruncate64, truncate, truncate64) are statically linked on mingw but missing from the madc import-name map. Tests including <unistd.h> (e.g., tests/teststaticlocalmtcxx with <pthread.h> and <unistd.h>, calling usleep) failed under Windows with "MIR error: import of undefined item usleep". The Windows PE build has no CRT export at any spelling for these functions (verified via nm: only T symbols in libmingwex.a, no __imp_ entries in libucrt.a or libucrtbase.a); dlopen cannot resolve them without the map entry. The fix adds six rows to the class-3 section (libmingwex-only surfaces, same closure rule as the existing <dirent.h> family) with explicit extern-C prototypes (useconds_t = unsigned int, off32_t = long, off64_t = long long; function names parenthesized because winpthreads may define a function-like `sleep` macro). scripts/gen_win_rt_exports.sh derives the libmadc-0.dll export list from the same rows and yields the six names correctly. scripts/check-one-mingw-stdio-map.sh is GREEN. Validation: Tier 1 targeted 33 tests pass 31 JIT 31 EXE 31 OBJ (1 skipped, 1 unsupported); wine subset 31 passed 0 failed 2 skipped; headerless win64 24 passed 0 failed. Tier 2 scripts/fast_lanes.sh: c-testsuite 220 pass, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gui 25/25, gxx-c++11 1500 (446 baseline), index-c 50/50.
+
+### datadef: zero-width bit-field aggregate alignment under Microsoft layout
+
+A zero-width bit-field that immediately follows a non-zero bit-field raises the aggregate's alignment to the field's declared-type's alignment. Under the Microsoft bit-field layout (mingw -mms-bitfields), `#pragma pack` alone can cap this aggregate alignment raise — `__attribute__((packed))` on the struct does not cap it. madc capped the aggregate alignment raise by the packed attribute too (DataDefSTRUCT::pack), so a packed struct stayed 1-aligned; the next member's placement, capped by the pack, was already right. The fix: DataDefSTRUCT::addUnnamedBitField on the Microsoft arm now raises max_align by cap_alignment(natural_field_align(dd), pragma_pack) instead of field_align(dd), which is capped by the packed attribute. Because replay_own_members and clone_local_aggregate_members replay layout through the same add* primitives, both now copy pragma_pack into the scratch workspace (replay_own_members in include/datadef.h, clone_local_aggregate_members in src/cir_builder.cpp). Reducer tests/testmszerowidthalign and tests/testzerowidthpack carry .win64_expect twins; tests/testzerowidthpack.win64_expect.domain names zs and zo as the labels whose correct output differs on win64. Before the fix, madc PE under wine differed on 9 of 13 structs in testmszerowidthalign: A1 `size 2 align 1 off 1` (mingw `size 4 align 4 off 1`), A2 `size 1 align 1` (mingw `size 4 align 4`), A3 `3 1 2` (mingw `4 4 2`), A5 `2 1 1` (mingw `2 2 1`), A6 `2 1` (mingw `4 4`), A7 `5 1 1` (mingw `8 4 1`), A8 `2 1 1` (mingw `8 8 1`), A9 `3 1 2` (mingw `4 4 2`), B1 `3 1 2` (mingw `4 4 2`); all member offsets already agreed, only sizes and alignments differed. testzerowidthpack zs line madc before `4 2 8 6 3` (mingw `4 4 8 6 3`); after the fix all agree. Linux/SysV (gcc 13, clang 18) already passed; no change. Validation: Tier 1 targeted 33 tests (testmszerowidthalign, testzerowidthpack, testbitfield*, testpragmapack*, testpacked*, testmemberpacked, testclassattributes) pass 32 JIT 32 EXE 32 OBJ (1 skipped). Wine subset (same 33): 31 passed 0 failed 2 skipped. Headerless native 6 pass, win64 24 pass. Tier 2 scripts/fast_lanes.sh: c-testsuite 220 pass, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gui 25/25, gxx-c++11 1500 (446 baseline), index-c 50/50.
+
+### parser: multi-TU template instances keyed on instantiation identity
+
+Template instances are emitted linkonce (C++ vague linkage): multi-object link keeps the first same-named copy, discarding duplicates. Before this change, a member-template instance and member constructor template instance were named by the order their TU first minted the symbol (`unique_overload_symbol` with `__mti` or `Class__Class` suffix). Two TUs instantiating different specializations in a different order would receive identical names, and the linker kept the first TU's body while the second TU assumed its own specialization — S(double) built S(int) (v=4), Box::count(int, double, char) answered 1, and std::map's lvalue-key operator[] reached the rvalue overload's _M_emplace_hint_unique instance and moved the key out of the vector. The fix keys each instance by its instantiation identity (call shape + candidate index for member functions; memo key + each argument's value category for constructors) via new `Program::instance_overload_symbol`: base + `__o` + FNV-1a-32(identity key) with the top bit set. `fnv1a32` (new static helper in parser.cpp) consolidates one inline FNV loop from overload_spelling_symbol_suffix; three other inline copies in cir_builder.cpp and cir_freeze.cpp remain unchanged (recorded as the open KG DupFamily fnv1a32_string_hash). The two naming sites are in instantiate_member_fn_template_for_call and instantiate_member_ctor_template_candidate. Reducer tests/testprojectmtiorder (three TUs: _main.cpp, _a.cpp, _b.cpp via --project): g++ 13, clang++ 18 and madc after the fix all print a=411 b=8335; madc before printed a=411 b=4105. scripts/project_gate.sh was RED (b=2 vs g++'s b=10) and is now GREEN. Validation: Tier 1 40 JIT, 39 EXE, 39 OBJ passed; Tier 2 six lanes green: c-testsuite 220, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gui 25/25, gxx-c++11 1500 (446 baseline), index-c 50/50.
+
+### packaging: Homebrew bottle build, install, and test
+
+Add scripts/brew_bottle.sh to build, bottle, and test a Homebrew formula from a source tarball: renders the formula into a local tap, installs with --build-bottle, bottled via `brew bottle --json`, poured back from the bottle file to validate, and brew test runs. The formula is rendered with a bottle block naming file://<outdir> for the test pour, then with the release root URL for the tap copy shipped with a release. scripts/brew_formula.sh gains --bottle <root-url> <tag> <sha256> <cellar> support; without it, output is byte-identical to before. The template's @BOTTLE@ line becomes the bottle block, or is empty when no --bottle is passed. scripts/brew_lane.sh now invokes brew_bottle.sh, running the test suite against a poured bottle: Homebrew 7.0.7 on Ubuntu 24.04, 1911 passed, 0 failed, 9 skipped. scripts/stage_install.sh stages lib/release/libmadc.so.forest as <libdir>/libmadc.so.0.forest when config.mk records WITH_FOREST = sidecar — reason: the poured bottle's RPATH rewrite rewrites libmadc.so.0 (17983528 bytes in the bottle, 18613424 poured; its last bytes are ELF notes instead of the MADCSNAP footer), so the forest appended to libmadc.so.0 no longer ends the file. The sidecar libmadc.so.0.forest is not an ELF file, so the pour leaves it alone; the first poured run found no forest and the 73 tests with .expect_quiet fixtures failed on the "no frozen forest found" notice; the second poured run gave 1911 passed, 0 failed, 9 skipped. .github/workflows/release.yml adds linux-brew-bottle job (ubuntu-24.04) to build and attach both the bottle (.tar.gz) and the tap formula (madc.rb). .claude/commands/promote.md lists eight release assets + SHA256SUMS (was six + SHA256SUMS) and documents the owner-gated tap step. scripts/promote_release.sh expects nine release assets (was seven): the eight plus SHA256SUMS. Validation: release-tier brew-linux lane (Homebrew 7.0.7, Ubuntu 24.04): bottle build, install, test, 1911 passed 0 failed 9 skipped.
+
+### forest: a restored free function's defaults re-derive when the function registers
+
+A restored function's default arguments re-derive from their frozen token runs via the flush's v23 rebuild. A FREE function's defaults re-derive only when the TU registers the function (register_forest_func), not at bind, because a default re-parses with its function's declaration — it may name referents this TU never declared (a compiler-derived identity, deferred until CIR reachability or a source lookup names it). A forest bound from a <string> producer holds basic_string<wchar_t>'s iterator-pair constructor instance, whose `= allocator<wchar_t>()` default names a product no C consumer declares. Before, that default re-derived unconditionally at bind, so every consumer (a C file with only <stdio.h> among them) printed "use of undeclared identifier 'allocator_wchar_t'" to stderr. The fix: forest_registered_funcs tracks restored FuncDefs this TU has registered; flush_forest_pending_globals skips an unregistered free function's default rebuild and stashes its index in forest_unsettled_defaults; register_forest_func calls the new forest_settle_param_defaults, which calls the new rebuild_forest_param_defaults to rebuild the function's defaults when it registers. The per-function rebuild body is the one rebuild_forest_param_defaults owns; method defaults keep the existing owner gate. Gate: scripts/forest_bind_gate.sh case [quietbind] (new) freezes a <string> producer, then binds a C consumer (stdio.h only), a C++ consumer (cstdio only), and a <string> consumer; negative control: the case fails against the pre-change binary on the C consumer, whose stderr carries the allocator_wchar_t error; after the fix, all three print their expected output with empty stderr. Validation: Tier 1 targeted 34 JIT, 33 EXE, 33 OBJ passed; Tier 2 six fast lanes green: c-testsuite 220, c-torture 1613, c2mir-tests 314, gui 25/25, gxx-c++11 1500, index-c 50/50. scripts/forest_bind_gate.sh GREEN 32/32 (added [quietbind]); packed release over all 73 .expect_quiet tests: 73 passed, 0 failed.
+
+### parser + cir: operator[] overloads ranked on index type and value category
+
+A class subscript's operator[] must be selected by the index's type and value category ([over.sub], [over.ics.rank]/3.2.3): an lvalue index never binds a `K&&` parameter, an rvalue binds it in preference, and std::map's two overloads exist to distinguish the cost (lvalue key = copy, rvalue = move). madc subscript sites (TokenSubscript::subscript_operator_element_type, parsePostfixChainFrom, class_subscript_addr_on, class_subscript_addr, class_subscript_call, class_subscript_is_object, select_operator_overload, class_operator_call, translate_expr) called findMethod("operator[]"), which returns the first declaration regardless of the index argument. DataDefCLASS::subscript_operator (new) ranks operator[] overloads on the index's overload-matching type and value category via findMethodOverload, falling back to findMethod if no strict winner exists or if index_type is NULL; CirBuilder::class_subscript_operator (new CIR peer) reads the index's type via ctor_arg_datadef and its category via arg_value_category, then calls subscript_operator. Eight cir_builder.cpp sites and the parse-time TokenSubscript reader now route through class_subscript_operator or subscript_operator, eliminating duplicate findMethod calls. One respell site (Program::respell_braced_subscript_index) still calls findMethod directly, handling braced-list indices with no type. Reducer tests/testsubscriptoverload.mad (--std=c++17): g++ 13, clang++ 18 and madc after the fix all print four lines `plain: cref rref`, `template: cref rref`, `type: int str`, `map: key=en size=2 en=hello fr=bonjour`; madc before printed first three as `plain: rref rref`, `template: rref rref`, `type: str str`. Separately, in tests/testsubscript.mad, the case d[k] with an lvalue std::string key previously selected operator[](key_type&&), moved from k, leaving it empty; after the fix it selects the lvalue overload and copies the key. Validation: Tier 1 targeted 110 JIT, 105 EXE, 105 OBJ passed; Tier 2 six fast lanes green: c-testsuite 220, c-torture 1613, c2mir-tests 314, gui 25/25, gxx-c++11 1500, index-c 50/50. scripts/forest_bind_gate.sh GREEN 31/31.
+
+### parser: the noexcept operator answers built-in indirection and explicit destructor call
+
+The noexcept operator ([expr.unary.noexcept]) must evaluate a built-in indirection (`noexcept(*p)` where *p is a built-in dereference, which cannot throw) and an explicit destructor call (`x.~T()`, whose exception specification matches the destructor's own specification, as probed by libstdc++'s is_nothrow_destructible trait). noexcept_eval_expr (the operand walker) now handles both forms: TokenBase::is_indirection() recognizes the built-in dereference form and reads the pointer operand's exception status; TokenExplicitDtor conjoins the object expression's status with the class destructor's specification (noexcept_destructor_spec). Before, both forms were refused with "cannot faithfully evaluate noexcept(...) for this operand", blocking binding of containers like vector<string> whose moves and relocations invoke allocator_traits<allocator<string>>::destroy → is_nothrow_destructible<string> → noexcept(string::~basic_string()). Reducer tests/testnoexceptderefdtor.mad (--std=c++17): g++ 13, clang++ 18, and madc after the fix all print three lines showing built-in deref results (1 1 1 1), class operator* results (0 1), and destructor specs (1 1 0 1); madc before refused at noexcept(*p). scripts/forest_bind_gate.sh case [subbind] now passes: the bound consumer's output equals the live compile's. Two gxx-c++11 baseline tests now passing: cpp0x/constexpr-noexcept4.C and cpp0x/noexcept10.C; baseline shrunk 450 → 448. Validation: Tier 1 targeted 110 JIT, 105 EXE, 105 OBJ passed; Tier 2 six fast lanes green: c-testsuite 220, c-torture 1613, c2mir-tests 314, gui 25/25, gxx-c++11 1500, index-c 50/50.
+
+### cir: substituted call arguments preserve their value category
+
+Template argument substitution now preserves whether a call argument is an rvalue or lvalue so that std::forward deduction reads the correct type and overload resolution selects the right overload. Before, a forwarded rvalue (std::forward<T>(x) with T = int, an xvalue) was treated as an lvalue in deduction, causing copy constructors to be invoked instead of move constructors in std::vector::push_back and in member/free templates with std::forward. The fixes: (a) subst_datadef preserves the rvalue kind when rebuilding a reference type (getReferenceType with rd->rvalue); (b) tsubst_concrete_arg_token creates an rvalue stand-in via static_cast<T&&>(v) (an xvalue) when the substituted type is a reference, or T(v) (a prvalue) otherwise; an lvalue argument stays a named variable; (c) substituted_arg_value_category (new) computes a substituted argument's value category from its origin (call/cast result type, or the operand's own category); (d) value-category vectors (cats) carry categories through overload re-ranking, template instantiation, and operator-template instantiation. scripts/forest_bind_gate.sh case [vecbind] now passes: a consumer bound to a frozen <vector> container has the same function set as the live compile (before, the bound consumer called `allocator_traits_std__allocator_int32_t___construct__mti__o2` and `vector_int32_t_std__allocator_int32_t____M_realloc_insert__mti__o2` where the live compile had the `__mti` instances). Reducer tests/testtsubstargcategory.mad (--std=c++17): g++ 13, clang++ 18 and madc after the fix all print `vec: move copy move`, `member: sinkL sinkR sinkR`, `free: sinkL sinkR`, `n=3`; madc before printed `vec: copy copy copy`, `member: sinkL sinkL sinkL`, `free: sinkL sinkR`, `n=3` (rvalues in std::forward calls deduced as lvalues). Validation: Tier 1 80 JIT, 74 EXE, 74 OBJ all passed; Tier 2 six lanes green: c-testsuite 220, c-torture 1613, c2mir-tests 314, gui 25/25, gxx-c++11 1498, index-c 50/50.
+
+### gate: identifiers retired from the std::string wrapper family
+
+Variable::string_literal_text → literal_text; Program::string_char_array → literal_char_array; local string_slot → char_array_slot (InitializerCursor::fills_whole); local string_clause → literal_clause (Program::parse_declaration_body). Renames retire identifiers matching `\bstring_[a-z]` (the retired std::string wrapper family, banned by scripts/check-no-std-hardcoding.sh in fulltest). Identifier count: 0 at 4f3f99ef2, 21 at f055ae418, 22 at d39f231ea; after rename: 0 (GREEN). scripts/check-one-string-char-fill.sh: GREEN (two-sided control verified). All static gates pass; Tier 1 targeted 44 JIT, 43 EXE, 43 OBJ passed; Tier 2 six fast lanes all green.
+
+### parser: a data-only struct or union qualifies a name in an expression (B77)
+
+A qualifier naming a struct, union or class reads its members in expression scope ([expr.prim.id]/2, [expr.unary.op]/3): `sizeof(S::m)`, `__alignof__(S::m)`, `decltype(S::m)`, and `&S::m` all reach the member's type or form a pointer to data member. madc kept a C++ struct or union with no member function, base or class-typed member as a DataDefSTRUCT (not promoted to DataDefCLASS), so `classify_qualifier_before_scope` asked `resolve_expression_class_scope` which answered only a DataDefCLASS, refusing all four above with "Unknown namespace or class 'S'". The fix extends the qualifier scope to data-only aggregates: `resolve_expression_aggregate_scope` (new) answers class, struct or union; `resolve_expression_class_scope` now delegates to it and extracts the class answer. QualifierScope gains `agg` to hold the aggregate answer (class, struct or union), keeping `cls` for the class answer; `agg` is cleared when the name also names a namespace and no class. `resolve_qualified_scope_expression` (new dispatcher) routes a class to the existing resolve_class_qualified_expression and a data-only aggregate to the new `resolve_aggregate_qualified_expression` (non-static data members only, no object). `qualified_member_without_object` and `data_member_pointer_constant` are the unique builders shared between both arms. Six expression readers route through the dispatcher (postfix chain, type-token arm preferring the registered class over the token's own definition when a struct is promoted to a class base, `decltype(e)::`, identifier arm, two `ns::C::` arms). Reducer tests/testqualifiedstructmember.mad (--std=c++17): g++ 13, clang++ 18 and madc after the fix all print `q 8 3 8 8 4 8 8` and `p 2.5 7 1.25`; madc before exited 1 "Unknown namespace or class 'S'" at line 21. The fix resolves BUGS.md B77. Validation: Tier 1 targeted 175 JIT, 158 EXE, 158 OBJ passed; Tier 2 six fast lanes green: c-testsuite 220 passed, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gui 25, gxx-c++11 1498 passed 448 baseline, index-c 50/50.
+
+### parser: the right operand of `.*` / `->*` reads through parseCastExpression (B141)
+
+The right operand of `.*` / `->*` is a cast-expression ([expr.mptr.oper]/1), allowing unary operators (`&C::foo`, `*ppd`), casts, and parenthesized operands. Program::parseExpr_operatorArm had two readers: parse_parenthesized_expression for `(...)` forms, and parsePostfixChain for other operands (which handles only postfix ops: `->`, `.`, `[]`, `++`, `--`). A unary operator or cast was refused: `(c.*&C::foo)(9)`, `c.**ppd`, `p->*&C::d + 1` all failed "Expecting a pointer-to-member after '.*'". The fix: parseExpr_operatorArm now reads the right operand through Program::parseCastExpression (the indexed cast-expression owner, listed in indirection.md), unifying both paths. Reducer tests/testmemptrcastoperand.mad (--std=c++17): g++ 13, clang++ 18 and madc after the fix print `mp 10 1 2 3 5 1`; madc before exited 1 with "1 parse error(s)" at line 21. The fix resolves BUGS.md B141. One baseline test now passing: g++.dg/template/ptrmem1.C (non-type template parameter M of type `T C::*` or `T (C::*)()` used in `(c.*M)` and `(c.*M)()`). Validation: Tier 1 targeted 61 JIT, 60 EXE, 60 OBJ passed; Tier 2 six fast lanes green: c-testsuite 220 passed, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gui 25, gxx-c++11 1498 passed 448 failing 0 outside baseline 1 now passing, index-c 50/50.
+
+### parser: a pointer-to-member function parameter deduces its class from a pointer-to-member argument (B127)
+
+A pointer-to-member function parameter in a function template deduces its class and the member's signature from a pointer-to-member argument ([temp.deduct.type]/8: `T (T::*)(T)` is a deducible form). A data-member parameter `M T::*pm` deduces M and T; a function parameter `R (T::*pm)(A)` deduces R, T and A; a const-method form `int (T::*)(int) const` deduces T and matches the method's cv-qualifier-seq. madc bound none of them: a function-template instantiation with `int (T1::*pm)(int)` parameter refused "import of undefined item" (apply, call, call_const, call_only, get_only undefined at link), and a declaration `auto ap = &C::foo;` then `(c.*ap)(3)` refused "too few arguments" in c2mir's arity check. The member-function form failed because the method's FuncDef carries the hidden receiver at parameter 0, while the parameter deduction expected only the SOURCE parameters. The data-member form skipped `T1::*` as a non-deduced nested-name-specifier (no deduction path existed). The fix spans two readers: (a) the address-of-qualified-member reader applies member_function_type (new, declared include/madc.h, defined src/parser.cpp) to extract a method's signature without the hidden receiver, building DataDefMemberFnPtr with that source-only type; (b) fn_template_deduce_member_pointer_param (new dispatcher) handles deduction of both forms — it calls fn_template_deduce_fnptr_param for the function form, and fn_template_deduce_param for the data form, binding the class spelling to the argument's owner. Two consumers now rely on the source-only type: the deduction path (new) and the existing cir `.*` call lowering in src/cir_builder.cpp. Reducer tests/testmemberptrdeduce.mad (--std=c++17): data-member deduce, function-parameter deduce, const-method deduce, auto binding, and overload selection all now print "pm 42 10 7 5 2 15", "auto 4", "cv 1 2", matching g++ 13 and clang++ 18. Before: template calls failed at link time with five undefined imports; auto binding failed in c2mir's argument-count check. Validation: Tier 1 targeted 62 JIT, 62 EXE, 62 OBJ passed; Tier 2 six fast lanes green: c-testsuite 220/220, c-torture 1613 passed 11 baseline, c2mir-tests 314 passed 50 baseline, gui 25/25, gxx-c++11 1497 passed 449 baseline (1 test now passing: g++.dg/cpp0x/vt-55542.C), index-c 50/50.
+
+### c2mir: a later initializer overrides an earlier one for the same subobject (B138)
+
+A later initializer overrides any earlier one for the same subobject (C11 6.7.9p19), in static and automatic storage alike: a designator naming an initialized member, a brace list that re-initializes a whole member, another union member, one character of a string, a string over an earlier character, and a bit-field. madc's parser places every clause through InitializerCursor before emission, so its lists never override. The in-tree c2mir driver collected the clauses as written and kept only the FIRST initializer of a static subobject, did not re-initialize a brace-listed member, and zeroed the rest of a local string after a patched character (B138). override_init_els (new, third_party/mir/c2mir/c2mir.c) drops ANY element inside the new initializer's bits, and a SCALAR element overlapping them (another union member); an earlier string or aggregate value holding them keeps its other parts. init_el_bits computes an element's bit range. collect_init_els calls override_init_els for each scalar, string, and brace list, adding the offset of an unnamed anonymous member's slot. Elements are numbered by a counter that never resets (init_els_num); init_els_start marks the initializer being collected. override_init_els now drops the earlier of two elements for the same subobject during collection, so the static writer's equal-offset skip no longer meets a stale one. patch_str_init_el (new) writes a constant character into a copy of the earlier narrow string (the static data writer lays data out one element per byte range). The local writer stores at the element's own offset. Reducer tests/testinitoverride.mad (C, --std=c17): gcc 13, clang 18 and madc print the three `.expect` lines `g -1 | -1 2 | -1 2 4 | 7 6 | 9 0 | 5`, `c azc 0 | ab 0 | 4 9 3`, `l -1 | 9 0 | 5 | azc 0 | ab 0 | 4 9 3`. The in-tree c2m driver before printed `g 0 | 0 2 | 3 2 4 | 5 6 | 9 2 | -1`, `c abc 0 | ab 0 | 1 2 3`, `l -1 | 9 2 | 5 | az 0 | ab 113 | 4 9 3` (gate scripts/c2m_initializer_override_gate.sh GREEN). madc's test suite (JIT, EXE, OBJ): all green before and after. Validation: Tier 1 163 JIT, 155 EXE, 155 OBJ passed; Tier 2 six lanes green: c-testsuite 220, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gui 25, gxx-c++11 1496 (450 baseline), index-c 50/50.
+
+### gate: a string literal fills a char array through one owner
+
+`scripts/check-one-string-char-fill.sh` (in `fulltest`, two-sided) fails on an adjacent-string-literal read or a literal-to-elements character copy in `src/parser.cpp` outside `Program::string_char_array`, `Program::fit_char_array` and `append_string_literal_chars`. Run over the parser before d39f231ea it reports the unbraced declaration reader's own loop (2 lines).
+
+### parser: a string literal fits to a char array through one owner
+
+String literal initialization of a char array (C11 6.7.9p14, [dcl.init.string]) fits its characters to the array: the NUL when there is room, zero padding when requested, and the excess dropped with a warning (gcc behaviour in C). Under --std=c++NN a string with no room for its NUL is refused ([dcl.init.string]/2); C modes, K&R modes and the madc dialect keep the C rule (exact fit without NUL; excess dropped with a recorded warning). madc had two implementations — unbraced declarations handled wide literals and concatenation but refused to truncate, while braced/designated slots silently truncated. The fix: Program::fit_char_array (now a Program member, given the diagnostic site and mode check) is the one fitting function for every reader; it takes a TokenStructLit of characters, truncates or zero-pads to count, emits a C warning on excess, and refuses in C++ modes. Program::string_char_array gained wide and pad parameters; it handles concatenation and wide-literal target units via madc_wide_payload_target_units (reused). The unbraced declaration reader in parse_declaration_body now calls string_char_array instead of hand-rolling the loop; InitializerCursor's two slot fills call fit_char_array directly on char_list_of's output. Known divergence: batch mode renders no warnings (only the REPL renders recorded diagnostics), so the dropped excess prints nothing where gcc prints a warning. Reducer tests/teststringcharlong.mad (--std=c17): gcc 13, clang 18, and madc after the fix all print `ol ab xy 5 | ab de | ab xy 5`; madc before refused unbraced `char[2] = "abc"` with "Too many initializers for array (expected 2)". tests/teststringcharlongcxx.mad (--std=c++17): char[3] = "abc" is refused by all three — g++ 13: "initializer-string for 'char [3]' is too long [-fpermissive]"; clang++ 18: "initializer-string for char array is too long, array size is 3 but initializer has size 4 (including the null terminating character)"; madc before accepted it and printed `abc`, now refuses with clang++'s text. c-torture pr86714 (const char a[2][3] = { "1234", "xyz" };) passes before and after. tests/teststringcharfit.mad (--std=c17) covers valid fits (exact, padding, unknown size, wide, multi-dim rows, struct members, compound literals, designated members): gcc 13, clang 18, and madc all three print the three .expect lines before and after. Validation: Tier 1 `fix_lanes.sh teststring* testchar* testwchar* testwide* testdesignat* testinit* testarray* teststruct* testcompoundlit* testanon* testunion* testaggr* testbraceinit*` 123 JIT, 120 EXE, 120 OBJ passed; Tier 2 six lanes green: c-testsuite 220, c-torture 1613 (11 baseline failing), c2mir-tests 314 (50 baseline), gui 25, gxx-c++11 1496 (450 baseline), index-c 50/50.
+
+### parser + cir: a designated initializer list keeps a current object (B139, B137)
+
+A designator moves the CURRENT OBJECT of an initializer list (C11 6.7.9p17–p20): the next positional initializer fills the subobject after the designated one, a brace-elided run fills a subaggregate member by member (p20), a later initializer of a subobject overrides an earlier one (p19) — for a union, the member written last — and a designator list descends one subobject per designator (`.a[1]`, `.s[1].q`, `[1][0]`). madc's parser read each designated clause in isolation with no path memory. The readers appended a positional clause after a designator at the END of the slot vector, and the vector was indexed two ways: by VALUE under brace elision (`{1, 2, 3, ...}` fills `k`, `s.p`, `s.q`), and by MEMBER when a designator wrote it (`.z` is slot 2) — so `.z = 9` overwrote `s.q`'s value. Union membership kept the higher-numbered member's slot, not the last-written designator. A designator chain with an array index was refused: `.a[1]` and `.s[1].q` refused "Expecting '=' after designated initializer"; `[1].q` and `[1][0]` refused "Expecting '=' after array designator". The braced compound literal `(struct AU){ 1, { .f = 2.5f }, 4 }` was refused, "Unknown field 'f' in compound literal designator" (B139: `{ 1, 2, 3, .a = 9, 4 }` printed `9 2 3 4` instead of `9 4 3 0`; B137). The fix: InitializerCursor reads and maintains a stack of frames (one per open subaggregate: slots, Shape, cursor position, limit); at the first designator it switches slots to member-indexed, replaying values already placed; a union keeps the member written last (p19); `designate` returns the designated slot's Shape for the reader. parse_designation is the one designator-list reader for all three contexts (parse_compound_struct_lit, read_struct_lit, parseDeclaration). cir's aggregate_init_list reads member-indexed slots; a counted-array member's member-indexed braced list emits through aggregate_init_list as elements (with the member's dims for a multi-dimensional member). In a compound literal, a nested brace placed by position now takes its type from aggregate_slot_member_type, so an anonymous member's first slot reads as the whole anonymous aggregate. Variable::is_string_literal and Variable::string_literal_text replace 7 hand-rolled `__literal__` prefix tests in 3 files (cir_format.cpp 2, cir_builder.cpp 3, parser.cpp 2). Program::string_char_array truncates or zero-pads a literal to the array (replacing reader B's lambda). Reducer tests/testdesignatedcursor.mad (--std=c17): gcc 13, clang 18, and madc after the fix print 11 lines including `q 9 4 3 0`, `n 0 5 6 7`, `cl 1 2.5 4 | 1 3 4`. Before: madc printed wrong values and refused valid designators. Validation: Tier 1 123 targeted tests JIT 123/0, EXE 121/0, OBJ 121/0; Tier 2 six fast lanes green: c-testsuite 220/220, c-torture 1613/11 (baseline), c2mir-tests 314/50 (4 now passing, baseline shrunk), gui 25/25, gxx-c++11 1496/450 (baseline), index-c 50/50.
+
+### cir + c2mir: a field designator inside an anonymous member's own braces names one of its members
+
+A braced initializer list for an anonymous member's slot names members at the containing aggregate's scope (C11 6.7.2.1p13, 6.7.9p17). An unnamed anonymous struct or union opens no scope of its own in c2mir — its members are declared in the containing aggregate — so lookups and positions must account for that. madc's parser read such a designator against the anonymous member (correct), but cir's `init_slot_value` emitted positionally for the first member (yielding "excess elements in array/struct/union initializer"), and c2mir looked the name in an empty scope (yielding "unknown field f in initializer"). The fix: `init_slot_value` takes `member_indexed` (true when slots were placed by designators); a position-placed list recursively enters `aggregate_init_list` for an anonymous member's first slot, so its braced clause initializes the whole anonymous member. In c2mir, `find_init_field` (new) looks a field designator up in the correct scope (containing aggregate, not the anonymous member's empty scope), and `process_init_field_designator` stops its walk at the container itself. Reducer tests/testanonmemberdesignator.mad (--std=c17): gcc 13, clang 18, and madc after the fix print "g 1 2.5 4 | 0 7 | 1 0 9" and "l 1 2.5 4 | 6 7". Before: madc and c2mir both refused. Validation: Tier 1 anon/union/aggr/braces/compoundlit/initlist/staticinit/struct tests 62 JIT, 62 EXE, 62 OBJ passed; Tier 2 six fast lanes green (c-testsuite 220, c-torture 1613 baseline, c2mir-tests 310 baseline, gui 25, gxx-c++11 1496 baseline, index-c 50/50).
+
+### c2mir: scalars converted to `_Bool` test for non-zero via `bool_conversion`, handling wide integers and floating values faithfully
+
+A scalar converted to `_Bool` reads as 1 if it is non-zero, else 0 (C11 6.3.1.2) — integer, floating-point, pointer, array/function designator, or `__int128`. MIR has no `_Bool` type (maps to U8); c2mir's prior lowering only masked: it kept the low byte, so `256`, `0.5`, and a 256-aligned pointer all read as 0, and `-1` read as 255. Conversion sites (initializer register and memory slots, assignment, compound-assignment and ++/--, cast, call argument, return, constant folder cast_value) now route through `bool_conversion` (new), which emits a MIR `!= 0` comparison yielding 0 or 1. For `__int128` sources, `int128_scalar_truth_val` (existing, tested against both halves) is reused. Reducer tests/testboolconversion.mad (--std=c17): gcc 13, clang 18, and madc after the fix print all six lines: `init 1 1 1 1 | 1 1 1 | 1 1 1`, `assign 1 1 1 | 1 1 1 1`, `call 1 1 1 1 1`, `zero 1 1 0 0`, `wide 1 1 1 1 1 1 1`, `addr 1 1 1 1 1 1`. Before: madc printed `init 0 255 0 0 | 0 0 0 | 0 0 0`, `assign 0 0 0 | 2 0 0 255`, `call 0 0 0 0 0`, `zero 0 0 0 0` (wide and addr lines not run before the fix; they test __int128 source and array/function/string/address sources). Validation: Tier 1 targeted (bool, cast, int128, complex, conversion tests + testmemberptrnull) 63 passed, 0 failed (EXE 63/0, OBJ 63/0); Tier 2 six fast lanes green: c-testsuite 220 passed, 0 outside baseline; c-torture 1613 passed, 0 outside baseline; c2mir-tests 310 passed, 0 outside baseline; gui 25/25; gxx-c++11 1496 passed, 0 outside baseline; index-c 50/50.
+
+### cir: a null pointer to member has a distinct null value (-1 for data, {0,0} for functions)
+
+A null pointer-to-member value ([conv.mem]/1) is not zero: a data member's null is -1 (since 0 is the offset of the first member), and a function member's null is {ptr:0, adj} (the Itanium C++ ABI struct representation). madc had no null test and no null value, storing a null constant as 0, so `&B::y` at offset 0 read as null in comparisons, `int (B::*fn)() = 0;` refused with "incompatible types in assignment to struct/union", and `fn == 0` and `fy == 0` refused with "invalid types of comparison operands". Zero-initialization of a member-pointer object — static storage, aggregate `{}`, member omitted in an initializer, `T()`, `new T()`, a mem-initializer `m()` — must write -1 (data) or {0,0} (function), not 0. A member pointer's truth value ([conv.bool]) is its null test. The fix: member_pointer_null (new) is the distinct null value (-1 or {0,0}); is_null_pointer_constant (new) is a predicate recognizing 0, nullptr, and ((void *)0) as null constants; member_pointer_conversion (reached from init/assign/compare/argument/return sites) returns member_pointer_null for such sources; member_pointer_truth (new) tests null for if/while/!/&&/?: conditions; holds_member_data_pointer (new) checks if an aggregate member HOLDS a data member pointer (needed to zero-init with -1, not 0). Comparisons, assignments, aggregate inits, static inits, brace inits, new-expressions, and truth tests all now match g++ 13 and clang++ 18. indirection.md updated to list these under the pointer-to-member conversion owner. tests/testmemberptrnull.mad (-std=c++11) now passes. Before: `py == 0` gave 1 (should 0), `is_null(py)` gave 1 (should 0), `py ? 1 : 0` gave 0 (should 1); `fn = 0` refused "incompatible types in assignment to struct/union"; `fn == 0` and `fy == 0` refused "invalid types of comparison operands". Validation: Tier 1 52 JIT, 49 EXE, 49 OBJ passed; Tier 2 six fast lanes green (c-testsuite 220, c-torture 1613, c2mir-tests 310, gui 25, gxx-c++11 1496, index-c 50/50).
+
+### cir: a new-expression's empty initializer vs. none
+
+`new T()` value-initializes ([expr.new]/23, [dcl.init]/8): a scalar, a plain struct and a union are zero. `new T` default-initializes: a scalar or plain struct comes uninitialized from malloc, and a class or union with a default constructor calls it. The parse kept no trace of an EMPTY new-initializer, so `new T()` and `new T` were the same: a scalar or plain struct from malloc was never zeroed, and the placement form `new (p) P()` / `new (p) P` of a plain struct stored the integer 0 into it, causing "incompatible types in assignment to struct/union". The fix: TokenNEW carries has_initializer, set when `(...)` or `{...}` appears after the type. For placement new with a scalar or plain struct: tsubst_scalar_placement_store returns NULL to hand off to the ordinary placement arm (no initializer stores nothing; `()` stores 0 for scalar or memsets a plain struct; an argument stores it). For placement new with a class: no initializer routes through complete_object_construct_stmts (construction only, no zero-fill); with `()` routes through class_direct_init_stmts (value-init). The heap form chooses calloc when value-init (automatic zero), malloc when default-init. Reducer tests/testnewvalueinit.mad (--std=c++11): g++ 13, clang++ 18 and madc after the fix print "heap 0 0 0 0 0 0 0 3 4", "place 0 0 3 0 1", "tmpl 0 0 0 0 0 0 5". Before: madc refused lines 28, 29, 48 with "incompatible types in assignment to struct/union"; a heap-only reducer showed 1136515949, 1136516493 24886 instead of 0, 0 0 for `new int()` and `new P()`. Validation: Tier 1 40 JIT, 37 EXE, 37 OBJ passed; Tier 2 six lanes green, 0 outside baseline (c-testsuite 220, c-torture 1613, c2mir-tests 310, gui 25, gxx-c++11 1496, index-c 50/50).
+
+### parser: a named cast's target is read through the type-id owner
+
+A named cast's target (static_cast / reinterpret_cast / const_cast) is a type-id ([expr.static.cast]/1, [expr.const.cast], [expr.reinterpret.cast]): a pointer-to-member (`static_cast<int D::*>`), a function pointer, a reference and a cv-qualified pointer all spell the type the cast converts to. The named cast read its `< type-id >` with two hand-rolled loops (expression form parse_named_cpp_cast, constant form parse_constant_named_cpp_cast) that knew only `*`, const, volatile, restrict and a trailing `&` / `&&`, missing `C::*` member-pointer syntax and `(params)` function-pointer syntax. Both old loops stopped at `(` and at `C::*`, so `static_cast<int (*)(int)>(twice)` and `static_cast<int D::*>(&B::y)` were both "Expecting '>' to close static_cast<...>". The constant form also read `&` as a pointer via getPointerType (used in array bounds, test line 34). The fix: parse_named_cast_target is the ONE reader for both forms, calling Program::parse_type_id (the documented TYPE-ID owner in indirection.md); a leading cv reaches parse_type_id correctly; the result is a full type-id including pointers-to-member, function pointers, and references with correct collapse semantics. The constant form now reads `&` as a reference, like every type-id. The two old loops are deleted; parse_named_cpp_cast and parse_constant_named_cpp_cast now call parse_named_cast_target, eliminating duplication. Gate scripts/check-one-ptr-operator-fold.sh baseline 7→5: two of its seven hand-rolled sites eliminated. Reducer tests/testnamedcasttypeid.mad (--std=c++11): g++ 13, clang++ 18, and madc after the fix print "7 9 42 7 4"; madc before refused both casts. Validation: Tier 1 70 JIT, 66 EXE, 66 OBJ passed; Tier 2 six lanes green, 0 outside baseline.
+
+### cir: pointer-to-member conversion between base and derived classes
+
+A pointer-to-member of a base class B converts to a pointer-to-member of a derived class D ([conv.mem]/2, implicit and static_cast), or converts back for static_cast only ([expr.static.cast]/12). The converted value moves by B's subobject offset in D: a data member's byte offset, a member function's {ptr, adj} pair's adj field. The data form leaves the Itanium null value -1 unmoved; madc does not yet produce -1 for a null data member pointer (BUGS.md B136, filed here). g++ 13 and clang++ 18 lower `int D::*f(int B::*p) { return p; }` as `p == -1 ? p : p + 12` (B at offset 12 in D after A0). madc had no member-pointer conversion — casts to member-function-pointer type failed c2mir "conversion to non-scalar type requested" — and implicit conversions didn't adjust the value. The fix: member_pointer_class (reused from ba0a5b81a) extracts the class from a DataDefMemberPtr or DataDefMemberFnPtr; member_pointer_conversion (new owner) handles base ↔ derived conversions at init, assign, compare, argument, return, and cast sites; member_ptr_constant (new) folds a constant conversion so file-scope initializers stay constant. Reducer tests/testmemberptrconv.mad (--std=c++11): g++ 13 and clang++ 18 print "7 7 7 7 9 7 7" then "7 7 7 7 7"; madc now matches. Before: `(DF) &B::get` failed "conversion to non-scalar type", implicit `DF df2 = &B::get` called get() with wrong this (printed 1), implicit `int D::*pd = &B::y` read D::pad[0] (printed 1). The fix also updates indirection.md and files B136 (null pointer-to-member has no null value). Validation: Tier 1 41 JIT, 41 EXE, 41 OBJ passed; Tier 2 six lanes green, 0 outside baseline.
+
+### cir: `obj.*pm` / `p->*pm` with a member pointer of a base adjusts the receiver address
+
+A pointer-to-member access on an object `obj.*pm` or through a pointer `p->*pm` converts the receiver to the member pointer's class first ([expr.mptr.oper]/2-3); when the base class sits at a non-zero offset in the object's class, the receiver address must be adjusted to that base subobject. madc used the unadjusted object address, so `d.*pb` (pb = &B::y, B at offset 12 in D after A0) read D's first member (pad[0], value 1) instead of B::y (value 7); `(d.*bf)()` called the member function with `this` pointing at D instead of its B subobject. The fix: member_pointer_class (new) extracts the class from a pointer-to-member's type (DataDefMemberPtr::owner_class or DataDefMemberFnPtr::owner_class); recv_to_base detects when an offset adjustment applies; the receiver address passes through base_subobject_addr (reused, no offset test for non-null objects) before the member access. Reducer tests/testmemberptrbaserecv.mad (--std=c++11): g++ 13 and clang++ 18 print "8 8 8 8 8 3 3"; madc now matches. Before: a smaller reducer reading `d.*pb`, `dp->*pb`, `(d.*bf)()` and `(dp->*bf)()` (pb = &B::y, bf = &B::get, d.y = 7) printed `1 1 1 1` (D's pad[0]) where g++ and clang++ print `7 7 7 7`. Validation: Tier 1 29 JIT, 29 EXE, 29 OBJ passed; Tier 2 six lanes green, 0 outside baseline.
+
+### parser: a member access on a reference-typed expression uses the referent
+
+A reference-typed expression denotes its referent ([expr.type]/1), so a member access on a reference reads the member from the referent object. A named cast to reference type (`static_cast<B &>(d).y`) looked the member up on the referent but typed the access's object as the REFERENCE, causing the CIR builder to emit `->` on an lvalue, and MIR refused "wrong type memory". g++ 13 and clang++ 18 emit `.` (direct member access). The fix: parsePostfixChainFrom applies referent_if_reference to both the member lookup (already present) and the proxy Variable's object type, so the access's typed object becomes the referent. Reducer tests/testrefcastmember.mad (--std=c++11): g++ 13, clang++ 18, and madc after the fix print "5 3 8 9 4 8"; madc before every static_cast to reference followed by .member failed with "MIR fatal error: wrong type memory". Validation: Tier 1 275 JIT, 264 EXE, 264 OBJ passed; Tier 2 six lanes green (c-testsuite 220, c-torture 1613, c2mir-tests 310, gui 25, gxx-c++11 1496, index-c 50).
+
+### cir: an explicit class-pointer cast moves the address by the base subobject's offset
+
+An explicit cast between pointers to related classes ([expr.static.cast]/11, [expr.cast]/4: a C-style cast tries static_cast's conversions first) moves the address by the base subobject's offset — up to a secondary base adds it, down to the derived class subtracts it — and a null pointer stays null ([conv.ptr]/3). reinterpret_cast keeps the address. g++ and clang++ lower `static_cast<B *>(p)` from a D* as `p ? p + off : 0`. madc's cast lowering emitted a bare C cast for every class pointer with no offset applied. A C-style cast to a secondary base `(B *)(&d)` and `static_cast<B *>(&d)` read D's first member (pad[0], value 1) instead of B's (value 7); `static_cast<D *>(bp)` from a B* downcast read past the object (garbage instead of 9). The fix: TokenCast now carries a Kind enum (Static, Reinterpret, Const), read once at the parse keyword and recorded in the token. base_subobject_ptr (the implicit upcast's pointer form) now also serves casts; derived_object_addr (the static downcast, new) and derived_object_ptr (its pointer form, new) are added; null_tested_class_ptr (new) is the one null test both pointer forms share. The pointer-cast arm of translate_expr now dispatches on tc->kind; Static casts apply the offset via null_tested_class_ptr; Reinterpret and Const casts use the generic arm (no offset). The reference-cast arm's inline downcast is replaced by derived_object_addr; reference-cast conversions now also apply only to a Static-kind cast (reinterpret_cast and const_cast keep the object). Reducer tests/testclassptrcast.mad (--std=c++11): g++ 13 and clang++ 18 print "7 7 7 7 1" then "9 9 1 1"; madc now matches. Before: `(B *) &d` and `static_cast<B *>(&d)->y` printed 1 (unadjusted, reading pad[0]); `static_cast<D *>(bp)->z` printed garbage. Validation: Tier 1 112 JIT passed, 108 EXE passed, 108 OBJ passed; Tier 2 six lanes green, 0 outside baseline.
+
+### cir: a derived-to-base pointer conversion preserves null ([conv.ptr]/3)
+
+A derived-to-base pointer conversion to a secondary base moves the address by the base subobject's offset, and a null pointer converts to a null pointer ([conv.ptr]/3). g++ and clang++ lower it as `p ? (B *)(p + off) : 0` (the address of an object, never null, without the test). madc's upcast owner applied the offset unconditionally, converting null D* to a non-null B*. The return statement re-derived the conversion as a bare cast with no offset, so `return p;` from a B*-returning function handed back the D address unadjusted, reading D's first member (pad[0], value 1) instead of B's (value 7). The fix: base_subobject_ptr is the ONE owner of pointer-form derived-to-base conversion, testing whether the address moves and wrapping in a null-preserving conditional: `D *tmp = value; tmp ? base_subobject_addr(tmp, ...) : (B *)0;` as a statement expression. An object's address (`&d`) and `__this` are never null and convert without the test. upcast_class_ptr now calls base_subobject_ptr for every pointer operand (init, assign, compare, argument, return), eliminating bare casts. Reducer tests/testupcastsecondarybase.mad (--std=c++11): g++ 13 and clang++ 18 print `1 1 7 7 7 1 1 7 1`; madc now matches. Before: `b1 == 0` and `b2 == 0` compared unequal (null D* became non-null B*), `up(dp)->y` printed 1 (unadjusted D address reading pad[0]). Validation: Tier 1 108 JIT, 105 EXE, 105 OBJ passed; Tier 2 six lanes green.
+
+### parser: a pointer-to-member declarator's owner may be a class-template parameter (B127)
+
+A pointer-to-member declarator `T1::*` where T1 is a class-template parameter reads T1 as a TYPE token, not an identifier ([dcl.mptr]/1: the nested-name-specifier denotes a class through the parameter). Inside an instantiated class body the declarator lookahead (`member_pointer_declarator_ahead`) tested only for identifier tokens, so it refused valid code: `typedef T2 (T1::*m)(T3);` "Expecting identifier in declarator", `typedef int T1::*dm;` "Expecting type in class definition". The fix: `member_pointer_owner_head` is the ONE head test of the member-pointer lookahead, admitting a contextual identifier token (lexer-named class), or a TYPE token whose definition is a class/struct or a dependent type (template parameter). member_pointer_declarator_ahead now calls the owner, and parse_member_pointer_owner handles TYPE-token heads by reading the token's definition directly (a class or dependent type), bypassing spelling resolution for the one-part case. Reducer tests/testmemberptrtemplateparam.mad (--std=c++11): data-pointer form (`int T1::*dm`), function-pointer form (`T2 (T1::*m)(T3)`), const-method-pointer form (`R (T1::*m)(int) const`), member-of-class (field), and member-typedef (using the typedef as a data member) all print "42 42 42 1 2", matching g++ 13 and clang++ 18. g++.dg/template/ptrmem19.C (a constructor taking a member-pointer typedef) now passes; removed from docs/parity/gxx-c++11-baseline.txt. Validation: Tier 1 29 JIT, 27 EXE, 27 OBJ passed; Tier 2 six lanes green, 1 baseline test now passing.
+
+### cir: a reference-returning call's result has one owner (B134)
+
+A reference-returning call's result lowers to the referent's address (T& is a T* at IR level), so the call expression is *call — the referent lvalue, read or written. This rule had no single owner and was inlined at 18 sites — every call, method, operator, subscript and postfix arm, the dump walker, and the manipulator bind — with one divergent copy: the host-call shim synth_call_shim_var. The shim classified the result by FuncDef::return_value_type() (the referent type) but passed the raw call (the address) to madc_value_set_integer and other setters. c2mir warned on int& and const char*& returns; it refused the whole program on double& returns with "incompatible argument type for arithmetic type parameter". A host program::call to a reference-returning function returned the address as the value instead of the referent's value. After: CirBuilder::reference_call_result(callee, call, origin) is the one owner. All 18 inlined sites now read a call's result through it (the tsubst copy at copy_cir_subtree keeps its m_tsubst_copy_under_deref skip; the nullary-operator site at class_nullary_call keeps its discard_value skip). Reducer tests/testrefreturnshim.mad (--std=c++11): g++ 13 and clang++ 18 print `42 5.0 ref 1`, exit 0, stderr empty; madc now prints the same, matches oracle. New unit test test_libmadc_program "call returns the referent of a reference-returning function": program::call of int_ref() / real_ref() / text_ref() returns 41 / 2.5 / "ref" (the referent values); the pre-change build failed on the double& return at cir_compile. Validation: Tier 1 43 JIT, 41 EXE, 41 OBJ passed; Tier 2 six lanes green, 0 outside baseline. New drift-prevention gate scripts/check-one-reference-call-result.sh (fulltest, after check-one-ptr-operator-fold.sh) scans src/*.cpp for hand-rolled copies (negative control 2 of 2; tree 0).
+
+### parser: a declaration list's tail keeps const and constexpr (B135)
+
+A declaration list's tail — every declarator after a comma in `const int a = 1, b = 2;` or `const int &c1 = x, &c2 = 7;` — keeps the declaration-specifiers of the head ([dcl.dcl]/9): `b` is a `const int`, and `c2` is a `const` reference. The tail re-enters parseDeclaration through Program::push_declarator_list_tail, which re-pushes the base-type token and four specifiers (volatile, extern, static, thread_local) so the next declarator sees the full list. Before: it re-pushed volatile, extern, static and thread_local, but not const, constexpr or inline, so every tail declarator lost its const and constexpr qualification: `constexpr int a = 1, b = 2;` made b non-constant (not an integer constant expression for static_assert or array bounds); `const int &c1 = x, &c2 = 7;` made c2 non-const and refused "Reference initializer must be an lvalue" (a const reference must bind the prvalue 7); `const char *a = "x", *b = "y";` made b a bare `char *` instead of `const char *`. Reducers: tests/testdeclaratorlistconst.mad (C, --std=c17): gcc and clang print `1 1 1 1 1 1 1 36`; madc before printed `0 0 0 0 0 0 1 36` (tail declarators unqualified). tests/testdeclaratorlistconstcxx.mad (C++, --std=c++17): g++ and clang++ print `8 16 16 24 12 8 11 4`; madc before failed at static_assert with "Expecting integer constant expression". After: push_declarator_list_tail now re-pushes constexpr (TokenCppKeyword, which sets const itself per TokenCppKeyword::parse) or else const (TokenCONST), and inline (TokenCppKeyword). Both tests now print the oracle output. Validation: Tier 1 85 JIT, 74 EXE, 74 OBJ passed; Tier 2 six lanes green, 0 outside baseline.
+
+### parser: a declarator list's next declarator may start with & or && (B133)
+
+A declarator after a ',' in a declaration list may begin with a reference ptr-operator `&` or `&&` in C++ ([dcl.decl]: `int &r1 = a, &r2 = b;`). The comma continuation (a state re-entered from declaration-list parsing) hands the next declarator to the declarator owner, which uses comma_continuation_starts_declarator to test "can this token begin a declarator". Before: it recognized `*`, `(`, and names but not `&` / `&&`, so file-scope and block-scope declarator lists refused with "Expecting identifier after ',' in declaration". The ctor-syntax list (`B o2(o), &q3 = o;`) shares the test; the for-init and member lists are its neighbours. After: comma_continuation_starts_declarator now checks for `&` and `&&` in C++ mode (is_cpp_mode()), admitting reference ptr-operators as valid declarator starters. The test is C++-only: C has no references, so a C (--std=c17) program with `int a = 1, &b = a;` still refuses with "Expecting identifier after ',' in declaration", matching gcc and clang behaviour. Reducer tests/testdeclaratorlistref.mad (--std=c++11): file-scope, block-scope, ctor-syntax, for-init, and member lists all now print output matching g++ 13 and clang++ 18. Reducer tests/testdeclaratorlistrefc.mad (--std=c17): unchanged refusal. g++.dg/cpp0x/decltype23.C (`int x, &&y = static_cast<int &&>(x);`) now passes; removed from docs/parity/gxx-c++11-baseline.txt. Validation: Tier 1 54 JIT, 51 EXE, 51 OBJ passed; Tier 2 six lanes green, 1 baseline test now passing.
+
+### parser: a trailing return type is one type-id (B132)
+
+A trailing return type is one type-id ([dcl.fct]/2): leading cv, any declarator shape (`(&)[N]`, `(*)(params)`), and template argument lists whose commas are inside the angle. It ends where a type-id ends, so pure-/defaulted-/deleted-specifiers and virt-specifiers stay the function's. Before: the capture loop (parseFunction's trailing-return collection, pd/sd/bd counters, no angle axis) missed template commas and swallowed `= 0` / `= default`. The reader loops (parseFunction eager + parse_deferred_function_body deferred) tested `*` and `&`/`&&` and folded getPointerType, missing leading cv and parenthesized declarators, dropping what they didn't read. Errors: `-> const int *` "Could not resolve trailing return type" (5 cases: f_arref, f_cptr, f_cref, p_cptr, x_lambda); `-> int (*)(int)` "cannot be called" (3 cases: f_fptr, m_fptr, x_lfptr, became `int` sizeof 4); `-> const int (&)[3]` fell back to body deduction (1 case: m_arref, sizeof 8); `-> P<int, int>` "Expecting ',' or '>'" (2 cases: x_pair, x_mpair); `= 0` / `= default` undefined at link (2 cases: x_pure, x_default). After: capture loop now uses DelimDepth with trailing_return_type_ends_at, holding extent through template arguments and stopping correctly before pure/default/delete. Reader paths now call Program::adopt_trailing_return_type → Program::parse_type_id (declarator owner), reading full type-id including leading cv and all declarator shapes. Reducer tests/testtrailingreturntypeid (--std=c++11): prints five labelled lines (free, free2, member, virtual, lambda) matching g++ 13 and clang++ 18. g++.dg/cpp0x/lambda/lambda-conv4.C now passes; file baseline 455→454, lane failing 453→452. New gate scripts/check-one-ptr-operator-fold.sh (9→7 sites) prevents future hand-rolled `*`-folds. Bonus: capture loop uses DelimDepth, lowering check-one-delim-tracker baseline 22→19. Validation: Tier 1 49 JIT, 46 EXE/OBJ; Tier 2 six lanes green, 0 outside baseline.
+
+### parser: a pushed token run has an owner (B131)
+
+An injected run parsed to its end or an unread (consumed tokens pushed back) now go through Program::NestedTokenStream (Injected) or Program::mark_stream / rewind_stream. Before: 33 for loops in src/parser.cpp pushed tokens ahead of the live stream without returning the outer read context, leaving curToken / prevToken / ParsePosition stale in the stream. A class re-parse's injected semicolon sentinel became the read context of libc++'s `to_string(` declarator. The operator loop in finish_expression read the context moved 92 times in 45 tests. A refused declaration in a class re-parse left the rest of its run in the stream; error recovery re-read it until timeout, printing "Expecting identifier in declarator" about 150,775 times. After: fourteen runs go through NestedTokenStream (Injected), which closes and returns the outer context; eleven unreads use mark_stream / rewind_stream; three rewrites use TokenStream::splice_front; five splices (tokens joining the outer construct) are marked "a splice:" and remain flagged. A temporary probe over tests/ before: 120 read-context mismatches (82 in libc++, 22 at unreads, 16 at splices), 92 moves across finish_expression. After: 16 mismatches (all at marked splices), 0 moves. Reducer tests/testinjectedrunrecover (--std=c++11): g++ 13 and clang++ 18 exit 0. madc before hang (20 s timeout, 150k errors). After: exit 1 in 0.011 s. g++.dg/template/ptrmem19.C: hang before, 2 errors in 12 ms after; gxx-c++11 lane 60 s → 29 s. New drift-prevention gate scripts/check-one-token-run.sh detects hand-rolled runs (negative control 2/2, tree 0). Validation: Tier 1 49 JIT/0 + 44 EXE/0 + 44 OBJ/0 + 6/0 new test; Tier 2 six lanes 0 outside baseline; batch 1882/0.
+
+### parser: one owner for a speculative parser rewind (B130)
+
+A parser rewind saves and restores the token stream cursor, the read context (curToken / prevToken / ParsePosition), and the pushback LIFO. The rewind was hand-rolled at 26 sites: a TokenStream::savepos() mark restored with `tokens = saved` or `tokens.restore(saved)`. Fourteen of them restored the cursor only, leaving the read context stale; the twelve that saved it disagreed on how (cur/prv only; cur/prv + ParsePosition::set_from; cur/prv + a snapshot). Four of them were injected runs ended by a rewind, converted to Program::NestedTokenStream::Injected in this commit. NestedTokenStream's Injected close changed from draining the run with nextToken() to rewinding to the mark taken before the injection (Program::rewind_stream). The fix unifies all rewinds under one owner: Program::mark_stream() captures the cursor and read context; Program::rewind_stream() restores all of them together. TokenStream::savepos() still exists (for non-rewind use); the owner (Program::rewind_stream) is TokenStream::restore()'s only caller (marked allowed-exception). TokenStream::operator=(const Pos &) is deleted so `tokens = saved` no longer compiles. A temporary probe over the whole tests/ suite logged 382187 events; 0 injected runs read past their end; 0 rewinds at the context-dropping sites where stale and restored context read a following + - * & ! ~ differently. New drift-prevention gate (scripts/check-one-stream-rewind.sh, wired into fulltest) detects hand-rolled rewinds outside the owner (negative control: 3-of-3; live tree: 0). Validation: batch tests-jit 1882/0 (probe build), Tier 1 31/0 JIT + 28/0 EXE/OBJ, Tier 2 fast_lanes 0 outside baseline (final build).
+
+### parser: the first call of a template with a dependent return type is a complete operand (B46)
+
+A parse over its own token run — isolated (TokenStream::swap_in) or injected ahead of the live stream — must return the outer read context on exit. Before: 24 hand-rolled swap sites and 7 injected-run sites, with 12 swaps and 6 injections returning only the stream, not the restored curToken/prevToken/ParsePosition. A stale prevToken corrupted downstream operator classification (isUnaryPosition reads it). The SFINAE pre-check of a function template's dependent return type, which runs only at the first instantiation, injected a run and drained without restoring context. The instantiation then saved and restored that stale prevToken (the return type's last name, `;`), so the caller's next `+` read as unary instead of binary. madc refused `std::move(x) + 0`, `val3(x) - 1`, `mv3(x) * 2`, `twice(x) + 1`, `mask(x) & 1` with "Malformed expression: 2 operands with no operator between them", "cannot dereference non-pointer type", or "expecting addressable expression after '&'", exit 1. The fix consolidates all instances into Program::NestedTokenStream (include/madc.h), a single owner that encapsulates stream swap/injection, context capture on entry, and restoration on every exit (normal, throw, idempotent close). Two modes: Isolated (full swap) and Injected (prepend and drain). Every former site now constructs it; hand saves of prevToken dropped from 31 to 19. New drift-prevention gate (scripts/check-one-nested-stream.sh, wired into fulltest) detects hand-rolled swaps/injections/drains outside the owner (negative control: 5-of-5 in fixed stanza; live tree: 0; historical: 53 swap lines and 8 drain loops at 02087421f). tests/testdependentreturnoperand.mad: all five operator cases now print the .expect lines matching g++ 13.3 and clang++ 18.1 (-std=c++17). Original BUGS.md B46 reducer (`int k = std::move(x) + 0;`) prints `3`. tests/testrepl_firstmove (madc -i): four REPL entries, each std::move's first call for its type (int&, long&, vector<int>&), then `std::move(w) * 2`. Before (2026-10-01 binary): showed only `144` (the first three entries showed nothing). After: `31`, `72`, `std::vector<int>{ 5, 6 }`, `144`, matching g++ 13.3 and clang++ 18.1. Tier 1: 204 passed, 0 failed, EXE/OBJ 190 each. Tier 2: green. Batch (tests/ JIT): 1881 passed. Unit tests all pass.
+
+### templates: one forwarding-reference test, gated (B128)
+
+Three copies of "is this declared parameter spelling a forwarding reference" ([temp.deduct.call]/3) existed: best_deduced_fn_template's lambda (B119), the identity-return recorder (B120), and FuncDef::is_concrete_rvalue_ref_param. The last one used a hand-stripped pack/`&&` suffix followed by type-parameter comparison. The first two already route through spelling_is_forwarding_reference (include/spelling_delim.h, the sole owner). is_concrete_rvalue_ref_param now calls the owner, eliminating the parallel copy and the hand-composed stripping logic. Parameter spellings carry their leading `const` from source tokens (captured via param_declarator_spelling), so the removed strip and the owner agree on every spelling. Behaviour-preserving; suite is the oracle. New drift-prevention gate (scripts/check-one-forwarding-test.sh, wired into fulltest) detects hand-rolled forwarding-reference tests outside the owner and detects hand-stripped `&&` followed by type-parameter equality against the stripped variable within 8 lines, over src/*.cpp and include/*.h. Negative control (fixed stanza in script): 2-of-2 matches on every run; live tree: 0 hits. Historical check on include/madc.h as of the previous commit: flags the removed hand strip (1 hit). Historical check on src/parser.cpp as of db03bc9a4: flags the former lambda (1 hit).
+
+### cir: the address of a baked const object designates the object, not its folded literal (B129)
+
+A read of a constant-folded `const int cx = 2;` (vfCONSTBAKED) translates as the literal `2`, enabling constant initializers like `const int H = cx + 3;`. Taking the address applies no lvalue-to-rvalue conversion ([conv.lval]/1, [dcl.init.ref]/5), so `&cx` and reference bindings of `cx` designate the object itself, not the literal. madc folded first and took the address of the result, sending `&2` to c2mir, which refused with "lvalue required as unary & operand", exit 1 (10 cases: local, global, max, vec, cond, member, static, constexpr, byref, byval). The fix: CirBuilder::folded_read_object detects when an N_ADDR operand is a folded read (an integer literal whose origin is the variable's token) and re-translates the variable with the fold suppressed via m_object_designator, so the object is captured and addressed. Enumerators (no vfCONSTBAKED) still materialize temporaries (expr and enum tests still pass). tests/testconstfoldrefparam.mad: all 14 cases now pass, matching g++ 13.3 and clang++ 18.1 (-std=c++17). Tier 1: 70 passed, EXE/OBJ each 58 passed. Tier 2 fast_lanes: green, 0 outside baseline.
+
+### templates: a function-template call's type is its DECLARED return, its reference included (B120)
+
+A function-template call's type is its DECLARED return type — the declared reference included ([dcl.type.decltype]/1.3, [temp.deduct.call]): an identity return `T &&f(T &)`, a forwarding `T &&f(T &&)` (an lvalue argument deduces T as `A &` and collapses the return to `A &`), or an explicit `f<int &>` all yield the proper reference type ([dcl.ref]/6). madc read the referent through a parallel TokenCallFunc::returns_ref_override boolean, not the declared return type's DataDefREF. This meant `decltype(tmv(x))` with lvalue x and `T &&f(T &)` was typed as `int` (the referent) instead of `int &&` (the declared return). `std::is_same<decltype(tmv(r)), int&&>` answered 0 (wrong). The original BUGS.md B120 reducer before printed `0 0 1` and now prints `1 1 1`, matching g++ 13.3 and clang++ 18.1 (-std=c++17). tests/testdecltypefntemplateref.mad checks identity, forwarding, and explicit returns: before move/tmv/tref/fwd/forward printed 0s; now all print 1. g++.dg/cpp0x/rv-dotstar.C now passes; gxx-c++11 baseline shrank 454 -> 453. The fix: TokenCallFunc::returns_ref_override is deleted; FuncDef::template_return_ref changes from bool to RefKind::None/Lvalue/Rvalue; FuncDef::template_return_deduce_forwarding tracks whether the deduced parameter is a forwarding `T &&` (for the [temp.deduct.call]/3 lvalue collapse). spelling_is_forwarding_reference is the one test of a declared reference spelling. resolve_fn_template_return_by_key uses getReferenceType as the one minting owner to build the DECLARED return — `T`, `T&`, or `T&&` — from the referenced type and the spelled reference. apply_template_call_return_inference reads the deduced parameter as a forwarding reference, marks the deduced type properly, and applies the identity-return declared type. The RC3 forest test (tests/unit/test_cir_freeze.cpp) verifies reference kind and forwarding flag round-trip through forest freeze/restore. DF_TRET_FWD and DF_TRET_RREF share DefFlags bits 5 and 8 (aggregate-only DF_HAS_VTABLE and DF_HAS_USER_CTOR respectively, DK_FUNC-scoped).
+
+### c++: a prefix ++/-- or an assignment yields its left operand as an lvalue (B116)
+
+In C++ a prefix ++/-- ([expr.pre.incr]/1) and every assignment ([expr.ass]/1) yield their left operand as an lvalue: a non-const reference binds one, `&` takes its address, the left operand is evaluated once (`a[i++] = 7` steps i once), and overload resolution ranks it as an lvalue (f(int&) prefers over f(int&&)). A postfix ++/-- yields a prvalue in both languages, so `k(u++)` picks `k(int&&)` over `k(int&)` (builtin_operator_yields_prvalue now recognizes postfix forms). madc refused `int &r = (y = 5)` and lowered call arguments like `g(x = 3)` through `&(x = v)`, which C rejects as "lvalue required as unary & operand". The fix adds Program::builtin_operator_yields_lvalue (C++ only, built-in operand only; class operands assign through operator=, whose return type decides) and Program::is_addressable_expression. CirBuilder::lvalue_operator_address lowers `&(L op R)` as `({ void *__t = (void *)&L; *(T *)__t op R; (T *)__t; })` (the lhs address captured once, the operation applied through it), eliminating the specialized scalar reference-return hoisting in translate_return (assign_op_node_code deleted). tests/testlvalueopbind.mad: madc prints the .expect lines (rank line shows postfix u++ picks k(int&&)), matching g++ 13.3 and clang++ 18.1 (-std=c++17). tests/testlvalueopc.mad (C-mode twin, --std=c17): still refused with "addressable expression" error. Extra checks: libstdc++ ios_base::fmtflags program using |=/&=/^= prints 0xff under madc as under g++; --emit=c11 output compiles with gcc -std=gnu11.
+
+### php: php::array_push accepts const value& to bind temporaries (B125)
+
+php::array_push's carrier overload accepted only a non-const lvalue reference, which [dcl.init.ref]/5 forbids for rvalue temporaries. A call like `php::array_push(a, value(3.5))` refused to match the `value&` parameter and fell back to the `const char*` overload — at b3276ee23 the temporary was coerced to an empty string; with B124 alone it was coerced to the text "3.5" (a string-kind element). The fix changes the parameter to `const value&`, allowing both lvalues and rvalues to bind. tests/testarraypushtemp.mad: a temporary value(3.5) now binds to `const value&` and preserves its kind as real, matching g++ 13.3 and clang++ 18.1 (-std=c++17). tests/testvaluector (batch failure at b3276ee23) now passes; it exercises the same carrier overload at lines 54–58. The array_push carrier overload takes `const value&` in include/madc/ns_php and include/madc/ns_php.h; the runtime plumbing php_array_push_value and __php_array_push_value take `const value*`/`const madc::value*` in src/ns_php.cpp, with __php_array_push_value declared in both headers.
+
+### cir: carrier prvalues coerce to const char* with the carrier's text (B124)
+
+A carrier prvalue (`value("t")` temporary, by-value `var` return) into a const char* parameter was admitted only by the lvalue-only is_class_object_value guard. Prvalues fell through to the raw pass and the callee read the temporary's storage words as text (empty strings printed on all three prvalue lines; c2mir "incompatible pointer types of argument and parameter" on the two declared-parameter calls, no diagnostic on the varargs call). The fix adds is_class_object_expr, which reads both lvalue and prvalue class object expressions and gates object_cstr_arg's materialization. The admission is now used in build_call_args (char* parameter and varargs arms), class_ctor_call_addr, class_ctor_call, class_operator_external_call, class_operator_call, the printstr/puts and dlcall builtin arms in translate_expr, and translate_throw_call (which composed the prvalue check by hand; it now reads the helper). tests/testcarriertempcstr: madc prints named / temp / made / vararg, matching g++ 13.3 and clang++ 18.1 (-std=c++17). A new drift-prevention gate (check-one-cstr-admission.sh, wired into fulltest) prevents future c_str coercion guards from admitting lvalues only without also handling prvalues, and prevents hand-composed prvalue admission outside the owner.
+
+### templates: a template-id's member type keys as the type it denotes; std::make_tuple compiles (B122)
+
+A member type of a template-id with concrete arguments (`typename strip<int&>::type`) is the type it denotes ([temp.type]): a template-id over it names the same specialization as one spelled with the type itself. madc keyed the opaque instantiation lane by the member spelling, so `box<typename strip<E>::type...>` in a function template instance's body created a second empty struct beside the return type's (a key mismatch); libstdc++ make_tuple's `tuple<typename __decay_and_strip<_Elements>::__type...>` faced the same defect and was never instantiated (c2mir "incompatible return-expr type"). canonical_arg_key_fragment now resolves a member-type spelling to the type it denotes: the spelling's top-level scope chain is scanned for a template-id; if found, the isolated-stream resolver (Program::resolve_type_token_range) substitutes its arguments, and the key is formed from the resolved type. Resolution is skipped in dependent parse or class-pattern capture contexts (where raw member names denote template parameters). tests/testmaketuple prints the .expect lines, matching g++ 13 and clang++ 18 (-std=c++17).
+
+### templates: a reference parameter's binding decides which function template is instantiated (B119)
+
+[dcl.init.ref]/5 and [over.ics.rank]/3.2.3 specify that a function template candidate's reference parameters rank by the argument's value category: a non-const lvalue reference binds no rvalue, a concrete rvalue reference binds no lvalue of its type, and an rvalue prefers rvalue-reference over const lvalue-reference binding. madc's parse-time choice among deduced function templates ranked types only, ignoring reference-binding rank; the first candidate with deducible types was instantiated, and the CIR refused the binding when the parameter and argument categories mismatched. Before: calls to f, g and std::get (tests/testtemplaterefbinding) fell to the template placeholder and were undefined imports; exit 1. After: madc instantiates the correct overload per the argument's value category; tests/testtemplaterefbinding prints the .expect lines, matching g++ 13 and clang++ 18. The fix: try_instantiate_namespace_fn_template gains declared_params_out; best_deduced_fn_template ranks each candidate through copy_move_ref_binding_rank; a refused binding makes the candidate not viable. SpelledReference + spelled_reference (spelling_delim.h) consolidate the reference-declarator read, replacing two inline copies in FuncDef::param_spells_rvalue_reference and is_nonconst_lref_param. argument_value_category uses the call's recorded deduced specialization when the callee is still a template placeholder. Reducer: tests/testtemplaterefbinding.mad.
+
+### parser: a block-scope typedef names its type, not a namespace alias (B123)
+
+A block-scope `typedef` ([dcl.typedef]/2) names its type, not a namespace alias; a template argument formed from it is that type ([temp.type]). madc gave a scalar typedef inside a namespace-scope function a namespace-qualified identity (`ns::E`), so `id<E>` and `addr<E>` were instantiated over a type named E at file scope where no E exists: c2mir printed "unknown type E". tests/testblocktypedeftemplatearg: madc now prints `6`, matching g++ 13 and clang++ 18 (-std=c++17). The fix: TokenTYPEDEF::parse's namespace-scope scalar-typedef arm now also requires `pgm.compounds.empty()` (no open block), gating the namespace alias identity to file-scope typedefs only. A block-scope typedef keeps the type's identity. Reducer: tests/testblocktypedeftemplatearg.mad with expected output from g++ 13 and clang++ 18.
+
+### types: an rvalue reference is its own type; a call returning one is an xvalue (B118, B117)
+
+[dcl.ref]/2 and [dcl.ref]/6 specify that `T&&` and `T&` are distinct types; a reference to a reference collapses (`T& &&` → `T&`, `T&& &&` → `T&&`, `T&& &` → `T&`). madc's type model had one DataDefREF per referent, indistinguishable between `&` and `&&`. Downstream, trait specializations matched wrong: `std::is_rvalue_reference<int&>` answered 1 (wrong); `std::is_same<int&, int&&>` answered 1 (wrong); an `std::forward_as_tuple(3)` call failed c2mir with "incompatible return-expr type" because the two lanes named the return type twice — tuple_int32_tR (its function's return type) and tuple_int32_tRR (its body) — so unification failed. Also, [basic.lval]/1.3 and [expr.call]/14 state that a call whose function returns `T&&` is an xvalue; madc read all reference-returning calls as lvalues. In [temp.deduct.call]/3, when `k(rr(x))` where `rr` returns `int&&` and `k` has a forwarding reference `T&&` parameter, the argument is an xvalue, so T deduces as `int`, not `int&`. Before: all reference-returning calls deduced as lvalues: `k(mv(x))` called `k<int&>`, `k(rr(x))` called `k<int&>` (wrong: xvalue should deduce as `int`), `k(b.take())` called `k<int&>` (wrong). In overload ranking, `w(rr(x))` and `w(b.take())` (both xvalues) called `w(int&)` (wrong: [dcl.init.ref]/5 and [over.ics.rank]/3.2.3 make xvalues prefer `const int&`); `r(lr(x))` and `r(b.peek())` (lvalues) called `r(int&&)` (wrong: lvalues cannot bind `int&&`). tests/testrvaluereftype: madc now prints trait/same/user/collapse/alias/decltype/tuple lines matching g++ 13 and clang++ 18 (-std=c++17). tests/testxvaluecall: deduce/collapse/bind-w/bind-r now match. The fix: DataDefREF carries a `rvalue` boolean (true for `T&&`, false for `T&`), set at construction — one DataDefREF per (referent, kind). Program::getReferenceType's new `rvalue` parameter gates reference collapse per [dcl.ref]/6, and every reference-spelling site (template-argument keys, binding identity, class-pattern replay, the mangler) now spells references through `reference_spelling(base, rvalue)` to preserve the distinction. Trait specialization matching (unwrap_baked_trait_arg) now reads the rvalue flag from a baked reference's type. A reference-returning call's value category (argument_value_category) now inspects the return type's `is_rvalue_reference()` and marks the result as Rvalue (xvalue) or Lvalue as appropriate. The overload rankers thread argument_value_category (from B92), so they now receive Rvalue for a call returning `T&&` and rank reference-parameter binding per [dcl.init.ref]/5 and [over.ics.rank]/3.2.3. Reducers: tests/testrvaluereftype.mad and tests/testxvaluecall.mad with expected output from g++ 13 and clang++ 18.
+
+### overload resolution: an argument's value category decides reference binding (B92)
+
+When overload resolution ranks two candidates whose reference parameters differ in whether they bind rvalues ([dcl.init.ref]/5), the argument's value category now decides the winner. A non-const lvalue reference `T&` binds no rvalue; `T&&` binds no lvalue of its type; an rvalue prefers `T&&` over `const T&`; a non-const lvalue prefers `T&` over `const T&` — regardless of declaration order. Before: ranking scored argument TYPES only, so the first declared overload took every tie: `w(1)` (a prvalue) called `w(int&)` instead of `w(const int&)` (SILENT: [dcl.init.ref]/5 forbids a prvalue binding a non-const lvalue reference); `r(x)` (an lvalue) called `r(int&&)` instead of `r(const int&)` (an lvalue cannot bind rvalue-reference). tests/testrefbindcategory: madc now prints the same output as g++ 13 and clang++ 18 (-std=c++17). The fix: the free-function ranker (src/parser.cpp: rank_fn_overload_candidates), the method ranker (DataDefCLASS::findMethodOverload), and the constructor ranker (CirBuilder::select_ctor_overload) now thread an ArgValueCategory vector alongside the argument types. A reference parameter's viability in each ranker checks the argument's category against [dcl.init.ref]/5 through reference_param_binding_rank. The category reader (Program::argument_value_category) determines whether an operand is an lvalue, an rvalue, or unknown — when the tree cannot state it (e.g., a reference-returning call, since DataDefREF spells `&` and `&&` alike; or a call still bound to a function template's placeholder). An unknown argument keeps the earlier ranking (no refusal, no preference). The per-argument binding choice (reference_param_binding_rank) reads the category and the parameter's reference flavor (rvalue or lvalue, const or not), ranks the binding by copy_move_ref_binding_rank, and returns -1 when the binding is impossible ([dcl.init.ref]/5 rules). Reducer: tests/testrefbindcategory.mad with expected output from g++ 13 and clang++ 18. BUGS.md: B92 entry removed.
+
+### cir: format prints signed char and unsigned char as integers, not characters (B93)
+
+The `format`, `print`, and `println` functions now format plain `char` as a character, but `signed char`, `unsigned char`, and enums over them as integers ([format.formatter.spec]/2). Before: every 8-bit type was sent to the character formatter—unsigned char u = 65; println("{}") printed "A" instead of "65"; an enum enumerator printed as the raw byte (0x00, 0x01, 0x02). tests/testformatsignedchar: madc now prints the same output as g++ 13 and clang++ 18 (-std=c++20, std::format). The fix: CirBuilder::format_arg_bind's argument classifier (src/cir_format.cpp) now uses Program::proven_scalar_identity to distinguish char, signed char and unsigned char (they share rawtype()). plain char goes to fkChar; the other two take the integer arms. Reducer: tests/testformatsignedchar.mad with expected output from g++ 13 and clang++ 18. BUGS.md: B93 entry removed.
+
+### cir: format / print / println evaluate every argument once, in order, before any output (B99)
+
+The `format`, `print`, and `println` functions now evaluate every argument once, in order, before any output is written, binding each argument by reference for the full expression ([format.args]: std::make_format_args). Before: format / print / println translated each argument where its field was written. Arguments were evaluated out of order: `println("unused ", side(1))` never ran side(1); `println("used {}", side(2))` printed `"used "` before side(2) ran; `println("twice {0} {0}", side(3))` ran side(3) at each field. tests/testformatargonce: madc now prints the same output as g++ 13 and clang++ 18 (-std=c++20, std::format). The fix: CirBuilder::lower_format_call evaluates all arguments at the head of the statement expression into temporaries via the new format_arg_bind path. Each field reads its temporary through format_field_stmt's revised contract. Reducer: tests/testformatargonce.mad with expected output from the oracles. BUGS.md: B99 entry removed.
+
+### c2mir: a local initializer zero-fills the member after a bit-field in its unit (B83)
+
+In gen_initializer's local branch, when a bit-field member initializer ends, the cursor rel_offset moved to the bit-field's type end (the whole unit size), not the field's last-bit end. In `struct G { char c; int x : 4; char d; char e[2]; }` with `{ .c = 1, .x = 2, .e = { 3, 4 } }`, x (an int unit at offset 0, bits 8..11) advanced rel_offset to byte 4, skipping the gap fill before d (byte 2) and e (bytes 3–4). The stock c2m printed `g: 1 2 40 3 4` (d is uninitialized); gcc 13 and clang 18 print `g: 1 2 0 3 4`. madc's own lowering initialized omitted members, masking the defect. The fix: for every bit-field member (member_decl->bit_offset >= 0), rel_offset is the byte after the field's last bit: offset + (bit_offset + width + CHAR_BIT - 1) / CHAR_BIT. This one rule replaces the prior byte-wise handling, which 029a55a0f had specialized. The in-tree c2m (obj/mir/host/c2m) now prints the correct output. A generic c2mir defect, a candidate for upstream vnmakarov/mir. Reducer: third_party/mir/c-tests/new/bitfield-init-gap.c. BUGS.md: B83 entry removed.
+
+### parser: a qualified member named without an object keeps its whole type in sizeof, alignof and decltype (B78)
+
+A non-static data member named without an object, `C::t`, may appear in an unevaluated operand ([expr.prim.id]/2): sizeof, alignof and decltype read the member's whole type. resolve_class_qualified_expression's no-object arm previously pushed `TokenInt(0)` typed as the member, but `TokenInt::setDataType` accepts only an integer or complex type, so a double, pointer, class or array member was mistyped as int (sizeof(C::t) for double was 4, sizeof(C::a) for char[12] was 1, exit 0). The fix pushes a TokenMember over an unevaluated object Variable of the class, the same construction the __this arm uses for member access in derived methods. The member keeps its whole type; sizeof/alignof read extents through member_array_type; decltype now sees the correct type and alignment. tests/testqualifiedmembersizeof: madc output now matches g++ 13 and clang++ 18. BUGS.md: B78 entry removed.
+
+### templates: a void_t detection argument naming another template's member is substituted and resolved (B109)
+
+A `void_t` specialization whose detection argument names another template's member — `typename std::iterator_traits<T>::iterator_category`, libstdc++'s `typename remove_reference<_Ep>::type::pointer` in unique_ptr — now matches when that substituted type is well-formed ([temp.deduct]/8, [temp.class.spec.match]). Program::eval_void_t_detection_slot previously read each argument's spelling and required its first scope segment to be a deduced parameter, rejecting arguments that named other templates' members before any resolution. The specialization never matched: tests/testvoidtothermember printed `detect: 0 0 0`, `deleter-pointer: 0`, exit 0; g++ and clang++ print `detect: 0 1 1`, `deleter-pointer: 1`. An argument the spelling walk cannot read now takes its own token run from scan_template_argument_list + template_argument_runs, resolved by Program::resolve_template_param_default_type(run, ded, NULL, true) in the substitution's immediate context (where a member a complete class lacks is a failure). The resolved type means the argument is well-formed. BUGS.md: B109 entry removed.
+
+### templates: every deducing function template is a candidate; the best is instantiated (B113)
+
+[temp.over]/1 specifies that every function template whose deduction succeeds adds its specialization to the candidate set, and [over.match.best] picks among them; only the selected specialization's definition is instantiated. instantiate_namespace_fn_template_for_call and instantiate_member_fn_template_for_call previously instantiated the FIRST candidate that deduced, ignoring later candidates even when they were better conversions. tests/testfntemplatenearerbase called two overloads (free functions and member functions), each with tag dispatch that picks the better-fitting template: before: printed `free: 1 1` / `member: 1`, exit 0; g++ prints `free: 2 2` / `member: 2`; libstdc++'s __advance, __distance and _M_construct tag dispatches took the input-iterator overload. try_instantiate_namespace_fn_template gains deduce_only parameter (stop after deduction, before instantiate_fn_template_binding) and concrete_params_out (per argument, the spelling of a parameter that names no template parameter). New best_deduced_fn_template ranks the deduced candidates: a parameter deduction formed from the argument is the identity; a concrete parameter ranks by score_arg_to_param, then compare_derived_to_base (commit A), through compare_conversion_sequences and conversion_dominance; ties keep the most-specialized order. Both lanes with more than one candidate: deduce every candidate (nothing instantiated), try the best first, keep the rest behind it in order (fallback for a failure past deduction: substitution or missing default). New parameter_type_end (beside parameter_default_begin) is the one reader of where a parameter's type ends: it drops the declarator-id only when prior tokens already name a type (never after `::`, cv-qualifiers or elaborated keyword alone), consolidating two private copies in extract_free_signature and skipped_template_function_signature_spellings that diverged. resolve_arg_spelling_datadef: a leading `const` with no `*`/`&` suffix (`const A`) now resolves to const-qualified type; before returned NULL. BUGS.md: B113 entry removed.
+
+### cir: ++, --, -, ! on a reference to a class call the class's operators
+
+The forms ++r, --r, r++ and -r, !r on a reference variable or reference parameter to a class now call the class's operators, per [expr.type]/1 (a reference denotes its object). Before: c2mir rejected the builtin lowering with "invalid operand types" and "incompatible types in assignment to struct/union", affecting plain code and function template instances (libstdc++'s __advance for class iterators). Fix: three sites now read the operand through operand_value_type (the one owner of "operand value through a reference", per indirection.md) instead of operand->datadef(): CirBuilder::translate_expr's ++/-- class dispatch, CirBuilder::class_unary_operator_call (unary - + ! ~), and class_operator_value_result's postfix arm. References to classes denote the objects, not the indirection itself; the dereference reaches the class's operators through make_unary_object_operator_call.
+
+### overload resolution: a nearer base is the better derived-to-base conversion
+
+With C derived from B derived from A, converting C to B (by value, or binding const B&) is better than C to A; C* to B* is better than C* to A*; [over.ics.rank]/4.4. score_arg_to_param scored every derived-to-base conversion alike, so the tie fell to declaration order; tests/testnearerbaseoverload's calls printed 1 for every overload (free functions href/hptr/hval/hrev, member functions S::m/S::p), exit 0; g++ prints 2. New compare_derived_to_base (src/cir_builder.cpp, beside score_arg_to_param) decides one argument's two derived-to-base conversions: the base that itself derives from the other wins. New in src/parser.cpp: compare_conversion_sequences and conversion_dominance apply per-argument comparison in the tie branch of rank_fn_overload_candidates and DataDefCLASS::findMethodOverload, before template/plain and cv/template/partial-ordering rules respectively. Retained member templates are excluded from the per-argument comparison because their parameters are spellings, not types.
+
+### operators: a unary operator's non-member candidates (free operator*, ++, -, !)
+
+A unary operator on a class or plain-struct operand now searches for non-member operator functions through the candidate lane in [over.match.oper]/3. Program::free_unary_operator_call instantiates free operator@ templates on the operand type (binary-lane equivalent for unary arity); lower_free_unary_operator_to_call reads a TokenOperator's operand and invokes it. build_indirection's class-object handlers (the one deref builder per indirection.md) now try free_unary_operator_call("operator*") after checking for the member operator*. The cir_builder's tsubst_operator_plan now offers dependent operators to both free lanes before lowering builtin forms. Program::operator_function_operand (new admission rule) gates both lanes: a class object or a plain struct. Before: madc refused `*w` with free operator* with "cannot dereference non-pointer type". After: plain-code and member-template unary operators now match g++ and clang++, instantiating both free function templates and concrete free operators.
+
+### templates: a constructor template whose trailing parameters have defaults is a candidate (B110)
+
+Member constructor templates with trailing default parameters are now viable candidates in [over.match.viable]/2 terms: n arguments match m parameters when n == m or n < m and the rest have defaults. The candidate scan in instantiate_member_ctor_template_candidate now computes both parameter count (total) and required count (parameters without defaults), tries exact-arity candidates first, then those the call can complete with defaults. basic_string's iterator-pair constructor template, `template<class _InputIterator> basic_string(_InputIterator, _InputIterator, const _Alloc & = _Alloc())`, is now matched for 2-argument construction. Consolidated two private parameter-default scans into parameter_default_begin, the one reader of where a parameter's default argument begins in a token sequence.
+
+### templates: a dependent call has no specialization candidates (B111)
+
+A dependent call ([temp.res]) has no candidate set until instantiation, per [temp.over]/1, so no specialization is a candidate — even ones instantiated by other calls. FnTemplateDeduction gains Outcome::Deferred; instantiate_namespace_fn_template_for_call records Deferred when fn_template_deduction_deferred() holds (a type-dependent call inside a dependent parse, or dependent explicit template arguments). rank_fn_overload_candidates' filter (a specialization is a candidate only as THIS call's deduction product) therefore admits no specialization for a deferred call. Before: a deferred call left outcome NotRun, which the filter treats as "no information", so every existing specialization stayed a candidate. The fix blocks spurious candidates and allows the pattern template (kept in the deferred call) and its tsubst copy to re-resolve on the concrete instance types. B111 (std::vector from an iterator pair) is now fixed by 87164680f (operator re-resolution on the instance) plus this commit; together they enable one program to construct vectors from two iterator types. tests/testvectoriterpairctor covers vector and string iterator-pair constructors and reverse-iterator ranges.
+
+### tsubst: an operator on a dependent operand re-resolves on the instance's types
+
+An operator with a type-dependent operand is resolved at template instantiation on the operand's substituted type ([temp.dep.res]). In a member function template, `b != e`, `*b` and `++b` on a parameter of type I are builtin operators when I is a pointer, but call class operators when I is an iterator class. The pattern captures these as builtin form (with a placeholder-typed operand); the instance's substitution gives the operand a concrete class type, so copy_cir_subtree re-resolves the operator node through translate_expr / build_indirection with the instance's variable. An iterator with a user copy constructor is passed by the Itanium invisible-reference ABI (the address is already in the parameter), so binding it to `const I &` reads the address holding parameter directly through copied_object_address. Before: madc kept the builtin form in every instance ("invalid types of comparison operands", "invalid type argument of unary *", c2mir "tsubst body calls un-emittable symbol" for iterator pack calls). After: member functions with pointer and iterator ranges now match g++ and clang++. tests/testtsubstdependentoperator covers `!=`, `*` and `++` on pointers and iterator classes (with and without user copy constructors).
+
+### parser: *r on a reference variable to a class calls its operator*
+
+A dereference `*r` on a reference variable to a class object now calls the class's operator*([over.match.oper]), as the reference denotes the object per [expr.type]/1. madc previously dereferenced the reference's pointer representation and applied a second builtin `*` to the resulting struct, which c2mir rejected with "invalid type argument of unary *". The fix is in build_indirection's class-object handler (the only dereference builder, per indirection.md): after checking for named-object and array cases, a new test detects a reference-variable operand to a class and invokes make_unary_object_operator_call to dispatch to operator* — reusing the owner the named-object arm already uses for `*obj`. tests/testderefclassref covers const-reference and reference-lvalue receivers.
+
+### tsubst: convert by-value class parameters when a pattern argument lacked a formal
+
+A parse-once tsubst copy now copy-initializes a by-value class parameter when the pattern lowered its argument with no formal to convert to (the callee was a function-template placeholder). Derived objects are sliced to their base, ints go through converting constructors, non-trivial copy constructors are invoked. Member-template bodies calling un-yet-instantiated function templates previously failed in c2mir with "incompatible argument type for struct/union type parameter" or "incompatible argument type for pointer type parameter". Pointer-range construction `std::vector<int> v(a, a + 3)` was refused (c2mir `stl_vector.h:711:23: incompatible argument type for struct/union type parameter`) and now works. Iterator-pair construction `std::vector<int> v(w.begin(), w.end())` remains open as B111 (the body's `emplace_back(*__first)` where `operator*` is a dependent class call). cir_node gains tsubst_arg_uncoerced marker (set by mark_pattern_arg_uncoerced when a call argument is lowered with no formal). copied_call_arg_for_formal accepts the substituted arg_type and invokes copied_class_value_arg to perform the conversion, re-running the same rule concrete calls use (object_arg_value over a reference-variable stand-in bound to the copied value). Forest container format v51 → v52 for the flag. tests/testtsubstbyvalueclassarg covers slicing, converting constructors, and pointer-range std::vector construction.
+
+### templates: function templates accept implicit conversions in non-deduced parameters
+
+A function template's concrete (non-deduced) class parameter now accepts an implicit conversion from the call's argument through the class's converting constructor, per [temp.deduct.call]/4. `fg(T, N)` with `N(int)` constructor, called as `fg(1, 3)`, now instantiates `fg<int>` with `3` converted to `N(3)`. madc's deduction refused a concrete parameter unless the argument was already that type, so the call failed with "undefined import" unless another call had already instantiated that specialization. instantiate_namespace_fn_template_for_call now makes two passes: STRICT over all candidates, then — only when none matched — RELAXED, where concrete class parameters accept converting arguments. This mirrors the member-template instantiation lane's rule. tests/testtemplatenondeducedconv covers direct calls, calls in template bodies, and cases where instantiation happens through multiple call paths.
+
+### templates: instantiated function template specializations are candidates only for their originating call (B112)
+
+A specialization instantiated by one call is no longer a candidate for another call via the global overload set. [temp.over]/1 specifies a call's candidate set as the non-template functions plus, per function template, the specialization that THIS call's template-argument deduction produced. madc instantiated every called template and registered its specialization under the template's name as an ordinary overload, so a later call could bind a specialization from an earlier instantiation. `TokenCallFunc` carries `FnTemplateDeduction` (the outcome of instantiation for that call: NotRun, Failed, or Deduced with the specialization); `find_namespace_function_overload` ranks only the specialization recorded on the call. The fix covers calls in template bodies too: CirBuilder::resolve_copied_dependent_call deduces before ranking the tsubst re-resolution. tests/testsfinaedefaultmember restores `only_long(1L)` at the site that was removed to work around B112; both calls now rank correctly. Calls like `std::max(x, 0)` with `long x` no longer bind `max<long>` (instantiated elsewhere); they are now refused with a diagnostic quality issue filed as B114. Filed during this fix: B113 (SILENT: of two function templates that both deduce, the first declared is called, not the better conversion), B114 (a failed deduction is reported as an undefined MIR import), B115 (a function template over a `const T&...` pack is refused).
+
+### templates: default template argument substitution failure removes candidates (B96)
+
+In a function template's default template argument, a member that a complete class lacks, a non-dependent alias argument that fails to fold (`std::_RequireInputIter`, `std::enable_if_t`), and `typename std::enable_if<false>::type` each remove the candidate, as [temp.deduct]/8 requires. `std::vector<int> v(40, 5)` now takes the fill constructor; its iterator-pair constructor template is invalid because `std::_RequireInputIter<int>` substitutes to a missing type.
+
+### diagnostics: the diagnostic caret underlines the token as gcc does
+
+A diagnostic's caret line now underlines the cited token as gcc does (`^` under its first character, `~` under the rest of the token's screen columns), including the REPL's diagnostics. The `Diagnostic` record carries the token's end (end_line and end_column from `madc_token_end`); positional recorders fill it; the echo renderer draws `^` at the start byte and `~` for each further screen column through the token's end on the line. A token that runs onto the next line is underlined to the line's end (gcc's first-line convention; madc echoes one line).
+
+### diagnostics: parse errors raised on dying tokens record their captured position
+
+A parse error raised on a token that does not survive the unwind is recorded with the position captured when it was raised, instead of reading the dead token from stack memory. On gcc's g++.dg/cpp0x/implicit7.C the raising token was a stack local of a frame the unwind had left; the former implementation kept a `TokenBase *` and dereferenced it after the unwind, reading stack memory below the stack pointer (found by valgrind: 5 "Invalid read" errors in `record_throw_diagnostic` and `diagnostic_file_for` before the fix).
+
+### diagnostics: token columns cite the start in gcc's screen columns (D26 part 2)
+
+A token's column is now its START (the lexer records it when the token's first byte is read), with an END position beside it; the header prints gcc's screen column (tabs to 8-column stops, code-point widths where a UTF-8 character is one column and an East Asian wide character two). Diagnostic header prints the START as gcc's screen column; highlighter, code graph and LSP diagnostic range read the token's START (in bytes); the stored unit stays bytes. The reducer testdiagstartcol shows lines 1-2 with a tab; gcc 13 cites 2:19 with the caret under foo's f, now madc does too (before: 2:14, foo's last byte, a byte column). For undeclared_name gcc cites 2:12 and madc now 2:12 (was 2:26). Forest format 51; the `.madh` compiler_hash signature changed. Gates: four fixtures (testcompilerdata, testprojecterrline, testmadcide_cli, testmadcide) moved to token start; test_repl_session's `%type nope + 1` check moved to `:1:7:`; test_diag_caret added a TEST_CASE with screen-column cases. Packed release suite (forest format 51) 1851 passed, 0 failed, 0 timed out, 9 skipped. Static gates green. An A/B of tests/ JIT output showed only anchor differences. Remaining: the underline (^~~).
+
+### packaging: Homebrew formula, staging script, runpath configuration (release step 9, Linux)
+
+The formula targets Linux and macOS; the Linux half is implemented and validated. scripts/stage_install.sh owns the installation layout (62 entries, identical tree to the old stage()), called by both package_release.sh and the formula; MADC_RUNPATH_LIBDIR is configured at build time so a compiled program's runpath names the stable lib directory instead of the running madc's versioned keg (which brew upgrade removes); packaging/homebrew/madc.rb.in is the formula template, rendered by scripts/brew_formula.sh for a tarball's URL and checksum; a build runs autoreconf -i, ./configure --enable-madcdat=no, make -C src, make -C src release (madcide compiled by the release compiler, shipped plugins built), then stage_install.sh into the Cellar keg; scripts/brew_lane.sh builds from the working tree in a local tap, runs brew test, checks which libmadc.so.0 the loader resolves when a program the installed madc compiles runs unmasked (the control, from the keg) and with the keg's lib/ masked (from HOMEBREW_PREFIX/lib), then runs the full suite. Measured (Ubuntu 24.04, Homebrew 7.0.7): brew install --build-from-source 4 minutes, brew test passed, a bin/madc program's RUNPATH is $ORIGIN/../lib:/workspace/madc/bin/../lib:/usr/local/lib (with default MADC_RUNPATH_LIBDIR), a program compiled by the installed madc whose RUNPATH names /home/linuxbrew/.linuxbrew/lib (from Homebrew) resolves libmadc.so.0 from the keg unmasked or from HOMEBREW_PREFIX/lib with the keg's lib/ masked, packed suite against installed madc 1851 passed 0 failed 0 timed out 9 skipped (tree baseline), keg carries lib/libmadcgit.so linked against Homebrew's libgit2 1.9. Static gates all green; Tier 2 all green at baseline. macOS is designed (uses three pinned build inputs as formula resources; madcide in step 4). Owner-gated: tap publication, bottle CI, release URL and checksum.
+
+### scripts: test runner limits core dumps to 1 byte, preventing piped handler hangs
+
+Tests that crash leave no core file (cores are never a test product). On WSL the kernel's core_pattern pipes to /wsl-capture-crash; the kernel ignores RLIMIT_CORE except for the 1-byte limit (the "skip this dump" signal), so each crash streams the whole process to the pipe destination, seconds apiece. testmadcide_plugin_host's deliberately crashing children: dev binary took 10-24 s, release binary took about 6 s and timed out (10 s cap) in about 2 of 10 runs. scripts/run_tests.sh now sets prlimit --core=1:1 once (inherited by every test process) if the platform supports prlimit and core_pattern has a pipe. After: testmadcide_plugin_host passes 10/10 runs (release) and 5/5 (dev), each test process with 1 byte soft and hard core limit. No test in tests/ depends on a core file. Tier 2 (scripts/fast_lanes.sh) passes all six lanes at their recorded baselines.
+
+### cir_freeze: restore const_param flag from frozen forest paramrec records
+
+Materialization of function and method parameters from a frozen forest now reads the `PF_CONST_PARAM` flag from `paramrec` records and restores it to `FuncDef::const_params`, which copy constructor selection reads to match `const T&` parameter signatures. Without restoration, implicit memberwise copy constructors on forest-bound classes cannot call member copy constructors that require const references, falling back to bit-copy (which causes double-free with std::string members). Frozen forest format unchanged; flag was recorded at freeze time but not read back on three rebuild arms. Test: forest_bind_gate constcopy case (FbgCounted's copy ctor invoked by Holder's implicit copy); packed suite 1850 passed, 0 failed, 9 skipped, 1 timeout (unrelated).
+
+### madcide: the REPL pane on the plugin points — the first builtin plugin (plan §41.11a step 8)
+
+`madcide_repl.inc` is madcide's first `builtin` plugin, included at the end of `madcide_core.inc`: `repl_activate(w)` registers its ten commands, its console view `repl` (shape `vsCONSOLE`, key `repl.pane`), and handlers of session events `seOPEN`, `seSTOP`, `seCLOSE` through the plugin points (`plugin_command`, `plugin_view_shaped`, `plugin_event`). The core's ten command codes, `viewREPL` and their table rows are gone. The console view's state lives on the bag under `repl.pane` as `{transcript, input, prompt, editable}` and the pane's view kind and Run ▸ Language…'s code on a world entity `repl-pane`. Keyboard routing uses `consolefocus` (the console view's focus key) instead of `replfocus`. The field's document owns its own caret, mark and selection (`field_document`), so editing the input runs on the field's state (`field_enter` / `field_leave`), and commands like `replolder` at the input's first line run through `ide_api_run`. A world made outside `IdeSession::open` runs `builtins_activate(w, es)` before profiles load, so profiles and menus can name the pane's commands; world-less readers (`parse_keys`, `parse_layout`) know only built-in names. Gate: `check-madcide-command-registry.sh` direction 9 (no madcide file names a builtin module's function), `tests/testmadcide_repl`, `tests/testmadcide_chthonia`, `tests/gui/madcide_repl`, `tests/testmadcide_layout`, `tests/testmadcide_lsp`, `tests/testmadcide_plugin_library`.
+
+### madcide: no enumerator declared twice — plugin_verb and ide_pmode renamed
+
+The plugin_verb enum's pvNONE and pvEVENT collided with provenance's; ide_pmode's lmNONE collided with lsp_method's. Both enums renamed (plv* and pn* prefixes). Rule 7 added to check-madcide-enums.sh to enforce one declaration per enumerator across madcide's sources (C11 6.7.2.2, [dcl.enum]); B104 filed for madc's acceptance of duplicate enumerator names where gcc, g++ and clang refuse them.
+
+### madcide: the host transport — a plugin's code in a forked child (plan §41.11a step 7)
+
+A manifest's `"transport": "host"` (refused without `"code"`, or naming another transport) or `settings.json`'s `"plugins.isolate": true` activates the plugin in a child process. `plugin_host_start` forks it, writes its start line, and serves its activation synchronously (`plugin_host_converse`): each registration becomes a hosted row (transport `host`, handler id `hid`), so menus and key profiles still name the plugin's commands; a refusal takes the rows back. The child (`plugin_child`) opens the plugin's code and activates it with `madcide_seat_api`, whose slots are envelope requests. `plugin_host_task` serves the child's connection at `tierEDITOR`; the dispatcher and `publish_event` send a hosted row's invocation through `conn_send`. A line that is not the envelope shows on madcide's stderr as the plugin's own output. When the child ends the status line says so and a new child starts, re-binding the host's own rows, at most three times a session; then its commands say the plugin is not running. On Windows a host plugin runs in madcide's process, and the status line says why. The plugin envelope (`{"plugin": <verb>, …}`, `plugin_verb`) is G6 for every seat client (madcide_seat.inc hands it to `plugin_seat_request` under the client's tier: `run` at the command's tier, `command_id` and `get` an observer's, `set` and `show` an editor's). Gate: `tests/testmadcide_plugin_host` (manifest refusals, a command in another process, nested run, event, crash restart, stop after fourth end, chthonia under `plugins.isolate`; skipped on Windows), `tests/testmadcide_serve_tiers` (the envelope's `get` and `set` by tier).
+
+### madc: fork_uri, conn_send, conn_cancel — fork child and shared channels (plan §41.11a step 7, engine)
+
+The `madc::fork_uri(entry)` verb returns a URI (`madcfork://<address>`) that a `madc::channel` opens to spawn a child process running the function `entry` of the running program. The child's stdin and stdout become the channel (what it reads is what the parent writes, what it writes is what the parent reads), and its stderr is folded into the channel as a single stream. The child inherits the program's code and data at the fork; writes to data stay the child's own (the parent's globals are unchanged). The child runs until entry returns, at which point the channel reads as ended (readline answers false). A child that crashes — or is cancelled — also ends the channel this way. Refused on Windows (no fork): the channel is not ok(). `madc::conn_send(id, line)` writes one line to the ONE shared channel `id` (registered via `channel::share()`), answering true on success or false if the channel left or the write failed. `madc::conn_cancel(id)` cancels a shared channel's source (a child process: SIGTERM; a socket: shutdown), so a task parked in its readline wakes to the end — how a madcide session stops a plugin host. Thread contract: the channel is used only from the opener's thread; the child is its own process. This is the engine half of the plugin host transport; the IDE uses it to spawn and communicate with madcide plugins compiled in-process (step 5) or loaded from a library (step 4). Gate: `tests/testfork_channel` (all six pins: child runs entry, inherits data, conn_send to one channel, conn_cancel ends stuck child, write-side close ends child, URI to no function refused; Windows form checks no fork and no child reply).
+
+### madcide: chthonia's Variables view (plan §41.11a step 6)
+
+The chthonia plugin's code adds a Variables view: its activation registers a command and view through the plugin API (version 2), subscribes to reTAKEN, reRAN, reBINDINGS and reSTOPPED events, and requests bindings through replbindings. Each row formats as one text line: the binding's name, type and value (when nonempty). A binding from the program's file carries navigation to its definition; bindings from entries show name, type and value but carry no file or line, so a row click goes nowhere. `chthonia.layout` gains a right sidebar for the view and `chthonia.menu` adds View ▸ Variables. The plugin ships as source (`plugins/chthonia/chthonia.mad`) and a prebuilt library per platform (Linux .so, Windows .dll via wine; macOS carries it in the tarball when it carries madcide, step 9). `scripts/build_shipped_plugins.sh` builds every shipped plugin's code with the packaged madcide, and `scripts/package_install_gate.sh` requires the built library. `scripts/check-madcide-command-registry.sh` validates each bundle's menu and keys against its own code's contributed commands and madcide's built-in commands. Gate: `tests/testmadcide_chthonia` pins 8-9 (the source and library forms activate; bindings appear after reBINDINGS events), `tests/gui/madcide_chthonia` (the Run button in the window), `tests/testmadcide_chthonia.win64_expect` (under wine, no backend yet).
+
+### madcide: session close closes its plugins' code
+
+The session's close now frees every active plugin's code loaded or compiled at activation. IdeSession::close() reads the world's active rows before the world closes, then calls plugins_close to run plugin_code_close on each (the right transport — library, source, or built-in). On Windows this allows plugin DLLs to be removed after the run (Windows refuses to remove a loaded library). Test: testmadcide_plugin_library pin 5 verifies the library is freed after session close by attempting php::unlink(hello.dll) and expecting success (library-released=1) on Linux, darwin and wine64.
+
+### lexer: TokenProgram::is removed — files released after tokenize
+
+The unused TokenProgram::is member (assigned but never read) is removed, freeing source files after tokenization. On Windows this allows code_open'd or refused sources to be removed immediately after compilation, fixing lock-timeout issues where the main file was held open by madcide's source plugins. Oracle: g++ 13 and clang++ 18 close TU files after reading; madc now matches. Gate: tests/testcode_open pin 5.
+
+### TypeSpeller: spell template instantiations as their source template-ids (B97)
+
+When a template instantiation has no alias name, %type and the show's type word now spell the template-id as g++ and clang++ write it (template name, source-argument types, trailing defaults omitted) instead of the canonical spelling (all defaults expanded). New helpers template_word and argument_word compute the source template-id from the canonical spelling by looking up template defaults and trimming matches. Test: eleven cases covering std::vector, std::map, std::list, std::string, and user-defined templates with and without default arguments.
+
+### cir_dump: var_dump and print_r name template instantiations as show does
+
+Aggregate naming centralizes in TypeSpeller::aggregate_name, a new owner that var_dump and print_r call through dump_aggregate_name. Template instantiations display as their source template-id (Box<int>); other aggregates display their tag name. Removes direct sdd->name access from var_dump and print_r output. Test: testphpdump_template covers user-defined and instantiated templates; testphpdumpselfref shows names now match the template-id instead of the internal tag.
+
+### cir: atomic builtins use append_i64 for i64 spelling consistency
+
+The ull_type lambda in lower_atomic_builtin() now calls the centralized append_i64() helper to build the unsigned long long type specifier, ensuring consistent i64 spelling across CIR codegen. This gates i64 spelling via check-i64-spec-spelling.sh (LLP64 parity: c2mir models platform long as 32-bit on win64, so lone N_LONG truncates 64-bit values there).
+
+### madc: code_open, code_symbol, code_close — source plugins in-process (plan §41.11a step 5)
+
+Three madc:: verbs compile and link source into the running process for madcide source-form plugins. code_open(out_diags, path, include_dirs) compiles source (with -I directories respected), keeps it linked into the process (references bind the shared engine), runs its dynamic initializers once, and returns the handle (0 on refusal, diagnostics as build_native's). code_symbol(code, name) retrieves a function or object address (0 if undefined). code_close(code) frees the code. Source validation is extracted to child_source_setup() and shared with build_native. CirJitSession::run_global_init() invokes a module's dynamic initialization independently, reused by both the call-only path (libmadc) and code_open. Thread contract: runtime-eval confinement — a code handle is used only from the thread that opened it; its code runs on the caller's thread. Note: file-scope destructors do not run at close or exit (BUGS.md B102). Gate: tests/testcode_open.
+
+### madcide: plugin source transport — plugins compile in-process from source (plan §41.11a step 5)
+
+The `source` transport complements the `library` transport (step 4): a plugin's madc source code compiles into madcide's process when activated, providing a fallback when no library is available or when a library is stale. The plugin_transport enum records how each active plugin's code reached the process (ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST). New madcide owners: plugin_include_dirs (madcide's include directory for compiles), plugin_code_symbol and plugin_code_close (dispatch through transport to the right verb), plugin_open_library and plugin_open_source (load or compile, setting why on refusal), plugin_code_check (find entries and check API version for both forms). At activation, a library loads first; when there is none madcide accepts (missing, wrong API, unloadable), the source compiles instead. Measured (2026-10-01, AOT release engine): library load ~0.07 ms, first source compile ~16 ms (warm JIT), further compiles ~7-8 ms; defaults: library first, source when there is none madcide accepts, activation at load. Tests: testmadcide_plugin_library exercises both transports (source-only plugin, stale library → fixed source replacement, per-plugin transport recording); testcode_open covers code_open file reaching, symbol resolution, initializers, closing, and refusals. Gate: tests/testcode_open, tests/testmadcide_plugin_library (platform-specific dylib/dll skips on darwin pending D5).
+
+### darwin: libmadc-0.dylib, and runtime-needing images load it (D5; plan §41.11a step 4, part 5)
+
+The hosted macOS build links libmadc-0.dylib (the runtime library, per architecture, installed name @rpath/libmadc-0.dylib), and a runtime-needing image or library loads it as the first LC_LOAD_DYLIB. The Mach-O writer now emits LC_RPATH directives following the target platform, not the build host: @executable_path/../lib when the load is @rpath/. A fix found on the way: the forest probe reads the main executable's image through `_dyld_get_image_header(0)`, since a dylib cannot name `_mh_execute_header`. The five darwin test skips waiting on D5 are removed, so testbuild_shared, testmadcide_plugin_library, testbuildnative, testparserun, and testmadcide now run in the darwin lane. Gate: `scripts/macho_dylib_gate.sh` verifies on both arm64 and x86-64 that the dylib's install name is correct, runtime-needing images carry the right LC_RPATHs and load the runtime, and 7 of 7 madc-runtime symbol binds appear in its export trie (the negative control: runtime-free libraries carry no libmadc load and no LC_RPATH).
+
+### mir-macho: madc -shared emits an MH_DYLIB on macOS (plan §41.11a step 4, part 4)
+
+The Mach-O writer now emits a properly formatted dylib for `madc -shared` output, with MH_DYLIB header, LC_ID_DYLIB load command naming the install path as @rpath/<basename>, and an export trie of every defined named symbol (a compressed prefix tree that dyld walks correctly). Gate: `scripts/macho_dylib_gate.sh` in `make -C src machogate` verifies both arm64 and x86-64 on the container: the header and load commands, the export trie structure holding all globals and no locals (so ld64.lld walks it unambiguously), and a program linked against the dylib through the trie. A library using the value runtime waits for D5 (libmadc-0.dylib) before it can run.
+
+Found on the way and fixed in its own commit: `macho_obj_gate.sh` had been red since `--std=madc` became the default for C files; its C fixtures now compile with `--std=c17` to retain their C identities for linking and symbol lookup in legs [4] and [6] (mixed-TU linking and reader merges). Both architectures (arm64, x86_64) now pass.
+
+### scripts: macho_obj_gate compiles its C fixtures --std=c17
+
+The macho_obj_gate script now passes `--std=c17` when compiling its C fixture files, ensuring free functions retain their C identities for linking and symbol lookup in legs [4] and [6] (mixed-TU linking and reader merges). Both architectures (arm64, x86_64) now pass.
+
+### mir-pe, madcide: madc -shared emits a Windows DLL, so plugin libraries load on Windows (plan §41.11a step 4, part 3)
+
+The PE writer now emits a proper DLL for `madc -shared` output (`MIR_object_exec_params.shared_p`), setting the `IMAGE_FILE_DLL` characteristic, image base `0x180000000` (relocated by base relocations), an export directory of every defined named non-local symbol (sorted by name, the ELF `-shared` dynamic-symbol rule), and a `pex_dll_stub` entry point that applies import-addend fixups at `DLL_PROCESS_ATTACH`, reads argc/argv/envp through UCRT slots and runs the init array. A runtime-needing DLL imports the value runtime from `libmadc-0.dll` via cir's `cir_windows_import_dlls` logic. Two defects fixed on the way (each in its own commit): the Windows build had been red since 2026-09-28 (an unused interrupt guard in `madc_session_client.cpp`, which had no backend process yet per plan §41.9a), and the plugin registry kept handlers and library handles in `long` (32 bits on Windows LLP64), causing symbol lookups to fail through truncated pointers; handlers and addresses are now `int64_t` in the registration verbs, and B101 is filed (madc accepts casts from pointer to narrower integer where gcc and clang refuse). Tests: `testbuild_shared` and `testmadcide_plugin_library` pass under wine with JIT, exe and obj; the genuine Windows lane runs them at the seam (its channel was down on 2026-10-01).
+
+### madcide: plugin handlers and library handles at full width
+
+Plugin command and event handlers are now stored as int64_t in the registry verbs plugin_command() and plugin_event(), and plugin_activate() holds library handles and symbol addresses as int64_t. This prevents pointer truncation on Windows (LLP64, where long is 32 bits) that caused plugin library symbol lookups to fail under wine: the handler cast to int64_t preserves the full pointer value when stored. B101 filed: madc accepts casts from pointer to narrower integer (like `(int)p`, `(long)p` on Windows) where gcc and clang refuse them.
+
+### session: the Windows build's interrupt guard has an explicit body
+
+The HostIgnoresInterrupt RAII guard struct on Windows now defines an explicit empty constructor body (no backend process yet per plan §41.9a), preventing mingw g++ -Wall -Werror from flagging the guard instances created in BackendSession::submit() and BackendSession::offer() as unused variables.
+
+### madcide, ui: one action-event builder, and the two gates step 3e turned red
+
+The synthesized action event (a key press, a post, a choice list row, a client's paste answer) now goes through one builder: `action_event(e, code, arg)` in madcide_core.inc. Every call site that created the event inline—`IdeSession::post()`, `IdeSession::command()`, `choice_action()`, and `client_service()` (the paste handler)—now calls `action_event()` and then `apply_ide_event()`. The client's paste answer no longer calls `S.command()` directly; it builds the event and lets `apply_ide_event()` dispatch it. Gate: `scripts/check-madcide-single-owners.sh` (one action-event builder across tools/madcide, plus negative control for blind-marker detection). The ui_web host header in `include/madc/ns_ui_web` now declares `int64_t n` for the clipboard-size variable instead of bare `long`, so the gate `scripts/check-ns-header-widths.sh` passes (namespace headers contain no bare long).
+
+### madc: the shared build kind, build include directories and the library verbs (plan §41.11a step 4, part 1)
+
+The build kinds `parse_build`, `build_native`, and `project_build` now support "shared" as a kind (a shared object, `-shared`) alongside "exe" (PIE executable) and "obj" (relocatable object). The refusal text for unknown kinds is consolidated into `native_kind_of()` in one owner, so all three lanes report the same message; previously each spelled its own copy. `build_native` gains an optional `include_dirs` parameter (an array of text, the CLI's `-I` directories in order), so a TU that includes a header outside its own directory builds successfully when that directory is given. Four `madc::` library verbs open and work with shared libraries built by madc or any C compiler: `library_open(path, why)` opens a library with every reference bound at open (RTLD_NOW, refusing at load rather than at first call when a name cannot bind), `library_symbol(lib, name)` retrieves a function's address (0 if not defined), `library_close(lib)` closes a library, and `library_suffix()` returns the target's shared-library suffix (".so", ".dylib", ".dll"). The dl seam (`madcdl_open_local`) gains a `bind_now` parameter so plugin libraries can refuse unresolvable references at activation rather than at runtime. Gate: `tests/testbuild_shared` (shared kind, -I directories, and the four verbs; skipped on darwin and Windows until the Mach-O and PE writers emit dylib and dll).
+
+### madcide: plugin libraries — the API table, activation, --build-plugin (plan §41.11a step 4, part 2)
+
+`<madcide/plugin_api>` (shipped in the packages at `share/madcide/include/madcide/`) holds the plugin API's version macro `MADCIDE_PLUGIN_API` and the handler contracts `cmd_handler` / `event_handler` (registration and invocation types, moved from `madcide_plugins.inc`). The immutable `ide_api` table calls into the world's registry and the session: `command(w, name, title, handler)` registers a command and returns its code, `view(w, name, title, key, show)` registers a contributed view and returns its kind, and `event(w, kind, handler)` subscribes a handler to an event kind. A plugin calls those at activation to register its contributions, which then behave like built-in ones: a contributed command's code reaches its handler through the dispatcher with the argument, a contributed view's rows appear in the pane, and handlers run on the session's thread between events. `<madcide/plugin>` defines `madcide_plugin_api` (the library's version entry) and declares `madcide_plugin_activate(const ide_api *, long w)`, the activation a plugin library must define; the compiler rejects definitions of another shape when the plugin is built. A manifest's `"api"` is checked when the manifest is read; at activation, the library's recorded version (`madcide_plugin_api()`) is checked against the running madcide's `MADCIDE_PLUGIN_API`. `<madcide/plugin>` adds the `ide::` namespace with helper functions and use-time calls: `ide::bind(api)` caches the table, `ide::command_id(w, name)` interns a name, and `ide::run(w, es, doc, code, arg)`, `ide::get/set(w, scope, key, value)` are the runtime operations a handler uses. `ide::set` has `ui::set`'s overloads (`const char *`, integer, bool, real) beside `const var &`, so a handler passing text uses the `const char *` overload. A manifest's `"code"` field names the plugin's madc source file in its directory. `madcide --build-plugin DIR` builds the source into its library (`DIR/name.so` on Linux) in-process with madcide's headers on the include path, printing the build's rows on refusal (exit 1 on error, 0 when built). At session open, after the profile is selected and before any data loads, `plugins_activate` activates the selected bundle's code (if its manifest has `"code"`) and then each plugin `settings.json`'s `"plugins"` list names. A plugin that defines no `madcide_plugin_activate`, whose library's version does not match, or whose activation returns false is refused at load: what it registered is taken back, the library is closed, and the refusal goes to the status line, and the session opens without it. A missing library is refused with the reason and the command to build it (`madcide --build-plugin`). Gate: `tests/testmadcide_plugin_library` (builds, activation from `settings.json`, a handler running another command through the API table, activation once per world, the four refusals), `testmadcide_cli` (`--build-plugin` argument parsing). Found on the way: B100 (a `const var &` parameter refuses a text prvalue), filed.
+
+### madcide: Emacs's region, kill-ring and Meta keys (emacs.keys)
+
+The engine spells Meta as `alt+` and C-SPC as `ctrl+space` (plan §41.11a step 3e, slice 2), so the emacs.keys profile now binds all of Emacs's region and Meta commands. C-SPC sets the mark, C-w kills the region, M-w copies it, C-y yanks it back, and C-x h selects all the buffer. M-v, M-f, M-b, M-< and M-> scroll and move by word or buffer end, and M-g g goes to a line. A terminal that sends Meta as an ESC prefix delivers esc and then the key—which the profile leaves unbound, so esc keeps closing panes and prompts, while window and browser targets send Meta directly. Gate: tests/testmadcide_emacs_keys.mad (every Emacs command is bound to its canonical key, no "(unbound)" entries).
+
+### madcide: Thonny's and VS Code's key styles, chthonia opens with Thonny's (plan §41.11a step 3e, slice 4)
+
+Two new `.keys` profiles: `thonny.keys` (Thonny's key bindings with `primary` for Ctrl/Cmd pairs and Tk's word/end motions) and `vscode.keys` (VS Code's Linux and macOS sheets; F5 and Ctrl+F5 both run until the debugger). `chthonia.plugin` now loads Thonny's keys as its default instead of Pico's. The six styles (JOE, Vim, Emacs, Pico, Thonny, VS Code) are now listed by their display names in Tools ▸ Key bindings… and the choice persists in settings.json per bundle. `chthonia.menu` gains Edit rows for Cut, Copy, Paste, Select all and Go to line. Each profile's header lists its missing commands, not invented: File ▸ New, Close, Close all, Save All; Edit ▸ Replace, Find previous, Toggle comment, Auto-complete; Run ▸ Interrupt and Send EOF as own commands, debugger (Phase 7); View ▸ font size, full screen; and (VS Code only) Move line, Insert line above/below, Go to Definition, next/previous problem, Command Palette, and debugger steps. testmadcide_select now loads its key styles (Thonny's, JOE's) explicitly with `load_profile()` instead of passing a bundle name to `IdeSession::open`, so each test runs its intended key profile. Gate: `testmadcide_chthonia` section 7 (six styles listed with Thonny current; choosing VS Code rebinds and persists), `testmadcide_select` (Thonny and JOE behaviour on identical keys), `tests/gui/madcide_clipboard` (Thonny's Ctrl+A, Ctrl+C, Ctrl+End, Ctrl+V from the page through the platform clipboard).
+
+### madcide, editor: selection and the clipboard commands (plan §41.11a step 3e, slice 3b)
+
+Shift with a motion extends a GUI selection through the single selection_range rule in the shared editor core; typing, Backspace, Delete, Enter and Paste replace a selection made this way (or by Select all or dragging), while a motion without Shift drops it. A block made with the block keys (JOE's `^K B` / `^K K`) keeps JOE's separate rules. Cut, Copy, Paste and Select all are IDE commands (`cmdCUT`, `cmdCOPY`, `cmdPASTE`, `cmdSELECTALL`) dispatched through the consolidated cut and copy rules (cut_selection, copy_selection in the shared core). The session keeps its own clipboard copy in the es `clip` slot. For targets reaching a platform clipboard (GTK4, Cocoa, Win32), a Copy command parks a `clipset` request and a Paste command parks a `paste` request; the client answers the paste with the platform's text. Gate: testmadcide_select verifies Thonny and VS Code behaviour on identical keys; check-one-selection-rule.sh (fulltest) prevents copies of the selection and cut rules.
+
+### Keys, UI: Shift reaches a binding, and the platform clipboard (plan §41.11a step 3e, slice 3a)
+
+Shift on a bound motion reaches that binding with Shift still held, allowing applications to extend a selection by that motion. Action events now carry the key_mod bits held on their last key. The key resolver's fallback order is: the key as pressed, without Shift (if held), then without any modifier. The platform clipboard through ui::clipboard_set/get reaches GdkClipboard (GTK4), NSPasteboard (Cocoa), or CF_UNICODETEXT (Win32); a read answers with LF line ends. Terminal and browser page targets return false and fall back to the application's own clipboard copy.
+
+### Keys: modifiers on every key (plan §41.11a step 3e, slice 2)
+
+Shift, Alt, Ctrl and Cmd now combine with any key. A key carries its modifiers as ui::key_mod bits in tui_keyev, spelled canonically: "ctrl+shift+s", "ctrl+f2", "shift+right", "alt+f4", "cmd+s", "ctrl+plus"; a plain Ctrl+letter stays "^s". A modified key nothing binds reads as its unmodified form (Shift+Right is right). Printables under Ctrl, Alt or Cmd never type. The terminal decodes xterm's modified sequences (cursor keys, function keys, CSI u, CSI Z, modifyOtherKeys, NUL for Ctrl+Space); the page spells Ctrl, Shift and Alt. Named out: chords the terminal cannot distinguish (Ctrl+Shift+S, Ctrl+digit, Ctrl+plus/minus) are GUI-only; Cmd with a printable stays the browser's (Cmd+C / Cmd+V are its clipboard) until slice 3; `primary` resolves on the engine's platform, so a browser on a Mac driving an engine on Linux reads `primary` as Ctrl. Gate: test_keys (spelling round-trip, primary resolution), test_tui_model (xterm decoding), test_web_model (page input, modified key resolution).
+
+### madcide's key bindings selection and persistence (plan §41.11a step 3e, slice 1)
+
+Tools ▸ Key bindings… lists the key profiles by their display names, marks the current one, and accepts a choice. The chosen profile rebinds immediately and is kept per bundle in settings.json, so reopening madcide or chthonia restores that bundle's keys while leaving other bundles unchanged. Every .keys file declares its display name with `@title NAME`; the one reader is the binding parser (which skips the directive during load). A choice list mechanism (`choice_show`, `choice_action`, `cmdCHOICE`) serves both this step and the language selector from step 3b. `dir_ensure` moves from madcide_discover.inc to madcide_plugins.inc as the one owner for creating configuration and session-advertisement directories. The writer `user_settings_save` commits each bundle's choice to disk, sitting beside the existing `user_settings_load` reader. Gate: testmadcide_chthonia section 7 (choice list shown with profiles listed by display name and current marked, choosing emacs rebinds and persists to settings.json, reopening reads it back, default keeps joe). Existing profiles and all command registry validation remain unchanged.
+
+### madcide's replbindings command and reBINDINGS event (plan §41.11a step 3d)
+
+The REPL pane publishes the session's bindings to the plugin event feed as `reBINDINGS` events when `cmdREPLBINDINGS` is dispatched. `repl_reply` handles bindings-kind session replies and publishes the events with their rows (name, type, value, file, line). Only the newest request's answer is published; older request sequences are dropped as they arrive (the completion-reply pattern). Gate: tests/testmadcide_contrib.mad section 10 (plugin_event subscribed, bindings heard, older seq dropped), tests/testmadcide_repl.mad section 10 (live session answer with rows). B98 (a value literal cannot nest a brace list) is filed as a side finding (the test works around it by spelling the inner array as a named var).
+
+### The bindings wire op and verb (plan §41.11a step 3d)
+
+The wire layer for session bindings is complete: `madc::session_bindings(h)` sends a request for the session's defined names, and the reply carries `rows` with each name's kind, type, value (bounded by the show form's limits: 16 elements, 80 columns), and origin file and line. `SessionClient::bindings()` sends the wire request asynchronously, `bindings_wait()` provides a synchronous API, and the backend's `serve_session()` dispatch calls the existing `InteractiveSession::bindings()` engine method, serializing its output to JSON. Pointer values show their address without dereferencing (`char *p = (char *)1` reads as a value, never followed, so the backend stays running). The backend protocol's `Op::bindings` enum and `madc::session_reply::bindings` reply kind are new; the wire shape and verb-layer `reply_row()` pattern mirror the existing `load` and `run` operations. Gate: tests/testsession_bindings.mad (integration test), tests/unit/test_session_backend.cpp "the session's bindings, as rows" (wire serialization/deserialization unit test). madcide's `replbindings` command follows in a later commit.
+
+### Session bindings owner and `%whos` command (plan §41.11a step 3d)
+
+The session's defined names are now available through `InteractiveSession::bindings()` API and the `%whos` command, listing objects and functions sorted by name with their types, values (in the show's row form: no pointer followed, text included, at most 16 elements of an aggregate), and origin file and line. `Program::session_bindings()` walks the top-level names filtered to entries and loaded files only, never header or prelude names. Values come from a quiet entry that takes no `REPL[N]` number and keeps no result. The show's bounded row form (16 elements, 80 columns) uses the new `__madc_show_row` compiler intrinsic and `CirBuilder::ShowLimits` struct to limit iteration and text width; `__madc_session_bind()` runtime captures the bounded text. `TopLevelName::Kind` enum values moved to shared `madc::name_kind` in `<bits/session_enums>` so the dialect can switch on kind codes. The wire op and verb for the `bindings` request follow in a later commit. B95 (copy-init from int selects no-definition constructor), B96 (vector two-int constructor instantiates iterator pair), and B97 (type spelling canonical form) are filed.
+
+### A qualified typedef's declaration is the unit's own, not the header's (B94, worked around)
+
+A file-scope object whose type is a qualified typedef name (`std::string s`, `std::size_t n`) is now correctly attributed to the unit's declaration, not the typedef's header. Two SILENT bugs fixed: unreferenced global objects with qualified typedef types now run their dynamic initializers (g++ and clang++ behaviour), and a unit's static with a qualified typedef type is now a session name, so later mutations affect the one object instead of separate copies per entry. The REPL's `?` display now shows the entry's location instead of the header's (a wrong display, not silent). The system-origin verdict and all position readers now call `Program::top_decl_position()` instead of reading `origin->file` directly. TopDecl annotates the parser's position at record time via `parse_file`, `parse_line`, `parse_column`. The parser root (a type token for a qualified name in `parseDeclaration` should yield a use-site token) remains open. Gate: `tests/testglobal_qualified_typedef_init.mad`, `test_repl_session` "a qualified typedef's object is the entry's own (B94)", `scripts/check-one-top-decl-position.sh` (fulltest).
+
+### madcide's F5 diagnostics populate the Problems pane (plan §41.11a step 3c)
+
+F5's load and run replies now populate madcide's Problems pane with compile-error diagnostics via a new `repl_problems()` helper that writes the reply's diagnostics array into the editor's diags bag key. A user can choose a Problems row to move the caret to its file and line (cmdGOTO); a clean F5 (successful load or run with no errors) empties stale Problems entries, while an entry's own diagnostics (REPL[N] items citing no editor file) stay out. Gate: testmadcide_repl.mad section 7 (f5 problems: rows=true goto line3=true; f5 problems clean: rows=0).
+
+### Session load and run replies carry diagnostic rows (plan §41.11a step 3c, engine)
+
+A `load()` and `run_main()` reply now includes a `diagnostics` array alongside its `ok` and `rendered` fields, allowing a client like madcide to display compile errors in an editor's Problems pane with file and line references without parsing the rendered text. The helpers `attach_diagnostics()` in the backend and `reply_diagnostics()` in the verb layer extract and shape the session's recorded diagnostic rows (from parse_check) into each reply's JSON, using the same row format as an offer's diagnostics. A new test helper `first_error_at()` extracts a diagnostic row's `file:line` location; the test suite verifies that a clean load or run carries an empty diagnostics array, and that a failed load cites the file and line in both the rendered text and the diagnostic rows. Gate: tests/unit/test_session_backend.cpp lines 273–275 and 299–310 (load and run replies carry diagnostics arrays, error locations available to Problems pane).
+
+### madcide's Run ▸ Language… command (plan §41.11a step 3b)
+
+Run ▸ Language… (`repllang`) lets the REPL session switch between C17, C++17, and madc on demand; choosing a language restarts the session under that standard via `repl_restart(w, es)` reading the tab's `replstd` field, and the choice list marks the current standard. The command is implemented on a shared choice list mechanism (`choice_show`, `choice_action`, the row verb `cmdCHOICE`, the pane `paneCHOICE`) that also serves step 3e's key bindings. A command can read its argument off the action event (its seat's, -c's, or a choice row's) by declaring `cmd_takes_arg(code) = true`, so Run ▸ Language… opens the choice list without an argument and sets the language directly with one. Unknown language names are refused with the three choices listed. The Run menu (chthonia) and Build menu (default) each carry a Language… row; the Test frame verifies the choice list shows all three standards, restart marks the chosen one current, esc closes it, and arguments work correctly. Gate: testmadcide_repl.mad section 9 (choice list shown, picking C++17 restarts and marks it, arguments work, unknown languages refused); testidemenu (commands=55, Build menu items=11), testmadcide_chthonia (repllang in Run menu).
+
+### Session language switching (plan §41.11a, madcide teaching IDE)
+
+A session can now restart under a different `--std=` standard via `session_restart(handle, standard)`. The handle, its readable channel case, and any parked async pump carry over across the restart, while the backend's state and buffered output go with the old backend. This lets the REPL switch language flavors on demand (e.g., from c11 to c++17), supporting madcide's language selector. A helper `std_option_of(spelling)` extracted from `session_open` normalizes standard spellings (`c17` → `--std=c17`) for reuse by both. Gate: testsession_pump.mad line 74 (restart as c++17: the backend accepts references and `standard` matches the requested flavor).
+
+### madcide's Stop command (plan §41.11a step 3a)
+
+Stop (`replstop`, plan §41.11a) restarts the REPL's session and clears any in-flight replies. With no session, the command refuses with a message; during a running entry that never ends, the entry stops with its restarting session, and the transcript says `[stopped; a new session started]`. The next entry runs in a fresh backend, as F5 now does before its load (both commands reuse the new `repl_restart()` helper). Stop joins the Build menu (new `cmdREPLSTOP` enum item), chthonia's Run menu, and the toolbar alongside Open, Save, and Run. The `repl_clear_marks()` helper centralizes clearing the seqs (`replbusy`, `replrunning`, `replcseq`, `replloadseq`, `replrunseq`) when a session is owed nothing. Gate: testmadcide_repl.mad pin 8 (stop before message, stop during spin and new session) + testmadcide_toolbar (Stop button), testidemenu (commands=54, items=10), testmadcide_chthonia (Stop in menu and toolbar).
+
+### madcide's REPL pane commands require editor tier (V6a duplex D3, plan §41.11a)
+
+The REPL pane's three commands — F5 run (`cmdREPLRUN`), typed entry (`cmdREPLENTER`), and the backend (`cmdREPL`) — now require editor tier, gated the same as builds and runs. An observer-tier client that sends replrun, replenter, or repl receives a tier-refused error: `<command> requires editor (you are observer)`. The gate: testmadcide_serve_tiers.mad's new section 1b (observer-run line) sends all three commands from an observer and verifies each is refused with the correct prose.
+
+### madcide's contributed commands (plugins Stage B1, plan §41.11a step 2)
+
+A madcide plugin module can now register a command in the world's registry via `plugin_command(w, name, title, handler)`, which returns the command's code (or 0 if refused: a built-in name, duplicate, invalid plugin name, or missing handler). The world-aware converters `cmd_table_w`, `cmd_of_w`, and `cmd_name_w` make contributed commands known to every input boundary: key profiles (`parse_keys`), menus (`load_menu`), the `-c` one-shot line (`run_once`), the seat (`api_run`), the MCP tool list (`mcp_tools`), and the LSP server's executeCommand ids (`lsp_command_ids`). The dispatcher routes contributed codes through their handlers in `IdeSession::command` and `apply_ide_event`; the core cannot see what a handler does, so each contributed command is gated at editor tier (`cmd_min_tier_w`). The contributed code range starts at `cmd_contrib_base()` (4096), above every built-in enumerator; `check-madcide-command-registry.sh` now validates that shipped code never contributes a built-in name or duplicate name, and that bundle menus and keys only name commands in the table and contributions. Gates: `tests/testmadcide_contrib` (five pins: registration refusals, world-aware converters, dispatcher, key profile binding with world, seat/MCP/LSP listing); `check-madcide-command-registry.sh` (new controls f–h).
+
+### madcide's contributed views (plugins Stage B1, plan §41.11a step 2c)
+
+A madcide plugin module can now register a view in the world's registry via `plugin_view(w, name, title, key, show)`, which returns the view's kind (or `viewNONE` if refused: a built-in name, duplicate, a key not in the plugin's own `plugin.name` form, or a show command that is not a contributed one). The world-aware accessors `view_of_w`, `view_name_w`, `view_title_w`, `view_show_cmd_w`, and `view_rows_key` answer for both built-in and contributed views. A layout line (`parse_layout`) names a contributed view when given the world, and `layout_to_text` writes it back, supporting round-trip layout serialization. `show_view` displays a contributed view like any built-in kind. The `compose_chrome_pane` function renders a contributed view's rows (stored on its bag key as an array of `{content, file?, line?}`) as a choice, each row carrying the view's row verb (its navigation command code). A choose on a row goes through the one navigation owner, `goto_pane_row`, which now accepts the view whose rows it reads (Problems, Outline, or a contributed view); a row naming no line goes nowhere. Contributed view kinds are interned from `view_contrib_base()` (128) upward; their row verbs occupy the range `[cmd_view_row_base(), cmd_contrib_base())` (2048–4096), so each view's row verb is unique and disjoint from contributed command codes. Gates: `tests/testmadcide_contrib` (pins 6–9: registration validation, layout parsing/writing, pane composition with rows, row navigation); `check-madcide-command-registry.sh` (new controls validating view kind and row-verb ranges stay below their respective bases).
+
+### madcide's contributed event handlers (plugins Stage B1, plan §41.11a step 2d)
+
+A madcide plugin module can now subscribe a handler to a kind of event published by the REPL pane via `plugin_event(w, kind, handler)`, which returns true (or false if refused: a kind outside the `repl_event` enum or a missing handler). The REPL pane publishes four event kinds: `reTAKEN` (an entry taken), `reRAN` (F5's run returned), `reREFUSED` (F5's load refused), and `reSTOPPED` (the session stopped). When `repl_reply` completes handling an entry taken, F5's load refused, F5's run returned, or session stopped reply, it publishes that reply's event via `repl_publish` (which calls `publish_event`), and every handler subscribed to its kind runs in registration order with the event `{kind, reply}`. Handlers run on the session's thread, between events, never during composition; they can keep a view's rows current or post commands, but they never hold the pane's session. Gate: `tests/testmadcide_contrib` (pin 10: subscription and refusal, event publication and handler dispatch).
+
+### madcide's Build menu palette rows attach to the menu carrying the build command, not its title
+
+The Build menu's palette rows (the `build-<n>` items listing compile and run commands) now appear in any menu that carries the `build` command, not only the menu titled "Build". The dispatch moved from title-string matching to command code: compose_menu_bar checks whether the menu's items contain the build command code, rather than testing `if (m["title"] == "Build")`. Gate: tests/testidemenu.mad's new build-rows-by-command line (pin 10) renames the Build menu to "Compile" and verifies its palette rows remain the same.
+
+### madcide's program name selects a profile bundle (plugins Stage A, part 4)
+
+A madcide binary or symbolic/hard link invoked under the name of a bundle now opens that bundle with no --profile flag. The profile selection order is the command line's --profile (if given), then the program's name (argv[0] basename without extension) when a bundle of that name exists, then settings.json's "profile" field, then default. A binary or link named chthonia or chthonia.exe opens the chthonia bundle with no configuration. A program name no bundle has falls through to the settings or default. The program_name() function extracts argv[0]'s basename and strips its last extension if present; active_profile() checks the name against the bundle search path and uses its bundle when found. The man page documents the profile selection precedence. Gate: tests/testmadcide_bundles (pin 10, bundles-progname line tests all four cases: link, .exe, explicit --profile, and unknown name).
+
+### madcide's toolbar (plan §41.11a step 2) renders menu rows marked "toolbar"
+
+madcide now displays a toolbar — a row of command buttons at the top of the workbench. Menu rows marked with placement `toolbar` in a bundle's menu are composed onto the root's `toolbar` hint as an array of {label, action, code?, enabled?}, the same shape the tab strip's hint uses. The TUI renders one line of `[Label chord]` buttons; the web page renders `.cf-btn` buttons and posts actions by name on click. Each button's displayed chord is the one the loaded key profile binds to the command by code or name. A row without a label or action is dropped. The chthonia teaching profile places Open, Save, and Run on the toolbar; the default profile's toolbar is empty, so its workbench is unchanged. A new method `tui_bindings::chord_for(code, action)` fetches the displayed binding for a menu item or toolbar button. New unit tests: test_tui_model.cpp (toolbar rows rendered as one line with chords, sidebar/centre offseted below the toolbar), test_web_model.cpp (toolbar rows with codes, enabled made explicit, action names mapped to codes). New integration test: madcide_toolbar.mad (page draws buttons, click posts action, F5 runs it, save completes the action). Gates: testmadcide_chthonia (chthonia's toolbar appears with codes, default's is empty).
+
+### madcide opens an untitled buffer when run without a file
+
+madcide's launch without a file (or with an empty path argument) now opens an untitled buffer instead of exiting, as Thonny does, and as JOE opens its Unnamed buffer. The untitled buffer is a real document: its text lexes and parses, F5 runs it under the unit name `untitled`, and the status line shows `untitled` as the document's name. The buffer is not managed or versioned (asset_layers_of returns lexable and parseable, not managed or versioned), and no running session holds it. Build commands, project operations (projaddcur refuses the same way), and the headless faces (`-c`, `--mcp`, `--lsp`, `--serve`) are refused with a message saying the buffer has no file. Save and ^K X (save-quit) prompt for a filename; the answer writes the file and the document takes that path as its launch file. With native dialogs, a Save request on an untitled buffer parks a save-dialog request with no initial path, and the dialog's answer saves the buffer and updates its path. The headless faces print `madcide: <flag> needs a file` on stderr and exit 2; the usage's first line is now `madcide [<file>] ...`. Two new helper functions, `doc_untitled` and `doc_name` (tools/texteditor/lined_core.inc), distinguish documents with and without a path; `doc_name` returns "untitled" for pathless documents and is used throughout madcide for unit names, status text and tab titles. A new prompt mode pmSAVEASQUIT and dialog kind dlgSAVEQUIT handle the ^K X case. Every Save As (not only an untitled buffer's) now closes the document's parse handle and forgets its git handle, so the diagnostics rows and the git layer follow the new name. Gate: tests/testmadcide_untitled (seven pins for open, layers, F5 run, build/project refusals, Save, ^K X, native-dialog Save As).
+
+### madcide's command line now uses a single argument parser and ships the chthonia teaching profile
+
+madcide's command line now uses one parser (ide_args_parse, tools/madcide/madcide_args.inc) for all modes: flags come anywhere, the first non-flag word is the file, `--` ends the flags, and unknown flags or missing values are refused with the reason and the usage (exit 2). `--help` prints the usage, and `--profile NAME` selects a profile bundle. The parser replaces the hand-rolled argv loop in madcide.mad's main(); every mode (run_tui, run_serve, run_lsp, run_mcp, run_line, run_once) receives the selected profile and passes it to IdeSession::open(). The chthonia profile (tools/madcide/plugins/chthonia/) is madcide's teaching bundle: pico's single-chord keys, a layout with the editor above and the REPL visible in the bottom panel as the first tab with Problems beside it (no Outline, Project, Terminal, or sidebar), and a simplified menu bar (File, Edit, Run, View, Help; no Build or Window). A REPL session starts at open when the layout displays it, so chthonia opens with a live session and the default profile's hidden REPL starts nothing. `--profile` is the command-line layer of the profile selection the bundles entry describes. Gates: tests/testmadcide_chthonia (bundle load, keys, views, menu, REPL session state), testmadcide_cli's argv lines (profile before/after file, --attach with and without address, `--`, --help, unknown option, missing value, second file). docs/man/madcide.1 documents --profile, settings layers, and plugins.
+
+### A reference's const-qualified referent now distinguished from const pointee
+
+A parameter or variable of reference type whose referent is const-qualified (`const T &`, `char *const &`) now correctly marks its object as read-only, while a reference to a const pointer (`const char *&`) correctly marks only the pointer as const. The fix centralizes the top-level cv read into one owner, `Program::declarator_written_cv` (every bit the source wrote before the modeled mask), consumed by three readers: parameter read-only marking (FuncDef::const_params, reference binding and overload ranking), a type trait's operand (`__is_assignable`, `__is_constructible`), and declared-object const-ness. A `const char *&` parameter now accepts mutable-pointer arguments where a `const char *const &` parameter refers to a const pointer and refuses assignment through it. Overload ranking now correctly selects between overloads differing in referent const (the Itanium spelling now encodes the referent cv: `const char *const &` is RKPKc, `const char *&` is RPKc). East-const declarations (`int const x`) now refuse write access. Oracle: g++ 13 and clang++ 18 (-std=c++17) on the test suite (testconstptrref, testconsteast_err, testconstptrref_err). Before: madc refused `const char *&` parameter bindings at compile time ("assignment of read-only variable"), minted one overload symbol for overloads differing only in referent const (MIR "Repeated item declaration"), answered type traits incorrectly (`0 1 0 1 1` vs. `1 0 0 1 1`), and accepted writes through east-const local variables (e.g. `int const x = 1; x = 2;` compiled and returned 2). After: madc prints the correct output matching g++ 13 and clang++ 18.
+
+### madcide's terminal caret and status line now measure UTF-8 characters by columns, not bytes
+
+The editor's cursor (the grid cursor visible on the terminal) and status-line alignment now correctly count UTF-8 multi-byte characters and East Asian wide characters as display columns. Before the fix, a UTF-8 character's bytes were each counted as one column, moving the cursor one column right per extra byte (é is two bytes but one column, so the cursor drifted one column right after it; 中 is three bytes but two columns, so it drifted two columns). The status line's gap (the space between left and right elements) and the REPL entry continuation indent also used byte counts, leaving the right element one column too far left and the continuation indent one column too short per UTF-8 character in the prompt. The fix centralizes the layout rule — `madc::line_layout` (tabs to 8-column stops, control bytes as `^X`, code-point widths from `codepoint_columns`) — as the sole owner; grid cells now hold one code point (a wide glyph occupies two cells, the second marked as a tail), and the viewport slices laid-out text by columns (`line_columns`). The dialect's width measurement (`ui::text_columns`) uses the same rule for status alignment and text wrapping. Oracle: xterm on a pty — a file named `café.mad` (80-column status): 78 columns before (one short), 79 after (the correct cols - 1 used by the status arm); "é!" with the caret at the end: column 3 before (drift of one byte), column 2 after (the display width of é).
+
+### Diagnostics expand tabs in source echoes and place the caret by screen column
+
+A diagnostic's source-line echo now expands tabs to 8-column stops and places the caret under the cited byte's display column, matching gcc and clang. Before the fix, the echo printed tabs as raw bytes and counted only bytes when positioning the caret, leaving it misplaced by up to 7 columns under a tab indent and further misplaced by UTF-8 multi-byte characters or East Asian wide characters. The fix unifies the layout rule — `madc::line_layout` (tabs, control bytes as `^X`, code-point widths) — between the line editor's painter (madcide's cursor) and the compiler's diagnostic caret, both reading gcc's screen-column model. The caret's byte column (still the token's LAST byte in part 1) is placed at the correct screen column for that byte. Oracle: gcc 13 -fsyntax-only on reducer with tab indent (2:19), UTF-8 characters (2:35), East Asian wide character (2:31).
+
+### madcide bundles (plugins Stage A) and configurable profiles
+
+madcide now loads profiles from named bundles — `<name>/<name>.plugin` manifests (JSON, read without running code) that name the keys, layout, menu, theme, and status the session loads, and the settings defaults. The search path finds the first bundle by name: the user's configuration directory (MADCIDE_CONFIG_DIR, then $XDG_CONFIG_HOME/madcide, %APPDATA%/madcide on Windows, ~/.config/madcide), then the shipped bundles beside the executable. The shipped `default` bundle is the fallback; a user's bundle overrides a shipped one by name. A profile is now selected by IdeSession::open()'s profile parameter, then settings.json's "profile" field, then the default bundle. A bundle's manifest is validated once at load: an unknown field, an unknown contribution, an unmatched "name", an unsupported "api", a data word that contains a path, or a non-object "contributes" are each refused with the file and field named. The key fallback chain is the bundle's keys word, then the default bundle's, then the built-in rescue set; load_profile's messages now say "keys" (`No keys 'x'.`, `Keys 'x' line N: ...`, `Keys 'x' rejected.`), since "profile" now names the bundle. Every other data kind (layout, theme, menu, status) falls back to the default bundle's if the named bundle does not provide one. Settings layer: the user's settings.json, then the active bundle's "settings" defaults, then the default bundle's. The `repl.std` setting seeds the bag's `replstd` (the REPL session's standard). `keyed_get` (tools/texteditor/editor_events.inc) no longer inserts the key it reads — it checks `php::array_key_exists` first, since the carrier's subscript creates the slot it reads. Gate: tests/testmadcide_bundles (nine pins: config-dir order, default-plugin parity, manifest validation, profile selection, bundle override, fallbacks with status-line announcements).
+
+### Tab inserts a tab byte in madcide's editor
+
+Tab now inserts a tab (0x09) at the caret in madcide, matching the behaviour of JOE, pico, vim's insert mode, and other standard editors. Previously, when the editor's edit node had the focus and received a Tab key, the key reached the `edit_key` function which had no tab handler, leaving the buffer unchanged. With a second focusable composed (such as a Problems list after a check or a menu bar), Tab was routed to the shared focus owner and cycled focus invisibly without editing the buffer. The fix adds a tab handler in `edit_key` that types a tab byte, and sets the editor node's `tabkey` hint while the editor has the keyboard (matching the terminal and REPL input's existing precedent). In vi NORMAL mode, Tab is inert, as vim's normal-mode Tab (^I) walks the jump list which madcide does not keep. Oracle: JOE 4.6 on the container for insert-mode Tab; vim for normal-mode behaviour.
+
+### madcide opens missing files and unreadable directories correctly
+
+madcide previously refused to start on a file that does not exist (`madcide new.c`
+with no `new.c` present exited with "cannot read new.c" and status 1), whereas standard
+editors (JOE, vim, pico, emacs) open an empty buffer ("New File"). Now madcide opens
+a missing path as a new empty buffer with status line "New file <path>.", writing
+nothing to disk until a save. An existing path that cannot be read (a directory,
+no permission) is refused on the launch's stderr or the status line at ^K E, with
+the reason stated. The same rule applies to both the launch and the ^K E (edit file)
+command. Two new PHP parity functions, `is_dir()` and `is_readable()`, distinguish
+directories from files and test read permission; they answer false for missing paths
+and the empty path, never throw. A single document minter, `new_document`, owns all
+entity creation (file loads, new files, view buffers) so they are stamped with a
+consistent initial state and path kind. Oracle: JOE 4.6 on the container; PHP 8.3
+for is_dir and is_readable.
+
+### madcide's ^W (delete word) now matches JOE's behaviour
+
+The delete-word command (^W) previously deleted from the caret to the end of the
+next word (Emacs's `kill-word` motion), so on whitespace it removed the whitespace
+run and the word after it. JOE's rule is class-based: word bytes delete the rest of
+the word, whitespace (space/tab/newline) deletes the whitespace run, and other bytes
+delete one byte. The deletion now computes a class-run extent in the text buffer
+(`text_buffer::class_run_right()`) based on the byte at the caret, using the existing
+word-byte and space-byte predicates. UTF-8 bytes (0x80 and above) are word bytes, so
+a UTF-8 letter is never split. Oracle: JOE 4.6 on the container.
+
+### madcide's startup hint names the loaded profile's chords, not JOE's
+
+The startup hint (the line displayed when hint=1 is set) previously hard-coded
+JOE's chords ("^K Q exits / ^K H shows the loaded profile's help") under every
+profile, so users in the rescue set or an alternate profile (pico, emacs, neovim)
+were shown commands that were not bound in their loaded table. The hint now
+calls `ui::key_sequence_for()` to look up the actual chords the loaded bindings
+table assigns to the quit and help commands. The same ranking rule is used as
+the menu bar's accelerators (fewest keys, shortest). If the loaded table does
+not bind both commands, the hint is shortened or omitted.
+
+### madcide saves and quits when started from any directory
+
+The line editor's verb and check file paths were previously resolved as cwd-relative
+paths, so save and quit operations only worked when madcide was started from the
+repository root. These paths are now resolved through `resolve_data_dir()`, which
+checks the source tree (from `__FILE__`), then the installed layouts (`<exedir>/../share/madcide/`
+for Linux/Mac, `<exedir>/` for Windows), ensuring they work regardless of the starting
+directory. The line editor now refuses to start if verb or check files cannot be loaded,
+preventing silent save failures. The package now ships verb and check bodies in the
+installed data directories, so an installed madcide can save and quit from any cwd.
+
+### Bit-fields under packing can now straddle their declared type's boundary
+
+Under `#pragma pack` or packed attributes, bit-fields can straddle their declared
+type's byte boundary (gcc place_field rule). Aggregate layout, sizes, offsets, and
+bit-field access (initialization, assignment, increment, read) now match GCC/Clang
+on all operations. Byte-wise read and write replace single-type load/store when a
+bit-field's bits run past its declared type's unit. Before, `#pragma pack(8) struct
+{ char a:4; int b:30; }` produced size 12 (madc); now 8 (GCC). Aggregate layout
+also corrected for packed members and `__attribute__((packed))` aggregates when
+fields straddle.
+
+### Non-static data members initialize in declaration order
+
+Members now initialize in declaration order ([class.base.init]/13) across all
+constructor paths: user-provided, implicit default, new-expressions, and
+tsubst instantiations. Each member initializes from its mem-initializer, else
+its default member initializer, else its default-initialization. Before, three
+separate initialization walks initialized members out of order, so a member's
+initializer could read another member's uninitialized storage, or a side effect
+could observe the wrong object state.
+
+### A class-type member's default member initializer applies in user and implicit constructors
+
+`struct Z { S s = S(10); };` where `S` is a class type now applies the
+default member initializer to member `s` when constructing a `Z` — in both a
+user-provided constructor (the prologue applies it if the mem-initializer list
+does not name the member) and the implicit default constructor. The initializer
+form `= expr` copy-initializes; `m{ }` value-initializes and `m{e}` list-initializes
+([class.mem]/10). Before, NSDMI was skipped for class-type members and read
+uninitialized storage; only scalar members applied NSDMI.
+
+### Braced mem-initializers and new-expressions list-initialize with initializer-list constructors
+
+A braced mem-initializer `v{ a, b }` or braced new-expression `new L{ a, b }`
+where the class has an initializer-list constructor now calls that constructor
+with the whole list as its one argument ([dcl.init.list]/4). The parenthesized form
+`v(a, b)` and `new L(a)` remain regular constructor calls. A base subobject's
+braced initializer-list `Base{ 1, 2 }` is also list-initialized. Before, braced
+and parenthesized forms were treated identically, so `v{ 5 }` incorrectly called
+`L(int)` instead of `L(std::initializer_list<int>)`, and some braced bases were
+rejected as having no matching constructor.
+
+### A value-initialized temporary of a ctor-less class is zero-filled before default member initializers
+
+`T()` or `T{}` temporaries of a ctor-less class type in argument position, as
+an operand, or as a return value now zero-fill before default member initializers apply
+([dcl.init]/8). The three code paths (function argument, member operand access, return
+from a temporary-returning function) now consistently use the value_init_zero_stmts helper
+to decide whether zero-fill is needed. A ctor-less class that value-initializes (no
+user-provided default constructor) must zero-fill first, then apply default member
+initializers; before, the temporaries incorrectly read uninitialized stack storage.
+
+### An elided empty temp `T x = T()` value-initializes a ctor-less class
+
+`T x = T();` and `T x = T{};` where `T` is a ctor-less class now value-initialize
+the object (zero-fill, then default member initializers), the same as `T x{};`.
+The elided temporary's aggregate claim is now owned by the declaration ([dcl.init]/8),
+so the zero-fill precedes the default-initialization step. Before, value-initialization
+of an elided empty temp skipped the zero-fill and read uninitialized storage.
+
+### A new-expression with a braced list aggregate-initializes a ctor-less class
+
+`new T{ a, b }` where `T` is a ctor-less class now aggregate-initializes the
+object on the heap, filling members in order and value-initializing the rest
+(zero-fill, then default member initializers). Placement new
+`new (addr) T{ a, b }` works correctly as well. An empty initializer-list
+`new T()` still value-initializes; an empty new without braces (no list)
+uses the default constructor if one exists. Before, both heap and placement
+new bypassed aggregate initialization and read uninitialized storage.
+
+### A class-type member's virtual bases are initialized in a mem-initializer
+
+A mem-initializer of a class-type member now properly constructs the member's
+virtual bases. A class-type member is a complete object (Itanium C1 construction),
+so its virtual bases must be initialized before its own constructor. Before, the
+code treated members like bases, calling only the base-construction path (C2
+construction), which skipped the member's own virtual bases. This caused incorrect
+field values when a class-type member had virtual bases.
+
+### An aggregate's trailing ctor-less class member is value-initialized
+
+`Out{ 2 }` where `Out` has a trailing member of ctor-less class type `In` now
+value-initializes that member (zero-fill, then any default member initializers).
+The aggregate_member_fill path incorrectly used the default constructor call
+site, which skipped zero-fill. Now it routes through class_subobject_mem_init,
+which implements aggregate initialization ([dcl.init.aggr]/5) correctly.
+
+### Mem-initializers of ctor-less class bases and members initialize correctly
+
+A mem-initializer for a ctor-less class base or member now initializes correctly
+through an aggregate-init path. Before, `P() : FB{ 1, 2 }` (a base) or `M() :
+m{ a, b }` (a class member) read stack garbage because the initializer was
+dropped entirely or walked the wrong data structure. An empty mem-initializer
+`Base()` or `member()` value-initializes the subobject (zero-fill first, then
+default member initializers and member constructors). A braced mem-initializer
+initializes members one by one; brace elision applies ([dcl.init.aggr]/16), so
+a scalar run can promote into an aggregate member's fields, and a braced sublist
+can fill an array or nested aggregate. A mem-initializer with a nested braced
+list that the parser flattens is now refused with an error (BUGS.md B81);
+recovery needs a parse-once change to retain nesting.
+
+### A using-declaration may name a conversion function
+
+`using Base::operator T;` in a class body is a using-declaration, as in g++
+and clang++; madc read the conversion-type-id on to the next `(`, swallowing
+the rest of the class, so `#include <atomic>` was refused ("Expecting variable
+name or ';' after class definition").
+
+### The GCC `__atomic_*` builtins
+
+Every `__atomic_*` builtin works in C and C++, as in gcc and clang: the `_n`
+value forms (`load_n`, `store_n`, `exchange_n`, `compare_exchange_n`, the
+`fetch_OP` and `OP_fetch` families for add, sub, and, or, xor and nand) at 1,
+2, 4 and 8 bytes, the object forms (`load`, `store`, `exchange`,
+`compare_exchange`) at any size, `test_and_set`, `clear`, `is_lock_free`,
+`always_lock_free` (a constant expression) and both fences. A value form
+yields the object's own type. Operands are checked as gcc checks them, so a
+bad call is an error and, under SFINAE, a substitution failure. madc lowered
+only `__atomic_fetch_add` and the two fences before; the rest were undeclared
+(`std::shared_ptr` was refused on `__atomic_always_lock_free`). Thread-safety:
+sizes 1, 2, 4 and 8 on an aligned object use the host's atomic instructions,
+and any other object takes an address-hashed spin lock.
+
+### `__alignof` is the alignof operator
+
+GNU `__alignof(T)` and `__alignof(expr)` give the alignment, as in gcc and
+clang; madc refused them ("Expecting identifier"). Every alignof spelling
+(`alignof`, `_Alignof`, `__alignof__`, `__alignof`) is now read through one
+predicate.
+
+### A class template over a non-type pack has its members
+
+`template<int... N> struct V { char k; };` instantiates with its members,
+as in g++ and clang++: `V<2, 16> v; v.k = 5;` was refused ("Unidentified
+member 'k'") and `sizeof(V<3>)` was 0. The pack's values expand in the
+class's body (`int v[] = { N... };`, `sizeof...(N)`), and an empty pack
+(`V<>`) is a class too.
+
+### A class's own members follow its vptr and bases one by one
+
+A class's members are placed after its vptr and bases each at the next
+offset its own alignment allows, as in g++ and clang++: `struct V { virtual
+int f(); char c; long double ld; }` has `c` at 8 and size 32, where madc
+placed `c` at 16 (size 48), and a class derived from a base with a
+constructor fills that base's tail padding (`struct NB { int a; char b;
+NB(); }; struct DN : NB { char c; int x; }` is 12 bytes with `c` at 5,
+not 16 with `c` at 8).
+
+### A C++ class lays out its own attributes
+
+A class with a member function, a vptr or a base takes `packed` and
+`aligned(N)` before its name, after it and after its `}`, and `alignas(N)`
+in its head, as g++ and clang++ do. madc dropped them (`struct
+__attribute__((packed)) P { int f(); char a; int b; }` was 8 bytes, not 5)
+or refused the `}` form (`} __attribute__((packed));`). A class's own
+`packed` packs its members and its vptr but never a base subobject, which
+only `#pragma pack` caps; its `aligned(N)` raises the class's alignment
+without moving a member. A member's own attributes in such a class are not
+laid out yet (BUGS.md B65).
+
+### `#pragma pack` lays out a C++ class
+
+Under `#pragma pack(N)` a class with a member function, a vptr or a base
+has its members, its vptr and its base subobjects aligned to at most N, as
+in g++ and clang++: `#pragma pack(1) struct PP { int f(); char c; int x;
+};` is 5 bytes with alignment 1, where madc ignored the pack (8 and 4).
+Virtual bases are capped as well. A class template is laid out under the
+pack in effect where it is defined, not where it is instantiated: a
+template defined inside `#pragma pack(1)` is packed wherever it is used,
+and one defined outside is not packed by an instantiation inside a pack
+region.
+
+### A member's own `packed` lays that member out at alignment 1
+
+`struct { char c; int x __attribute__((packed)); }` has `x` at offset 1 and
+size 5, as in gcc and clang; madc placed `x` at 4 (size 8). The member
+takes alignment 1, or its own `aligned(N)` beside `packed`, and adds
+nothing to the aggregate's alignment. This holds after the declarator and
+among a line's specifiers (`__attribute__((packed)) int x, y;` packs both),
+for struct-typed and array members, in a union, in an anonymous aggregate
+and beside a tag's `aligned(N)`. `--emit=c11` renders the member's
+`packed` and `aligned(N)` after its declarator.
+
+### A zero-width bit-field under packing aligns to its type
+
+`int : 0` moves the next member to a 4-byte boundary under `#pragma pack(N)`
+and in a packed struct, as in gcc and clang: `struct { char a : 4; int : 0;
+char c; }` has `c` at offset 4 and size 5 under `#pragma pack(2)`, where
+madc put `c` at 2 (and at 1 in a packed struct). The zero-width field still
+adds nothing to the struct's alignment. The Microsoft bit-field layout is
+unchanged.
+
+### A variadic class template-id as a data member is a complete type
+
+`struct H { char c; P<int, char, long> m; };` for `template<typename... T>
+struct P` has `P`'s members and size, as in g++ and clang++: `h.m.v[2]` was
+refused ("Unidentified member") and `sizeof(H)` was 1. The same holds in a
+class template's body with the class's own pack expanded (`P<U...> m;`),
+for a member declared through a typedef of such a template-id, and for an
+empty pack (`P<>`, which `sizeof` also measured as 0). A class template
+instantiated while a C-style struct body is open is no longer registered as
+a type nested inside that struct.
+
+### `sizeof` of a variadic class template-id measures it before any object exists
+
+`sizeof(P<int>)` and `alignof(P<int>)` for `template<typename... T> struct
+P` are the class's size and alignment the first time they are asked, as in
+g++ and clang++; they were 0 and 1 until an object of the type had been
+declared, and `sizeof(P<char, int>)` stayed 0. Every context that requires
+a complete type now completes such a template-id.
+
+### `sizeof` and `alignof` of an expression of a member template's parameter type
+
+In a member function template, `sizeof(v)` and `alignof(v)` of a parameter
+`V v`, of a local `V x`, of an array `V a[3]` and its element, of `*p` for
+`V *p`, and of a `V &` measure the instantiation's type, as in g++ and
+clang++; they answered the size and alignment of nothing (0 and 1). An
+object that also requests an alignment (`alignas(8) V x;`) answers the
+larger of the two. `sizeof x` without parentheses was right only because
+its body was parsed again for each instantiation.
+
+### A variable-length array typedef's size is fixed where the typedef is reached
+
+After `typedef int c[n + 2];` with `n == 3`, assigning `n = 10` no longer
+changes the type: `sizeof(c)` is 20 and `c x;` declares 20 bytes, as in gcc
+and clang (C11 6.7.8p3). Before, madc evaluated the size expression again
+at every use, so both were 48. A size expression with side effects runs
+once, where the typedef is; that holds for each typedef in a list and for a
+pointer-to-array typedef (`typedef int (*p)[n];`), and a typedef inside a
+loop is evaluated again on each iteration.
+
+### `sizeof` and `alignof` of a member template's parameter measure the argument
+
+In a member function template, `alignof(V)` and `__alignof__(V)` measure
+the argument each instantiation supplies, as in g++ and clang++; they
+answered 1. The same holds for `V` under a qualifier, a pointer, a
+reference or an array: `sizeof(const V)` was 0 and `alignof(V[2])` was 1.
+`sizeof(V *)` and `sizeof(V[2])` were right before only because their body
+was parsed again for each instantiation; now they are measured with the
+others. In C, `sizeof(c *)` and `sizeof(c[3])` over a variable-length
+array typedef `c` are accepted and measured (8 and three times `c`); they
+were refused with "Expecting ')' after sizeof type".
+
+### `_Alignas` and `alignas` align what they declare
+
+`struct A { char c; _Alignas(16) int x; };` is 32 bytes,
+`_Alignas(double) char d;` takes double's alignment, `alignas(16) char
+buf[8];` is placed on a 16-byte boundary and `struct alignas(16) H` is
+16-aligned, as in gcc and clang. Before, madc ignored every alignment
+specifier. The operand is a type or a constant expression, the strictest
+of several wins, and class templates and function templates read it per
+instantiation. A class template may carry `alignas` or `__attribute__`
+before its name (before, the attribute was refused), and a pack expands in
+its body's `sizeof(T)...` and `alignof(T)...` for any number of arguments,
+none included. `alignas` is a keyword in C23, C++11 and the madc dialect;
+in C17 it is an ordinary identifier unless `<stdalign.h>` defines it. The
+members of a class that declares member functions still ignore it.
+
+### An object's `aligned` attribute aligns it
+
+`char c __attribute__((aligned(16)));` is placed on a 16-byte boundary and
+`__alignof__(c)` is 16, as in gcc and clang, at file scope and in a
+function, static or automatic. The attribute works before or after the
+storage class, after a qualifier, after the type and after the declarator,
+and among the specifiers it aligns every declarator of the list. Before,
+madc ignored it on every object and refused it after `static` or `const`
+and at the start of a `for` initializer.
+
+### A member's `aligned` attribute before its type aligns it
+
+`struct L { char c; __attribute__((aligned(16))) int x; };` is 32 bytes,
+as in gcc and clang; it was 8. The attribute also works between a
+qualifier and the type (`const __attribute__((aligned(16))) int x;`, which
+was refused) and in every position inside a nested struct or union's body,
+where it was dropped or refused. Of several `aligned` attributes on one
+member, the strictest now wins.
+
+### A member's `aligned` attribute after its declarator aligns it
+
+`struct T { char c; int x __attribute__((aligned(16))); };` is 32 bytes
+with `x` at offset 16, as in gcc and clang, and in `int a, b
+__attribute__((aligned(8)));` only `b` is aligned. Before, madc read the
+attribute in that position and dropped it: 8 bytes, `x` at 4.
+
+### A nested aggregate's attributes lay it out, before its tag or after its `}`
+
+`struct O { char c; struct __attribute__((packed)) N { char a; int b; } in; };`
+packs N to 5 bytes, as does `struct N { ... } __attribute__((packed)) in;`,
+and `aligned(16)` on a nested aggregate aligns the type, as in gcc and clang.
+A trailing `} __attribute__((packed))` on any struct now re-lays its members
+with their bit-fields, anonymous members and member alignment. Before, a
+named nested aggregate and any attribute after a nested `}` were silently
+dropped (8 bytes for gcc's 5, alignment 1 for 16), and a trailing `packed`
+over an anonymous member misplaced it: `t2.y` read 0. An anonymous
+aggregate in a C++ class body may now carry attributes after its `}`, and
+the one before its `{` packs it, as in g++.
+
+### `aligned(N)` reads N as a constant expression
+
+`struct L { char c; int __attribute__((aligned(2 * 8))) x; };` is 32 bytes
+with alignment 16, as in gcc and clang, and so is every other position madc
+reads the attribute from (a tag, a nested tag, a typedef prefix). Before, a
+member's leading attribute took N's first literal: 8 bytes, alignment 4.
+
+### A GNU attribute may be spelled with double underscores
+
+`struct __attribute__((__packed__)) S { char a; int b; }` is 5 bytes,
+`__aligned__(16)` aligns to 16, and `__mode__(QI)` / `mode(__QI__)` make a
+one-byte integer, as in gcc and clang, which accept every attribute name and
+its own words in both spellings (system headers use the underscored one).
+Before, madc accepted `__packed__` and then ignored it, so the layout was
+silently wrong (8 bytes for the 5); `__aligned__` and the underscored mode
+words were ignored the same way.
+
+### `__make_integer_seq` and `__type_pack_element` read a less-than argument
+
+`__make_integer_seq<IS, long, lim < 4 ? 5 : 1>` is the sequence 0..4 and
+`__type_pack_element<lim < 4 ? 2 : 0, char, long, short>` is short, as in
+clang, where `lim` is a variable. Before, both builtins took `lim <` as the
+start of a template-argument list, declined, and left an empty class: the
+sequence's sum() read 0 and the type's size read 0, exit 0.
+
+### A qualified statement may hold a `>` in parentheses
+
+`S::In<(4 > 1) + 1>::f();` calls `S::In<2>::f`, as in g++. Before, madc
+took the parenthesized `>` as the close of the argument list, read the
+statement as a declaration, and refused it ("'f' is not a type member").
+
+### A non-type template argument substitutes as its value
+
+`sizeof(decltype(h<4>()))` for `template<int N> Arr<N * 3> h()` is 12, and
+`decltype(f<1>())` picks `EI_t<(N <= 2) && yes(0), long>`'s long, as in
+g++; so does a type default naming a non-type parameter
+(`template<int N, class U = Arr<N * 3> > U k()`). Before, each read a wrong
+type silently: 8 for the 12, 1 for the long, 8 for every defaulted U.
+
+### A return type may hold a `>` in parentheses under SFINAE
+
+`template<int N> EI_t<(N > 2) && yes(0), int> f()` and its `(N <= 2)`
+twin select by SFINAE as in g++, as do the `typename EI<...>::type` form
+and a `(N >> 1)` in the argument. Before, the return-type check took the
+parenthesized `>` as the list's close and `yes` as the function's name,
+discarded the viable overload, and `f<5>()` was refused.
+
+### A partial specialization's head may end in `>>`
+
+`template<class T> int Z<A<T>>::f()` and `template<class T> struct
+Z<A<T>>::N { ... };` define the member and nested class of the
+specialization `Z<A<T>>`, as in g++. Before, the head's last argument lost
+its `>` to the shared `>>`, the definitions attached to nothing, and
+`Z<A<short>>().f()` failed to link.
+
+### A requires-expression's parameters need no std::declval
+
+`template<class T> concept R = requires (T b) { b.y; };` holds for a T with
+a member `y` without `<utility>`, as in g++, and so do parameters declared
+`T &`, `T &&` or `const T`. Before, madc rewrote each parameter to
+`std::declval<T&>()`. Without that declaration in scope, every such concept
+was silently unsatisfied.
+
+### A requires-expression's parameters are split at their own commas
+
+`requires (A<(1 < 2)> a, T b) { a.x; b.y; }` declares two parameters, as in
+g++. Before, madc counted `(`, `[` and `<` together, never came back to
+zero at the comma, and read a single parameter. The concept was then
+silently unsatisfied.
+
+### A member template can call through its own function-pointer parameter or local
+
+`template<class T> int h(void (*f)(int, int), T t) { f(1, 2); ... }` as a
+member, a constructor template that calls `f` in its body or mem-init
+(`: v(sq((int)t))`), and a local `void (*g)(int, int) = cb; g(3, 4);`
+compile and run as in g++. Before, madc took `f` or `g` for the name of a
+function with no definition and refused the instantiation ("tsubst bailed
+... un-emittable symbol").
+
+### Constructor templates that differ by arity are told apart with a function-pointer parameter
+
+`template<class T> S(void (*f)(int, int), T t)` beside `template<class T>
+S(T t)` makes `S a(cb, 7)` call the two-parameter constructor and `S b(5)`
+the one-parameter one, as in g++, whichever is declared first. Before, madc
+counted parameters up to the first `)`, which here was the function
+pointer's own, and refused the class that declares its one-parameter
+constructor first.
+
+### A partial specialization deduces a non-type parameter inside a template-id
+
+`template<class T, int N> struct Z<T, C<N> >` is the specialization
+`Z<int, C<8> >` selects, with N bound to 8 in its body, as in g++, and
+`P<C<N>, C<N> >` matches only when both values agree. Before, madc never
+recorded such a parameter, so the specialization was silently passed over
+for the primary. One more g++.dg test, cpp0x/variadic160.C, now compiles.
+
+### A partial specialization's nested template-id pattern matches by identity
+
+`template<class T> struct Z<T, B<int> >` is the specialization `Z<int, B<int>
+>` selects, as in g++, and so are `Z<T, A<true> >`, `Z<T, IC<int, 7> >` and
+`Z<T, IC<bool, false> >` for their own arguments. Before, madc compared each
+argument inside the pattern's template-id by spelling: `int` against the
+canonical `int32_t`, `true` against `1`. Every such specialization was
+silently passed over for the primary.
+
+### An out-of-line nested class follows its class-head
+
+`template<class T> struct O<T*>::N { ... };` defines the nested class of the
+partial specialization `O<T*>`, with T bound to `char` for `O<char*>`, as in
+g++. The primary's `O<T>::N` no longer defines it. A head with a `>` inside
+parentheses (`Q<T, (3 > 2) + 4>::M`) is read whole. Before, madc bound the
+owner's parameters by position and read the head up to the first `>`, and
+refused `O<char*>().f()` ("Unidentified member 'g'").
+
+### A partial specialization's out-of-line member is defined with its own head
+
+`template<class U> int Z<U*>::f() { return 2; }` defines the member of the
+partial specialization `template<class T> struct Z<T*>`, as in g++, and
+likewise heads such as `P<T, const T>` and `P<T, decltype((3 > 2))>`. The
+definition's parameters take what the specialization deduced, so
+`sizeof(T)` in `P<T, const T>::g()` reads `short` for `P<short, const
+short>`. A more specialized `Z<const T*>` keeps its own member. Before, madc
+attached such a definition to nothing, and the call failed to link.
+
+### A partial specialization's member can be defined with a `>` in its head
+
+`template<class T> int Z<T, (3 > 2) + 4>::f() { return 50; }` defines the
+member of the partial specialization `Z<T, 5>`, as in g++. Before, madc did
+not recognize the definition, and `Z<int, 5>().f()` silently ran the primary
+template's body.
+
+### A partial specialization's non-type pattern matches by value
+
+`template<class T> struct W<T, 4 + 4>` is the specialization `W<int, 8>`
+selects, as in g++: a non-type template argument is identified by its value,
+so `(7)` matches 7, `!false` matches true and a `nullptr` member-pointer
+pattern matches a null argument. Before, madc compared only literal
+spellings, silently passed the specialization over and used the primary.
+One more g++.dg test, template/ptrmem33.C, now compiles.
+
+### A defaulted constructor template's head can hold a `>` in parentheses
+
+`template<class U = int, int N = (3 > 2), class V = short> S() : v(sizeof(V))
+{}` is a constructor template whose parameters U, N and V all have defaults,
+as in g++. Before, madc ended the head at the `>` inside `(3 > 2)`, lost V,
+and refused the constructor ("use of undeclared identifier 'V'").
+
+### A non-type template default can name an earlier parameter
+
+`template<class T, int N = sizeof(T) + 1> int f()` makes `f<int>()` return
+5, as in g++. That covers free function templates and member templates,
+defaults that read another non-type parameter (`int M = N * 2`), and ones
+that read `T::value`. Before, madc evaluated such a default without the
+arguments bound before it. The call then failed to link or, beside a call
+that spelled every argument (`f<char, 9>()`), silently ran that other
+instantiation.
+
+### A member template defined out of class keeps its declared defaults
+
+`struct E { template<class T, int N = 5> int h(); };` defined as
+`template<class U, int M> int E::h() { return M; }` makes `e.h<int>()`
+return 5, as in g++: the default template arguments are those of every
+declaration together, including when the definition renames the parameters.
+Before, the definition's head replaced the in-class defaults with none. A
+defaulted call then either failed to link (`E__h`) or, beside a call that
+spelled the arguments (`e.h<char, 9>()`), silently ran that other
+instantiation.
+
+### An explicit specialization of a class template's member is used
+
+`template<> int S<true>::f() { return 7; }` defines `S<true>::f`, and the
+primary template's definition defines `f` for every other `S`, as in g++.
+That includes int and type arguments, a const member, one overload of an
+overloaded member, and a specialization declared after the class was
+instantiated but before the member was used. Before, madc ignored every such
+specialization and called the primary template's body, with no diagnostic.
+A specialization whose argument is an expression (`S<(1 == 1)>`) still does
+not match `S<true>`, because madc does not yet identify a non-type argument
+by its value.
+
+### A `>` in parentheses no longer ends a template-argument list
+
+Inside its own body, a class template can name another specialization of
+itself with a parenthesized `>` or `>>` in the argument: `C<(N > 1) + 5>()`
+and `C<(N >> 1)>()` are `C<6>` and `C<1>` when N is 3, as in g++. Before,
+madc ended the argument list at the inner `>` and refused the expression
+("use of undeclared identifier 'C_3'").
+
+### A qualified name can sit inside a parenthesized declarator
+
+`int (*C::get())(int) { ... }`, `int (*N::pick(int r))[3] { ... }` and a
+class template's `T (*B<T>::first())[3] { ... }` define the members C, N and
+B declare, as in g++. That includes static and const member functions. Before,
+the name in a parenthesized declarator could not be qualified, and a class
+template's member was never attached to its declaration, so it linked as an
+undefined symbol (`_ZN1BIiE5firstEv`).
+
+### A namespace member can be defined outside its namespace
+
+`int N::f() { ... }` and `int N::x = 30;` define the members N declares, as in
+g++. That includes a nested namespace's member (`int N::M::g(int)`), a
+qualifier found through a using-directive, and an inline namespace's member
+defined through its enclosing one (`int Q::f()` defines `Q::V1::f`). The body
+finds N's members unqualified, and the symbols are the namespace members'
+(`_ZN1N1fEv`). A qualified definition of a name N never declared is refused
+("'N::nope' should have been declared inside 'N'"), and so is one whose
+signature matches none of N's declarations (`int N::f(int)` over
+`int f();`). Before, every such
+definition was refused as an "Unknown C++ declarator scope". Two g++.dg tests
+now pass (attributes-namespace5.C, inline-ns1.C).
+
+### A member function can return a pointer to an array or a function
+
+`int (*rows())[3] { ... }` and `int (*get())(int) { ... }` inside a class,
+static or not, are member functions, as in g++. madc read a `(` right after
+a member's type only as a data member's declarator and refused the body.
+
+### A function can return a reference to an array
+
+`int (&f())[3]`, and an `auto&` function returning an array, work: the
+reference's `sizeof` is the array's, and a write through it reaches the
+array. A call through a pointer to such a function works too. Before, madc
+emitted the function as returning `int *` and refused the return and every
+subscript of the call.
+
+### `auto&` bound to an array is a reference to the array
+
+`auto &r = a;` over `int a[2][3]` binds `int (&)[2][3]`, as g++ deduces:
+`sizeof r` is 24 and `r[1][0] = 40` writes the array. The same holds for a
+one-dimensional array and a `const auto&` to a row. Before, madc bound an
+`int&` to the first element and refused every subscript of it.
+
+### A function's return type is spelled the same everywhere
+
+A function returning a pointer to an array (`int (*f(void))[3]`) works: its
+definition, a prototype, a static one, and a call through a pointer to it.
+An `auto` function or a lambda returning a two-dimensional array's row
+pointer works too. Before, madc emitted such a function as returning `int *`,
+and c2mir refused `f()[1][0]`. A function only declared, never defined in the
+file, whose return type is a function pointer (`void (*signal(int, void
+(*)(int)))(int)`) is prototyped as returning that pointer, not `long long`.
+A call through a pointer to a member function returning `const int *&` now
+compiles. The six places that spelled a return type (a definition, a
+prototype, a declared-only extern, a function pointer's target, a
+pointer-to-member call, a return temp) share one owner, and a gate keeps it
+that way.
+
+### `auto` from an array or a function deduces a pointer
+
+`auto q = a;` over `int a[3]` declares an `int *`, and over `int a[2][3]` an
+`int (*)[3]`, as g++ and clang++ deduce. The same holds for a member array, a
+row of a two-dimensional array, and the return of an `auto` function or a
+lambda. `auto fp = (f);` declares a pointer to `f`. Before, madc deduced the
+array's element type, then refused every subscript of the result, and
+deduced a parenthesized function name as a function. Template argument
+deduction and `auto` now share one rule.
+
+### Polymorphic classes copy by value
+
+An object of a class with virtual functions can be copied again: into a
+declaration, a by-value parameter and a return, through the implicit copy
+constructor or a defaulted one, and from a derived object. The copy's
+virtual calls are its own class's. Before, madc refused all of these
+("no matching constructor for call to 'P(Q)'", and 'P(P)' for a by-value
+parameter). A polymorphic class with a virtual base is still refused.
+
+### A copy madc cannot lower is an error, not a default construction
+
+For a class with no user constructor, a copy the implicit copy constructor
+could not lower was silently replaced by default construction: the source
+was dropped and the program ran with garbage members. It now reports
+"no matching constructor", as it already did for a class with user
+constructors.
+
+### Copying a derived object into its base copies non-trivial members
+
+`B b = d;`, where `d` derives from `B` and `B` holds a `std::string`, now
+copies the string and every other member. madc sliced only a trivially
+copyable base. For any other it default-constructed `b`, dropping the
+argument: an empty string and a garbage `int`, exit 0. A slicing move moves
+the members too.
+
+### A defaulted copy constructor binds through a conversion again
+
+A `std::string` converts to a `std::string_view` again in a return, in a
+declaration and inside `std::string::compare`, under both libstdc++ and
+libc++. `string_view` defaults its copy constructor, and the defaulted-
+constructor lowering had stopped applying the conversion first, so c2mir
+refused a struct assignment between the two types.
+
+### A returned `var` literal is copied into the result again
+
+`var obj() { return { "k": 1 }; }` built the literal and then constructed
+the result through `var(const char *)` with the literal as its text, so the
+first keyed read aborted ("value of this kind has no keyed members"). The
+carrier's copy constructor, copy assignment and value-operand operators had
+their `const var &` parameter recorded one slot too far, so an rvalue could
+not bind them.
+
+### A defaulted move constructor moves memberwise beside a user copy
+
+A class that provides its own copy constructor and defaults its move
+constructor, as libstdc++'s `std::vector` does, moves again. Returning a
+struct with a `std::vector` member had stopped compiling ("cannot lower
+defaulted copy/move constructor"). Its base's members were also moved twice,
+the second time from the emptied source, so the returned vector came back
+empty.
+
+### Deleted copy and move constructors stay in overload resolution
+
+Copying a `std::unique_ptr` now reports its deleted copy constructor instead
+of compiling and crashing. A deleted move constructor likewise blocks an
+rvalue even when a copy overload exists. Defaulted constructors continue to
+copy or move members, including when their declarations come from a frozen
+header. Forest snapshots advance to format 50 to preserve these declarations.
+
+### Closing a byte channel wakes parked selectors
+
+`madc::channel::close()` now wakes tasks parked on its read handle before
+releasing it. A `chan_select` waiting on that channel rescans and returns -1
+when every case is dead, including on Linux where epoll otherwise forgets
+the closed descriptor silently. Accepting into a reused channel also closes
+its previous endpoint through this notification path.
+
+### Range-for requires C++11 or the madc dialect
+
+`for (int x : values)` is now refused in C modes and pre-C++11 modes.
+C++11 and later and the madc dialect continue to accept it. Before, C17
+and C++98 mode ran the loop despite their selected language level.
+
+### C89 for initializers require an expression
+
+A declaration such as `for (int i = 0; ...)` is now refused in pre-C99
+modes. C99 and later, C++, and the madc dialect continue to accept it.
+Before, madc accepted the declaration under C89 and ran the loop.
+
+### Short declarations are confined to the madc dialect
+
+`:=` now lexes and parses as a short declaration only under `--std=madc`.
+C and C++ modes reject it as invalid syntax, matching GCC and Clang.
+Before, both modes accepted it and could silently create a variable.
+
+### A stray closing brace is a syntax error
+
+A top-level `}` now reports an extraneous closing brace at its source
+location. Before, madc silently accepted it and decremented the compound
+depth below zero.
+
+### Array compound literals retain their array type
+
+`sizeof((int[3]){0})` now yields 12, and `&(int[3]){...}` has
+pointer-to-array type. An unsized literal takes its bound from its
+initializers, including designators. Value uses still decay to a pointer;
+the CIR builder spells that decay for c2mir through one shared lowering.
+Before, the parser typed every array compound literal as a pointer, so
+`sizeof` silently yielded 8.
+
+### Taking an array's address preserves its full type
+
+`&array` now has pointer-to-array type, including every dimension. `sizeof
+*&array` measures the array, and `&array + 1` advances by its full size for
+global, local, member, and qualified namespace arrays. The address builder
+uses the existing array operand type owner for both named and qualified
+expressions, matching gcc and clang in C17 and C++17.
+
+### A weak function yields to a strong one
+
+`__attribute__((weak))` on a function now makes its definition weak, as in
+gcc and clang, wherever the attribute appears: before the declaration,
+after the decl-specifiers, or on an earlier prototype. With `--project`, a
+strong definition in another TU replaces the weak one, in either TU order,
+and every call and address reaches the strong copy, in the JIT and in an
+executable or object. Before, madc dropped the attribute, so each TU called
+its own copy and one function had two addresses.
+
+### A C file-scope declaration without a type declares an int
+
+In C, `y = 4;` or `z = 5, w;` at file scope now declares `int` variables, as
+gcc reads it in every C mode (C89 6.5.2). `y = 4;` after `int y;` defines
+the same `y`. Before, madc parsed the line as an expression that nothing at
+file scope runs, so `y` stayed 0 without a word, and an undeclared `z = 5`
+was refused. An interactive entry keeps reading `y = 4;` as an assignment.
+
+### `int(f(3));` calls f
+
+A statement such as `int(step(3));` or `S(f(x));`, with `x` a variable, is
+now a functional cast of the call, as in g++ and clang++. `step(3)` cannot
+be a function declarator, since `3` cannot begin a parameter. Before, madc
+read it as the declaration `int step(3)`, a variable initialized to 3, so
+the call never ran and the variable hid the function. `int(g(int));` is
+still a declaration of a function `g`.
+
+### `std::unique_ptr` holds its pointer
+
+`using Base<T>::Base;` now inherits the base's constructors, constructor
+templates included, and so does `using B::B;` inside a class template.
+libstdc++'s unique_ptr is built this way. Before, every `std::unique_ptr` built from a pointer held null,
+`std::make_unique`'s included, and a file-scope one initialized from
+`make_unique` crashed before `main`.
+
+### A returned temporary is built in place
+
+`return T(args);` now constructs the function's result directly. When no
+constructor matches, `return local;` now moves the local into the result.
+Before, the temporary was copied and then destroyed, which freed what the
+result still held, so `std::make_unique` returned a dangling pointer.
+
+### The implicit copy and move constructors run each base's own
+
+A class with no copy or move constructor of its own now copies or moves
+each base with that base's constructor, as C++ requires. Moving such a
+class moves its base: `D b(std::move(a));` with `D(D &&) = default;` over a
+base that has a move constructor now leaves `a` empty. Before, madc refused
+it, or the move left `a` still owning its resource. A copy now runs a
+member's copy constructor, never its move constructor, even when the move
+constructor is declared first.
+
+### A base's constructor keeps the members it built
+
+A class whose base has a user constructor no longer constructs that base's
+members a second time. `struct D : B {};` over a `B()` that sets a member,
+and a class that inherits a constructor with `using A::A;`, now keep what
+the base's constructor stored. Before, the member's default constructor
+overwrote it. The other bases of a class that inherits a constructor are
+now default-constructed. A user constructor now also runs the constructor
+of a base that sits under a base with none. Before, both were left
+unconstructed.
+
+### An array compound literal has the extent written in it
+
+`(int[3]){0}` now has three elements, zero-filled, as C requires. Before,
+madc sized it by its initializer list, so it held one element, and a store
+to its third element overwrote whatever came next. An unsized literal,
+`(int[]){...}`, is still sized by its list, a designator included.
+
+### A nested struct inside a C++ struct may hold C++ members
+
+`struct O { struct In { int v = 4; }; In in; };` now compiles, as in g++
+and clang++. The same goes for a nested struct with a brace initializer
+(`int v{8};`) or a member function, and for a nested `class` inside a
+struct. Before, these were refused ("Expecting ';' after anonymous struct
+member", "Expecting type in struct definition"), though the same nesting
+inside a `class` worked.
+
+### An error in a default member initializer is reported
+
+`struct S { int m = nope; };` is now refused with "use of undeclared
+identifier 'nope'", as g++ refuses it. Before, madc compiled it and `s.m`
+read garbage. In a REPL entry, `struct Later { int m = ans; };` is refused
+too, since `ans` moves on before the initializer runs. The initializer of a
+member whose type is a class, an array or a C aggregate still fails quietly
+(a system header's `= PTHREAD_MUTEX_INITIALIZER`). Three g++ testsuite cases
+that compiled only because madc dropped their initializers are now honest
+refusals: `lambda-nsdmi2.C`, `lambda-nsdmi5.C` (B56) and `noexcept62.C` (B57).
+
+### A default member initializer may name `this`, members and later member functions
+
+A default member initializer now parses once its class is complete, as
+C++ requires ([class.mem]/7), with `this` bound to the object. So
+`int b = a + 1;`, `T *self = this;`, `int i = f();` (with `f` declared later
+in the class), an initializer naming a class enumerator or static member,
+and `int n = sizeof(S);` all work, as in g++ and clang++. Before, each of
+these was silently dropped, and the member was left uninitialized. Two more
+g++ testsuite cases now pass (`lambda-ice14.C`, `lambda-ice26.C`: an
+initializer lambda that reads a member).
+
+### Default member initializers apply at every default construction
+
+A class's default member initializers (`struct A { int n = 3; };`) now apply
+wherever the object is default-constructed, as in g++ and clang++. That covers
+`new A` (and `new A()`, `new A{}`, `new A[n]`, placement new), a member
+(`struct B { A a; };`), a base class, an inherited constructor's own members,
+a temporary (`A().n`), a braced local or global (`A g{};`), and each element
+of `A la[2];`. Before, only a named object's declaration applied them: `new A`
+read 0, a nested member read garbage, `A().n` read garbage, `A g{};` read 0,
+and `A la[2];` did not compile. Each object gets its initializers exactly
+once.
+
+### An anonymous C++ enum's enumerators have the enum's type
+
+In C++, an enumerator of an anonymous enum whose values need more than `int`,
+or whose base is fixed, now has the enum's type, as in g++ and clang++. For
+`enum { BIG = 0x100000000 };`, `sizeof(BIG)` is 8 (it was 4). For
+`enum : unsigned char { FA = 1 };`, `sizeof(FA)` is 1. The same holds inside
+a class. An anonymous enum whose values fit `int` keeps `int`, as before.
+
+### A real's text is right everywhere it is read as text
+
+A `var` holding a real used to turn into text with six fixed decimal places
+(`1.500000`, `0.300000`, and 1e25 as `10000000000000000905969664.000000`)
+wherever it was read as text: its `c_str()`, `printf("%s", v)`, a channel
+write, `madc::eval_expression`'s result, and every `php::` and `perl::`
+function given a real. Now:
+
+- madc's own text for a real is what `format("{}", …)` prints (`1.5`,
+  `0.30000000000000004`, `1`, `1e+25`), so `c_str()` and `format` agree.
+- `php::` functions read a real as PHP does (`php::implode` of
+  `{ 1.5, 0.1 + 0.2, 1.0, 1e25 }` is `1.5 0.3 1 1.0E+25`, and
+  `php::str_repeat(1.5, 2)` is `1.51.5`).
+- `perl::` functions read a real as Perl does (`perl::uc(1e25)` is `1E+25`).
+
+### `php::sort` and `php::rsort` order values as PHP does
+
+`php::sort` and `php::rsort` now use PHP 8's standard comparison, as its
+`sort()` and `rsort()` do. An integer and a real compare numerically (before,
+`{ 3, 1.5, 2, 0.5, 1 }` sorted to `1 2 3 1.5 0.5`). So do numeric strings
+(`"10"` after `"9"`), and a number against a word compares by the number's
+text. Both sorts are stable, so equal elements keep their order, `rsort`
+included.
+
+### madcide no longer hangs when you quit after using the REPL tab
+
+Quitting madcide's terminal UI after opening the REPL tab (or pressing F5)
+used to hang: the tab's background task was never told to stop before
+madcide waited for it. Every background task a session starts (the REPL tab,
+a build, a program in a window's Terminal tab) is now stopped before
+madcide waits for it, so the quit is immediate. A program still running
+in the REPL tab or the Terminal is stopped too (after a 2-second grace if it
+does not end on its own). The same fix covers `madcide --lsp`, whose
+shutdown hung the same way after the client ran `madcide.repl`, and an
+in-process build still running at quit is now cancelled.
+
+### F5 runs the buffer in madcide's REPL tab (§37 item 10, slice 3)
+
+In madcide, F5 (Build > Run in REPL, the `replrun` command, bound in every
+profile) runs the current buffer in the REPL tab, as Thonny's F5 and
+IPython's `%run` do. The tab takes the keyboard. The session restarts, so the
+run is clean and a running entry stops. The transcript shows
+`%run <file name>`, then what the program's `main` prints. Lines typed while
+`main` runs are its stdin. After that, the prompt can call the buffer's
+functions, `static` ones included, and read its globals. The buffer's text
+runs as it is in the editor, unsaved edits included, under the tab's
+standard. A buffer that does not compile shows its diagnostics under the
+file's name and leaves a fresh, empty session. A pseudo-buffer (`[build]`,
+`[repl]`) or an empty buffer is refused on the status line.
+
+### Function keys, and loading a program into a session (§37 item 10, slices 1–2)
+
+Key bindings and events now know F1–F12 (spelled `f1`–`f12` in `.keys`
+profiles), from a terminal (xterm and the Linux console) and from the window.
+In the window, a bound function key no longer triggers the browser's own
+action (F5 does not reload the page).
+
+A session can now load a program's text, such as an editor buffer with unsaved
+edits, under the file's name, and then run its `main`. Its diagnostics cite
+that name, and its functions stay callable from the entries that follow. From
+the dialect: `madc::session_load(h, path, text)` and `madc::session_run(h,
+argv)`. This is the groundwork for madcide's F5 (run the buffer into the REPL
+tab), which comes next.
+
+### A crash in a REPL entry no longer ends madc (§37 item 9, slice 4)
+
+`madc` and `madc -i` now run the session in a backend process on your
+terminal, the same backend madcide's REPL tab uses. If an entry crashes, madc
+prints `madc: the session stopped (signal 11, segmentation fault); a new one
+started` and carries on with a fresh session (its state starts empty). Ctrl-C
+while an entry runs stops that entry's session the same way, and the REPL
+stays. `exit(n)` in an entry still exits madc with `n`. An entry that reads
+stdin still reads the next line of a piped transcript. Windows keeps the
+in-process session until it has a backend.
+
+Diagnostics rendered to a stream other than stderr (a session's reply, an
+embedding host) now include the offending line and its caret. Before, those
+two lines always went to stderr, so madcide's REPL tab showed the caret line
+above the error it belongs to.
+
+### madcide's REPL tab (§37 item 9, slice 3)
+
+madcide's bottom panel has a REPL tab (View > REPL, or the `repl` command).
+It runs an interactive session in its own process: the running madc forks,
+and nothing execs. The prompt shows the standard (`c11> `). The tab shows a
+transcript of each entry after its prompt, what it printed, and its value or
+its diagnostics. Under the transcript is an input field. Typing edits the
+field with the profile's own keys and never touches the editor. Enter offers
+the entry. An unfinished one keeps editing on a new line. Up and down walk
+the history from the field's first and last line. Tab completes from the
+session. ^] hands the keyboard back. While an entry runs, the lines you type
+are its stdin. If an entry crashes, the transcript says so and the next entry
+runs in a fresh session. The REPL keys are the `@repl` scope's defaults, and
+a `.keys` profile can rebind them.
+
+The session protocol gained a `running` notice, sent when an entry is taken
+and before it runs, so the transcript shows the entry before its output. The
+new `madc::session_standard(h)` names the standard in force. Panel tabs now
+take their titles from the view vocabulary ("REPL", not "Repl").
+
+In a window or the terminal UI, tab always moved focus once the screen had
+two focusable parts, so the Terminal tab's shell never got a tab either. An
+edit node's `tabkey` hint now keeps tab for that field while it has focus.
+The Terminal and the REPL input use it.
+
+Tests: `testmadcide_repl` (the pane, headless: JIT, `--exe`, `--obj`) and
+`tests/gui/madcide_repl` (in the window under Xvfb, typed through the page's
+own input path).
+
+### Sessions from the dialect: `madc::session_*` (§37 item 9, slice 2)
+
+A madc program can now run an interactive session in a backend process and
+drive it, which is what madcide's REPL pane will do. `madc::session_open("c17")`
+returns a handle. `session_offer(h, text, final)` sends an entry and
+`session_complete(h, text, caret)` asks for completions; both return at once.
+`session_poll(reply, h)` hands back each reply as a row with named fields:
+its `kind` and the entry's `state` are enum codes
+(`madc::session_reply::offer`, `madc::offer_state::taken`) a handler can
+compare against, never words. `session_output` returns what the program
+printed, `session_input` feeds its stdin, and `session_restart` and
+`session_close` do what they say. If an entry crashes the backend,
+`session_poll` reports it (exit status 139 for a segfault) and restarts the
+backend with an empty state. The caller keeps running.
+
+`session_readable(h)` is a `chan_select` case, so a task can wait on a
+session beside its other channels. The select machinery now takes any
+readiness source with several wait handles (a session has two: its replies
+and the program's output), resolved by id at every select, so a closed or
+restarted session never leaves a stale entry. A new scheduler call,
+`taskio::handle_closing`, wakes a task parked on a handle that is about to
+close. The epoll path used to forget such a task, so restarting a session
+under a waiting pump hung it.
+
+Tests: `testsession_entries` (entries, output order, verdicts, diagnostics
+rows, completion, stdin, a refused standard) and `testsession_pump` (a task
+pumping replies through `chan_select`, a crash and its restart, a restart
+while the pump waits), under JIT, `--exe` and `--obj`.
+
+### The session in its own process (§37 item 9, slice 1)
+
+`SessionClient` (`include/madc_session_client.h`) runs an interactive
+session in a backend process: the running madc forks, with no exec, and the
+child serves one session until the client closes the channel. Requests and
+replies are JSON lines on a socketpair, in Jupyter's message shape. An
+entry's printed output reaches the client before its result. A reply carries
+the verdict, the shown value, the rendered diagnostics and their rows, or a
+completion's names. The client writes the program's stdin, so a `scanf` in
+an entry reads it. A crash in an entry ends the backend, not the client:
+the client reports the exit status (139 for a segfault), and `restart()`
+begins a new, empty session. This is the backend madcide's REPL pane and the
+CLI will both use (plan §41.9a). It is POSIX-only for now.
+
+`InteractiveSession::begin` now says why it refuses a standard
+(`Unknown --std target: …`, as the CLI does), on the Program's error stream.
+
+Tests: `test_session_backend` covers output order, stdin, a refused entry's
+diagnostics, completion, a crash and restart, and an unknown standard.
+
+### `?while` says where a keyword comes from
+
+`?while` printed "while is a keyword of madc" in the madc dialect: it named
+the session's standard. It now names the keyword's origin. A keyword the
+language's first standard has is "a keyword of C" (`while`, `for`) or "a
+keyword of C++" (`class`). A later one names the standard it first arrived
+in, among the session's languages: `const` is C89's, `constexpr` C++11's,
+`restrict` C99's. Only the dialect's own words say madc (`defer`). A type
+keyword such as `int` is described as a keyword and as its type. The facts
+come from one table of the standards' keyword lists, `src/madc_keywords.cpp`.
+madc's C++ keyword reservation now reads each keyword's version from that
+table instead of repeating it.
+
+Tests: the keyword case in `test_repl_session`. It also checks that every
+keyword madc reserves, under seven standards, is in the table.
+
+### REPL command: `?name` / `%pinfo name` (§37 item 8, slice 2)
+
+`?sq` describes what the session knows of a name, in IPython's fields. For a
+function it prints each overload's signature with where it was defined
+(`Signature: int sq(int n)  @ REPL[3]:1`), then `Type: function`. An object
+gets its type and where it was declared (`int [3]` for an array). A struct
+or class gets its type, where it was defined and its public members with
+their types (`int area() const`), and a typedef the type it names. A macro
+prints its `#define`, and a keyword the standard it belongs to. A name that
+is both a C tag and a function (`stat`) gets both. An unknown name is
+refused with `'nosuchname' is not declared`. `?` describes exactly the
+names Tab offers. `?` alone lists the commands, and the name after `?`
+completes with Tab.
+
+Fixed: `%type printf` printed `int (const char *, long, ...)`. The
+varargs slot madc adds internally was spelled as a parameter. It now prints
+`int (const char *, ...)`.
+
+Tests: the `?name` cases in `test_repl_session` and `test_repl_cli`.
+
+### REPL commands: `%type`, `%help` (§37 item 8, slice 1)
+
+An entry that starts with `%` or `:` and a name is a session command, as in
+IPython. `%type EXPR` (or `:type EXPR`) prints the expression's type without
+running it, for example `int (int)` for a function, `int [3]` for an array,
+`std::string` in C++ and `var` in the madc dialect. `%help` lists the
+commands, and an unknown one is refused. Tab completes a command's name, and
+then names in its argument. `::x` and a continued line such as `%b; }` stay
+C.
+
+Tests: the command cases in `test_repl_session` and `test_repl_cli`.
+
+### Tab completes members after `.`, `->` and `::` (D23, slice 4)
+
+After `p.` or `pp->`, Tab lists the object's fields, public methods and
+static members, including those of its bases, and follows a chain such as
+`pp->next->in.`. Private and protected members are not offered. `ans.` and
+`_.` list the members of a kept result. After `geometry::` or `std::`, Tab
+lists the namespace's names, types, nested namespaces and templates. After
+`Color::`, it lists a scoped enum's enumerators, and after `Box::`, the
+class's members and nested types. In the madc dialect, `total.` lists a
+`var`'s methods, and `php::` completes in a fresh session before `php` has
+been used. As at the top level, an empty word after `.` or `::` lists
+every candidate. A call or a subscript in the chain (`f().`, `a[0].`)
+completes nothing yet.
+
+Tests: the member case in `test_repl_session` and the `p.` case in
+`test_repl_cli`.
+
+### Tab offers only names you can write at the top level
+
+In a C++ session after `#include <vector>`, Tab listed madc's internal
+names, such as `allocator_char__allocator_char__o2`, and std's names
+without `std::`, such as `vector`, which g++ refuses there. Now it offers a
+namespace's names only once a `using namespace` brings them in. The madc
+dialect still offers std's names bare, because dialect code writes them
+that way. Reserved names (a leading `_` or a `__` anywhere) are offered
+only for a word that starts the same way.
+
+Tests: the C++ lines of `test_repl_session`'s completion case.
+
+### Tab completes names in the REPL (D23, slice 3)
+
+At the REPL, Tab completes the word before the caret from the session's
+names, as Julia's does. It offers every entry's objects and functions,
+the names an included header declares (`printf`, `stdout`, `EOF`), types,
+the standard's keywords, and macros. In C++ it also offers class and
+namespace names; in madc, the words that need no include (`println`,
+`php`), and `ans` and `_N` once a value is kept. One candidate is inserted.
+With several, the first Tab inserts their common prefix and a second lists
+them. After `struct`, `union` or `enum` Tab completes a tag. A word in a
+string, a comment or a directive completes nothing, and names after `.`,
+`->` or `::` are the next slice.
+
+Tests: the completion cases in `test_repl_session` and `test_repl_cli`.
+
+### The REPL keeps a history (D23, slice 2)
+
+On the first line of an entry, Up recalls earlier entries that start with
+what you have typed, and Down walks back to what you had typed. That is
+how Julia and IPython recall. Ctrl-R and Ctrl-S search history as readline
+does; Enter leaves the match to edit or run, and Ctrl-G puts the entry
+back. Every entry the session takes is added, including a refused one, but
+not a repeat of the one before. Entries are saved as they are taken, in
+Julia's format, to `$XDG_STATE_HOME/madc/history`
+(`~/.local/state/madc/history`), or `%LOCALAPPDATA%\madc\history` on
+Windows. A later session recalls the ones typed in its own language: C,
+C++ or madc. `--history-file=PATH` moves the file and `--history-file=no`
+keeps none.
+
+Tests: the history cases in `test_line_edit` and `test_repl_cli`.
+
+### A shown string keeps its UTF-8 text
+
+A REPL entry that shows a string now writes UTF-8 text as itself, as Julia
+and Python do: `"été"`, where it showed `"\303\251t\303\251"`. A byte that
+is not part of valid UTF-8 is still an octal escape (`"\377"`). The same
+rule spells string literals in `--emit=c11` output, which gcc and clang read
+as the same bytes.
+
+Tests: `testrepl_utf8` (new), and the UTF-8 lines in `test_repl_session`'s
+display case.
+
+### The REPL edits each entry on a terminal (D23, slice 1)
+
+On a terminal, `madc` now edits each entry the way Julia's REPL and readline
+do. The caret moves over the whole entry, lines included, with the arrows
+and Emacs keys: `^A`/`^E`, `esc b`/`esc f`, `^K`/`^U`/`^W`/`^Y`, `^T` and
+`^_` to undo. Enter runs the entry when it is complete, wherever the caret
+is, and otherwise starts a new line indented to the prompt's width. The
+third Enter in a row submits an unfinished entry, and Esc then Enter always
+starts a new line. Tab at the start of a line indents. Ctrl-C drops the
+entry and Ctrl-D on an empty one ends the session. A paste is typed text:
+each pasted line runs as it completes, and a pasted tab stays a tab. UTF-8
+input works. Output with no final newline no longer hides the next prompt.
+Piped input and `TERM=dumb` still read plain lines. History, and Tab
+completing names, are the next slices.
+
+Tests: `test_line_edit` (new), the editor cases in `test_repl_cli`, and the
+UTF-8 and paste cases of `test_tui_model`'s key parser.
+
+### A REPL entry's reference to an array shows the array
+
+`int (&ra)[2] = arr;`, then `ra`, showed `<int32_t>` with a stray backend
+warning, and `ans` held a meaningless number. Now `ra` shows `{ 4, 5 }`, as
+the array does, and `ans` says an array is not kept yet.
+
+Tests: the reference-to-array lines in `test_repl_session`'s aggregate case.
+
+### A REPL result names the object an entry showed (D12, slice 2)
+
+`ans` of a struct, union or class is now the object itself, as it is in
+Julia and IPython. After `p`, then `p.b = 9;`, `ans.b` is 9; after `v`, then
+`v.push_back(3);`, `ans.size()` is 3. Every class object is kept this way,
+including one that cannot be copied. A value an entry computes, such as
+`std::vector<int>{ 7, 8 }` or a function's by-value result, is kept as its
+own object. Numbers, pointers, enums and a madc `var` are still kept as
+copies. A part of a temporary (`mkh().name`) is shown but not kept, and an
+array is not kept yet. Showing `*pa` or a struct's array member now prints
+its elements, where it printed `<int32_t>`.
+
+Tests: the aggregate case in `test_repl_session`.
+
+### A functional cast at a REPL entry's top level is an expression
+
+`std::string("short").size()` typed as an entry read "Expecting parameter
+type in function pointer typedef": the entry's top level read it as a
+declaration, as a file's top level must. Inside a function the same line was
+right. An entry's top level admits statements, so a type-headed statement
+there is now decided as it is in a body: `std::string("short").size()`
+shows 5 and `std::vector<int>{ 1, 2 }.size()` shows 2, while
+`std::string s("x")` and `std::string f();` stay declarations. The statement
+is also cited where the entry writes it, not at the header's typedef.
+
+Tests: the functional-cast case in `test_repl_session`.
+
+### The REPL names the values it showed: `ans`, `_`, `__`, `___`, `_N` (D12)
+
+An entry that shows a value (no final `;`) keeps it, as IPython keeps
+`Out[N]`: `ans` and `_` are the last one, `__` and `___` the two before it,
+and `_N` is the value `REPL[N]` showed. `x + 1`, then `ans * 2`, then
+`_2 + _3` works in C, C++ and the madc dialect. A value hidden by `;` keeps
+nothing, and neither does a `void` call or a refused entry. A kept value is
+a copy, so `_N` stays what `REPL[N]` showed. Your own `ans` or `_` wins.
+`ans` and its three neighbours are refused where code runs later (a
+function or lambda body, a default argument), since they move on with every
+entry; `_N` works there. Scalars, pointers, enums, C structs, trivially
+copyable classes and a madc `var` are kept. Other class objects and arrays
+are shown and not kept yet, and naming one says so.
+
+Tests: `testrepl_ans` (IPython gives the same lines), and the D12 cases in
+`test_repl_session`.
+
+### Entries the backend refuses no longer break the REPL session
+
+In a C session, after two entries the backend refused (a file-scope
+`int y = g();` whose initializer is not constant, and so refused in C),
+every later entry failed "tag P redeclaration" for a struct an earlier
+entry had defined, and the session could compile nothing more. A refused
+entry's parse tree was freed while the backend's checker still held
+pointers into it, and a later entry's tree reused the memory. The tree
+now lives as long as the session. Nothing changes for a file compile.
+
+Tests: the new refused-entries case in `test_repl_session`.
+
+### A file-scope `auto` object is defined
+
+In C++ and C23, `auto x = 5;` at file scope read "MIR error: import of
+undefined item x", and `auto t = s;` of a `std::string` read `""`. The
+same held for `auto fp = g;`, a lambda, `auto &r = m;`, `const auto` and
+`static auto`. In the REPL, whose entries are file scope, `auto x = 5;`
+then `x` read "undefined reference to 'x'", and `auto x = 5` without a
+`;` showed nothing. All of them are defined now and match g++, clang++
+and gcc.
+
+Tests: `testautofilescope` (C++17), `testautofilescopec23`, and the
+`auto` case in `test_repl_session`.
+
+### A REPL entry's final function name shows the function
+
+An entry ending in a bare function name called the function. `f` showed
+`3`, `g` read "too few arguments", `&f` was refused and ran on into the
+next line, and `int (*p)(void) = f` was refused. With a `;`, and in a file,
+all four were right. Now `f`, `(f)`, `&f`, `*f` and `1, f` show the
+function's pointer, `(int (*)(void)) 0x…` in C and `(int (*)()) 0x…` in
+C++, as cling shows it, and nothing is called until `p()`.
+
+Tests: the new function-name case in `test_repl_session`, under C, C++ and
+the madc dialect.
+
+### `madc -i file` runs the file, then the REPL has its names (D20)
+
+As `python -i` does, `madc -i prog.c a b` loads `prog.c` into a REPL
+session and runs its `main` with `prog.c a b` as its arguments. The prompt
+follows, with every name the file defined. The file is read in its own
+grammar, as `madc prog.c` reads it. A `--std=madc` script's top-level
+statements are its `main`, as always. `main`'s return value does not end
+the session, and `exit(n)` still ends the process. A file without `main`
+just loads, so `madc -i lib.c` is a session over `lib.c`'s functions. A
+file that is refused leaves nothing behind, and the prompt starts anyway.
+
+The file and the session are one unit, as they are in cling and clang-repl:
+a `static` in the file is visible to later entries. A second file that
+defines the same `static` is refused whole ("redefinition of 'count'"),
+which both of them do too. A `static` typed as an entry is accepted now as
+well. Before, it was refused as "not supported yet". The banner is printed
+only when the REPL starts without a file.
+
+Tests: `testrepl_cfile` (cling 1.2 gives the same four lines),
+`testrepl_script`, and the load, `main` and statics cases in
+`test_repl_session`.
+
+### A later REPL entry that names an auto-included header runs
+
+After a first entry, an entry that used `format`, `println`, `php::` or any
+other auto-included name went wrong. `int total = 3;` then
+`format("now={}", total)` was refused as "redefinition of 'total'", and
+later entries crashed. `println(...)` printed nothing and reported no
+error. The lexer inserts the header's tokens counting from the start of
+the token stream, but each entry was lexed onto the stream behind the
+earlier entries' tokens. Each entry now starts on a fresh stream, as a file
+does. Test: `test_repl_session`, "a later entry that names an
+auto-included header runs".
+
+### `madc` with no program file is the REPL (D20)
+
+`madc` alone printed a stale usage line. It now enters the REPL when stdin
+is a terminal, as Julia, Python, Node and Lua do. There is no `--repl`
+flag:
+- the prompt names the standard in force (`madc> `, `c17> `, `c++17> `);
+- continuation lines are indented to its width;
+- an entry runs as soon as it is complete, with the final `;` optional, and
+  shows its value when the `;` is omitted;
+- a finished `if` waits one line for an `else`;
+- Ctrl-D exits.
+
+`-i` / `--interactive` enters the REPL even on a piped stdin, with no
+banner and no prompt, so a transcript's output is its values and
+diagnostics. With no file and a piped stdin, madc compiles and runs stdin,
+and `-` names stdin as a file argument (`madc - a b < prog.c`), as in gcc
+and python. An artifact request with no input (`-o`, `-c`, `-E`,
+`--emit=`, ...) is gcc's `fatal error: no input files`. The command line's
+options (`--std=`, `-I`, `-D`, `-l`, `madc.ini`) hold in the session as in
+a file.
+
+An entry is classified on the live session, inside its entry transaction,
+so a name an earlier entry declared counts (`x +` waits for its operand).
+An attempt still being typed keeps nothing, takes no entry number and
+prints nothing. A close that opens nothing is refused. Each entry starts
+from an empty token queue, whatever refused the one before.
+
+Tests: `test_repl_cli`, the `madc_repl_run` loop over string streams;
+`test_repl_session`'s offer cases.
+
+### A `var` holding a number takes arithmetic (D28)
+
+`var a = 5; a + 1` was refused. A `var` now takes `+ - * / %`, unary `-`,
+`< <= > >=` and the compound assignments, with a number or text on either
+side (`1 + a`, `"x" + t`). The rule is `madc::value::arithmetic` / `negate`
+/ `compare`, shared by the script's operator rows and the C++ operators on
+`madc::value`:
+- an integer with an integer is an integer, wrapping on overflow (Julia);
+- an integer with a real is a real;
+- `/` of two integers is real (`5 / 2` is `2.5`); a plain `int` keeps C's
+  division;
+- `%` truncates (C, PHP, Julia's `rem`); an integer `% 0` is refused;
+- numbers order exactly (`var(INT64_MAX) >= 9223372036854775807.0` is false,
+  as in Python and Julia) and text orders bytewise;
+- text joins text; any other pair, a boolean included, is a catchable
+  error, as `==`'s strict kinds are.
+
+`a += 1` adds, and `t += "x"` still appends. The result of an operator is a
+new `var`, returned by value. `-a` reaches the carrier through the unary
+operator lane's admission, `carrier_operand`. A carrier on the left keeps
+its member rows: the free-operator lane no longer claims `v + w` for a
+free row that only fits through the carrier's text conversion. A session
+shows a `var` result (`a + 1` shows `6`, not `<array>`), and
+`php::print_r(a + 1)` prints it. The bitwise operators, which a `var` does
+not define, are still refused. The free rows (`1 + a`) are registered for
+every Program, so a second session or eval context has them too.
+
+Test: `testvararith` (oracles: python3, php 8.3 and gcc on the distinctive
+lines), unit cases in `test_libmadc_value` and `test_repl_session`. Closes
+BUGS.md B29.
+
+### A unary operator returning a class by value gets its result slot
+
+`N operator-() const` on a class with a user copy constructor or destructor
+was emitted one argument short ("too few arguments") with an unaddressable
+value. The unary operator lane never asked `function_retbuf_class`. It now
+passes the hidden result address first and yields the materialized temp,
+as the binary operator and method lanes do. This covers madc-compiled
+bodies and external operators alike. Found while adding `var`'s unary minus
+(D28).
+
+Test: `testunaryretbuf` (g++ and clang++ agree).
+
+### A `var` passed by value is the callee's own copy
+
+`void g(var v) { v = 9; }` changed the caller's variable. The caller passed
+its own buffer, because the call lanes test a by-value class argument with
+`as_class_instance`, which does not see the carrier. The caller now builds
+the parameter object and passes its address, as g++ and clang pass a
+`madc::value`:
+- an lvalue argument is copy-constructed into a caller-owned temp;
+- a by-value result (`g(f())`) is already the parameter object;
+- a string, number or boolean is converted, as in `var v = 5;`.
+
+`by_value_class_formal` is now the one test the ten call-lane argument arms
+share. Three defects fixed on the way:
+- A `var &` argument into a `var` formal (`g(r)`) was a c2mir error.
+- A keyed slot argument (`g(o["k"])`) was passed as an integer.
+- Inside the callee, binding the formal to a `const var &` (`k = v;`) took
+  the address of the formal's pointer, and it crashed.
+
+Test: `testvarbyvalue` (oracle: the same program over `madc::value`, built
+with g++ and clang++).
+
+### A `var` can be returned by value
+
+`var f(long n) { var x = n; return x; }` was lowered as a function returning
+`long long` whose `return x;` returned the buffer's address. The Adventure
+plan's L3 recorded it as open. Returning a `var` by value now works wherever
+a function returns: free functions, methods and calls through a function
+pointer. The same holds wherever the result is used: a declaration, an
+argument, a `const var &`, a method receiver and an `==` operand.
+
+`madc::value` has a user-provided copy constructor and destructor, so g++
+and clang return it through a hidden result address. madc now does the
+same (`void _Z1fl(struct __madc_value *__retbuf, long long n)`), so a madc
+function and a host `madc::value g()` share one ABI. The new
+`struct __madc_value` is the carrier's C-visible slot type: its size and
+alignment are madc::value's, and it is emitted once per module that names
+it. The carrier's storage is still its `long long[]` buffer.
+
+Two defects on the way:
+- The retbuf copy constructor declared an external constructor's
+  parameters by hand, with every scalar as `long long`. So
+  `var f() { return 2.5; }` returned a garbage real. It now uses
+  `native_param_shape`.
+- A host call (libmadc `program::call`) to a function returning `var`
+  would have received its text. It is declined, as before, because the
+  interchange struct cannot carry an array or an object.
+
+Test: `testvarreturn` (both oracles are the same program over the real
+`madc::value`, built with g++ and clang++).
+
+### A shown standard container is written as the expression that builds it
+
+Result capture (D10, plan §41.4a) now covers the standard containers. Each
+shows as a C++ expression that builds it again:
+- `std::vector<int>{ 1, 2, 3 }`, or `std::vector<int>{ }` when empty;
+- `std::map<int,int>{ { 1, 10 }, { 2, 20 } }`;
+- `std::set<int>{ 1, 3 }`.
+
+A `std::string` shows as its text (`"ab\"c"`). A C++ class is named without
+C's `struct` (`H{ .name = "hh", .n = 3 }`). Two fixes found on the way:
+- A declaration whose type comes from a header (`std::string s = "ab"`) was
+  refused with no diagnostic. The entry's run was placed at the header's
+  token and so dropped as an unused library function. It is now placed in
+  the entry's own text.
+- madc refuses `std::vector`'s `operator==` (B31) and two initializer-list
+  constructions (B30), so the tests compare containers element by element.
+
+Test: `test_repl_session`.
+
+### A shown `var` is written as its dialect literal
+
+Result capture (D10, plan §41.4a) now covers the madc dialect's `var`, the
+REPL's default carrier (D4), which showed as `<madc::value>`. A `var` now
+shows as the literal that builds it again:
+- `5`, `2.5`, `"hi\n"` and `true`;
+- `{ 10, 20, 30 }` for an array;
+- `{ "k": 1, "name": "x" }` for an object.
+
+A null `var` shows nothing, as Julia shows `nothing` and IPython `None`.
+The kind is known only at run time, so the runtime value walk renders it,
+as it does for print_r. Each shown text, entered again, shows the same
+text.
+
+Test: `test_repl_session`.
+
+### A shown struct, union or array is written as its initializer
+
+Slice 2 of result capture (D10, plan §41.4a). An aggregate's shown value is
+written as C99 designated initializers, and at top level it carries its type:
+- C: `(struct Point){ .x = 1.0, .y = 2.5 }` and `(int[3]){ 4, 5, 6 }`;
+- C++: `Point{ .x = 1.0, .y = 2.5 }` and `{ 4, 5, 6 }`, since C++ has no
+  array compound literal.
+
+A nested member is the braces alone. A `char` array is text when a NUL ends
+it within its bound (`.name = "abc"`) and a brace list of characters
+otherwise. A union shows the first member, the one its initializer sets. A
+struct returned by a call is evaluated once. A member with no display yet
+(a container, a madc `var`) shows its type in angle brackets, in place.
+
+Each shown text re-enters in the session's tests. One exception: madc
+refuses the two-dimensional `(int[2][2]){ … }` entered again, while gcc and
+clang accept it, filed as B28.
+
+Test: `test_repl_session`.
+
+### An entry without its final `;` shows its value
+
+In the interactive session, an entry whose final statement omits its `;` now
+shows that statement's value (D10, plan §41.4a), as Julia does. A declaration
+counts too, so `int x = 15` shows `15`. With the `;`, the entry shows
+nothing. The value is spelled so that the text, entered again, yields the
+value:
+- `30`, `18446744073709551615u`, `0.3333333333333333`, `0.8333333f`, `1.5L`,
+  `1e+100`, `-0.0`, `INFINITY`;
+- `true`, `'\n'`, `"a\"b\n"`;
+- `(int *) 0x7ffd…`, `(int *) nullptr` in C++, `(int *) NULL` in C;
+- `E::B` in C++ and `B` in C, and `(E) 3` for a value that names no
+  enumerator;
+- `(int (*)(int)) nullptr`.
+
+`InteractiveSession::shown()` returns the text; the core prints nothing.
+
+Rendering is one more flavor of the one print_r / var_dump walk. Its floats
+use the same shortest round-trip digits as `std::format`. The C-literal
+escape rule moved into the runtime (`__madc_c_escape`), so a shown `"a\n"` and
+a compiled literal cannot disagree, and `check-one-c-escape.sh` gates it.
+
+Test: `test_repl_session`. Every shown text is entered again and compared
+with the original value.
+
+### An inline definition reaches the calls that waited for it
+
+In the interactive session, a function first called through a stub (D27)
+and then defined `inline`, like `inline int T::f() { return 4; }` after
+`int gt(T t) { return t.f(); }`, still failed `gt(T())` with "undefined
+reference to 'T::f()'". An entry emits an inline body only where it uses it,
+and the defining entry did not use it. That entry now emits the body a stub
+waits for, and the body replaces the stub. This is Julia's late binding.
+clang-repl-20 fails `gt(T())` ("Symbols not found: [ _ZN1T1fEv ]") and the
+session does not copy that.
+
+Test: `test_repl_session`.
+
+### An object no entry defines yet is refused at its first use
+
+In the interactive session, code that named an object an entry had declared
+but none had defined refused its entry at link. That covered
+`extern int later2; int g2() { return later2; }` and a member function
+reading a static data member that a later entry defines. Following D27, such
+code now reads the object through a cell the session owns. The session binds
+the cell once an entry defines the object, so `g2()` gives 4 after
+`int later2 = 4;`. A write through the cell and the address `&later2` reach
+the same object. A read that comes first fails when it runs, with
+"undefined reference to 'later2'", and the entry is kept. clang-repl-18 and
+-20 give `g2=4` too.
+
+A static initializer such as `int *p = &nd;` is still refused at its entry,
+because that entry is the use. clang-repl accepts it only because it links
+the module at `p`'s first read. A reference, an array, a madc carrier and a
+thread-local object are also still refused at link.
+
+Test: `test_repl_session`.
+
+### A function no entry defines yet is refused at its first use
+
+In the interactive session, an entry that named a function no entry had
+defined was refused at its link: `int calls_h() { return h(); }` before `h`
+existed, or `int z = 5; f();` with `f` only declared. The owner decided (plan
+§42 D27) that the refusal waits for the first use, as in Julia and
+clang-repl.
+
+Such an entry now links against a stub, and a later definition replaces the
+stub. A call, a function pointer or a vtable slot bound earlier reaches the
+definition, and the function keeps one address. A use that comes first fails
+when it runs, with "undefined reference to 'f()'", and returns to the entry's
+boundary. The entry stays linked with its definitions, so `z` is 5, as Julia
+keeps it. clang-repl-18 and -20 give `calls_h=11` too, but they fail
+`int z = 5; f();` at its entry and leave `z` unusable, which the session does
+not copy. The failure is no C++ exception: `catch (...)` does not see it, but
+the objects the run built in a `try` are destroyed, as a throw would destroy
+them.
+
+MIR's loader gains ld's rule that a definition replaces a weak one of the same
+function and takes its address, and a call to a weak function is never
+patched into a direct call.
+
+Test: `test_repl_session`.
+
+### A header's statics no longer refuse an entry
+
+In the interactive session under a C++ standard, `#include <string>`,
+`<cmath>`, `<cstdlib>` and `<algorithm>` were each refused with
+"'__madc_bswap16' has internal linkage: a static function in an interactive
+session is not supported yet". `#include <iostream>` was refused the same
+way for `__ioinit`. The check meant for a static the entry writes itself
+counted every internal-linkage definition the entry queued, a header's
+included. Each entry's module is a translation unit, so a header's
+`static` definitions are that module's own copy, as in every C++ TU. Only a
+static written in the entry's own text is refused now. clang-repl-18 and -20
+include all five headers and give `r=7 s=abc`, then `r2=9`, and so does the
+session.
+
+Test: `test_repl_session`.
+
+### A refused entry leaves nothing behind
+
+In the interactive session, an entry that was refused (by its parse, its
+translation or its link) kept everything it had declared. After a refused
+`int h() { return 1; } int x = ;`, `h` was still declared, so a corrected
+`int h() { return 2; }` was a redefinition. The same held for its types,
+macros, includes and namespaces. A refused `#define N 4` still expanded, a
+refused `struct F { int a; };` stayed the definition of an earlier
+`struct F;`, and a refused `int S::count = 1;` left `S::count` defined but
+emitted nowhere, so every later use failed to compile.
+
+Each entry now runs inside a transaction on the Program. It commits once the
+entry's module links and rolls back on any refusal. The rollback covers:
+- the registries (types, functions, templates, overloads, namespaces,
+  aliases);
+- the macro tables and the include bookkeeping, including the include
+  guards;
+- every entity a definition had changed in place (an earlier declaration's
+  object, function or forward-declared aggregate).
+
+The class journals opened inside an entry nest in its transaction, because
+each registry's transactions now nest. This follows Julia, which leaves
+nothing behind for an input that fails to parse. cling gives the same values
+on these inputs (`dv=4`, `ovd=4.5`, `sf=16`, `ev=8`). clang-repl-20 keeps a
+refused macro and include guard, breaks a rolled-back namespace and keeps a
+refused out-of-line member, and madc copies none of that. This replaces the
+scaffolding that kept a refused entry's definitions out of later modules
+(`session_withheld`).
+
+Test: `test_repl_session`, under C++17 and C17.
+
+### An entry emits an inline body only where it is used
+
+In the interactive session, `struct S { static int count; static int bump()
+{ return ++count; } };` was refused with "undefined reference to
+'S::count'" before a later entry could define `S::count`. The same happened
+to `inline int f() { return later; }` before `int later = 4;`. The builder
+emitted every user body in each module. In a whole file that is harmless,
+but an entry is not whole. Every C++ TU emits a vague-linkage body (in-class,
+`inline`, an instantiation) only where it is used, and so does clang-repl.
+In an interactive entry such a body is now lowered only when referenced, on
+the same reachability path system-header bodies take. A strong definition is
+still emitted whole, so `int g2() { return later2; }` is still refused.
+clang-repl-18 and -20 accept both entries and give `kc=14` and `r=4`, and so
+does the session.
+
+Test: `test_repl_session`.
+
+### A qualified expression is a statement at an entry's top level
+
+In the interactive session, `S::count = 3;`, `S::bump();` and
+`S::count += 10;` were refused with "Qualified member definition requires a
+return type". At a file's top level, `Class::` can only begin a constructor
+or destructor definition, and the reader knew nothing else. Inside a body,
+the same text was already an expression statement. In an interactive
+entry's own text, under every standard, a qualified name that is not a
+constructor or destructor now goes back to the statement parser. A file's
+top level still refuses it, and so does g++ ("'count' in 'struct S' does not
+name a type"). clang-repl-18 and -20 give `kc=14 kv=6`, and so does the
+session.
+
+Test: `test_repl_session`.
+
+### A later entry defines an earlier entry's members
+
+In the interactive session, a class declared in one entry could not have its
+members defined in a later one. `int S::get() const { ... }`, `S::S(int a)
+: v(a) {}`, `S::~S() {}` and `int S::count = 5;` were all refused with
+"Expecting identifier after type". So was a local variable shadowing an
+earlier entry's class (`int T = 3;`), and so was `(int)E::B`.
+
+A file lexes its whole text before any of it is parsed, so its lexer knows
+only madc's own types. A class the file declares reaches the parser as an
+identifier, and the parser resolves it by lookup. A session lexes each entry
+after the earlier entries are parsed, and the lexer read their declarations,
+so an earlier class name arrived as a type-name, blind to scope. An entry's
+lexer now knows what a file's lexer knows (`Program::lexer_type_token`, the
+one answer for the word lexer and PCH replay). clang-repl-18 and -20 give
+`kg=40 dc=1 kc=5 ks=4 ke=1` for the sequence, and so does the session.
+
+Test: `test_repl_session`.
+
+### Two more synthesized destructors are linkonce
+
+Two destructors madc synthesizes in every translation unit that needs them
+were emitted as strong definitions. Their siblings were already linkonce:
+- the complete-object destructor of a class with virtual bases, which g++
+  emits weak;
+- the helper that destroys an array of class objects (`E__arr3___dtor`).
+
+So in the interactive session, the next entry that needed one was refused as
+a multiple definition of `J::~J()` or `E__arr3___dtor`. Both are linkonce
+now. clang-repl-18 and -20 give `kj=1 kjd=1 kda=6`, and so does the session.
+
+Test: `test_repl_session`.
+
+### A linkonce definition loaded twice is one definition
+
+C++ gives vtables, type_info, inline functions, template instantiations and
+synthesized destructors vague linkage: every translation unit that needs one
+emits its own identical copy, and the linker keeps the first. MIR's
+in-process loader ignored that binding. A later module's copy of a function
+was a fatal redefinition, and a later copy of a data item silently took the
+name over while each module kept using its own. So:
+- In the interactive session, every entry after a class with a constructor
+  or destructor was refused ("multiple definition of 'D::D(int)'", from its
+  C2/D2 aliases), and so was every entry after a class that needed a
+  synthesized or deleting destructor.
+- An object built in one entry failed `typeid(*bp) == typeid(C)` in the
+  next. The same happened across the TUs of a `--project` program, where an
+  inline function's static local was also counted twice.
+
+`MIR_load_module` now applies the rule. A linkonce or weak definition whose
+name the context already holds becomes an import bound to the definition
+already there, so every module shares one copy. `MIR_module_link_check`
+agrees, and a strong duplicate is still a redefinition. clang-repl-18 and -20
+give `kd=5 kd2=6 kh=1 okc=1 same=1 ks=4 kdc=1 okpc=1` for the session
+sequence, and so does madc. For the `--project` reducer, g++ and clang++ give
+`same=1 okc=1 c1=1 c2=2`, and so does madc, which gave `same=0` and `c2=1`.
+
+Tests: `test_c2mir`, `test_repl_session`, `testprojectvague`.
+
+### Every submitted entry has its own number
+
+An interactive entry's diagnostics cite `REPL[N]`. N counted only the entries
+that linked, so the entry after a refused one took the refused one's name,
+and two entries' diagnostics both cited `REPL[2]`. N now counts every entry
+submitted, refused ones included, as Julia's `REPL[N]` and IPython's `In [N]`
+do. `InteractiveSession::submitted()` reports that count, and `entries()`
+still counts the entries linked.
+
+Test: `test_repl_session`, "every submitted entry has its own number".
+
+### An entry that cannot link is refused, and the session goes on
+
+In the interactive session, an entry whose module could not link used to end
+the session. After `int f(void);`, the entry `f();` failed at link, and so
+did every later entry, `int k = 3;` included. None of the failures recorded
+a diagnostic. Loading a module into MIR registers its exports before the
+link can fail, and a failed link leaves the module queued, so every later
+link re-linked it. This takes the common C path too: under c89 through c17,
+calling a function that is declared but not yet defined ends up here.
+
+Now the session asks MIR first. `MIR_module_link_check`, in madc's MIR
+subtree, answers from the context's own tables whether the module would load
+and link, without changing them, and the load and link share its two rules.
+A module that would fail is never loaded. The entry records one diagnostic
+per symbol, in ld's words: `undefined reference to 'f'`, or `'f()'` for a
+C++ symbol, demangled as ld shows it, and `multiple definition of ...`.
+The next entry links as if the refused one had never been tried:
+- clang-repl-18 and -20 report "Symbols not found: [ _Z1fv ]", then give
+  `k=3`, and `f=7` once `f` is defined. So does the session.
+- Under c89, as clang-repl-20 with `-xc` does, an undeclared `f();` is
+  refused, and `g = f();` gives 7 after `f` is defined.
+
+An entry that fails to compile now records a diagnostic too, instead of
+printing to stderr only. "Is this diagnostic an error" has one owner,
+`Diagnostic::is_error`, gated by `check-one-error-diagnostic-scan.sh`.
+
+Tests: `test_c2mir`, `test_repl_session`.
+
+### A refused entry's definitions never come alive in a later entry
+
+In the interactive session, the definitions a refused entry had parsed were
+defined by every later entry's module. A function written before a parse
+error came alive in the next entry, although its entry was refused. A
+definition that could not compile or link, such as a C global with a
+non-constant initializer, was re-emitted by every later entry, so all of
+them were refused too. Now no later module defines a refused entry's own
+definitions. It declares them, so using one is refused by name.
+- A template instantiation or another vague-linkage definition may still be
+  defined by any later module that needs it.
+- So may a definition with internal linkage.
+- A header the entry included keeps its definitions, as it keeps its
+  include.
+
+Removing a refused entry's declarations as well is the rest of plan §41.3.
+
+Test: `test_repl_session`, "a refused entry's definitions never come alive
+later".
+
+### An entry compiles after an earlier entry failed to compile
+
+In the interactive session, one refused compile made every later entry fail
+to compile, even a valid `int k = 0;`. Only "cir_compile failed" was shown,
+with no message of the entry's own. One c2mir context compiles every entry of
+a session, and `c2mir_compile_tree` (in madc's MIR subtree) counted the
+context's errors since it was created, not the errors of the tree it was
+given. Its type check already counted per tree. Now its answer does too. A
+one-shot build has a fresh context per program, so it never met this.
+
+Test: `test_cir`, a tree after a refused one in the same c2mir context.
+
+### A `delete` statement owes its `;`, and runs at the top level
+
+`delete p }`, a delete statement with no `;`, compiled in every C++ mode;
+g++ and clang++ refuse it with "expected ';'", and so does madc now. The same
+gap dropped a top-level `delete p;` from a `--std=madc` script and from an
+interactive entry, so the destructor never ran. For the test's statements
+inside `main`, g++ and clang++ print `dtor` then `after`, and so does madc.
+
+Tests: `teststmtsemideletecxx`, `testscripttopdelete`, `test_repl_session`.
+
+### A top-level cast statement runs instead of being dropped
+
+A cast used as a statement at the top level, such as
+`static_cast<void>(f());`, was silently discarded in a `--std=madc` script,
+so `f` never ran. In an interactive entry, `(void)f();` was discarded the
+same way under every C and C++ standard. An expression statement now runs
+whatever its expression is, as it would inside `main`. For the test's
+statements inside `main`, g++ and clang++ print `12345`, and so does madc.
+
+Tests: `testscripttopcast`, `test_repl_session`.
+
+### A top-level block runs instead of being dropped
+
+In a `--std=madc` script, a block at file scope, `{ int t = 2; g = g + t; }`,
+was parsed and then silently discarded, so the script went on with `g`
+unchanged and nothing inside the block ran. It now runs in the synthesized `main`, in order with the
+statements around it, as it would inside a written `main`. gcc and clang
+print `3` and `in block 30` for the test's statements inside `main`, and so
+does madc. An interactive entry's block runs the same way.
+
+Tests: `testscripttopblock`, `test_repl_session`.
+
+### An interactive entry's statements run
+
+An entry in the interactive session can now hold statements as well as
+declarations (plan §41.2a, slice 2). They run once, in source order, when the
+entry is submitted. After `int x = 10;`, the entry `x = x * 2;` leaves `x` at
+20, and a later `for (int i = 1; i <= 4; ++i) x += i;` leaves it at 30.
+- The statements lower into `void __madc_entry_N(void)` in the entry's own
+  module, and the session calls it once the module links. Script mode's
+  synthesized `main` is untouched.
+- A declaration keeps its place among the statements. In `step(1); int y =
+  step(2); step(3);` the steps run 1, 2, 3, as clang-repl runs them. A
+  global's dynamic initializer that follows the entry's first statement
+  moves out of the module's init into the entry's run.
+- A top-level `:=` declares a session global, like `int n = e;`, so later
+  entries see it. A top-level `defer` runs when the entry ends.
+- An entry that does not compile runs none of its statements.
+
+Statements run under the C and C++ standards too (D3). Under `--std=c89`,
+`c99`, `c17` and `c++17`, an entry's `x = 3;`, calls, `if`, loops, `switch`,
+blocks and labels run as they do under `--std=madc`.
+
+Tests: `test_repl_session`.
+
+### A file-scope `:=` in an included file gets its storage
+
+Outside script mode, a `:=` at file scope declares a global, as `int
+hdr_count = 5;` does. madc registered the name but never recorded the
+declaration, so no storage was emitted and the program died at link time with
+`import of undefined item hdr_count`. The declaration is now recorded like any
+other, and its initializer runs in declaration order, constant or dynamic. The
+same header spelled with ordinary declarations prints `5 6` under g++ and
+clang++, and so does madc.
+
+A file-scope variable's declaration record now has one owner,
+`Program::record_global_top_decl`. Three parser sites had each built it by
+hand.
+
+Tests: `testcolondeclheader`.
+
+### The interactive session keeps each entry's definitions for the next
+
+This is the core of the REPL arc (plan §41.2a, slice 1). `InteractiveSession`
+(`include/madc_session.h`) holds one Program and one live MIR context.
+- Each entry is parsed on top of everything the earlier entries declared:
+  macros, includes, types and symbols.
+- Each entry is compiled to its own MIR module and linked into the live
+  context, so a later entry calls an earlier entry's functions and reads its
+  globals in place. Nothing is replayed or recompiled.
+- Anything an earlier module defines is declared, never defined again, in a
+  later module. There is one `g`, and writing it through its live address
+  changes what the next entry reads.
+
+For example, after `int g = 5; int f(int a) { return a + g; }`, the next
+entry's `int h(void) { return f(2) + g; }` returns 12, the value gcc and clang
+give for the same two files linked together. This works under `--std=c17` and
+`--std=madc`.
+
+A file-scope `static` is refused for now with a clear message. Statics wait
+for the redefinition rules (D6), because a later entry's module cannot import
+an internal-linkage name.
+
+Tests: `test_repl_session`.
+
+### `_Generic` and `__builtin_types_compatible_p` see a C enum's compatible type
+
+A C enum is compatible with its underlying integer type (C11 6.7.2.2p4),
+but madc compared type names as strings. So `_Generic(e, unsigned int: 1,
+default: 0)` chose `default` for an `enum A { A1 = 1 }` operand (gcc: 1), as
+did `_Generic(&e, unsigned int *: …)`. `__builtin_types_compatible_p(enum A,
+unsigned int)` answered 0, and `enum A g; extern unsigned int g;` was refused
+as "conflicting types". The first two were silent wrong answers. All three
+now use one compatibility relation, `c_type_signatures_compatible`. It
+matches an enum against its integer type at any depth of pointer, array or
+qualifier. Two distinct enums stay incompatible, as gcc and clang have them.
+
+Tests: `testenumgenericc`.
+
+### A `bool`, character-type or win64 `long` constant keeps its value
+
+madc keeps a constant's value in a parse-time slot. The five slot accessors
+(`set`, `get`, `cmp` and the increment and decrement steps) each chose the
+slot by comparing the type against their own list of builtin types, and the
+lists had drifted apart. `get` had no `bool` entry, so
+`constexpr bool B = false;` read as true and `B ? 7 : 8` gave 7. `wchar_t`,
+`char16_t` and `char32_t` constants stored nothing, so
+`constexpr wchar_t W = 5; int a[W];` made a zero-length array. On win64,
+`long` is its own type with `int`'s storage, so the same happened to
+`const long N = 4; int a[N];` (mingw g++: 16 bytes, madc: 0). These were
+silent wrong answers.
+
+The slot is now chosen once, `Variable::slot_kind()`, which keeps the
+special cases and picks every other integer type by its size and
+signedness. All five accessors use it.
+
+Tests: `testconstslotkindscxx`, and a `test_datadef` case that checks the
+LLP64 `long` slot.
+
+### A C enumerator past `int` has its enum's type, as gcc gives it
+
+In C an enumerator has type `int` while every value of its enum fits `int`.
+When a value is past `int`, gcc gives every enumerator of that enum the
+enum's own type once the list is complete. clang gives it only to the
+enumerators past `int`; madc follows gcc. In C23 an enumerator of an enum
+with a declared base always has the enum's type (gcc and clang agree). madc
+kept every C enumerator `int`, so `sizeof(BA)` read 4 for
+`enum Big { BA = 0x100000000LL }` where gcc reads 8, and
+`sizeof(FA)` read 4 for `enum F : unsigned char { FA }` where gcc reads 1.
+`MB - 2 > 0` for `enum M { MA = 0xFFFFFFFFu, MB = 1 }` computed signed,
+where gcc computes it as `unsigned int`. These were silent wrong answers.
+The enumerators now take the enum's type at the definition's close
+(`Variable::retype_constant`).
+
+Tests: `testenumeratortypec`, `testenumeratortypec23`.
+
+### A folded constant reads in its own type, so unsigned constants compute unsigned
+
+madc folds a read of an enumerator or a baked `const` scalar to a literal,
+and that literal was always signed. So `const unsigned U = 5; U - 6 > 0` was
+false (g++ and clang++: true), and so was `MB - 2 > 0` for
+`enum M { MA = 0xFFFFFFFFu, MB = 1 }`, an enum that promotes to
+`unsigned int`. These were silent wrong answers. The literal now carries
+the constant's promoted type (`CirBuilder::constant_value_literal`). A
+packed enum still promotes to `int`, and an anonymous enum's enumerator past
+`int` keeps its full value.
+
+Tests: `testconstfoldunsignedcxx`.
+
+### A C enum is its compatible type: unsigned int when no enumerator is negative
+
+In C an enumerated type is compatible with an integer type the compiler
+chooses (C11 6.7.2.2p4). gcc and clang choose `unsigned int` when no
+enumerator is negative, `int` when one is, and the 64-bit type past 32 bits.
+The enum has that type's rank, so its arithmetic is that type's. madc lowered
+every such C enum as a signed `int`: `(enum U)-1 > 0` was false,
+`u - 2 > 0` was false for `u = 1`, `(enum U)-2 / 2` divided signed, and
+`unsigned long long w = (enum U)-1` read 18446744073709551615 where gcc reads
+4294967295. These were silent wrong answers.
+
+A C enum is now stored as that type and promotes as it does
+(`DataDefENUM::c_compatible`, read by `integer_promoted_type`). C++ keeps
+[conv.prom]/3, where an enum with no declared base promotes by the range of
+its values, so `enum U { UA = 1 }` still promotes to `int` there. The
+frozen-header pack (format v49) records the flag.
+
+Tests: `testenumcompatc`, `testenumcompatcxx`.
+
+### `enum TAG` in a cast, a parameter or `va_arg` names the enum
+
+Four readers of an elaborated `enum TAG` typed it `int` instead of the tag's
+enum: a cast (`(enum Big)x`), a function parameter (`long long f(enum Big b)`),
+a K&R parameter declaration, and `va_arg(ap, enum Big)`. A 64-bit enum's
+value was truncated (`(enum Big)0x100000005` read 5, gcc 4294967301; a
+parameter holding `0x100000001` read 1), and in C++ `h(c)` for an
+`enum Color c` parameter chose `h(int)` over `h(Color)`. All silent wrong
+answers. Each now resolves the tag through the one elaborated-specifier
+resolver, `Program::resolve_declared_type_token`, as `sizeof(enum X)` and
+struct members already did.
+
+Tests: `testenumelabtypec`, `testenumelabtypecxx`.
+
+### An enum whose values need more than `int` is stored in a type that holds them
+
+madc stored every enum with no declared base in an `int`, and kept an
+enum-typed constant's value in a 32-bit slot. So `enum Big { B = 0x100000000LL }`
+objects were 4 bytes, and `B` read back 0 (`B + 1` read 1); gcc and clang
+store 8 bytes and read 4294967296. In C++, `enum U { M = 0xFFFFFFFFu }` read
+back as -1. This was a silent truncation.
+
+Such an enum is now stored in the type it promotes to ([conv.prom]/3: the
+first of `int`, `unsigned int` and `long` that holds every enumerator), and
+enum-typed constants carry 64-bit values. `enum_value_range_promotion` is
+the one rule behind both the promotion and the storage. Enums whose values
+fit `int` are stored exactly as before.
+
+The frozen-header pack (format v48) now records an enum's storage type and
+whether its base was declared. The restore used to treat every recorded base
+as declared, which changes how a C++ enum promotes.
+
+Now passing, and removed from their baselines: c2mir's `new/enum_test.c` and
+g++'s `cpp0x/enum17.C`.
+
+Tests: `testenum64c`, `testenum64cxx`.
+
+### `sizeof(enum X)` measures the enum
+
+The `sizeof` / `alignof` type-query arm answered `sizeof(int)` for every
+elaborated `enum X`, whatever its base. `enum F : unsigned char` read 4 as
+`sizeof(enum F)` and 1 as `sizeof(F)` (g++: 1 both), and a packed enum's type
+read 4 while its objects read 1. The arm now resolves the tag through the one
+elaborated-specifier resolver and measures its type; `sizeof(enum X *)` reads
+the declarator like any other type-id.
+
+Tests: `testenumsizeoftagc`, `testenumsizeoftagcxx`.
+
+### `__attribute__((packed))` on an enum
+
+GNU `packed` gives an enum with no declared base the smallest integer type
+that holds its range: char, short, int or long long, unsigned unless an
+enumerator is negative. madc refused the attribute before the tag
+(`enum __attribute__((packed)) E {…}`), and after the body it left the
+attribute to the declarator, which dropped it. So every packed enum object
+was 4 bytes where gcc and clang give 1 or 2, and a struct holding one was
+8 bytes where they give 2: a silent wrong answer. Both positions are now the
+type's. A scoped or fixed-base enum ignores `packed`, as gcc and clang do.
+
+`Program::consume_gnu_attributes_naming(kind)` is now the one reader of "do
+the attribute groups ahead name this kind" (comparing the enum, not the
+spelling). The using-declaration's `using_if_exists` reader uses it too.
+
+Tests: `testenumpackedc`, `testenumpackedcxx`.
+
+### `typedef enum Tag {…} Alias;` declares the tag, and an alias names its enum
+
+The typedef reader consumed an enum's tag itself and handed the enum parser
+only the body, so the tag was never declared. Silent wrong answers followed:
+- In C, a later `enum Color` decayed to plain `int`. A 2-bit bit-field of it
+  holding 3 read back -1 where gcc reads 3, because the enum's underlying
+  type is unsigned.
+- `typedef enum Color C8;` minted a new 4-byte enum instead of naming
+  `Color`. For `enum Color : unsigned char`, `sizeof(C8)` was 4 (g++: 1),
+  and `f(C8)` chose `f(int)` over `f(Color)`.
+
+It also made valid C++ fail: `Color` and `Holder::Kind` were undeclared after
+their typedefs.
+
+The enum parser now reads the whole specifier, tag included, and a tagged
+enum's alias is a second name for the tag's type ([dcl.typedef]). Anonymous
+enums keep their alias-is-the-enum model.
+
+Tests: `testtypedefenumtagc`, `testtypedefenumtagcxx`.
+
+### An enum definition ends in its `;`
+
+After an enum body, the parser treated the `;` as optional. So `enum E { A, B }`
+compiled at the end of a file, before `return 0;` in a block, and as the last
+member of a class (`struct S { enum { A } };`). gcc and clang refuse all
+three ("expected ';' after enum"). The definition now takes its `;` or a
+declarator; anything else is refused as the struct and class definitions
+refuse it: "Expecting variable name or ';' after enum definition". In an
+interactive entry, `enum E { A, B }` now reads Incomplete.
+
+Tests: `testenumnosemicc`, `testenumnosemicstmtc`,
+`testenumnosemicmembercxx`, and the classifier corpus.
+
+### The REPL input classifier: an interactive entry is a parser mode
+
+`Program::classify_entry` decides whether one REPL entry is complete, needs
+more input, or is invalid, before anything runs (plan §41.1a). It runs in a
+parser mode, `ParseMode::InteractiveEntry`, which is off by default. File
+parsing accepts and refuses exactly what it did before.
+
+The verdict (`EntryVerdict`) uses the criterion Julia, Python and IPython
+share: the first error decides, and an error at the end of the entry means
+"keep reading".
+- **The lexer says why it refused** (`Diagnostic::cause`). An open block
+  comment, an open conditional group, or a trailing line splice in an entry
+  is `end_of_input`. A literal cut by the new-line is not: a C string cannot
+  continue on the next line.
+- **Delimiters are checked first.** An unclosed `(` `[` `{` is Incomplete
+  without a parse. A close that opens nothing is Invalid.
+- **The parser reads the entry with an end-of-entry token appended**
+  (`TokenEndOfEntry`, like Clang-Repl's `annot_repl_input_end`). An error
+  that consumed or cites it is Incomplete: `1 +`, `if (c)`, `do {}`,
+  `template <class T>`, `int f(int a)`, `struct P {…}`. Any other error is
+  Invalid: `int x = 5 5`.
+- **A statement with a value may omit its final `;`** (decision D11): an
+  expression statement or an object declaration, such as `int x = 5`. A
+  jump, a typedef and a function declarator still wait for it.
+  `shows_value` records that the `;` was omitted (D10).
+- **An `if` that ends at the entry's end is `CompleteExtendable`**: an
+  `else` on the next line would still continue it.
+
+Along the way:
+- `tokenize` and `tokenize_buffer` now share one lex loop (`lex_main_unit`).
+- `Source`'s two copies of the line-splice rule are now one
+  (`splice_length_at`).
+- The three `else` lookaheads of `if` are now one
+  (`if_statement_else_follows`).
+
+The corpus is `tests/unit/test_repl_input.cpp`.
+
+### An expression ends before a juxtaposed operand
+
+`int x = 3 4 +;` compiled as `3 + 4` and exited 7. The expression engine
+read on past a literal or a name that followed a complete operand, and
+refused the pair at the end only when no later operator had bound it. gcc
+and clang stop at the `4` ("expected ',' or ';' before numeric constant").
+The engine now ends the expression there too; inside a parenthesis it opened,
+the error is "expected ')' before …".
+
+Stopping there exposed readers that had relied on the old refusal: each took
+whatever followed an element as the next element. `Program::
+require_list_element_end` / `finish_list_element` are now the one separator
+step, where an element ends at its `,` or at the list's close. These readers
+use it:
+- call and member-call arguments (`g(a b)` ran as `g(a, b)`);
+- `new T(…)` arguments;
+- constructor-argument lists and the carrier literal;
+- compound literals and declaration initializer lists (`int z[2] = {a b};`
+  gave `{1, 2}`), including designated initializers;
+- flattened braced arguments and the UFCS receiver.
+
+The for header's init and increment clauses need a `,` before another
+expression, and a declarator list continues only after a consumed `,`
+(`int y = a b;` used to begin a declarator `b`).
+
+Whether an operand is complete is read off the engine's own stacks as well
+as the last token read. An arm's lookahead can push tokens back, which left
+`q` as the current token in `(q) = 0`.
+
+### A discarded `if constexpr` branch ends where its statement does
+
+madc skips a discarded branch without parsing it. The skip used to run to
+the first `;` outside a group, which went wrong in two ways, both exit 0:
+
+- `if constexpr (false) while (c) { x++; }` also swallowed the next
+  statement.
+- `if constexpr (false) if (c) a; else b;` stopped before the `else`, which
+  then bound to the `if constexpr` and ran.
+
+`Program::skip_discarded_statement` now skips by the statement grammar:
+- blocks;
+- `if`/`else`, including `if constexpr` and `if consteval`;
+- `while`, `for` and `switch`;
+- `do … while (…);`;
+- `try`/`catch`;
+- labeled statements;
+- any other statement, through its `;`.
+
+Groups are skipped through the shared delimiter tracker, replacing a
+hand-rolled depth count.
+
+### Statements own their `;` (REPL arc prerequisite P1)
+
+The expression engine stops on a `;` and before a closer. When a closer
+stood where the `;` belonged, the statement just ended, and all of these
+compiled with exit 0:
+- `{ x = 3 }`
+- `break }`
+- `return 0 }`
+- `int a = 1 }`
+- `g(1));`
+- `);`
+
+The first five are now gcc's "expected ';' before '}' token" (or "expected
+',' or ';'" after a declaration). The last two are "expected statement before
+')' token".
+
+How it works:
+
+- Each construct records what it owes as its last act, through
+  `Program::StatementTerminator`:
+  - an expression statement owes Expression;
+  - a jump statement, a do-while and `throw` owe Jump;
+  - an object declaration or `typedef` owes Declaration.
+  
+  `parseStatement` pays it through `require_statement_terminator`.
+- `StatementTerminatorScope` bounds where a record is valid:
+  - Each statement opens one.
+  - A class body opens one. A member typedef inside a class instantiated for
+    a return type used to consume the outer statement's `;`
+    (g++.dg `variadic121`, `typedef15`).
+  - An if/switch init-statement or condition declaration opens one; the
+    header pays those terminators itself.
+- The `;`-skip before `else` is removed from `TokenIF`, and from both
+  `if constexpr` paths. So `if (x) a;; else b;` is gcc's "'else' without a
+  previous 'if'". Before, it bound the `else`, and a bare `; else b;` ran `b`
+  unconditionally.
+
+This is file-parsing parity with gcc and is always on. The REPL's relaxations
+(an optional final `;`, and the incomplete-versus-invalid verdicts) will be a
+separate parser mode that is off by default.
+
+### `new T[n]{…}` initializes its elements
+
+madc never read the braced list of an array new-expression. It fell out of
+the expression and was parsed as a separate compound statement, so
+`new int[4]{1, 2, 7}` allocated four zeros and `new Foo[2]{3, 4}`
+default-constructed both elements, with exit 0.
+
+`TokenNEW` now reads the list, as `array_init`, with the one expression-position
+brace-list reader. It is lowered like this:
+
+- **Scalar elements:** `n` is evaluated once, the block is zeroed, and each
+  clause becomes a store (`scalar_array_new_list_init`).
+- **Class elements:** these go through the class array owner,
+  `class_array_list_init`.
+- **The elements past the list** are value-initialized.
+
+A constant count with too many clauses is gcc's "too many initializers for
+'T [n]'". A runtime count below the list stores nothing past it. gcc throws
+`std::bad_array_new_length` there; madc's `new[]` has no length check yet.
+
+g++.dg `pr52742` now passes, including the template case.
+
+### A builtin operation on a `var` is refused, not run on its storage
+
+A `var` / `madc::value` is stored in C as a `long long` array. When no carrier
+row served an operation, c2mir quietly accepted the array's address instead.
+Each of these compiled with exit 0 and a garbage answer, with at most a
+warning:
+
+- `x + 1` did pointer arithmetic, `x < y` compared addresses, and `x -= 1`
+  stepped a pointer.
+- `int a = x;`, `b = x;`, `take(x)` and `return x;` from an `int` function
+  each read the address as a number.
+- `if (f)` was always taken, even for a false or null value, because the
+  address is never null.
+
+A plain class in the same positions is already a c2mir error; the carrier's
+representation hid the mistake.
+
+Each of these is now gcc's error for a class without the operator or
+conversion:
+- `CirBuilder::carrier_builtin_operator_refusal` rejects a binary operator
+  once class-operator selection has missed (e.g. "no match for 'operator+'").
+- `carrier_scalar_conversion_refusal` rejects a conversion into an
+  arithmetic slot: initialization, assignment, argument passing and return
+  ("cannot convert … to 'int32_t' in …").
+- `translate_cond` rejects a truth test ("could not convert … to 'bool'").
+
+The carrier's own conversions are unchanged:
+- the explicit ones, `as_integer`, `as_real`, `as_boolean`, `is_null` and
+  `empty`;
+- the text coercion into a `const char *` slot.
+
+Nothing in the suite, the tools or Tier 2 relied on the old behaviour.
+
+Still open, as an owner decision: whether the carrier gets PHP-style
+arithmetic and truthiness. Adding those rows would retire these refusals
+without any other change.
+
+### A block-scope static is initialized once
+
+[stmt.dcl]/4 says a block-scope static is initialized once, the first time
+control passes its declaration. madc re-initialized these on every call,
+exit 0:
+
+- class-type statics spelled `static Foo s(8);`, `static Foo s{8};`, or
+  `static auto s = Foo(8);`;
+- default-constructed statics and static arrays (`static Foo a[2];`);
+- `static var`;
+- the scalar `static auto n = 5;`, which restarted at 5 each call.
+
+Also, `static int n = g();` was refused by c2mir as a non-constant static
+initializer.
+
+The causes and fixes:
+
+- **The storage class was dropped.** The constructor-argument and `auto`
+  declaration arms never recorded `static`, `thread_local` or `inline`.
+  `Program::apply_declaration_storage` is now the one owner, and every arm
+  calls it. In C++, a block-scope `thread_local` implies `static`.
+- **Construction was emitted unguarded.** `CirBuilder::emit_static_local_once`
+  lowers it as gcc does under `-fthreadsafe-statics`: a static guard,
+  `__cxa_guard_acquire`, the construction, then `__cxa_guard_release`. A
+  constructor that throws runs `__cxa_guard_abort` on the SJLJ unwind, so the
+  next pass retries.
+- **Dynamic scalar initializers.** A dynamic initializer on a scalar static
+  now runs in the same once-block (`m_dynamic_static_locals`, the block-scope
+  twin of the file-scope dynamic-init queue).
+- **`static var` storage.** A static `var` gets static storage with no
+  scope-exit destructor (`ObjStorage::Static`).
+
+On macOS, a `__cxa_` import now loads libc++, the same as an Itanium-mangled
+import does.
+
+Thread-safety contract: concurrent first passes wait in `__cxa_guard_acquire`,
+and exactly one of them constructs. `teststaticlocalmtcxx` checks this with
+four threads.
+
+Still open:
+- `thread_local` objects are emitted `_Thread_local` with a per-thread guard,
+  but MIR has no TLS, so they are process-wide in practice. This is the
+  existing floor gap.
+- Local statics, like file-scope objects, are not destroyed at exit.
+
+### A braced list on an array of class type initializes every element
+
+Found while fixing `new T[n]{…}` for the REPL arc's statement-terminator
+work. Before this, every case below compiled and ran with exit 0 and wrong
+values:
+
+- `Foo a[3] = {4, 7};` ran one constructor on the whole array with `4`. The
+  `7` was dropped, and `a[1]` and `a[2]` were never constructed.
+- An aggregate element with a `std::string` member (`S s[2] = {{"hi", 4}}`)
+  had its string bit-copied from the literal.
+- A global array had the same fault as a local one.
+- `Two t[] = {1, 2, 3}` (a class with a constructor) got its size from its
+  data members, as if brace elision applied, and came out with 2 elements
+  instead of 3.
+
+Now `CirBuilder::class_array_list_init` owns the elements, for local and
+global arrays:
+
+- Each element is copy-initialized from its clause:
+  - a braced clause list-initializes it, choosing an initializer-list
+    constructor first;
+  - a same-class temporary is elided into it;
+  - an aggregate element takes its members by brace elision.
+- Rows of a multi-dimensional array fill the same way.
+- Every element without a clause is value-initialized: the default
+  constructor, after zero-fill when that constructor isn't user-provided.
+- The declaration reader no longer pads a class row with `0` clauses, which
+  would have constructed the element from 0.
+
+`DataDef::brace_elision_width` sizes unsized arrays and replaces the parser's
+`flattened_scalar_capacity`. `DataDefCLASS::is_aggregate` is the one predicate
+for the new code. The older inline copies of that predicate are recorded as an
+open family.
+
+Two g++.dg tests now pass: `constexpr-61484` and `initlist50`.
+
+Still open:
+- A by-value call as an element is not elided (`Foo a[1] = {make()}` runs one
+  copy constructor more than gcc).
+- A local static array was constructed on every call, as every local static
+  class object was. That is fixed in the entry above.
+
+### The lexer refuses what gcc and clang refuse, and decodes literals their way (REPL arc prerequisites)
+
+The REPL's input classifier (plan §41.1) tells input that is still being
+typed from input that is already wrong. That needs the lexer to report an
+open comment, an open `#if` or a cut string at all. A survey of end-of-input
+cases turned up more accepted-invalid programs and silent wrong values.
+Each fix has its own commit and gcc/clang-oracled tests.
+
+- **An unterminated `/* comment`** was swallowed with the rest of the file,
+  and the program ran. It is now "unterminated comment" at the `/*`. One
+  reader (`Source::consume_block_comment`) replaced four copies, and
+  `check-one-block-comment-reader.sh` gates it.
+- **A file closes every `#if` it opens.** A taken `#if 1` with no `#endif` ran,
+  and a header whose include guard never closed leaked the open group into
+  its includer. Both are now gcc's "unterminated #if" (named by the group's
+  latest directive) at the group's opening line.
+- **A string or character literal cut by a new-line** (`"ab⏎cd"`) became a
+  two-line string. It is now gcc's "missing terminating \" character".
+  A `\`-new-line splice still joins lines.
+- **Escapes have one decoder** (`read_literal_escape`, gated by
+  `check-one-escape-decoder.sh`). Before, all of these ran with exit 0:
+  - `L"\x1234"` was three wide characters.
+  - `"\x041"` lost its last digit.
+  - `"é"` kept its six spelled characters instead of UTF-8.
+  - `"\e"` was a backslash and an `e`.
+  - `"\x41B"` and an empty `"\x"` were accepted.
+- **A multi-character constant** such as `'ab'` is 24930 (gcc and clang)
+  instead of 97. `''` is an error, and `#if '\xff' < 0` agrees with code.
+- **In C a character constant is an `int`**: `sizeof('a')` is 4, and
+  `_Generic` and `__typeof__` see `int`. C++ keeps `char`.
+- **A template instantiated while an expression completes** (the free-operator
+  lowering of `__x < __y` on strings) no longer moves the outer parse's
+  current token into the instantiated body.
+- **An if/switch init-statement or condition declares in the statement's own
+  scope.** Two sibling `if (int c = …)` statements were refused as a
+  redefinition since D18 (`tests/testifinit` had regressed). Before D18 the
+  second silently got the first one's variable and type.
+  `Program::StatementHeaderScope` also serves the for-init and range-for
+  scopes.
+
+### Redeclarations are decided in the front end (REPL arc, decision D18)
+
+The REPL + teaching-IDE arc (`docs/plans/madc-repl-thonny-plan-2026-09-24.md`)
+depends on madc knowing exactly when a redeclaration is legal, so D18 fixed
+that first. The front end had no redeclaration rule for objects, and C
+functions had only a signature check.
+
+- **One owner for object redeclarations** (`Program::declare_object`, gcc's
+  `duplicate_decls` for objects).
+  - `int x; double x = 2.5;` and `int a[3]; int a[4];` compiled and exited 0.
+    The second declaration silently overwrote the first's type.
+  - Under `--std=c++17`, `int x; int x = 2;`, `static int s = 4; static int s;`
+    and `int u, u;` compiled and exited 0; C++ has no tentative definitions.
+  - Two initialized definitions of one global died as a location-less
+    `MIR fatal error: Repeated item declaration`, a process exit.
+  - All are now refused where the declaration binds, with gcc's wording
+    ("conflicting types for 'x'", "redefinition of 'x'") and a line number.
+  - C and the madc dialect keep tentative definitions.
+- **A second body for a C-linkage function** (a C function, `static` included,
+  or an `extern "C"` function in C++) is now `redefinition of 'f'` at the
+  definition, not a MIR fatal error.
+- **Still open:** a C++-linkage same-signature redefinition still reaches MIR.
+  madc cannot yet tell it from a `long` / `long long` type-model twin, and the
+  fix is a distinct `long long` type on LP64.
+
+### Arrays, calls, casts, `sizeof` and arithmetic operands each read their operand through one owner
+
+The indirection families left open by the `*`/`&` consolidation, each measured
+against gcc and clang before it was touched. Five of them held silent wrong
+answers.
+
+- **The end of an expression is one function** (`Program::finish_expression`).
+  An initializer, call argument or condition ended through a second copy that
+  skipped the "two operands, no operator" check: `int r = (x)(4)` with `x` an
+  `int` compiled to `int r = x = 4` and exited 0.
+- **An array operand's element has one owner** (`array_operand_type` /
+  `array_operand_element_type`). madc stores arrays flattened, and four sites
+  re-derived rows from the scalar. `sizeof(*table)` on an array of function
+  pointers was 16 (gcc 8); `sizeof(*pa[1])`, `sizeof(*(m + 1))` and
+  `sizeof(*c3[1])` measured the scalar; `(*table)(5)`, `(*grid[1])(5)`,
+  `*s.g[1]`, `**pa[1]`, `q.in->x` and `ps[1]->x` were refused; `*arr` on a
+  class array called `operator*`.
+- **`sizeof` of an expression is measured once.** `sizeof s.a` on a member
+  array was 4 (gcc 12), `sizeof s.n` 1 (gcc 10) and `sizeof s.n[1]` 1 (gcc 5),
+  all silent. The parenthesized form had its own patched copy.
+- **A call through any function-pointer expression**: adjacency decides, not
+  a list of callee kinds or a pending operator. `g(3) + (*tab)(3)`,
+  `(x, f)(x)`, `(f = twice)(x)` and calls through a `const fn_t *` now work.
+- **The operand of a cast is a cast-expression**: nine shape arms deleted.
+  `(long)"abc"[1]` now works, and gxx-c++11 gains `initlist-array20`.
+- **`(*rp++)[1]`** (a subscript of a stepped dereference) now parses.
+- **"Is this a function pointer" has one owner** (`as_fptr_dd()`, which sees
+  through `const`). A site that `static_cast` a const wrapper is gone, and
+  the structural sites are marked.
+- **An arithmetic operand's type has one owner per step**: the value it
+  denotes (a reference is its referent) and that value's integer promotions.
+  Every operator reads its operands through them.
+  - Unary `~`, `-` and `+` now promote. `f(~uc)` picked `f(unsigned char)`,
+    and `sizeof(~ch)` was 1.
+  - Unary `+` is a real operator, not dropped. A class's `operator+()` now
+    runs (`(+k).v` was 1, g++ 101), `sizeof(+a)` is 8, not 12, and
+    `+[](int){...}` compiles.
+  - A bit-field narrower than `int` promotes to `int`.
+  - `%` has a type: `l % 3` on a `long` was 4 bytes.
+  - A reference operand no longer types the expression as a pointer.
+    `auto a = rl + 2` and even `auto c = rl` bound a pointer to the value
+    and crashed.
+  - `auto` and lambda return types stopped deducing `double` for `float`
+    arithmetic.
+- **C++ comparisons and logical operators yield `bool`** (C keeps `int`).
+  They were `int` in both languages: `f(i == j)` picked `f(int)` over
+  `f(bool)`, `sizeof(i == j)` was 4 and `auto a = (i == j)` deduced `int`. In
+  the madc dialect `println("{}", i < j)` now prints `true`, as `std::format`
+  does.
+- **`c ? a : b` over two arithmetic arms has the standard's type.** madc took
+  the true arm's type, which gave wrong values as well as wrong types:
+  `auto a = nb ? uc : ss` stored -5 as 251, and `b ? i : d` / `b ? fl : d`
+  narrowed to `int` / `float`. C++ keeps a type both arms share (`b ? uc : uc2`
+  is `unsigned char`). Otherwise, and always in C, the usual arithmetic
+  conversions apply.
+- **A compound assignment (`+=` ... `^=`) has its left operand's type**, as
+  `=` does. All ten were `int`: `sizeof(d *= 2)` was 4, and `*(p += 2)` was
+  refused.
+- **A function-pointer argument picks the function-pointer overload.**
+  `f(pg)` picked `f(long)` over `f(int (*)(int))`. `k(g)` was refused as
+  ambiguous between `k(bool)` and `k(long)`; it now picks `k(bool)`, as g++
+  and clang++ do.
+- **Calls through a reference to a function or function pointer work**
+  (`int (*&r)(int) = pg; r(4)`, `int (&rf)(int) = g; rf(5)`). The call
+  used to be refused. A local, `static` or file-scope pointer to a function
+  pointer (`int (**pp)(int)`) now declares with its real type in C and C++;
+  it had been declared `long long *`.
+- **A reference to a function or a function pointer mangles as g++ does**:
+  `RPFiiE` and `RFiiE`, not `PPFiiE`. A madc definition taking one, and a g++
+  caller of it, now link.
+- **An aggregate's reference member binds its initializer.** `RM rm{lv}` (for
+  `long &r`) used to store the value in the reference and then crash. A
+  `const &` member binds a temporary too.
+- **`signed char` is its own type in C.** `_Generic` chose the `char`
+  association for a `signed char` (and `char *` for `signed char *`), and
+  `__builtin_types_compatible_p(char, signed char)` was 1. The emitted C
+  spelled `signed char` as plain `char`, which on aarch64-linux (an
+  unsigned-char target) turned `(signed char)200` into 200 instead of -56.
+- **c2mir folds a constant cast to `signed char` as `signed char`.** It cast
+  through the target's plain char, so on aarch64-linux `int x = (signed
+  char)200;` folded to 200. The aarch64 qemu lane now runs every
+  `tests/cross/aarch64_*.c` fixture and carries a char-sign fixture.
+- **C: a leading `const` in a typedef or a cast qualifies the pointee.**
+  `typedef const char *ccp`, `typedef const int CI`, `typedef const struct T
+  *P` and `(const char *)p` had all named the unqualified type, so `_Generic`
+  chose `char *` and `__builtin_types_compatible_p(ccp, const char *)` was 0.
+- **A pointer non-type template argument is one operand in the template's
+  body.** `template <int (*P)()> ... P()` over `FnPtr<&g>` was refused as
+  `&(g())`, and `O->m` over `Obj<&obj>` as `&(obj->m)`. New gate
+  `check-one-nontype-splice.sh`.
+- **c2mir's own `_Generic` no longer promotes its controlling expression.** A
+  `char` or `short` operand selected `int` (or default) in C compiled by c2m,
+  and `_Generic(x, char *: ..., const char *: ...)` was refused as two
+  compatible associations. (madc resolves `_Generic` itself; this is c2m's.)
+- **A `volatile` local keeps its value across `longjmp`.** madc dropped the
+  qualifier, and c2mir ignored it anyway and kept every scalar local in a
+  register, so a `volatile` local changed between `setjmp` and `longjmp` came
+  back with its `setjmp`-time value, or garbage (gcc and clang: 4511; madc:
+  -834290028). c2m compiling C directly had the same bug. `volatile` now also
+  reaches `--emit=c11` output, including a pointer object's own qualifier
+  (`int *volatile p`).
+- **MIR knows what a volatile access is.** MIR had no volatile concept, so at
+  `-O2` its optimizer removed, merged and forwarded volatile loads and stores
+  like any others. A loop spinning on a `volatile sig_atomic_t` flag set by a
+  signal handler never ended, in madc and in c2m alike. A memory operand now
+  carries a volatile bit (`volatile:` in textual MIR, one prefix byte in binary
+  MIR), c2mir sets it on every access through a volatile lvalue, and every
+  optimization pass leaves such an access exactly as written: the same count
+  and order of loads and stores as gcc and clang, at every `-O` level.
+  `*vp;`, `(void) *vp` and `(*vp, 0)` now perform their read. New gate
+  `check-volatile-accesses.sh` counts the accesses at run time against gcc.
+- **`volatile` is part of the type.** Only a volatile object reached the
+  IR; `volatile int *q`, a volatile struct member, `typedef volatile int vint`,
+  a cast `(volatile int *)p`, a volatile parameter or return type all lost the
+  qualifier in the front end. A spin through a `volatile sig_atomic_t *` hung
+  at `-O2`, a `vint` local came back from `longjmp` as garbage, and `_Generic`
+  picked the `int *` association for every one. madc's const-qualified type
+  became one qualified type carrying a const/volatile mask (gcc's model), and
+  every spelling now reaches c2mir and `--emit=c11` output — in C, in madc
+  mode (what a `.c` file with no `--std` compiles in) and in C++ (`const` is
+  modeled in the type in C only). In C++ the qualifier is now part of the
+  function's identity: `f(volatile int *)` mangles `_Z1fPVi` (it was
+  `_Z1fPi`, the second overload renamed `f__o2`, which nothing links), every
+  level's cv reaches the symbol (`PVPVi`, `PVKcS0_`), `volatile int &` binds
+  a volatile referent (`_Z1kRVi`), and overload resolution follows
+  [conv.qual]: `int*` still picks `f(int*)` over `f(volatile int*)`, a
+  `volatile int*` never picks `f(int*)`. A qualified pointer is a pointer
+  everywhere: through a member `struct N *volatile next`, `n.next->v` was
+  refused, `n.p + 2` stepped by 8 instead of 4, and deduction from it failed.
+  A volatile object's lvalue is volatile: `&vx` is `volatile int *`, a
+  member of a volatile struct is volatile (in madc and in plain C through
+  c2m, where `_Generic (&vs.m, ...)` picked `int *`), a volatile lvalue binds
+  only `volatile int &`, and `T &` deduces `volatile int`. In C a const
+  object's lvalue is const the same way (`&cs.m` of a `const struct S cs` is
+  `const int *`). A template argument's `volatile` is part of it:
+  `std::is_same<volatile int, int>` is false, `remove_volatile`,
+  `add_volatile` and `remove_pointer` over volatile types give g++'s
+  answers, and an alias template whose target begins with `const` or
+  `volatile` (`template <class T> using c_t = const T *;`) is no longer
+  refused. A volatile member function (`int get() volatile`) is its own
+  overload with its own symbol (`_ZNV1C3getEv`), a volatile object calls it,
+  and `this` inside it is `volatile C *`. A volatile parameter keeps its
+  value across `longjmp`, K&R declarations may start with `volatile`, a
+  `volatile int a[][3]` parameter's elements are volatile, and a C++ class
+  member declared `volatile` (or `int *volatile`) is volatile. `_Generic`
+  associations and `__builtin_types_compatible_p` accept any type name
+  (`volatile int (*)[4]`, `int (**)(int)`), and `__is_same(volatile int *,
+  int *)` is false. `const` now reaches c2mir and `--emit=c11` output too
+  (`const int k` was emitted as `int k`).
+  Also fixed: a subscript through a reference to a pointer (`int *&rp;
+  rp[1]`) read the wrong memory and returned garbage — it now indexes the
+  referent; a brace-initialized `typedef const
+  struct` (or volatile) local was refused (`CP cp = { 3, 4 };`); overload
+  resolution ranked an `int**` argument as an exact match for an `int*`
+  parameter (and `D**` for `B**`), so `f(int*)` / `f(int**)` was reported
+  ambiguous and a function template could run the instance built for a
+  different type (`sizeof (T)` 4 for an `int *volatile`); and a class
+  template partial specialization ignored a pointer level's `volatile`
+  (`S<T*>` matched `int *volatile`, `S<T volatile>` missed it). The volatile
+  gate now counts madc's accesses too.
+  On win64 `long` is its own type in the parse-side type view: a `long`
+  operand selected `_Generic`'s `int` association, and `i + l` was typed
+  `int` and `u + l` `unsigned int` (C: `long`, and `unsigned long`, since a
+  32-bit `long` cannot hold every `unsigned int`); on macOS `long long`
+  rendered as `long`.
+  The release binaries serve `<setjmp.h>` and `<signal.h>` from their own
+  header pack — a machine with no headers installed could not compile a
+  program that included them.
+
+Gates: `check-one-deref-builder.sh` gains rules 4–6 (array decay, one
+operator drain, the cast operand); new `check-one-fptr-predicate.sh` and
+`check-one-operand-promotion.sh`.
+Reducers: `testjuxtaposeinit`, `testjuxtaposearg`, `testfptrcallctx`,
+`testfptrarrayderef`, `testarrayrowderef`, `testarrayrowderefcpp`,
+`testderefstepsubscript`, `testcallthroughexpr`, `testcastoperand`,
+`testsizeofoperand`, `testunarypromotion`, `testunarypromotionc`,
+`testcomparebool`, `testcompareboolc`, `testcompareboolmadc`,
+`testconditionaltype`, `testconditionaltypec`, `testcompoundassigntype`,
+`testcompoundassigntypec`, `testoverloadfnptrarg`, `testcallfnptrref`,
+`testfnptrptrc`, `testrefmemberaggr`, `testsignedcharc`,
+`testsignedcharemit`, `testsignedchar`, `testconsttypedefcastc`,
+`testtplnontypegroup`, `testvolatileemit`, `testvolatilesetjmpc`,
+`testvolatilesetjmpo2c`, `testvolatilesignalc`, `testvolatilepointeec`,
+`testvolatilepointeeo2c`, `testqualifiedaggregateinitc`.
+
+### Unary `*` and `&` read their operand through one owner
+
+A handed-over parse error, `**c.pp()`, turned out to be one symptom of a
+family: six hand-written readers of a `*` operand, each covering part of the
+grammar, and every one wrong somewhere. The `&` reader had the same problem.
+Both now read their operand as a cast-expression through the expression
+engine, the way gcc's `c_parser_unary_expression` does, and each has one
+builder:
+
+- **Refused shapes that now parse:** `**c.pp()`, `**cp->p2`, `**first(pp)`,
+  `**arr2[0]`, `**::gpp`, `***sp->p3`, `**m` on a 2-D array, `sizeof **p`,
+  `sizeof -x`, `(int)*it`, `&*p`, `&**pp`, `&*it`, `&*this`, `(*twice)(3)`,
+  `&*q++`, `(*sq++).m`.
+- **Silent wrong answers fixed:** `*&x + 1` (was 0), `*static_cast<int*>(vp) + 1`
+  (9), `**(q)++` (dereferenced once), `(int)*p++` (lost the `++`),
+  `(char)**pp * 100`, `(char)-x * 100` and `(char)~x * 100` (the cast took
+  the whole product), `sizeof(*m)` on `int[2][3]` (4, not 12), and
+  `fn_t *fpp = &f`, which stored `f` itself.
+- **`*it++` on a class iterator** now compiles: the postfix step's by-value
+  result is materialized as a temporary before `operator*` is called on it.
+- **Conformance:** gxx-c++11 1464 → 1474 and c2mir-tests 302 → 304, with
+  nothing targeted at them; both baselines were shrunk.
+- **New rule** `.claude/rules/indirection.md` indexes the one owner for every
+  layered pointer, reference and array concern. The new gate
+  `scripts/check-one-deref-builder.sh` (in `fulltest`) keeps both families
+  from regrowing.
+
+Reducers: `tests/testderefoperandc`, `testderefoperandcpp`,
+`testaddrofoperand`, `testaddrofoperandcpp`, `testclasspostincprvalue`.
+
+### The audit's findings, measured and fixed: void pointers, ellipsis overloads, aarch64 long double
+
+The duplication audit run at the self-hosting merge reported two divergent
+families. Measured on the artifact, each turned out larger and different from
+what reading the code suggested, and each surfaced a defect one layer down.
+Five fixes, four of them silent wrong answers:
+
+- **`void **` is not `void`.** A pointer's `rawtype()` and `type()` both come
+  from its pointee, so sixteen hand-written "is this void" tests also said yes
+  to `void *` and `void **`; nine forgot the guard. Overload ranking treated
+  `int **` → `void **` as the `void *` conversion (a false ambiguity, or an
+  ill-typed call accepted); a multi-return refused a `void *` slot; a range-for
+  refused a `void **` iterator and — through the dumper's spec builder — a plain
+  `void *arr[2]`; `std::format` accepted `void **` while refusing `int *`.
+  `DataDef::is_void()` is now the one owner, gated by
+  `scripts/check-one-void-predicate.sh`.
+- **`void *a[3]; a + 3` advanced 3 bytes, not 24** — plain C, every build,
+  exit 0. The GNU `void *`-arithmetic rewrite asked about the array's element
+  type instead of its decay; it adopts `Program::array_decay_pointer` now.
+- **An ellipsis overload is viable.** `pick(void **)` vs `pick(...)` with an
+  `int **` called the `void **` one; `f(long)` vs `f(...)` with a struct called
+  `f(long)`. The free-function ranker scored the argument against the `...`'s
+  synthetic parameter slot; `FuncDef::fixed_param_count()` owns that slot now,
+  and an ellipsis match loses every tie ([over.ics.rank]).
+- **aarch64-linux could not link any program doing `long double`
+  arithmetic.** MIR's generator called helpers under dotted names nothing
+  exports on that target. They call libgcc's soft-float routines by name now —
+  exactly the set gcc's own objects import — with gcc's 32-bit post-compare for
+  the six comparisons. (ppc64, riscv64 and s390x carry the same helpers but are
+  not madc targets and have no object writer; they were never broken.)
+- **A `long double` constant reached aarch64-linux in the x86 host's byte
+  layout**, which reads as binary128 near zero (`1.0L/3.0L` printed `0.000…`).
+  `MIR_new_data`, the one place a value becomes target bytes, re-encodes x87 →
+  binary128 exactly. Folding on an x87 host is still 64-bit precise, not
+  113 — a documented limit.
+
+A new lane, `scripts/aarch64_ldouble_lane.sh` (`remote_build.sh aarch64-ld`),
+runs madc's aarch64-linux objects and a gcc-built aarch64 `c2m` under qemu
+against a gcc oracle: every long double builtin and every constant route,
+byte-identical. It is the first lane to exercise that madc target at all.
+
+### A definition is a declaration — the win64 pack serves its libc prototypes
+
+A call to an undeclared C library function adopts the frozen pack's real
+prototype (GCC canon: the builtin's), because the zero-parameter K&R guess is
+ABI-wrong wherever variadic and named arguments travel differently. The
+adoption predicate required the pack's record to be `declaration_only` — which
+asks "is this record bodyless", not "does the pack give this name a
+prototype". Those are the same question only on a C library that *declares*
+its formatted-I/O family. mingw-w64 **defines** it: `printf`, `fprintf`,
+`sprintf`, `scanf` and the rest are `__mingw_ovr` inline definitions under the
+`-D__USE_MINGW_ANSI_STDIO=1` this build passes. So on Windows adoption
+declined for all of them — 91 names (`stdio.h` 33, `wchar.h` 56, `stdlib.h` 4,
+`sys/stat.h` 2) — and every zero-include `printf` compiled as
+`extern int printf();`.
+
+C11 6.9.1: a function definition declares the function, and its declarator
+supplies the prototype. A bodied record now adopts as a prototype-only copy,
+so the pack keeps its own record's body for the bound-include path while the
+adopted copy can never reach an ODR-use materialization or emit a call to an
+inline body's symbol. None of this is win64-specific — Windows is only where a
+mainstream libc exercises it. The decline path also names the failing
+conjunct now; the gate that rejected an entire libc read as an unexplained
+"not in an adoptable C shape".
+
+The reducer samples the FAMILY (`printf`, `sprintf`, `snprintf`, `sscanf` —
+`snprintf` for the typedef'd parameter arm) rather than pinning one name,
+which is how ninety more went unmeasured, and `headerless-win` — the only lane
+that can see a win64 pack decline, because every other Windows lane reaches the
+mingw headers through wine's `Z:` — joins the develop push gate.
+
+### The MIR bootstrap cycle: unsigned↔floating conversions are generated inline
+
+x86-64 has no unsigned-integer → floating instruction and no truncating x87
+integer store, so MIR's generator has to synthesize `UI2F`, `UI2D`, `UI2LD` and
+`LD2I`. It synthesized all four as a **call to a one-line C helper living in
+`mir-gen-x86_64.c` itself** — `static float mir_ui2f (uint64_t i) { return
+(float) i; }`. That is a bootstrap cycle: a C compiler built on MIR, compiling
+`mir-gen.c`, lowers that helper's body into a call to `mir.ui2f`, i.e. to
+itself, and it recurses until the stack dies. Nothing could see it until a
+libmir compiled entirely by madc ran.
+
+The four helpers, their `mir.*` exports and their loader entries are gone.
+`UI2F`/`UI2D` expand to gcc's arithmetic done branchlessly (machinize runs
+after the CFG is built, so a new basic block there would mean CFG surgery);
+`UI2LD` splits at 32 bits instead, because an x87 long double represents every
+`uint64_t` *exactly* and the sticky-bit trick would corrupt an odd value above
+2^63; `LD2I` is gcc's `fnstcw`/`fldcw` sequence as a single machine pattern,
+using the destination register as its own scratch.
+
+A reducer over every rounding boundary is byte-identical to gcc under the JIT,
+through a `.o`, and under a `c2m` whose whole libmir madc compiled — in `-ei`,
+`-eg` and `-el`. Over 426 `c-tests` programs the madc-built `c2m` and the
+gcc-built one now agree on every exit status, and the two float tests that
+differed are identical.
+
+### Floating → unsigned 64-bit conversion above 2^63
+
+Separately, MIR has **no** floating → unsigned integer instruction at all:
+`F2I`, `D2I` and `LD2I` are signed, and c2mir mapped a `uint64_t` target onto
+them, so any value at or above 2^63 came back as the integer indefinite,
+9223372036854775808 — silently, with exit status 0. c2mir lowers it now, for
+all three floating types, with gcc's compare/subtract/xor sequence written
+branchlessly, so every MIR target is fixed without a new MIR instruction.
+
+### `__attribute__((alias))` defines its symbol — a madc-built libmir links and runs
+
+madc emitted no symbol for `__attribute__((alias("T")))` — not for MIR's eight
+exports specifically, for the attribute at all. It had only the *reference*
+half of what gcc does: a reference to the alias resolved to the target's
+storage (that redirect is how a system-header class static binds to its real
+Itanium symbol, and it is unchanged). The *defining* half — a second symbol of
+the alias's own name, its `asm` label when it has one, at the target's address
+— was never built. A running program cannot tell the two apart, which is how
+the gap survived a green suite; `nm` can, and now gates it.
+
+Three facts had been sharing `Variable::storage_alias_name`. They are now three
+fields with one meaning and one writer each. `parseFunction` was additionally
+passing `NULL` for the attribute's alias-target out-param, so a prototype
+carrying the attribute after its parameter list dropped it entirely.
+
+`MIR_gen_object_prepare` exposes the capture's module-data walk, which
+otherwise ran inside the emit entry — after every chance to annotate — so a
+DATA alias had no defined target to point at.
+
+Measured against gcc and clang (both define 6 globals on the reducer where
+madc defined 3, and 6 after). On MIR's own translation units `nm -g
+--defined-only` now shows **zero** gcc-only symbols where eight were missing:
+`mir.va_arg`, `mir.va_block_arg` and the six `__mir_*oti` helpers.
+
+### A union brace initializes one member, named by a designator
+
+C11 6.7.9p17: a union's brace initializer initializes exactly one member, and a
+bare positional list can only ever name the *first*. madc lowered every
+designated initializer positionally with the earlier slots zero-filled —
+correct for a struct, impossible for a union, where `{.a = p}` became a
+two-element union initializer that c2mir refused.
+
+The parser already writes a `.member =` value into that member's slot, so the
+slot index *is* the member index; it only had to be spelled back as the
+`N_FIELD_ID` designator c2mir's grammar takes. The three sites that built an
+aggregate's initializer list are now one owner. `--emit=c11` learned to spell
+`.name`.
+
+### `void **` is not a size-1 pointer
+
+GNU C allows arithmetic on a `void *` with element size 1. The predicate that
+spotted it asked the pointee's `rawtype()`, which reports what a pointer chain
+ultimately points *at* — so `void **`, `void ***` and deeper all matched, and
+their arithmetic scaled by **one byte**. Silent: `p[1]` was always right, and
+only the explicit `p + 1` form read a pointer one byte out of place.
+
+### 🏁 A `c2m` built entirely by madc
+
+With those three fixed, **all six MIR translation units compile under madc**
+and archive into a working `libmir.a`. The resulting `c2m` compiles C,
+JIT-generates machine code and runs it — in `-ei`, `-eg` and `-el` — and the
+binary MIR it emits runs under the gcc-built `c2m`. Differentially tested
+against the gcc-built `c2m` over 140 `c-tests` programs: 137 identical. The
+three that differ are float/long-double conversion and are recorded as the
+next gap.
+
 ## [v0.100.1] — 2026-09-22
 
 A bugfix release: madc now compiles every translation unit of its own

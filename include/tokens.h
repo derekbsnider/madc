@@ -58,6 +58,7 @@ class TokenCpnd;
 class TokenFunc;
 class TokenInt;
 class TokenDecl;
+class TokenGlobalInit;
 class TokenCallFunc;
 class TokenMember;
 class TokenCallMethod;
@@ -127,10 +128,13 @@ enum class TokenID {
 			      // headers use `yield` as an identifier), claimed
 			      // by the UFCS error-shape rule: they fire only
 			      // where the statement was otherwise ill-formed.
-  tkSCOPE, tkAWAIT            // madc-dialect structure spellings (MT-5), the
+  tkSCOPE, tkAWAIT,           // madc-dialect structure spellings (MT-5), the
 			      // same contextual discipline as tkGO/tkYIELD:
 			      // `scope { ... }` structured-concurrency block
 			      // and `await <chan-expr>` channel receive.
+  tkUnaryPlus,                // unary `+` ([expr.unary.op]/7) — built by the engine in
+			      // unary position; the lexer always says tkAdd
+  tkEndOfEntry                // the end of one interactive entry (TokenEndOfEntry)
 };
 
 enum class TokenAssoc {
@@ -266,15 +270,23 @@ public:
     //   head_tok   — the FIRST source token of the construct (the token
     //                parseStatement was handed); its START is the extent start
     //   end_line / end_column — the END of the LAST consumed token: the static
-    //                parse position when the construct finished (a simple
-    //                statement's ';', a compound's '}'). Columns are END-
-    //                anchored (the byte after the token's last char).
+    //                parse END position when the construct finished (a simple
+    //                statement's ';', a compound's '}'): the column of that
+    //                token's last byte.
     // NULL / 0 = no extent (a leaf, an expression node, a synthesized token).
     // TokenCpnd's former end_line (the closing-brace line) lives here now.
     // Replaced the never-read, never-written `std::streampos pos`.
     TokenBase *head_tok;
     int end_line;
     int end_column;
+    // `line` / `column` are where the token STARTS (D26: gcc's caret, the
+    // byte its first character is; 1-based, a byte count). Its lexical END —
+    // the line and the column of its last byte — is recorded beside it when
+    // it is read from source text (Program::getToken); 0 = not recorded (a
+    // parser-built or injected token, a prelude-image token), and
+    // madc_token_end() then derives it from the start and the spelling.
+    int lex_end_line = 0;
+    int lex_end_column = 0;
     // Flat POD data record (Phase 2). See TokenRec above.
     TokenRec rec;
     // Diagnostic: how many times the parser has CONSUMED this token via
@@ -299,10 +311,15 @@ public:
     std::string leading_trivia;
     // Current parse position — updated by nextToken(), inherited by
     // all new tokens so synthetic parser-created tokens automatically
-    // get the position of the most recently consumed source token.
+    // get the position of the most recently consumed source token: its
+    // START (line / column). _parse_end_* is that token's END, where a
+    // construct's extent ends. Saved and restored together through
+    // ParsePosition, never one static at a time.
     static const char *_parse_file;
     static int _parse_line;
     static int _parse_column;
+    static int _parse_end_line;
+    static int _parse_end_column;
     // Active interned-spelling pool for spelling() (interning Step 4). Bound to the
     // currently-processing Program's strpool at lex/parse entry (compile is
     // sequential per-Program, incl. --project per-TU). Lets the arg-less spelling()
@@ -343,6 +360,8 @@ public:
 	    c->file = file;
 	    c->line = line;
 	    c->column = column;
+	    c->lex_end_line = lex_end_line;
+	    c->lex_end_column = lex_end_column;
 	    // The ud-suffix is part of the literal's IDENTITY, not its
 	    // position — a cloned `123_w` is still `123_w`. Propagated here
 	    // (the sanctioned copier) because clone() is per-class.
@@ -431,6 +450,7 @@ public:
     virtual TokenFunc          *as_func_tok()       { return NULL; }
     virtual TokenInt           *as_int_tok()        { return NULL; }
     virtual TokenDecl          *as_decl_tok()       { return NULL; }
+    virtual TokenGlobalInit    *as_global_init_tok() { return NULL; }
     virtual TokenCallFunc      *as_callfunc_tok()   { return NULL; }
     virtual TokenMember        *as_member_tok()     { return NULL; }
     virtual TokenCallMethod    *as_callmethod_tok() { return NULL; }
@@ -447,6 +467,62 @@ public:
     virtual TokenDerefExpr     *as_deref_expr_tok() { return NULL; }
     virtual TokenDerefStep     *as_deref_step_tok() { return NULL; }
     virtual TokenCast          *as_cast_tok()       { return NULL; }
+    // Is this a DEREFERENCE — any of the three nodes Program::build_indirection
+    // builds (TokenDeref for a named pointer, TokenDerefStep for `*p++`,
+    // TokenDerefExpr otherwise)? The builder picks the kind from the operand's
+    // shape; a consumer asking "is this `*x`" must not depend on that choice
+    // (a call arm that knew TokenDerefExpr alone lost `(*t)(i)`).
+    bool is_indirection()
+    { return as_deref_tok() || as_deref_expr_tok() || as_deref_step_tok(); }
+};
+
+// The parse position as ONE value (D26): the last consumed token's file, its
+// START (what a token the parser builds inherits) and its END (where a
+// construct's extent ends). A nested parse saves it, moves it and restores it
+// whole, so a start from one token never sits beside another token's end.
+struct ParsePosition
+{
+    const char *file;
+    int line;
+    int column;
+    int end_line;
+    int end_column;
+    static ParsePosition current()
+    {
+	ParsePosition p = { TokenBase::_parse_file, TokenBase::_parse_line,
+			    TokenBase::_parse_column, TokenBase::_parse_end_line,
+			    TokenBase::_parse_end_column };
+	return p;
+    }
+    // No position: a unit's lexing starts here, so its tokens take their
+    // positions from its own text.
+    static void reset()
+    {
+	ParsePosition none = { NULL, 0, 0, 0, 0 };
+	none.restore();
+    }
+    void restore() const
+    {
+	TokenBase::_parse_file = file;
+	TokenBase::_parse_line = line;
+	TokenBase::_parse_column = column;
+	TokenBase::_parse_end_line = end_line;
+	TokenBase::_parse_end_column = end_column;
+    }
+    // The position of token `t` as a value: its file, start and end (the
+    // recorded lexical end, else the one derived from its spelling). A copy
+    // outlives the token (throwbuf keeps one for its diagnostic).
+    static ParsePosition of(TokenBase *t)
+    {
+	ParsePosition p = { t->file, t->line, t->column, t->lex_end_line,
+		    t->lex_end_column };
+	if ( !t->lex_end_column )
+	    end_from_spelling(t, p);
+	return p;
+    }
+    // The parser's position becomes token `t`'s.
+    static void set_from(TokenBase *t) { of(t).restore(); }
+    static void end_from_spelling(TokenBase *t, ParsePosition &p);	// parser.cpp
 };
 
 // whitespace
@@ -506,6 +582,10 @@ public:
     void set_resolved_type(DataDef *d) { resolved_type = d; }
     virtual DataDef *datadef() const override
     { return resolved_type ? resolved_type : (_datatype ? _datatype : &ddVOID); }
+    // A comparison or logical operator: its built-in result is a truth value
+    // — bool in C++, int in C (Program::resolve_object_operator_type records
+    // which, by the language, as the token's own type).
+    virtual bool yields_truth_value() const { return false; }
     virtual TokenBase *clone() override { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual int64_t ival() const override { return 0; }
     virtual size_t argc() const override { return 2; }
@@ -540,13 +620,66 @@ public:
     virtual inline int precedence() const override { return 16; }
 };
 
+// The parse-side type of an arithmetic OPERAND has one owner per step, and
+// every operator's datadef() below reads its children through them — never
+// through a bare child->datadef() (gated: check-one-operand-promotion.sh).
+//  * operand_value_type: the VALUE the operand denotes ([expr]/5). A
+//    reference-typed expression answers a DataDefREF and a reference VARIABLE
+//    answers the pointer madc lowers it as; both denote the referent.
+//    Program::operand_value_datadef composes from it.
+//  * promoted_operand_type: that value, cv-unqualified ([conv.lval]), after
+//    the integer promotions ([conv.prom], C11 6.3.1.1p2): bool, the character
+//    types, the shorts, a bit-field narrower than int and an enum promoting
+//    to int answer int; an enum its promoted type; char32_t unsigned int.
+//    Every other value (int and wider, reals, pointers, classes, vectors,
+//    complex) answers itself.
+// Each asks the child's datadef() exactly ONCE (the TokenAdd rule below).
+// Defined in parser.cpp: a bit-field's width and a reference variable's flag
+// live on TokenMember / TokenVar, which madc.h declares.
+DataDef *operand_value_type(TokenBase *operand);
+DataDef *promoted_operand_type(TokenBase *operand);
+// The integer-promotion core over a TYPE (the enum and character-type rules;
+// cir_builder's enum_promotes_to composes from it). NULL-safe.
+DataDef *integer_promoted_type(DataDef *dd);
+
+// Integer conversion rank (C11 6.3.1.1p1, [conv.rank]) of a PROMOTED operand
+// type: width orders the ranks, except where two integer types share a width —
+// the platform `long` (LLP64: 4 bytes, beside int) and the platform `long
+// long` (darwin: 8 bytes, beside long) each outrank the other type of their
+// width. A width test alone made `i + l` an int on win64 (mingw: long).
+static inline int integer_conversion_rank(const DataDef *dd)
+{
+    return (int)dd->size * 2 + (dd_is_platform_integer(dd) ? 1 : 0);
+}
+
+// The unsigned integer type corresponding to a signed one (C11 6.2.5p6) — the
+// usual arithmetic conversions' last case, where the signed operand outranks
+// the unsigned one but cannot represent all its values (win64 `long` against
+// `unsigned int` is `unsigned long`).
+static inline DataDef *unsigned_integer_counterpart(DataDef *dd)
+{
+    if ( dynamic_cast<DataDefPlatformLONG *>(dd) )
+	return dd_platform_ulong();
+    if ( dynamic_cast<DataDefPlatformLONGLONG *>(dd) )
+	return dd_platform_ulonglong();
+    if ( dd->size == ddUINT128.size )
+	return &ddUINT128;
+    if ( dd->size == ddUINT64.size )
+	return &ddUINT64;
+    return &ddUINT32;
+}
+
 // addition operator +
 // Usual arithmetic conversions (C11 6.3.1.8) — the parse-side VALUE view
 // shared by the binary arithmetic operators' datadef() overrides: a real
-// operand wins (wider real first), otherwise the wider integer wins and at
-// equal width unsigned wins. Types below the int promotion floor, pointer/
-// function/complex operands, and NULL children answer NULL so each
-// operator's own arms and the ddINT default keep their existing behavior.
+// operand wins (wider real first); otherwise the integer rule by RANK
+// (integer_conversion_rank) — same signedness, the higher rank; an unsigned
+// operand of rank >= the signed one's, the unsigned; a signed one wider than
+// the unsigned, the signed; else the signed one's unsigned counterpart. The
+// operands arrive PROMOTED
+// (promoted_operand_type), so plain int, pointer/function/complex operands
+// and NULL children answer NULL and each operator's own arms and the ddINT
+// default keep their behavior; the floor tests below stay as the contract.
 // (Runtime codegen types via c2mir regardless; this view feeds parse-time
 // consumers — _Generic selection, overload ranking, sizeof-of-expression.)
 static inline DataDef *usual_arithmetic_result(DataDef *ld, DataDef *rd)
@@ -566,13 +699,25 @@ static inline DataDef *usual_arithmetic_result(DataDef *ld, DataDef *rd)
 	    return ld->size >= rd->size ? ld : rd;
 	return lr ? ld : rd;
     }
-    DataDef *w = ld;
-    if ( rd->size > w->size
-      || (rd->size == w->size && rd->is_unsigned() && !w->is_unsigned()) )
-	w = rd;
+    const bool lu = ld->is_unsigned(), ru = rd->is_unsigned();
+    const int lk = integer_conversion_rank(ld), rk = integer_conversion_rank(rd);
+    DataDef *w;
+    if ( lu == ru )
+	w = rk > lk ? rd : ld;
+    else
+    {
+	DataDef *u = lu ? ld : rd, *sg = lu ? rd : ld;
+	if ( (lu ? lk : rk) >= (lu ? rk : lk) )
+	    w = u;
+	else if ( sg->size > u->size )
+	    w = sg;
+	else
+	    w = unsigned_integer_counterpart(sg);
+    }
     if ( w->size < ddINT.size )
 	return NULL;	// below the promotion floor: both promote to int
-    if ( w->size == ddINT.size && !w->is_unsigned() )
+    if ( !w->is_unsigned()
+      && integer_conversion_rank(w) == integer_conversion_rank(&ddINT) )
 	return NULL;	// plain int — the caller default already
     return w;
 }
@@ -593,8 +738,8 @@ public:
 	// interpreter initializer of ~50-add chains — HUNG the compiler;
 	// callgrind: 59% TokenAdd::datadef'2). Same rule in every operator
 	// override below.
-	DataDef *ld = left  ? left->datadef()  : NULL;
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
 	if ( ld && ld->is_pointer() ) return ld;
 	if ( rd && rd->is_pointer() ) return rd;
 	if ( ld && ld->is_complex() ) return ld;
@@ -626,8 +771,8 @@ public:
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator- on a class object
 	// Children queried ONCE (the TokenAdd exponential-recursion rule).
-	DataDef *ld = left  ? left->datadef()  : NULL;
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
 	// `p - n` is a pointer; `p - q` (both pointers) is ptrdiff_t.
 	if ( ld && ld->is_pointer() )
 	{
@@ -652,27 +797,42 @@ public:
     virtual inline int precedence() const override { return 2; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const override { return 1; }
-    // Propagate unsigned operand type so -1U is uint32, not ddINT;
-    // propagate a complex operand so -z stays complex (like the binary ops);
-    // propagate a REAL operand (-2.5 is double, not ddINT) and an integer
-    // operand wider than int (-7L is long) — [expr.unary.op] with integer
-    // promotion. Overload ranking reads this parse-side VALUE view
-    // (operand_value_datadef); without the real arm, abs(-2.5) ranked as
-    // int and bound the int overload (silent truncation on the libc++
-    // global-abs family).
+    // [expr.unary.op]/8, C11 6.5.3.3: the result is the PROMOTED operand's
+    // type — -uc is int, -1U unsigned, -7L long, -2.5 double (overload ranking
+    // reads this VALUE view; without the real arm abs(-2.5) once bound the
+    // int overload). A complex or vector operand is its own result.
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
-	// Child queried ONCE (the TokenAdd exponential-recursion rule).
-	DataDef *rd = right ? right->datadef() : NULL;
-	if ( rd && rd->is_unsigned() )
+	DataDef *rd = promoted_operand_type(right);
+	if ( rd && (rd->is_complex() || rd->is_simd()) )
 	    return rd;
-	if ( rd && rd->is_complex() )
+	if ( DataDef *ua = usual_arithmetic_result(rd, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
+};
+
+// unary plus + ([expr.unary.op]/7, C11 6.5.3.3): the PROMOTED operand, an
+// rvalue — never the operand itself. A class operand's operator+() types
+// through resolved_type, and an array or function operand's decay is set
+// there at reduce time (resolve_object_operator_type). The lexer always
+// says TokenAdd for '+'; the engine builds this in unary position, as it
+// turns a TokenNeg into a TokenSub in binary position.
+class TokenUnaryPlus: public TokenOperator
+{
+public:
+    TokenUnaryPlus() : TokenOperator('+') {}
+    virtual TokenBase *clone() override { TokenUnaryPlus *to = new TokenUnaryPlus(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
+    virtual TokenID id() const override { return TokenID::tkUnaryPlus; }
+    virtual inline int precedence() const override { return 2; }
+    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual size_t argc() const override { return 1; }
+    virtual DataDef *datadef() const override {
+	if ( resolved_type ) return resolved_type;
+	DataDef *rd = promoted_operand_type(right);
+	if ( rd && (rd->is_pointer() || rd->as_fptr_dd() || rd->is_complex()
+		 || rd->is_simd()) )
 	    return rd;
-	if ( rd && rd->is_real() )
-	    return rd;
-	if ( rd && rd->is_integer()
-	  && _datatype && rd->size > _datatype->size )
-	    return rd;
+	if ( DataDef *ua = usual_arithmetic_result(rd, rd) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -689,8 +849,8 @@ public:
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator* on a class object
 	// Children queried ONCE (the TokenAdd exponential-recursion rule).
-	DataDef *ld = left  ? left->datadef()  : NULL;
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
 	if ( ld && ld->is_complex() ) return ld;
 	if ( rd && rd->is_complex() ) return rd;
 	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
@@ -710,8 +870,8 @@ public:
     {
 	if ( resolved_type ) return resolved_type;   // overloaded operator/ on a class object
 	// Children queried ONCE (the TokenAdd exponential-recursion rule).
-	DataDef *ld = left  ? left->datadef()  : NULL;
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
 	if ( ld && ld->is_complex() ) return ld;
 	if ( rd && rd->is_complex() ) return rd;
 	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
@@ -727,6 +887,17 @@ public:
     virtual TokenBase *clone() override { TokenMod *to = new TokenMod(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const override { return TokenID::tkMod; }
     virtual inline int precedence() const override { return 3; }
+    // C11 6.5.5, [expr.mul]: the usual arithmetic conversions, TokenMul's rule.
+    // Without it `%` answered the TokenOperator default — `l % 3` on a long
+    // measured 4 bytes and `auto r = l % m` truncated.
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;   // overloaded operator% on a class object
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
+	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
+	return TokenOperator::datadef();
+    }
 };
 
 // increment operator ++
@@ -739,8 +910,8 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
-	if ( left )  return left->datadef();
-	if ( right ) return right->datadef();
+	if ( left )  return operand_value_type(left);
+	if ( right ) return operand_value_type(right);
 	return TokenBase::datadef();
     }
     virtual inline int precedence()   const override { return 2; }
@@ -758,8 +929,8 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
-	if ( left )  return left->datadef();
-	if ( right ) return right->datadef();
+	if ( left )  return operand_value_type(left);
+	if ( right ) return operand_value_type(right);
 	return TokenBase::datadef();
     }
     virtual inline int precedence()   const override { return 2; }
@@ -781,7 +952,7 @@ public:
 	// value, so its type is the LHS's type — required for
 	// `*(end = ptr + N)` where `end` is `char *`.
 	// Child queried ONCE (the TokenAdd exponential-recursion rule).
-	DataDef *ld = left ? left->datadef() : NULL;
+	DataDef *ld = operand_value_type(left);
 	if ( ld ) return ld;
 	return TokenOperator::datadef();
     }
@@ -790,114 +961,113 @@ public:
     virtual TokenAssign *as_assign_tok() override { return this; }
 };
 
-// assignment operator += (assignment by sum)
-class TokenAddEq: public TokenMultiOp
+// A compound assignment `a @= b` ([expr.ass]/1 and /7, C11 6.5.16p3): its
+// type is the LEFT operand's, as `=`'s is (TokenAssign reads the same
+// operand_value_type); a class's operator@= keeps its declared return
+// (resolved_type). The ten operators below declared no type of their own and
+// answered the operator default, int — `*(p += 2)` was refused.
+class TokenCompoundAssign: public TokenMultiOp
 {
 public:
-    TokenAddEq() : TokenMultiOp("+=") {}
-    virtual TokenID id() const override { return TokenID::tkAddEq; }
-    virtual TokenBase *clone() override { return new TokenAddEq(); }
+    TokenCompoundAssign(const char *s) : TokenMultiOp(s) {}
     virtual inline int precedence()   const override { return 14; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
+    virtual DataDef *datadef() const override
+    {
+	if ( resolved_type ) return resolved_type;
+	if ( DataDef *ld = operand_value_type(left) ) return ld;
+	return TokenOperator::datadef();
+    }
+};
+
+// assignment operator += (assignment by sum)
+class TokenAddEq: public TokenCompoundAssign
+{
+public:
+    TokenAddEq() : TokenCompoundAssign("+=") {}
+    virtual TokenID id() const override { return TokenID::tkAddEq; }
+    virtual TokenBase *clone() override { return new TokenAddEq(); }
 };
 
 // assignment operator -= (assignment by difference)
-class TokenSubEq: public TokenMultiOp
+class TokenSubEq: public TokenCompoundAssign
 {
 public:
-    TokenSubEq() : TokenMultiOp("-=") {}
+    TokenSubEq() : TokenCompoundAssign("-=") {}
     virtual TokenID id() const override { return TokenID::tkSubEq; }
     virtual TokenBase *clone() override { return new TokenSubEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator *= (assignment by product)
-class TokenMulEq: public TokenMultiOp
+class TokenMulEq: public TokenCompoundAssign
 {
 public:
-    TokenMulEq() : TokenMultiOp("*=") {}
+    TokenMulEq() : TokenCompoundAssign("*=") {}
     virtual TokenID id() const override { return TokenID::tkMulEq; }
     virtual TokenBase *clone() override { return new TokenMulEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator /= (assignment by quotient)
-class TokenDivEq: public TokenMultiOp
+class TokenDivEq: public TokenCompoundAssign
 {
 public:
-    TokenDivEq() : TokenMultiOp("/=") {}
+    TokenDivEq() : TokenCompoundAssign("/=") {}
     virtual TokenID id() const override { return TokenID::tkDivEq; }
     virtual TokenBase *clone() override { return new TokenDivEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator %= (assignment by remainder)
-class TokenModEq: public TokenMultiOp
+class TokenModEq: public TokenCompoundAssign
 {
 public:
-    TokenModEq() : TokenMultiOp("%=") {}
+    TokenModEq() : TokenCompoundAssign("%=") {}
     virtual TokenID id() const override { return TokenID::tkModEq; }
     virtual TokenBase *clone() override { return new TokenModEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator <<= (assignment by bitwise left shift)
-class TokenBSLEq: public TokenMultiOp
+class TokenBSLEq: public TokenCompoundAssign
 {
 public:
-    TokenBSLEq() : TokenMultiOp("<<=") {}
+    TokenBSLEq() : TokenCompoundAssign("<<=") {}
     virtual TokenID id() const override { return TokenID::tkBSLEq; }
     virtual TokenBase *clone() override { return new TokenBSLEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator >>= (assignment by bitwise right shift)
-class TokenBSREq: public TokenMultiOp
+class TokenBSREq: public TokenCompoundAssign
 {
 public:
-    TokenBSREq() : TokenMultiOp(">>=") {}
+    TokenBSREq() : TokenCompoundAssign(">>=") {}
     virtual TokenID id() const override { return TokenID::tkBSREq; }
     virtual TokenBase *clone() override { return new TokenBSREq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator &= (assignment by bitwise and)
-class TokenBandEq: public TokenMultiOp
+class TokenBandEq: public TokenCompoundAssign
 {
 public:
-    TokenBandEq() : TokenMultiOp("&=") {}
+    TokenBandEq() : TokenCompoundAssign("&=") {}
     virtual TokenID id() const override { return TokenID::tkBandEq; }
     virtual TokenBase *clone() override { return new TokenBandEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator |= (assignment by bitwise or)
-class TokenBorEq: public TokenMultiOp
+class TokenBorEq: public TokenCompoundAssign
 {
 public:
-    TokenBorEq() : TokenMultiOp("|=") {}
+    TokenBorEq() : TokenCompoundAssign("|=") {}
     virtual TokenID id() const override { return TokenID::tkBorEq; }
     virtual TokenBase *clone() override { return new TokenBorEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator ^= (assignment by bitwise xor)
-class TokenXorEq: public TokenMultiOp
+class TokenXorEq: public TokenCompoundAssign
 {
 public:
-    TokenXorEq() : TokenMultiOp("^=") {}
+    TokenXorEq() : TokenCompoundAssign("^=") {}
     virtual TokenID id() const override { return TokenID::tkXorEq; }
     virtual TokenBase *clone() override { return new TokenXorEq(); }
-    virtual inline int precedence()   const override { return 14; }
-    virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
 };
 
 // overload function operator ()
@@ -927,16 +1097,15 @@ public:
     TokenBnot() : TokenOperator('~') {}
     virtual TokenID id() const override { return TokenID::tkBnot; }
     virtual TokenBase *clone() override { TokenBnot *to = new TokenBnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
-    // Propagate operand type so ~0U is uint32, not the default ddINT;
-    // propagate a complex operand — ~z is the complex conjugate (GNU).
+    // [expr.unary.op]/10, C11 6.5.3.3: the PROMOTED operand's type — ~uc is
+    // int, ~0U unsigned; a complex operand is its own result (~z is the
+    // conjugate, GNU), and so is a vector.
     virtual DataDef *datadef() const override {
 	if ( resolved_type ) return resolved_type;
-	// Child queried ONCE (the TokenAdd exponential-recursion rule).
-	DataDef *rd = right ? right->datadef() : NULL;
-	if ( rd && rd->is_integer() && rd != &ddINT )
+	DataDef *rd = promoted_operand_type(right);
+	if ( rd && (rd->is_complex() || rd->is_simd()) )
 	    return rd;
-	if ( rd && rd->is_complex() )
-	    return rd;
+	if ( DataDef *ua = usual_arithmetic_result(rd, rd) ) return ua;
 	return TokenOperator::datadef();
     }
     virtual inline int precedence()   const override { return 2; }
@@ -952,6 +1121,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLnot; }
     virtual TokenBase *clone() override { TokenLnot *to = new TokenLnot(); to->left = left; to->right = right; to->resolved_type = resolved_type; return to; }
     virtual inline int precedence()   const override { return 2; }
+    virtual bool yields_truth_value() const override { return true; }
     virtual inline TokenAssoc assoc() const override { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const override { return 1; }
 };
@@ -972,8 +1142,8 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
-	DataDef *ld = left  ? left->datadef()  : NULL;
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
 	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
@@ -987,6 +1157,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLand; }
     virtual TokenBase *clone() override { return new TokenLand(); }
     virtual inline int precedence() const override { return 11; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // bitwise or operator | (inclusive or)
@@ -1001,8 +1172,8 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
-	DataDef *ld = left  ? left->datadef()  : NULL;
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
 	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
@@ -1016,6 +1187,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLor; }
     virtual TokenBase *clone() override { return new TokenLor(); }
     virtual inline int precedence() const override { return 12; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // bitwise xor operator ^ (exclusive or)
@@ -1030,8 +1202,8 @@ public:
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
-	DataDef *ld = left  ? left->datadef()  : NULL;
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *ld = promoted_operand_type(left);
+	DataDef *rd = promoted_operand_type(right);
 	if ( DataDef *ua = usual_arithmetic_result(ld, rd) ) return ua;
 	return TokenOperator::datadef();
     }
@@ -1073,6 +1245,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkEquals; }
     virtual TokenBase *clone() override { return new TokenEquals(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator === (exactly equal to)
@@ -1083,6 +1256,7 @@ public:
     virtual TokenID id() const override { return TokenID::tk3Eq; }
     virtual TokenBase *clone() override { return new Token3Eq(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator !== (not exactly equal to) — !(===)
@@ -1093,6 +1267,7 @@ public:
     virtual TokenID id() const override { return TokenID::tk3NotEq; }
     virtual TokenBase *clone() override { return new Token3NotEq(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator != (not equal to)
@@ -1103,6 +1278,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkNotEq; }
     virtual TokenBase *clone() override { return new TokenNotEq(); }
     virtual inline int precedence() const override { return 7; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator < (less than)
@@ -1113,6 +1289,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLT; }
     virtual TokenBase *clone() override { return new TokenLT(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator < (greater than)
@@ -1123,6 +1300,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkGT; }
     virtual TokenBase *clone() override { return new TokenGT(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator <= (less than or equal to)
@@ -1133,6 +1311,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkLE; }
     virtual TokenBase *clone() override { return new TokenLE(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator <= (greater than or equal to)
@@ -1143,6 +1322,7 @@ public:
     virtual TokenID id() const override { return TokenID::tkGE; }
     virtual TokenBase *clone() override { return new TokenGE(); }
     virtual inline int precedence() const override { return 6; }
+    virtual bool yields_truth_value() const override { return true; }
 };
 
 // comparison operator <=> (three-way greater than, less than or equal to)
@@ -1170,15 +1350,12 @@ class TokenBSL: public TokenMultiOp
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
-	DataDef *ld = left ? left->datadef() : NULL;
-	// a vector's shift is the vector (gcc's vector extension) — the width
-	// test below would read a 4-byte vector as a promoted int
+	DataDef *ld = promoted_operand_type(left);
+	// a vector's shift is the vector (gcc's vector extension)
 	if ( ld && ld->is_simd() )
 	    return ld;
-	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
-	  && (ld->size > ddINT.size
-	   || (ld->size == ddINT.size && ld->is_unsigned())) )
-	    return ld;
+	if ( ld && ld->is_integer() && !ld->is_pointer() )
+	    if ( DataDef *ua = usual_arithmetic_result(ld, ld) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -1194,15 +1371,12 @@ class TokenBSR: public TokenMultiOp
     virtual DataDef *datadef() const override
     {
 	if ( resolved_type ) return resolved_type;
-	DataDef *ld = left ? left->datadef() : NULL;
-	// a vector's shift is the vector (gcc's vector extension) — the width
-	// test below would read a 4-byte vector as a promoted int
+	DataDef *ld = promoted_operand_type(left);
+	// a vector's shift is the vector (gcc's vector extension)
 	if ( ld && ld->is_simd() )
 	    return ld;
-	if ( ld && ld->is_integer() && !ld->is_pointer() && !ld->is_function()
-	  && (ld->size > ddINT.size
-	   || (ld->size == ddINT.size && ld->is_unsigned())) )
-	    return ld;
+	if ( ld && ld->is_integer() && !ld->is_pointer() )
+	    if ( DataDef *ua = usual_arithmetic_result(ld, ld) ) return ua;
 	return TokenOperator::datadef();
     }
 };
@@ -1258,7 +1432,7 @@ class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator('
     // parseExpression stopped at the first comma and the rest was dropped.
     virtual DataDef *datadef() const override {
 	// Child queried ONCE (the TokenAdd exponential-recursion rule).
-	DataDef *rd = right ? right->datadef() : NULL;
+	DataDef *rd = operand_value_type(right);
 	if ( rd )
 	    return rd;
 	return TokenOperator::datadef();
@@ -1290,6 +1464,11 @@ class TokenSemi:  public TokenSymbol   { public: TokenSemi()   :   TokenSymbol('
 class TokenColEq: public TokenSymbol   { public: TokenColEq()  :  TokenSymbol(':') {} virtual TokenID id() const override { return TokenID::tkColEq; } virtual TokenBase *clone() override { return new TokenColEq(); } };
 class TokenQuote: public TokenSymbol   { public: TokenQuote()  :   TokenSymbol('"') {} virtual TokenID id() const override { return TokenID::tkQuote; }  virtual TokenBase *clone() override { return new TokenQuote(); } };
 class TokenApost: public TokenSymbol   { public: TokenApost()  :  TokenSymbol('\'') {} virtual TokenID id() const override { return TokenID::tkApost; }  virtual TokenBase *clone() override { return new TokenApost(); } };
+// The end of ONE interactive entry (Program::ParseMode::InteractiveEntry):
+// Clang-Repl's annot_repl_input_end, Python's ENDMARKER. Only
+// Program::finish_interactive_entry makes one, after the entry's last token;
+// a TranslationUnit parse never sees it.
+class TokenEndOfEntry: public TokenSymbol { public: TokenEndOfEntry() : TokenSymbol(0) {} virtual TokenID id() const override { return TokenID::tkEndOfEntry; } virtual TokenBase *clone() override { return new TokenEndOfEntry(); } };
 
 
 // base numerics
@@ -1356,6 +1535,11 @@ inline bool is_zero_integer_literal(const TokenBase *t)
     return t && t->id() == TokenID::tkInt && t->ival() == 0;
 }
 
+// A null pointer constant ([conv.ptr]/1): a zero integer literal or `nullptr`
+// (a TokenNullptr is a zero TokenInt), and madc's own NULL, `((void *)0)` in
+// every mode (include/madc/stddef.h).
+bool is_null_pointer_constant(const TokenBase *t);
+
 class TokenNullptr: public TokenInt
 {
 public:
@@ -1407,6 +1591,10 @@ public:
     // the subscript index expressions of a deferred row sizeof, emitted
     // (values discarded) ahead of the runtime size computation.
     std::vector<TokenBase *> operand_side_effects;
+    // The least value a deferred measure answers: the alignment a named
+    // object's declaration requests (`alignas(8) V x;` then `alignof(x)`),
+    // which its type's alignment only raises. 0 for a type operand.
+    size_t measure_floor = 0;
 
     TokenTypeQuery(DataDef *dd = NULL, bool want_align = false,
 		   bool use_cached_size = true)
@@ -1420,6 +1608,7 @@ public:
 	TokenTypeQuery *c = new TokenTypeQuery(query_type, want_alignof,
 					       use_cached_runtime_size);
 	c->operand_side_effects = operand_side_effects;
+	c->measure_floor = measure_floor;
 	return c;
     }
     virtual TokenID id() const override { return TokenID::tkInt; }
@@ -1890,6 +2079,10 @@ public:
     DataDefCLASS *alloc_class;
     std::vector<TokenBase *> ctor_args;
     bool braced = false; // list-initialization selects braced constructor overloads
+    // A new-initializer `( ... )` / `{ ... }` was written ([expr.new]/23):
+    // omitted, the object is default-initialized; `()` value-initializes
+    // (zero for a scalar or a plain struct) — empty ctor_args are both.
+    bool has_initializer = false;
     // Placement new: `new (placement) Type(args)` constructs at the given
     // address instead of allocating. `placement` is the address expression
     // (NULL for ordinary `new`); `alloc_type` is the constructed type when it
@@ -1897,12 +2090,15 @@ public:
     TokenBase *placement;
     DataDef *alloc_type;
     TokenBase *array_size;	// `new T[n]` — the element count expr (NULL for scalar new)
+    // `new T[n]{...}`: the braced list that initializes the elements
+    // ([expr.new]/18, [dcl.init.aggr]); NULL when the array new has none.
+    class TokenStructLit *array_init;
     // The expression's TYPE ([expr.new]/1: a prvalue of type `T *`), set by
     // parse() for both the scalar and the array form. A new-expression is the
     // keyword token itself, so without this datadef() answered the keyword
     // default and `auto c = new T(...)` deduced `char`.
     DataDef *result_type;
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; result_type = NULL; }
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; array_size = NULL; array_init = NULL; result_type = NULL; }
     virtual TokenID id() const override { return TokenID::tkNEW; }
     virtual TokenBase *clone() override { return new TokenNEW(); }
     virtual TokenBase *parse(Program &) override;

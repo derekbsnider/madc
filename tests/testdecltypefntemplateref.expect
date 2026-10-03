@@ -1,0 +1,11 @@
+move: 1
+tmv: 1 1
+tref: 1
+tval: 1
+fwd: 1 1
+plain: 1
+forward: 1 1
+explicit: 1 1
+pick: int& int&& int&&
+bind: 5
+assign: 7

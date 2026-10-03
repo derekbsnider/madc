@@ -5,6 +5,9 @@
 # Lines starting with # and blank lines are ignored.
 #
 # File and exit
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title JOE
+
 ^k x savequit
 ^k d save
 ^k s save
@@ -26,6 +29,9 @@
 ^f find
 ^n modes
 ^b build
+# F5 runs the buffer into the REPL tab's session: a fresh one, its main
+# run, its names left for the prompt (plan §41.10a).
+f5 replrun
 ^r refresh
 ^k j projaddcur
 # Movement (arrows/home/end/pgup/pgdn are the primary motion keys; these

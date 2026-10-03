@@ -1,0 +1,14 @@
+// C++: a trait's SPELLED type arguments are read by the ONE type-id owner
+// (parse_type_id): every level's volatile is part of the type —
+// `__is_same(volatile int *, int *)` and `__is_same(int *volatile, int *)`
+// are false — and `&` / `&&` still reach __is_assignable. The reader
+// hand-rolled its stars and dropped each volatile (all three were true).
+// Oracle: g++ and clang++ print testtraittypenamecxx.expect.
+#include <stdio.h>
+struct A { int x; A &operator= (const A &) = default; };
+int main () {
+  printf ("tr: %d %d %d %d %d %d\n", (int) __is_same (volatile int *, int *), (int) __is_same (int *volatile, int *),
+          (int) __is_same (volatile int, int), (int) __is_same (int, int),
+          (int) __is_assignable (A &, const A &), (int) __is_same (const int &, const int &));
+  return 0;
+}

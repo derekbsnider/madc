@@ -322,47 +322,89 @@ TypeNode parse_type(const std::string &raw)
 	TypeNode t;
 	std::string s = mstrip(raw);
 
-	// Peel outer decorations. Trailing * / & first (outermost), then leading
-	// "const". We recurse by re-parsing the inner string, then prepend deco.
-	// Repeat until no decoration remains.
+	// Peel outer decorations, OUTERMOST first: the end of the spelling is the
+	// outermost level (a trailing `*`, `&`, `&&`, or a cv after the last
+	// `*`), a LEADING cv the innermost (it binds to the core), so the leading
+	// words are read only once no trailing decoration remains — reading them
+	// first merged `volatile int* volatile*`'s base qualifier into the outer
+	// level (PVPi for g++'s PVPVi). The cv words of ONE level (`const volatile
+	// int`, `int* const volatile`) are ONE <CV-qualifiers> set, spelled in
+	// the ABI's order r V K and a single substitution candidate (g++: `const
+	// volatile int*` is PVKi, never PKVi) — they accumulate in `level_cv` and
+	// flush as one deco before the next declarator operator and at the core.
+	unsigned level_cv = 0;
+	auto flush_cv = [&]() {
+		if (!level_cv) return;
+		std::string q;
+		if (level_cv & 2u) q += "V";
+		if (level_cv & 1u) q += "K";
+		t.decos.push_back(q);
+		level_cv = 0;
+	};
 	for (;;) {
 		s = mstrip(s);
 		if (!s.empty() && s.back() == '*') {
+			flush_cv();
 			t.decos.push_back("P");
 			s = s.substr(0, s.size() - 1);
 			continue;
 		}
 		// rvalue reference "&&" → O (must be tested before single &)
 		if (s.size() >= 2 && s.compare(s.size() - 2, 2, "&&") == 0) {
+			flush_cv();
 			t.decos.push_back("O");
 			s = s.substr(0, s.size() - 2);
 			continue;
 		}
 		if (!s.empty() && s.back() == '&') {
+			flush_cv();
 			t.decos.push_back("R");
 			s = s.substr(0, s.size() - 1);
 			continue;
 		}
-		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
-			t.decos.push_back("K");
-			s = s.substr(6);
-			continue;
-		}
-		// `typename rr<T>::type` — the keyword disambiguates a dependent
-		// name in source; the ABI encodes the nested-name alone
-		// (g++: RN2rrIT_E4typeE). Peel it as a no-op decoration.
-		if (s.size() >= 9 && s.compare(0, 9, "typename ") == 0) {
-			s = s.substr(9);
-			continue;
-		}
-		// trailing " const" form
+		// trailing " const" / " volatile": the level the last operator made
+		// (or the core's east cv, `int const`)
 		if (s.size() >= 6 && s.compare(s.size() - 6, 6, " const") == 0) {
-			t.decos.push_back("K");
+			level_cv |= 1u;
 			s = s.substr(0, s.size() - 6);
+			continue;
+		}
+		if (s.size() >= 9 && s.compare(s.size() - 9, 9, " volatile") == 0) {
+			level_cv |= 2u;
+			s = s.substr(0, s.size() - 9);
 			continue;
 		}
 		break;
 	}
+	// The core's leading words: its cv, and `typename rr<T>::type` — the
+	// keyword disambiguates a dependent name in source; the ABI encodes the
+	// nested-name alone (g++: RN2rrIT_E4typeE), a no-op decoration. NOT when
+	// the rest is a COMPOSITE declarator (`volatile int (*)[3]`, `const char
+	// (*)(int)`): its leading cv is its element's / return's, read by the
+	// array and function arms' own parse_type below — taken here it landed on
+	// the outermost level and was dropped as a top-level cv (PA3_i for g++'s
+	// PA3_Vi).
+	bool composite = s.find("(*)") != std::string::npos
+		      || s.find("(&)") != std::string::npos
+		      || (!s.empty() && s.back() == ']');
+	for (; !composite;) {
+		if (s.size() >= 6 && s.compare(0, 6, "const ") == 0) {
+			level_cv |= 1u;
+			s = mstrip(s.substr(6));
+			continue;
+		}
+		if (s.size() >= 9 && s.compare(0, 9, "volatile ") == 0) {
+			level_cv |= 2u;
+			s = mstrip(s.substr(9));
+			continue;
+		}
+		if (s.size() >= 9 && s.compare(0, 9, "typename ") == 0) {
+			s = mstrip(s.substr(9));
+			continue;
+		}
+		break;
+	}
+	flush_cv();
 
 	// Template-param placeholder: "$T0" → template-param #0, etc.
 	if (s.size() >= 3 && s[0] == '$' && s[1] == 'T') {
@@ -370,11 +412,15 @@ TypeNode parse_type(const std::string &raw)
 		return t;
 	}
 
-	// Function-pointer type "<ret> (*)(<params>)" → PF<ret><params>E.
+	// Function-pointer type "<ret> (*)(<params>)" → PF<ret><params>E, and a
+	// function REFERENCE "<ret> (&)(<params>)" → RF<ret><params>E.
 	size_t fp = s.find("(*)(");
+	const char *fn_deco = "P";
+	if (fp == std::string::npos && (fp = s.find("(&)(")) != std::string::npos)
+		fn_deco = "R";
 	if (fp != std::string::npos) {
 		t.is_funcptr = true;
-		t.decos.push_back("P");                 // pointer to the function type
+		t.decos.push_back(fn_deco);             // pointer / reference to the function type
 		t.fp_ret.push_back(parse_type(mstrip(s.substr(0, fp))));
 		size_t pend = s.rfind(')');
 		std::string ps = s.substr(fp + 4, pend - (fp + 4));
@@ -448,10 +494,12 @@ TypeNode parse_param_type(const std::string &raw)
 {
 	TypeNode t = parse_type(raw);
 	// Top-level cv-qualification is not part of a function parameter type in
-	// the Itanium ABI (`const size_t` by value encodes as `m`). Keep pointee
-	// const (`const char*` -> `PKc`) and reference-to-const (`const T&` -> `RK...`).
-	if (t.decos.size() == 1 && t.decos[0] == "K")
-		t.decos.clear();
+	// the Itanium ABI ([dcl.fct]/5: `const size_t` by value encodes as `m`,
+	// `int* volatile` as `Pi`). Keep pointee cv (`const char*` -> `PKc`,
+	// `volatile int*` -> `PVi`) and a reference's referent's (`const T&` -> `RK...`).
+	// decos are outermost first: a leading qualifier set IS the top level.
+	if (!t.decos.empty() && t.decos[0].find_first_not_of("VK") == std::string::npos)
+		t.decos.erase(t.decos.begin());
 	return t;
 }
 
@@ -550,12 +598,14 @@ public:
 	// the N..E (the outer N..E is supplied by the caller, so the name itself
 	// is NOT wrapped), registering its candidates so what follows — the
 	// parameters, a conversion target — may back-reference it (RS_).
-	std::string member_prefix(const std::string &qualified_class, bool const_method)
+	std::string member_prefix(const std::string &qualified_class, unsigned method_cv)
 	{
 		reset();
 		TypeNode cls = parse_type(qualified_class);
 		std::string out = "_ZN";
-		if (const_method) out += "K";
+		// <CV-qualifiers> of the member function ::= [r] [V] [K]
+		if (method_cv & 2u) out += "V";
+		if (method_cv & 1u) out += "K";
 		out += encode_name(cls.name, /*standalone=*/false);
 		return out;
 	}
@@ -577,9 +627,9 @@ public:
 	                          const std::string &unqualified,
 	                          const std::string &special,    // C1 / D1 / op code
 	                          const std::vector<std::string> &params,
-	                          bool const_method)
+	                          unsigned method_cv)
 	{
-		std::string out = member_prefix(qualified_class, const_method);
+		std::string out = member_prefix(qualified_class, method_cv);
 		out += special.empty() ? source_name(unqualified) : special;
 		out += "E";
 		out += params_enc(params);
@@ -593,9 +643,9 @@ public:
 	// Foo::operator bool() const → _ZNK3FoocvbEv.
 	std::string mangle_conversion(const std::string &qualified_class,
 	                              const std::string &target_type,
-	                              bool const_method)
+	                              unsigned method_cv)
 	{
-		std::string out = member_prefix(qualified_class, const_method);
+		std::string out = member_prefix(qualified_class, method_cv);
 		out += "cv" + encode_type(parse_type(target_type));
 		out += "Ev";
 		return out;
@@ -606,9 +656,9 @@ public:
 	                          const std::vector<std::string> &targs,
 	                          const std::string &ret,
 	                          const std::vector<std::string> &params,
-	                          bool const_method)
+	                          unsigned method_cv)
 	{
-		std::string out = member_prefix(qualified_class, const_method);
+		std::string out = member_prefix(qualified_class, method_cv);
 		add_sub("@member-template:" + qualified_class + "::" + unqualified);
 		out += source_name(unqualified);
 		out += "I";
@@ -1105,11 +1155,11 @@ std::string itanium_encode_type_sub(const std::string &cpp_type)
 std::string itanium_mangle_member_sub(const std::string &qualified_class,
                                        const std::string &member,
                                        const std::vector<std::string> &param_types,
-                                       bool const_method)
+                                       unsigned method_cv)
 {
 	ItaniumMangler m;
 	return m.settled(m.mangle_member(qualified_class, member, "",
-	                       param_types, const_method));
+	                       param_types, method_cv));
 }
 
 std::string itanium_mangle_member_template_sub(const std::string &qualified_class,
@@ -1117,12 +1167,12 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
                                        const std::vector<std::string> &template_arg_types,
                                        const std::string &return_type,
                                        const std::vector<std::string> &param_types,
-                                       bool const_method)
+                                       unsigned method_cv)
 {
 	ItaniumMangler m;
 	return m.settled(m.mangle_member_template(qualified_class, member,
 	                                template_arg_types, return_type,
-	                                param_types, const_method));
+	                                param_types, method_cv));
 }
 
 std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
@@ -1145,22 +1195,22 @@ std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
 std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::string &op,
                                          const std::vector<std::string> &param_types,
-                                         bool const_method)
+                                         unsigned method_cv)
 {
 	// A member operator is unary iff it takes no explicit parameter.
 	std::string code = op_special(op, param_types.empty());
 	if (code.empty()) return "";
 	ItaniumMangler m;
 	return m.settled(m.mangle_member(qualified_class, "", code,
-	                       param_types, const_method));
+	                       param_types, method_cv));
 }
 
 std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
                                            const std::string &target_type,
-                                           bool const_method)
+                                           unsigned method_cv)
 {
 	ItaniumMangler m;
-	return m.settled(m.mangle_conversion(qualified_class, target_type, const_method));
+	return m.settled(m.mangle_conversion(qualified_class, target_type, method_cv));
 }
 
 std::string itanium_mangle_std_free_template(const std::string &name,

@@ -1,10 +1,15 @@
-.TH MADCIDE 1 "2026-09-01" "madc" "User Commands"
+.TH MADCIDE 1 "2026-10-01" "madc" "User Commands"
 .SH NAME
 madcide \- terminal IDE built on the live madc compiler
 .SH SYNOPSIS
 .B madcide
-.I file
+.RI [ file ]
 .RI [ ro ]
+.RB [ \-\-profile
+.IR name ]
+.br
+.B madcide \-\-build\-plugin
+.I dir
 .SH DESCRIPTION
 .B madcide
 is a terminal IDE whose core is the running
@@ -35,9 +40,61 @@ files) swap the same way (^K T).
 .TP
 .I file
 The file to edit. A path that does not exist opens as a new file.
+Without a file,
+.B madcide
+opens an untitled buffer: saving it asks for a file name, and F5 runs it
+under the name
+.BR untitled .
+The one-shot and server modes
+.RB ( \-c ,
+.BR \-\-mcp ,
+.BR \-\-lsp ,
+.BR \-\-serve )
+need a file.
 .TP
 .I ro
-Any second argument opens the buffer read-only.
+The word
+.B ro
+after the file opens the buffer read-only.
+.PP
+Options may come before or after the file;
+.B \-\-
+ends them (for a file whose name starts with
+.BR \- ).
+An unknown option is refused with the usage (exit status 2).
+.SH OPTIONS
+.TP
+.BI \-\-profile " name"
+The profile to open under: a bundle naming the keybindings, layout,
+menu, colour scheme and status line, and its settings' defaults.
+Without the option, a program invoked under the name of a profile opens
+under that profile: a link named
+.B chthonia
+to
+.B madcide
+(or a copy of the binary with that name) needs no option. Otherwise the
+default is the
+.I profile
+setting in
+.IR settings.json ,
+else
+.BR default .
+.B chthonia
+is the learning profile, laid out as Thonny is: Thonny's keys, the editor
+with the REPL below it, and a beginner's menu.
+.TP
+.BI \-\-build\-plugin " dir"
+Build the plugin in
+.I dir
+into its library,
+.IR dir / name .so
+beside its manifest, and exit: 0 when built, 1 with the compiler's
+diagnostics when not. The running madcide compiles it in-process, with
+its own plugin headers on the include path. Nothing is ever built
+automatically.
+.TP
+.B \-\-help
+Print the usage and exit.
 .SH KEYS
 Under the default JOE profile,
 .B ^K H
@@ -97,6 +154,52 @@ files are colour schemes;
 .I joe.status
 is the status-line layout. All are plain text \(em copy and edit them
 to make your own.
+.PP
+A profile is a plugin directory,
+.IR name / name .plugin
+(JSON) beside the data files it carries, found first in the user's
+.I plugins
+directory and then in the shipped one (a
+.I plugins
+directory beside
+.I profiles
+above), so a user's profile overrides a shipped one of the same name.
+The user's configuration directory holds
+.I settings.json
+and
+.IR plugins :
+.PP
+.nf
+    $MADCIDE_CONFIG_DIR            (when set)
+    $XDG_CONFIG_HOME/madcide
+    %APPDATA%\emadcide              (Windows)
+    ~/.config/madcide
+.fi
+.PP
+.I settings.json
+is a JSON object:
+.B "profile"
+names the profile,
+.B "plugins"
+lists plugins whose code loads beside the profile's, and any other key is
+a setting, which beats the profile's own default (for example
+.BR "repl.std" ,
+the REPL's language standard).
+.PP
+A plugin with code names its source in its manifest
+.RB ( """code"": ""name.mad""" ),
+madc code that includes
+.B <madcide/plugin>
+and defines
+.BR madcide_plugin_activate ,
+which registers its commands and views. Its library, built by
+.BR \-\-build\-plugin ,
+loads when the profile in use is the plugin or
+.B "plugins"
+names it, before the keys and menus load, so they can bind its commands.
+A missing library, a library built against another plugin API version,
+and an activation that refuses are each reported on the status line, and
+the editor opens without the plugin.
 .SH SEE ALSO
 .BR madc (1)
 .br

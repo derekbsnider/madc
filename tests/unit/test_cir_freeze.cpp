@@ -2167,6 +2167,82 @@ TEST_CASE("RC2: free-function prototypes freeze into the arena and restore") {
 }
 
 // ---------------------------------------------------------------------------
+// RC3: a function template's IDENTITY-RETURN inference (`T &&f(T &)`, the
+// apply_template_call_return_inference lane) freezes the declared reference's
+// KIND — `&` vs `&&` (DF_TRET_REF + DF_TRET_RREF) — and whether the deduced
+// parameter is a forwarding `T &&` (DF_TRET_FWD). Both new bits share a bit
+// with an aggregate-only flag (the kind-scoped DefFlags precedent).
+// ---------------------------------------------------------------------------
+
+TEST_CASE("RC3: identity-return reference kind and forwarding round-trip") {
+	std::string inc_path = std::string("/tmp/madc_rc3_inc_")
+			     + std::to_string((long)getpid()) + ".h";
+	std::string main_path = std::string("/tmp/madc_rc3_main_")
+			      + std::to_string((long)getpid()) + ".cpp";
+	std::string snap_path = std::string("/tmp/madc_rc3_snap_")
+			      + std::to_string((long)getpid()) + ".msnap";
+	{
+		std::ofstream inc(inc_path.c_str());
+		inc << "template<class T> T &&rc3_move(T &x) { return static_cast<T&&>(x); }\n"
+		       "template<class T> T &rc3_ref(T &x) { return x; }\n"
+		       "template<class T> T &&rc3_fwd(T &&x) { return static_cast<T&&>(x); }\n"
+		       "template<class T> T &&rc3_cfwd(const T &&x) { return static_cast<T&&>(x); }\n";
+	}
+	{
+		std::ofstream mn(main_path.c_str());
+		mn << "#include \"" << inc_path << "\"\n"
+		      "int main() { return 0; }\n";
+	}
+
+	std::shared_ptr<Program> prog = std::make_shared<Program>();
+	prog->language_std = Program::STD_CPP17;
+	prog->pack_recording = true;
+	prog->forest_arena_enabled = true;
+	TokenProgram *tp = prog->tokenize(main_path.c_str());
+	REQUIRE(tp != nullptr);
+	REQUIRE(prog->parse(tp));
+	REQUIRE(madc_cir_freeze(prog.get(), main_path.c_str(),
+				snap_path.c_str(), /*append=*/false) == 0);
+	std::remove(inc_path.c_str());
+	std::remove(main_path.c_str());
+
+	const void *image = NULL;
+	size_t image_len = 0;
+	REQUIRE(cir_forest_map_image(snap_path.c_str(), image, image_len));
+	std::remove(snap_path.c_str());
+	CirFrozenForest forest;
+	freeze_test_bind_substrate();
+	REQUIRE(forest.open(image, image_len, /*c2m=*/NULL));
+	forest.materialize_from_arena();
+
+	const FuncDef *mv = NULL, *rf = NULL, *fw = NULL, *cfw = NULL;
+	const std::vector<CirRestoredFunc> &fns = forest.restored_funcs();
+	for (size_t i = 0; i < fns.size(); ++i) {
+		if (!fns[i].name || !fns[i].fd)
+			continue;
+		std::string nm(fns[i].name);
+		if (nm.find("rc3_move") != std::string::npos) mv = fns[i].fd;
+		if (nm.find("rc3_ref") != std::string::npos)  rf = fns[i].fd;
+		if (nm.find("rc3_fwd") != std::string::npos
+		    && nm.find("rc3_cfwd") == std::string::npos) fw = fns[i].fd;
+		if (nm.find("rc3_cfwd") != std::string::npos) cfw = fns[i].fd;
+	}
+	REQUIRE(mv != NULL);
+	REQUIRE(rf != NULL);
+	REQUIRE(fw != NULL);
+	REQUIRE(cfw != NULL);
+	CHECK(mv->template_return_ref == RefKind::Rvalue);
+	CHECK(!mv->template_return_deduce_forwarding);
+	CHECK(rf->template_return_ref == RefKind::Lvalue);
+	CHECK(!rf->template_return_deduce_forwarding);
+	CHECK(fw->template_return_ref == RefKind::Rvalue);
+	CHECK(fw->template_return_deduce_forwarding);
+	// `const T &&` is an rvalue reference, never a forwarding one.
+	CHECK(cfw->template_return_ref == RefKind::Rvalue);
+	CHECK(!cfw->template_return_deduce_forwarding);
+}
+
+// ---------------------------------------------------------------------------
 // #23: a restored class's METHODS register into the program exactly as
 // parseFunction's prototype tail leaves them — funcdef_map[method-id] + a
 // program-scope Variable whose data is a Method with owner_class set. That is

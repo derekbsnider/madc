@@ -61,8 +61,12 @@ typedef double mir_ldouble; /* arm64-macos: long double == double */
 #else
 /* aarch64-linux long double is IEEE binary128.  Cross-building from a host
    whose long double is narrower (x86-64 x87-80) keeps the SIZE and
-   alignment right but folds constants at host precision -- a documented
-   cross-fidelity limit, not a layout bug. */
+   alignment right, and MIR_new_data re-encodes every LD data element from
+   the host's x87 layout into binary128 (mir.c, MIR_LD_DATA_X87_TO_BINARY128)
+   -- before that, the host's BYTES reached the target and read as binary128
+   near zero, a layout bug.  What remains is a documented cross-fidelity
+   limit: a constant FOLDED on such a host carries 64 significand bits, not
+   113 (`1.0L / 3.0L` differs from gcc past the 19th digit). */
 typedef long double mir_ldouble;
 #endif
 

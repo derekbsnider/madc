@@ -223,11 +223,14 @@ rm -f "$tmp"
 # the name, gate the tier, S.command, count the error rows, compose, typeset,
 # fan out the new events). Every transport drives it — the api seat, the MCP
 # seat, the LSP face and, since the V6 seam, the ui::NONE `-c` client, which
-# had restated the run/compose/render sequence. Marker: `S.command(` appears
-# once across tools/madcide.
+# had restated the run/compose/render sequence. Marker: a `.command(` call,
+# through ANY receiver, appears once across tools/madcide (the receiver's
+# name is not the rule: a session spelled `s` runs a command the same way). A
+# command run from inside the session or a client is its action event
+# through apply_ide_event (action_event), never a second command call.
 count_command_runs()
 {
-	cat "$@" | grep -c '\bS\.command('
+	cat "$@" | grep -c -E '\b[A-Za-z_][A-Za-z0-9_]*\.command\('
 }
 
 n=$(count_command_runs "$TOOLS"/*.inc)
@@ -235,7 +238,7 @@ if [ "$n" -ne 1 ]; then
 	echo "check-madcide-single-owners: FAIL — $n S.command( run site(s)" \
 	     "across tools/madcide (expected 1: api_run, the one command core" \
 	     "every transport drives)." >&2
-	grep -n '\bS\.command(' "$TOOLS"/*.inc >&2
+	grep -n -E '\b[A-Za-z_][A-Za-z0-9_]*\.command\(' "$TOOLS"/*.inc >&2
 	exit 1
 fi
 
@@ -243,7 +246,8 @@ fi
 tmp=$(mktemp)
 cat "$TOOLS"/*.inc > "$tmp"
 echo '    bool ok = S.command(adoc, code, arg, cont);	// synthetic' >> "$tmp"
-if [ "$(count_command_runs "$tmp")" -ne 2 ]; then
+echo '    s.command(doc, code, arg, cont);		// synthetic, another receiver' >> "$tmp"
+if [ "$(count_command_runs "$tmp")" -ne 3 ]; then
 	rm -f "$tmp"
 	echo "check-madcide-single-owners: FAIL — negative control did not" \
 	     "detect a synthetic command run (the marker went blind)." >&2
@@ -507,7 +511,200 @@ if [ "$(count_validator_calls $VALIDATOR_FILES "$tmp")" -ne 3 ]; then
 fi
 rm -f "$tmp"
 
-echo "check-madcide-single-owners: OK (one fresh-row owner: push_buffer_row;" \
+# "Is this path a FILE or a pseudo-buffer" has ONE owner: path_is_asset
+# (madcide_core.inc; DupFamily madcide_pseudo_buffer_test, consolidated with
+# F5, plan §41.10a slice 3 — the slice had begun a second copy,
+# path_is_pseudo_buffer, beside the layer owner's). A pseudo-buffer
+# ([build], [terminal], [repl]) is named in brackets. Marker: the bracket
+# test on a name's first byte appears once across tools/madcide +
+# tools/texteditor — inside the owner.
+count_bracket_tests()
+{
+	cat "$@" | grep -cE "\[0\] *[!=]= *'\['"
+}
+
+n=$(count_bracket_tests "$TEXTED"/*.inc "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n pseudo-buffer bracket" \
+	     "test(s) across tools/texteditor + tools/madcide (expected 1:" \
+	     "path_is_asset)." >&2
+	grep -nE "\[0\] *[!=]= *'\['" "$TEXTED"/*.inc "$TOOLS"/*.inc >&2
+	exit 1
+fi
+
+# Negative control for the bracket marker.
+tmp=$(mktemp)
+echo "    if ( pc[0] == '[' ) return;	// synthetic" > "$tmp"
+if [ "$(count_bracket_tests "$TEXTED"/*.inc "$TOOLS"/*.inc "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic bracket test (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# STOPPING a build has ONE owner: stop_build (both kinds: the exec pump's
+# sent stop, the in-process build's scope_cancel). IdeSession::close() had
+# its own copy of the first branch only, so an in-process build was never
+# cancelled at the session's end (consolidated into IdeSession::stop_tasks
+# with the quit-hang fix, 2026-09-28). Marker: the build's stop handle is
+# READ once across tools/madcide — inside the owner.
+count_buildstop_reads()
+{
+	cat "$@" | grep -c 'es_int(w, es, "buildstop"'
+}
+
+n=$(count_buildstop_reads "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n reads of the build stop" \
+	     "handle across tools/madcide (expected 1: stop_build)." >&2
+	grep -n 'es_int(w, es, "buildstop"' "$TOOLS"/*.inc >&2
+	exit 1
+fi
+
+# Negative control for the build-stop marker.
+tmp=$(mktemp)
+echo '    long stopc = es_int(w, es, "buildstop", 0);	// synthetic' > "$tmp"
+if [ "$(count_buildstop_reads "$TOOLS"/*.inc "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic build-stop read (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# Where madcide's and the line editor's DATA lives has ONE owner:
+# resolve_data_dir (tools/texteditor/lined_core.inc; B85). The install
+# layout's `share/` arm is spelled once, inside it, and no data file is read
+# through a cwd-relative "tools/..." path: that path is what made save and
+# quit (line-editor verbs) do nothing outside the repo root, and never in
+# the shipped package.
+count_share_arms()
+{
+	cat "$@" | grep -c '/share/{}'
+}
+count_cwd_data_reads()
+{
+	cat "$@" | grep -cE '"tools/(madcide|texteditor)/'
+}
+
+n=$(count_share_arms "$TOOLS"/*.inc "$TEXTED"/*.inc)
+m=$(count_cwd_data_reads "$TOOLS"/*.inc "$TEXTED"/*.inc)
+if [ "$n" -ne 1 ] || [ "$m" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n install-layout share/ arms" \
+	     "(expected 1: resolve_data_dir) and $m cwd-relative tools/ data" \
+	     "reads (expected 0) across tools/madcide + tools/texteditor. Find" \
+	     "data through resolve_data_dir." >&2
+	grep -nE '/share/\{\}|"tools/(madcide|texteditor)/' \
+	     "$TOOLS"/*.inc "$TEXTED"/*.inc >&2
+	exit 1
+fi
+
+# Negative control: a synthetic cwd-relative read must trip the marker.
+tmp=$(mktemp)
+echo '    php::file_get_contents(t, "tools/texteditor/verbs/q.madv");	// synthetic' > "$tmp"
+if [ "$(count_cwd_data_reads "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic cwd-relative data read (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# Every DOCUMENT entity has ONE minter: new_document (tools/texteditor/
+# lined_core.inc; B86) — text under a path, unmodified, the path's kind
+# stamped. A file's load (setup_document), a new file and every view buffer
+# ([repl], [build], [terminal]) come through it; a second
+# `ui::create(w, "document")` is the copy that let an unreadable path become
+# an empty buffer under its name and a view buffer read a same-named file.
+count_document_mints()
+{
+	cat "$@" | grep -cE 'ui::create\([^,]*, *"document"\)'
+}
+
+n=$(count_document_mints "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEXTED"/*.mad)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n document mint sites across" \
+	     "tools/madcide + tools/texteditor (expected 1: new_document). Open" \
+	     "a file through open_buffer_doc / setup_document, a view buffer" \
+	     "through new_document." >&2
+	grep -nE 'ui::create\([^,]*, *"document"\)' "$TOOLS"/*.inc "$TOOLS"/*.mad \
+	     "$TEXTED"/*.inc "$TEXTED"/*.mad >&2
+	exit 1
+fi
+
+# Negative control: a synthetic second minter must trip the marker.
+tmp=$(mktemp)
+echo '    long nd = ui::create(w2, "document");	// synthetic' > "$tmp"
+if [ "$(count_document_mints "$TOOLS"/*.inc "$TOOLS"/*.mad "$TEXTED"/*.inc "$TEXTED"/*.mad "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic document mint (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# A data file's PATH has ONE owner: bundle_data_path (tools/madcide/
+# madcide_plugins.inc; plugins Stage A) — the active bundle's own directory,
+# then the shared profiles/. The keys, layout, menu, theme and status loaders
+# each formed `<profile_dir>/<name>.<kind>` themselves; a sixth copy would
+# read past a bundle's own files. Marker: no `{}/{}.<kind>` path spelled with
+# a data kind's extension across tools/madcide + tools/texteditor.
+count_data_paths()
+{
+	cat "$@" | grep -cE '"\{\}/\{\}\.(keys|layout|menu|theme|status)"'
+}
+
+n=$(count_data_paths "$TOOLS"/*.inc "$TEXTED"/*.inc)
+if [ "$n" -ne 0 ]; then
+	echo "check-madcide-single-owners: FAIL — $n data-file paths spelled by" \
+	     "hand across tools/madcide + tools/texteditor (expected 0: every" \
+	     "loader asks bundle_data_path)." >&2
+	grep -nE '"\{\}/\{\}\.(keys|layout|menu|theme|status)"' "$TOOLS"/*.inc "$TEXTED"/*.inc >&2
+	exit 1
+fi
+
+# Negative control: a synthetic hand-spelled path must trip the marker.
+tmp=$(mktemp)
+echo '    php::file_get_contents(txt, format("{}/{}.layout", dir, n));	// synthetic' > "$tmp"
+if [ "$(count_data_paths "$TOOLS"/*.inc "$TEXTED"/*.inc "$tmp")" -ne 1 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic hand-spelled data path (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+# A synthesized command event has ONE builder: action_event (post, command
+# and a choice list's row each spelled the literal, and the client's paste
+# answer ran a second command call, until plan §41.11a step 4). Marker: the
+# event's "action_code" key appears once across tools/madcide.
+count_action_events()
+{
+	cat "$@" | grep -c -E '"action_code"[[:space:]]*:'
+}
+
+n=$(count_action_events "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n action-event literal(s)" \
+	     "across tools/madcide (expected 1: action_event, the one builder)." >&2
+	grep -n -E '"action_code"[[:space:]]*:' "$TOOLS"/*.inc >&2
+	exit 1
+fi
+tmp=$(mktemp)
+cat "$TOOLS"/*.inc > "$tmp"
+echo '    var e = { "event": "action", "action_code": code };	// synthetic' >> "$tmp"
+if [ "$(count_action_events "$tmp")" -ne 2 ]; then
+	rm -f "$tmp"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic action-event literal (the marker went blind)." >&2
+	exit 1
+fi
+rm -f "$tmp"
+
+echo "check-madcide-single-owners: OK (one data-location owner: resolve_data_dir;" \
+     "one data-file path: bundle_data_path; one action-event builder: action_event;" \
+     "one document minter: new_document; one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \
      "validator seat: graph_edit_apply)"

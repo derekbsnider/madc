@@ -210,6 +210,12 @@
       el.removeChild(el._strip);
       el._strip = null;
     }
+    // The toolbar (plan §41.11a): `toolbar` rows on a node (madcide's root)
+    // are buttons in the workbench's toolbar slot, the top row; a click posts
+    // the row's action by name through the button handler below. No rows:
+    // the slot empties, and an empty slot takes no space.
+    if (Array.isArray(op.toolbar)) toolbar(el, op.toolbar);
+    else if (el._slots && el._slots.get('toolbar')) el._slots.get('toolbar').textContent = '';
     // Slice 3 workbench: a `region` node docks into that region's slot of
     // its parent's grid (the page's own CSS placement, keyed by data-slot),
     // and a parent that holds region'd children becomes the workbench
@@ -300,6 +306,24 @@
       if (tabs[i].action) t.dataset.action = tabs[i].action;
       if (tabs[i].arg != null) t.dataset.arg = String(tabs[i].arg);
       s.appendChild(t);
+    }
+  }
+
+  // The toolbar's buttons (plan §41.11a): one per row, its label shown and
+  // its chord (the loaded profile's, from web_model) as the tooltip; a
+  // disabled row's button is disabled. The slot is the workbench's.
+  function toolbar(el, rows) {
+    var s = slotOf(el, 'toolbar');
+    s.textContent = '';
+    for (var i = 0; i < rows.length; i++) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cf-btn tb-btn';
+      b.dataset.action = rows[i].action || '';
+      b.textContent = rows[i].label || '';
+      if (rows[i].key) b.title = (rows[i].label || '') + ' (' + rows[i].key + ')';
+      if (rows[i].enabled === false) b.disabled = true;
+      s.appendChild(b);
     }
   }
 
@@ -782,18 +806,46 @@
     Enter: 'enter', Tab: 'tab', Backspace: 'backspace', Escape: 'esc',
     ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
     Home: 'home', End: 'end', PageUp: 'pgup', PageDown: 'pgdn',
-    Delete: 'del', Insert: 'ins'
+    Delete: 'del', Insert: 'ins',
+    // Function keys (a mapped key's default is prevented: F5 never reloads)
+    F1: 'f1', F2: 'f2', F3: 'f3', F4: 'f4', F5: 'f5', F6: 'f6',
+    F7: 'f7', F8: 'f8', F9: 'f9', F10: 'f10', F11: 'f11', F12: 'f12'
   };
   var ctrlPunct = { '\\': '^\\', ']': '^]', '^': '^^', '_': '^_' };
 
+  // The key's modifiers as the engine's spelling words (ctrl, shift, alt,
+  // cmd; plan §41.11a step 3e): the engine parses them with its one key
+  // owner. A plain Ctrl+letter stays "^s", every profile's spelling.
+  function modWords(e, withShift) {
+    return (e.ctrlKey ? 'ctrl+' : '') + (withShift && e.shiftKey ? 'shift+' : '') +
+           (e.altKey ? 'alt+' : '') + (e.metaKey ? 'cmd+' : '');
+  }
+
+  // Cmd is a binding modifier where the engine's primary modifier is Cmd
+  // (the page's body says which, plan §41.11a step 3e); elsewhere Cmd with a
+  // printable stays the browser's (its Cmd+C / Cmd+V).
+  var cmdBinds = document.body.getAttribute('data-primary') === 'cmd';
+
   function keySpelling(e) {
-    if (named[e.key]) return named[e.key];
-    if (e.ctrlKey && !e.altKey && !e.metaKey && e.key.length === 1) {
+    if (named[e.key]) return modWords(e, true) + named[e.key];
+    if (e.key.length !== 1 || !(e.ctrlKey || e.altKey || e.metaKey))
+      return null;                  // a printable types (the input event)
+    if (e.metaKey && !cmdBinds) return null;
+    // AltGr (Windows reports it as Ctrl+Alt) and macOS's Option type
+    // characters: '@' on a German layout, 'ß' from Option+S.
+    if (e.getModifierState && e.getModifierState('AltGraph')) return null;
+    if (e.altKey && !e.ctrlKey && !e.metaKey && !/[a-zA-Z0-9]/.test(e.key))
+      return null;
+    if (e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) {
       if (/[a-zA-Z]/.test(e.key)) return '^' + e.key.toLowerCase();
       if (ctrlPunct[e.key]) return ctrlPunct[e.key];
-      if (e.key === ' ') return 'space';
     }
-    return null;
+    // A letter reports its case under Shift; any other printable is already
+    // its shifted character (Ctrl+plus), so Shift is spelled on letters only.
+    var letter = /[a-zA-Z]/.test(e.key);
+    var base = e.key === ' ' ? 'space' : e.key === '+' ? 'plus'
+             : letter ? e.key.toLowerCase() : e.key;
+    return modWords(e, letter) + base;
   }
 
   kb.addEventListener('keydown', function (e) {
@@ -808,6 +860,13 @@
     var t = kb.value;
     kb.value = '';
     if (t) post({ kind: 'text', text: t });
+  });
+  // The browser's own Paste (its menu, or a key the page leaves to it) types
+  // the clipboard's text, line breaks kept: the input box would drop them.
+  kb.addEventListener('paste', function (e) {
+    var t = e.clipboardData ? e.clipboardData.getData('text/plain') : '';
+    e.preventDefault();
+    if (t) post({ kind: 'text', text: t.replace(/\r\n?/g, '\n') });
   });
   document.addEventListener('mousedown', function () { setTimeout(function () { kb.focus(); }, 0); });
 

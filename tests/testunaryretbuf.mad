@@ -1,0 +1,36 @@
+// A unary operator returning a class that is non-trivial for calls (a user
+// copy constructor and destructor) takes the hidden result address, as the
+// binary operators and methods do. It used to be emitted one argument short
+// ("too few arguments") with an unaddressable value.
+#include <stdio.h>
+
+static int live = 0;
+
+struct N {
+	long v;
+	N() : v(0) { ++live; }
+	N(long x) : v(x) { ++live; }
+	N(const N &o) : v(o.v) { ++live; }
+	~N() { --live; }
+	N operator-() const { return N(-v); }
+	N operator+() const { return N(v); }
+	N operator~() const { return N(~v); }
+	long get() const { return v; }
+};
+
+int main()
+{
+	{
+		N a(5);
+		N b = -a;
+		printf("neg %ld\n", b.v);
+		printf("plus %ld\n", (+a).v);
+		printf("compl %ld\n", (~a).get());
+		printf("twice %ld\n", (-(-a)).v);
+		N c = -b;
+		printf("again %ld\n", c.v);
+	}
+	// Every temporary has been destroyed once its scope closed.
+	printf("live %d\n", live);
+	return 0;
+}

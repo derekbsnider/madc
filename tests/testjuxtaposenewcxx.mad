@@ -1,0 +1,6 @@
+// [expr.new]: a new-initializer's expression-list is separated by `,`. The
+// new-expression's argument loop consumed a `,` only when one was next, so
+// `new S(a b)` constructed S(a, b).
+// Oracle: g++ "error: expected ')' before 'b'", clang++ "error: expected ')'".
+struct S { int m, n; S(int a, int b) : m(a), n(b) {} };
+int main() { int a = 1, b = 2; S *sp = new S(a b); return sp->m * 10 + sp->n; }

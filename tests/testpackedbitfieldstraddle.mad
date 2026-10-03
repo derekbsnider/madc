@@ -1,0 +1,68 @@
+// Under any packing -- `#pragma pack(N)`, a packed aggregate, a packed member --
+// a SysV bit-field is placed at the next free bit and may straddle its type's
+// window (gcc place_field); without packing it moves to the next window. A
+// straddling field's bits run past its type's unit, so it is read and written
+// byte by byte: plain and compound assignment, ++, static and automatic
+// initializers, a 64-bit field across nine bytes, and a field whose unit would
+// run past the end of the aggregate. Raw bytes are dumped only from static or
+// zeroed objects (padding bits are unspecified). Oracle: gcc 13 and clang 18
+// print the lines below.
+#include <stdio.h>
+#include <string.h>
+#pragma pack(1)
+struct P1 { char a : 3; int b : 30; short c : 9; };
+#pragma pack(2)
+struct P2 { char a : 5; int b : 20; char d; };
+#pragma pack(4)
+struct P4 { char a : 6; long b : 40; };
+#pragma pack(8)
+struct P8 { char a : 4; int b : 30; char c; };
+#pragma pack()
+struct N { char a : 4; int b : 30; char c; };
+struct __attribute__((packed)) W { char a : 4; unsigned long w : 64; char z; };
+struct __attribute__((packed)) O { char c; int x : 8; };
+struct M { char a : 4; int b : 30 __attribute__((packed)); unsigned c : 7; };
+static struct P1 sp1 = { -2, 123456789, -200 };
+static struct W sw = { 5, 0xfedcba9876543210UL, 9 };
+static void dump(const char *tag, const void *p, size_t n)
+{
+	const unsigned char *b = p;
+	printf("%s:", tag);
+	for (size_t i = 0; i < n; i++) printf(" %02x", b[i]);
+	printf("\n");
+}
+int main(void)
+{
+	struct P1 p1 = { 1, -5, 77 };
+	struct P2 p2 = { 3, 0x54321, 'q' };
+	struct P4 p4 = { -7, 0x7f12345678L };
+	struct W w = { 1, 0x0123456789abcdefUL, 2 };
+	struct O o = { 'c', -3 };
+	struct M m = { 2, 123456789, 100 };
+	struct P1 q;
+	struct W r;
+	printf("sizes: %zu %zu %zu %zu %zu %zu %zu %zu\n", sizeof p1, sizeof p2, sizeof p4,
+	       sizeof(struct P8), sizeof(struct N), sizeof w, sizeof o, sizeof m);
+	printf("p1: %d %d %d | sp1: %d %d %d\n", p1.a, p1.b, p1.c, sp1.a, sp1.b, sp1.c);
+	p1.b += 1000; p1.c++; p1.a = -3;
+	printf("p1': %d %d %d\n", p1.a, p1.b, p1.c);
+	printf("p2: %d %x %c | p4: %d %lx\n", p2.a, p2.b, p2.d, p4.a, (unsigned long)p4.b);
+	p4.b = -p4.b;
+	printf("p4': %d %ld\n", p4.a, (long)p4.b);
+	printf("w: %d %lx %d | sw: %d %lx %d\n", w.a, (unsigned long)w.w, w.z, sw.a,
+	       (unsigned long)sw.w, sw.z);
+	w.w ^= 0xffffffff00000000UL; w.a = 7;
+	printf("w': %d %lx %d\n", w.a, (unsigned long)w.w, w.z);
+	printf("o: %c %d | m: %d %d %u\n", o.c, o.x, m.a, m.b, m.c);
+	m.b = -m.b; m.c = 127;
+	printf("m': %d %d %u\n", m.a, m.b, m.c);
+	memset(&q, 0, sizeof q);
+	q.a = 1; q.b = -5; q.c = 77;
+	memset(&r, 0, sizeof r);
+	r.a = 7; r.w = 0xfedcba9889abcdefUL; r.z = 2;
+	dump("sp1", &sp1, sizeof sp1);
+	dump("q", &q, sizeof q);
+	dump("sw", &sw, sizeof sw);
+	dump("r", &r, sizeof r);
+	return 0;
+}

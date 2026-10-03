@@ -1,0 +1,27 @@
+// The web target's platform clipboard under Xvfb (plan §41.11a step 3e):
+// the window's GdkClipboard takes text and a read answers it with its line
+// breaks. The engine's door (a host's clip ops, the "\r\n" a Windows
+// clipboard keeps read back as "\n") is testuihostfake's. The first resize
+// is the page's ready signal: the window exists by then.
+int main()
+{
+    long w = ui::world_new();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    var ev;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event_code"] == ui::event_kind::resize )
+	    break;
+    }
+    println("GUI_CLIP_SET {}", ui::clipboard_set(t, "first line\nsecond") ? "taken" : "refused");
+    var got;
+    bool ok = ui::clipboard_get(got, t);
+    println("GUI_CLIP_GET {} [{}]", ok ? "answered" : "refused",
+	    php::str_replace("\n", "|", got));
+    ui::close(t);
+    ui::world_close(w);
+    println("GUI_CLOSED");
+    return 0;
+}

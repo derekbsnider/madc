@@ -1,0 +1,40 @@
+// A substituted call's arguments keep their value category: a forwarded
+// rvalue reaches the move constructor / the `T&&` overload through a
+// member-template body (std::vector<S>::push_back -> emplace_back ->
+// allocator construct) and through user member and free templates.
+// Oracle: g++ 13 and clang++ 18 print the same four lines.
+#include <vector>
+#include <utility>
+#include <cstdio>
+struct S {
+	int v;
+	S(int x) : v(x) {}
+	S(const S &o) : v(o.v) { printf("copy "); }
+	S(S &&o) : v(o.v) { printf("move "); }
+};
+void sink(S &) { printf("sinkL "); }
+void sink(S &&) { printf("sinkR "); }
+struct Relay {
+	template<class T> void pass(T &&t) { sink(std::forward<T>(t)); }
+};
+template<class T> void free_pass(T &&t) { sink(std::forward<T>(t)); }
+int main() {
+	std::vector<S> v;
+	v.reserve(4);
+	printf("vec: ");
+	v.push_back(S(1));
+	S s(2);
+	v.push_back(s);
+	v.push_back(std::move(s));
+	printf("\nmember: ");
+	Relay r;
+	S a(3);
+	r.pass(a);
+	r.pass(S(4));
+	r.pass(std::move(a));
+	printf("\nfree: ");
+	free_pass(a);
+	free_pass(S(5));
+	printf("\nn=%d\n", (int)v.size());
+	return 0;
+}

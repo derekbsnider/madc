@@ -45,6 +45,7 @@
 #include <deque>
 #include <limits.h>
 #include <map>
+#include <utility>
 #include <stdint.h>
 #include <string.h>
 #include <vector>
@@ -593,12 +594,38 @@ struct MadcChan {
 	std::deque<ChanWaiter *> send_waiters;
 };
 
-// One handle space, two case kinds (MT-4b): a value channel, or a byte
-// endpoint (madc::channel) registered by chan_readable whose READ readiness
-// selects beside the value cases. Exactly one pointer is set per entry.
+// One handle space, three case kinds: a value channel; a byte endpoint
+// (madc::channel) registered by chan_readable whose READ readiness selects
+// beside the value cases (MT-4b); or a readiness source resolved by id at
+// every select (taskio::chan_readiness — an interactive session, plan
+// §41.9a). Exactly one of chan / bytes / resolve is set per entry. The byte
+// endpoint and the source select through ONE path, taskio::
+// readiness_source (the channel through ChannelReadiness below).
 struct ChanEntry {
 	MadcChan *chan = 0;
 	madc::channel *bytes = 0;
+	madc::taskio::readiness_resolver resolve = 0;
+	int64_t source_id = 0;
+};
+
+// A madc::channel as a readiness source: its three-state probe and its one
+// read handle (none while it has no waitable read side).
+class ChannelReadiness : public madc::taskio::readiness_source
+{
+public:
+	explicit ChannelReadiness(madc::channel *c) : c_(c) {}
+	int64_t poll_state() override { return c_->poll_state(); }
+	void wait_handles(std::vector<madc::poll_handle> &out) override
+	{
+		out.clear();
+		intptr_t h = (intptr_t)c_->read_wait_handle();
+		if (h >= 0) {
+			madc::poll_handle p = { h, c_->read_wait_kind() };
+			out.push_back(p);
+		}
+	}
+private:
+	madc::channel *c_;
 };
 
 std::map<int64_t, ChanEntry> g_chans;
@@ -902,9 +929,22 @@ int64_t chan_select(value &out, value &chans)
 	if (n == 0)
 		__madc_throw_cstr("chan_select: empty case list");
 	std::vector<ChanEntry> es(n);
-	for (size_t i = 0; i < n; i++)
+	std::vector<ChannelReadiness> adapters;
+	adapters.reserve(n);	// src[] points into it: no reallocation
+	std::vector<madc::taskio::readiness_source *> src(n, nullptr);
+	for (size_t i = 0; i < n; i++) {
 		es[i] = entry_of(hs[i].as_integer(), "select");
+		if (es[i].bytes) {
+			adapters.push_back(ChannelReadiness(es[i].bytes));
+			src[i] = &adapters.back();
+		}
+	}
 	for (;;) {
+		// A resolved source is looked up again at every pass: a
+		// closed one is gone (dead), a restarted one has new handles.
+		for (size_t i = 0; i < n; i++)
+			if (es[i].resolve)
+				src[i] = es[i].resolve(es[i].source_id);
 		// Ready scan, lowest index first — buffered values on a
 		// closed channel still drain here (only closed-AND-drained
 		// disables a case). A byte case fires with out = null when
@@ -920,7 +960,7 @@ int64_t chan_select(value &out, value &chans)
 				if (r == 0)
 					any_open = true;
 			} else {
-				int64_t r = es[i].bytes->poll_state();
+				int64_t r = src[i] ? src[i]->poll_state() : -1;
 				if (r == 1) {
 					out = value();
 					return (int64_t)i;
@@ -937,7 +977,12 @@ int64_t chan_select(value &out, value &chans)
 		// arriving, or an fd turning readable) claims the group.
 		SelectGroup grp;
 		std::vector<ChanWaiter> ws(n);
-		std::vector<IoWaiter> ios(n);
+		// A byte case's handles, each an io waiter carrying the case's
+		// index (a source may have several: a session's two streams);
+		// gathered first, so the waiters' vector never reallocates
+		// under a registered pointer.
+		std::vector<std::pair<size_t, madc::poll_handle> > want;
+		std::vector<madc::poll_handle> handles;
 		for (size_t i = 0; i < n; i++) {
 			if (es[i].chan) {
 				if (es[i].chan->closed)
@@ -954,19 +999,22 @@ int64_t chan_select(value &out, value &chans)
 				// the dead test, NOT the raw handle. A case
 				// that turned ready since the scan registers
 				// too: the hook fires it immediately.
-				if (es[i].bytes->poll_state() < 0)
+				if (!src[i] || src[i]->poll_state() < 0)
 					continue;
-				intptr_t h = (intptr_t)
-					es[i].bytes->read_wait_handle();
-				if (h < 0)
-					continue;   // closed under us: dead
-				ios[i].handle = h;
-				ios[i].kind = es[i].bytes->read_wait_kind();
-				ios[i].task = __madc_task_current();
-				ios[i].group = &grp;
-				ios[i].index = (int64_t)i;
-				io_register(&ios[i]);
+				src[i]->wait_handles(handles);
+				for (size_t k = 0; k < handles.size(); k++)
+					if (handles[k].value >= 0)   // closed under us: dead
+						want.push_back(std::make_pair(i, handles[k]));
 			}
+		}
+		std::vector<IoWaiter> ios(want.size());
+		for (size_t k = 0; k < want.size(); k++) {
+			ios[k].handle = want[k].second.value;
+			ios[k].kind = want[k].second.kind;
+			ios[k].task = __madc_task_current();
+			ios[k].group = &grp;
+			ios[k].index = (int64_t)want[k].first;
+			io_register(&ios[k]);
 		}
 		__madc_task_park();
 		// Eager removal FIRST: no case channel and no io registry may
@@ -979,14 +1027,14 @@ int64_t chan_select(value &out, value &chans)
 					     rq.begin(); it != rq.end(); )
 					it = (*it == &ws[i])
 						? rq.erase(it) : it + 1;
-			} else if (ios[i].handle >= 0) {
-				io_unregister(&ios[i]);
 			}
 		}
+		for (size_t k = 0; k < ios.size(); k++)
+			io_unregister(&ios[k]);
 		if (grp.fired_index >= 0) {
 			// A fired byte case reports readiness, never a value
-			// (the caller holds the channel object and reads it).
-			if (es[(size_t)grp.fired_index].bytes)
+			// (the caller holds the channel or session and reads it).
+			if (!es[(size_t)grp.fired_index].chan)
 				out = value();
 			return grp.fired_index;
 		}
@@ -1018,6 +1066,40 @@ int64_t chan_readable(channel &c)
 	g_chans[h] = e;
 	return h;
 }
+
+namespace taskio {
+
+// Register a readiness source resolved by id (plan §41.9a slice 2; the
+// contract is in madc_task_io.h).
+int64_t chan_readiness(readiness_resolver resolve, int64_t id)
+{
+	ChanEntry e;
+	e.resolve = resolve;
+	e.source_id = id;
+	int64_t h = g_next_chan++;
+	g_chans[h] = e;
+	return h;
+}
+
+// Wake the tasks parked on a closing handle (the contract is in
+// madc_task_io.h). A select's group is woken, not fired, so it rescans; a
+// plain waiter (wait_readable) re-probes its channel.
+void handle_closing(intptr_t handle, poll_handle_kind kind)
+{
+	for (IoWaiter *w = g_io_head; w; w = w->next) {
+		if (w->fired || w->handle != handle || w->kind != kind)
+			continue;
+		w->fired = true;	// never woken twice through this record
+		if (w->group) {
+			if (w->group->fired_index >= 0 || w->group->woken)
+				continue;
+			w->group->woken = true;
+		}
+		__madc_task_unpark(w->task);
+	}
+}
+
+} // namespace taskio
 
 // The interim structured-join verb (until MT-3 scopes): drain the task
 // root scope NOW — for teardown code that closes resources a still-running

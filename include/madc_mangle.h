@@ -54,12 +54,15 @@ std::string itanium_typeinfo_name_string_cpp(const std::string &cpp_spelling);
 // the spelling, keyed by the std ABI generation AND the target data model.
 std::string itanium_encode_type_sub(const std::string &cpp_type);
 
-// Mangle a member function on a (possibly template-id) class.
-//   itanium_mangle_member_sub(class_type, "size", {}, true)
+// Mangle a member function on a (possibly template-id) class. `method_cv` is
+// the member's cv-qualifier MASK (bit 0 const, bit 1 volatile — FuncDef::
+// method_cv(); a bool `true` still reads as const), spelled V before K:
+//   itanium_mangle_member_sub(class_type, "size", {}, true)   → _ZNK...
+//   itanium_mangle_member_sub(class_type, "get", {}, 2u)      → _ZNV...
 std::string itanium_mangle_member_sub(const std::string &qualified_class,
                                        const std::string &member,
                                        const std::vector<std::string> &param_types,
-                                       bool const_method);
+                                       unsigned method_cv);
 
 // Mangle a member function template specialization on a (possibly template-id)
 // class. `template_arg_types` are the deduced concrete template args; `return_type`
@@ -70,7 +73,7 @@ std::string itanium_mangle_member_template_sub(const std::string &qualified_clas
                                        const std::vector<std::string> &template_arg_types,
                                        const std::string &return_type,
                                        const std::vector<std::string> &param_types,
-                                       bool const_method);
+                                       unsigned method_cv);
 
 // Mangle a constructor on a (possibly template-id) class. `flavor` picks the
 // Itanium variant: "C1" (complete object, the default — what a caller invokes),
@@ -97,14 +100,14 @@ std::string itanium_mangle_dtor_sub(const std::string &qualified_class,
 std::string itanium_mangle_operator_sub(const std::string &qualified_class,
                                          const std::string &op,
                                          const std::vector<std::string> &param_types,
-                                         bool const_method);
+                                         unsigned method_cv);
 
 // Mangle a conversion function `operator <type>() [const]` on a (possibly
 // template-id) class — `cv <type>`, never a symbolic operator code.
 //   itanium_mangle_conversion_sub("Foo", "bool", true) → "_ZNK3FoocvbEv"
 std::string itanium_mangle_conversion_sub(const std::string &qualified_class,
                                            const std::string &target_type,
-                                           bool const_method);
+                                           unsigned method_cv);
 
 // Mangle a non-member std:: function template (operator or named), e.g.
 //   std::operator<< <char_traits<char>>(basic_ostream<char,_Traits>&, const char*)

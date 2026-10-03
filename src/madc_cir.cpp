@@ -25,6 +25,7 @@
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
+#include <cxxabi.h>	// abi::__cxa_demangle: a link refusal names the symbol as ld does
 #include "madc_guards.h"	// the GUI memory-guard lift after the project parse
 #include "madc_posix_io.h"	// resolve_real_path — used by the MADC_CROSS_TARGET arm
 
@@ -40,12 +41,15 @@
 #include "madc_modules.h"	// -l<name> -> the target library spelling (the one owner)
 #include "madc_cir.h"
 #include "rt/rt_task.h"	// __madc_task_join_all (root-scope join after jitted main)
+#include "rt/rt_except.h"	// the session entry boundary's unwind (plan §42 D27)
+#include "rt/rt_dump.h"	// the shown value's capture sink (plan §41.4a, D10)
 #include "madc_sys_includes.h"	// per-flavor C++ runtime link set (cir_native_link_env)
 #include "madc_project.h"
 #include "cir_builder.h"
 #include "cir_emit_c.h"
 #include "cir_freeze.h"
 #include "madc_pch.h"	// v20: template token runs ride the .madh record form
+#include "madcdis/text_utf16.h"	// madc::line_width: a binding row's cut
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -126,6 +130,11 @@ static void cir_register_source_debug(MIR_context_t ctx)
 // discipline as the fatal-containment state below).
 static thread_local const std::vector<Program::HostCallbackReg> *cir_active_host_regs = NULL;
 
+// An interactive session's object cells (plan §42 D27, slice 2), by cell
+// symbol: a cell import binds to its slot's address. Set around the link check
+// and the link of a session entry, like the host callbacks above.
+static thread_local std::map<std::string, void *> *cir_active_cells = NULL;
+
 // The ACTIVE stdlib flavor's C++ runtime, in the process's global symbol scope.
 //
 // A mangled-direct import names a symbol the selected stdlib really exports
@@ -197,6 +206,11 @@ static void *cir_import_resolver(const char *name)
 	for (const Program::HostCallbackReg &r : *cir_active_host_regs)
 	    if (r.entry && r.import_sym == name)
 		return (void *)r.entry;
+    if (cir_active_cells) {
+	std::map<std::string, void *>::iterator ci = cir_active_cells->find(name);
+	if (ci != cir_active_cells->end())
+	    return (void *)&ci->second;
+    }
     void *addr = madcdl_sym_default(name);
     if (!addr)
 	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
@@ -309,6 +323,29 @@ static void cir_collect_module_defs(MIR_context_t ctx, MIR_module_t mod,
     }
 }
 
+// The one shape of a per-symbol trap: a function FN_NAME whose body calls
+// HANDLER (through PROTO: no result, one pointer argument) with the name SYM,
+// so a trap that fires NAMES its symbol. --run-frozen's traps and an
+// interactive session's function stubs (plan §42 D27) are both made of it.
+// Call inside the module being built; NM_SEQ numbers its name strings.
+static MIR_item_t cir_new_symbol_trap_fn(MIR_context_t ctx, const char *fn_name,
+					 const std::string &sym, MIR_item_t proto,
+					 MIR_item_t handler, size_t &nm_seq)
+{
+    char nm_item[32];
+    snprintf(nm_item, sizeof(nm_item), "__madc_trapnm_%zu", nm_seq++);
+    MIR_item_t nm_data = MIR_new_string_data( // allowed-exception: the owner
+	ctx, nm_item, MIR_str_t{sym.size() + 1, sym.c_str()});
+    MIR_item_t f = MIR_new_func(ctx, fn_name, 0, NULL, 0);
+    MIR_append_insn(ctx, f,
+		    MIR_new_call_insn(ctx, 3, MIR_new_ref_op(ctx, proto), // allowed-exception: the owner
+				      MIR_new_ref_op(ctx, handler),
+				      MIR_new_ref_op(ctx, nm_data)));
+    MIR_append_insn(ctx, f, MIR_new_ret_insn(ctx, 0));
+    MIR_finish_func(ctx);
+    return f;
+}
+
 // Build + load the per-symbol trap-stub module for `undef` (shared by the
 // --run-frozen whole-module lane and the bind lane's cache module).
 static void cir_bind_trap_module(MIR_context_t ctx,
@@ -322,29 +359,14 @@ static void cir_bind_trap_module(MIR_context_t ctx,
     size_t nm_seq = 0;
     // One trap function per symbol (both callable stubs and vtable slots) so
     // a fired trap NAMES the symbol — the whole point of this diagnostic.
-    auto new_trap_fn = [&](const char *fn_name, const std::string &sym,
-			   MIR_item_t handler) -> MIR_item_t {
-	char nm_item[32];
-	snprintf(nm_item, sizeof(nm_item), "__madc_trapnm_%zu", nm_seq++);
-	MIR_item_t nm_data = MIR_new_string_data(
-	    ctx, nm_item, MIR_str_t{sym.size() + 1, sym.c_str()});
-	MIR_item_t f = MIR_new_func(ctx, fn_name, 0, NULL, 0);
-	MIR_append_insn(ctx, f,
-			MIR_new_call_insn(ctx, 3,
-					  MIR_new_ref_op(ctx, trap_proto),
-					  MIR_new_ref_op(ctx, handler),
-					  MIR_new_ref_op(ctx, nm_data)));
-	MIR_append_insn(ctx, f, MIR_new_ret_insn(ctx, 0));
-	MIR_finish_func(ctx);
-	return f;
-    };
     for (const std::string &nm : undef) {
 	if (itanium_data_symbol(nm)) {
 	    // Data symbol (vtable/typeinfo): a table of pointers to a
 	    // per-symbol trap function, so a virtual dispatch through it
 	    // traps cleanly AND names the class.
-	    MIR_item_t vf = new_trap_fn((nm + ".__vtrap").c_str(), nm,
-					vslot_imp);
+	    MIR_item_t vf = cir_new_symbol_trap_fn(
+		ctx, (nm + ".__vtrap").c_str(), nm, trap_proto, vslot_imp,
+		nm_seq);
 	    MIR_new_export(ctx, nm.c_str());
 	    MIR_new_ref_data(ctx, nm.c_str(), vf, 0);
 	    for (int i = 1; i < 32; ++i)
@@ -352,7 +374,8 @@ static void cir_bind_trap_module(MIR_context_t ctx,
 	    continue;
 	}
 	MIR_new_export(ctx, nm.c_str());
-	new_trap_fn(nm.c_str(), nm, trap_imp);
+	cir_new_symbol_trap_fn(ctx, nm.c_str(), nm, trap_proto, trap_imp,
+			       nm_seq);
     }
     MIR_finish_module(ctx);
     MIR_load_module(ctx, DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx)));
@@ -969,16 +992,23 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
     if (prog)
 	prog->_c2mir_seconds += std::chrono::duration<double>(
 	    std::chrono::steady_clock::now() - _c2m_t0).count();
+    // Once c2mir has read the tree, its context keeps pointers into the
+    // builder's node arena (the checker's symbol table is keyed by the tree's
+    // scope and identifier nodes), so the arena must outlive the context,
+    // whether the compile succeeded or not: the caller owns it either way. A
+    // session's context outlives every entry; a refused entry's arena freed
+    // here was reused by a later entry's nodes, which then met the refused
+    // one's symbols ("tag P redeclaration", and reads of freed memory).
     if (!_c2m_ok) {
 	fprintf(stderr, "%s: cir_compile failed\n", source_name);
-	delete builder;
+	out_builder = builder;
 	return NULL;
     }
 
     MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
     if (!mod) {
 	fprintf(stderr, "%s: no module produced\n", source_name);
-	delete builder;
+	out_builder = builder;
 	return NULL;
     }
 
@@ -993,8 +1023,20 @@ static MIR_module_t build_tu_module(MIR_context_t ctx, c2m_ctx_t c2m,
 
 CirJitSession::CirJitSession()
     : ctx(NULL), c2m(NULL), builder(NULL), forest(NULL), mod(NULL),
-      cache_mod(NULL)
+      cache_mod(NULL), live_mode(false), stub_mod(NULL), stub_modules(0)
 {
+}
+
+// The function item named `name` in ONE module: a TU's own init (a static,
+// so a same-named init in another module is not it) or a --project entry.
+static MIR_item_t cir_module_func_item(MIR_module_t m, const char *name)
+{
+    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, m->items);
+	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item))
+	if (item->item_type == MIR_func_item
+	    && strcmp(item->u.func->name, name) == 0)
+	    return item;
+    return NULL;
 }
 
 CirJitSession::~CirJitSession()
@@ -1014,6 +1056,8 @@ void CirJitSession::teardown()
     }
     delete builder;
     delete forest;
+    for (CirBuilder *b : live_builders)
+	delete b;
     ctx = NULL;
     c2m = NULL;
     builder = NULL;
@@ -1021,6 +1065,15 @@ void CirJitSession::teardown()
     mod = NULL;
     cache_mod = NULL;	// owned by ctx (MIR_finish freed it above)
     gen_cache.clear();
+    live_mode = false;
+    live_mods.clear();	// owned by ctx
+    live_builders.clear();
+    stub_mod = NULL;	// owned by ctx
+    stub_modules = 0;
+    late_stubs.clear();
+    live_init.clear();
+    late_cell_slots.clear();
+    late_cell_waits.clear();
 }
 
 bool CirJitSession::init_contexts(const char *source_name, bool dump_checked)
@@ -1063,6 +1116,89 @@ static bool cir_register_tu_init(MIR_context_t ctx, CirBuilder *b,
     return true;
 }
 
+// Object mode: DEFINE the symbols __attribute__((alias("T"))) names.
+//
+// madc has always implemented the attribute as a REDIRECT — a reference to the
+// alias resolves to the target's storage, which is how <compare>'s class
+// statics bind to their real Itanium symbols. gcc and clang do that AND emit a
+// second symbol of the alias's own name at the target's address; that defining
+// half is this. Without it a madc-built libmir exports none of the eight
+// `mir.*` / `__mir_*` names the generated code imports, so nothing links
+// against it (mir-x86_64.c:154, mir-gen-x86_64.c:783, mir-int128-helper.h:302).
+//
+// Runs beside cir_register_tu_init for the same reason: after link, when the
+// eager gen interface has generated every function, so the target really is
+// defined in the capture. c2mir is NOT the reference here — `c2m -fobject`
+// ignores the attribute silently and rejects the asm-label spelling outright;
+// gcc/clang are the oracle.
+static bool cir_emit_alias_symbols(MIR_context_t ctx, Program *prog,
+				   const char *source_name)
+{
+    if (!prog || !prog->tkProgram)
+	return true;
+    MIR_object_t o = NULL;
+    for (Variable *v : prog->tkProgram->variables) {
+	if (!v || v->alias_definition_target.empty() || !v->is_global())
+	    continue;
+	// The alias's OWN emitted name: its asm label when it carries one
+	// (that IS the construct's point — `x asm("mir.va_arg")` defines
+	// "mir.va_arg", not "x"), else the declared name. NOT var_emit_name,
+	// which answers the reference question and returns the TARGET.
+	const std::string &sym = v->asm_label.empty() ? v->name : v->asm_label;
+	if (sym.empty())
+	    continue;
+	if (o == NULL) {
+	    // A DATA target is only a DEFINED symbol once the capture's
+	    // module-data walk has placed it; the walk otherwise runs inside
+	    // the emit entry, i.e. after every chance to annotate. Force it
+	    // here — and only here, on a TU that actually declares an alias,
+	    // so nothing else's emit ordering moves. Every module is loaded
+	    // and linked by this point (both call sites run right after
+	    // MIR_link), which is the walk's precondition.
+	    if (MIR_gen_object_prepare(ctx) != 0
+		|| (o = MIR_gen_get_object(ctx)) == NULL) {
+		fprintf(stderr, "%s: no object capture for alias symbol '%s'\n",
+			source_name, sym.c_str());
+		return false;
+	    }
+	}
+	int sec = 0;
+	uint64_t value = 0, size = 0;
+	if (!MIR_object_find_symbol(o, v->alias_definition_target.c_str(),
+				    &sec, &value, &size)) {
+	    // gcc: "error: 'x' aliased to undefined symbol 'f'". C requires
+	    // the target to be DEFINED in the same translation unit, so this
+	    // is the source's bug, not a capture we should paper over.
+	    fprintf(stderr, "%s: '%s' aliased to undefined symbol '%s'"
+		    " — an alias target must be defined in the same"
+		    " translation unit\n",
+		    source_name, sym.c_str(),
+		    v->alias_definition_target.c_str());
+	    return false;
+	}
+	// MIR_object_add_symbol never dedupes by name (madc_cir.cpp:620), so
+	// a second alias declaration of the same name would add a second
+	// symtab entry rather than replace the first.
+	if (MIR_object_find_symbol(o, sym.c_str(), NULL, NULL, NULL))
+	    continue;
+	const bool func_p = v->type && v->type->is_function();
+	// local_p=0: an alias is an export. weak_p=0: madc has no
+	// __attribute__((weak)) on declarations yet, and none of the MIR
+	// exports are weak.
+	if (MIR_object_add_symbol(o, sym.c_str(), sec, value, size,
+				  func_p ? 1 : 0, 0, 0) < 0) {
+	    fprintf(stderr, "%s: cannot define alias symbol '%s' in the object"
+		    " capture\n", source_name, sym.c_str());
+	    return false;
+	}
+	DBG(std::cout << "alias: defined '" << sym << "' at '"
+		      << v->alias_definition_target << "' (sec " << sec
+		      << " +" << value << ", size " << size << ")"
+		      << std::endl);
+    }
+    return true;
+}
+
 bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 {
     if (setjmp(cir_mir_error_jmp)) {
@@ -1073,7 +1209,11 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	// them all, untruncated (host-regs still set for accurate resolution).
 	cir_dump_undefined_imports(ctx);
 	cir_active_host_regs = NULL;
-	teardown();
+	cir_active_cells = NULL;
+	// A live session's context holds every earlier entry: one refused
+	// module must not end it (its rollback is plan §41.3).
+	if (!live_mode)
+	    teardown();
 	return false;
     }
     cir_mir_error_armed = true;
@@ -1095,6 +1235,12 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
     if (cache_mod)
 	MIR_load_module(ctx, cache_mod);
     mc_lap("load(cache_mod)");
+    // Plan §42 D27: a session entry's function stubs load ahead of it, so its
+    // imports of those functions bind to them.
+    if (stub_mod) {
+	MIR_load_module(ctx, stub_mod);
+	stub_mod = NULL;
+    }
     MIR_load_module(ctx, mod);
     mc_lap("load(consumer)");
     if (cache_mod)
@@ -1108,6 +1254,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 	cir_ledger_pull(ctx, prog);
     mc_lap("ledger pull");
     cir_active_host_regs = prog ? &prog->host_callback_regs : NULL;
+    cir_active_cells = live_mode ? &late_cell_slots : NULL;
     // Object mode never reads import addresses (cir_object_import_resolver),
     // so it needs no runtime loaded — its DT_NEEDED comes from
     // cir_native_link_env. prog == NULL is the frozen lane, which recreates
@@ -1131,6 +1278,7 @@ bool CirJitSession::load_and_link(const char *source_name, Program *prog)
 		 madc_object_mode ? cir_object_import_resolver
 				  : cir_import_resolver);
     cir_active_host_regs = NULL;
+    cir_active_cells = NULL;
     mc_lap("MIR_link");
     if (madc_debug_info) {
 	// -g: JIT lane registers the GDB-JIT object; object mode attaches
@@ -1273,6 +1421,10 @@ bool CirJitSession::build(Program *prog, const char *source_name,
     if (!load_and_link(source_name, prog))
 	return false;
     if (madc_object_mode && !cir_register_tu_init(ctx, builder, source_name)) {
+	teardown();
+	return false;
+    }
+    if (madc_object_mode && !cir_emit_alias_symbols(ctx, prog, source_name)) {
 	teardown();
 	return false;
     }
@@ -1419,14 +1571,8 @@ void *CirJitSession::function_code(const char *emitted_name)
     }
     cir_mir_error_armed = true;
     void *code = NULL;
-    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
-	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-	if (item->item_type == MIR_func_item &&
-	    strcmp(item->u.func->name, emitted_name) == 0) {
-	    code = MIR_gen(ctx, item);
-	    break;
-	}
-    }
+    if (MIR_item_t item = find_item(emitted_name, /*func=*/true))
+	code = MIR_gen(ctx, item);
     cir_mir_error_armed = false;
     if (code) gen_cache[emitted_name] = code;
     return code;
@@ -1435,20 +1581,478 @@ void *CirJitSession::function_code(const char *emitted_name)
 void *CirJitSession::data_address(const char *emitted_name)
 {
     if (!mod || !emitted_name || !emitted_name[0]) return NULL;
-    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
-	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-	const char *name = NULL;
-	switch (item->item_type) {
-	    case MIR_data_item:      name = item->u.data->name; break;
-	    case MIR_bss_item:       name = item->u.bss->name; break;
-	    case MIR_ref_data_item:  name = item->u.ref_data->name; break;
-	    case MIR_expr_data_item: name = item->u.expr_data->name; break;
-	    default: break;
+    MIR_item_t item = find_item(emitted_name, /*func=*/false);
+    return item ? item->addr : NULL;
+}
+
+// The definition named `name` (a function item, or a data item: data, bss,
+// ref-data, expr-data) in `mod`, then in every earlier live-mode module,
+// newest first. An import or a prototype defines nothing, so an entry that
+// only calls `f` never shadows the module that defines it.
+MIR_item_t CirJitSession::find_item(const char *name, bool func) const
+{
+    auto in_module = [&](MIR_module_t m) -> MIR_item_t {
+	if (func)
+	    return cir_module_func_item(m, name);
+	for (MIR_item_t item = DLIST_HEAD(MIR_item_t, m->items);
+	     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
+	    const char *nm = NULL;
+	    switch (item->item_type) {
+		case MIR_data_item:      nm = item->u.data->name; break;
+		case MIR_bss_item:       nm = item->u.bss->name; break;
+		case MIR_ref_data_item:  nm = item->u.ref_data->name; break;
+		case MIR_expr_data_item: nm = item->u.expr_data->name; break;
+		default: break;
+	    }
+	    if (nm != NULL && strcmp(nm, name) == 0)
+		return item;
 	}
-	if (name != NULL && strcmp(name, emitted_name) == 0)
-	    return item->addr;
-    }
+	return (MIR_item_t)NULL;
+    };
+    if (mod)
+	if (MIR_item_t item = in_module(mod))
+	    return item;
+    for (size_t i = live_mods.size(); i-- > 0; )
+	if (live_mods[i] != mod)
+	    if (MIR_item_t item = in_module(live_mods[i]))
+		return item;
     return NULL;
+}
+
+// A symbol as the linker names it in a diagnostic: an Itanium name
+// demangled (ld's default), any other name as emitted.
+static std::string cir_link_display_name(const char *sym)
+{
+    if (!sym)
+	return std::string();
+    if (sym[0] == '_' && sym[1] == 'Z') {
+	int status = 0;
+	char *dem = abi::__cxa_demangle(sym, NULL, NULL, &status);
+	std::string shown = (dem && status == 0) ? dem : sym;
+	free(dem);
+	return shown;
+    }
+    return sym;
+}
+
+struct CirLinkRefusal
+{
+    Program *prog;
+    const char *entry_name;
+    CirBuilder *builder;		// the entry's: which names are functions
+    std::vector<std::string> late;	// functions nothing defines (D27)
+    size_t refused;
+};
+
+// MIR_module_link_check's report: one diagnostic per failing symbol, recorded
+// and rendered on the entry, in the linker's words (ld's "undefined reference
+// to" / "multiple definition of"). The position is the entry's: MIR items
+// carry no source location. A FUNCTION nothing defines is not refused here:
+// its refusal waits for its first use (plan §42 D27), and the entry links
+// against a stub.
+static void cir_record_link_refusal(MIR_error_type_t error_type,
+				    const char *name, void *arg)
+{
+    CirLinkRefusal *r = (CirLinkRefusal *)arg;
+    if (error_type == MIR_undeclared_op_ref_error && r->builder
+	&& r->builder->declares_function(name)) {
+	r->late.push_back(name);
+	return;
+    }
+    ++r->refused;
+    std::string msg = error_type == MIR_repeated_decl_error
+	? "multiple definition of '" : "undefined reference to '";
+    msg += cir_link_display_name(name) + "'";
+    r->prog->record_frontend_error(Program::DiagnosticPhase::compiler, msg,
+				   r->entry_name, 0, 0);
+}
+
+// -----------------------------------------------------------------------
+// An interactive session's late binding (plan §42 D27)
+// -----------------------------------------------------------------------
+//
+// An entry may name a function no entry defines yet. As in Julia and
+// clang-repl, the refusal waits for the first use: the entry links against a
+// stub, a later definition replaces the stub (MIR's loader gives it the
+// stub's address), and a use that comes first fails when it runs. The failing
+// use returns to the entry's BOUNDARY, the guarded call around the entry's
+// init and its run; the entry stays linked, with its definitions.
+
+struct CirEntryBoundary
+{
+    jmp_buf jb;
+    Program *prog;
+    const char *entry_name;
+    void *task;			// the task the entry runs on
+    void *cleanup_mark;		// the exception runtime's cleanup stack, and
+    void *except_state;		// its state, as the boundary armed
+    CirEntryBoundary *outer;
+};
+static thread_local CirEntryBoundary *cir_entry_boundary = NULL;
+
+// The body of every session stub, and the unbound arm of every object cell's
+// read (slice 2): the use of a symbol no entry defines. It records ld's words
+// on the running entry and returns to the entry's boundary, so it never
+// returns to its caller (the pointer it is declared to return is the cell
+// read's type). It is no C++ exception, so no script `try` sees it. Reached
+// with no boundary to return to (a task the entry spawned, another thread), it
+// aborts with the message, as the frozen trap does.
+extern "C" void *__madc_session_unbound(const char *sym)
+{
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || b->task != __madc_task_current()) {
+	fprintf(stderr, "madc: undefined reference to '%s', reached outside"
+		" the entry that ran it\n", cir_link_display_name(sym).c_str());
+	abort();
+    }
+    {
+	// Scoped: its strings are gone before the jump.
+	std::string msg = "undefined reference to '"
+	    + cir_link_display_name(sym) + "'";
+	b->prog->record_frontend_error(Program::DiagnosticPhase::runtime, msg,
+				       b->entry_name, 0, 0);
+    }
+    longjmp(b->jb, 1);
+}
+
+// D10 (plan §41.4a): the show's hand-off. The value text the generated walk
+// captured in SINK is recorded on the running entry's Program
+// (Program::entry_shown), which the session reads (InteractiveSession::shown).
+// A show outside an entry's boundary has no entry to record on.
+extern "C" void __madc_session_show(void *sink)
+{
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || !b->prog)
+	return;
+    b->prog->entry_shown.assign(__madc_dump_sink_text(sink),
+				__madc_dump_sink_length(sink));
+}
+
+// A binding row's hand-off (plan §41.11a step 3d): the text a row's walk
+// captured in SINK joins the running entry's rows (Program::entry_rows_shown),
+// in order, cut to 80 columns, the last one then `…`.
+extern "C" void __madc_session_bind(void *sink)
+{
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || !b->prog)
+	return;
+    std::string text(__madc_dump_sink_text(sink), __madc_dump_sink_length(sink));
+    const size_t cap = 80;		// columns: the one layout rule's
+    if (madc::line_width(text) > cap)
+	text = madc::line_columns(text, 0, cap - 1) + "…";
+    b->prog->entry_rows_shown.push_back(text);
+}
+
+static void cir_call_tu_init(void *code)
+{
+    ((void (*)(int, char **, char **))code)(0, NULL, NULL);
+}
+
+static void cir_call_entry_run(void *code)
+{
+    ((void (*)(void))code)();
+}
+
+// main(argc, argv) through the boundary's one-pointer call.
+struct CirMainCall
+{
+    void *code;
+    int argc;
+    char **argv;
+    int status;
+};
+
+static void cir_call_main(void *call)
+{
+    CirMainCall *mc = (CirMainCall *)call;
+    mc->status = ((int (*)(int, char **))mc->code)(mc->argc, mc->argv);
+}
+
+// Run an entry's code at the entry's boundary. False when a use of an
+// undefined symbol returned here. The return destroys what the run registered
+// on the exception runtime's cleanup stack, as a throw past it would, and
+// gives that runtime back the state it had when the boundary armed.
+static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
+				      void (*call)(void *), void *code)
+{
+    CirEntryBoundary b;
+    b.prog = prog;
+    b.entry_name = entry_name;
+    b.task = __madc_task_current();
+    b.cleanup_mark = __madc_cleanup_top();
+    b.except_state = malloc(__madc_except_state_size());
+    if (!b.except_state)
+	return false;
+    __madc_except_state_save(b.except_state);
+    b.outer = cir_entry_boundary;
+    if (setjmp(b.jb)) {
+	__madc_cleanup_unwind_to(b.cleanup_mark);
+	__madc_except_state_restore(b.except_state);
+	cir_entry_boundary = b.outer;
+	free(b.except_state);
+	return false;
+    }
+    cir_entry_boundary = &b;
+    try {
+	call(code);
+    } catch (...) {
+	cir_entry_boundary = b.outer;
+	free(b.except_state);
+	throw;
+    }
+    cir_entry_boundary = b.outer;
+    free(b.except_state);
+    return true;
+}
+
+// The stubs for the functions an admitted entry names and nothing defines, in
+// a module of their own that load_and_link loads ahead of the entry's. Each is
+// a WEAK definition, so a later definition replaces it and takes its address
+// (MIR's loader, replaced_weak_func): every reference already bound then
+// reaches the definition. A stub is never in session_defined, so the builder
+// still emits a later definition.
+void CirJitSession::make_function_stubs(const std::vector<std::string> &names)
+{
+    char mod_name[48];
+    snprintf(mod_name, sizeof mod_name, "__madc_session_stubs_%zu",
+	     ++stub_modules);
+    MIR_new_module(ctx, mod_name);
+    MIR_item_t proto = MIR_new_proto(ctx, "__madc_session_unbound__proto",
+				     0, NULL, 1, MIR_T_P, "sym");
+    MIR_item_t unbound = MIR_new_import(ctx, "__madc_session_unbound");
+    size_t nm_seq = 0;
+    for (const std::string &nm : names) {
+	MIR_new_export(ctx, nm.c_str());
+	MIR_item_t f = cir_new_symbol_trap_fn(ctx, nm.c_str(), nm, proto,
+					      unbound, nm_seq);
+	MIR_item_set_binding(ctx, f, MIR_ITEM_BIND_WEAK);
+	late_stubs[nm] = f;
+    }
+    MIR_finish_module(ctx);
+    stub_mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+}
+
+// After an entry links: a stub whose function the entry defined was replaced
+// by the loader, and one that a library now provides (an entry's `import` or
+// `#load`) is redirected to the library's function.
+void CirJitSession::rebind_late_stubs(MIR_module_t m, Program *prog)
+{
+    cir_active_host_regs = &prog->host_callback_regs;
+    for (std::map<std::string, MIR_item_t>::iterator it = late_stubs.begin();
+	 it != late_stubs.end(); ) {
+	if (cir_module_func_item(m, it->first.c_str())) {
+	    late_stubs.erase(it++);
+	    continue;
+	}
+	if (void *addr = cir_import_resolver(it->first.c_str())) {
+	    _MIR_redirect_thunk(ctx, it->second->addr, addr);
+	    late_stubs.erase(it++);
+	    continue;
+	}
+	++it;
+    }
+    cir_active_host_regs = NULL;
+    // What the stubs still wait for: the builder emits such a function's
+    // inline body in the entry that defines it (Program::session_awaited).
+    prog->session_awaited.clear();
+    for (std::map<std::string, MIR_item_t>::const_iterator it = late_stubs.begin();
+	 it != late_stubs.end(); ++it)
+	prog->session_awaited.insert(it->first);
+}
+
+// The entry transaction's JIT half (plan §41.3). MIR_load_module and MIR_link
+// change the live context before they can fail: a loaded module's exports
+// join the environment, and a failed link leaves the module queued, so every
+// later link re-links it. A module either would refuse is refused HERE,
+// before either runs, by MIR's own rules and against the resolver the link
+// uses, so the context stays exactly as the earlier entries left it. (A
+// session is JIT-only: the object lane's resolver never applies.) An admitted
+// module's function stubs (D27) are made only then, so a refused entry loads
+// none.
+bool CirJitSession::admits(MIR_module_t m, Program *prog, const char *entry_name,
+			   CirBuilder *b)
+{
+    // The link's view of the host (load_and_link's): the stdlib flavor's
+    // runtime is open (idempotent), the Program's host callbacks resolve.
+    cir_open_stdlib_runtime(prog->active_stdlib_flavor());
+    cir_active_host_regs = &prog->host_callback_regs;
+    // Slice 2: the cells the entry's code reads late-bound objects through
+    // resolve to the session's slots. A refused entry's slot is never read.
+    if (b)
+	for (const auto &kv : b->late_cells())
+	    late_cell_slots.insert(std::make_pair(kv.first, (void *)NULL));
+    cir_active_cells = &late_cell_slots;
+    CirLinkRefusal refusal = { prog, entry_name, b, {}, 0 };
+    MIR_module_link_check(ctx, m, cir_import_resolver,
+			  cir_record_link_refusal, &refusal);
+    cir_active_host_regs = NULL;
+    cir_active_cells = NULL;
+    if (refusal.refused != 0)
+	return false;
+    if (!refusal.late.empty())
+	make_function_stubs(refusal.late);
+    if (b)
+	for (const auto &kv : b->late_cells())
+	    if (!late_cell_slots[kv.first])
+		late_cell_waits[kv.first] = kv.second;
+    return true;
+}
+
+// After an entry links: every waiting cell whose object is now defined, by an
+// entry (a data item of a live module) or by a library, is bound to it, so the
+// code reading through it reaches that object.
+void CirJitSession::bind_late_cells(Program *prog)
+{
+    cir_active_host_regs = &prog->host_callback_regs;
+    for (std::map<std::string, std::string>::iterator it = late_cell_waits.begin();
+	 it != late_cell_waits.end(); ) {
+	void *addr = data_address(it->second.c_str());
+	if (!addr)
+	    addr = cir_import_resolver(it->second.c_str());
+	if (addr) {
+	    late_cell_slots[it->first] = addr;
+	    late_cell_waits.erase(it++);
+	    continue;
+	}
+	++it;
+    }
+    cir_active_host_regs = NULL;
+}
+
+bool CirJitSession::begin_live(const char *session_name)
+{
+    if (ctx) teardown();
+    if (!init_contexts(session_name, /*dump_checked=*/false))
+	return false;
+    live_mode = true;
+    return true;
+}
+
+bool CirJitSession::append(Program *prog, const char *entry_name)
+{
+    if (!live_mode || !ctx || !prog)
+	return false;
+    // The project-TU shape: this entry's init is a static under its own
+    // name, called here (the engine's ld.so role, as --project calls each
+    // TU's) — never a second exported __madc_global_init.
+    CirBuilder *b = NULL;
+    bool stop = false;
+    // MADC_SESSION_DUMP_TREE=1: each entry's module tree, pre-check (the
+    // --dump-cir twin for a session, which has no command line).
+    static const bool dump_tree = getenv("MADC_SESSION_DUMP_TREE") != NULL;
+    MIR_module_t m = build_tu_module(ctx, c2m, prog, entry_name,
+				     dump_tree, false, false, b, stop,
+				     /*project_tu=*/true);
+    // The builder's node arena backs whatever c2mir read of it, for the
+    // session's life: the module, admitted or not, and a tree c2mir refused.
+    if (b)
+	live_builders.push_back(b);
+    if (!m) {
+	// build_tu_module rendered why on stderr (c2mir's own messages are
+	// not captured as rows); the entry records that it did not compile.
+	if (!prog->has_error_diagnostic())
+	    prog->set_error(Program::DiagnosticPhase::compiler,
+			    "the entry did not compile (the backend's"
+			    " diagnostic is on stderr)", entry_name, 0, 0);
+	return false;
+    }
+    live_init.clear();
+    // Refused: never loaded, never one of live_mods, never `mod`.
+    if (!admits(m, prog, entry_name, b))
+	return false;
+    live_mods.push_back(m);
+    mod = m;
+    if (!load_and_link(entry_name, prog)) {
+	// Past admits(), a MIR fatal is internal; load_and_link rendered it
+	// on stderr, and the entry records it too.
+	prog->set_error(Program::DiagnosticPhase::compiler,
+			std::string("MIR error: ") + cir_mir_error_text,
+			entry_name, 0, 0);
+	return false;
+    }
+    // What this module now defines for every later one: its exported
+    // definitions (MIR marks the definition an export item names).
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, m->items); it;
+	 it = DLIST_NEXT(MIR_item_t, it)) {
+	switch (it->item_type) {
+	    case MIR_func_item: case MIR_data_item: case MIR_bss_item:
+	    case MIR_ref_data_item: case MIR_expr_data_item:
+		break;
+	    default:
+		continue;
+	}
+	if (!it->export_p)
+	    continue;
+	const char *nm = MIR_item_name(ctx, it);
+	if (nm && nm[0])
+	    prog->session_defined.insert(nm);
+    }
+    rebind_late_stubs(m, prog);
+    bind_late_cells(prog);
+    // Its init runs next (run_entry_init): the entry counts from here.
+    live_init = b ? b->tu_init_name() : std::string();
+    return true;
+}
+
+bool CirJitSession::run_entry_init(Program *prog, const char *entry_name)
+{
+    if (!live_mode || !mod)
+	return false;
+    if (live_init.empty())
+	return true;
+    if (setjmp(cir_mir_error_jmp)) {
+	cir_mir_error_armed = false;
+	fprintf(stderr, "%s: MIR codegen error: %s\n", entry_name,
+		cir_mir_error_text);
+	return false;
+    }
+    cir_mir_error_armed = true;
+    void *icode = NULL;
+    if (MIR_item_t it = cir_module_func_item(mod, live_init.c_str()))
+	icode = MIR_gen(ctx, it);
+    cir_mir_error_armed = false;
+    if (!icode) {
+	fprintf(stderr, "%s: TU init '%s' not found in its module\n",
+		entry_name, live_init.c_str());
+	return false;
+    }
+    return cir_run_at_entry_boundary(prog, entry_name, cir_call_tu_init, icode);
+}
+
+bool CirJitSession::run_entry_function(Program *prog, const char *entry_name,
+				       const char *emitted_name)
+{
+    void *code = function_code(emitted_name);
+    if (!code)
+	return false;
+    return cir_run_at_entry_boundary(prog, entry_name, cir_call_entry_run, code);
+}
+
+bool CirJitSession::run_session_main(Program *prog, const char *unit_name,
+				     int argc, char **argv, int *status)
+{
+    CirMainCall mc;
+    mc.code = function_code("main");
+    if (!mc.code)
+	return false;
+    mc.argc = argc;
+    mc.argv = argv;
+    mc.status = 0;
+    bool ok = cir_run_at_entry_boundary(prog, unit_name, cir_call_main, &mc);
+    // main's return waits for every live task (run_main's root-scope join).
+    __madc_task_join_all();
+    if (ok && status)
+	*status = mc.status;
+    return ok;
+}
+
+bool CirJitSession::run_global_init()
+{
+    void *ginit = function_code("__madc_global_init");
+    if (!ginit)
+	return false;
+    ((void (*)())ginit)();
+    return true;
 }
 
 int CirJitSession::run_main(int argc, char **argv, bool *ok, double *out_secs)
@@ -1866,20 +2470,21 @@ static void cir_fill_exec_params(MIR_object_exec_params &xp,
 
 #if MADC_TARGET_APPLE_P
 // ONE rule for the Mach-O emit lanes (source image + object link): a
-// program still needing the madc runtime cannot link — no target libmadc
-// dylib exists — and the message names the fix. Returns true when the
-// emit must refuse. (The PE lanes used to share this refusal; W3.5's
-// libmadc-0.dll lifted it — see cir_windows_import_dlls.)
-static bool cir_target_runtime_refused(bool have_madc, bool drop_madc,
-				       const char *out_path)
+// runtime-needing image loads the madc surface (madc_puts, the
+// madc_value_* bridge, the __madc_* helpers) from libmadc-0.dylib — the
+// darwin twin of libmadc.so.0 and libmadc-0.dll (D5) — by its install name
+// @rpath/libmadc-0.dylib; the runpath (cir_native_link_env:
+// @executable_path/../lib, then this madc's own lib dir) becomes the
+// image's LC_RPATHs. FIRST on the load list: the writer binds flat once
+// extras are present, and dyld's flat lookup searches in load order,
+// specific before general (cir_windows_import_dlls' rule). Until D5 such a
+// program was refused here; -static-libmadc still merges the C-lane
+// runtime into the image instead.
+static void cir_apple_runtime_dylib(bool have_madc, bool drop_madc,
+				    std::vector<const char *> &libs)
 {
-    if (!have_madc || drop_madc)
-	return false;
-    fprintf(stderr, "madc: %s: program needs the madc runtime, which does"
-	    " not exist as a library for this native-emit target; build it"
-	    " into the image with -static-libmadc (C-lane machinery only)\n",
-	    out_path);
-    return true;
+    if (have_madc && !drop_madc)
+	libs.push_back("@rpath/libmadc-0.dylib");
 }
 #endif
 
@@ -1923,12 +2528,21 @@ static void cir_windows_import_dlls(bool have_madc, bool drop_madc,
 // owner per target — an any-target test let the cross madc's ELF cover set
 // leak into a pure-C image as three load commands (macho_exe_dylib_gate
 // [A] caught it). One owner for both Mach-O writers (image + object link).
+// An import the C++ runtime serves: an Itanium-mangled name, or an unmangled
+// entry of the Itanium C++ ABI runtime (libc++abi, which libc++.1.dylib
+// re-exports) — the `__cxa_guard_*` of a block-scope static's once-init
+// ([stmt.dcl]/4) is imported by a program that names nothing from std.
+static bool cir_cxx_runtime_import(const std::string &s)
+{
+    return s.compare(0, 2, "_Z") == 0 || s.compare(0, 6, "__cxa_") == 0;
+}
+
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 				   const std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
 {
     for (const std::string &s : imports)
-	if (s.compare(0, 2, "_Z") == 0) {
+	if (cir_cxx_runtime_import(s)) {
 	    libs.push_back("/usr/lib/libc++.1.dylib");
 	    break;
 	}
@@ -1980,12 +2594,11 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
     std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
     // Mach-O: the base C/C++ sonames are cover analysis only — never load
-    // commands. A program still needing the madc runtime fails at emit,
-    // not at dyld; a C++ program gets its real world (libc++) as an
+    // commands. A program still needing the madc runtime loads
+    // libmadc-0.dylib; a C++ program gets its real world (libc++) as an
     // LC_LOAD_DYLIB, and with extras present the writer binds every
     // import flat across the load list (mir-debug.h).
-    if (cir_target_runtime_refused(have_madc, drop_madc, out_path))
-	return false;
+    cir_apple_runtime_dylib(have_madc, drop_madc, libs);
     cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
     // PE: runtime-needing programs import from libmadc-0.dll; the list
@@ -1997,8 +2610,9 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 #endif
     MIR_object_exec_params xp;
     cir_fill_exec_params(xp, kind, libs, runpath, gui_subsystem);
-    // Apple targets: the ad-hoc code-signature identifier is conventionally
-    // the output basename (ignored by the ELF writer).
+    // The output basename: Apple targets' ad-hoc code-signature identifier,
+    // a PE DLL's own name in its export directory (ignored by the ELF
+    // writer).
     const char *out_base = strrchr(out_path, '/');
     xp.identifier = out_base ? out_base + 1 : out_path;
     std::vector<uint8_t> pack_blob;
@@ -2099,23 +2713,28 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // release tarball is the standing case) binds its OWN tree's runtime
     // before the compiling madc's libdir or the system fallback. The
     // token is the loader's, never the shell's: $ORIGIN on ELF,
-    // @executable_path on Mach-O. PE has no runpath (adjacency binds) —
+    // @executable_path on Mach-O — the TARGET's loader, so a Linux-hosted
+    // cross madc emitting Mach-O writes dyld's token (the cover set above
+    // is the host's; this is not). PE has no runpath (adjacency binds) —
     // its value stays what it was, unread by the writer.
-#ifdef __APPLE__
+#if MADC_TARGET_APPLE_P
     runpath = "@executable_path/../lib:";
-#elif defined(_WIN32)
+#elif MADC_TARGET_WINDOWS_P
     runpath = "";
 #else
     runpath = "$ORIGIN/../lib:";
 #endif
     // bin/madc lives in <root>/bin; the runtime lives in <root>/lib. An
-    // installed madc pairs with /usr/local/lib — both go on the produced
-    // binary's library search path so it works from either layout.
+    // installed madc pairs with the build's stable library directory
+    // (MADC_RUNPATH_LIBDIR: /usr/local/lib, or a package manager's linked
+    // lib, which outlives the compiling madc's own versioned directory) —
+    // both go on the produced binary's library search path so it works
+    // from either layout.
     runpath += madc_self_lib_dir();
     if (runpath.empty() || runpath[runpath.size() - 1] == ':')
-	runpath += "/usr/local/lib";
+	runpath += MADC_RUNPATH_LIBDIR;
     else
-	runpath += ":/usr/local/lib";
+	runpath += std::string(":") + MADC_RUNPATH_LIBDIR;
 }
 
 // THE object-capture-mode scope (dupaudit family object_mode_emit_scoping):
@@ -2445,14 +3064,11 @@ int madc_cir_link_objects(const std::vector<std::string> &paths,
 		      << std::endl);
 	std::vector<const char *> libs;
 #if MADC_TARGET_APPLE_P
-	// Same Mach-O rule as cir_write_native_image — one refusal text,
-	// one extra-dylib policy (the shared helpers are the single
+	// Same Mach-O rule as cir_write_native_image — one runtime-dylib
+	// rule, one extra-dylib policy (the shared helpers are the single
 	// owners; this lane's copy had already drifted to an older
 	// message once).
-	if (cir_target_runtime_refused(have_madc, drop_madc, out_path)) {
-	    MIR_object_destroy(obj);
-	    return -1;
-	}
+	cir_apple_runtime_dylib(have_madc, drop_madc, libs);
 	cir_apple_extra_dylibs(imports, other, libs);
 #elif MADC_TARGET_WINDOWS_P
 	// Same PE rule as cir_write_native_image: libmadc-0.dll first
@@ -2757,7 +3373,7 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 	// — it is NOT a scalar. Exclude it structurally so the derived-type
 	// record path (DK_PTR/DK_REF/DK_CONST) handles it. Likewise an enum (named
 	// constants), SIMD vector, template param, or _Complex is its own concept.
-	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefCONST *>(dd)
+	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefQUAL *>(dd) // allowed-exception: structural (exact-class dispatch)
 	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
 	    || dd->is_template_param() || dd->is_complex())
 		return 0;
@@ -2831,17 +3447,23 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	uint32_t kind;
 	DataDef *operand;
 	uint64_t carray_count = 0;
+	uint32_t record_flags = 0;
 	if (DataDefREF *rf = dynamic_cast<DataDefREF *>(dd))		// REF is-a PTR: check first
 	{
+		// flags bit 0: an rvalue reference (`T&&`, a distinct type).
 		kind = madc::dis::DK_REF;   operand = rf->base_type;
+		record_flags = rf->is_rvalue_reference() ? 1u : 0u;
 	}
-	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+	else if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) // allowed-exception: structural (exact-class dispatch)
 	{
 		kind = madc::dis::DK_PTR;   operand = p->base_type;
 	}
-	else if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd))
+	else if (DataDefQUAL *k = dynamic_cast<DataDefQUAL *>(dd))
 	{
+		// The cv MASK rides flags (DK_CONST names the qualified variant;
+		// a pre-mask record's 0 reads back as const).
 		kind = madc::dis::DK_CONST; operand = k->base_type;
+		record_flags = k->quals;
 	}
 	else if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd))
 	{
@@ -2867,6 +3489,7 @@ void Program::forest_arena_record_unary(DataDef *dd)
 	r.ref0     = forest_serialize_type_id(operand);	// operand, as a type-id
 	r.carray_count_lo = (uint32_t)(carray_count & 0xffffffffu);
 	r.carray_count_hi = (uint32_t)(carray_count >> 32);
+	r.flags    = record_flags;
 	forest_arena.set_def_at(tid, r);
 }
 
@@ -3281,7 +3904,12 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	if (fd->declaration_only) r.flags |= madc::dis::DF_DECLARATION_ONLY;
 	if (fd->c_linkage)        r.flags |= madc::dis::DF_FUNC_C_LINKAGE;
 	if (fd->is_const_method)  r.flags |= madc::dis::DF_IS_CONST_METHOD;
+	if (fd->is_volatile_method) r.flags |= madc::dis::DF_IS_VOLATILE_METHOD;
 	if (fd->pure_virtual)     r.flags |= madc::dis::DF_PURE_VIRTUAL;
+	if (fd->defaulted_or_deleted)
+		r.flags |= madc::dis::DF_FUNC_DEFAULTED_OR_DELETED;
+	if (fd->is_deleted)
+		r.flags |= madc::dis::DF_FUNC_IS_DELETED;
 	if (fd->noexcept_spec == FuncDef::NxTrue)
 		r.flags |= madc::dis::DF_NOEXCEPT_TRUE;
 	else if (fd->noexcept_spec == FuncDef::NxUnknown)
@@ -3307,8 +3935,12 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 	r.tret_arg_index  = (uint32_t)fd->template_return_deduce_arg_index;
 	if (fd->template_return_deduce_from_pointer)
 		r.flags |= madc::dis::DF_TRET_FROM_POINTER;
-	if (fd->template_return_ref)
+	if (fd->template_return_deduce_forwarding)
+		r.flags |= madc::dis::DF_TRET_FWD;
+	if (fd->template_return_ref != RefKind::None)
 		r.flags |= madc::dis::DF_TRET_REF;
+	if (fd->template_return_ref == RefKind::Rvalue)
+		r.flags |= madc::dis::DF_TRET_RREF;
 	// v23: serialize each param's DEFAULT-argument token run (raw source
 	// tokens, .madh record form) into the arena tokbytes block BEFORE the
 	// paramrec run is appended (tokbytes is a separate block, but resolve-
@@ -3320,7 +3952,8 @@ void Program::forest_arena_record_func(FuncDef *fd, Method *mth)
 		madc::dis::paramrec &pr = prs[p];
 		memset(&pr, 0, sizeof(pr));
 		pr.type_id         = pt[p];
-		pr.flags           = (p < fd->const_params.size() && fd->const_params[p]) ? 1u : 0u;
+		pr.flags           = (p < fd->const_params.size() && fd->const_params[p])
+				   ? madc::dis::PF_CONST_PARAM : 0u;
 		pr.cpp_spelling_id = (p < fd->param_cpp_spellings.size()
 				      && !fd->param_cpp_spellings[p].empty())
 				   ? forest_arena.strings.intern(fd->param_cpp_spellings[p].c_str()) : 0u;
@@ -3413,7 +4046,7 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 	if (!forest_arena_enabled)
 		return;
 	for (int depth = 0; dd && depth < 16; ++depth) {
-		if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(dd)) {
+		if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(dd)) { // allowed-exception: structural type-graph walk
 			uint32_t tid = type_id_for(fp);
 			if (!madc::dis::arena_id_is_project(tid)
 			    || forest_arena.has_def(tid))
@@ -3437,11 +4070,11 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			return;
 		}
 		// REF is-a PTR; both (and CONST) expose the operand as base_type.
-		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) {
+		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 			dd = p->base_type;
 			continue;
 		}
-		if (DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd)) {
+		if (DataDefQUAL *k = dynamic_cast<DataDefQUAL *>(dd)) {
 			dd = k->base_type;
 			continue;
 		}
@@ -3873,7 +4506,10 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 		words.push_back(method.is_deleted ? 1u : 0u);
 		words.push_back((uint32_t)method.noexcept_spec);
 		words.push_back(method.pure_virtual ? 1u : 0u);
-		words.push_back(method.is_const_method ? 1u : 0u);
+		// the member's cv MASK (bit 0 const, bit 1 volatile): a 0/1 word
+		// is the pre-mask record, read unchanged
+		words.push_back((method.is_const_method ? 1u : 0u)
+				| (method.is_volatile_method ? 2u : 0u));
 		words.push_back(method.is_member_template ? 1u : 0u);
 		words.push_back(method.has_eager_body ? 1u : 0u);
 		words.push_back((uint32_t)method.parameters.size());
@@ -4258,7 +4894,7 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	if (!owner)
 	    continue;
 	DataDefPTR *p0 = fd->parameters.empty()
-		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]);
+		       ? NULL : dynamic_cast<DataDefPTR *>(fd->parameters[0]); // allowed-exception: structural (exact-class dispatch)
 	bool instance = p0 && p0->base_type == owner;
 	// v36 semantics on the UNCHANGED record layout: the per-param default
 	// runs (always in the layout, previously written empty here) now carry
@@ -4292,7 +4928,8 @@ static void cir_forest_fill_templates(Program *prog, cir_frozen_forest &f)
 	// class names datatype_map never keys); the flat name is the fallback
 	// (pinned/derived spellings); either miss degrades to the eager arm.
 	std::string ret_flat = fd->returns.is_reference()
-			     ? fd->return_value_type().name + "&"
+			     ? fd->return_value_type().name
+			       + (fd->returns.is_rvalue_reference() ? "&&" : "&")
 			     : fd->returns.name;
 	uint32_t ret_tid = madc_type_id_for(&fd->returns);
 	std::string ret_bank = "#" + std::to_string(ret_tid) + "#" + ret_flat;
@@ -5071,12 +5708,22 @@ static void forest_record_enum(Program *prog, DataDefENUM *edd,
 		   : prog->forest_arena.strings.intern(
 			edd->canonical_cpp_spelling().c_str());
 	r.size    = (uint32_t)edd->size;
-	// A FIXED underlying base drives the enum's layout AND its lowered C type
-	// ([dcl.enum]p8, DataDefENUM::set_underlying); the restore must re-adopt
-	// both, so carry the base's type-id in ref0 (free for DK_ENUM; primitives
-	// are pinned ids).
+	// v48: the enum's STORAGE — its size above and its raw type here — is
+	// what its objects lower to (DataDefENUM::set_layout): a fixed base, a
+	// packed base, the wider type its values need, or int. The restore
+	// re-adopts it verbatim, whatever chose it.
+	r.datatype = (uint32_t)edd->rawtype();
+	// The underlying type (declared or computed) rides ref0 (free for
+	// DK_ENUM; primitives are pinned ids), and whether it was DECLARED rides
+	// DF_ENUM_FIXED_BASE: promotion reads the two apart ([conv.prom]/3-4).
 	r.ref0    = edd->underlying
 		  ? forest_serialize_type_id(edd->underlying) : 0u;
+	if (edd->fixed_base)
+		r.flags |= madc::dis::DF_ENUM_FIXED_BASE;
+	// v49: a C enum promotes as its underlying type too (its compatible
+	// type, C11 6.7.2.2p4).
+	if (edd->c_compatible)
+		r.flags |= madc::dis::DF_ENUM_C_COMPATIBLE;
 	// The enumerators come from the TAG, which owns them
 	// (DataDefENUM::enumerators, stamped at the one point in TokenENUM::parse
 	// where a name and a value are both known). This used to re-derive them
@@ -6168,12 +6815,13 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	// Phase 2: now that all parsing is done, enter the MIR bracket. No
 	// throwing call sits between MIR_init() and teardown().
 	MIR_context_t ctx = MIR_init();
-	// C++ TUs each emit their own copy of every template instantiation they
-	// use (ODR: the copies are identical). MIR treats a same-named exported
-	// func in a later module as a fatal redefinition; permit it so the last
-	// copy wins — the linkonce/COMDAT analogue for the multi-TU JIT.
-	// (Named DATA duplicates still get per-module addresses — split-state
-	// hazard for template statics; revisit when a corpus actually hits it.)
+	// C++ TUs each emit their own copy of every vague-linkage entity they
+	// use (instantiations, inline bodies, vtables, type_info; ODR: the
+	// copies are identical). MIR_load_module keeps the first LINKONCE copy
+	// and binds a later TU's to it, data included, so every TU shares one
+	// address. The permission covers what is left: a STRONG func defined by
+	// two TUs, which MIR would refuse as a redefinition. The last copy wins
+	// (ld would refuse a genuine one as a multiple definition).
 	MIR_set_func_redef_permission(ctx, TRUE);
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
@@ -6247,16 +6895,11 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	void *code = nullptr;
 	MIR_module_t entry_mod = nullptr;
 	for (MIR_module_t m : modules) {
-		for (MIR_item_t item = DLIST_HEAD(MIR_item_t, m->items);
-		     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-			if (item->item_type == MIR_func_item &&
-			    strcmp(item->u.func->name, manifest.entry.c_str()) == 0) {
-				code = MIR_gen(ctx, item);
-				entry_mod = m;
-				break;
-			}
+		if (MIR_item_t item = cir_module_func_item(m, manifest.entry.c_str())) {
+			code = MIR_gen(ctx, item);
+			entry_mod = m;
+			break;
 		}
-		if (code) break;
 	}
 	if (!code) {
 		fprintf(stderr, "madc_project_execute: entry '%s' not found\n",
@@ -6278,14 +6921,8 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		if (ini.empty())
 			continue;
 		void *icode = nullptr;
-		for (MIR_item_t item = DLIST_HEAD(MIR_item_t, modules[bi]->items);
-		     item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
-			if (item->item_type == MIR_func_item
-			    && strcmp(item->u.func->name, ini.c_str()) == 0) {
-				icode = MIR_gen(ctx, item);
-				break;
-			}
-		}
+		if (MIR_item_t item = cir_module_func_item(modules[bi], ini.c_str()))
+			icode = MIR_gen(ctx, item);
 		if (!icode) {
 			fprintf(stderr, "madc_project_execute: %s: TU init '%s'"
 				" not found in its module\n",
@@ -6447,7 +7084,7 @@ int madc_project_emit_native(MadcEngine &engine,
 	// madc_project_execute, in object-capture mode, emitting instead of
 	// running. cir_init reads madc_object_mode → native_object_p.
 	MIR_context_t ctx = MIR_init();
-	MIR_set_func_redef_permission(ctx, TRUE);   // C++ ODR linkonce analogue
+	MIR_set_func_redef_permission(ctx, TRUE);   // strong duplicates: see madc_project_execute
 	c2mir_init(ctx);
 	MIR_gen_init(ctx);
 	MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
@@ -6505,6 +7142,13 @@ int madc_project_emit_native(MadcEngine &engine,
 	for (size_t bi = 0; bi < builders.size(); bi++)
 		if (!cir_register_tu_init(ctx, builders[bi],
 					  parsed[bi].name.c_str())) {
+			teardown();
+			return -1;
+		}
+	// Each TU's __attribute__((alias)) definitions, same ordering rule.
+	for (size_t bi = 0; bi < builders.size(); bi++)
+		if (!cir_emit_alias_symbols(ctx, parsed[bi].prog.get(),
+					    parsed[bi].name.c_str())) {
 			teardown();
 			return -1;
 		}

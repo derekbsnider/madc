@@ -1,0 +1,47 @@
+// A reference denotes its object ([expr.type]/1), so ++r, --r, r++, -r and
+// !r on a reference to a class call the class's operators. madc lowered them
+// as the builtin operators on the struct (c2mir: "invalid operand types of
+// +"), for a reference variable and a reference parameter alike, in plain
+// code and in a function template's instance (libstdc++'s __advance for a
+// class iterator).
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+struct It {
+    int *p;
+    It &operator++() { ++p; return *this; }
+    It &operator--() { --p; return *this; }
+    It operator++(int) { It o = *this; ++p; return o; }
+    int operator-() const { return -*p; }
+    bool operator!() const { return *p == 0; }
+    int operator*() const { return *p; }
+};
+
+void step(It &i) { ++i; ++i; --i; i++; }
+template<class I> void tstep(I &i) { ++i; ++i; --i; i++; }
+template<class I, class D> void adv(I &i, D n)
+{
+    if (n > 0)
+        while (n--)
+            ++i;
+    else
+        while (n++)
+            --i;
+}
+
+int main()
+{
+    int a[6] = { 1, 2, 3, 4, 5, 0 };
+    It x = { a }, y = { a }, z = { a + 5 };
+    It &r = x;
+    ++r;
+    It old = r++;
+    step(x);
+    tstep(y);
+    adv(z, -2);
+    It &rz = z;
+    printf("ref: %d %d\n", *old, *x);
+    printf("param: %d %d\n", *y, *z);
+    printf("unary: %d %d\n", -r, (int)!rz);
+    return 0;
+}

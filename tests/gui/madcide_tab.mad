@@ -1,0 +1,69 @@
+// B55 in the window: with a second focusable composed (the panel's
+// Problems list after a check), the page's tab reached the shared focus
+// owner and cycled focus — the editor never saw it. The editor's edit node
+// asks for tab (`tabkey`) while it has the keyboard, so the page's tab
+// arrives as the editor's KEY and types a tab at the caret (JOE's Tab; the
+// headless pins: tests/testmadcide_tab.mad). Runs under Xvfb through the
+// gui lane.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_tab_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "default");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+    S.panel(true);			// what run_ide pushes for a window
+
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("TAB open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    var ce = { "event": "action", "event_code": ui::event_kind::action,
+		       "action": "check", "seq": "" };
+	    S.apply_ide_event(doc, ce);	// Problems shows (clean): a list
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    ui::eval_page(t, "window.madc(JSON.stringify({kind:'key',key:'tab'}))");
+	}
+	else if ( ev["event"] == "key" || ev["event"] == "focus" )
+	{
+	    println("TAB event {} {}", ev["event"], ev["key"].is_null() ? "-" : ev["key"].c_str());
+	    S.apply_ide_event(doc, ev);
+	    var tx;
+	    ui::text(tx, w, doc);
+	    println("TAB typed={}", tx.index("\tint main") == 0 ? 1 : 0);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("TAB closed");
+    // a test leaves nothing in its working directory
+    remove(path);
+    return 0;
+}

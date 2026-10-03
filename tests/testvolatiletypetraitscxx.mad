@@ -1,0 +1,23 @@
+// C++: libstdc++'s <type_traits> over volatile — is_volatile, remove_volatile,
+// add_volatile, remove_cv, remove_pointer and is_same agree with g++. The
+// template arguments lost the qualifier (is_same<volatile int, int> was
+// true), then — once they kept it — the partial specialization
+// remove_volatile<_Tp volatile> bound _Tp to the qualified type, the
+// __is_same builtin peeled any qualifier off a baked argument, and add_volatile's
+// `using type = _Tp volatile;` dropped it.
+// Oracle: g++ and clang++ print testvolatiletypetraitscxx.expect.
+#include <type_traits>
+#include <stdio.h>
+template <class T> struct W { typedef T volatile vt; typedef volatile T vt2; };
+int main () {
+  printf ("traits: %d %d %d %d\n", (int) std::is_volatile<volatile int>::value,
+          (int) std::is_volatile<int>::value,
+          (int) std::is_same<std::remove_volatile<volatile int>::type, int>::value,
+          (int) std::is_same<std::add_volatile<int>::type, volatile int>::value);
+  printf ("cv: %d %d %d\n", (int) std::is_same<std::remove_cv<const volatile int>::type, int>::value,
+          (int) std::is_volatile<std::remove_pointer<volatile int *>::type>::value,
+          (int) std::is_same<W<int>::vt, W<int>::vt2>::value);
+  printf ("same: %d %d\n", (int) std::is_same<volatile int *, int *>::value,
+          (int) std::is_same<volatile int, int>::value);
+  return 0;
+}

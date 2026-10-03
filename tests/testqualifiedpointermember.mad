@@ -1,0 +1,44 @@
+// A QUALIFIED pointer is a pointer. A struct member's or a typedef's
+// top-level cv is its TYPE's (`struct N *volatile next`, `typedef int
+// *volatile vip`), so the type is QUAL(PTR) — and 119 "is it a pointer"
+// sites asked dynamic_cast<DataDefPTR *>, which is NULL for one: `n1.next->v`
+// was refused ("expression before '->' is not a typed pointer") in every mode
+// once volatile became part of the type (9cb7289c6), and the other shapes
+// below sat behind it (pointer arithmetic stepping by the pointer's own size,
+// a subscript typed int64). Every semantic site asks as_pointer_dd() now
+// (pointer_dd_of when the type may be NULL); exact-class dispatch keeps the
+// cast, marked (check-one-pointee-accessor.sh). A bit-field reached through a
+// pointer to a volatile struct keeps its signedness (the owner-struct lookup
+// sees through the qualified pointee).
+// Oracle: gcc and clang print testqualifiedpointermember.expect.
+#include <stdio.h>
+#include <string.h>
+struct B { signed bf : 5; int pad; };
+struct N { struct N *volatile next; int v; int *volatile p; int *volatile ap[2]; };
+typedef int *volatile vip;
+static int take (int *p) { return *p; }
+static int *give (struct N *n) { return n->p; }
+int main (void) {
+  int arr[3] = { 4, 5, 6 };
+  struct N n2 = { 0, 7, arr, { arr, arr + 1 } };
+  struct N n1 = { &n2, 1, arr, { arr + 2, arr } };
+  struct N *pn = &n1;
+  vip q = arr;
+  int x = 0;
+  printf ("arrow: %d %d %d\n", pn->next->v, n1.next->v, (*n1.next).v);
+  printf ("sub: %d %d %d %d\n", n1.p[1], pn->p[2], q[0], n1.next[0].v);
+  printf ("deref: %d %d %d\n", *n1.p, *(pn->p + 1), *q);
+  printf ("arith: %d %d %d\n", (int) (n1.p + 2 - arr), n1.p == arr, (int) (q + 1 - arr));
+  n1.p++; q += 1;
+  printf ("step: %d %d\n", *n1.p, *q);
+  printf ("call: %d %d %d\n", take (n1.p), take (q), *give (&n2));
+  printf ("cond: %d\n", *(x ? arr : n1.p));
+  printf ("amem: %d %d %d\n", *n1.ap[0], n2.ap[1][0], *pn->ap[1]);
+  memcpy (&x, n1.p, sizeof x);
+  printf ("mem: %d %d\n", x, (int) sizeof (*n1.p));
+  printf ("addr: %d\n", *&n1.next->v);
+  volatile struct B vb = { -3, 0 };
+  volatile struct B *pb = &vb;
+  printf ("bits: %d %d\n", pb->bf, vb.bf);
+  return 0;
+}

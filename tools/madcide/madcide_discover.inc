@@ -53,37 +53,6 @@ void session_dir(var &out)
 	out = format("{}/.local/state/madcide/sessions", home);
 }
 
-// Create the directory and every ancestor. php::mkdir is PHP's ONE level
-// (there is no recursive flag), so walk the components; an already-existing
-// level is not an error. False = it does not exist afterwards.
-bool session_dir_ensure(var &dir)
-{
-    const char *d = dir.c_str();
-    if ( strlen(d) == 0 )
-	return false;
-    if ( php::file_exists(d) )
-	return true;
-    array parts;
-    php::explode(parts, "/", d);
-    long n = php::count(parts);
-    // An absolute path's leading empty component IS the root; a relative one
-    // grows from the working directory.
-    var grown = ".";
-    if ( d[0] == '/' )
-	grown = "";
-    for ( long i = 0; i < n; i = i + 1 )
-    {
-	const char *seg = php::array_get_cstr(parts, i);
-	if ( strlen(seg) == 0 )
-	    continue;
-	var next = format("{}/{}", grown, seg);
-	grown = next;
-	if ( !php::file_exists(grown.c_str()) )
-	    php::mkdir(grown.c_str());
-    }
-    return php::file_exists(d);
-}
-
 // A filesystem-safe rendering of a root path, so `ls` of the directory reads
 // as the sessions it holds. Every path separator (`/` AND the Windows `\`)
 // and the Windows drive-letter colon become `_`: canonical_path yields
@@ -207,7 +176,7 @@ void session_advertise(IdeSession &S, long doc, var &endpoint)
     ui::set(w, es, "advertep", endpoint);
     var dir;
     session_dir(dir);
-    if ( !session_dir_ensure(dir) )
+    if ( !dir_ensure(dir) )
 	return;
     var root;
     madc::canonical_path(root, ".");
@@ -324,9 +293,12 @@ bool session_covers(var &root, var &file)
 }
 
 // The session that covers `file`, best first: a session that HOLDS the file
-// beats one that merely covers its root. False = nothing running matches.
+// beats one that merely covers its root. False = nothing running matches,
+// and for no file at all (an untitled buffer is nobody's document).
 bool session_find(var &out, const char *file)
 {
+    if ( file == 0 || strlen(file) == 0 )
+	return false;
     var want;
     madc::canonical_path(want, file);
     var all;

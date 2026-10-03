@@ -1,0 +1,38 @@
+/* A returned prvalue of the function's class initializes the result object
+   itself ([stmt.return]/2, guaranteed elision), and a returned local is
+   moved into it ([class.copy.elision]/3). madc built the prvalue in a
+   temporary, bit-copied it into the result and destroyed the temporary —
+   freeing what the result still owned — and a local with no matching
+   constructor was bit-copied too, so both it and the result freed one
+   pointer. std::make_unique returns exactly `unique_ptr<T>(new T(...))`.
+   Oracle: g++ and clang++ -std=c++17 print both lines below. */
+#include <cstdio>
+
+static int frees = 0;
+struct Own {
+	int *p;
+	Own(int *q) : p(q) {}
+	Own(Own &&u) : p(u.p) { u.p = 0; }
+	~Own() { if (p) { ++frees; delete p; } }
+};
+struct W : Own { using Own::Own; };
+struct M { Own o; M(int *q) : o(q) {} };
+
+W mkw(int v) { return W(new int(v)); }
+W mkw_local(int v) { W w(new int(v)); return w; }
+M mkm(int v) { return M(new int(v)); }
+M mkm_local(int v) { M m(new int(v)); return m; }
+
+int main()
+{
+	{
+		W a = mkw(1);
+		W b = mkw_local(2);
+		M c = mkm(3);
+		M d = mkm_local(4);
+		printf("held %d %d %d %d freed %d\n", *a.p, *b.p, *c.o.p,
+		       *d.o.p, frees);
+	}
+	printf("frees %d\n", frees);
+	return 0;
+}

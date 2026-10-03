@@ -1,0 +1,30 @@
+// A discarded `if constexpr` branch ([stmt.if]/2) is skipped unparsed — and
+// must end exactly where its statement does. The skip ran to the first `;`
+// outside a group, so a braced loop body took the NEXT statement with it
+// (`y = 5;` vanished), a nested `if (c) a; else b;` stopped before its
+// `else`, which then bound to the `if constexpr` and RAN — exit 0 each.
+// Program::skip_discarded_statement now follows the statement grammar
+// (blocks, if/else, loops, do-while, try/catch, labels, `;`-ended
+// statements), its groups through the shared delimiter tracker.
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+int main()
+{
+	int c = 0, x = 0, y = 0, z = 0, w = 0, v = 0, u = 0;
+	if constexpr (false) while (c) { x++; }
+	y = 5;
+	if constexpr (false) if (c) x = 1; else x = 2;
+	z = 7;
+	if constexpr (false) do { x++; } while (c);
+	w = 9;
+	if constexpr (false) for (int i = 0; i < 3; ++i) { x += i; }
+	v = 11;
+	if constexpr (false) switch (c) { case 0: x = 3; break; default: break; }
+	u = 13;
+	if constexpr (false) { auto l = [&] { x = 4; return 0; }; l(); }
+	else x = 100;
+	if constexpr (true) y += 1; else while (c) { x = 5; }
+	if constexpr (false) lbl: x = 6;
+	printf("x=%d y=%d z=%d w=%d v=%d u=%d\n", x, y, z, w, v, u);
+	return 0;
+}

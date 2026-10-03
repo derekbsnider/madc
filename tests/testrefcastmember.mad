@@ -1,0 +1,35 @@
+// A member access on a cast to REFERENCE type ([expr.static.cast]/2-3:
+// `static_cast<B &>(d).y` names a member of the referent). A reference-typed
+// expression denotes its referent ([expr.type]/1), so the member is read
+// with `.` from the object the cast selects. The postfix chain after a named
+// cast looked the member up on the referent but typed the access's object as
+// the REFERENCE, so the lowering chose `->` on an object that is already an
+// lvalue: `(*(struct B *)((char *)&d + 12))->y`, which MIR refused ("wrong
+// type memory") for every reference cast followed by `.member`.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct A0 { int pad[3]; };
+struct B { int y; };
+struct D : A0, B { int z; };
+struct E : B { int w; };
+
+int main()
+{
+	B b;
+	b.y = 5;
+	D d;
+	d.pad[0] = 1;
+	d.y = 7;
+	d.z = 9;
+	E e;
+	e.y = 3;
+	e.w = 4;
+	B *bp = &d;
+	static_cast<B &>(d).y = 8;
+	printf("%d %d %d %d %d %d\n", static_cast<B &>(b).y, static_cast<B &>(e).y,
+	       static_cast<B &>(d).y, static_cast<D &>(*bp).z,
+	       static_cast<E &>(static_cast<B &>(e)).w, d.y);
+	return 0;
+}

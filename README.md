@@ -271,68 +271,76 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.100.0**, the Nexus release. madcide stops being
-a desktop application and becomes a **session**: a window is a *client*, so
-several windows share one document with their own carets and presence, the
-editor region is a real split tree whose layouts persist beside the manifest,
-and a View re-represents the same document as source, MC11, C11 or C++ in
-place — source left, MC11 right, carets tracking through the emitter's
-correlation map. Every change is an event in an append-only journal that
-replays, checkpoints and compacts. The session is reachable over an `api`
-transport with permission tiers, a headless `--serve`, a `ws` window on the
-same port, an MCP seat, an LSP face, a VS Code extension, attach and
-discovery. Beyond the human faces sits **the Nexus**: the live IR as a
-node-addressed graph an agent queries and edits through validated verbs
-rather than text patches, with history verbs over git and a propose tier.
-Underneath, the async I/O reactor gained a Windows backend and libgit2 became
-the `madcgit` module rather than a vendored subtree.
+The current release is **v0.101.0**, the REPL release. Run `madc` with no
+program file and you get an interactive C/C++ session in the spirit of Julia
+and IPython: each entry's definitions carry into the next, results are named
+(`ans`, `_`, `_N`), the terminal edits each entry with history and Tab
+completion, and `%whos`, `%type`, `%help` and `?name` answer questions about
+what you have built so far; `madc -i file` runs a file and keeps its names.
+A session can also run in its own process, driven from the dialect
+(`madc::session_*`) or from the editor.
 
-The same release makes C++ conformance a **measured** number. Every C++
-symbol madc defines now emits its real Itanium mangled name, so a madc object
-file links against g++- and clang-built code; expression SFINAE, pointers to
-members, real lambda captures, inheriting constructors and prvalue reference
-binding landed behind it. The `g++.dg` ratchet lane was built in this window
-and driven from **1169 (60%) to 1464 / 1950 (75.1%)**. That work then found
-three standard-C regressions — including a compiler SIGSEGV — which are fixed,
-returning gcc c-torture to 1611/1624 with zero regressions against v0.99.2.
+madcide grows a **plugin system** — libraries, source and forked-child
+transports contributing commands, views, event handlers and toolbar rows —
+and its first product on it is **Chthonia**, a teaching IDE modelled on
+Thonny: a REPL pane, a Variables view, F5 diagnostics in the Problems pane,
+Run ▸ Language…, and Thonny's keys by default among six key styles (JOE, Vim,
+Emacs, Pico, Thonny, VS Code) with selection and the platform clipboard. The
+name mixes its two models, Thonny for the IDE and Julia for the REPL, behind a
+C for C/C++ and an h for helper; say it "THO-nee-ah".
 
-Branch state: v0.100.0 is released on `develop`; the `master` promotion
+The release also carries the B-series correctness burn-down, silent wrong
+answers first (value categories and rvalue references, out-of-line overloads
+that bound the wrong body, member pointers, partial specializations, atomics,
+bit-field layout including the Microsoft rules, `volatile` through typedefs,
+multi-TU template instance naming), a Linux Homebrew bottle, and an archive
+of every released binary (`scripts/release_bins.sh`) that classifies a red
+test as a regression or an older defect.
+
+Branch state: v0.101.0 is released on `develop`; the `master` promotion
 follows the release-tier lane ledger (every platform lane's FULL suite green
 on this content), with public binaries built by CI for Linux
-(deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel), each
-shipping the platform webview library beside the binaries.
+(deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
-Latest validated results — the full release tier, every lane green on one
-commit (`7488a39cf`, 2026-09-21). Measured conformance against third-party
-suites is published separately in
-[`docs/conformance-coverage.md`](docs/conformance-coverage.md):
+Latest validated results — the seam battery and the release-tier lanes on
+one content (`aeb92da3a`, 2026-10-03). Measured conformance against third-party suites is published
+separately in [`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
-- Linux JIT: **1540 passed / 0 failed / 0 timed out / 9 skipped**; native EXE lane **1444/0**, OBJ lane
-  **1444/0**; packed suite **1540/0/0/9**; headerless (no headers on
-  disk anywhere) **1506/0/0/43**; doctest **186/186**
-- the GUI stage under Xvfb (webview, the web editor, the madcide workbench,
-  split with both clicks, menu bar, the dialogs, the panel, Run into the
-  Terminal with no input, the resizable panel): **19/19 JIT, 19/19 EXE, 19/19 OBJ**
-- Windows: packed Win64 under persistent Wine **1480/0/0TO/69skip**
-  (`verify_pe_release` OK, 234 units); the FULL suite on genuine Windows 11
-  **1480/0/0TO/69skip**
-- **C conformance**: gcc `c-torture/execute` **1611/1624 in scope (99.2%)**
+- Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
+  **1884 passed / 0 failed / 0 timed out / 43 skipped**, plus the 34
+  header-needing tests with headers on disk **34/0**; the whole suite as
+  native artifacts: JIT **1918/0/0/9**, EXE **1748/0**, OBJ **1748/0**;
+  unit tests and every repository gate green
+- the GUI stage under Xvfb: **25/25 JIT, 25/25 EXE, 25/25 OBJ**
+- Windows: the packed Win64 binary under Wine **1844/0/0TO/83skip**; the
+  FULL suite on genuine Windows 11 **1845/0/0TO/82skip**
+- macOS, libc++: the FULL suite on the shipped -O2 packed binary on the
+  GitHub runners, **arm64 1893/0/0TO/34skip, Intel 1894/0/0TO/33skip**
+- Homebrew: the Linux bottle built, poured and `brew test`ed, then the suite
+  on the installed madc **1918/0/0TO/9skip**
+- **C conformance**: gcc `c-torture/execute` **1613/1624 in scope (99.3%)**
   under `--std=c17`, ratcheted against a baseline of pre-existing failures;
-  c-testsuite **220/220, baseline empty** (`--std=gnu11`)
-- **C++ conformance**: gcc's own `g++.dg` compile-clean subset —
-  C++98 **308/385 (80.0%)**, C++11 **1464/1950 (75.1%)**, C++14 **206/417**,
-  C++17 **128/308**, C++20 **346/653**
-- macOS cross release on both architectures: 836 units, Mach-O release
-  verifier (including the C-linkage authority) and the exe/dylib gate green;
-  the FULL suite on GitHub's mac runners: arm64 **1520/0/0TO/29skip**,
-  Intel **1521/0/0TO/28skip**
-- the libc++ flavor suite (macOS's library on Linux hardware): **jit 1533/0/0TO/16skip, EXE/OBJ 1437/0**
+  c-testsuite **220/220, baseline empty**; index-c **50/50**
+- **C++ conformance**: gcc's own `g++.dg` compile-clean subset — C++11
+  **1501/1946 (77.1%)**, ratcheted
+- macOS cross release on both architectures: 837 units, Mach-O release
+  verifier green; aarch64 long double lane green
 - Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
   byte-identical** to the original C game (a permanent fulltest gate)
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.101.0](docs/release-notes/v0.101.0.md) — **the REPL release**:
+  `madc` with no file is an interactive C/C++ session (Julia/IPython
+  semantics, named results, `%whos`, line editing, history, completion);
+  sessions in their own process; madcide plugins and **Chthonia**, the
+  Thonny-style teaching IDE; the B-series correctness burn-down; a Linux
+  Homebrew bottle; every release binary archived.
+- [v0.100.1](docs/release-notes/v0.100.1-master.md) — madc compiles every
+  translation unit of its own backend (MIR and c2mir, 33,629 lines), GNU
+  `asm` labels on declarations, the index-c correctness lane, and a
+  preprocessor regression on the macOS SDK fixed before it shipped.
 - [v0.100.0](docs/release-notes/v0.100.0.md) — **the Nexus release**:
   madcide becomes a multi-client session (a window is a client, presence,
   split-tree Views, an event-sourced change log, correlation maps) reachable
@@ -349,23 +357,6 @@ suites is published separately in
   the desktop application: the prompts as dialogs (quick input / confirm
   with buttons), a click picks the window, the status bar as chrome, and
   "(^C aborts)" true in every profile.
-- [v0.99.0](docs/release-notes/v0.99.0.md) — madcide is a desktop
-  application: the GUI chrome milestone (native menu bar from one
-  command/menu data file, native file dialogs, status chrome, the JOE
-  split as a window stack, mouse caret/selection, the incremental web
-  editor, event enums) + five carrier fixes.
-- [v0.98.0](docs/release-notes/v0.98.0.md) — the macOS full-suite
-  release: the whole suite green on both mac runner arches after the
-  darwin burndown (by-value class ABI, distinct wide char types,
-  target-shaped long double / va_list, libc++ `<list>`); 128-bit SIMD
-  in MIR on x86-64 + aarch64 with the vector ABI gated against the
-  platform compiler; Apple stack-argument packing; `-w`; every
-  platform lane's full suite gates master.
-- [v0.97.0](docs/release-notes/v0.97.0.md) — the madcide interaction
-  arc (gateway seam, modes palette, the vi modal personality as
-  profile data) + the carrier elegance arc (keyed literals, `rows[] =`
-  append, literal expressions, live-kind subscripts); c-testsuite
-  220/220 COMPLETE.
 
 Older release notes live in [docs/release-notes/](docs/release-notes/).
 

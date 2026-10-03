@@ -1,0 +1,2 @@
+copy: hi 7 src=hi
+move: hi 7

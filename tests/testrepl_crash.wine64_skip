@@ -1,0 +1,1 @@
+no fork on Windows yet: the session runs in the CLI process there, so a crash ends madc (plan 41.9a, named)

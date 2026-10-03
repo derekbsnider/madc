@@ -95,7 +95,31 @@ int64_t fake_tick(void *h, int64_t ms)
     return 1;
 }
 
-static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick };
+// The platform clipboard (plan §41.11a step 3e): the host puts and reads
+// plain text. Here the first put is refused and the first read finds no
+// clipboard — the engine says so, and an application keeps its own copy;
+// after that a put lands, and a read answers with a Windows "\r\n" the
+// engine hands back as "\n".
+int clip_puts = 0;
+int clip_reads = 0;
+int64_t fake_clip_set(void *host, const char *text)
+{
+    clip_puts++;
+    if ( clip_puts == 1 )
+	return 1;
+    println("fake clip_set: {}", php::str_replace("\n", "|", text));
+    return 0;
+}
+
+const char *fake_clip_get(void *host)
+{
+    clip_reads++;
+    if ( clip_reads == 1 )
+	return 0;
+    return "one\r\ntwo";
+}
+
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get };
 static bool fake_registered = ui::register_host("fake", ui::WEB, &fake_ops);
 
 int main()
@@ -192,6 +216,15 @@ int main()
     println("dialogs -> {}", ui::dialogs(t) ? "yes" : "no");
     bool shown = ui::dialog(t, "{\"mode\":\"open\",\"title\":\"Open File\",\"path\":\"\"}");
     println("dialog -> {}", shown ? "shown" : "refused");
+    println("clipboards -> {}", ui::clipboards(t) ? "yes" : "no");
+    println("clipboard set (none yet) -> {}", ui::clipboard_set(t, "x") ? "taken" : "refused");
+    var clip;
+    println("clipboard get (none yet) -> {}", ui::clipboard_get(clip, t) ? "answered" : "refused");
+    bool put = ui::clipboard_set(t, "one\ntwo");
+    println("clipboard set -> {}", put ? "taken" : "refused");
+    bool got = ui::clipboard_get(clip, t);
+    println("clipboard get -> {} [{}] {}", got ? "answered" : "refused",
+	    php::str_replace("\n", "|", clip), strchr(clip.c_str(), '\r') ? "CR kept" : "no CR");
     var ev;
     while ( ui::event(ev, t, w) )
     {

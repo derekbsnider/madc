@@ -1,0 +1,30 @@
+// A reference to a function or to a function pointer names its referent
+// ([dcl.ref]), so `r(args)` calls through it like the referent's own name:
+// `int (*&rpg)(int) = pg; rpg(4)`, `int (&rf)(int) = g; rf(5)`, a `const &`
+// and a reference PARAMETER alike, and assigning through the reference rebinds
+// the pointer it names. madc stores a reference as a pointer, whose type is
+// not callable: the name was pushed as a plain value and the `(` refused as a
+// juxtaposed operand ("2 operands with no operator between them"). Beneath
+// that, a LOCAL pointer or reference to a function pointer was declared
+// `long long *` (only a parameter rendered `int (**fp)(int)`), a reference to a
+// FUNCTION one level too deep, and binding one spelled the function's source
+// name instead of its symbol.
+#include <cstdio>
+static int g(int x) { return x * 2; }
+static int h(int x) { return x + 100; }
+static int via_ref(int (*&fp)(int), int v) { return fp(v); }
+static int via_fnref(int (&fn)(int), int v) { return fn(v); }
+static int via_cref(int (*const &fp)(int), int v) { return fp(v); }
+int main() {
+    int (*pg)(int) = g;
+    int (*&rpg)(int) = pg;
+    int (&rf)(int) = g;
+    int (*const &crp)(int) = pg;
+    std::printf("local: %d %d %d\n", rpg(4), rf(5), crp(6));
+    std::printf("param: %d %d %d\n", via_ref(pg, 7), via_fnref(g, 8), via_cref(pg, 9));
+    int (**pp)(int) = &pg;
+    std::printf("ptr: %d %d\n", (*pp)(4), (**pp)(5));
+    rpg = h;
+    std::printf("rebind: %d %d\n", pg(3), rpg(3));
+    return 0;
+}

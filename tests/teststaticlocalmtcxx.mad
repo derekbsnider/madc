@@ -1,0 +1,45 @@
+// [stmt.dcl]/4 under contention: four threads reach a block-scope static
+// whose constructor is slow; exactly one constructs it and the others WAIT
+// for it to finish (gcc's -fthreadsafe-statics protocol, __cxa_guard_acquire
+// in libstdc++ / libc++abi), so every thread reads the finished value. The
+// guard is madc's emit_static_local_once. (Per-thread `thread_local` objects
+// are a MIR floor gap — MIR has no TLS — so they are not checked here.)
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+#include <pthread.h>
+#include <unistd.h>
+static int ctor_calls = 0;
+static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+struct Slow {
+	int v;
+	Slow() : v(0)
+	{
+		pthread_mutex_lock(&mu);
+		ctor_calls++;
+		pthread_mutex_unlock(&mu);
+		usleep(20000);
+		v = 42;
+	}
+};
+int shared_value() { static Slow s; return s.v; }
+void *worker(void *out)
+{
+	*(int *)out = shared_value();
+	return NULL;
+}
+int main()
+{
+	pthread_t t[4];
+	int res[4];
+	for (int i = 0; i < 4; i++)
+		pthread_create(&t[i], NULL, worker, &res[i]);
+	for (int i = 0; i < 4; i++)
+		pthread_join(t[i], NULL);
+	int saw = 0;
+	for (int i = 0; i < 4; i++)
+		if (res[i] == 42)
+			saw++;
+	printf("constructed %d time(s); %d of 4 threads read the finished value\n",
+	       ctor_calls, saw);
+	return 0;
+}

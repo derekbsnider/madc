@@ -18,8 +18,10 @@
 - OWNER LAW (2026-09-04): no master release until EVERY platform lane has run
   its FULL test suite green on the promoted content. Pushing `master` (and
   `/promote`) runs `scripts/lane_ledger.sh check --release`: the develop set
-  PLUS the release tier (`promote=release`) — the linux libc++ flavor lane,
-  the darwin full suite on both mac runner arches, genuine Windows. A
+  PLUS the release tier (`promote=release`) — the darwin full suite on both
+  mac runner arches (THE libc++ lane: the macOS -O2 packed binary), genuine
+  Windows. One stdlib flavor per platform, one per packed binary: Linux and
+  Windows libstdc++, macOS libc++ (owner 2026-10-03). A
   build-and-verify lane (the container cross `macos` build) is not a test
   lane. A platform failure is fixed or formally skipped with a stated reason
   before promotion — never carried as a residue.
@@ -31,7 +33,7 @@
   See `docs/adr/0001-cir-c2mir-backend.md`.
 - Commit early and often on feature branches
 - Use `#ifdef FEATURE_NAME` guards for in-progress code on shared branches
-- Before merging a feature branch, run `/dupaudit` scoped to the subsystem the
-  feature touched; a family it reports as divergent is a live bug, not debt
+- `/dupaudit` runs inside `/commit`, scoped to the commit's diff — NEVER as a
+  merge gate; a family it reports as divergent is a live bug, not debt
 - Every duplication a `/dupaudit` finding gets consolidated leaves a gate behind
   in `fulltest` — one implementation without a gate regrows

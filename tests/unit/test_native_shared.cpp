@@ -191,6 +191,13 @@ TEST_SUITE("madc_cir_emit_native") {
 	    "}\n",
 	    mnkExecutable);
 	CHECK(rt_img.find("libmadc.so.0") != std::string::npos);
+	// Its RUNPATH ends with the build's stable library directory
+	// (MADC_RUNPATH_LIBDIR, src/Makefile: /usr/local/lib, or a package
+	// manager's linked lib), after $ORIGIN/../lib and the compiling madc's
+	// own directory.
+	std::string stable = std::string(":") + MADC_RUNPATH_LIBDIR;
+	CHECK(rt_img.find(stable) != std::string::npos);
+	CHECK(rt_img.find("$ORIGIN/../lib:") != std::string::npos);
     }
 
     TEST_CASE("PIE flip: mnkPieExecutable emits an ET_DYN PIE, -no-pie stays ET_EXEC") {

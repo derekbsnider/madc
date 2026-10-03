@@ -1,0 +1,1 @@
+libc++'s std::vector iterator-pair constructor instantiates bodies c2mir refuses (pointer to incomplete type in __uninitialized_allocator_copy); every archived release since v0.72.0 the same; BUGS.md B160

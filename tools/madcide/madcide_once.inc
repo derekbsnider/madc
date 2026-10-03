@@ -25,7 +25,8 @@
 // A command's OWN refusal ("No terminal to suspend.") speaks on the status
 // line inside the projection and reads as 0 until the api seat's per-reply
 // verdicts land (design §2.7, V6).
-long run_once(var &out, const char *path, bool ro, const char *cmdline)
+long run_once(var &out, const char *path, bool ro, const char *cmdline,
+	      const char *profile = "")
 {
     out = "";
     var line = php::trim(cmdline);
@@ -39,19 +40,23 @@ long run_once(var &out, const char *path, bool ro, const char *cmdline)
 	arg = php::trim(rest.c_str());
     }
     // The command-line BOUNDARY: the name converts once here so an unknown
-    // command refuses BEFORE any session opens (exit 2, nothing on stdout).
+    // command refuses before anything runs (exit 2, nothing on stdout). A
+    // built-in name is known before any session opens; a contributed one
+    // (plugins Stage B1) only in the session's world, so an unknown name
+    // opens the session first and asks the world.
     long code = cmd_of(name.c_str());
+    IdeSession S;
+    long doc = S.open(path, ro, profile);
+    if ( doc <= 0 )
+	return 1;			// -1 already reported on stderr
+    if ( code == cmdNONE )
+	code = cmd_of_w(S.world(), name.c_str());
     if ( code == cmdNONE )
     {
 	println(stderr, "madcide: unknown command '{}' (the names are the registry's: tools/madcide/profiles/default.menu)", name);
+	S.close();
 	return 2;
     }
-    IdeSession S;
-    long doc = S.open(path, ro);
-    if ( doc == 0 )
-	println(stderr, "madcide: cannot read {}", path);
-    if ( doc <= 0 )
-	return 1;			// -1 already reported on stderr
     S.terminal(false);		// the level says so: nothing to hand over
     // ONE command core: this client drives api_run (madcide_api.inc) like
     // every other transport — run, count the error rows, compose, typeset —

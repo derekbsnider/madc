@@ -1,0 +1,14 @@
+// In C++ a string literal initializing a char array needs room for its NUL
+// as well ([dcl.init.string]/2: no more initializers than array elements,
+// the NUL counted), so `char c[3] = "abc";` — valid C — is ill-formed: g++ 13
+// refuses it, "initializer-string for 'char [3]' is too long", and clang++ 18
+// "initializer-string for char array is too long". madc accepted it.
+#include <cstdio>
+
+char c[3] = "abc";
+
+int main()
+{
+	std::printf("%c%c%c\n", c[0], c[1], c[2]);
+	return 0;
+}

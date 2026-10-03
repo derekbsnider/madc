@@ -1,5 +1,5 @@
 // madcide — the madc IDE (hub doc Phase 2; Track 7.2's consumer).
-// Usage: madc tools/madcide/madcide.mad <file> [ro] [--gui] [-c "<command> [arg]"]
+// Usage: madc tools/madcide/madcide.mad [<file>] [ro] [--profile NAME] [--gui] [-c "<command> [arg]"]
 // Run it from the repository root (verb bodies and keybinding profiles
 // load by relative path). The buffer is the texteditor machinery; the
 // diagnostics pane and outline are projections of live compiler data;
@@ -42,6 +42,7 @@
 #include "../texteditor/lined_core.inc"
 #include "../texteditor/editor_events.inc"
 #include "madcide_core.inc"
+#include "madcide_args.inc"	// THE command line (the one argv reader)
 // SESSION DISCOVERY (V6c-4) sits directly on the session: the ADVERTISEMENT a
 // client finds a running session by, so nobody has to be told an address. It
 // is read by every face that listens (the serving processes below) and by the
@@ -63,16 +64,35 @@
 
 int main(int argc, char **argv)
 {
+    // THE command line (madcide_args.inc): flags anywhere, the first word
+    // that is not a flag is the file, an unknown flag refused with the usage.
+    ide_args a;
+    var why;
+    if ( !ide_args_parse(a, why, argc, (const char **)argv) )
+    {
+	println(stderr, "madcide: {}", why);
+	print(stderr, "{}", ide_usage());
+	return 2;
+    }
+    if ( a.help )
+    {
+	print("{}", ide_usage());
+	return 0;
+    }
     // `--sessions` answers before anything else: it needs no file, because it
     // is the question "what is already running?" (V6c-4).
-    for ( int i = 1; i < argc; i++ )
-	if ( strcmp(argv[i], "--sessions") == 0 )
-	    return run_sessions();
-    if ( argc < 2 )
+    if ( a.sessions )
+	return run_sessions();
+    // `--build-plugin DIR` builds a plugin's library and exits: no session,
+    // no file (madcide_plugin_code.inc).
+    if ( a.build_plugin != NULL )
+	return run_build_plugin(a.build_plugin);
+    // No file: the editor opens an untitled buffer (Thonny's, JOE's
+    // Unnamed); a headless face has nothing to act on without one.
+    if ( a.file == NULL && ide_face_needs_file(a) != NULL )
     {
-	printf("usage: madcide <file> [ro] [--gui|--line] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]] [--no-serve]\n");
-	printf("       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n");
-	printf("       madcide --sessions                                 (what is running, and how to join it)\n");
+	println(stderr, "madcide: {} needs a file", ide_face_needs_file(a));
+	print(stderr, "{}", ide_usage());
 	return 2;
     }
     // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program
@@ -86,63 +106,20 @@ int main(int argc, char **argv)
     // the projection printed, the exit status the verdict (run_once). `ro`
     // opens the file read-only. The client loop and the composer are
     // identical for every level (the workbench layout rides layout hints
-    // the terminal ignores; the one-shot typesets the same tree).
-    bool ro = false;
-    ui::level lvl = ui::TUI;
-    const char *once = NULL;
-    const char *serve = NULL;
-    bool mcp = false;
-    bool lsp = false;
-    bool attach = false;		// --attach was asked for
-    const char *attach_addr = NULL;	// ... at this address, or NULL = discover
-    bool no_serve = false;
-    for ( int i = 2; i < argc; i++ )
-    {
-	if ( strcmp(argv[i], "--gui") == 0 )
-	    lvl = ui::WEB;
-	else if ( strcmp(argv[i], "--line") == 0 )
-	    lvl = ui::LINE;
-	else if ( strcmp(argv[i], "--mcp") == 0 )
-	    mcp = true;
-	else if ( strcmp(argv[i], "--lsp") == 0 )
-	    lsp = true;
-	else if ( strcmp(argv[i], "ro") == 0 )
-	    ro = true;
-	else if ( strcmp(argv[i], "-c") == 0 )
-	{
-	    if ( i + 1 >= argc )
-	    {
-		println(stderr, "madcide: -c needs \"<command> [arg]\"");
-		return 2;
-	    }
-	    i++;
-	    once = argv[i];
-	}
-	else if ( strcmp(argv[i], "--serve") == 0 )
-	{
-	    if ( i + 1 >= argc )
-	    {
-		println(stderr, "madcide: --serve needs <host:port>");
-		return 2;
-	    }
-	    i++;
-	    serve = argv[i];
-	}
-	else if ( strcmp(argv[i], "--no-serve") == 0 )
-	    no_serve = true;
-	else if ( strcmp(argv[i], "--attach") == 0 )
-	{
-	    // The address is OPTIONAL (V6c-4): without one, DISCOVER the
-	    // session that holds this file. A following word that starts with
-	    // '-' is the next flag, not an address.
-	    attach = true;
-	    if ( i + 1 < argc && argv[i + 1][0] != '-' )
-	    {
-		i++;
-		attach_addr = argv[i];
-	    }
-	}
-    }
+    // the terminal ignores; the one-shot typesets the same tree). The
+    // profile (--profile NAME; "" = settings.json's, else default) selects
+    // no face: every face opens its session under it.
+    const char *file = a.file == NULL ? "" : a.file;	// "" = untitled
+    bool ro = a.ro;
+    ui::level lvl = a.level;
+    const char *once = a.once;
+    const char *serve = a.serve;
+    bool mcp = a.mcp;
+    bool lsp = a.lsp;
+    bool attach = a.attach;		// --attach was asked for
+    const char *attach_addr = a.attach_addr;	// ... at this address, or NULL = discover
+    bool no_serve = a.no_serve;
+    const char *profile = a.profile == NULL ? "" : a.profile;
     if ( attach )
     {
 	// The ATTACH RELAY (V6c-3c): become a client of a session that is
@@ -162,11 +139,11 @@ int main(int argc, char **argv)
 	if ( attach_addr == NULL )
 	{
 	    var rec;
-	    if ( !session_find(rec, argv[1]) )
+	    if ( !session_find(rec, file) )
 	    {
 		println(stderr,
 			"madcide: no running session holds {} — start one, or give --attach <host:port>",
-			argv[1]);
+			file);
 		return 2;
 	    }
 	    found_addr = rec["endpoint"];
@@ -180,7 +157,7 @@ int main(int argc, char **argv)
     if ( once != NULL )
     {
 	var out;
-	long rc = run_once(out, argv[1], ro, once);
+	long rc = run_once(out, file, ro, once, profile);
 	print("{}", out);
 	return rc;
     }
@@ -190,7 +167,7 @@ int main(int argc, char **argv)
 	// JSON-RPC 2.0 — a tool call is an `api` command by name (run_mcp is an
 	// adapter over the SAME command core the --serve api seat drives). The
 	// standard MCP deployment: an editor / agent host spawns this process.
-	return run_mcp(argv[1], ro);
+	return run_mcp(file, ro, profile);
     }
     if ( lsp )
     {
@@ -205,7 +182,7 @@ int main(int argc, char **argv)
 	// browser) that joins the very same buffers. Two processes would be
 	// two sessions on one file — two carets, two undo histories, last save
 	// wins.
-	return run_lsp(argv[1], ro, serve);
+	return run_lsp(file, ro, serve, profile);
     }
     if ( serve != NULL )
     {
@@ -214,14 +191,14 @@ int main(int argc, char **argv)
 	// page.js over the socket) and plain HTTP GETs for the page — the SAME
 	// session and registry the local windows drive (run_serve classifies
 	// each connection with serve_web).
-	return run_serve(argv[1], ro, serve);
+	return run_serve(file, ro, serve, profile);
     }
     if ( lvl == ui::LINE )
     {
 	// The ex / edlin client (V2.5): stdin lines in, the level-0
 	// projection out — its own loop, as the one-shot has its own, but
 	// the SAME session and composer (run_line).
-	run_line(argv[1], ro);
+	run_line(file, ro, profile);
 	return 0;
     }
     // The editor — which LISTENS by default (V6c-4 ruling R2) on a loopback
@@ -229,5 +206,5 @@ int main(int argc, char **argv)
     // or a browser joins THIS session instead of opening a second one on the
     // same file. `--no-serve` opts out. ⚠️ NO AUTH, NO TLS: loopback only.
     const char *listen_at = no_serve ? NULL : "127.0.0.1:0";
-    return run_tui(argv[1], ro, lvl, listen_at);
+    return run_tui(file, ro, lvl, listen_at, profile);
 }

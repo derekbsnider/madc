@@ -1,0 +1,39 @@
+// A C++ class lays out its own GNU attributes — `packed` and `aligned(N)`
+// before its name, after it and after its `}`, and `alignas(N)` in its head —
+// in a class with a member function, a vptr or a base. Its `packed` packs its
+// own members and its vptr, never a base; its `aligned(N)` raises the class's
+// alignment and moves no member.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <stdio.h>
+#include <stddef.h>
+
+struct B { char b; int bi; };
+struct L { char l; long ll; };
+struct __attribute__((packed)) P1 { int f() { return b; } char a; int b; };
+struct __attribute__((aligned(16))) P2 { int f() { return a; } char a; };
+struct P3 { int f() { return b; } char a; int b; } __attribute__((packed));
+class alignas(16) K { public: int f() { return a; } char a; };
+struct __attribute__((packed)) V1 { virtual int f() { return x; } char c; int x; };
+struct __attribute__((packed)) E2 : L { char c; int x; };
+struct E3 : L { char c; int x; } __attribute__((packed));
+struct __attribute__((aligned(16))) D4 : B { char c; };
+struct __attribute__((aligned(16))) V3 { virtual int f() { return c; } char c; };
+struct __attribute__((packed)) VP : virtual L { char c; };
+class __attribute__((packed)) Q { char c; int x; public: int f() { return x; } };
+
+int main()
+{
+	printf("ba: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(P1), offsetof(P1, b),
+	       sizeof(P2), alignof(P2), sizeof(P3), sizeof(K), alignof(K));
+	printf("bb: %zu %zu %zu %zu %zu %zu %zu\n", sizeof(V1), alignof(V1),
+	       sizeof(E2), alignof(E2), offsetof(E2, x), sizeof(E3), offsetof(E3, x));
+	printf("bc: %zu %zu %zu %zu %zu %zu %zu %zu\n", sizeof(D4), alignof(D4),
+	       offsetof(D4, c), sizeof(V3), alignof(V3), sizeof(VP), alignof(VP), sizeof(Q));
+	P1 p; p.a = 1; p.b = 0x11223344;
+	V1 v; v.c = 2; v.x = -5;
+	E3 e; e.l = 3; e.ll = 1L << 40; e.c = 4; e.x = 77;
+	V1 *pv = &v;
+	printf("bv: %d %x %d %d %d %ld %d %d\n", p.a, p.f(), v.c, pv->f(),
+	       e.l, e.ll, e.c, e.x);
+	return 0;
+}

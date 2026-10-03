@@ -9,6 +9,7 @@
 #include "libmadc/value.h"
 #include "madc_value_cell.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -700,6 +701,237 @@ bool value::operator==(const value &other) const
 	}
     }
     return false;
+}
+
+namespace {
+
+const size_t KIND_COUNT = (size_t)value::kind::instance + 1;
+const size_t ORDERING_SLOT = (size_t)value::arith::mod + 1;
+
+// The refusal texts, built once and immutable after: a script error keeps the
+// pointer after the call returns (__madc_throw_cstr), so each one must be
+// static text. Rows are the five arithmetic operators, then ordering.
+struct refusal_table
+{
+    std::string binary[ORDERING_SLOT + 1][KIND_COUNT][KIND_COUNT];
+    std::string unary[KIND_COUNT];
+    refusal_table()
+    {
+	static const char *const opnames[ORDERING_SLOT + 1] =
+	    { "+", "-", "*", "/", "%", "ordering" };
+	for ( size_t o = 0; o <= ORDERING_SLOT; ++o )
+	    for ( size_t a = 0; a < KIND_COUNT; ++a )
+		for ( size_t b = 0; b < KIND_COUNT; ++b )
+		    binary[o][a][b] = std::string("unsupported operand kinds for ")
+			+ opnames[o] + ": " + value::kind_name((value::kind)a)
+			+ " and " + value::kind_name((value::kind)b);
+	for ( size_t a = 0; a < KIND_COUNT; ++a )
+	    unary[a] = std::string("unsupported operand kind for unary -: ")
+		+ value::kind_name((value::kind)a);
+    }
+};
+
+const refusal_table &refusals()
+{
+    static const refusal_table t;
+    return t;
+}
+
+const char *binary_refusal(size_t slot, const value &a, const value &b)
+{
+    return refusals().binary[slot][(size_t)a.type()][(size_t)b.type()].c_str();
+}
+
+bool number_kind(const value &v)
+{
+    return v.is_integer() || v.is_real();
+}
+
+double number_real(const value &v)
+{
+    return v.is_integer() ? (double)v.as_integer() : v.as_real();
+}
+
+// An integer against a real, exactly: (double)i rounds above 2^53.
+value::ordering order_int_real(int64_t i, double d)
+{
+    if ( std::isnan(d) )
+	return value::ordering::unordered;
+    if ( d >= 9223372036854775808.0 )
+	return value::ordering::less;
+    if ( d < -9223372036854775808.0 )
+	return value::ordering::greater;
+    int64_t t = (int64_t)d;	// exact: |d| < 2^63, truncated toward zero
+    if ( i != t )
+	return i < t ? value::ordering::less : value::ordering::greater;
+    double frac = d - (double)t;	// exact
+    if ( frac > 0 )
+	return value::ordering::less;
+    if ( frac < 0 )
+	return value::ordering::greater;
+    return value::ordering::equal;
+}
+
+value::ordering reversed(value::ordering o)
+{
+    if ( o == value::ordering::less )
+	return value::ordering::greater;
+    if ( o == value::ordering::greater )
+	return value::ordering::less;
+    return o;
+}
+
+} // namespace
+
+const char *value::arithmetic(arith op, const value &a, const value &b,
+			      value &out)
+{
+    if ( a.is_string() && b.is_string() )
+    {
+	if ( op != arith::add )
+	    return binary_refusal((size_t)op, a, b);
+	std::string t;
+	t.reserve(a.size() + b.size());
+	t.append((const char *)a.data(), a.size());
+	t.append((const char *)b.data(), b.size());
+	out = value(t);
+	return NULL;
+    }
+    if ( !number_kind(a) || !number_kind(b) )
+	return binary_refusal((size_t)op, a, b);
+    if ( a.is_integer() && b.is_integer() && op != arith::div )
+    {
+	// Unsigned arithmetic wraps without undefined behaviour.
+	uint64_t x = (uint64_t)a.as_integer(), y = (uint64_t)b.as_integer();
+	switch ( op )
+	{
+	case arith::add: out = value((int64_t)(x + y)); return NULL;
+	case arith::sub: out = value((int64_t)(x - y)); return NULL;
+	case arith::mul: out = value((int64_t)(x * y)); return NULL;
+	case arith::mod:
+	    if ( y == 0 )
+		return "integer remainder by zero";
+	    // INT64_MIN % -1 overflows the division; the remainder is 0.
+	    if ( (int64_t)y == -1 )
+		out = value((int64_t)0);
+	    else
+		out = value(a.as_integer() % b.as_integer());
+	    return NULL;
+	case arith::div:
+	    break;
+	}
+    }
+    double x = number_real(a), y = number_real(b);
+    switch ( op )
+    {
+    case arith::add: out = value(x + y); break;
+    case arith::sub: out = value(x - y); break;
+    case arith::mul: out = value(x * y); break;
+    case arith::div: out = value(x / y); break;
+    case arith::mod: out = value(std::fmod(x, y)); break;
+    }
+    return NULL;
+}
+
+const char *value::negate(const value &a, value &out)
+{
+    if ( a.is_integer() )
+    {
+	out = value((int64_t)(0 - (uint64_t)a.as_integer()));
+	return NULL;
+    }
+    if ( a.is_real() )
+    {
+	out = value(-a.as_real());
+	return NULL;
+    }
+    return refusals().unary[(size_t)a.type()].c_str();
+}
+
+const char *value::compare(const value &a, const value &b, ordering &out)
+{
+    if ( a.is_string() && b.is_string() )
+    {
+	size_t n = a.size() < b.size() ? a.size() : b.size();
+	int c = n ? std::memcmp(a.data(), b.data(), n) : 0;
+	if ( c == 0 )
+	    c = a.size() < b.size() ? -1 : a.size() > b.size() ? 1 : 0;
+	out = c < 0 ? ordering::less : c > 0 ? ordering::greater
+					 : ordering::equal;
+	return NULL;
+    }
+    if ( !number_kind(a) || !number_kind(b) )
+	return binary_refusal(ORDERING_SLOT, a, b);
+    if ( a.is_integer() && b.is_integer() )
+    {
+	int64_t x = a.as_integer(), y = b.as_integer();
+	out = x < y ? ordering::less : x > y ? ordering::greater
+					     : ordering::equal;
+	return NULL;
+    }
+    if ( a.is_integer() )
+	out = order_int_real(a.as_integer(), b.as_real());
+    else if ( b.is_integer() )
+	out = reversed(order_int_real(b.as_integer(), a.as_real()));
+    else
+    {
+	double x = a.as_real(), y = b.as_real();
+	out = x < y ? ordering::less : x > y ? ordering::greater
+		: x == y ? ordering::equal : ordering::unordered;
+    }
+    return NULL;
+}
+
+namespace {
+
+value arithmetic_or_throw(value::arith op, const value &a, const value &b)
+{
+    value out;
+    if ( const char *e = value::arithmetic(op, a, b, out) )
+	throw std::domain_error(e);
+    return out;
+}
+
+value::ordering compare_or_throw(const value &a, const value &b)
+{
+    value::ordering o = value::ordering::unordered;
+    if ( const char *e = value::compare(a, b, o) )
+	throw std::domain_error(e);
+    return o;
+}
+
+} // namespace
+
+value operator+(const value &a, const value &b)
+    { return arithmetic_or_throw(value::arith::add, a, b); }
+value operator-(const value &a, const value &b)
+    { return arithmetic_or_throw(value::arith::sub, a, b); }
+value operator*(const value &a, const value &b)
+    { return arithmetic_or_throw(value::arith::mul, a, b); }
+value operator/(const value &a, const value &b)
+    { return arithmetic_or_throw(value::arith::div, a, b); }
+value operator%(const value &a, const value &b)
+    { return arithmetic_or_throw(value::arith::mod, a, b); }
+value operator-(const value &a)
+{
+    value out;
+    if ( const char *e = value::negate(a, out) )
+	throw std::domain_error(e);
+    return out;
+}
+bool operator<(const value &a, const value &b)
+    { return compare_or_throw(a, b) == value::ordering::less; }
+bool operator<=(const value &a, const value &b)
+{
+    value::ordering o = compare_or_throw(a, b);
+    return o == value::ordering::less || o == value::ordering::equal;
+}
+bool operator>(const value &a, const value &b)
+    { return compare_or_throw(a, b) == value::ordering::greater; }
+bool operator>=(const value &a, const value &b)
+{
+    value::ordering o = compare_or_throw(a, b);
+    return o == value::ordering::greater || o == value::ordering::equal;
 }
 
 const char *value::kind_name(kind k)

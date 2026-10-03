@@ -1,0 +1,58 @@
+// C++: a volatile pointee is part of the function's type — its Itanium
+// symbol spells V (f(volatile int*) is _Z1fPVi, one cv set per level:
+// const volatile char* is PVKc and a single substitution candidate), and
+// overload resolution ranks the qualification conversion ([conv.qual],
+// [over.ics.rank]/3.2.5-6): int* -> volatile int* is viable but loses to the
+// identity; volatile int* -> int* is not viable; a volatile referent binds
+// only a volatile-or-less-qualified lvalue. The mangler read neither the
+// volatile nor the per-level cv (every overload below was _Z1fPi, the
+// second one renamed f__o2), and the ranker peeled the pointee's qualifiers
+// (f(int*) served every call). The calls through the g++ symbol names
+// (declared extern "C") bind only when madc mints exactly those symbols.
+// Oracle: g++ and clang++ print testvolatilemanglecxx.expect.
+#include <stdio.h>
+
+struct T { int x; };
+int f (int *p) { return *p; }
+int f (volatile int *p) { return *p + 1; }
+int g (const volatile int *p) { return *p + 2; }
+int h (volatile int *volatile *pp) { return **pp + 3; }
+int k (volatile int &r) { return r + 4; }
+int m (int *volatile p) { return *p + 5; }
+int n (const volatile char *a, const volatile char *b) { return *a + *b; }
+int q (volatile T *a, volatile T *b) { return a->x + b->x; }
+
+int rk (volatile int &) { return 8; }
+int rk (int &) { return 7; }
+int rv (volatile int *) { return 3; }
+int rv (void *) { return 4; }
+int rw (const volatile void *) { return 5; }
+int rw (void *) { return 6; }
+int rd (volatile int **) { return 10; }
+int rd (...) { return 11; }
+
+extern "C" int _Z1fPVi (volatile int *);
+extern "C" int _Z1gPVKi (const volatile int *);
+extern "C" int _Z1hPVPVi (volatile int *volatile *);
+extern "C" int _Z1kRVi (volatile int *);
+extern "C" int _Z1mPi (int *);
+extern "C" int _Z1nPVKcS0_ (const volatile char *, const volatile char *);
+extern "C" int _Z1qPV1TS1_ (volatile T *, volatile T *);
+
+int main ()
+{
+  int x = 1;
+  volatile int vx = 10;
+  volatile int *pvx = &vx;
+  int *px = &x;
+  char c = 'a';
+  T t = { 20 };
+  printf ("sym: %d %d %d %d %d %d %d\n", _Z1fPVi (pvx), _Z1gPVKi (pvx),
+          _Z1hPVPVi (&pvx), _Z1kRVi (pvx), _Z1mPi (px), _Z1nPVKcS0_ (&c, &c),
+          _Z1qPV1TS1_ (&t, &t));
+  printf ("ptr: %d %d %d %d\n", f (px), f (pvx), rv (px), rv (pvx));
+  printf ("void: %d %d\n", rw (px), rw (pvx));
+  printf ("ref: %d %d\n", rk (x), rk (*pvx));
+  printf ("deep: %d %d\n", rd (&px), rd (&pvx));
+  return 0;
+}

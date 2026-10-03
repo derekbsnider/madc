@@ -1,0 +1,3 @@
+#ifndef TESTCONDOPENHEADERC_HELPER_H
+#define TESTCONDOPENHEADERC_HELPER_H
+int helper_value = 0;

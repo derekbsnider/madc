@@ -7,13 +7,13 @@
  * it may be a further cast. mir-hash.h:39 is built on this shape, and it was
  * the one construct that stopped madc preprocessing its own backend.
  *
- * Program::parse_deref_paren_operand is the ONE owner of "what is inside
- * *( ... )" — it tells a CAST HEAD or a statement expression from a plain
- * parenthesized expression. The cast arm (parse_cast_unary_deref_operand)
- * hand-rolled the plain-expression case only, so the cast head reached the
- * expression parser as a bare TYPE token and died on "Expecting identifier".
- * The same deref WITHOUT the outer cast always worked, because that path
- * reaches the owner.
+ * The cast arm once hand-rolled its deref operand (parse_cast_unary_deref_
+ * operand, the plain-expression case only), so the cast head reached the
+ * expression parser as a bare TYPE token and died on "Expecting identifier"
+ * while the same deref WITHOUT the outer cast worked. Both now read the
+ * operand through Program::parseCastExpression — the expression engine,
+ * bounded at the cast-expression — whose `(` arm tells a cast head from a
+ * statement expression or a parenthesized group, at every star depth.
  *
  * The NEGATIVE CONTROL is in this file on purpose: `(uint64_t)a * (uint64_t)b`
  * is MULTIPLICATION. A fix that made `*` unary after every cast breaks it.

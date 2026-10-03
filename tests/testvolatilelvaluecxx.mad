@@ -1,0 +1,39 @@
+// C++: a volatile object's glvalue is volatile — its declared TYPE carries
+// the qualifier, as a member's and a typedef's do. `&vx` is `volatile int *`
+// (overload f(volatile int*) over f(int*), T* deduces T = volatile int), a
+// member of a volatile object or of `*pvs` is volatile ([expr.ref]/4) at
+// every depth, a volatile lvalue binds `volatile int &` and never `int &`
+// ([dcl.init.ref]/5), `T &` deduces T = volatile int while by-value `T`
+// drops it ([temp.deduct.call]/2). The variable's volatile rode a flag no
+// type carried: every line below took the int path.
+// Oracle: g++ and clang++ print testvolatilelvaluecxx.expect.
+#include <stdio.h>
+
+struct S { int m; int a[2]; struct { int in; } sub; };
+typedef volatile struct S vS;
+template <class T> struct is_v { enum { value = 0 }; };
+template <class T> struct is_v<volatile T> { enum { value = 1 }; };
+template <class T> int pv (T *) { return is_v<T>::value; }
+template <class T> int pr (T &) { return is_v<T>::value; }
+template <class T> int pval (T) { return is_v<T>::value; }
+int f (int *) { return 1; }
+int f (volatile int *) { return 2; }
+int k (volatile int &) { return 8; }
+int k (int &) { return 7; }
+
+int main ()
+{
+  volatile int vx = 1;
+  int x = 2;
+  volatile struct S vs = { 3, { 4, 5 }, { 6 } };
+  vS ts = { 7, { 8, 9 }, { 10 } };
+  struct S s = { 11, { 12, 13 }, { 14 } };
+  volatile struct S *pvs = &s;
+  volatile int va[2] = { 1, 2 };
+  printf ("addr: %d %d %d %d\n", f (&vx), f (&x), f (&va[1]), pv (&vx));
+  printf ("mem: %d %d %d %d %d\n", f (&vs.m), f (&ts.m), f (&pvs->m), f (&s.m), f (&vs.a[1]));
+  printf ("nest: %d %d\n", f (&vs.sub.in), f (&pvs->sub.in));
+  printf ("ref: %d %d %d %d\n", k (vx), k (x), k (vs.m), k (s.m));
+  printf ("ded: %d %d %d %d\n", pr (vx), pr (x), pr (vs.m), pval (vx));
+  return 0;
+}

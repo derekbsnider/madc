@@ -1,0 +1,15 @@
+// A stray `;` after an if's substatement ENDS the if: `if (x) a;; else b;`
+// has an `else` with no if (C11 6.8.4, [stmt.select]). TokenIF skipped every
+// `;` before looking for the else, so the else bound to the if; and a
+// statement that began with `else` parsed as nothing, so `; else b;` ran `b`
+// unconditionally — both exit 0.
+// Oracle: gcc refuses it ("'else' without a previous 'if'"), clang too
+// ("expected expression" at the `else`).
+#include <stdio.h>
+int main()
+{
+	int x = 0;
+	if (x) x = 1;; else x = 2;
+	printf("%d\n", x);
+	return 0;
+}

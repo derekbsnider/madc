@@ -1,0 +1,23 @@
+bundles-cfg-override: /o
+bundles-cfg-xdg: /x/madcide
+bundles-cfg-appdata: /a/madcide
+bundles-cfg-home: /h/.config/madcide
+bundles-cfg-none: []
+bundles-default-pin: found=1 read=1 same=1
+bundles-refuse-field: CFG/plugins/bad/bad.plugin: unknown field 'colour'
+bundles-refuse-kind: CFG/plugins/bad/bad.plugin: unknown contribution 'commands'
+bundles-refuse-name: CFG/plugins/bad/bad.plugin: its "name" must be 'bad', its directory's
+bundles-refuse-api: CFG/plugins/bad/bad.plugin: targets plugin API 3; this madcide serves 2
+bundles-refuse-path: CFG/plugins/bad/bad.plugin: "keys" must name a .keys file
+bundles-refuse-contributes: CFG/plugins/bad/bad.plugin: "contributes" must be an object
+bundles-refuse-json: CFG/plugins/bad/bad.plugin is not valid JSON
+bundles-none: bundle=default keys=joe window=main scheme=default shipped-dir=1
+bundles-settings: bundle=mine keys=pico window=mine scheme=default replstd=c11 user-dir=1
+bundles-cli: bundle=default keys=joe window=main
+bundles-progname: link=chthonia exe=chthonia cli=default unknown=mine
+bundles-user-setting: replstd=c17
+bundles-override: bundle=default keys=emacs user-dir=1
+bundles-nokeys: bundle=nokeys keys=joe msg=No keys 'nosuch'. The default keys 'joe' are in use.
+bundles-refused: bundle=default keys=joe msg=Profile 'bad' refused: CFG/plugins/bad/bad.plugin: unknown field 'colour' — the default profile is in use.
+bundles-unknown: bundle=default msg=No profile 'nosuch' — the default profile is in use.
+bundles-path: bundle=default msg='../mine' is not a profile name — the default profile is in use.

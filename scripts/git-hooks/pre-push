@@ -6,8 +6,17 @@
 # to be FRESH (green on code-equivalent content — scripts/lane_ledger.sh
 # check --promote). Pushing master requires the release tier as well
 # (check --release; owner law 2026-09-04: every platform lane's FULL suite
-# is green before a master release). Feature branches push freely: the
-# gate protects the shared integration branches, not WIP.
+# is green before a master release).
+#
+# EVERY branch, including a feature branch, requires the COMMIT tier
+# (check --commit: scripts/fast_lanes.sh — six lanes, under three minutes
+# in total). "Feature branches push freely" used to mean freely of ALL
+# lanes, and on 2026-09-22 a branch carrying five fixes across mir-gen,
+# c2mir and cir_builder was pushed five times without one conformance lane
+# ever running; the three-minute tier then found a regression that sixteen
+# targeted tests, two hand reducers against two oracles and a 426-program
+# differential had all missed. A docs-only push stays free, because
+# staleness is measured over CODE_PATHS.
 #
 # Fail-closed: a gate that cannot run blocks the push. The loud escape
 # hatch for a genuine emergency is MADC_PUSH_NOGATE=1 — it prints what
@@ -20,27 +29,37 @@ set -u
 cd "$(git rev-parse --show-toplevel)"
 
 mode=""
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
+pushing=""
+while read -r _local_ref local_sha remote_ref _remote_sha; do
+	# A DELETE sends an all-zero local sha. There is no content to test and
+	# no lane can speak for it, so deleting a branch must never be gated —
+	# a stale lane would otherwise make dead branches undeletable.
+	case "$local_sha" in *[!0]*) ;; *) continue;; esac
 	case "$remote_ref" in
-		refs/heads/develop) [ -z "$mode" ] && mode=--promote;;
+		refs/heads/develop) [ "$mode" != "--release" ] && mode=--promote;;
 		refs/heads/master) mode=--release;;
+		refs/heads/*) [ -z "$mode" ] && mode=--commit;;
 	esac
+	pushing="yes"
 done
 
+# No branch refs at all (a tag push, a delete): nothing to gate.
+[ -z "$pushing" ] && exit 0
 [ -z "$mode" ] && exit 0
 
 if [ "${MADC_PUSH_NOGATE:-}" = "1" ]; then
-	echo "pre-push: MADC_PUSH_NOGATE=1 — lane gate SKIPPED for a" \
-	     "develop/master push (emergency bypass; re-run the lanes)" >&2
+	echo "pre-push: MADC_PUSH_NOGATE=1 — lane gate SKIPPED (${mode#--}" \
+	     "tier; emergency bypass — re-run the lanes)" >&2
 	exit 0
 fi
 
-echo "pre-push: develop/master push — checking lane freshness" \
+echo "pre-push: checking lane freshness" \
      "(docs/lane-status.tsv, ${mode#--} tier)" >&2
 if ! timeout 60 bash scripts/lane_ledger.sh check "$mode" >&2; then
-	echo "pre-push: BLOCKED — stale lane(s) above; run them on current" \
-	     "content and record with scripts/lane_ledger.sh, or (emergency" \
-	     "only) MADC_PUSH_NOGATE=1 git push" >&2
+	echo "pre-push: BLOCKED — stale lane(s) above. The commit tier is" \
+	     "\`bash scripts/fast_lanes.sh\` (under three minutes, records" \
+	     "itself); the wider tiers are in .claude/rules/testing-fulltest.md." \
+	     "Emergency only: MADC_PUSH_NOGATE=1 git push" >&2
 	exit 1
 fi
 exit 0

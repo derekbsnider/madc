@@ -8,6 +8,7 @@
 #   madc-<ver>-windows-x86_64/bin/madc.exe            stripped, forest-packed
 #   madc-<ver>-windows-x86_64/bin/madcide.exe         the IDE, AOT-compiled by that PE under wine
 #   madc-<ver>-windows-x86_64/bin/profiles/           madcide keybinding/theme profiles (data beside the exe)
+#   madc-<ver>-windows-x86_64/bin/verbs/, checks/     the line editor's verb and check bodies
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
 #   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine (win twin of libmadc.so.0; AOT output + madcide bind it)
@@ -74,6 +75,10 @@ export WINEDEBUG=-all
 wineserver -p || true
 rm -f tmp/madcide-pkg.exe
 ( ulimit -t 600; timeout 600 wine "$BIN" -o tmp/madcide-pkg.exe tools/madcide/madcide.mad )
+# The shipped plugins: a plugin with code carries its library (a .dll),
+# built by this madcide.exe under wine (plan §41.11a step 6).
+echo "== madcide plugins (each with code built by the packaged madcide.exe) =="
+scripts/build_shipped_plugins.sh tmp/plugins-pkg-win wine tmp/madcide-pkg.exe
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE/$ROOT/bin" "$STAGE/$ROOT/lib" "$STAGE/$ROOT/THIRD_PARTY_NOTICES"
@@ -83,6 +88,19 @@ install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
 # madcide's profile search ends at <exedir>/profiles (resolve_profile_dir).
 mkdir -p "$STAGE/$ROOT/bin/profiles"
 install -m 644 tools/madcide/profiles/* "$STAGE/$ROOT/bin/profiles/"
+# The shipped plugins (bundles; a plugin's code as source plus its .dll),
+# beside the exe the same way.
+mkdir -p "$STAGE/$ROOT/bin/plugins"
+cp -R tmp/plugins-pkg-win/. "$STAGE/$ROOT/bin/plugins/"
+# The plugin API headers (<madcide/plugin>), beside the exe the same way:
+# --build-plugin's include directory (resolve_data_dir's last arm).
+mkdir -p "$STAGE/$ROOT/bin/include/madcide"
+install -m 644 tools/madcide/include/madcide/* "$STAGE/$ROOT/bin/include/madcide/"
+# The line editor's verb and check bodies, beside the exe the same way
+# (resolve_data_dir's last arm): without them madcide cannot save or quit.
+mkdir -p "$STAGE/$ROOT/bin/verbs" "$STAGE/$ROOT/bin/checks"
+install -m 644 tools/texteditor/verbs/*.madv "$STAGE/$ROOT/bin/verbs/"
+install -m 644 tools/texteditor/checks/*.madv "$STAGE/$ROOT/bin/checks/"
 # Example config at the root under a NON-live name: ./madc.ini is a
 # real search arm, so an extracted example must never shadow a config.
 install -m 644 docs/examples/madc.ini "$STAGE/$ROOT/madc.ini.example"
@@ -185,13 +203,13 @@ file; to use one, copy it to madc.ini next to where you run madc, or
 into %XDG_CONFIG_HOME%\\madc\\madc.ini.
 EOF
 
-# Launch smoke on the STAGED exe: no-args madcide prints its usage line
-# and exits 1 — proving the shipped bytes load, bind libmadc-0.dll by
+# Launch smoke on the STAGED exe: `madcide --help` prints its usage line
+# and exits 0 — proving the shipped bytes load, bind libmadc-0.dll by
 # adjacency from the staged bin/, and run main. (The interactive TUI
 # needs a real console: a wine pty probe would prove wine's console
 # layer, not Windows — the TUI proof stays with the genuine-win lane on
 # owner hardware. The PK4 install gate below re-proves the ZIPPED bytes.)
-smoke_out=$(cd "$STAGE/$ROOT/bin" && timeout 60 wine madcide.exe 2>/dev/null; true)
+smoke_out=$(cd "$STAGE/$ROOT/bin" && timeout 60 wine madcide.exe --help 2>/dev/null; true)
 case "$smoke_out" in
     *"usage: madcide"*) echo "madcide.exe staged smoke: OK" ;;
     *) echo "package_release_windows: staged madcide.exe smoke failed (got: $smoke_out)" >&2

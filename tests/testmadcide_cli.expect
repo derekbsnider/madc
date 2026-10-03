@@ -5,7 +5,7 @@ long twice(long x) { return add(x, x); }
 long bad() { return nosuch; }
 
 Problems
-  1. 3:26 error use of undeclared identifier 'nosuch'
+  1. 3:21 error use of undeclared identifier 'nosuch'
 Check: 1 problem(s).
 --- end rc=1 ---
 cli-pin: identical=1 ran=1 cont=1 errors=1
@@ -37,4 +37,24 @@ cli-unknown: rc=2 out-empty=1
 cli-noarg: rc=2 said=1
 cli-noterm: rc=0 said=1
 cli-quit: rc=0
-cli-noread: rc=1 out-empty=1
+cli-new: opened=1 said=1 unwritten=1
+cli-new-nodir: opened=1 said=1
+cli-new-once: rc=0 unwritten=1
+cli-dir: rc=1 out-empty=1
+cli-editdir: rc=0 said=1
+cli-editnew: rc=0 said=1 unwritten=1
+cli-args-profile-first: file=f.c profile=chthonia ro=0 lsp=0 attach=0 addr=- help=0
+cli-args-profile-after: file=f.c profile=chthonia ro=1 lsp=0 attach=0 addr=- help=0
+cli-args-attach-discover: file=f.c profile=- ro=0 lsp=1 attach=1 addr=- help=0
+cli-args-attach-addr: file=f.c profile=- ro=0 lsp=1 attach=1 addr=127.0.0.1:9 help=0
+cli-args-attach-file: file=f.c profile=- ro=0 lsp=1 attach=1 addr=- help=0
+cli-args-dashdash: file=-dash.c profile=- ro=1 lsp=0 attach=0 addr=- help=0
+cli-args-help: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=1
+cli-args-unknown: refused: unknown option '--bogus'
+cli-args-novalue: refused: --profile needs a profile NAME
+cli-args-twofiles: refused: unexpected argument 'b.c' (the file is 'a.c')
+cli-args-nofile: file=- profile=- ro=0 lsp=0 attach=0 addr=- help=0
+cli-needs-file: tui=- gui=- line=- once=-c mcp=--mcp lsp=--lsp serve=--serve
+cli-usage: names-profile=1 file-optional=1
+cli-args-build-plugin: ok=1 dir=plugins/hello file=-
+cli-args-build-plugin-novalue: refused: --build-plugin needs a plugin DIR

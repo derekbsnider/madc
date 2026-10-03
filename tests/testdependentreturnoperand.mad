@@ -1,0 +1,32 @@
+// A call to a function template whose return type is a dependent member type
+// (`typename RR<T>::type`, std::move's `remove_reference<_Tp>::type &&`) is a
+// complete operand: the binary operator after it binds to it
+// ([expr.post]/1, [expr.add]/1), at the FIRST call as at every later one.
+// madc read the operator as unary at the first call, exit 1: `+`/`-` as
+// "Malformed expression: 2 operands with no operator between them", `*` as
+// "cannot dereference non-pointer type", `&` as "expecting addressable
+// expression after '&'" (B46). The SFINAE check of the dependent return
+// type, which runs only at the first instantiation, left its `;` sentinel as
+// the parser's previous token.
+// Oracle: g++ 13.3 and clang++ 18.1 (-std=c++17 -Wall, warning-free) print the
+// .expect lines.
+#include <cstdio>
+#include <utility>
+template<class T> struct RR { typedef T type; };
+template<class T> typename RR<T>::type val3(T t) { return t; }
+template<class T> typename RR<T>::type &&mv3(T &t) { return static_cast<typename RR<T>::type &&>(t); }
+template<class T> typename RR<T>::type twice(T t) { return t * 2; }
+template<class T> typename RR<T>::type mask(T t) { return t; }
+int main()
+{
+	int x = 3;
+	int a = std::move(x) + 0;
+	int b = val3(x) - 1;
+	int c = mv3(x) * 2;
+	int d = twice(x) + 1;
+	int e = mask(x) & 1;
+	int f = std::move(x) - 4;
+	printf("move: %d %d\n", a, f);
+	printf("dependent: %d %d %d %d\n", b, c, d, e);
+	return 0;
+}

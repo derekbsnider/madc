@@ -1,0 +1,44 @@
+struct Box<int>(1) {
+  ["v"]=>
+  int[4](4) {
+    [0]=>
+    int(0)
+    [1]=>
+    int(0)
+    [2]=>
+    int(0)
+    [3]=>
+    int(0)
+  }
+}
+Two<int,long> Object
+(
+    [a] => 0
+    [b] => 0
+)
+
+struct Box<int,8>(1) {
+  ["v"]=>
+  int[8](8) {
+    [0]=>
+    int(0)
+    [1]=>
+    int(0)
+    [2]=>
+    int(0)
+    [3]=>
+    int(0)
+    [4]=>
+    int(0)
+    [5]=>
+    int(0)
+    [6]=>
+    int(0)
+    [7]=>
+    int(0)
+  }
+}
+struct Plain(1) {
+  ["x"]=>
+  int(0)
+}

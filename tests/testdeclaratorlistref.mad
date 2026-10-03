@@ -1,0 +1,38 @@
+// A declarator after a ',' may begin with a reference ptr-operator ([dcl.decl]:
+// `int &r1 = a, &r2 = b;`). The comma continuation hands the next declarator
+// to the declarator owner; before B133 its test for "can this token begin a
+// declarator" knew `*`, `(` and a name but not `&` / `&&`, so a file-scope
+// or block-scope list was "Expecting identifier after ',' in declaration".
+// The ctor-syntax list (`B o2(o), &q3 = o`) shares that test; the for-init
+// and member lists are its neighbours.
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect line.
+#include <stdio.h>
+
+struct B { int v; };
+int g = 1;
+int &gr1 = g, &gr2 = g;
+struct S { int &x, &y; S(int &a) : x(a), y(a) {} };
+
+int main()
+{
+	int a = 1, b = 2;
+	int &r1 = a, &r2 = b;
+	int *p = &a, &r3 = b, **pp = &p;
+	int &&rv = 5, &r4 = a;
+	B o = {4};
+	B &q1 = o, &q2 = o;
+	B o2(o), &q3 = o;
+	const int &c1 = a;
+	const int &c2 = 7;
+	r2 = 3;
+	q2.v = 5;
+	gr2 = 6;
+	S s(a);
+	int n = 0;
+	for ( int i = 0, &ri = i; ri < 3; ++ri )
+		n += i;
+	printf("%d %d %d %d %d %d %d %d %d %d %d %d\n", r1, b, r3, **pp, rv, r4,
+	       q1.v, q3.v, o2.v, c1 + c2, gr1, s.x + s.y + n);
+	return 0;
+}

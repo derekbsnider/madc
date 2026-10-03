@@ -1,0 +1,50 @@
+// [temp.over]/1: every function template whose deduction succeeds adds its
+// specialization to the candidate set, and overload resolution picks the best
+// of them ([over.match.best]): a tag parameter of a nearer base wins
+// ([over.ics.rank]/4.4). madc instantiated the first template that deduced,
+// so libstdc++'s tag dispatch (__advance, __distance, _M_construct) took the
+// input-iterator overload: the first two lines printed 1, exit 0. An unnamed
+// parameter of a qualified type (`std::input_iterator_tag`) also read as `std::`.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <iterator>
+#include <list>
+#include <string>
+#include <vector>
+
+struct A {};
+struct B : A {};
+struct C : B {};
+
+template<class It> int ri(It, It, std::input_iterator_tag) { return 1; }
+template<class It> int ri(It, It, std::forward_iterator_tag) { return 2; }
+template<class T> int ut(T, const A &) { return 1; }
+template<class T> int ut(T, const B &) { return 2; }
+
+struct V {
+    template<class It> int ri2(It, It, std::input_iterator_tag) { return 1; }
+    template<class It> int ri2(It, It, std::forward_iterator_tag) { return 2; }
+    template<class It> int go(It a, It b)
+    { return ri2(a, b, typename std::iterator_traits<It>::iterator_category()); }
+};
+
+int main()
+{
+    int a[3] = { 1, 2, 3 };
+    C c;
+    V v;
+    printf("free: %d %d\n", ri(a, a + 3, std::random_access_iterator_tag()),
+           ut(1, c));
+    printf("member: %d\n", v.go(a, a + 3));
+    std::list<char> lc = { 'a', 'b', 'c' };
+    std::string s(lc.begin(), lc.end());
+    std::list<int> li = { 1, 2, 3, 4 };
+    std::vector<int> w(li.begin(), li.end());
+    std::vector<int>::iterator vt = w.begin();
+    std::advance(vt, 3);
+    std::list<int>::iterator lt = li.begin();
+    std::advance(lt, 2);
+    printf("library: %s %zu %d %d %ld\n", s.c_str(), w.size(), *vt, *lt,
+           (long)std::distance(w.begin(), w.end()));
+    return 0;
+}

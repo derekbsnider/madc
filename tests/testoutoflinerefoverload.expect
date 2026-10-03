@@ -1,0 +1,4 @@
+const& copy | W lvalue x.v=1
+&& move | W rvalue
+const& copy | R lvalue x.v=1
+&& move | R xvalue x.v=0

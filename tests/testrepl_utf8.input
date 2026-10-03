@@ -1,0 +1,4 @@
+s
+strlen(s)
+strcmp(s, "\303\251t\303\251") == 0
+const char *t = "\xff"

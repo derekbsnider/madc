@@ -1,0 +1,9 @@
+# Labels whose line legitimately DIFFERS from tests/testmadcide_plugin_library.darwin_expect
+# versus tests/testmadcide_plugin_library.expect: each names a plugin library, whose suffix is the
+# target's (madc::library_suffix: .dylib on macOS). Every other labelled line must
+# be identical in both (scripts/check-expect-twins.sh).
+madcide
+stale-msg
+activate-future
+activate-noentry
+activate-declines

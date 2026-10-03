@@ -1,0 +1,46 @@
+// Out-of-line definitions of a class template's `const_reference` /
+// `value_type&&` overload pair (std::vector::push_back's shape): each
+// definition attaches to the declaration whose parameter it spells — the
+// typedef'd reference decomposes to `const T&`, and `&` vs `&&` is part of
+// the match — in either definition order. An lvalue argument copies and
+// leaves the source intact; an rvalue moves.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+#include <utility>
+struct S {
+	int v;
+	S() : v(1) {}
+	S(const S &o) : v(o.v) { printf("copy "); }
+	S(S &&o) : v(o.v) { o.v = 0; printf("move "); }
+};
+template <class T> struct W {
+	typedef T value_type;
+	typedef const value_type &const_reference;
+	void push(const_reference x);
+	void push(value_type &&x);
+};
+template <class T> void W<T>::push(const_reference x) { printf("const& "); T t(x); }
+template <class T> void W<T>::push(value_type &&x) { printf("&& "); T t(std::move(x)); }
+template <class T> struct R {
+	typedef T value_type;
+	typedef const value_type &const_reference;
+	void push(const_reference x);
+	void push(value_type &&x);
+};
+template <class T> void R<T>::push(value_type &&x) { printf("&& "); T t(std::move(x)); }
+template <class T> void R<T>::push(const_reference x) { printf("const& "); T t(x); }
+int main()
+{
+	S x;
+	W<S> w;
+	w.push(x);
+	printf("| W lvalue x.v=%d\n", x.v);
+	w.push(S());
+	printf("| W rvalue\n");
+	R<S> r;
+	r.push(x);
+	printf("| R lvalue x.v=%d\n", x.v);
+	r.push(std::move(x));
+	printf("| R xvalue x.v=%d\n", x.v);
+	return 0;
+}

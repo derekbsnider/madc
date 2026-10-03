@@ -1,0 +1,6 @@
+# Labels whose line legitimately DIFFERS from tests/testmadcide_untitled.win64_expect
+# versus tests/testmadcide_untitled.expect — the win64 domain's own answers (F5 runs
+# through the REPL session backend, which forks the running madc; Windows has no
+# fork yet, plan 41.9a, so no run path is recorded). Every other labelled line
+# must be identical in both (scripts/check-expect-twins.sh).
+untitled-f5

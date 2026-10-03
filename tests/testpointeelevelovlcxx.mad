@@ -1,0 +1,33 @@
+// C++: a pointer's pointee is part of its type at EVERY level — [conv.ptr]
+// has no T** -> T* conversion, and none between pointer-to-pointer types
+// other than [conv.qual]'s cv. The overload scorer's representation test
+// compared the pointees' rawtype(), and a pointer's rawtype is ITS pointee's,
+// so an int** argument ranked EXACT against an int* parameter: f(int*) vs
+// f(int**) was called ambiguous, and a function template called at T = int
+// and then at T = int* (or int *volatile) served the second call with the
+// first instance — sizeof (T) read 4 where it is 8 (silent wrong answer).
+// Oracle: g++ and clang++ print testpointeelevelovlcxx.expect.
+#include <stdio.h>
+
+struct B { int b; };
+struct D : B { int d; };
+template <class T> int sz (T *) { return (int) sizeof (T); }
+int f (int *) { return 1; }
+int f (int **) { return 2; }
+int g (B **) { return 3; }
+int g (void *) { return 4; }
+int main ()
+{
+	int v = 0;
+	int *q = 0;
+	char c = 0;
+	char *r = 0;
+	volatile int w = 0;
+	int *volatile x = 0;
+	D *dp = 0;
+	printf ("sz: %d %d %d %d\n", sz (&v), sz (&q), sz (&c), sz (&r));
+	printf ("szv: %d %d\n", sz (&w), sz (&x));
+	printf ("f: %d %d\n", f (&v), f (&q));
+	printf ("g: %d\n", g (&dp));
+	return 0;
+}

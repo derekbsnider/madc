@@ -68,8 +68,9 @@ enum DefKind : uint32_t {
 	DK_PRIM,	// (reserved — primitives are referenced by pinned id, not recorded)
 	DK_VOID,	// (reserved)
 	DK_PTR,		// ref0 = pointee type-id
-	DK_REF,		// ref0 = referee type-id
-	DK_CONST,	// ref0 = unqualified type-id
+	DK_REF,		// ref0 = referee type-id; flags bit 0 = rvalue reference (`T&&`)
+	DK_CONST,	// DataDefQUAL: ref0 = unqualified type-id, flags = its cv mask
+			// (CvQual; 0 = const — the records written before the mask)
 	DK_ENUM,
 	DK_STRUCT,	// members_* slice
 	DK_UNION,	// members_* slice, union layout
@@ -119,8 +120,9 @@ enum DefKind : uint32_t {
 			// packed header binds exactly as the live parse left it.
 };
 
-// Kind-independent flag bits on a defrec (grows as the schema completes — a new bool is a
-// new bit, dumped for free).
+// Flag bits on a defrec (grows as the schema completes — a new bool is a new bit, dumped
+// for free). All 32 bits are taken: a bit may carry one meaning per record KIND, each
+// such flag marked `<kind>-scoped` and read only under that kind's test.
 enum DefFlags : uint32_t {
 	DF_UNION_LAYOUT      = 1u << 0,
 	DF_IS_COMPLETE       = 1u << 1,
@@ -142,9 +144,24 @@ enum DefFlags : uint32_t {
 						// DF_TYPEDEF_TAG_ALIAS kind-scoping precedent — all
 						// 32 bits are taken)
 	DF_IS_VARARGS        = 1u << 10,
+	DF_ENUM_FIXED_BASE   = 1u << 10,	// v48, DK_ENUM-scoped: DataDefENUM::fixed_base
+						// (the base was DECLARED, `enum E : T`). A
+						// recorded COMPUTED base (ref0) is not declared:
+						// the restore used to re-adopt every base as
+						// declared, so a restored unfixed enum promoted
+						// to its underlying type where a live parse
+						// promotes by value range ([conv.prom]/3)
 	DF_IS_VOID_PARAMS    = 1u << 11,
+	DF_ENUM_C_COMPATIBLE = 1u << 11,	// v49, DK_ENUM-scoped: DataDefENUM::c_compatible
+						// (defined in C: compatible with its underlying
+						// type, so it promotes as that type, C11
+						// 6.7.2.2p4). Shares its bit with the
+						// function-only DF_IS_VOID_PARAMS
 	DF_DECLARATION_ONLY  = 1u << 12,
 	DF_IS_CONST_METHOD   = 1u << 13,	// FuncDef::is_const_method
+	DF_IS_VOLATILE_METHOD = 1u << 27,	// FuncDef::is_volatile_method (`f() volatile`);
+						// function records only — the bit is
+						// DF_OPAQUE_TAG on an aggregate's
 	DF_HAS_FOREST_BODY   = 1u << 14,	// INLINE method: body_unit/body_idx locate its Tree-1 def
 	DF_IS_MEMBER_TEMPLATE = 1u << 15,	// FuncDef::is_member_template / template_param_names
 						// non-empty — a template method instantiates no
@@ -162,7 +179,14 @@ enum DefFlags : uint32_t {
 						// otherwise it cleanly lacks (a producer root must
 						// never restore into a consumer).
 	DF_TRET_FROM_POINTER = 1u << 18,	// v21: FuncDef::template_return_deduce_from_pointer
-	DF_TRET_REF          = 1u << 19,	// v21: FuncDef::template_return_ref
+	DF_TRET_REF          = 1u << 19,	// v21: FuncDef::template_return_ref != None
+	DF_TRET_FWD          = 1u << 5,	// DK_FUNC-scoped: FuncDef::
+						// template_return_deduce_forwarding (the deduced
+						// parameter is a forwarding `T &&`); shares the
+						// bit with the aggregate-only DF_HAS_VTABLE.
+	DF_TRET_RREF         = 1u << 8,	// DK_FUNC-scoped: template_return_ref is
+						// Rvalue (`T &&`); shares the bit with the
+						// aggregate-only DF_HAS_USER_CTOR. Absent = `T &`.
 
 	DF_FPTR_PTR_SYNTAX   = 1u << 20,	// v22: DataDefFPTR::ptr_syntax (explicit `(*)` form
 						// vs a Form-1 function typedef)
@@ -214,6 +238,7 @@ enum DefFlags : uint32_t {
 						// admitted-set chase (startup R1); it stays
 						// reachable through reference pulls / its owner
 						// body's use.
+	DF_FUNC_DEFAULTED_OR_DELETED = 1u << 28, // DK_FUNC: preserve = default/delete
 	DF_BODY_IN_INSTANTIATION = 1u << 26,	// v27: the captured DEFBODY tokens were parsed
 						// inside a fn-template INSTANTIATION
 						// (fn_template_instantiation_depth > 0 — an
@@ -238,6 +263,7 @@ enum DefFlags : uint32_t {
 						// type; the restore must NOT flat-register it
 						// (LOADED == parsed) — the owner's type_aliases
 						// restore is its whole registration
+	DF_FUNC_IS_DELETED   = 1u << 31,	// DK_FUNC: selected deleted overload is invalid
 	DF_NSBIND_OVERLOAD_MEMBER = 1u << 0,	// DK_NSBIND-scoped: the imported fn is a MEMBER
 						// of ns::name's overload set ([namespace.udecl]
 						// join — the using-arm's second registration);
@@ -454,10 +480,15 @@ struct vgrouprec {
 	uint32_t addr_point;	// VtableGroup.addr_point
 };
 
+// paramrec.flags: the parameter's recorded facts.
+enum ParamFlags : uint32_t {
+	PF_CONST_PARAM = 1u << 0,	// FuncDef::const_params[i]
+};
+
 // A function parameter (FuncDef::parameters[i]).
 struct paramrec {
 	uint32_t type_id;	// the parameter type, as a type-id
-	uint32_t flags;		// bit0 = const_param (grows)
+	uint32_t flags;		// ParamFlags
 	uint32_t cpp_spelling_id;	// param_cpp_spellings[i] (0 = render from type)
 	// v23: the parameter's DEFAULT-ARGUMENT expression, as its RAW SOURCE
 	// TOKEN run (FuncDef::param_default_tokens[i], .madh record form) in the

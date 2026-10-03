@@ -245,10 +245,11 @@ static uint32_t arena_ensure(DefArena &a, DataDef *dd, std::set<DataDef *> &done
 		if ( fd->is_void_params )   r.flags |= DF_IS_VOID_PARAMS;
 		if ( fd->declaration_only ) r.flags |= DF_DECLARATION_ONLY;
 	}
-	else if ( DataDefCONST *k = dynamic_cast<DataDefCONST *>(dd) )
+	else if ( DataDefQUAL *k = dynamic_cast<DataDefQUAL *>(dd) )
 	{
 		r.kind = DK_CONST;
 		r.ref0 = arena_ensure(a, k->base_type, done);
+		r.flags = k->quals;
 	}
 	else if ( DataDefREF *rf = dynamic_cast<DataDefREF *>(dd) )		// REF is-a PTR: check first
 	{
@@ -726,7 +727,7 @@ TEST_CASE("B3 arena: getReferenceType / getConstType write-through (DK_REF / DK_
 	CHECK(rr.ref0 == prog->type_id_for(&widget));	// referee, by project id
 
 	// --- const (const Widget) ---
-	DataDefCONST *cst = prog->getConstType(&widget);
+	DataDefQUAL *cst = prog->getConstType(&widget);
 	REQUIRE(cst != NULL);
 	CHECK(cst->is_const());				// reads unchanged
 	CHECK(cst->base_type == &widget);
@@ -736,8 +737,30 @@ TEST_CASE("B3 arena: getReferenceType / getConstType write-through (DK_REF / DK_
 	REQUIRE(prog->forest_arena.get_def_at(ctid, cr));
 	CHECK(cr.kind == DK_CONST);
 	CHECK(cr.ref0 == prog->type_id_for(&widget));	// unqualified base, by project id
+	CHECK(cr.flags == cvCONST);			// the cv mask rides flags
 
 	CHECK(rtid != ctid);				// distinct derived types get distinct slots
+
+	// --- volatile / const volatile: ONE variant per (unqualified base, mask) ---
+	DataDef *vol = prog->getQualifiedType(&widget, cvVOLATILE);
+	REQUIRE(vol != NULL);
+	CHECK(vol->is_volatile());
+	CHECK(!vol->is_const());
+	CHECK(vol->unqualified() == &widget);
+	CHECK(vol->name == "volatile Widget");
+	CHECK(prog->getQualifiedType(vol, cvVOLATILE) == vol);	// idempotent
+	CHECK(prog->getQualifiedType(&widget, cvNONE) == &widget);
+	DataDef *cv1 = prog->getQualifiedType(cst, cvVOLATILE);
+	DataDef *cv2 = prog->getQualifiedType(vol, cvCONST);
+	CHECK(cv1 == cv2);				// merged, never a wrapper over a wrapper
+	CHECK(cv1->cv_quals() == (cvCONST | cvVOLATILE));
+	CHECK(cv1->unqualified() == &widget);
+	CHECK(cv1->name == "const volatile Widget");
+	CHECK(prog->getConstType(cv1) == cv1);
+	defrec vr;
+	REQUIRE(prog->forest_arena.get_def_at(prog->type_id_for(vol), vr));
+	CHECK(vr.kind == DK_CONST);
+	CHECK(vr.flags == cvVOLATILE);
 
 	delete prog;	// while widget is still in scope
 }

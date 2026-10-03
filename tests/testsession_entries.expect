@@ -1,0 +1,12 @@
+running: true standard: c11
+define: offer=true taken=true ok=true
+output: first
+42
+reply: seq matches=true submitted=3
+shown: 10
+unfinished: incomplete=true running notices=0
+refused: ok=false error row=true
+complete: kind=true start=0 first=twice
+stdin: 42
+running notices: 6
+bad standard: running=false error=Unknown --std target: c99x

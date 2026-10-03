@@ -1,0 +1,1 @@
+rejected under libc++ as no matching constructor instead of the deleted copy constructor the .expect_err names (libc++ deletes it implicitly); every archived release since v0.72.0 the same; BUGS.md B161

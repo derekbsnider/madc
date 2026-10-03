@@ -19,8 +19,8 @@
   no branch lockstep, no fork release.
 - It carries native C99 `_Complex`, `__attribute__((cleanup))`,
   ≤16-byte SIMD/vector (`vector_size`/`ext_vector_type`) support, the
-  Mach-O executable writer, and ABI/codegen fixes the CIR backend
-  depends on.
+  Mach-O executable writer, volatile memory accesses (`MIR_mem_t.volatile_p`),
+  and ABI/codegen fixes the CIR backend depends on.
 - libmir build products land under `obj/mir/<variant>` — NEVER inside
   `third_party/mir`. `make -C src` builds the host libmir + c2m itself;
   `make -C src mirclean` removes MIR build products (`clean` does not).

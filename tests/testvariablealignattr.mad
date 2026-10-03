@@ -1,0 +1,64 @@
+// An object's `aligned` attribute aligns it: at file scope and block scope,
+// static and automatic, in every specifier position (before and after the
+// storage class, after a qualifier, after the type), after its declarator
+// (that declarator only), and on every declarator of a list when it sits
+// among the specifiers. __alignof__ answers the object's alignment, and the
+// object is placed on that boundary. An `aligned` on a declaration that
+// declares no object reaches no later one. Oracle: gcc 13 and clang 18 print
+// the lines below.
+#include <stdio.h>
+#include <stdint.h>
+#define AL __attribute__((aligned(16)))
+#define AL32 __attribute__((aligned(32 / 2)))
+
+AL char g1;
+static AL char g2;
+AL static char g3;
+char AL g4;
+char g5 AL;
+const AL int g6 = 6;
+AL char ga, gb;
+char gc, gd AL;
+extern AL char ge;
+AL char ge;
+AL int garr[3];
+struct P { char c; };
+AL struct P gp;
+__attribute__((aligned(16))) struct Q { char c; };
+char after_q;
+
+static int mis(const void *p) { return (int)((uintptr_t)p % 16); }
+
+int main(void)
+{
+	char k0 = 1;
+	AL char l1 = 2;
+	char k1 = 3;
+	static AL char s1;
+	char l2 AL32 = 4;
+	short k2 = 5;
+	const AL int l3 = 6;
+	AL char la, lb;
+	char lc, ld AL;
+	AL int larr[4];
+	AL struct P lp;
+	int n = 0;
+	for (AL int i = 0; i < 2; ++i)
+		n += i + mis(&i);
+	larr[0] = k0 + k1 + k2 + l1 + l2 + l3 + g6;
+	la = lb = lc = ld = 0;
+	lp.c = 0;
+	printf("ga: %zu %zu %zu %zu %zu %zu %zu %zu\n", __alignof__(g1), __alignof__(g2), __alignof__(g3),
+	       __alignof__(g4), __alignof__(g5), __alignof__(g6), __alignof__(ga), __alignof__(gb));
+	printf("gb: %zu %zu %zu %zu %zu %zu %zu\n", __alignof__(gc), __alignof__(gd), __alignof__(ge),
+	       __alignof__(garr), __alignof__(gp), sizeof(struct Q), __alignof__(after_q));
+	printf("la: %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu\n", __alignof__(l1), __alignof__(s1), __alignof__(l2),
+	       __alignof__(l3), __alignof__(la), __alignof__(lb), __alignof__(lc), __alignof__(ld),
+	       __alignof__(larr), __alignof__(lp));
+	printf("gm: %d %d %d %d %d %d %d %d %d %d %d\n", mis(&g1), mis(&g2), mis(&g3), mis(&g4), mis(&g5),
+	       mis(&g6), mis(&ga), mis(&gb), mis(&gd), mis(garr), mis(&gp));
+	printf("lm: %d %d %d %d %d %d %d %d %d %d\n", mis(&l1), mis(&s1), mis(&l2), mis(&l3), mis(&la),
+	       mis(&lb), mis(&ld), mis(larr), mis(&lp), n);
+	printf("sum: %d\n", larr[0]);
+	return 0;
+}

@@ -10,6 +10,7 @@
 
 int other_side_report(const Counter &c);
 
+static int fnref_twice(int x) { return x * 2; }
 int report(const Counter &c)
 {
     return c.get() * 10;
@@ -52,5 +53,7 @@ int main()
     int arr[4] = { 1, 2, 3, 4 };
     printf("add4: %d\n", u.add4(arr));
     printf("cell: %d\n", cell_check(21));
+    int (*tp)(int) = fnref_twice;
+    printf("fnref: %d %d\n", via_fnptr_ref(tp, 5), via_fn_ref(fnref_twice, 6));
     return 0;
 }

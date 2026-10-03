@@ -1,0 +1,75 @@
+// The toolbar in the window (plan §41.11a, step 2): chthonia.menu places
+// Open, Save and Run on the toolbar (the placement word `toolbar`); the
+// composed root carries them as its `toolbar` hint, web_model passes them
+// with their codes, and the page draws a button per row in the workbench's
+// top row. A click on Save posts the row's action by name, which arrives as
+// the session's action event carrying its command's code (the headless
+// pins: tests/testmadcide_chthonia.mad, test_web_model). Runs under Xvfb
+// through the gui lane.
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+
+int main()
+{
+    const char *path = "madc_ide_toolbar_gui.mad";
+    php::file_put_contents(path, "int main() { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    bundle_select(w, es, "chthonia");	// the shipped bundle: its menu
+    plugins_activate(w, es);		// its code first: the menu names its Variables
+    ui::set(w, es, "profile", "pico");
+    load_status(w, es, "joe");
+    load_theme(w, es, "default");
+    load_menu(w, es, "chthonia");
+    IdeSession S;
+    S.attach(w, es);
+    push_buffer_row(w, es, doc, path);
+    ui::set(w, es, "bufidx", 0);
+    S.panel(true);			// what run_ide pushes for a window
+
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    println("TOOLBAR open");
+    var ev;
+    int stage = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	if ( ev["event"] == "resize" )
+	{
+	    if ( stage != 0 )
+		continue;
+	    stage = 1;
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    var tree;
+	    S.compose_ide_tree(tree, doc);
+	    ui::render(t, w, tree);
+	    // The buttons as the page drew them, then a click on Save.
+	    ui::eval_page(t,
+		"(function(){var bs=document.querySelectorAll('.slot[data-slot=toolbar] .tb-btn');"
+		"var l=[];for(var i=0;i<bs.length;i++)l.push(bs[i].textContent);"
+		"window.madc(JSON.stringify({kind:'snapshot',text:'buttons='+l.join(',')}));"
+		"for(var k=0;k<bs.length;k++)if(bs[k].textContent==='Save')bs[k].click();})()");
+	}
+	else if ( ev["event"] == "snapshot" )
+	    println("TOOLBAR {}", ev["text"]);
+	else if ( ev["event"] == "action" )
+	{
+	    println("TOOLBAR event action {} code={}", ev["action"],
+		    ev["action_code"].as_integer() == cmdSAVE ? 1 : 0);
+	    S.apply_ide_event(doc, ev);
+	    println("TOOLBAR saved={}", doc_modified(w, doc) ? 0 : 1);
+	    break;
+	}
+    }
+    ui::close(t);
+    ui::world_close(w);
+    println("TOOLBAR closed");
+    // a test leaves nothing in its working directory
+    remove(path);
+    return 0;
+}

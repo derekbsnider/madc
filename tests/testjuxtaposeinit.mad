@@ -1,0 +1,16 @@
+// A parenthesized non-callable followed by `(` is two operands with no
+// operator between them: gcc and clang both reject `(x)(4)` ("called object
+// is not a function or function pointer"). In an INITIALIZER the parse ends
+// at the conditional-end short-circuit, which used to bind the pending `=` to
+// the juxtaposed pair and return it: `int r = (x)(4)` built `int r = x = 4`
+// (exit 0, r == 4). Every exit of parseExpression now finishes through
+// Program::finish_expression, which refuses the leftover operand.
+#include <stdio.h>
+
+int main(void)
+{
+    int x = 3;
+    int r = (x)(4);
+    printf("%d\n", r);
+    return 0;
+}

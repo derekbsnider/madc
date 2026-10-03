@@ -18,8 +18,9 @@
 //
 // Transport: the accepted connection is an ordinary madc::channel byte
 // stream (the listen:// acceptor, V6a step 1/2a); the {"event":…} push feed
-// (broadcast_events) and the permission tiers (grant_tier / eff_tier /
-// clienttier) live here beside the command core.
+// (broadcast_events) and the permission tiers (grant_tier / clienttier)
+// live here beside the command core; eff_tier, which a plugin host's seat
+// reads too, is madcide_plugins.inc's, beside cmd_min_tier_w.
 
 // ---- JSON-RPC 2.0 envelopes — ONE spelling for every face --------------------
 // The MCP seat, the LSP face and madcide-as-an-MCP-client all speak JSON-RPC
@@ -132,16 +133,6 @@ long grant_tier(long self_id)
     return tierOWNER;
 }
 
-// The EFFECTIVE tier of a connection id. An untracked id (-1 — a direct,
-// local caller such as the -c / headless-harness seat that never shared) is
-// the operator itself: full rights (owner). A real network client always has
-// a share()d id with a granted tier, so this only widens the local path.
-long eff_tier(long id)
-{
-    long t = madc::conn_cookie(id);
-    return t < 0 ? tierOWNER : t;
-}
-
 // clienttier <id> <tier> — the OWNER verb that re-tiers a connection (it acts
 // on the SEAT's connections, not the document, so the seat owns it, not the
 // editor registry). Owner-only; a bad id or tier spelling refuses with prose.
@@ -200,7 +191,7 @@ void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, 
 	handle_clienttier(out, self_id, arg);
 	return;
     }
-    long code = cmd_of(name);
+    long code = cmd_of_w(S.world(), name);	// contributed commands too
     if ( code == cmdNONE )
     {
 	var why = format("unknown command '{}'", name);
@@ -210,7 +201,7 @@ void api_run(var &out, IdeSession &S, long doc, long self_id, const char *name, 
     // Permission gate (V6a tiers): a command above this caller's tier is
     // refused with prose, never run silently.
     long my_tier = eff_tier(self_id);
-    long need = cmd_min_tier(code);
+    long need = cmd_min_tier_w(S.world(), code);
     if ( my_tier < need )
     {
 	var why = format("'{}' requires {} (you are {})",

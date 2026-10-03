@@ -1,0 +1,65 @@
+// A loop spinning on a volatile sig_atomic_t that a signal handler sets ends at
+// -O2 however the volatile is spelled -- the POINTEE of a pointer, a struct
+// member, a typedef, a cast, a parameter (C11 6.7.3p7: every access through a
+// volatile-qualified lvalue is performed as written). The front end dropped
+// all five: only a volatile OBJECT reached the IR, so -O2 hoisted the load and
+// the loop never ended. They now ride the type (DataDefQUAL's cv mask) into
+// c2mir, which marks the MIR memory operand volatile.
+// Oracle: gcc and clang (-O0 and -O2) print testvolatilepointeeo2c.expect.
+#include <signal.h>
+#include <stdio.h>
+#include <sys/time.h>
+
+typedef volatile sig_atomic_t vsig;
+struct M { int pad; volatile sig_atomic_t f; };
+
+static sig_atomic_t plain0, plain3, plain4;
+static struct M m;
+static vsig td;
+static int phase;
+
+static void on_alarm (int sig) {
+  (void) sig;
+  switch (phase) {
+  case 0: plain0 = 1; break;
+  case 1: m.f = 1; break;
+  case 2: td = 1; break;
+  case 3: plain3 = 1; break;
+  default: plain4 = 1; break;
+  }
+}
+
+static void arm (int p) {
+  struct itimerval it = {{0, 0}, {0, 10000}};
+  phase = p;
+  signal (SIGALRM, on_alarm); /* per alarm: a strict ISO signal() is one-shot (SysV) */
+  setitimer (ITIMER_REAL, &it, 0);
+}
+
+static long spin (volatile sig_atomic_t *p) {
+  long n = 0;
+  while (!*p) n++;
+  return n;
+}
+
+int main (void) {
+  volatile sig_atomic_t *vp = &plain0;
+  long n0 = 0, n1 = 0, n2 = 0, n3 = 0, n4;
+
+  arm (0);
+  while (!*vp) n0++;
+  arm (1);
+  while (!m.f) n1++;
+  arm (2);
+  while (!td) n2++;
+  arm (3);
+  while (!*(volatile sig_atomic_t *) &plain3) n3++;
+  arm (4);
+  n4 = spin (&plain4);
+  printf ("pointee: %d\n", n0 > 0);
+  printf ("member: %d\n", n1 > 0);
+  printf ("typedef: %d\n", n2 > 0);
+  printf ("cast: %d\n", n3 > 0);
+  printf ("parameter: %d\n", n4 > 0);
+  return 0;
+}

@@ -1,0 +1,74 @@
+/* A class's default member initializers are its implicit default
+   constructor's ([class.base.init]/9), so EVERY default construction applies
+   them: a new-expression ([expr.new]/22), an array element, a member or base
+   subobject, an inherited constructor's own members, a temporary, a braced
+   value-initialization and a global. madc applied them only at a named
+   object's declaration, so `new A` read 0 and a nested member read garbage
+   (B26), `A la[2];` failed in c2mir, and `A g{};` read 0. Each construction
+   applies them once: the counter below reads 8 in g++.
+   Oracle: g++ and clang++ -std=c++17 print every line below. */
+#include <cstdio>
+#include <new>
+
+static int counter = 0;
+struct A { int n = 3; };
+struct B { A a; int k = 5; };
+struct W { B b; };
+struct D : A { int m = 4; };
+struct D2 : A { int m = 4; D2() {} };
+struct D3 : A { D3() : A() {} };
+struct V { int n = 3; virtual int g() { return n; } virtual ~V() {} };
+struct P { int p; P(int x) : p(x) {} };
+struct Q : P { using P::P; int z = 9; };
+struct U { A a; int u; U() : u(1) {} };
+struct C { int id = ++counter; };
+A ga;
+A gb{};
+
+int main()
+{
+	A *a = new A;
+	A *b = new A();
+	A *c = new A{};
+	printf("new %d %d %d\n", a->n, b->n, c->n);
+	B *bb = new B;
+	printf("new nested %d %d\n", bb->a.n, bb->k);
+	B sb;
+	printf("stack nested %d %d\n", sb.a.n, sb.k);
+	W sw;
+	printf("stack deep %d %d\n", sw.b.a.n, sw.b.k);
+	D *d = new D;
+	D sd;
+	printf("derived %d %d %d %d\n", d->n, d->m, sd.n, sd.m);
+	D2 d2;
+	D3 d3;
+	printf("user ctor derived %d %d %d\n", d2.n, d2.m, d3.n);
+	A *arr = new A[2];
+	printf("array %d %d\n", arr[0].n, arr[1].n);
+	A la[2];
+	printf("local array %d %d\n", la[0].n, la[1].n);
+	V *v = new V;
+	printf("virtual %d\n", v->g());
+	alignas(A) unsigned char buf[sizeof(A)];
+	A *pa = new (buf) A;
+	printf("placement %d\n", pa->n);
+	Q q(1);
+	printf("inherited %d %d\n", q.p, q.z);
+	U u;
+	printf("user ctor member %d %d\n", u.a.n, u.u);
+	printf("temp %d %d\n", A().n, A{}.n);
+	A g{};
+	printf("braced %d\n", g.n);
+	printf("globals %d %d\n", ga.n, gb.n);
+	C c1;
+	C *c2 = new C;
+	C c3[2];
+	C *c4 = new C[2];
+	C c5{};
+	C c6 = C();
+	printf("counter %d %d %d %d\n", counter, c1.id, c2->id, c6.id);
+	delete a; delete b; delete c; delete bb; delete d; delete[] arr;
+	delete v; delete c2; delete[] c4;
+	(void)c3; (void)c5;
+	return 0;
+}

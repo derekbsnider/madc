@@ -1,0 +1,26 @@
+/* A function DECLARED (never defined in this file) whose return type is a
+   function pointer: `void (*signal(int, void (*)(int)))(int)`, spelled
+   without the <signal.h> typedef, and defined by libc. The value it returns
+   is a pointer to a function, compared with one and passed back in.
+   madc prototyped a declared-only function returning a function pointer as
+   returning `long long` (`extern long long get(void)`), so the comparison
+   warned "comparison of integer with a pointer" and a call through the
+   result called an integer. The run must be quiet (no warning). A
+   definition later in the same file was right; now every declarator of a
+   function's return type has one owner.
+   Oracle: gcc 13 and clang 18 -std=c17 -Wall print the line below. */
+#include <stdio.h>
+
+void (*signal(int sig, void (*func)(int)))(int);
+
+static void h(int s) { (void)s; }
+
+int main(void)
+{
+	void (*prev)(int) = signal(2, h);
+	void (*now)(int) = signal(2, prev);
+	printf("signal: %d %d\n", prev == (void (*)(int))0, now == h);
+	signal(2, h);
+	signal(2, prev)(0);		/* calls h through the returned pointer */
+	return 0;
+}

@@ -97,6 +97,11 @@ stale_reason() {
 #            be green before a master release (owner law 2026-09-04) but whose
 #            cost or hardware keeps them off every develop push (the libc++
 #            flavor lane, the darwin runner suite, genuine Windows).
+#   batch    never blocks, but `check` prints a BATCH reminder while it is
+#            stale: the whole tests/ suite, JIT only (scripts/batch_lane.sh),
+#            run once per BATCH of fixes, never per fix (owner 2026-09-28).
+#            The fast tier has no tests/ lane, and the develop push already
+#            requires the battery, whose fulltest covers the same suite.
 #   no       never blocks; recorded for the record.
 #
 # WHY THE FAST TIER EXISTS: gcc c-torture had NO row at all, so nothing re-ran
@@ -118,7 +123,7 @@ gate_applies() {
 check() {
 	local promote_gate="${1:-}"
 	ensure_ledger
-	local rc=0 lane promote sha date tally reason
+	local rc=0 lane promote sha date tally reason stale_batch=""
 	printf '%-16s %-8s %-14s %-12s %s\n' LANE PROMOTE STATE LAST-GREEN TALLY
 	while IFS=$'\t' read -r lane promote sha date tally; do
 		case "$lane" in ''|'#'*) continue;; esac
@@ -132,8 +137,24 @@ check() {
 			if gate_applies "$promote_gate" "$promote"; then
 				rc=1
 			fi
+			[ "$promote" = batch ] && stale_batch="$stale_batch $lane"
 		fi
 	done < "$LEDGER"
+	if [ -n "$stale_batch" ]; then
+		echo "lane_ledger: BATCH tier stale (${stale_batch# }) — run" \
+		     "scripts/batch_lane.sh when this batch of fixes is done" >&2
+	fi
+	# A master release also needs every released madc-release archived (owner
+	# 2026-08-09, 2026-10-02): the /release archive step was a prose step and
+	# lapsed for six releases. The archive check proves it can fail first.
+	if [ "$promote_gate" = --release ]; then
+		if ! bash scripts/release_bins.sh selftest > /dev/null ||
+		   ! bash scripts/release_bins.sh check >&2; then
+			echo "lane_ledger: release BLOCKED — the release-binary" \
+			     "archive (scripts/release_bins.sh) is incomplete" >&2
+			rc=1
+		fi
+	fi
 	if [ "$rc" -ne 0 ]; then
 		echo "lane_ledger: ${promote_gate#--} BLOCKED — stale gated" \
 		     "lane(s) above must re-run on current content" >&2
@@ -189,8 +210,31 @@ selftest() {
 		rm -f "$tmp"
 		return 1
 	fi
+	# The COMMIT tier: a stale `commit` row must block EVERY branch push
+	# (--commit, the tier the pre-push hook applies to a feature branch),
+	# and a stale `yes` row must NOT — that separation is the whole point
+	# of having three tiers, and a gate that cannot tell them apart would
+	# either block every WIP push or none of them.
+	{
+		printf '%s\n' "$HEADER"
+		printf 'selftest-commit-stale\tcommit\t%s\tnever\t0/0\n' "$stale_sha"
+	} > "$tmp"
+	if ( LEDGER="$tmp"; check --commit ) > /dev/null 2>&1; then
+		echo "lane_ledger: SELFTEST FAILED — a stale commit-tier row passed --commit" >&2
+		rm -f "$tmp"
+		return 1
+	fi
+	{
+		printf '%s\n' "$HEADER"
+		printf 'selftest-promote-stale\tyes\t%s\tnever\t0/0\n' "$stale_sha"
+	} > "$tmp"
+	if ! ( LEDGER="$tmp"; check --commit ) > /dev/null 2>&1; then
+		echo "lane_ledger: SELFTEST FAILED — a stale promote-tier row blocked --commit" >&2
+		rm -f "$tmp"
+		return 1
+	fi
 	rm -f "$tmp"
-	echo "lane_ledger: selftest OK (stale row blocks, fresh row passes, release tier gates master only)"
+	echo "lane_ledger: selftest OK (stale row blocks, fresh row passes, commit tier gates every branch, release tier gates master only)"
 }
 
 case "${1:-}" in

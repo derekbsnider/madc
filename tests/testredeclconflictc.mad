@@ -1,0 +1,15 @@
+// C11 6.7p4: every declaration of one object names ONE type. `int x;` then
+// `double x = 2.5;` compiled with exit 0 — addVariable handed the second
+// declarator the first Variable and parseDeclaration overwrote its type, so
+// the EARLIER declaration was emitted as `double x;`. Now refused where the
+// second declarator binds (Program::declare_object).
+// Oracle: gcc "conflicting types for 'x'"; clang "redefinition of 'x' with a
+// different type: 'double' vs 'int'" — both reject (g++ / clang++ likewise).
+#include <stdio.h>
+int x;
+double x = 2.5;
+int main(void)
+{
+	printf("%f\n", x);
+	return 0;
+}

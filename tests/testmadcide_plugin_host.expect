@@ -1,0 +1,12 @@
+transport-library: CFG/plugins/hosted/hosted.plugin: "transport" may only ask for "host" (its code in a process of its own), beside "code"
+transport-no-code: CFG/plugins/hosted/hosted.plugin: "transport" may only ask for "host" (its code in a process of its own), beside "code"
+host-open: transport-host=1 contributed=1 view=1
+host-greet: msg=Hello, world. other-process=1
+host-again: msg=Again: Hello, again. (ran)
+host-event: msg=Heard the entry.
+host-crash: msg=Plugin 'hosted' ended; it was started again.
+host-after: msg=Hello, back.
+host-stopped: msg=Plugin 'hosted' stopped: its process ended 4 times.
+host-gone: msg=Plugin 'hosted' is not running.
+isolate-open: transport-host=1
+isolate-rows: [count int 3|main int (void)|square int (int)|]

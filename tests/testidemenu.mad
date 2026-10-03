@@ -49,6 +49,7 @@ int main()
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     ui::set(w, es, "profile", "joe");
     load_status(w, es, "joe");
@@ -93,6 +94,28 @@ int main()
     println("build-menu: items={} sep-at={} first={}/{} enabled={} last={}/{} enabled={}",
 	    php::count(bitems), bsep, bfirst["id"], bfirst["title"],
 	    enabled_of(bfirst), blast["id"], blast["title"], enabled_of(blast));
+    // The rows follow the COMMAND the menu carries (`build`), never its
+    // title: the same data under another title still lists them.
+    var rdef = def;
+    long nm = php::count(rdef);
+    for ( long k = 0; k < nm; k = k + 1 )
+    {
+	var rm = rdef[k];
+	if ( rm["title"] == "Build" )
+	{
+	    rm["title"] = "Compile";
+	    rdef[k] = rm;
+	}
+    }
+    ui::set(w, es, "menudef", rdef);
+    var rtree;
+    S.compose_ide_tree(rtree, doc);
+    long rcount = -1;
+    for ( var rb : rtree["hints"]["menu"]["bar"] )
+	if ( rb["title"] == "Compile" )
+	    rcount = php::count(rb["items"]);
+    println("build-rows-by-command: {}", rcount == php::count(bitems) ? "same" : "DIFFER");
+    ui::set(w, es, "menudef", def);
 
     var tree;
     S.compose_ide_tree(tree, doc);
@@ -153,7 +176,7 @@ int main()
     bool palette = false;
     for ( var m : def )
     {
-	if ( m["title"] == "palette" )
+	if ( m["place"].as_integer() == mpPALETTE )
 	    palette = true;
 	for ( var it : m["items"] )
 	{
@@ -180,5 +203,7 @@ int main()
 	    when_holds(ctx, e1) ? 1 : 0, when_holds(ctx, e2) ? 1 : 0,
 	    when_holds(ctx, e3) ? 1 : 0, when_holds(ctx, e4) ? 1 : 0,
 	    when_holds(ctx, e5) ? 1 : 0, when_holds(ctx, e6) ? 1 : 0);
+    // a test leaves nothing in its working directory
+    remove(path);
     return 0;
 }

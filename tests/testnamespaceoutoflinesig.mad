@@ -1,0 +1,8 @@
+/* A qualified definition must define a function the namespace declares,
+   matched by its signature ([dcl.meaning]/1): N declares only `f()`, so
+   `int N::f(int)` declares nothing and is refused, as g++ refuses it
+   ("'int N::f(int)' should have been declared inside 'N'") and clang++
+   ("out-of-line definition of 'f' does not match any declaration"). */
+namespace N { int f(); }
+int N::f(int k) { return k; }
+int main() { return 0; }

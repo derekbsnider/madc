@@ -1,0 +1,43 @@
+// Calls through a function-pointer EXPRESSION in every context whose parse
+// ends at the conditional-end short-circuit (initializer, call argument,
+// if-condition, subscript index, ternary branch, return). These are the
+// valid neighbours of testjuxtaposeinit / testjuxtaposearg: finishing every
+// exit through Program::finish_expression must refuse only juxtaposed
+// operands, never a real call. Oracle: gcc and clang, -std=c17.
+#include <stdio.h>
+
+typedef int (*fn_t)(int);
+
+static int twice(int v) { return 2 * v; }
+static int thrice(int v) { return 3 * v; }
+
+struct S { fn_t f; fn_t *t; };
+
+static fn_t table[2] = { twice, thrice };
+
+static int call(fn_t *t, int i) { return (*t)(i); }
+
+int main(void)
+{
+    fn_t f = twice;
+    fn_t *fpp = &f;
+    struct S s;
+    int a[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    s.f = thrice;
+    s.t = &f;
+
+    int r1 = (**fpp)(4);
+    int r2 = (*fpp)(4);
+    int r3 = (*s.t)(5) + (s.f)(1);
+    printf("init: %d %d %d\n", r1, r2, r3);
+    printf("arg: %d %d %d\n", (*fpp)(3), (table[1])(2), (*s.t)(1));
+    if ( (*fpp)(1) == 2 )
+	printf("cond: ok\n");
+    printf("index: %d\n", a[(*fpp)(2) - 1]);
+    printf("ternary: %d\n", r1 > 0 ? (*s.t)(6) : (s.f)(6));
+    printf("call: %d\n", call(fpp, 7));
+    int v = 1;
+    v = (*fpp)(v) + 1;
+    printf("assign: %d\n", v);
+    return 0;
+}

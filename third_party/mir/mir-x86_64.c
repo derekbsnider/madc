@@ -148,7 +148,7 @@ void va_start_interp_builtin (MIR_context_t ctx MIR_UNUSED, void *p, void *a) {
 /* AOT object mode: generated code calls these through the "mir.va_arg" /
    "mir.va_block_arg" import items (mir-gen-x86_64.c), which become undefined
    symbols in an emitted .o -- export them from libmir under those exact ELF
-   names so the link resolves (the mir.ui2f family gets the same treatment in
+   names so the link resolves ("mir.arg_memcpy" gets the same treatment in
    mir-gen-x86_64.c).  The _WIN32 half below carries its own copy for ITS
    va_arg_builtin: this whole half never compiles on Windows. */
 extern __typeof (va_arg_builtin) mir_va_arg_obj_export asm ("mir.va_arg")

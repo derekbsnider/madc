@@ -1,0 +1,43 @@
+// C++: a volatile member function ([dcl.fct]/4, [class.this]) — `int get()
+// volatile` is a distinct overload of `int get()`, a volatile object (or a
+// reference or pointer to one) calls only the volatile member and a plain
+// object prefers the plain one ([over.match.funcs]), `this` is `volatile C *`
+// inside it (so `v = x` through it is a volatile store), an out-of-line
+// definition matches its declaration's cv, and the symbol spells V
+// (_ZNV1C3getEv, _ZNVK1C4bothEv). The method-qualifier reader dropped
+// `volatile`: both gets were `int get()`, the second renamed C__get__o2, and
+// every call took the first.
+// Oracle: g++ and clang++ print testvolatilemethodcxx.expect.
+#include <stdio.h>
+
+struct C {
+  int v;
+  int get () { return 10 + v; }
+  int get () volatile { return 20 + v; }
+  int only () volatile { return 30 + v; }
+  int both () const volatile { return 40 + v; }
+  void set (int x) volatile { v = x; }
+};
+struct D { int w; int peek () volatile; };
+int D::peek () volatile { return w + 1; }
+
+extern "C" int _ZNV1C3getEv (volatile C *);
+extern "C" int _ZN1C3getEv (C *);
+extern "C" int _ZNVK1C4bothEv (const volatile C *);
+extern "C" int _ZNV1D4peekEv (volatile D *);
+
+int main ()
+{
+  C c = { 1 };
+  volatile C vc = { 2 };
+  volatile C &rc = c;
+  volatile C *pc = &c;
+  printf ("pick: %d %d %d %d\n", c.get (), vc.get (), rc.get (), pc->get ());
+  printf ("only: %d %d %d\n", c.only (), vc.only (), vc.both ());
+  vc.set (5);
+  D d = { 6 };
+  printf ("set: %d %d\n", vc.v, d.peek ());
+  printf ("sym: %d %d %d %d\n", _ZNV1C3getEv (&vc), _ZN1C3getEv (&c), _ZNVK1C4bothEv (&vc),
+          _ZNV1D4peekEv (&d));
+  return 0;
+}

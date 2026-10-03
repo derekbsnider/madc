@@ -1,0 +1,84 @@
+// "Is this type void" — DataDef::is_void(), the ONE owner.
+//
+// DataDefPTR::rawtype() forwards to the pointee, and a DataDefPTR is built with
+// its pointee's type(), so a hand-written `rawtype() == dtVOID` / `type() ==
+// dtVOID` is ALSO true for void*, void**, ... Sixteen sites asked that by hand;
+// nine forgot the pointer guard. This test pins the three whose divergence was
+// observable, each against the other pointer shapes as a control:
+//
+//   * OVERLOAD RANKING: int** -> void** and S* -> void** are not standard
+//     conversions ([conv.ptr] converts an object pointer to void* only), but
+//     madc scored both as the void* conversion. Against a void* competitor
+//     that made every such call a FALSE AMBIGUITY ("candidates void * * and
+//     void *"), and with no competitor it accepted the ill-typed call (c2mir's
+//     "incompatible argument type" warning its only trace). g++ and clang++
+//     choose the void* overload; the exact void** -> void** control keeps the
+//     void** one.
+//   * RANGE-FOR over an iterator whose begin() returns void**: its element is
+//     void*, a value. madc declined the raw-pointer iterator shape ("its
+//     begin() returns a pointer with no renderable pointee") because the
+//     pointee "was void".
+//   * RANGE-FOR over a plain `void *arr[2]` — ordinary C++ — was refused
+//     ("array element type has no renderable declaration") on every build
+//     before this: the range-for DECLARES its walker with the dumper's spec
+//     builder, and that builder carried the dumper's "void has nothing to
+//     render" refusal. Found one layer under the void** iterator fix; the
+//     builder is split now (pointee_decl_specs / dump_pointee_specs).
+//
+// g++ -std=c++17 and clang++ -std=c++17 both print the asserted lines.
+#include <stdio.h>
+
+struct S { int x; };
+
+int pick(void **) { return 1; }
+int pick(void *) { return 2; }
+int pick_cls(void **) { return 1; }
+int pick_cls(void *) { return 2; }
+
+// size() is REQUIRED by madc's iterator protocol (the generated loop is
+// counted — see class_iterator_iteration_protocol), so it is here to make the
+// void-pointee test the one that decides: without it the class is refused for
+// the missing size() before the pointee is ever asked about.
+struct VoidBag {
+	void *slots[3];
+	void **begin() { return slots; }
+	void **end() { return slots + 3; }
+	unsigned long size() const { return 3; }
+};
+
+int main()
+{
+	int *p = 0;
+	int **pp = &p;
+	S s;
+	S *sp = &s;
+	void *vp = p;
+	void **vpp = &vp;
+
+	printf("ovl-intpp %d\n", pick(pp));
+	printf("ovl-clsp %d\n", pick_cls(sp));
+	printf("ovl-exact-control %d\n", pick(vpp));
+
+	VoidBag b;
+	b.slots[0] = (void *) 10;
+	b.slots[1] = (void *) 20;
+	b.slots[2] = (void *) 30;
+	long sum = 0;
+	for (void *e : b)
+		sum += (long) e;
+	printf("rangefor-voidpp %ld\n", sum);
+
+	int a = 1, c = 2;
+	int *iarr[2] = { &a, &c };
+	long isum = 0;
+	for (int *e : iarr)
+		isum += *e;
+	printf("rangefor-intp-array-control %ld\n", isum);
+
+	void *varr[2] = { (void *) 10, (void *) 20 };
+	long vsum = 0;
+	for (void *e : varr)
+		vsum += (long) e;
+	printf("rangefor-voidp-array %ld\n", vsum);
+	return 0;
+}

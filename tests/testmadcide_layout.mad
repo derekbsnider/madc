@@ -15,12 +15,19 @@
 #include "../tools/madcide/madcide_core.inc"
 
 // One pane's facts on a line: slot side size mode tabs(kinds) focus hidden.
+// The world the layouts' view words resolve in (main's; the REPL pane's
+// `repl` is a contributed view).
+long layout_world = 0;
+
 void pane_line(var &out, var &p)
 {
     var kinds = "";
     for ( var t : p["tabs"] )
-	kinds = format("{}{}{}", kinds, strlen(kinds.c_str()) > 0 ? "," : "",
-		       view_name(t["kind"].as_integer()));
+    {
+	var vn;
+	view_name_w(vn, layout_world, t["kind"].as_integer());
+	kinds = format("{}{}{}", kinds, strlen(kinds.c_str()) > 0 ? "," : "", vn);
+    }
     out = format("{} {} {}% {} [{}] focus={} hidden={}",
 		 slot_name(p["slot"].as_integer()),
 		 ui::side_name(p["side"].as_integer()),
@@ -57,12 +64,20 @@ void refuse(const char *label, const char *text)
 
 int main()
 {
+    // A world for the layouts' view words: the shipped ones name `repl`, the
+    // REPL pane's view, which madcide's builtin module registers in a world
+    // (builtins_activate, as IdeSession::open runs it).
+    long w = ui::world_new();
+    long es = ui::create(w, "editor-state");
+    builtins_activate(w, es);
+    layout_world = w;
+
     // 1. The shipped file and the baked default: one tree.
     var txt;
     php::file_get_contents(txt, "tools/madcide/profiles/default.layout");
     var lo;
     var err;
-    bool ok = parse_layout(lo, txt.c_str(), err);
+    bool ok = parse_layout(lo, txt.c_str(), err, w);
     println("shipped: ok={} window={} chrome={}", ok ? 1 : 0, lo["window"],
 	    php::count(lo["chrome"]));
     var es_shape;
@@ -78,7 +93,7 @@ int main()
     }
     var baked;
     var berr;
-    bool bok = parse_layout(baked, default_layout_text(), berr);
+    bool bok = parse_layout(baked, default_layout_text(), berr, w);
     var a = js::stringify(lo);
     var b = js::stringify(baked);
     println("baked: ok={} identical={}", bok ? 1 : 0, a == b ? 1 : 0);
@@ -146,9 +161,9 @@ int main()
     //    equal. The editor region persists as source panes (a code render is
     //    session state), so a round-tripped tree carries no code tabs.
     var emitted;
-    layout_to_text(emitted, baked);
+    layout_to_text(emitted, baked, w);
     var reparsed;
-    bool rok = parse_layout(reparsed, emitted.c_str(), err);
+    bool rok = parse_layout(reparsed, emitted.c_str(), err, w);
     var sa = js::stringify(baked);		// ring c_str: own each before ==
     var sb = js::stringify(reparsed);
     println("roundtrip-default: ok={} equal={}", rok ? 1 : 0, sa == sb ? 1 : 0);
@@ -161,10 +176,10 @@ int main()
 	"  pane editor tabs views source\n"
 	"pane sidebar right 20% tabs views outline hidden\n";
     var rt;
-    parse_layout(rt, rtsrc, err);
-    layout_to_text(emitted, rt);
+    parse_layout(rt, rtsrc, err, w);
+    layout_to_text(emitted, rt, w);
     var rt2;
-    rok = parse_layout(rt2, emitted.c_str(), err);
+    rok = parse_layout(rt2, emitted.c_str(), err, w);
     var sc = js::stringify(rt);
     var sd = js::stringify(rt2);
     println("roundtrip-split: ok={} equal={}", rok ? 1 : 0, sc == sd ? 1 : 0);

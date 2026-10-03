@@ -1,0 +1,40 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+#include <stddef.h>
+
+// A nested aggregate's own attributes, before its tag or after its `}`, lay
+// it out as gcc does; a trailing `packed` re-lays the members already read.
+struct O3 { char c; struct __attribute__((packed)) N3 { char a; int b; } in; };
+struct O5 { char c; struct N5 { char a; int b; } __attribute__((packed)) in; };
+struct O6 { char c; struct { char a; int b; } __attribute__((packed)) in; };
+struct O7 { char c; union __attribute__((packed)) U7 { char a; int b; char d[5]; } u; };
+struct O8 { char c; struct { char x; struct __attribute__((packed)) N8 { char a; int b; } in; } mid; };
+struct O9 { char c; struct { char x; struct N9 { char a; int b; } __attribute__((packed)) in; } mid; };
+struct A1 { char c; struct __attribute__((aligned(16))) { char a; } in; };
+struct A2 { char c; struct N2 { char a; } __attribute__((aligned(16))) in; };
+struct A3 { char c; struct __attribute__((aligned(2 * 8))) N3a { char a; } in; };
+struct T1 { char a; int b : 4; int c; } __attribute__((packed));
+struct T2 { char a; struct { char x; int y; }; int z; } __attribute__((packed));
+union  T3 { char a; int b; char d[5]; } __attribute__((packed));
+
+int main(void)
+{
+	struct O9 o9;
+	o9.mid.in.b = 1234;
+	printf("pn: %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %zu %d\n",
+	       sizeof(struct N3), sizeof(struct O3), sizeof(struct N5), sizeof(struct O5),
+	       sizeof(((struct O6 *)0)->in), sizeof(struct O6), sizeof(union U7), sizeof(struct O7),
+	       sizeof(struct N8), sizeof(struct O8), sizeof(struct N9), sizeof(struct O9), o9.mid.in.b);
+	printf("na: %zu %zu %zu %zu %zu %zu\n",
+	       sizeof(((struct A1 *)0)->in), sizeof(struct A1), sizeof(struct N2), sizeof(struct A2),
+	       sizeof(struct N3a), sizeof(struct A3));
+	struct T1 t1 = { 1, 5, 77 };
+	struct T2 t2;
+	t2.x = 3;
+	t2.y = 400;
+	t2.z = 9;
+	printf("rl: %zu %zu %d %zu %zu %zu %d %d %d %zu\n", sizeof(struct T1), offsetof(struct T1, c),
+	       t1.c + t1.b, sizeof(struct T2), offsetof(struct T2, y), offsetof(struct T2, z),
+	       t2.x, t2.y, t2.z, sizeof(union T3));
+	return 0;
+}

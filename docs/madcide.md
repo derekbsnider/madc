@@ -37,17 +37,28 @@ the file could not be read or the problems projection carries errors
 command does not take. The argument is what you would have typed at the
 prompt the command opens.
 
-The packaged `madcide` binary ships with the Linux, Windows and macOS
-releases (`bin/madcide`, `bin\madcide.exe`); the window needs the platform
-webview library the packages install beside it (WebView2 on Windows,
-WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
+The packaged `madcide` binary ships with the Linux and Windows releases
+(`bin/madcide`, `bin\madcide.exe`), and joins the macOS release once its
+release job builds it beside `lib/libmadc-0.dylib`; the window needs the
+platform webview library the packages install beside it (WebView2 on
+Windows, WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
 
 ## Keys are profiles
 
 Every key binding is data in `tools/madcide/profiles/*.keys`: `joe` (the
 default — the full JOE/WordStar set), `pico`, `emacs`, `neovim` (a modal
-personality that starts in normal mode). `^T` opens Options; its Keymap
-row cycles profiles; `^K H` shows the loaded profile's own bindings.
+personality that starts in normal mode), `thonny` (Thonny's keys: Ctrl+S,
+Ctrl+Z/Y, Ctrl+X/C/V, Ctrl+A, F5 to run, Ctrl+F2 to stop; chthonia's
+default) and `vscode` (VS Code's default keymap; Ctrl+K opens its chords).
+Each lists, in its header, the keys whose command madcide does not have
+yet. `^T` opens Options; its Keymap
+row cycles profiles for the session; `^K H` shows the loaded profile's own
+bindings. View ▸ Key Bindings… (chthonia's Tools ▸ Key bindings…, the
+`keystyle` command) lists the profiles by their display names and keeps the
+one chosen for the bundle in use, in `settings.json`'s `"keys"` object
+(`"keys": { "chthonia": "emacs" }`), so the next session of that bundle
+opens with it. A profile's display name is its `@title NAME` line; a
+`.keys` file dropped into the profile directory joins the list.
 The JOE defaults most worth knowing:
 
 | Keys | Command |
@@ -61,6 +72,24 @@ The JOE defaults most worth knowing:
 | `^K O` `^K N` `^K P` · `^K 0` `^K 1` | split / next / previous window · close / only window |
 | `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses, indented and syntax-coloured like the source) |
 | `^N` · `^K Z` | the Modes palette (`:` = the vi colon line, `v` = vi modal editing) · a shell |
+
+A binding's keys may carry modifiers: `ctrl+shift+s`, `ctrl+f2`,
+`shift+right`, `alt+f4`, `ctrl+space`, `ctrl+plus`, and `primary+s` (Ctrl,
+or Cmd on macOS). A plain Ctrl+letter is still written `^s`. A modified key
+a profile does not bind acts as its key without Shift, then as its key
+(`ctrl+shift+left` is `ctrl+left`'s binding, `shift+right` is `right`). A
+terminal reports modifiers only where it sends xterm's modified sequences,
+so Ctrl+Shift+S and Ctrl+digit are the window's (`--gui`, the browser).
+
+Shift with a motion selects, as in Thonny and VS Code: the selection is the
+same block the block keys light, extended from where the first shifted
+motion started, and a motion without Shift drops it. Typing, Backspace,
+Delete, Enter and Paste replace a selection made this way (or by Select all,
+or by dragging the pointer); a block made with the block keys (JOE's `^K B`
+/ `^K K`) keeps JOE's rules. Edit ▸ Cut, Copy, Paste and Select all are
+commands (`cut`, `copy`, `paste`, `selectall`); `^K Y`'s delete fills the
+same clipboard. Under `--gui` it is the system's clipboard; in a terminal
+or a browser page it is madcide's own.
 
 A binding's last word is a command name from the IDE's one vocabulary
 (`tools/madcide/madcide_enums.inc`, the `ide_cmd` enum and its name table).
@@ -235,3 +264,112 @@ session owns, the terminal and a fresh window share it.
 
 Dedicated keys and menu items for the `view*` commands are a coming addition;
 today they reach the colon line — and any client that speaks the registry.
+
+## Plugins
+
+A profile is a plugin: a directory `<name>/` holding its manifest
+`<name>.plugin` (JSON) and the data files it carries (keys, layout, menu,
+theme, status line). madcide looks in the user's `plugins/` directory first
+(`~/.config/madcide/plugins`, `%APPDATA%\madcide\plugins` on Windows, or
+`$MADCIDE_CONFIG_DIR/plugins`), then in the shipped one, so a user's plugin
+overrides a shipped plugin of the same name.
+
+A plugin can carry code. Its manifest names the source, one madc file in its
+directory:
+
+```json
+{ "name": "hello", "api": 2, "code": "hello.mad" }
+```
+
+The source includes `<madcide/plugin>` and defines the activation madcide
+calls when it loads the plugin, which registers its commands and views:
+
+```cpp
+#include <madcide/plugin>
+
+bool hello_greet(long w, long es, long doc, const char *arg)
+{
+    ide::set(w, es, "msg", format("Hello, {}.", arg));
+    return true;
+}
+
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
+{
+    ide::bind(api);
+    return ide::command(w, "greet", "Greet", hello_greet) != 0;
+}
+```
+
+`madcide --build-plugin <dir>` builds it into its library beside the manifest
+(`hello.so` on Linux, `hello.dll` on Windows, `hello.dylib` on macOS), the
+running madcide compiling in-process; nothing is built automatically. The
+plugin's code activates when the profile in use is the plugin, or when
+`settings.json` lists it (`"plugins": ["hello"]`), before the keys and menus
+load, so a key profile or a menu can name `greet`: from its library when it
+has one this madcide accepts, else from its source, compiled into the
+running madcide. A library loads in well under a millisecond; a source costs
+a compile at every launch (about 16 ms for the first plugin and 7 ms for each
+further one with the installed madcide), so a plugin ships fast with its
+library and works without one. A handler calls madcide only through `ide::`
+(`command`, `view`, `event` at activation; `run`, `command_id`, `get`, `set`,
+`show` from a handler), so a plugin binds to nothing of madcide's own. The
+code stays loaded until the session closes.
+
+`ide::event` subscribes a handler to the REPL pane's events, whose kinds
+`<madcide/plugin_api>` names: `reTAKEN` (an entry ran), `reRAN` (F5's program
+returned), `reBINDINGS` (the session's names answered: `event["reply"]["rows"]`,
+each row with `name`, `kind`, `type`, `value`, `file` and `line`) and
+`reSTOPPED` (the session stopped). A view's rows are `{ "content", "file",
+"line" }` objects on the key the view names; choosing a row with a line goes
+there.
+
+madcide's own REPL pane is a plugin compiled into madcide: its commands
+(`repl`, `replrun`, `replstop`, `repllang`, `replbindings`, and the input's
+`replenter`, `replcomplete`, `replolder`, `replnewer`, `replunfocus` in the
+`@repl` scope) and its view `repl` register the way a plugin's do, so a key
+profile, a menu or a layout names them as it names any plugin's.
+
+The shipped `chthonia` plugin carries code: the Variables view in chthonia's
+right sidebar (View ▸ Variables), Thonny's. It lists the names the REPL session
+defined, each with its type and value (`count int 3`, `square int (int)`),
+refreshed after every entry and every F5 run and emptied when the session
+stops; choosing a name the program's file defined goes to its line. The
+packages ship it as its source plus its library, built by the packaged
+madcide.
+
+A library built against another plugin API version (it says both), or one
+that cannot be loaded or has no `madcide_plugin_activate`, is refused, and
+the plugin's source replaces it; the status line says so, so the library can
+be rebuilt. A source that does not compile (its first error, positioned) or
+has no activation, and an activation that returns false, are each reported on
+the status line, and the editor opens without the plugin; what a refused
+activation registered is taken back.
+Plugin libraries are Linux shared objects, Windows DLLs and macOS dylibs; a
+plugin binds the engine the editor loaded (`libmadc.so.0`, the
+`libmadc-0.dll` beside `madcide.exe`, `lib/libmadc-0.dylib`).
+
+A plugin's code can run in a process of its own, so a crash in it leaves the
+editor running. The manifest asks for it beside its code:
+
+```json
+{ "name": "hello", "api": 2, "code": "hello.mad", "transport": "host" }
+```
+
+and `"plugins.isolate": true` in `settings.json` does it for every plugin.
+madcide forks a child of itself that opens the plugin's code by the same rule
+(its library, else its source) and activates it; the plugin's source is the
+same either way. Its commands, views and events work as they do in madcide's
+process, and its `ide::` calls reach the session as requests. A line the
+child writes that is not a request (its own output, a crash report) shows on
+madcide's stderr. When the child ends, the status line says so and madcide
+starts it again, at most three times a session; then its commands say the
+plugin is not running. Windows has no fork, so there a plugin that asks for
+its own process runs in madcide's, and the status line says why.
+
+The seat (`madcide --serve`, `--attach`) answers the same requests from any
+client, under its tier: `{"plugin": "get", "key": K, "seq": N}` and
+`{"plugin": "command_id", "name": NAME, "seq": N}` (an observer may),
+`{"plugin": "set", "key": K, "value": V, "seq": N}` and
+`{"plugin": "show", "kind": KIND, "seq": N}` (an editor), and `{"plugin":
+"run", "code": C, "arg": A, "seq": N}` (the command's own tier); `scope`
+names an entity of the world, the session's when absent.

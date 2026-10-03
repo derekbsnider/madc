@@ -1,0 +1,31 @@
+// The decl-specifiers of a declaration qualify EVERY declarator of its list
+// (C11 6.7p1, [dcl.dcl]/9): in `const char *a = "x", *b = "y";` b is a
+// `const char *`, and in `const int ga = 1, gb = 2;` gb is a `const int`.
+// The tail of a list re-enters the declaration parser through
+// Program::push_declarator_list_tail; before B135 it re-pushed volatile,
+// extern, static and thread_local but not const, so every tail declarator was
+// unqualified and each `_Generic` below printed 0 for the tail (exit 0).
+//
+// gcc 13 and clang 18 (-std=c17) print the .expect line.
+#include <stdio.h>
+
+const char *a = "x", *b = "y";
+const int ga = 1, gb = 2;
+static const int sa = 5, sb = 6;
+
+int main(void)
+{
+	const int la = 3, lb = 4;
+	const char *p = "p", *q = "q";
+	volatile const int va = 7, vb = 8;
+	printf("%d %d %d %d %d %d %d %d\n",
+	       _Generic(b, const char *: 1, default: 0),
+	       _Generic(&gb, const int *: 1, default: 0),
+	       _Generic(&sb, const int *: 1, default: 0),
+	       _Generic(&lb, const int *: 1, default: 0),
+	       _Generic(q, const char *: 1, default: 0),
+	       _Generic(&vb, const volatile int *: 1, default: 0),
+	       _Generic(a, const char *: 1, default: 0),
+	       ga + gb + sa + sb + la + lb + va + vb + (p[0] - 'p'));
+	return 0;
+}

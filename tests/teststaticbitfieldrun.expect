@@ -1,0 +1,4 @@
+static: 1 12345 7 | 2 123456789a | fffffabc -3 | 3 ffeabcde -7
+auto: 1 12345 7 | 3 ffeabcde -7
+nested 0: 10 | 4 344865 8 | 5 2092491 6
+nested 1: 11 | -5 -26505 9 | -6 -4660 -7

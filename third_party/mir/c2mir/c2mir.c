@@ -6496,6 +6496,10 @@ struct decl {
   unsigned addr_p : 1, reg_p : 1, asm_p : 1, used_p : 1;
   /* function carries __attribute__((optimize("-fno-strict-aliasing"))): */
   unsigned no_strict_aliasing_p : 1;
+  /* a bit-field member read and written byte by byte: in a MadC settled layout
+     its bits run past its declared type's unit (a packed field straddles), or
+     that unit runs past the aggregate (set_type_layout) */
+  unsigned bit_field_bytes_p : 1;
   int bit_offset, width; /* for bitfields, -1 bit_offset for non bitfields. */
   mir_size_t offset;     /* var offset in frame or bss */
   node_t scope;          /* declaration scope */
@@ -6927,6 +6931,28 @@ static struct type *create_type (c2m_ctx_t c2m_ctx, struct type *copy) {
   return res;
 }
 
+/* C11 6.5.2.3p3-4: a member of a qualified object has the so-qualified type
+   (`vs.m` of a `volatile struct S vs` is a volatile int) -- an ARRAY member's
+   ELEMENTS (6.7.3p9).  Only const and volatile propagate; restrict and _Atomic
+   are the member's own.  TYPE is the member expression's private copy; an
+   array type is copied before its element is qualified (the declared member
+   type is shared). */
+static void qualify_member_type (c2m_ctx_t c2m_ctx, struct type *type,
+                                 const struct type_qual *obj_qual) {
+  if (!obj_qual->const_p && !obj_qual->volatile_p) return;
+  if (type->mode == TM_ARR) {
+    struct arr_type *arr_type = reg_malloc (c2m_ctx, sizeof (struct arr_type));
+
+    *arr_type = *type->u.arr_type;
+    arr_type->el_type = create_type (c2m_ctx, arr_type->el_type);
+    qualify_member_type (c2m_ctx, arr_type->el_type, obj_qual);
+    type->u.arr_type = arr_type;
+    return;
+  }
+  type->type_qual.const_p = type->type_qual.const_p || obj_qual->const_p;
+  type->type_qual.volatile_p = type->type_qual.volatile_p || obj_qual->volatile_p;
+}
+
 static struct type *create_vector_type_with_nel (c2m_ctx_t c2m_ctx, struct type *el_type,
                                                  mir_size_t size, mir_size_t nel,
                                                  node_t pos_node) {
@@ -7318,9 +7344,15 @@ static void set_type_layout (c2m_ctx_t c2m_ctx, struct type *type) {
           if (!settled_member_layout (el, &member_offset, &member_bit_offset, &member_width)) {
             error (c2m_ctx, POS (el), "missing or malformed MadC settled member layout");
           } else {
+            mir_size_t unit = type_size (c2m_ctx, decl->decl_spec.type);
+
             decl->offset = member_offset;
             decl->bit_offset = member_bit_offset;
             decl->width = member_width;
+            decl->bit_field_bytes_p
+              = member_width > 0
+                && ((mir_size_t) member_bit_offset + member_width > unit * MIR_CHAR_BIT
+                    || member_offset + unit > settled_size);
           }
           if (anon_process_p) update_members_offset (decl->decl_spec.type, decl->offset);
         }
@@ -7574,10 +7606,11 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
   case TP: to_e->c.mto = (cast) from_e->c.mfrom; break;
 #define BASIC_FROM_CONV(mfrom)                                                           \
   switch (to->u.basic_type) {                                                            \
-    CONV (TP_BOOL, mir_bool, u_val, mfrom) CONV (TP_UCHAR, mir_uchar, u_val, mfrom);     \
+  case TP_BOOL: to_e->c.u_val = from_e->c.mfrom != 0; break; /* C11 6.3.1.2 */      \
+    CONV (TP_UCHAR, mir_uchar, u_val, mfrom);                                            \
     CONV (TP_USHORT, mir_ushort, u_val, mfrom) CONV (TP_UINT, mir_uint, u_val, mfrom);   \
     CONV (TP_ULONG, mir_ulong, u_val, mfrom) CONV (TP_ULLONG, mir_ullong, u_val, mfrom); \
-    CONV (TP_SCHAR, mir_char, i_val, mfrom);                                             \
+    CONV (TP_SCHAR, mir_schar, i_val, mfrom);                                            \
     CONV (TP_SHORT, mir_short, i_val, mfrom) CONV (TP_INT, mir_int, i_val, mfrom);       \
     CONV (TP_LONG, mir_long, i_val, mfrom) CONV (TP_LLONG, mir_llong, i_val, mfrom);     \
     CONV (TP_FLOAT, mir_float, d_val, mfrom) CONV (TP_DOUBLE, mir_double, d_val, mfrom); \
@@ -7693,7 +7726,7 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
     } else {
       assert (to->mode == TM_BASIC);
       switch (to->u.basic_type) {
-      case TP_BOOL: to_e->c.u_val = (mir_bool) low; break;
+      case TP_BOOL: to_e->c.u_val = low != 0 || from_e->c_u_hi_val != 0; break;
       case TP_UCHAR: to_e->c.u_val = (mir_uchar) low; break;
       case TP_USHORT: to_e->c.u_val = (mir_ushort) low; break;
       case TP_UINT: to_e->c.u_val = (mir_uint) low; break;
@@ -7705,7 +7738,7 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
         else
           to_e->c.u_val = (mir_char) low;
         break;
-      case TP_SCHAR: to_e->c.i_val = (mir_char) low; break;
+      case TP_SCHAR: to_e->c.i_val = (mir_schar) low; break;
       case TP_SHORT: to_e->c.i_val = (mir_short) low; break;
       case TP_INT: to_e->c.i_val = (mir_int) low; break;
       case TP_LONG: to_e->c.i_val = (mir_long) low; break;
@@ -9235,6 +9268,35 @@ static void setup_const_addr_p (c2m_ctx_t c2m_ctx, node_t r) {
   e->c.i_val = offset;
 }
 
+/* The member of struct/union TYPE a field designator ID names. An unnamed
+   anonymous member's type opens no scope: its members are declared in the
+   scope of the aggregate holding it (where a member records it), so inside
+   its own braces (`{ .f = 1 }` for `union { int a; float f; };`) the name is
+   looked up there and must belong to it. */
+static int find_init_field (c2m_ctx_t c2m_ctx, node_t id, struct type *type, symbol_t *sym) {
+  node_t scope = type->u.tag_type;
+  decl_t decl;
+
+  if (type->unnamed_anon_struct_union_member_type_p) {
+    node_t decl_list = NL_EL (type->u.tag_type->u.ops, 1);
+
+    scope = NULL;
+    for (node_t m = NL_HEAD (decl_list->u.ops); m != NULL; m = NL_NEXT (m))
+      if (m->code == N_MEMBER && m->attr != NULL) {
+        scope = ((decl_t) m->attr)->scope;
+        break;
+      }
+    if (scope == NULL) return FALSE;
+  }
+  if (!symbol_find (c2m_ctx, S_REGULAR, id, scope, sym)) return FALSE;
+  if (!type->unnamed_anon_struct_union_member_type_p) return TRUE;
+  decl = sym->def_node->attr;
+  for (node_t c = decl->containing_unnamed_anon_struct_union_member; c != NULL;
+       c = ((decl_t) c->attr)->containing_unnamed_anon_struct_union_member)
+    if (((decl_t) c->attr)->decl_spec.type == type) return TRUE;
+  return FALSE;
+}
+
 static void process_init_field_designator (c2m_ctx_t c2m_ctx, node_t designator_member,
                                            struct type *container_type) {
   decl_t decl;
@@ -9258,6 +9320,7 @@ static void process_init_field_designator (c2m_ctx_t c2m_ctx, node_t designator_
   for (curr_member = decl->containing_unnamed_anon_struct_union_member; curr_member != NULL;
        curr_member = decl->containing_unnamed_anon_struct_union_member) {
     decl = curr_member->attr;
+    if (decl->decl_spec.type == container_type) break; /* inside its own braces */
     VARR_PUSH (node_t, containing_anon_members, curr_member);
   }
   while (VARR_LENGTH (node_t, containing_anon_members) != 0) {
@@ -9440,7 +9503,7 @@ check_one_value:
 
           if (curr_type->mode != TM_STRUCT && curr_type->mode != TM_UNION) {
             error (c2m_ctx, POS (curr_des), "field name not in struct or union initializer");
-          } else if (!symbol_find (c2m_ctx, S_REGULAR, id, curr_type->u.tag_type, &sym)) {
+          } else if (!find_init_field (c2m_ctx, id, curr_type, &sym)) {
             error (c2m_ctx, POS (curr_des), "unknown field %s in initializer", id->u.s.s);
           } else {
             process_init_field_designator (c2m_ctx, sym.def_node, curr_type);
@@ -9675,6 +9738,7 @@ static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
   decl->addr_p = FALSE;
   decl->reg_p = decl->asm_p = decl->used_p = FALSE;
   decl->no_strict_aliasing_p = FALSE;
+  decl->bit_field_bytes_p = FALSE;
   decl->offset = 0;
   decl->bit_offset = -1;
   decl->param_args_start = decl->param_args_num = 0;
@@ -10346,12 +10410,18 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
   node_t scope;
   mir_size_t start_offset = 0; /* to remove an uninitialized warning */
 
-  /* Exclude decls which will be in regs: */
+  /* Exclude decls which will be in regs.  A VOLATILE object never is: every access to it
+     must be a real load or store (C11 5.1.2.3p6), and a volatile local modified between
+     setjmp and longjmp keeps its last value only in memory (C11 7.13.2.1p3) -- a register
+     is restored to its setjmp-time contents.  Nor is an object whose alignment specifier
+     raises its type's (`_Alignas (16) char c;`): only a frame slot is placed on that
+     boundary, the generator's slot for a register's address is not. */
   for (i = j = 0; i < VARR_LENGTH (decl_t, func_decls_for_allocation); i++) {
     decl = VARR_GET (decl_t, func_decls_for_allocation, i);
     type = decl->decl_spec.type;
     ns = decl->scope->attr;
-    if (scalar_type_p (type) && !int128_type_p (type)) {
+    if (scalar_type_p (type) && !int128_type_p (type) && !type->type_qual.volatile_p
+        && decl->decl_spec.align <= (int) var_align (c2m_ctx, type)) {
       decl->reg_p = TRUE;
       continue;
     }
@@ -10385,7 +10455,17 @@ static void process_func_decls_for_allocation (c2m_ctx_t c2m_ctx) {
         start_offset = 0;
       }
     }
-    ns->offset = round_size (ns->offset, var_align (c2m_ctx, type));
+    {
+      /* An alignment specifier on the object (C11 6.7.5: `_Alignas (16) char c;`)
+         places it on that boundary, not only on its type's.  The frame itself is
+         rounded to MAX_ALIGNMENT, the largest alignment the target admits
+         (invalid_alignment). */
+      mir_size_t align = var_align (c2m_ctx, type);
+
+      if (decl->decl_spec.align > 0 && (mir_size_t) decl->decl_spec.align > align)
+        align = decl->decl_spec.align;
+      ns->offset = round_size (ns->offset, align);
+    }
     decl->offset = ns->offset;
     ns->offset += var_size (c2m_ctx, type);
     ns->size = ns->offset - start_offset;
@@ -11032,6 +11112,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                NL_HEAD (declarator->u.ops)->u.s.s);
       }
       t2 = create_type (c2m_ctx, decl->decl_spec.type);
+      /* The member expression's qualifiers include its object's
+         (qualify_member_type): `&vs.m` of a volatile `vs` is `volatile int *`. */
+      t2->type_qual = type_qual_union (&t2->type_qual, &e1->type->type_qual);
       if (op1->code == N_DEREF_FIELD && (e2 = NL_HEAD (op1->u.ops)->attr)->const_p) {
         e->const_p = TRUE;
         e->c.u_val = e2->c.u_val + decl->offset;
@@ -11088,6 +11171,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       assert (sym.def_node->code == N_MEMBER);
       decl = sym.def_node->attr;
       *e->type = *decl->decl_spec.type;
+      qualify_member_type (c2m_ctx, e->type, &t1->type_qual);
       e->u.lvalue_node = sym.def_node;
       if ((width = NL_EL (sym.def_node->u.ops, 3))->code != N_IGNORE && e->type->mode == TM_BASIC
           && (width_expr = width->attr)->const_p
@@ -11701,8 +11785,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     op1 = NL_HEAD (r->u.ops);
     check (c2m_ctx, op1, r);
     e1 = op1->attr;
-    t = *e1->type;
-    if (integer_type_p (&t)) t = integer_promotion (&t);
+    /* The controlling expression undergoes lvalue conversion and array/function-to-pointer
+       conversion ONLY (C11 6.5.1.1p2, C17 DR 481): no integer promotions (a char selects
+       char), and only the top level's qualifiers drop -- a pointee's stay. */
+    t = *adjust_type (c2m_ctx, e1->type);
+    clear_type_qual (&t.type_qual);
     list = NL_NEXT (op1);
     for (ga = NL_HEAD (list->u.ops); ga != NULL; ga = NL_NEXT (ga)) {
       assert (ga->code == N_GENERIC_ASSOC);
@@ -11719,7 +11806,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       decl_spec = type_name->attr;
       if (incomplete_type_p (c2m_ctx, decl_spec->type)) {
         error (c2m_ctx, POS (ga), "_Generic case has incomplete type");
-      } else if (compatible_types_p (&t, decl_spec->type, TRUE)) {
+      } else if (compatible_types_p (&t, decl_spec->type, FALSE)) {
         if (ga_case)
           error (c2m_ctx, POS (ga_case),
                  "_Generic expr type is compatible with more than one generic association type");
@@ -11729,7 +11816,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
           type_name2 = NL_HEAD (ga2->u.ops);
           if (type_name2->code != N_IGNORE
               && !(incomplete_type_p (c2m_ctx, t2 = ((struct decl_spec *) type_name2->attr)->type))
-              && compatible_types_p (t2, decl_spec->type, TRUE)) {
+              && compatible_types_p (t2, decl_spec->type, FALSE)) {
             error (c2m_ctx, POS (ga), "two or more compatible generic association types");
             break;
           }
@@ -12577,6 +12664,8 @@ struct gen_ctx {
     VARR (MIR_var_t) * arg_vars;
   } proto_info;
   VARR (init_el_t) * init_els;
+  size_t init_els_start; /* the first element of the initializer being collected */
+  mir_size_t init_els_num; /* the next element's number: source order, never reused */
   MIR_item_t abort_proto, abort_item;
   MIR_item_t memcmp_proto, memcmp_item;
   MIR_item_t copysignf_proto, copysignf_item;
@@ -12613,6 +12702,8 @@ struct gen_ctx {
 #define stmtexpr_last_expr gen_ctx->stmtexpr_last_expr
 #define proto_info gen_ctx->proto_info
 #define init_els gen_ctx->init_els
+#define init_els_start gen_ctx->init_els_start
+#define init_els_num gen_ctx->init_els_num
 #define abort_proto gen_ctx->abort_proto
 #define abort_item gen_ctx->abort_item
 #define memcmp_proto gen_ctx->memcmp_proto
@@ -13143,6 +13234,54 @@ static void emit2_noopt (c2m_ctx_t c2m_ctx, MIR_insn_code_t code, MIR_op_t op1, 
   emit_insn (c2m_ctx, MIR_new_insn (c2m_ctx->ctx, code, op1, op2));
 }
 
+/* MIR has no floating -> UNSIGNED integer conversion: MIR_F2I / MIR_D2I /
+   MIR_LD2I are all signed, and a value at or above 2^63 has no signed 64-bit
+   image, so every target yields its "integer indefinite" (2^63) instead of the
+   value.  `(uint64_t) 1.8e19` therefore answered 9223372036854775808 --
+   silently, with the right exit status.  Lower it here, the way gcc does
+   (oracle: gcc -O2 -S on `(uint64_t) d`): below 2^63 convert directly; at or
+   above it, subtract 2^63, convert, and put bit 63 back with an xor (gcc's
+   btcq).  gcc branches; we do it branchlessly, because cast() emits a
+   straight-line sequence and owns no basic blocks, and every MIR target has an
+   FP comparison that yields 0 or 1 in an integer register.
+
+     c   = fp >= 2^63                 -- 0 or 1
+     fp2 = fp - (fp_type) c * 2^63
+     res = (int64_t) fp2 ^ (c << 63)
+
+   The subtraction cannot round.  Every value representable in [2^63, 2^64) is
+   a multiple of its own ulp, which is >= 1 in all three formats, and the
+   difference is below 2^63, so it is exact in the same format -- for float and
+   double as well as long double.  A negative or NaN operand takes the c == 0
+   arm, i.e. the plain signed conversion: what gcc emits, and undefined
+   behaviour in C either way.  */
+static op_t fp_to_uint64 (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t ft) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_insn_code_t ge_code = ft == MIR_T_F ? MIR_FGE : ft == MIR_T_D ? MIR_DGE : MIR_LDGE;
+  MIR_insn_code_t mul_code = ft == MIR_T_F ? MIR_FMUL : ft == MIR_T_D ? MIR_DMUL : MIR_LDMUL;
+  MIR_insn_code_t sub_code = ft == MIR_T_F ? MIR_FSUB : ft == MIR_T_D ? MIR_DSUB : MIR_LDSUB;
+  MIR_insn_code_t i2fp_code = ft == MIR_T_F ? MIR_I2F : ft == MIR_T_D ? MIR_I2D : MIR_I2LD;
+  MIR_insn_code_t fp2i_code = ft == MIR_T_F ? MIR_F2I : ft == MIR_T_D ? MIR_D2I : MIR_LD2I;
+  MIR_op_t two63_op = (ft == MIR_T_F   ? MIR_new_float_op (ctx, 9223372036854775808.0f)
+                       : ft == MIR_T_D ? MIR_new_double_op (ctx, 9223372036854775808.0)
+                                       : MIR_new_ldouble_op (ctx, 9223372036854775808.0L));
+  op_t val = get_new_temp (c2m_ctx, ft), two63 = get_new_temp (c2m_ctx, ft);
+  op_t bias = get_new_temp (c2m_ctx, ft), adj = get_new_temp (c2m_ctx, ft);
+  op_t big = get_new_temp (c2m_ctx, MIR_T_I64), top = get_new_temp (c2m_ctx, MIR_T_I64);
+  op_t res = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  emit2 (c2m_ctx, tp_mov (ft), val.mir_op, op.mir_op);
+  emit2 (c2m_ctx, tp_mov (ft), two63.mir_op, two63_op);
+  emit3 (c2m_ctx, ge_code, big.mir_op, val.mir_op, two63.mir_op);
+  emit2 (c2m_ctx, i2fp_code, bias.mir_op, big.mir_op);
+  emit3 (c2m_ctx, mul_code, bias.mir_op, bias.mir_op, two63.mir_op);
+  emit3 (c2m_ctx, sub_code, adj.mir_op, val.mir_op, bias.mir_op);
+  emit2 (c2m_ctx, fp2i_code, res.mir_op, adj.mir_op);
+  emit3 (c2m_ctx, MIR_LSH, top.mir_op, big.mir_op, MIR_new_int_op (ctx, 63));
+  emit3 (c2m_ctx, MIR_XOR, res.mir_op, res.mir_op, top.mir_op);
+  return res;
+}
+
 static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
   op_t res, interm;
   MIR_type_t op_type;
@@ -13259,6 +13398,8 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
     break;
   case MIR_OP_FLOAT:
   float_val:
+    /* MIR_F2I/D2I/LD2I below are SIGNED; a u64 target needs its own lowering. */
+    if (t == MIR_T_U64) return fp_to_uint64 (c2m_ctx, op, MIR_T_F);
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_F2I
@@ -13273,6 +13414,8 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
     break;
   case MIR_OP_DOUBLE:
   double_val:
+    /* MIR_F2I/D2I/LD2I below are SIGNED; a u64 target needs its own lowering. */
+    if (t == MIR_T_U64) return fp_to_uint64 (c2m_ctx, op, MIR_T_D);
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_D2I
@@ -13287,6 +13430,8 @@ static op_t cast (c2m_ctx_t c2m_ctx, op_t op, MIR_type_t t, int new_op_p) {
     break;
   case MIR_OP_LDOUBLE:
   ldouble_val:
+    /* MIR_F2I/D2I/LD2I below are SIGNED; a u64 target needs its own lowering. */
+    if (t == MIR_T_U64) return fp_to_uint64 (c2m_ctx, op, MIR_T_LD);
     insn_code = (t == MIR_T_I8 || t == MIR_T_U8 || t == MIR_T_I16 || t == MIR_T_U16
                      || t == MIR_T_I32 || t == MIR_T_U32 || t == MIR_T_I64 || t == MIR_T_U64
                    ? MIR_LD2I
@@ -13373,10 +13518,44 @@ static op_t mem_to_address (c2m_ctx_t c2m_ctx, op_t mem, int reg_p) {
   return mem;
 }
 
+static MIR_op_t mem_part_op (MIR_context_t ctx, MIR_op_t mem, MIR_type_t type, MIR_disp_t offset);
+
+/* The bits of bit-field OP (bit_field_bytes_p) read byte by byte, from the
+   byte holding its first bit, into a 64-bit temp in which the field starts at
+   bit *BIT_OFFSET (little-endian bit order). */
+static op_t bit_field_bytes_load (c2m_ctx_t c2m_ctx, op_t op, int *bit_offset) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  int first = op.decl->bit_offset / MIR_CHAR_BIT, bo = op.decl->bit_offset % MIR_CHAR_BIT;
+  int nbytes = (bo + op.decl->width + MIR_CHAR_BIT - 1) / MIR_CHAR_BIT;
+  op_t bits = get_new_temp (c2m_ctx, MIR_T_I64), byte = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  assert (nbytes <= 9);
+  for (int k = 0; k < nbytes && k < 8; k++) {
+    MIR_op_t mem = mem_part_op (ctx, op.mir_op, MIR_T_U8, first + k);
+
+    if (k == 0) {
+      emit2 (c2m_ctx, MIR_MOV, bits.mir_op, mem);
+    } else {
+      emit2 (c2m_ctx, MIR_MOV, byte.mir_op, mem);
+      emit3 (c2m_ctx, MIR_LSH, byte.mir_op, byte.mir_op, MIR_new_int_op (ctx, k * MIR_CHAR_BIT));
+      emit3 (c2m_ctx, MIR_OR, bits.mir_op, bits.mir_op, byte.mir_op);
+    }
+  }
+  if (nbytes == 9) { /* a 57..64-bit field starting past bit 0: byte 9 holds its top bits */
+    emit3 (c2m_ctx, MIR_URSH, bits.mir_op, bits.mir_op, MIR_new_int_op (ctx, bo));
+    emit2 (c2m_ctx, MIR_MOV, byte.mir_op, mem_part_op (ctx, op.mir_op, MIR_T_U8, first + 8));
+    emit3 (c2m_ctx, MIR_LSH, byte.mir_op, byte.mir_op, MIR_new_int_op (ctx, 64 - bo));
+    emit3 (c2m_ctx, MIR_OR, bits.mir_op, bits.mir_op, byte.mir_op);
+    bo = 0;
+  }
+  *bit_offset = bo;
+  return bits;
+}
+
 static op_t force_val (c2m_ctx_t c2m_ctx, op_t op, int arr_p) {
   MIR_context_t ctx = c2m_ctx->ctx;
   op_t temp_op;
-  int sh;
+  int sh, bit_offset;
   MIR_type_t t;
 
   if (arr_p && op.mir_op.mode == MIR_OP_MEM) {
@@ -13400,13 +13579,20 @@ static op_t force_val (c2m_ctx_t c2m_ctx, op_t op, int arr_p) {
   }
   if (op.decl == NULL || op.decl->bit_offset < 0) return op;
   assert (op.mir_op.mode == MIR_OP_MEM);
-  temp_op = get_new_temp (c2m_ctx, MIR_T_I64);
-  emit2 (c2m_ctx, MIR_MOV, temp_op.mir_op, op.mir_op); /* ??? */
+  if (op.decl->bit_field_bytes_p) {
+    /* MadC settles a byte-wise bit-field for little-endian targets only */
+    assert (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
+    temp_op = bit_field_bytes_load (c2m_ctx, op, &bit_offset);
+    sh = 64 - bit_offset - op.decl->width;
+  } else {
+    temp_op = get_new_temp (c2m_ctx, MIR_T_I64);
+    emit2 (c2m_ctx, MIR_MOV, temp_op.mir_op, op.mir_op); /* ??? */
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  sh = 64 - op.decl->bit_offset - op.decl->width;
+    sh = 64 - op.decl->bit_offset - op.decl->width;
 #else
-  sh = op.decl->bit_offset + (64 - type_size (c2m_ctx, op.decl->decl_spec.type) * MIR_CHAR_BIT);
+    sh = op.decl->bit_offset + (64 - type_size (c2m_ctx, op.decl->decl_spec.type) * MIR_CHAR_BIT);
 #endif
+  }
   if (sh != 0) emit3 (c2m_ctx, MIR_LSH, temp_op.mir_op, temp_op.mir_op, MIR_new_int_op (ctx, sh));
   emit3 (c2m_ctx,
          signed_integer_type_p (op.decl->decl_spec.type)
@@ -13629,10 +13815,35 @@ static MIR_label_t get_label (c2m_ctx_t c2m_ctx, node_t target) {
   return labels->attr = MIR_new_label (c2m_ctx->ctx);
 }
 
+/* An expression evaluated only for its side effects still performs its volatile read (C11
+   5.1.2.3p6): `*vp;`, `(void) *vp` and `(*vp, 0)` read *vp, as gcc and clang do.  R is the
+   discarded expression and RES its generated operand.  Only an lvalue designator reads: the
+   operand an assignment returns is the lvalue it stored to, never re-read. */
+static op_t gen_discarded_volatile_read (c2m_ctx_t c2m_ctx, node_t r, op_t res) {
+  MIR_type_t t;
+  op_t temp;
+
+  /* The node's code first: top_gen also generates statements, whose operand is never set. */
+  if ((r->code != N_ID && r->code != N_DEREF && r->code != N_IND && r->code != N_FIELD
+       && r->code != N_DEREF_FIELD)
+      || res.mir_op.mode != MIR_OP_MEM || !res.mir_op.u.mem.volatile_p
+      || !scalar_type_p (((struct expr *) r->attr)->type))
+    return res;
+  res = force_val (c2m_ctx, res, FALSE); /* a bit-field is read (and extracted) here */
+  if (res.mir_op.mode == MIR_OP_MEM) {
+    t = res.mir_op.u.mem.type;
+    temp = get_new_temp (c2m_ctx, promote_mir_int_type (t));
+    emit2 (c2m_ctx, tp_mov (t), temp.mir_op, res.mir_op);
+    res = temp;
+  }
+  return res;
+}
+
 static void top_gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_t false_label,
                      int *expect_res) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   top_gen_last_op = gen (c2m_ctx, r, true_label, false_label, FALSE, NULL, expect_res);
+  if (true_label == NULL) top_gen_last_op = gen_discarded_volatile_read (c2m_ctx, r, top_gen_last_op);
 }
 
 static op_t modify_for_block_move (c2m_ctx_t c2m_ctx, op_t mem, op_t index) {
@@ -13900,13 +14111,28 @@ static op_t int128_temp (c2m_ctx_t c2m_ctx) {
   return new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, addr.mir_op.u.reg, 0, 1));
 }
 
-static op_t int128_half_op (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t type, int offset) {
-  MIR_context_t ctx = c2m_ctx->ctx;
+/* The memory operand for the part of MEM at byte OFFSET, of TYPE: a member, an __int128 half, a
+   complex component, a block chunk.  The ONE builder of a sub-object operand -- a part of a
+   volatile object is volatile too (C11 6.5.2.3p3). */
+static MIR_op_t mem_part_op (MIR_context_t ctx, MIR_op_t mem, MIR_type_t type, MIR_disp_t offset) {
+  MIR_op_t part;
 
+  assert (mem.mode == MIR_OP_MEM);
+  part = MIR_new_mem_op (ctx, type, mem.u.mem.disp + offset, mem.u.mem.base, mem.u.mem.index,
+                         mem.u.mem.scale);
+  part.u.mem.volatile_p = mem.u.mem.volatile_p;
+  return part;
+}
+
+static op_t int128_half_op (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t type, int offset) {
   assert (mem.mir_op.mode == MIR_OP_MEM);
-  return new_op (NULL, MIR_new_mem_op (ctx, type, mem.mir_op.u.mem.disp + offset,
-                                       mem.mir_op.u.mem.base, mem.mir_op.u.mem.index,
-                                       mem.mir_op.u.mem.scale));
+  return new_op (NULL, mem_part_op (c2m_ctx->ctx, mem.mir_op, type, offset));
+}
+
+/* An lvalue of volatile-qualified TYPE is accessed exactly as written (C11 5.1.2.3p6): mark its
+   memory operand, so the generator never removes, merges or moves the access. */
+static void mark_volatile_lvalue (op_t *op, struct type *type) {
+  if (op->mir_op.mode == MIR_OP_MEM && type->type_qual.volatile_p) op->mir_op.u.mem.volatile_p = TRUE;
 }
 
 static void store_int128_halves (c2m_ctx_t c2m_ctx, op_t dest, op_t low, op_t high) {
@@ -14942,6 +15168,51 @@ static void emit_int128_branch_lt_le (c2m_ctx_t c2m_ctx, MIR_label_t target, int
   emit3 (c2m_ctx, le_p ? MIR_UBLE : MIR_UBLT, MIR_new_label_op (ctx, target), low.mir_op,
          MIR_new_uint_op (ctx, kl));
   emit_label_insn_opt (c2m_ctx, skip);
+}
+
+static int bool_type_p (struct type *type) {
+  return type != NULL && type->mode == TM_BASIC && type->u.basic_type == TP_BOOL;
+}
+
+/* C11 6.3.1.2: a scalar converted to _Bool is 0 when it compares equal to 0,
+   else 1.  MIR has no boolean type (_Bool is U8), so a conversion that only
+   narrows keeps the low byte: 256, 0.5 and a 256-aligned pointer were 0.  The
+   value OP (any scalar MIR type) as an I64 0/1. */
+static op_t scalar_truth_val (c2m_ctx_t c2m_ctx, op_t op) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_type_t t = get_op_type (c2m_ctx, op);
+  op_t res = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  if (t == MIR_T_F) {
+    emit3 (c2m_ctx, MIR_FNE, res.mir_op, op.mir_op, MIR_new_float_op (ctx, 0.0f));
+  } else if (t == MIR_T_D) {
+    emit3 (c2m_ctx, MIR_DNE, res.mir_op, op.mir_op, MIR_new_double_op (ctx, 0.0));
+  } else if (t == MIR_T_LD) {
+    emit3 (c2m_ctx, MIR_LDNE, res.mir_op, op.mir_op, MIR_new_ldouble_op (ctx, 0.0));
+  } else {
+    if (op.mir_op.mode == MIR_OP_MEM) { /* load (and extend) the narrow value */
+      op_t v = get_new_temp (c2m_ctx, MIR_T_I64);
+
+      emit2 (c2m_ctx, MIR_MOV, v.mir_op, op.mir_op);
+      op = v;
+    }
+    emit3 (c2m_ctx, MIR_NE, res.mir_op, op.mir_op, MIR_new_int_op (ctx, 0));
+  }
+  return res;
+}
+
+static op_t int128_scalar_truth_val (c2m_ctx_t c2m_ctx, op_t src);
+
+/* The value OP of C type FROM converted to C type TO is a truth value when TO
+   is _Bool and FROM is another scalar.  Apply it before any narrowing: a
+   scalar __int128 value (in memory) tests both halves. */
+static op_t bool_conversion (c2m_ctx_t c2m_ctx, op_t op, struct type *from, struct type *to) {
+  if (!bool_type_p (to) || from == NULL || bool_type_p (from) || !scalar_type_p (from)
+      || complex_type_p (from))
+    return op;
+  if (int128_type_p (from))
+    return op.mir_op.mode == MIR_OP_MEM ? int128_scalar_truth_val (c2m_ctx, op) : op;
+  return scalar_truth_val (c2m_ctx, op);
 }
 
 /* Scalar __int128 truth value: low|high != 0, as an I64 0/1. */
@@ -15982,9 +16253,7 @@ static op_t MIR_UNUSED simple_gen_post_call_res_code (c2m_ctx_t c2m_ctx,
     /* the V128 result register into the memory-backed result slot the call
        lowering reserved for a memory-value type returned in registers */
     assert (res.mir_op.mode == MIR_OP_MEM);
-    emit2 (c2m_ctx, MIR_VMOV,
-           MIR_new_mem_op (c2m_ctx->ctx, MIR_T_V128, res.mir_op.u.mem.disp, res.mir_op.u.mem.base,
-                           res.mir_op.u.mem.index, res.mir_op.u.mem.scale),
+    emit2 (c2m_ctx, MIR_VMOV, mem_part_op (c2m_ctx->ctx, res.mir_op, MIR_T_V128, 0),
            VARR_GET (MIR_op_t, call_ops, call_ops_start + 2));
   }
   return res;
@@ -16137,16 +16406,9 @@ static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct
     assert (size % 8 == 0);
     for (i = 0; size > 0; size -= 8, i++) {
       if (load_p) {
-        insn = MIR_new_insn (ctx, MIR_MOV, var_ops[i],
-                             MIR_new_mem_op (ctx, MIR_T_I64, mem_op.u.mem.disp + i * 8,
-                                             mem_op.u.mem.base, mem_op.u.mem.index,
-                                             mem_op.u.mem.scale));
+        insn = MIR_new_insn (ctx, MIR_MOV, var_ops[i], mem_part_op (ctx, mem_op, MIR_T_I64, i * 8));
       } else {
-        insn = MIR_new_insn (ctx, MIR_MOV,
-                             MIR_new_mem_op (ctx, MIR_T_I64, mem_op.u.mem.disp + i * 8,
-                                             mem_op.u.mem.base, mem_op.u.mem.index,
-                                             mem_op.u.mem.scale),
-                             var_ops[i]);
+        insn = MIR_new_insn (ctx, MIR_MOV, mem_part_op (ctx, mem_op, MIR_T_I64, i * 8), var_ops[i]);
       }
       MIR_append_insn (ctx, curr_func, insn);
     }
@@ -16162,10 +16424,7 @@ static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct
     for (i = 0; size > 0; size--, i++) {
       var_op = var_ops[i / 8];
       if (load_p) {
-        insn
-          = MIR_new_insn (ctx, MIR_MOV, op,
-                          MIR_new_mem_op (ctx, MIR_T_U8, mem_op.u.mem.disp + i, mem_op.u.mem.base,
-                                          mem_op.u.mem.index, mem_op.u.mem.scale));
+        insn = MIR_new_insn (ctx, MIR_MOV, op, mem_part_op (ctx, mem_op, MIR_T_U8, i));
         MIR_append_insn (ctx, curr_func, insn);
         if ((sh = i * 8 % 64) != 0) {
           insn = MIR_new_insn (ctx, MIR_LSH, op, op, MIR_new_int_op (ctx, sh));
@@ -16179,11 +16438,7 @@ static inline void MIR_UNUSED gen_multiple_load_store (c2m_ctx_t c2m_ctx, struct
         else
           insn = MIR_new_insn (ctx, MIR_URSH, op, var_op, MIR_new_int_op (ctx, sh));
         MIR_append_insn (ctx, curr_func, insn);
-        insn
-          = MIR_new_insn (ctx, MIR_MOV,
-                          MIR_new_mem_op (ctx, MIR_T_U8, mem_op.u.mem.disp + i, mem_op.u.mem.base,
-                                          mem_op.u.mem.index, mem_op.u.mem.scale),
-                          op);
+        insn = MIR_new_insn (ctx, MIR_MOV, mem_part_op (ctx, mem_op, MIR_T_U8, i), op);
         MIR_append_insn (ctx, curr_func, insn);
       }
     }
@@ -16368,6 +16623,81 @@ static mir_size_t get_object_path_offset (c2m_ctx_t c2m_ctx) {
   return offset;
 }
 
+/* The bits [*start, *end) of the object that init element EL initializes. */
+static void init_el_bits (c2m_ctx_t c2m_ctx, const init_el_t *el, mir_size_t *start,
+                          mir_size_t *end) {
+  if (el->member_decl != NULL && el->member_decl->bit_offset >= 0) {
+    *start = el->offset * MIR_CHAR_BIT + (mir_size_t) el->member_decl->bit_offset;
+    *end = *start + (mir_size_t) el->member_decl->width;
+  } else {
+    *start = el->offset * MIR_CHAR_BIT;
+    *end = *start
+           + (incomplete_type_p (c2m_ctx, el->el_type)
+                ? 0
+                : raw_type_size (c2m_ctx, el->el_type) * MIR_CHAR_BIT);
+  }
+}
+
+/* Write constant character EL into a copy of STR_EL's narrow string literal,
+   which holds it.  FALSE when EL is not a constant character. */
+static int patch_str_init_el (c2m_ctx_t c2m_ctx, init_el_t *str_el, const init_el_t *el) {
+  struct expr *e = el->init->attr;
+  node_t str = str_el->init;
+  mir_size_t pos = el->offset - str_el->offset, len = str->u.s.len;
+  VARR (char) * buf;
+  node_t patched;
+
+  if (str->code != N_STR || el->member_decl != NULL || e == NULL || !e->const_p
+      || !integer_type_p (e->type) || raw_type_size (c2m_ctx, el->el_type) != 1)
+    return FALSE;
+  VARR_CREATE (char, buf, c2m_alloc (c2m_ctx), len > pos ? len : pos + 1);
+  for (mir_size_t k = 0; k < len; k++) VARR_PUSH (char, buf, str->u.s.s[k]);
+  while (VARR_LENGTH (char, buf) <= pos) VARR_PUSH (char, buf, 0);
+  VARR_SET (char, buf, pos, (char) e->c.u_val);
+  patched = new_str_node (c2m_ctx, N_STR,
+                          uniq_str (c2m_ctx, VARR_ADDR (char, buf), VARR_LENGTH (char, buf)),
+                          POS (str));
+  patched->attr = str->attr;
+  str_el->init = patched;
+  VARR_DESTROY (char, buf);
+  return TRUE;
+}
+
+/* C11 6.7.9p19: each initializer overrides any earlier one for the same
+   subobject.  Drop the elements of the initializer being collected that the
+   bits [start, end) override: an element inside them, and a scalar
+   overlapping them (another member of a union).  An earlier string or
+   aggregate value holding them keeps its other parts: NEW_EL, a constant
+   character of a static initializer inside an earlier string, is written
+   into that string (static data lays out one element per byte range), and
+   TRUE says it was. */
+static int override_init_els (c2m_ctx_t c2m_ctx, mir_size_t start, mir_size_t end,
+                              const init_el_t *new_el) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  size_t j = init_els_start;
+  int patched_p = FALSE;
+
+  if (start >= end) return FALSE;
+  for (size_t i = init_els_start; i < VARR_LENGTH (init_el_t, init_els); i++) {
+    init_el_t el = VARR_GET (init_el_t, init_els, i);
+    mir_size_t s, e;
+
+    init_el_bits (c2m_ctx, &el, &s, &e);
+    if (s < end && start < e) {
+      if (start <= s && e <= end) continue;
+      if (el.init->code == N_STR || el.init->code == N_STR16 || el.init->code == N_STR32) {
+        if (new_el != NULL && !patched_p && s <= start && end <= e)
+          patched_p = patch_str_init_el (c2m_ctx, &el, new_el);
+      } else if (scalar_type_p (el.el_type)) {
+        continue;
+      }
+    }
+    VARR_SET (init_el_t, init_els, j++, el);
+  }
+  VARR_TRUNC (init_el_t, init_els, j);
+  return patched_p;
+}
+
 /* The function has the same structure as check_initializer.  Keep it this way. */
 static void collect_init_els (c2m_ctx_t c2m_ctx, decl_t member_decl, struct type **type_ptr,
                               node_t initializer, int const_only_p, int top_p MIR_UNUSED) {
@@ -16397,7 +16727,7 @@ check_one_value:
             || initializer->code == N_STR32 || !const_only_p || cexpr->const_p
             || cexpr->const_addr_p || (literal != NULL && addr_p));
     init_el.c2m_ctx = c2m_ctx;
-    init_el.num = VARR_LENGTH (init_el_t, init_els);
+    init_el.num = init_els_num++;
     init_el.offset = get_object_path_offset (c2m_ctx);
     init_el.member_decl = member_decl;
     init_el.el_type = type;
@@ -16405,6 +16735,12 @@ check_one_value:
                                ? NULL
                                : VARR_LAST (init_object_t, init_object_path).container_type;
     init_el.init = initializer;
+    {
+      mir_size_t start, end;
+
+      init_el_bits (c2m_ctx, &init_el, &start, &end);
+      if (override_init_els (c2m_ctx, start, end, const_only_p ? &init_el : NULL)) return;
+    }
     VARR_PUSH (init_el_t, init_els, init_el);
     return;
   }
@@ -16418,7 +16754,7 @@ check_one_value:
                || str->code == N_STR32)))
       && type->mode == TM_ARR && init_compatible_string_p (str, type->u.arr_type->el_type)) {
     init_el.c2m_ctx = c2m_ctx;
-    init_el.num = VARR_LENGTH (init_el_t, init_els);
+    init_el.num = init_els_num++;
     init_el.offset = get_object_path_offset (c2m_ctx);
     init_el.member_decl = NULL;
     init_el.el_type = type;
@@ -16426,8 +16762,26 @@ check_one_value:
                                ? NULL
                                : VARR_LAST (init_object_t, init_object_path).container_type;
     init_el.init = str;
+    {
+      mir_size_t start, end;
+
+      init_el_bits (c2m_ctx, &init_el, &start, &end);
+      override_init_els (c2m_ctx, start, end, NULL);
+    }
     VARR_PUSH (init_el_t, init_els, init_el);
     return;
+  }
+  if (!top_p && !incomplete_type_p (c2m_ctx, type)) {
+    /* A brace list for a subobject initializes all of it (6.7.9p19).  The path
+       offset leaves out an unnamed anonymous member's own offset (its members
+       carry adjusted ones), so a list for that member adds it. */
+    mir_size_t start = get_object_path_offset (c2m_ctx);
+
+    if (member_decl != NULL && type->unnamed_anon_struct_union_member_type_p)
+      start += member_decl->offset;
+    start *= MIR_CHAR_BIT;
+    override_init_els (c2m_ctx, start, start + raw_type_size (c2m_ctx, type) * MIR_CHAR_BIT,
+                       NULL);
   }
   if (init == NULL) return;
   assert (init->code == N_INIT);
@@ -16488,7 +16842,7 @@ check_one_value:
 
           /* field should be only in struct/union initializer */
           assert (curr_type->mode == TM_STRUCT || curr_type->mode == TM_UNION);
-          found_p = symbol_find (c2m_ctx, S_REGULAR, id, curr_type->u.tag_type, &sym);
+          found_p = find_init_field (c2m_ctx, id, curr_type, &sym);
           assert (found_p); /* field should present */
           process_init_field_designator (c2m_ctx, sym.def_node, curr_type);
           ok_p = update_path_and_do (c2m_ctx, NL_NEXT (curr_des) == NULL, collect_init_els, mark,
@@ -16759,10 +17113,62 @@ static void gen_memcpy (c2m_ctx_t c2m_ctx, MIR_disp_t disp, MIR_reg_t base, op_t
   emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_CALL, 6 /* args + proto + func + res */, args));
 }
 
+/* Store *VAL into bit-field VAR (bit_field_bytes_p) byte by byte, touching
+   only the bytes holding its bits (little-endian bit order): a byte the field
+   fills is written, any other is merged (or, when IGNORE_OTHERS_P, written
+   with its other bits zero).  *VAL becomes the stored value, as in
+   emit_scalar_assign. */
+static void emit_bit_field_bytes_store (c2m_ctx_t c2m_ctx, op_t var, op_t *val,
+                                        int ignore_others_p) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  int first = var.decl->bit_offset / MIR_CHAR_BIT, bo = var.decl->bit_offset % MIR_CHAR_BIT;
+  int width = var.decl->width, nbytes = (bo + width + MIR_CHAR_BIT - 1) / MIR_CHAR_BIT;
+  uint64_t mask = 0xffffffffffffffff >> (64 - width);
+  op_t v = get_new_temp (c2m_ctx, MIR_T_I64), bits = get_new_temp (c2m_ctx, MIR_T_I64);
+  op_t part = get_new_temp (c2m_ctx, MIR_T_I64), old = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  /* MadC settles a byte-wise bit-field for little-endian targets only */
+  assert (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__ && nbytes <= 9);
+  if (signed_integer_type_p (var.decl->decl_spec.type)) {
+    emit3 (c2m_ctx, MIR_LSH, v.mir_op, val->mir_op, MIR_new_int_op (ctx, 64 - width));
+    emit3 (c2m_ctx, MIR_RSH, v.mir_op, v.mir_op, MIR_new_int_op (ctx, 64 - width));
+  } else {
+    emit3 (c2m_ctx, MIR_AND, v.mir_op, val->mir_op, MIR_new_uint_op (ctx, mask));
+  }
+  *val = v;
+  emit3 (c2m_ctx, MIR_AND, bits.mir_op, v.mir_op, MIR_new_uint_op (ctx, mask));
+  for (int k = 0; k < nbytes; k++) {
+    /* the field bit at this byte's bit 0 (negative: the field starts inside it) */
+    int lo = k * MIR_CHAR_BIT - bo;
+    uint64_t byte_mask = (lo < 0 ? mask << -lo : mask >> lo) & 0xff;
+    MIR_op_t mem = mem_part_op (ctx, var.mir_op, MIR_T_U8, first + k);
+
+    if (lo < 0)
+      emit3 (c2m_ctx, MIR_LSH, part.mir_op, bits.mir_op, MIR_new_int_op (ctx, -lo));
+    else if (lo > 0)
+      emit3 (c2m_ctx, MIR_URSH, part.mir_op, bits.mir_op, MIR_new_int_op (ctx, lo));
+    else
+      emit2 (c2m_ctx, MIR_MOV, part.mir_op, bits.mir_op);
+    if (byte_mask != 0xff) {
+      emit3 (c2m_ctx, MIR_AND, part.mir_op, part.mir_op, MIR_new_uint_op (ctx, byte_mask));
+      if (!ignore_others_p) {
+        emit2 (c2m_ctx, MIR_MOV, old.mir_op, mem);
+        emit3 (c2m_ctx, MIR_AND, old.mir_op, old.mir_op,
+               MIR_new_uint_op (ctx, ~byte_mask & 0xff));
+        emit3 (c2m_ctx, MIR_OR, part.mir_op, part.mir_op, old.mir_op);
+      }
+    }
+    emit2 (c2m_ctx, MIR_MOV, mem, part.mir_op);
+  }
+}
+
 static void emit_scalar_assign (c2m_ctx_t c2m_ctx, op_t var, op_t *val, MIR_type_t t,
                                 int ignore_others_p) {
   if (var.decl == NULL || var.decl->bit_offset < 0) {
     emit2_noopt (c2m_ctx, tp_mov (t), var.mir_op, val->mir_op);
+  } else if (var.decl->bit_field_bytes_p) {
+    assert (var.mir_op.mode == MIR_OP_MEM);
+    emit_bit_field_bytes_store (c2m_ctx, var, val, ignore_others_p);
   } else {
     MIR_context_t ctx = c2m_ctx->ctx;
     int width = var.decl->width;
@@ -16816,29 +17222,25 @@ static void emit_scalar_assign (c2m_ctx_t c2m_ctx, op_t var, op_t *val, MIR_type
   }
 }
 
-static void add_bit_field (c2m_ctx_t c2m_ctx, uint64_t *u, uint64_t v, decl_t member_decl) {
-  uint64_t mask, mask2;
-  int bit_offset = member_decl->bit_offset, width = member_decl->width;
-  size_t MIR_UNUSED size = type_size (c2m_ctx, member_decl->decl_spec.type) * MIR_CHAR_BIT;
+/* Store the low WIDTH bits of V at bit FIRST_BIT of the byte run BYTES: bit
+   0 is byte 0's least (little endian) or most (big endian) significant bit,
+   the order the target numbers a bit-field's bits in. */
+static void add_bit_field (char *bytes, mir_size_t first_bit, int width, uint64_t v) {
+  for (int j = 0; j < width; j++) {
+#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    mir_size_t pos = first_bit + j;
+    int bit = pos % MIR_CHAR_BIT;
+#else
+    mir_size_t pos = first_bit + width - 1 - j;
+    int bit = MIR_CHAR_BIT - 1 - pos % MIR_CHAR_BIT;
+#endif
+    char mask = (char) (1 << bit);
 
-  mask = 0xffffffffffffffff >> (64 - width);
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  mask2 = ~(mask << bit_offset);
-#else
-  mask2 = ~(mask << (size - bit_offset - width));
-#endif
-  *u &= mask2;
-  if (signed_integer_type_p (member_decl->decl_spec.type)) {
-    v <<= (64 - width);
-    v = (int64_t) v >> (64 - width);
+    if ((v >> j) & 1)
+      bytes[pos / MIR_CHAR_BIT] |= mask;
+    else
+      bytes[pos / MIR_CHAR_BIT] &= (char) ~mask;
   }
-  v &= mask;
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  v <<= bit_offset;
-#else
-  v <<= size - bit_offset - width;
-#endif
-  *u |= v;
 }
 
 static MIR_item_t get_mir_str_op_data (c2m_ctx_t c2m_ctx, MIR_str_t str) {
@@ -16874,13 +17276,19 @@ static MIR_item_t get_string_data (c2m_ctx_t c2m_ctx, node_t n) {
   return data;
 }
 
+/* A local initializer's end so far never moves back: an element inside an
+   earlier string or aggregate value (6.7.9p19) ends before it. */
+static mir_size_t init_end_max (mir_size_t end, mir_size_t el_end) {
+  return el_end > end ? el_end : end;
+}
+
 static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
                              const char *global_name, mir_size_t size, int local_p) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_context_t ctx = c2m_ctx->ctx;
   op_t val;
   size_t str_len;
-  mir_size_t data_size, el_size, offset = 0, rel_offset = 0, start_offset;
+  mir_size_t data_size, offset = 0, rel_offset = 0;
   init_el_t init_el, next_init_el;
   MIR_reg_t base;
   MIR_type_t t;
@@ -16892,6 +17300,8 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
     init_el = VARR_GET (init_el_t, init_els, init_start);
     val = val_gen (c2m_ctx, init_el.init);
     t = get_op_type (c2m_ctx, var);
+    val = bool_conversion (c2m_ctx, val, ((struct expr *) init_el.init->attr)->type,
+                           init_el.el_type);
     if (int128_type_p (((struct expr *) init_el.init->attr)->type)
         && val.mir_op.mode == MIR_OP_MEM)
       /* Register-class scalar initialized from a scalar __int128 value. */
@@ -16924,9 +17334,10 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         MIR_type_t src_t = get_mir_type (c2m_ctx, src_type);
         val = gen (c2m_ctx, init_el.init, NULL, NULL, TRUE, NULL, NULL);
         val = scalar_to_complex (c2m_ctx, val, src_t, init_el.el_type->u.basic_type);
-        gen_memcpy (c2m_ctx, offset + rel_offset, base, val,
+        gen_memcpy (c2m_ctx, offset + init_el.offset, base, val,
                     raw_type_size (c2m_ctx, init_el.el_type));
-        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        rel_offset
+          = init_end_max (rel_offset, init_el.offset + raw_type_size (c2m_ctx, init_el.el_type));
         continue;
       }
       /* Complex local initialized from a complex of DIFFERENT component width
@@ -16941,9 +17352,10 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         val = gen (c2m_ctx, init_el.init, NULL, NULL, TRUE, NULL, NULL);
         val = complex_to_complex (c2m_ctx, val, src_type->u.basic_type,
                                   init_el.el_type->u.basic_type);
-        gen_memcpy (c2m_ctx, offset + rel_offset, base, val,
+        gen_memcpy (c2m_ctx, offset + init_el.offset, base, val,
                     raw_type_size (c2m_ctx, init_el.el_type));
-        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        rel_offset
+          = init_end_max (rel_offset, init_el.offset + raw_type_size (c2m_ctx, init_el.el_type));
         continue;
       }
       if (int128_type_p (init_el.el_type)) {
@@ -16952,13 +17364,16 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         val = materialize_int128_scalar_node (c2m_ctx, init_el.init, src_type);
         gen_memcpy (c2m_ctx, offset + init_el.offset, base, val,
                     raw_type_size (c2m_ctx, init_el.el_type));
-        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        rel_offset
+          = init_end_max (rel_offset, init_el.offset + raw_type_size (c2m_ctx, init_el.el_type));
         continue;
       }
       if (t == MIR_T_UNDEF)
-        val = new_op (NULL, MIR_new_mem_op (ctx, t, offset + rel_offset, base, 0, 1));
+        val = new_op (NULL, MIR_new_mem_op (ctx, t, offset + init_el.offset, base, 0, 1));
       val = gen (c2m_ctx, init_el.init, NULL, NULL, t != MIR_T_UNDEF,
                  t != MIR_T_UNDEF ? NULL : &val, NULL);
+      val = bool_conversion (c2m_ctx, val, ((struct expr *) init_el.init->attr)->type,
+                             init_el.el_type);
       if (t != MIR_T_UNDEF && int128_type_p (((struct expr *) init_el.init->attr)->type)
           && val.mir_op.mode == MIR_OP_MEM)
         /* Narrower element initialized from a scalar __int128 value. */
@@ -16970,8 +17385,8 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
                        : init_el.init->code == N_STR16 ? init_el.init->u.s.len / 2
                        : init_el.init->code == N_STR32 ? init_el.init->u.s.len / 4
                                                        : raw_type_size (c2m_ctx, init_el.el_type);
-        gen_memcpy (c2m_ctx, offset + rel_offset, base, val, s);
-        rel_offset = init_el.offset + s;
+        gen_memcpy (c2m_ctx, offset + init_el.offset, base, val, s);
+        rel_offset = init_end_max (rel_offset, init_el.offset + s);
       } else {
         MIR_op_t mem
           = MIR_new_alias_mem_op (ctx, t, offset + init_el.offset, base, 0, 1,
@@ -16981,10 +17396,25 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
                                                     ? init_el.container_type
                                                     : init_el.el_type),
                                   0);
+        /* Initializing a volatile object (or member) is a volatile store. */
+        mem.u.mem.volatile_p = (var.mir_op.mode == MIR_OP_MEM && var.mir_op.u.mem.volatile_p)
+                               || init_el.el_type->type_qual.volatile_p;
         val = cast (c2m_ctx, val, get_mir_type (c2m_ctx, init_el.el_type), FALSE);
         emit_scalar_assign (c2m_ctx, new_op (init_el.member_decl, mem), &val, t,
                             i == init_start || rel_offset == init_el.offset);
-        rel_offset = init_el.offset + _MIR_type_size (ctx, t);
+        if (init_el.member_decl != NULL && init_el.member_decl->bit_offset >= 0) {
+          /* A bit-field ends at the byte after its last bit, not at its type's
+             unit: a member after it in the unit (`char c; int x : 4; char d;`,
+             d at byte 2) still takes the gap fill, and a byte-wise field's bits
+             running past the unit are never reached by it. */
+          rel_offset = init_end_max (rel_offset,
+                                     init_el.offset
+                                       + ((mir_size_t) init_el.member_decl->bit_offset
+                                          + init_el.member_decl->width + MIR_CHAR_BIT - 1)
+                                           / MIR_CHAR_BIT);
+        } else {
+          rel_offset = init_end_max (rel_offset, init_el.offset + _MIR_type_size (ctx, t));
+        }
       }
     }
     if (rel_offset < size) /* fill the tail: */
@@ -17116,6 +17546,52 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
       } else if (val.mir_op.mode == MIR_OP_REF) {
         data = MIR_new_ref_data (ctx, global_name, val.mir_op.u.ref, 0);
         data_size = _MIR_type_size (ctx, t);
+      } else if (init_el.member_decl != NULL && init_el.member_decl->bit_offset >= 0) {
+        /* A run of bit-fields: the next bit-field joins it while its first
+           byte lies inside the run's bytes so far.  Fields of different
+           declared types share bytes, so the run is not one unit of the
+           first field's type; it is emitted byte by byte from the current
+           position through the byte holding its last bit. */
+        mir_size_t run_start = rel_offset > init_el.offset ? rel_offset : init_el.offset;
+        mir_size_t run_end = run_start;
+        VARR (char) * run;
+
+        VARR_CREATE (char, run, alloc, 16);
+        for (;;) {
+          /* the field's unit may begin before the run; its first bit never does */
+          mir_size_t first_bit = init_el.offset * MIR_CHAR_BIT
+                                 + (mir_size_t) init_el.member_decl->bit_offset
+                                 - run_start * MIR_CHAR_BIT;
+          int width = init_el.member_decl->width;
+          mir_size_t end = run_start + (first_bit + width + MIR_CHAR_BIT - 1) / MIR_CHAR_BIT;
+          int joined_p = FALSE;
+
+          assert (val.mir_op.mode == MIR_OP_INT || val.mir_op.mode == MIR_OP_UINT);
+          for (; run_end < end; run_end++) VARR_PUSH (char, run, 0);
+          add_bit_field (VARR_ADDR (char, run), first_bit, width, val.mir_op.u.u);
+          while (i + 1 < VARR_LENGTH (init_el_t, init_els)) {
+            next_init_el = VARR_GET (init_el_t, init_els, i + 1);
+            if (next_init_el.member_decl == NULL || next_init_el.member_decl->bit_offset < 0
+                || (next_init_el.offset
+                      + (mir_size_t) next_init_el.member_decl->bit_offset / MIR_CHAR_BIT
+                    >= run_end))
+              break;
+            i++;
+            if (next_init_el.offset == init_el.offset
+                && next_init_el.member_decl->bit_offset == init_el.member_decl->bit_offset)
+              continue; /* the same bit-field initialized again */
+            init_el = next_init_el;
+            val = val_gen (c2m_ctx, init_el.init);
+            joined_p = TRUE;
+            break;
+          }
+          if (!joined_p) break;
+        }
+        data = MIR_new_data (ctx, global_name, MIR_T_U8, run_end - run_start,
+                             VARR_ADDR (char, run));
+        VARR_DESTROY (char, run);
+        /* rel_offset below is the last field's offset plus data_size */
+        data_size = run_end - init_el.offset;
       } else if (val.mir_op.mode != MIR_OP_STR) {
         union {
           int8_t i8;
@@ -17129,30 +17605,8 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
           float f;
           double d;
           long double ld;
-          uint8_t data[8];
         } u;
-        start_offset = 0;
-        el_size = data_size = _MIR_type_size (ctx, t);
-        if (init_el.member_decl != NULL && init_el.member_decl->bit_offset >= 0) {
-          uint64_t uval = 0;
-
-          assert (val.mir_op.mode == MIR_OP_INT || val.mir_op.mode == MIR_OP_UINT);
-          assert (init_el.member_decl->bit_offset % 8 == 0); /* first in the group of bitfields */
-          start_offset = init_el.member_decl->bit_offset / 8;
-          add_bit_field (c2m_ctx, &uval, val.mir_op.u.u, init_el.member_decl);
-          for (; i + 1 < VARR_LENGTH (init_el_t, init_els); i++, init_el = next_init_el) {
-            next_init_el = VARR_GET (init_el_t, init_els, i + 1);
-            if (next_init_el.offset != init_el.offset) break;
-            if (next_init_el.member_decl->bit_offset == init_el.member_decl->bit_offset) continue;
-            val = val_gen (c2m_ctx, next_init_el.init);
-            assert (val.mir_op.mode == MIR_OP_INT || val.mir_op.mode == MIR_OP_UINT);
-            add_bit_field (c2m_ctx, &uval, val.mir_op.u.u, next_init_el.member_decl);
-          }
-          val.mir_op.u.u = uval;
-          if (i + 1 < VARR_LENGTH (init_el_t, init_els)
-              && next_init_el.offset - init_el.offset < data_size)
-            data_size = next_init_el.offset - init_el.offset;
-        }
+        data_size = _MIR_type_size (ctx, t);
         switch (t) {
         case MIR_T_I8: u.i8 = (int8_t) val.mir_op.u.i; break;
         case MIR_T_U8: u.u8 = (uint8_t) val.mir_op.u.u; break;
@@ -17167,16 +17621,7 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
         case MIR_T_LD: u.ld = val.mir_op.u.ld; break;
         default: assert (FALSE);
         }
-        if (start_offset == 0 && data_size == el_size) {
-          data = MIR_new_data (ctx, global_name, t, 1, &u);
-        } else {
-          for (mir_size_t byte_num = start_offset; byte_num < data_size; byte_num++) {
-            if (byte_num == start_offset)
-              data = MIR_new_data (ctx, global_name, MIR_T_U8, 1, &u.data[byte_num]);
-            else
-              MIR_new_data (ctx, NULL, MIR_T_U8, 1, &u.data[byte_num]);
-          }
-        }
+        data = MIR_new_data (ctx, global_name, t, 1, &u);
       } else if (init_el.el_type->mode == TM_ARR) {
         data_size = raw_type_size (c2m_ctx, init_el.el_type);
         str_len = val.mir_op.u.str.len;
@@ -17232,9 +17677,7 @@ static op_t complex_load (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset
   op_t temp = get_new_temp (c2m_ctx, ct);
 
   assert (mem.mir_op.mode == MIR_OP_MEM);
-  emit2 (c2m_ctx, tp_mov (ct), temp.mir_op,
-         MIR_new_mem_op (ctx, ct, mem.mir_op.u.mem.disp + offset, mem.mir_op.u.mem.base,
-                         mem.mir_op.u.mem.index, mem.mir_op.u.mem.scale));
+  emit2 (c2m_ctx, tp_mov (ct), temp.mir_op, mem_part_op (ctx, mem.mir_op, ct, offset));
   return temp;
 }
 
@@ -17243,10 +17686,7 @@ static void complex_store (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offse
   MIR_context_t ctx = c2m_ctx->ctx;
 
   assert (mem.mir_op.mode == MIR_OP_MEM);
-  emit2 (c2m_ctx, tp_mov (ct),
-         MIR_new_mem_op (ctx, ct, mem.mir_op.u.mem.disp + offset, mem.mir_op.u.mem.base,
-                         mem.mir_op.u.mem.index, mem.mir_op.u.mem.scale),
-         val.mir_op);
+  emit2 (c2m_ctx, tp_mov (ct), mem_part_op (ctx, mem.mir_op, ct, offset), val.mir_op);
 }
 
 /* Promote a scalar operand to a complex temp: {value, 0}. */
@@ -17952,7 +18392,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                                                         // and str in initializer
     break;
   case N_COMMA:
-    gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+    gen_discarded_volatile_read (c2m_ctx, NL_HEAD (r->u.ops),
+                                 gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL));
     res = gen (c2m_ctx, NL_EL (r->u.ops, 1), true_label, false_label,
                true_label == NULL && !void_type_p (((struct expr *) r->attr)->type), NULL,
                expect_res);
@@ -18054,9 +18495,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       int offset = r->code == N_REALPART ? 0 : imoff;
 
       assert (op1.mir_op.mode == MIR_OP_MEM);
-      res = new_op (NULL, MIR_new_mem_op (ctx, rct, op1.mir_op.u.mem.disp + offset,
-                                          op1.mir_op.u.mem.base, op1.mir_op.u.mem.index,
-                                          op1.mir_op.u.mem.scale));
+      res = new_op (NULL, mem_part_op (ctx, op1.mir_op, rct, offset));
     }
     break;
   }
@@ -18542,6 +18981,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     t = get_op_type (c2m_ctx, var);
     op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, t != MIR_T_UNDEF,
                t != MIR_T_UNDEF ? NULL : &var, NULL);
+    if (t != MIR_T_UNDEF)
+      op2 = bool_conversion (c2m_ctx, op2, ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type,
+                             ((struct expr *) r->attr)->type);
     if (t != MIR_T_UNDEF && int128_type_p (((struct expr *) NL_EL (r->u.ops, 1)->attr)->type)
         && op2.mir_op.mode == MIR_OP_MEM)
       /* Narrower lvalue assigned from a scalar __int128 value. */
@@ -18563,6 +19005,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   assign: /* t/val is promoted type/new value of assign expression */
     if (scalar_type_p (((struct expr *) r->attr)->type)) {
       assert (t != MIR_T_UNDEF);
+      /* A compound assignment or ++/-- of a _Bool stores the result's
+         truth value (C11 6.5.16.2p3, 6.5.2.4p2 — `E1 = E1 op E2`). */
+      if (r->code != N_ASSIGN && bool_type_p (((struct expr *) r->attr)->type))
+        val = scalar_truth_val (c2m_ctx, val);
       val = cast (c2m_ctx, val, get_mir_type (c2m_ctx, ((struct expr *) r->attr)->type), FALSE);
       emit_scalar_assign (c2m_ctx, var, &val, t, FALSE);
       if ((val_p || true_label != NULL) && r->code != N_POST_INC && r->code != N_POST_DEC)
@@ -18620,6 +19066,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       reg_var = get_reg_var (c2m_ctx, t, name, decl->u.asm_str);
       res = new_op (decl, MIR_new_reg_op (ctx, reg_var.reg));
     }
+    mark_volatile_lvalue (&res, e->type);
     break;
   }
   case N_IND: {
@@ -18684,6 +19131,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       res.mir_op.u.mem.nonalias = arr_type->antialias;
     }
     res.mir_op.u.mem.type = t;
+    mark_volatile_lvalue (&res, el_type);
     break;
   }
   case N_LABEL_ADDR: {
@@ -18760,6 +19208,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       op1.mir_op = MIR_new_alias_mem_op (ctx, t, 0, op1.mir_op.u.reg, 0, 1,
                                          get_type_alias (c2m_ctx, type), op_e->type->antialias);
       res = new_op (NULL, op1.mir_op);
+      mark_volatile_lvalue (&res, type);
     }
     break;
   case N_FIELD:
@@ -18787,10 +19236,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                  ? op1.mir_op.u.mem.alias
                : anon_union_type != NULL ? get_type_alias (c2m_ctx, anon_union_type)
                                          : get_type_alias (c2m_ctx, e->type));
-      op1.mir_op
-        = MIR_new_alias_mem_op (ctx, t, op1.mir_op.u.mem.disp + decl->offset, op1.mir_op.u.mem.base,
-                                op1.mir_op.u.mem.index, op1.mir_op.u.mem.scale, alias,
-                                decl->decl_spec.type->antialias);
+      op1.mir_op = mem_part_op (ctx, op1.mir_op, t, decl->offset);
+      op1.mir_op.u.mem.alias = alias;
+      op1.mir_op.u.mem.nonalias = decl->decl_spec.type->antialias;
     } else {
       struct expr *left = NL_HEAD (r->u.ops)->attr;
       assert (left->type->mode == TM_PTR);
@@ -18805,6 +19253,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                                 decl->decl_spec.type->antialias);
     }
     res = new_op (decl, op1.mir_op);
+    mark_volatile_lvalue (&res, e->type);
+    if (r->code == N_DEREF_FIELD)
+      mark_volatile_lvalue (&res, ((struct expr *) NL_HEAD (r->u.ops)->attr)->type->u.ptr_type);
     break;
   }
   case N_COND: {
@@ -18878,6 +19329,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     from_type = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
     op1 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, !void_type_p (type), NULL, NULL);
     if (void_type_p (type)) {
+      op1 = gen_discarded_volatile_read (c2m_ctx, NL_EL (r->u.ops, 1), op1);
       res = op1;
       res.decl = NULL;
       res.mir_op.mode = MIR_OP_UNDEF;
@@ -18959,7 +19411,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       }
     } else {
       t = get_mir_type (c2m_ctx, type);
-      res = cast (c2m_ctx, op1, t, TRUE);
+      res = cast (c2m_ctx, bool_conversion (c2m_ctx, op1, from_type, type), t, TRUE);
     }
     break;
   }
@@ -18977,7 +19429,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       _MIR_get_temp_item_name (ctx, module, buff, sizeof (buff));
       global_name = buff;
     }
-    init_start = VARR_LENGTH (init_el_t, init_els);
+    init_start = init_els_start = VARR_LENGTH (init_el_t, init_els);
     collect_init_els (c2m_ctx, NULL, &decl->decl_spec.type, NL_EL (r->u.ops, 1),
                       decl->scope == top_scope || decl->decl_spec.linkage == N_STATIC
                         || decl->decl_spec.linkage == N_EXTERN || decl->decl_spec.static_p
@@ -19529,6 +19981,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
            hook spills that value into its by-reference argument slot. */
         op2 = gen (c2m_ctx, arg, NULL, NULL,
                    !memory_arg_p || scalar_type_p (arg_type), NULL, NULL);
+        op2 = bool_conversion (c2m_ctx, op2, e->type, arg_type);
         if (!memory_arg_p && int128_type_p (e->type) && op2.mir_op.mode == MIR_OP_MEM) {
           /* __int128 argument value for a narrower parameter: convert to the
              parameter's scalar shape so the ordinary promotion below works. */
@@ -19678,7 +20131,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
             }
           }
         } else if (initializer->code != N_IGNORE) {  // ??? general code
-          init_start = VARR_LENGTH (init_el_t, init_els);
+          init_start = init_els_start = VARR_LENGTH (init_el_t, init_els);
           collect_init_els (c2m_ctx, NULL, &decl->decl_spec.type, initializer,
                             decl->decl_spec.linkage == N_STATIC
                               || decl->decl_spec.linkage == N_EXTERN || decl->decl_spec.static_p
@@ -20265,6 +20718,7 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
                 : complex_to_complex (c2m_ctx, val, ret_expr_type->u.basic_type,
                                       ret_type->u.basic_type);
       if (scalar_return_p) {
+        val = bool_conversion (c2m_ctx, val, ret_expr_type, ret_type);
         if (int128_type_p (((struct expr *) NL_EL (r->u.ops, 1)->attr)->type)
             && val.mir_op.mode == MIR_OP_MEM) {
           /* Narrower return type from a scalar __int128 value. */
@@ -20504,6 +20958,7 @@ static void gen_mir (c2m_ctx_t c2m_ctx, node_t r) {
   VARR_CREATE (MIR_op_t, switch_ops, alloc, 128);
   VARR_CREATE (case_t, switch_cases, alloc, 64);
   VARR_CREATE (init_el_t, init_els, alloc, 128);
+  init_els_start = init_els_num = 0;
   VARR_CREATE (node_t, node_stack, alloc, 8);
   VARR_CREATE (MIR_alias_t, union_alias_done, alloc, 8);
   abort_proto = abort_item = memcmp_proto = memcmp_item = copysignf_proto = copysignf_item
@@ -21395,7 +21850,10 @@ int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
   gen_mir (c2m_ctx, tree);
   MIR_finish_module (ctx);
 
-  return n_errors == 0;
+  /* madc fork: THIS compile's verdict.  n_errors counts for the context's
+     whole life, and one context compiles many trees (a REPL session's
+     entries): an earlier tree's errors are not this one's. */
+  return n_errors == n_error_before;
 }
 
 void c2mir_dump_tree (c2m_ctx_t c2m_ctx, FILE *f, node_t tree) {

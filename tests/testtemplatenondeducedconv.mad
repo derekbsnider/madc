@@ -1,0 +1,21 @@
+// A function-template parameter that names no template parameter takes no
+// part in deduction, so its argument may reach it through an implicit
+// conversion ([temp.deduct.call]/4): fg(1, 3) deduces T = int and converts 3
+// through N(int). madc's deduction refused a concrete class parameter the
+// argument is not, so fg<int> was never instantiated; the call failed
+// (undefined import) unless another call had instantiated fg<int>.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+struct N { int v; N(int x) : v(x) { } };
+
+template<class T> int fg(T, N n) { return n.v; }
+template<class T> int ftop(T t) { return fg(t, 2); }
+
+int main()
+{
+	printf("direct: %d\n", fg(1, 3));
+	printf("template-body: %d\n", ftop(1L));
+	printf("after-instance: %d %d\n", fg('c', N(4)), fg('c', 5));
+	return 0;
+}

@@ -552,6 +552,63 @@ TEST_CASE("apply_input — text, keys, chords: the grid's events from the page's
     CHECK(m.pending_chord().empty());
 }
 
+TEST_CASE("apply_input — a function key from the page: bound, it is its action; unbound, a key")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, editor_tree(w, 0));
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"key\",\"key\":\"f6\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::key);
+    CHECK(ev[0].key == tui_key::fkey);
+    CHECK((int)ev[0].ch == 6);
+    tui_bindings b;
+    b.bind("f5", "replrun");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"f5\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "replrun");
+    CHECK(ev[0].seq == "f5");
+}
+
+// The page spells modifiers (plan §41.11a step 3e): Ctrl+Shift+S posts
+// "ctrl+shift+s", bound apart from ^s; an unbound Shift+Right reads as
+// right; Ctrl+Space nothing binds is a key event, never a typed space.
+TEST_CASE("apply_input — a modified key from the page: bound apart, else its key")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, editor_tree(w, 0));
+    tui_bindings b;
+    b.bind("^s", "save");
+    b.bind("ctrl+shift+s", "saveas");
+    b.bind("right", "cright");
+    std::string err;
+    REQUIRE(b.finalize(err));
+    m.set_bindings(b);
+    std::vector<tui_event> ev =
+	m.apply_input("{\"kind\":\"key\",\"key\":\"ctrl+shift+s\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "saveas");
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"^s\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].action_name == "save");
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"shift+right\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "cright");
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"ctrl+space\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::key);
+    CHECK(ev[0].mods == (unsigned char)ui::key_mod::ctrl);
+}
+
 TEST_CASE("codes — an option's code hint rides the choose event; a posted action name converts to its code at the boundary")
 {
     world w;
@@ -647,6 +704,42 @@ TEST_CASE("apply_input — navigation through the focus owner; viewport facts; s
     CHECK(ev[0].kind == tui_event_kind::snapshot);
     CHECK(ev[0].text == "Ln 1");
     CHECK(m.last_snapshot() == "Ln 1");
+}
+
+TEST_CASE("apply_input — a focused edit with the tabkey hint takes tab; without it tab cycles")
+{
+    world w;
+    roles r = roles::standard(w);
+    // A REPL-shaped tree: a choice, then an input field with the keyboard.
+    uinode root(r.group);
+    uinode menu(r.choice);
+    menu.add(option(w, "Save", "w"));
+    menu.add(option(w, "Quit", "q"));
+    root.add(menu);
+    uinode field(r.edit);
+    field.content = madc::value(std::string("c11> twi"));
+    std::map<std::string, madc::value> h;
+    h["caret"] = madc::value((int64_t)8);
+    h["focus"] = madc::value((int64_t)1);
+    h["tabkey"] = madc::value((int64_t)1);
+    field.hints = madc::value::make_object(h);
+    root.add(field);
+    web_model m;
+    m.compose(r, root);
+    REQUIRE(m.focus_slot() == 1u);
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"key\",\"key\":\"tab\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::key);	// the completion key reaches the app
+    CHECK(ev[0].key == tui_key::tab);
+    CHECK(m.focus_slot() == 1u);
+    // The same field without the hint: tab is a focus cycle.
+    h.erase("tabkey");
+    root.children[1].hints = madc::value::make_object(h);
+    m.compose(r, root);
+    ev = m.apply_input("{\"kind\":\"key\",\"key\":\"tab\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::focus);
+    CHECK(m.focus_slot() == 0u);
 }
 
 TEST_CASE("apply_input — malformed or unknown input yields no events and never throws")
@@ -1264,6 +1357,67 @@ TEST_CASE("compose — a group's tabs array becomes the strip as data; the integ
     const nlohmann::json *mk = node_by_key(ops, "0.1");
     REQUIRE(mk);
     CHECK((*mk)["tabs"] == true);
+}
+
+TEST_CASE("compose — the root's toolbar hint becomes button rows with the bound chords and codes; a malformed row is dropped")
+{
+    // Plan §41.11a: madcide composes {label, action, code?, enabled?} rows on
+    // the root. web_model adds the chord the LOADED profile binds to the
+    // code, else to the name (the menu items' rule), makes `enabled`
+    // explicit, and converts a posted action name to the row's code at the
+    // boundary. A row with no action is dropped; a node without the hint
+    // carries no toolbar (the negative control).
+    world w;
+    roles r = roles::standard(w);
+    tui_bindings b;
+    b.bind("f5", "replrun", 77);
+    b.bind("^s", "save");			// by name: the tools' shape
+    std::string err;
+    REQUIRE(b.finalize(err));
+    web_model m;
+    m.set_bindings(b);
+    uinode root(r.group);
+    uinode body(r.content);
+    body.content = madc::value(std::string("x"));
+    root.add(body);
+    std::vector<madc::value> rows;
+    std::map<std::string, madc::value> run;
+    run["label"] = madc::value(std::string("Run"));
+    run["action"] = madc::value(std::string("replrun"));
+    run["code"] = madc::value((int64_t)77);
+    rows.push_back(madc::value::make_object(run));
+    std::map<std::string, madc::value> save;
+    save["label"] = madc::value(std::string("Save"));
+    save["action"] = madc::value(std::string("save"));
+    save["enabled"] = madc::value((int64_t)0);
+    rows.push_back(madc::value::make_object(save));
+    std::map<std::string, madc::value> open;
+    open["label"] = madc::value(std::string("Open"));
+    open["action"] = madc::value(std::string("editfile"));	// unbound: no key
+    rows.push_back(madc::value::make_object(open));
+    std::map<std::string, madc::value> bad;
+    bad["label"] = madc::value(std::string("Nothing"));	// no action: dropped
+    rows.push_back(madc::value::make_object(bad));
+    std::map<std::string, madc::value> h;
+    h["toolbar"] = madc::value::make_array(rows);
+    root.hints = madc::value::make_object(h);
+
+    nlohmann::json ops = nlohmann::json::parse(m.compose(r, root));
+    const nlohmann::json *p = node_by_key(ops, "0");
+    REQUIRE(p);
+    CHECK((*p)["toolbar"] == nlohmann::json::parse(
+	"[{\"label\":\"Run\",\"action\":\"replrun\",\"code\":77,\"key\":\"f5\",\"enabled\":true},"
+	"{\"label\":\"Save\",\"action\":\"save\",\"key\":\"^s\",\"enabled\":false},"
+	"{\"label\":\"Open\",\"action\":\"editfile\",\"enabled\":true}]"));
+    const nlohmann::json *c = node_by_key(ops, "0.0");
+    REQUIRE(c);
+    CHECK(c->find("toolbar") == c->end());
+    // A button click posts the NAME; the model converts it to the row's code.
+    std::vector<tui_event> ev = m.apply_input("{\"kind\":\"action\",\"action\":\"replrun\"}");
+    REQUIRE(ev.size() == 1u);
+    CHECK(ev[0].kind == tui_event_kind::action);
+    CHECK(ev[0].action_name == "replrun");
+    CHECK(ev[0].action_code == 77);
 }
 
 TEST_CASE("compose / apply_input — a tab carries a command ARGUMENT; the action input reports it as the event's text")

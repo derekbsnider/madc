@@ -1,0 +1,25 @@
+Foo(1)
+Foo(2)
+Foo()
+Foo(4)
+Foo()
+Foo()
+rows: 1 2 -1 | 4 -1 -1
+~Foo(-1)
+~Foo(-1)
+~Foo(4)
+~Foo(-1)
+~Foo(2)
+~Foo(1)
+Foo(1)
+Foo(2)
+Foo(3)
+Foo()
+elided: 1 2 | 3 -1
+~Foo(-1)
+~Foo(3)
+~Foo(2)
+~Foo(1)
+braced-elems: 0 7 0 0
+aggr: a 1 [] 0 | b 2 c 3
+plain: 1 2 0 0 3 4 5 6

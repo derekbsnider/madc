@@ -1,0 +1,31 @@
+// The C++ twin of tests/testdeclaratorlistconst: a declaration list's tail
+// keeps its decl-specifiers ([dcl.dcl]/9). `constexpr int a = 1, b = 2;`
+// makes b a constant expression (static_assert, an array bound), and in
+// `const int &c1 = a, &c2 = 7;` c2 is a const reference, which binds the
+// prvalue 7. Before B135 Program::push_declarator_list_tail dropped const and
+// constexpr: the static_assert was "Expecting integer constant expression"
+// and the reference list was "Reference initializer must be an lvalue".
+//
+// g++ 13 and clang++ 18 (-std=c++17) print the .expect line.
+#include <stdio.h>
+
+constexpr int a = 1, b = 2;
+static_assert(b == 2, "b");
+int arr[b];
+const int ca = 3, cb = 4;
+int arr2[cb];
+inline int ia = 5, ib = 6;
+
+int main()
+{
+	constexpr int c = 3, d = 4;
+	int v[d];
+	const int e = 5, f = 6;
+	int w[f];
+	int x = 1;
+	const int &c1 = x, &c2 = 7;
+	printf("%d %d %d %d %d %d %d %d\n", (int)sizeof(arr), (int)sizeof(arr2),
+	       (int)sizeof(v), (int)sizeof(w), a + c + ca + e, c1 + c2,
+	       ia + ib, d);
+	return 0;
+}

@@ -1,0 +1,2 @@
+// GCC and Clang C17 reject range-based for syntax.
+int main(void) { int a[2] = {1, 2}; int s = 0; for (int x : a) s += x; return s; }

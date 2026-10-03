@@ -39,6 +39,10 @@
 #include "madc_project.h" // --project: compile_commands.json multi-TU driver
 
 #include "madc_cir.h"     // madc_cir_execute/emit/freeze/emit_native + MadcNativeKind
+#include "madc_session.h" // InteractiveSession: the REPL's session (D20)
+#include "madc_session_client.h" // BackendSession: the session in a backend (D2)
+#include "madc_repl.h"    // madc_repl_run: the REPL's loop (D20)
+#include "madcdis/tui_provider.h"	// create_line_target: the editor's terminal (D23)
 
 // Supplied by the build as -DMADC_VERSION_STR='"x.y.z"' from ../VERSION (the
 // version-consuming objects depend on that file — src/Makefile). The fallback
@@ -260,6 +264,13 @@ static void print_usage(const char *prog)
 "\n"
 "Input / mode:\n"
 "  <file>                  compile and JIT-run a single source file\n"
+"  (no file)               the REPL when stdin is a terminal; otherwise\n"
+"                          compile and run stdin, as if named -\n"
+"  -                       read the program from stdin (gcc, python)\n"
+"  -i, --interactive       the REPL, even when stdin is not a terminal; with\n"
+"                          a <file>, run it first and keep its names (python -i)\n"
+"  --history-file=PATH|no  where the REPL keeps its history (default\n"
+"                          $XDG_STATE_HOME/madc/history); no keeps none\n"
 "  --project <prj.json>    build from a project manifest: compile each\n"
 "                          translation unit, link the modules, run the entry.\n"
 "                          Two shapes by top-level JSON kind: an OBJECT is the\n"
@@ -453,6 +464,95 @@ static int cross_refuse_run(const char *lane)
 }
 #endif
 
+// The file lane's one read of its input (plan §41.5a): `-` names stdin, as
+// in gcc and python, read whole into the buffer lane; any other argument
+// names a file.
+static TokenProgram *tokenize_input(Program &prog, const char *path)
+{
+    if ( strcmp(path, "-") != 0 )
+	return prog.tokenize(path);
+    std::string text((std::istreambuf_iterator<char>(std::cin)),
+		     std::istreambuf_iterator<char>());
+    return prog.tokenize_buffer(text, "<stdin>");
+}
+
+// The REPL (D20): the session adopts the Program the command line and
+// madc.ini configured, and the loop runs over stdin and stdout, prompting
+// when stdin is a terminal. With a program file (`-i file`, python -i; plan
+// §41.5a, slice 2) the file loads into the session first and its main, when
+// it has one, runs with the file lane's argv (the path, then the program's
+// arguments). The prompt follows whatever they did, as python's does: a
+// refused file leaves nothing, a stopped main leaves the file's names.
+// `history` is the line editor's history file (D23; empty: none).
+static int repl_loops(ReplSession &session, bool terminal,
+		      const std::string &history, int file_argc, char **file_argv)
+{
+    int status = 0;
+    if ( file_argc > 0 )
+    {
+	session.run_file(file_argc, file_argv);
+	if ( session.ended(status) )
+	    return status;		// the file's exit(n) ends madc
+    }
+    else if ( terminal )
+	std::cout << "madc " << MADC_VERSION_STR << ". Ctrl-D exits."
+		  << std::endl;
+    // A VT terminal edits each entry (D23); anything else reads cooked
+    // lines (a pipe, a dumb terminal, a console without VT mode).
+    if ( terminal )
+    {
+	std::unique_ptr<madc::hub::line_target> term(
+	    madc::hub::create_line_target());
+	if ( term )
+	{
+	    int rc = madc_repl_edit(session, *term, std::cout, history);
+	    if ( rc >= 0 )
+		return rc;
+	}
+    }
+    return madc_repl_run(session, std::cin, std::cout, terminal);
+}
+
+static int run_repl(std::unique_ptr<Program> prog, bool terminal,
+		    const std::string &history,
+		    int file_argc = 0, char **file_argv = NULL)
+{
+#ifdef MADC_CROSS_TARGET
+    return cross_refuse_run("run the REPL");
+#endif
+#ifndef _WIN32
+    // The session runs in a backend process on this terminal (D2, plan
+    // §41.9a slice 4), so a crash in an entry starts a fresh session instead
+    // of ending madc. The backend's Program is the fork's copy of this
+    // configured one (the command line and madc.ini hold there, and each
+    // restart copies it again); this one never begins. One stdin for both:
+    // read unbuffered here, as the backend reads it.
+    Program *configured = prog.get();
+    SessionClient client;
+    client.set_inherit_stdio(true);
+    setvbuf(stdin, NULL, _IONBF, 0);
+    if ( !client.start(std::string(), [configured]() {
+	     return std::unique_ptr<Program>(configured);	// the child's copy
+	 }) )
+    {
+	std::cerr << client.last_error() << std::endl;
+	return 1;
+    }
+    BackendSession session(client, std::cerr, NULL);
+    return repl_loops(session, terminal, history, file_argc, file_argv);
+#else
+    // No fork on Windows: the session runs in this process until the
+    // backend there is a child of self (plan §41.9a, named).
+    InteractiveSession session(std::move(prog));
+    if ( !session.begin() )
+    {
+	session.program().print_last_diagnostic(std::cerr);
+	return 1;
+    }
+    return repl_loops(session, terminal, history, file_argc, file_argv);
+#endif
+}
+
 int main(int argc, char **argv)
 {
     // --show-stats: earliest in-process timestamp, so the phase breakdown can
@@ -519,6 +619,9 @@ int main(int argc, char **argv)
     const char *config_path = NULL;       // --config=<file>: this madc.ini instead of the lookup chain
     bool no_config = false;               // --no-config: skip the madc.ini lookup entirely
     bool cli_set_std = false;             // --std= came from the COMMAND LINE (so a madc.ini `std` key must not override it)
+    bool interactive = false;             // -i / --interactive: the REPL, whatever stdin is (D20)
+    std::string history_file;             // --history-file=PATH|no: the REPL's history (D23)
+    bool history_file_given = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -772,6 +875,20 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "--project") == 0 && i + 1 < argc) {
             project_manifest = argv[++i];
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-i") == 0
+                   || strcmp(argv[i], "--interactive") == 0) {
+            // D20: the REPL even on a piped stdin (python -i); with a
+            // program file, the file first.
+            interactive = true;
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--history-file=", 15) == 0) {
+            // D23 (plan §41.7a): the REPL's history file, Julia's flag;
+            // `no` keeps history for the session alone.
+            history_file = argv[i] + 15;
+            if (history_file == "no")
+                history_file.clear();
+            history_file_given = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0
                 || strcmp(argv[i], "-?") == 0) {
@@ -1282,6 +1399,58 @@ int main(int argc, char **argv)
 	return (rc < 0) ? 1 : rc;
     }
 
+    // No program file (D20, plan §41.5a). An artifact or dump request names
+    // what to do with a translation unit, so it has nothing to work on
+    // (gcc); otherwise -i or a terminal stdin is the REPL, and a piped stdin
+    // is the program, as if named `-`.
+    std::vector<char *> stdin_argv;
+    if ( interactive && filearg < argc && strcmp(argv[filearg], "-") == 0 )
+    {
+	// `-i -` is `-i`: `-` names stdin, which -i reads as entries.
+	if ( filearg + 1 < argc )
+	{
+	    std::cerr << "madc: -i -: the REPL takes no program arguments"
+		      << std::endl;
+	    return 1;
+	}
+	++filearg;
+    }
+    bool terminal = isatty(0) != 0;
+    bool artifact_request = emit_native || do_emit || emit_pch
+	|| emit_function_name || dump_source || dump_macro_table
+	|| dump_cir || dump_nodes || dump_checked || dump_registered
+	|| freeze_path || freeze_run;
+    if ( interactive && artifact_request )
+    {
+	std::cerr << "madc: -i runs the REPL; it cannot also write an artifact"
+		     " or a dump" << std::endl;
+	return 1;
+    }
+    if ( filearg >= argc )
+    {
+	if ( artifact_request )
+	{
+	    std::cerr << "madc: fatal error: no input files" << std::endl
+		      << "compilation terminated." << std::endl;
+	    return 1;
+	}
+	if ( interactive || terminal )
+	    return run_repl(std::move(prog), terminal,
+			    history_file_given ? history_file
+					       : madc_repl_history_path());
+	static char stdin_path[] = "-";
+	stdin_argv.assign(argv, argv + argc);
+	stdin_argv.push_back(stdin_path);
+	stdin_argv.push_back(NULL);
+	argv = stdin_argv.data();
+	filearg = argc++;
+    }
+    else if ( interactive )
+	return run_repl(std::move(prog), terminal,
+			history_file_given ? history_file
+					   : madc_repl_history_path(),
+			argc - filearg, argv + filearg);
+
     if ( argc >= 2 && filearg < argc )
     {
 	if ( dump_source )
@@ -1302,7 +1471,7 @@ int main(int argc, char **argv)
 	// A NULL TokenProgram means a lexer-phase diagnostic already printed
 	// (failed #include, unterminated literal, bad PP directive) and
 	// compilation aborted — exit nonzero like every later phase does.
-	if ( !(tp=prog->tokenize(argv[filearg])) )
+	if ( !(tp=tokenize_input(*prog, argv[filearg])) )
 	    return 1;
 	gettimeofday(&_tk1, NULL);
 	double _fw_tk1 = prog->_forest_work_seconds;
@@ -1762,7 +1931,7 @@ int main(int argc, char **argv)
 	// `./prog; echo $?`). Negative = infrastructure failure → 1.
 	return (result < 0) ? 1 : result;
     }
-    std::cout << "Usage: madc [-v|--verbose] [-E] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;
-
+    // Not reached: with no program file the D20 dispatch above ran the REPL
+    // or named stdin as the program.
     return 0;
 }

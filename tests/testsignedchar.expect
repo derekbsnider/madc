@@ -1,0 +1,4 @@
+ovl: char schar uchar schar
+ptr: schar* char*
+tmpl: char schar
+val: -3 -56 3

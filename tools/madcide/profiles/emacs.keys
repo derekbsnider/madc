@@ -2,15 +2,19 @@
 # as joe.keys respelled onto Emacs's CONTROL chords (C-x families
 # included; the chord grammar is the same data joe's ^K uses).
 #
-# HONEST SUBSET (the two engine gaps, named): Meta has no key spelling
-# yet (an ESC prefix cancels a pending chord), so the M- seats (M-v,
-# M-w, M-x, M-g g) wait on a meta spelling; C-SPC (set-mark) has no
-# NUL spelling, so the region pair is incomplete — mark stays unbound
-# rather than squatting a fake seat. Region selection here is
+# Meta is `alt+` and C-SPC is `ctrl+space` (plan §41.11a step 3e). The
+# window and the browser send Meta, as does a terminal that reports
+# modified keys; a terminal that sends Meta as an ESC prefix delivers esc
+# and then the key, which this profile leaves unbound, so esc keeps
+# closing panes and prompts and the M- seats are the window's there.
+# C-SPC is a terminal's NUL, so it reaches every client. The region is
 # mark..caret live (no `bend` in this set), which IS the Emacs region
-# model.
+# model; Shift with a motion selects too (Emacs's shift-select-mode).
 #
 # File and exit
+# The style's name in Tools ▸ Key bindings… (plan §41.11a step 3e).
+@title Emacs
+
 ^x ^s save
 ^x ^c quit
 ^x ^f editfile
@@ -21,13 +25,25 @@
 ^s find
 # Editing
 ^k delline
-^w blockdel
 ^d del
 ^_ undo
+# The region and the kill ring: C-SPC sets the mark, C-w kills the region,
+# M-w copies it, C-y yanks it back, C-x h marks the whole buffer.
+ctrl+space mark
+^w cut
+alt+w copy
+^y paste
+^x h selectall
 # Movement
 ^a home
 ^e end
 ^v pgdn
+alt+v pgup
+alt+f wordright
+alt+b wordleft
+alt+< top
+alt+> bottom
+alt+g g gotoline
 # Repaint (C-l recenter's closest seat)
 ^l refresh
 # Windows: C-x 2 / 1 / 0 / o — the direct Emacs seats.
@@ -35,6 +51,9 @@
 ^x 1 onlywin
 ^x 0 killwin
 ^x o nextw
+# F5 runs the buffer into the REPL tab's session: a fresh one, its main
+# run, its names left for the prompt (plan §41.10a).
+f5 replrun
 # The project window's keys (@project scope — profile data; the baked
 # defaults add esc/backspace).
 @project ins projadd

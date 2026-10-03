@@ -1,0 +1,79 @@
+// An arithmetic operand's parse-side type has ONE owner per step: the value it
+// denotes ([expr]/5 — a reference is its referent; madc lowers a reference
+// VARIABLE as its pointer) and that value's integer promotions ([conv.prom]:
+// bool, the chars, the shorts, a bit-field narrower than int and an enum whose
+// promotion is int all become int). Every operator's type reads its operands
+// through them. Before, unary `~`/`-` kept the operand's own type, unary `+`
+// was dropped outright (so a class's operator+() never ran and `+arr` stayed
+// an array), a bit-field kept its declared unsigned type, `%` had no type at
+// all (int), and a reference operand typed the operator as the reference's
+// POINTER — `auto a = rl + 2` bound a pointer to the value 42 and crashed.
+// `auto` itself deduced through a second copy of the operator typing that read
+// a reference leaf the same way (`auto c = rl` crashed too) and answered
+// double for any real operand (`auto x = f * 2` on a float: 8 bytes).
+// noexcept(+a) and noexcept(a + 1) were refused: the evaluator read the
+// decayed type recorded on the operator as a class overload.
+// Oracle: g++ and clang++, -std=c++17.
+#include <cstdio>
+
+enum E { EA, EB };
+enum F : unsigned char { FA, FB };
+struct BF { unsigned x : 3; int y : 5; unsigned w : 32; };
+struct K { int v; K operator+() const { return K{v + 100}; } };
+struct RM { long &r; RM(long &x) : r(x) {} };
+static long gv = 9;
+static long &rf() { return gv; }
+static int g(int x) { return x * 2; }
+
+static const char *f(bool) { return "bool"; }
+static const char *f(char) { return "char"; }
+static const char *f(signed char) { return "schar"; }
+static const char *f(unsigned char) { return "uchar"; }
+static const char *f(short) { return "short"; }
+static const char *f(unsigned short) { return "ushort"; }
+static const char *f(int) { return "int"; }
+static const char *f(unsigned) { return "uint"; }
+static const char *f(long) { return "long"; }
+static const char *f(unsigned long) { return "ulong"; }
+static const char *f(E) { return "E"; }
+static const char *f(F) { return "F"; }
+static const char *f(K) { return "K"; }
+static const char *f(int *) { return "int*"; }
+
+int main()
+{
+    unsigned char uc = 200; signed char sc = -3; short ss = 5;
+    unsigned short us = 7; char ch = 9; bool b = true;
+    E e = EB; F ff = FB; BF bf = { 5, -2, 7u };
+    const unsigned char cuc = 2; unsigned char &ruc = uc;
+    long lv = 40; long &rl = lv; RM rm(lv); K k{ 1 };
+    int arr[3] = { 1, 2, 3 }; long l = 5000000000L; unsigned u = 7u;
+    float fl = 1.5f;
+
+    std::printf("narrow: %s %s %s %s %s %s %s %s\n", f(~uc), f(-uc), f(+uc),
+		f(~sc), f(+ss), f(-us), f(~ch), f(+ch));
+    std::printf("bool: %s %s\n", f(+b), f(~b));
+    std::printf("enum: %s %s %s %s\n", f(+e), f(~e), f(-ff), f(+ff));
+    std::printf("bitfield: %s %s %s %s %s\n", f(-bf.x), f(bf.x + 0),
+		f(bf.x << 1), f(-bf.y), f(bf.w + 0));
+    std::printf("const: %s %s\n", f(-cuc), f(+cuc));
+    std::printf("ref: %s %s %s %s %s %s\n", f(-ruc), f(~ruc), f(rl + 1),
+		f(-rl), f(rl << 1), f(rm.r + 1));
+    std::printf("mod: %s %s %s\n", f(l % 3), f(u % 3u), f(uc % uc));
+    std::printf("sizeof: %d %d %d %d %d\n", (int)sizeof(~uc), (int)sizeof(+ss),
+		(int)sizeof(-uc), (int)sizeof(+arr), (int)sizeof(l % 3));
+    auto a1 = ~uc; auto a2 = rl + 2; auto a3 = -rl; auto a4 = rl++;
+    auto a5 = (rl = 45); auto a6 = rf() + 1; auto a7 = l % 6000000000L;
+    a1 += 1; a2 += 1; a3 -= 1; a4 += 1; a5 += 1; a6 += 1;
+    std::printf("auto: %d %ld %ld %ld %ld %ld %ld | %ld\n", (int)a1, (long)a2,
+		(long)a3, (long)a4, (long)a5, (long)a6, (long)a7, lv);
+    auto c = rl; c += 1; auto x = fl * 2; auto y = fl + fl;
+    auto lam = [](float q) { return q * 2; };
+    std::printf("deduce: %ld %d %d %d | %ld\n", (long)c, (int)sizeof(x),
+		(int)sizeof(y), (int)sizeof(lam(1.0f)), lv);
+    std::printf("plus: %d %s %s %d %d\n", (+k).v, f(+k), f(+arr), (int)sizeof(+g),
+		(+g)(4));
+    std::printf("noexcept: %d %d %d\n", (int)noexcept(+arr), (int)noexcept(arr + 1),
+		(int)noexcept(-uc));
+    return 0;
+}

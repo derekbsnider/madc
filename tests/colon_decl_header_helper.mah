@@ -1,0 +1,5 @@
+// A module of testcolondeclheader.mad. A file-scope `:=` outside script mode
+// declares a global, as `T name = e;` does: a constant initializer and a
+// dynamic one (it reads another global).
+hdr_count := 5;
+hdr_next := hdr_count + 1;

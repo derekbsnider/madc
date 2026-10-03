@@ -496,15 +496,121 @@ void *madarray_append_cstr(void *ptr, const char *s)
 			     s ? strlen(s) : 0);
 	return ptr;
     }
-void *madarray_append_value(void *ptr, void *other)
+
+// ---- var arithmetic and ordering (plan §42 D28): the carrier's operator
+// rows (add_array_methods) bind these. madc::value::arithmetic / negate /
+// compare own the rule; an entry only shapes the operands and turns a
+// refusal into a catchable script error (static text, so the handler can
+// read it after the jump). A NEW value returns BY VALUE: madc::value is
+// non-trivial for calls, so the result comes back through the hidden result
+// address the CIR passes (L3), the ABI of any C++ function returning a
+// madc::value. C linkage does not change that ABI, which is what clang's
+// -Wreturn-type-c-linkage is about.
+static madc::value carrier_arith(madc::value::arith op, const madc::value &a,
+				 const madc::value &b)
     {
-	const madc::value *o = (const madc::value *)other;
-	if (!o->is_string())
-	    __madc_throw_cstr("+=: appended value is not string kind");
-	madarray_append_text((madc::value *)ptr, (const char *)o->data(),
-			     o->size());
-	return ptr;
+	madc::value out;
+	if (const char *e = madc::value::arithmetic(op, a, b, out))
+	    __madc_throw_cstr(e);
+	return out;
     }
+static int64_t carrier_order(const madc::value &a, const madc::value &b,
+			     bool lt, bool eq, bool gt)
+    {
+	madc::value::ordering o = madc::value::ordering::unordered;
+	if (const char *e = madc::value::compare(a, b, o))
+	    __madc_throw_cstr(e);
+	return (o == madc::value::ordering::less && lt)
+	    || (o == madc::value::ordering::equal && eq)
+	    || (o == madc::value::ordering::greater && gt);
+    }
+// `v @= x`: the receiver becomes `v @ x`. A null receiver of += takes the
+// operand, as `+= "text"` vivifies a null to text.
+static void *carrier_compound(madc::value::arith op, void *self,
+			      const madc::value &b)
+    {
+	madc::value *v = (madc::value *)self;
+	if (v->is_frozen())
+	    __madc_throw_cstr("compound assignment: value is frozen");
+	if (op == madc::value::arith::add && v->is_null()
+	    && (b.is_integer() || b.is_real() || b.is_string())) {
+	    *v = b;
+	    return self;
+	}
+	madc::value r;
+	if (const char *e = madc::value::arithmetic(op, *v, b, r))
+	    __madc_throw_cstr(e);
+	*v = std::move(r);
+	return self;
+    }
+#define CARRIER_VAL(p) (*(const madc::value *)(p))
+#if defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wreturn-type-c-linkage"
+#endif
+#define CARRIER_ARITH_ENTRIES(name, op)					\
+madc::value madarray_##name##_value(void *a, void *b)			\
+    { return carrier_arith(op, CARRIER_VAL(a), CARRIER_VAL(b)); }	\
+madc::value madarray_##name##_int(void *a, int64_t b)			\
+    { return carrier_arith(op, CARRIER_VAL(a), madc::value(b)); }	\
+madc::value madarray_##name##_real(void *a, double b)			\
+    { return carrier_arith(op, CARRIER_VAL(a), madc::value(b)); }	\
+madc::value madarray_r##name##_int(int64_t a, void *b)			\
+    { return carrier_arith(op, madc::value(a), CARRIER_VAL(b)); }	\
+madc::value madarray_r##name##_real(double a, void *b)			\
+    { return carrier_arith(op, madc::value(a), CARRIER_VAL(b)); }	\
+void *madarray_##name##_assign_value(void *a, void *b)			\
+    { return carrier_compound(op, a, CARRIER_VAL(b)); }		\
+void *madarray_##name##_assign_int(void *a, int64_t b)			\
+    { return carrier_compound(op, a, madc::value(b)); }		\
+void *madarray_##name##_assign_real(void *a, double b)			\
+    { return carrier_compound(op, a, madc::value(b)); }
+CARRIER_ARITH_ENTRIES(add, madc::value::arith::add)
+CARRIER_ARITH_ENTRIES(sub, madc::value::arith::sub)
+CARRIER_ARITH_ENTRIES(mul, madc::value::arith::mul)
+CARRIER_ARITH_ENTRIES(div, madc::value::arith::div)
+CARRIER_ARITH_ENTRIES(mod, madc::value::arith::mod)
+#undef CARRIER_ARITH_ENTRIES
+// Text joins text: `v + "x"`, `"x" + v`.
+madc::value madarray_add_cstr(void *a, const char *b)
+    { return carrier_arith(madc::value::arith::add, CARRIER_VAL(a),
+			   madc::value(b ? b : "")); }
+madc::value madarray_radd_cstr(const char *a, void *b)
+    { return carrier_arith(madc::value::arith::add, madc::value(a ? a : ""),
+			   CARRIER_VAL(b)); }
+madc::value madarray_neg(void *a)
+    {
+	madc::value out;
+	if (const char *e = madc::value::negate(CARRIER_VAL(a), out))
+	    __madc_throw_cstr(e);
+	return out;
+    }
+#if defined(__clang__)
+#pragma clang diagnostic pop
+#endif
+#define CARRIER_ORDER_ENTRIES(name, lt, eq, gt)				\
+int64_t madarray_##name##_value(void *a, void *b)			\
+    { return carrier_order(CARRIER_VAL(a), CARRIER_VAL(b), lt, eq, gt); } \
+int64_t madarray_##name##_int(void *a, int64_t b)			\
+    { return carrier_order(CARRIER_VAL(a), madc::value(b), lt, eq, gt); } \
+int64_t madarray_##name##_real(void *a, double b)			\
+    { return carrier_order(CARRIER_VAL(a), madc::value(b), lt, eq, gt); } \
+int64_t madarray_##name##_cstr(void *a, const char *b)			\
+    { return carrier_order(CARRIER_VAL(a), madc::value(b ? b : ""),	\
+			   lt, eq, gt); }				\
+int64_t madarray_r##name##_int(int64_t a, void *b)			\
+    { return carrier_order(madc::value(a), CARRIER_VAL(b), lt, eq, gt); } \
+int64_t madarray_r##name##_real(double a, void *b)			\
+    { return carrier_order(madc::value(a), CARRIER_VAL(b), lt, eq, gt); } \
+int64_t madarray_r##name##_cstr(const char *a, void *b)		\
+    { return carrier_order(madc::value(a ? a : ""), CARRIER_VAL(b),	\
+			   lt, eq, gt); }
+CARRIER_ORDER_ENTRIES(lt, true, false, false)
+CARRIER_ORDER_ENTRIES(le, true, true, false)
+CARRIER_ORDER_ENTRIES(gt, false, false, true)
+CARRIER_ORDER_ENTRIES(ge, false, true, true)
+#undef CARRIER_ORDER_ENTRIES
+#undef CARRIER_VAL
 
 // value.push(x) — append one ELEMENT (array-kind append; operator+= owns
 // TEXT append). A null receiver vivifies to an empty array; any other

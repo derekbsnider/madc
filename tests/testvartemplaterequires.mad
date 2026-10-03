@@ -1,0 +1,25 @@
+// A requires-expression in a variable template's initializer is part of the
+// initializer: its braces hold `;`s, and the declaration ends at the `;` after
+// them. The template-declaration skipper read a `requires` there as a trailing
+// requires-clause and ended the declaration at the first inner `;`, so the
+// leftover `};` closed the enclosing namespace early (libc++'s
+// __ranges/enable_view.h: "extraneous closing brace" at _LIBCPP_END_NAMESPACE_STD).
+// Oracle: g++ 13 and clang++ 18 (-std=c++20) print the .expect lines.
+#include <cstdio>
+namespace ns {
+template <class T>
+inline constexpr bool has_ptr = sizeof(T) > 64 || requires { (T*)nullptr; };
+template <class T>
+inline constexpr bool addable = requires (T a) { a + a; };
+template <class T>
+inline constexpr bool big = sizeof(T) > 64;
+int after() { return 7; }
+}
+static_assert(ns::has_ptr<int>, "requires-expression initializer");
+static_assert(ns::addable<int>, "requires-expression with parameters");
+static_assert(!ns::big<int>, "plain initializer");
+int main()
+{
+	printf("after %d\n", ns::after());
+	return 0;
+}

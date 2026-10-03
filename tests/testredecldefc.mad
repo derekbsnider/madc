@@ -1,0 +1,14 @@
+// C11 6.9p3 / 6.9.2: at most one initialized definition of a file-scope
+// object per TU. `int x = 1; int x = 2;` reached MIR as two definitions and
+// died there — "MIR fatal error: Repeated item declaration x", no source
+// location, process exit (the host-killing path in an eval / REPL / parse
+// handle). Now a located front-end diagnostic (Program::declare_object).
+// Oracle: gcc and clang "redefinition of 'x'" (g++ / clang++ likewise).
+#include <stdio.h>
+int x = 1;
+int x = 2;
+int main(void)
+{
+	printf("%d\n", x);
+	return 0;
+}

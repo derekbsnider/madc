@@ -1,0 +1,19 @@
+/* A non-type template argument is identified by its VALUE ([temp.type]/1):
+   a partial specialization's pattern `(7)` or `4 + 4` matches the argument
+   7 or 8, and `!false` matches true. Before, the matcher read only literal
+   spellings, so each specialization was silently passed over and the
+   primary answered.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     nt: 7 8 1 1 0 */
+#include <cstdio>
+template<class T, int N> struct W { enum { k = 1 }; };
+template<class T> struct W<T, (7)> { enum { k = 7 }; };
+template<class T> struct W<T, 4 + 4> { enum { k = 8 }; };
+template<class T, bool B> struct V { enum { k = 0 }; };
+template<class T> struct V<T, !false> { enum { k = 1 }; };
+int main()
+{
+	printf("nt: %d %d %d %d %d\n", (int)W<int, 7>::k, (int)W<int, 8>::k,
+	       (int)W<int, 6>::k, (int)V<int, true>::k, (int)V<int, false>::k);
+	return 0;
+}

@@ -62,3 +62,6 @@ int cell_check(int v)
     c.put(v);
     return c.get() * 2;
 }
+
+int via_fnptr_ref(int (*&fp)(int), int v) { return fp(v) + 1; }
+int via_fn_ref(int (&fn)(int), int v) { return fn(v) + 2; }

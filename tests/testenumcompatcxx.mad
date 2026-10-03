@@ -1,0 +1,16 @@
+/* C++ keeps [conv.prom]/3: an enum with no declared base promotes by the
+   VALUE range of its enumerators, so `enum U { UA = 1 }` promotes to int
+   and `(U)-1 > 0` is false, while `enum M { MA = 0xFFFFFFFFu }` promotes to
+   unsigned int. The C rule (testenumcompatc) must not leak into C++.
+   Oracle: g++ and clang++ -std=c++17 print "promoted 0 0 1". */
+#include <cstdio>
+
+enum U { UA = 1 };
+enum M { MA = 0xFFFFFFFFu };
+
+int main()
+{
+    U u = UA;
+    std::printf("promoted %d %d %d\n", (U)-1 > 0, u - 2 > 0, (M)-1 > 0);
+    return 0;
+}

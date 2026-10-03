@@ -1,0 +1,1 @@
+SysV bit-field straddling under packing with LP64 long bit-fields (long : 40, unsigned long : 64); Microsoft allocation units never straddle and long is 32 bits (tests/testbitfieldunit locks the win64 layout)

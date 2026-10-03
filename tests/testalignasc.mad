@@ -1,0 +1,55 @@
+// C11 `_Alignas` (6.7.5), and `alignas` through <stdalign.h>: on a member
+// (before its type or after it), on an object at file scope and in a function
+// (static and automatic, before or after the storage class), with a
+// type-name operand (the type's alignment) or a constant expression; of
+// several the strictest wins, and `_Alignas(0)` has no effect. The object is
+// placed on its boundary and `_Alignof` / `__alignof__` answer it. Oracle:
+// gcc 13 and clang 18 print the lines below.
+#include <stdio.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <stdalign.h>
+
+struct A { char c; _Alignas(16) int x; };
+struct B { char c; _Alignas(double) char d; };
+struct M { char c; int _Alignas(8) x; };
+struct N { char c; _Alignas(4) _Alignas(16) char d; };
+struct Z { char c; _Alignas(0) int x; };
+struct E { char c; _Alignas(sizeof(double) * 2) char d; };
+struct S { char c; alignas(16) short s; };
+struct O { char k; struct { char c; _Alignas(16) int x; } in; };
+_Alignas(16) char g1;
+static _Alignas(16) char g2;
+_Alignas(16) static char g3;
+char _Alignas(16) g4;
+extern _Alignas(16) char g5;
+_Alignas(16) char g5;
+alignas(long double) char g6;
+_Alignas(16) char ga, gb;
+
+static int mis(const void *p) { return (int)((uintptr_t)p % 16); }
+
+int main(void)
+{
+	char q0 = 1;
+	_Alignas(16) char l1 = 2;
+	char q1 = 3;
+	static _Alignas(16) char s1;
+	char _Alignas(32 / 2) l2 = 4;
+	alignas(16) short l3 = 5;
+	int n = 0;
+	for (_Alignas(16) int i = 0; i < 2; ++i)
+		n += i + mis(&i);
+	printf("sm: %zu %zu %zu %zu %zu %zu\n", sizeof(struct A), _Alignof(struct A), sizeof(struct B),
+	       _Alignof(struct B), sizeof(struct M), offsetof(struct M, x));
+	printf("sn: %zu %zu %zu %zu %zu %zu\n", sizeof(struct N), _Alignof(struct N), sizeof(struct Z),
+	       sizeof(struct E), sizeof(struct S), sizeof(struct O));
+	printf("va: %zu %zu %zu %zu %zu %zu %zu %zu\n", __alignof__(g1), __alignof__(g2), __alignof__(g3),
+	       __alignof__(g4), __alignof__(g5), __alignof__(g6), __alignof__(ga), __alignof__(gb));
+	printf("vb: %zu %zu %zu %zu %zu\n", __alignof__(l1), __alignof__(s1), __alignof__(l2), _Alignof(l1),
+	       __alignof__(l3));
+	printf("ad: %d %d %d %d %d %d %d %d\n", mis(&l1), mis(&l2), mis(&l3), mis(&s1), mis(&g1), mis(&g2),
+	       mis(&gb), n);
+	printf("sum: %d\n", q0 + q1 + l1 + l2 + l3);
+	return 0;
+}

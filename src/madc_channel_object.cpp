@@ -330,8 +330,9 @@ int64_t channel::accept(channel &client)
 		s->failed = true;
 		return -1;
 	}
-	// Hand the accepted byte stream to `client`, replacing whatever it held
-	// (a fresh accept target is empty; a reused one is closed by the move).
+	// Hand the accepted byte stream to `client`, replacing whatever it held.
+	// A reused target closes through the same waiter-notifying path.
+	client.close();
 	ChannelState *cs = state(client.impl_);
 	cs->channel = std::move(accepted);
 	cs->wsc = nullptr;		// a fresh accepted byte stream, not ws yet
@@ -769,6 +770,10 @@ void channel::close()
 	ChannelState *s = state(impl_);
 	if ( s->channel )
 	{
+		const int64_t handle = read_wait_handle();
+		if ( handle >= 0 )
+			taskio::handle_closing(static_cast<intptr_t>(handle),
+					       read_wait_kind());
 		s->channel->close();
 		s->exit_status = s->channel->exit_status();
 		s->channel.reset();
@@ -863,6 +868,29 @@ void conn_broadcast(int64_t except_id, const char *line)
 			continue;
 		it->second.ch->write(line);
 	}
+}
+
+// Write `line` to the ONE share()-registered channel `id` (a madcide plugin
+// host's connection: the invocation its row names). False = no such
+// connection, or its write failed (the peer left; its serve task removes it
+// on EOF). Atomic against the parked reader as conn_broadcast is.
+bool conn_send(int64_t id, const char *line)
+{
+	if ( !line )
+		return false;
+	std::map<int64_t, ConnEntry>::iterator it = g_shared.find(id);
+	return it != g_shared.end() && it->second.ch->write(line);
+}
+
+// Cancel the ONE share()-registered channel `id`'s source (a process: the
+// owner's SIGTERM; a socket: its shutdown), so the task parked in its
+// readline wakes to the end — how a session stops a plugin host whose code
+// no longer reads. An id no channel holds: nothing.
+void conn_cancel(int64_t id)
+{
+	std::map<int64_t, ConnEntry>::iterator it = g_shared.find(id);
+	if ( it != g_shared.end() )
+		it->second.ch->cancel();
 }
 
 // Set / read the opaque per-connection cookie (madcide's permission tier).

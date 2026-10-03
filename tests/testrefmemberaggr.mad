@@ -1,0 +1,27 @@
+// A reference MEMBER of an aggregate binds its initializer ([dcl.init.aggr]
+// copy-initializes each member from its initializer; [dcl.init.ref]), exactly
+// as a reference parameter binds its argument: the object's address, and for a
+// const referent a prvalue materialized into a temporary whose lifetime is
+// the aggregate's. madc's brace-list lowering stored the initializer's VALUE
+// in the reference's pointer slot — `RM rm{lv}` then read through address 40
+// and crashed — and the class-aggregate lane took a bare `&` that no prvalue
+// has.
+#include <cstdio>
+struct RM { long &r; };
+struct RC { const int &c; int v; };
+struct RN { int &a; int &b; };
+int main() {
+    long lv = 40; int x = 1, y = 2;
+    RM rm{lv};
+    RC rc{x, 9};
+    RN rn = {x, y};
+    RC rt{5, 1};
+    rm.r += 2; rn.a = 10; rn.b += 5;
+    std::printf("read: %ld %d %d %d %d\n", rm.r, rc.c, rc.v, rn.a, rn.b);
+    std::printf("alias: %ld %d %d\n", lv, x, y);
+    std::printf("temp: %d %d\n", rt.c, rt.v);
+    RM arr[2] = {{lv}, {lv}};
+    arr[1].r = 7;
+    std::printf("array: %ld %ld\n", arr[0].r, lv);
+    return 0;
+}

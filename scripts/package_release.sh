@@ -28,6 +28,9 @@
 #                                               SYSTEM libgit2 (the nexus's PAST verbs; git:: programs) —
 #                                               a WEAK dependency too: libgit2 is the IDE's, not madc's
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
+#   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
+#   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
+#   /usr/share/madcide/verbs/, checks/          the line editor's verb and check bodies
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
@@ -122,6 +125,10 @@ fi
 echo "== madcide (AOT via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release -o tmp/madcide-pkg tools/madcide/madcide.mad )
 strip --strip-unneeded tmp/madcide-pkg
+# The shipped plugins: a plugin with code carries its library, built by
+# this madcide (plan §41.11a step 6); every stage() copies the one set.
+echo "== madcide plugins (each with code built by the packaged madcide) =="
+scripts/build_shipped_plugins.sh tmp/plugins-pkg tmp/madcide-pkg
 
 # ---------- 2. packed suite against the distribution binary ----------
 # MADC_PKG_SKIP_SUITE=1 skips the suite for a package run on content a
@@ -140,48 +147,11 @@ rm -rf tmp/pkgroot tmp/rpmtop
 mkdir -p dist
 
 stage() {
-    # $3 (prefix) is "usr" for the deb/rpm filesystem layout and "" for
-    # the relocatable tarball root — the SAME staging lines serve all
-    # three packages (one implementation; only the layout parameterizes).
-    local root="$1" libdir="$2" prefix="$3"
-    local p="$root${prefix:+/$prefix}"
-    mkdir -p "$p/bin" "$root/$libdir" \
-             "$p/share/man/man1" "$p/share/doc/madc/examples"
-    install -m 755 bin/madc-release "$p/bin/madc"
-    # NO strip here: since the PK2 shared default, `make release` strips
-    # the release library BEFORE packing the forest into it (strip-before-
-    # pack ordering, src/Makefile) — stripping again rewrites the ELF and
-    # silently drops the appended forest container. lib/release/ is the
-    # release mode's OWN product dir (per-mode-names law): a dev rebuild
-    # can never swap this file.
-    install -m 644 lib/release/libmadc.so "$root/$libdir/libmadc.so.0"
-    ln -s libmadc.so.0 "$root/$libdir/libmadc.so"
-    # The emitted-C runtime (a few KB, static): what `madc --emit=c11`
-    # output links on a box with no madc at all (cc prog.c -lmadc_rt) —
-    # try/catch context stack + VLA scope-exit helpers, nothing else.
-    # Platform parity: the mac and win archives already ship it.
-    install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
-    # The platform webview library: the loader tries <exedir>/../lib first
-    # (the tarball's lib/), then the system search (the deb/rpm libdir,
-    # registered by the ldconfig trigger).
-    install -m 755 lib/libmadcwebview.so "$root/$libdir/libmadcwebview.so"
-    install -m 755 lib/libmadcgit.so "$root/$libdir/libmadcgit.so"
-    install -m 755 tmp/madcide-pkg "$p/bin/madcide"
-    mkdir -p "$p/share/madcide/profiles"
-    install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
-    gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
-    gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
-    install -m 644 LICENSE "$p/share/doc/madc/copyright"
-    install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
-    gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
-    # The example config keeps its real name: share/doc is not on
-    # madc.ini's search path, so it can never shadow a user's config.
-    install -m 644 docs/examples/madc.ini "$p/share/doc/madc/examples/madc.ini"
-    # dpkg-deb requires plain 0755 directories. GNU chmod's NUMERIC modes
-    # deliberately preserve a directory's setgid bit (inherited from the
-    # checkout), so it must be cleared symbolically first.
-    find "$root" -type d -exec chmod g-s {} +
-    find "$root" -type d -exec chmod 0755 {} +
+    # $3 (prefix) is "usr" for the deb/rpm filesystem layout and "" for the
+    # relocatable tarball root — the SAME staging (scripts/stage_install.sh,
+    # which the Homebrew formula calls too) serves all three packages; only
+    # the layout parameterizes. The packages carry the optional modules.
+    MADC_STAGE_REQUIRE_MODULES=1 scripts/stage_install.sh "$1" "$2" "$3"
 }
 
 # ---------- deb ----------

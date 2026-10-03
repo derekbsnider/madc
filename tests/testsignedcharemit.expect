@@ -1,0 +1,6 @@
+signed char g = -5;
+char c = 'a';
+signed char sc = -3;
+unsigned char uc = 200;
+signed char *psc = &sc;
+(int)(signed char)200

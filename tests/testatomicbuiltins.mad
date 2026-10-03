@@ -1,0 +1,82 @@
+// The GCC __atomic_* builtins, every form: the _n value forms at 1, 2, 4 and
+// 8 bytes (and on a pointer, which is not scaled), the object forms on
+// 8-byte, 3-byte and double objects, test_and_set/clear, the lock-free
+// queries and the fences. Oracle: gcc 13 and clang 18 (with -latomic)
+// print the lines below.
+#include <stdio.h>
+#include <stdbool.h>
+struct P { int a, b; };
+struct Q { char c[3]; };
+int main(void)
+{
+	int i = 5; long l = -7; short s = 3; unsigned char uc = 250; bool b = false;
+	int *pi = &i;
+	int arr[4] = {0}; int *pp = arr;
+	int r1 = __atomic_load_n(&i, __ATOMIC_SEQ_CST);
+	long r2 = __atomic_load_n(&l, __ATOMIC_ACQUIRE);
+	int r3 = __atomic_load_n(&s, 0);
+	int r4 = __atomic_load_n(&uc, __ATOMIC_RELAXED);
+	printf("la: %d %ld %d %d\n", r1, r2, r3, r4);
+	__atomic_store_n(&i, 42, __ATOMIC_RELEASE);
+	__atomic_store_n(&l, -9000000000L, __ATOMIC_SEQ_CST);
+	printf("st: %d %ld\n", i, l);
+	r1 = __atomic_exchange_n(&i, 17, __ATOMIC_ACQ_REL);
+	printf("xc: %d %d\n", r1, i);
+	int exp = 17;
+	bool ok = __atomic_compare_exchange_n(&i, &exp, 23, false, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED);
+	int exp2 = 99;
+	bool ok2 = __atomic_compare_exchange_n(&i, &exp2, 50, true, __ATOMIC_SEQ_CST, __ATOMIC_RELAXED);
+	printf("ce: %d %d %d %d\n", ok, ok2, i, exp2);
+	int f1 = __atomic_fetch_add(&i, 2, 0);
+	int f2 = __atomic_fetch_sub(&i, 1, 0);
+	int f3 = __atomic_fetch_and(&i, 0x1e, 0);
+	int f4 = __atomic_fetch_or(&i, 0x100, 0);
+	int f5 = __atomic_fetch_xor(&i, 3, 0);
+	printf("fa: %d %d %d %d %d %d\n", f1, f2, f3, f4, f5, i);
+	f1 = __atomic_add_fetch(&i, 2, 0);
+	f2 = __atomic_sub_fetch(&i, 1, 0);
+	f3 = __atomic_and_fetch(&i, 0x1ff, 0);
+	f4 = __atomic_or_fetch(&i, 0x1000, 0);
+	f5 = __atomic_xor_fetch(&i, 5, 0);
+	int f6 = __atomic_nand_fetch(&i, 0xff, 0);
+	printf("af: %d %d %d %d %d %d\n", f1, f2, f3, f4, f5, f6);
+	f1 = __atomic_fetch_nand(&s, 1, 0);
+	printf("fn: %d %d\n", f1, s);
+	long w1 = __atomic_fetch_add(&l, 10, 0);
+	long w2 = __atomic_sub_fetch(&l, 1, 0);
+	int w3 = __atomic_add_fetch(&s, 7, 0);
+	unsigned w4 = __atomic_add_fetch(&uc, 10, 0);
+	printf("wl: %ld %ld %d %u\n", w1, w2, w3, w4);
+	int *op = __atomic_fetch_add(&pp, 8, 0);
+	printf("pt: %d %d\n", (int)(op - arr), (int)((char *)pp - (char *)arr));
+	printf("pl: %d\n", *__atomic_load_n(&pi, 0));
+	bool t1 = __atomic_test_and_set(&b, 0);
+	bool t2 = __atomic_test_and_set(&b, 0);
+	printf("ts: %d %d %d\n", t1, t2, b);
+	__atomic_clear(&b, __ATOMIC_SEQ_CST);
+	printf("cl: %d\n", b);
+	struct P p = {1, 2}, p2, p3 = {7, 8}, p4;
+	__atomic_load(&p, &p2, 0);
+	__atomic_store(&p, &p3, 0);
+	__atomic_exchange(&p, &p2, &p4, 0);
+	printf("gp: %d %d %d %d %d %d\n", p.a, p.b, p2.a, p2.b, p4.a, p4.b);
+	struct P e = {1, 2}, d = {5, 6};
+	bool gok = __atomic_compare_exchange(&p, &e, &d, false, 5, 5);
+	printf("gc: %d %d %d\n", gok, p.a, p.b);
+	struct Q q = {{1, 2, 3}}, q2, q3 = {{7, 8, 9}}, qe = {{0, 0, 0}};
+	__atomic_load(&q, &q2, 0);
+	__atomic_store(&q, &q3, 0);
+	bool qok = __atomic_compare_exchange(&q, &qe, &q2, false, 5, 5);
+	printf("gq: %d %d %d %d %d\n", q2.c[0], q.c[2], qok, qe.c[1], qe.c[2]);
+	int l1 = __atomic_always_lock_free(4, 0);
+	int l2 = __atomic_always_lock_free(sizeof(long), 0);
+	int l3 = __atomic_always_lock_free(3, 0);
+	int l4 = __atomic_is_lock_free(8, 0);
+	printf("lf: %d %d %d %d\n", l1, l2, l3, l4);
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
+	__atomic_signal_fence(__ATOMIC_SEQ_CST);
+	double dd = 1.5, dd2;
+	__atomic_load(&dd, &dd2, 0);
+	printf("dd: %g\n", dd2);
+	return 0;
+}

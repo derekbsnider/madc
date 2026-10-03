@@ -1,0 +1,56 @@
+// A `var` returned by value (Adventure plan L3): madc::value is non-trivial
+// for calls, so the result is constructed through the hidden result address
+// (Itanium sret), in script functions, methods and through a pointer alike.
+
+var f(long n) { var x = n; return x; }
+var lit_int() { return 5; }
+var lit_text() { return "text"; }
+var lit_real() { return 2.5; }
+var obj() { return { "k": 1, "m": "two" }; }
+var list() { return { 1, 2, 3 }; }
+var pick(bool c) { if (c) return "yes"; return 3; }
+var again(long n) { return f(n); }
+var echo(const var &v) { return v; }
+long kind_count(const var &v) { return v.count(); }
+
+struct Box {
+	var v;
+	var get() { return v; }
+};
+
+var global_b = f(3);
+
+int main()
+{
+	println("global: {}", global_b);
+	var b = f(4);
+	println("local: {}", b);
+	println("expr: {}", f(6));
+	println("int: {}", lit_int());
+	println("text: {}", lit_text());
+	println("real: {}", lit_real());
+	var o = obj();
+	println("obj: {} {}", o["k"], o["m"]);
+	var l = list();
+	println("list: {} {}", l.count(), l[2]);
+	println("pick: {} {}", pick(true), pick(false));
+	println("again: {}", again(7));
+	println("echo: {}", echo(lit_text()));
+	println("count: {}", kind_count(lit_text()));
+	println("eq: {}", f(8) == 8);
+	println("method: {}", lit_text().count());
+	Box bx;
+	bx.v = "boxed";
+	println("box: {}", bx.get());
+	var (*fp)(long) = f;
+	println("fnptr: {}", fp(9));
+	long total = 0;
+	for (long i = 0; i < 4; i++) {
+		var t = f(i);
+		total += t.as_integer();
+	}
+	println("loop: {}", total);
+	f(10);
+	println("done");
+	return 0;
+}

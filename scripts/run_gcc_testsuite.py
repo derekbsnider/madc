@@ -43,8 +43,8 @@ DEFAULT_UNSUPPORTED_TARGETS = {
 # --- g++ suite (ROADMAP 2.12) -------------------------------------------------
 # The C++11 lane measures PARSE/SEMA, so its in-scope set is the `dg-do compile`
 # tests that must compile CLEAN. A test carrying dg-error / dg-bogus /
-# dg-warning / dg-message asserts a DIAGNOSTIC — madc must produce that error,
-# not merely fail — which is a later phase.
+# dg-warning / dg-message / dg-excess-errors asserts a DIAGNOSTIC — madc
+# must produce that error, not merely fail — which is a later phase.
 # See docs/plans/2026-09-04-cxx-conformance-lane.md.
 # The DEFAULT scope is the C++11 lane (ROADMAP 2.12). --gxx-dirs re-points it
 # at another standard's directories without touching this constant:
@@ -53,7 +53,7 @@ DEFAULT_UNSUPPORTED_TARGETS = {
 # knobs because g++.dg/template is shared by every standard.
 GXX_DIRS = ("g++.dg/cpp0x", "g++.dg/template")
 DG_DO_COMPILE_RE = re.compile(r"dg-do\s+compile")
-DG_DIAGNOSTIC_RE = re.compile(r"dg-(error|bogus|warning|message)")
+DG_DIAGNOSTIC_RE = re.compile(r"dg-(error|bogus|warning|message|excess-errors)")
 DG_ADDITIONAL_SOURCES_RE = re.compile(r"dg-additional-sources")
 
 
@@ -85,7 +85,7 @@ def gxx_scope_reason(path):
 	if not DG_DO_COMPILE_RE.search(text):
 		return "not a dg-do compile test"
 	if DG_DIAGNOSTIC_RE.search(text):
-		return "diagnostic test (dg-error/bogus/warning/message)"
+		return "diagnostic test (dg-error/bogus/warning/message/excess-errors)"
 	if DG_ADDITIONAL_SOURCES_RE.search(text):
 		return "dg-additional-sources companion TU"
 	return ""

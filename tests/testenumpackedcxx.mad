@@ -1,0 +1,18 @@
+// GNU `__attribute__((packed))` on a C++ enum: an unscoped enum with no
+// declared base takes the smallest integer type that holds its range; a
+// scoped enum and a fixed-base enum ignore it (g++ and clang++ agree). madc
+// refused the attribute before the tag and dropped it after the body.
+// Oracle: g++ and clang++ -std=c++17 print "sizes 1 2 4 4".
+#include <cstdio>
+
+enum __attribute__((packed)) Small { SMALL_A, SMALL_B };
+enum Wide { WIDE_A = 1000 } __attribute__((packed));
+enum class __attribute__((packed)) Scoped { S_A };
+enum __attribute__((packed)) Fixed : int { F_A };
+
+int main()
+{
+    std::printf("sizes %zu %zu %zu %zu\n", sizeof(Small), sizeof(Wide),
+		sizeof(Scoped), sizeof(Fixed));
+    return 0;
+}

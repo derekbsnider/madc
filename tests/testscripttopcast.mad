@@ -1,0 +1,14 @@
+// A top-level cast statement in script mode runs in the synthesized main, in
+// order with the statements around it, and so does a namespace-qualified
+// call. A named cast used to be dropped without a word (the program printed
+// 135). Oracle: the same statements inside `int main()`, compiled by g++ and
+// clang++, print "12345".
+int log_v = 0;
+int step(int d) { log_v = log_v * 10 + d; return d; }
+namespace ns { int bump(int d) { return step(d); } }
+step(1);
+static_cast<void>(step(2));
+(void)step(3);
+reinterpret_cast<long>((void *)(long)step(4));
+ns::bump(5);
+println("{}", log_v);

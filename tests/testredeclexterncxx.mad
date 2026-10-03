@@ -1,0 +1,13 @@
+// [basic.def.odr]/1 + [dcl.link]: an extern "C" function is one function per
+// name, so a second body is a redefinition — the C-linkage rule of
+// testredeclfuncc, reached in C++ through the linkage-spec. It reached MIR
+// as two definitions of the bare symbol.
+// Oracle: g++ "redefinition of 'int f()'"; clang++ "redefinition of 'f'".
+#include <stdio.h>
+extern "C" int f(void) { return 1; }
+extern "C" int f(void) { return 2; }
+int main()
+{
+	printf("%d\n", f());
+	return 0;
+}

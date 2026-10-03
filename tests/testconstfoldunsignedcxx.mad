@@ -1,0 +1,26 @@
+/* A folded integer constant reads in its promoted type. Every enumerator
+   and baked const scalar was emitted as a signed literal, so
+   `const unsigned U = 5; U - 6 > 0` and `MB - 2 > 0` for an enum that
+   promotes to unsigned int (`enum M { MA = 0xFFFFFFFFu, MB = 1 }`) computed
+   signed: silent wrong answers. A packed enum still promotes to int, and an
+   anonymous enum's enumerator past int keeps its value.
+   Oracle: g++ and clang++ -std=c++17 print "unsigned 1 1 1 1",
+   "promoted 0 0" and "wide 1 4294967296". */
+#include <cstdio>
+
+enum M { MA = 0xFFFFFFFFu, MB = 1 };
+enum __attribute__((packed)) P { PA = 1 };
+enum { EI_1 = 0xFFFFFFFFu, EI_2 };
+const unsigned int U = 5;
+const unsigned long UL = 5;
+constexpr unsigned long long ULL = 5;
+
+int main()
+{
+    const short S = 5;
+    std::printf("unsigned %d %d %d %d\n", MB - 2 > 0, U - 6 > 0, UL - 6 > 0,
+		ULL - 6 > 0);
+    std::printf("promoted %d %d\n", PA - 2 > 0, S - 6 > 0);
+    std::printf("wide %d %lld\n", EI_2 != 0, (long long)EI_2);
+    return 0;
+}

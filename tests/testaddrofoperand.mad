@@ -1,0 +1,75 @@
+// Unary & reads a CAST-EXPRESSION (C11 6.5.3.2; C++ [expr.unary.op]/3): its
+// operand is the unary-expression that follows -- `*p`, `**pp`, `*f(x)` --
+// and a function designator is told from a function POINTER by its type.
+//
+// madc's & reader hand-read identifier, paren, chain and call shapes only:
+//   * `&*p`, `&**pp`, `&*id(p)` were refused ("expecting variable name");
+//   * `&f` on a function-POINTER variable returned `f` itself -- the reader
+//     took every is_function() type for a function designator, and a
+//     DataDefFPTR answers is_function() too -- so `fn_t *fpp = &f` stored
+//     the function's address, and `(**fpp)(4)` jumped through code bytes
+//     (silent; the parenthesized `(**(&f))(4)` hid it: two identity derefs);
+//   * the deref of a real function (`(*twice)(3)`, `(*&twice)(3)`) was
+//     refused: the designator test it used was an oblique FPTR test;
+//   * a call through a dereferenced pointer-to-function-pointer, `(*t)(i)`,
+//     was "Malformed expression": the call arm recognized the callee only
+//     as a TokenDerefExpr, and `*t` builds a TokenDeref;
+//   * `&*q++` and `(*sq++).m` -- a stepped dereference is an lvalue.
+// Oracle: gcc and clang -std=c17 agree on every line.
+#include <stdio.h>
+
+struct S { int a[3]; };
+typedef int (*fn_t)(int);
+
+static int g = 5;
+static int twice(int x) { return 2 * x; }
+static int *id(int *x) { return x; }
+static int call(fn_t *t, int i) { return (*t)(i); }
+
+int main(void)
+{
+    int x = 5;
+    int a[3] = { 5, 9, 11 };
+    int *p = a;
+    int **pp = &p;
+    struct S s = { { 5, 9, 11 } };
+    struct S *sp = &s;
+    fn_t f = twice;
+    fn_t *fpp = &f;
+
+    /* controls: shapes the reader handled */
+    printf("addr-var %d\n", *&x);
+    printf("addr-sub %ld\n", (long)(&a[2] - &a[0]));
+    printf("addr-member %ld\n", (long)(&s.a[2] - s.a));
+    printf("addr-arrow %d\n", *&sp->a[1]);
+    printf("addr-plus %ld\n", (long)(&x + 1 - &x));
+    printf("cast-addr %ld\n", (long)((char *)&x + 1 - (char *)&x));
+    printf("addr-global %d\n", *&g);
+    printf("addr-function %d\n", (&twice)(4));
+    printf("paren-fnptr %d\n", (**(&f))(4));
+
+    /* the operand of & is a cast-expression */
+    printf("addr-deref %d\n", *&*p);
+    printf("addr-deref2 %ld\n", (long)(&**pp - a));
+    printf("addr-deref-call %d\n", *&*id(p));
+
+    /* a function pointer is an object; a function is a designator */
+    printf("fnptr-addr %d\n", (**fpp)(4));
+    printf("fnptr-addr-eq %d\n", *fpp == f);
+    printf("deref-function %d\n", (*twice)(3));
+    printf("deref-addr-function %d\n", (*&twice)(3));
+    printf("fnptr-deref1 %d\n", (*fpp)(5));
+    printf("fnptr-param %d\n", call(&f, 4));
+
+    /* a stepped dereference is an lvalue too */
+    {
+        int *q = a;
+        int v = *&*q++;
+        printf("addr-deref-step %d %ld\n", v, (long)(q - a));
+        struct S sarr[2] = { { { 5, 9, 11 } }, { { 4, 0, 0 } } };
+        struct S *sq = sarr;
+        int w = (*sq++).a[0];
+        printf("member-of-deref-step %d %ld\n", w, (long)(sq - sarr));
+    }
+    return 0;
+}

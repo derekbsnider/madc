@@ -4,7 +4,8 @@
 // madcdis/ui_focus.h — the ONE focus/navigation owner shared by every ui
 // model: the presentation state a frontend keeps between composes (which
 // focusable has focus, each choice's live selection) and the navigation
-// rules (tab cycles focus; arrows move a focused choice's selection; enter
+// rules (tab cycles focus — except on a focused edit field that takes it,
+// the `tabkey` hint; arrows move a focused choice's selection; enter
 // chooses; any other key rides through to the application with the focused
 // choice's selection). Moved out of tui_model::apply_keys (2026-09-07, the
 // web-provider engine plan Task 2), unchanged: a DOM frontend needs the same
@@ -41,7 +42,11 @@ struct focusable
     std::vector<int64_t> option_codes;		// choice: the `code` hint each
 						// (0 = none) — the application's
 						// own enum for the option
-    focusable() : k(kind::choice), option_count(0) {}
+    bool takes_tab;				// edit: the field's own key (the
+						// `tabkey` hint — a terminal, a
+						// REPL input): focused, tab is
+						// the application's, not a cycle
+    focusable() : k(kind::choice), option_count(0), takes_tab(false) {}
 };
 
 class focus_state
@@ -100,6 +105,16 @@ public:
 	    && _focusables[_focus].option_count > 0;
     }
 
+    // The focused slot is an edit field that takes tab (a shell's or a
+    // REPL's completion key) — tab rides through to the application; the
+    // field's own binding hands the keyboard back.
+    bool on_tab_field() const
+    {
+	return _focus < _focusables.size()
+	    && _focusables[_focus].k == focusable::kind::edit
+	    && _focusables[_focus].takes_tab;
+    }
+
     // The navigation step for a key the key owner passed through: fills
     // `e` and returns true when the key was consumed (focus or a selection
     // moved — a focus event says "repaint"; or a choose fired). False = the
@@ -110,7 +125,7 @@ public:
     bool navigate(const tui_keyev &k, tui_event &e)
     {
 	const bool choice = on_choice();
-	if ( k.kind == tui_key::tab && _focusables.size() > 1 )
+	if ( k.kind == tui_key::tab && _focusables.size() > 1 && !on_tab_field() )
 	{
 	    _focus = (_focus + 1) % _focusables.size();
 	    e.kind = tui_event_kind::focus;
@@ -142,6 +157,7 @@ public:
 	e.kind = tui_event_kind::key;
 	e.key = k.kind;
 	e.ch = k.ch;
+	e.mods = k.mods;
 	if ( choice )
 	{
 	    e.choice_focused = true;

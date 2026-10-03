@@ -1,0 +1,4 @@
+[
+  {"directory":"tests","file":"testprojectvague_a.cpp","command":"g++ -c testprojectvague_a.cpp"},
+  {"directory":"tests","file":"testprojectvague_b.cpp","command":"g++ -c testprojectvague_b.cpp"}
+]

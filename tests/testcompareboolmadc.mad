@@ -1,0 +1,12 @@
+// madc-dialect twin of testcomparebool: the dialect presents as C++, so a
+// built-in comparison or logical operator yields bool and `{}` formats it the
+// way std::format does ("true"/"false"). A comparison against a carrier
+// already printed true; the same comparison over two ints printed 1.
+int main()
+{
+    int i = 2, j = 3;
+    println("{} {} {} {} {}", i == j, i < j, !i, i && j, sizeof(i < j));
+    long n = (i < j) + (i < j);
+    println("{}", n);
+    return 0;
+}

@@ -60,6 +60,8 @@
 { "_Z7f_cprefRPKc", "f_cpref(char const*&)" },
 { "_Z7f_cvptrPKv", "f_cvptr(void const*)" },
 { "_Z7f_floatf", "f_float(float)" },
+{ "_Z7f_fnrefRFiiE", "f_fnref(int (&)(int))" },
+{ "_Z7f_fprefRPFiiE", "f_fpref(int (*&)(int))" },
 { "_Z7f_llongx", "f_llong(long long)" },
 { "_Z7f_schara", "f_schar(signed char)" },
 { "_Z7f_shorts", "f_short(short)" },

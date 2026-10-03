@@ -1,0 +1,32 @@
+// A variadic class template-id as a by-value data member is a complete
+// type ([class.mem]): in a C-style struct body, in a class body, in a class
+// template's body with concrete arguments and with the class's own pack
+// expanded (`P2<U...>`), and with an empty pack (`P1<>`, which sizeof also
+// measures on its own). Its members are reachable and its size counts.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+
+template<typename... T> struct P2 { char k; int v[sizeof...(T)]; };
+template<typename... T> struct P1 { char k; double m; };
+template<typename... T> struct P3 { short s; };
+
+struct H { char c; P2<int, char, long> m; };
+struct E { char c; P1<> e; };
+template<class U> struct Q { U u; P2<int, char> m; };
+template<class... U> struct R { char c; P2<U...> m; };
+class C { public: int f() { return m.v[1]; } P2<int, int> m; };
+typedef P3<int, int> A3;
+struct T { char c; A3 a; };
+
+int main()
+{
+	std::printf("ve: %zu %zu\n", sizeof(P3<>), alignof(P3<>));
+	H h; h.m.v[2] = 7;
+	Q<char> q; q.m.v[1] = 3;
+	R<int, int, int, int> r; r.m.v[3] = 4;
+	C c; c.m.v[1] = 5;
+	T t; t.a.s = 6;
+	std::printf("vm: %zu %zu %d %zu\n", sizeof(H), sizeof(E), h.m.v[2], sizeof(P1<>));
+	std::printf("vt: %zu %d %zu %d %zu %d %zu %d\n", sizeof(Q<char>), q.m.v[1], sizeof(r), r.m.v[3], sizeof(C), c.f(), sizeof(T), t.a.s);
+	return 0;
+}

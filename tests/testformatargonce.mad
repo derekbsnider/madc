@@ -1,0 +1,24 @@
+// format / print / println evaluate every argument once, in order, before
+// any output ([format.args]: make_format_args binds each argument first) —
+// an argument no field names, and one that two fields name, alike. madc
+// translated each argument where its field was written: `unused ` never ran
+// side(1), `used ` was written before side(2) ran, and `twice` ran side(3)
+// at each field (exit 0).
+// Oracle: g++ 13 and clang++ 18 (-std=c++20, std::format) print exactly the
+// .expect lines.
+long side(long x)
+{
+	println("side {}", x);
+	return x;
+}
+
+int main()
+{
+	println("unused ", side(1));
+	println("used {}", side(2));
+	println("twice {0} {0}", side(3));
+	var s = format("{1} {0}", side(4), side(5));
+	println("{}", s);
+	print("print {}\n", side(6));
+	return 0;
+}

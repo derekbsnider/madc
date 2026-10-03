@@ -35,6 +35,16 @@ compiles to MIR for execution. (The original asmjit x86-64 JIT and the
 Gecko parser experiment were both removed; CIR → c2mir → MIR is now the
 sole backend.)
 
+**Context for agents.** This is an open-source programming-language
+project (MPL 2.0, public on GitHub), developed by its owner, who is the
+person you are working with. The repository is public. "Bugs",
+"crashes", "reducers", and "debugging" a code path all mean ordinary
+compiler and runtime engineering on madc's own code: a miscompile,
+a wrong answer, a parser that rejects valid C. Hand-off state lives
+in the repository (`claude_status.json`, `BUGS.md`, git history,
+`madc-knowledge`). Agents never read another agent session's transcript
+files.
+
 The "Mad" in Mad-C: mix functions from multiple programming languages
 (PHP, Perl, Python, Ruby, JavaScript) in a single program via
 namespaces.
@@ -105,7 +115,16 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `canonical_path_for_compare()`; a library's platform spelling (the `lib`
    prefix, `.so` / `.dylib` / `.dll`, the real runtime image names) is
    `madc_module_library_spelling()` in `src/madc_modules.cpp` (gated by
-   `check-one-library-spelling.sh`); a module-bound namespace's members
+   `check-one-library-spelling.sh`); a parse over its own token run — an
+   isolated sub-stream or a run injected ahead of the live stream — is
+   `Program::NestedTokenStream`, which also returns the outer read context
+   (`curToken` / `prevToken` / `ParsePosition`) on every exit (gated by
+   `check-one-nested-stream.sh`; a token run pushed by hand is gated by
+   `check-one-token-run.sh` — rewriting tokens not yet read is
+   `TokenStream::splice_front`); a speculative read's rewind is
+   `Program::mark_stream` / `rewind_stream`, which return the cursor AND
+   that read context together (gated by `check-one-stream-rewind.sh`);
+   a module-bound namespace's members
    materialize in `Program::resolve_module_member()` — reached only
    through `find_namespace_member()`'s miss path (gated by
    `check-one-module-member-owner.sh`); the ui INPUT owners are
@@ -123,17 +142,35 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `Program::member_declarator`), gated by `check-one-declarator-reader.sh`;
    `[dims]` alone is `parse_array_dimensions` + `nest_carray_dims`. Never
    read a declarator by hand in an arm.
+   A string literal initializing a character array is read by
+   `Program::literal_char_array` and fitted by `Program::fit_char_array`
+   (gated by `check-one-string-char-fill.sh`).
+   The operand of a unary `*`, a cast or a bare `sizeof` is a cast-expression
+   read by ONE owner, `Program::parseCastExpression` (the expression engine,
+   bounded), and a dereference is built only by `Program::build_indirection`
+   (gated by `check-one-deref-builder.sh`); every owner for layered pointers,
+   references, arrays and their symbols is indexed in `indirection.md`.
    (`pre-edit-checklist.md`, `design-principles.md`)
 
 5. **Do not cross layer boundaries.** Parsers parse, compilers emit
    code, namespace files implement their own namespace. A fix that
    touches the wrong layer is a future bug. (`design-principles.md`)
 
-6. **Targeted tests per change; `make -C src fulltest` per MERGE WAVE.**
-   Incremental commits run the new/affected tests; the full battery runs
-   ONCE at the release/merge gate (or for genuinely suite-wide blast
-   radius). Never re-run suites on already-green content. No
-   JIT-green-EXE-broken, no EXE-green-JIT-broken. (`testing-fulltest.md`)
+6. **THREE test tiers, not two — name the one you are running.**
+   TIER 1 targeted, per change (seconds). **TIER 2 `bash scripts/fast_lanes.sh`,
+   per COMMIT that touches code — SIX conformance lanes in under three
+   minutes, and NOT optional.** After each BATCH of fixes (never per fix),
+   the batch checkpoint `bash scripts/batch_lane.sh`: the whole tests/ suite,
+   JIT only, about ten minutes. TIER 3 `bash scripts/seam_battery.sh`, ONCE
+   per merge wave: gates, then the full suite ONE way — on the shipped -O2
+   packed binary, headerless — then the small on-disk subsets, exe + obj on
+   the same binary, and the platform builds, cheapest first.
+   `/commit` runs Tier 1 + Tier 2 for you.
+   Treating this as "targeted or battery" is the documented failure mode:
+   it oscillates between hand-rolled tests and multi-hour suites and misses
+   the three-minute gate that catches real regressions. Never re-run suites
+   on already-green content. No JIT-green-EXE-broken, no
+   EXE-green-JIT-broken. (`testing-fulltest.md`)
 
 7. **No hard-coding specifics into general machinery.** Test runner:
    no per-test case branches. Parser: no string comparisons against
@@ -189,7 +226,8 @@ upstream MIR: it carries native C99 `_Complex`,
 `__attribute__((cleanup))`, the scope-depth auto-local layout fix, the
 struct/union statement-expression copy-out fix, ≤16-byte SIMD/vector
 (`vector_size`/`ext_vector_type`) support, the Mach-O executable writer,
-and the SysV-varargs / `_Complex` / `_Alignas` ABI fixes the CIR backend
+volatile memory accesses (`MIR_mem_t.volatile_p`, honoured by every
+optimization pass), and the SysV-varargs / `_Complex` / `_Alignas` ABI fixes the CIR backend
 depends on. `make -C src` builds libmir + c2m itself, into
 `obj/mir/<variant>` (never inside the subtree). `vnmakarov/mir` is the
 true upstream; `github.com/derekbsnider/mir` is the historical former
@@ -241,6 +279,16 @@ A test with a sibling `tests/<name>.helper` fixture (e.g.
 `include_helper.mad`, project-mode TU sources) is a compilation unit of
 another test — runners skip it; skip it when running by hand too.
 
+## Committing
+
+`/commit` (`.claude/commands/commit.md`) is the commit path: it names the test
+tier the change needs, runs Tier 1 (targeted) and Tier 2
+(`scripts/fast_lanes.sh` — six conformance lanes, under three minutes), and
+writes the four rule trailers. Use it instead of deciding the tier per commit;
+choosing between "a few targeted tests" and "the multi-hour battery" is the
+documented way this goes wrong. The pre-push hook enforces the commit tier on
+every branch, so a push with Tier 2 unrun is blocked, not merely regretted.
+
 ## Duplication audit
 
 `/dupaudit` (`.claude/commands/dupaudit.md`) is a **recon** pass for *semantic*
@@ -250,8 +298,11 @@ detector: the case that hurts here shares no text (six angle-bracket scanners,
 one guarded, a sixth unguarded copy written two days *after* the fix landed in
 the first).
 
-Run it **before merging a feature branch, scoped to the subsystem the feature
-touched** — that is where new copies are born. Findings are recorded as
+It runs **inside `/commit`, scoped to the commit's diff, before the build** —
+that is where new copies are born, and where a consolidation is still part of
+the change Tier 1 and Tier 2 validate. **Never as a merge gate:** the merge
+follows the battery, so anything it rewrites there is code the battery never
+ran. Findings are recorded as
 `DupFamily` nodes in `madc-knowledge` so later sweeps re-check instead of
 rediscovering, and every family that gets consolidated leaves a gate in
 `fulltest` so it cannot regrow. Non-Claude tools: read the command file and
@@ -321,8 +372,8 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 | [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
 | [knowledge-graph.md](.claude/rules/knowledge-graph.md) |   14 | KG as authoritative project memory, mirrored back into repo files |
-| [scratch-files.md](.claude/rules/scratch-files.md) |     8 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root |
-| [rule-trailers.md](.claude/rules/rule-trailers.md) |    28 | **Show the Top 5 work, don't assert it.** Every `src/`/`include/` commit carries `Hypothesis:` / `Layer:` / `Searched:` / `Oracle:`; gated by `check-rule-trailers.sh`. Can't write `Layer:`? You're shimming |
+| [scratch-files.md](.claude/rules/scratch-files.md) |    10 | All scratch / temp / reducer files go in `tmp/` (gitignored) — never in `tests/` or repo root; a test removes what it creates (gated by `run_tests.sh`) |
+| [rule-trailers.md](.claude/rules/rule-trailers.md) |    33 | **Show the Top 5 work, don't assert it.** Every `src/`/`include/` commit carries `Hypothesis:` / `Layer:` / `Searched:` / `Oracle:`; gated by `check-rule-trailers.sh`. Can't write `Layer:`? You're shimming |
 
 Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
 too; it's stated in the "Shell command hygiene" section of this file.
@@ -342,8 +393,8 @@ no matter how small.
 | [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [parse-once.md](.claude/rules/parse-once.md)     |    24 | New C++ support resolves on the parse-once generic spine (g++ tsubst model), NEVER via re-parse; re-parse is a transitional fallback slated for deletion at suite-wide burndown=0; every change moves the `[why:]` fallback count down or flat |
 | [code-style.md](.claude/rules/code-style.md)     |     6 | C++11, tabs, header guards, DBG                |
-| [value-first.md](.claude/rules/value-first.md)   |    30 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
-| [dialect-lean.md](.claude/rules/dialect-lean.md) |    38 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; the one include a fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`); interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
+| [value-first.md](.claude/rules/value-first.md)   |    39 | madc-dialect code: ZERO includes/`using`/`std::` (bare print/println/format; auto-include reaches user modules); var/value over std::string; missing capability = fix the CARRIER/compiler, never spell around it |
+| [dialect-lean.md](.claude/rules/dialect-lean.md) |    37 | OWNER LAW: the `--std=madc` surface (prelude fragments included) never depends on C++ system header parsing or std::string; the one include a fragment may carry is a sibling `bits/` fragment (`<bits/ui_enums>`); interop conveniences behind the stdlib guards; polyglot publics need lean PRIMARY forms; gated by `check-dialect-lean.sh` |
 | [dialect-literals.md](.claude/rules/dialect-literals.md) | 24 | In dialect PRODUCTION code (`tools/`), build objects with literals `var x = { "k": v };` — never a bare `var x;` filled field-by-field; imperative key-assign is for MUTATION / computed keys / indices; gated by `check-dialect-literals.sh` |
 | [enum-over-strings.md](.claude/rules/enum-over-strings.md) |  32 | Enums (not chars/strings) for type/category discriminators; convert C-string node names to enums at the boundary |
 | [thread-safety.md](.claude/rules/thread-safety.md) | 22 | OWNER LAW: every language addition STATES its thread-safety contract (C++ stdlib convention default); shared mutation routes through the hub/verbs; no new bare mutable globals |
@@ -355,8 +406,8 @@ that fails any of these is not merged.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 27 | Targeted tests per change; `make -C src fulltest` once per merge wave — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V: slices bank on the feature branch, ONE battery + lanes + develop merge at the seam |
+| [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 74 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (six lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 
@@ -378,13 +429,14 @@ editing — don't try to memorize all of them.
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
+| [indirection.md](.claude/rules/indirection.md) |   114 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); an operand's value + integer promotions (`operand_value_type` / `promoted_operand_type`, gated), type minting/peeling, an array operand's element (`array_operand_element_type`), decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **35 rules, 1065 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~414 lines** — loaded by Claude via
+- **36 rules, 1255 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~487 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1501 lines.**
+- **Grand total loaded by Claude Code per turn: ~1750 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the
@@ -425,8 +477,8 @@ sibling `docs/rules/` reasoning file. Refresh these counts by running
 - Commit early. Never run `git checkout` on files with uncommitted
   work — use feature guards (`#ifdef FEATURE_NAME`) or `git stash`.
 - Read the related rule(s) before editing compiler internals.
-- Run the targeted tests per change and `make -C src fulltest` once per
-  merge wave; a green merge-wave battery is part of "done."
+- Run the targeted tests per change and `bash scripts/seam_battery.sh` once
+  per merge wave; a green merge-wave battery is part of "done."
 
 ## Help / feedback
 

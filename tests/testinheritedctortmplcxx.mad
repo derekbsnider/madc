@@ -1,0 +1,29 @@
+/* A constructor TEMPLATE is inherited like any other constructor
+   ([class.inhctor]): `using B::B;` makes B's `template<class U> B(U)` a
+   candidate for D, and a construction instantiates it in B, where it is
+   declared. madc instantiated only a class's OWN constructor templates, so
+   the inherited one never became a candidate: "no matching constructor for
+   call to 'D(double)'" (g++.dg/cpp0x/constexpr-83144.C, once the
+   template-id form `using tuple<T, T>::tuple;` was read).
+   Oracle: g++ and clang++ -std=c++17 print `2 7 5 9`. */
+#include <cstdio>
+
+struct B {
+	int v;
+	template <class U> B(U u) : v((int)u) {}
+	B(int a, int b) : v(a * 10 + b) {}
+};
+struct D : B { using B::B; int own = 5; };
+template <class T> struct P {
+	T x, y;
+	template <class U1, class U2> P(U1 a, U2 b) : x(a), y(b) {}
+};
+template <class T> struct Q : P<T> { using P<T>::P; };
+
+int main()
+{
+	D d(2.5);
+	Q<int> q{7, 9L};
+	printf("%d %d %d %d\n", d.v, q.x, d.own, q.y);
+	return 0;
+}

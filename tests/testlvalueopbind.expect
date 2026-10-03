@@ -1,0 +1,10 @@
+pre-inc: 12
+assign: 13
+compound: 27
+pre-dec: 36
+once: 17 6 1
+bind: 9
+ret: 2
+addr: 7
+refret: 1234
+rank: int& int& int& int&&

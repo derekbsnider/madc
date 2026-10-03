@@ -39,8 +39,15 @@
    /usr/lib/libSystem.B.dylib (macOS mandates dynamic libSystem), and
    always carries a linker-signed ad-hoc code signature (CodeDirectory
    with SHA-256 page hashes, no certificate -- Apple Silicon refuses
-   unsigned binaries; ad-hoc signing is pure hashing).  shared_p is
-   refused loudly: there is no dylib emission by design.
+   unsigned binaries; ad-hoc signing is pure hashing).
+
+   shared_p makes the same image an MH_DYLIB: based at 0 (no __PAGEZERO;
+   dyld slides it, the rebase stream fixing the baked internal slots as
+   for an executable), no LC_LOAD_DYLINKER or LC_MAIN, an LC_ID_DYLIB
+   naming it "@rpath/" + params->identifier, and an export trie of every
+   defined, named, non-local symbol (the ELF -shared dynamic-symbol rule).
+   Its module initializers run from __mod_init_func when dyld loads it,
+   as an executable's do.
 
    params->extra_* (the carrier seam): one optional caller-named read-only
    segment/section pair laid out between __DATA and __LINKEDIT and covered
@@ -169,10 +176,12 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
 
 #define MACHO_MH_MAGIC_64 0xfeedfacfu
 #define MACHO_MH_EXECUTE 2u
+#define MACHO_MH_DYLIB 6u
 #define MACHO_MH_NOUNDEFS 0x1u
 #define MACHO_MH_DYLDLINK 0x4u
 #define MACHO_MH_TWOLEVEL 0x80u
 #define MACHO_MH_PIE 0x200000u
+#define MACHO_MH_NO_REEXPORTED_DYLIBS 0x100000u
 
 #define MACHO_CPU_TYPE_X86_64 0x01000007u
 #define MACHO_CPU_SUBTYPE_X86_64_ALL 3u
@@ -184,6 +193,8 @@ static void macho_sha256_final (macho_sha256_t *s, uint8_t out[32]) {
 #define MACHO_LC_SYMTAB 0x2u
 #define MACHO_LC_DYSYMTAB 0xbu
 #define MACHO_LC_LOAD_DYLIB 0xcu
+#define MACHO_LC_ID_DYLIB 0xdu
+#define MACHO_LC_RPATH (0x1cu | MACHO_LC_REQ_DYLD)
 #define MACHO_LC_LOAD_DYLINKER 0xeu
 #define MACHO_LC_UUID 0x1bu
 #define MACHO_LC_CODE_SIGNATURE 0x1du
@@ -306,6 +317,19 @@ static uint32_t machob_lc_str_size (uint32_t fixed, const char *s) {
   return (n + 7u) & ~7u;
 }
 
+/* LC_RPATH's size for a `len'-byte path (8-padded, NUL included) */
+static uint32_t machob_rpath_size (size_t len) { return (uint32_t) ((12 + len + 1 + 7) & ~(size_t) 7); }
+
+/* Does the image load anything through @rpath?  Only then do the runpath's
+   entries become LC_RPATHs: dyld consults them for @rpath loads alone, and
+   an image without one stays exactly as it was. */
+static int macho_rpath_p (const MIR_object_exec_params *params) {
+  if (params->runpath == NULL || params->runpath[0] == '\0') return 0;
+  for (size_t i = 0; i < params->n_needed; i++)
+    if (strncmp (params->needed[i], "@rpath/", 7) == 0) return 1;
+  return 0;
+}
+
 typedef struct {
   int seg;
   uint64_t off; /* offset within the segment */
@@ -335,11 +359,159 @@ static int macho_u64_cmp (const void *a, const void *b) {
   return x < y ? -1 : x > y ? 1 : 0;
 }
 
+/* ===== the export trie (a dylib's exported names, dyld's lookup) ========
+   A compressed prefix tree over the `_'-prefixed names.  Siblings never
+   share a first character, so dyld's walk -- take the child whose whole
+   edge prefixes the rest of the name -- cannot descend a wrong branch (a
+   flat root fanning out to `_foo' and `_foobar' would: `_foo' prefixes
+   `_foobar').  A node: ULEB terminal size, {ULEB flags, ULEB image-relative
+   address} when terminal, a child count byte, then per child its edge
+   string and the child's ULEB trie offset.  Offsets are ULEBs inside
+   earlier nodes, so the layout iterates to a fixed point (offsets only
+   grow), as ld64 lays it out. */
+
+typedef struct {
+  int terminal_p;
+  uint64_t addr;                  /* image-relative (terminal only) */
+  size_t first_edge, n_edges;     /* the node's children, contiguous */
+  uint64_t off;                   /* the node's offset in the trie */
+} macho_trie_node_t;
+
+typedef struct {
+  const char *s; /* the edge label (not NUL-terminated at len) */
+  size_t len;
+  size_t child; /* node index */
+} macho_trie_edge_t;
+
+typedef struct {
+  macho_trie_node_t *nodes;
+  size_t n_nodes, cap_nodes;
+  macho_trie_edge_t *edges;
+  size_t n_edges, cap_edges;
+  const char *const *names; /* sorted, distinct */
+  const uint64_t *addrs;
+} macho_trie_t;
+
+/* The node for names[lo, hi), which share their first `depth' bytes; its
+   index, or -1 (out of memory). */
+static long macho_trie_node (macho_trie_t *t, size_t lo, size_t hi, size_t depth) {
+  if (t->n_nodes == t->cap_nodes) {
+    size_t cap = t->cap_nodes ? 2 * t->cap_nodes : 16;
+    void *np = realloc (t->nodes, cap * sizeof (macho_trie_node_t));
+    if (np == NULL) return -1;
+    t->nodes = np;
+    t->cap_nodes = cap;
+  }
+  size_t me = t->n_nodes++;
+  memset (&t->nodes[me], 0, sizeof (macho_trie_node_t));
+  size_t i = lo;
+  if (i < hi && t->names[i][depth] == '\0') { /* sorted: the prefix itself is first */
+    t->nodes[me].terminal_p = 1;
+    t->nodes[me].addr = t->addrs[i];
+    i++;
+  }
+  size_t ng = 0;
+  for (size_t j = i; j < hi; ng++) {
+    size_t k = j;
+    while (k < hi && t->names[k][depth] == t->names[j][depth]) k++;
+    j = k;
+  }
+  if (ng > 255) return -1; /* the child count is one byte; a byte alphabet bounds it */
+  if (t->n_edges + ng > t->cap_edges) {
+    size_t cap = t->cap_edges ? 2 * t->cap_edges : 16;
+    while (cap < t->n_edges + ng) cap *= 2;
+    void *np = realloc (t->edges, cap * sizeof (macho_trie_edge_t));
+    if (np == NULL) return -1;
+    t->edges = np;
+    t->cap_edges = cap;
+  }
+  size_t e0 = t->n_edges;
+  t->n_edges += ng; /* reserved first: a node's children stay contiguous */
+  t->nodes[me].first_edge = e0;
+  t->nodes[me].n_edges = ng;
+  size_t g = 0;
+  for (size_t j = i; j < hi; g++) {
+    size_t k = j;
+    while (k < hi && t->names[k][depth] == t->names[j][depth]) k++;
+    const char *a = t->names[j], *b = t->names[k - 1]; /* the group's common prefix */
+    size_t l = depth;
+    while (a[l] != '\0' && a[l] == b[l]) l++;
+    long child = macho_trie_node (t, j, k, l);
+    if (child < 0) return -1;
+    t->edges[e0 + g].s = a + depth;
+    t->edges[e0 + g].len = l - depth;
+    t->edges[e0 + g].child = (size_t) child;
+    j = k;
+  }
+  return (long) me;
+}
+
+static uint64_t macho_uleb_size (uint64_t v) {
+  uint64_t n = 1;
+  while (v >= 0x80) {
+    v >>= 7;
+    n++;
+  }
+  return n;
+}
+
+static uint64_t macho_trie_term_size (const macho_trie_node_t *nd) {
+  return nd->terminal_p ? macho_uleb_size (0) + macho_uleb_size (nd->addr) : 0;
+}
+
+/* The trie over `n' sorted, distinct names into `out'; 0, or -1. */
+static int macho_export_trie (dwbuf_t *out, const char *const *names, const uint64_t *addrs,
+                              size_t n) {
+  macho_trie_t t = {0};
+  t.names = names;
+  t.addrs = addrs;
+  int rc = -1;
+  if (macho_trie_node (&t, 0, n, 0) < 0) goto done;
+  for (int changed = 1; changed;) { /* the fixed-point layout */
+    changed = 0;
+    uint64_t off = 0;
+    for (size_t i = 0; i < t.n_nodes; i++) {
+      macho_trie_node_t *nd = &t.nodes[i];
+      if (nd->off != off) {
+        nd->off = off;
+        changed = 1;
+      }
+      uint64_t ts = macho_trie_term_size (nd);
+      off += macho_uleb_size (ts) + ts + 1;
+      for (size_t e = nd->first_edge; e < nd->first_edge + nd->n_edges; e++)
+        off += t.edges[e].len + 1 + macho_uleb_size (t.nodes[t.edges[e].child].off);
+    }
+  }
+  for (size_t i = 0; i < t.n_nodes; i++) {
+    macho_trie_node_t *nd = &t.nodes[i];
+    buf_uleb (out, macho_trie_term_size (nd));
+    if (nd->terminal_p) {
+      buf_uleb (out, 0); /* EXPORT_SYMBOL_FLAGS_KIND_REGULAR */
+      buf_uleb (out, nd->addr);
+    }
+    buf_u8 (out, (uint8_t) nd->n_edges);
+    for (size_t e = nd->first_edge; e < nd->first_edge + nd->n_edges; e++) {
+      buf_bytes (out, t.edges[e].s, t.edges[e].len);
+      buf_u8 (out, 0);
+      buf_uleb (out, t.nodes[t.edges[e].child].off);
+    }
+  }
+  rc = 0;
+done:
+  free (t.nodes);
+  free (t.edges);
+  return rc;
+}
+
+static int macho_cstr_cmp (const void *a, const void *b) {
+  return strcmp (*(const char *const *) a, *(const char *const *) b);
+}
+
 /* ===== the writer ======================================================= */
 
 static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                   void **buf, size_t *size) {
-  if (params->shared_p) return -1; /* no dylib emission by design (no libmadc.dylib) */
+  int dylib_p = params->shared_p != 0; /* MH_DYLIB (see the header note) */
   const char *entry_nm = params->entry != NULL ? params->entry : "main";
   const char *ident = params->identifier != NULL ? params->identifier : "mir.image";
   size_t n = obj->n_syms;
@@ -352,7 +524,14 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
       entry_i = i;
       break;
     }
-  if (entry_i == n) return -1;
+  if (!dylib_p && entry_i == n) return -1;
+  /* the flavor: an executable sits above __PAGEZERO and enters at LC_MAIN; a
+     dylib starts at 0 (dyld slides it), so its segments are one dyld index
+     lower, and it names itself (LC_ID_DYLIB, "@rpath/" + the identifier:
+     the install name an image linking it records) and exports its defined
+     globals through the trie */
+  uint64_t base = dylib_p ? 0 : MACHO_BASE;
+  int seg_shift = dylib_p ? 1 : 0;
 
   /* ---- relocation census: field kinds resolve at emit; internal ABS64
      becomes a rebase, import ABS64 becomes a bind.  A dynamic slot in
@@ -388,7 +567,8 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
                           + (obj->bss_size != 0 ? 1 : 0);
   uint32_t dylinker_size = machob_lc_str_size (12, "/usr/lib/dyld");
   uint32_t libsystem_size = machob_lc_str_size (24, "/usr/lib/libSystem.B.dylib");
-  uint32_t sizeofcmds = (72 + 0)                          /* __PAGEZERO */
+  uint32_t id_size = machob_lc_str_size (24 + 7, ident); /* "@rpath/" + ident */
+  uint32_t sizeofcmds = (dylib_p ? 0 : 72 + 0)            /* __PAGEZERO */
                         + (72 + 80)                       /* __TEXT + __text */
                         + (72 + (1 + n_init_sects) * 80)  /* __DATA_CONST */
                         + (72 + n_data_sects * 80)        /* __DATA */
@@ -396,15 +576,16 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
                         + 48                              /* LC_DYLD_INFO_ONLY */
                         + 24                              /* LC_SYMTAB */
                         + 80                              /* LC_DYSYMTAB */
-                        + dylinker_size                   /* LC_LOAD_DYLINKER */
+                        + (dylib_p ? 0 : dylinker_size)   /* LC_LOAD_DYLINKER */
                         + 24                              /* LC_UUID */
                         + 24                              /* LC_BUILD_VERSION */
-                        + 24                              /* LC_MAIN */
+                        + (dylib_p ? id_size : 24)        /* LC_ID_DYLIB / LC_MAIN */
                         + libsystem_size                  /* LC_LOAD_DYLIB libSystem */
                         + 16                              /* LC_FUNCTION_STARTS */
                         + 16                              /* LC_DATA_IN_CODE */
                         + 16;                             /* LC_CODE_SIGNATURE */
-  uint32_t ncmds = 16; /* 5 segments + the 11 fixed commands above */
+  uint32_t ncmds = dylib_p ? 14 : 16; /* 5 segments + the 11 fixed commands above;
+                                         a dylib: no __PAGEZERO, no dylinker */
   for (size_t i = 0; i < params->n_needed; i++) {
     sizeofcmds += machob_lc_str_size (24, params->needed[i]);
     ncmds++;
@@ -413,9 +594,20 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     sizeofcmds += 72 + 80;
     ncmds++;
   }
+  int rpath_p = macho_rpath_p (params); /* one LC_RPATH per runpath entry */
+  if (rpath_p)
+    for (const char *r = params->runpath; *r != '\0';) {
+      const char *e = strchr (r, ':');
+      size_t len = e != NULL ? (size_t) (e - r) : strlen (r);
+      if (len != 0) {
+        sizeofcmds += machob_rpath_size (len);
+        ncmds++;
+      }
+      r += len + (e != NULL);
+    }
 
 #define MACHO_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
-  /* ---- layout: identity fileoff <-> vaddr-MACHO_BASE mapping */
+  /* ---- layout: identity fileoff <-> vaddr-base mapping */
   uint64_t text_off = MACHO_ALIGN (32 + sizeofcmds, 16); /* keeps SSE pool alignment */
   uint64_t text_end = text_off + obj->text.len;
   uint64_t text_seg_size = MACHO_ALIGN (text_end, MACHO_PAGE);
@@ -434,9 +626,9 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   uint64_t data_off = dc_off + dc_seg_size;
   uint64_t data_file_size = MACHO_ALIGN (obj->data.len, MACHO_PAGE);
   if (data_file_size == 0) data_file_size = MACHO_PAGE;
-  uint64_t bss_vaddr = MACHO_ALIGN (MACHO_BASE + data_off + obj->data.len, bss_align);
+  uint64_t bss_vaddr = MACHO_ALIGN (base + data_off + obj->data.len, bss_align);
   uint64_t data_vm_size
-    = MACHO_ALIGN (bss_vaddr + obj->bss_size - (MACHO_BASE + data_off), MACHO_PAGE);
+    = MACHO_ALIGN (bss_vaddr + obj->bss_size - (base + data_off), MACHO_PAGE);
   if (data_vm_size < data_file_size) data_vm_size = data_file_size;
   /* extra carrier segment between __DATA and __LINKEDIT: page-aligned start
      (data_off/data_file_size already are), identity fileoff <-> vaddr like
@@ -444,13 +636,13 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
      of the file */
   uint64_t xtra_off = data_off + data_file_size;
   uint64_t xtra_file_size = extra_p ? MACHO_ALIGN (params->extra_size, MACHO_PAGE) : 0;
-  uint64_t xtra_vaddr = MACHO_BASE + xtra_off;
+  uint64_t xtra_vaddr = base + xtra_off;
   uint64_t le_off = xtra_off + xtra_file_size; /* __LINKEDIT file start */
 
-  uint64_t text_vaddr = MACHO_BASE + text_off; /* builder .text offset 0 */
-  uint64_t data_vaddr = MACHO_BASE + data_off;
-  uint64_t pool_vaddr = MACHO_BASE + dc_off;
-  uint64_t initarr_vaddr = MACHO_BASE + initarr_off;
+  uint64_t text_vaddr = base + text_off; /* builder .text offset 0 */
+  uint64_t data_vaddr = base + data_off;
+  uint64_t pool_vaddr = base + dc_off;
+  uint64_t initarr_vaddr = base + initarr_off;
 
 #define MACHO_SEC_VADDR(sec) \
   ((sec) == MIR_OBJ_SEC_TEXT      ? text_vaddr \
@@ -462,14 +654,17 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
 #define MACHO_SLOT_OFF(sec) \
   ((sec) == MIR_OBJ_SEC_DATA ? data_off : (sec) == MIR_OBJ_SEC_INITARR ? initarr_off : dc_off)
   /* dyld segment index + segment file base for a slot's section */
-#define MACHO_SLOT_SEG(sec) ((sec) == MIR_OBJ_SEC_DATA ? MACHO_SEG_DATA : MACHO_SEG_DATA_CONST)
+#define MACHO_SLOT_SEG(sec) \
+  (((sec) == MIR_OBJ_SEC_DATA ? MACHO_SEG_DATA : MACHO_SEG_DATA_CONST) - seg_shift)
 #define MACHO_SLOT_SEG_OFF(sec) ((sec) == MIR_OBJ_SEC_DATA ? data_off : dc_off)
 
   /* ---- collect rebase / bind entries (sorted for the opcode streams) */
   int rc = -1;
   unsigned char *p = NULL;
   dwbuf_t rebase = {0}, bind = {0}, funcstarts = {0}, symtab = {0}, strtab = {0}, sig = {0};
-  uint64_t *fstarts = NULL;
+  dwbuf_t trie = {0}, xnames = {0};
+  uint64_t *fstarts = NULL, *xaddrs = NULL;
+  const char **xnms = NULL;
   macho_rebase_t *rebases = calloc (n_rebase ? n_rebase : 1, sizeof (macho_rebase_t));
   macho_bind_t *binds = calloc (n_bind ? n_bind : 1, sizeof (macho_bind_t));
   if (rebases == NULL || binds == NULL) goto done;
@@ -599,11 +794,53 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     }
   while (strtab.len % 8 != 0) buf_u8 (&strtab, 0);
 
+  /* ---- a dylib's export trie: every defined, named, non-local symbol (the
+     ELF -shared dynamic-symbol rule), `_'-prefixed, each a regular export
+     at its image-relative address (internal references were baked, so an
+     export never interposes them: the ELF writer's -Bsymbolic) */
+  if (dylib_p) {
+    size_t nx = 0;
+    for (size_t i = 0; i < n; i++) {
+      objsym_t *s = &obj->syms[i];
+      if (s->name != NULL && s->defined_p && !s->local_p && !s->section_p) nx++;
+    }
+    xnms = calloc (nx ? nx : 1, sizeof (char *));
+    xaddrs = calloc (nx ? nx : 1, sizeof (uint64_t));
+    if (xnms == NULL || xaddrs == NULL) goto done;
+    size_t *xoff = calloc (nx ? nx : 1, sizeof (size_t));
+    if (xoff == NULL) goto done;
+    nx = 0;
+    for (size_t i = 0; i < n; i++) { /* the names, one buffer (it may move while growing) */
+      objsym_t *s = &obj->syms[i];
+      if (s->name == NULL || !s->defined_p || s->local_p || s->section_p) continue;
+      xoff[nx++] = xnames.len;
+      buf_u8 (&xnames, '_');
+      buf_str (&xnames, s->name);
+    }
+    for (size_t k = 0; k < nx; k++) xnms[k] = (const char *) xnames.p + xoff[k];
+    free (xoff);
+    qsort (xnms, nx, sizeof (char *), macho_cstr_cmp);
+    size_t nd = 0;
+    for (size_t k = 0; k < nx; k++) /* distinct names */
+      if (nd == 0 || strcmp (xnms[nd - 1], xnms[k]) != 0) xnms[nd++] = xnms[k];
+    for (size_t k = 0; k < nd; k++)
+      for (size_t i = 0; i < n; i++) {
+        objsym_t *s = &obj->syms[i];
+        if (s->name == NULL || !s->defined_p || s->local_p || s->section_p) continue;
+        if (strcmp (s->name, xnms[k] + 1) != 0) continue;
+        xaddrs[k] = MACHO_SEC_VADDR (s->sec) + s->value - base;
+        break;
+      }
+    if (macho_export_trie (&trie, xnms, xaddrs, nd) != 0) goto done;
+    while (trie.len % 8 != 0) buf_u8 (&trie, 0);
+  }
+
   /* ---- __LINKEDIT layout (ascending dataoffs; the signature is LAST and
      the file ends exactly at its end -- codesign requirement) */
   uint64_t rebase_le = 0;
   uint64_t bind_le = rebase_le + rebase.len;
-  uint64_t fstarts_le = bind_le + bind.len;
+  uint64_t trie_le = bind_le + bind.len;
+  uint64_t fstarts_le = trie_le + trie.len;
   uint64_t dic_le = fstarts_le + funcstarts.len; /* LC_DATA_IN_CODE, empty */
   uint64_t symtab_le = dic_le;
   uint64_t strtab_le = symtab_le + symtab.len;
@@ -628,6 +865,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
   if (extra_p) memcpy (p + xtra_off, params->extra_data, params->extra_size);
   memcpy (p + le_off + rebase_le, rebase.p, rebase.len);
   memcpy (p + le_off + bind_le, bind.p, bind.len);
+  memcpy (p + le_off + trie_le, trie.p, trie.len);
   memcpy (p + le_off + fstarts_le, funcstarts.p, funcstarts.len);
   memcpy (p + le_off + symtab_le, symtab.p, symtab.len);
   memcpy (p + le_off + strtab_le, strtab.p, strtab.len);
@@ -642,7 +880,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
                         + r->offset;
     if (r->kind != MIR_OBJ_RELOC_ABS64) {
       uint64_t v = MACHO_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
-      if (obj_apply_field_reloc (r->kind, p + slot_off, v, MACHO_BASE + slot_off) != 0)
+      if (obj_apply_field_reloc (r->kind, p + slot_off, v, base + slot_off) != 0)
         goto done; /* range overflow: not an emitter-layout reality */
     } else if (s->defined_p) {
       uint64_t v = MACHO_SEC_VADDR (s->sec) + s->value + (uint64_t) r->addend;
@@ -661,21 +899,22 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     buf_u32 (&lc, MACHO_CPU_TYPE_X86_64);
     buf_u32 (&lc, MACHO_CPU_SUBTYPE_X86_64_ALL);
 #endif
-    buf_u32 (&lc, MACHO_MH_EXECUTE);
+    buf_u32 (&lc, dylib_p ? MACHO_MH_DYLIB : MACHO_MH_EXECUTE);
     buf_u32 (&lc, ncmds);
     buf_u32 (&lc, sizeofcmds);
-    buf_u32 (&lc, MACHO_MH_NOUNDEFS | MACHO_MH_DYLDLINK | MACHO_MH_TWOLEVEL | MACHO_MH_PIE);
+    buf_u32 (&lc, MACHO_MH_NOUNDEFS | MACHO_MH_DYLDLINK | MACHO_MH_TWOLEVEL
+                    | (dylib_p ? MACHO_MH_NO_REEXPORTED_DYLIBS : MACHO_MH_PIE));
     buf_u32 (&lc, 0); /* reserved */
 
-    machob_segment (&lc, "__PAGEZERO", 0, MACHO_BASE, 0, 0, 0, 0);
+    if (!dylib_p) machob_segment (&lc, "__PAGEZERO", 0, MACHO_BASE, 0, 0, 0, 0);
 
-    machob_segment (&lc, "__TEXT", MACHO_BASE, text_seg_size, 0, text_seg_size,
+    machob_segment (&lc, "__TEXT", base, text_seg_size, 0, text_seg_size,
                     MACHO_VM_PROT_READ | MACHO_VM_PROT_EXECUTE, 1);
     machob_section (&lc, "__text", "__TEXT", text_vaddr, obj->text.len, (uint32_t) text_off, 4,
                     MACHO_S_REGULAR | MACHO_S_ATTR_PURE_INSTRUCTIONS
                       | MACHO_S_ATTR_SOME_INSTRUCTIONS);
 
-    machob_segment (&lc, "__DATA_CONST", MACHO_BASE + dc_off, dc_seg_size, dc_off, dc_seg_size,
+    machob_segment (&lc, "__DATA_CONST", base + dc_off, dc_seg_size, dc_off, dc_seg_size,
                     MACHO_VM_PROT_READ | MACHO_VM_PROT_WRITE, 1 + n_init_sects);
     {
       unsigned pl2 = 0;
@@ -707,7 +946,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
                       params->extra_size, (uint32_t) xtra_off, 3, MACHO_S_REGULAR);
     }
 
-    machob_segment (&lc, "__LINKEDIT", MACHO_BASE + le_off, MACHO_ALIGN (le_size, MACHO_PAGE),
+    machob_segment (&lc, "__LINKEDIT", base + le_off, MACHO_ALIGN (le_size, MACHO_PAGE),
                     le_off, le_size, MACHO_VM_PROT_READ, 0);
 
     /* LC_DYLD_INFO_ONLY */
@@ -721,8 +960,8 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     buf_u32 (&lc, 0);
     buf_u32 (&lc, 0); /* lazy_bind: none -- everything binds eagerly */
     buf_u32 (&lc, 0);
-    buf_u32 (&lc, 0); /* export trie: executables export nothing */
-    buf_u32 (&lc, 0);
+    buf_u32 (&lc, trie.len != 0 ? (uint32_t) (le_off + trie_le) : 0); /* export trie: */
+    buf_u32 (&lc, (uint32_t) trie.len); /* a dylib's; executables export nothing */
 
     /* LC_SYMTAB */
     buf_u32 (&lc, MACHO_LC_SYMTAB);
@@ -743,11 +982,11 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     buf_u32 (&lc, n_undef);              /* nundefsym */
     for (int i = 0; i < 12; i++) buf_u32 (&lc, 0); /* toc..locrel: none */
 
-    /* LC_LOAD_DYLINKER */
-    buf_u32 (&lc, MACHO_LC_LOAD_DYLINKER);
-    buf_u32 (&lc, dylinker_size);
-    buf_u32 (&lc, 12); /* name offset */
-    {
+    /* LC_LOAD_DYLINKER (an executable's) */
+    if (!dylib_p) {
+      buf_u32 (&lc, MACHO_LC_LOAD_DYLINKER);
+      buf_u32 (&lc, dylinker_size);
+      buf_u32 (&lc, 12); /* name offset */
       size_t base_len = lc.len - 12;
       buf_str (&lc, "/usr/lib/dyld");
       while (lc.len - base_len != dylinker_size) buf_u8 (&lc, 0);
@@ -767,11 +1006,23 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     buf_u32 (&lc, MACHO_MINOS_12_0); /* sdk */
     buf_u32 (&lc, 0);                /* ntools */
 
-    /* LC_MAIN */
-    buf_u32 (&lc, MACHO_LC_MAIN);
-    buf_u32 (&lc, 24);
-    buf_u64 (&lc, text_off + obj->syms[entry_i].value); /* entryoff */
-    buf_u64 (&lc, 0);                                   /* stacksize: default */
+    if (dylib_p) { /* LC_ID_DYLIB: the install name a linking image records */
+      size_t base_len = lc.len;
+      buf_u32 (&lc, MACHO_LC_ID_DYLIB);
+      buf_u32 (&lc, id_size);
+      buf_u32 (&lc, 24);         /* name offset */
+      buf_u32 (&lc, 1);          /* timestamp */
+      buf_u32 (&lc, 0x00010000); /* current_version 1.0.0 */
+      buf_u32 (&lc, 0x00010000); /* compatibility_version 1.0.0 */
+      buf_bytes (&lc, "@rpath/", 7);
+      buf_str (&lc, ident);
+      while (lc.len - base_len != id_size) buf_u8 (&lc, 0);
+    } else { /* LC_MAIN */
+      buf_u32 (&lc, MACHO_LC_MAIN);
+      buf_u32 (&lc, 24);
+      buf_u64 (&lc, text_off + obj->syms[entry_i].value); /* entryoff */
+      buf_u64 (&lc, 0);                                   /* stacksize: default */
+    }
 
     /* LC_LOAD_DYLIB libSystem (+ params->needed extras).  With extras the
        bind stream switches to flat-namespace lookup (see the bind stream
@@ -792,6 +1043,25 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
         while (lc.len - base_len != sz) buf_u8 (&lc, 0);
       }
     }
+
+    /* LC_RPATH: the runpath's entries, in order (dyld tries each for an
+       @rpath load) */
+    if (rpath_p)
+      for (const char *r = params->runpath; *r != '\0';) {
+        const char *e = strchr (r, ':');
+        size_t len = e != NULL ? (size_t) (e - r) : strlen (r);
+        if (len != 0) {
+          uint32_t sz = machob_rpath_size (len);
+          size_t base_len = lc.len;
+          buf_u32 (&lc, MACHO_LC_RPATH);
+          buf_u32 (&lc, sz);
+          buf_u32 (&lc, 12); /* path offset */
+          buf_bytes (&lc, r, len);
+          buf_u8 (&lc, 0);
+          while (lc.len - base_len != sz) buf_u8 (&lc, 0);
+        }
+        r += len + (e != NULL);
+      }
 
     /* LC_FUNCTION_STARTS */
     buf_u32 (&lc, MACHO_LC_FUNCTION_STARTS);
@@ -862,7 +1132,7 @@ static int macho_emit_executable (MIR_object_t obj, const MIR_object_exec_params
     machob_be64 (&sig, 0); /* codeLimit64 */
     machob_be64 (&sig, 0);             /* execSegBase: __TEXT fileoff */
     machob_be64 (&sig, text_seg_size); /* execSegLimit */
-    machob_be64 (&sig, MACHO_CS_EXECSEG_MAIN_BINARY);
+    machob_be64 (&sig, dylib_p ? 0 : MACHO_CS_EXECSEG_MAIN_BINARY);
     buf_bytes (&sig, ident, ident_len);
     for (uint32_t i = 0; i < n_code_slots; i++) {
       macho_sha256_t sh;
@@ -893,6 +1163,10 @@ done:
   free (rebases);
   free (binds);
   free (fstarts);
+  free (xnms);
+  free (xaddrs);
+  free (trie.p);
+  free (xnames.p);
   free (rebase.p);
   free (bind.p);
   free (funcstarts.p);

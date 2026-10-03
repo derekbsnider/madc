@@ -1,0 +1,12 @@
+// C11 6.4.4.4p1: no c-char is a new-line, so a character constant whose line
+// ends before its closing quote is missing that quote. madc read on across the
+// new-line and took the constant's first byte (exit 0).
+// Oracle: gcc "error: missing terminating ' character" at the opening quote,
+//         clang "warning: missing terminating ' character" then
+//         "error: expected expression" (the program is refused).
+int main(void)
+{
+	char c = 'a
+';
+	return c;
+}

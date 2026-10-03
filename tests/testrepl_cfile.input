@@ -1,0 +1,4 @@
+printf("helper=%d\n", helper());
+count * 3
+count = 5;
+printf("after=%d\n", helper() + 1);

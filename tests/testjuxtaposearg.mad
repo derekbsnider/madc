@@ -1,0 +1,13 @@
+// The call-argument twin of testjuxtaposeinit: `printf("%d\n", (x)(4))`
+// printed 4 (the top of the juxtaposed pair, `x` silently dropped, exit 0)
+// where gcc and clang reject the call of a non-function. The argument
+// parse also ends at the conditional-end short-circuit; it now finishes
+// through Program::finish_expression like every other exit.
+#include <stdio.h>
+
+int main(void)
+{
+    int x = 3;
+    printf("%d\n", (x)(4));
+    return 0;
+}

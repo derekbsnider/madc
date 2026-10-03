@@ -1,0 +1,8 @@
+// C11 6.10.1: a conditional group runs from its #if to its #endif, and the
+// file must supply the #endif. madc ran a file whose `#if 1` never closed
+// (exit 0): at the end of input nothing checked for open groups.
+// Oracle: gcc "7: error: unterminated #if", clang "7:2: error: unterminated
+// conditional directive" (at the opening directive).
+int main(void) { return 0; }
+#if 1
+int never_closed;

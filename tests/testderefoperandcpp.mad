@@ -1,0 +1,67 @@
+// Unary * reads a CAST-EXPRESSION ([expr.unary.op]/1) -- the C++ shapes of
+// testderefoperandc: member calls, `::`-qualified names, implicit-this
+// members, class iterators (operator*), named casts. madc refused `**c.pp()`
+// (the handed-over defect), `**cp->pp()`, `***c.ppp()`, `**::gpp`, the
+// implicit member under two stars, `(int)*it` and `(int)**c.pp()`, and read
+// `*static_cast<int *>(vp) + 1` as `*(static_cast<int *>(vp) + 1)` (silent:
+// 9 for 6). `*it2++` on a class iterator is `*(it2++)`, and a reference to a
+// pointer dereferences its referent. Oracle: g++ and clang++ -std=c++17 agree on every line.
+#include <stdio.h>
+
+struct C {
+    char *s;
+    char **p2;
+    char **pp() { return &s; }
+    char ***ppp() { return &p2; }
+    char *p1() { return s; }
+    int implicit2() { return **p2; }
+};
+
+struct It {
+    char *p;
+    char operator*() { return *p; }
+    It &operator++() { ++p; return *this; }
+    It operator++(int) { It old = *this; ++p; return old; }
+};
+
+static char **gpp;
+
+int main()
+{
+    char ch = 7;
+    C c;
+    c.s = &ch;
+    c.p2 = &c.s;
+    C *cp = &c;
+    gpp = &c.s;
+
+    printf("mcall1 %d\n", *c.p1());
+    printf("mcall-paren %d\n", *(*c.pp()));
+    printf("mcall2 %d\n", **c.pp());
+    printf("arrow-mcall2 %d\n", **cp->pp());
+    printf("mcall3 %d\n", ***c.ppp());
+    printf("implicit2 %d\n", c.implicit2());
+    printf("qualified2 %d\n", **::gpp);
+
+    char buf[2] = { 7, 9 };
+    It it;
+    it.p = buf;
+    printf("class-deref %d\n", *it);
+    printf("cast-class %d\n", (int)*it);
+    printf("cast-mcall2 %d\n", (int)**c.pp());
+    printf("preinc-class %d\n", *++it);
+    It it2;
+    it2.p = buf;
+    int v = *it2++;
+    printf("postinc-class %d %d\n", v, *it2);
+
+    char *&rp = c.s;
+    char **&rpp = c.p2;
+    printf("ref-to-ptr %d\n", *rp);
+    printf("ref-to-ptr2 %d\n", **rpp);
+
+    int a[2] = { 5, 9 };
+    void *vp = a;
+    printf("named-cast-plus %d\n", *static_cast<int *>(vp) + 1);
+    return 0;
+}

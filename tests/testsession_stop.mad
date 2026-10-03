@@ -1,0 +1,45 @@
+// Stopping a session whose entry never ends (madcide's Stop, Thonny's
+// Stop/Restart): the restart terminates the busy backend at once instead of
+// waiting out the 2s grace an idle backend gets to read its end of input and
+// exit on its own. php::time() is whole seconds, so a restart that waited
+// the grace reads 2 or more; a prompt one reads 0 or 1.
+
+// Poll until a reply of `kind` (or the backend's end) arrives.
+long wait_for(var &r, long h, madc::session_reply kind)
+{
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	if ( madc::session_poll(r, h) != 0 )
+	{
+	    if ( r["kind"] == kind || r["kind"] == madc::session_reply::stopped )
+		return 1;
+	    continue;
+	}
+	madc::sleep_ms(10);
+    }
+    return 0;
+}
+
+int main()
+{
+    long h = madc::session_open("c11");
+    var r;
+
+    madc::session_offer(h, "long spin = 0; for (;;) spin++;", true);
+    println("running: {}", wait_for(r, h, madc::session_reply::running) != 0
+			    && r["kind"] == madc::session_reply::running);
+
+    long t0 = php::time();
+    bool restarted = madc::session_restart(h);
+    long took = php::time() - t0;
+    println("restart: {} prompt={}", restarted, took <= 1);
+
+    madc::session_offer(h, "int after = 1;", true);
+    wait_for(r, h, madc::session_reply::offer);
+    println("fresh session: ok={}", r["ok"]);
+
+    // An idle backend still ends on its own when the session closes.
+    println("close: {}", madc::session_close(h));
+    println("done");
+    return 0;
+}

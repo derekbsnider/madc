@@ -495,7 +495,16 @@ void emit_declarator(CEmit &e, node_t decl)
 			node_t s = op(suffixes, i);
 			if (!s) break;
 			if (s->code == N_POINTER) {
-				d = "*" + d;
+				// The pointer level's own qualifiers (`*volatile p`,
+				// `*const p`): op 0 is its qualifier list.
+				std::string quals;
+				if (node_t ql = op(s, 0))
+					for (int qi = 0; ; qi++) {
+						node_t q = op(ql, qi);
+						if (!q) break;
+						quals += emit_to_string(e, q) + " ";
+					}
+				d = "*" + quals + d;
 				prefix_pointer = true;
 			} else {                     // N_FUNC -> "(params)", N_ARR -> "[size]"
 				if (prefix_pointer) d = "(" + d + ")";
@@ -702,6 +711,13 @@ void emit(CEmit &e, node_t n, int ctx)
 		if (w && w->code != N_IGNORE) {
 			e.put(" : ");
 			emit(e, w, P_COND);
+		}
+		// The member's own attributes (`packed`, a packed member's
+		// `aligned(N)`) follow its declarator and a bit-field's width.
+		node_t mattrs = op(n, 2);
+		if (mattrs && mattrs->code == N_LIST && op(mattrs, 0)) {
+			e.put(' ');
+			emit_seq(e, mattrs, 0, " ", P_NONE);
 		}
 		e.put(';');
 		emit_pack_pop(e, pack);
@@ -962,6 +978,16 @@ void emit(CEmit &e, node_t n, int ctx)
 		emit_initializer(e, op(n, 1));
 		break;
 	}
+	case N_FIELD_ID:
+		// A MEMBER designator inside an N_INIT designator list:
+		// N_FIELD_ID(N_ID) -> `.name`. Emitted for a UNION whose brace
+		// initializes a member other than the first — that has no
+		// positional spelling at all (a union initializer holds exactly
+		// one element, which names the FIRST member). See
+		// CirBuilder::aggregate_init_list.
+		e.put('.');
+		emit(e, op(n, 0), P_NONE);
+		break;
 	case N_CAST:
 		// [0] = N_TYPE (target type), [1] = operand expression (a
 		// cast-expression: `(T)x`, `(T)(a + b)`, `((T)p)->f` by context)

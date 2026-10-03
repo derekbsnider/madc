@@ -41,6 +41,7 @@
 // a plain object confined to the thread that composes and applies keys;
 // two models never share state.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <map>
@@ -55,6 +56,7 @@
 #include "madcdis/ui_focus.h"	// focusable, focus_state — the focus/navigation owner
 #include "madcdis/ui_input.h"	// ui_apply_keys — the one keys → events adapter
 #include "madcdis/ui_style.h"	// ui_style, ui_style_of — the one render style + spec parser
+#include "madcdis/text_utf16.h"	// line_layout / line_columns — the one line layout (B87)
 
 namespace madc {
 namespace hub {
@@ -64,14 +66,28 @@ namespace hub {
 // madcdis/ui_style.h — the one vocabulary the DOM model renders too; this
 // model paints it into cells, the VT100 target spells it as SGR.
 
+// One terminal column. `ch` is the glyph drawn there: one code point's UTF-8
+// bytes packed first-byte-lowest (an ASCII glyph is its own byte, so a cell
+// compares against 'x' directly). A wide glyph (codepoint_columns() == 2)
+// occupies its cell AND the next, which is its `tail`: no glyph of its own,
+// never emitted (the terminal advanced over it drawing the glyph).
 struct tui_cell
 {
-    char     ch;
+    uint32_t ch;
+    bool     tail;
     ui_style attr;
-    tui_cell() : ch(' '), attr(ui_style::normal()) {}
+    tui_cell() : ch(' '), tail(false), attr(ui_style::normal()) {}
     bool operator==(const tui_cell &o) const
-	{ return ch == o.ch && attr == o.attr; }
+	{ return ch == o.ch && tail == o.tail && attr == o.attr; }
     bool operator!=(const tui_cell &o) const { return !(*this == o); }
+    // The glyph's bytes, appended to `out` (nothing for a tail).
+    void append_glyph(std::string &out) const
+    {
+	if ( tail )
+	    return;
+	for ( uint32_t g = ch; g != 0; g >>= 8 )
+	    out += (char)(g & 0xFF);
+    }
 };
 
 struct tui_grid
@@ -96,25 +112,72 @@ struct tui_grid
     const tui_cell &at(size_t r, size_t c) const { return cells[r * cols + c]; }
 
     // Clipped text write; never wraps. THE CELL INVARIANT: a cell holds one
-    // printable byte occupying exactly one terminal column — a control byte
-    // in a cell desynchronizes grid columns from screen columns (a raw tab
-    // MOVES the terminal cursor without erasing the skipped columns: stale
-    // fragments + doubled glyphs while scrolling, the IDE-9c defect). Tab
-    // expansion is the document projection's job (paint_edit's display map);
-    // here every control byte renders as a visible '?'. Bytes >= 0x80 pass
-    // through (UTF-8 renders byte-per-cell today; the multi-column glyph
-    // model is the doc-lens display-map seat).
+    // printable glyph and the grid's columns ARE the screen's — a control
+    // byte in a cell desynchronizes them (a raw tab MOVES the terminal cursor
+    // without erasing the skipped columns: stale fragments + doubled glyphs
+    // while scrolling, the IDE-9c defect), and so does a character's bytes
+    // counted as columns (B87: the caret drifted one column right per extra
+    // byte of a UTF-8 character). Tab expansion is the document projection's
+    // job (paint_edit lays lines out through madc::line_layout); here every
+    // control byte renders as a visible '?', each code point takes
+    // codepoint_columns() cells, and a wide glyph that does not fit before
+    // the right edge shows as a space.
     void put(size_t r, size_t c, const std::string &text,
 	     ui_style attr = ui_style::normal())
     {
 	if ( r >= rows )
 	    return;
-	for ( size_t i = 0; i < text.size() && c + i < cols; ++i )
+	size_t i = 0;
+	while ( i < text.size() && c < cols )
 	{
-	    tui_cell &cell = at(r, c + i);
-	    char b = text[i];
-	    cell.ch = (unsigned char)b < 0x20 || b == 0x7f ? '?' : b;
-	    cell.attr = attr;
+	    uint32_t cp = 0;
+	    size_t n = madc::utf8_decode_at(text, i, cp);
+	    uint32_t glyph = 0;
+	    size_t w = 1;
+	    if ( cp < 0x20 || cp == 0x7f )
+		glyph = '?';
+	    else
+	    {
+		for ( size_t k = n; k > 0; --k )
+		    glyph = (glyph << 8) | (unsigned char)text[i + k - 1];
+		w = madc::codepoint_columns(cp);
+	    }
+	    if ( c + w > cols )
+	    {
+		glyph = ' ';		// a wide glyph cut by the right edge
+		w = 1;
+	    }
+	    set_glyph(r, c, glyph, w, attr);
+	    c += w;
+	    i += n;
+	}
+    }
+    // Place one glyph `w` columns wide at (r, c). A glyph overwriting half of
+    // a wide one leaves the other half a space, so no tail outlives its lead
+    // and no lead loses its tail.
+    void set_glyph(size_t r, size_t c, uint32_t glyph, size_t w, ui_style attr)
+    {
+	if ( at(r, c).tail && c > 0 )
+	{
+	    at(r, c - 1).ch = ' ';
+	    at(r, c - 1).tail = false;
+	}
+	size_t after = c + w;
+	if ( after < cols && at(r, after).tail )
+	{
+	    at(r, after).ch = ' ';
+	    at(r, after).tail = false;
+	}
+	tui_cell &cell = at(r, c);
+	cell.ch = glyph;
+	cell.tail = false;
+	cell.attr = attr;
+	if ( w == 2 )
+	{
+	    tui_cell &t2 = at(r, c + 1);
+	    t2.ch = 0;
+	    t2.tail = true;
+	    t2.attr = attr;
 	}
     }
     void fill_attr(size_t r, size_t c, size_t len, ui_style attr)
@@ -131,7 +194,7 @@ struct tui_grid
 	if ( r >= rows )
 	    return out;
 	for ( size_t c = 0; c < cols; ++c )
-	    out += at(r, c).ch;
+	    at(r, c).append_glyph(out);
 	size_t end = out.find_last_not_of(' ');
 	return end == std::string::npos ? std::string() : out.substr(0, end + 1);
     }
@@ -223,9 +286,13 @@ inline uint64_t tui_row_hash(const tui_grid &g, size_t r)
     for ( size_t c = 0; c < g.cols; ++c )
     {
 	const tui_cell &cell = g.at(r, c);
-	unsigned char bytes[4] = { (unsigned char)cell.ch, cell.attr.fg,
+	unsigned char bytes[8] = { (unsigned char)(cell.ch & 0xFF),
+				   (unsigned char)((cell.ch >> 8) & 0xFF),
+				   (unsigned char)((cell.ch >> 16) & 0xFF),
+				   (unsigned char)(cell.ch >> 24),
+				   (unsigned char)cell.tail, cell.attr.fg,
 				   cell.attr.bg, cell.attr.flags };
-	for ( int i = 0; i < 4; ++i )
+	for ( int i = 0; i < 8; ++i )
 	{
 	    h ^= bytes[i];
 	    h *= 1099511628211ULL;
@@ -359,48 +426,168 @@ inline tui_paint_plan tui_diff_plan(const tui_grid &prev, const tui_grid &next)
 // SS3 forms of the VT100/xterm family; the shapes every terminal library
 // parses — cross-checked against termbox2's and ncurses's tables). A bare
 // ESC is ambiguous until the input pauses: the TARGET calls flush() when
-// its read times out after an ESC, resolving it to the esc key. Modifier
-// parameters on arrows ("1;2A") resolve to the unmodified key in this
-// pilot.
+// its read times out after an ESC, resolving it to the esc key. xterm's
+// modified keys decode with their modifiers (plan §41.11a step 3e): a
+// cursor or function key's second parameter ("CSI 1;5A" Ctrl+Up,
+// "CSI 15;2~" Shift+F5, "CSI 1;3P" Alt+F1), CSI Z (Shift+Tab), and a
+// modifyOtherKeys or CSI u report of any other key ("CSI 27;6;83~",
+// "CSI 115;5u"). ui::key_mod's bits are the parameter less one. A terminal
+// that reports none sends Ctrl+Shift+S as Ctrl+S; those chords are the
+// GUI's. NUL is Ctrl+Space. An Esc-prefixed byte is still the esc key then
+// the byte (the profiles' `esc x` Meta chords).
+//
+// A byte of 0x80 and above is a `ch`: UTF-8 input arrives as the bytes of
+// its code points, and a printable run coalesces them into one text event
+// (plan §41.7a). A BRACKETED PASTE (xterm's mode 2004: CSI 200~ ... CSI
+// 201~, which a target turns on only where it wants it) is text, not keys:
+// every byte between the markers is a literal `ch`, a tab and a line break
+// included, and a CR or CR LF becomes one '\n'. A paste spans reads; only
+// its end marker ends it.
+// The function keys' xterm tilde codes (CSI n ~), F1..F12: ONE table the
+// parser and tui_key_bytes read. F1..F4 also arrive as SS3 P..S (xterm's
+// own spelling for them, which tui_key_bytes writes back), and F1..F5 as
+// the Linux console's CSI [ A..E.
+inline int fkey_tilde_code(int n)
+{
+    static const int codes[13] = { 0, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 23, 24 };
+    return n >= 1 && n <= 12 ? codes[n] : 0;
+}
+inline int fkey_of_tilde_code(int code)
+{
+    for ( int n = 1; n <= 12; ++n )
+	if ( fkey_tilde_code(n) == code )
+	    return n;
+    return 0;
+}
+
 class tui_keyparse
 {
-    enum class state : unsigned char { normal, esc, csi, ss3 };
+    enum class state : unsigned char { normal, esc, csi, ss3, console_fkey, paste };
     state _st;
     std::string _params;
+    std::string _paste_end;	// the part of the end marker matched so far
+    bool _paste_cr;		// the last pasted byte was CR (CR LF is one)
 
-    static void emit(std::vector<tui_keyev> &out, tui_key k, char c = 0)
+    static void emit(std::vector<tui_keyev> &out, tui_key k, char c = 0,
+		     unsigned char mods = 0)
     {
-	out.push_back(tui_keyev(k, c));
+	out.push_back(key_normalized(tui_keyev(k, c, mods)));
+    }
+    // A key a modifyOtherKeys / CSI u report names by its code.
+    static void emit_code(std::vector<tui_keyev> &out, int code,
+			  unsigned char mods)
+    {
+	switch ( code )
+	{
+	    case 9:   emit(out, tui_key::tab, 0, mods); return;
+	    case 13:  emit(out, tui_key::enter, 0, mods); return;
+	    case 27:  emit(out, tui_key::esc, 0, mods); return;
+	    case 8:
+	    case 127: emit(out, tui_key::backspace, 0, mods); return;
+	    default:
+		if ( code >= 0x20 && code <= 0x7e )
+		    emit(out, tui_key::ch, (char)code, mods);
+		return;			// otherwise unrecognized: dropped
+	}
     }
     static void resolve_csi(const std::string &params, char final_byte,
 			    std::vector<tui_keyev> &out)
     {
+	// "a;b;c": the key (or 1), the modifiers + 1, a code.
+	int p[3] = { 0, 0, 0 };
+	size_t np = 0, at = 0;
+	while ( np < 3 )
+	{
+	    size_t semi = params.find(';', at);
+	    p[np++] = atoi(params.substr(at, semi == std::string::npos
+					       ? std::string::npos : semi - at).c_str());
+	    if ( semi == std::string::npos )
+		break;
+	    at = semi + 1;
+	}
+	unsigned char mods = p[1] > 1 ? (unsigned char)(p[1] - 1) : 0;
 	switch ( final_byte )
 	{
-	    case 'A': emit(out, tui_key::up); return;
-	    case 'B': emit(out, tui_key::down); return;
-	    case 'C': emit(out, tui_key::right); return;
-	    case 'D': emit(out, tui_key::left); return;
-	    case 'H': emit(out, tui_key::home); return;
-	    case 'F': emit(out, tui_key::end); return;
+	    case 'A': emit(out, tui_key::up, 0, mods); return;
+	    case 'B': emit(out, tui_key::down, 0, mods); return;
+	    case 'C': emit(out, tui_key::right, 0, mods); return;
+	    case 'D': emit(out, tui_key::left, 0, mods); return;
+	    case 'H': emit(out, tui_key::home, 0, mods); return;
+	    case 'F': emit(out, tui_key::end, 0, mods); return;
+	    case 'P': case 'Q': case 'R': case 'S':	// CSI 1;m P: a modified F1..F4
+		emit(out, tui_key::fkey, (char)(final_byte - 'P' + 1), mods);
+		return;
+	    case 'Z':				// back-tab
+		emit(out, tui_key::tab, 0,
+		     (unsigned char)(mods | key_mod_bits(::ui::key_mod::shift)));
+		return;
+	    case 'u':				// CSI code;m u
+		emit_code(out, p[0], mods);
+		return;
 	    case '~':
-		switch ( params.empty() ? 0 : atoi(params.c_str()) )
+		switch ( p[0] )
 		{
-		    case 1: case 7: emit(out, tui_key::home); return;
-		    case 4: case 8: emit(out, tui_key::end); return;
-		    case 2: emit(out, tui_key::ins); return;
-		    case 3: emit(out, tui_key::del); return;
-		    case 5: emit(out, tui_key::pgup); return;
-		    case 6: emit(out, tui_key::pgdn); return;
-		    default: return;	// unrecognized: dropped
+		    case 1: case 7: emit(out, tui_key::home, 0, mods); return;
+		    case 4: case 8: emit(out, tui_key::end, 0, mods); return;
+		    case 2: emit(out, tui_key::ins, 0, mods); return;
+		    case 3: emit(out, tui_key::del, 0, mods); return;
+		    case 5: emit(out, tui_key::pgup, 0, mods); return;
+		    case 6: emit(out, tui_key::pgdn, 0, mods); return;
+		    case 27:			// modifyOtherKeys: 27;m;code
+			emit_code(out, p[2], mods);
+			return;
+		    default:
+		    {
+			int n = fkey_of_tilde_code(p[0]);
+			if ( n )
+			    emit(out, tui_key::fkey, (char)n, mods);
+			return;		// otherwise unrecognized: dropped
+		    }
 		}
 	    default: return;		// unrecognized final: dropped
 	}
+    }
+    // One pasted byte as text: a line break is '\n' whatever the terminal
+    // sent for it.
+    void paste_byte(unsigned char b, std::vector<tui_keyev> &out)
+    {
+	bool cr = _paste_cr;
+	_paste_cr = b == '\r';
+	if ( b == '\n' && cr )
+	    return;			// the LF of a CR LF
+	emit(out, tui_key::ch, b == '\r' ? '\n' : (char)b);
     }
     void feed_byte(unsigned char b, std::vector<tui_keyev> &out)
     {
 	switch ( _st )
 	{
+	    case state::paste:
+	    {
+		static const char end_marker[] = "\x1b[201~";
+		if ( b == (unsigned char)end_marker[_paste_end.size()] )
+		{
+		    _paste_end += (char)b;
+		    if ( _paste_end.size() == sizeof(end_marker) - 1 )
+		    {
+			_paste_end.clear();
+			_st = state::normal;
+		    }
+		    return;
+		}
+		// A partial marker that went no further was pasted text; the
+		// byte that broke it may begin a marker itself.
+		if ( !_paste_end.empty() )
+		{
+		    std::string held;
+		    held.swap(_paste_end);
+		    for ( size_t i = 0; i < held.size(); ++i )
+			paste_byte((unsigned char)held[i], out);
+		    feed_byte(b, out);
+		    return;
+		}
+		paste_byte(b, out);
+		return;
+	    }
 	    case state::esc:
 		if ( b == '[' )
 		{
@@ -421,8 +608,20 @@ class tui_keyparse
 		feed_byte(b, out);
 		return;
 	    case state::csi:
+		if ( b == '[' && _params.empty() )
+		{
+		    _st = state::console_fkey;	// the Linux console's F1..F5
+		    return;
+		}
 		if ( b >= 0x40 && b <= 0x7e )
 		{
+		    if ( b == '~' && _params == "200" )
+		    {
+			_st = state::paste;	// a bracketed paste begins
+			_paste_end.clear();
+			_paste_cr = false;
+			return;
+		    }
 		    resolve_csi(_params, (char)b, out);
 		    _st = state::normal;
 		}
@@ -440,9 +639,17 @@ class tui_keyparse
 		    case 'D': emit(out, tui_key::left); break;
 		    case 'H': emit(out, tui_key::home); break;
 		    case 'F': emit(out, tui_key::end); break;
+		    case 'P': case 'Q': case 'R': case 'S':
+			emit(out, tui_key::fkey, (char)(b - 'P' + 1));
+			break;
 		    default: break;		// unrecognized: dropped
 		}
 		_st = state::normal;
+		return;
+	    case state::console_fkey:
+		if ( b >= 'A' && b <= 'E' )
+		    emit(out, tui_key::fkey, (char)(b - 'A' + 1));
+		_st = state::normal;		// anything else: dropped
 		return;
 	    case state::normal:
 	    default:
@@ -460,14 +667,16 @@ class tui_keyparse
 	    emit(out, tui_key::ctrl, (char)('a' + b - 1));
 	else if ( b >= 0x1c && b <= 0x1f )
 	    emit(out, tui_key::ctrl, (char)(b + 0x40));	// ^\ ^] ^^ ^_
-	else if ( b >= 0x20 && b <= 0x7e )
-	    emit(out, tui_key::ch, (char)b);
-	// 0x00, >=0x80: dropped (byte-oriented pilot; UTF-8 glyph
-	// handling is the named residue).
+	else if ( b >= 0x20 )
+	    emit(out, tui_key::ch, (char)b);	// ASCII, and UTF-8's bytes
+	else if ( b == 0x00 )			// the terminals' Ctrl+Space
+	    emit(out, tui_key::ch, ' ', key_mod_bits(::ui::key_mod::ctrl));
+	// A grid still draws one byte per cell, so a multibyte glyph there is
+	// the grid's named residue.
     }
 
 public:
-    tui_keyparse() : _st(state::normal) {}
+    tui_keyparse() : _st(state::normal), _paste_cr(false) {}
 
     void feed(const char *bytes, size_t n, std::vector<tui_keyev> &out)
     {
@@ -475,12 +684,16 @@ public:
 	    feed_byte((unsigned char)bytes[i], out);
     }
     // Mid-sequence? The target polls briefly only then — an unambiguous
-    // batch pays zero added latency.
-    bool pending() const { return _st != state::normal; }
+    // batch pays zero added latency. A paste is not pending: it spans
+    // reads, and a pause inside it waits for no grace read.
+    bool pending() const
+	{ return _st != state::normal && _st != state::paste; }
     // The input paused: a pending bare ESC is the esc key; a partial
-    // CSI/SS3 is line noise and drops.
+    // CSI/SS3 is line noise and drops. A paste keeps going.
     void flush(std::vector<tui_keyev> &out)
     {
+	if ( _st == state::paste )
+	    return;
 	if ( _st == state::esc )
 	    emit(out, tui_key::esc);
 	_st = state::normal;
@@ -496,8 +709,61 @@ public:
 // parser's CSI/SS3 arms read (the CSI form for the cursor keys, the tilde
 // codes for ins/del/pgup/pgdn, 0x7f for backspace, \r for enter). A
 // control chord is its control byte; a printable is itself; `none` is
-// empty.
+// empty. A modified key is xterm's modified form (the parser's): the cursor
+// and function keys' "1;m" / "n;m" parameters, CSI Z for Shift+Tab,
+// modifyOtherKeys (CSI 27;m;code~) for any other key, NUL for Ctrl+Space.
+inline std::string tui_key_base_bytes(const tui_keyev &k);
 inline std::string tui_key_bytes(const tui_keyev &k)
+{
+    if ( k.mods == 0 )
+	return tui_key_base_bytes(k);
+    const unsigned char ctrl = key_mod_bits(::ui::key_mod::ctrl);
+    const unsigned char shift = key_mod_bits(::ui::key_mod::shift);
+    unsigned char mods = k.mods;
+    if ( k.kind == tui_key::ctrl )
+	mods |= ctrl;
+    const std::string m = std::to_string(1 + (int)mods);
+    switch ( k.kind )
+    {
+	case tui_key::up:    return "\x1b[1;" + m + "A";
+	case tui_key::down:  return "\x1b[1;" + m + "B";
+	case tui_key::right: return "\x1b[1;" + m + "C";
+	case tui_key::left:  return "\x1b[1;" + m + "D";
+	case tui_key::home:  return "\x1b[1;" + m + "H";
+	case tui_key::end:   return "\x1b[1;" + m + "F";
+	case tui_key::ins:   return "\x1b[2;" + m + "~";
+	case tui_key::del:   return "\x1b[3;" + m + "~";
+	case tui_key::pgup:  return "\x1b[5;" + m + "~";
+	case tui_key::pgdn:  return "\x1b[6;" + m + "~";
+	case tui_key::fkey:
+	    if ( k.ch >= 1 && k.ch <= 4 )
+		return "\x1b[1;" + m + (char)('P' + k.ch - 1);
+	    if ( k.ch >= 5 && k.ch <= 12 )
+		return "\x1b[" + std::to_string(fkey_tilde_code(k.ch)) + ";" + m + "~";
+	    return std::string();
+	case tui_key::tab:
+	    if ( k.mods == shift )
+		return std::string("\x1b[Z");
+	    return "\x1b[27;" + m + ";9~";
+	case tui_key::enter:	 return "\x1b[27;" + m + ";13~";
+	case tui_key::esc:	 return "\x1b[27;" + m + ";27~";
+	case tui_key::backspace: return "\x1b[27;" + m + ";127~";
+	case tui_key::ch:
+	    if ( k.ch == ' ' && k.mods == ctrl )
+		return std::string(1, '\0');
+	    return "\x1b[27;" + m + ";" + std::to_string((int)(unsigned char)k.ch) + "~";
+	case tui_key::ctrl:
+	{
+	    // The letter's code: upper-case under Shift, as xterm reports it.
+	    char c = k.ch;
+	    if ( (k.mods & shift) && c >= 'a' && c <= 'z' )
+		c = (char)(c - 'a' + 'A');
+	    return "\x1b[27;" + m + ";" + std::to_string((int)(unsigned char)c) + "~";
+	}
+	default:		 return std::string();
+    }
+}
+inline std::string tui_key_base_bytes(const tui_keyev &k)
 {
     switch ( k.kind )
     {
@@ -522,6 +788,12 @@ inline std::string tui_key_bytes(const tui_keyev &k)
 	case tui_key::del:	 return std::string("\x1b[3~");
 	case tui_key::pgup:	 return std::string("\x1b[5~");
 	case tui_key::pgdn:	 return std::string("\x1b[6~");
+	case tui_key::fkey:
+	    if ( k.ch >= 1 && k.ch <= 4 )
+		return std::string("\x1bO") + (char)('P' + k.ch - 1);
+	    if ( k.ch >= 5 && k.ch <= 12 )
+		return "\x1b[" + std::to_string(fkey_tilde_code(k.ch)) + "~";
+	    return std::string();
 	default:		 return std::string();
     }
 }
@@ -732,9 +1004,9 @@ private:
 	    std::string left = " " + prose::text_of(n.label);
 	    std::string right = prose::text_of(n.content);
 	    line_out l(left);
-	    if ( !right.empty() && left.size() + right.size() + 2 <= cols )
-		l.text += std::string(cols - left.size() - right.size() - 1,
-				      ' ') + right;
+	    size_t lw = madc::line_width(left), rw = madc::line_width(right);
+	    if ( !right.empty() && lw + rw + 2 <= cols )
+		l.text += std::string(cols - lw - rw - 1, ' ') + right;
 	    span s; s.col = 0; s.len = cols; s.attr = ui_style::reverse();
 	    l.spans.push_back(s);
 	    emit_line(fl, l);
@@ -892,6 +1164,7 @@ private:
 	    fl.order.push_back(ei);
 	    focusable f;
 	    f.k = focusable::kind::edit;
+	    f.takes_tab = hint_of(n.hints, "tabkey", 0) != 0;	// the field's tab
 	    _focus_st.add(f);
 	}
 	else if ( n.role == r.list && !n.label.is_null() )
@@ -951,12 +1224,23 @@ private:
 	return collect_leaf(r, n, c0, width);
     }
 
+    // A composed line through the one layout rule (tabs, code-point
+    // widths). Its styled spans are BYTE positions of the text, placed
+    // through the same map (B87: a span after a UTF-8 character landed a
+    // column right per extra byte). A position past the text's end is a
+    // COLUMN: a full-width bar spans len = cols, the row's width.
     void paint_line(size_t row, size_t col0, const line_out &l)
     {
-	_grid.put(row, col0, l.text);
+	std::vector<size_t> col;
+	_grid.put(row, col0, madc::line_layout(l.text, 0, col));
+	const size_t n = l.text.size();
 	for ( size_t i = 0; i < l.spans.size(); ++i )
-	    _grid.fill_attr(row, col0 + l.spans[i].col, l.spans[i].len,
-		l.spans[i].attr);
+	{
+	    size_t s = l.spans[i].col, e = l.spans[i].col + l.spans[i].len;
+	    size_t cs = s <= n ? col[s] : std::max(col[n], s);
+	    size_t ce = e <= n ? col[e] : std::max(col[n], e);
+	    _grid.fill_attr(row, col0 + cs, ce - cs, l.spans[i].attr);
+	}
     }
     // A leaf pane's header line: the tab titles, the active one reverse.
     void paint_header(size_t row, size_t col0,
@@ -979,37 +1263,12 @@ private:
 	paint_line(row, col0, l);
     }
 
-    // THE byte->display-column expansion for one document line (tabs move
-    // to the next 8-column stop, JOE's default). Returns the display form
-    // (what the grid shows); dcol[i] = the display column of byte i, with
-    // the end sentinel dcol[size()] = the display width — the ONE map the
-    // caret, the horizontal shift, the selection, and the highlight spans
-    // all convert through. A control byte other than tab stays one column
-    // wide (the grid's put() renders it '?').
+    // A document line's byte->display-column map is madc::line_layout's
+    // (madcdis/text_utf16.h): tabs to the next `tabw` stop (8, JOE's default;
+    // the ^T option's hint), code-point widths, control bytes as ^X — the ONE
+    // map the caret, the horizontal shift, the selection and the highlight
+    // spans all convert through, and the one the line editor paints with.
     enum { tab_stop = 8 };
-    static std::string expand_line(const std::string &line,
-				   std::vector<size_t> &dcol,
-				   size_t tabw = tab_stop)
-    {
-	std::string disp;
-	if ( tabw < 1 )
-	    tabw = tab_stop;
-	dcol.assign(line.size() + 1, 0);
-	for ( size_t i = 0; i < line.size(); ++i )
-	{
-	    dcol[i] = disp.size();
-	    if ( line[i] == '\t' )
-	    {
-		disp += ' ';
-		while ( disp.size() % tabw )
-		    disp += ' ';
-	    }
-	    else
-		disp += line[i];
-	}
-	dcol[line.size()] = disp.size();
-	return disp;
-    }
 
     // THE byte-range-to-visible-row overlap rule (selection and highlight
     // spans both paint through it): the [s0, e0) document range's overlap
@@ -1063,8 +1322,8 @@ private:
 	size_t caret_end = caret_line + 1 < starts.size()
 			 ? starts[caret_line + 1] - 1 : e.text.size();
 	std::vector<size_t> caret_dcol;
-	expand_line(e.text.substr(caret_begin, caret_end - caret_begin),
-		    caret_dcol, (size_t)e.tabw);
+	madc::line_layout(e.text.substr(caret_begin, caret_end - caret_begin),
+			  0, caret_dcol, (size_t)e.tabw);
 	size_t caret_col = caret_dcol[caret - caret_begin];
 
 	size_t &top = _scroll[e.slot];
@@ -1086,10 +1345,10 @@ private:
 	    size_t end = li + 1 < starts.size() ? starts[li + 1] - 1
 						: e.text.size();
 	    std::vector<size_t> dcol;
-	    std::string disp = expand_line(e.text.substr(begin, end - begin),
-					   dcol, (size_t)e.tabw);
-	    if ( shift < disp.size() )
-		_grid.put(top_row + k, col0, disp.substr(shift, width));
+	    std::string disp = madc::line_layout(e.text.substr(begin, end - begin),
+						 0, dcol, (size_t)e.tabw);
+	    if ( shift < dcol.back() )
+		_grid.put(top_row + k, col0, madc::line_columns(disp, shift, width));
 	    // Highlight spans first, the selection LAST (it wins where
 	    // they overlap) — both are the one range-overlap rule below.
 	    for ( size_t si = 0; si < e.spans.size(); ++si )
@@ -1232,6 +1491,14 @@ public:
     {
 	_grid.resize(rows, cols);
 	_focus_st.begin_compose();
+	// The toolbar (plan §41.11a): a root `toolbar` hint takes the top row;
+	// the bands and the centre lay out in the rows below it. No hint = no
+	// row, byte-identical to before (the negative control).
+	const std::string tbline = toolbar_line(tree);
+	const size_t top = (!tbline.empty() && rows > 1) ? 1 : 0;
+	if ( top )
+	    _grid.put(0, 0, tbline);
+	const size_t body_rows = rows - top;
 	// Column geometry: sidebars carve columns from the full width; the
 	// centre keeps the rest; panels span the centre columns.
 	size_t centre_c0 = 0, centre_w = cols;
@@ -1300,13 +1567,14 @@ public:
 	}
 	_focus_st.end_compose();
 	// Row geometry: panels carve rows from the centre; sidebars are full
-	// height. Paint the panels, the sidebars, then the centre flow.
-	size_t centre_r0 = 0, centre_h = rows;
+	// height (below the toolbar row). Paint the panels, the sidebars, then
+	// the centre flow.
+	size_t centre_r0 = top, centre_h = body_rows;
 	for ( size_t i = 0; i < bands.size(); ++i )
 	{
 	    if ( bands[i].side != ui_side::top && bands[i].side != ui_side::bottom )
 		continue;
-	    size_t ph = (size_t)((long)rows * bands[i].size / 100);
+	    size_t ph = (size_t)((long)body_rows * bands[i].size / 100);
 	    if ( ph < 3 )
 		ph = 3;
 	    if ( centre_h < 2 || ph > centre_h - 1 )
@@ -1324,9 +1592,40 @@ public:
 	}
 	for ( size_t i = 0; i < bands.size(); ++i )
 	    if ( bands[i].side == ui_side::left || bands[i].side == ui_side::right )
-		paint_region(bands[i].content, 0, rows);
+		paint_region(bands[i].content, top, body_rows);
 	paint_region(centre, centre_r0, centre_h);
 	return _grid;
+    }
+
+    // The toolbar's one line (plan §41.11a): each row of the root's
+    // `toolbar` hint as `[Label chord]`, the chord the LOADED profile binds
+    // to the row's code, else to its name (the page's tooltip, the menu's
+    // accelerator: tui_bindings::chord_for). A row with no label or no
+    // action is dropped. "" when the root carries none.
+    std::string toolbar_line(const uinode &tree) const
+    {
+	std::string line;
+	if ( !tree.hints.is_object() )
+	    return line;
+	const std::map<std::string, madc::value> &ho = tree.hints.as_object();
+	std::map<std::string, madc::value>::const_iterator ti = ho.find("toolbar");
+	if ( ti == ho.end() || !ti->second.is_array() )
+	    return line;
+	const std::vector<madc::value> &tbrows = ti->second.as_array();
+	for ( size_t k = 0; k < tbrows.size(); ++k )
+	{
+	    if ( !tbrows[k].is_object() )
+		continue;
+	    const std::string label = hint_str(tbrows[k], "label");
+	    const std::string action = hint_str(tbrows[k], "action");
+	    if ( label.empty() || action.empty() )
+		continue;
+	    const std::string key = _keys.bindings().chord_for(hint_of(tbrows[k], "code", 0), action);
+	    if ( !line.empty() )
+		line += ' ';
+	    line += "[" + label + (key.empty() ? std::string() : " " + key) + "]";
+	}
+	return line;
     }
 
     // Install a finalized bindings table (a profile swap is a new table);

@@ -1,0 +1,16 @@
+/* The out-of-line member definition of a partial specialization whose head
+   argument holds a `>` inside parentheses (`Z<T, (3 > 2) + 4>`, i.e.
+   Z<T, 5>): the class-template-id's `<` is the one whose list closes at
+   the `>` before `::`, found forward, so the definition attaches to the
+   partial specialization's member and not to nothing (the primary's body
+   ran instead). A plain partial specialization is the control.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     z: 50 1 90 */
+#include <cstdio>
+template<class T, int N> struct Z { int f(); };
+template<class T, int N> int Z<T, N>::f() { return N; }
+template<class T> struct Z<T, (3 > 2) + 4> { int f(); };
+template<class T> int Z<T, (3 > 2) + 4>::f() { return 50; }
+template<class T> struct Z<T, 9> { int f(); };
+template<class T> int Z<T, 9>::f() { return 90; }
+int main() { printf("z: %d %d %d\n", Z<int, 5>().f(), Z<int, 1>().f(), Z<int, 9>().f()); return 0; }

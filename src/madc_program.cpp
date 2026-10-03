@@ -1095,7 +1095,7 @@ bool is_valid_expression_binding_name(const std::string &identifier)
 bool is_expression_keyword_identifier(const std::string &identifier)
 {
     return identifier == "sizeof"
-	|| identifier == "alignof"
+	|| is_alignof_identifier(identifier)
 	|| identifier == "typeof"
 	|| identifier == "typeof_unqual";
 }
@@ -2317,6 +2317,9 @@ bool value_from_storage(DataDef *type, void *data, size_t count,
 {
     if ( !type || !data )
 	return false;
+    // A global's top-level cv is its declared type's (`volatile bool g`): the
+    // storage marshals as the unqualified type.
+    type = type->unqualified();
 
     if ( count != 1 || is_array_like )
 	return false;
@@ -2381,6 +2384,9 @@ bool set_storage_from_value(DataDef *type, void *data, size_t count,
 {
     if ( !type || !data )
 	return false;
+    // A global's top-level cv is its declared type's (`volatile bool g`): the
+    // storage marshals as the unqualified type.
+    type = type->unqualified();
 
     if ( count != 1 || is_array_like )
 	return false;
@@ -3782,15 +3788,10 @@ struct program::impl
 	if ( pgm->last_error.has_error )
 	    return false;
 	// File-scope class globals (e.g. `std::string g = "hi";`) construct in
-	// the synthesized module function __madc_global_init — main calls it
-	// too, but a call-only session never runs main. The function carries a
-	// static once-guard, so init-here + a later run_main stays single-shot.
+	// the module's dynamic initialization — main runs it too, but a
+	// call-only session never runs main (CirJitSession::run_global_init).
 	if ( jit )
-	{
-	    void *ginit = jit->function_code("__madc_global_init");
-	    if ( ginit )
-		((void (*)())ginit)();
-	}
+	    jit->run_global_init();
 	runtime_initialized = true;
 	return true;
     }
@@ -4641,7 +4642,8 @@ static void compile_source_child_frontend(::Program &self, ::Program &child,
 // persistent parse handles (AST-1): one rendering of the compiler's
 // structured data, whether the child lives for one call or for a
 // handle's lifetime.
-static void diagnostic_rows_from_child(::Program &child, madc::value &out)
+// Also the session backend's (src/madc_session_client.cpp): an entry's rows.
+void diagnostic_rows_from_child(::Program &child, madc::value &out)
 {
     std::vector<madc::value> rows;
     for ( size_t i = 0; i < child.diagnostics.size(); ++i )
@@ -4839,21 +4841,12 @@ bool internal_program_source_emit(::Program &self,
 					     out, display_name);
 }
 
-// Does the child carry at least one ERROR-severity diagnostic? The
-// build lane's silent-failure belt: a failed build must return rows
-// that SAY why (see internal_program_build_native).
-static bool child_has_error_row(::Program &child)
-{
-    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
-	if ( child.diagnostics[i].severity == ::Program::DiagnosticSeverity::error )
-	    return true;
-    return false;
-}
-
-// ONE owner for the build-surface kind vocabulary ("exe" | "obj") — the
-// path lane and the live-handle lane must never drift (a new kind lands
-// here once). False = unknown name; the caller owns the diagnostic.
-static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
+// ONE owner for the build-surface kind vocabulary ("exe" | "obj" |
+// "shared") — the path lane, the live-handle lane and the project lane must
+// never drift (a new kind lands here once, its refusal text with it).
+// False = unknown name, with `why` the diagnostic every lane records.
+static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind,
+			   std::string &why)
 {
     if ( kind_name == "exe" )
     {
@@ -4865,6 +4858,13 @@ static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
 	kind = mnkObject;		// relocatable .o (-r -o)
 	return true;
     }
+    if ( kind_name == "shared" )
+    {
+	kind = mnkShared;		// a shared object (-shared)
+	return true;
+    }
+    why = "unknown build kind '" + kind_name
+	+ "' (expected \"exe\", \"obj\" or \"shared\")";
     return false;
 }
 
@@ -4873,14 +4873,17 @@ static bool native_kind_of(const std::string &kind_name, MadcNativeKind &kind)
 // incomplete tree — parse_build and parse_run both refuse on it.
 static bool parse_tree_backend_ready(::Program &child)
 {
-    return child.tkProgram && !child_has_error_row(child);
+    return child.tkProgram && !child.has_error_diagnostic();
 }
 
 // The build surface (madcide IDE-10c): the CLI's AOT lane — tokenize +
 // parse a FILE in a child Program (the lexer owns file ingestion and the
 // TU's relative #includes, exactly as parse_open_file), then
 // madc_cir_emit_native — run IN-PROCESS. kind: "exe" = PIE executable
-// (the CLI -o default), "obj" = relocatable .o (-r -o). Diagnostics come
+// (the CLI -o default), "obj" = relocatable .o (-r -o), "shared" = a
+// shared object (-shared). include_dirs are the CLI's -I directories, in
+// order: an array of text (null = none; any other shape, or an element
+// that is not text, is refused with a row). Diagnostics come
 // back as rows either way; a failure with nothing recorded (a backend
 // refusal prints to stderr, not into Program::diagnostics — the named
 // backend-diagnostics-as-data residue) gets one synthesized error row so
@@ -4888,10 +4891,46 @@ static bool parse_tree_backend_ready(::Program &child)
 // Thread contract: the runtime-eval confinement — the call owns its
 // child; the emit phase has no yield points (it blocks a cooperative
 // scheduler for its duration — the named backend-yield residue).
+// A source child's inputs, the one owner for the in-process compile verbs
+// (build_native, code_open): the include directories (the CLI's -I, an
+// array of text, in order) and the source file itself. False = refused,
+// the reason recorded on `child`.
+static bool child_source_setup(::Program &child, const std::string &path,
+			       const madc::value &include_dirs)
+{
+    if ( !include_dirs.is_null() && !include_dirs.is_array() )
+    {
+	child.set_error(::Program::DiagnosticPhase::compiler,
+			"the include directories must be an array of"
+			" directory names");
+	return false;
+    }
+    if ( include_dirs.is_array() )
+	for ( const madc::value &d : include_dirs.as_array() )
+	{
+	    if ( !d.is_string() )
+	    {
+		child.set_error(::Program::DiagnosticPhase::compiler,
+				"an include directory must be text");
+		return false;
+	    }
+	    child.add_include_dir(d.as_string());	// -I, in order
+	}
+    struct stat sb;
+    if ( stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode) )
+    {
+	child.set_error(::Program::DiagnosticPhase::compiler,
+			"cannot read source file", path.c_str());
+	return false;
+    }
+    return true;
+}
+
 bool internal_program_build_native(::Program &self, const std::string &path,
 				   const std::string &kind_name,
 				   madc::value &out,
-				   const std::string &outpath)
+				   const std::string &outpath,
+				   const madc::value &include_dirs)
 {
     self.clear_diagnostics();
     self.clear_error();
@@ -4905,19 +4944,12 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 	// contract); recording into child.diagnostics is untouched.
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = native_kind_of(kind_name, kind);
+	std::string kind_why;
+	bool kind_ok = native_kind_of(kind_name, kind, kind_why);
 	if ( !kind_ok )
-	    child.set_error(::Program::DiagnosticPhase::compiler,
-			    "unknown build kind '" + kind_name
-			    + "' (expected \"exe\" or \"obj\")");
-	struct stat sb;
-	if ( kind_ok
-	  && (stat(path.c_str(), &sb) != 0 || !S_ISREG(sb.st_mode)) )
-	{
-	    kind_ok = false;
-	    child.set_error(::Program::DiagnosticPhase::compiler,
-			    "cannot read source file", path.c_str());
-	}
+	    child.set_error(::Program::DiagnosticPhase::compiler, kind_why);
+	if ( kind_ok )
+	    kind_ok = child_source_setup(child, path, include_dirs);
 	if ( kind_ok )
 	{
 	    TokenProgram *tp = child.tokenize(path.c_str());
@@ -4926,7 +4958,7 @@ bool internal_program_build_native(::Program &self, const std::string &path,
 					  outpath.c_str(),
 					  std::vector<std::string>()) == 0;
 	}
-	if ( !ok && !child_has_error_row(child) )
+	if ( !ok && !child.has_error_diagnostic() )
 	    child.set_error(::Program::DiagnosticPhase::compiler,
 			    "build failed with no recorded diagnostic"
 			    " (backend output goes to stderr)",
@@ -4934,6 +4966,92 @@ bool internal_program_build_native(::Program &self, const std::string &path,
     }
     diagnostic_rows_from_child(child, out);
     return ok;
+}
+
+// ---- code in this process (madcide's `source` plugins, plan §41.11a step 5)
+// A source file compiled into the RUNNING process and kept: a child Program
+// (build_native's inputs, child_source_setup) whose JIT session is linked
+// against this process — its imports bind what the process already loaded,
+// so the code shares the one engine (the plugin design's G1) — and whose
+// dynamic initializers (__madc_global_init) have run, once. code_symbol
+// answers a function's or an object's address by its emitted name (an
+// extern "C" name is its spelling), as library_symbol answers a library's.
+// The source twin of the library verbs. Handle discipline = handle_table.
+// Thread contract: the runtime-eval confinement — a code handle is used
+// only from the thread that opened it, and its code runs on the caller's
+// thread; closing it frees the code, so no address it gave may be called
+// after. Its file-scope objects are not destroyed at close: no namespace-
+// scope destructor runs yet, at exit or here (BUGS.md B102).
+struct code_state
+{
+    ::Program *child;
+    CirJitSession *jit;
+    code_state() : child((::Program *)0), jit((CirJitSession *)0) {}
+    ~code_state() { delete jit; delete child; }
+};
+
+static handle_table<code_state> &code_handles()
+{
+    static handle_table<code_state> handles;
+    return handles;
+}
+
+int64_t internal_program_code_open(::Program &self, const std::string &path,
+				   madc::value &out,
+				   const madc::value &include_dirs)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+    out = value();
+    code_state *st = new code_state();
+    st->child = new ::Program(self.engine);
+    ::Program &child = *st->child;
+    child.registration_policy =
+	runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    bool ok = false;
+    {
+	DiagnosticRenderMute mute;	// rows, never rendering (build_native's)
+	if ( child_source_setup(child, path, include_dirs) )
+	{
+	    TokenProgram *tp = child.tokenize(path.c_str());
+	    if ( tp && child.parse(tp) )
+	    {
+		st->jit = new CirJitSession();
+		ok = st->jit->build(&child, path.c_str());
+	    }
+	}
+	if ( !ok && !child.has_error_diagnostic() )
+	    child.set_error(::Program::DiagnosticPhase::compiler,
+			    "the code did not compile into this process with no"
+			    " recorded diagnostic (backend output goes to stderr)",
+			    path.c_str());
+    }
+    diagnostic_rows_from_child(child, out);
+    if ( !ok )
+    {
+	delete st;
+	return 0;
+    }
+    // Dynamic initialization, in the caller's runtime scope: every later
+    // call into the code runs there too.
+    st->jit->run_global_init();
+    return code_handles().open(st);
+}
+
+int64_t internal_program_code_symbol(int64_t code, const std::string &name)
+{
+    code_state *st = code_handles().get(code);
+    if ( !st || !st->jit || name.empty() )
+	return 0;
+    void *addr = st->jit->function_code(name.c_str());
+    if ( !addr )
+	addr = st->jit->data_address(name.c_str());
+    return (int64_t)(intptr_t)addr;
+}
+
+bool internal_program_code_close(int64_t code)
+{
+    return code_handles().close(code);
 }
 
 // ---- persistent parse handles (madcide AST-1 / IDE-6) --------------------
@@ -5026,19 +5144,26 @@ run_channel_policy &run_policy()
     return p;
 }
 
+} // namespace
+
 #ifndef _WIN32
 // The child's first steps before the program runs (after the body's own
 // __madc_task_atfork_child() — every child that runs madc code resets the
 // cooperative scheduler at its fork site, the discipline the live-build
 // owners gate counts): CLI-parity signal dispositions, stderr onto the
-// stream.
-void run_child_prologue()
+// stream. Also the session backend's (src/madc_session_client.cpp), whose
+// stdio may be the host's terminal: there stderr stays stderr
+// (merge_stderr false).
+void run_child_prologue(bool merge_stderr)
 {
     signal(SIGINT, SIG_DFL);
     signal(SIGQUIT, SIG_DFL);
-    ::dup2(STDOUT_FILENO, STDERR_FILENO);
+    if ( merge_stderr )
+	::dup2(STDOUT_FILENO, STDERR_FILENO);
 }
 #endif
+
+namespace {
 
 // `madcrun://<handle>?pty` / `madcproj://<manifest>?pty`: the child on a
 // pseudo-terminal (the embedded Terminal — a console program gets its
@@ -5105,7 +5230,7 @@ public:
 	const std::string name = st->display_name;
 	options.child_body = [child, name]() -> int {
 	    __madc_task_atfork_child();		// a fork child running madc code
-	    run_child_prologue();
+	    run_child_prologue(true);
 	    std::string argv0 = name;
 	    char *guest_argv[2];
 	    guest_argv[0] = &argv0[0];
@@ -5166,7 +5291,7 @@ public:
 	options.child_body = [engine, manifest, manifest_path, forest_bind,
 			      forest_bind_path]() -> int {
 	    __madc_task_atfork_child();		// a fork child running madc code
-	    run_child_prologue();
+	    run_child_prologue(true);
 	    std::string argv0 = manifest_path;
 	    char *guest_argv[2];
 	    guest_argv[0] = &argv0[0];
@@ -5183,6 +5308,74 @@ public:
 	return detail::exec_channel_over(std::move(process));
     }
 };
+
+// `madcfork://<entry>`: a fork CHILD running a function of the running
+// program, `int entry()` (its address in decimal; madc::fork_uri spells it),
+// whose stdin and stdout are the channel — read = what the child writes
+// (its stderr folded in, one stream, as madcrun:// folds it: a crash's
+// report arrives on the channel, never on this process's terminal), write =
+// what it reads. Through the ONE
+// spawn owner, as madcrun:// runs a tree: the pipes, the reap and the cancel
+// are the owner's, nothing execs, and the child inherits the program's code
+// and data at the fork. A madcide plugin host runs this way (plan §41.11a
+// step 7). Windows: no fork, so the scheme is refused there.
+class ForkChannelFactory : public DataChannelRegistry::Factory
+{
+public:
+    std::unique_ptr<DataChannel> open(const DataSource &source,
+				      ChannelOpenMode mode,
+				      error *err = nullptr) const override
+    {
+	(void)mode;
+	const std::string spec = source.path();
+	char *end = (char *)0;
+	const unsigned long long addr = strtoull(spec.c_str(), &end, 10);
+	if ( spec.empty() || !end || *end != '\0' || addr == 0 )
+	{
+	    detail::set_channel_error(err, "madcfork: '" + spec
+				   + "' is not a function's address (madc::fork_uri spells it)");
+	    return std::unique_ptr<DataChannel>();
+	}
+#ifdef _WIN32
+	detail::set_channel_error(err, "madcfork: no fork on Windows");
+	return std::unique_ptr<DataChannel>();
+#else
+	typedef int (*fork_entry)();
+	const fork_entry entry = (fork_entry)(uintptr_t)addr;
+	ProcessOptions options;
+	options.inherit_stderr = true;
+	options.child_body = [entry]() -> int {
+	    __madc_task_atfork_child();		// a fork child running madc code
+	    run_child_prologue(true);		// its stderr onto the stream
+	    int rc = entry();
+	    fflush(stdout);
+	    return rc & 0xff;
+	};
+	std::unique_ptr<Process> process(
+	    new Process(DataSource("exec://<madcfork>"), options));
+	if ( !process->start(err) )
+	    return std::unique_ptr<DataChannel>();
+	return detail::exec_channel_over(std::move(process));
+#endif
+    }
+};
+
+} // namespace
+
+// The madcfork:// scheme, registered once by its first spelling
+// (madc::fork_uri): it needs no Program.
+void register_fork_channel_factory()
+{
+    static bool registered = false;
+    if ( registered )
+	return;
+    registered = true;
+    DataChannelRegistry::instance().register_factory(
+	"madcfork", std::unique_ptr<DataChannelRegistry::Factory>(
+			new ForkChannelFactory()));
+}
+
+namespace {
 
 // Registered by the Program that opens parse / project handles (the IDE's
 // own runtime Program) — once; the project policy follows the latest.
@@ -5302,11 +5495,7 @@ bool internal_program_parse_refresh(::Program &self, int64_t handle,
 // not raise (warnings never gate — the diag_error_count rule).
 static size_t child_error_count(::Program &child)
 {
-    size_t n = child.error_nodes;
-    for ( size_t i = 0; i < child.diagnostics.size(); ++i )
-	if ( child.diagnostics[i].severity == ::Program::DiagnosticSeverity::error )
-	    ++n;
-    return n;
+    return child.error_nodes + child.error_diagnostic_count();
 }
 
 // The VALIDATED whole-TU refresh (code-graph MCP L3, design §6.6: "validated by
@@ -5577,17 +5766,21 @@ static void highlight_token_rows(::Program &child,
 	}
 	if ( hc != HighlightClass::hcNone && !sp.empty() )
 	{
-	    // Token stamps are END-anchored (the repo's diagnostic
-	    // convention); a span's contract is START + length.
-	    long start = (long)t->column - (long)sp.size();
+	    // A token's stamp is its 1-based START (D26); a span's contract
+	    // is a 0-based start + length.
+	    long start = (long)t->column - 1;
 	    if ( start < 0 )
 		start = 0;
 	    rows.push_back(highlight_row((long)t->line, start,
 					 (long)sp.size(),
 					 highlight_class_name(hc)));
 	}
-	prev_line = (long)t->line;	// lexed spellings are single-line
-	prev_end_col = (long)t->column;	// the stamp IS the end
+	// The cursor after the token: its end (the column of its last byte,
+	// which is the 0-based column just past it).
+	int end_line = 0, end_column = 0;
+	madc_token_end(t, end_line, end_column);
+	prev_line = (long)end_line;
+	prev_end_col = (long)end_column;
     }
     // A comment after the LAST token lives in the trailing trivia, not on
     // any token; the cursor the loop left is its exact anchor.
@@ -5885,21 +6078,25 @@ static const ::Program::TopDecl *graph_global_resolve(::Program &child, int64_t 
 // A global variable's terse node: { id, kind:"Global", name, line, column? }.
 // A global is not derivable from graph_kind_name (its DataDef is its TYPE, e.g.
 // int) — it is a "Global" by virtue of being a dkGlobalVar decl. Span from the
-// origin token when present, else the TopDecl's recorded line.
-static madc::value graph_global_node_value(const ::Program::TopDecl &td, int64_t id)
+// origin token when present, else the TopDecl's recorded line — the
+// declaration's own place either way (Program::top_decl_position).
+static madc::value graph_global_node_value(const ::Program &child,
+					   const ::Program::TopDecl &td, int64_t id)
 {
     std::map<std::string, madc::value> f;
     f["id"]   = value(id);
     f["kind"] = value(std::string("Global"));
     if ( !td.name.empty() )
 	f["name"] = value(td.name);
+    int line, column;
+    child.top_decl_position(td, line, &column);
     if ( td.origin )
     {
-	f["line"]   = value((int64_t)td.origin->line);
-	f["column"] = value((int64_t)td.origin->column);
+	f["line"]   = value((int64_t)line);
+	f["column"] = value((int64_t)column);
     }
-    else if ( td.line )
-	f["line"] = value((int64_t)td.line);
+    else if ( line )
+	f["line"] = value((int64_t)line);
     return value::make_object(f);
 }
 
@@ -5956,7 +6153,7 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
     {
 	const ::Program::TopDecl *td = graph_global_resolve(*st->child, node_id);
 	if ( td )
-	    out = graph_global_node_value(*td, node_id);
+	    out = graph_global_node_value(*st->child, *td, node_id);
 	else
 	{
 	    std::map<std::string, madc::value> empty;
@@ -5979,13 +6176,13 @@ bool internal_program_graph_node(int64_t handle, int64_t node_id,
 // type; a pointer/reference -> its operand (base_type; DataDefREF derives
 // from DataDefPTR, so the cast reads both); anything else -> itself.
 //
-// M-3 (const-cast hazard, fixed): DataDefCONST forwards is_pointer()/
+// M-3 (const-cast hazard, fixed): DataDefQUAL forwards is_pointer()/
 // is_reference() to its wrapped base_type but is NOT ITSELF a DataDefPTR —
 // `((DataDefPTR *)dd)->base_type` on a const-qualified pointer (`int *
 // const`, or a const-qualified typedef of one) would have been an unsafe
-// cross-class cast reading a DataDefCONST through a DataDefPTR* lens.
+// cross-class cast reading a DataDefQUAL through a DataDefPTR* lens.
 // Peel const FIRST (`dd->unqualified()` — a no-op on anything that is not
-// a DataDefCONST, so a FuncDef/DataDefPTR/DataDefREF/etc. passes through
+// a DataDefQUAL, so a FuncDef/DataDefPTR/DataDefREF/etc. passes through
 // unchanged), THEN dispatch on the unqualified `base`: the pointer/
 // reference cast now only ever sees a genuine DataDefPTR/DataDefREF.
 bool internal_program_graph_type_of(int64_t handle, int64_t node_id,
@@ -6926,7 +7123,7 @@ bool internal_program_graph_references(int64_t handle, int64_t def_id,
     if ( ftarget )
 	nodes.push_back(graph_func_node_value(st, ftarget));
     else if ( gtd )
-	nodes.push_back(graph_global_node_value(*gtd, def_id));
+	nodes.push_back(graph_global_node_value(child, *gtd, def_id));
 
     if ( ftarget || gvar )
     {
@@ -7019,7 +7216,7 @@ bool internal_program_graph_search(int64_t handle, const std::string &kind,
 		continue;
 	    if ( nodes.size() >= GRAPH_EDGE_RESULT_CAP )
 	    { truncated = true; break; }
-	    nodes.push_back(graph_global_node_value(td, graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i)));
+	    nodes.push_back(graph_global_node_value(child, td, graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i)));
 	}
     std::map<std::string, madc::value> r;
     r["nodes"] = value::make_array(nodes);
@@ -7059,7 +7256,7 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
     if ( ftarget )
 	nodes.push_back(graph_func_node_value(st, ftarget));
     else if ( gtd )
-	nodes.push_back(graph_global_node_value(*gtd, id));
+	nodes.push_back(graph_global_node_value(child, *gtd, id));
 
     if ( ftarget || gvar )
     {
@@ -7134,11 +7331,10 @@ bool internal_program_graph_impact(int64_t handle, int64_t id, madc::value &out)
 // stamps; it never scans the token stream for a terminator.
 struct GraphExtent { int line, column, end_line, end_column; };
 
-// START of a token: stamps are END-anchored (column = the byte after the last
-// char — highlight_token_rows' convention), so start = column - spelling; a
-// string literal reads its lex-recorded first piece. False = a synthetic-
-// position head (a macro expansion: the spelling occupies no source bytes) —
-// no extent rather than a wrong one.
+// START of a token, 0-based: the stamp is its 1-based start (D26); a string
+// literal reads its lex-recorded first piece. False = a synthetic-position
+// head (a macro expansion: the spelling occupies no source bytes) — no extent
+// rather than a wrong one.
 static bool graph_token_start(TokenBase *t, int &line, int &column)
 {
     if ( !t || t->is_synthetic_position() )
@@ -7150,9 +7346,8 @@ static bool graph_token_start(TokenBase *t, int &line, int &column)
 	    column = ts->src_pieces.front().col;
 	    return true;
 	}
-    std::string sp = madc_token_spelling(t);
     line = t->line;
-    column = t->column - (int)sp.size();
+    column = t->column - 1;
     if ( column < 0 )
 	column = 0;
     return true;
@@ -7304,7 +7499,7 @@ bool internal_program_graph_span(int64_t handle, int64_t id, madc::value &out)
 	    out = graph_error_result("no extent recorded for this global (no declaration statement was retained for it)");
 	    return true;
 	}
-	out = graph_span_value(graph_global_node_value(*td, id), x);
+	out = graph_span_value(graph_global_node_value(child, *td, id), x);
 	return true;
     }
     case GraphIdSpace::Body:
@@ -7364,7 +7559,7 @@ bool internal_program_graph_at(int64_t handle, int64_t line, int64_t column,
 	if ( graph_extent_of(td.decl, x) && x.line == line && x.column == column )
 	{
 	    int64_t gid = graph_id_stamp(st, GRAPH_DECL_ID_BASE + (int64_t)i);
-	    out = graph_span_value(graph_global_node_value(td, gid), x);
+	    out = graph_span_value(graph_global_node_value(child, td, gid), x);
 	    return true;
 	}
     }
@@ -7431,16 +7626,15 @@ bool internal_program_parse_build(int64_t handle,
 	// contract); ObjectModeScope lives inside the emit lane itself.
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = native_kind_of(kind_name, kind);
+	std::string kind_why;
+	bool kind_ok = native_kind_of(kind_name, kind, kind_why);
 	if ( !kind_ok )
-	    child.set_error(::Program::DiagnosticPhase::compiler,
-			    "unknown build kind '" + kind_name
-			    + "' (expected \"exe\" or \"obj\")");
+	    child.set_error(::Program::DiagnosticPhase::compiler, kind_why);
 	if ( kind_ok )
 	    ok = madc_cir_emit_native(&child, st->display_name.c_str(),
 				      kind, outpath.c_str(),
 				      std::vector<std::string>()) == 0;
-	if ( !ok && !child_has_error_row(child) )
+	if ( !ok && !child.has_error_diagnostic() )
 	    child.set_error(::Program::DiagnosticPhase::compiler,
 			    "build failed with no recorded diagnostic"
 			    " (backend output goes to stderr)",
@@ -7696,11 +7890,10 @@ bool internal_program_project_build(::Program &self,
     {
 	DiagnosticRenderMute mute;
 	MadcNativeKind kind = mnkPieExecutable;
-	bool kind_ok = native_kind_of(kind_name, kind);
+	std::string kind_why;
+	bool kind_ok = native_kind_of(kind_name, kind, kind_why);
 	if ( !kind_ok )
-	    synth.set_error(::Program::DiagnosticPhase::compiler,
-			    "unknown build kind '" + kind_name
-			    + "' (expected \"exe\" or \"obj\")");
+	    synth.set_error(::Program::DiagnosticPhase::compiler, kind_why);
 	ProjectManifest manifest;
 	std::string err;
 	if ( kind_ok && !read_project_manifest(manifest_path, manifest, err) )
@@ -7728,7 +7921,7 @@ bool internal_program_project_build(::Program &self,
 					  std::vector<std::string>(),
 					  self.registration_policy.enable_forest_bind,
 					  self.forest_bind_path) == 0;
-	if ( !ok && !child_has_error_row(synth) )
+	if ( !ok && !synth.has_error_diagnostic() )
 	    synth.set_error(::Program::DiagnosticPhase::compiler,
 			    "project build failed with no recorded diagnostic"
 			    " (run a project check for per-TU rows; backend"

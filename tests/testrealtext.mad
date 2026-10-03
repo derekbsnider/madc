@@ -1,0 +1,26 @@
+// A real's text, in the language that reads it. The carrier's own text for a
+// real (a var's c_str(), what printf("%s") shows) is format's `{}`: shortest
+// round-trip digits. A php:: function reads a real as PHP converts it
+// (precision 14, PHP 8.3.6 the oracle), a perl:: function as Perl does
+// (%.15g, Perl 5 the oracle). Before, every one of them read std::to_string's
+// fixed six places: 1.500000, 0.300000, 10000000000000000905969664.000000.
+
+int main()
+{
+	var h = 1.5;
+	var t = 0.1 + 0.2;
+	var one = 1.0;
+	var big = 1e25;
+	println("format: {} {} {} {}", h, t, one, big);
+	println("c_str: {} {} {} {}", h.c_str(), t.c_str(), one.c_str(), big.c_str());
+	printf("printf: %s %s\n", h, t);
+
+	var a = { 1.5, 0.1 + 0.2, 1.0, 1e25 };
+	println("php implode: {}", php::implode(" ", a));
+	println("php str_repeat: {}", php::str_repeat(h, 2));
+	println("php strtoupper: {}", php::strtoupper(big));
+
+	println("perl uc: {}", perl::uc(big));
+	println("perl substr: {}", perl::substr(t, 0, 5));
+	return 0;
+}

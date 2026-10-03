@@ -118,10 +118,15 @@ node_t CirBuilder::format_text_stmt(const std::string &bytes,
 		     origin);
 }
 
-bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
-				   const std::string &sink_var,
-				   std::vector<node_t> &out, TokenBase *origin,
-				   std::string &why)
+// A format argument's kind — what its value is passed to the runtime as.
+enum FormatKind {
+	fkI64, fkU64, fkF64, fkCstr, fkStdString, fkChar, fkBool,
+	fkValue, fkPtr
+};
+
+bool CirBuilder::format_arg_bind(TokenBase *arg, FormatArg &fa,
+				 std::vector<node_t> &out, TokenBase *origin,
+				 std::string &why)
 {
 	DataDef *dd = arg ? arg->datadef() : NULL;
 	// A call's parse-bound datadef can name a DIFFERENT overload than the
@@ -151,7 +156,7 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	// ("no formatter for pointer type 'array*'").
 	if ( u->is_reference() )
 	{
-		DataDefPTR *rp = dynamic_cast<DataDefPTR *>(u);
+		DataDefPTR *rp = pointer_dd_of(u);
 		DataDef *base = rp ? rp->base_type : NULL;
 		if ( base && base->unqualified()->is_madc_array() )
 			u = base->unqualified();
@@ -170,21 +175,7 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 		if ( DataDef *adp = m_prog->array_decay_pointer(arg) )
 			u = adp->unqualified();
 
-	// The spec's SHAPE — parsed by the one engine parser, so the message a
-	// user sees at compile time names the same rule the runtime enforces.
-	madc_fmt_spec sp;
-	if ( const char *perr = __madc_fmt_parse_spec(spec.data(),
-						      (long long)spec.size(),
-						      &sp) )
-	{
-		why = perr;
-		return false;
-	}
-
-	enum {
-		fkI64, fkU64, fkF64, fkCstr, fkStdString, fkChar, fkBool,
-		fkValue, fkPtr
-	} kind;
+	FormatKind kind;
 
 	// Order matters exactly as dump_scalar documents: text pointers before
 	// the integer arms (is_integer() is true for every pointer), the value
@@ -201,9 +192,9 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	{
 		// std gives only void* (and nullptr) a formatter; any other
 		// pointer type is ill-formed in real C++ too.
-		DataDefPTR *up = dynamic_cast<DataDefPTR *>(u);
+		DataDefPTR *up = pointer_dd_of(u);
 		DataDef *pt = up ? up->base_type : NULL;
-		if ( pt && pt->rawtype() == DataType::dtVOID )
+		if ( pt && pt->is_void() )
 			kind = fkPtr;
 		else
 		{
@@ -222,8 +213,11 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	}
 	else if ( u->rawtype() == DataType::dtBOOL )
 		kind = fkBool;
-	else if ( u->rawtype() == DataType::dtINT8
-	       || u->rawtype() == DataType::dtUINT8 )
+	// Only plain `char` is a character ([format.formatter.spec]/2):
+	// `signed char`, `unsigned char` (int8_t, uint8_t) and an enum over
+	// them are integers. They share char's rawtype, so the test is the
+	// scalar's identity (Program::proven_scalar_identity), not rawtype().
+	else if ( Program::proven_scalar_identity(u) == &ddCHAR )
 		kind = fkChar;
 	else if ( u->is_real() )
 		kind = fkF64;
@@ -232,6 +226,98 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	else
 	{
 		why = std::string("no formatter for type '") + u->name + "'";
+		return false;
+	}
+
+	// The argument is evaluated HERE, once, into a temporary every field
+	// naming it reads ([format.args]). A scalar's temporary has the type the
+	// runtime primitive takes; a class object's holds its address
+	// (object_arg_addr: a prvalue materializes a temporary for the full
+	// expression, as make_format_args binds it by reference).
+	char tname[40];
+	snprintf(tname, sizeof tname, "__madc_fmtarg_%d", m_strtmp_counter++);
+	fa.tmp = tname;
+	fa.kind = kind;
+	ExternParam ty = { {N_VOID}, true, NULL };
+	node_t val = NULL;
+	switch ( kind )
+	{
+	case fkI64:  ty = { {N_LONG, N_LONG}, false, NULL };		break;
+	case fkU64:  ty = { {N_UNSIGNED, N_LONG, N_LONG}, false, NULL };	break;
+	case fkF64:  ty = { {N_DOUBLE}, false, NULL };			break;
+	case fkCstr: ty = { {N_CHAR}, true, NULL };			break;
+	case fkChar:
+	case fkBool: ty = { {N_INT}, false, NULL };			break;
+	case fkPtr:  ty = { {N_VOID}, true, NULL };			break;
+	case fkStdString:
+	case fkValue:
+	{
+		DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(u);
+		if ( !cls )
+		{
+			why = "argument's class type is unresolved";
+			return false;
+		}
+		// __madc_fmt_stdstring reads a std::string of the HOST's layout.
+		// A string of the OTHER flavor (linux -stdlib=libc++ on a
+		// libstdc++-built madc: 24 bytes, SSO, the data pointer nowhere
+		// near where libstdc++ keeps it — it read a nil pointer and fwrite
+		// crashed) is read through its OWN c_str()/size(): the script
+		// members, the view the marshalling thunk takes too.
+		if ( kind == fkStdString && madc_mangle_flavor_differs()
+		  && !script_string_view_syms(cls, fa.cstr_sym, fa.size_sym) )
+		{
+			why = "the argument's string class has no "
+			      "c_str()/size() to read it through";
+			return false;
+		}
+		val = object_arg_addr(arg, cls);
+		break;
+	}
+	}
+	if ( !val )
+		val = translate_expr(arg);
+	// The temporary's type, built twice: the declaration and the
+	// initializer's cast each own their nodes.
+	auto type_specs = [&]() {
+		node_t s = list();
+		for ( size_t j = 0; j < ty.specs.size(); j++ )
+			append(s, simple(ty.specs[j], origin));
+		return s;
+	};
+	auto type_declr = [&]() {
+		node_t d = list();
+		if ( ty.ptr )
+			append(d, pointer());
+		return d;
+	};
+	node_t ttype = node2(N_TYPE, type_specs(),
+			     node2(N_DECL, ignore(), type_declr()));
+	node_t tdecl = simple(N_SPEC_DECL, origin);
+	append(tdecl, node1(N_SHARE, type_specs()));
+	append(tdecl, node2(N_DECL, id(tname, origin), type_declr()));
+	append(tdecl, ignore());
+	append(tdecl, ignore());
+	append(tdecl, node2(N_CAST, ttype, val, origin));
+	out.push_back(tdecl);
+	return true;
+}
+
+
+bool CirBuilder::format_field_stmt(const FormatArg &fa, const std::string &spec,
+				   const std::string &sink_var,
+				   std::vector<node_t> &out, TokenBase *origin,
+				   std::string &why)
+{
+	FormatKind kind = (FormatKind)fa.kind;
+	// The spec's SHAPE — parsed by the one engine parser, so the message a
+	// user sees at compile time names the same rule the runtime enforces.
+	madc_fmt_spec sp;
+	if ( const char *perr = __madc_fmt_parse_spec(spec.data(),
+						      (long long)spec.size(),
+						      &sp) )
+	{
+		why = perr;
 		return false;
 	}
 
@@ -344,8 +430,9 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 		break;
 	}
 
+	// The primitive reads the argument's temporary (format_arg_bind).
 	const char *sym = NULL;
-	node_t val = NULL;
+	node_t val = id(fa.tmp.c_str(), origin);
 	node_t val2 = NULL;	// a second value operand (bytes + length)
 	std::vector<ExternParam> params;
 	params.push_back({ {N_VOID}, true });		// sink
@@ -356,100 +443,54 @@ bool CirBuilder::format_field_stmt(TokenBase *arg, const std::string &spec,
 	case fkI64:
 		sym = "__madc_fmt_i64";
 		params.push_back({ {N_LONG, N_LONG}, false });
-		val = translate_expr(arg);
 		break;
 	case fkU64:
 		sym = "__madc_fmt_u64";
 		params.push_back({ {N_UNSIGNED, N_LONG, N_LONG}, false });
-		val = translate_expr(arg);
 		break;
 	case fkF64:
 		sym = "__madc_fmt_f64";
 		params.push_back({ {N_DOUBLE}, false });
-		val = translate_expr(arg);
 		break;
 	case fkCstr:
 		sym = "__madc_fmt_cstr";
 		params.push_back({ {N_CHAR}, true });
-		val = translate_expr(arg);
 		break;
 	case fkChar:
 		sym = "__madc_fmt_char";
 		params.push_back({ {N_INT}, false });
-		val = translate_expr(arg);
 		break;
 	case fkBool:
 		sym = "__madc_fmt_bool";
 		params.push_back({ {N_INT}, false });
-		val = translate_expr(arg);
 		break;
 	case fkPtr:
 		sym = "__madc_fmt_ptr";
 		params.push_back({ {N_VOID}, true });
-		val = translate_expr(arg);
 		break;
 	case fkStdString:
 	case fkValue:
-	{
-		DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(u);
-		if ( !cls )
+		if ( !fa.cstr_sym.empty() )
 		{
-			why = "argument's class type is unresolved";
-			return false;
-		}
-		node_t obj = node2(N_CAST, void_ptr_type(),
-				   object_arg_addr(arg, cls), origin);
-		if ( kind == fkStdString && madc_mangle_flavor_differs() )
-		{
-			// __madc_fmt_stdstring reads a std::string of the HOST's
-			// layout. A string of the OTHER flavor (linux -stdlib=libc++
-			// on a libstdc++-built madc: 24 bytes, SSO, the data pointer
-			// nowhere near where libstdc++ keeps it — it read a nil
-			// pointer and fwrite crashed) is handed over as bytes +
-			// length through its OWN c_str()/size(): the script members,
-			// the view the marshalling thunk takes too. The object's
-			// address is bound to a local first, so an argument that is
-			// a call is evaluated once.
-			std::string cstr_sym, size_sym;
-			if ( !script_string_view_syms(cls, cstr_sym, size_sym) )
-			{
-				why = "the argument's string class has no "
-				      "c_str()/size() to read it through";
-				return false;
-			}
-			char oname[40];
-			snprintf(oname, sizeof oname, "__madc_fmtobj_%d",
-				 m_strtmp_counter++);
-			node_t ospec = list();
-			append(ospec, simple(N_VOID, origin));
-			node_t odeclr = list();
-			append(odeclr, pointer());
-			node_t odecl = simple(N_SPEC_DECL, origin);
-			append(odecl, node1(N_SHARE, ospec));
-			append(odecl, node2(N_DECL, id(oname, origin), odeclr));
-			append(odecl, ignore());
-			append(odecl, ignore());
-			append(odecl, obj);
-			out.push_back(odecl);
+			// The other flavor's string: bytes + length through its
+			// own c_str()/size() (format_arg_bind).
 			sym = "__madc_fmt_str_n";
 			params.push_back({ {N_CHAR}, true });
 			params.push_back({ {N_LONG, N_LONG}, false });
 			node_t ca = list();
-			append(ca, id(oname, origin));
-			val = node2(N_CALL, id(cstr_sym.c_str(), origin), ca,
+			append(ca, id(fa.tmp.c_str(), origin));
+			val = node2(N_CALL, id(fa.cstr_sym.c_str(), origin), ca,
 				    origin);
 			node_t sa = list();
-			append(sa, id(oname, origin));
-			val2 = node2(N_CALL, id(size_sym.c_str(), origin), sa,
+			append(sa, id(fa.tmp.c_str(), origin));
+			val2 = node2(N_CALL, id(fa.size_sym.c_str(), origin), sa,
 				     origin);
 			break;
 		}
 		sym = kind == fkValue ? "__madc_fmt_value"
 				      : "__madc_fmt_stdstring";
 		params.push_back({ {N_VOID}, true });
-		val = obj;
 		break;
-	}
 	}
 
 	need_output_extern(sym, false, params);
@@ -523,14 +564,13 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		TokenBase *a0 = tcf->parameters[0];
 		DataDef *a0dd = a0 ? a0->datadef() : NULL;
 		bool a0_char_ptr = false;
-		if ( DataDefPTR *a0p = dynamic_cast<DataDefPTR *>(a0dd) )
+		if ( DataDefPTR *a0p = pointer_dd_of(a0dd) )
 			a0_char_ptr = a0p->base_type
 				   && a0p->base_type->rawtype() == DataType::dtCHAR;
 		bool a0_literal = a0 && a0->type() == TokenType::ttString;
 		if ( !a0_literal )
 			if ( TokenVar *a0v = dynamic_cast<TokenVar *>(a0) )
-				a0_literal = a0v->var.name.compare(
-					0, 11, "__literal__") == 0;
+				a0_literal = a0v->var.is_string_literal();
 		if ( !a0_literal && a0dd && a0dd->is_pointer() && !a0_char_ptr )
 		{
 			stream_tok = a0;
@@ -560,9 +600,9 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 	else if ( ftok && ftok->type() == TokenType::ttVariable )
 	{
 		TokenVar *tv = dynamic_cast<TokenVar *>(ftok);
-		if ( tv && tv->var.name.compare(0, 11, "__literal__") == 0 )
+		if ( tv && tv->var.is_string_literal() )
 		{
-			f = tv->var.name.substr(11);
+			f = tv->var.literal_text();
 			have_literal = true;
 		}
 	}
@@ -613,6 +653,19 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		append(sdecl, ignore());
 		append(sdecl, sinit);
 		stmts.push_back(sdecl);
+	}
+
+	// Every argument is evaluated once, in order, before any output
+	// ([format.args]) — the unused ones too, and one that two fields name
+	// only once.
+	std::vector<FormatArg> bound(nargs);
+	for ( size_t ai = 0; ai < nargs; ai++ )
+	{
+		std::string why;
+		if ( !format_arg_bind(tcf->parameters[fmt_at + 1 + ai], bound[ai],
+				      stmts, origin, why) )
+			return error_node((std::string(fname) + ": "
+					   + why).c_str(), origin);
 	}
 
 	// Walk the literal with the engine's own iterator. Indexing mode
@@ -674,8 +727,8 @@ node_t CirBuilder::lower_format_call(TokenCallFunc *tcf, FuncDef *fd,
 		}
 		std::string spec(it.spec ? it.spec : "", (size_t)it.spec_n);
 		std::string why;
-		if ( !format_field_stmt(tcf->parameters[fmt_at + 1 + ai], spec,
-					sink_var, stmts, origin, why) )
+		if ( !format_field_stmt(bound[ai], spec, sink_var, stmts, origin,
+					why) )
 			return error_node((std::string(fname) + ": "
 					   + why).c_str(), origin);
 	}

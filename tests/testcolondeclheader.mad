@@ -1,0 +1,9 @@
+// A `:=` at the file scope of an included file declares a global with its
+// storage, like `int hdr_count = 5;` (it had none: "import of undefined item").
+// Oracle: the same header spelled `int hdr_count = 5; int hdr_next =
+// hdr_count + 1;`, compiled by g++ and clang++, prints "5 6" and then "7".
+#include "colon_decl_header_helper.mah"
+
+println("{} {}", hdr_count, hdr_next);
+hdr_next = hdr_next + 1;
+println("{}", hdr_next);

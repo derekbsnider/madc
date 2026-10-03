@@ -1,0 +1,69 @@
+// A unary operator's candidates include the NON-MEMBER operator functions
+// found by lookup of operator@ ([over.match.oper]/3): a free `int
+// operator*(const W &)`, `W &operator++(W &)`, `W operator++(W &, int)`,
+// `int operator-(const W &)`, `bool operator!(const W &)`, a namespace's
+// operator templates, a hidden friend. madc tried only member operators for a
+// unary operator ("cannot dereference non-pointer type" for `*w`), in plain
+// code and in a member template's instance alike.
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+struct W { int *p; };
+int operator*(const W &w) { return *w.p; }
+W &operator++(W &w) { ++w.p; return w; }
+W operator++(W &w, int) { W old = w; ++w.p; return old; }
+int operator-(const W &w) { return -*w.p; }
+bool operator!(const W &w) { return w.p == nullptr; }
+bool operator!=(const W &a, const W &b) { return a.p != b.p; }
+
+namespace ns {
+template<class P> struct V { P p; };
+template<class P> int operator*(const V<P> &v) { return *v.p; }
+template<class P> V<P> &operator++(V<P> &v) { ++v.p; return v; }
+template<class P> bool operator!=(const V<P> &a, const V<P> &b) { return a.p != b.p; }
+}
+
+struct Vec {
+	int x, y;
+	friend Vec operator-(const Vec &v) { return Vec{-v.x, -v.y}; }
+};
+
+struct Sum {
+	template<class I> int of(I b, I e)
+	{
+		int s = 0;
+		while (b != e) {
+			s += *b;
+			++b;
+		}
+		return s;
+	}
+};
+
+int main()
+{
+	int a[3] = {1, 2, 3};
+	W b{a}, e{a + 3};
+	int s = 0;
+	while (b != e) {
+		s += *b;
+		++b;
+	}
+	W c{a};
+	W d = c++;
+	printf("free: %d %d %d %d\n", s, -c, *d, (int)!c);
+	ns::V<int *> vb{a}, ve{a + 3};
+	int t = 0;
+	while (vb != ve) {
+		t += *vb;
+		++vb;
+	}
+	printf("free-template: %d\n", t);
+	Vec v{1, 2};
+	Vec n = -v;
+	printf("hidden-friend: %d %d\n", n.x, n.y);
+	Sum sum;
+	printf("member-template: %d %d %d\n", sum.of(a, a + 3),
+	       sum.of(W{a}, W{a + 3}), sum.of(ns::V<int *>{a}, ns::V<int *>{a + 3}));
+	return 0;
+}

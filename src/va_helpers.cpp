@@ -20,6 +20,7 @@
 #include <map>
 #include <iostream>
 #include <string>
+#include "atomic_builtins.h"
 
 struct madc_timeval
 {
@@ -357,26 +358,229 @@ extern "C" int __madc_mul_overflow_uu64(long long a, long long b, uint64_t *res)
 
 // ── Atomic builtins ──────────────────────────────────────────────────────────
 // gcc/clang INLINE the `__atomic_*` builtins (they are not real symbols — only
-// the unprefixed C11 `atomic_thread_fence` lives in libatomic). c2mir does not
-// inline them; it emits external calls that fail to link. madc's cir_builder
-// lowers `__atomic_thread_fence` / `__atomic_fetch_add` to these real-symbol
-// wrappers (resolved via dlsym(RTLD_DEFAULT) at MIR-link), implemented here with
-// the genuine builtins — this runtime TU is gcc/clang-compiled, so they become
-// real atomic instructions / fences. libstdc++'s <ext/atomicity.h> refcount path
-// (the read/write memory barriers and __exchange_and_add) reaches them through
-// <memory>, which the vector reallocation chain pulls in.
+// libatomic's out-of-line forms are). c2mir does not inline them; madc's
+// cir_builder lowers every builtin in include/atomic_builtins.h to the helper
+// here named `__madc` + the builtin's name minus one leading underscore
+// (resolved via dlsym(RTLD_DEFAULT) at MIR-link), implemented with the genuine
+// builtins — this runtime TU is gcc/clang-compiled, so they become real atomic
+// instructions and fences. A sized helper takes the object's size first; a
+// value (`_n`) helper carries the value as unsigned long long, which the
+// compiler converts from and back to the object's type.
+// Thread-safety contract (atomic_builtins.h): an object of size 1, 2, 4 or 8
+// that is naturally aligned is accessed lock-free; any other object takes the
+// address-hashed spin lock below, as libatomic does. madc reports only the
+// first kind as lock-free; libatomic may also call a small object lock-free
+// when it fits one aligned word.
 // They live with the other builtin shims (below) and NOT on the AOT ledger:
 // a ledger source is compiled by madc, which would lower the `__atomic_*` here
 // straight back into these same wrappers — an infinite self-call. Programs
 // needing them are Tier B and refuse loudly under -static-libmadc.
+namespace {
+
+// Spin locks for the objects the host cannot access lock-free, one per
+// 16-byte address block, hashed. Atomic state only: each byte is touched
+// solely through __atomic_test_and_set / __atomic_clear.
+unsigned char madc_atomic_locks[64];
+
+unsigned char *madc_atomic_lock_for(const volatile void *p)
+{
+	return &madc_atomic_locks[((uintptr_t)p >> 4) % 64];
+}
+
+void madc_atomic_lock(const volatile void *p)
+{
+	unsigned char *l = madc_atomic_lock_for(p);
+	while (__atomic_test_and_set(l, __ATOMIC_ACQUIRE))
+		;
+}
+
+void madc_atomic_unlock(const volatile void *p)
+{
+	__atomic_clear(madc_atomic_lock_for(p), __ATOMIC_RELEASE);
+}
+
+bool madc_atomic_lock_free(size_t n, const volatile void *p)
+{
+	return atomic_lock_free_size(n) && ((uintptr_t)p & (n - 1)) == 0;
+}
+
+[[noreturn]] void madc_atomic_unsupported(const char *op, size_t n)
+{
+	fprintf(stderr, "madc: %s on a %zu-byte object is not supported\n",
+		op, n);
+	abort();
+}
+
+template <typename U>
+unsigned long long madc_load_as(const volatile void *p, int mo)
+{ return __atomic_load_n((const volatile U *)p, mo); }
+
+template <typename U>
+void madc_store_as(volatile void *p, unsigned long long v, int mo)
+{ __atomic_store_n((volatile U *)p, (U)v, mo); }
+
+template <typename U>
+int madc_cas_as(volatile void *p, void *expected, unsigned long long desired,
+		int weak, int smo, int fmo)
+{
+	U e;
+	memcpy(&e, expected, sizeof(U));
+	bool ok = __atomic_compare_exchange_n((volatile U *)p, &e, (U)desired,
+					      weak != 0, smo, fmo);
+	if (!ok)
+		memcpy(expected, &e, sizeof(U));
+	return ok;
+}
+
+unsigned long long madc_bytes_value(size_t n, const void *src)
+{
+	switch (n) {
+	case 1: { uint8_t v; memcpy(&v, src, 1); return v; }
+	case 2: { uint16_t v; memcpy(&v, src, 2); return v; }
+	case 4: { uint32_t v; memcpy(&v, src, 4); return v; }
+	default: { uint64_t v; memcpy(&v, src, 8); return v; }
+	}
+}
+
+void madc_value_bytes(size_t n, unsigned long long v, void *dst)
+{
+	switch (n) {
+	case 1: { uint8_t b = (uint8_t)v; memcpy(dst, &b, 1); return; }
+	case 2: { uint16_t b = (uint16_t)v; memcpy(dst, &b, 2); return; }
+	case 4: { uint32_t b = (uint32_t)v; memcpy(dst, &b, 4); return; }
+	default: { uint64_t b = (uint64_t)v; memcpy(dst, &b, 8); return; }
+	}
+}
+
+} // namespace
+
 extern "C" void __madc_atomic_thread_fence(int memorder) { __atomic_thread_fence(memorder); }
 extern "C" void __madc_atomic_signal_fence(int memorder) { __atomic_signal_fence(memorder); }
-extern "C" int  __madc_atomic_fetch_add_i(int *p, int v, int memorder)
-{ return __atomic_fetch_add(p, v, memorder); }
-// int64_t, never `long`: the CIR declares the wide arm as long long (the
-// i64 spelling law) and host `long` is 32-bit on win64 (LLP64).
-extern "C" int64_t __madc_atomic_fetch_add_l(int64_t *p, int64_t v, int memorder)
-{ return __atomic_fetch_add(p, v, memorder); }
+
+extern "C" unsigned long long __madc_atomic_load_n(size_t n, const volatile void *p, int mo)
+{
+	switch (n) {
+	case 1: return madc_load_as<uint8_t>(p, mo);
+	case 2: return madc_load_as<uint16_t>(p, mo);
+	case 4: return madc_load_as<uint32_t>(p, mo);
+	case 8: return madc_load_as<uint64_t>(p, mo);
+	}
+	madc_atomic_unsupported("__atomic_load_n", n);
+}
+
+extern "C" void __madc_atomic_store_n(size_t n, volatile void *p, unsigned long long v, int mo)
+{
+	switch (n) {
+	case 1: madc_store_as<uint8_t>(p, v, mo); return;
+	case 2: madc_store_as<uint16_t>(p, v, mo); return;
+	case 4: madc_store_as<uint32_t>(p, v, mo); return;
+	case 8: madc_store_as<uint64_t>(p, v, mo); return;
+	}
+	madc_atomic_unsupported("__atomic_store_n", n);
+}
+
+extern "C" int __madc_atomic_compare_exchange_n(size_t n, volatile void *p, void *expected,
+						unsigned long long desired, int weak, int smo, int fmo)
+{
+	switch (n) {
+	case 1: return madc_cas_as<uint8_t>(p, expected, desired, weak, smo, fmo);
+	case 2: return madc_cas_as<uint16_t>(p, expected, desired, weak, smo, fmo);
+	case 4: return madc_cas_as<uint32_t>(p, expected, desired, weak, smo, fmo);
+	case 8: return madc_cas_as<uint64_t>(p, expected, desired, weak, smo, fmo);
+	}
+	madc_atomic_unsupported("__atomic_compare_exchange_n", n);
+}
+
+// exchange_n and the fetch_OP / OP_fetch families: one read-modify-write
+// shape, (size, object, value, order) -> the value the builtin yields.
+#define MADC_ATOMIC_RMW(NAME)							\
+extern "C" unsigned long long __madc_atomic_##NAME(size_t n, volatile void *p,	\
+						   unsigned long long v, int mo) \
+{										\
+	switch (n) {								\
+	case 1: return __atomic_##NAME((volatile uint8_t *)p, (uint8_t)v, mo);	\
+	case 2: return __atomic_##NAME((volatile uint16_t *)p, (uint16_t)v, mo); \
+	case 4: return __atomic_##NAME((volatile uint32_t *)p, (uint32_t)v, mo); \
+	case 8: return __atomic_##NAME((volatile uint64_t *)p, (uint64_t)v, mo); \
+	}									\
+	madc_atomic_unsupported("__atomic_" #NAME, n);				\
+}
+MADC_ATOMIC_RMW(exchange_n)
+MADC_ATOMIC_RMW(fetch_add)
+MADC_ATOMIC_RMW(fetch_sub)
+MADC_ATOMIC_RMW(fetch_and)
+MADC_ATOMIC_RMW(fetch_or)
+MADC_ATOMIC_RMW(fetch_xor)
+MADC_ATOMIC_RMW(fetch_nand)
+MADC_ATOMIC_RMW(add_fetch)
+MADC_ATOMIC_RMW(sub_fetch)
+MADC_ATOMIC_RMW(and_fetch)
+MADC_ATOMIC_RMW(or_fetch)
+MADC_ATOMIC_RMW(xor_fetch)
+MADC_ATOMIC_RMW(nand_fetch)
+#undef MADC_ATOMIC_RMW
+
+// The object (generic) forms: any size, operands by address.
+extern "C" void __madc_atomic_load(size_t n, const volatile void *p, void *ret, int mo)
+{
+	if (madc_atomic_lock_free(n, p)) {
+		madc_value_bytes(n, __madc_atomic_load_n(n, p, mo), ret);
+		return;
+	}
+	madc_atomic_lock(p);
+	memcpy(ret, (const void *)p, n);
+	madc_atomic_unlock(p);
+}
+
+extern "C" void __madc_atomic_store(size_t n, volatile void *p, const void *val, int mo)
+{
+	if (madc_atomic_lock_free(n, p)) {
+		__madc_atomic_store_n(n, p, madc_bytes_value(n, val), mo);
+		return;
+	}
+	madc_atomic_lock(p);
+	memcpy((void *)p, val, n);
+	madc_atomic_unlock(p);
+}
+
+extern "C" void __madc_atomic_exchange(size_t n, volatile void *p, const void *val,
+				       void *ret, int mo)
+{
+	if (madc_atomic_lock_free(n, p)) {
+		madc_value_bytes(n, __madc_atomic_exchange_n(n, p,
+			madc_bytes_value(n, val), mo), ret);
+		return;
+	}
+	madc_atomic_lock(p);
+	memcpy(ret, (const void *)p, n);
+	memcpy((void *)p, val, n);
+	madc_atomic_unlock(p);
+}
+
+extern "C" int __madc_atomic_compare_exchange(size_t n, volatile void *p, void *expected,
+					      const void *desired, int weak, int smo, int fmo)
+{
+	if (madc_atomic_lock_free(n, p))
+		return __madc_atomic_compare_exchange_n(n, p, expected,
+			madc_bytes_value(n, desired), weak, smo, fmo);
+	madc_atomic_lock(p);
+	int ok = memcmp((const void *)p, expected, n) == 0;
+	if (ok)
+		memcpy((void *)p, desired, n);
+	else
+		memcpy(expected, (const void *)p, n);
+	madc_atomic_unlock(p);
+	return ok;
+}
+
+extern "C" int __madc_atomic_test_and_set(volatile void *p, int mo)
+{ return __atomic_test_and_set(p, mo); }
+
+extern "C" void __madc_atomic_clear(volatile void *p, int mo)
+{ __atomic_clear((volatile bool *)p, mo); }
+
+extern "C" int __madc_atomic_is_lock_free(size_t n, const volatile void *p)
+{ return madc_atomic_lock_free(n, p); }
 
 // __builtin_bswap*: byte-swap fixed-width integer values.
 extern "C" uint16_t __madc_bswap16(uint16_t x)

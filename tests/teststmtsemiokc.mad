@@ -1,0 +1,30 @@
+// Every statement form that owns a `;` still parses once statements pay their
+// own terminator (Program::require_statement_terminator): expression and jump
+// statements, do-while, declarator lists, typedefs, a struct definition with
+// a declarator, empty statements, labels and goto, and an if whose then-branch
+// is a bare jump (its `;` is the body's, so the else still binds).
+// Oracle: gcc and clang print exactly the .expect lines.
+#include <stdio.h>
+typedef int count_t;
+struct pair { int a, b; } origin = { 0, 0 };
+static int twice(int v) { return v * 2; }
+int main(void)
+{
+	count_t n = 0, m = 3, *pm = &m;
+	int i;
+	;;
+	for ( i = 0; i < 10; i++ )
+	{
+		if ( i == 4 ) break; else n += i;
+		if ( i & 1 ) continue;
+	}
+	do n++; while ( n < 8 );
+	do { n += 2; } while ( 0 );
+	switch ( *pm ) { case 3: n += twice(1); break; default: ; }
+	i = 0, n += 1;
+	if ( n > 100 ) goto out;
+	n += origin.a;
+out:
+	printf("n=%d i=%d m=%d\n", n, i, m);
+	return 0;
+}

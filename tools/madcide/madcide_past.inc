@@ -27,6 +27,8 @@ long git_handle_of(long w, long es, long adoc)
     long gh = es_int(w, adoc, "ghandle", -1);
     if ( gh >= 0 )
 	return gh;
+    if ( doc_untitled(w, adoc) )
+	return 0;		// no file, no repository (not cached: Save As names it)
     var p;
     ui::get(p, w, adoc, "path");
     var dir = php::dirname(p);		// ring: own the text first

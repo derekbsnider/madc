@@ -1,0 +1,102 @@
+// Unary * reads a CAST-EXPRESSION (C11 6.5.3.2; C++ [expr.unary.op]/1): its
+// operand is the unary-expression that follows -- another `*`, a postfix
+// chain, a call, a prefix step -- and it ends before the first binary
+// operator. A cast's operand is the same production (C11 6.5.4).
+//
+// madc read that operand with FIVE hand-rolled per-shape readers (the
+// single-star arm, its two-star and N-star sub-arms, the cast operand's own
+// deref reader, sizeof's star fast path), each a partial copy of the grammar.
+// Every row below failed in at least one of them:
+//   * two stars over a postfix operand (`**s.p2`, `**sp->p2`, `**first(pp)`,
+//     `**arr2[0]`) and three over one (`***sp->p3`, `**t.name`) were parse
+//     errors;
+//   * `**(q)++` dereferenced ONCE (silent: it printed a pointer's low byte);
+//   * `*&x + 1` read as `*(&x + 1)` (silent: 0 for 6);
+//   * a cast of a unary operand swallowed the binary operator after it:
+//     `(char)**pp * 100`, `(char)-nx * 100`, `(char)~nx * 100` (silent:
+//     -68 / -68 / 88 for 700 / 700 / 600), and `(int)*p++` dropped the `++`;
+//   * `*--ptrs[1]` reached c2mir mistyped;
+//   * a multi-dimensional array's `*m` is its ROW: `**m` was refused and
+//     sizeof(*m) measured the element; unparenthesized `sizeof **sp->p3`
+//     and `sizeof -x` were refused ("Expecting '(' or identifier").
+// Oracle: gcc and clang -std=c17 agree on every line.
+#include <stdio.h>
+
+struct S { char *p; char **p2; char ***p3; };
+struct T { char name[2][3]; };
+typedef int (*fn_t)(int);
+
+static char **gpp;
+static char **first(char **x) { return x; }
+static int twice(int x) { return 2 * x; }
+
+int main(void)
+{
+    char buf[3] = { 7, 9, 11 };
+    char *p = buf;
+    char **pp = &p;
+    char **arr2[1] = { &p };
+    struct S s;
+    struct S *sp = &s;
+    struct T t = { { { 7, 8, 9 }, { 4, 5, 6 } } };
+    int x = 5, nx = -7;
+    int a[2] = { 5, 9 };
+    int m[2][3] = { { 1, 2, 3 }, { 4, 5, 6 } };
+    fn_t f = twice;
+
+    s.p = buf; s.p2 = &s.p; s.p3 = &s.p2;
+    gpp = pp;
+
+    /* controls: shapes every reader handled */
+    printf("single-var %d\n", *p);
+    printf("double-var %d\n", **pp);
+    printf("paren-inner %d\n", *(*pp));
+    printf("single-arrow %d\n", *sp->p);
+    printf("global2 %d\n", **gpp);
+    printf("fnptr1 %d\n", (*f)(5));
+
+    /* two and three stars over a postfix operand */
+    printf("dot2 %d\n", **s.p2);
+    printf("arrow2 %d\n", **sp->p2);
+    printf("call2 %d\n", **first(pp));
+    printf("sub2 %d\n", **arr2[0]);
+    printf("arrow3 %d\n", ***sp->p3);
+    printf("member-array2 %d\n", **t.name);
+    printf("array2d-sub %d\n", *m[1]);
+    printf("array2d-deref2 %d\n", **m);
+
+    /* postfix ++ binds to the operand under every star */
+    {
+        char *cells[2] = { buf, buf + 1 };
+        char **q = cells;
+        int v = **(q)++;
+        printf("paren-postinc2 %d %d\n", v, (int)(q - cells));
+    }
+    {
+        char *q = buf;
+        int v = (int)*q++;
+        printf("cast-postinc %d %d\n", v, (int)(q - buf));
+    }
+
+    /* the operand ends before the first binary operator */
+    printf("addrof-plus %d\n", *&x + 1);
+    printf("cast-deref2-mul %d\n", (char)**pp * 100);
+    printf("cast-neg-mul %d\n", (char)-nx * 100);
+    printf("cast-bnot-mul %d\n", (char)~nx * 100);
+    printf("deref2-mul %d\n", **pp * 100);
+
+    /* a prefix step under a star */
+    {
+        int *ptrs[2] = { a, a + 1 };
+        printf("predec-sub %d\n", *--ptrs[1]);
+    }
+
+    /* sizeof measures the operand's type -- no evaluation */
+    printf("sizeof-deref-member %d\n", (int)sizeof(*s.p));
+    printf("sizeof-deref3 %d %d\n", (int)sizeof(**sp->p3), (int)sizeof(***sp->p3));
+    printf("sizeof-array2d %d\n", (int)sizeof(*m));
+    printf("sizeof-member-array %d\n", (int)sizeof(*t.name));
+    printf("sizeof-bare %d %d %d\n", (int)sizeof **sp->p3, (int)sizeof *m,
+           (int)sizeof -x);
+    return 0;
+}

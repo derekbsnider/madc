@@ -1,0 +1,12 @@
+narrow: int int int int int int int int
+bool: int int
+enum: int int int int
+bitfield: int int int int uint
+const: int int
+ref: int int long long long long
+mod: long uint int
+sizeof: 4 4 4 8 8
+auto: -200 43 -41 41 46 11 5000000000 | 45
+deduce: 46 4 4 4 | 45
+plus: 101 K int* 8 8
+noexcept: 1 1 1

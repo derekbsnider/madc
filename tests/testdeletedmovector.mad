@@ -1,0 +1,16 @@
+struct X {
+	int n;
+	X() : n(7) {}
+	X(const X &) = default;
+	X(X &&) = delete;
+};
+
+static_assert(__is_constructible(X, X &), "the defaulted copy remains usable");
+static_assert(!__is_constructible(X, X &&), "the deleted move is not usable");
+
+int main()
+{
+	X a;
+	X b(static_cast<X &&>(a));
+	return b.n;
+}

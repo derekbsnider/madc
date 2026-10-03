@@ -1,0 +1,38 @@
+// A class subscript calls the operator[] its index selects ([over.sub],
+// [over.ics.rank]/3.2.3): an lvalue index binds `const K&`, an rvalue
+// `K&&`, and an index type picks its own overload. std::map's lvalue-key
+// operator[] copies the key; the rvalue one moves it.
+// Oracle: g++ 13 and clang++ 18 print the same four lines.
+#include <map>
+#include <string>
+#include <cstdio>
+struct M {
+	const char *operator[](const int &) { return "cref"; }
+	const char *operator[](int &&) { return "rref"; }
+};
+template<class K> struct TM {
+	const char *operator[](const K &) { return "cref"; }
+	const char *operator[](K &&) { return "rref"; }
+};
+struct Mixed {
+	const char *operator[](int) { return "int"; }
+	const char *operator[](const char *) { return "str"; }
+};
+int main() {
+	M m;
+	int k = 1;
+	TM<std::string> tm;
+	std::string s = "x";
+	Mixed x;
+	std::printf("plain: %s %s\n", m[k], m[2]);
+	std::printf("template: %s %s\n", tm[s], tm[std::string("y")]);
+	std::printf("type: %s %s\n", x[3], x["k"]);
+	std::map<std::string, std::string> d;
+	std::string key = "en";
+	std::string val = "hello";
+	d[key] = val;
+	d[std::string("fr")] = "bonjour";
+	std::printf("map: key=%s size=%d en=%s fr=%s\n", key.c_str(),
+		(int)d.size(), d[key].c_str(), d["fr"].c_str());
+	return 0;
+}

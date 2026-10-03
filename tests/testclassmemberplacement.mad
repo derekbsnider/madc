@@ -1,0 +1,31 @@
+// A class's own members follow its vptr and bases member by member, each at
+// the next offset its own alignment allows (Itanium): a `char` after a vptr
+// sits at 8 even when a later member needs 16, and a derived class's members
+// fill a non-POD base's tail padding. Oracle: g++ 13 and clang++ 18 print the
+// lines below.
+#include <stdio.h>
+#include <stddef.h>
+
+struct V { virtual int f() { return c; } char c; long double ld; };
+struct NB { int a; char b; NB() {} };
+struct DN : NB { char c; int x; };
+struct DB : NB { int f() { return c; } char c; short s; int i : 5; };
+struct DD : DN { char e; };
+struct VV : V { char g; long double m; };
+
+int main()
+{
+	printf("ca: %zu %zu %zu %zu %zu %zu\n", sizeof(V), offsetof(V, c), offsetof(V, ld),
+	       sizeof(DN), offsetof(DN, c), offsetof(DN, x));
+	printf("cb: %zu %zu\n", sizeof(DB), offsetof(DB, s));
+	printf("cc: %zu %zu %zu %zu %zu\n", sizeof(DD), offsetof(DD, e), sizeof(VV),
+	       offsetof(VV, g), offsetof(VV, m));
+	V v; v.c = 1; v.ld = 2.5L;
+	DN d; d.a = 3; d.b = 4; d.c = 5; d.x = 6;
+	DB b; b.c = 7; b.s = -8; b.i = -9;
+	VV w; w.c = 10; w.ld = 1.25L; w.g = 11; w.m = -0.5L;
+	V *pv = &v;
+	printf("cv: %d %d %.2Lf %d %d %d %d %d %d %d %d %.2Lf %d %.2Lf\n", pv->f(), v.c, v.ld,
+	       d.a, d.b, d.c, d.x, b.f(), b.s, b.i, w.c, w.ld, w.g, w.m);
+	return 0;
+}

@@ -1,0 +1,21 @@
+/* C89 6.5.2: a file-scope declaration with no type specifier declares an
+   int (gcc accepts it in every C mode, warning "data definition has no type
+   or storage class"). `y = 4;` after `int y;` is `int y = 4;`, the
+   definition of the tentatively defined y; `z = 5, w;` declares two ints.
+   madc parsed `y = 4;` as an expression, which nothing at file scope
+   lowers: y stayed 0, silently (B12), and `z = 5` was "use of undeclared
+   identifier 'z'".
+   Oracle: gcc -std=c89 and -std=c17, and clang -std=c89, print `4 5 0 9`
+   (clang -std=c17 refuses implicit int). */
+#include <stdio.h>
+
+int y;
+y = 4;
+z = 5, w;
+f(void) { return y + z; }
+
+int main(void)
+{
+	printf("%d %d %d %d\n", y, z, w, f());
+	return 0;
+}

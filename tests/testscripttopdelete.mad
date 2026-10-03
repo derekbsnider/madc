@@ -1,0 +1,10 @@
+// A top-level `delete` in script mode runs in the synthesized main, in order
+// with the statements around it: a delete-expression statement is an
+// expression statement. It used to be dropped without a word (the destructor
+// never ran, and the program printed only "after"). Oracle: the same
+// statements inside `int main()`, compiled by g++ and clang++, print "dtor"
+// and then "after".
+struct S { int a; ~S() { println("dtor"); } };
+S *sp = new S;
+delete sp;
+println("after");

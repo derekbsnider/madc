@@ -1,0 +1,54 @@
+// A volatile the source spells anywhere but on the object itself — a pointer's
+// POINTEE, a struct member, a typedef, a cast, a parameter, a function's
+// return, one level inside a pointer chain — is part of the TYPE (C11 6.7.3):
+// _Generic and __builtin_types_compatible_p see it, and a `typedef volatile
+// int` local keeps its value across longjmp (7.13.2.1p3). The front end
+// dropped every one (only a volatile OBJECT reached the IR): _Generic picked
+// the unqualified association, and the typedef'd local came back from the
+// longjmp as garbage. They ride DataDefQUAL's cv mask now.
+// Oracle: gcc and clang (-O0 and -O2) print testvolatilepointeec.expect.
+#include <setjmp.h>
+#include <stdio.h>
+typedef volatile int vint;
+typedef int *volatile vip;
+typedef volatile struct P { int x; } VP;
+struct S { volatile int a; volatile int *p; int *volatile q; volatile int arr[2]; int volatile b; };
+volatile int g;
+volatile int *gp = &g;
+int *volatile *gpp;
+static volatile int (*pa)[4];
+volatile int *ret (void) { return &g; }
+#define G(e) _Generic ((e), volatile int *: 1, int *: 2, int *volatile *: 3, default: 0)
+static void param (volatile int *p, volatile int a[], int volatile *b, const volatile char *c) {
+  printf ("param: %d %d %d %d\n", G (p), G (a), G (b),
+          _Generic (c, const volatile char *: 1, const char *: 2, volatile char *: 3, default: 0));
+}
+static jmp_buf jb;
+static void jump (int v) { longjmp (jb, v); }
+static int across_longjmp (int n) {
+  vint acc = 0;
+  vint i;
+  if (setjmp (jb) == 0) { for (i = 0; i < n; i++) acc += i; jump (1); }
+  return acc * 100 + i;
+}
+int main (void) {
+  struct S s = { 0 };
+  VP vp = { 0 };
+  vint vi = 0;
+  vip x = 0;
+  int i = 0;
+  printf ("decl: %d %d %d %d %d\n", G (gp), G (&vi), G (gpp), G (*pa), G (&x));
+  printf ("mem: %d %d %d %d %d\n", G (&s.a), G (s.p), G (&s.q), G (&s.arr[0]), G (&s.b));
+  printf ("cast: %d %d %d\n", G ((volatile int *) &i), G ((int volatile *) &i), G ((vint *) &i));
+  printf ("ret: %d\n", G (ret ()));
+  printf ("tag: %d\n", _Generic (&vp, volatile struct P *: 1, struct P *: 2, default: 0));
+  printf ("compat: %d %d %d %d\n", __builtin_types_compatible_p (vint, int),
+          __builtin_types_compatible_p (volatile int *, vint *),
+          __builtin_types_compatible_p (const volatile int *, volatile const int *),
+          __builtin_types_compatible_p (volatile int *, int *));
+  param (&g, &g, &g, "c");
+  s.a = 5; vi += s.a; *gp = vi; vp.x = 3;
+  printf ("val: %d %d %d %zu\n", g, vi + vp.x, *ret (), sizeof (vint));
+  printf ("longjmp: %d\n", across_longjmp (10));
+  return 0;
+}

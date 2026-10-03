@@ -1,0 +1,10 @@
+// C11 6.10.1: the #else branch of a group is still inside the group, so the
+// file's end still owes its #endif. gcc names the unterminated group by its
+// LATEST directive (#else here) and points at the group's opening line.
+// Oracle: gcc "7: error: unterminated #else", clang "7:2: error:
+// unterminated conditional directive".
+int main(void) { return 0; }
+#ifdef NEVER_DEFINED_MACRO
+int not_here;
+#else
+int here;

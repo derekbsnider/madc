@@ -331,7 +331,11 @@ typedef struct MIR_object_exec_params {
                           shared_p is set */
   const char *identifier; /* Apple targets: the code-signature identifier
                              (conventionally the output basename); NULL =
-                             "mir.image".  Ignored for ELF targets.  Callers
+                             "mir.image"; with shared_p also the dylib's
+                             install name, after "@rpath/".  PE targets with shared_p: the
+                             DLL's own name in its export directory
+                             (conventionally the output basename); NULL =
+                             "mir.dll".  Ignored for ELF targets.  Callers
                              must zero-initialize this struct so newly added
                              tail fields default off. */
   /* Extra read-only carrier section (Apple targets): when extra_data is
@@ -368,8 +372,12 @@ typedef struct MIR_object_exec_params {
    symbol with argc/argv and exits with its return), internal address
    slots baked + rebase opcodes, imports as `_'-prefixed dyld bind
    opcodes, and a linker-signed ad-hoc code signature (SHA-256 page
-   hashes, no certificate -- mandatory on arm64).  params->interp and
-   runpath are ignored; shared_p is refused (no dylib emission). */
+   hashes, no certificate -- mandatory on arm64).  params->interp is
+   ignored; params->runpath's colon-separated entries become LC_RPATHs
+   when a needed dylib is spelled "@rpath/..." (dyld consults them for
+   those loads alone).  shared_p emits an MH_DYLIB instead: based at 0,
+   no LC_MAIN, an LC_ID_DYLIB of "@rpath/" + identifier, and an export
+   trie of the defined global symbols. */
 extern int MIR_object_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params,
                                        void **buf, size_t *size);
 

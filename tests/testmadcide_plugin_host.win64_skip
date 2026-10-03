@@ -1,0 +1,1 @@
+the host transport forks a child; Windows has no fork, so a host plugin runs in madcide's process there (pinned by testmadcide_plugin_library activate-asks), and a crash in its command would end this test

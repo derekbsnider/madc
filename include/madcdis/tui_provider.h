@@ -58,6 +58,33 @@ public:
     virtual void size(size_t &rows, size_t &cols) = 0;
 };
 
+// The LINE seam (plan §41.7a, D23): the same physical terminal in its other
+// screen mode, raw keys on the NORMAL screen, for a line editor that paints
+// relative to its cursor (madcdis/line_edit.h). Nothing takes the alternate
+// screen. The terminal is held only while an entry is read: begin() raws
+// it and turns bracketed paste on; end() turns paste off and gives the
+// terminal back as found, so an entry runs on the terminal its program
+// expects. Type-ahead survives both.
+class line_target
+{
+public:
+    virtual ~line_target() {}
+    // Raw keys, bracketed paste on; `cols` gets the width. False = a fault
+    // (reason on stderr); the host falls back to cooked lines.
+    virtual bool begin(size_t &cols) = 0;
+    virtual void end() = 0;
+    virtual void write(const std::string &bytes) = 0;
+    // As tui_target::read_keys: the batch of immediately available keys, a
+    // resize among them. False = the input source ended.
+    virtual bool read_keys(std::vector<tui_keyev> &out) = 0;
+    virtual size_t columns() = 0;
+};
+
+// The built-in VT line target (src/ui_term.cpp), or null when this process
+// has no terminal to edit on: stdin or stdout is not one, or (POSIX) TERM is
+// unset or "dumb". Null is the host's cue for cooked lines, not an error.
+line_target *create_line_target();
+
 typedef tui_target *(*tui_target_factory)();
 
 struct tui_target_entry

@@ -1,0 +1,73 @@
+// `new T()` value-initializes ([expr.new]/23, [dcl.init]/8): a scalar, a
+// plain struct and a union are zero; `new T` default-initializes. The parse
+// kept no trace of an EMPTY new-initializer, so `new T()` and `new T` were
+// the same: a scalar or plain struct came from malloc, never zeroed, and the
+// placement form `new (p) P()` / `new (p) P` of a plain struct stored the
+// integer 0 into it ("incompatible types in assignment to struct/union").
+//
+// g++ 13 and clang++ 18 (-std=c++11) print the .expect lines.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <new>
+
+struct P { int a; int b; };
+struct R { int a; P p; };
+union U { int i; double d; };
+
+// A freed chunk of the same size, full of non-zero bytes, for the next
+// allocation to reuse.
+static void dirty(size_t n)
+{
+	void *j = malloc(n);
+	memset(j, 0x5a, n);
+	free(j);
+}
+
+template<class T> T *heap_value() { return new T(); }
+template<class T> T *place_value(void *buf) { return ::new (buf) T(); }
+template<class T> T *place_default(void *buf) { return ::new (buf) T; }
+
+int main()
+{
+	dirty(sizeof(int));
+	int *i1 = new int();
+	dirty(sizeof(P));
+	P *p1 = new P();
+	dirty(sizeof(R));
+	R *r1 = new R();
+	dirty(sizeof(U));
+	U *u1 = new U();
+	long *l1 = new long(3);
+	int *i2 = new int;
+	*i2 = 4;
+	printf("heap %d %d %d %d %d %d %d %ld %d\n", *i1, p1->a, p1->b, r1->a,
+	       r1->p.a, r1->p.b, u1->i, *l1, *i2);
+
+	P q = { 7, 8 };
+	new (&q) P();
+	P p = { 7, 8 };
+	new (&p) P;
+	p.a = 3;
+	int y = 6;
+	new (&y) int();
+	double dd = 2.5;
+	new (&dd) double();
+	printf("place %d %d %d %d %d\n", q.a, q.b, p.a, y, (int)(dd == 0.0));
+
+	dirty(sizeof(P));
+	P *tp = heap_value<P>();
+	dirty(sizeof(int));
+	int *ti = heap_value<int>();
+	P w = { 7, 8 };
+	place_value<P>(&w);
+	int n = 9;
+	place_value<int>(&n);
+	P v = { 7, 8 };
+	place_default<P>(&v)->b = 5;
+	printf("tmpl %d %d %d %d %d %d %d\n", tp->a, tp->b, *ti, w.a, w.b, n, v.b);
+
+	delete i1; delete p1; delete r1; delete u1; delete l1; delete i2;
+	delete tp; delete ti;
+	return 0;
+}

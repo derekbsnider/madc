@@ -21,6 +21,8 @@ namespace ui_web {
 	int posted;		// events posted during the current run()
 	int running;		// inside webview_run (terminate is meaningful)
 	int ticked;		// the tick ended the current run() (nothing posted)
+	char *clip;		// the last clipboard read (clip_get's answer),
+				// the host's until the next read
     };
 
     // The most recently opened host — the test seam's target
@@ -130,6 +132,7 @@ namespace ui_web {
 	h->posted = 0;
 	h->running = 0;
 	h->ticked = 0;
+	h->clip = 0;
 	webview_set_title(h->view, title);
 	webview_set_size(h->view, 960, 640, WEBVIEW_HINT_NONE);
 	webview_bind(h->view, "madc", on_event, h);
@@ -227,6 +230,38 @@ namespace ui_web {
 	return 0;
     }
 
+    // The platform clipboard (plan §41.11a step 3e, madcwebview_clipboard_*):
+    // clip_set puts plain text there, 0 = taken; clip_get reads what it
+    // holds now, kept on the host until the next read (the engine copies
+    // it at once); 0 = no clipboard here.
+    int64_t clip_set(void *hv, const char *text)
+    {
+	host *h = (host *)hv;
+	return madcwebview_clipboard_set(h->view, text) == 0 ? 0 : 1;
+    }
+
+    void on_clip_text(const char *text, void *arg)
+    {
+	host *h = (host *)arg;
+	if ( h->clip )
+	    free(h->clip);
+	int64_t n = strlen(text);
+	h->clip = (char *)malloc(n + 1);
+	if ( h->clip )
+	{
+	    memcpy(h->clip, text, n);
+	    h->clip[n] = 0;
+	}
+    }
+
+    const char *clip_get(void *hv)
+    {
+	host *h = (host *)hv;
+	if ( madcwebview_clipboard_get(h->view, on_clip_text, h) != 0 )
+	    return 0;
+	return h->clip;
+    }
+
     // The test seam: choose a menu item by its command id as the user would
     // (the platform fires the action; the event reaches the engine).
     // 0 = fired; 1 = no window, no menu, or no such item.
@@ -244,6 +279,8 @@ namespace ui_web {
 	    __last_host = 0;
 	webview_unbind(h->view, "madc");
 	webview_destroy(h->view);
+	if ( h->clip )
+	    free(h->clip);
 	free(h);
     }
 
@@ -284,5 +321,5 @@ namespace ui_web {
 
 }
 
-static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick };
+static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick, ui_web::clip_set, ui_web::clip_get };
 static bool __ui_web_registered = ui::register_host("web", ui::WEB, &__ui_web_ops);

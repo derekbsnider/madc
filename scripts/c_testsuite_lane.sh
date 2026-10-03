@@ -18,6 +18,10 @@
 #   MADC_BIN            binary under test (default bin/madc)
 #   MADC_CTS_DIR        the checkout (default /workspace/c-testsuite)
 #   MADC_CTS_BASELINE   baseline file (default docs/parity/c-testsuite-baseline.txt)
+#
+# Each program runs with its working directory in a scratch dir under tmp/,
+# removed at the end: a suite program may create files (00187.c writes
+# fred.txt), and from the repo root they landed among the sources.
 set -u
 cd "$(dirname "$0")/.."
 
@@ -48,10 +52,15 @@ pass=0; fail=0; newfail=0; fixed=0
 newfail_names=""
 fixed_names=""
 mkdir -p tmp
+case "$BIN" in /*) ABS_BIN="$BIN" ;; *) ABS_BIN="$PWD/$BIN" ;; esac
+case "$DIR" in /*) ;; *) DIR="$PWD/$DIR" ;; esac
+RUN_DIR=tmp/c_testsuite_cwd
+rm -rf "$RUN_DIR"
+mkdir -p "$RUN_DIR"
 for src in "$DIR"/*.c; do
 	name=$(basename "$src")
 	exp="$src.expected"
-	out=$( ( ulimit -t 10; timeout 15 "$BIN" --std=gnu11 "$src" ) 2>/dev/null )
+	out=$( ( cd "$RUN_DIR" || exit 1; ulimit -t 10; timeout 15 "$ABS_BIN" --std=gnu11 "$src" ) 2>/dev/null )
 	rc=$?
 	ok=0
 	if [ "$rc" -eq 0 ]; then
@@ -76,6 +85,7 @@ for src in "$DIR"/*.c; do
 	fi
 done
 
+rm -rf "$RUN_DIR"
 echo "c-testsuite: $pass passed, $fail failed" \
      "($newfail outside baseline, $fixed baseline tests now passing)"
 if [ "$fixed" -gt 0 ]; then

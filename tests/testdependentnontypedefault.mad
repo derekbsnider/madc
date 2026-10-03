@@ -1,0 +1,24 @@
+/* A function template's non-type default that names an earlier parameter
+   is substituted with the arguments bound before it, then evaluated
+   ([temp.deduct]/5): a member template (in class, and out of class with a
+   `>` in the default), a free function template, a non-type neighbour, and
+   a `T::value` read. A defaulted call beside an explicit-argument call to
+   the same template instantiates its own specialization.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     dep: 5 9 5 7 8 4 2 1 */
+#include <cstdio>
+struct A { static const int value = 3; };
+struct E { template<class T, int N = sizeof(T) + 1> int h() { return N; } };
+template<class T, int N = sizeof(T) + 1> int f() { return N; }
+template<int N, int M = N * 2> int g() { return M; }
+template<class T, int N = T::value + 1> int v() { return N; }
+struct D { template<class T, int N = (sizeof(T) > 2) + 1> int k(); };
+template<class U, int M> int D::k() { return M; }
+int main()
+{
+	E e;
+	D d;
+	printf("dep: %d %d %d %d %d %d %d %d\n", e.h<int>(), e.h<char, 9>(),
+	       f<int>(), f<char, 7>(), g<4>(), v<A>(), d.k<int>(), d.k<char>());
+	return 0;
+}

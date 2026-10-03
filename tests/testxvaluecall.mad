@@ -1,0 +1,42 @@
+// A call whose function returns an rvalue reference is an xvalue
+// ([basic.lval]/1.3, [expr.call]/14): a forwarding reference deduces T as
+// the plain type for it ([temp.deduct.call]/3), it binds no non-const `T&`
+// and it prefers `T&&` ([dcl.init.ref]/5, [over.ics.rank]/3.2.3). A `T&&`
+// return over T = U& collapses to `U&` ([dcl.ref]/6): an lvalue. madc read
+// every reference-returning call as an lvalue: k(mv(x)) deduced T = int&,
+// w(rr(x)) called w(int&) (exit 0).
+// Oracle: g++ 13 and clang++ 18 (-std=c++17) print exactly the .expect lines.
+#include <cstdio>
+
+template<class T> struct is_ref { static const bool v = false; };
+template<class T> struct is_ref<T&> { static const bool v = true; };
+template<class T> struct no_ref { typedef T type; };
+template<class T> struct no_ref<T&> { typedef T type; };
+
+template<class T> T &&mv(T &t) { return static_cast<T &&>(t); }
+template<class T> T &&fw(typename no_ref<T>::type &t) { return static_cast<T &&>(t); }
+static int &&rr(int &x) { return static_cast<int &&>(x); }
+static int &lr(int &x) { return x; }
+
+struct B {
+	int v;
+	int &&take() { return static_cast<int &&>(v); }
+	int &peek() { return v; }
+};
+
+template<class T> static const char *k(T &&) { return is_ref<T>::v ? "T=U&" : "T=U"; }
+static const char *w(int &) { return "int&"; }
+static const char *w(const int &) { return "const int&"; }
+static const char *r(int &&) { return "int&&"; }
+static const char *r(const int &) { return "const int&"; }
+
+int main()
+{
+	int x = 1;
+	B b = { 2 };
+	printf("deduce: %s %s %s %s\n", k(mv(x)), k(rr(x)), k(lr(x)), k(b.take()));
+	printf("collapse: %s %s\n", k(fw<int &>(x)), k(fw<int>(x)));
+	printf("bind-w: %s %s %s\n", w(rr(x)), w(lr(x)), w(b.take()));
+	printf("bind-r: %s %s %s %s\n", r(rr(x)), r(lr(x)), r(b.take()), r(b.peek()));
+	return 0;
+}

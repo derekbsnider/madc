@@ -1,0 +1,34 @@
+// C twin of testunarypromotion: the integer promotions (C11 6.3.1.1p2) of an
+// arithmetic operand have ONE owner, read by every operator's parse-side type
+// (_Generic selection, sizeof). Before, unary `~`/`-`/`+` kept the operand's
+// own type (`+` was dropped outright), a bit-field narrower than int kept its
+// declared unsigned type, and `%` typed every operand pair as int — `l % 3`
+// on a long was 4 bytes. Oracle: gcc and clang, -std=gnu17.
+#include <stdio.h>
+
+#define T(x) _Generic((x), _Bool: "bool", char: "char", signed char: "schar", \
+	unsigned char: "uchar", short: "short", unsigned short: "ushort", \
+	int: "int", unsigned: "uint", long: "long", unsigned long: "ulong", \
+	float: "float", double: "double", default: "other")
+
+struct BF { unsigned x : 3; int y : 5; unsigned w : 32; };
+
+int main(void)
+{
+    unsigned char uc = 200; short ss = 5; unsigned short us = 7; char ch = 9;
+    _Bool b = 1; const unsigned char cuc = 2; struct BF bf = { 5, -2, 7u };
+    long l = 5000000000L; unsigned u = 7u; float fl = 1.5f;
+
+    printf("narrow: %s %s %s %s %s %s %s\n", T(~uc), T(-uc), T(+uc), T(+ss),
+	   T(-us), T(~ch), T(+ch));
+    printf("bool: %s %s %s\n", T(+b), T(~b), T(-b));
+    printf("bitfield: %s %s %s %s %s %s\n", T(-bf.x), T(+bf.x), T(bf.x + 0),
+	   T(bf.x << 1), T(-bf.y), T(-bf.w));
+    printf("const: %s %s %s\n", T(-cuc), T(-(uc)), T(- -uc));
+    printf("wide: %s %s %s\n", T(+fl), T(~u), T(-l));
+    printf("mod: %s %s %s\n", T(l % l), T(l % 3), T(u % 3));
+    printf("sizeof: %d %d %d %d\n", (int)sizeof(~uc), (int)sizeof(+ss),
+	   (int)sizeof(- -uc), (int)sizeof(l % 3));
+    printf("value: %d %d %ld %d\n", ~uc, +uc, l % 3000000000L, -bf.x);
+    return 0;
+}

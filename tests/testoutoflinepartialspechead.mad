@@ -1,0 +1,30 @@
+/* An out-of-line member of a partial specialization is defined with the
+   specialization's own argument list as its class-head
+   ([temp.class.spec.mfunc]/1): `template<class U> int Z<U*>::f()` for
+   `template<class T> struct Z<T*>`, with U bound to what T deduced, and
+   likewise `P<T, const T>` and `P<T, decltype((3 > 2))>`. The more
+   specialized Z<const T*> keeps its own member. Before, each such
+   definition attached to nothing and the call was an undefined import.
+   Oracle (g++ 13 and clang++ 18, -std=c++17):
+     zp: 1 2 5 1 3 2 4 */
+#include <cstdio>
+template<class T> struct Z { int f(); };
+template<class T> int Z<T>::f() { return 1; }
+template<class T> struct Z<T*> { int f(); };
+template<class U> int Z<U*>::f() { return 2; }
+template<class T> struct Z<const T*> { int f(); };
+template<class T> int Z<const T*>::f() { return 5; }
+template<class T, class U> struct P { int f(); };
+template<class T, class U> int P<T, U>::f() { return 1; }
+template<class T> struct P<T, const T> { int f(); int g(); };
+template<class T> int P<T, const T>::f() { return 3; }
+template<class T> int P<T, const T>::g() { return (int)sizeof(T); }
+template<class T> struct P<T, decltype((3 > 2))> { int f(); };
+template<class T> int P<T, decltype((3 > 2))>::f() { return 4; }
+int main()
+{
+	printf("zp: %d %d %d %d %d %d %d\n", Z<int>().f(), Z<int *>().f(),
+	       Z<const int *>().f(), P<int, long>().f(), P<int, const int>().f(),
+	       P<short, const short>().g(), P<int, bool>().f());
+	return 0;
+}

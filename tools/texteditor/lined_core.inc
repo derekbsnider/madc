@@ -17,39 +17,80 @@ const char *LINEED_FILES[9] = { "p", "c", "i", "a", "d", "f", "w", "q", "qbang" 
 // read the same rule (§7.3's affordance form).
 const char *LINEED_EDIT_VERBS[5] = { "c", "i", "a", "d", "w" };
 
-void bind_lineed_verbs(long w)
+// Where a program's DATA directory `sub` lives (the one owner: the line
+// editor's verbs and checks here, madcide's profiles through
+// resolve_profile_dir). The source tree keeps it beside the file that owns
+// it (`src_dir`, the caller's php::dirname(__FILE__): the include-resolved
+// path, from any cwd). An INSTALLED program is an AOT binary whose __FILE__
+// names a build tree that box never had, so the running binary's own
+// directory (madc::compiler_path) anchors the install layouts:
+// <exedir>/../share/<product>/<sub> (the Linux/mac package layout), then
+// <exedir>/<sub> (the Windows zip: data beside the exe). First existing
+// directory wins; nothing found keeps the source-tree spelling, so a
+// report names a real place to fix. Never a cwd-relative path: the editor
+// is started from anywhere.
+void resolve_data_dir(var &dir, const char *product, const char *src_dir,
+		      const char *sub)
 {
+    dir = format("{}/{}", src_dir, sub);
+    if ( php::file_exists(dir) )
+	return;
+    var exedir = php::dirname(madc::compiler_path());
+    var share = format("{}/../share/{}/{}", exedir, product, sub);
+    if ( php::file_exists(share) )
+    {
+	dir = share;
+	return;
+    }
+    var beside = format("{}/{}", exedir, sub);
+    if ( php::file_exists(beside) )
+	dir = beside;
+}
+
+// False (with the reason on stderr) when a verb or check body cannot load:
+// save and quit ARE verbs, so an editor without them could neither save nor
+// quit, and a caller must refuse to start rather than run one. The bodies
+// ship inside madcide's package (share/madcide, or beside madcide.exe), the
+// one product that carries this editor.
+bool bind_lineed_verbs(long w)
+{
+    var vdir;
+    resolve_data_dir(vdir, "madcide", php::dirname(__FILE__), "verbs");
+    var cdir;
+    resolve_data_dir(cdir, "madcide", php::dirname(__FILE__), "checks");
     // THE subject-document rule (verbs/_subject.madv) is prepended to
     // every body at bind: `doc` = the actor's active document, else the
     // world's one "document". One owner; bodies never look it up.
     var pro;
-    if ( !php::file_get_contents(pro,
-	    "tools/texteditor/verbs/_subject.madv") )
+    var ppath = format("{}/_subject.madv", vdir);
+    if ( !php::file_get_contents(pro, ppath) )
     {
-	println(stderr, "cannot load the subject-document prologue");
-	return;
+	println(stderr, "cannot load the editor's verbs ({}): without them it cannot save or quit — check the install layout", ppath);
+	return false;
     }
     for ( int k = 0; k < 9; k = k + 1 )
     {
 	var src;
-	if ( !php::file_get_contents(src,
-		format("tools/texteditor/verbs/{}.madv", LINEED_FILES[k])) )
+	var vpath = format("{}/{}.madv", vdir, LINEED_FILES[k]);
+	if ( !php::file_get_contents(src, vpath) )
 	{
-	    println(stderr, "cannot load verb body {}", LINEED_FILES[k]);
-	    continue;
+	    println(stderr, "cannot load the editor's verb body {}", vpath);
+	    return false;
 	}
 	var full = format("{}\n{}", pro, src);
 	ui::bind_verb(w, LINEED_VERBS[k], full.c_str());
     }
     var chk;
-    if ( !php::file_get_contents(chk, "tools/texteditor/checks/editable.madv") )
+    var cpath = format("{}/editable.madv", cdir);
+    if ( !php::file_get_contents(chk, cpath) )
     {
-	println(stderr, "cannot load the editable check body");
-	return;
+	println(stderr, "cannot load the editor's check body {}", cpath);
+	return false;
     }
     var fullchk = format("{}\n{}", pro, chk);
     for ( int k = 0; k < 5; k = k + 1 )
 	ui::bind_check(w, LINEED_EDIT_VERBS[k], fullchk.c_str());
+    return true;
 }
 
 // A document's PATH and its KIND move together (client-server design §2.1:
@@ -76,18 +117,60 @@ long doc_kind(long w, long doc)
     return k.as_integer();
 }
 
+// An UNTITLED document has no path: the buffer a launch without a file opens
+// (Thonny's <untitled>, JOE's Unnamed). Its text is real and it lexes and
+// parses; a save asks for a name first.
+bool doc_untitled(long w, long doc)
+{
+    var p;
+    ui::get(p, w, doc, "path");
+    return p.is_null() || strlen(p.c_str()) == 0;
+}
+
+// The name a document goes by: its path, or `untitled` for a document that
+// has none. The unit name a parse, a lens and a REPL run give it, the status
+// line's %n and the tab's title; where a FILE is meant, the path is read.
+void doc_name(var &out, long w, long doc)
+{
+    if ( doc_untitled(w, doc) )
+    {
+	out = "untitled";
+	return;
+    }
+    ui::get(out, w, doc, "path");
+}
+
+// THE document entity: `text` under `path`, unmodified — every document
+// either editor holds is minted here. No file is read: a loaded file's
+// text arrives from setup_document; a new file's and a view buffer's
+// ([repl], [build], [terminal]) text is empty, and a view's name is a
+// display path, never looked up on disk (a file named `[build]` in the
+// working directory is not the build pane). An empty `path` mints the
+// UNTITLED document: no path, and the madc dialect's kind, the language a
+// madc editor's unnamed buffer is written in (Save As stamps the real one).
+long new_document(long w, const char *path, const char *text)
+{
+    long doc = ui::create(w, "document");
+    ui::text_load(w, doc, text);
+    long dialect = madc::fkMADC;	// a long: ui::set's overloads take int64_t or double
+    if ( strlen(path) > 0 )
+	doc_set_path(w, doc, path);
+    else
+	ui::set(w, doc, "kind", dialect);
+    ui::set(w, doc, "modified", false);
+    return doc;
+}
+
 // Create the document entity and load its file: the setup BOTH editors
 // share (lined's line mode and vised's TUI mode edit the same document
 // shape). 0 = the file could not be read.
 long setup_document(long w, const char *path, bool ro)
 {
-    long doc = ui::create(w, "document");
     var seed;
     if ( !php::file_get_contents(seed, path) )
-	return 0;
-    ui::text_load(w, doc, seed.c_str());
-    doc_set_path(w, doc, path);
-    ui::set(w, doc, "modified", false);
+	return 0;		// read first: a refused read leaves no
+				// orphan document in the world
+    long doc = new_document(w, path, seed.c_str());
     if ( ro )
 	ui::set(w, doc, "read_only", true);
     return doc;
@@ -103,7 +186,11 @@ void run_session(const char *path, bool ro)
 	return;
     }
     long es = ui::create(w, "editor-state");
-    bind_lineed_verbs(w);
+    if ( !bind_lineed_verbs(w) )
+    {
+	ui::world_close(w);
+	return;
+    }
 
     var out;
     char line[256];

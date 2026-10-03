@@ -1,0 +1,18 @@
+#include <stdio.h>
+
+int global[3] = {1, 2, 3};
+int matrix[2][3] = {{1, 2, 3}, {4, 5, 6}};
+struct Holder { int member[4]; } holder;
+
+int main(void)
+{
+	int local[2] = {7, 8};
+	printf("%zu %zu %d %td %zu %td %zu %td %zu %td\n",
+	       sizeof *&global, sizeof &global, (*&global)[2],
+	       (char *)(&global + 1) - (char *)&global,
+	       sizeof *&matrix, (char *)(&matrix + 1) - (char *)&matrix,
+	       sizeof *&holder.member,
+	       (char *)(&holder.member + 1) - (char *)&holder.member,
+	       sizeof *&local, (char *)(&local + 1) - (char *)&local);
+	return 0;
+}

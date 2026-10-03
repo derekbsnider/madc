@@ -1,0 +1,69 @@
+# madcide keybinding profile: VS Code's keys (plan §41.11a step 3e) — its
+# published default keymap, the Linux and macOS sheets (code.visualstudio.
+# com/shortcuts/keyboard-shortcuts-linux.pdf and -macos.pdf) and the
+# default-keybindings page, read 2026-10-01, onto the one action
+# vocabulary. `primary` is Ctrl, or Cmd on macOS: VS Code's two sheets
+# differ by that swap for most commands; a `ctrl+` line is Ctrl on both
+# (Go to Line, Ctrl+Tab, the terminal). Ctrl+K opens chords, as in VS
+# Code. Shift with any motion selects (the engine's rule). Until the
+# debugger (Phase 7) F5 and Ctrl+F5 both run.
+#
+# Where macOS uses a different KEY, not just Cmd, the Linux key is bound
+# on every platform (a profile has one key per binding): the file's ends
+# (Ctrl+Home / Ctrl+End; macOS ⌘↑ / ⌘↓), the word motions (Ctrl+arrows;
+# macOS ⌥←/⌥→), Find next (F3; macOS ⌘G) and Redo (Ctrl+Y; macOS ⇧⌘Z).
+#
+# VS Code's keys whose command madcide does not have yet are listed, not
+# invented: New File (Ctrl+N), Close (Ctrl+W), Close All (Ctrl+K Ctrl+W),
+# Save All (Ctrl+K S; macOS ⌥⌘S), Replace (Ctrl+H), Find previous
+# (Shift+F3), Toggle line comment (Ctrl+/), Trigger suggestion
+# (Ctrl+Space), Move line (Alt+Up / Alt+Down), Insert line below / above
+# (Ctrl+Enter, Ctrl+Shift+Enter), Go to Definition (F12), next / previous
+# problem (F8 / Shift+F8), the Command Palette (Ctrl+Shift+P, F1), the
+# debugger's steps and breakpoints (F9, F10, F11, Shift+F11), zoom
+# (Ctrl+= / Ctrl+-) and full screen (F11).
+@title VS Code
+
+# File management
+primary+o editfile
+primary+s save
+primary+shift+s saveas
+ctrl+tab bufsel
+# Basic editing
+primary+z undo
+primary+y redo
+primary+x cut
+primary+c copy
+primary+v paste
+primary+a selectall
+primary+shift+k delline
+ctrl+home top
+ctrl+end bottom
+ctrl+left wordleft
+ctrl+right wordright
+ctrl+del delword
+# Search and navigation
+primary+f find
+f3 findnext
+ctrl+g gotoline
+primary+p project
+primary+shift+e project
+primary+shift+o outline
+primary+shift+m problems
+primary+shift+u output
+# Editor management: split, and focus the previous / next group
+primary+\ splitw
+primary+k primary+left prevw
+primary+k primary+right nextw
+# Run (F5 / Ctrl+F5) and stop (Shift+F5); the integrated terminal
+f5 replrun
+ctrl+f5 replrun
+shift+f5 replstop
+ctrl+` terminal
+# Quit: VS Code's on Linux (Ctrl+Q) and macOS (⌘Q), off its sheets.
+primary+q quit
+# The project window's keys (@project scope — profile data; the baked
+# defaults add esc/backspace).
+@project ins projadd
+@project del projdel
+@project enter projopen

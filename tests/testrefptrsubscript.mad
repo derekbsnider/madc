@@ -1,0 +1,36 @@
+// C++: a subscript through a REFERENCE to a pointer indexes the referent
+// ([expr.sub] on the glvalue the reference denotes: `int *&rp; rp[1]` is
+// `(*rp)[1]`). A reference is stored as a pointer to its referent, and the
+// named-variable subscript arm emitted the stored pointer itself as the
+// base — `rp[1]` read the SECOND `int *` past the referent and returned it
+// as an int (c2mir: "returning pointer without cast for integer result"),
+// exit 0 with a garbage sum. The same holds for `char *&`, a reference to a
+// pointer to volatile, a reference to a volatile pointer (`int *volatile &`
+// — mangled RVPi: a reference's first level is its referent, never the
+// parameter object's top-level cv) and a store through one.
+// Oracle: g++ and clang++ print testrefptrsubscript.expect.
+#include <stdio.h>
+
+static int second (int *volatile &rp) { return rp[1]; }
+static int third (int *&rp) { return rp[1]; }
+static int fourth (volatile int *&rp) { return rp[2]; }
+static char initial (const char *&s) { return s[0]; }
+static void poke (int *&rp) { rp[0] = 40; }
+int vsecond (int *volatile &rp) { return rp[1] + 100; }
+
+extern "C" int _Z7vsecondRVPi (int *volatile *);
+
+int main ()
+{
+  int a[3] = { 4, 5, 6 };
+  int *p = a;
+  volatile int *vp = a;
+  int *volatile vq = a + 1;
+  const char *s = "madc";
+  printf ("read: %d %d %d %d\n", second (p), third (p), fourth (vp), second (vq));
+  printf ("char: %c\n", initial (s));
+  poke (p);
+  printf ("store: %d\n", a[0]);
+  printf ("sym: %d\n", _Z7vsecondRVPi (&p));
+  return 0;
+}

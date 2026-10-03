@@ -884,12 +884,16 @@ static int obj_item_sym_eq (obj_item_sym_t el1, obj_item_sym_t el2, void *arg MI
 
 /* Follow export/forward/import indirections to the item that actually defines
    the name in this context; a name with no definition here stays an import
-   (an undefined ELF symbol resolved by the system linker). */
-static MIR_item_t obj_canonical_item (MIR_item_t item) {
+   (an undefined ELF symbol resolved by the system linker).  A weak func that a
+   strong definition replaced is defined by the replacement. */
+static MIR_item_t obj_canonical_item (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t repl;
+
   while ((item->item_type == MIR_export_item || item->item_type == MIR_forward_item
           || item->item_type == MIR_import_item)
          && item->ref_def != NULL && item->ref_def != item)
     item = item->ref_def;
+  if ((repl = _MIR_weak_func_replacement (ctx, item)) != NULL) item = repl;
   return item;
 }
 
@@ -898,7 +902,7 @@ static MIR_item_t obj_canonical_item (MIR_item_t item) {
    a definition via MIR_object_symbol_define. */
 static int gen_obj_item_sym (gen_ctx_t gen_ctx, MIR_item_t item) {
   obj_item_sym_t el, tab_el;
-  item = obj_canonical_item (item);
+  item = obj_canonical_item (gen_ctx->ctx, item);
   el.item = item;
   el.sym = -1;
   if (HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)) return tab_el.sym;
@@ -2991,6 +2995,20 @@ static void finish_ssa (gen_ctx_t gen_ctx) {
 /* Add all copies which are uses of bb_insn to temp_bb_insns2.  Return TRUE if all bb_insn uses
    (skipping moves) are memory address.  Collect insns which bb_insn uses are memory in
    bb_mem_insns. */
+/* TRUE if INSN accesses memory through a volatile lvalue (MIR_mem_t.volatile_p).  Such an access
+   is an observable side effect: it is performed exactly as written, so no pass may remove it,
+   merge it with another access, forward a value to or from it, move it, or fold it into another
+   insn.  The ONE predicate every pass asks: address transformation, GVN, DSE, both dead code
+   eliminations and the combiner (LICM and pressure relief never move a memory insn at all).  A
+   vectorizer packing adjacent accesses must ask it too. */
+static int volatile_mem_insn_p (MIR_insn_t insn) {
+  for (size_t i = 0; i < insn->nops; i++)
+    if ((insn->ops[i].mode == MIR_OP_MEM && insn->ops[i].u.mem.volatile_p)
+        || (insn->ops[i].mode == MIR_OP_VAR_MEM && insn->ops[i].u.var_mem.volatile_p))
+      return TRUE;
+  return FALSE;
+}
+
 static int collect_addr_uses (gen_ctx_t gen_ctx, bb_insn_t bb_insn,
                               VARR (bb_insn_t) * bb_mem_insns) {
   int res = TRUE;
@@ -2999,6 +3017,8 @@ static int collect_addr_uses (gen_ctx_t gen_ctx, bb_insn_t bb_insn,
   for (ssa_edge_t se = bb_insn->insn->ops[0].data; se != NULL; se = se->next_use) {
     if (se->use->insn->ops[se->use_op_num].mode == MIR_OP_VAR_MEM) {
       gen_assert (move_code_p (se->use->insn->code) && se->use_op_num <= 1);
+      /* A volatile access through the address is a real memory access: keep the var there. */
+      if (volatile_mem_insn_p (se->use->insn)) res = FALSE;
       if (bb_mem_insns != NULL) VARR_PUSH (bb_insn_t, bb_mem_insns, se->use);
       continue;
     }
@@ -4529,6 +4549,14 @@ static void gvn_modify (gen_ctx_t gen_ctx) {
       int64_t val = 0, val2;
 
       next_bb_insn = DLIST_NEXT (bb_insn_t, bb_insn);
+      if (volatile_mem_insn_p (insn)) {
+        /* Performed as written: no value number, never replaced, deleted or used as a value
+           source (it is never entered into mem_expr_tab), and its nloc stays 0 -- the unknown
+           location DSE never deletes a store to.  A volatile store still clobbers every
+           available memory it may alias. */
+        if (move_code_p (insn->code)) update_mem_availability (gen_ctx, curr_available_mem, bb_insn);
+        continue;
+      }
       if (insn->code == MIR_MOV
           && (insn->ops[1].mode == MIR_OP_INT || insn->ops[1].mode == MIR_OP_UINT)) {
         bb_insn->gvn_val_const_p = TRUE;
@@ -5294,7 +5322,7 @@ static void dse (gen_ctx_t gen_ctx) {
       if (!move_code_p (insn->code)) continue;
       if (insn->ops[0].mode == MIR_OP_VAR_MEM) { /* store */
         if ((nloc = insn->ops[0].u.var_mem.nloc) != 0) {
-          if (!bitmap_clear_bit_p (live, nloc)) {
+          if (!bitmap_clear_bit_p (live, nloc) && !volatile_mem_insn_p (insn)) {
             DEBUG (2, {
               fprintf (debug_file, "Removing dead store ");
               print_bb_insn (gen_ctx, bb_insn, FALSE);
@@ -5346,6 +5374,7 @@ static int ssa_dead_insn_p (gen_ctx_t gen_ctx, bb_insn_t bb_insn) {
   ssa_edge_t ssa_edge;
 
   /* check control insns with possible output: */
+  if (volatile_mem_insn_p (insn)) return FALSE; /* a volatile access is a side effect */
   if (MIR_call_code_p (insn->code) || insn->code == MIR_ALLOCA || insn->code == MIR_BSTART
       || insn->code == MIR_VA_START || insn->code == MIR_VA_ARG
       || (insn->nops > 0 && insn->ops[0].mode == MIR_OP_VAR
@@ -9059,7 +9088,8 @@ static int combine_substitute (gen_ctx_t gen_ctx, bb_insn_t *bb_insn_ref, long *
        r0 = r2 op r3; ...; ... = r0  =>  ...; ... = r2 op r3 */
     var = insn->ops[1].u.var;
     if ((def_insn = get_uptodate_def_insn (gen_ctx, var)) == NULL
-        || fixed_place_insn_p (def_insn))
+        || fixed_place_insn_p (def_insn) || volatile_mem_insn_p (def_insn)
+        || volatile_mem_insn_p (insn))
       return FALSE;
     target_get_early_clobbered_hard_regs (def_insn, &early_clobbered_hard_reg1,
                                           &early_clobbered_hard_reg2);
@@ -9100,6 +9130,7 @@ static int combine_substitute (gen_ctx_t gen_ctx, bb_insn_t *bb_insn_ref, long *
     var = VARR_POP (MIR_reg_t, insn_vars);
     if ((def_insn = get_uptodate_def_insn (gen_ctx, var)) == NULL) continue;
     if (!move_code_p (def_insn->code)) continue;
+    if (volatile_mem_insn_p (def_insn)) continue; /* a volatile load stays where it is */
     insn_var_change_p = FALSE;
     for (i = 0; i < nops; i++) { /* Change all var occurences: */
       op_ref = &insn->ops[i];
@@ -9438,7 +9469,8 @@ static void dead_code_elimination (gen_ctx_t gen_ctx) {
         if (bitmap_clear_bit_p (live, var) || bitmap_bit_p (addr_regs, var)) dead_p = FALSE;
       }
       if (!reg_def_p) dead_p = FALSE;
-      if (dead_p && !MIR_call_code_p (insn->code) && insn->code != MIR_RET && insn->code != MIR_JRET
+      if (dead_p && !volatile_mem_insn_p (insn) && !MIR_call_code_p (insn->code)
+          && insn->code != MIR_RET && insn->code != MIR_JRET
           && insn->code != MIR_ALLOCA && insn->code != MIR_BSTART && insn->code != MIR_BEND
           && insn->code != MIR_VA_START && insn->code != MIR_VA_ARG && insn->code != MIR_VA_END
           && !(MIR_overflow_insn_code_p (insn->code)
@@ -9849,8 +9881,11 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
     if (item->item_type == MIR_func_item) {
       obj_item_sym_t el, tab_el;
       el.item = item;
-      if (!HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)
-          || !MIR_object_symbol_defined_p (gen_object, tab_el.sym))
+      /* a replaced weak func is never generated: its references bind to the
+         replacement (obj_canonical_item) */
+      if (_MIR_weak_func_replacement (ctx, item) == NULL
+          && (!HTAB_DO (obj_item_sym_t, obj_item_sym_tab, el, HTAB_FIND, tab_el)
+              || !MIR_object_symbol_defined_p (gen_object, tab_el.sym)))
         (*MIR_get_error_func (ctx)) (MIR_func_error,
                                      "AOT object mode: function %s was not generated before "
                                      "MIR_gen_object_emit",
@@ -9951,9 +9986,20 @@ static void obj_emit_module_data (gen_ctx_t gen_ctx, MIR_module_t m) {
   }
 }
 
+/* Place every loaded module's data into the capture and define its data
+   symbols.  One-shot: both emit entries may be called on one capture (a .o
+   alongside an executable), and an annotating consumer may have run it
+   already through MIR_gen_object_prepare. */
+static void gen_obj_run_data_walk (gen_ctx_t gen_ctx, MIR_context_t ctx) {
+  if (obj_data_emitted_p) return;
+  for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
+       m = DLIST_NEXT (MIR_module_t, m))
+    obj_emit_module_data (gen_ctx, m);
+  obj_data_emitted_p = TRUE;
+}
+
 /* Shared head of the emit entries: validate the capture state and run the
-   module-data walk exactly once (both entries may be called on one capture,
-   e.g. a .o alongside an executable). */
+   module-data walk. */
 static gen_ctx_t gen_obj_emit_prepare (MIR_context_t ctx, void **buf, size_t *size) {
   gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
 
@@ -9961,13 +10007,16 @@ static gen_ctx_t gen_obj_emit_prepare (MIR_context_t ctx, void **buf, size_t *si
   if (size != NULL) *size = 0;
   if (gen_ctx == NULL || !object_mode_p || gen_object == NULL || buf == NULL || size == NULL)
     return NULL;
-  if (!obj_data_emitted_p) {
-    for (MIR_module_t m = DLIST_HEAD (MIR_module_t, *MIR_get_module_list (ctx)); m != NULL;
-         m = DLIST_NEXT (MIR_module_t, m))
-      obj_emit_module_data (gen_ctx, m);
-    obj_data_emitted_p = TRUE;
-  }
+  gen_obj_run_data_walk (gen_ctx, ctx);
   return gen_ctx;
+}
+
+int MIR_gen_object_prepare (MIR_context_t ctx) {
+  gen_ctx_t gen_ctx = *gen_ctx_loc (ctx);
+
+  if (gen_ctx == NULL || !object_mode_p || gen_object == NULL) return -1;
+  gen_obj_run_data_walk (gen_ctx, ctx);
+  return 0;
 }
 
 struct MIR_object *MIR_gen_get_object (MIR_context_t ctx) {

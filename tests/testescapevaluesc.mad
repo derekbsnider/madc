@@ -1,0 +1,38 @@
+// C11 6.4.4.4 / 6.4.5: one escape decoder for every literal kind. madc had
+// three copies, which differed and were wrong in the same way:
+//   - `\x` stopped after two hex digits (6.4.4.4p7: every hex digit that
+//     follows), so L"\x1234" was THREE wide chars (0x12,'3','4') and "\x041"
+//     was "\x04" then '1';
+//   - a narrow literal kept a universal-character-name as its six spelled
+//     characters ("é" had strlen 6), where it is the UTF-8 encoding;
+//   - `\e` (the GNU escape for ESC, gcc and clang) stayed a backslash + 'e',
+//     and in an #if character constant it was 'e' (the #if copy).
+// Every value below exited 0 with the wrong bytes.
+// Oracle: gcc and clang print exactly the .expect lines.
+#include <stdio.h>
+#include <string.h>
+#include <wchar.h>
+int main(void)
+{
+	const wchar_t *w = L"\x1234";
+	printf("L-hex: len=%d unit=%x\n", (int)wcslen(w), (unsigned)w[0]);
+	const char *z = "\x041";
+	printf("lead-zero hex: len=%d byte=%d\n", (int)strlen(z), z[0]);
+	char c = '\x041';
+	printf("char hex: %d\n", c);
+	const char *u = "éx";
+	printf("ucn: len=%d %x %x %x\n", (int)strlen(u), (unsigned char)u[0],
+	       (unsigned char)u[1], (unsigned char)u[2]);
+	const char *big = "\U0001F600";
+	printf("ucn8: len=%d first=%x\n", (int)strlen(big), (unsigned char)big[0]);
+	const wchar_t *wu = L"é";
+	printf("L-ucn: len=%d unit=%x\n", (int)wcslen(wu), (unsigned)wu[0]);
+	const char *e = "\e";
+	printf("gnu esc: %d\n", e[0]);
+	const char *oct = "\101\0602";
+	printf("octal: %s\n", oct);
+#if '\e' == 27 && '\x041' == 65
+	printf("#if escapes: ok\n");
+#endif
+	return 0;
+}

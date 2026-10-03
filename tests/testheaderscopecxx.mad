@@ -1,0 +1,25 @@
+// [basic.scope.block]/1, [stmt.if]/3, [stmt.switch]/3: a name declared by a
+// selection statement's init-statement or condition belongs to THAT
+// statement's scope, so sibling statements may each declare it — with
+// different types. madc declared it in the enclosing block: same-block reuse
+// handed the second `c` the FIRST one's variable and type, and since the
+// redeclaration check (declare_object) it was refused as "redefinition of
+// 'c'" (testifinit regressed). The for-init and range-for element scopes
+// now open through the same StatementHeaderScope.
+// Oracle: g++ and clang++ print exactly the .expect lines.
+#include <stdio.h>
+int foo() { return 7; }
+int main()
+{
+	if ( int c = foo() ) printf("if-cond int c=%d\n", c);
+	if ( double c = 2.5 ) printf("if-cond double c=%g\n", c);
+	if ( int c = foo(); c > 5 ) printf("if-init int c=%d\n", c);
+	if ( const char *c = "seven"; c[0] == 's' ) printf("if-init str c=%s\n", c);
+	switch ( int s = foo(); s ) { case 7: printf("switch int s=%d\n", s); break; }
+	switch ( long s = 40000000000L; s > 0 ) { case 1: printf("switch long s=%ld\n", s); break; }
+	for ( int i = 0; i < 1; ++i ) printf("for int i=%d\n", i);
+	for ( double i = 0.5; i < 1; ++i ) printf("for double i=%g\n", i);
+	int c = 99;
+	printf("outer c=%d\n", c);
+	return 0;
+}

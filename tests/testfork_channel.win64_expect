@@ -1,0 +1,9 @@
+open: 0 madcfork: no fork on Windows
+reply1: 
+reply2: 
+parent counter: 41
+conn_send: sent=0 reply= unknown=0
+conn_cancel: ended=1
+after close: more=0
+crash: stderr-folded=0 ended, runs on
+bad: ok=0 madcfork: 'nothing' is not a function's address (madc::fork_uri spells it)

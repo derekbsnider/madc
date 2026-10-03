@@ -17,6 +17,11 @@
 # the C11 6.10.3.4p2 blue paint across a macro argument's pre-expansion, and
 # the over-eager hide of a macro during its own argument's expansion.
 #
+# SHRUNK 2026-10-02 (310 -> 314 of 364) by the designated-initializer cursor
+# (B139/B137): new/issue191-1.c .. issue191-4.c, compound literals whose
+# designator lists hold an index (`.data[1] = {42}`, `.bs[0].cs[0].x = 1`,
+# `.data[1].x = 1, {2}, .data[3] = {3}`).
+#
 # The `new/` failures are MIR's own regression tests and are the best
 # available reducers for the C constructs madc still cannot compile in
 # c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
@@ -26,8 +31,6 @@ lacc/declaration-default-int.c
 lacc/declarator-parens.c
 lacc/declare-auto-func.c
 lacc/function-incomplete.c
-lacc/function-pointer.c
-lacc/immediate-pointer.c
 lacc/include.c
 lacc/initialize-array.c
 lacc/initialize-object.c
@@ -54,14 +57,9 @@ new/cleanup-matrix.c
 new/cleanup-prefix-attr.c
 new/cleanup-return.c
 new/empty-asm.c
-new/enum_test.c
 new/int_min.c
 new/issue186-1.c
 new/issue189.c
-new/issue191-1.c
-new/issue191-2.c
-new/issue191-3.c
-new/issue191-4.c
 new/issue197.c
 new/issue198.c
 new/issue199.c

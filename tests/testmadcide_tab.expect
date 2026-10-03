@@ -1,0 +1,6 @@
+tab: [a\tb\n] caret=2 modified=1
+tab-readonly: [ab\n] caret=1 modified=0
+tabkey: editor=1
+tabkey: prompt=0
+tabkey: after-prompt=1
+tab-vinormal: [ab\n] caret=1 modified=0

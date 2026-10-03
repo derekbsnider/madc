@@ -1,0 +1,31 @@
+// A compound assignment (`+=` `-=` `*=` `/=` `%=` `<<=` `>>=` `&=` `|=` `^=`)
+// has its LEFT operand's type ([expr.ass]/1: an lvalue referring to the left
+// operand), exactly as `=` does; a class's operator@= keeps its declared
+// return. The ten compound operator classes declared no type of their own and
+// answered the operator default, int: `f(uc += 1)` picked f(int),
+// `sizeof(d *= 2)` was 4, `auto a = (l += 1)` deduced int, `f(p += 1)` bound
+// f(int) (a c2mir check error) and `*(p += 2)` was refused as a dereference
+// of a non-pointer.
+#include <cstdio>
+static const char *f(char) { return "char"; }
+static const char *f(unsigned char) { return "uchar"; }
+static const char *f(short) { return "short"; }
+static const char *f(int) { return "int"; }
+static const char *f(unsigned) { return "uint"; }
+static const char *f(long) { return "long"; }
+static const char *f(float) { return "float"; }
+static const char *f(double) { return "double"; }
+static const char *f(int *) { return "int*"; }
+struct V { int v; V &operator+=(int k) { v += k; return *this; } };
+static const char *f(V &) { return "V&"; }
+int main() {
+    unsigned char uc = 250; short s = 3; int i = 1; unsigned u = 5; long l = 2; float fl = 1.5f; double d = 2.0;
+    int arr[3] = {1, 2, 3}; int *p = arr; V vv{1};
+    std::printf("type: %s %s %s %s %s %s %s %s %s %s\n", f(uc += 1), f(s <<= 1), f(i -= 1), f(u ^= 1), f(l *= 2), f(fl /= 2), f(d *= 2), f(p += 1), f(i %= 5), f(vv += 1));
+    std::printf("size: %d %d %d %d\n", (int)sizeof(uc += 1), (int)sizeof(s |= 1), (int)sizeof(d -= 1), (int)sizeof(p -= 1));
+    auto a1 = (uc += 10); auto a2 = (l += 1); auto a3 = (d += 0.5);
+    std::printf("auto: %d %d %d %d %ld %.1f\n", (int)sizeof(a1), (int)sizeof(a2), (int)sizeof(a3), a1, a2, a3);
+    p = arr; int w = *(p += 2);
+    std::printf("val: %d %d %d\n", w, (int)(uc += 250), vv.v);
+    return 0;
+}

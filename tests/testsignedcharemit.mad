@@ -1,0 +1,13 @@
+// The emitted C spells signed char as `signed char`, never plain `char`: the
+// two are distinct types, and on an unsigned-char target (aarch64-linux)
+// plain char turns (signed char)200 into 200 instead of -56. madc's rawtype
+// folds them into one enum value; append_type_specs tells them apart by
+// identity (Program::proven_scalar_identity).
+int printf(const char *, ...);
+signed char g = -5;
+int main(void) {
+    char c = 'a'; signed char sc = -3; unsigned char uc = 200;
+    signed char *psc = &sc;
+    printf("val: %d %d %d %d %d\n", c, sc, uc, *psc, (int)(signed char)200);
+    return g + 5;
+}

@@ -1,0 +1,46 @@
+// C++: a template type argument's cv is part of the TYPE — `volatile int *`
+// and `int *` are distinct arguments (a partial specialization `same<T, T>`
+// tells them apart), `volatile int` selects `is_v<T volatile>` with T bound
+// to int (the pattern's qualifier is matched, not deduced — [temp.deduct.type]
+// /8), `rp<volatile int *>::type` keeps its volatile, and a class template's
+// `typedef T volatile type;` / `using type = T volatile;`, an alias template
+// `template <class T> using p_t = volatile T *;` and `using VI = volatile
+// int;` all carry it. The argument readers spelled the cv beside a type that
+// lacked it (`same<volatile int *, int *>` was 1), the class-pattern
+// normalizer refused a volatile level, the using-alias reader and the
+// alias-template body reader dropped a leading cv (an alias template whose
+// target began with `const` or `volatile` was refused outright).
+// Oracle: g++ and clang++ print testvolatiletemplateargcxx.expect.
+#include <stdio.h>
+
+template <class T, class U> struct same { enum { value = 0 }; };
+template <class T> struct same<T, T> { enum { value = 1 }; };
+template <class T> struct is_v { enum { value = 0 }; };
+template <class T> struct is_v<T volatile> { enum { value = 1 }; };
+template <class T> struct rp { typedef T type; };
+template <class T> struct rp<T *> { typedef T type; };
+template <class T> struct av { typedef T volatile type; typedef volatile T type2; };
+template <class T> struct au { using type = T volatile; using type2 = volatile T; };
+template <class T> using av_t = T volatile;
+template <class T> using avp_t = volatile T *;
+template <class T> using c_t = const T *;
+template <class T> struct W { T v; };
+using VI = volatile int;
+
+int main ()
+{
+  printf ("same: %d %d %d %d\n", (int) same<volatile int *, int *>::value,
+          (int) same<volatile int, int>::value, (int) same<int volatile, volatile int>::value,
+          (int) same<int *volatile, int *>::value);
+  printf ("isv: %d %d %d\n", (int) is_v<volatile int>::value, (int) is_v<int>::value,
+          (int) is_v<rp<volatile int *>::type>::value);
+  printf ("member: %d %d %d %d\n", (int) is_v<av<int>::type>::value, (int) is_v<av<int>::type2>::value,
+          (int) is_v<au<int>::type>::value, (int) is_v<au<int>::type2>::value);
+  printf ("alias: %d %d %d\n", (int) is_v<av_t<int> >::value,
+          (int) is_v<rp<avp_t<int> >::type>::value, (int) is_v<VI>::value);
+  int x = 4;
+  c_t<int> cp = &x;
+  W<volatile int> w = { 3 };
+  printf ("use: %d %d %d\n", *cp, w.v, (int) is_v<decltype (w.v)>::value);
+  return 0;
+}

@@ -1,0 +1,15 @@
+// C twin of testcompoundassigntype: an assignment expression, compound or
+// not, has the type of its left operand after lvalue conversion (C11
+// 6.5.16p3). madc typed every compound assignment int — `_Generic(d *= 2)`
+// selected int, sizeof(uc += 1) was 4 — and refused `*(p += 2)`.
+#include <stdio.h>
+#define T(x) _Generic((x), char: "char", unsigned char: "uchar", short: "short", int: "int", unsigned: "uint", long: "long", float: "float", double: "double", int *: "int*", default: "other")
+int main(void) {
+    unsigned char uc = 250; short s = 3; int i = 1; unsigned u = 5; long l = 2; float fl = 1.5f; double d = 2.0;
+    int arr[3] = {1, 2, 3}; int *p = arr;
+    printf("type: %s %s %s %s %s %s %s %s %s\n", T(uc += 1), T(s <<= 1), T(i -= 1), T(u ^= 1), T(l *= 2), T(fl /= 2), T(d *= 2), T(p += 1), T(i %= 5));
+    printf("size: %d %d %d %d\n", (int)sizeof(uc += 1), (int)sizeof(s |= 1), (int)sizeof(d -= 1), (int)sizeof(p -= 1));
+    p = arr; int w = *(p += 2);
+    printf("val: %d %d\n", w, (int)(uc += 250));
+    return 0;
+}

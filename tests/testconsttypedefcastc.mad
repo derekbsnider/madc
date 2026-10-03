@@ -1,0 +1,33 @@
+// C: a LEADING const in a typedef or a cast type-id qualifies the pointee (or
+// the typedef's own type), exactly as a declaration's does — `typedef const
+// char *ccp` is pointer-to-const-char, `typedef const int CI` is const int,
+// `(const char *)p` is a const char * value (C11 6.7.8, 6.5.4). madc minted
+// the declaration's pointee-const (consume_declarator_stars) but the typedef
+// and cast readers consumed their `const` and dropped it, so _Generic chose
+// `char *` and __builtin_types_compatible_p said 0. Oracle: gcc and clang
+// print the lines of testconsttypedefcastc.expect.
+#include <stdio.h>
+#define P(x) _Generic ((x), char *: "char*", const char *: "cchar*", int *: "int*", const int *: "cint*", const char **: "ccharpp", char **: "charpp", default: "other")
+#define Q(x) _Generic ((x), struct T *: "T*", const struct T *: "cT*", default: "other")
+struct T { int a; };
+typedef const char *ccp;
+typedef char const *ccp2;
+typedef const int CI;
+typedef int const CI2;
+typedef const char *const cpc;
+typedef const char *L1, **L2;
+typedef const struct T *CTP;
+typedef const struct U { int b; } *CUP;
+typedef const struct T CT;
+int main (void) {
+  char arr[4] = "abc"; int i = 3; void *vp = arr; struct T t = {1}; struct U u = {2};
+  ccp a = arr; ccp2 b = arr; CI *c = &i; cpc d = arr; ccp *e = &a; CI2 *f = &i; L1 g = arr; L2 h = &g;
+  CTP p = &t; CUP q = &u; CT *r = &t; CI k = 9;
+  printf ("td: %s %s %s %s %s %s %s %s\n", P (a), P (b), P (c), P (d), P (e), P (f), P (g), P (h));
+  printf ("tag: %s %s %s\n", Q (p), Q (r), _Generic (q, struct U *: "U*", const struct U *: "cU*", default: "other"));
+  printf ("cast: %s %s %s %s %s\n", P ((const char *) arr), P ((ccp) vp), P ((char const *) vp), P ((const int *) vp), P ((char *) a));
+  printf ("compat: %d %d %d\n", __builtin_types_compatible_p (__typeof__ ((const char *) vp), const char *),
+          __builtin_types_compatible_p (ccp, const char *), __builtin_types_compatible_p (ccp, char *));
+  printf ("val: %d %d %d %d %d %c %d\n", p->a, q->b, r->a, *c + *f, k, a[1], (int) sizeof (CT));
+  return 0;
+}

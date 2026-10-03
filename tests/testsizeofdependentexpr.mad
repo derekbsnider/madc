@@ -1,0 +1,35 @@
+// sizeof and alignof of an EXPRESSION whose type depends on a member
+// function template's parameter, in its parse-once (tsubst) body: a
+// parameter, a local (with and without parentheses), an array of it and
+// its element, a dereference, a reference, and an object whose declaration
+// requests an alignment (the larger of the two). The class template's own
+// parameter is the neighbour.
+// Oracle: g++ 13 and clang++ 18 print the lines below.
+#include <cstdio>
+#include <cstddef>
+#include <cstdint>
+
+struct alignas(16) W { char c; char d[20]; };
+
+template<class U> struct Box
+{
+	U u;
+	template<class V> std::size_t pv(V v) { return sizeof(v) + 100 * alignof(v); }
+	template<class V> std::size_t lv() { V x; (void)x; return sizeof(x) + 100 * __alignof__(x); }
+	template<class V> std::size_t np() { V x; (void)x; return sizeof x; }
+	template<class V> std::size_t ar() { V a[3]; (void)a; return sizeof(a) + 1000 * sizeof(a[0]); }
+	template<class V> std::size_t pt(V *p) { return sizeof(*p) + 1000 * sizeof(p); }
+	template<class V> std::size_t rf(V &r) { return sizeof(r) + 100 * alignof(r); }
+	template<class V> std::size_t cu() { return sizeof(u) + 100 * alignof(u); }
+	template<class V> std::size_t fl() { char k = 1; alignas(8) V x; x = 0; return alignof(x) + 100 * ((std::uintptr_t)&x % 8) + k - 1 + x; }
+};
+
+int main()
+{
+	Box<char> b;
+	W w{};
+	std::printf("de: %zu %zu %zu %zu %zu %zu %zu\n", b.pv(w), b.lv<W>(), b.np<W>(), b.ar<W>(), b.pt(&w), b.rf(w), b.cu<W>());
+	std::printf("dn: %zu %zu %zu\n", b.pv(1.0), b.lv<short>(), b.ar<int>());
+	std::printf("df: %zu %zu\n", b.fl<char>(), b.fl<short>());
+	return 0;
+}

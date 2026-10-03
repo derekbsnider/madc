@@ -1,0 +1,49 @@
+// An address use of a constant-folded `const int` OBJECT designates the
+// object ([conv.lval]/1: `&` and a reference binding apply no lvalue-to-rvalue
+// conversion; [dcl.init.ref]/5.1: an lvalue of the referent's type binds
+// directly): a reference parameter (a local, a namespace-scope and a static
+// const, a constexpr, std::max's and vector::push_back's `const T &`), the
+// conditional of two such lvalues, an aggregate's reference member, and both
+// lambda captures. The callee's `&r` is the object's address. A prvalue
+// argument (`cx + G`, an enumerator) still materializes a temporary.
+// madc folded the read to its baked literal before taking its address, and
+// c2mir refused `&2` (`lvalue required as unary & operand`), exit 1 — every
+// line but expr / rref / unary / enum (B129).
+// Oracle: g++ 13.3 and clang++ 18.1 (-std=c++17 -Wall, warning-free) print the
+// .expect lines.
+#include <cstdio>
+#include <algorithm>
+#include <vector>
+static int h(const int &r) { return r; }
+static const int *addr(const int &r) { return &r; }
+const int G = 40;
+constexpr int CE = 9;
+enum { EV = 5 };
+struct R { const int &r; };
+int main()
+{
+	const int cx = 2;
+	int y = 1;
+	static const int S = 7;
+	const int &rr = cx;
+	std::vector<int> v;
+	v.push_back(cx);
+	v.push_back(G);
+	const int *p = &cx;
+	R s = { cx };
+	printf("local: %d %d\n", h(cx), (int)(addr(cx) == &cx));
+	printf("rref: %d %d\n", rr, (int)(&rr == &cx));
+	printf("global: %d %d\n", h(G), (int)(addr(G) == &G));
+	printf("max: %d %d\n", std::max(cx, y), std::max(G, y));
+	printf("vec: %d %d\n", v[0], v[1]);
+	printf("expr: %d\n", h(cx + G));
+	printf("unary: %d %d\n", *p, (int)(p == &cx));
+	printf("cond: %d %d\n", h(y ? cx : G), (int)(addr(y ? cx : G) == &cx));
+	printf("member: %d %d\n", s.r, (int)(&s.r == &cx));
+	printf("static: %d %d\n", h(S), (int)(addr(S) == &S));
+	printf("constexpr: %d %d\n", h(CE), (int)(addr(CE) == &CE));
+	printf("enum: %d\n", h(EV));
+	printf("byref: %d\n", [&] { return (int)(addr(cx) == &cx) + h(cx); }());
+	printf("byval: %d\n", [=] { return h(cx); }());
+	return 0;
+}
