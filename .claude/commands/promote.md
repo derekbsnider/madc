@@ -46,12 +46,12 @@ counts the assets:
    the promotion candidate — the master pre-push hook runs the same check —
    which requires the develop push-gated lanes (linux battery, wine64,
    c-testsuite, the `macos` cross BUILD) AND the release tier:
-   - `libcxx` — `scripts/remote_build.sh libcxx` (jit + exe + obj under
-     `-stdlib=libc++`, macOS's library on linux hardware);
    - `darwin-suite` — `gh workflow run darwin-probe.yml -R derekbsnider/madc
      --ref <candidate> -f suite_gate=true`, the FULL suite on both mac
-     runner arches, green on both (a failing test is fixed or carries a
-     `.darwin_skip` stating why it is out of the domain);
+     runner arches on the -O2 packed macOS binary, green on both (a failing
+     test is fixed or carries a `.darwin_skip` stating why it is out of the
+     domain). It is THE libc++ lane: one stdlib flavor per platform, and
+     macOS's is libc++ (owner 2026-10-03);
    - `genuine-win` — the owner-hardware Windows run.
    Record each green with `scripts/lane_ledger.sh record <lane> <tally>` at
    the candidate. A stale or red row blocks; fix on develop and move the

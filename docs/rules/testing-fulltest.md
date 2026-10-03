@@ -97,11 +97,50 @@ complement mode), so the two runs together cover the suite once. exe + obj
 stay a FULL run — they are the lane that sees emission and runtime-linking
 defects — but on the packed binary, where compile time no longer dominates
 (a 28-test subset: 5 s packed vs 16 s dev). The order is cheapest-first, so a
-red stage is seen in minutes. The -O0 dev binary keeps the per-fix and
-per-batch tiers, where its incremental build is the point.
+red stage is seen in minutes. The -O0 dev binary keeps the per-fix tiers
+(Tier 1 and Tier 2), where its incremental build is the point.
 
-`make -C src fulltest` still exists (gates + the suite on the dev binary) for
-a local all-in-one run; `make -C src gates` is the seam's gate stage.
+`make -C src fulltest` still exists (gates, then the suite on the -O2
+`madc-release`) for a local all-in-one run; `make -C src gates` is the seam's
+gate stage.
+
+## Why every full suite runs the -O2 build, one runner pass per lane (owner, 2026-10-03)
+
+- The per-batch checkpoint kept the -O0 dev binary for its incremental build:
+  1918 tests in 693 s. One C++ test (`testconstfoldrefparam`, `<vector>`)
+  measured 0.50 s on the dev binary and 0.17 s on `madc-release`, identical
+  output, interleaved — about 3x.
+- `run_tests.sh` runs the JIT pass first on EVERY invocation; `--exe` and
+  `--obj` add their native pass on top. The `libcxx` stage invoked it three
+  times (plain, `--exe`, `--obj`), so the JIT suite ran three times; the
+  `tests-all`, `exe` and `obj` stages had the same shape. One `--exe --obj`
+  invocation gives the same coverage.
+- Together with libc++ headers parsed live (about 5.5x a libstdc++ test, no
+  libc++ pack on Linux) the linux libc++ lane took over two hours for
+  coverage the darwin suite already gives on the packed macOS binary
+  (`branching.md`).
+- The lanes accumulated one at a time, each for a reason, and none was
+  retired when a later lane covered it. The inventory below is the check:
+  a lane with nothing in its last column goes.
+
+## Lane inventory (2026-10-03)
+
+| lane | binary | stdlib | passes | platform | covers that no other lane does |
+|---|---|---|---|---|---|
+| Tier 1 `fix_lanes.sh` / `tests-all` | -O0 dev | libstdc++ | JIT + EXE + OBJ, targeted | Linux | the change, before a commit |
+| Tier 2 `fast_lanes.sh` | -O0 dev | libstdc++ | six conformance corpora | Linux | third-party C / C++ conformance ratchets |
+| `tests-jit` (batch) | -O2 release | libstdc++ | JIT, full suite | Linux, headers on disk | a batch of fixes between seams |
+| `linux-battery` (seam) | -O2 packed | libstdc++ | gates; JIT headerless + ondisk complement; EXE + OBJ | Linux | the shipped artifact, forest declines, native artifacts |
+| `headerless-win` / `wine64` (seam) | -O2 packed PE | libstdc++ | JIT headerless + ondisk-win | Linux under wine | the win64 artifact (one run, two ledger rows) |
+| `macos`, `aarch64-ld` (seam) | cross builds | — | build + verify; aarch64 long double under qemu | Linux | the Mach-O release; aarch64 long double |
+| `darwin-suite` (release) | -O2 packed macOS | libc++ | JIT full suite + advisory EXE | macOS arm64 + x86-64 | macOS, libc++, AArch64 |
+| `genuine-win` (release) | -O2 packed PE | libstdc++ | JIT full suite | Windows 11 | native Windows (PE loader, UCRT) |
+| `brew-linux` (release) | Homebrew-built bottle | libstdc++ | bottle, pour, `brew test`, JIT full suite | Linux | the Homebrew install layout and runpath |
+
+Open questions for the owner, not changed here: `brew-linux` runs the full
+suite where its unique coverage is the install (a subset would cover it);
+`darwin-suite`'s EXE pass is advisory with ~310 expected Tier B failures; the
+`wine64` row duplicates `headerless-win`'s tally.
 
 ## Why native-EXE work needs an explicit second lane
 

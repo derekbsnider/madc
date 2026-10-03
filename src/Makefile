@@ -1236,8 +1236,10 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/forest_dm_oracle.sh
 	@cd .. && timeout 1500 bash scripts/win_posix_archive_gate.sh
 
-fulltest: gates
-	@cd .. && bash scripts/run_tests.sh
+# The suite runs the -O2 madc-release (owner 2026-10-03: full suites run the
+# -O2 build); the gates keep the dev binary they test.
+fulltest: gates release
+	@cd .. && MADC_BIN=bin/madc-release bash scripts/run_tests.sh
 
 # CIR renderer fidelity gate over the whole corpus (diagnostic; localizes
 # missing renderer constructs and gcc-vs-emitted asm divergences).

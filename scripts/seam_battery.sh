@@ -7,8 +7,8 @@
 #
 # Owner 2026-10-02: the full tests/ suite runs ONE way at the seam — on the
 # shipped artifact, the -O2 packed madc-release, headerless — and the other
-# axes ride that same binary on smaller runs. The -O0 dev binary no longer
-# runs the full suite here (it stays the per-fix Tier 1/2 and per-batch
+# axes ride that same binary on smaller runs. The -O0 dev binary runs no
+# full suite anywhere (owner 2026-10-03; it stays the per-fix Tier 1/2
 # binary, where incremental builds matter). The order is cheapest-first, so
 # a red stage costs minutes, not the whole battery:
 #

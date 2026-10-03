@@ -1,6 +1,8 @@
 #!/bin/bash
 # batch_lane.sh — the BATCH tier: the whole tests/ suite, JIT only, once per
-# BATCH of fixes, never per fix (owner 2026-09-28).
+# BATCH of fixes, never per fix (owner 2026-09-28), on the -O2 madc-release
+# (owner 2026-10-03: full suites run the -O2 build — about 3x the dev
+# binary's speed on a C++ test).
 #
 # The fast tier (scripts/fast_lanes.sh) runs per commit but has no lane over
 # tests/*.mad; the seam battery (fulltest) is the only other run of it. A
@@ -13,18 +15,20 @@
 # `lane_ledger.sh check` prints a BATCH reminder while that row is stale; it
 # never blocks a commit (the batch, not the fix, is the unit).
 #
-#   MADC_BIN                 binary under test (default bin/madc)
+#   MADC_BIN                 binary under test (default bin/madc-release;
+#                            build it with make -C src release)
 #   MADC_BATCH_NO_RECORD=1   run and report, do not touch the ledger (the
 #                            remote_build.sh `batch` stage: a row written on
 #                            the rsync copy gates nothing)
 set -u
 cd "$(dirname "$0")/.."
 
-BIN="${MADC_BIN:-bin/madc}"
+BIN="${MADC_BIN:-bin/madc-release}"
 if [ ! -x "$BIN" ]; then
-	echo "batch_lane: $BIN missing — build first" >&2
+	echo "batch_lane: $BIN missing — make -C src release first" >&2
 	exit 1
 fi
+export MADC_BIN="$BIN"
 
 mkdir -p tmp/logs
 log=tmp/logs/batch-tests-jit-$(date +%Y%m%d-%H%M%S).log

@@ -14,8 +14,9 @@ and produces exactly the oscillation this rule exists to stop.
           recorded baselines, it records each green lane in the ledger, and
           `scripts/lane_ledger.sh check --commit` reports its freshness.
           BATCH CHECKPOINT, per BATCH of fixes, never per fix (owner
-          2026-09-28) — ~10 minutes: `bash scripts/batch_lane.sh` (the whole
-          tests/ suite, JIT only; remote: `remote_build.sh sync build batch`,
+          2026-09-28): `bash scripts/batch_lane.sh` (the whole tests/ suite,
+          JIT only, on the -O2 madc-release; remote: `remote_build.sh sync
+          build batch`, which builds it first,
           then record its tests-jit tally). Run it before reporting a batch
           done, before a push, and before moving to another area. Ledger row
           `tests-jit` (promote=batch): never blocks, `check` reminds while stale.
@@ -28,6 +29,14 @@ and produces exactly the oscillation this rule exists to stop.
           subsets (`ondisk`, `ondisk-win`), then `exeobj` (--exe --obj on the
           packed binary), then the macOS build and aarch64 (owner 2026-10-02).
           The -O0 dev binary never runs the full suite at the seam.
+
+EVERY FULL SUITE RUNS THE -O2 BUILD (owner 2026-10-03): the batch, the seam,
+`make -C src fulltest`, every platform lane. The -O0 dev binary is the Tier 1
+and Tier 2 binary only. A lane makes ONE runner pass: `run_tests.sh --exe
+--obj` runs the JIT pass once — never a plain run plus `--exe` plus `--obj`,
+which repeats it three times. A lane whose coverage another lane already
+gives is retired, not kept (the lane inventory in
+`docs/rules/testing-fulltest.md`).
 
   PER FIX = ONE command, Tier 1 + Tier 2: `scripts/fix_lanes.sh <globs>`
           (remote: `TESTS='<globs>' remote_build.sh sync build fix`). Never

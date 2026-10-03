@@ -33,21 +33,13 @@
 #             ...' (JIT + exe + obj), then Tier 2 (fast_lanes.sh). ~5 minutes;
 #             the ONE command a fix runs. No-record, as for fastlanes
 #   batch     the BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
-#             JIT only, once per batch of fixes; MADC_BATCH_NO_RECORD=1, so
-#             record its printed tests-jit tally HERE, as for fastlanes
-#   exe       bash scripts/run_tests.sh --exe
-#   obj       bash scripts/run_tests.sh --obj  (single-object loader lane)
-#   libcxx    the whole suite under -stdlib=libc++, JIT + exe + obj (the
-#             stdlib-flavor PARITY lane; .libcxx_skip marks out-of-scope tests)
-#   libcxxjit the lane's JIT leg only — the per-batch checkpoint during lane
-#             burndown (owner 2026-08-05: don't run half a dozen full suites
-#             per change); EXE/OBJ legs run at session end / pre-merge
+#             JIT only, on the -O2 madc-release, once per batch of fixes;
+#             MADC_BATCH_NO_RECORD=1, so record its printed tests-jit tally
+#             HERE, as for fastlanes
 #   release   make -C src release
-#   packed    MADC_BIN=bin/madc-release bash scripts/run_tests.sh
 #   headerless-win  the win64 profile of the lane below (the shipped PE under
 #             wine with every include root masked, so Z: cannot stand in for
-#             the mingw headers). Run it with `wine`, as `headerless` runs
-#             with `packed`
+#             the mingw headers). Run it with `wine`
 #   headerless the packed suite with NO headers on disk (private mount
 #             namespace, tmpfs over every system include root). The only lane
 #             that can SEE a forest decline — every other lane has the headers
@@ -129,10 +121,9 @@ if [ -z "$stages" ]; then
 	stages="sync build"
 fi
 # battery expands IN PLACE (any position — other stages may surround it,
-# e.g. "sync battery libcxxjit"; the old whole-string match silently dropped
+# e.g. "sync battery gui"; the old whole-string match silently dropped
 # it to "unknown stage" and the run lost its fulltest leg, 2026-08-10).
-# `headerless` is IN the battery, right after `packed` (it runs the packed
-# binary). It is the only lane that can observe the artifact failing to serve a
+# `headerless` is IN the battery (it runs the packed binary). It is the only lane that can observe the artifact failing to serve a
 # standard header from its own frozen corpus — every other lane has the headers
 # on disk, so a decline is silently rescued by live parse and the run stays
 # GREEN. Task #58 broke that promise on real Windows and unrelated work fixed it
@@ -142,8 +133,10 @@ fi
 # shipped -O2 packed artifact, headerless — and the on-disk include path and
 # the native-artifact lanes ride the same binary (ondisk = the headerless-
 # skipped subset; exeobj = --exe --obj). The gates run first, without the
-# suite; the -O0 dev binary's full-suite runs (fulltest, exe, obj, packed) are
-# no longer seam stages. scripts/seam_battery.sh adds the platform lanes.
+# suite. scripts/seam_battery.sh adds the platform lanes. Owner 2026-10-03:
+# no full suite runs the -O0 dev binary, and a lane makes ONE runner pass
+# (--exe --obj, never plain + --exe + --obj, each repeating the JIT pass) —
+# the old exe, obj, packed, libcxx and libcxxjit stages are gone.
 stages=${stages/battery/sync build release gates headerless ondisk exeobj}
 case " $stages " in
 	*" shell "*) echo "ssh -p $PORT $REMOTE"; exit 0;;
@@ -327,9 +320,14 @@ for stage in $stages; do
 		;;
 	batch)
 		# The BATCH tier (scripts/batch_lane.sh): the whole tests/ suite,
-		# JIT only, once per batch of fixes. No-record for the fastlanes
-		# reason; record tests-jit on the NAS from its summary line.
-		run_remote "batch" "cd $REMOTE_MADC; MADC_BATCH_NO_RECORD=1 bash scripts/batch_lane.sh"
+		# JIT only, once per batch of fixes, on the -O2 madc-release (owner
+		# 2026-10-03: full suites run the -O2 build). Build what the lane
+		# VALIDATES: make is idempotent, so the Makefile decides freshness
+		# rather than the caller remembering `release` earlier in the stage
+		# list (`headerless-win` once validated an EIGHT-HOUR-OLD PE). No-record
+		# for the fastlanes reason; record tests-jit on the NAS from its
+		# summary line.
+		run_remote "batch" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release MADC_BATCH_NO_RECORD=1 bash scripts/batch_lane.sh"
 		;;
 	tests)
 		# TARGETED subset — the inner loop. TESTS holds basename globs.
@@ -345,36 +343,14 @@ for stage in $stages; do
 	tests-all)
 		# The same subset across every execution lane (JIT + exe + obj) —
 		# the targeted equivalent of the battery, for the surface touched.
+		# ONE runner pass: --exe --obj runs the JIT pass once, then both
+		# native passes.
 		if [ -z "$TESTS" ]; then
 			echo "stage 'tests-all' needs TESTS='<glob> [glob...]'" >&2
 			note_stage "tests-all" 1
 		else
-			run_remote "tests jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh $TESTS"
-			run_remote "tests exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --exe $TESTS"
-			run_remote "tests obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --obj $TESTS"
+			run_remote "tests-all" "cd $REMOTE_MADC; bash scripts/run_tests.sh --exe --obj $TESTS"
 		fi
-		;;
-	exe)
-		run_remote "exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --exe"
-		;;
-	obj)
-		run_remote "obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --obj"
-		;;
-	libcxx)
-		# The PARITY lane: the whole suite under the alternate stdlib
-		# flavor, in all three execution lanes. This is how "libc++
-		# behaves like the default flavor" is MEASURED — a flavor-specific
-		# fixture proves only that one fixture works. Out-of-scope tests
-		# carry tests/<base>.libcxx_skip with a reason.
-		run_remote "libcxx jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++"
-		run_remote "libcxx exe" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++ --exe"
-		run_remote "libcxx obj" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++ --obj"
-		;;
-	libcxxjit)
-		# JIT leg only — the per-batch lane checkpoint; the EXE/OBJ legs
-		# move to session end / pre-merge (they are ~2/3 of the lane's
-		# wall time and rarely flip for front-end work).
-		run_remote "libcxx jit" "cd $REMOTE_MADC; bash scripts/run_tests.sh --stdlib=libc++"
 		;;
 	release)
 		run_remote "release" "make -C $REMOTE_MADC/src -j20 release"
@@ -394,16 +370,6 @@ for stage in $stages; do
 		echo "pull macos tarballs rc=$rc"
 		note_stage "pull macos tarballs" "$rc"
 		;;
-	packed)
-		# Build what this lane VALIDATES. Every artifact lane below does
-		# the same: make is idempotent (a no-op when up to date), so the
-		# Makefile's dependencies decide freshness instead of the caller
-		# remembering to put `release` earlier in the stage list. Ordering
-		# is not a guarantee — `headerless-win` validated an EIGHT-HOUR-OLD
-		# madc-release-x86-64-windows.exe and reported 1010/1, a failure
-		# that belonged to a binary the fix under test was never built into.
-		run_remote "packed" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; MADC_BIN=bin/madc-release bash scripts/run_tests.sh"
-		;;
 	headerless)
 		run_remote "headerless" "make -C $REMOTE_MADC/src -j20 release; cd $REMOTE_MADC; bash scripts/headerless_suite.sh"
 		;;
@@ -411,7 +377,6 @@ for stage in $stages; do
 		# The win64 profile of the same lane: the shipped PE under wine
 		# with every include root masked, so `Z:` cannot stand in for the
 		# mingw headers the artifact is supposed to be serving itself.
-		# Paired with `wine` the way `headerless` is paired with `packed`.
 		# The profile is an ENV knob; a positional argument is a
 		# run_tests.sh test FILTER. `headerless_suite.sh win64` ran the
 		# NATIVE profile filtered to 0 of 1063 tests and exited 0.
