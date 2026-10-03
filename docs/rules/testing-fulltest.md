@@ -132,6 +132,7 @@ gate stage.
 | `tests-jit` (batch) | -O2 release | libstdc++ | JIT, full suite | Linux, headers on disk | a batch of fixes between seams |
 | `linux-battery` (seam) | -O2 packed | libstdc++ | gates; JIT headerless + ondisk complement; EXE + OBJ | Linux | the shipped artifact, forest declines, native artifacts |
 | `headerless-win` / `wine64` (seam) | -O2 packed PE | libstdc++ | JIT headerless + ondisk-win | Linux under wine | the win64 artifact (one run, two ledger rows) |
+| `package-win` (seam) | -O2 packed PE | libstdc++ | madcide.exe AOT + shipped plugins + zip + install gate | Linux under wine | the Windows packager, which no other lane runs before release.yml (it first failed there at v0.101.0: a plugin built by an exe away from `libmadc-0.dll`) |
 | `macos`, `aarch64-ld` (seam) | cross builds | — | build + verify; aarch64 long double under qemu | Linux | the Mach-O release; aarch64 long double |
 | `darwin-suite` (release) | -O2 packed macOS | libc++ | JIT full suite + advisory EXE | macOS arm64 + x86-64 | macOS, libc++, AArch64 |
 | `genuine-win` (release) | -O2 packed PE | libstdc++ | JIT full suite | Windows 11 | native Windows (PE loader, UCRT) |

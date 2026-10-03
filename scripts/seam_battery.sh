@@ -18,6 +18,8 @@
 #   2  headerless the FULL suite, Linux packed binary, no headers on disk
 #      ondisk     the headerless-skipped tests, same binary, headers on disk
 #   3  headerless-win / ondisk-win   the win64 twins (packed PE under wine)
+#      package-win  the Windows zip from that PE + its install gate (the
+#                   Linux packager clean-rebuilds the tree twice: release.yml's)
 #   4  exeobj     the FULL suite as native executables and objects (--exe
 #                 --obj), on the packed binary — the longest stage, last
 #   5  macos      release-macos (both arches; its pack step is the darwin
@@ -44,7 +46,7 @@ stage() {	# stage <label> <remote_build stage...>
 	echo "=== $label ($(date -u +%H:%M:%SZ)) ==="
 	bash scripts/remote_build.sh "$@" > "tmp/logs/seam-$label.log" 2>&1
 	local rc=$?
-	grep -E '^[0-9]+ passed, |^EXE: |^OBJ: |^FAIL|^RED|headerless_suite: (COMPLEMENT|VACUOUS|CONTROL)' \
+	grep -E '^[0-9]+ passed, |^EXE: |^OBJ: |^FAIL|^RED|headerless_suite: (COMPLEMENT|VACUOUS|CONTROL)|package_install_gate: (PASS|FAIL)|did not build' \
 		"tmp/logs/seam-$label.log" | tail -12
 	echo "$label rc=$rc"
 	note "$label" "$rc"
@@ -76,6 +78,7 @@ stage ondisk ondisk
 # --- 3. the win64 twins ------------------------------------------------------
 stage headerless-win headerless-win
 stage ondisk-win ondisk-win
+stage package-win package-win
 
 # --- 4. native artifacts on the shipped binary (longest) ---------------------
 stage exeobj exeobj

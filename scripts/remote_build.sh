@@ -53,6 +53,10 @@
 #             and a gcc-built aarch64 c2m JIT, all under qemu-aarch64)
 #   release-win  make -C src release-windows — the stripped, forest-packed PE
 #             that headerless-win runs and the Windows zip ships
+#   package-win  make -C src release-windows, then package_release_windows.sh:
+#             madcide.exe AOT under wine, the shipped plugins built by the
+#             STAGED madcide.exe, the zip, and its install gate (PK4). The
+#             only run of the Windows packager outside release.yml
 #   wine      the Win64 DOMAIN suite under a PERSISTENT wineserver. Every
 #             parameter is load-bearing — see the stage body; without the
 #             persistent server a first run yields rotating phantom failures
@@ -391,6 +395,13 @@ for stage in $stages; do
 		# consume. It had no stage of its own, so the only way to refresh
 		# it was to remember the make target.
 		run_remote "release-win" "make -C $REMOTE_MADC/src -j20 release-windows"
+		;;
+	package-win)
+		# The Windows packager had no lane: a plugin built by an exe away
+		# from libmadc-0.dll (wine rc 53, no output) first failed in
+		# release.yml at the v0.101.0 tag. Unlike package_release.sh it
+		# rebuilds nothing, so it rides the seam beside the win64 twins.
+		run_remote "package-win" "make -C $REMOTE_MADC/src -j20 release-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p; bash scripts/package_release_windows.sh"
 		;;
 	win)
 		# The hosted MinGW+UCRT PE. Named for its make target so there is
