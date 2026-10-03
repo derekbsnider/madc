@@ -83,9 +83,27 @@ longer measures the right thing:
 - The mechanism: a second check mode. `check --promote` (the develop push)
   gates `promote=yes` rows; `check --release` (the master push and /promote)
   gates `yes` AND `release` rows. The release tier holds the platform suites
-  whose cost or hardware keep them off every develop push: `libcxx`,
+  whose cost or hardware keep them off every develop push:
   `darwin-suite` (darwin-probe with `suite_gate=true`, both arches),
-  `genuine-win`. An unrecorded row (`none`) is stale by definition, so master
+  `genuine-win`. (`libcxx`, the libc++ flavor run on linux hardware, was in
+  this tier until 2026-10-03.)
+
+## Why the libc++ lane is the darwin suite (owner 2026-10-03)
+
+- Each platform has one stdlib flavor and each packed binary freezes one:
+  Linux and Windows libstdc++, macOS libc++. A binary packing both was ruled
+  out.
+- The linux `libcxx` lane ran the -O0 dev binary with no libc++ pack, so
+  every C++ test parsed the libc++ headers live — about 5.5x its libstdc++
+  time on one `<vector>` test — and it invoked the runner three times (plain,
+  `--exe`, `--obj`), each repeating the JIT pass: over two hours for
+  coverage the darwin suite already gives.
+- darwin-probe runs the FULL suite with `MADC_BIN=bin/madc-release-<arch>-macos`
+  — the shipped -O2 libc++ packed binary — and `MADC_SKIP_EXT` includes
+  `libcxx`, so every `.libcxx_skip` fixture applies there. That is the
+  libc++ configuration users run.
+- `-stdlib=libc++` on Linux stays a supported flag, gated by
+  `scripts/libcxx_gate.sh` in fulltest. An unrecorded row (`none`) is stale by definition, so master
   is blocked until each has run green on the candidate. The selftest carries
   the third negative control: a stale release-tier row must pass `--promote`
   and block `--release`.

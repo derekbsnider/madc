@@ -1,0 +1,5 @@
+running: true
+restart: true prompt=true
+fresh session: ok=true
+close: true
+done

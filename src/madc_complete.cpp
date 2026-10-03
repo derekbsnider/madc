@@ -268,7 +268,9 @@ public:
 	out.assign(names.begin(), names.end());
     }
 private:
-    const std::string &word;
+    // The rule's own copy: a caller may build it from a temporary
+    // (session_bindings' empty word), which a reference would outlive.
+    const std::string word;
     const bool reserved_word;
     std::set<std::string> names;
 };

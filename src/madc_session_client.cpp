@@ -298,7 +298,7 @@ SessionClient::Reply::Reply()
 }
 
 SessionClient::SessionClient()
-    : fd(-1), output_done(false), next_seq(1), inherit_stdio(false)
+    : fd(-1), output_done(false), next_seq(1), answered_seq(0), inherit_stdio(false)
 {
 }
 
@@ -315,6 +315,12 @@ SessionClient::~SessionClient()
 bool SessionClient::running() const
 {
     return fd >= 0;
+}
+
+// The backend answers its requests in order, one reply each.
+bool SessionClient::busy() const
+{
+    return fd >= 0 && answered_seq + 1 < next_seq;
 }
 
 #ifndef _WIN32
@@ -368,6 +374,7 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
     inbuf.clear();
     output_done = false;
     next_seq = 1;
+    answered_seq = 0;
     // The backend's first line says whether its session began.
     Reply hello;
     std::string output;
@@ -418,6 +425,7 @@ void SessionClient::release_waiters() const
 
 void SessionClient::stop()
 {
+    const bool computing = busy();
     release_waiters();
     if ( fd >= 0 )
     {
@@ -426,6 +434,10 @@ void SessionClient::stop()
     }
     if ( process )
     {
+	// A busy backend never reaches that read (an endless entry, Stop's
+	// case): it is terminated now, not after the grace.
+	if ( computing )
+	    process->terminate();
 	process->wait_or_kill(2000);
 	process.reset();
     }
@@ -676,6 +688,8 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
     if ( j.is_discarded() || !j.is_object() )
 	return 0;
     reply.seq = j.value("seq", 0u);
+    if ( op != Op::running && op != Op::unknown && reply.seq > answered_seq )
+	answered_seq = reply.seq;
     reply.rendered = j.value("rendered", std::string());
     reply.ok = j.value("ok", false);
     // A taken entry's, a load's and a run's reply carry their rows.

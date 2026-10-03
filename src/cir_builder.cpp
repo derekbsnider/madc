@@ -5264,10 +5264,36 @@ void CirBuilder::native_func_shape(FuncDef *fd, bool &ret_ptr,
 	if (ret_specs.empty())
 		ret_ptr = false;
 	if (!fd) return;
+	// A by-value non-trivial class return (function_retbuf_class, the one
+	// ABI decision): a void function taking the hidden result address
+	// first, marked ret_addr so the TARGET places it — the shape every
+	// call lane passes.
+	if (DataDefCLASS *retc = function_retbuf_class(fd)) {
+		ret_ptr = false;
+		ret_specs.clear();
+		params.push_back({ {}, true, retc, true });
+	}
 	for (size_t i = 0; i < fd->parameters.size(); i++) {
 		bool refp = fd->is_ref_param(i);
 		params.push_back(native_param_shape(fd->parameters[i], refp));
 	}
+}
+
+// The two external bindings no prototype pass reaches: an Itanium export
+// (`_Z…`, the storage alias a declaration-only C++ function binds — _Znwm and
+// the other <new> allocation operators, #92) and a registered row's runtime
+// entry (emit_symbol — the carrier's free operator rows, D28).
+void CirBuilder::declare_bound_callee(FuncDef *cdf, const std::string &sym)
+{
+	if (!cdf || !cdf->declaration_only || sym.empty())
+		return;
+	if (sym != cdf->emit_symbol && sym.compare(0, 2, "_Z") != 0)
+		return;
+	bool ret_ptr = false;
+	std::vector<c2mir_node_code_t> ret_specs;
+	std::vector<ExternParam> params;
+	native_func_shape(cdf, ret_ptr, ret_specs, params);
+	need_output_extern(sym.c_str(), ret_ptr, params, ret_specs);
 }
 
 // The cv of a type's qualifier mask in the emitted tree: every modeled bit
@@ -8557,6 +8583,7 @@ node_t CirBuilder::object_call_temp(TokenBase *call_tok, DataDefCLASS *cdd,
 		FuncDef *cdf = NULL;
 		std::string sym = call_target_emit_name(tcf, &cdf);
 		referenced_funcs.insert(sym);
+		declare_bound_callee(cdf, sym);
 		node_t cargs = list();
 		append(cargs, retbuf_slot_addr(cdd, name, origin));   // __retbuf = &__t
 		build_call_args(tcf, cargs);
@@ -26840,27 +26867,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					// own translation path above.)
 					if (!is_c2mir_builtin_call_name(tcf->var.name))
 						referenced_funcs.insert(callee_name);
-					// #92 family: a DECLARATION-ONLY callee emitting under
-					// its Itanium export (_Znwm and the other tracked
-					// global allocation operators are the shape that
-					// exposed it) gets NO typed proto from any pass —
-					// c2mir's implicit decl then types the call integer
-					// ("returning integer without cast for pointer
-					// result" inside materialized <new> bodies).
-					// Register the typed extern from the resolved
-					// FuncDef, exactly like the class-member emit_symbol
-					// binds do (the flush dedupes against typed_proto_syms).
-					if (cdf && cdf->declaration_only
-					    && callee_name.compare(0, 2, "_Z") == 0) {
-						bool op_ret_ptr = false;
-						std::vector<c2mir_node_code_t> op_ret_specs;
-						std::vector<ExternParam> op_params;
-						native_func_shape(cdf, op_ret_ptr,
-								  op_ret_specs, op_params);
-						need_output_extern(callee_name.c_str(),
-								   op_ret_ptr, op_params,
-								   op_ret_specs);
-					}
+					declare_bound_callee(cdf, callee_name);
 					func_id = id(callee_name.c_str(), tb);
 				}
 			}
