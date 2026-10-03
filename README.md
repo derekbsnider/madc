@@ -303,20 +303,21 @@ on this content), with public binaries built by CI for Linux
 (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
 Latest validated results — the seam battery and the release-tier lanes on
-one content (`028e31c36`, 2026-10-03; the Chthonia rename after it is
-textual). Measured conformance against third-party suites is published
+one content (`aeb92da3a`, 2026-10-03). Measured conformance against third-party suites is published
 separately in [`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
 - Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
-  **1883 passed / 0 failed / 0 timed out / 43 skipped**, plus the 34
+  **1884 passed / 0 failed / 0 timed out / 43 skipped**, plus the 34
   header-needing tests with headers on disk **34/0**; the whole suite as
-  native artifacts: JIT **1917/0/0/9**, EXE **1747/0**, OBJ **1747/0**;
+  native artifacts: JIT **1918/0/0/9**, EXE **1748/0**, OBJ **1748/0**;
   unit tests and every repository gate green
 - the GUI stage under Xvfb: **25/25 JIT, 25/25 EXE, 25/25 OBJ**
-- Windows: the packed Win64 binary under Wine **1844/0/0TO/82skip**; the
-  FULL suite on genuine Windows 11 **1845/0/0TO/81skip**
-- the libc++ flavor suite (macOS's library on Linux hardware): **jit
-  1903/0/0TO/23skip, EXE/OBJ 1735/0**
+- Windows: the packed Win64 binary under Wine **1844/0/0TO/83skip**; the
+  FULL suite on genuine Windows 11 **1845/0/0TO/82skip**
+- macOS, libc++: the FULL suite on the shipped -O2 packed binary on the
+  GitHub runners, **arm64 1893/0/0TO/34skip, Intel 1894/0/0TO/33skip**
+- Homebrew: the Linux bottle built, poured and `brew test`ed, then the suite
+  on the installed madc **1918/0/0TO/9skip**
 - **C conformance**: gcc `c-torture/execute` **1613/1624 in scope (99.3%)**
   under `--std=c17`, ratcheted against a baseline of pre-existing failures;
   c-testsuite **220/220, baseline empty**; index-c **50/50**
