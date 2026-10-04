@@ -203,7 +203,8 @@ int main()
 	    face_needs(1, n1), face_needs(2, n2), face_needs(2, n3),
 	    face_needs(3, n4), face_needs(2, n5), face_needs(2, n6),
 	    face_needs(3, n7));
-    var usage = ide_usage();
+    var usage;
+    ide_usage(usage);
     println("cli-usage: names-profile={} file-optional={}",
 	    usage.index("--profile NAME") >= 0 ? 1 : 0,
 	    usage.index("usage: madcide [<file>]") >= 0 ? 1 : 0);

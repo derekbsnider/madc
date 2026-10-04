@@ -8,6 +8,7 @@ madcide \- terminal IDE built on the live madc compiler
 .RB [ \-\-profile
 .IR name ]
 .RB [ \-\-std= \fIstd\fR]
+.RB [ \-\-gui | \-\-tui | \-\-line ]
 .br
 .B madcide \-\-build\-plugin
 .I dir
@@ -83,6 +84,21 @@ else
 .B chthonia
 is the learning profile, laid out as Thonny is: Thonny's keys, the editor
 with the REPL below it, and a beginner's menu.
+.TP
+.B \-\-gui
+Open in a window (the platform webview).
+.TP
+.B \-\-tui
+Open in the terminal.
+.B madcide
+does without an option;
+.BR chthonia ,
+the learning IDE built as its own program on madcide's base, opens a
+window without one.
+.TP
+.B \-\-line
+The line editor: commands from standard input, the screen's text to
+standard output.
 .TP
 .BI \-\-std= std
 The language standard every buffer compiles under (its diagnostics, outline,

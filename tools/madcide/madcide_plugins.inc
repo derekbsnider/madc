@@ -36,14 +36,15 @@
 
 #include "include/madcide/plugin_api"	// the API version, the handler contracts
 
-// Where madcide's configuration lives, from its inputs (the environment's
-// values; NULL or "" = unset): MADCIDE_CONFIG_DIR (madcide's own override —
-// the test suite points it at a fixture, or nowhere), then
-// $XDG_CONFIG_HOME/madcide, then %APPDATA%/madcide on Windows, then
-// ~/.config/madcide. "" = none (no home): no settings and no user plugins,
-// never an error.
-void config_dir_of(var &out, const char *over, const char *xdg,
-		   const char *appdata, const char *home, bool win)
+// Where product `name`'s configuration lives (madcide's, chthonia's: the
+// product in use), from its inputs (the environment's values; NULL or "" =
+// unset): MADCIDE_CONFIG_DIR (the base's own override — the test suite
+// points it at a fixture, or nowhere), then $XDG_CONFIG_HOME/<name>, then
+// %APPDATA%/<name> on Windows, then ~/.config/<name>. "" = none (no home):
+// no settings and no user plugins, never an error.
+void config_dir_of(var &out, const char *name, const char *over,
+		   const char *xdg, const char *appdata, const char *home,
+		   bool win)
 {
     out = "";
     if ( over != 0 && strlen(over) > 0 )
@@ -53,23 +54,24 @@ void config_dir_of(var &out, const char *over, const char *xdg,
     }
     if ( xdg != 0 && strlen(xdg) > 0 )
     {
-	out = format("{}/madcide", xdg);
+	out = format("{}/{}", xdg, name);
 	return;
     }
     if ( win && appdata != 0 && strlen(appdata) > 0 )
     {
-	out = format("{}/madcide", appdata);
+	out = format("{}/{}", appdata, name);
 	return;
     }
     if ( home != 0 && strlen(home) > 0 )
-	out = format("{}/.config/madcide", home);
+	out = format("{}/.config/{}", home, name);
 }
 
 void madcide_config_dir(var &out)
 {
     bool win = strcmp(madc::sys.platform, "win32") == 0;
-    config_dir_of(out, getenv("MADCIDE_CONFIG_DIR"), getenv("XDG_CONFIG_HOME"),
-		  getenv("APPDATA"), getenv("HOME"), win);
+    config_dir_of(out, product_in_use().name, getenv("MADCIDE_CONFIG_DIR"),
+		  getenv("XDG_CONFIG_HOME"), getenv("APPDATA"), getenv("HOME"),
+		  win);
 }
 
 // A JSON OBJECT from a file (a manifest, settings.json). False = it cannot
@@ -424,11 +426,15 @@ void program_name(var &out)
 // WHICH bundle (§5.2): the command line's --profile (`cli`, "" = not
 // given), then the program's own name when a bundle of that name exists (a
 // `chthonia` binary, or a link named chthonia, opens the chthonia bundle
-// with no flag; owner 2026-09-30), then settings.json's "profile", then
+// with no flag; owner 2026-09-30), then settings.json's "profile", then the
+// product's bundle (<madcide/product>: chthonia's, even renamed), then
 // `default`, so nothing changes without one of them.
 void active_profile(var &out, long w, long es, const char *cli)
 {
     out = "default";
+    const char *pb = product_in_use().bundle;
+    if ( strlen(pb) > 0 )
+	out = pb;
     if ( cli != 0 && strlen(cli) > 0 )
     {
 	out = cli;

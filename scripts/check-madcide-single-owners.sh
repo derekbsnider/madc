@@ -731,10 +731,38 @@ if [ "$(count_family_ranges "$TOOLS"/*.inc "$tmpd/synthetic.inc")" -ne 1 ]; then
 fi
 rm -rf "$tmpd"
 
+# The plugin registry's "active" rows have ONE writer: plugin_record_active
+# (madcide_plugin_code.inc). The library/source, builtin and host arms each
+# appended the row by hand until the product's linked arm (D3) would have
+# been a fourth copy. Marker: one `"active", ` write across tools/madcide.
+count_active_writes()
+{
+	cat "$@" | grep -c 'ui::set(w, reg, "active", '
+}
+
+n=$(count_active_writes "$TOOLS"/*.inc)
+if [ "$n" -ne 1 ]; then
+	echo "check-madcide-single-owners: FAIL — $n writer(s) of the plugin" \
+	     "registry's \"active\" rows across tools/madcide (expected 1:" \
+	     "plugin_record_active):" >&2
+	grep -n 'ui::set(w, reg, "active", ' "$TOOLS"/*.inc >&2
+	exit 1
+fi
+tmpd=$(mktemp -d)
+echo '    ui::set(w, reg, "active", active);	// synthetic' > "$tmpd/synthetic.inc"
+if [ "$(count_active_writes "$TOOLS"/*.inc "$tmpd/synthetic.inc")" -ne 2 ]; then
+	rm -rf "$tmpd"
+	echo "check-madcide-single-owners: FAIL — negative control did not" \
+	     "detect a synthetic active-row write (the marker went blind)." >&2
+	exit 1
+fi
+rm -rf "$tmpd"
+
 echo "check-madcide-single-owners: OK (one data-location owner: resolve_data_dir;" \
      "one data-file path: bundle_data_path; one action-event builder: action_event;" \
      "one document minter: new_document; one fresh-row owner: push_buffer_row;" \
      "one pause owner: terminal_return_pause; one text-mutation owner pair:" \
      "ed_text_insert/ed_text_erase; one record-kind reader per layer; one" \
-     "validator seat: graph_edit_apply; one file-kind family reader: kind_family)"
+     "validator seat: graph_edit_apply; one file-kind family reader: kind_family;" \
+     "one active-plugin row writer: plugin_record_active)"
 exit 0

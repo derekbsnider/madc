@@ -3,7 +3,7 @@
 // the file, and a later `ro` opens it read-only. The strings are compared
 // only here, at the input boundary: main reads the parsed record.
 //
-//   madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--line]
+//   madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--tui|--line]
 //           [-c "<command> [arg]"] [--serve <host:port>] [--mcp] [--lsp] [--attach [<host:port>]]
 //           [--no-serve] [--sessions] [--build-plugin DIR] [--help] [--] [<file>]
 //
@@ -11,6 +11,9 @@
 // headless faces (-c, --mcp, --lsp, --serve) act on a file and need one.
 // --build-plugin DIR builds the plugin in DIR into its library and exits
 // (plan §41.11a step 4); like --sessions it needs no file.
+//
+// The face with no flag is the product's (<madcide/product>): madcide's is
+// the console editor, chthonia's a window; --gui and --tui ask for either.
 //
 // --std=STD is the session's language standard (madcide_lang.inc), converted
 // here to its kind: a standard madc's own --std= names canonically (c17,
@@ -33,7 +36,7 @@ struct ide_args
     const char *once;		// -c "<command> [arg]"
     const char *serve;		// --serve <host:port>
     const char *attach_addr;	// --attach's address; NULL = discover
-    ui::level level;		// --gui (ui::WEB), --line (ui::LINE), else ui::TUI
+    ui::level level;		// --gui (ui::WEB), --tui (ui::TUI), --line (ui::LINE), else the product's
     bool ro;
     bool mcp;
     bool lsp;
@@ -44,16 +47,19 @@ struct ide_args
     bool help;			// --help / -h
 };
 
-// The usage text (printed for --help, and after a refusal).
-const char *ide_usage()
+// The usage text (printed for --help, and after a refusal), under the
+// product's name.
+void ide_usage(var &out)
 {
-    return "usage: madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--line] [--no-serve]  (no file = an untitled buffer)\n"
+    var text = "usage: madcide [<file>] [ro] [--profile NAME] [--std=STD] [--gui|--tui|--line] [--no-serve]  (no file = an untitled buffer)\n"
 	   "       madcide <file> [ro] [--profile NAME] [--std=STD] [-c \"<command> [arg]\"] [--serve <host:port>] [--mcp] [--lsp [--serve <host:port>]]\n"
 	   "       madcide <file> --lsp|--mcp --attach [<host:port>]  (join a running session; no address = discover one)\n"
 	   "       madcide --sessions                                 (what is running, and how to join it)\n"
 	   "       madcide --build-plugin DIR                         (build the plugin in DIR into its library)\n"
 	   "       --profile NAME   the profile (a bundle of keys, layout, menu and settings; default: settings.json's \"profile\", else default)\n"
 	   "       --std=STD        the language standard (c17, c++17, madc, ...; default: settings.json's \"std\", else each file's own)\n";
+    var pn = format("{} ", product_in_use().name);
+    out = php::str_replace("madcide ", pn.c_str(), text);
 }
 
 // A flag's value: the index of the next word, or 0 when there is none (`why`
@@ -90,7 +96,7 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
     a.once = NULL;
     a.serve = NULL;
     a.attach_addr = NULL;
-    a.level = ui::TUI;
+    a.level = product_in_use().level;
     a.ro = false;
     a.mcp = false;
     a.lsp = false;
@@ -109,6 +115,8 @@ bool ide_args_parse(ide_args &a, var &why, int argc, const char **argv)
 		flags = false;
 	    else if ( strcmp(w, "--gui") == 0 )
 		a.level = ui::WEB;
+	    else if ( strcmp(w, "--tui") == 0 )
+		a.level = ui::TUI;
 	    else if ( strcmp(w, "--line") == 0 )
 		a.level = ui::LINE;
 	    else if ( strcmp(w, "--mcp") == 0 )

@@ -65,4 +65,10 @@ struct ide_api
 typedef long (*plugin_version_fn)();
 typedef bool (*plugin_activate_fn)(const ide_api *api, long w);
 
+// The activation a plugin's code defines (plugin_activate_fn's shape): the
+// entry madcide looks up in a plugin's library, and the address a product
+// that links the plugin hands madcide_main (<madcide/product>). Declared
+// once, here, so a definition of another shape is refused where it is built.
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w);
+
 #endif

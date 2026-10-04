@@ -430,10 +430,7 @@ long plugin_host_activate(long w, var &dir, var &name, var &m, var &why,
 	    return -1;
 	return 0;
     }
-    var active;
-    registry_rows(active, w, "active");
-    active[] = { "name": name, "transport": ptHOST, "from": from, "handle": 0 };
-    ui::set(w, reg, "active", active);
+    plugin_record_active(w, name, ptHOST, from, 0);
     plugin_host_mark(w, hi, 0, hsRESTARTING);
     go plugin_host_task(w, es, hi, h);
     return 1;

@@ -1673,9 +1673,11 @@ long plugin_field_of(var &word)
 }
 
 // How a plugin's CODE reached madcide's process (§5.4): compiled into
-// madcide, its library loaded, its source compiled in when it activates, or a
-// child process speaking over the seat. An active plugin's row records it.
-enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLAST };
+// madcide, its library loaded, its source compiled in when it activates, a
+// child process speaking over the seat, or linked into the product
+// (<madcide/product>: chthonia's plugin is part of chthonia's program). An
+// active plugin's row records it.
+enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLINKED, ptLAST };
 const char *plugin_transport_name(long t)
 {
     switch ( t )
@@ -1684,6 +1686,7 @@ const char *plugin_transport_name(long t)
 	case ptLIBRARY: return "library";
 	case ptSOURCE: return "source";
 	case ptHOST: return "host";
+	case ptLINKED: return "linked";
     }
     return "";
 }

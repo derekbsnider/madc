@@ -114,8 +114,4 @@ extern "C" long madcide_plugin_api()
     return MADCIDE_PLUGIN_API;
 }
 
-// The activation the plugin defines (plugin_activate_fn's contract), declared
-// here so a definition of another shape is refused when the plugin is built.
-extern "C" bool madcide_plugin_activate(const ide_api *api, long w);
-
 #endif

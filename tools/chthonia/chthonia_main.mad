@@ -1,0 +1,20 @@
+// chthonia — the easy GUI to learn C and C++ (plugin design §9.3; docs/plans/
+// 2026-10-03-chthonia-windows-macos.md §7 D3): a product built on madcide.
+// Its program is three units (chthonia.json): madcide's base, the chthonia
+// plugin's code, and this one, which names the product and calls the base.
+//
+// The descriptor is the whole difference from madcide: chthonia's name (its
+// usage, its window title, its configuration directory), its bundle, a
+// window by default (--tui gives the console), and its plugin linked in.
+//
+// Thread contract: <madcide/product>'s — main hands the descriptor to the
+// base, which records it before any session or thread starts.
+#include <madcide/product>
+
+const ide_product chthonia_product = { "chthonia", "chthonia", ui::WEB,
+				       "chthonia", madcide_plugin_activate };
+
+int main(int argc, char **argv)
+{
+    return madcide_main(argc, argv, chthonia_product);
+}

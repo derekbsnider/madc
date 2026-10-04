@@ -40,13 +40,17 @@ int madcide_main(int argc, char **argv, const ide_product &product)
     var why;
     if ( !ide_args_parse(a, why, argc, (const char **)argv) )
     {
-	println(stderr, "madcide: {}", why);
-	print(stderr, "{}", ide_usage());
+	println(stderr, "{}: {}", product.name, why);
+	var usage;
+	ide_usage(usage);
+	print(stderr, "{}", usage);
 	return 2;
     }
     if ( a.help )
     {
-	print("{}", ide_usage());
+	var usage;
+	ide_usage(usage);
+	print("{}", usage);
 	return 0;
     }
     // `--sessions` answers before anything else: it needs no file, because it
@@ -61,8 +65,10 @@ int madcide_main(int argc, char **argv, const ide_product &product)
     // Unnamed); a headless face has nothing to act on without one.
     if ( a.file == NULL && ide_face_needs_file(a) != NULL )
     {
-	println(stderr, "madcide: {} needs a file", ide_face_needs_file(a));
-	print(stderr, "{}", ide_usage());
+	println(stderr, "{}: {} needs a file", product.name, ide_face_needs_file(a));
+	var usage;
+	ide_usage(usage);
+	print(stderr, "{}", usage);
 	return 2;
     }
     // The UI LEVEL is ONE flag (ui::level, owner 2026-09-09: a program

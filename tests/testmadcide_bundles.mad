@@ -98,15 +98,15 @@ int main()
 
     // 1. The configuration directory's order.
     var c;
-    config_dir_of(c, "/o", "/x", "/a", "/h", true);
+    config_dir_of(c, "madcide", "/o", "/x", "/a", "/h", true);
     println("bundles-cfg-override: {}", c);
-    config_dir_of(c, "", "/x", "/a", "/h", true);
+    config_dir_of(c, "madcide", "", "/x", "/a", "/h", true);
     println("bundles-cfg-xdg: {}", c);
-    config_dir_of(c, NULL, NULL, "/a", "/h", true);
+    config_dir_of(c, "madcide", NULL, NULL, "/a", "/h", true);
     println("bundles-cfg-appdata: {}", c);
-    config_dir_of(c, NULL, NULL, "/a", "/h", false);
+    config_dir_of(c, "madcide", NULL, NULL, "/a", "/h", false);
     println("bundles-cfg-home: {}", c);
-    config_dir_of(c, NULL, NULL, NULL, NULL, false);
+    config_dir_of(c, "madcide", NULL, NULL, NULL, NULL, false);
     println("bundles-cfg-none: [{}]", c);
 
     var cfg;
