@@ -703,33 +703,36 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
-### B167. `#include <windows.h>` is refused on win64 (objidl.h: `CLIPFORMAT`)
+### B167. `#include <windows.h>` is refused on win64: absent from the forest, and in C++
 
 ```c
 #include <windows.h>
 int main(void) { return 0; }
 ```
 
-- x86_64-w64-mingw32-gcc 13 (`-std=c17`): compiles, exit 0. madc
-  `--std=c17` under wine (2026-10-04), both `bin/madc-hosted-x86-64-windows.exe`
-  and the release set's `madc.exe`: exit 1, 515 errors, the first
-  `objidl.h:9546:9: Expecting type after 'typedef', got 'CLIPFORMAT'`.
-  `#include <objidl.h>` alone: exit 1, 1016 errors.
-- So a C program for Windows that includes `<windows.h>` does not compile
-  with madc on Windows. `tests/testwebviewrunstop` declares the Win32
-  types it needs by hand for this reason.
-- Two gaps, measured 2026-10-04:
+- x86_64-w64-mingw32-gcc / g++ 13 (`-std=c17`, `-std=c++17`): compile, exit 0.
+- C under wine is FIXED (2026-10-04, `tests/testsysheaderreinclude`): every
+  mingw header had been classified as user code — the system include dirs
+  were compared with a `/` appended to a Windows canonical spelling — so
+  wtypes.h's nested second inclusion was skipped and objidl.h met an
+  undeclared `CLIPFORMAT`. `madc.exe --std=c17` now compiles the full
+  `<windows.h>` (0 errors) and runs Win32 calls JIT and as a built .exe,
+  matching mingw-gcc.
+- Two gaps remain, measured 2026-10-04 with the release set's `madc.exe`:
   1. PACKAGING: `<windows.h>` is not in `scripts/forest_pack_headers_windows.txt`,
      so the release's forest does not carry it. On genuine Windows (no
-     headers on disk) the release set's `madc.exe` refuses BOTH forms with
+     headers on disk) the release set's `madc.exe` refuses it with
      `Failed to open include file: windows.h`. Under wine the container's
      mingw headers answer through `Z:` and hide this.
-  2. PARSING: the lean form (`#define WIN32_LEAN_AND_MEAN 1` first — what
-     madc's own `src/rt/rt_posix_*.c` and `rt_task.c` use, and what the
-     August W4 fixes 3aa24f909 / 9f283f21a made parse) compiles and runs
-     under wine (`tick=1`); the full form fails at `objidl.h` as above.
-- Layer not yet traced for (2): where `CLIPFORMAT` should have been declared
-  (`wtypes.h`) on madc's include path before `objidl.h` uses it.
+  2. C++: `madc.exe --std=c++17` on the reducer: exit 1, 920 errors. The
+     first is `psdk_inc/intrin-impl.h:667:5: use of undeclared identifier
+     '__builtin_ia32_sfence'` (the body of the inline `__faststorefence`;
+     gcc predeclares its `__builtin_ia32_*` builtins, madc declares none,
+     and C's implicit declaration is what let the C form through). The rest
+     follow it: `windef.h:74` `Expecting type in struct definition, got
+     'LONG'`, then `HANDLE`, `LPCSTR`, `HRESULT`, ... not types. Layer of
+     the cascade not yet traced (whether winnt.h's typedefs are lost to the
+     first error's recovery).
 - Found 2026-10-04 writing the reducer for the Windows window-loop stop.
 
 ### B164. The forest pack's header compile refuses libstdc++ 13 template bodies (28 errors, the build stays green)

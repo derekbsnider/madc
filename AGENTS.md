@@ -112,7 +112,9 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    leaves no trace when skipped, which is why it fails silently.
    Standing instances: balanced-delimiter scanning is `DelimDepth`
    (`delimiter-tracking.md`); path canonicalization for comparison is
-   `canonical_path_for_compare()`; a library's platform spelling (the `lib`
+   `canonical_path_for_compare()`, and "is this path inside that directory"
+   is `host_path_within()` (the host's separators; gated by
+   `check-one-path-within.sh`); a library's platform spelling (the `lib`
    prefix, `.so` / `.dylib` / `.dll`, the real runtime image names) is
    `madc_module_library_spelling()` in `src/madc_modules.cpp` (gated by
    `check-one-library-spelling.sh`); a parse over its own token run — an

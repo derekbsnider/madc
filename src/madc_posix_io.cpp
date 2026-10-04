@@ -6,9 +6,9 @@
 
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #ifdef _WIN32
 #include <cstdio>
-#include <cstring>
 #include <fcntl.h>	// _O_CREAT/_O_EXCL — make_temp_file's atomic claim
 #include <io.h>
 #include <limits.h>
@@ -163,14 +163,22 @@ std::string resolve_real_path(const char *path)
 #endif
 }
 
-// The one separator predicate both splitters share (header contract).
+// The one separator set the splitters and host_path_within share (header
+// contract): '/' and '\\' on Windows, '/' elsewhere.
+#ifdef _WIN32
+static const char host_path_separators[] = "/\\";
+#else
+static const char host_path_separators[] = "/";
+#endif
+
+static bool host_path_is_separator(char c)
+{
+	return c != '\0' && std::strchr(host_path_separators, c) != nullptr;
+}
+
 static size_t host_path_last_separator(const std::string &path)
 {
-#ifdef _WIN32
-	return path.find_last_of("/\\");
-#else
-	return path.rfind('/');
-#endif
+	return path.find_last_of(host_path_separators);
 }
 
 std::string host_path_dirname(const std::string &path)
@@ -187,6 +195,31 @@ std::string host_path_basename(const std::string &path)
 	if ( sep == std::string::npos )
 		return path;
 	return path.substr(sep + 1);
+}
+
+bool host_path_within(const std::string &dir, const std::string &path,
+		      std::size_t *rel_at)
+{
+	size_t n = dir.size();
+	while ( n > 0 && host_path_is_separator(dir[n - 1]) )
+		--n;
+	// A root (`/`, `Z:\\`) is all separator past its drive: keep that one.
+	if ( n < dir.size() && (n == 0 || dir[n - 1] == ':') )
+		++n;
+	if ( n == 0 || path.size() <= n || path.compare(0, n, dir, 0, n) != 0 )
+		return false;
+	size_t at = n;
+	if ( !host_path_is_separator(dir[n - 1]) )
+	{
+		if ( !host_path_is_separator(path[n]) )
+			return false;
+		++at;
+	}
+	if ( at >= path.size() )
+		return false;
+	if ( rel_at )
+		*rel_at = at;
+	return true;
 }
 
 std::string get_host_name()

@@ -5000,6 +5000,7 @@ std::string canonical_path_for_compare(const std::string &path)
 }
 } } // namespace madc::detail
 using madc::detail::canonical_path_for_compare;
+using madc::detail::host_path_within;
 
 static const char *madc_fallback_include_paths[] = {
     "/usr/local/include/",
@@ -5190,13 +5191,11 @@ const std::vector<std::string> &Program::sys_include_prefixes_canonical() const
 	return _canon_prefixes;
     _canon_prefixes.clear();
     const char *const *paths = sys_include_paths();
+    // The directories' COMPARISON spellings, as host_path_within reads them:
+    // no separator appended here — the canonicalizer writes the host's own
+    // ('\\' on Windows), and a '/' added to it never matched there.
     for ( int i = 0; paths[i]; ++i )
-    {
-	std::string p = canonical_path_for_compare(paths[i]);
-	if ( p != paths[i] && (p.empty() || p.back() != '/') )
-	    p += '/';		// realpath drops the trailing '/' a prefix needs
-	_canon_prefixes.push_back(p);
-    }
+	_canon_prefixes.push_back(canonical_path_for_compare(paths[i]));
     _canon_prefix_flavor = f;
     return _canon_prefixes;
 }
@@ -5364,12 +5363,13 @@ bool Program::is_system_header_path(const char *path) const
     // demand libSystem imports from every program).
     if ( find_embedded_header(path) )
 	return true;
+    // "Inside a system dir" is host_path_within's question (the path layer's
+    // one owner), for the table's spellings and for the canonical ones alike.
+    const std::string file(path);
     const char *const *sys_paths = sys_include_paths();
     for ( int i = 0; sys_paths[i]; ++i )
     {
-	const char *prefix = sys_paths[i];
-	size_t plen = strlen(prefix);
-	if ( plen && strncmp(path, prefix, plen) == 0 )
+	if ( host_path_within(sys_paths[i], file) )
 	    return true;
     }
     // Then the canonical spellings, for a caller that realpath'd its file (as
@@ -5379,10 +5379,12 @@ bool Program::is_system_header_path(const char *path) const
     // multiple-include, which permanently drops the second visit to a header
     // written to be included twice — libc++'s <stddef.h>/<stdint.h> wrappers are
     // exactly that, and <cstddef> #errors when its second visit never happens.
+    // mingw's guard-less <pshpack1.h> / <poppack.h> pairs are another: skipped
+    // after the first visit, every later struct they wrap lost its packing.
     const std::vector<std::string> &canon = sys_include_prefixes_canonical();
     for ( size_t i = 0; i < canon.size(); ++i )
     {
-	if ( !canon[i].empty() && strncmp(path, canon[i].c_str(), canon[i].size()) == 0 )
+	if ( host_path_within(canon[i], file) )
 	    return true;
     }
     return false;

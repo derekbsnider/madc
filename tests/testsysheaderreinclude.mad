@@ -1,0 +1,52 @@
+// A system header with no full include guard is read again on EVERY
+// inclusion — gcc's multiple-include rule, which skips a repeat only when
+// the whole file sits in a guard whose macro is defined. A header found
+// under a system include directory gets that rule; one that madc misfiled
+// as user code got madc's include-once rule instead, and its second
+// inclusion vanished without a diagnostic. On Windows every mingw header
+// was misfiled (B167): the system directories were compared with a '/'
+// appended to a canonical spelling whose separators are '\'.
+//
+// <assert.h> is guard-less on glibc and mingw alike: it is written to be
+// included again under a different NDEBUG. The first inclusion (NDEBUG set)
+// makes assert() skip its operand; the second (NDEBUG unset) makes it
+// evaluate it. mingw's <pshpack1.h> / <poppack.h> are guard-less too: each
+// pair packs the structs between them to one-byte alignment.
+//
+// Oracles: gcc 13 and clang 18 (-std=c17, Linux): `assert-reinclude:
+// evals=1`; x86_64-w64-mingw32-gcc 13 (-std=c17, run under wine):
+// `assert-reinclude: evals=1` and `pack-reinclude: A=5 B=5`. madc.exe
+// before the fix: evals=0 and A=5 B=8.
+#include <stdio.h>
+
+static int evals;
+
+#define NDEBUG 1
+#include <assert.h>
+static void assert_off(void) { assert((evals++, 1)); }
+#undef NDEBUG
+#include <assert.h>
+static void assert_on(void) { assert((evals++, 1)); }
+
+#ifdef _WIN32
+#include <pshpack1.h>
+struct packed_a { char c; int i; };
+#include <poppack.h>
+#include <pshpack1.h>
+struct packed_b { char c; int i; };
+#include <poppack.h>
+#endif
+
+int main(void)
+{
+	assert_off();
+	assert_on();
+	printf("assert-reinclude: evals=%d\n", evals);
+#ifdef _WIN32
+	printf("pack-reinclude: A=%d B=%d\n", (int)sizeof(struct packed_a),
+	       (int)sizeof(struct packed_b));
+#else
+	printf("pack-reinclude: not Win32\n");
+#endif
+	return 0;
+}

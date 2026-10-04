@@ -762,12 +762,10 @@ void *madcgit_relpath(void *result, int64_t handle, const char *path)
     if ( !st )
 	return result;
     std::string wd = madc::detail::canonical_path_for_compare(st->repo.workdir());
-    while ( wd.size() > 1 && (wd[wd.size() - 1] == '/' || wd[wd.size() - 1] == '\\') )
-	wd.erase(wd.size() - 1);
     std::string given = madc::text_of(path);
     std::string p = madc::detail::canonical_path_for_compare(given);
-    if ( wd.empty() || p.size() <= wd.size() + 1 || p.compare(0, wd.size(), wd) != 0
-	 || (p[wd.size()] != '/' && p[wd.size()] != '\\') )
+    std::size_t rel_at = 0;
+    if ( !madc::detail::host_path_within(wd, p, &rel_at) )
     {
 	out = madc::error_value("git: `" + given + "` is not inside the repository's working tree");
 	return result;
@@ -777,7 +775,7 @@ void *madcgit_relpath(void *result, int64_t handle, const char *path)
     // Windows the working-tree-relative result would read "tests\file" — the
     // git:: face normalizes to forward slashes at its output boundary, the same
     // platform-path discipline the session-discovery layer applies to its slug.
-    std::string rel = p.substr(wd.size() + 1);
+    std::string rel = p.substr(rel_at);
     for ( size_t i = 0; i < rel.size(); ++i )
 	if ( rel[i] == '\\' )
 	    rel[i] = '/';

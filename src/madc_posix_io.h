@@ -43,6 +43,17 @@ std::string canonical_path_for_compare(const std::string &path);
 std::string host_path_dirname(const std::string &path);
 std::string host_path_basename(const std::string &path);
 
+// Is `path` inside the directory `dir`? Both are COMPARISON spellings
+// (canonical_path_for_compare). THE owner of "under this directory": dir's
+// spelling, less any trailing separator, must be followed in path by a
+// separator of the same predicate the splitters use — '/' or '\' on Windows
+// (the canonicalizer writes '\'), '/' elsewhere. A bare string prefix also
+// matches a sibling (include vs include-fixed), and a '/' appended to a
+// Windows canonical spelling never matches. `rel_at`, when non-null,
+// receives the offset of the part below dir (past the separator).
+bool host_path_within(const std::string &dir, const std::string &path,
+		      std::size_t *rel_at = nullptr);
+
 // Thread-safe local time (POSIX localtime_r). The Win32 arm is the MS
 // localtime_s — NOTE the two spell their argument orders opposite ways,
 // which is exactly why call sites go through this owner. False on failure,
