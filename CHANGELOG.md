@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### madcgit: hide libgit2 exports from the process namespace
+
+The madcgit module exported 876 libgit2 symbols (git_*, giterr_*) on macOS dylibs and 1836 on Windows DLL. Modules load `RTLD_GLOBAL` on POSIX, so scripts' dlsym fallback could reach those symbols, polluting the namespace. The fix hides them: macOS archives link through `-Wl,-load_hidden` (ld64.lld-18 and Apple ld64 compatible feature), Windows DLL links with `-Wl,--exclude-libs,ALL` (consistent with the Linux module). New gate `scripts/check-madcgit-exports.sh` verifies every madcgit image (ELF via `nm -D`, Mach-O via `llvm-nm -g`, PE via `objdump -p` export table) exports no symbol matching `^(git|giterr)_`. Negative controls (synthetic `git_x` export must FAIL, hidden `git_x` must PASS) verify the gate. Integrated: `make -C src gates`.
+
+Measurements on container: Before the change, gate rc=1 naming 876 symbols per Mach-O image and 1836 in DLL. After: "check-madcgit-exports: OK (5 madcgit image(s), no libgit2 symbol exported)". `llvm-nm -g` on both dylibs: only `madc::` C++ symbols and the ten `madcgit_*` functions. `objdump -p` on DLL: the ten `madcgit_*` functions plus `madc::` C++ symbols. Hosted Windows madc runs `tests/testgit.mad` under wine against rebuilt `madcgit.dll`: all 20 expected lines.
+
+Validation: Tier 1 `scripts/run_tests.sh --exe --obj testgit testgraphpast testnexus_layers`: 3 passed 0 failed (JIT), EXE 2 passed 0 failed, OBJ 2 passed 0 failed; Tier 2 `scripts/fast_lanes.sh` GREEN (c-testsuite 220 passed 0 failed, c-torture 1614 passed 0 outside baseline, c2mir-tests 314 passed 0 outside baseline, gui 26 passed 0 failed EXE/OBJ, gxx-c++11 1501 passed 0 outside baseline, index-c 50 passed 50 tasks ok). (One run over the tree holding both this commit and its sibling commit.)
+
 ### build: per-mode predefined-macro table (concurrent-make write race)
 
 The modes that capture a foreign compiler (darwin hosted+cross, windows hosted) regenerate a predefined-macro table at parse time. All modes' sub-makes regenerated `src/predefined_macros.cpp` concurrently, causing a race where three writes to one shared file interleaved, creating redefinition errors in per-mode objects. The fix mirrors the existing `sys_include_paths.cpp` approach: modes with `SYS_INCLUDES_CPP` now get `PREDEF_MACROS_CPP = $(OBJDIR)/predefined_macros.cpp`, with a per-mode compile rule. Gen script writes a per-process temp (`"$OUT.tmp.$$"`) before compare-and-move to prevent interleaving between concurrent make sub-processes.

@@ -53,7 +53,10 @@ ifeq ($(MODE),hosted-x86-64-windows)
 MADCGIT_LIBRARY = ../bin/madcgit.dll
 MADCGIT_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-x86-64-windows.a
 MADCGIT_CFLAGS = -I$(LIBGIT2_INCLUDE)
-MADCGIT_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib
+# --exclude-libs,ALL: the DLL has no dllexport, so ld auto-exports every
+# global — the archives' too, libgit2's whole API among them. Excluded, the
+# module exports its own madcgit_* only (gate: check-madcgit-exports.sh).
+MADCGIT_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--exclude-libs,ALL
 MADCGIT_LIBS = $(MADCGIT_LIBGIT2) -L../lib -lmadc.dll -lws2_32 -lsecur32 -lpthread
 MADCGIT_LINK_PREREQ = ../bin/libmadc-0.dll
 else ifdef HOSTED_DARWIN_TARGET
@@ -65,7 +68,10 @@ MADCGIT_LIBRARY = $(LIBDIR)/madcgit/$(DARWIN_ARCH)-macos/libmadcgit.dylib
 MADCGIT_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-$(DARWIN_ARCH)-macos.a
 MADCGIT_CFLAGS = -I$(LIBGIT2_INCLUDE)
 MADCGIT_LINK_FLAGS = $(DARWIN_LD_FLAGS) -dynamiclib -Wl,-install_name,@rpath/libmadcgit.dylib -undefined dynamic_lookup
-MADCGIT_LIBS = $(MADCGIT_LIBGIT2) -lz
+# -load_hidden: the archive's symbols load with hidden visibility, so the
+# dylib exports its own madcgit_* only, never libgit2's API (a script's dlsym
+# fallback would otherwise find them; gate: check-madcgit-exports.sh).
+MADCGIT_LIBS = -Wl,-load_hidden,$(MADCGIT_LIBGIT2) -lz
 MADCGIT_LINK_PREREQ =
 else
 # --- Linux/host: the staged static libgit2 for this host
@@ -90,7 +96,8 @@ endif
 MADCGIT_LIBRARY = $(LIBDIR)/libmadcgit.so
 # --exclude-libs,ALL: the static archive's git_* stay internal to the module.
 # Modules load RTLD_GLOBAL (madc_dl_open_global), so an exported copy would
-# enter the process's global scope beside any libgit2 a program loads itself.
+# enter the process's global scope beside any libgit2 a program loads itself
+# (gate: check-madcgit-exports.sh).
 MADCGIT_LINK_FLAGS = -shared -fPIC -Wl,-soname,libmadcgit.so -Wl,--exclude-libs,ALL
 MADCGIT_LINK_PREREQ =
 ifeq ($(MADCGIT_AVAILABLE),1)
