@@ -375,12 +375,109 @@ The debugger is the largest gap: there is no stepper. It is its own arc
 (the JIT executes, `mir-interp-not-assumed`) and is designed separately.
 Every other row is a command over machinery that exists.
 
+## 7c. Projects and building in Chthonia (owner, 2026-10-04)
+
+The owner: "Chthonia needs a way to handle projects and building
+executables like madcide does … those things are inherently important to a
+C/C++ IDE." Thonny has neither; the parity table (§7a) is not the limit.
+
+Everything it needs exists in madcide's base; Chthonia's bundle leaves it
+out. The change is the bundle's data:
+
+1. `chthonia.menu` — File gains Project…, Open Project… and Add Current
+   File to Project (`project`, `openproject`, `projaddcur`): the implicit
+   one-file project becomes a manifest when a second file joins it
+   (`proj_add`). A Build menu after Run carries `build` (Build…), so
+   `compose_menu_bar` lists the ^B rows under it as direct items: Check,
+   Build, Run, Stop, and with a manifest open the project-wide rows plus the
+   manifest's own commands.
+2. `chthonia.layout` — the bottom panel's views become `repl problems
+   output terminal`: a build's output streams into Output, and Build ▸ Run
+   runs a console program on a pseudo-terminal in Terminal.
+3. Keys — `chthonia.keys` binds Build… to Ctrl+B (Xcode's and Sublime's
+   build key; Thonny binds nothing there); `vscode.keys` binds Ctrl+Shift+B,
+   VS Code's Run Build Task.
+4. Help (§7d) says how Run ▸ Run (F5: the program in the Shell, its names
+   in Variables) differs from Build ▸ Run (a native executable in the
+   Terminal).
+
+Gate: `testmadcide_chthonia` pins the menu bar (`[File Edit Run Build View
+Tools Help]`), the File and Build ids, the panel's views, and a Build row
+run from the Chthonia bundle producing an executable that runs; the key
+pins move with the bindings.
+
+## 7d. Help, and Markdown (owner, 2026-10-04)
+
+The owner, on Help ▸ Help: "it's sort of cryptic, and doesn't read like a
+real help page, and the scrollbars are a little off … it needs topics,
+contents, information on all the menus and commands." And: "a markdown
+render could be particularly useful within the context of an IDE, because
+it would be good for the IDE to support reading, displaying, and editing
+markdown files (i.e. README.md)." Today Help lists the loaded key profile's
+binding lines in a choice pane, under the label `Help — <profile> profile`.
+
+The name "Thonny" appears nowhere Chthonia shows text; the key style that
+follows Thonny's defaults is titled Chthonia (`chthonia.keys`, owner
+2026-10-04).
+
+**One Markdown parser: cmark-gfm** (github/cmark-gfm, owner 2026-10-04 —
+the CommonMark reference implementation plus GitHub's tables, task lists,
+strikethrough and autolinks, which READMEs are written in). A dependency,
+not a subtree: Debian/Ubuntu `libcmark-gfm-dev`, Homebrew `cmark-gfm`, and
+the same upstream release built with mingw for Windows. It links
+statically into a madc module beside `madcgit`, which every package ships,
+because Help must work on every platform. Its COPYING (BSD-2 for cmark;
+MIT for houdini, GitHub's buffer and the utf8proc-derived utf8.c) ships
+verbatim with each package: `/usr/share/doc/madc/cmark-gfm-copyright` on
+Linux, `THIRD_PARTY_NOTICES/cmark-gfm-COPYING.txt` on macOS and Windows.
+The CommonMark spec (CC-BY-SA 4.0) is read from the dependency's source
+tree by the conformance lane and never copied into the repository.
+
+The module turns Markdown text into a value tree: each block and inline
+with its kind (an enum) and its source range. Three consumers:
+
+1. **A rendered page view** — headings, paragraphs, lists, code blocks,
+   tables and links as ui-tree nodes (`heading`, `content`, `list`,
+   `item`, `action`, `group`), which the web page, the TUI and
+   `render_tree` already draw. A link to another topic or file is an
+   action row. Two uses:
+   - **Help**: each bundle contributes its topics as `.md` files (a new
+     contribution kind beside keys, menu and layout), starting at a
+     Contents topic. One topic, **Menus and commands**, is generated as
+     Markdown from the loaded menus and the command registry: every menu,
+     every item, what it does, and its key in the current key style. It
+     cannot drift from the real menus. Command descriptions are data in
+     the bundle's help, the base bundle's when the bundle has none.
+   - **View ▸ Markdown Preview** of the `.md` buffer being edited, beside
+     it, refreshed as it changes.
+2. **Highlighting** of `.md` buffers through the existing span machinery
+   (IDE-7).
+3. **The editable concealing lens** on the view seam (AST-3's named seat:
+   formatting characters hidden, caret and edits in stored offsets through
+   the coordinate map). Block source positions from cmark are exact;
+   inline positions are measured first, and where they are inexact the lens
+   computes them inside the block's known range.
+
+Before the design is final: install `libcmark-gfm-dev` on the container
+and measure its inline source positions on real READMEs; check the help
+pane's scrolling on a rendered window.
+
+Gates: a conformance lane over the CommonMark spec examples (a ratchet,
+like the C lanes); the shipped-notices check in `package_install_gate.sh`
+— a data list of the libraries each package links, each artifact carrying
+every listed notice (webview, libgit2, zstd and cmark-gfm today); help
+topic and Menus-and-commands pins in the madcide tests.
+
+Thread contract: the parser is a pure function; a bundle's help topics are
+read-only data loaded per session.
+
 ## 8. Order
 
 A (the REPL, which every chthonia user sees first; done) → B (measured, no
 defect; done) → D1 (the probe; done) → D2 → D3 → D4 with C folded in (the
-Mac build is chthonia's Mac build) → the parity rows (§7a) → the debugger
-arc. Owner, 2026-10-04: the chthonia binary comes first, GUI by default,
-working on all three platforms with Thonny's functionality. Each step is its
+Mac build is chthonia's Mac build) → the parity rows (§7a) → Projects and
+building (§7c) → Help and Markdown (§7d) → the debugger arc. Owner,
+2026-10-04: the chthonia binary comes first, GUI by default, working on all
+three platforms with Thonny's functionality. Each step is its
 own commit with its reducer, Tier 1 + Tier 2 per commit, and the batch after
 each step.
