@@ -5,7 +5,7 @@
 # Variables joins as its command lands; View ▸ Outline shows the outline in
 # the sidebar beside Variables (chthonia.layout). Thonny rows whose command
 # madcide does not have yet: File ▸ Close, Close all, Save All; Edit ▸
-# Replace, Toggle comment; View ▸ the font size, Full screen.
+# Replace; View ▸ the font size, Full screen.
 
 File new New
 File editfile Open…
@@ -22,6 +22,10 @@ Edit copy Copy [selection]
 Edit paste Paste [editable]
 Edit -
 Edit selectall Select all
+Edit -
+Edit indent Indent selected lines [editable]
+Edit dedent Dedent selected lines [editable]
+Edit togglecomment Toggle comment [editable]
 Edit -
 Edit find Find…
 Edit gotoline Go to line…

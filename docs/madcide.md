@@ -91,6 +91,23 @@ commands (`cut`, `copy`, `paste`, `selectall`); `^K Y`'s delete fills the
 same clipboard. Under `--gui` it is the system's clipboard; in a terminal
 or a browser page it is madcide's own.
 
+Edit ▸ Indent Lines, Dedent Lines and Toggle Comment (`indent`, `dedent`,
+`togglecomment`) work on every line the selection touches, or on the
+caret's line when nothing is selected. A selection that ends at the start
+of a line leaves that line out. Indent puts a tab at the start of each
+non-empty line. Dedent removes one leading tab, or up to a tab width of
+leading spaces. Toggle Comment adds the language's line comment and a
+space at column 0 of each non-blank line. When every non-blank line
+already starts with the comment, it removes the comment instead. The
+comment is `//` for C, C++ and madc (an untitled buffer counts as madc),
+`#` for shell, Python, Perl, Ruby, Makefiles, YAML and TOML, `;` for INI
+and `--` for Lua. A file with no line comment, such as plain text,
+refuses. Each command is one undo step and leaves the selection covering
+the whole lines. With a selection that crosses a line, Tab indents
+instead of replacing the selection. The Thonny keys bind Shift+Tab and
+Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
+Shift+Tab and Ctrl+/.
+
 A binding's last word is a command name from the IDE's one vocabulary
 (`tools/madcide/madcide_enums.inc`, the `ide_cmd` enum and its name table).
 The profile resolves every word to its code when it LOADS — a misspelt word

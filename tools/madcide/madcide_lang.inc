@@ -54,6 +54,36 @@ bool kind_is_standard(long k)
     return f != madc::fkUNKNOWN && k != f;
 }
 
+// The line-comment opener of `doc`'s language, by its kind (Edit ▸ Toggle
+// comment): "//" for C, C++ and madc and the languages that took theirs, "#"
+// for the shell's family, ";" for INI, "--" for Lua; "" = none the editor
+// knows (plain text, markup, data, a binary). An untitled buffer compiles
+// as madc (doc_standard) and takes madc's.
+const char *line_comment_of(long w, long doc)
+{
+    long k = doc_kind(w, doc);
+    if ( k == madc::fkUNKNOWN && doc_untitled(w, doc) )
+	k = madc::fkMADC;
+    if ( kind_family(k) != madc::fkUNKNOWN )
+	return "//";
+    switch ( k )
+    {
+	case madc::fkJS: case madc::fkTYPESCRIPT: case madc::fkRUST:
+	case madc::fkGO: case madc::fkJAVA: case madc::fkPHP:
+	case madc::fkSWIFT: case madc::fkKOTLIN: case madc::fkCSHARP:
+	    return "//";
+	case madc::fkSHELL: case madc::fkMAKEFILE: case madc::fkYAML:
+	case madc::fkTOML: case madc::fkPYTHON: case madc::fkPERL:
+	case madc::fkRUBY:
+	    return "#";
+	case madc::fkINI:
+	    return ";";
+	case madc::fkLUA:
+	    return "--";
+    }
+    return "";
+}
+
 // A standard's spelling where it enters (the command line, the "std"
 // setting, the command's argument), converted once: its kind, or
 // madc::fkUNKNOWN when it names none. A leading `--std=` is madc's own

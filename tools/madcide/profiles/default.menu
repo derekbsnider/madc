@@ -55,6 +55,10 @@ Edit blockdel Delete Block [selection && editable]
 Edit -
 Edit delline Delete Line [editable]
 Edit delword Delete Word [editable]
+Edit -
+Edit indent Indent Lines [editable]
+Edit dedent Dedent Lines [editable]
+Edit togglecomment Toggle Comment [editable]
 
 Search find Find…
 Search findnext Find Next

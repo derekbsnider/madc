@@ -1,0 +1,19 @@
+indent-caret-line: [\tint a;|int b;||int c;|] caret=1 sel=none modified=1
+dedent-caret-line: [int a;|int b;||int c;|] caret=0 sel=none modified=1
+undo-both: [int a;|int b;||int c;|] caret=0 sel=none modified=0
+select-3: [int a;|int b;||int c;|] caret=15 sel=0..15 modified=0
+comment: [// int a;|// int b;||int c;|] caret=21 sel=0..21 modified=1
+uncomment: [int a;|int b;||int c;|] caret=15 sel=0..15 modified=1
+undo-uncomment: [// int a;|// int b;||int c;|] caret=21 sel=0..21 modified=1
+uncomment-again: [int a;|int b;||int c;|] caret=15 sel=0..15 modified=1
+tab-indents: [\tint a;|\tint b;||int c;|] caret=17 sel=0..17 modified=1
+tab-again: [\t\tint a;|\t\tint b;||int c;|] caret=19 sel=0..19 modified=1
+shift-tab: [\tint a;|\tint b;||int c;|] caret=17 sel=0..17 modified=1
+dedent-past-zero: [int a;|int b;||int c;|] caret=15 sel=0..15 modified=1
+mixed-comments-all: [// // x;|// y;|    z;|          w;|] caret=15 sel=0..15 modified=1
+dedent-spaces: [// // x;|// y;|z;|  w;|] caret=15 sel=15..23 modified=1
+python: [# x = 1|] caret=2 sel=none modified=1
+text: [notes|] caret=0 sel=none modified=0
+text: msg=This file's language has no line comment.
+readonly: [int a;|int b;||int c;|] caret=0 sel=none modified=0
+readonly: refused=1

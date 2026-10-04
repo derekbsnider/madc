@@ -701,16 +701,6 @@ long layout_size_of(var &word)
     return v;
 }
 
-// The leading whitespace of a raw line (its nesting depth).
-long layout_depth_of(var &raw)
-{
-    const char *rs = raw.c_str();
-    long d = 0;
-    while ( rs[d] == ' ' || rs[d] == '\t' )
-	d = d + 1;
-    return d;
-}
-
 // One `pane` line's words (after the keyword) into a flat row. False + err.
 bool layout_pane_row(var &row, var &words, long lineno, var &err, long w)
 {
@@ -929,7 +919,7 @@ bool parse_layout(var &layout, const char *text, var &err, long w = 0)
 	    err = format("line {}: unknown word '{}'", lineno, kw);
 	    return false;
 	}
-	long depth = layout_depth_of(raw);
+	long depth = blank_run(raw.c_str());	// its nesting depth: the leading blanks
 	// The open splits: a line at or above an open split's depth closes it.
 	while ( php::count(open) > 0 )
 	{
@@ -3227,6 +3217,20 @@ void select_all(long w, long es, long doc)
     long n = ui::text_size(w, doc);
     ui::set(w, es, "caret", n);
     select_span(w, es, 0, n);
+}
+
+// Edit ▸ Toggle comment: the shared line-comment toggle (edit_lines) over
+// the NAV target, with the stored document's language's opener; an
+// editable buffer whose language has none refuses.
+void toggle_comment(long w, long es, long doc, long nav, long caret)
+{
+    const char *p = line_comment_of(w, doc);
+    if ( es_flag(w, es, "editable") && strlen(p) == 0 )
+    {
+	ui::set(w, es, "msg", "This file's language has no line comment.");
+	return;
+    }
+    edit_lines(w, es, nav, caret, leCOMMENT, p);
 }
 
 // ---- direct editing (^Y delete line, ^W delete word right) ------------
@@ -7452,6 +7456,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    }
 	    case cmdSELECTALL:
 		select_all(w, es, nav);
+		return true;
+	    // The line edits (Thonny's Edit ▸ Indent, Dedent, Toggle comment):
+	    // over the NAV target too, refused on a displayed View by the gate.
+	    case cmdINDENT:
+		edit_lines(w, es, nav, caret, leINDENT, "");
+		return true;
+	    case cmdDEDENT:
+		edit_lines(w, es, nav, caret, leDEDENT, "");
+		return true;
+	    case cmdTOGGLECOMMENT:
+		toggle_comment(w, es, doc, nav, caret);
 		return true;
 	    case cmdBLOCKCOPY:
 	    {

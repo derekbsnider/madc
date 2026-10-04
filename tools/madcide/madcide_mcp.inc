@@ -563,11 +563,7 @@ void line_indent_at(var &out, var &t, long w, long doc, long line)
 {
     long ls = line_start_of(w, doc, line);
     const char *s = t.c_str();		// ONE copy per scan: a c_str() copies the whole text
-    long n = strlen(s);
-    long i = ls;
-    while ( i < n && (s[i] == ' ' || s[i] == '\t') )
-	i = i + 1;
-    out = perl::substr(t, ls, i - ls);
+    out = perl::substr(t, ls, blank_run(s + ls));
 }
 
 // Does [at, end) own its line(s): only whitespace before it on its first line
@@ -845,8 +841,10 @@ void edit_preview(var &out, long w, long adoc, var &t, var &cand, var &ops)
 	    hi = at + del;
 	delta = delta + strlen(s["ins"].c_str()) - del;
     }
-    long line0 = line_of(w, adoc, lo);
-    long line1 = line_of(w, adoc, hi > lo ? hi - 1 : hi);
+    var lr;
+    range_lines(lr, w, adoc, lo, hi);
+    long line0 = lr["first"].as_integer();
+    long line1 = lr["last"].as_integer();
     long rs = line_start_of(w, adoc, line0);
     long re = line_start_of(w, adoc, line1) + ui::text_line_len(w, adoc, line1);
     if ( re < hi )

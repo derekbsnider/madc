@@ -16,12 +16,11 @@
 # VS Code's keys whose command madcide does not have yet are listed, not
 # invented: New File (Ctrl+N), Close (Ctrl+W), Close All (Ctrl+K Ctrl+W),
 # Save All (Ctrl+K S; macOS ⌥⌘S), Replace (Ctrl+H), Find previous
-# (Shift+F3), Toggle line comment (Ctrl+/), Trigger suggestion
-# (Ctrl+Space), Move line (Alt+Up / Alt+Down), Insert line below / above
-# (Ctrl+Enter, Ctrl+Shift+Enter), Go to Definition (F12), next / previous
-# problem (F8 / Shift+F8), the Command Palette (Ctrl+Shift+P, F1), the
-# debugger's steps and breakpoints (F9, F10, F11, Shift+F11), zoom
-# (Ctrl+= / Ctrl+-) and full screen (F11).
+# (Shift+F3), Trigger suggestion (Ctrl+Space), Move line (Alt+Up /
+# Alt+Down), Insert line below / above (Ctrl+Enter, Ctrl+Shift+Enter), Go
+# to Definition (F12), next / previous problem (F8 / Shift+F8), the
+# Command Palette (Ctrl+Shift+P, F1), the debugger's steps and breakpoints
+# (F9, F10, F11, Shift+F11), zoom (Ctrl+= / Ctrl+-) and full screen (F11).
 @title VS Code
 
 # File management
@@ -42,6 +41,12 @@ ctrl+end bottom
 ctrl+left wordleft
 ctrl+right wordright
 ctrl+del delword
+# Indent / Outdent line and Toggle line comment (Tab over a selection that
+# crosses a line indents it too: the editor's GUI rule, no line here)
+primary+] indent
+primary+[ dedent
+shift+tab dedent
+primary+/ togglecomment
 # Search and navigation
 primary+f find
 f3 findnext

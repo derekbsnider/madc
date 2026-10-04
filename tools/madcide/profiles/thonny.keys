@@ -11,8 +11,7 @@
 # Thonny's keys whose command madcide does not have yet are listed, not
 # invented: File ▸ New (Ctrl+N), Close (Ctrl+W), Close all (Ctrl+Shift+W),
 # Save All (Ctrl+Alt+S); Edit ▸ Replace (Thonny's Find & Replace is one
-# dialog; Ctrl+F finds here), Toggle comment (Ctrl+3), Auto-complete
-# (Ctrl+Space); Run ▸ Interrupt (Ctrl+C in the Shell — here Ctrl+C copies
+# dialog; Ctrl+F finds here), Auto-complete (Ctrl+Space); Run ▸ Interrupt (Ctrl+C in the Shell — here Ctrl+C copies
 # everywhere and Ctrl+F2 stops), Send EOF (Ctrl+D), the debugger (F6, F7,
 # F8, Ctrl+F5, Shift+F5, Ctrl+F8); View ▸ the font size (Ctrl+plus,
 # Ctrl+minus) and Full screen (F11).
@@ -31,6 +30,11 @@ primary+x cut
 primary+c copy
 primary+v paste
 primary+a selectall
+# Indent / Dedent selected lines are Thonny's Tab and Shift+Tab: Tab over
+# a selection that crosses a line indents it (the editor's GUI rule, no
+# line here); Shift+Tab dedents the selection's lines, or the caret's.
+shift+tab dedent
+primary+3 togglecomment
 primary+f find
 primary+g gotoline
 primary+l replclear

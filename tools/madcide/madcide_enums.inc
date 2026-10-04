@@ -27,15 +27,15 @@ enum ide_cmd : unsigned short
     cmdNONE = 0,			// unbound chord / unknown name
     // ---- the command registry (profiles/default.menu) ----
     cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
-    cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
+    cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
-    cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
+    cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
     cmdREFRESH, cmdSAVE, cmdSAVEAS,
     cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
-    cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOP, cmdUNDO, cmdVIEW,
+    cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOGGLECOMMENT, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
     cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
     cmdVIMODE, cmdWORDLEFT, cmdWORDRIGHT,
@@ -77,6 +77,7 @@ void cmd_table(var &t)
     rows[] = { "name": "colon", "code": cmdCOLON };
     rows[] = { "name": "copy", "code": cmdCOPY };
     rows[] = { "name": "cut", "code": cmdCUT };
+    rows[] = { "name": "dedent", "code": cmdDEDENT };
     rows[] = { "name": "delline", "code": cmdDELLINE };
     rows[] = { "name": "delword", "code": cmdDELWORD };
     rows[] = { "name": "discard", "code": cmdDISCARD };
@@ -86,6 +87,7 @@ void cmd_table(var &t)
     rows[] = { "name": "gotoline", "code": cmdGOTOLINE };
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
+    rows[] = { "name": "indent", "code": cmdINDENT };
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
     rows[] = { "name": "keystyle", "code": cmdKEYSTYLE };
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
@@ -119,6 +121,7 @@ void cmd_table(var &t)
     rows[] = { "name": "splitw", "code": cmdSPLITW };
     rows[] = { "name": "terminal", "code": cmdTERMINAL };
     rows[] = { "name": "theme", "code": cmdTHEME };
+    rows[] = { "name": "togglecomment", "code": cmdTOGGLECOMMENT };
     rows[] = { "name": "top", "code": cmdTOP };
     rows[] = { "name": "undo", "code": cmdUNDO };
     rows[] = { "name": "view", "code": cmdVIEW };
