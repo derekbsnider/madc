@@ -580,6 +580,16 @@ and a plugin can only observe REPL events (`ide::event`), not add a command.
    - A file command's diagnostics show once: a recorded diagnostic is
      marked when rendered (`Program::Diagnostic::rendered`), and the
      session's end-of-entry render skips the marked ones.
+   - **`.` as a third prefix** (owner, 2026-10-04; next): cling's and
+     Node's `.help`, `.load` reach the same table as `%` and `:`. Their own
+     spellings are alias ROWS resolving to our commands, one meaning under
+     every prefix (D24): `.L` = `%load`, `.q` / `.exit` = a new `%quit`,
+     `.?` = `%help`. cling's `.x file` is not an alias: it loads the file and
+     calls the function named after it (`.x hello.c(1, 2)` runs
+     `hello(1, 2)`), so it is its own command, falling back to `main`. `%help`
+     names each row's aliases. Safe in C/C++: an entry never starts with `.`
+     and a letter (`.5` starts with a digit; a continuation line is not an
+     entry's start).
    - `%build FILE [-o OUT]`: the in-process native build (the Build menu's
      `madc_parse_build` over a parse of FILE), the executable beside FILE.
 3. **The IDE layer** on the same payloads: `%open FILE` and `%edit NAME`
