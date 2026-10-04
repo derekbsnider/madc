@@ -22,7 +22,7 @@ The plugin design settled what the product is (`docs/plans/2026-09-30-madcide-pl
 |---|---|---|
 | Run in `madcide.exe` printed madcide's usage (exit 2) | The Windows Run spawned the running executable with `--run-frozen=` on its command line; only the madc CLI reads that option (from 7225fa035, 2026-09-08). Another AOT program re-ran itself without end. | **Fixed** 6a8a692b4 |
 | The REPL tab: "the backend process is POSIX-only for now (plan 41.9a)" | `SessionClient::start` forks; its `_WIN32` arm refuses | **Fixed** (Step A) |
-| 12 s before the window appears | Not traced. Launches without a window measured under 0.3 s, so the cost is in the window path | Step B |
+| 12 s before the window appears | Not reproduced: the same v0.101.0 zip shows its window in 0.6 s (§5). The owner puts it down to load on the box | **Closed** (Step B) |
 | The macOS tarball has no madcide | An AOT madcide binds libmadc's value runtime; on macOS that is `libmadc-0.dylib`, the darwin port's D5, not built yet | Step C |
 
 ## 3. Done: the run child (6a8a692b4)
@@ -111,12 +111,25 @@ emulation.
 
 ## 5. Step B — the 12 s Windows start
 
-Measure before designing: time `madcide.exe file.c --gui` on the owner's
-Windows box (`scripts/win_run.sh`), split into process start, the forest map,
-the plugin and profile loads, and the first paint. A window-free launch takes
-under 0.3 s, so the cost is in the window path: the webview library's load,
-WebView2's runtime start, or the page's first compose. Fix the measured
-dominator. Never cache a user program (owner law).
+**Measured (2026-10-04): no defect.** Genuine Windows 11 (the owner's box,
+over the `win_run.sh` channel). A PowerShell timer starts the process,
+samples its top-level windows and child processes every 20 ms, then kills it.
+
+| Build | Launch | WebView2 child | `webview` window | page title set | madcide CPU |
+|---|---|---|---|---|---|
+| v0.101.0 (the published zip, freshly unpacked) | `--gui hello.c` | 0.10 s | 0.62 s | 1.04 s | 0.25 s |
+| v0.101.0 | `--gui` (untitled) | 0.07 s | 0.61 s | 1.06 s | 0.14 s |
+| this branch (`tmp/winstage`, release-built `madcide.exe`) | `--gui hello.c` | 0.07 s | 0.62 s | 1.05 s | 0.22 s |
+
+Without a window: `--help` takes 0.03–0.06 s, and `hello.c -c check` (a
+whole session) 0.07–0.08 s. madcide spends under 0.3 s of CPU before the page
+is up; the rest is WebView2's own start. The owner judged the 12 s to be load
+on the box. Nothing to fix.
+
+Found on the way, for D3: `madcide.exe` is a console-subsystem image, so a
+launch from Explorer or a shortcut also opens a console window beside the
+GUI one. The chthonia product, GUI by default, needs a GUI-subsystem image,
+or to detach the console when it opens its window.
 
 ## 6. Step C — macOS
 
@@ -166,7 +179,6 @@ Plugin design §9.3 and §9.4, in its own order:
 
 ## 8. Order
 
-A (the REPL, which every chthonia user sees first; done) → B (measure, then
-fix: waits on the owner, since it opens a window on the owner's desktop) → D1
-(the probe; done) → C (D5) → D2–D4. Each step is its own commit with its
+A (the REPL, which every chthonia user sees first; done) → B (measured, no
+defect; done) → D1 (the probe; done) → C (D5) → D2–D4. Each step is its own commit with its
 reducer, Tier 1 + Tier 2 per commit, and the batch after each step.
