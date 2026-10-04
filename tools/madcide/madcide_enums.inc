@@ -33,7 +33,7 @@ enum ide_cmd : unsigned short
     cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
-    cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
+    cmdPROBLEMS, cmdPROFILE, cmdPROGARGS, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
     cmdREFRESH, cmdREPLACE, cmdSAVE, cmdSAVEALL, cmdSAVEAS,
     cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOGGLECOMMENT, cmdTOP, cmdUNDO, cmdVIEW,
@@ -110,6 +110,7 @@ void cmd_table(var &t)
     rows[] = { "name": "prevw", "code": cmdPREVW };
     rows[] = { "name": "problems", "code": cmdPROBLEMS };
     rows[] = { "name": "profile", "code": cmdPROFILE };
+    rows[] = { "name": "progargs", "code": cmdPROGARGS };
     rows[] = { "name": "projaddcur", "code": cmdPROJADDCUR };
     rows[] = { "name": "project", "code": cmdPROJECT };
     rows[] = { "name": "quit", "code": cmdQUIT };
@@ -310,7 +311,8 @@ enum ide_prompt : unsigned char
 {
     pmNONE = 0, pmCONFIRM, pmFIND, pmGOTOLINE, pmINSERTFILE, pmEDITFILE,
     pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON,
-    pmSAVEASQUIT, pmREPLACE, pmREPLACEWITH, pmREPLACEASK, pmCLOSEASK, pmSAVEASCLOSE
+    pmSAVEASQUIT, pmREPLACE, pmREPLACEWITH, pmREPLACEASK, pmCLOSEASK, pmSAVEASCLOSE,
+    pmPROGARGS
 };
 const char *prompt_name(long m)
 {
@@ -334,6 +336,7 @@ const char *prompt_name(long m)
 	case pmREPLACEASK: return "replaceask";
 	case pmCLOSEASK: return "closeask";
 	case pmSAVEASCLOSE: return "saveasclose";
+	case pmPROGARGS: return "progargs";
     }
     return "";
 }

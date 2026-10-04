@@ -1,0 +1,11 @@
+set: msg=[Program arguments: -n 3 "a file.txt"]
+run: c11> %run madc_ide_progargs.mad -n 3 "a file.txt"
+run: argc 4
+run: arg 1 [-n]
+run: arg 2 [3]
+run: arg 3 [a file.txt]
+prefilled: [-n 3 "a file.txt"]
+bad: msg=[Program arguments not changed: an unclosed quote or a trailing backslash.] kept=[-n 3 "a file.txt"]
+cleared: msg=[Program arguments: none.]
+run-none: c11> %run madc_ide_progargs.mad
+run-none: argc 1

@@ -37,8 +37,9 @@
 // of the entry offered, or
 // of F5's load / run, 0 when none), replrunning (it was taken and runs, or
 // F5's main runs), replsent (its text), replcseq / replccaret / replctext
-// (a pending completion), replloadseq / replrunseq / replrunpath (F5's
-// load and run requests, and the path main runs under), replbseq (a
+// (a pending completion), replloadseq / replrunseq / replrunpath /
+// replrunargs (F5's load and run requests, the path main runs under and
+// the Program arguments it was given), replbseq (a
 // pending bindings request, replbindings), replin (the input
 // buffer, a field: its caret is the field's own), replhist / replhpos /
 // repldraft (the history). Its standard is the session's (madcide_lang.inc):
@@ -393,8 +394,10 @@ void repl_reply(long w, long es, var &r)
 	}
 	var rp;
 	ui::get(rp, w, es, "replrunpath");
-	var argv = {};
-	argv.push(rp);
+	var ra;
+	ui::get(ra, w, es, "replrunargs");
+	var argv;
+	program_argv(argv, rp.c_str(), ra.is_null() ? "" : ra.c_str());
 	long rs = madc::session_run(es_int(w, es, "replh", 0), argv);
 	ui::set(w, es, "replrunseq", rs);
 	ui::set(w, es, "replbusy", rs);
@@ -665,7 +668,17 @@ void repl_run(long w, long es, long doc)
 	return;
     repl_clear_marks(w, es);		// a fresh session owes nothing either
     var name = php::basename(p.c_str());
+    // The Program arguments (the core's progargs) as typed, taken now: the
+    // %run line shows them (Thonny's `%Run hello.py a b`), the run passes
+    // them.
+    var args;
+    ui::get(args, w, es, "progargs");
+    if ( args.is_null() )
+	args = "";
+    ui::set(w, es, "replrunargs", args.c_str());
     var line = format("%run {}", name);
+    if ( strlen(args.c_str()) > 0 )
+	line = format("%run {} {}", name, args);
     var pr;
     repl_prompt(pr, w, es);
     var shown;

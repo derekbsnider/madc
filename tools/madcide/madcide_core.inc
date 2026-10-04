@@ -3029,6 +3029,54 @@ void viewsplit_args(var &arg, long &dir, long &lang);
 void viewdock_target(var &arg, long &slot, long &side);
 void viewsize_args(var &arg, long &slot, long &size);
 
+// An empty answer is no answer — except where empty IS the answer:
+// Replace's text to put in (delete each match) and the Program arguments
+// (none).
+bool prompt_takes_empty(long mode)
+{
+    return mode == pmREPLACEWITH || mode == pmPROGARGS;
+}
+
+// ---- Program arguments (Thonny's View ▸ Program arguments) ---------------
+// The words a run of the buffer passes its main after the path, as the
+// user typed them on the session's bag ("progargs"), split the way Thonny
+// splits them: Python's shlex.split (python::shlex_split). F5's run reads
+// them (the REPL plugin's repl_run).
+
+// The argv a run passes: the path, then the words of `args`. False = `args`
+// does not split (an unclosed quote, a trailing backslash): argv holds the
+// path alone.
+bool program_argv(var &argv, const char *path, const char *args)
+{
+    var words;
+    bool ok = python::shlex_split(words, args);
+    var a = {};
+    var p = path;
+    a.push(p);
+    for ( var wd : words )
+	a.push(wd);
+    argv = a;
+    return ok;
+}
+
+// The prompt's answer: kept when it splits, refused (the old words stay)
+// when it does not.
+void set_program_args(long w, long es, const char *text0)
+{
+    var text = text0;			// ring discipline: own the text first
+    var words;
+    if ( !python::shlex_split(words, text.c_str()) )
+    {
+	ui::set(w, es, "msg", "Program arguments not changed: an unclosed quote or a trailing backslash.");
+	return;
+    }
+    ui::set(w, es, "progargs", text.c_str());
+    if ( php::count(words) == 0 )
+	ui::set(w, es, "msg", "Program arguments: none.");
+    else
+	ui::set(w, es, "msg", format("Program arguments: {}", text));
+}
+
 // Prompt completion (enter): dispatch on the stored mode. False = quit
 // (a committed :q — every other mode continues the session).
 bool finish_prompt(long w, long es, long doc, long caret)
@@ -3037,9 +3085,7 @@ bool finish_prompt(long w, long es, long doc, long caret)
     var in;
     ui::get(in, w, es, "pinput");
     end_prompt(w, es);
-    // An empty answer is no answer — except Replace's text to put in, where
-    // empty means delete each match.
-    if ( strlen(in.c_str()) == 0 && mode != pmREPLACEWITH )
+    if ( strlen(in.c_str()) == 0 && !prompt_takes_empty(mode) )
 	return true;
     if ( mode == pmCOLON )
 	return colon_command(w, es, doc, caret, in);
@@ -3059,6 +3105,11 @@ bool finish_prompt(long w, long es, long doc, long caret)
     {
 	ui::set(w, es, "rwith", in.c_str());
 	replace_begin(w, es, doc, caret);
+	return true;
+    }
+    if ( mode == pmPROGARGS )
+    {
+	set_program_args(w, es, in.c_str());
 	return true;
     }
     if ( mode == pmGOTOLINE )
@@ -7912,6 +7963,17 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdFINDNEXT:
 	    {
 		do_find(w, es, nav, caret);
+		return true;
+	    }
+	    case cmdPROGARGS:
+	    {
+		// The prompt starts with the current words (Thonny's field
+		// keeps them between runs).
+		var cur;
+		ui::get(cur, w, es, "progargs");
+		start_prompt(w, es, "Program arguments", pmPROGARGS);
+		if ( !cur.is_null() )
+		    ui::set(w, es, "pinput", cur.c_str());
 		return true;
 	    }
 	    case cmdREPLACE:

@@ -68,7 +68,7 @@ form one word, and `""` is an empty word. `#` is an ordinary character,
 because `shlex.split` starts no comments. The function returns `false` where
 Python raises `ValueError` (an unclosed quote, or a backslash at the end),
 and `words` is then left empty. It is a pure function, safe to call from any
-thread.
+thread. madcide's Program arguments split with it.
 
 ```c
 var words;

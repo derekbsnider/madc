@@ -104,7 +104,9 @@ comment is `//` for C, C++ and madc (an untitled buffer counts as madc),
 and `--` for Lua. A file with no line comment, such as plain text,
 refuses. Each command is one undo step and leaves the selection covering
 the whole lines. With a selection that crosses a line, Tab indents
-instead of replacing the selection.
+instead of replacing the selection. The Thonny keys bind Shift+Tab and
+Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
+Shift+Tab and Ctrl+/.
 
 Edit ▸ Replace… (`replace`; Ctrl+H in the VS Code keys, `^\` in the Pico
 keys) works like nano's replace. It asks for the text to find, then for
@@ -139,9 +141,7 @@ so an untitled buffer stays open with its changes. The tab to the right
 takes over, or the tab to the left when you close the last tab. madcide
 always has a buffer, so closing the last file leaves the untitled buffer,
 and closing the untitled buffer empties it. The document stays loaded in
-case another client of the session is showing it. The Thonny keys bind Shift+Tab and
-Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
-Shift+Tab and Ctrl+/.
+case another client of the session is showing it.
 
 A binding's last word is a command name from the IDE's one vocabulary
 (`tools/madcide/madcide_enums.inc`, the `ide_cmd` enum and its name table).
@@ -410,6 +410,15 @@ madcide's own REPL pane is a plugin compiled into madcide: its commands
 profile, a menu or a layout names them as it names any plugin's. `replclear`
 empties the transcript and keeps the session and its names (Thonny's Edit ▸
 Clear shell, Ctrl+L in the `thonny` keys).
+
+View ▸ Program arguments… (`progargs`) sets the words F5 passes the program
+after its path, as Thonny's does. The prompt starts with the current words.
+They split the way Thonny splits them, with Python's `shlex.split`
+(`python::shlex_split`), so a quoted word stays whole: `-n 3 "a file.txt"`
+gives `main` an `argc` of 4. The `%run` line shows them as typed. An unclosed
+quote or a trailing backslash is refused, and the old words stay; an empty
+answer clears them. They last until the session ends. Build ▸ Run does not
+pass them.
 
 The shipped `chthonia` plugin carries code: the Variables view in chthonia's
 right sidebar (View ▸ Variables), Thonny's; the sidebar's second tab is the
