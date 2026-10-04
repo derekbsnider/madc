@@ -598,6 +598,16 @@ extern "C" uint64_t __madc_bswap64(uint64_t x)
     return __builtin_bswap64(x);
 }
 
+#if defined(__x86_64__) || defined(__i386__)
+// __builtin_ia32_sfence: a store fence (x86 only, as gcc declares it; the
+// lexer maps the builtin here for an x86 target). An out-of-line call is a
+// compiler barrier too, which is what mingw's __faststorefence also wants.
+extern "C" void __madc_ia32_sfence(void)
+{
+    __builtin_ia32_sfence();
+}
+#endif
+
 // GCC integer bit-operation builtins.
 extern "C" int __madc_ffs(unsigned int x)
 {

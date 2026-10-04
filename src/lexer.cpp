@@ -3939,6 +3939,14 @@ void Program::_tokenizer_init()
 	}
 	define_map[o->name] = o->value;
     }
+    // x86 builtins with no c2mir form map to helpers the madc binary exports,
+    // as the bswap family above does. gcc declares __builtin_ia32_* only for
+    // an x86 target, and the target's own predefine table (just seeded) is
+    // what says the CPU is x86. mingw's <psdk_inc/intrin-impl.h> calls
+    // __builtin_ia32_sfence in the inline __faststorefence that <windows.h>
+    // reaches; C++ has no implicit declaration to carry an unknown one.
+    if ( define_map.count("__x86_64__") || define_map.count("__i386__") )
+	define_map["__builtin_ia32_sfence"] = "__madc_ia32_sfence";
     // C modes define __STDC_VERSION__ per the selected standard (gcc parity;
     // the g++-run capture cannot supply it, and glibc gates its C99/C11
     // surfaces — __USE_ISOC99/__USE_ISOC11 — on it). c89/c90 predate the
