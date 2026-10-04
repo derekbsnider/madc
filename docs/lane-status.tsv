@@ -9,9 +9,9 @@ macos	yes	a480870b6bb9	2026-10-03	BUILD lane: hosted builds + release-macos rc=0
 genuine-win	release	1bddf869e673	2026-10-03	1845/0/0TO/82skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed madc-release-x86-64-windows.exe built at dc6f8f82b content, MADC_SKIP_EXT="win64 win"; +1 skip = testsession_stop, no fork on Windows). win_suite rc=0, 816s
 brew-linux	release	e19b9d5673e8	2026-10-03	1918/0/0TO/9skip - scripts/brew_lane.sh on the container at e19b9d567 (code = aeb92da3a, v0.101.0): brew install --build-bottle + brew bottle (madc-0.101.0.x86_64_linux.bottle.tar.gz) + the keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc, 594s
 tests-jit	batch	19a9202e2d11	2026-10-04	1933 passed, 0 failed, 0 timed out, 9 skipped — batch (container)
-c-testsuite	commit	76d1b0b02252	2026-10-04	220 passed, 0 failed — fast tier (container)
-c-torture	commit	76d1b0b02252	2026-10-04	1614 passed, 0 outside baseline — fast tier (container)
-c2mir-tests	commit	76d1b0b02252	2026-10-04	314 passed, 0 outside baseline — fast tier (container)
-gui	commit	76d1b0b02252	2026-10-04	26/0 (EXE 26/0, OBJ 26/0) — fast tier (container)
-gxx-c++11	no	76d1b0b02252	2026-10-04	1501 passed, 0 outside baseline — fast tier (container)
-index-c	yes	76d1b0b02252	2026-10-04	50/50 — fast tier (container)
+c-testsuite	commit	3f3a617cb0ea	2026-10-04	220 passed, 0 failed — fast tier (container)
+c-torture	commit	3f3a617cb0ea	2026-10-04	1614 passed, 0 outside baseline — fast tier (container)
+c2mir-tests	commit	3f3a617cb0ea	2026-10-04	314 passed, 0 outside baseline — fast tier (container)
+gui	commit	3f3a617cb0ea	2026-10-04	26/0 (EXE 26/0, OBJ 26/0) — fast tier (container)
+gxx-c++11	no	3f3a617cb0ea	2026-10-04	1501 passed, 0 outside baseline — fast tier (container)
+index-c	yes	3f3a617cb0ea	2026-10-04	50/50 — fast tier (container)
