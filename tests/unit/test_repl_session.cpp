@@ -2107,6 +2107,77 @@ TEST_CASE("session commands: %help, %type, an unknown command, and what stays C"
     CHECK(m.shown() == "var");			// the dialect's carrier
 }
 
+// The third prefix (plan §7f): cling's and Node's `.name` reaches the table
+// `%` and `:` reach, and their own spellings are alias rows naming our
+// commands under every prefix — `.L` is %load, `.q` and `.exit` %quit, `.?`
+// %help — which %help names. %quit ends the session: ended() for a host that
+// honors no payloads, the `quit` payload for one that does. What stays C:
+// `.5`, and a designator's `.x` on a continuation line.
+TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
+{
+    std::string lib = temp_source("int thrice(int v) { return 3 * v; }\n",
+				  "madc_repl_dotlib");
+    InteractiveSession c;
+    REQUIRE(c.begin("--std=c17"));
+    std::ostringstream err;
+    c.program().error_stream = &err;
+    REQUIRE(c.submit("int x = 10;"));
+    REQUIRE(c.submit(".type x * 2.5"));
+    CHECK(c.shown() == "double");
+    REQUIRE(c.submit(".L " + lib));
+    REQUIRE(c.submit("thrice(x)"));
+    CHECK(c.shown() == "30");
+    CHECK_FALSE(c.submit("%L " + lib + "x"));	// %L is .L: its FILE opens first
+    CHECK(first_error(c) == "Failed to open file");
+    const char *helps[] = { ".help", ".?", "%?", ":?" };
+    for ( size_t i = 0; i < sizeof(helps) / sizeof(helps[0]); ++i )
+    {
+	CAPTURE(helps[i]);
+	REQUIRE(c.submit(helps[i]));
+	const std::string &h = c.shown();
+	CHECK(h.find("list the session's commands (also .?)\n") != std::string::npos);
+	CHECK(h.find("nothing runs (also .L)\n") != std::string::npos);
+	CHECK(h.find("%quit") != std::string::npos);
+	CHECK(h.find("end the session (also .q, .exit)\n") != std::string::npos);
+    }
+    CHECK_FALSE(c.submit(".nosuch"));
+    CHECK(err.str().find("unknown command '.nosuch'") != std::string::npos);
+    // What stays C.
+    REQUIRE(c.submit(".5 + x"));
+    CHECK(c.shown() == "10.5");
+    REQUIRE(c.submit("struct P { int x; int y; };"));
+    REQUIRE(c.submit("struct P q = {\n.x = 3,\n.y = 4 };"));
+    REQUIRE(c.submit("q.y"));
+    CHECK(c.shown() == "4");
+    // Completion offers the aliases beside the names.
+    size_t start = 0;
+    CHECK(complete_at_end(c, ".ex", &start) == std::vector<std::string>{ "exit" });
+    CHECK(start == 1u);
+    CHECK(complete_at_end(c, ".q") == (std::vector<std::string>{ "q", "quit" }));
+    CHECK(complete_at_end(c, "%L") == std::vector<std::string>{ "L" });
+    // %quit: refused with an argument, else the session ends (status 0).
+    int status = 7;
+    CHECK_FALSE(c.ended(status));
+    CHECK_FALSE(c.submit("%quit now"));
+    CHECK(first_error(c) == "%quit takes no argument");
+    CHECK_FALSE(c.ended(status));
+    REQUIRE(c.submit(".q"));
+    CHECK(c.ended(status));
+    CHECK(status == 0);
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit(".exit"));
+    CHECK(h.payload() == madc::session_payload::quit);
+    CHECK(h.payload_argv().empty());
+    REQUIRE(h.submit(":L " + lib));
+    CHECK(h.payload() == madc::session_payload::load);
+    CHECK(h.payload_argv() == std::vector<std::string>{ lib });
+
+    std::remove(lib.c_str());
+}
+
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
 // knows of a name, in IPython's fields, each overload with its location
 // (Julia), from the walk completion reads: `?` describes a name exactly

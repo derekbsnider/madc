@@ -30,8 +30,9 @@ namespace madc {
     // loaded, nothing run); run (%run, D16: a FRESH session, which the
     // session cannot start itself — the host restarts it, loads the file and
     // runs its main, as F5 does); run_here (%run -i: loaded and run in this
-    // session).
-    enum class session_payload : unsigned char { none, load, run, run_here };
+    // session); quit (%quit: end the session, IPython's ask_exit — a
+    // terminal ends, an IDE pane starts a fresh session; no argv).
+    enum class session_payload : unsigned char { none, load, run, run_here, quit };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`
     // (%whos, madcide's Variables view, plan §41.11a) is one of these codes.

@@ -62,8 +62,9 @@ public:
     // (the path, then the program's arguments): `madc -i file`, the core of
     // %run (D25). False when the file was refused.
     virtual bool run_file(int argc, char **argv) = 0;
-    // The session ended the process (an exit(n) in an entry): its status.
-    // An in-process session never says so (the exit already happened).
+    // The session ended, and its status: an exit(n) in an entry ended a
+    // backend's process (in this process the exit already happened), or
+    // %quit asked to end it (status 0).
     virtual bool ended(int &status) const { (void)status; return false; }
 };
 
@@ -145,12 +146,15 @@ public:
     const std::string &shown() const override;
     std::string standard_name() override;
     bool continues_if(const std::string &line) override;
+    // %quit ended the session (plan §7f): status 0.
+    bool ended(int &status) const override;
 
     // The session's commands (plan §41.8a, D13/D24): an entry whose first
-    // line starts with `%name` or `:name` is a command, never C. The typed
-    // name becomes one of these codes once, at input. `?NAME` is %pinfo NAME,
-    // and `?` alone %help (IPython).
-    enum class Command : unsigned char { help, type, pinfo, whos, load, run };
+    // line starts with `%name`, `:name` or `.name` is a command, never C.
+    // The typed name, a command's or an alias's (cling's `.L`, plan §7f),
+    // becomes one of these codes once, at input. `?NAME` is %pinfo NAME, and
+    // `?` alone %help (IPython).
+    enum class Command : unsigned char { help, type, pinfo, whos, load, run, quit };
     // What the last taken command asks its host (IPython's payloads; the
     // codes are <bits/session_enums>' session_payload), with payload_argv()
     // — the file, then its arguments. A host that honors them says so with
@@ -158,7 +162,8 @@ public:
     // file, an IDE's open buffer as its live text, and only a client can
     // start a FRESH session for %run, D16). With any other host the session
     // loads %load's and %run -i's file itself, and %run refuses, naming
-    // %run -i.
+    // %run -i. %quit's payload has no argv; a host that honors no payloads
+    // reads %quit from ended().
     madc::session_payload payload() const { return payload_kind; }
     const std::vector<std::string> &payload_argv() const { return payload_args; }
     void host_honors_payloads(bool on) { payload_host = on; }
@@ -196,6 +201,7 @@ private:
     // shell's rules (ns_common::shell_words).
     bool load_command(const std::string &argument, const std::string &name);
     bool run_file_command(const std::string &argument, const std::string &name);
+    bool quit_command(const std::string &argument, const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host
     // that honors payloads, else loaded (and run) here.
     bool file_command(madc::session_payload kind, std::vector<std::string> &words);
@@ -215,6 +221,7 @@ private:
     std::vector<std::string> payload_args;
     bool payload_host;			// the host honors payloads
     bool load_main;			// the last loaded file defined main
+    bool quit_asked;			// %quit ended the session
     unsigned quiet_count;		// the quiet entries' units, each its own
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);

@@ -137,6 +137,7 @@ const PayloadRow payload_rows[] = {
     { "load", madc::session_payload::load },
     { "run", madc::session_payload::run },
     { "run_here", madc::session_payload::run_here },
+    { "quit", madc::session_payload::quit },
 };
 
 const char *payload_name(madc::session_payload p)
@@ -1042,6 +1043,13 @@ ReplSession::Offered BackendSession::offer(const std::string &text,
 
 bool BackendSession::honor(const SessionClient::Reply &reply)
 {
+    if ( reply.payload == madc::session_payload::quit )
+    {
+	// %quit: the session ends, and the terminal with it (status 0).
+	has_ended = true;
+	end_status = 0;
+	return true;
+    }
     if ( reply.payload == madc::session_payload::none || reply.argv.empty() )
 	return true;
     if ( reply.payload == madc::session_payload::load )

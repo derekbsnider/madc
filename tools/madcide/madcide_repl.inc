@@ -205,6 +205,7 @@ bool repl_history_step(long w, long es, long dir)
 void repl_pump(long w, long es, long h, long stopc);
 void repl_pane_sync(long w, long es);
 bool repl_run_payload(long w, long es, var &r);
+bool repl_restart(long w, long es, long doc);
 
 // F5's rows into Problems (plan §41.11a step 3): the replies to its load
 // and to its run carry the rows the unit recorded, citing the buffer's
@@ -344,9 +345,11 @@ void repl_reply(long w, long es, var &r)
 	if ( seq != es_int(w, es, "replbusy", 0) )
 	    return;
 	bool taken = r["state"] == madc::offer_state::taken;
+	bool quits = taken && r["payload"] == madc::session_payload::quit;
 	// A file command's payload keeps the pane busy into its file's load
 	// (repl_load_file sets the load's seq), so it never reads idle between.
-	bool files = taken && !(r["payload"] == madc::session_payload::none);
+	bool files = taken && !quits
+		     && !(r["payload"] == madc::session_payload::none);
 	if ( !files )
 	    ui::set(w, es, "replbusy", 0);
 	ui::set(w, es, "replrunning", 0);
@@ -363,6 +366,14 @@ void repl_reply(long w, long es, var &r)
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
 	repl_publish(w, es, reTAKEN, r);
+	if ( quits )
+	{
+	    // %quit (.q, .exit): the session ends, and the pane starts a fresh
+	    // one, as when a backend ends (Thonny's exit()).
+	    if ( repl_restart(w, es, active_doc(w, es, 0)) )
+		repl_feed(w, es, "[the session ended; a new one started]\n");
+	    return;
+	}
 	if ( files && !repl_run_payload(w, es, r) )
 	    ui::set(w, es, "replbusy", 0);
 	return;

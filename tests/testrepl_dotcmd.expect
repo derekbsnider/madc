@@ -1,0 +1,6 @@
+21
+double
+7.5
+%load FILE             define FILE's names in this session; nothing runs (also .L)
+%quit                  end the session (also .q, .exit)
+Each name is also written with `:` or `.` (`:type EXPR`, `.L FILE`).

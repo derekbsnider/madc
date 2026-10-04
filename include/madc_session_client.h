@@ -92,7 +92,8 @@ public:
 	// A taken command's ask of its host (IPython's payloads; a
 	// <bits/session_enums> session_payload): the file and its arguments in
 	// `argv`, for the host to load (%load), run here (%run -i) or run in
-	// a fresh session (%run, D16: restart, load, run, as F5 does).
+	// a fresh session (%run, D16: restart, load, run, as F5 does); or,
+	// with no argv, to end the session (%quit).
 	::madc::session_payload payload;
 	std::vector<std::string> argv;
 	// A completion's: the word's start and the names.
@@ -236,8 +237,8 @@ private:
     bool settle(int rc, const SessionClient::Reply &reply, const std::string &output);
     // A taken command's ask (IPython's payloads): load_file(argv[0])
     // (%load), run_file(argv) (%run -i), or, for %run's fresh session
-    // (D16), the backend restarted first, as F5 does. False when it was
-    // refused or did not start.
+    // (D16), the backend restarted first, as F5 does; %quit ends the
+    // session (ended()). False when it was refused or did not start.
     bool honor(const SessionClient::Reply &reply);
     // FILE loaded into the session (D25), its diagnostics shown; false
     // when it was refused. *defines_main: FILE defined main.

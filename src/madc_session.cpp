@@ -66,25 +66,56 @@ const CommandRow command_rows[] = {
       "define FILE's names in this session; nothing runs" },
     { "run", InteractiveSession::Command::run, "%run [-i] FILE [ARGS]",
       "FILE's main with ARGS, in a fresh session (-i: this one); its names stay" },
+    { "quit", InteractiveSession::Command::quit, "%quit",
+      "end the session" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
+
+// The other REPLs' own spellings (plan §7f): each an alias row naming one of
+// the commands above, one meaning under every prefix (D24).
+struct AliasRow
+{
+    const char *name;
+    InteractiveSession::Command code;
+};
+
+const AliasRow alias_rows[] = {
+    { "?", InteractiveSession::Command::help },		// cling's .?
+    { "L", InteractiveSession::Command::load },		// cling's .L
+    { "q", InteractiveSession::Command::quit },		// cling's .q
+    { "exit", InteractiveSession::Command::quit },	// Node's .exit
+};
+
+const size_t alias_count = sizeof(alias_rows) / sizeof(alias_rows[0]);
+
+const CommandRow *command_coded(InteractiveSession::Command code)
+{
+    for ( size_t i = 0; i < command_count; ++i )
+	if ( command_rows[i].code == code )
+	    return &command_rows[i];
+    return NULL;
+}
 
 const CommandRow *command_named(const std::string &name)
 {
     for ( size_t i = 0; i < command_count; ++i )
 	if ( name == command_rows[i].name )
 	    return &command_rows[i];
+    for ( size_t i = 0; i < alias_count; ++i )
+	if ( name == alias_rows[i].name )
+	    return command_coded(alias_rows[i].code);
     return NULL;
 }
 
 // Where a command stands in an entry (D13): its first line, after blanks,
-// starts with `%` or `:` and at once a name, or with `?` (D15). So `::x` and
-// the `%:` digraph stay C, and so does every continuation line; C starts no
-// statement with `?`.
+// starts with `%`, `:` or `.` and at once a name, or with `?` (D15). The name
+// after a prefix may be `?` (cling's `.?`). So `::x`, the `%:` digraph and
+// `.5` stay C, and so does every continuation line (a designator's `.x`); C
+// starts no statement with `?`, or with `.` and a letter.
 struct CommandText
 {
-    size_t prefix;	// the `%`, `:` or `?`; npos when the text is no command
+    size_t prefix;	// the `%`, `:`, `.` or `?`; npos when the text is no command
     size_t name_end;	// past the name (past the `?`)
     size_t line_end;	// the first line's end
     bool query;		// `?NAME`: IPython's %pinfo NAME; `?` alone its help
@@ -115,16 +146,20 @@ CommandText command_text(const std::string &text)
 	return c;
     }
     if ( i == std::string::npos || i + 1 >= text.size()
-	 || (text[i] != '%' && text[i] != ':') )
+	 || (text[i] != '%' && text[i] != ':' && text[i] != '.') )
 	return c;
     // The name is the REPL's one word rule's run (text_buffer::word_byte,
-    // as completion and word motion read a word), not starting with a digit.
+    // as completion and word motion read a word), not starting with a digit,
+    // or the one byte `?`.
     size_t e = i + 1;
-    if ( !madc::hub::text_buffer::word_byte(text[e])
-	 || isdigit((unsigned char)text[e]) )
-	return c;
-    while ( e < text.size() && madc::hub::text_buffer::word_byte(text[e]) )
+    if ( text[e] == '?' )
 	++e;
+    else if ( !madc::hub::text_buffer::word_byte(text[e])
+	      || isdigit((unsigned char)text[e]) )
+	return c;
+    else
+	while ( e < text.size() && madc::hub::text_buffer::word_byte(text[e]) )
+	    ++e;
     c.prefix = i;
     c.name_end = e;
     c.line_end = text.find('\n', e);
@@ -147,7 +182,7 @@ InteractiveSession::InteractiveSession()
     : prog(new Program()), jit(new CirJitSession()), entry_count(0),
       submit_count(0), showed_command(false),
       payload_kind(madc::session_payload::none), payload_host(false),
-      load_main(false), quiet_count(0)
+      load_main(false), quit_asked(false), quiet_count(0)
 {
 }
 
@@ -155,7 +190,7 @@ InteractiveSession::InteractiveSession(std::unique_ptr<Program> configured)
     : prog(std::move(configured)), jit(new CirJitSession()), entry_count(0),
       submit_count(0), showed_command(false),
       payload_kind(madc::session_payload::none), payload_host(false),
-      load_main(false), quiet_count(0)
+      load_main(false), quit_asked(false), quiet_count(0)
 {
 }
 
@@ -307,8 +342,8 @@ std::vector<std::string> InteractiveSession::complete(const std::string &text,
     CommandText c = command_text(text);
     if ( c.is_command() && caret <= c.line_end )
     {
-	// The command's own name: the registry's names that start with it
-	// (`?` has none: what follows it is the name it asks about).
+	// The command's own name: the registry's names and aliases that start
+	// with it (`?` has none: what follows it is the name it asks about).
 	if ( caret <= c.name_end && !c.query )
 	{
 	    std::vector<std::string> out;
@@ -319,6 +354,9 @@ std::vector<std::string> InteractiveSession::complete(const std::string &text,
 	    for ( size_t i = 0; i < command_count; ++i )
 		if ( strncmp(command_rows[i].name, typed.c_str(), typed.size()) == 0 )
 		    out.push_back(command_rows[i].name);
+	    for ( size_t i = 0; i < alias_count; ++i )
+		if ( strncmp(alias_rows[i].name, typed.c_str(), typed.size()) == 0 )
+		    out.push_back(alias_rows[i].name);
 	    std::sort(out.begin(), out.end());
 	    return out;
 	}
@@ -433,15 +471,27 @@ bool InteractiveSession::run_command(const std::string &text,
     {
 	case Command::help:
 	{
-	    // Each command's usage and what it does; `:` reaches them too.
+	    // Each command's usage, what it does and its aliases; `:` and `.`
+	    // reach them too.
 	    size_t width = 0;
 	    for ( size_t i = 0; i < command_count; ++i )
 		width = std::max(width, strlen(command_rows[i].usage));
 	    for ( size_t i = 0; i < command_count; ++i )
+	    {
 		command_output += std::string(command_rows[i].usage)
 		    + std::string(width + 2 - strlen(command_rows[i].usage), ' ')
-		    + command_rows[i].summary + "\n";
-	    command_output += "Each is also written with `:` (`:type EXPR`).";
+		    + command_rows[i].summary;
+		std::string also;
+		for ( size_t a = 0; a < alias_count; ++a )
+		    if ( alias_rows[a].code == command_rows[i].code )
+			also += (also.empty() ? " (also ." : ", .")
+			      + std::string(alias_rows[a].name);
+		if ( !also.empty() )
+		    command_output += also + ")";
+		command_output += "\n";
+	    }
+	    command_output += "Each name is also written with `:` or `.`"
+			      " (`:type EXPR`, `.L FILE`).";
 	    return true;
 	}
 	case Command::type:
@@ -455,8 +505,34 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return load_command(command_argument(text, c), name);
 	case Command::run:
 	    return run_file_command(command_argument(text, c), name);
+	case Command::quit:
+	    return quit_command(command_argument(text, c), name);
     }
     return false;
+}
+
+// `%quit` (clang-repl's %quit, cling's .q, Node's .exit): the session ends.
+// Ending is its host's (IPython's ask_exit payload): the `quit` payload for a
+// host that honors payloads; any other reads it from ended().
+bool InteractiveSession::quit_command(const std::string &argument,
+				      const std::string &name)
+{
+    if ( argument.find_first_not_of(" \t\r") != std::string::npos )
+    {
+	command_error("%quit takes no argument", name);
+	return false;
+    }
+    quit_asked = true;
+    if ( payload_host )
+	payload_kind = madc::session_payload::quit;
+    return true;
+}
+
+bool InteractiveSession::ended(int &status) const
+{
+    if ( quit_asked )
+	status = 0;
+    return quit_asked;
 }
 
 void InteractiveSession::command_error(const std::string &message,

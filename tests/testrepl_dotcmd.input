@@ -1,0 +1,7 @@
+.L tests/testrepl_runcmd_lib.mad
+thrice(base)
+.type base * 2.5
+.5 + base
+.?
+.q
+exit(3);

@@ -775,7 +775,8 @@ namespace madc {
     //     returns), payload (a madc::session_payload code: what a taken
     //     command asks the pane to do with argv, the file and its
     //     arguments — load it, run it here, or run it in a fresh session,
-    //     reading an open buffer's live text); a load's ok, rendered,
+    //     reading an open buffer's live text; or, with no argv, end the
+    //     session: %quit); a load's ok, rendered,
     //     diagnostics and main (the file defined main, so running it runs
     //     main: one an earlier unit defined is not the file's); a run's ok,
     //     rendered, status (main's) and diagnostics (the rows recorded since
