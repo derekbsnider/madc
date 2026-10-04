@@ -28,6 +28,27 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B168. `__DATE__` / `__TIME__` are madc's own build date, not the compile's
+
+```c
+#include <stdio.h>
+int main(void) { printf("%s\n", __DATE__); return 0; }
+```
+
+- C11 6.10.8.1: the date of translation of the source file. gcc 13 and
+  clang 18 (2026-10-04): `Oct  4 2026`. The v0.101.0 release madc
+  (`tmp/release-bins/v0.101.0`) the same day: `Oct  3 2026` — the day madc
+  itself was built: `src/lexer.cpp` sets `define_map["__DATE__"]` from the
+  C++ compiler's own `__DATE__` (and `__TIME__` likewise).
+- Consumers: Help ▸ About's copyright year (`product_about`) reads
+  `__DATE__`; it is right only while madc and the product are built in the
+  same year.
+- Not a one-line fix: the frozen forest is keyed by the predefined-macro
+  table (the context hash and the producer config), so a per-compile date
+  must stay out of that key (gcc's `SOURCE_DATE_EPOCH` is the reproducible-
+  build convention to honour too).
+- Found 2026-10-04 writing Help ▸ About.
+
 ### B156. `__is_same` is false for a namespace-scope scalar typedef and its type
 
 ```cpp
@@ -697,7 +718,17 @@ int main(void) { return 0; }
 - So a C program for Windows that includes `<windows.h>` does not compile
   with madc on Windows. `tests/testwebviewrunstop` declares the Win32
   types it needs by hand for this reason.
-- Layer not yet traced: where `CLIPFORMAT` should have been declared
+- Two gaps, measured 2026-10-04:
+  1. PACKAGING: `<windows.h>` is not in `scripts/forest_pack_headers_windows.txt`,
+     so the release's forest does not carry it. On genuine Windows (no
+     headers on disk) the release set's `madc.exe` refuses BOTH forms with
+     `Failed to open include file: windows.h`. Under wine the container's
+     mingw headers answer through `Z:` and hide this.
+  2. PARSING: the lean form (`#define WIN32_LEAN_AND_MEAN 1` first — what
+     madc's own `src/rt/rt_posix_*.c` and `rt_task.c` use, and what the
+     August W4 fixes 3aa24f909 / 9f283f21a made parse) compiles and runs
+     under wine (`tick=1`); the full form fails at `objidl.h` as above.
+- Layer not yet traced for (2): where `CLIPFORMAT` should have been declared
   (`wtypes.h`) on madc's include path before `objidl.h` uses it.
 - Found 2026-10-04 writing the reducer for the Windows window-loop stop.
 
