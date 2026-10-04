@@ -106,7 +106,7 @@ int madcide_main(int argc, char **argv, const ide_product &product)
 	// documents; the editor adds others with didOpen).
 	if ( !lsp && !mcp )
 	{
-	    println(stderr, "madcide: --attach needs --lsp or --mcp");
+	    println(stderr, "{}: --attach needs --lsp or --mcp", product_in_use().name);
 	    return 2;
 	}
 	// No address given: DISCOVER the session that holds <file> (V6c-4) —
@@ -119,14 +119,14 @@ int madcide_main(int argc, char **argv, const ide_product &product)
 	    if ( !session_find(rec, file) )
 	    {
 		println(stderr,
-			"madcide: no running session holds {} — start one, or give --attach <host:port>",
-			file);
+			"{}: no running session holds {} — start one, or give --attach <host:port>",
+			product_in_use().name, file);
 		return 2;
 	    }
 	    found_addr = rec["endpoint"];
 	    var line;
 	    session_report(line, rec);
-	    println(stderr, "madcide: discovered {}", line);
+	    println(stderr, "{}: discovered {}", product_in_use().name, line);
 	    return run_attach(found_addr.c_str(), lsp);
 	}
 	return run_attach(attach_addr, lsp);

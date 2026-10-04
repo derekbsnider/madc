@@ -53,7 +53,7 @@ long run_once(var &out, const char *path, bool ro, const char *cmdline,
 	code = cmd_of_w(S.world(), name.c_str());
     if ( code == cmdNONE )
     {
-	println(stderr, "madcide: unknown command '{}' (the names are the registry's: tools/madcide/profiles/default.menu)", name);
+	println(stderr, "{}: unknown command '{}' (-c takes the command names the menus list)", product_in_use().name, name);
 	S.close();
 	return 2;
     }

@@ -4,3 +4,4 @@ product-face: none-web=1 tui=1 gui-web=1 line=1
 product-usage: chthonia=1 madcide=0
 product-open: doc=1 bundle=chthonia transport=linked variables=1
 product-title: [chthonia - madc_ide_product.c @ 1 : 1]
+product-mcp: named=1 base=0

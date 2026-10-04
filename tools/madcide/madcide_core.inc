@@ -8916,7 +8916,7 @@ bool init_view_es(long w, long es, long doc, const char *path,
 	{
 	    var kpath;
 	    bundle_data_path(kpath, w, es, kw.c_str(), cbKEYS);
-	    println(stderr, "madcide: cannot load the startup keys {} and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", kpath);
+	    println(stderr, "{}: cannot load the startup keys {} and the built-in rescue bindings failed to install — check the install layout (source tree: profiles/ beside madcide_core.inc; installed: <exedir>/../share/madcide/profiles, or profiles/ beside the executable).", product_in_use().name, kpath);
 	    return false;
 	}
     }
@@ -9023,7 +9023,7 @@ long IdeSession::open(const char *path0, bool ro, const char *profile, long std)
     long doc = open_buffer_doc(note, w, p.c_str(), ro);
     if ( doc == 0 )
     {
-	println(stderr, "madcide: {}", note);
+	println(stderr, "{}: {}", product_in_use().name, note);
 	return -1;
     }
     if ( !setup_editor_state(w, doc) )

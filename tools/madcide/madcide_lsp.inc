@@ -989,7 +989,7 @@ bool lsp_handle(IdeSession &S, long doc, long self_id, var &req, var &out, var &
     {
 	if ( !wants_reply )
 	{
-	    println(stderr, "madcide --lsp: ignoring unknown notification {}", method);
+	    println(stderr, "{} --lsp: ignoring unknown notification {}", product_in_use().name, method);
 	    return false;				// never answer a notification
 	}
 	var why = format("Method not found: {}", method);

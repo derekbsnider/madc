@@ -565,12 +565,12 @@ int run_build_plugin(const char *dir)
     var rows = {};
     if ( plugin_build(why, rows, dir) )
     {
-	println("madcide: built {}", why);
+	println("{}: built {}", product_in_use().name, why);
 	return 0;
     }
     for ( var r : rows )
 	println(stderr, "{}:{}:{}: {}: {}", r["file"], r["line"], r["column"],
 		r["severity"], r["message"]);
-    println(stderr, "madcide: --build-plugin: {}", why);
+    println(stderr, "{}: --build-plugin: {}", product_in_use().name, why);
     return 1;
 }

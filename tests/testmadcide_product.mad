@@ -13,13 +13,20 @@
 //      is the plugin LINKED into this program: transport `linked`, nothing
 //      loaded or compiled, its Variables command registered;
 //   5. the window's title is Thonny's shape under the product's name: the
-//      composed root's `title` hint, `chthonia - <file> @ <row> : <col>`.
+//      composed root's `title` hint, `chthonia - <file> @ <row> : <col>`;
+//   6. what the program says about itself is under the product's name: an
+//      MCP client's tool descriptions read `chthonia '<command>' command`,
+//      never the base's `madcide`.
 // This unit links the plugin as chthonia's program does (chthonia.json):
 // its code is compiled here, beside the base.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
 #include "../tools/madcide/madcide_args.inc"
+#include "../tools/madcide/madcide_discover.inc"
+#include "../tools/madcide/madcide_client.inc"
+#include "../tools/madcide/madcide_api.inc"
+#include "../tools/madcide/madcide_mcp.inc"
 #include "../tools/madcide/plugins/chthonia/chthonia.mad"	// the plugin, linked in
 
 const ide_product test_product = { "chthonia", "chthonia", ui::WEB, "chthonia",
@@ -83,6 +90,21 @@ int main()
     var root;
     S.compose_ide_tree(root, doc);
     println("product-title: [{}]", root["hints"]["title"]);
+
+    // 6. The tool descriptions an MCP client reads.
+    var tools;
+    mcp_tools(tools, S.w);
+    long named = 0;
+    long base = 0;
+    for ( var t : tools )
+    {
+	var d = t["description"];
+	if ( d.index("chthonia '") == 0 )
+	    named++;
+	if ( d.index("madcide") >= 0 )
+	    base++;
+    }
+    println("product-mcp: named={} base={}", named > 0 ? 1 : 0, base);
     S.close();
     php::unlink(path);
     return 0;

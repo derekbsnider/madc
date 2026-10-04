@@ -482,7 +482,7 @@ void mcp_tools(var &out, long w)
     {
 	var nm = r["name"];
 	long tier = cmd_min_tier_w(w, r["code"].as_integer());
-	var desc = format("madcide '{}' command (requires {} tier)",
+	var desc = format("{} '{}' command (requires {} tier)", product_in_use().name,
 		nm, tier_name(tier));
 	var tool = { "name": nm, "description": desc, "inputSchema": schema };
 	tools[] = tool;
