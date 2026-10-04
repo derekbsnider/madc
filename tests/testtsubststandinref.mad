@@ -1,0 +1,69 @@
+// A reference-returning call made in a member template, bound to a formal the
+// pattern already knows: `f(v)` on a functor whose operator() overloads
+// include member templates is bound at parse time to an overload placeholder,
+// and the instance resolves it to an operator() returning a reference (the
+// shape of std::_Rb_tree's `_KeyOfValue()(__v)`, BUGS.md B170). The reference
+// formal binds the referent itself; a by-value class formal copies it.
+#include <stdio.h>
+#include <map>
+#include <set>
+#include <string>
+#include <utility>
+
+template <typename P>
+struct First {
+	typename P::first_type &operator()(P &x) const { return x.first; }
+	const typename P::first_type &operator()(const P &x) const { return x.first; }
+	template <typename Q>
+	typename Q::first_type &operator()(Q &x) const { return x.first; }
+	template <typename Q>
+	const typename Q::first_type &operator()(const Q &x) const { return x.first; }
+};
+
+typedef std::pair<const int, int> IV;
+typedef std::pair<const std::string, int> SV;
+
+template <class K, class V, class KOV>
+struct Keys {
+	int same(const K &k, const V &v) const { return &k == &v.first; }
+	template <class Arg>
+	int ident(Arg &&v) const { KOV f; return same(f(v), v); }
+};
+
+template <class K, class V, class KOV>
+struct Tree {
+	int same(const K &k, const V &v) const { return &k == &v.first; }
+	size_t length(const K &k) const { return k.size(); }
+	size_t by_value(K k) const { k += "!"; return k.size(); }
+	template <class Arg>
+	int ident(Arg &&v) const { KOV f; return same(f(v), v); }
+	template <class Arg>
+	size_t temp_len(Arg &&v) const { return length(KOV()(v)); }
+	template <class Arg>
+	size_t copy_len(Arg &&v) const { KOV f; return by_value(f(v)); }
+};
+
+int main()
+{
+	Keys<int, IV, First<IV> > ti;
+	IV a(3, 30);
+	printf("scalar identity: %d\n", ti.ident(a));
+
+	Tree<std::string, SV, First<SV> > ts;
+	SV b("abc", 30);
+	printf("class identity: %d\n", ts.ident(b));
+	printf("class value: %zu\n", ts.temp_len(b));
+	printf("class copy: %zu %s\n", ts.copy_len(b), b.first.c_str());
+
+	std::map<std::string, int> ages = { { "bo", 4 }, { "al", 9 }, { "cy", 1 }, { "al", 7 } };
+	printf("map: %zu", ages.size());
+	for (auto &kv : ages)
+		printf(" %s=%d", kv.first.c_str(), kv.second);
+	printf("\n");
+	SV p("dee", 5);
+	auto r = ages.insert(p);
+	printf("insert: %d %s %zu\n", (int)r.second, r.first->first.c_str(), ages.size());
+	std::set<std::string> s = { "b", "a", "b" };
+	printf("set: %zu %s\n", s.size(), s.begin()->c_str());
+	return 0;
+}

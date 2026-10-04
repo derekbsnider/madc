@@ -480,6 +480,11 @@ public:
     // cpp-first-api.md).
     bool stands_for_function_template() const
     { return is_template_placeholder() || !inline_builtin_kind.empty(); }
+    // A member function template's PLACEHOLDER: the declaration-only
+    // stand-in a call binds while its arguments are still dependent (its
+    // return is fabricated; the instance is resolved per substitution).
+    bool is_member_template_placeholder() const
+    { return is_member_template && declaration_only; }
     // import (alias form): a member of a namespace bound to a dynamic module
     // by `import name as ns;`. Non-empty dyn_module_member marks the FuncDef;
     // the CIR builder lowers every call to a runtime-resolved indirect call

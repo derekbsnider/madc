@@ -836,6 +836,12 @@ class CirBuilder {
 	// it only flags forms that `&expr` already rejects, so lvalue arguments keep
 	// the existing direct-address lowering untouched.
 	bool expr_is_nonaddressable_rvalue(TokenBase *arg);
+	// A PATTERN call bound to a member template's placeholder whose
+	// declared return is a reference (`... &` / `... &&`): every instance of
+	// that candidate is a glvalue, while the placeholder's fabricated return
+	// reads as a prvalue ([temp.dep.expr]: the call is type-dependent; the
+	// copy resolves the instance — copied_dependent_call_winner).
+	bool stand_in_call_returns_reference(TokenBase *arg);
 
 	// ---- madc array (`array`, a madc::value) object lowering ----
 	// Same opaque-object model as other runtime objects; array arguments are
@@ -3013,6 +3019,7 @@ public:
 	// BY-VALUE class formal of class `target` (copied_call_arg_for_formal).
 	node_t copied_class_value_arg(class TokenBase *arg, node_t value,
 				      DataDefCLASS *target, DataDef *arg_type,
+				      const std::map<DataDef *, DataDef *> *subst,
 				      std::vector<node_t> &prefix);
 	// Is `arg` a PRVALUE of class `target` — the parameter object itself
 	// ([class.temporary], guaranteed elision)?

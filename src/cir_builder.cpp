@@ -2303,6 +2303,19 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 				out = c2mir_node_first_op(out);
 			arg = plan.rebuilt;
 		}
+		// A pattern call bound as the glvalue its stand-in declares
+		// (`&call`, ref_param_arg_addr) that the copy resolves to a
+		// BY-VALUE overload is a prvalue — bind its value (through a
+		// temporary: ReferentPrvalue).
+		// (A Tree-1 temp's `&__madc_objtmp_N` already is a referent address.)
+		if (FuncDef *w = copied_dependent_call_winner(arg, subst))
+			if (!w->returns_reference()) {
+				cir_node *an = CIR_NODE(out);
+				node_t inner = (an && an->base.code == N_ADDR)
+					? c2mir_node_first_op(out) : NULL;
+				if (inner && inner->code != N_ID)
+					out = inner;
+			}
 		cir_node *on = CIR_NODE(out);
 		DataDef *value_type = on ? on->datadef() : NULL;
 		if (!value_type && arg)
@@ -2324,7 +2337,8 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 	if (!refp && arg && arg_type && src_arg
 	    && CIR_NODE(src_arg)->tsubst_arg_uncoerced)
 		if (DataDefCLASS *vc = by_value_class_formal(formal))
-			return copied_class_value_arg(arg, out, vc, arg_type, prefix);
+			return copied_class_value_arg(arg, out, vc, arg_type,
+						      subst, prefix);
 	return out;
 }
 
@@ -2354,6 +2368,7 @@ void CirBuilder::mark_pattern_arg_uncoerced(node_t args)
 // with a destructor would destroy twice, so that case is refused loudly.
 node_t CirBuilder::copied_class_value_arg(TokenBase *arg, node_t value,
 					  DataDefCLASS *target, DataDef *arg_type,
+					  const std::map<DataDef *, DataDef *> *subst,
 					  std::vector<node_t> &prefix)
 {
 	DataDef *vt = arg_type;
@@ -2365,7 +2380,12 @@ node_t CirBuilder::copied_class_value_arg(TokenBase *arg, node_t value,
 	bool invisible = class_param_via_invisible_ref(target) != NULL;
 	if (vc == target && !invisible)
 		return value;
-	bool prvalue = expr_is_nonaddressable_rvalue(arg);
+	// A call the copy re-resolved has the WINNER's category (its pattern
+	// token is bound to a stand-in): a reference-returning instance is an
+	// lvalue, copy-constructed below.
+	FuncDef *winner = copied_dependent_call_winner(arg, subst);
+	bool prvalue = winner ? !winner->returns_reference()
+			      : expr_is_nonaddressable_rvalue(arg);
 	if (vc == target && (prvalue || class_prvalue_of(arg, target)))
 		return node1(N_ADDR, value, arg);
 	if (prvalue) {
@@ -3192,8 +3212,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			for (Variable *mv : recv_class->methods) {
 				FuncDef *mfd = mv
 					? dynamic_cast<FuncDef *>(mv->type) : NULL;
-				if (!mfd || !mfd->is_member_template
-				    || !mfd->declaration_only
+				if (!mfd || !mfd->is_member_template_placeholder()
 				    || method_candidate_display_name(mv, mfd) != mname)
 					continue;
 				Variable synth_recv("__madc_tsubst_recv",
@@ -3232,7 +3251,7 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 		}
 		FuncDef *wfd = dynamic_cast<FuncDef *>(winner->type);
 		Variable *winner_instance = NULL;
-		if (wfd && wfd->is_member_template && wfd->declaration_only) {
+		if (wfd && wfd->is_member_template_placeholder()) {
 			Variable synth_recv("__madc_tsubst_recv", *recv_type, 1,
 					    NULL, false);
 			TokenCallMethod synth(synth_recv, *winner);
@@ -7664,6 +7683,13 @@ node_t CirBuilder::object_arg_addr(TokenBase *arg, DataDefCLASS *target,
 				     node1(N_ADDR, translate_expr(arg), arg),
 				     arg);
 	}
+	// A pattern call whose member-template stand-in declares a reference
+	// return: the same addr-of-call shape (`&*call'` once the copy rewrites
+	// the callee). Materializing a `target` temp would choose its
+	// constructor against the stand-in's fabricated return type.
+	if (stand_in_call_returns_reference(arg))
+		return node2(N_CAST, void_ptr_type(),
+			     node1(N_ADDR, translate_expr(arg), arg), arg);
 
 	// A Derived object bound to a Base parameter: C++ binds the base SUBOBJECT
 	// (reference binding / upcast) — take the object's own address and select
@@ -7993,6 +8019,16 @@ node_t CirBuilder::object_arg_value(TokenBase *arg, DataDefCLASS *target)
 				     node1(N_ADDR, translate_expr(arg), arg), arg);
 		return node1(N_ADDR, class_object_temp(arg, target), arg);
 	}
+	// A pattern call whose member-template stand-in declares a reference
+	// return: no conversion to `target` can be chosen from the stand-in's
+	// fabricated return type. Keep the call, marked as the argument the copy
+	// converts against the instance's formal and return
+	// (copied_class_value_arg: an lvalue, copy-constructed).
+	if (target && stand_in_call_returns_reference(arg)) {
+		node_t raw = translate_expr(arg);
+		CIR_NODE(raw)->tsubst_arg_uncoerced = true;
+		return raw;
+	}
 	if (!target || !class_param_via_invisible_ref(target))
 		return class_object_value(arg, target);
 	// Pattern-mode pack expansion: keep the marked expression for tsubst
@@ -8018,6 +8054,26 @@ bool CirBuilder::class_prvalue_of(TokenBase *arg, DataDefCLASS *target)
 			return true;
 	return arg && class_operator_value_result(arg)
 	    && as_class_instance(arg->datadef()) == target;
+}
+
+bool CirBuilder::stand_in_call_returns_reference(TokenBase *arg)
+{
+	if (!m_tsubst_pattern_mode || !arg
+	    || (arg->type() != TokenType::ttCallFunc
+		&& arg->type() != TokenType::ttCallMethod))
+		return false;
+	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(arg);
+	if (!call || !tsubst_call_can_rewrite_after_subst(call)
+	    || ref_returning_call_type(arg) || identity_forward_operand(call))
+		return false;
+	FuncDef *fd = call_target_funcdef(call);
+	if (!fd || !fd->is_member_template_placeholder())
+		return false;
+	// The retained return-type tokens close with the declarator's `&` / `&&`.
+	const std::vector<TokenBase *> &rt = fd->member_template_return_tokens;
+	TokenBase *last = rt.empty() ? NULL : rt.back();
+	return last && (last->id() == TokenID::tkBand
+			|| last->id() == TokenID::tkLand);
 }
 
 bool CirBuilder::expr_is_nonaddressable_rvalue(TokenBase *arg)
@@ -8263,8 +8319,16 @@ node_t CirBuilder::ref_param_arg_addr(TokenBase *arg, DataDef *expected_referent
 	// object's address ([expr.ref]) — the reference parameter binds to the
 	// same object, so pass the pointer through. `&translate_expr` below
 	// would take the address of the SLOT (a T** where the callee reads T*).
+	// A pattern call whose member-template stand-in declares a reference
+	// return binds as the glvalue it is (`&call`, `&*call'` once the copy
+	// rewrites the callee); the stand-in's fabricated return would read as
+	// a prvalue and bind a copy. Should the copy resolve the call to a
+	// by-value overload, copied_call_arg_for_formal binds that value
+	// through a temporary.
 	RefArgValueForm form = reference_member_value_is_stored_address(arg)
 		? RefArgValueForm::ReferentAddress
+		: stand_in_call_returns_reference(arg)
+		? RefArgValueForm::ReferentLvalue
 		: RefArgValueForm::ReferentValue;
 	DataDef *value_type = arg ? arg->datadef() : NULL;
 	return ref_param_arg_addr_from_value(
@@ -14628,7 +14692,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	size_t vgrp = 0;
 	int vslot = -1;
 	if (callee && callee->emit_symbol.empty()
-	    && !(callee->is_member_template && callee->declaration_only)) {
+	    && !callee->is_member_template_placeholder()) {
 		std::string vmn = method_slot_name(callee, sym, recv_class);
 		size_t vg; int vs;
 		if (recv_class->find_vslot(vmn, vg, vs)) {
@@ -14687,8 +14751,8 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			this_arg, origin);
 	}
 
-	if (m_tsubst_pattern_mode && callee && callee->is_member_template
-	    && callee->declaration_only
+	if (m_tsubst_pattern_mode && callee
+	    && callee->is_member_template_placeholder()
 	    && tsubst_call_can_rewrite_after_subst(tm)
 	    && tsubst_call_has_pack_expansion_arg(tm)) {
 		// The instantiated callee's __retbuf ABI is knowable HERE: the
@@ -14737,7 +14801,7 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 		return reference_call_result(callee, mcall, origin);
 	}
 
-	if (callee && callee->is_member_template && callee->declaration_only)
+	if (callee && callee->is_member_template_placeholder())
 		if (node_t mt = member_template_method_call(tm, callee, this_arg, origin))
 			return mt;
 	if (callee && !callee->emit_symbol.empty())
@@ -18185,7 +18249,7 @@ FuncDef *CirBuilder::select_or_instantiate_ctor(DataDefCLASS *cdd,
 	// (idempotent, memoized per class+arg types) and re-select, exactly as
 	// resolve_copied_dependent_call instantiates member-call callees at
 	// copy time.
-	if ((!ctor || (ctor->is_member_template && ctor->declaration_only))
+	if ((!ctor || ctor->is_member_template_placeholder())
 	    && m_prog) {
 		// list_initialization = false here: the [dcl.init.list]/3-4
 		// filter fired at the PARSE construction sites; this
@@ -21124,8 +21188,8 @@ node_t CirBuilder::member_template_method_call(TokenMember *tm, FuncDef *callee,
 	// deduction below needs the thawed pattern.
 	if (callee)
 		callee->ensure_member_template_thawed();
-	if (!tm || !callee || !callee->is_member_template
-	    || !callee->declaration_only || !callee->is_varargs)
+	if (!tm || !callee || !callee->is_member_template_placeholder()
+	    || !callee->is_varargs)
 		MTCALL_BAIL("flags");
 	DataDefCLASS *owner = !callee->parameters.empty()
 			    ? class_behind(callee->parameters[0]) : NULL;
