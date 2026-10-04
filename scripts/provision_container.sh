@@ -227,15 +227,21 @@ report() {
 			missing=1
 		fi
 	done
-	# The madcmark module's pinned cmark-gfm (scripts/stage_cmark_gfm.sh).
+	# The madcmark module's pinned cmark-gfm (scripts/stage_cmark_gfm.sh), per
+	# target like libgit2's; the macOS twins need the SDK.
 	local cm
-	cm=$(bash "$(dirname "$0")/stage_cmark_gfm.sh" --path host)
-	if [ -f "$cm/libcmark-gfm.a" ]; then
-		printf '  ok      cmark-gfm stage (%s)\n' "$cm"
-	else
-		printf '  MISSING cmark-gfm stage (%s) — scripts/stage_cmark_gfm.sh host\n' "$cm"
-		missing=1
-	fi
+	for t in host x86-64-windows arm64-macos x86-64-macos; do
+		cm=$(bash "$(dirname "$0")/stage_cmark_gfm.sh" --path "$t")
+		if [ -f "$cm/libcmark-gfm.a" ]; then
+			printf '  ok      cmark-gfm stage (%s)\n' "$cm"
+		else
+			case $t in
+			*-macos) printf '  MISSING cmark-gfm stage (%s) — scripts/stage_cmark_gfm.sh %s (needs the SDK)\n' "$cm" "$t" ;;
+			*)       printf '  MISSING cmark-gfm stage (%s) — scripts/stage_cmark_gfm.sh %s\n' "$cm" "$t" ;;
+			esac
+			missing=1
+		fi
+	done
 	return $missing
 }
 
@@ -312,10 +318,14 @@ echo "provision_container: staging cmark-gfm (madcmark, the host)"
 bash "$(dirname "$0")/stage_cmark_gfm.sh" host || exit 1
 echo "provision_container: staging libgit2 (madcgit cross, x86-64-windows)"
 bash "$(dirname "$0")/stage_libgit2.sh" x86-64-windows || exit 1
+echo "provision_container: staging cmark-gfm (madcmark cross, x86-64-windows)"
+bash "$(dirname "$0")/stage_cmark_gfm.sh" x86-64-windows || exit 1
 if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then
 	for a in arm64-macos x86-64-macos; do
 		echo "provision_container: staging libgit2 (madcgit cross, $a)"
 		bash "$(dirname "$0")/stage_libgit2.sh" "$a" || exit 1
+		echo "provision_container: staging cmark-gfm (madcmark cross, $a)"
+		bash "$(dirname "$0")/stage_cmark_gfm.sh" "$a" || exit 1
 	done
 fi
 

@@ -14,6 +14,8 @@
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
 #   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine carrying the forest (win twin of libmadc.so.0; madc.exe, AOT output, madcide and chthonia bind it)
 #   madc-<ver>-windows-x86_64/bin/madcwebview.dll     the platform webview library (WebView2 + native chrome; GUI programs: import madcwebview)
+#   madc-<ver>-windows-x86_64/bin/madcgit.dll         the madcgit module (git::, libgit2 linked in)
+#   madc-<ver>-windows-x86_64/bin/madcmark.dll        the madcmark module (markdown::, cmark-gfm linked in)
 #   madc-<ver>-windows-x86_64/lib/libmadc.dll.a       import lib for it (link .o output)
 #   madc-<ver>-windows-x86_64/lib/libmadc_rt.a        emitted-C runtime (try/catch + VLA)
 #   madc-<ver>-windows-x86_64/madc.ini.example        documented example config (non-live name)
@@ -57,7 +59,7 @@ GCC_SRC="${WIN_UCRT_LIBSTDCXX_SRC:-/workspace/win-ucrt-libstdc++/gcc-13.2.0}"
 mkdir -p dist
 
 for f in "$BIN" "$SET/libstdc++-6.dll" "$SET/libwinpthread-1.dll" "$SET/libmadc-0.dll" \
-         "$SET/madcwebview.dll" "$SET/madcgit.dll" lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
+         "$SET/madcwebview.dll" "$SET/madcgit.dll" "$SET/madcmark.dll" lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
     if [ ! -f "$f" ]; then
         echo "package_release_windows: $f missing — run 'make -C src release-windows' first" >&2
         exit 1
@@ -117,6 +119,9 @@ install -m 755 "$SET/madcwebview.dll" "$STAGE/$ROOT/bin/madcwebview.dll"
 # minimal read-only libgit2 is STATIC-linked inside it; nothing named libgit2
 # ships.
 install -m 755 "$SET/madcgit.dll" "$STAGE/$ROOT/bin/madcgit.dll"
+# The madcmark module (a program that says `markdown::…`, e.g. the IDEs' help):
+# beside madc.exe; cmark-gfm is STATIC-linked inside it.
+install -m 755 "$SET/madcmark.dll" "$STAGE/$ROOT/bin/madcmark.dll"
 install -m 644 lib/libmadc.dll.a "$STAGE/$ROOT/lib/libmadc.dll.a"
 install -m 644 lib/libmadc_rt-hosted-x86-64-windows.a "$STAGE/$ROOT/lib/libmadc_rt.a"
 install -m 644 LICENSE "$STAGE/$ROOT/LICENSE"
@@ -144,6 +149,8 @@ install -m 644 third_party/webview/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/web
 # madcgit.dll statically links libgit2 (GPLv2 WITH the linking exception, which
 # permits linking into a differently-licensed application): its notice ships.
 install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$STAGE/$ROOT/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
+# madcmark.dll statically links cmark-gfm (BSD-2 and MIT): its notice ships.
+install -m 644 "$(make -C src -s print-CMARK_GFM_STAGE)/src/COPYING" "$STAGE/$ROOT/THIRD_PARTY_NOTICES/cmark-gfm-COPYING.txt"
 
 cat > "$STAGE/$ROOT/README-windows.txt" <<EOF
 madc ${VER} for Windows (x86_64)

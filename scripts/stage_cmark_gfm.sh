@@ -71,7 +71,8 @@ if [ "$tag" != "$CMARK_GFM_TAG" ]; then
 fi
 
 toolchain=$(bash scripts/stage_cmake_args.sh "$target")
-mapfile -t TOOLCHAIN <<< "$toolchain"
+TOOLCHAIN=()
+while IFS= read -r arg; do TOOLCHAIN+=("$arg"); done <<< "$toolchain"	# bash 3.2 has no mapfile
 
 echo "cmark-gfm ($target): configuring static build"
 printf '  %s\n' "${TOOLCHAIN[@]}"

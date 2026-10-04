@@ -221,6 +221,12 @@ jobs:
         run: |
           bash scripts/stage_libgit2.sh x86-64-windows
           ls -la "$(bash scripts/stage_libgit2.sh --path x86-64-windows)"
+      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+        # release-windows builds the markdown:: module too, cmark-gfm linked
+        # into madcmark.dll; staged like libgit2 above (after configure).
+        run: |
+          bash scripts/stage_cmark_gfm.sh x86-64-windows
+          ls -la "$(bash scripts/stage_cmark_gfm.sh --path x86-64-windows)"
       - name: initialize wine prefix
         # A fresh runner HOME has no ~/.wine; without this, the FIRST wine
         # invocation happens inside forest_pack_windows.sh's freeze and the
@@ -326,6 +332,12 @@ jobs:
         run: |
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
+      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+        # The darwin twin of the windows step: release-macos builds
+        # libmadcmark.dylib with the arch's stage linked in.
+        run: |
+          bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
+          ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee release-make.log

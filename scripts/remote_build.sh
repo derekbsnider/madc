@@ -458,7 +458,11 @@ for stage in $stages; do
 		#                      VALIDATES (the `packed` rule) — without it the
 		#                      suite ran whatever hosted PE the last `win`
 		#                      stage left, however old.
-		run_remote "wine" "make -C $REMOTE_MADC/src -j20 hosted-x86-64-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
+		#   make modules-windows: the module DLLs the hosted exe imports
+		#                      from bin/ (madcgit.dll, madcmark.dll) — the
+		#                      same rule; a stale madcgit.dll failed testgit
+		#                      with "'madcgit_status' is not exported".
+		run_remote "wine" "make -C $REMOTE_MADC/src -j20 hosted-x86-64-windows; make -C $REMOTE_MADC/src -j20 modules-windows; cd $REMOTE_MADC; WINEDEBUG=-all wineserver -p </dev/null >/dev/null 2>&1; WINEDEBUG=-all MADC_BIN=bin/madc-hosted-x86-64-windows.exe MADC_WRAPPER=wine MADC_SKIP_EXT='win64 wine64' bash scripts/run_tests.sh"
 		;;
 	warnscan)
 		# Accepts lane labels: remote_build.sh 'warnscan host win64'

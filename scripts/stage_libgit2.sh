@@ -84,7 +84,8 @@ fi
 
 # The target's toolchain (scripts/stage_cmake_args.sh, one argument per line).
 toolchain=$(bash scripts/stage_cmake_args.sh "$target")
-mapfile -t TOOLCHAIN <<< "$toolchain"
+TOOLCHAIN=()
+while IFS= read -r arg; do TOOLCHAIN+=("$arg"); done <<< "$toolchain"	# bash 3.2 has no mapfile
 
 # zlib policy differs by target. libgit2's BUNDLED zlib (deps/zlib) is ancient
 # K&R code: it compiles under mingw but NOT against the macOS SDK headers

@@ -21,6 +21,8 @@
 #   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
 #                                             (WKWebView + native chrome; GUI programs:
 #                                             import madcwebview) — macOS 13.3+
+#   madc-<ver>-macos-<arch>/lib/libmadcgit.dylib   the madcgit module (git::, libgit2 linked in)
+#   madc-<ver>-macos-<arch>/lib/libmadcmark.dylib  the madcmark module (markdown::, cmark-gfm linked in)
 #   madc-<ver>-macos-<arch>/bin/madcide       the IDE, AOT-compiled by bin/madc  } darwin host of
 #   madc-<ver>-macos-<arch>/bin/chthonia      the learning IDE (a window)       } this arch only
 #   madc-<ver>-macos-<arch>/share/madcide/    madcide's data (profiles, plugins, plugin headers,
@@ -32,6 +34,7 @@
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/darwin-libc-NOTICE.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/APSL-2.0.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/webview-LICENSE.txt  (webview/webview, MIT)
+#   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libgit2-COPYING.txt, cmark-gfm-COPYING.txt
 #   madc-<ver>-macos-<arch>/README-macos.txt  ad-hoc signing / quarantine notes
 # and refreshes their lines in dist/SHA256SUMS (other lines preserved — run
 # scripts/package_release.sh FIRST; it rewrites that file wholesale).
@@ -146,6 +149,13 @@ package_arch() {
         echo "package_release_macos: $madcgit missing — run 'make -C src release-macos' first (it builds madcgit-${bin_arch}-macos)" >&2
         exit 1
     fi
+    # The madcmark module (a program that says `markdown::…`, e.g. the IDEs'
+    # help), built the same way with cmark-gfm STATIC-linked inside it.
+    local madcmark="lib/madcmark/${bin_arch}-macos/libmadcmark.dylib"
+    if [ ! -f "$madcmark" ]; then
+        echo "package_release_macos: $madcmark missing — run 'make -C src release-macos' first (it builds madcmark-${bin_arch}-macos)" >&2
+        exit 1
+    fi
 
     # madcide and chthonia (owner ruling 2026-09-01: the packages ship the
     # IDE; chthonia plan §7 D4), AOT-compiled by THIS arch's release madc and
@@ -177,6 +187,7 @@ package_arch() {
     install -m 755 "$rtdylib" "$stage/$root/lib/libmadc-0.dylib"
     install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
     install -m 755 "$madcgit" "$stage/$root/lib/libmadcgit.dylib"
+    install -m 755 "$madcmark" "$stage/$root/lib/libmadcmark.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     if [ "$ide" = 1 ]; then
         install -m 755 "tmp/madcide-pkg-$bin_arch" "$stage/$root/bin/madcide"
@@ -213,6 +224,10 @@ package_arch() {
     # its notice ships.
     install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" \
         "$stage/$root/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
+    # libmadcmark.dylib statically links cmark-gfm (BSD-2 and MIT): its notice
+    # ships.
+    install -m 644 "$(make -C src -s print-CMARK_GFM_STAGE)/src/COPYING" \
+        "$stage/$root/THIRD_PARTY_NOTICES/cmark-gfm-COPYING.txt"
     local ide_text=""
     if [ "$ide" = 1 ]; then
         ide_text="

@@ -953,11 +953,13 @@ endif
 # The platform webview library (webview.mk) rides the release of each arch:
 # package_release_macos.sh ships it as lib/libmadcwebview.dylib. The madcgit
 # module (madcgit.mk) rides too, with the minimal static libgit2 linked in;
-# package_release_macos.sh ships it as lib/libmadcgit.dylib.
+# package_release_macos.sh ships it as lib/libmadcgit.dylib. So does the
+# madcmark module (madcmark.mk, cmark-gfm linked in): lib/libmadcmark.dylib.
 release-%-macos:
 	$(MAKE) hosted-$*-macos
 	$(MAKE) webview-$*-macos
 	$(MAKE) madcgit-$*-macos
+	$(MAKE) madcmark-$*-macos
 	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../obj/hosted-$*-macos/madc-thin
 	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/libmadc-0.dylib obj/hosted-$*-macos/forest.bin
 
@@ -1018,7 +1020,8 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # The platform webview library (webview.mk) rides the release too:
 # package_release_windows.sh ships bin/madcwebview.dll beside madc.exe. The
 # madcgit module (madcgit.mk) rides too, with the minimal static libgit2 linked
-# in; package_release_windows.sh ships bin/madcgit.dll beside madc.exe.
+# in; package_release_windows.sh ships bin/madcgit.dll beside madc.exe. So
+# does the madcmark module (madcmark.mk, cmark-gfm linked in): bin/madcmark.dll.
 # The release SET (docs/plans/2026-10-03-chthonia-windows-macos.md §7b,
 # forest-carriers S4's shared shape on Windows) is one directory, because a
 # PE binds its DLLs by adjacency: the thin madc.exe, the stripped
@@ -1027,14 +1030,20 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # program) load that one engine image, and find the forest in it through
 # the library-image arm. Its own directory also keeps a dev rebuild of
 # bin/libmadc-0.dll (no forest) from ever standing in for the release one.
+# The module DLLs a hosted madc.exe imports from beside it (bin/): what
+# release-windows ships, and what the wine lane's hosted exe loads
+# (scripts/remote_build.sh wine) — one list.
+modules-windows:
+	$(MAKE) madcgit-windows
+	$(MAKE) madcmark-windows
 release-windows:
 	$(MAKE) hosted-x86-64-windows
 	$(MAKE) webview-windows
-	$(MAKE) madcgit-windows
+	$(MAKE) modules-windows
 	$(MAKE) MODE=hosted-x86-64-windows $(WIN_RELEASE_DIR)/madc.exe
 	x86_64-w64-mingw32-strip $(WIN_RELEASE_DIR)/madc.exe
 	x86_64-w64-mingw32-strip -o $(WIN_RELEASE_DIR)/libmadc-0.dll ../bin/libmadc-0.dll
-	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll ../bin/madcgit.dll $(WIN_RELEASE_DIR)/
+	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll ../bin/madcgit.dll ../bin/madcmark.dll $(WIN_RELEASE_DIR)/
 	rm -f ../bin/madc-release-x86-64-windows.exe
 	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
 	cd .. && bash scripts/verify_pe_release.sh bin/release-windows/madc.exe

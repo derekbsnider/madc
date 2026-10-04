@@ -7,7 +7,7 @@
 #
 #   bash scripts/stage_cmake_args.sh <host|x86-64-windows|arm64-macos|x86-64-macos>
 #       prints the arguments, ONE PER LINE (a value may contain spaces):
-#       mapfile -t args <<< "$(bash scripts/stage_cmake_args.sh "$target")"
+#       (read them into an array line by line: stage_libgit2.sh)
 #   bash scripts/stage_cmake_args.sh --target <target>
 #       prints the canonical target (host -> x86-64-linux, aarch64-linux)
 #

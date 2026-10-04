@@ -130,6 +130,12 @@ jobs:
           # serves the native build with no path hardcoded to the container.
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
           ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
+      - name: stage the static cmark-gfm (the madcmark module's build-time dep)
+        run: |
+          # release-%-macos builds the markdown:: module too, cmark-gfm
+          # linked into libmadcmark.dylib; staged like libgit2 above.
+          bash scripts/stage_cmark_gfm.sh ${{ matrix.arch }}-macos
+          ls -la "$(bash scripts/stage_cmark_gfm.sh --path ${{ matrix.arch }}-macos)"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee probe-make.log

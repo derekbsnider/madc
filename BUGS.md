@@ -2221,7 +2221,12 @@ int main(void) { return x; }
   (`scripts/brew_lane.sh`, linuxbrew), and the Mac bottle is held.
 - Fix: one module-link owner keyed on the host's object format (ELF vs
   Mach-O), not on MODE, so a native darwin build links a module as the
-  hosted darwin arm does.
+  hosted darwin arm does. The name is not the problem: macOS `dlopen`
+  ignores the extension, and a module is only ever opened, never linked
+  with `-l`, so modules can be spelled `lib<module>.so` on both Linux and
+  macOS (owner, 2026-10-04). That spelling moves
+  `madc_module_library_spelling`, its gate, the module makefiles and the
+  macOS packager together.
 - Found 2026-10-04 while adding cmark-gfm to the Homebrew formula (the
   madcmark module).
 
