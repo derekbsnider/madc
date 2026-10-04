@@ -83,8 +83,9 @@ fi
 # mac and win archives already ship it.
 install -m 644 lib/release/libmadc_rt.a "$root/$libdir/libmadc_rt.a"
 # The optional modules: the platform webview library (the loader tries
-# <exedir>/../lib first, then the system search) and the madcgit module.
-for m in libmadcwebview.so libmadcgit.so; do
+# <exedir>/../lib first, then the system search), the madcgit module and the
+# madcmark module.
+for m in libmadcwebview.so libmadcgit.so libmadcmark.so; do
 	if [ -f "lib/$m" ]; then
 		install -m 755 "lib/$m" "$root/$libdir/$m"
 	elif [ -n "$MADC_STAGE_REQUIRE_MODULES" ]; then
@@ -117,6 +118,19 @@ install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
 # that library's own package carries its notice.
 if [ -f "$root/$libdir/libmadcgit.so" ] && [ -n "$(make -C src -s print-MADCGIT_LIBGIT2)" ]; then
 	install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$p/share/doc/madc/libgit2-copyright"
+fi
+# A libmadcmark.so linked against the staged cmark-gfm carries its code
+# (BSD-2 and MIT), so the stage's notice ships beside it; one linked against a
+# system cmark-gfm (Homebrew) leaves the notice to that package.
+if [ -f "$root/$libdir/libmadcmark.so" ]; then
+	notice=$(make -C src -s print-MADCMARK_NOTICE)
+	if [ -n "$notice" ]; then
+		if [ ! -f "$notice" ]; then
+			echo "stage_install: cmark-gfm's notice $notice is missing (scripts/stage_cmark_gfm.sh host)" >&2
+			exit 1
+		fi
+		install -m 644 "$notice" "$p/share/doc/madc/cmark-gfm-copyright"
+	fi
 fi
 gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
 # The example config keeps its real name: share/doc is not on madc.ini's

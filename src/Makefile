@@ -753,10 +753,12 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
 MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_sqlite.cpp
-# The madcgit module's unit test links the module and libgit2 (the staged
-# archive, or a system libgit2 at the floor): madcgit.mk builds it (and adds
-# it to TESTBINS) where one of them is present.
-MODULE_TESTSRCS = $(TESTDIR)/test_gitrepo.cpp
+# The modules' unit tests link the module and its dependency: madcgit's
+# libgit2 (the staged archive, or a system libgit2 at the floor), madcmark's
+# cmark-gfm (the staged archives, or a system cmark-gfm). madcgit.mk /
+# madcmark.mk build each (and add it to TESTBINS) where its dependency is
+# present.
+MODULE_TESTSRCS = $(TESTDIR)/test_gitrepo.cpp $(TESTDIR)/test_markdown.cpp
 ifeq ($(HAVE_MADCDAT),1)
 ACTIVE_TESTSRCS = $(filter-out $(MODULE_TESTSRCS), $(TESTSRCS))
 else
@@ -782,9 +784,9 @@ LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 # build when you are NOT about to run unit tests, pass BUILD_TESTS=0.
 BUILD_TESTS ?= 1
 ifeq ($(BUILD_TESTS),1)
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(TESTBINS) $(MADCGIT_DEFAULT) $(MADCMARK_DEFAULT)
 else
-DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(MADCGIT_DEFAULT)
+DEFAULT_TARGETS = $(LIBMADC_STATIC) $(LIBMADC_RT) $(BIN) $(LIBMADC_SHARED) $(MADCGIT_DEFAULT) $(MADCMARK_DEFAULT)
 endif
 
 
@@ -796,8 +798,14 @@ print-%:
 all:
 	$(MAKE) $(DEFAULT_TARGETS)
 
+# The Linux host's stage target for the CMake-built module dependencies
+# (x86-64-linux, aarch64-linux): scripts/stage_cmake_args.sh's spelling, read
+# from it — the stage scripts and these makefiles name one directory.
+STAGE_HOST_TARGET := $(shell bash ../scripts/stage_cmake_args.sh --target host)
+
 include webview.mk
 include madcgit.mk
+include madcmark.mk
 
 libmadc:
 	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
@@ -1194,7 +1202,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-anchor-owner.sh
 	@cd .. && bash scripts/check-one-blank-run.sh
 	@cd .. && bash scripts/check-chthonia-boundary.sh
-	@cd .. && bash scripts/check-madcgit-exports.sh
+	@cd .. && bash scripts/check-module-exports.sh
 	@cd .. && bash scripts/check-one-style-vocabulary.sh
 	@cd .. && bash scripts/check-expect-twins.sh
 	@cd .. && bash scripts/check-object-module-deps.sh

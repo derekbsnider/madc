@@ -133,6 +133,13 @@ jobs:
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
           LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh host
           ls -la "$(LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh --path host)"
+      - name: stage the static cmark-gfm (the madcmark module links it)
+        # The tag src/madcmark.mk pins, staged like libgit2's (after configure:
+        # it reads the build's CC/AR from src/Makefile).
+        run: |
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
+          CMARK_GFM_DIR=$HOME/cmark-gfm bash scripts/stage_cmark_gfm.sh host
+          ls -la "$(CMARK_GFM_DIR=$HOME/cmark-gfm bash scripts/stage_cmark_gfm.sh --path host)"
       - name: build + package + install-gate smoke (deb, rpm, tarball)
         run: |
           # Suite skipped, citation: a v* tag exists only on content the

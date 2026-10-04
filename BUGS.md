@@ -2207,6 +2207,24 @@ int main(void) { return x; }
 - Found 2026-10-03 while fixing the Windows Run recursion (the audit of
   `madc_self_exe_path()` callers).
 
+## Build and packaging
+
+### B172. A native macOS `make -C src` links the modules with GNU ld's flags
+
+- `src/madcgit.mk` and `src/madcmark.mk` choose their arm by MODE: the
+  hosted darwin MODEs get `-dynamiclib`, `-install_name` and `-load_hidden`.
+  A native macOS build in the default MODE (`develop`, which is what the
+  Homebrew formula's `make -C src` runs) falls to the Linux arm:
+  `-Wl,-soname` and `-Wl,--exclude-libs,ALL`, which Apple's ld64 does not
+  take, and a `.so` name.
+- Not measured: there was no mac run. The brew lane is Linux-only
+  (`scripts/brew_lane.sh`, linuxbrew), and the Mac bottle is held.
+- Fix: one module-link owner keyed on the host's object format (ELF vs
+  Mach-O), not on MODE, so a native darwin build links a module as the
+  hosted darwin arm does.
+- Found 2026-10-04 while adding cmark-gfm to the Homebrew formula (the
+  madcmark module).
+
 ## Open questions
 
 ### B10. `__builtin_types_compatible_p` in C++

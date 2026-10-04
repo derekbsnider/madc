@@ -1,0 +1,7 @@
+available: true
+blocks: 5
+heading: true level=1 text=Hello
+task: true checked=true
+table: true right=true
+code: info=c text=int x;
+link: true url=https://example.com

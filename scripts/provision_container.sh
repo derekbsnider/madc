@@ -80,7 +80,8 @@ PKGS_storage="libdb-dev libgdbm-dev libsqlite3-dev libqdbm-dev libxqdbm-dev"
 # target, the host included (owner floor 2026-10-04: 1.8.7 / 1.9.7 or newer;
 # Ubuntu's libgit2-dev is 1.7.2). The stage needs cmake. Without the host
 # stage the module is not built and the nexus degrades to "no repository";
-# the suite's git tests need it.
+# the suite's git tests need it. The madcmark module (src/madcmark.mk) links
+# the pinned cmark-gfm scripts/stage_cmark_gfm.sh builds the same way.
 PKGS_git="cmake"
 PKGS_cross="qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu"
 # rpm supplies rpmbuild for scripts/package_release.sh (.rpm leg); dpkg-deb
@@ -226,6 +227,15 @@ report() {
 			missing=1
 		fi
 	done
+	# The madcmark module's pinned cmark-gfm (scripts/stage_cmark_gfm.sh).
+	local cm
+	cm=$(bash "$(dirname "$0")/stage_cmark_gfm.sh" --path host)
+	if [ -f "$cm/libcmark-gfm.a" ]; then
+		printf '  ok      cmark-gfm stage (%s)\n' "$cm"
+	else
+		printf '  MISSING cmark-gfm stage (%s) — scripts/stage_cmark_gfm.sh host\n' "$cm"
+		missing=1
+	fi
 	return $missing
 }
 
@@ -298,6 +308,8 @@ fi
 # report MISSING, not a provisioning fail.
 echo "provision_container: staging libgit2 (madcgit, the host)"
 bash "$(dirname "$0")/stage_libgit2.sh" host || exit 1
+echo "provision_container: staging cmark-gfm (madcmark, the host)"
+bash "$(dirname "$0")/stage_cmark_gfm.sh" host || exit 1
 echo "provision_container: staging libgit2 (madcgit cross, x86-64-windows)"
 bash "$(dirname "$0")/stage_libgit2.sh" x86-64-windows || exit 1
 if [ -d "${MACOS_SDK:-/workspace/sdk/MacOSX.sdk}" ]; then

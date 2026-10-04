@@ -24,12 +24,11 @@
 # compiled by the cross toolchain) so the archive is fully self-contained and
 # no cross find_package(ZLIB) is needed.
 #
-# The compiler + archiver are the hosted MODE's OWN (make print-CC/print-AR:
-# mingw-w64 UCRT over specs on the container for windows, cross clang-18 +
-# llvm-ar-18 for macOS) — libgit2 is built by the SAME toolchain line madc is,
-# never a copy of it kept here. Static-only (BUILD_SHARED_LIBS=OFF): CMake only
-# compiles .o and archives, so no darwin dylib/install_name link step runs on
-# the Linux host.
+# The toolchain is the target's hosted MODE's own, translated into CMake's
+# arguments by scripts/stage_cmake_args.sh (the one translation, shared with
+# stage_cmark_gfm.sh). Static-only (BUILD_SHARED_LIBS=OFF): CMake only compiles
+# .o and archives, so no darwin dylib/install_name link step runs on the Linux
+# host.
 #
 # Layout under $LIBGIT2_DIR (default /workspace/libgit2), per pinned tag:
 #   <tag>/src/                       the pinned source tree (git tag)
@@ -47,14 +46,7 @@ if [ "${1:-}" = "--path" ]; then
     shift
 fi
 target="${1:?$usage}"
-host_target="$(uname -m | tr _ -)-linux"
-case "$target" in
-    x86-64-windows|arm64-macos|x86-64-macos) ;;
-    x86_64-windows) target=x86-64-windows ;;
-    x86_64-macos)   target=x86-64-macos ;;
-    host|"$host_target") target=$host_target ;;
-    *) echo "stage_libgit2: unknown target '$target' ($usage)" >&2; exit 2 ;;
-esac
+target=$(bash "$(dirname "$0")/stage_cmake_args.sh" --target "$target") || exit 2
 cd "$(dirname "$0")/.."
 
 # The pin and the stage directory: src/madcgit.mk's, never a second copy.
@@ -90,89 +82,38 @@ if [ "$tag" != "$LIBGIT2_TAG" ]; then
     exit 1
 fi
 
-# The target MODE's compiler + archiver, read from the one definition: a
-# cross target's hosted MODE, the host's default build otherwise. print-CC
-# yields "<program> <flags...>"; CMake wants the program and its flags apart.
-case "$target" in
-    *-linux) MODE= ; MODEARG=() ;;
-    *)       MODE="hosted-$target" ; MODEARG=( MODE="$MODE" ) ;;
-esac
-CCLINE=$(make -C src -s "${MODEARG[@]}" print-CC)
-AR=$(make -C src -s "${MODEARG[@]}" print-AR)
-[ -n "$CCLINE" ] && [ -n "$AR" ] || { echo "libgit2 ($target): could not read CC/AR of MODE=${MODE:-default} from src/Makefile" >&2; exit 1; }
-CC_PROG=${CCLINE%% *}
-CC_FLAGS=${CCLINE#* }
-[ "$CC_FLAGS" = "$CCLINE" ] && CC_FLAGS=
-# ranlib beside the archiver (llvm-ar-18 -> llvm-ranlib-18; *-ar -> *-ranlib).
-RANLIB=$(printf '%s' "$AR" | sed 's/\(.*\)ar/\1ranlib/')
+# The target's toolchain (scripts/stage_cmake_args.sh, one argument per line).
+toolchain=$(bash scripts/stage_cmake_args.sh "$target")
+mapfile -t TOOLCHAIN <<< "$toolchain"
 
-# CMAKE_SYSTEM_NAME switches libgit2's platform backends (win32 vs posix). The
-# macOS targets are unix-like; Darwin picks the posix path with the SDK sysroot.
 # zlib policy differs by target. libgit2's BUNDLED zlib (deps/zlib) is ancient
 # K&R code: it compiles under mingw but NOT against the macOS SDK headers
 # (deps/zlib/zutil.c vs _stdio.h). Windows has no guaranteed system zlib, so
 # there we bundle it (the archive stays fully self-contained). macOS ships zlib
 # as a SYSTEM library (always present at runtime), so there we compile against
 # the SDK's zlib.h and let libmadcgit.dylib resolve -lz at its own link — the
-# static libgit2.a carries no zlib objects, only unresolved zlib symbols.
-# The host target is a native build: no cross settings, position-independent
-# code (the archive links into the shared libmadcgit.so), and the system
-# zlib madc's own packages already depend on (zlib1g).
+# static libgit2.a carries no zlib objects, only unresolved zlib symbols. The
+# SDK is the hosted MODE's (print-MACOS_SDK: the container's staged SDK on a
+# cross build, Xcode's on a native darwin host). The host target links the
+# system zlib madc's own packages already depend on (zlib1g).
 case "$target" in
-    *-linux) SYSNAME=Linux ; SYS_EXTRA=( -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DUSE_BUNDLED_ZLIB=OFF ) ;;
-    *-windows) SYSNAME=Windows ; SYS_EXTRA=( -DUSE_BUNDLED_ZLIB=ON ) ;;
+    *-linux) ZLIB=( -DUSE_BUNDLED_ZLIB=OFF ) ;;
+    *-windows) ZLIB=( -DUSE_BUNDLED_ZLIB=ON ) ;;
     *-macos)
-        arch=${target%-macos}
-        SYSNAME=Darwin
-        # The darwin cross linker (the one madc's own build uses): without it
-        # clang falls back to the host GNU ld, which cannot link Mach-O
-        # ("unrecognised emulation mode: llvm") and CMake's compiler + feature
-        # checks fail. -fuse-ld=lld is the DARWIN_LD_FLAGS the hosted MODE sets;
-        # read it from the one definition rather than hardcode it here.
-        LDF=$(make -C src -s MODE="$MODE" print-DARWIN_LD_FLAGS)
-        # The macOS SDK sysroot comes from the hosted MODE, never a hardcode:
-        # on the container MACOS_SDK falls back to /workspace/sdk/MacOSX.sdk,
-        # but a NATIVE darwin host (the darwin-probe.yml GitHub runner, which
-        # also stages this archive before `make release-macos`) has its Xcode
-        # SDK elsewhere. print-MACOS_SDK yields whichever this host uses
-        # (`xcrun --show-sdk-path` on darwin, the /workspace fallback on the
-        # container), so the same recipe serves the cross build and the native
-        # build. zlib's headers/tbd live under that same SDK on both.
-        SDK=$(make -C src -s MODE="$MODE" print-MACOS_SDK)
-        [ -n "$SDK" ] || { echo "libgit2 ($target): could not read MACOS_SDK of MODE=$MODE from src/Makefile" >&2; exit 1; }
-        SYS_EXTRA=( -DCMAKE_OSX_SYSROOT="$SDK"
-                    -DCMAKE_OSX_ARCHITECTURES="$(printf %s "$arch" | sed 's/x86-64/x86_64/')"
-                    -DCMAKE_OSX_DEPLOYMENT_TARGET=12
-                    -DCMAKE_EXE_LINKER_FLAGS="$LDF"
-                    -DCMAKE_SHARED_LINKER_FLAGS="$LDF"
-                    -DCMAKE_MODULE_LINKER_FLAGS="$LDF"
-                    -DUSE_BUNDLED_ZLIB=OFF
-                    -DZLIB_INCLUDE_DIR="$SDK/usr/include"
-                    -DZLIB_LIBRARY="$SDK/usr/lib/libz.tbd" )
+        SDK=$(make -C src -s MODE="hosted-$target" print-MACOS_SDK)
+        [ -n "$SDK" ] || { echo "libgit2 ($target): could not read MACOS_SDK of MODE=hosted-$target from src/Makefile" >&2; exit 1; }
+        ZLIB=( -DUSE_BUNDLED_ZLIB=OFF
+               -DZLIB_INCLUDE_DIR="$SDK/usr/include"
+               -DZLIB_LIBRARY="$SDK/usr/lib/libz.tbd" )
         ;;
 esac
 
 echo "libgit2 ($target): configuring minimal static build"
-echo "  CC=$CC_PROG   FLAGS=$CC_FLAGS"
-echo "  AR=$AR   RANLIB=$RANLIB   SYSTEM=$SYSNAME"
-# A cross target names its system and keeps CMake's searches inside it.
-case "$target" in
-    *-linux) CROSS=() ;;
-    *) CROSS=( -DCMAKE_SYSTEM_NAME="$SYSNAME"
-               -DCMAKE_SYSTEM_PROCESSOR=x86_64
-               -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=NEVER
-               -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY
-               -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY ) ;;
-esac
+printf '  %s\n' "${TOOLCHAIN[@]}"
 rm -rf "$BUILD"
 mkdir -p "$BUILD"
 cmake -S "$SRC" -B "$BUILD" -G "Unix Makefiles" \
-    -DCMAKE_BUILD_TYPE=Release \
-    "${CROSS[@]}" \
-    -DCMAKE_C_COMPILER="$CC_PROG" \
-    -DCMAKE_C_FLAGS="$CC_FLAGS" \
-    -DCMAKE_AR="$(command -v "$AR" || echo "$AR")" \
-    -DCMAKE_RANLIB="$(command -v "$RANLIB" || echo "$RANLIB")" \
+    "${TOOLCHAIN[@]}" \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_TESTS=OFF \
     -DBUILD_CLI=OFF \
@@ -184,7 +125,7 @@ cmake -S "$SRC" -B "$BUILD" -G "Unix Makefiles" \
     -DUSE_GSSAPI=OFF \
     -DUSE_ICONV=OFF \
     -DREGEX_BACKEND=builtin \
-    "${SYS_EXTRA[@]}"
+    "${ZLIB[@]}"
 
 jobs=$(nproc 2>/dev/null || echo 4)
 echo "libgit2 ($target): building (-j$jobs)"

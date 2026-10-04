@@ -41,8 +41,6 @@ LIBGIT2_DIR ?= /workspace/libgit2
 LIBGIT2_TAG := v1.9.7
 LIBGIT2_STAGE = $(LIBGIT2_DIR)/$(LIBGIT2_TAG)
 LIBGIT2_INCLUDE = $(LIBGIT2_STAGE)/src/include
-# The host's own stage target: x86-64-linux, aarch64-linux.
-LIBGIT2_HOST_TARGET := $(shell uname -m | tr _ -)-linux
 
 ifeq ($(MODE),hosted-x86-64-windows)
 # --- Windows bundle: madcgit.dll (row .windows) beside madc.exe. Self-contained
@@ -55,7 +53,7 @@ MADCGIT_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-x86-64-windows.a
 MADCGIT_CFLAGS = -I$(LIBGIT2_INCLUDE)
 # --exclude-libs,ALL: the DLL has no dllexport, so ld auto-exports every
 # global — the archives' too, libgit2's whole API among them. Excluded, the
-# module exports its own madcgit_* only (gate: check-madcgit-exports.sh).
+# module exports its own madcgit_* only (gate: check-module-exports.sh).
 MADCGIT_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib -Wl,--exclude-libs,ALL
 MADCGIT_LIBS = $(MADCGIT_LIBGIT2) -L../lib -lmadc.dll -lws2_32 -lsecur32 -lpthread
 MADCGIT_LINK_PREREQ = ../bin/libmadc-0.dll
@@ -70,7 +68,7 @@ MADCGIT_CFLAGS = -I$(LIBGIT2_INCLUDE)
 MADCGIT_LINK_FLAGS = $(DARWIN_LD_FLAGS) -dynamiclib -Wl,-install_name,@rpath/libmadcgit.dylib -undefined dynamic_lookup
 # -load_hidden: the archive's symbols load with hidden visibility, so the
 # dylib exports its own madcgit_* only, never libgit2's API (a script's dlsym
-# fallback would otherwise find them; gate: check-madcgit-exports.sh).
+# fallback would otherwise find them; gate: check-module-exports.sh).
 MADCGIT_LIBS = -Wl,-load_hidden,$(MADCGIT_LIBGIT2) -lz
 MADCGIT_LINK_PREREQ =
 else
@@ -81,7 +79,7 @@ else
 # flags; MADCGIT_LIBGIT2 stays empty then (no archive linked, no notice to
 # ship: the system package carries its own). `all` builds the module where
 # either is present; a release (package_release.sh) requires the stage.
-MADCGIT_STAGED = $(LIBGIT2_STAGE)/libgit2-$(LIBGIT2_HOST_TARGET).a
+MADCGIT_STAGED = $(LIBGIT2_STAGE)/libgit2-$(STAGE_HOST_TARGET).a
 ifneq ($(wildcard $(MADCGIT_STAGED)),)
 MADCGIT_LIBGIT2 = $(MADCGIT_STAGED)
 MADCGIT_AVAILABLE := 1
@@ -97,7 +95,7 @@ MADCGIT_LIBRARY = $(LIBDIR)/libmadcgit.so
 # --exclude-libs,ALL: the static archive's git_* stay internal to the module.
 # Modules load RTLD_GLOBAL (madc_dl_open_global), so an exported copy would
 # enter the process's global scope beside any libgit2 a program loads itself
-# (gate: check-madcgit-exports.sh).
+# (gate: check-module-exports.sh).
 MADCGIT_LINK_FLAGS = -shared -fPIC -Wl,-soname,libmadcgit.so -Wl,--exclude-libs,ALL
 MADCGIT_LINK_PREREQ =
 ifeq ($(MADCGIT_AVAILABLE),1)

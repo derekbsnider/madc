@@ -21,6 +21,11 @@ static const MadcModuleSpec madc_modules[] = {
 	// src/madcgit.mk where pkg-config finds libgit2; the <ns_git> fragment
 	// imports it and asks madc::module_available before the first call.
 	{ "madcgit", "madcgit.h", "libmadcgit.so", "libmadcgit.dylib", "madcgit.dll", MADC_MODULE_LAZY },
+	// GitHub-flavoured Markdown (plan 2026-10-03-chthonia-windows-macos.md
+	// §7d): cmark-gfm, a dependency linked statically into the module
+	// (src/madcmark.mk); the <ns_markdown> fragment imports it and asks
+	// madc::module_available before the first call.
+	{ "madcmark", "madcmark.h", "libmadcmark.so", "libmadcmark.dylib", "madcmark.dll", MADC_MODULE_LAZY },
 	{ NULL, NULL, NULL, NULL, NULL, 0 }
 };
 

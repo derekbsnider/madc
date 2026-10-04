@@ -31,6 +31,9 @@
 #   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view, the
 #                                               pinned libgit2 linked in statically (the nexus's PAST
 #                                               verbs; git:: programs) — no libgit2 package needed
+#   /usr/lib/<multiarch|lib64>/libmadcmark.so   the madcmark module: Markdown parsed by cmark-gfm,
+#                                               linked in statically (markdown:: programs; the IDE's
+#                                               help and previews) — no cmark-gfm package needed
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
 #   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
@@ -39,6 +42,7 @@
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
 #   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into libmadcgit.so
+#   /usr/share/doc/madc/cmark-gfm-copyright     cmark-gfm's notices — linked into libmadcmark.so
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
 #
@@ -124,6 +128,16 @@ if [ ! -f "$lg2" ]; then
     exit 1
 fi
 make -C src -j"$(nproc)" libmadcgit > /dev/null
+# The madcmark module (src/madcmark.mk): Markdown, statically linking the
+# pinned cmark-gfm scripts/stage_cmark_gfm.sh staged for this host. Required
+# for the same reason as libgit2's stage: the system arm (the Homebrew
+# formula's) links a shared cmark-gfm no package declares.
+cm=$(bash scripts/stage_cmark_gfm.sh --path host)
+if [ ! -f "$cm/libcmark-gfm.a" ]; then
+    echo "package_release: $cm/libcmark-gfm.a missing — bash scripts/stage_cmark_gfm.sh host" >&2
+    exit 1
+fi
+make -C src -j"$(nproc)" libmadcmark > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
     echo "package_release: distribution binary still links storage libs" >&2
@@ -212,7 +226,7 @@ Recommends: gtk4
 # The webview library's own DT_NEEDED (webkitgtk, gtk4 and their world) must
 # not become hard Requires of the whole package: the GUI is optional, the
 # weak dependencies above name it.
-%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit)\\.so\$
+%global __requires_exclude_from ^/usr/lib64/(libmadcwebview|libmadcgit|libmadcmark)\\.so\$
 %define __strip /bin/true
 %define _build_id_links none
 
@@ -233,10 +247,12 @@ ${DESC_BODY}
 /usr/lib64/libmadc_rt.a
 /usr/lib64/libmadcwebview.so
 /usr/lib64/libmadcgit.so
+/usr/lib64/libmadcmark.so
 /usr/share/madcide
 %doc /usr/share/doc/madc/copyright
 %doc /usr/share/doc/madc/webview-copyright
 %doc /usr/share/doc/madc/libgit2-copyright
+%doc /usr/share/doc/madc/cmark-gfm-copyright
 %doc /usr/share/doc/madc/changelog.gz
 %doc /usr/share/doc/madc/examples/madc.ini
 /usr/share/man/man1/madc.1.gz
@@ -300,6 +316,11 @@ libgit2 linked into it (the \`git::\` namespace; madcide's MCP seat reads
 history, blame and revisions through it). It is loaded on first use and
 needs no libgit2 installed; libgit2's notice is
 share/doc/madc/libgit2-copyright.
+
+Markdown: lib/libmadcmark.so parses Markdown with cmark-gfm linked into
+it (the \`markdown::\` namespace; the IDEs' help and previews read
+through it). It is loaded on first use and needs no cmark-gfm installed;
+cmark-gfm's notice is share/doc/madc/cmark-gfm-copyright.
 
 It needs the WebKitGTK 6.0 and GTK 4 runtime libraries installed
 (Debian/Ubuntu: libwebkitgtk-6.0-4 libgtk-4-1; Fedora: webkitgtk6.0

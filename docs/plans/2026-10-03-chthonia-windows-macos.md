@@ -429,10 +429,14 @@ follows Thonny's defaults is titled Chthonia (`chthonia.keys`, owner
 **One Markdown parser: cmark-gfm** (github/cmark-gfm, owner 2026-10-04 —
 the CommonMark reference implementation plus GitHub's tables, task lists,
 strikethrough and autolinks, which READMEs are written in). A dependency,
-not a subtree: Debian/Ubuntu `libcmark-gfm-dev`, Homebrew `cmark-gfm`, and
-the same upstream release built with mingw for Windows. It links
-statically into a madc module beside `madcgit`, which every package ships,
-because Help must work on every platform. Its COPYING (BSD-2 for cmark;
+not a subtree: one pinned upstream release (`CMARK_GFM_TAG` in
+`src/madcmark.mk`, 0.29.0.gfm.13), staged per target by
+`scripts/stage_cmark_gfm.sh` as `madcgit`'s libgit2 is — the distributions
+lag the upstream fixes (Ubuntu 24.04 carries 0.29.0.gfm.6). It links
+statically into the `madcmark` module beside `madcgit`, which every package
+ships, because Help must work on every platform. A system cmark-gfm
+(Homebrew's formula depends on `cmark-gfm`; a dev box) builds the module
+linked shared when no stage is present. Its COPYING (BSD-2 for cmark;
 MIT for houdini, GitHub's buffer and the utf8proc-derived utf8.c) ships
 verbatim with each package: `/usr/share/doc/madc/cmark-gfm-copyright` on
 Linux, `THIRD_PARTY_NOTICES/cmark-gfm-COPYING.txt` on macOS and Windows.
@@ -465,8 +469,8 @@ with its kind (an enum) and its source range. Three consumers:
    computes them inside the block's known range.
 
 **Measured 2026-10-04** (cmark-gfm 0.29.0.gfm.6, Ubuntu's
-`libcmark-gfm-dev` + `libcmark-gfm-extensions-dev`, which ship static
-archives and a `libcmark-gfm.pc`; a probe printing every node's
+`libcmark-gfm-dev` + `libcmark-gfm-extensions-dev`, and the same probe
+against the pinned 0.29.0.gfm.13: identical positions; a probe printing every node's
 `start/end line:column` with `CMARK_OPT_SOURCEPOS` and the table,
 strikethrough, autolink and tasklist extensions attached, over a sample
 with emphasis across a line break, a link, code spans, a nested list, a
