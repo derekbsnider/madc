@@ -137,6 +137,7 @@ jobs:
           echo "=== freeze + verify evidence ==="
           grep -E "forest_pack_gate:|forest_pack_darwin: OK|verify_macho_release:|Froze " probe-make.log
           ls -la bin/madc-hosted-${{ matrix.arch }}-macos bin/madc-release-${{ matrix.arch }}-macos \
+                 obj/hosted-${{ matrix.arch }}-macos/libmadc-0.dylib lib/libmadc-0.dylib \
                  obj/hosted-${{ matrix.arch }}-macos/forest.bin obj/hosted-${{ matrix.arch }}-macos/madc-freezer \
                  lib/libmadc_rt-hosted-${{ matrix.arch }}-macos.a
           echo "forest units (container cross-pack baseline: 835):"
@@ -159,12 +160,14 @@ jobs:
           bin/madc-release-${{ matrix.arch }}-macos --version | head -1
       - name: mac battery on the runner (tarball-shaped stage)
         run: |
-          # The battery expects the tarball layout: bin/madc + lib/libmadc_rt.a
-          # beside it (leg 6c). Owner-hardware baseline: 8 passed / 3 failed
-          # (three standing known-opens) — the gate holds the PASS floor and
-          # prints every FAIL line for the leg-for-leg compare.
+          # The battery expects the tarball layout: the thin bin/madc, the
+          # lib/libmadc-0.dylib it loads (the engine + the forest), and
+          # lib/libmadc_rt.a beside it (leg 6c). Owner-hardware baseline: 8
+          # passed / 3 failed (three standing known-opens) — the gate holds the
+          # PASS floor and prints every FAIL line for the leg-for-leg compare.
           mkdir -p tmp/stage/bin tmp/stage/lib
           cp bin/madc-release-${{ matrix.arch }}-macos tmp/stage/bin/madc
+          cp obj/hosted-${{ matrix.arch }}-macos/libmadc-0.dylib tmp/stage/lib/libmadc-0.dylib
           cp lib/libmadc_rt-hosted-${{ matrix.arch }}-macos.a tmp/stage/lib/libmadc_rt.a
           set +e
           bash scripts/mac_battery.sh tmp/stage/bin/madc 2>&1 | tee mac-battery.log

@@ -1,31 +1,38 @@
 #!/bin/bash
-# verify_macho_release.sh — container-side gate for a stripped darwin release
-# binary (macos-release-lane plan W1): the strip must not have cost the
-# forest carrier or the code signature.
+# verify_macho_release.sh — container-side gate for a darwin release pair
+# (macos-release-lane plan W1; the thin shape: chthonia plan §7b): the
+# stripped thin CLI and the libmadc-0.dylib that carries the forest.
 #
-#   bash scripts/verify_macho_release.sh <macho-binary> <expected-forest.bin>
+#   bash scripts/verify_macho_release.sh <madc-cli> <libmadc-0.dylib> <expected-forest.bin>
 #
-# Four authorities, runnable on the Linux container AND natively on a darwin
+# Six authorities, runnable on the Linux container AND natively on a darwin
 # build host (darwin-host port D2 — the host's brew coreutils/llvm serve the
 # GNU spellings; MADC_READER names the reader, OTOOL the load-command dumper):
-#   1. the __MADC,__forest section exists and its BYTES equal the freeze's
-#      standalone container (extracted by load-command offset/size);
+#   1. the library's __MADC,__forest section exists and its BYTES equal the
+#      freeze's standalone container (extracted by load-command offset/size);
 #   2. the extracted bytes read back as a forest (the same --dump-forest
 #      checks the pack gate applies) through the READER: the Linux bin/madc
 #      on the container, the unstripped hosted binary on a darwin host — a
 #      madc of the same tree either way (freeze-context hash);
-#   3. arm64 slices carry LC_CODE_SIGNATURE (llvm-strip re-signs ad-hoc when
-#      it rewrites the file; a missing signature means AMFI kills the binary
-#      on sight). x86-64 darwin does not require one.
+#   3. arm64 images (the CLI and the library) carry LC_CODE_SIGNATURE
+#      (llvm-strip re-signs ad-hoc when it rewrites the file; a missing
+#      signature means AMFI kills the image on sight). x86-64 darwin does not
+#      require one.
 #   4. the embedded C prelude is OPEN-provenance (W0.5): the umbrella's
-#      marker line rides in .rodata, so the binary names its own prelude
-#      input. An "sdk-private" stamp (the never-shipped oracle diff input)
-#      or a missing marker refuses the release here, mechanically.
+#      marker line rides in the library's .rodata, so the release names its
+#      own prelude input. An "sdk-private" stamp (the never-shipped oracle
+#      diff input) or a missing marker refuses the release here, mechanically.
+#   5. the prelude restores C language linkage (below).
+#   6. the CLI is thin: no forest section of its own, an LC_LOAD_DYLIB of
+#      @rpath/libmadc-0.dylib, and an LC_RPATH of @loader_path/../lib — the
+#      tarball's lib/ beside bin/. A monolithic binary here would ship the
+#      engine twice and leave every other program on the library forest-less.
 # In-vivo AMFI acceptance stays the Mac battery's job (W2).
 set -e
 
-BIN="$1"
-FOREST="$2"
+CLI="$1"
+BIN="$2"
+FOREST="$3"
 # Tool spellings: the container's versioned apt names first, then the
 # unversioned ones a brew llvm prefix (or PATH) supplies.
 OTOOL="${OTOOL:-$(command -v llvm-otool-18 || command -v llvm-otool || echo llvm-otool-18)}"
@@ -36,12 +43,12 @@ if [ -z "$TIMEOUT" ]; then
     exit 1
 fi
 
-if [ -z "$BIN" ] || [ -z "$FOREST" ]; then
-    echo "usage: $0 <macho-binary> <expected-forest.bin>" >&2
+if [ -z "$CLI" ] || [ -z "$BIN" ] || [ -z "$FOREST" ]; then
+    echo "usage: $0 <madc-cli> <libmadc-0.dylib> <expected-forest.bin>" >&2
     exit 2
 fi
-if [ ! -f "$BIN" ] || [ ! -f "$FOREST" ]; then
-    echo "verify_macho_release: missing input ($BIN / $FOREST)" >&2
+if [ ! -f "$CLI" ] || [ ! -f "$BIN" ] || [ ! -f "$FOREST" ]; then
+    echo "verify_macho_release: missing input ($CLI / $BIN / $FOREST)" >&2
     exit 1
 fi
 
@@ -90,14 +97,18 @@ grep -q '^ledger	modules=' "$DUMP"
 UNITS=$(grep -c '^unit	' "$DUMP")
 rm -f "$EXTRACT" "$DUMP"
 
-# 3. arm64 must be signed after the strip rewrite.
-ARCH=$("$OTOOL" -h "$BIN" | awk '/magic/ { getline; print $2 }')
-if [ "$ARCH" = "0x0100000c" ] || [ "$ARCH" = "16777228" ]; then
-    if ! printf '%s\n' "$LOADCMDS" | grep -q 'LC_CODE_SIGNATURE'; then
-        echo "verify_macho_release: FAILED — arm64 slice has no LC_CODE_SIGNATURE" >&2
-        exit 1
+CLI_LOADCMDS=$("$OTOOL" -l "$CLI")
+
+# 3. arm64 must be signed after the strip rewrite — both images.
+for img in "$CLI" "$BIN"; do
+    ARCH=$("$OTOOL" -h "$img" | awk '/magic/ { getline; print $2 }')
+    if [ "$ARCH" = "0x0100000c" ] || [ "$ARCH" = "16777228" ]; then
+        if ! "$OTOOL" -l "$img" | grep -q 'LC_CODE_SIGNATURE'; then
+            echo "verify_macho_release: FAILED — arm64 image $img has no LC_CODE_SIGNATURE" >&2
+            exit 1
+        fi
     fi
-fi
+done
 
 # 4. Open-provenance prelude only. Positive match on the open stamp shape
 #    (scripts/fetch_darwin_open_headers.sh is the stamp's one owner) — an
@@ -132,4 +143,20 @@ if ! grep -a -q 'define __BEGIN_DECLS extern "C" {' "$BIN"; then
 	exit 1
 fi
 
-echo "verify_macho_release: OK ($BIN: $UNITS units, forest bytes intact, C linkage restored, ${PROV#MADC-DARWIN-PRELUDE-PROVENANCE: })"
+# 6. The CLI is thin: the forest rides the library alone, and the CLI finds
+#    that library through its rpath (otool prints each load command's
+#    `name <path> (offset N)` / `path <path> (offset N)` operand line).
+if printf '%s\n' "$CLI_LOADCMDS" | grep -q 'sectname __forest'; then
+    echo "verify_macho_release: FAILED — $CLI carries its own __forest section (not the thin CLI)" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$CLI_LOADCMDS" | grep -q 'name @rpath/libmadc-0.dylib '; then
+    echo "verify_macho_release: FAILED — $CLI does not load @rpath/libmadc-0.dylib" >&2
+    exit 1
+fi
+if ! printf '%s\n' "$CLI_LOADCMDS" | grep -q 'path @loader_path/../lib '; then
+    echo "verify_macho_release: FAILED — $CLI has no LC_RPATH @loader_path/../lib" >&2
+    exit 1
+fi
+
+echo "verify_macho_release: OK ($BIN: $UNITS units, forest bytes intact, C linkage restored, ${PROV#MADC-DARWIN-PRELUDE-PROVENANCE: }; $CLI thin, loads @rpath/libmadc-0.dylib)"

@@ -10,11 +10,14 @@
 # into dist/, named
 #   madc-<ver>-macos-arm64.tar.gz / madc-<ver>-macos-x86_64.tar.gz
 # each containing
-#   madc-<ver>-macos-<arch>/bin/madc          stripped, forest-packed hosted binary
+#   madc-<ver>-macos-<arch>/bin/madc          the stripped thin CLI: it loads
+#                                             lib/libmadc-0.dylib (@loader_path/../lib)
 #   madc-<ver>-macos-<arch>/lib/libmadc_rt.a  emitted-C runtime (W3: try/catch + VLA)
-#   madc-<ver>-macos-<arch>/lib/libmadc-0.dylib  the madc runtime (D5): what a
+#   madc-<ver>-macos-<arch>/lib/libmadc-0.dylib  the madc engine and runtime (D5),
+#                                             carrying the frozen header forest
+#                                             (__MADC,__forest): what the CLI and a
 #                                             runtime-needing program madc -o builds
-#                                             loads (@rpath/libmadc-0.dylib)
+#                                             load (@rpath/libmadc-0.dylib)
 #   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
 #                                             (WKWebView + native chrome; GUI programs:
 #                                             import madcwebview) — macOS 13.3+
@@ -103,7 +106,7 @@ package_arch() {
     if [ "$HOST_OS" = Darwin ] && [ -z "${MADC_READER:-}" ]; then
         reader="bin/madc-hosted-${bin_arch}-macos"
     fi
-    if ! MADC_READER="$reader" bash scripts/verify_macho_release.sh "$bin" "obj/hosted-${bin_arch}-macos/forest.bin"; then
+    if ! MADC_READER="$reader" bash scripts/verify_macho_release.sh "$bin" "obj/hosted-${bin_arch}-macos/libmadc-0.dylib" "obj/hosted-${bin_arch}-macos/forest.bin"; then
         echo "package_release_macos: $bin failed verify_macho_release — refusing to package" >&2
         exit 1
     fi
@@ -121,9 +124,10 @@ package_arch() {
         echo "package_release_macos: $webview missing — run 'make -C src release-macos' first (it builds webview-${bin_arch}-macos)" >&2
         exit 1
     fi
-    # The madc runtime (D5): libmadc-0.dylib, built per arch beside forest.bin;
-    # a runtime-needing image loads it as @rpath/libmadc-0.dylib, its
-    # LC_RPATH @executable_path/../lib reaching this lib/ next to bin/.
+    # The madc engine and runtime (D5): libmadc-0.dylib, built per arch beside
+    # forest.bin and carrying it. The thin CLI and a runtime-needing image load
+    # it as @rpath/libmadc-0.dylib, their LC_RPATHs reaching this lib/ next to
+    # bin/ (the verify above checked the CLI's).
     local rtdylib="obj/hosted-${bin_arch}-macos/libmadc-0.dylib"
     if [ ! -f "$rtdylib" ]; then
         echo "package_release_macos: $rtdylib missing — run 'make -C src release-macos' first" >&2
@@ -183,19 +187,22 @@ package_arch() {
 madc ${VER} for macOS (${pkg_arch})
 ====================================
 
-Install: copy bin/madc anywhere on your PATH.
+Install: keep bin/ and lib/ together (bin/madc loads lib/libmadc-0.dylib,
+which holds the compiler and its headers) and put bin/ on your PATH.
 
 This binary is ad-hoc signed (no Apple Developer ID). Because it was
 downloaded, macOS quarantines it; the first run will be blocked by
 Gatekeeper. Either:
 
-    xattr -d com.apple.quarantine bin/madc
+    xattr -dr com.apple.quarantine .
 
-or right-click the binary in Finder and choose Open once.
+(from this directory: it clears bin/ and lib/ together), or right-click
+the binary in Finder and choose Open once.
 
-The binary is self-contained: the C standard headers and the frozen C++
-standard-library groves (<string>, <vector>, <iostream>, ...) are embedded,
-so no Xcode or Command Line Tools installation is required. C++ headers
+The installation is self-contained: the C standard headers and the frozen
+C++ standard-library groves (<string>, <vector>, <iostream>, ...) are
+embedded in lib/libmadc-0.dylib, so no Xcode or Command Line Tools
+installation is required. C++ headers
 outside the packed set are not available on a machine without headers and
 fail with a clear error.
 

@@ -269,6 +269,53 @@ they never did. The work:
 2. macOS: `libmadc-0.dylib` carries the forest in `__MADC,__forest`
    (`-sectcreate`, then the ad-hoc signature), and the hosted CLI is thin.
    Proved on the owner's Mac.
+   **Done 2026-10-04.** The dylib's link takes the same `-sectcreate` the
+   hosted binary takes. The release CLI, `bin/madc-release-<arch>-macos`, is
+   `madc.o` linked against the dylib (rpath `@loader_path/../lib`), stripped:
+   170,656 bytes beside a 19,015,712-byte dylib (arm64). Before this, the pair
+   was a 17,351,552-byte monolithic CLI holding the forest and a
+   10,788,512-byte dylib holding none. The hosted dev binary stays
+   monolithic and packed.
+   `verify_macho_release.sh` takes the pair and checks:
+   - the dylib's section bytes equal `forest.bin` and read back (837 units);
+   - the CLI has no forest section, loads `@rpath/libmadc-0.dylib`, and has
+     the `@loader_path/../lib` rpath;
+   - both arm64 images are signed;
+   - the prelude's provenance marker and C-linkage restore are in the dylib.
+
+   The mactar install gate asserts `[library-image]` under `-v`, and that the
+   CLI refuses to run with the dylib hidden.
+   On the arm64 Mac (`madc-mac`, macOS 15.3.2, no `/usr/include`), from the
+   tarball:
+   - C, C++ (`<iostream>`, `<string>`) and dialect programs run.
+   - `-v` prints `forest-bind: [library-image] opened container (837 units)`.
+   - A `madc -o` program's `madc::diagnostics` over a C buffer
+     (`<stdio.h>`, `<string.h>`) and a C++ buffer (`<iostream>`, `<string>`)
+     reports 0 diagnostics for each.
+   - The same program built from the 0.100.1 tarball (the old shape) reports
+     `Failed to open include file: iostream` for the C++ buffer. C passed
+     there because the C prelude is embedded in the engine's text. This was
+     the macOS twin of the Windows `stdio.h` failure.
+   - With the dylib hidden, dyld refuses to load the CLI.
+   - chthonia, built on that Mac by the tarball's madc (`madc --project
+     tools/chthonia/chthonia.json -o chthonia`, which loads
+     `@rpath/libmadc-0.dylib`), run from its build directory:
+     - `-c check` on `hello.c` (`<stdio.h>`) is clean, rc 0;
+     - `-c check` on `hello.cpp` (`<iostream>`, `<string>`) is clean, rc 0;
+     - the control, a C file missing a `;`, reports `2:47 error expected ';'
+       before '}' token`, rc 1.
+
+     Run from `/tmp`, the AOT chthonia cannot find the editor's verbs,
+     whose path is baked relative to the build tree. The installed layout
+     (`share/madcide`) is D4's to stage on the Mac.
+   - The Intel Mac (`madc-mac-x86`, macOS 15.7.4) gave the same results
+     from the x86_64 tarball: every probe and both controls, and chthonia
+     built there with `-c check` clean on both files and the control
+     reported.
+   - Not yet done: the native-window check by driven input. Scripting keys
+     over ssh (`osascript` → System Events) needs the owner to grant
+     Automation/Accessibility on the laptop; the probe hung on that consent
+     prompt and was killed.
 3. Gate: a program built with `madc -o` that opens a parse handle over
    `#include <stdio.h>` reports no diagnostics where no headers are on
    disk: the genuine-Windows lane and the Mac. `chthonia.exe hello.c -c

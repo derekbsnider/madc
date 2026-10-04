@@ -46,6 +46,10 @@
 #   mactar   (darwin host only — the release.yml mac jobs; the container
 #            cannot execute darwin binaries and prints a stated SKIP) tar
 #            extract; the shipped bin/madc runs the probe (output asserted);
+#            `madc -v` says `forest-bind: [library-image] opened container`
+#            — the forest served from the shipped lib/libmadc-0.dylib, the
+#            thin CLI carrying none [control: hide lib/libmadc-0.dylib =>
+#            madc must fail to run];
 #            scripts/mac_battery.sh against the extracted tarball layout
 #            holds the PASS floor (MAC_BATTERY_FLOOR, default 8 = the
 #            owner-hardware baseline) and prints every FAIL line [control:
@@ -335,12 +339,33 @@ gate_mactar() {
     [ -x "$root/bin/madc" ]        || fail mactar "no executable bin/madc in the artifact"
     [ -f "$root/lib/libmadc_rt.a" ] || fail mactar "no lib/libmadc_rt.a in the artifact"
     [ -f "$root/lib/libmadcwebview.dylib" ] || fail mactar "no lib/libmadcwebview.dylib in the artifact"
+    [ -f "$root/lib/libmadc-0.dylib" ] || fail mactar "no lib/libmadc-0.dylib in the artifact"
 
     # 1. the shipped madc runs a program
     out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 )
     case "$out" in
         *"$MARKER"*) ok mactar "shipped madc runs (JIT output asserted)" ;;
         *) fail mactar "shipped madc did not produce '$MARKER' (got: $out)" ;;
+    esac
+
+    # 1b. the forest is served from the shipped library image (the thin CLI
+    # carries none); the grep's control is the non-verbose run above, which
+    # asserted the marker and so ran with no -v evidence lines.
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" -v "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 \
+           | grep 'forest-bind:' )
+    case "$out" in
+        *"forest-bind: [library-image] opened container"*)
+            ok mactar "forest served from the shipped lib/libmadc-0.dylib ([library-image])" ;;
+        *) fail mactar "-v never said 'forest-bind: [library-image] opened container' (got: $out)" ;;
+    esac
+    # control: hide the library => the thin CLI cannot run at all (proves
+    # the pass was served by THIS tarball's library, not some other copy).
+    mv "$root/lib/libmadc-0.dylib" "$root/lib/libmadc-0.dylib.hidden"
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madc" "$PWD/$GATE_TMP/pk4hello.mad" ) 2>&1 )
+    mv "$root/lib/libmadc-0.dylib.hidden" "$root/lib/libmadc-0.dylib"
+    case "$out" in
+        *"$MARKER"*) fail mactar "negative control broken: lib/libmadc-0.dylib hidden but madc still ran" ;;
+        *) ok mactar "negative control: hidden lib/libmadc-0.dylib => madc does not run" ;;
     esac
 
     # 2. the Mac battery against the extracted tarball layout (bin/madc +

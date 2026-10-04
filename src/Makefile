@@ -629,7 +629,9 @@ ENABLE_SHARED_CLI ?= 0
 # packaging twins. Cross and hosted modes therefore always link
 # monolithic, whatever configure's host default says — without this pin
 # the PK2 default flip would point their $(BIN) at a foreign-format
-# lib/libmadc-$(MODE).so nothing ships yet.
+# lib/libmadc-$(MODE).so nothing ships yet. The Windows and macOS RELEASE
+# CLIs are thin through their own rules (release-windows' madc.exe,
+# $(DARWIN_THIN_CLI)), against libmadc-0.dll / libmadc-0.dylib.
 ifneq (,$(filter cross-% hosted-%,$(MODE)))
 ENABLE_SHARED_CLI = 0
 endif
@@ -650,6 +652,7 @@ $(LINK_SHAPE_STAMP):
 # --with-forest=none skips the forest entirely.
 ifdef HOSTED_DARWIN_TARGET
 DARWIN_FOREST_BIN = $(OBJDIR)/forest.bin
+DARWIN_THIN_CLI = $(OBJDIR)/madc-thin
 CROSS_MADC_BIN = ../bin/madc-$(DARWIN_ARCH)-macos
 # The FREEZER — the madc that parses the darwin groves into $(DARWIN_FOREST_BIN).
 # Cross (the container): the same-arch cross madc, built by the recursive make
@@ -902,17 +905,20 @@ machogate: cross-arm64-macos cross-x86-64-macos
 	@cd .. && bash scripts/macho_dylib_gate.sh
 
 # macOS release artifacts (macos-release-lane plan W1): the darwin twin of
-# `release`. The hosted binaries are ALREADY -O2 and forest-packed at link
-# time (the __MADC,__forest section — a signed Mach-O cannot take the ELF
-# EOF trailer), so the release step is: build both arches SEQUENTIALLY (the
-# per-mode generated tables share src/ file paths — never parallelize
-# across arches), strip into the release-named twins, and verify the strip
-# kept the forest bytes and the arm64 ad-hoc signature (llvm-strip re-signs
-# when it rewrites the file). In-vivo AMFI + behavior evidence is the Mac
-# side's job (W2, scripts/mac_battery.sh).
+# `release`. The release CLI is THIN (§7b of the chthonia plan): madc.o
+# against libmadc-0.dylib, whose __MADC,__forest section — placed at link
+# time, a signed Mach-O cannot take the ELF EOF trailer — carries the
+# forest for the CLI and every program bound to the library. The release
+# step: build both arches SEQUENTIALLY (the per-mode generated tables share
+# src/ file paths — never parallelize across arches), strip the thin CLI
+# into the release-named twin, and verify the pair: the library holds the
+# forest bytes, the CLI holds none and loads the library through its rpath,
+# both carry the arm64 ad-hoc signature (llvm-strip re-signs when it
+# rewrites the file). In-vivo AMFI + behavior evidence is the Mac side's
+# job (W2, scripts/mac_battery.sh).
 # Per-arch release step — ONE implementation for both origins: build the
-# hosted binary, strip into the release-named twin, verify the strip kept the
-# forest bytes + the arm64 signature. The verify READER is the host bin/madc
+# hosted binaries, strip the thin CLI into the release-named twin, verify
+# the pair. The verify READER is the host bin/madc
 # on the container (its freeze-context hash must match the tree that froze
 # the groves — the version string rides the predefined-macro table — so
 # release-macos rebuilds it first); a darwin host has no host-MODE madc, so
@@ -935,8 +941,8 @@ release-%-macos:
 	$(MAKE) hosted-$*-macos
 	$(MAKE) webview-$*-macos
 	$(MAKE) madcgit-$*-macos
-	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../bin/madc-hosted-$*-macos
-	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/forest.bin
+	$(DARWIN_STRIP) -o ../bin/madc-release-$*-macos ../obj/hosted-$*-macos/madc-thin
+	cd .. && MADC_READER=$(MACHO_READER) OTOOL=$(DARWIN_OTOOL) bash scripts/verify_macho_release.sh bin/madc-release-$*-macos obj/hosted-$*-macos/libmadc-0.dylib obj/hosted-$*-macos/forest.bin
 
 release-macos:
 ifneq ($(DARWIN_HOST),1)
@@ -954,10 +960,10 @@ ifeq ($(DARWIN_HOST),1)
 DARWIN_DEV_RT_DYLIB = ../lib/libmadc-0.dylib
 endif
 hosted-x86-64-macos:
-	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos ../lib/libmadc_rt-hosted-x86-64-macos.a ../obj/hosted-x86-64-macos/libmadc-0.dylib $(DARWIN_DEV_RT_DYLIB)
+	$(MAKE) MODE=hosted-x86-64-macos ../bin/madc-hosted-x86-64-macos ../lib/libmadc_rt-hosted-x86-64-macos.a ../obj/hosted-x86-64-macos/libmadc-0.dylib ../obj/hosted-x86-64-macos/madc-thin $(DARWIN_DEV_RT_DYLIB)
 
 hosted-arm64-macos:
-	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a ../obj/hosted-arm64-macos/libmadc-0.dylib $(DARWIN_DEV_RT_DYLIB)
+	$(MAKE) MODE=hosted-arm64-macos ../bin/madc-hosted-arm64-macos ../lib/libmadc_rt-hosted-arm64-macos.a ../obj/hosted-arm64-macos/libmadc-0.dylib ../obj/hosted-arm64-macos/madc-thin $(DARWIN_DEV_RT_DYLIB)
 
 # darwin-HOST MIR variant libs: built BY the darwin compiler, so host
 # detection selects the Apple arms natively — no MIR_TARGET knobs.
@@ -1299,8 +1305,9 @@ $(PROCESS_FIXTURE): ../tests/helpers/process_fixture.cpp
 
 # Where a thin CLI looks for its libmadc: $ORIGIN/../lib resolves in BOTH
 # layouts — bin/madc -> lib/libmadc.so in the build tree, $(PREFIX)/bin/madc ->
-# $(INSTALL_LIBDIR)/libmadc.so.0 once installed. (Apple's spelling is
-# @loader_path; the darwin dylib shape itself rides the later packaging work.)
+# $(INSTALL_LIBDIR)/libmadc.so.0 once installed. Apple's spelling is
+# @loader_path: the darwin release CLI ($(DARWIN_THIN_CLI)) finds
+# lib/libmadc-0.dylib through it.
 ifdef HOSTED_DARWIN_TARGET
 CLI_RPATH = -Wl,-rpath,@loader_path/../lib
 else
@@ -1535,12 +1542,26 @@ endif
 # package_release_macos.sh ships it as lib/libmadc-0.dylib, and a darwin
 # host also places it there in the dev tree (bin/../lib, which the
 # LC_RPATHs reach).
+# The library carries the forest (docs/plans/2026-10-03-chthonia-windows-macos.md
+# §7b, forest-carriers S4's shared shape): the same __MADC,__forest section
+# the hosted binary takes, so every program bound to libmadc — the thin CLI
+# below, an AOT madcide or chthonia, a plugin library — reads the frozen
+# headers through the library-image discovery arm. The linker signs after
+# section layout, as for the binary.
 ifdef HOSTED_DARWIN_TARGET
-$(OBJDIR)/libmadc-0.dylib: $(LIBMADC_STATIC) $(MIRLIB)
-	$(CXX) -dynamiclib -o $@ -Wl,-install_name,@rpath/libmadc-0.dylib $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+$(OBJDIR)/libmadc-0.dylib: $(LIBMADC_STATIC) $(MIRLIB) $(FOREST_EMBED_DEP)
+	$(CXX) -dynamiclib -o $@ -Wl,-install_name,@rpath/libmadc-0.dylib $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS) $(FOREST_EMBED_LDFLAGS)
 
 ../lib/libmadc-0.dylib: $(OBJDIR)/libmadc-0.dylib
 	cp -p $< $@
+
+# The darwin release CLI (§7b): the same madc.o, linked against
+# libmadc-0.dylib — the Linux thin CLI's link (madc.o + -lmadc) and the
+# Windows release set's madc.exe. It carries no forest of its own; the
+# library's serves it. CLI_RPATH (@loader_path/../lib) finds the library in
+# the tarball's lib/ beside bin/, and in the dev tree's lib/ on a darwin host.
+$(DARWIN_THIN_CLI): $(OBJDIR)/madc.o $(OBJDIR)/libmadc-0.dylib
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(OBJDIR)/libmadc-0.dylib $(CLI_RPATH) $(CXXFLAGS) $(DEFINES) $(LIBS)
 endif
 
 # Forest-carriers S1: cross-freeze the darwin groves and keep the freezer (the
