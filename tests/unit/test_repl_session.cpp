@@ -2223,15 +2223,19 @@ TEST_CASE("session bindings: %whos lists the names the session defined (C17)")
     CHECK(binding_field(rows, "square", "type") == "int (int)");
     CHECK(binding_field(rows, "square", "value").empty());
     CHECK(binding_field(rows, "square", "file") == "REPL[4]");
-    // A pointer shows its address, never its pointee: text included, and a
-    // wild one cannot crash the backend.
-    CHECK(binding_field(rows, "p", "value") == "(char *) 0x1");
-    CHECK(binding_field(rows, "greeting", "value").compare(0, 17, "(const char *) 0x") == 0);
+    // The row's value spells no type (its Type column does, gdb's `info
+    // locals`). A pointer shows its address; a character pointer then its
+    // text, read so that a wild one cannot crash the backend.
+    CHECK(binding_field(rows, "p", "value") == "0x1 <unreadable>");
+    const std::string g = binding_field(rows, "greeting", "value");
+    CHECK(g.compare(0, 2, "0x") == 0);
+    CHECK(g.size() > 5);
+    CHECK(g.compare(g.size() - 5, 5, " \"hi\"") == 0);
     // An aggregate: 16 elements, then `…`.
     CHECK(binding_field(rows, "big", "type") == "int [20]");
     CHECK(binding_field(rows, "big", "value")
-	  == "(int[20]){ 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, … }");
-    CHECK(binding_field(rows, "pt", "value") == "(struct P){ .x = 1, .y = 2 }");
+	  == "{ 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, … }");
+    CHECK(binding_field(rows, "pt", "value") == "{ .x = 1, .y = 2 }");
     // %whos prints the same rows as a table.
     REQUIRE(c.submit("%whos"));
     const std::string table = c.shown();
@@ -2259,14 +2263,20 @@ TEST_CASE("session bindings: C++ containers, a class the session wrote, a qualif
 		     "11, 12, 13, 14, 15, 16, 17, 18, 19, 20 };"));
     REQUIRE(c.submit("static std::string t = \"x\";"));
     REQUIRE(c.submit("t += \"y\";"));
+    REQUIRE(c.submit("#include <map>"));
+    REQUIRE(c.submit("std::map<int, int> m;"));	// brace-initialized: B30
+    REQUIRE(c.submit("m[1] = 10; m[2] = 20;"));
     madc::value rows;
     c.bindings(rows);
-    CHECK(binding_field(rows, "v", "value") == "std::vector<int>{ 1, 2, 3 }");
+    // A container's row is its elements: the Type column names it.
+    CHECK(binding_field(rows, "v", "type") == "std::vector<int>");
+    CHECK(binding_field(rows, "v", "value") == "{ 1, 2, 3 }");
     CHECK(binding_field(rows, "w", "value")
-	  == "std::vector<int>{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, … }");
+	  == "{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, … }");
+    CHECK(binding_field(rows, "m", "value") == "{ { 1, 10 }, { 2, 20 } }");
     // A class the session wrote a method of walks by its members: a row
     // calls no code the session wrote.
-    CHECK(binding_field(rows, "b", "value") == "Box{ .a = { 7, 8, 9 } }");
+    CHECK(binding_field(rows, "b", "value") == "{ .a = { 7, 8, 9 } }");
     // B94: a qualified typedef's object is the entry's, not its header's.
     CHECK(binding_field(rows, "s", "type") == "std::string");
     CHECK(binding_field(rows, "s", "value") == "\"hello\"");

@@ -1153,7 +1153,8 @@ bool CirBuilder::dump_sequence(DumpFlavor fl, const DumpAccess &acc,
 			body.push_back(dump_call_stmt("__madc_dump_sh_textchar", ca,
 						      origin));
 		} else {
-			out.push_back(dump_show_text(nested ? std::string("{ ")
+			out.push_back(dump_show_text(!show_spells_type(nested)
+						     ? std::string("{ ")
 						     : dump_container_type_word(cls)
 						       + "{ ", origin));
 			need_dump_extern("__madc_dump_sh_sep",
@@ -1394,7 +1395,8 @@ bool CirBuilder::dump_iterator(DumpFlavor fl, const DumpAccess &acc,
 	std::vector<node_t> body;
 	const bool show = fl == dfShow;
 	if (show) {
-		out.push_back(dump_show_text(nested ? std::string("{ ")
+		out.push_back(dump_show_text(!show_spells_type(nested)
+					     ? std::string("{ ")
 					     : dump_container_type_word(cls) + "{ ",
 					     origin));
 		need_dump_extern("__madc_dump_sh_sep",

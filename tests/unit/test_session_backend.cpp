@@ -345,7 +345,7 @@ TEST_CASE("session backend: the session's bindings, as rows")
     }
     CHECK(got == "count object int = 3 @ REPL[1]:1\n"
 		 "loaded object int = 9 @ buffer_rows.c:1\n"
-		 "p object char * = (char *) 0x1 @ REPL[2]:1\n"
+		 "p object char * = 0x1 <unreadable> @ REPL[2]:1\n"
 		 "square function int (int) =  @ REPL[3]:1\n");
     CHECK(c.running());
     REQUIRE(c.offer_wait("count + loaded", true, r, out, kWait) == 1);

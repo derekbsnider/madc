@@ -1538,6 +1538,12 @@ int main()
     naming the vector's constructor with one `char*` argument.
 - `std::vector<int> v = { 1, 2, 3 }` works, and a map filled by assignment
   shows fine.
+- 2026-10-04 (at 55586e7f1 + the %run work): the map's declaration is now
+  refused as `cir error: cannot lower defaulted copy/move constructor` (a
+  block-scope `std::map<int, int> m = { { 1, 10 }, { 2, 20 } };` at `4:8`
+  of a 7-line reducer), the same at namespace scope and at the C++ REPL's
+  prompt (`REPL[N]: 1 untranslatable node(s); not compiling`). The REPL's
+  row test fills its map by assignment until this is fixed.
 - Where: not traced. Both are the initializer-list constructor over an
   element that needs its own conversion: a pair from a braced pair, and a
   string from a literal.
