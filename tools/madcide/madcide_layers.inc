@@ -7,7 +7,7 @@
 // session's project, the test records and this node's runners) — no verb
 // assumes a layer below it exists. Included by madcide_mcp.inc after
 // madcide_past.inc (git_handle_of / git_relpath_of come from the core's
-// madcide_git.inc) and before the verb
+// madcide_repo.inc) and before the verb
 // families; the test-record read reaches madcide_nexus.inc's fold through the
 // declaration below (the L4d precedent: a declaration resolves a later body).
 //

@@ -1,3 +1,4 @@
+seat: branch=true clean=true edited=true
 status: branch line=true
 log: rows=2 sha=true shape=true
 show rev: commit=true author=true date=true
@@ -6,6 +7,12 @@ blame: rows=1 sha=true line=true
 diff unchanged: empty=true
 diff edited: header=true added=true
 blame edited: uncommitted=true
+changes: buffer=[changes] added=true read-only=true
+blame pseudo: Not a file: [changes]
+blame line: Line 2: not committed yet.
+blame first: line=true sha=true ago=true
+history: label=History of VERSION choice=true rows=true title=true
+revision: buffer=true same=true read-only=true
 refused: %git: unknown verb 'frob': log [-n N] [FILE] | show REV[:FILE] | blame FILE[:LINE] | status | diff [FILE]
 refused: %git: which verb? log [-n N] [FILE] | show REV[:FILE] | blame FILE[:LINE] | status | diff [FILE]
 refused: %git: blame takes FILE or FILE:LINE

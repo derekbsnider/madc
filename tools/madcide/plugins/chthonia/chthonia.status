@@ -1,0 +1,5 @@
+# Chthonia's status line: madcide's joerc formats (profiles/joe.status, its
+# seat vocabulary) with the git branch on the right (%G: `*` when the file
+# differs from its last commit), as an IDE's status bar shows it.
+lmsg \i%k%T%W%I%X %n %m%y%R %M %x
+rmsg  %S %G Row %4r Col %3c

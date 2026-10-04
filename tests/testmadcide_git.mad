@@ -12,6 +12,12 @@
 //            added is `00000000 (Not Committed Yet LINE)`;
 //   diff   — FILE's open buffer, unsaved edits included, against HEAD (git
 //            diff HEAD -- FILE); an unchanged buffer prints nothing;
+// then the views (§7e stage 1): the %G status seat (the branch, `*` once
+// the buffer differs from its last commit); View ▸ Changes (the buffer's
+// diff in the read-only [changes] buffer); Blame line (the caret's line's
+// commit, or "not committed yet", on the status line; a pseudo-buffer is
+// "Not a file"); View ▸ History (the file's commits as a choice list, a row
+// showing that revision in a read-only "[VERSION @ SHA7]" buffer);
 // then the refusals, and the relative dates on fixed (when, now) pairs: what
 // git log --date=relative printed for commits exactly that old (1 s, 30 s,
 // 100 s, 5 h, 3 d, 20 d, 100 d, 400 d, 730 d, 2000 d) and for a future one.
@@ -60,6 +66,14 @@ int main()
     S.attach(w, es);
     var disk;
     php::file_get_contents(disk, "VERSION");
+    var seat0;
+    git_seat(seat0, w, es, doc);
+    ui::set(w, doc, "modified", true);
+    var seat1;
+    git_seat(seat1, w, es, doc);
+    ui::set(w, doc, "modified", false);
+    println("seat: branch={} clean={} edited={}", strlen(seat0.c_str()) > 0,
+	    rust::ends_with(seat0.c_str(), "*") == 0, rust::ends_with(seat1.c_str(), "*") != 0);
 
     var out;
     git_run(out, S, doc, w, es, "status");
@@ -99,6 +113,50 @@ int main()
     git_run(out, S, doc, w, es, spec.c_str());
     var want = format("00000000 (Not Committed Yet {}) an added line\n", nl + 1);
     println("blame edited: uncommitted={}", out == want);
+
+    bool cont = true;
+    S.command(doc, cmd_of_w(w, "gitchanges"), "", cont);
+    long cd = active_doc(w, es, 0);
+    var cname;
+    doc_name(cname, w, cd);
+    var ctext;
+    ui::text(ctext, w, cd);
+    println("changes: buffer={} added={} read-only={}", cname,
+	    rust::contains(ctext.c_str(), "\n+an added line\n") != 0, !es_flag(w, es, "editable"));
+    var msg;
+    S.command(doc, cmd_of_w(w, "gitblame"), "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blame pseudo: {}", msg);
+    switch_buffer(w, es, cd, buffer_index_of(w, es, doc));
+    ui::set(w, es, "caret", strlen(disk.c_str()));		// the added line
+    S.command(doc, cmd_of_w(w, "gitblame"), "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blame line: {}", msg);
+    ui::set(w, es, "caret", 0);
+    S.command(doc, cmd_of_w(w, "gitblame"), "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blame first: line={} sha={} ago={}", perl::index(msg.c_str(), "Line 1: ") == 0,
+	    hex_run(msg, 8, 7), rust::contains(msg.c_str(), " ago: ") != 0);
+
+    S.command(doc, cmd_of_w(w, "githistory"), "", cont);
+    var hrows;
+    ui::get(hrows, w, es, "choicerows");
+    var hlabel;
+    ui::get(hlabel, w, es, "choicelabel");
+    var h0 = hrows[0];
+    var h0title = h0["title"];
+    var h0arg = h0["arg"];
+    println("history: label={} choice={} rows={} title={}", hlabel,
+	    cur_pane(w, es) == paneCHOICE, php::count(hrows) > 0, hex_run(h0title, 0, 7));
+    S.command(doc, cmd_of_w(w, "githistory"), h0arg.c_str(), cont);
+    long hd = active_doc(w, es, 0);
+    var hname;
+    doc_name(hname, w, hd);
+    var htext;
+    ui::text(htext, w, hd);
+    println("revision: buffer={} same={} read-only={}", perl::index(hname.c_str(), "[VERSION @ ") == 0,
+	    htext == disk, !es_flag(w, es, "editable"));
+    switch_buffer(w, es, hd, buffer_index_of(w, es, doc));
 
     git_run(out, S, doc, w, es, "frob");
     print("refused: {}", out);

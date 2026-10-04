@@ -2,7 +2,7 @@ chthonia-open: doc=1 bundle=chthonia keys=chthonia
 chthonia-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=1
 chthonia-menu: [File Edit Run Build View Tools Help] run=[replrun replstop language]
 chthonia-repl: live=1 running=1
-chthonia-outline: view=[repl variables problems output terminal outline progargs] tools=[keystyle options] shown=1 rows=[main] hidden=1 sidebar-back=1 options=1 closed=1
+chthonia-outline: view=[repl variables problems output terminal outline gitchanges githistory gitblame progargs] tools=[keystyle options] shown=1 rows=[main] hidden=1 sidebar-back=1 options=1 closed=1
 chthonia-toolbar: New=new:new Open=editfile:open Save=save:save | Run=replrun:run>Run Stop=replstop:stop codes=1
 chthonia-dropdown: pane=choice label=Run rows=[Run][Stop][Language…]
 chthonia-dropdown-unknown: No menu 'Debug'.

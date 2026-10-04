@@ -8,7 +8,9 @@
 # pending chord (chord echo) · %x the enclosing context (madcide renders
 # its AST-backed enclosing function here — exact where JOE's is a
 # textual backward heuristic) · %y the active VIEW name in JOE's
-# "(syntax)" seat · %% a literal percent.
+# "(syntax)" seat · %G the git branch, `*` when the buffer differs from its
+# last commit (a madcide seat; joerc has no letter for it) · %% a literal
+# percent.
 #
 # Unsupported joerc escapes render EMPTY and light up as their features
 # land (%T overtype, %W wordwrap, %I autoindent, %X rectangle, %M macro,

@@ -263,6 +263,14 @@ prints for the same question:
 A file open in the editor answers with its live text, so `diff` and `blame`
 include unsaved edits. Dates are git's relative ones (`3 days ago`).
 
+The View menu shows the same reads for the file you are editing (madcide's
+and Chthonia's): **Changes** opens its diff against the last commit in a
+read-only `[changes]` buffer; **History…** lists its commits, and choosing
+one opens the file as that commit holds it, read-only (`[NAME @ SHA]`);
+**Blame line** says on the status line who last changed the caret's line.
+The status line's `%G` seat (Chthonia's shows it beside Row and Col) is the
+branch, with `*` when the file differs from its last commit.
+
 ## Sharing a session
 
 One madcide session can carry more than one client: the editor you are typing

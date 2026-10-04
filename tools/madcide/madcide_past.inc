@@ -21,7 +21,7 @@
 // the live parse handle (design §7); nothing is persisted (no-program-cache law).
 
 // The doc's git handle and relative path: git_handle_of / git_relpath_of
-// (madcide_git.inc, the IDE's git module in the core).
+// (madcide_repo.inc, the core's: a buffer's repository).
 
 // (keyed_get — the one keyed READ of a map that may still be null / the empty
 // container — lives in editor_events.inc since Nexus L4c; the stream's

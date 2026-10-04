@@ -5,6 +5,7 @@
   "code": "chthonia.mad",
   "contributes": {
     "keys": "chthonia",
+    "status": "chthonia",
     "layout": "chthonia",
     "menu": "chthonia",
     "settings": {

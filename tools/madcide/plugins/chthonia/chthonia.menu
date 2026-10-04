@@ -4,7 +4,9 @@
 # the Build… item's menu lists the build rows themselves (Check, Build, Run,
 # Stop, and a project's own). View ▸ Outline shows the outline in the
 # sidebar beside Variables (chthonia.layout); Output and Terminal are the
-# bottom panel's tabs for a build and the program it runs. Not yet here:
+# bottom panel's tabs for a build and the program it runs. View ▸ Changes,
+# History and Blame line are git's (madcide_git.inc): the file against its
+# last commit, its commits, who last changed the caret's line. Not yet here:
 # View ▸ the font size, Full screen.
 
 File new New
@@ -52,6 +54,9 @@ View problems Problems
 View output Output
 View terminal Terminal
 View outline Outline
+View gitchanges Changes
+View githistory History…
+View gitblame Blame line
 View progargs Program arguments…
 
 Tools keystyle Key bindings…

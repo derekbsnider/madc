@@ -166,6 +166,7 @@ void action_event(var &e, long code, const char *arg)
 #include "madcide_plugin_code.inc"	// plugin code: the API table, activation, --build-plugin
 #include "madcide_plugin_host.inc"	// the host transport: a plugin's code in a child process
 #include "madcide_lang.inc"		// the session's language standard (--std=, `language`)
+#include "madcide_repo.inc"		// a buffer's git repository + the %G status seat
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -2388,8 +2389,10 @@ bool lens_name(var &out, long w, long es)
 // count/operator echoes here too), %M the vi MODE seat (vim's
 // showmode), %x the enclosing context — madcide renders its AST-backed
 // enclosing function here, superior to JOE's textual backward
-// heuristic — %y the active VIEW name in JOE's "(syntax)" seat, and %%
-// a literal percent. UNSUPPORTED joerc escapes render EMPTY and light
+// heuristic — %y the active VIEW name in JOE's "(syntax)" seat, %G (a
+// madcide seat, no joerc letter) the buffer's git branch with `*` when the
+// buffer differs from its last commit (madcide_repo.inc), and %% a literal
+// percent. UNSUPPORTED joerc escapes render EMPTY and light
 // up as their features land (%T %W %I %X %S
 // ...). \X attribute escapes are consumed — the status row renders
 // inverse whole-line; intra-line styling is a named seat.
@@ -2504,6 +2507,8 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 	}
 	if ( e == 'x' )
 	    seat = fnctxv;
+	if ( e == 'G' )
+	    git_seat(seat, w, es, doc);
 	if ( e == 'y' )
 	{
 	    var vw;

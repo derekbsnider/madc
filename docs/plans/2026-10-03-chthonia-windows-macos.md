@@ -503,11 +503,15 @@ madcide reaches only through its agent seat (the graph verbs `status`,
 menu, view or status field shows any of it. The work is in madcide's base,
 and Chthonia's menu and layout show it.
 
-1. **Stage 1 — show what exists (read-only):** the branch and the file's
-   state against the last commit on the status line and the tabs; View ▸
-   Changes (the buffer's diff against the last commit); View ▸ History (the
-   file's commits; choosing one shows that revision read-only through the
-   view seam); blame for the caret's line.
+1. **Stage 1 — show what exists (read-only; done):** the branch and the
+   file's state against the last commit on the status line (the `%G` seat,
+   `madcide_repo.inc`); View ▸ Changes (the buffer's diff against the last
+   commit, in a read-only `[changes]` buffer); View ▸ History (the file's
+   commits as a choice list; choosing one shows that revision in a read-only
+   `[NAME @ SHA]` buffer); View ▸ Blame line (the caret's line's commit on
+   the status line). The module gained the reads `status`, `diff` and
+   `commit`; madcide's verbs are `madcide_git.inc`, one implementation
+   behind the menu rows and `%git`. Not yet: the state on the tabs.
 2. **Stage 2 — writing (the owner's call):** init, stage and commit, which
    extends `madcgit` past its read-only design; push and pull last, since
    they need TLS and SSH in the Windows and macOS libgit2 builds (built
@@ -603,8 +607,8 @@ and a plugin can only observe REPL events (`ide::event`), not add a command.
    (payload `open`; the terminal runs `madc::run_terminal_editor`), and
    `ide::repl_command` (plugin API 3), recognized through the session's one
    rule (`madc::session_command_of`).
-4. **`%git VERB`:** the calls the Git view makes (§7e), one implementation
-   behind the menu and the command. The read verbs come with §7e stage 1:
+4. **`%git VERB` (done, read verbs):** the calls the Git view makes (§7e),
+   one implementation behind the menu and the command. The read verbs come with §7e stage 1:
    `log [FILE]`, `show REV[:FILE]`, `blame FILE[:LINE]`, `status`,
    `diff [FILE]`; `status` and `diff` are new `madcgit` reads (the module
    has open, head, refs, revparse, log, show, blame and dirty). The writing
@@ -617,8 +621,9 @@ defect; done) → D1 (the probe; done) → D2 → D3 → D4 with C folded in (th
 Mac build is chthonia's Mac build) → the parity rows (§7a) → Projects and
 building (§7c) → the libgit2 floor (1.8.7 / 1.9.7, owner 2026-10-04) →
 REPL commands and the Variables row (§7f: the row, `%load`, `%run`, the `.`
-prefix, `%call`, `%build` and the IDE layer done; `%git` next) → Help and Markdown (§7d) → Git
-(§7e) → Recent files and the rest of §7a → the debugger arc.
+prefix, `%call`, `%build`, the IDE layer and `%git`'s read verbs done) → Help and Markdown (§7d) → Git
+(§7e: stage 1 done with `%git`) → Recent files and the rest of §7a → the
+debugger arc.
 Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working
 on all three platforms with Thonny's functionality. Everything above the
 debugger arc is madc v0.102.0's scope — the release Chthonia's own repository
