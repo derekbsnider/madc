@@ -276,6 +276,10 @@ int main()
   the binding rank (`copy_move_ref_binding_rank`'s `arg_const`) reads every
   object as non-const. Layer: the const-qualified-type model
   (`DataDefQUAL` for C++ const, FEATURE_CONST_TYPES), not the rankers.
+- Same root, seen 2026-10-04 in the REPL: `const char *p = "Test";` then
+  `%whos` lists `p` with Type `char *` under `--std=c++17` and `--std=madc`
+  (the Variables view too), `const char *` under `--std=c17`. The binding's
+  type is spelled from the type, which carries no C++ const.
 
 ### B102. A namespace-scope object's destructor never runs at exit
 

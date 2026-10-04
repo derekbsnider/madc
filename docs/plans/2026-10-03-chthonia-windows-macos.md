@@ -541,16 +541,35 @@ and a plugin can only observe REPL events (`ide::event`), not add a command.
    in the tree), cut at the row's width with `…`; memory that cannot be read
    shows `0x… <unreadable>` (gdb: `<error: Cannot access memory …>`). The
    entry show (`p` at the prompt) keeps its re-enterable spelling.
-2. **Engine commands** (madc's REPL, every host): `%run FILE [ARGS]` (D16:
-   a fresh namespace, the file's `main` run with ARGS split by the shell's
-   rules, its names left for the prompt), `%load FILE` (Julia's `include`
-   into the current session), `%build FILE [-o OUT]` (the in-process native
-   build). F5 submits the typed `%run` line, so the shown command and the
-   run are one path.
-3. **The IDE command layer:** `ide::repl_command`, a plugin's `%name`
-   answered by the IDE before the session sees the entry; `%open FILE`,
-   `%edit NAME` (the name's definition in the editor, from the bindings'
-   file and line), and `%git`. `%help` lists both layers.
+2. **Engine commands** (madc's REPL, every host). The session's command
+   rows gain `%load FILE`, `%run [-i] FILE [ARGS]` and `%build FILE [-o
+   OUT]`; the engine owns their parsing (ARGS split by the shell's rules,
+   one owner shared with `python::shlex_split`) and their `%help` rows.
+   - `%load FILE` (D25): FILE's names defined in this session, nothing run.
+   - `%run -i FILE [ARGS]` (D16): FILE loaded into this session and its
+     `main` run with ARGS.
+   - `%run FILE [ARGS]` (D16, a fresh session): the engine cannot restart
+     itself (restart is the client's: `SessionClient::restart`,
+     `madc::session_restart`), so it answers with a PAYLOAD, IPython's
+     mechanism (a kernel's execute reply asks its frontend to act: `%edit`
+     opens a file, `%load` sets the next input). The `run` payload {path,
+     argv} rides the offer's reply; every host honors it with the steps F5
+     already takes: the terminal's `BackendSession` restarts, loads and
+     runs; madcide restarts and loads the file, from its buffer's live text
+     when the file is open; the in-process Windows terminal, which has no
+     backend to restart, refuses it and names `%run -i`.
+   - F5 and a typed `%run` share madcide's one fresh-run path
+     (`repl_run_fresh`: restart, load the text, run argv); F5 keeps its own
+     entry, since it runs untitled and never-saved buffers, which the
+     engine's "the file opens" check would refuse.
+   - `%build FILE [-o OUT]`: the in-process native build (the Build menu's
+     `madc_parse_build` over a parse of FILE), the executable beside FILE.
+3. **The IDE layer** on the same payloads: `%open FILE` and `%edit NAME`
+   (the name's definition, from the bindings' file and line) are engine
+   commands whose payload a host honors (madcide opens the editor; the
+   terminal names `$EDITOR`, as IPython's `%edit` does). A plugin's own
+   command is `ide::repl_command`, answered by the IDE before the session
+   sees the entry; `%help` lists both layers.
 4. **`%git VERB`:** the calls the Git view makes (§7e), one implementation
    behind the menu and the command. The read verbs come with §7e stage 1:
    `log [FILE]`, `show REV[:FILE]`, `blame FILE[:LINE]`, `status`,
