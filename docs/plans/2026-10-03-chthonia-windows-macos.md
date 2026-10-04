@@ -464,9 +464,25 @@ with its kind (an enum) and its source range. Three consumers:
    inline positions are measured first, and where they are inexact the lens
    computes them inside the block's known range.
 
-Before the design is final: install `libcmark-gfm-dev` on the container
-and measure its inline source positions on real READMEs; check the help
-pane's scrolling on a rendered window.
+**Measured 2026-10-04** (cmark-gfm 0.29.0.gfm.6, Ubuntu's
+`libcmark-gfm-dev` + `libcmark-gfm-extensions-dev`, which ship static
+archives and a `libcmark-gfm.pc`; a probe printing every node's
+`start/end line:column` with `CMARK_OPT_SOURCEPOS` and the table,
+strikethrough, autolink and tasklist extensions attached, over a sample
+with emphasis across a line break, a link, code spans, a nested list, a
+table, a fenced block and a quote with an entity and an escape):
+- exact, delimiters included: every block, emphasis and strong (across the
+  line break too), links, strikethrough, table cells — so the concealed
+  characters of an inline are its range minus its children's;
+- a code span reports its content only (the backticks are just outside);
+- a soft line break reports no position (0:0);
+- a text node's literal is decoded and merged (`&amp;` reads `&`, `\*`
+  reads `*`, one node), its range covering the source run — offsets inside
+  it come from scanning that run;
+- a list and its last item end at the following line, column 0.
+The lens takes the ranges and scans for the backtick runs, the escapes and
+the entities; nothing needs patching in the dependency. Still to check:
+the help pane's scrolling on a rendered window.
 
 Gates: a conformance lane over the CommonMark spec examples (a ratchet,
 like the C lanes); the shipped-notices check in `package_install_gate.sh`
