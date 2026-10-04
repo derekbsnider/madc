@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### packaging: one madcide data staging script for Linux, Windows, macOS
+
+A new `scripts/stage_madcide_data.sh <data-dir> <plugins-dir>` consolidates the staging of madcide's data (profiles/, plugins/, include/madcide/, verbs/, checks/). Before this change the same five install/cp steps were duplicated in two places: `scripts/stage_install.sh` (Linux deb/rpm/tarball, Homebrew keg; `data-dir` = share/madcide) and `scripts/package_release_windows.sh` (Windows PE; `data-dir` = the exe's bin/). Both now call the one script. A new gate `scripts/check-one-madcide-staging.sh` (wired into `make -C src gates`) fails on an `install`/`cp` naming tools/texteditor/(verbs|checks) or tools/madcide/(profiles|include) in scripts/*.sh, packaging/, .github/workflows/ outside the owner. Behaviour preserved: on the container, old vs new staging diffed clean (diff -r exit 0) — Linux: 32 files under share/madcide; Windows: 32 files under bin/. Validation: Tier 2 scripts/fast_lanes.sh GREEN (c-testsuite 220/0, c-torture 1614 passed 0 outside baseline, c2mir-tests 314/0, gui 26/0, gxx-c++11 1501/0, index-c 50/50).
+
 ### darwin: the forest moves into libmadc-0.dylib (forest-carriers S4 shape)
 
 macOS release now produces a thin `madc-release-<arch>-macos` and `libmadc-0.dylib` that carries the forest in a __MADC,__forest Mach-O section. `madc` and every program built on the engine (`madcide`, `chthonia`, a user's `madc -o` program) load that one engine image; a parse handle in any of them finds the forest through the library-image arm of `Program::probe_forest_chain` (src/lexer.cpp: `madc_self_lib_path()` via dladdr, then `cir_forest_map_image`). Before this change the forest was embedded in the CLI binaries (the hosted binary and its stripped release twin), none in the dylib; parse handles inside `libmadc-0.dylib` had no header source — a `madc -o` program calling `madc::diagnostics` over a C++ buffer reported `error 1:19 Failed to open include file: iostream`. The reader side (Program::probe_forest_chain arm 2, cir_macho_find_forest) was already sufficient and unchanged.

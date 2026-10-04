@@ -90,24 +90,10 @@ for m in libmadcwebview.so libmadcgit.so; do
 	fi
 done
 install -m 755 "$madcide" "$p/bin/madcide"
-mkdir -p "$p/share/madcide/profiles"
-install -m 644 tools/madcide/profiles/* "$p/share/madcide/profiles/"
-# The shipped plugins (bundles: <name>/<name>.plugin, the data files it
-# carries, and its code as source plus its built library), the plugin
-# search path's second arm (resolve_data_dir).
-mkdir -p "$p/share/madcide/plugins"
-cp -R "$plugins"/. "$p/share/madcide/plugins/"
-# The plugin API headers a plugin's code includes (<madcide/plugin>):
-# --build-plugin puts this directory on the include path (resolve_data_dir),
-# and `madc -shared -I` names it by hand.
-mkdir -p "$p/share/madcide/include/madcide"
-install -m 644 tools/madcide/include/madcide/* "$p/share/madcide/include/madcide/"
-# The line editor's verb and check bodies (save, quit and the rest are
-# verbs): resolve_data_dir finds them here, and madcide refuses to start
-# without them rather than run an editor that cannot save or quit.
-mkdir -p "$p/share/madcide/verbs" "$p/share/madcide/checks"
-install -m 644 tools/texteditor/verbs/*.madv "$p/share/madcide/verbs/"
-install -m 644 tools/texteditor/checks/*.madv "$p/share/madcide/checks/"
+# madcide's data (profiles, plugins, the plugin API headers, the line
+# editor's verbs and checks): the one staging owner, into share/madcide —
+# where resolve_data_dir and resolve_profile_dir look in an install.
+scripts/stage_madcide_data.sh "$p/share/madcide" "$plugins"
 gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
 gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
 install -m 644 LICENSE "$p/share/doc/madc/copyright"

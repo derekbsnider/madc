@@ -1152,6 +1152,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-symbol-trap.sh
 	@cd .. && bash scripts/check-one-c-escape.sh
 	@cd .. && bash scripts/check-one-path-within.sh
+	@cd .. && bash scripts/check-one-madcide-staging.sh
 	@cd .. && bash scripts/check-one-pointee-accessor.sh
 	@cd .. && bash scripts/check-one-operand-promotion.sh
 	@cd .. && bash scripts/check-one-nontype-splice.sh

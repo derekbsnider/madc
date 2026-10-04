@@ -225,6 +225,12 @@ Plugin design §9.3 and §9.4, in its own order:
      (`share/madcide`) and `package_release_windows.sh` (beside the exe). A
      third copy for the Mac must not be added: one staging script serves
      all three platforms.
+     **Done 2026-10-04:** `scripts/stage_madcide_data.sh <data-dir>
+     <plugins-dir>` is the one owner. Both callers adopted it with
+     identical output: old and new staging were `diff -r` clean on the
+     container, 32 files each for Linux `share/madcide` and Windows `bin/`.
+     `check-one-madcide-staging.sh` (in `gates`) fails on an `install` or
+     `cp` of madcide's data outside it, and has two negative controls.
 
 ## 7b. Step E — the forest in the library on Windows and macOS
 
