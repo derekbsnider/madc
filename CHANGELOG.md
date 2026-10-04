@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### gate: check-chthonia-boundary (Chthonia boundary gate for independent repository)
+
+A new static gate, `scripts/check-chthonia-boundary.sh`, enforces that Chthonia's code and manifest stay on madcide's public surface, so Chthonia can move to its own repository (docs/plans/2026-10-04-chthonia-own-repository.md, §2). The gate scans `tools/chthonia/` and `tools/madcide/plugins/chthonia/` (`.mad`, `.h`, `.inc` files) and the build manifest `tools/chthonia/chthonia.json`, verifying that every `#include` is either `<madcide/NAME>` (where NAME is a file in `tools/madcide/include/madcide/`) or a quoted file in the includer's own directory, and the manifest names only paths inside the moving set, the public include directory `../madcide/include`, or the one named exception `../madcide/madcide_base.mad` (madcide's base compiled from source until libmadcide ships). Reports offending file and line text (no line numbers). Negative controls (synthetic include and manifest referencing internal) fail; positive controls (public include, sibling include) pass. Integrated into the build system: `make -C src gates` runs it. Validation: Tier 2 scripts/fast_lanes.sh GREEN (c-testsuite 220/0, c-torture 1614 passed 10 failing 0 outside baseline, c2mir-tests 314 passed 50 failed 0 outside baseline, gui 26/0 (EXE/OBJ), gxx-c++11 1501 passed 445 compile-failed 0 outside baseline, index-c 50/50).
+
 ### madcide, chthonia: projects and native builds — Build menu, Project rows, Output/Terminal tabs
 
 The owner directed: "Chthonia needs a way to handle projects and building executables like madcide does... Thonny might not have that, but those things are inherently important to a C/C++ IDE." Chthonia now ships project rows and a Build menu with the build commands under it, and tabs for Output and Terminal in the bottom pane alongside the REPL.
