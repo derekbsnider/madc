@@ -33,6 +33,7 @@ primary+v paste
 primary+a selectall
 primary+f find
 primary+g gotoline
+primary+l replclear
 # Run: F5 runs the script into the Shell's session (a fresh one, its
 # names left for the prompt); Ctrl+F2 is Stop/Restart backend.
 f5 replrun

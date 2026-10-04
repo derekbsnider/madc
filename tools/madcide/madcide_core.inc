@@ -1309,6 +1309,9 @@ bool show_view(long w, long es, long kind)
     }
     var ch = lo["chrome"];
     var c = ch[ci];
+    // The tab this one replaces: dismiss_view returns the pane to it.
+    if ( c["active"].as_integer() != tab )
+	c["prev"] = c["active"].as_integer();
     c["hidden"] = 0;
     c["active"] = tab;
     ch[ci] = c;
@@ -1340,6 +1343,39 @@ bool hide_view(long w, long es, long kind)
 	ui::set(w, es, "chromelast", none);
     }
     return was;
+}
+
+// DISMISS a shown tool View — a View command's toggle-off, Thonny's: the
+// other Views stay. In a pane with other tabs, the tab it showed before this
+// View came up (show_view's record; else its first other tab) is active
+// again and the pane stays; a pane hosting this View alone hides
+// (hide_view). False when the View was not shown.
+bool dismiss_view(long w, long es, long kind)
+{
+    if ( !view_shown(w, es, kind) )
+	return false;
+    var lo;
+    layout_get(lo, w, es);
+    long tab = -1;
+    long ci = chrome_hosting(lo, kind, tab);
+    var ch = lo["chrome"];
+    var c = ch[ci];
+    long ntabs = php::count(c["tabs"]);
+    if ( ntabs < 2 )
+	return hide_view(w, es, kind);
+    long back = c["prev"].is_null() ? -1 : c["prev"].as_integer();
+    if ( back < 0 || back >= ntabs || back == tab )
+	back = tab == 0 ? 1 : 0;
+    c["active"] = back;
+    ch[ci] = c;
+    lo["chrome"] = ch;
+    ui::set(w, es, "layout", lo);
+    if ( es_int(w, es, "chromelast", viewNONE) == kind )
+    {
+	long none = viewNONE;
+	ui::set(w, es, "chromelast", none);
+    }
+    return true;
 }
 
 // The @pane esc on the chrome: hide the pane that showed the LAST kind; false
@@ -7486,9 +7522,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdOUTLINE:
 	    {
 		// The outline View toggles where the layout hosts it (the
-		// sidebar by default): shown -> hidden; else refresh + show.
+		// sidebar by default): shown -> dismissed (a pane of its own
+		// hides; beside other tabs, the one it replaced returns —
+		// chthonia's Variables); else refresh + show.
 		if ( view_shown(w, es, viewOUTLINE) )
-		    hide_view(w, es, viewOUTLINE);
+		    dismiss_view(w, es, viewOUTLINE);
 		else
 		{
 		    refresh_outline(w, es, doc);

@@ -365,10 +365,10 @@ reaches for, by menu.
 | Area | chthonia has | chthonia lacks |
 |---|---|---|
 | File | New, Open, Save, Save As, Quit; toolbar New/Open/Save | Close, Close all, Save All, Recent files |
-| Edit | Undo, Redo, Cut, Copy, Paste, Select all, Find, Go to line | Replace, Toggle comment, Indent/Dedent selection, Clear shell |
-| View | Shell, Variables, Problems | Outline (madcide has it; chthonia's menu hides it), font size, Full screen, Program arguments |
+| Edit | Undo, Redo, Cut, Copy, Paste, Select all, Find, Go to line, Clear shell (2026-10-04: `replclear`, Ctrl+L) | Replace, Toggle comment, Indent/Dedent selection |
+| View | Shell, Variables, Problems, Outline (2026-10-04: the sidebar's second tab; toggling it off returns Variables) | font size, Full screen, Program arguments |
 | Run | Run (F5), Stop; toolbar Run/Stop | Debug, Step over/into/out, Resume, Run to cursor, breakpoints, Interrupt, Send EOF; toolbar Debug and the steps |
-| Tools / Help | Key bindings, Help | Options, About |
+| Tools / Help | Key bindings, Options (2026-10-04: tab width, scheme, keymap), Help, About | — |
 | Window | a window titled `chthonia - <file> @ <line> : <col>`; no console window on Windows (D3) | `--tui`/`--help` from a console on Windows (the GUI-subsystem image does not attach to its parent's console) |
 
 The debugger is the largest gap: there is no stepper. It is its own arc

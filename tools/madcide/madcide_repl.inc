@@ -714,6 +714,17 @@ bool repl_cmd_stop(long w, long es, long doc, const char *arg)
     return true;
 }
 
+// Clear (`replclear`, Thonny's Edit ▸ Clear shell): the transcript empties —
+// the screen model's own erase-display (CSI 2J, term_screen), the one way
+// its text is cleared; the session, its names and an entry running keep on.
+bool repl_cmd_clear(long w, long es, long doc, const char *arg)
+{
+    if ( repl_doc_if_any(w, es) != 0 )
+	repl_feed(w, es, "\033[2J");
+    repl_pane_sync(w, es);
+    return true;
+}
+
 bool repl_cmd_bindings(long w, long es, long doc, const char *arg)
 {
     repl_bindings(w, es);
@@ -801,6 +812,7 @@ bool repl_activate(long w)
     ui::set(w, rw, "view", view);
     return plugin_command(w, "replrun", "Run in REPL", repl_cmd_run) != 0
 	&& plugin_command(w, "replstop", "Stop the REPL", repl_cmd_stop) != 0
+	&& plugin_command(w, "replclear", "Clear the shell", repl_cmd_clear) != 0
 	&& plugin_command(w, "replbindings", "REPL bindings", repl_cmd_bindings) != 0
 	&& plugin_command(w, "replenter", "REPL enter", repl_cmd_enter) != 0
 	&& plugin_command(w, "replcomplete", "REPL complete", repl_cmd_complete) != 0

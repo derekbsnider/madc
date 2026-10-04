@@ -352,13 +352,17 @@ each row with `name`, `kind`, `type`, `value`, `file` and `line`) and
 there.
 
 madcide's own REPL pane is a plugin compiled into madcide: its commands
-(`repl`, `replrun`, `replstop`, `replbindings`, and the input's
+(`repl`, `replrun`, `replstop`, `replclear`, `replbindings`, and the input's
 `replenter`, `replcomplete`, `replolder`, `replnewer`, `replunfocus` in the
 `@repl` scope) and its view `repl` register the way a plugin's do, so a key
-profile, a menu or a layout names them as it names any plugin's.
+profile, a menu or a layout names them as it names any plugin's. `replclear`
+empties the transcript and keeps the session and its names (Thonny's Edit ▸
+Clear shell, Ctrl+L in the `thonny` keys).
 
 The shipped `chthonia` plugin carries code: the Variables view in chthonia's
-right sidebar (View ▸ Variables), Thonny's. It lists the names the REPL session
+right sidebar (View ▸ Variables), Thonny's; the sidebar's second tab is the
+Outline (View ▸ Outline, which toggles it; toggled off, Variables shows
+again). It lists the names the REPL session
 defined, each with its type and value (`count int 3`, `square int (int)`),
 refreshed after every entry and every F5 run and emptied when the session
 stops; choosing a name the program's file defined goes to its line. The

@@ -2,8 +2,9 @@
 # vocabulary, in the format of profiles/default.menu, laid out as Thonny's
 # menus are (its rows for the commands madcide has; step 3e). No Build,
 # Project or Views rows: the power surface is not advertised. View ▸
-# Variables joins as its command lands. Thonny rows whose command madcide
-# does not have yet: File ▸ Close, Close all, Save All; Edit ▸
+# Variables joins as its command lands; View ▸ Outline shows the outline in
+# the sidebar beside Variables (chthonia.layout). Thonny rows whose command
+# madcide does not have yet: File ▸ Close, Close all, Save All; Edit ▸
 # Replace, Toggle comment; View ▸ the font size, Full screen.
 
 File new New
@@ -24,6 +25,8 @@ Edit selectall Select all
 Edit -
 Edit find Find…
 Edit gotoline Go to line…
+Edit -
+Edit replclear Clear shell
 
 Run replrun Run
 Run replstop Stop
@@ -32,8 +35,10 @@ Run language Language…
 View repl Shell
 View variables Variables
 View problems Problems
+View outline Outline
 
 Tools keystyle Key bindings…
+Tools options Options…
 
 Help help Help
 Help about About Chthonia

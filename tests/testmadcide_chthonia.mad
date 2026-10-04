@@ -36,6 +36,12 @@
 //   9. the same, its code activated from the library --build-plugin built
 //      (a copy of the bundle in this test's configuration directory, which
 //      the search path puts first).
+//  10. View ▸ Outline and Tools ▸ Options (§7a Thonny parity): the View and
+//      Tools menus list them; outline shows in the sidebar beside Variables
+//      (the file's main) and toggles back; options opens and closes its pane.
+//  11. Edit ▸ Clear shell (`replclear`, Thonny's Ctrl+L), in pins 8-9's
+//      session: the transcript had text and is empty; the session is live
+//      and the Variables rows stay.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -165,6 +171,18 @@ void variables_gate(IdeSession &S, long doc, const char *label)
     enter_line(S, doc, w, es, "int y = 7;");
     variables_rows(got, S, doc);
     println("{}-entry: [{}]", label, got);
+    // Edit ▸ Clear shell (`replclear`, §7a; Thonny's Ctrl+L): the transcript
+    // empties, the session and its names stay.
+    var tbefore;
+    ui::text(tbefore, w, repl_doc_if_any(w, es));
+    ev_action(e, "replclear", "primary+l");
+    S.apply_ide_event(doc, e);
+    var tafter;
+    ui::text(tafter, w, repl_doc_if_any(w, es));
+    variables_rows(got, S, doc);
+    println("{}-clear: had-text={} empty={} live={} rows=[{}]", label,
+	    strlen(tbefore.c_str()) > 0 ? 1 : 0, strlen(tafter.c_str()) == 0 ? 1 : 0,
+	    es_int(w, es, "repllive", 0), got);
     ev_action(e, "replstop", "");
     S.apply_ide_event(doc, e);
     settle(w, es, false);
@@ -202,6 +220,34 @@ int main()
     long h = es_int(S.w, S.es, "replh", 0);
     println("chthonia-repl: live={} running={}", es_int(S.w, S.es, "repllive", 0),
 	    h != 0 && madc::session_running(h) ? 1 : 0);
+    // View ▸ Outline and Tools ▸ Options (§7a Thonny parity): the View menu
+    // lists outline and Tools lists options; `outline` shows the outline in
+    // the sidebar beside Variables (the file's main), again hides it and the
+    // sidebar shows Variables again; `options` opens the Options pane.
+    var vtitles;
+    var vids;
+    menu_bar(vtitles, vids, S.w, S.es, "View");
+    var ttitles;
+    var tids;
+    menu_bar(ttitles, tids, S.w, S.es, "Tools");
+    bool oc = true;
+    S.command(doc, cmdOUTLINE, "", oc);
+    long side1 = slot_shown(S.w, S.es, slotSIDEBAR);
+    var orows;
+    ui::get(orows, S.w, S.es, "outline");
+    var onames = "";
+    for ( var orow : orows )
+	onames = format("{}[{}]", onames, orow["name"]);
+    S.command(doc, cmdOUTLINE, "", oc);
+    long side2 = slot_shown(S.w, S.es, slotSIDEBAR);
+    S.command(doc, cmdOPTIONS, "", oc);
+    long optshown = cur_pane(S.w, S.es) == paneOPTIONS ? 1 : 0;
+    S.command(doc, cmdOPTIONS, "", oc);
+    println("chthonia-outline: view=[{}] tools=[{}] shown={} rows={} hidden={} sidebar-back={} options={} closed={}",
+	    vids, tids, side1 == viewOUTLINE ? 1 : 0, onames,
+	    view_shown(S.w, S.es, viewOUTLINE) ? 0 : 1,
+	    side2 != viewNONE && side2 != viewOUTLINE ? 1 : 0,
+	    optshown, cur_pane(S.w, S.es) == paneNONE ? 1 : 0);
     var tbr;
     toolbar_rows(tbr, S, doc);
     println("chthonia-toolbar: {}", tbr);
