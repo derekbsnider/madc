@@ -89,9 +89,18 @@ public:
 	std::string shown;
 	std::string rendered;
 	madc::value diagnostics;
+	// A taken command's ask of its host (IPython's payloads; a
+	// <bits/session_enums> session_payload): the file and its arguments in
+	// `argv`, for the host to load (%load), run here (%run -i) or run in
+	// a fresh session (%run, D16: restart, load, run, as F5 does).
+	::madc::session_payload payload;
+	std::vector<std::string> argv;
 	// A completion's: the word's start and the names.
 	size_t start;
 	std::vector<std::string> names;
+	// load: the file defined main (InteractiveSession::loaded_main), so
+	// running the file runs it.
+	bool defines_main;
 	// load: ok. run: ok, and main's return value.
 	int status;
 	// continues: the line continues an if that ended an entry (D11).
@@ -225,6 +234,14 @@ private:
     // After a wait: the output (piped), the rendered diagnostics, and the
     // backend's end. False when it stopped.
     bool settle(int rc, const SessionClient::Reply &reply, const std::string &output);
+    // A taken command's ask (IPython's payloads): load_file(argv[0])
+    // (%load), run_file(argv) (%run -i), or, for %run's fresh session
+    // (D16), the backend restarted first, as F5 does. False when it was
+    // refused or did not start.
+    bool honor(const SessionClient::Reply &reply);
+    // FILE loaded into the session (D25), its diagnostics shown; false
+    // when it was refused. *defines_main: FILE defined main.
+    bool load_file(const std::string &path, bool *defines_main = NULL);
     SessionClient &client;
     std::ostream &err;
     std::ostream *out;

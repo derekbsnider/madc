@@ -19,6 +19,7 @@ thread_local bool madc_verbose = false;
 #include <iostream>
 #include <map>
 #include <queue>
+#include <sstream>
 #include <stack>
 #include <string>
 #include <vector>
@@ -1720,6 +1721,100 @@ TEST_CASE("a loaded file's main runs with its argv, and the session goes on (§4
     REQUIRE(l.submit("sq(9)"));
     CHECK(l.shown() == "81");
     std::remove(lp.c_str());
+}
+
+// How often NEEDLE occurs in TEXT.
+static size_t occurrences(const std::string &text, const char *needle)
+{
+    size_t n = 0;
+    for ( size_t at = text.find(needle); at != std::string::npos;
+	  at = text.find(needle, at + 1) )
+	++n;
+    return n;
+}
+
+// The file commands (plan §7f). A host that honors no payloads (the
+// in-process terminal): %load and %run -i load the file in the session
+// itself, %run (a fresh session) is refused naming %run -i, and a refused
+// file's diagnostics show once — its load rendered them, the command's end
+// does not again. A payload host (the backend server) gets the command's
+// payload with the file and its arguments, and the session loads nothing.
+TEST_CASE("session commands: %load and %run, with and without a payload host (§7f)")
+{
+    std::string lib = temp_source("int thrice(int v) { return 3 * v; }\n",
+				  "madc_repl_cmdlib");
+    std::string bad = temp_source("int broken = nosuch;\n", "madc_repl_cmdbad");
+    std::string prog = temp_source(
+	"int ran = 0;\n"
+	"int main(int argc, char **argv) { ran = argc; return 0; }\n",
+	"madc_repl_cmdprog");
+    std::string other = temp_source("int sq(int v) { return v * v; }\n",
+				    "madc_repl_cmdother");
+    const std::string missing = "/nonexistent/madc_repl_no_such_file.c";
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%load " + lib));
+    CHECK(s.payload() == madc::session_payload::none);
+    REQUIRE(s.submit("thrice(7)"));
+    CHECK(s.shown() == "21");
+    REQUIRE(s.submit("%run -i " + prog + " a 'b c'"));
+    REQUIRE(s.submit("ran"));
+    CHECK(s.shown() == "3");
+    CHECK(s.loaded_main());
+    // A file with no main of its own runs none: prog's is not its main.
+    REQUIRE(s.submit("ran = 0;"));
+    REQUIRE(s.submit("%run -i " + other + " z"));
+    CHECK_FALSE(s.loaded_main());
+    REQUIRE(s.submit("ran"));
+    CHECK(s.shown() == "0");
+    REQUIRE(s.submit("sq(9)"));
+    CHECK(s.shown() == "81");
+    CHECK_FALSE(s.submit("%run " + prog));
+    CHECK(first_error(s) == "%run starts a fresh session, which this host"
+			    " cannot; %run -i FILE runs it in this one");
+    CHECK_FALSE(s.submit("%run"));
+    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK_FALSE(s.submit("%run -i"));
+    CHECK(first_error(s) == "%run needs a FILE");
+    CHECK_FALSE(s.submit("%load"));
+    CHECK(first_error(s) == "%load takes one FILE");
+    CHECK_FALSE(s.submit("%load " + lib + " " + lib));
+    CHECK(first_error(s) == "%load takes one FILE");
+    CHECK_FALSE(s.submit("%run \"unclosed"));
+    CHECK(first_error(s) == "%run: no closing quotation, or a backslash at the end");
+    err.str("");
+    CHECK_FALSE(s.submit("%load " + bad));
+    CHECK(occurrences(err.str(), "undeclared identifier 'nosuch'") == 1);
+    err.str("");
+    CHECK_FALSE(s.submit("%load " + missing));
+    CHECK(occurrences(err.str(), "Failed to open file") == 1);
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit("%run " + prog + " x"));
+    CHECK(h.payload() == madc::session_payload::run);
+    CHECK(h.payload_argv() == std::vector<std::string>{ prog, "x" });
+    REQUIRE(h.submit("%run -i " + prog));
+    CHECK(h.payload() == madc::session_payload::run_here);
+    REQUIRE(h.submit("1 + 1"));		// the next entry asks nothing
+    CHECK(h.payload() == madc::session_payload::none);
+    REQUIRE(h.submit("%load " + lib));
+    CHECK(h.payload() == madc::session_payload::load);
+    CHECK(h.payload_argv() == std::vector<std::string>{ lib });
+    CHECK(h.function("thrice") == (void *)NULL);
+    CHECK(h.function("main") == (void *)NULL);
+    CHECK_FALSE(h.submit("%load " + missing));
+    CHECK(h.payload() == madc::session_payload::none);
+    CHECK(first_error(h) == "Failed to open file");
+
+    std::remove(lib.c_str());
+    std::remove(bad.c_str());
+    std::remove(prog.c_str());
+    std::remove(other.c_str());
 }
 
 // Completion (plan §41.7a, slice 3): the names that complete the word before

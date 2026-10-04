@@ -1,0 +1,15 @@
+%run -i tests/testrepl_runcmd_prog.mad alpha "two words"
+twice(base)
+%run tests/testrepl_runcmd_prog.mad x
+twice(3141)
+base
+%run tests/no_such_file.mad
+twice(2718)
+%run tests/testrepl_runcmd_lib.mad
+twice(1)
+%load tests/testrepl_runcmd_prog.mad
+twice(thrice(1111))
+%run
+%load
+%run "unclosed
+%help

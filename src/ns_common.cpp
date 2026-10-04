@@ -112,6 +112,69 @@ bool contains(const std::string &s, const std::string &needle)
 	return s.find(needle) != std::string::npos;
 }
 
+bool shell_words(const std::string &s, std::vector<std::string> &out)
+{
+	out.clear();
+	std::vector<std::string> taken;
+	std::string word;
+	bool in_word = false;
+	size_t i = 0;
+	const size_t n = s.size();
+	while ( i < n )
+	{
+		const char c = s[i];
+		if ( c == ' ' || c == '\t' || c == '\r' || c == '\n' )
+		{
+			if ( in_word )
+				taken.push_back(word);
+			word.clear();
+			in_word = false;
+			++i;
+			continue;
+		}
+		in_word = true;
+		if ( c == '\\' )
+		{
+			if ( i + 1 >= n )
+				return false;		// No escaped character
+			word += s[i + 1];
+			i += 2;
+			continue;
+		}
+		if ( c == '\'' )
+		{
+			const size_t e = s.find('\'', i + 1);
+			if ( e == std::string::npos )
+				return false;		// No closing quotation
+			word.append(s, i + 1, e - i - 1);
+			i = e + 1;
+			continue;
+		}
+		if ( c == '"' )
+		{
+			for ( ++i; ; ++i )
+			{
+				if ( i >= n )
+					return false;	// No closing quotation
+				if ( s[i] == '"' )
+					break;
+				if ( s[i] == '\\' && i + 1 < n
+				     && (s[i + 1] == '"' || s[i + 1] == '\\') )
+					++i;
+				word += s[i];
+			}
+			++i;
+			continue;
+		}
+		word += c;
+		++i;
+	}
+	if ( in_word )
+		taken.push_back(word);
+	out.swap(taken);
+	return true;
+}
+
 // format's `{}` for a double: the one owner of the carrier's real text
 // (the REPL's value display reads the same digits).
 std::string carrier_real_text(double v)

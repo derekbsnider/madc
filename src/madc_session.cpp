@@ -33,6 +33,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"		// shell_words: %run's and %load's arguments
 #include "madc_cir.h"
 #include "madc_session.h"
 #include "madc_type_spelling.h"
@@ -61,6 +62,10 @@ const CommandRow command_rows[] = {
       "what the session knows of a name (also ?NAME)" },
     { "whos", InteractiveSession::Command::whos, "%whos",
       "the names the session defined: their types, values and origins" },
+    { "load", InteractiveSession::Command::load, "%load FILE",
+      "define FILE's names in this session; nothing runs" },
+    { "run", InteractiveSession::Command::run, "%run [-i] FILE [ARGS]",
+      "FILE's main with ARGS, in a fresh session (-i: this one); its names stay" },
 };
 
 const size_t command_count = sizeof(command_rows) / sizeof(command_rows[0]);
@@ -140,13 +145,17 @@ std::string command_argument(const std::string &text, const CommandText &c)
 
 InteractiveSession::InteractiveSession()
     : prog(new Program()), jit(new CirJitSession()), entry_count(0),
-      submit_count(0), showed_command(false), quiet_count(0)
+      submit_count(0), showed_command(false),
+      payload_kind(madc::session_payload::none), payload_host(false),
+      load_main(false), quiet_count(0)
 {
 }
 
 InteractiveSession::InteractiveSession(std::unique_ptr<Program> configured)
     : prog(std::move(configured)), jit(new CirJitSession()), entry_count(0),
-      submit_count(0), showed_command(false), quiet_count(0)
+      submit_count(0), showed_command(false),
+      payload_kind(madc::session_payload::none), payload_host(false),
+      load_main(false), quiet_count(0)
 {
 }
 
@@ -223,11 +232,14 @@ static bool link_and_run(Program &prog, CirJitSession &jit,
 }
 
 // A unit's parse recorded its diagnostics without rendering them (an attempt
-// still being typed must say nothing); the unit is final now.
-void InteractiveSession::render_parse_diagnostics()
+// still being typed must say nothing); the unit is final now. Its link and
+// its run render theirs as they record them, and a command that loads a file
+// has rendered the file's already: each record shows once.
+void InteractiveSession::render_pending_diagnostics()
 {
     for ( const Program::Diagnostic &d : prog->diagnostics )
-	prog->print_diagnostic(prog->error(), d);
+	if ( !d.rendered )
+	    prog->print_diagnostic(prog->error(), d);
 }
 
 InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
@@ -246,6 +258,9 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     // that fails to parse. Its diagnostics stay. An attempt the client goes
     // on typing rolls back the same way.
     showed_command = false;
+    // A payload is the entry's just taken, never a later one's.
+    payload_kind = madc::session_payload::none;
+    payload_args.clear();
     if ( command_text(text).is_command() )
     {
 	// A command is one line, complete at its end (plan §41.8a): taken at
@@ -255,7 +270,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
 	    taken();
 	++submit_count;
 	bool ok = run_command(text, name);
-	render_parse_diagnostics();
+	render_pending_diagnostics();
 	return Offered{ OfferState::taken, ok };
     }
     Program::EntryTransaction entry(*prog);
@@ -268,7 +283,7 @@ InteractiveSession::Offered InteractiveSession::enter(const std::string &text,
     if ( taken )
 	taken();
     ++submit_count;
-    render_parse_diagnostics();
+    render_pending_diagnostics();
     if ( verdict != Program::EntryVerdict::Complete
       && verdict != Program::EntryVerdict::CompleteExtendable )
 	return Offered{ OfferState::taken, false };
@@ -315,6 +330,7 @@ std::vector<std::string> InteractiveSession::complete(const std::string &text,
 
 bool InteractiveSession::load(const std::string &path)
 {
+    load_main = false;
     std::ifstream file(path.c_str(), std::ios::binary);
     if ( !file )
     {
@@ -332,16 +348,21 @@ bool InteractiveSession::load_text(const std::string &text, const std::string &p
     // A file is read as gcc reads it, through its translation too: no entry
     // relaxation, bodies kept as roots, and an undefined reference refused
     // at its link (late binding, D27, is an entry's).
+    load_main = false;
+    const bool had_main = function("main") != NULL;
     Program::ParseModeScope mode(*prog, Program::ParseMode::TranslationUnit);
     Program::EntryTransaction unit(*prog);
     bool parsed = prog->parse_file_unit(text, path);
-    render_parse_diagnostics();
+    render_pending_diagnostics();
     if ( !parsed )
 	return false;
     bool linked = false;
     bool ok = link_and_run(*prog, *jit, unit, prog->intern_file(path), linked);
     if ( linked )
+    {
 	prog->session_units.insert(path);	// its names are the session's
+	load_main = !had_main && function("main") != NULL;
+    }
     return ok;
 }
 
@@ -369,7 +390,7 @@ bool InteractiveSession::run_file(int argc, char **argv)
     if ( argc < 1 || !load(argv[0]) )
 	return false;
     int status = 0;
-    if ( function("main") )
+    if ( load_main )
 	run_main(argc, argv, &status);	// its status is not the session's
     return true;
 }
@@ -430,8 +451,102 @@ bool InteractiveSession::run_command(const std::string &text,
 	case Command::whos:
 	    whos_command();
 	    return true;
+	case Command::load:
+	    return load_command(command_argument(text, c), name);
+	case Command::run:
+	    return run_file_command(command_argument(text, c), name);
     }
     return false;
+}
+
+void InteractiveSession::command_error(const std::string &message,
+				       const std::string &name)
+{
+    prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			 Program::DiagnosticPhase::parser, message,
+			 prog->intern_file(name), 1, 1);
+}
+
+// `%load FILE` (D25, Julia's include): FILE's names defined in this session,
+// nothing run — load(), which leaves nothing of a refused file.
+bool InteractiveSession::load_command(const std::string &argument,
+				      const std::string &name)
+{
+    std::vector<std::string> words;
+    if ( !ns_common::shell_words(argument, words) )
+    {
+	command_error("%load: no closing quotation, or a backslash at the end",
+		      name);
+	return false;
+    }
+    if ( words.size() != 1 )
+    {
+	command_error("%load takes one FILE", name);
+	return false;
+    }
+    return file_command(madc::session_payload::load, words);
+}
+
+// `%run [-i] FILE [ARGS]` (D16, D25; IPython's %run, Thonny's F5): FILE's
+// main with ARGS split by the shell's rules, its names left for the prompt.
+// -i runs it in this session (run_file: load, then main). Without it the run
+// is a FRESH session's, which only the host can start: the `run` payload,
+// which the host honors as F5 does — restart, load, run.
+bool InteractiveSession::run_file_command(const std::string &argument,
+					  const std::string &name)
+{
+    std::vector<std::string> words;
+    if ( !ns_common::shell_words(argument, words) )
+    {
+	command_error("%run: no closing quotation, or a backslash at the end",
+		      name);
+	return false;
+    }
+    const bool here = !words.empty() && words[0] == "-i";
+    if ( here )
+	words.erase(words.begin());
+    if ( words.empty() )
+    {
+	command_error("%run needs a FILE", name);
+	return false;
+    }
+    if ( !here && !payload_host )
+    {
+	command_error("%run starts a fresh session, which this host cannot;"
+		      " %run -i FILE runs it in this one", name);
+	return false;
+    }
+    return file_command(here ? madc::session_payload::run_here
+			     : madc::session_payload::run, words);
+}
+
+// A file command's FILE (plan §7f) opens first, so a mistyped name is refused
+// before anything is restarted or loaded and the session survives it. A host
+// that honors payloads reads the file itself (an IDE's open buffer is its
+// live text, as F5 runs it); with any other host the session loads it here.
+bool InteractiveSession::file_command(madc::session_payload kind,
+				      std::vector<std::string> &words)
+{
+    if ( !std::ifstream(words[0].c_str()) )
+    {
+	prog->record_frontend_error(Program::DiagnosticPhase::lexer,
+				    "Failed to open file", words[0].c_str(),
+				    0, 0);
+	return false;
+    }
+    if ( payload_host )
+    {
+	payload_kind = kind;
+	payload_args = words;
+	return true;
+    }
+    if ( kind == madc::session_payload::load )
+	return load(words[0]);
+    std::vector<char *> argv;
+    for ( std::string &w : words )
+	argv.push_back(&w[0]);
+    argv.push_back(NULL);
+    return run_file((int)words.size(), argv.data());
 }
 
 // `%type EXPR` (plan §41.8a): the expression's type, never run. It is parsed

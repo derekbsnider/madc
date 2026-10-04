@@ -772,7 +772,12 @@ namespace madc {
     //     prints comes after it, then its offer row. An offer's state (a
     //     madc::offer_state code), ok, shown, rendered (the diagnostics as the
     //     CLI prints them), submitted, diagnostics (the rows parse_check
-    //     returns); a load's ok, rendered and diagnostics; a run's ok,
+    //     returns), payload (a madc::session_payload code: what a taken
+    //     command asks the pane to do with argv, the file and its
+    //     arguments — load it, run it here, or run it in a fresh session,
+    //     reading an open buffer's live text); a load's ok, rendered,
+    //     diagnostics and main (the file defined main, so running it runs
+    //     main: one an earlier unit defined is not the file's); a run's ok,
     //     rendered, status (main's) and diagnostics (the rows recorded since
     //     the last entry or load began, the run's own included); a
     //     completion's start and names; a bindings reply's rows; a stop's

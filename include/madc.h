@@ -3310,6 +3310,11 @@ public:
 	// not a token's: the echo underlines line:column through it (D26).
 	int end_line = 0;
 	int end_column = 0;
+	// Its text has been shown: print_diagnostic sets it as it renders,
+	// record_throw_diagnostic when throwbuf::sync rendered the record. A
+	// session renders a unit's records once (a command that loads a file
+	// renders the file's, then the command's own).
+	mutable bool rendered = false;
 	// The one test of "an error, not a warning"
 	// (scripts/check-one-error-diagnostic-scan.sh).
 	bool is_error() const { return severity == DiagnosticSeverity::error; }	// allowed-exception: the owner

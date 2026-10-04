@@ -552,16 +552,34 @@ and a plugin can only observe REPL events (`ide::event`), not add a command.
      itself (restart is the client's: `SessionClient::restart`,
      `madc::session_restart`), so it answers with a PAYLOAD, IPython's
      mechanism (a kernel's execute reply asks its frontend to act: `%edit`
-     opens a file, `%load` sets the next input). The `run` payload {path,
-     argv} rides the offer's reply; every host honors it with the steps F5
-     already takes: the terminal's `BackendSession` restarts, loads and
-     runs; madcide restarts and loads the file, from its buffer's live text
-     when the file is open; the in-process Windows terminal, which has no
-     backend to restart, refuses it and names `%run -i`.
-   - F5 and a typed `%run` share madcide's one fresh-run path
-     (`repl_run_fresh`: restart, load the text, run argv); F5 keeps its own
-     entry, since it runs untitled and never-saved buffers, which the
-     engine's "the file opens" check would refuse.
+     opens a file, `%load` sets the next input).
+   - All three file commands answer with payloads (`load`, `run`,
+     `run_here`: {argv}, the file then its arguments) when the host honors
+     them (`host_honors_payloads`, the backend server), so the HOST reads the
+     file: madcide loads an open buffer's live text for each, as F5 does, and
+     a typed `%load` or `%run -i` never reads a stale saved copy. The engine
+     still parses the line and refuses a file that does not open, before
+     anything restarts. The terminal's `BackendSession` honors them with its
+     load and run requests (restarting first for `run`); the in-process
+     Windows terminal honors none, so its session loads `%load`'s and
+     `%run -i`'s file itself and refuses `%run`, naming `%run -i`.
+   - F5 and the typed file commands share madcide's one path
+     (`repl_load_file`: restart when fresh, load the text, run argv unless
+     `%load`); F5 keeps its own entry, since it runs untitled and
+     never-saved buffers, which the engine's "the file opens" check would
+     refuse.
+   - Running a file runs FILE's `main`: the session records whether the
+     load defined one (`InteractiveSession::loaded_main`, the load reply's
+     `main`), since a `main` an earlier unit defined is not FILE's (a second
+     is refused). `%run -i lib.c` after `%run prog.c` runs nothing; madcide
+     then publishes `reRAN` with the load reply, as for `%load`, so a view
+     that refreshes on a run (Chthonia's Variables) still does.
+   - madcide finds a file's open buffer through `buffer_doc_named`, which,
+     before the buffer table exists (one buffer, never a second opened),
+     answers with the active buffer when its path matches.
+   - A file command's diagnostics show once: a recorded diagnostic is
+     marked when rendered (`Program::Diagnostic::rendered`), and the
+     session's end-of-entry render skips the marked ones.
    - `%build FILE [-o OUT]`: the in-process native build (the Build menu's
      `madc_parse_build` over a parse of FILE), the executable beside FILE.
 3. **The IDE layer** on the same payloads: `%open FILE` and `%edit NAME`
@@ -583,7 +601,8 @@ A (the REPL, which every chthonia user sees first; done) → B (measured, no
 defect; done) → D1 (the probe; done) → D2 → D3 → D4 with C folded in (the
 Mac build is chthonia's Mac build) → the parity rows (§7a) → Projects and
 building (§7c) → the libgit2 floor (1.8.7 / 1.9.7, owner 2026-10-04) →
-REPL commands and the Variables row (§7f) → Help and Markdown (§7d) → Git
+REPL commands and the Variables row (§7f: the row, `%load` and `%run` done;
+`%build`, the IDE layer and `%git` next) → Help and Markdown (§7d) → Git
 (§7e) → Recent files and the rest of §7a → the debugger arc.
 Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working
 on all three platforms with Thonny's functionality. Each step is its own

@@ -276,7 +276,9 @@ program file and you get an interactive C/C++ session in the spirit of Julia
 and IPython: each entry's definitions carry into the next, results are named
 (`ans`, `_`, `_N`), the terminal edits each entry with history and Tab
 completion, and `%whos`, `%type`, `%help` and `?name` answer questions about
-what you have built so far; `madc -i file` runs a file and keeps its names.
+what you have built so far; `madc -i file` runs a file and keeps its names,
+as `%run file args` does from the prompt (`%run -i` in the same session,
+`%load` to define a file's names without running it).
 A session can also run in its own process, driven from the dialect
 (`madc::session_*`) or from the editor.
 

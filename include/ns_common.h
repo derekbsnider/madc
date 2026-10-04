@@ -12,6 +12,7 @@
 //////////////////////////////////////////////////////////////////////////
 
 #include <string>
+#include <vector>
 #include <cstdint>
 
 #include "datadef.h"
@@ -43,6 +44,18 @@ void repeat(std::string &s, int64_t count);
 bool starts_with(const std::string &s, const std::string &prefix);
 bool ends_with  (const std::string &s, const std::string &suffix);
 bool contains   (const std::string &s, const std::string &needle);
+
+// ---- Command-line words -----------------------------------------------
+
+// The words of a shell-like command line, Python's shlex.split in POSIX
+// mode: THE splitter (python::shlex_split and the REPL's %run read it).
+// Whitespace (space, tab, CR, LF) separates words; '...' is literal; inside
+// "..." a backslash escapes only `"` and `\`; outside quotes a backslash
+// takes the next character; quoted and plain runs that touch form one word,
+// and "" is an empty word; `#` is ordinary. False for an unclosed quote or a
+// trailing backslash (Python's ValueError), with `out` empty.
+// Thread contract: a pure function over its arguments.
+bool shell_words(const std::string &text, std::vector<std::string> &out);
 
 // ---- madc::value stringification --------------------------------------
 

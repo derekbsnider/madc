@@ -150,7 +150,22 @@ public:
     // line starts with `%name` or `:name` is a command, never C. The typed
     // name becomes one of these codes once, at input. `?NAME` is %pinfo NAME,
     // and `?` alone %help (IPython).
-    enum class Command : unsigned char { help, type, pinfo, whos };
+    enum class Command : unsigned char { help, type, pinfo, whos, load, run };
+    // What the last taken command asks its host (IPython's payloads; the
+    // codes are <bits/session_enums>' session_payload), with payload_argv()
+    // — the file, then its arguments. A host that honors them says so with
+    // host_honors_payloads(true) (the backend server: its clients read the
+    // file, an IDE's open buffer as its live text, and only a client can
+    // start a FRESH session for %run, D16). With any other host the session
+    // loads %load's and %run -i's file itself, and %run refuses, naming
+    // %run -i.
+    madc::session_payload payload() const { return payload_kind; }
+    const std::vector<std::string> &payload_argv() const { return payload_args; }
+    void host_honors_payloads(bool on) { payload_host = on; }
+    // The last file loaded defined main (a main an earlier unit defined is
+    // not the file's: a second main is refused): only then does running the
+    // file run main (run_file, and a host's run after its load).
+    bool loaded_main() const { return load_main; }
     // The names the session defined (plan §41.11a step 3d): the one owner
     // %whos and the bindings wire op read. A row per object and function a
     // session unit (an entry, a loaded file) defined, sorted by name:
@@ -169,13 +184,23 @@ public:
 
 private:
     Offered enter(const std::string &text, bool final, const TakenHook &taken);
-    void render_parse_diagnostics();
+    // The recorded diagnostics nothing has rendered yet, rendered.
+    void render_pending_diagnostics();
     // A command entry's run: its output goes to command_output. False when
     // it is refused (its diagnostics are the Program's).
     bool run_command(const std::string &text, const std::string &name);
     bool type_command(const std::string &expression, const std::string &name);
     bool pinfo_command(const std::string &argument, const std::string &name);
     void whos_command();
+    // %load FILE and %run [-i] FILE [ARGS] (D25, D16): ARGS split by the
+    // shell's rules (ns_common::shell_words).
+    bool load_command(const std::string &argument, const std::string &name);
+    bool run_file_command(const std::string &argument, const std::string &name);
+    // A file command's file, once it opens: the payload `kind` for a host
+    // that honors payloads, else loaded (and run) here.
+    bool file_command(madc::session_payload kind, std::vector<std::string> &words);
+    // A command's usage error, cited at the entry's first column.
+    void command_error(const std::string &message, const std::string &name);
     // The quiet entry: each object shown through the row form, the texts in
     // order. False when it did not run (then the texts are fewer).
     bool show_rows(const std::vector<Variable *> &objects,
@@ -186,6 +211,10 @@ private:
     unsigned submit_count;
     std::string command_output;		// the last command's output
     bool showed_command;		// the last entry was a command
+    madc::session_payload payload_kind;	// the last command's ask of its host
+    std::vector<std::string> payload_args;
+    bool payload_host;			// the host honors payloads
+    bool load_main;			// the last loaded file defined main
     unsigned quiet_count;		// the quiet entries' units, each its own
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);

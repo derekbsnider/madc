@@ -1,0 +1,8 @@
+main argc=3 [alpha] [two words]
+2034
+main argc=2 [x]
+6282
+5436
+6666
+%load FILE             define FILE's names in this session; nothing runs
+%run [-i] FILE [ARGS]  FILE's main with ARGS, in a fresh session (-i: this one); its names stay

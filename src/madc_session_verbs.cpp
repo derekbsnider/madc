@@ -85,6 +85,16 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["rendered"] = madc::value(r.rendered);
 	    f["submitted"] = madc::value((int64_t)r.submitted);
 	    f["diagnostics"] = reply_diagnostics(r);
+	    // A taken command's ask (a session_payload code; argv is the file,
+	    // then its arguments): the pane honors it (%load, %run, %run -i).
+	    f["payload"] = madc::value((int64_t)r.payload);
+	    if ( r.payload != madc::session_payload::none )
+	    {
+		std::vector<madc::value> argv;
+		for ( const std::string &a : r.argv )
+		    argv.push_back(madc::value(a));
+		f["argv"] = madc::value::make_array(argv);
+	    }
 	    break;
 	case madc::session_reply::complete:
 	{
@@ -106,6 +116,8 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["diagnostics"] = reply_diagnostics(r);
 	    if ( r.kind == madc::session_reply::run )
 		f["status"] = madc::value((int64_t)r.status);
+	    else
+		f["main"] = madc::value(r.defines_main);
 	    break;
 	case madc::session_reply::continues:
 	    f["continues"] = madc::value(r.continues);

@@ -24766,6 +24766,7 @@ void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const c
 {
     if ( DiagnosticRenderMute::active )
 	return;		// captured as data; the record already exists
+    diag.rendered = true;
     if ( !diag.file.empty() )
 	os << ANSI_WHITE << diag.file << ':' << diag.line << ':'
 	   << madc_diag_screen_column(&source, diag.file.c_str(), diag.line,
@@ -80314,6 +80315,9 @@ size_t Program::record_throw_diagnostic(const std::exception &e,
 {
     set_error(phase, Throw.str().empty() ? e.what() : Throw.str(),
 	      file, line, column, end_line, end_column);
+    // sync renders unless muted, and only a Throw it ran fills the buffer.
+    diagnostics.back().rendered = !DiagnosticRenderMute::active
+				&& !Throw.str().empty();
     return diagnostics.size() - 1;
 }
 

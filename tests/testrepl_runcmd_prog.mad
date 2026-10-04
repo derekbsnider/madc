@@ -1,0 +1,14 @@
+// The program testrepl_runcmd.input runs with %run (its argv shows how
+// the arguments were split) and defines with %load (its main does not run).
+#include <stdio.h>
+
+int twice(int x) { return 2 * x; }
+
+int main(int argc, char **argv)
+{
+	printf("main argc=%d", argc);
+	for ( int i = 1; i < argc; i++ )
+		printf(" [%s]", argv[i]);
+	printf("\n");
+	return 0;
+}

@@ -130,6 +130,31 @@ InteractiveSession::OfferState state_of(const std::string &name)
     return InteractiveSession::OfferState::taken;
 }
 
+// A taken command's ask of its host (<bits/session_enums>' session_payload):
+// the wire's word for each; none rides no field.
+struct PayloadRow { const char *name; madc::session_payload payload; };
+const PayloadRow payload_rows[] = {
+    { "load", madc::session_payload::load },
+    { "run", madc::session_payload::run },
+    { "run_here", madc::session_payload::run_here },
+};
+
+const char *payload_name(madc::session_payload p)
+{
+    for ( const PayloadRow &r : payload_rows )
+	if ( r.payload == p )
+	    return r.name;
+    return "";
+}
+
+madc::session_payload payload_of(const std::string &name)
+{
+    for ( const PayloadRow &r : payload_rows )
+	if ( name == r.name )
+	    return r.payload;
+    return madc::session_payload::none;
+}
+
 // One line out, whole; a peer that went away is an error, never a SIGPIPE
 // (the client must outlive its backend — the socket channel's write).
 bool write_line(madc::DataChannel &wire, const std::string &line)
@@ -224,6 +249,10 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		  const std::string &std_option)
 {
     InteractiveSession session(std::move(prog));
+    // A file command's payload is the client's to honor: it reads the file
+    // (an IDE's buffer is its live text) and, for %run's fresh session,
+    // restarts this backend first, as F5 does.
+    session.host_honors_payloads(true);
     std::ostringstream err;
     session.program().error_stream = &err;
     auto flush_program = [] {
@@ -288,6 +317,11 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		{
 		    rep["shown"] = session.shown();
 		    rep["submitted"] = session.submitted();
+		    if ( session.payload() != madc::session_payload::none )
+		    {
+			rep["payload"] = payload_name(session.payload());
+			rep["argv"] = session.payload_argv();
+		    }
 		    attach_diagnostics(rep, session);
 		}
 		break;
@@ -310,6 +344,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 						  req.value("path", std::string()));
 		else
 		    rep["ok"] = session.load(req.value("path", std::string()));
+		rep["main"] = session.loaded_main();	// the file's main, to run
 		attach_diagnostics(rep, session);
 		break;
 	    case Op::continues:
@@ -356,7 +391,8 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 
 SessionClient::Reply::Reply()
     : kind(Kind::offer), seq(0), state(InteractiveSession::OfferState::taken),
-      ok(false), submitted(0), start(0), status(0), continues(false),
+      ok(false), submitted(0), payload(::madc::session_payload::none),
+      start(0), defines_main(false), status(0), continues(false),
       exit_status(-1), signal(0)
 {
 }
@@ -852,6 +888,8 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    reply.state = state_of(j.value("state", std::string()));
 	    reply.shown = j.value("shown", std::string());
 	    reply.submitted = j.value("submitted", 0u);
+	    reply.payload = payload_of(j.value("payload", std::string()));
+	    reply.argv = j.value("argv", std::vector<std::string>());
 	    break;
 	case Op::complete:
 	    reply.kind = Reply::Kind::complete;
@@ -860,6 +898,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	    break;
 	case Op::load:
 	    reply.kind = Reply::Kind::load;
+	    reply.defines_main = j.value("main", false);
 	    break;
 	case Op::run:
 	    reply.kind = Reply::Kind::run;
@@ -980,7 +1019,9 @@ bool BackendSession::submit(const std::string &text, const TakenHook &taken)
     std::string output;
     int rc = client.offer_wait(text, true, r, output, -1, taken);
     shown_text = rc > 0 ? r.shown : std::string();
-    return settle(rc, r, output) && r.ok;
+    if ( !settle(rc, r, output) )
+	return false;
+    return honor(r) && r.ok;
 }
 
 ReplSession::Offered BackendSession::offer(const std::string &text,
@@ -993,7 +1034,31 @@ ReplSession::Offered BackendSession::offer(const std::string &text,
     shown_text = rc > 0 ? r.shown : std::string();
     if ( !settle(rc, r, output) )
 	return Offered{ OfferState::taken, false };	// it ran, and stopped
-    return Offered{ r.state, r.ok };
+    bool ok = r.ok;
+    if ( r.state == OfferState::taken )
+	ok = honor(r) && ok;
+    return Offered{ r.state, ok };
+}
+
+bool BackendSession::honor(const SessionClient::Reply &reply)
+{
+    if ( reply.payload == madc::session_payload::none || reply.argv.empty() )
+	return true;
+    if ( reply.payload == madc::session_payload::load )
+	return load_file(reply.argv[0]);
+    if ( reply.payload == madc::session_payload::run && !client.restart() )
+    {
+	err << "madc: " << client.last_error() << std::endl;
+	has_ended = true;
+	end_status = 1;
+	return false;
+    }
+    std::vector<std::string> args(reply.argv);
+    std::vector<char *> argv;
+    for ( std::string &a : args )
+	argv.push_back(&a[0]);
+    argv.push_back(NULL);
+    return run_file((int)args.size(), argv.data());
 }
 
 std::vector<std::string> BackendSession::complete(const std::string &text,
@@ -1017,19 +1082,28 @@ bool BackendSession::continues_if(const std::string &line)
     return settle(rc, r, std::string()) && r.continues;
 }
 
-bool BackendSession::run_file(int argc, char **argv)
+bool BackendSession::load_file(const std::string &path, bool *defines_main)
 {
-    if ( argc < 1 )
-	return false;
     SessionClient::Reply r;
     std::string output;
-    int rc = client.load_wait(argv[0], r, output);
-    if ( !settle(rc, r, output) || !r.ok )
+    int rc = client.load_wait(path, r, output);
+    if ( defines_main )
+	*defines_main = r.defines_main;
+    return settle(rc, r, output) && r.ok;
+}
+
+bool BackendSession::run_file(int argc, char **argv)
+{
+    bool has_main = false;
+    if ( argc < 1 || !load_file(argv[0], &has_main) )
 	return false;
+    if ( !has_main )
+	return true;			// a main an earlier unit defined is not FILE's
+    SessionClient::Reply r;
+    std::string output;
     std::vector<std::string> args(argv, argv + argc);
-    output.clear();
     HostIgnoresInterrupt quiet;
-    rc = client.run_wait(args, r, output);	// no main: ok false, nothing ran
+    int rc = client.run_wait(args, r, output);	// no main: ok false, nothing ran
     settle(rc, r, output);
     return true;
 }

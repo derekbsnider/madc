@@ -23,6 +23,15 @@ namespace madc {
     // main run (the cores of %load and %run), D11's question answered, or
     // the names the session defined (%whos's rows, plan §41.11a step 3d).
     enum class session_reply : unsigned char { running, offer, complete, stopped, load, run, continues, bindings };
+    // What a taken command asks its HOST to do (IPython's payloads: a
+    // kernel's execute reply asks its frontend to act) with the reply's
+    // `argv`, the file and then its arguments, the host reading the file (an
+    // IDE's open buffer is its live text): none; load (%load, D25: the file
+    // loaded, nothing run); run (%run, D16: a FRESH session, which the
+    // session cannot start itself — the host restarts it, loads the file and
+    // runs its main, as F5 does); run_here (%run -i: loaded and run in this
+    // session).
+    enum class session_payload : unsigned char { none, load, run, run_here };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`
     // (%whos, madcide's Variables view, plan §41.11a) is one of these codes.
