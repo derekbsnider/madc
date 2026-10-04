@@ -11,9 +11,9 @@ method returns a NEW string. Text returns are ring-lifetime
 `python::title(s)`, `swapcase(s)`, `center(s, w, fill)`,
 `ljust(s, w, fill)`, `rjust(s, w, fill)`, `zfill(s, w)`,
 `replace(s, old, new)` — plus the value-out
-`python::format(out, fmt, args)`. The `std::string`-flavored forms are
-C++-interop conveniences, declared only when `<string>` precedes
-`<ns_python>`.
+`python::format(out, fmt, args)` and `python::shlex_split(words,
+text)`. The `std::string`-flavored forms are C++-interop conveniences,
+declared only when `<string>` precedes `<ns_python>`.
 
 ## Case Transforms
 
@@ -53,6 +53,29 @@ C++-interop conveniences, declared only when `<string>` precedes
 | Function | Description | Example |
 |----------|-------------|---------|
 | `replace(str, old, new)` | Replace all occurrences | `python::replace(s, "foo", "bar")` |
+
+## Splitting a command line
+
+| Function | Description | Example |
+|----------|-------------|---------|
+| `shlex_split(words, text)` | Python's `shlex.split` (POSIX mode): the words of a shell-like command line | `python::shlex_split(words, "a 'b c' d")` — `a`, `b c`, `d` |
+
+Spaces, tabs and newlines separate words. Text in single quotes is taken
+literally. Inside double quotes, a backslash escapes only `"` and `\`, and
+any other backslash stays as written. Outside quotes, a backslash makes the
+next character literal. Quoted and unquoted text with no space between them
+form one word, and `""` is an empty word. `#` is an ordinary character,
+because `shlex.split` starts no comments. The function returns `false` where
+Python raises `ValueError` (an unclosed quote, or a backslash at the end),
+and `words` is then left empty. It is a pure function, safe to call from any
+thread.
+
+```c
+var words;
+if ( python::shlex_split(words, "-n 3 \"a file.txt\"") )
+    for ( var w : words )
+        println("{}", w);	// -n, 3, a file.txt
+```
 
 ## Formatting
 

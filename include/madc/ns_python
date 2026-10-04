@@ -58,6 +58,13 @@ namespace python {
     const char *zfill(const char *s, int64_t width) { return __py_zfill_cstr(s, width); }
     const char *replace(value &s, const char *old_text, const char *new_text) { return __py_replace_value(&s, old_text, new_text); }
     const char *replace(const char *s, const char *old_text, const char *new_text) { return __py_replace_cstr(s, old_text, new_text); }
+    // shlex.split (POSIX mode): the words of a shell-like command line into
+    // OUT — '...' literal, "..." keeping \" and \\ as escapes, a backslash
+    // outside quotes taking the next character. False = an unclosed quote
+    // or a trailing backslash (Python's ValueError); OUT is left empty.
+    // Declared here, defined in the host (src/ns_python.cpp), resolved
+    // mangled-direct. Thread contract: a pure function.
+    bool shlex_split(value &out, const char *text);
 }
 
 #if defined(_GLIBCXX_STRING) || defined(_LIBCPP_STRING)

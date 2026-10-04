@@ -424,3 +424,83 @@ std::string *__py_replace(std::string *a, const char *b, const char *c) { return
 std::string *__py_format(std::string *a, const char *b, madc::value *c) { return python_format(a, b, c); }
 madc::value *__py_format_value(madc::value *a, const char *b, madc::value *c) { return python_format_value(a, b, c); }
 }
+
+// ---- script-facing publics, resolved mangled-direct (cpp-first-api) ----
+namespace python {
+
+// python::shlex_split — Python's shlex.split (POSIX mode): the words of a
+// shell-like command line. Whitespace (space, tab, CR, LF) separates words;
+// '...' is literal; inside "..." a backslash escapes only `"` and `\` (any
+// other stays as written); outside quotes a backslash takes the next
+// character, whatever it is; quoted and plain runs that touch form one word,
+// and "" is an empty word; `#` is an ordinary character (shlex.split sets no
+// comment characters). False = Python's ValueError ("No closing quotation",
+// "No escaped character"): `out` is left empty.
+// Thread contract: a pure function over its arguments.
+bool shlex_split(madc::value &out, const char *text)
+{
+	std::vector<madc::value> &words
+		= ns_common::value_array_reset_for_write(out, "python::shlex_split");
+	const std::string s = python_text_arg(text);
+	std::vector<std::string> taken;
+	std::string word;
+	bool in_word = false;
+	size_t i = 0;
+	const size_t n = s.size();
+	while ( i < n )
+	{
+		const char c = s[i];
+		if ( c == ' ' || c == '\t' || c == '\r' || c == '\n' )
+		{
+			if ( in_word )
+				taken.push_back(word);
+			word.clear();
+			in_word = false;
+			++i;
+			continue;
+		}
+		in_word = true;
+		if ( c == '\\' )
+		{
+			if ( i + 1 >= n )
+				return false;		// No escaped character
+			word += s[i + 1];
+			i += 2;
+			continue;
+		}
+		if ( c == '\'' )
+		{
+			const size_t e = s.find('\'', i + 1);
+			if ( e == std::string::npos )
+				return false;		// No closing quotation
+			word.append(s, i + 1, e - i - 1);
+			i = e + 1;
+			continue;
+		}
+		if ( c == '"' )
+		{
+			for ( ++i; ; ++i )
+			{
+				if ( i >= n )
+					return false;	// No closing quotation
+				if ( s[i] == '"' )
+					break;
+				if ( s[i] == '\\' && i + 1 < n
+				     && (s[i + 1] == '"' || s[i + 1] == '\\') )
+					++i;
+				word += s[i];
+			}
+			++i;
+			continue;
+		}
+		word += c;
+		++i;
+	}
+	if ( in_word )
+		taken.push_back(word);
+	for ( size_t k = 0; k < taken.size(); ++k )
+		words.push_back(madc::value(taken[k]));
+	return true;
+}
+
+} // namespace python

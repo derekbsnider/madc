@@ -246,7 +246,7 @@ downstream and the transport for upstream PR branches only (see
 | CIR builder | `src/cir_builder.cpp`    | Lowers the AST to a `cir_node` tree (c2mir-friendly C11 AST), the IR fed to c2mir → MIR |
 | php::     | `src/ns_php.cpp`           | 36 PHP-style string + array functions                          |
 | perl::    | `src/ns_perl.cpp`          | 20 Perl-style functions (chop, grep, glob, split)              |
-| python::  | `src/ns_python.cpp`        | 15 Python-style functions (title, center, zfill, format)       |
+| python::  | `src/ns_python.cpp`        | 16 Python-style functions (title, center, zfill, format, shlex_split) |
 | ruby::    | `src/ns_ruby.cpp`          | 12 Ruby-style functions (squeeze, tr, chars, rotate)           |
 | js::      | `src/ns_js.cpp`            | 6 JS-style functions (base64, URL encoding, JSON)              |
 | rust::    | `src/ns_rust.cpp`          | 18 Rust-style string + array helpers (plus `rust::match`)      |
