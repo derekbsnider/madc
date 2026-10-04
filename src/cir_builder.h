@@ -797,9 +797,16 @@ class CirBuilder {
 	// resolution — class_ctor_call); returns the temp's lvalue.
 	node_t class_object_temp(TokenBase *arg, DataDefCLASS *target);
 
+	// What a reference argument's lowered value is: the referent's VALUE,
+	// its category read from the argument token (expr_is_nonaddressable_rvalue);
+	// already the referent's ADDRESS; or a value whose category the caller
+	// established — an LVALUE binds its address, a PRVALUE binds through a
+	// materialized temporary (a tsubst copy's re-resolved call argument).
 	enum class RefArgValueForm {
 		ReferentValue,
-		ReferentAddress
+		ReferentAddress,
+		ReferentLvalue,
+		ReferentPrvalue
 	};
 	// Address of an argument bound to a NON-class reference parameter
 	// (`const T&`, T scalar/pointer). An lvalue passes by address directly; a
@@ -815,7 +822,8 @@ class CirBuilder {
 		DataDef *value_type, DataDef *expected_referent,
 		bool allow_converted_temp, RefArgValueForm value_form,
 		std::vector<node_t> &prefix);
-	RefArgValueForm copied_ref_arg_value_form(TokenBase *arg, node_t value);
+	RefArgValueForm copied_ref_arg_value_form(TokenBase *arg, node_t value,
+				const std::map<DataDef *, DataDef *> *subst);
 	// THE result of a call to `callee`: a reference return lowers to the
 	// referent's ADDRESS (T& is a T* at this level), so the call expression
 	// is `*call` — the referent lvalue, read or written. Every call, method,
@@ -3033,6 +3041,13 @@ public:
 		const std::map<DataDef *, DataDef *> *subst,
 		bool *changed_out = nullptr,
 		std::vector<DataDef *> *concrete_param_types = nullptr,
+		std::string *error_out = nullptr);
+	// The callee this copy re-resolves a pattern CALL argument to
+	// (resolve_copied_dependent_call's winner), or NULL when the pattern's
+	// own binding stands. The pattern token stays bound to its parse-time
+	// stand-in, so the instance's type and value category are the winner's.
+	class FuncDef *copied_dependent_call_winner(class TokenBase *arg,
+		const std::map<DataDef *, DataDef *> *subst,
 		std::string *error_out = nullptr);
 	bool system_header_pack_element_call_resolves(
 		class TokenPackExpansion *pe,

@@ -1,0 +1,50 @@
+// A reference parameter bound to a call whose callee is resolved only per
+// instantiation: inside a member template, `f(v)` on a functor with
+// member-template operator() overloads is bound at parse time to an overload
+// placeholder, and the instance resolves it to an operator() that returns a
+// REFERENCE (the shape of std::_Rb_tree::_M_insert_unique's
+// `_KeyOfValue()(__v)` into `const key_type&`).
+#include <stdio.h>
+#include <utility>
+
+template <typename P>
+struct First {
+	typename P::first_type &operator()(P &x) const { return x.first; }
+	const typename P::first_type &operator()(const P &x) const { return x.first; }
+	template <typename Q>
+	typename Q::first_type &operator()(Q &x) const { return x.first; }
+	template <typename Q>
+	const typename Q::first_type &operator()(const Q &x) const { return x.first; }
+};
+
+struct Plus {
+	template <class Q> int operator()(Q &q) const { return q.first + q.second; }
+};
+
+typedef std::pair<const int, int> V;
+
+template <class K, class KOV>
+struct Tree {
+	int pick(int pos, const K &k) const { return pos * 1000 + k; }
+	template <class Q>
+	int same(const Q &k, const V &v) const { return &k == &v.first; }
+	template <class Arg>
+	int temp_functor(int pos, Arg &&v) const { return pick(pos, KOV()(v)); }
+	template <class Arg>
+	int named_functor(int pos, Arg &&v) const { KOV f; return pick(pos, f(v)); }
+	template <class Arg>
+	int identity(Arg &&v) const { KOV f; return same(f(v), v); }
+	template <class Arg>
+	int by_value(int pos, Arg &&v) const { return pick(pos, Plus()(v)); }
+};
+
+int main()
+{
+	Tree<int, First<V> > t;
+	V a(3, 30), b(7, 70);
+	printf("temp: %d %d\n", t.temp_functor(1, a), t.temp_functor(2, b));
+	printf("named: %d %d\n", t.named_functor(4, a), t.named_functor(5, b));
+	printf("identity: %d\n", t.identity(a));
+	printf("by_value: %d\n", t.by_value(6, b));
+	return 0;
+}

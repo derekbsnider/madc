@@ -2158,7 +2158,7 @@ node_t CirBuilder::reference_call_result(FuncDef *callee, node_t call,
 }
 
 CirBuilder::RefArgValueForm CirBuilder::copied_ref_arg_value_form(
-	TokenBase *arg, node_t value)
+	TokenBase *arg, node_t value, const std::map<DataDef *, DataDef *> *subst)
 {
 	if (reference_member_value_is_stored_address(arg))
 		return RefArgValueForm::ReferentAddress;
@@ -2167,19 +2167,27 @@ CirBuilder::RefArgValueForm CirBuilder::copied_ref_arg_value_form(
 		return RefArgValueForm::ReferentValue;
 	node_t core = node_without_value_casts(value);
 	cir_node *cn = core ? CIR_NODE(core) : NULL;
+	// A call argument this copy re-resolves has the WINNER's value category;
+	// its pattern token is still bound to the parse-time stand-in, whose
+	// fabricated return reads as a prvalue whatever the instance returns.
+	FuncDef *winner = copied_dependent_call_winner(arg, subst);
 	// Tree 1 may already have adapted a known reference formal. Preserve that
 	// address through tsubst, except when the source expression itself is an
-	// address-valued prvalue (`&x`), which must bind through a temporary.
+	// address-valued prvalue (`&x`), which must bind through a temporary. A
+	// call's own value is never an address-of node, so under a re-resolved
+	// call the address is Tree 1's.
 	if (cn && cn->base.code == N_ADDR
-	    && !expr_is_nonaddressable_rvalue(arg))
+	    && (winner || !expr_is_nonaddressable_rvalue(arg)))
 		return RefArgValueForm::ReferentAddress;
+	if (winner && !winner->returns_reference())
+		return RefArgValueForm::ReferentPrvalue;
 	// A reference-returning call normally copies as `*call` (a referent lvalue).
 	// Tsubst's forward/identity rewrites can suppress that dereference and leave
 	// any address-shaped replacement (`call`, a stored slot ID, or a cast of the
 	// slot). Every such non-deref result is already the referent address.
-	if (ref_returning_call_type(arg))
+	if (winner || ref_returning_call_type(arg))
 		return cn && cn->base.code == N_DEREF
-			? RefArgValueForm::ReferentValue
+			? RefArgValueForm::ReferentLvalue
 			: RefArgValueForm::ReferentAddress;
 	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
 	if (tv && tv->var.is_reference())
@@ -2303,7 +2311,7 @@ node_t CirBuilder::copied_call_arg_for_formal(TokenBase *arg, node_t src_arg,
 			value_type = subst_datadef_active(value_type, *subst);
 		if (value_type && value_type->is_reference())
 			value_type = ref_param_referent(value_type);
-		RefArgValueForm form = copied_ref_arg_value_form(arg, out);
+		RefArgValueForm form = copied_ref_arg_value_form(arg, out, subst);
 		node_t addr = ref_param_arg_addr_from_value(
 			arg, [out]() -> node_t { return out; }, value_type,
 			ref_param_referent(formal), allow_converted_temp,
@@ -2874,6 +2882,17 @@ ArgValueCategory CirBuilder::substituted_arg_value_category(TokenBase *origin,
 	return arg_value_category(origin);
 }
 
+FuncDef *CirBuilder::copied_dependent_call_winner(TokenBase *arg,
+	const std::map<DataDef *, DataDef *> *subst, std::string *error_out)
+{
+	TokenCallFunc *call = dynamic_cast<TokenCallFunc *>(arg);
+	if (!call || !subst || !tsubst_call_can_rewrite_after_subst(call))
+		return NULL;
+	Variable *w = resolve_copied_dependent_call(call, subst, NULL, NULL,
+						    error_out);
+	return w ? dynamic_cast<FuncDef *>(w->type) : NULL;
+}
+
 Variable *CirBuilder::resolve_copied_dependent_call(
 	TokenCallFunc *tcf, const std::map<DataDef *, DataDef *> *subst,
 	bool *changed_out, std::vector<DataDef *> *concrete_param_types_out,
@@ -3076,14 +3095,9 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			}
 #endif
 			if (tsubst_call_can_rewrite_after_subst(inner)) {
-				bool inner_changed = false;
 				std::string inner_err;
-				Variable *iw = resolve_copied_dependent_call(
-					inner, subst, &inner_changed, NULL,
-					&inner_err);
-				FuncDef *iwfd = iw
-					? dynamic_cast<FuncDef *>(iw->type)
-					: NULL;
+				FuncDef *iwfd = copied_dependent_call_winner(
+					inner, subst, &inner_err);
 #ifdef MADC_DBG_PACK
 				if (!iwfd)
 					fprintf(stderr, "inner-recurse-fail "
@@ -3902,7 +3916,7 @@ cir_node *CirBuilder::tsubst_relower_deferred_construction(
 					arg, [value]() -> node_t { return value; },
 					value_type, ref_param_referent(pt),
 					allow_converted_temp,
-					copied_ref_arg_value_form(arg, value),
+					copied_ref_arg_value_form(arg, value, &smap),
 					prefix_items);
 			}
 			return copy_expr_under(arg, smap, pack_index,
@@ -8168,8 +8182,10 @@ node_t CirBuilder::ref_param_arg_addr_from_value(
 		return value();
 	bool needs_converted_temp = allow_converted_temp
 	    && class_pointer_reference_conversion(value_type, expected_referent);
-	if (value_type
-	    && (expr_is_nonaddressable_rvalue(arg) || needs_converted_temp)) {
+	bool prvalue = value_form == RefArgValueForm::ReferentPrvalue
+		|| (value_form == RefArgValueForm::ReferentValue
+		    && expr_is_nonaddressable_rvalue(arg));
+	if (value_type && (prvalue || needs_converted_temp)) {
 		// The reference binds to the PARAMETER's referent type, and the rvalue
 		// is converted to it ([dcl.init.ref]). When the referent differs from the
 		// arg's own type — a `0`/null literal bound to a pointer `_Base_ptr&`
