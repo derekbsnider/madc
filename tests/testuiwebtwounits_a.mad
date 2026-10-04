@@ -1,0 +1,6 @@
+// A --project unit of testuiwebtwounits.mad: names ui::WEB, so it runs
+// <ns_ui_web>'s registration.
+long web_level_a()
+{
+    return ui::WEB;
+}

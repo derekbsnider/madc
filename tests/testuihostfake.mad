@@ -121,11 +121,17 @@ const char *fake_clip_get(void *host)
 
 static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get };
 static bool fake_registered = ui::register_host("fake", ui::WEB, &fake_ops);
+// Another host: one entry differs (no clipboard read).
+static ui::ui_host_ops other_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, 0 };
 
 int main()
 {
     println("registered -> {}", fake_registered ? "yes" : "no");
-    println("duplicate -> {}", ui::register_host("fake", ui::WEB, &fake_ops) ? "yes" : "no");
+    // The same host registered again (each unit of a program that names the
+    // level runs its fragment's initializer) is accepted; another host under
+    // a taken name is refused.
+    println("same host again -> {}", ui::register_host("fake", ui::WEB, &fake_ops) ? "yes" : "no");
+    println("another host, taken name -> {}", ui::register_host("fake", ui::WEB, &other_ops) ? "yes" : "no");
     println("term taken -> {}", ui::register_host("term", ui::WEB, &fake_ops) ? "yes" : "no");
     println("no-level host -> {}", ui::register_host("nolevel", ui::NONE, &fake_ops) ? "yes" : "no");
 

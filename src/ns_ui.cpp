@@ -1766,6 +1766,15 @@ bool register_host(const char *target, ui::level lvl, const ui_host_ops *ops)
 		name.c_str());
 	return false;
     }
+    // The same host registered again is already served: each unit of a
+    // multi-unit program that names its level runs the host fragment's
+    // initializer (<ns_ui_web>'s, the <iostream> ios_base::Init shape), and
+    // the program links one copy of the host's functions, so every copy's
+    // table holds the same entries. Another host under a taken name is
+    // refused.
+    if ( const ui_host_reg *had = ui_host_named(name) )
+	if ( had->level == lvl && memcmp(had->ops, ops, sizeof *ops) == 0 )
+	    return true;
     if ( name == "term" || ui_host_named(name) )
     {
 	fprintf(stderr, "ui::register_host: target '%s' is already registered\n",

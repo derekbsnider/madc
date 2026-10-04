@@ -1,5 +1,6 @@
 registered -> yes
-duplicate -> no
+same host again -> yes
+another host, taken name -> no
 term taken -> no
 no-level host -> no
 fake open: madc

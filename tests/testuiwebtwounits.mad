@@ -1,0 +1,13 @@
+// Project-mode test: two units that both name ui::WEB, the level a program
+// asks for. Each unit gets <ns_ui_web> from the auto-include, so each runs
+// the fragment's initializer, which registers the web host. The program
+// links one copy of the host's functions, so the second registration is the
+// same host again: it is accepted with nothing said. chthonia's program
+// (tools/chthonia/chthonia.json) has the same shape: madcide's base and
+// chthonia's main both name the level.
+// Before the fix every run of such a program began with "ui::register_host:
+// target 'web' is already registered" on stderr (.expect_quiet gates it).
+// The C++ precedent: <iostream>'s ios_base::Init object, constructed in
+// every unit that includes the header and initializing the streams once.
+// The build is testuiwebtwounits.cc.json through the --project flag in
+// testuiwebtwounits.flags; this file is an ignored positional.

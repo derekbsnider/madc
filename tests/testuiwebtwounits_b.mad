@@ -1,0 +1,10 @@
+// A --project unit of testuiwebtwounits.mad: names ui::WEB too, so it runs
+// <ns_ui_web>'s registration again, and holds main.
+long web_level_a();
+
+int main(void)
+{
+    long here = ui::WEB;
+    printf("two-units: same-level=%d\n", web_level_a() == here ? 1 : 0);
+    return 0;
+}
