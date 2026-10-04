@@ -28,6 +28,105 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B170. A reference-returning call in a member template binds a reference parameter through a temp: a copy for a scalar, a crash for a class (`std::map<std::string, int>::insert`)
+
+```cpp
+#include <stdio.h>
+#include <utility>
+template <typename P>
+struct First {
+	typename P::first_type &operator()(P &x) const { return x.first; }
+	template <typename Q>
+	typename Q::first_type &operator()(Q &x) const { return x.first; }
+};
+typedef std::pair<const int, int> V;
+template <class K, class KOV>
+struct Tree {
+	int same(const K &k, const V &v) const { return &k == &v.first; }
+	template <class Arg>
+	int ident(Arg &&v) const { KOV f; return same(f(v), v); }
+};
+int main()
+{
+	Tree<int, First<V> > t;
+	V a(3, 30);
+	printf("%d\n", t.ident(a));
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `1`. madc `--std=c++17` at the
+  copied-reference-argument fix: `0`, exit 0; v0.101.0: `0` plus a c2mir
+  warning `assigning pointer without cast to integer`.
+- Layer: the pattern lane. In `ident`'s pattern, `f(v)` is bound to the
+  member-template `operator()` placeholder (fabricated `int64` return), so
+  `expr_is_nonaddressable_rvalue` reads it as a prvalue, and the argument
+  for `same`'s `const K&` formal (known at pattern time) is materialized:
+  `int tmp = <call>; same(..., &tmp)`. The instance resolves the call to an
+  `operator()` returning `int&`; the copy keeps Tree 1's temp, so `k` names
+  a copy of the key. Values are right (`std::map` brace-init is correct);
+  identity is not.
+- The fix direction: a call bound to a function-template stand-in has an
+  UNKNOWN value category at pattern time (`Program::argument_value_category`
+  already says so); Tree 1 must defer the binding (leave the argument
+  uncoerced) and the copy lane must re-coerce it against the instance
+  (`copied_ref_arg_value_form` already reads the winner's category). The
+  copy lane rebuilds the enclosing call only when `resolve_copied_dependent_call`
+  reports `changed`, so that condition has to cover an argument whose call
+  re-resolves to a different function.
+- When the callee is itself a member template (Tree 1 has no formal), the
+  binding is already deferred and right: `tests/testtsubstrefcallarg`'s
+  `identity:` line.
+- A CLASS referent crashes. `std::map<std::string, int> m; m.insert(p);`
+  (and `m = { { "bo", 4 } }`) dies in `free()` / SIGSEGV after two c2mir
+  warnings `incompatible argument type for pointer type parameter` at
+  `stl_tree.h:2171` and `:1828`, on v0.101.0 too; g++ inserts. Reducer:
+
+```cpp
+#include <stdio.h>
+#include <string>
+#include <utility>
+template <typename P>
+struct First {
+	typename P::first_type &operator()(P &x) const { return x.first; }
+	const typename P::first_type &operator()(const P &x) const { return x.first; }
+	template <typename Q>
+	typename Q::first_type &operator()(Q &x) const { return x.first; }
+	template <typename Q>
+	const typename Q::first_type &operator()(const Q &x) const { return x.first; }
+};
+typedef std::pair<const std::string, int> V;
+template <class K, class KOV>
+struct Tree {
+	size_t pick(const K &k) const { return k.size(); }
+	template <class Arg>
+	size_t temp_functor(Arg &&v) const { return pick(KOV()(v)); }
+	template <class Arg>
+	size_t named_functor(Arg &&v) const { KOV f; return pick(f(v)); }
+};
+int main()
+{
+	Tree<std::string, First<V> > t;
+	V a("abc", 30);
+	printf("%zu %zu\n", t.temp_functor(a), t.named_functor(a));
+	return 0;
+}
+```
+
+  g++ / clang++: `3 3`. madc: the two warnings, then `free(): invalid
+  pointer`. Two layers. (1) Tree 1 materializes a `std::string` temp with
+  `class_object_temp`, its constructor chosen against the placeholder's
+  fabricated `int64` type. (2) In the copy, that constructor call's N_CALL
+  carries the ARGUMENT's origin token (the `f(v)` TokenCallMethod), and
+  the receiver-aware member-call rebuild in `copy_cir_subtree` claims it as
+  that method call (its `[__this][arg]` arity fits): the emitted C is
+  `*First::operator()(&__madc_objtmp_0, First::operator()(&f, v))`, the
+  string is never constructed, and its cleanup frees garbage. Fixing (1)
+  (the deferral above) removes the temp; (2) is its own defect — a claim
+  keyed on a node's origin token must not take a node that token did not
+  emit.
+- Found 2026-10-04 fixing the double materialization behind B30.
+
 ### B168. `__DATE__` / `__TIME__` are madc's own build date, not the compile's
 
 ```c
