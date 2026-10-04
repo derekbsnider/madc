@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 WIN_SSH="${MADC_WIN_SSH:-derek@host.docker.internal}"
 WIN_BASE="${MADC_WIN_DIR:-/mnt/c/Users/Public/madcwin}"
 TIMEOUT="${MADC_WIN_TIMEOUT:-120}"
-PRODUCT="${MADC_BIN:-bin/madc-release-x86-64-windows.exe}"
+PRODUCT="${MADC_BIN:-bin/release-windows/madc.exe}"
 STAGE="$WIN_BASE/suite.$$.$RANDOM"
 
 if [ ! -f "$PRODUCT" ]; then

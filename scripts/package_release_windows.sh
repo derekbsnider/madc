@@ -5,13 +5,14 @@
 #
 # Stages dist/madc-<ver>-windows-x86_64.zip (zip, not tar.gz — native
 # extraction on Windows) containing
-#   madc-<ver>-windows-x86_64/bin/madc.exe            stripped, forest-packed
+#   madc-<ver>-windows-x86_64/bin/madc.exe            the thin CLI (its engine and forest are libmadc-0.dll)
 #   madc-<ver>-windows-x86_64/bin/madcide.exe         the IDE, AOT-compiled by that PE under wine
+#   madc-<ver>-windows-x86_64/bin/chthonia.exe        the learning IDE built on madcide (a window by default)
 #   madc-<ver>-windows-x86_64/bin/profiles/           madcide keybinding/theme profiles (data beside the exe)
 #   madc-<ver>-windows-x86_64/bin/verbs/, checks/     the line editor's verb and check bodies
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
-#   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine (win twin of libmadc.so.0; AOT output + madcide bind it)
+#   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine carrying the forest (win twin of libmadc.so.0; madc.exe, AOT output, madcide and chthonia bind it)
 #   madc-<ver>-windows-x86_64/bin/madcwebview.dll     the platform webview library (WebView2 + native chrome; GUI programs: import madcwebview)
 #   madc-<ver>-windows-x86_64/lib/libmadc.dll.a       import lib for it (link .o output)
 #   madc-<ver>-windows-x86_64/lib/libmadc_rt.a        emitted-C runtime (try/catch + VLA)
@@ -26,7 +27,9 @@
 # adjacency is the binding rule, for the exe itself and for every
 # runtime-needing exe madc emits next to it.
 #
-# Inputs are the `make -C src release-windows` artifacts. This script
+# Inputs are the `make -C src release-windows` artifacts: the release set,
+# bin/release-windows/ (docs/plans/2026-10-03-chthonia-windows-macos.md §7b).
+# This script
 # re-runs scripts/verify_pe_release.sh on the exact binary it packages
 # (the 2026-08-11 lesson: gates hold for the EXACT bytes shipped, never
 # by construction). In-vivo evidence is scripts/win_battery.sh on the
@@ -47,13 +50,14 @@ set -e
 VER=$(cat VERSION)
 ROOT="madc-${VER}-windows-x86_64"
 STAGE="dist/.stage-windows"
-BIN=bin/madc-release-x86-64-windows.exe
+SET=bin/release-windows
+BIN="$SET/madc.exe"
 GCC_SRC="${WIN_UCRT_LIBSTDCXX_SRC:-/workspace/win-ucrt-libstdc++/gcc-13.2.0}"
 
 mkdir -p dist
 
-for f in "$BIN" bin/libstdc++-6.dll bin/libwinpthread-1.dll bin/libmadc-0.dll \
-         bin/madcwebview.dll bin/madcgit.dll lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
+for f in "$BIN" "$SET/libstdc++-6.dll" "$SET/libwinpthread-1.dll" "$SET/libmadc-0.dll" \
+         "$SET/madcwebview.dll" "$SET/madcgit.dll" lib/libmadc.dll.a lib/libmadc_rt-hosted-x86-64-windows.a; do
     if [ ! -f "$f" ]; then
         echo "package_release_windows: $f missing — run 'make -C src release-windows' first" >&2
         exit 1
@@ -72,9 +76,18 @@ bash scripts/verify_pe_release.sh "$BIN"
 # packed ELF.
 echo "== madcide.exe (AOT via the release PE under wine) =="
 export WINEDEBUG=-all
+# The programs built below run from tmp/: they bind the release set's DLLs
+# (the engine with the forest) through WINEPATH, as the zip's bin/ serves
+# them by adjacency. Without it wine cannot load libmadc-0.dll (exit 53).
+export WINEPATH="Z:$(pwd | sed 's,/,\\,g')\\bin\\release-windows"
 wineserver -p || true
 rm -f tmp/madcide-pkg.exe
 ( ulimit -t 600; timeout 600 wine "$BIN" -o tmp/madcide-pkg.exe tools/madcide/madcide.mad )
+# chthonia.exe: the product built on madcide's base (tools/chthonia/
+# chthonia.json, a GUI-subsystem image: no console window).
+echo "== chthonia.exe (AOT via the release PE under wine) =="
+rm -f tmp/chthonia-pkg.exe
+( ulimit -t 600; timeout 600 wine "$BIN" --project tools/chthonia/chthonia.json -o tmp/chthonia-pkg.exe )
 # The shipped plugins: a plugin with code carries its library (a .dll),
 # built by this madcide.exe under wine (plan §41.11a step 6).
 echo "== madcide plugins (each with code built by the packaged madcide.exe) =="
@@ -84,6 +97,7 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/$ROOT/bin" "$STAGE/$ROOT/lib" "$STAGE/$ROOT/THIRD_PARTY_NOTICES"
 install -m 755 "$BIN" "$STAGE/$ROOT/bin/madc.exe"
 install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
+install -m 755 tmp/chthonia-pkg.exe "$STAGE/$ROOT/bin/chthonia.exe"
 # Data beside the exe — PE binding's adjacency rule extended to data:
 # madcide's profile search ends at <exedir>/profiles (resolve_profile_dir).
 mkdir -p "$STAGE/$ROOT/bin/profiles"
@@ -104,18 +118,18 @@ install -m 644 tools/texteditor/checks/*.madv "$STAGE/$ROOT/bin/checks/"
 # Example config at the root under a NON-live name: ./madc.ini is a
 # real search arm, so an extracted example must never shadow a config.
 install -m 644 docs/examples/madc.ini "$STAGE/$ROOT/madc.ini.example"
-install -m 755 bin/libstdc++-6.dll "$STAGE/$ROOT/bin/libstdc++-6.dll"
-install -m 755 bin/libwinpthread-1.dll "$STAGE/$ROOT/bin/libwinpthread-1.dll"
-install -m 755 bin/libmadc-0.dll "$STAGE/$ROOT/bin/libmadc-0.dll"
+install -m 755 "$SET/libstdc++-6.dll" "$STAGE/$ROOT/bin/libstdc++-6.dll"
+install -m 755 "$SET/libwinpthread-1.dll" "$STAGE/$ROOT/bin/libwinpthread-1.dll"
+install -m 755 "$SET/libmadc-0.dll" "$STAGE/$ROOT/bin/libmadc-0.dll"
 # The platform webview library (GUI programs: import madcwebview): the
 # loader searches the exe's directory on Windows — beside madc.exe, like
 # the runtime DLLs. It needs the Evergreen WebView2 runtime on the machine.
-install -m 755 bin/madcwebview.dll "$STAGE/$ROOT/bin/madcwebview.dll"
+install -m 755 "$SET/madcwebview.dll" "$STAGE/$ROOT/bin/madcwebview.dll"
 # The madcgit module (a program that says `git::…`, e.g. madcide's nexus):
 # the loader searches the exe's directory on Windows — beside madc.exe. The
 # minimal read-only libgit2 is STATIC-linked inside it; nothing named libgit2
 # ships.
-install -m 755 bin/madcgit.dll "$STAGE/$ROOT/bin/madcgit.dll"
+install -m 755 "$SET/madcgit.dll" "$STAGE/$ROOT/bin/madcgit.dll"
 install -m 644 lib/libmadc.dll.a "$STAGE/$ROOT/lib/libmadc.dll.a"
 install -m 644 lib/libmadc_rt-hosted-x86-64-windows.a "$STAGE/$ROOT/lib/libmadc_rt.a"
 install -m 644 LICENSE "$STAGE/$ROOT/LICENSE"
@@ -149,7 +163,7 @@ madc ${VER} for Windows (x86_64)
 ================================
 
 Install: extract this folder anywhere and run bin\\madc.exe. Keep the
-three DLLs next to madc.exe — Windows binds DLLs by adjacency (there is
+DLLs next to madc.exe (libmadc-0.dll is the compiler itself) — Windows binds DLLs by adjacency (there is
 no runpath), and executables madc emits with -o also bind them from the
 directory they run in.
 
@@ -157,9 +171,11 @@ This binary is unsigned. SmartScreen will warn on first run of a
 downloaded copy: choose "More info" -> "Run anyway", or unblock the zip
 before extracting (right-click -> Properties -> Unblock).
 
-The binary is self-contained: the C standard headers (mingw-w64/UCRT)
+The install is self-contained: the C standard headers (mingw-w64/UCRT)
 and the frozen C++ standard-library groves (<string>, <vector>,
-<iostream>, ...) are embedded, so no compiler installation is required.
+<iostream>, ...) are embedded in libmadc-0.dll, so no compiler
+installation is required — for madc.exe and for every program built on
+it (madcide.exe, chthonia.exe, your own).
 Headers outside the packed set are not available on a machine without
 them and fail with a clear error.
 
@@ -197,6 +213,13 @@ DLLs. madcide's window mode is one:
 
 It needs the Microsoft Edge WebView2 Runtime, which Windows 11 (and any
 machine with Microsoft Edge) already has.
+
+chthonia (bin\\chthonia.exe): the easy GUI to learn C and C++, built on
+madcide and laid out as Thonny is — the editor, the Shell (a C REPL) below
+it, the Variables view beside it, Run (F5) and Stop on the toolbar. It
+opens a window; give it a file to open:
+
+    bin\\chthonia.exe file.c
 
 madc.ini.example (this folder) is a documented example configuration
 file; to use one, copy it to madc.ini next to where you run madc, or

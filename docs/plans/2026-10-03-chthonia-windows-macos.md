@@ -218,6 +218,54 @@ Plugin design §9.3 and §9.4, in its own order:
      third copy for the Mac must not be added: one staging script serves
      all three platforms.
 
+## 7b. Step E — the forest in the library on Windows and macOS
+
+Found 2026-10-04 on genuine Windows: chthonia.exe and madcide.exe report
+`Failed to open include file: stdio.h` for hello.c (`-c check` exit 1),
+where Linux reports clean. Their parse handles run in `libmadc-0.dll`, and
+the forest, Windows' only source of the C headers, is packed into
+`madc.exe` alone (`release-windows` → `forest_pack_windows.sh`). Wine hides
+it: the container's mingw headers answer through `Z:`. So diagnostics,
+colour and F5 fail in every program built on the engine, on every
+Windows machine.
+
+Owner, 2026-10-04: the forest was to move into the library on all three
+platforms. Linux has it (the thin CLI, the forest in `libmadc.so`,
+forest-carriers S4). The Makefile pins every hosted mode monolithic ("the
+per-OS shared-library products land with the PK3 packaging twins"), and
+they never did. The work:
+
+1. Windows: the release set is its own directory, `bin/release-windows/`
+   (PE binds by adjacency, so the exe and its DLLs travel together, and a
+   dev rebuild of `bin/libmadc-0.dll` can never swap the release one).
+   `madc.exe` there is thin: `madc.o` linked against `libmadc.dll.a`. Its
+   `libmadc-0.dll` is the stripped engine carrying the forest (PE overlay),
+   which every program finds through the library-image arm.
+   `forest_pack_windows.sh` freezes with a copy of the set and appends to
+   the release DLL. Every consumer of `bin/madc-release-x86-64-windows.exe`
+   moves to the set: `verify_pe_release.sh`, `headerless_suite.sh`,
+   `win_suite.sh`, `package_release_windows.sh`, `/promote`'s wine leg.
+   **Done 2026-10-04.** Measured: `madc.exe` 142,848 bytes; `libmadc-0.dll`
+   17,092,408 bytes (10,394,112 stripped engine + the 238-unit forest).
+   `verify_pe_release.sh` asserts the exe carries no forest and that a `-v`
+   run of an `#include <stdio.h>` program binds through
+   `[library-image]`; its negative control (the same set with an unpacked
+   DLL) prints no such line and live-parses, and under wine still prints
+   the right answer, which is why the arm is asserted. headerless-win
+   subset 23/0 (2 domain skips). On genuine Windows, from the staged zip
+   layout: `madc.exe hello.c` prints 5; `testfreezerun.mad` (C++ through
+   the groves) is right; a `madc -o` program runs; `madcide.exe` and
+   `chthonia.exe hello.c -c check` are clean; chthonia's `replrun` over
+   `--serve` fills Variables with `add`/`main`; the window shows syntax
+   colour.
+2. macOS: `libmadc-0.dylib` carries the forest in `__MADC,__forest`
+   (`-sectcreate`, then the ad-hoc signature), and the hosted CLI is thin.
+   Proved on the owner's Mac.
+3. Gate: a program built with `madc -o` that opens a parse handle over
+   `#include <stdio.h>` reports no diagnostics where no headers are on
+   disk: the genuine-Windows lane and the Mac. `chthonia.exe hello.c -c
+   check` is clean on genuine Windows.
+
 ## 7a. Thonny parity: what chthonia has and what it lacks
 
 Thonny is the oracle (owner, 2026-09-30). Rows are features a Thonny user
@@ -230,7 +278,7 @@ reaches for, by menu.
 | View | Shell, Variables, Problems | Outline (madcide has it; chthonia's menu hides it), font size, Full screen, Program arguments |
 | Run | Run (F5), Stop; toolbar Run/Stop | Debug, Step over/into/out, Resume, Run to cursor, breakpoints, Interrupt, Send EOF; toolbar Debug and the steps |
 | Tools / Help | Key bindings, Help | Options, About |
-| Window | a window | the product's name and file in the title (it says `madc`); no console window on Windows (D3) |
+| Window | a window titled `chthonia - <file> @ <line> : <col>`; no console window on Windows (D3) | `--tui`/`--help` from a console on Windows (the GUI-subsystem image does not attach to its parent's console) |
 
 The debugger is the largest gap: there is no stepper. It is its own arc
 (the JIT executes, `mir-interp-not-assumed`) and is designed separately.

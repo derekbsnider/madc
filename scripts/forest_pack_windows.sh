@@ -3,7 +3,15 @@
 # ledger into a madc.exe (windows lane W4; execution decisions in
 # docs/plans/2026-08-12-windows-release-lane.md).
 #
-#   bash scripts/forest_pack_windows.sh [bin/madc-release-x86-64-windows.exe]
+#   bash scripts/forest_pack_windows.sh [--image <dll>] [bin/release-windows/madc.exe]
+#
+# --image <dll> (forest-carriers S4's shared shape on Windows,
+# docs/plans/2026-10-03-chthonia-windows-macos.md §7b): pack a carrier image
+# OTHER than the exe — the release set's libmadc-0.dll, which the thin
+# madc.exe and every program built on the engine load, so one container
+# serves them all (the library-image arm). The exe still freezes and
+# verifies; only the carrier changes. The release-windows target packs the
+# set this way. Without --image the exe itself is the carrier.
 #
 # The FREEZER is the exe ITSELF, run under wine — the Linux forest_pack.sh
 # self-freeze model, not the darwin cross-freezer (wine executes the consumer
@@ -24,7 +32,16 @@
 set -e
 cd "$(dirname "$0")/.."
 
-BIN="${1:-bin/madc-release-x86-64-windows.exe}"
+IMAGE=
+while [ $# -gt 0 ]; do
+    case "$1" in
+	--image) IMAGE="$2"; shift 2 ;;
+	--image=*) IMAGE="${1#--image=}"; shift ;;
+	*) break ;;
+    esac
+done
+BIN="${1:-bin/release-windows/madc.exe}"
+IMAGE="${IMAGE:-$BIN}"
 LIST=scripts/forest_pack_headers_windows.txt
 GUARDED_LIST=scripts/forest_pack_guarded_windows.txt
 LEDGER_LIST=scripts/ledger_sources.txt
@@ -80,8 +97,22 @@ TU=tmp/forest_pack_tu_win.cpp
 } > "$TU"
 
 # The pack runs a COPY of the exe (see header). The .exe suffix matters to
-# wine's loader.
-cp -p "$BIN" tmp/forest_packer_madc.exe
+# wine's loader. A separate carrier image is the DLL the packer itself loads:
+# the copy runs from its own directory with a copy of that DLL beside it (PE
+# adjacency outranks WINEPATH), the container is appended to another copy,
+# and that copy is renamed over the image — the loaded mapping is never
+# written through (the Linux forest_pack.sh --image rule).
+PACKER=tmp/forest_packer_madc.exe
+APPEND_TO="$IMAGE"
+if [ "$IMAGE" != "$BIN" ]; then
+    rm -rf tmp/forest_packer
+    mkdir -p tmp/forest_packer
+    cp -p "$(dirname "$BIN")"/*.dll tmp/forest_packer/
+    PACKER=tmp/forest_packer/madc.exe
+    APPEND_TO=tmp/forest_pack_image.dll
+    cp -p "$IMAGE" "$APPEND_TO"
+fi
+cp -p "$BIN" "$PACKER"
 
 ulimit -t 1800
 # ONE STDLIB FLAVOR PER SHIPPED ARTIFACT (owner policy 2026-08-16): Linux and
@@ -102,19 +133,29 @@ ulimit -t 1800
 # Captured for the degradation gate (task #63) — see scripts/forest_pack.sh for
 # why this is redirect-then-cat and never `| tee`.
 PACK_LOG=tmp/forest_pack_win_freeze.log
-if ! timeout 1800 "$WINE" tmp/forest_packer_madc.exe --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$BIN" "$TU" > "$PACK_LOG" 2>&1; then
+if ! timeout 1800 "$WINE" "$PACKER" --no-config --freeze-mir-cache "${LEDGER_ARGS[@]}" --freeze-append="$APPEND_TO" "$TU" > "$PACK_LOG" 2>&1; then
     cat "$PACK_LOG"
     echo "forest_pack_windows: FAILED - freeze-append exited nonzero" >&2
     exit 1
 fi
 cat "$PACK_LOG"
+if [ "$APPEND_TO" != "$IMAGE" ]; then
+    mv -f "$APPEND_TO" "$IMAGE"
+fi
 
-# Verify through the PACKED exe itself (self-image arm: the running
-# executable's own trailer). Wine's CRT writes CRLF: the greps below are
-# prefix/substring matches, never $-anchored, so the \r before each newline
-# is inert — do not add $ anchors here.
-timeout 300 "$WINE" "$BIN" --dump-forest > tmp/forest_pack_win_dump.txt
-timeout 300 "$WINE" "$BIN" --run-frozen
+# Verify: the container reads back and the exe runs the frozen module. The
+# exe's OWN image verifies through the self-image arm (no path); a separate
+# carrier is named explicitly (forest_pack.sh's rule) — discovery of it by
+# the library-image arm is the load-log check below. Wine's CRT writes CRLF:
+# the greps below are prefix/substring matches, never $-anchored, so the \r
+# before each newline is inert — do not add $ anchors here.
+if [ "$IMAGE" = "$BIN" ]; then
+    timeout 300 "$WINE" "$BIN" --dump-forest > tmp/forest_pack_win_dump.txt
+    timeout 300 "$WINE" "$BIN" --run-frozen
+else
+    timeout 300 "$WINE" "$BIN" --dump-forest="$IMAGE" > tmp/forest_pack_win_dump.txt
+    timeout 300 "$WINE" "$BIN" --run-frozen="$IMAGE"
+fi
 if ! grep -q '^forest	units=' tmp/forest_pack_win_dump.txt; then
     echo "forest_pack_windows: FAILED - packed exe has no forest directory" >&2
     exit 1
@@ -166,10 +207,14 @@ grep -q 'list=1,4,9,16,25' <<<"$out_frozen"
 # trace pays the wine translation tax.
 LOAD_LOG=tmp/forest_pack_win_load.log
 timeout 900 "$WINE" "$BIN" -v tests/testfreezerun.mad > "$LOAD_LOG" 2>&1
+if [ "$IMAGE" != "$BIN" ] && ! grep -aq 'forest-bind: \[library-image\] opened container' "$LOAD_LOG"; then
+    echo "forest_pack_windows: FAILED - $BIN did not bind the forest in $IMAGE (no library-image line in $LOAD_LOG)" >&2
+    exit 1
+fi
 bash scripts/forest_pack_gate.sh --profile win64 \
     --pack-log "$PACK_LOG" --load-log "$LOAD_LOG" \
     --dump tmp/forest_pack_win_dump.txt \
     --units-from "$LIST" --sources-from "$GUARDED_LIST"
 
 units=$(grep -c '^unit	' tmp/forest_pack_win_dump.txt)
-echo "forest_pack_windows: OK (1 profile, $units units appended to $BIN; product smokes green)"
+echo "forest_pack_windows: OK (1 profile, $units units appended to $IMAGE; product smokes green)"

@@ -391,6 +391,8 @@ endif
 # The release pack also needs this root while the outer make has no hosted
 # MODE selected, so keep the stage owner outside the mode conditional.
 WIN_UCRT_LIBSTDCXX ?= /workspace/win-ucrt-libstdc++/stage
+# The Windows release set's directory (release-windows below).
+WIN_RELEASE_DIR = ../bin/release-windows
 
 ifeq ($(MODE),hosted-x86-64-windows)
 WIN_MINGW = x86_64-w64-mingw32
@@ -994,14 +996,25 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # package_release_windows.sh ships bin/madcwebview.dll beside madc.exe. The
 # madcgit module (madcgit.mk) rides too, with the minimal static libgit2 linked
 # in; package_release_windows.sh ships bin/madcgit.dll beside madc.exe.
+# The release SET (docs/plans/2026-10-03-chthonia-windows-macos.md §7b,
+# forest-carriers S4's shared shape on Windows) is one directory, because a
+# PE binds its DLLs by adjacency: the thin madc.exe, the stripped
+# libmadc-0.dll carrying the forest, and the runtime DLLs. madc.exe and every
+# program built on the engine (madcide.exe, chthonia.exe, a user's madc -o
+# program) load that one engine image, and find the forest in it through
+# the library-image arm. Its own directory also keeps a dev rebuild of
+# bin/libmadc-0.dll (no forest) from ever standing in for the release one.
 release-windows:
 	$(MAKE) hosted-x86-64-windows
 	$(MAKE) webview-windows
 	$(MAKE) madcgit-windows
-	cp -p ../bin/madc-hosted-x86-64-windows.exe ../bin/madc-release-x86-64-windows.exe
-	x86_64-w64-mingw32-strip ../bin/madc-release-x86-64-windows.exe
-	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh bin/madc-release-x86-64-windows.exe
-	cd .. && bash scripts/verify_pe_release.sh bin/madc-release-x86-64-windows.exe
+	$(MAKE) MODE=hosted-x86-64-windows $(WIN_RELEASE_DIR)/madc.exe
+	x86_64-w64-mingw32-strip $(WIN_RELEASE_DIR)/madc.exe
+	x86_64-w64-mingw32-strip -o $(WIN_RELEASE_DIR)/libmadc-0.dll ../bin/libmadc-0.dll
+	cp -p ../bin/libstdc++-6.dll ../bin/libwinpthread-1.dll ../bin/madcwebview.dll ../bin/madcgit.dll $(WIN_RELEASE_DIR)/
+	rm -f ../bin/madc-release-x86-64-windows.exe
+	cd .. && MADC_WIN_CXX_INCLUDE="$(WIN_UCRT_LIBSTDCXX)/include/c++/13.2.0" bash scripts/forest_pack_windows.sh --image bin/release-windows/libmadc-0.dll bin/release-windows/madc.exe
+	cd .. && bash scripts/verify_pe_release.sh bin/release-windows/madc.exe
 
 # Release pipeline (strip-before-append is MANDATORY ordering: strip rewrites
 # the ELF and would destroy an already-appended forest blob). Pack failure =
@@ -1499,6 +1512,14 @@ $(OBJDIR)/win_ucrt_compat.o: win_ucrt_compat.S
 ../bin/libmadc-0.dll: $(LIBMADC_STATIC) $(MIRLIB) ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(MIRDIR)/mir-int128-helper.h
 	bash ../scripts/gen_win_rt_exports.sh $(MIRDIR)/mir-mingw-stdio.h $(OBJDIR)/libmadc.def $(MIRDIR)/mir-int128-helper.h
 	$(CXX) -shared -o $@ $(OBJDIR)/libmadc.def -Wl,--out-implib,../lib/libmadc.dll.a $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(LIBS)
+
+# The release set's THIN CLI (release-windows): the same madc.o the hosted
+# exe links, against libmadc-0.dll's import library instead of the archive —
+# the Linux thin CLI's link (madc.o + -lmadc). The import library is named by
+# path: lib/ also holds the host's libmadc.a and libmadc.so.
+$(WIN_RELEASE_DIR)/madc.exe: $(OBJDIR)/madc.o ../bin/libmadc-0.dll
+	@mkdir -p $(WIN_RELEASE_DIR)
+	$(CXX) -o $@ $(OBJDIR)/madc.o ../lib/libmadc.dll.a $(CXXFLAGS) $(DEFINES) $(LIBS)
 endif
 
 # libmadc-0.dylib (D5, PK3-mac-runtime): the darwin twin of libmadc-0.dll

@@ -1,28 +1,36 @@
 #!/bin/bash
-# verify_pe_release.sh — container-side gate for the packed win64 release exe
-# (windows-release-lane plan W5): the strip+pack must have produced exactly
-# the artifact the lane decided to ship.
+# verify_pe_release.sh — container-side gate for the win64 release set
+# (windows-release-lane plan W5; the set's shape: docs/plans/
+# 2026-10-03-chthonia-windows-macos.md §7b): the strip+pack must have produced
+# exactly the artifacts the lane decided to ship — a thin madc.exe and the
+# libmadc-0.dll beside it that carries the forest.
 #
-#   bash scripts/verify_pe_release.sh [bin/madc-release-x86-64-windows.exe]
+#   bash scripts/verify_pe_release.sh [bin/release-windows/madc.exe]
 #
-# Five authorities, all runnable on the Linux container:
+# Seven authorities, all runnable on the Linux container:
 #   1. the import table is the DECIDED set — UCRT api-sets + KERNEL32 +
-#      WS2_32 + the two staged runtime DLLs — and NEVER msvcrt.dll (a
-#      msvcrt import means the ucrt.specs swap was lost: two CRTs in one
-#      process, %Lf prints 0.00);
-#   2. the PE-trailer forest reads back through the EXACT shipped bytes
-#      under wine (self-image arm): directory pin, the win64 ledger
-#      selection present per module, and --run-frozen executes;
-#   3. the binary is stripped (no COFF symbol table);
+#      WS2_32 + the staged runtime DLLs + libmadc-0.dll (the engine) — and
+#      NEVER msvcrt.dll (a msvcrt import means the ucrt.specs swap was lost:
+#      two CRTs in one process, %Lf prints 0.00);
+#   2. the PE-trailer forest in libmadc-0.dll reads back through the EXACT
+#      shipped bytes under wine: directory pin, the win64 ledger selection
+#      present per module, and --run-frozen executes;
+#   3. the exe and the DLL are stripped (no COFF symbol table);
 #   4. the runtime DLLs the exe binds by name exist beside it (the
 #      deployment set the zip stages);
 #   5. the artifact carries EXACTLY ONE stdlib-flavor profile (owner policy:
-#      Linux and Windows ship libstdc++, macOS ships libc++, never both).
+#      Linux and Windows ship libstdc++, macOS ships libc++, never both);
+#   6. madc.exe is a console program, and what it emits is console by
+#      default and GUI under -mwindows, as the cross gcc stamps them;
+#   7. the forest MOVED: the exe's own image carries none, and the exe binds
+#      the DLL's by discovery (one container, in the library, serves the CLI
+#      and every program built on the engine).
 # In-vivo evidence on real Windows stays scripts/win_battery.sh's job.
 set -e
 cd "$(dirname "$0")/.."
 
-BIN="${1:-bin/madc-release-x86-64-windows.exe}"
+BIN="${1:-bin/release-windows/madc.exe}"
+LIB="$(dirname "$BIN")/libmadc-0.dll"
 OBJDUMP="${OBJDUMP:-x86_64-w64-mingw32-objdump}"
 WINE="${MADC_WINE:-wine}"
 export WINEDEBUG=-all
@@ -43,7 +51,7 @@ while IFS= read -r dll; do
     case "$dll" in
         KERNEL32.dll|WS2_32.dll|ucrtbase.dll) ;;
         api-ms-win-crt-*.dll) ;;
-        libstdc++-6.dll|libwinpthread-1.dll) ;;
+        libstdc++-6.dll|libwinpthread-1.dll|libmadc-0.dll) ;;
         *)
             echo "verify_pe_release: FAILED — unexpected import: $dll" >&2
             bad=1
@@ -52,10 +60,11 @@ while IFS= read -r dll; do
 done <<<"$IMPORTS"
 [ "$bad" -eq 0 ]
 
-# 2. Forest read-back through the shipped bytes (wine, self-image arm).
+# 2. Forest read-back through the shipped bytes (wine; the carrier named
+#    explicitly — discovery of it is check 7).
 DUMP=tmp/verify_pe_dump.txt
 mkdir -p tmp
-timeout 300 "$WINE" "$BIN" --dump-forest > "$DUMP"
+timeout 300 "$WINE" "$BIN" --dump-forest="$LIB" > "$DUMP"
 grep -q '^forest	units=' "$DUMP"
 grep -q '^ledger	modules=' "$DUMP"
 if ! LEDGER_SOURCES=$(bash scripts/select_ledger_sources.sh win64 scripts/ledger_sources.txt); then
@@ -70,13 +79,15 @@ while IFS= read -r src; do
     fi
 done <<<"$LEDGER_SOURCES"
 UNITS=$(grep -c '^unit	' "$DUMP")
-timeout 300 "$WINE" "$BIN" --run-frozen > /dev/null 2>&1
+timeout 300 "$WINE" "$BIN" --run-frozen="$LIB" > /dev/null 2>&1
 
-# 3. Stripped: no COFF symbol table survives.
-if [ "$("$OBJDUMP" -t "$BIN" | grep -c '^\[')" -gt 0 ]; then
-    echo "verify_pe_release: FAILED — $BIN still carries a COFF symbol table (not stripped)" >&2
-    exit 1
-fi
+# 3. Stripped: no COFF symbol table survives, in the exe or the DLL.
+for img in "$BIN" "$LIB"; do
+    if [ "$("$OBJDUMP" -t "$img" | grep -c '^\[')" -gt 0 ]; then
+        echo "verify_pe_release: FAILED — $img still carries a COFF symbol table (not stripped)" >&2
+        exit 1
+    fi
+done
 
 # 4. The deployment set beside the exe (PE has no runpath; adjacency is
 #    the binding rule; the zip stages exactly these).
@@ -171,5 +182,27 @@ if [ "$con_sub" != "$oracle_con" ] || [ "$gui_sub" != "$oracle_gui" ]; then
     exit 1
 fi
 rm -rf "$SUBSYS_DIR"
+# 7. The forest MOVED to the library: an explicit read of the exe's own
+#    bytes finds no container, and a program that includes a header binds
+#    the DLL's through the library-image arm (the trace names the arm). On
+#    genuine Windows the forest is the ONLY header source, so a missed bind
+#    is "Failed to open include file" there; under wine the host's mingw
+#    headers would mask it, which is why the arm is asserted, not the output
+#    alone.
+if timeout 120 "$WINE" "$BIN" --dump-forest="$BIN" 2>/dev/null | grep -q '^forest	units='; then
+    echo "verify_pe_release: FAILED — $BIN carries a forest of its own (it belongs in $LIB only)" >&2
+    exit 1
+fi
+BIND_DIR=tmp/verify_pe_bind
+rm -rf "$BIND_DIR"
+mkdir -p "$BIND_DIR"
+printf '#include <stdio.h>\nint main(void) { puts("bound"); return 0; }\n' > "$BIND_DIR/bind.c"
+timeout 300 "$WINE" "$BIN" -v "$BIND_DIR/bind.c" > "$BIND_DIR/bind.log" 2>&1 || true
+if ! grep -aq 'forest-bind: \[library-image\] opened container' "$BIND_DIR/bind.log" \
+    || ! grep -aq '^bound' "$BIND_DIR/bind.log"; then
+    echo "verify_pe_release: FAILED — $BIN did not bind the forest in $LIB by discovery (see $BIND_DIR/bind.log)" >&2
+    exit 1
+fi
+rm -rf "$BIND_DIR"
 
-echo "verify_pe_release: OK ($BIN: $UNITS units, ONE stdlib profile, ledger complete, imports clean, stripped, DLL set adjacent, subsystem console=$con_sub -mwindows=$gui_sub as gcc)"
+echo "verify_pe_release: OK ($BIN: $UNITS units in $(basename "$LIB"), none in the exe, ONE stdlib profile, ledger complete, imports clean, stripped, DLL set adjacent, subsystem console=$con_sub -mwindows=$gui_sub as gcc)"
