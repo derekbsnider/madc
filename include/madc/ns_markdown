@@ -7,14 +7,14 @@
 // markdown::available() before parsing. The wrapper is the dialect's
 // carrier-return convention (the out-parameter, returned).
 //   markdown::parse(out, text): the document node — every node {kind (a
-//     markdown::node code), line, col, end_line, end_col (1-based source
+//     markdown::node_kind code), line, col, end_line, end_col (1-based source
 //     positions; 0 where none, a soft break's), text (a literal's decoded
 //     text), children}, and by kind: heading level; list list (a
 //     markdown::list_kind code), start, tight; item task, checked;
 //     code_block info, fenced; link and image url, title; table align (a
-//     markdown::align code per column); table_row header.
+//     markdown::column_align code per column); table_row header.
 // THREAD CONTRACT: parse is a pure function of its text.
-#include <bits/markdown_enums>	// markdown::node / list_kind / align: the tree's codes
+#include <bits/markdown_enums>	// markdown::node_kind / list_kind / column_align: the tree's codes
 import madcmark;
 
 namespace markdown {

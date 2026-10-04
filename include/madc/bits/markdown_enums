@@ -2,7 +2,7 @@
 // ENUMS, the ONE text for two readers: the engine (the madcmark module,
 // src/modules/madcmark/madcmark.cpp, converts cmark-gfm's node types to
 // these once) and the dialect (<ns_markdown> includes it, so a renderer
-// switches on `n["kind"] == markdown::node::heading` — an enumerator the
+// switches on `n["kind"] == markdown::node_kind::heading` — an enumerator the
 // compiler checks — instead of comparing a word).
 // Plain C++11 enums, nothing else (dialect-lean).
 //
@@ -14,7 +14,7 @@ namespace markdown {
     // A node's kind: CommonMark's blocks and inlines, then GitHub's
     // extensions (tables, strikethrough; a task list item is an `item`
     // with `task` set).
-    enum class node : unsigned char
+    enum class node_kind : unsigned char
     {
 	none,
 	// blocks
@@ -30,7 +30,7 @@ namespace markdown {
     enum class list_kind : unsigned char { bullet, ordered };
     // A table column's alignment, from its delimiter row (`:--`, `:-:`,
     // `--:`).
-    enum class align : unsigned char { none, left, center, right };
+    enum class column_align : unsigned char { none, left, center, right };
 }
 
 #endif

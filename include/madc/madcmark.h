@@ -9,7 +9,7 @@
 //   madcmark_parse(out, text) -> the document node: {kind, line, col,
 //                                end_line, end_col, text, children, ...}
 //                                (include/madcdis/markdown.h states the shape;
-//                                kinds are markdown::node codes,
+//                                kinds are markdown::node_kind codes,
 //                                <bits/markdown_enums>)
 // Thread contract: a pure function of its text.
 void   *madcmark_parse(void *result, const char *text);

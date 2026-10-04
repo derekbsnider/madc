@@ -707,6 +707,52 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B174. A variable that hides a type name reads as that type after `(`
+
+```cpp
+namespace md { enum class node : unsigned char { none, text }; }
+int main()
+{
+    int node = 5;
+    if ( !(node == 5) )
+        return 1;
+    return node == 5 ? 0 : 2;
+}
+```
+
+- g++ 13 and clang++ 18 (2026-10-04): compile it; it exits 0. madc
+  (`--std=c++17`) refuses it: `5:17: error: Missing operand` at `!(node`.
+  `md::node` is not visible unqualified, and the local `node` is in scope, so
+  `(node` cannot open a cast.
+- Not only a namespace's type: a file-scope `enum class node` hidden by the
+  local `int node` fails the same way ([basic.scope.hiding]/2: a variable hides
+  a class or enumeration name), and so does `int y = (node);` ("expecting an
+  operand"). Without the parentheses (`return node == 5 ? 0 : 2;`) madc reads
+  the variable.
+- A second defect under the first: a namespace member's type is visible by its
+  bare name outside the namespace. `namespace md { enum class node { none }; }
+  int main() { node x = node::none; return (int)x; }` — g++: `'node' was not
+  declared in this scope`; madc compiles it, exit 0. That leak is why the
+  namespace form reaches the cast arm at all.
+- Where (2026-10-04): `parseExpression`'s cast arm (`(TYPE)expr` detection)
+  takes a bare identifier as the cast's type whenever the flat `datatype_map`
+  holds its spelling; nothing asks whether a declaration in an inner scope
+  hides it. Fix shape: a variable declared where `datatype_map` holds its name
+  hides that entry for the rest of its scope, recorded and restored the way
+  `register_scoped_typedef` / `unwind_block_typedef_shadows` do for block
+  typedefs, so every `datatype_map` reader agrees (the cast arm,
+  `unqualified_name_is_type_or_template`, the declaration disambiguators).
+- The dialect form fails the same way once a program mentions `markdown::`
+  (its auto-include brings `markdown::`'s enums): `var node = 5; if (
+  !(node == 5) )` gives the same error. That is how it was found
+  (2026-10-04): madcide began including `<ns_markdown>`, and
+  `madcide_propose.inc`'s `!(node["kind"] == …)` stopped compiling. The
+  enums were renamed (`markdown::node_kind`, `markdown::column_align`), so
+  madcide compiles, but any program that names a local after a namespace's
+  type still hits it.
+- A core-parser change, so it gets its own focused session (owner,
+  2026-09-13); next in the queue.
+
 ### B171. `std::map<std::string, T>::find("literal")` is refused: the heterogeneous `find<_Kt>` is chosen
 
 ```cpp

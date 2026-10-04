@@ -13,7 +13,7 @@
 // registry is filled once per process behind a static guard.
 
 #include "libmadc/value.h"
-#include "madc/bits/markdown_enums"	// markdown::node — a node's one enum text
+#include "madc/bits/markdown_enums"	// markdown::node_kind — a node's one enum text
 
 #include <string>
 
@@ -21,7 +21,7 @@ namespace madc {
 
 // `text` parsed as GitHub-flavoured Markdown into a value tree, the document
 // node at its root. Every node:
-//   {kind: markdown::node code, line, col, end_line, end_col (1-based source
+//   {kind: markdown::node_kind code, line, col, end_line, end_col (1-based source
 //    positions; 0 where cmark-gfm reports none, a soft break's), text (the
 //    literal of text, code, code_block, html_block, html_inline: decoded,
 //    entities and escapes resolved), children: [...]}
@@ -33,7 +33,7 @@ namespace madc {
 //   code_block: info (the fence's info string, "" for an indented block),
 //               fenced (bool)
 //   link/image: url, title
-//   table:      align: [markdown::align code per column]
+//   table:      align: [markdown::column_align code per column]
 //   table_row:  header (bool)
 value markdown_tree(const std::string &text);
 

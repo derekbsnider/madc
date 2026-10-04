@@ -34,62 +34,62 @@ void ensure_extensions()
 // HTML renderer's filter, not syntax.
 const char *const extension_names[] = { "table", "strikethrough", "autolink", "tasklist" };
 
-// cmark-gfm's node type -> markdown::node, at the boundary, once. The
+// cmark-gfm's node type -> markdown::node_kind, at the boundary, once. The
 // extensions register their node types at run time, so those are known by
 // the type string their extension gives them.
-markdown::node node_kind(cmark_node *n)
+markdown::node_kind kind_of(cmark_node *n)
 {
     switch ( cmark_node_get_type(n) )
     {
-	case CMARK_NODE_DOCUMENT:		return markdown::node::document;
-	case CMARK_NODE_BLOCK_QUOTE:		return markdown::node::block_quote;
-	case CMARK_NODE_LIST:			return markdown::node::list;
-	case CMARK_NODE_ITEM:			return markdown::node::item;
-	case CMARK_NODE_CODE_BLOCK:		return markdown::node::code_block;
-	case CMARK_NODE_HTML_BLOCK:		return markdown::node::html_block;
-	case CMARK_NODE_PARAGRAPH:		return markdown::node::paragraph;
-	case CMARK_NODE_HEADING:		return markdown::node::heading;
-	case CMARK_NODE_THEMATIC_BREAK:		return markdown::node::thematic_break;
-	case CMARK_NODE_FOOTNOTE_DEFINITION:	return markdown::node::footnote_definition;
-	case CMARK_NODE_TEXT:			return markdown::node::text;
-	case CMARK_NODE_SOFTBREAK:		return markdown::node::softbreak;
-	case CMARK_NODE_LINEBREAK:		return markdown::node::linebreak;
-	case CMARK_NODE_CODE:			return markdown::node::code;
-	case CMARK_NODE_HTML_INLINE:		return markdown::node::html_inline;
-	case CMARK_NODE_EMPH:			return markdown::node::emph;
-	case CMARK_NODE_STRONG:			return markdown::node::strong;
-	case CMARK_NODE_LINK:			return markdown::node::link;
-	case CMARK_NODE_IMAGE:			return markdown::node::image;
-	case CMARK_NODE_FOOTNOTE_REFERENCE:	return markdown::node::footnote_reference;
+	case CMARK_NODE_DOCUMENT:		return markdown::node_kind::document;
+	case CMARK_NODE_BLOCK_QUOTE:		return markdown::node_kind::block_quote;
+	case CMARK_NODE_LIST:			return markdown::node_kind::list;
+	case CMARK_NODE_ITEM:			return markdown::node_kind::item;
+	case CMARK_NODE_CODE_BLOCK:		return markdown::node_kind::code_block;
+	case CMARK_NODE_HTML_BLOCK:		return markdown::node_kind::html_block;
+	case CMARK_NODE_PARAGRAPH:		return markdown::node_kind::paragraph;
+	case CMARK_NODE_HEADING:		return markdown::node_kind::heading;
+	case CMARK_NODE_THEMATIC_BREAK:		return markdown::node_kind::thematic_break;
+	case CMARK_NODE_FOOTNOTE_DEFINITION:	return markdown::node_kind::footnote_definition;
+	case CMARK_NODE_TEXT:			return markdown::node_kind::text;
+	case CMARK_NODE_SOFTBREAK:		return markdown::node_kind::softbreak;
+	case CMARK_NODE_LINEBREAK:		return markdown::node_kind::linebreak;
+	case CMARK_NODE_CODE:			return markdown::node_kind::code;
+	case CMARK_NODE_HTML_INLINE:		return markdown::node_kind::html_inline;
+	case CMARK_NODE_EMPH:			return markdown::node_kind::emph;
+	case CMARK_NODE_STRONG:			return markdown::node_kind::strong;
+	case CMARK_NODE_LINK:			return markdown::node_kind::link;
+	case CMARK_NODE_IMAGE:			return markdown::node_kind::image;
+	case CMARK_NODE_FOOTNOTE_REFERENCE:	return markdown::node_kind::footnote_reference;
 	default:
 	    break;
     }
     const char *t = cmark_node_get_type_string(n);
     if ( !t )
-	return markdown::node::none;
+	return markdown::node_kind::none;
     if ( strcmp(t, "table") == 0 )
-	return markdown::node::table;
+	return markdown::node_kind::table;
     if ( strcmp(t, "table_row") == 0 || strcmp(t, "table_header") == 0 )
-	return markdown::node::table_row;	// the header row: `header` says so
+	return markdown::node_kind::table_row;	// the header row: `header` says so
     if ( strcmp(t, "table_cell") == 0 )
-	return markdown::node::table_cell;
+	return markdown::node_kind::table_cell;
     if ( strcmp(t, "strikethrough") == 0 )
-	return markdown::node::strikethrough;
-    return markdown::node::none;
+	return markdown::node_kind::strikethrough;
+    return markdown::node_kind::none;
 }
 
-markdown::align align_code(uint8_t a)
+markdown::column_align align_code(uint8_t a)
 {
     switch ( a )
     {
-	case 'l': return markdown::align::left;
-	case 'c': return markdown::align::center;
-	case 'r': return markdown::align::right;
-	default:  return markdown::align::none;
+	case 'l': return markdown::column_align::left;
+	case 'c': return markdown::column_align::center;
+	case 'r': return markdown::column_align::right;
+	default:  return markdown::column_align::none;
     }
 }
 
-value code_value(markdown::node k)	{ return value((int64_t)k); }
+value code_value(markdown::node_kind k)	{ return value((int64_t)k); }
 
 std::string text_of(const char *s)
 {
@@ -100,7 +100,7 @@ std::string text_of(const char *s)
 value node_value(cmark_node *n)
 {
     std::map<std::string, value> f;
-    markdown::node k = node_kind(n);
+    markdown::node_kind k = kind_of(n);
     f["kind"] = code_value(k);
     f["line"] = value((int64_t)cmark_node_get_start_line(n));
     f["col"] = value((int64_t)cmark_node_get_start_column(n));
@@ -109,17 +109,17 @@ value node_value(cmark_node *n)
     f["text"] = value(text_of(cmark_node_get_literal(n)));
     switch ( k )
     {
-	case markdown::node::heading:
+	case markdown::node_kind::heading:
 	    f["level"] = value((int64_t)cmark_node_get_heading_level(n));
 	    break;
-	case markdown::node::list:
+	case markdown::node_kind::list:
 	    f["list"] = value((int64_t)(cmark_node_get_list_type(n) == CMARK_ORDERED_LIST
 				       ? markdown::list_kind::ordered
 				       : markdown::list_kind::bullet));
 	    f["start"] = value((int64_t)cmark_node_get_list_start(n));
 	    f["tight"] = value(cmark_node_get_list_tight(n) != 0);
 	    break;
-	case markdown::node::item:
+	case markdown::node_kind::item:
 	{
 	    const char *t = cmark_node_get_type_string(n);
 	    bool task = t && strcmp(t, "tasklist") == 0;
@@ -127,7 +127,7 @@ value node_value(cmark_node *n)
 	    f["checked"] = value(task && cmark_gfm_extensions_get_tasklist_item_checked(n));
 	    break;
 	}
-	case markdown::node::code_block:
+	case markdown::node_kind::code_block:
 	{
 	    int length = 0, offset = 0;	// cmark-gfm writes all three
 	    char fence = 0;
@@ -135,12 +135,12 @@ value node_value(cmark_node *n)
 	    f["fenced"] = value(cmark_node_get_fenced(n, &length, &offset, &fence) != 0);
 	    break;
 	}
-	case markdown::node::link:
-	case markdown::node::image:
+	case markdown::node_kind::link:
+	case markdown::node_kind::image:
 	    f["url"] = value(text_of(cmark_node_get_url(n)));
 	    f["title"] = value(text_of(cmark_node_get_title(n)));
 	    break;
-	case markdown::node::table:
+	case markdown::node_kind::table:
 	{
 	    uint16_t cols = cmark_gfm_extensions_get_table_columns(n);
 	    uint8_t *al = cmark_gfm_extensions_get_table_alignments(n);
@@ -150,7 +150,7 @@ value node_value(cmark_node *n)
 	    f["align"] = value::make_array(aligns);
 	    break;
 	}
-	case markdown::node::table_row:
+	case markdown::node_kind::table_row:
 	    f["header"] = value(cmark_gfm_extensions_get_table_row_is_header(n) != 0);
 	    break;
 	default:
