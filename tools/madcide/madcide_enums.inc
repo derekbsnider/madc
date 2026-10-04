@@ -27,7 +27,8 @@ enum ide_cmd : unsigned short
     cmdNONE = 0,			// unbound chord / unknown name
     // ---- the command registry (profiles/default.menu) ----
     cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
-    cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
+    cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
+    cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
     cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
@@ -74,6 +75,8 @@ void cmd_table(var &t)
     rows[] = { "name": "bufsel", "code": cmdBUFSEL };
     rows[] = { "name": "build", "code": cmdBUILD };
     rows[] = { "name": "check", "code": cmdCHECK };
+    rows[] = { "name": "close", "code": cmdCLOSE };
+    rows[] = { "name": "closeall", "code": cmdCLOSEALL };
     rows[] = { "name": "colon", "code": cmdCOLON };
     rows[] = { "name": "copy", "code": cmdCOPY };
     rows[] = { "name": "cut", "code": cmdCUT };
@@ -307,7 +310,7 @@ enum ide_prompt : unsigned char
 {
     pmNONE = 0, pmCONFIRM, pmFIND, pmGOTOLINE, pmINSERTFILE, pmEDITFILE,
     pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON,
-    pmSAVEASQUIT, pmREPLACE, pmREPLACEWITH, pmREPLACEASK
+    pmSAVEASQUIT, pmREPLACE, pmREPLACEWITH, pmREPLACEASK, pmCLOSEASK, pmSAVEASCLOSE
 };
 const char *prompt_name(long m)
 {
@@ -329,6 +332,8 @@ const char *prompt_name(long m)
 	case pmREPLACE: return "replace";
 	case pmREPLACEWITH: return "replacewith";
 	case pmREPLACEASK: return "replaceask";
+	case pmCLOSEASK: return "closeask";
+	case pmSAVEASCLOSE: return "saveasclose";
     }
     return "";
 }
@@ -372,11 +377,13 @@ const char *req_name(long k)
 // The IDE's own dialog kind: what a native file dialog's answer MEANS. The
 // host speaks only the dialog MODE (ui::dialog_mode's names, open | save) —
 // dlg_host_mode is that wire word; the kind waits on the bag for the answer.
-// dlgSAVEQUIT is a save whose answer then quits (^K X on an untitled buffer).
-enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT, dlgSAVEQUIT };
+// dlgSAVEQUIT is a save whose answer then quits (^K X on an untitled buffer);
+// dlgSAVECLOSE one whose answer then closes the buffer (File ▸ Close).
+enum ide_dlg : unsigned char { dlgOPEN = 0, dlgSAVE, dlgOPENPROJECT, dlgSAVEQUIT,
+			       dlgSAVECLOSE };
 const char *dlg_host_mode(long d)
 {
-    return d == dlgSAVE || d == dlgSAVEQUIT ? "save" : "open";
+    return d == dlgSAVE || d == dlgSAVEQUIT || d == dlgSAVECLOSE ? "save" : "open";
 }
 
 // Where a menu file's rows go (plan §41.11a, the toolbar): a row's MENU word

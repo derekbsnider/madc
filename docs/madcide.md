@@ -124,7 +124,22 @@ the VS Code keys) writes every buffer that has unsaved changes. The
 buffer you are in stays the active one. An untitled buffer has no file
 to write, so Save All leaves it and counts it; Save names it. The status
 line reports what happened, for example `Saved 2 files. 1 untitled (Save
-As names it).` The Thonny keys bind Shift+Tab and
+As names it).`
+
+File ▸ Close and Close All (`close`, `closeall`; Ctrl+W and Ctrl+Shift+W in
+the Thonny keys, Ctrl+W and Ctrl+K Ctrl+W in the VS Code keys) close the
+current tab or every tab. A buffer with unsaved changes asks `Save changes
+to NAME? (y)es (n)o (^C)`. `y` saves and closes, `n` closes without
+saving, and Esc keeps the buffer open. In a window the question is a
+dialog with Yes, No and Cancel buttons; the answer keys are the `@save`
+scope's. Saying yes for an untitled buffer asks for its name (Save As),
+and the buffer closes once it is written. Close All asks once for every
+unsaved buffer: `y` runs Save All and closes every buffer it left clean,
+so an untitled buffer stays open with its changes. The tab to the right
+takes over, or the tab to the left when you close the last tab. madcide
+always has a buffer, so closing the last file leaves the untitled buffer,
+and closing the untitled buffer empties it. The document stays loaded in
+case another client of the session is showing it. The Thonny keys bind Shift+Tab and
 Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
 Shift+Tab and Ctrl+/.
 

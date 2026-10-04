@@ -4,11 +4,12 @@
 # Project or Views rows: the power surface is not advertised. View ▸
 # Variables joins as its command lands; View ▸ Outline shows the outline in
 # the sidebar beside Variables (chthonia.layout). Thonny rows whose command
-# madcide does not have yet: File ▸ Close, Close all; View ▸ the font
-# size, Full screen.
+# madcide does not have yet: View ▸ the font size, Full screen.
 
 File new New
 File editfile Open…
+File close Close
+File closeall Close all
 File save Save [editable]
 File saveall Save All
 File saveas Save As… [editable]

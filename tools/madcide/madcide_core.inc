@@ -385,6 +385,9 @@ const char *modal_default_keys_text()
 	   "@replace n pno\n"
 	   "@replace a pall\n"
 	   "@replace esc pcancel\n"
+	   "@save y pyes\n"
+	   "@save n pno\n"
+	   "@save esc pcancel\n"
 	   "@project esc projclose\n"
 	   "@project backspace projdelchar\n"
 	   "@project ins projadd\n"
@@ -2211,6 +2214,8 @@ void menu_show(long w, long es, long doc, const char *arg0)
 void edit_file(long w, long es, long olddoc, const char *path0);
 bool save_as(long w, long es, long doc, const char *path0);	// S4: Save As
 bool save_as_quit(long w, long es, long doc, const char *path0);	// ^K X, untitled
+void save_as_close(long w, long es, long doc, const char *path0);	// File ▸ Close, untitled
+void close_answer(long w, long es, long doc, long a);	// File ▸ Close's question
 long active_doc(long w, long es, long fallback);
 void goto_pane_row(long w, long es, long doc, long option, long view)
 {
@@ -2552,6 +2557,7 @@ const char *question_scope(long mode)
     {
 	case pmCONFIRM: return "confirm";
 	case pmREPLACEASK: return "replace";
+	case pmCLOSEASK: return "save";
     }
     return "";
 }
@@ -3074,6 +3080,11 @@ bool finish_prompt(long w, long es, long doc, long caret)
 	return save_as(w, es, doc, in.c_str());
     if ( mode == pmSAVEASQUIT )
 	return save_as_quit(w, es, doc, in.c_str());
+    if ( mode == pmSAVEASCLOSE )
+    {
+	save_as_close(w, es, doc, in.c_str());
+	return true;
+    }
     if ( mode == pmOPENPROJECT )
     {
 	proj_open(w, es, doc, in.c_str());
@@ -3171,6 +3182,11 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 		replace_answer(w, es, doc, a.as_integer());
 		return true;
 	    }
+	    if ( qmode == pmCLOSEASK )
+	    {
+		close_answer(w, es, doc, a.as_integer());
+		return true;
+	    }
 	    if ( a == cmdPYES )
 	    {
 		var vb;
@@ -3186,6 +3202,8 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	{
 	    if ( qmode == pmREPLACEASK )
 		replace_answer(w, es, doc, cmdPCANCEL);
+	    else if ( qmode == pmCLOSEASK )
+		close_answer(w, es, doc, cmdPCANCEL);
 	    else
 		end_prompt(w, es);
 	}
@@ -3742,9 +3760,9 @@ void switch_buffer(long w, long es, long olddoc, long idx)
 
 // THE buffer-table row shape, one owner (dupaudit family
 // madcide_buffer_row_shape): a FRESH row for a newly opened document.
-// The seed row in edit_file is the one deliberate exception — it carries
-// the LIVE interaction state of the buffer being adopted, not fresh
-// zeroes.
+// The seed row (ensure_buffer_table) is the one deliberate exception — it
+// carries the LIVE interaction state of the buffer being adopted, not
+// fresh zeroes.
 void push_buffer_row(long w, long es, long nd, const char *path)
 {
     var bufs;
@@ -3763,9 +3781,47 @@ void push_buffer_row(long w, long es, long nd, const char *path)
     ui::set(w, es, "buffers", bufs);
 }
 
+// The buffer-table row showing `doc` (a document has one row); -1 when
+// none.
+long buffer_index_of(long w, long es, long doc)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() )
+	return -1;
+    long n = php::count(bufs);
+    for ( long i = 0; i < n; i = i + 1 )
+    {
+	var r = bufs[i];
+	if ( r["doc"].as_integer() == doc )
+	    return i;
+    }
+    return -1;
+}
+
+// A session without the buffer table (headless) seeds it from the buffer
+// it drives: ONE owner (edit_file opens beside it, Close removes from it).
+// The seed row carries that buffer's LIVE interaction state, not fresh
+// zeroes (push_buffer_row's shape otherwise).
+void ensure_buffer_table(long w, long es, long doc)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( !bufs.is_null() && php::count(bufs) > 0 )
+	return;
+    var seed = {};
+    var op;
+    ui::get(op, w, doc, "path");
+    long lv = ensure_focused_view(w, es, doc);	// the live View too
+    seed[] = { "doc": doc, "path": op, "caret": es_int(w, es, "caret", 0),
+	       "mark": -1, "bend": -1, "view": lv };
+    ui::set(w, es, "buffers", seed);
+    ui::set(w, es, "bufidx", 0);
+    ui::set(w, es, "adoc", doc);
+}
+
 // ^K E's commit: an open path switches; anything else opens (missing =
-// New File). A session without the table (headless) seeds it from the
-// buffer it was driving.
+// New File). A session without the table (headless) seeds it first.
 void edit_file(long w, long es, long olddoc, const char *path0)
 {
     // Value-first: the caller hands a prompt value's ring-lifetime
@@ -3774,22 +3830,9 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     // {}-format/value-assign char-array mistype is a banked engine
     // defect, KG madc_char_array_text_boundary).
     var p = path0;
+    ensure_buffer_table(w, es, olddoc);
     var bufs;
     ui::get(bufs, w, es, "buffers");
-    if ( bufs.is_null() || php::count(bufs) == 0 )
-    {
-	var seed = {};
-	var op;
-	ui::get(op, w, olddoc, "path");
-	long lv = ensure_focused_view(w, es, olddoc);	// the live View too
-	seed[] = { "doc": olddoc, "path": op,
-		   "caret": es_int(w, es, "caret", 0),
-		   "mark": -1, "bend": -1, "view": lv };
-	ui::set(w, es, "buffers", seed);
-	ui::set(w, es, "bufidx", 0);
-	ui::set(w, es, "adoc", olddoc);
-	ui::get(bufs, w, es, "buffers");
-    }
     long n = php::count(bufs);
     // Two spellings of one file are one BUFFER (V6c-2): same_file, or
     // `^K E /abs/path/x.mad` opens a second buffer on the file already open
@@ -5879,17 +5922,43 @@ bool dialog_request(long w, long es, long dlg, const char *title,
     return true;
 }
 
+// The prompt a file dialog's request falls back to (the terminal, or a
+// client with no native dialog): its mode and its label, by the dialog's
+// kind. ONE mapping — save_as_ask and IdeSession::dialog_fallback read it.
+long dlg_prompt_mode(long dlg)
+{
+    switch ( dlg )
+    {
+	case dlgSAVE: return pmSAVEAS;
+	case dlgSAVEQUIT: return pmSAVEASQUIT;
+	case dlgSAVECLOSE: return pmSAVEASCLOSE;
+	case dlgOPENPROJECT: return pmOPENPROJECT;
+    }
+    return pmEDITFILE;		// dlgOPEN: the file to edit
+}
+
+const char *dlg_prompt_label(long dlg)
+{
+    switch ( dlg )
+    {
+	case dlgSAVE: case dlgSAVEQUIT: case dlgSAVECLOSE: return "Save as";
+	case dlgOPENPROJECT: return "Project file to open";
+    }
+    return "Name of file to edit";
+}
+
 // Ask for the name a save writes under (Save As…): the native dialog when
-// the client has one, else JOE's prompt. `then_quit` is ^K X on a buffer
-// with no file yet: the answer saves, then quits (the request's own kind
-// carries it, so a cancel leaves nothing behind).
-void save_as_ask(long w, long es, long doc, bool then_quit)
+// the client has one, else JOE's prompt. `dlg` is the save's kind — what
+// the answer does after writing: dlgSAVE nothing more, dlgSAVEQUIT quits
+// (^K X on a buffer with no file yet), dlgSAVECLOSE closes the buffer
+// (File ▸ Close). The request carries it, so a cancel leaves nothing behind.
+void save_as_ask(long w, long es, long doc, long dlg)
 {
     var cur = "";
     if ( !doc_untitled(w, doc) )
 	ui::get(cur, w, doc, "path");
-    if ( !dialog_request(w, es, then_quit ? dlgSAVEQUIT : dlgSAVE, "Save As", cur) )
-	start_prompt(w, es, "Save as", then_quit ? pmSAVEASQUIT : pmSAVEAS);
+    if ( !dialog_request(w, es, dlg, "Save As", cur) )
+	start_prompt(w, es, dlg_prompt_label(dlg), dlg_prompt_mode(dlg));
 }
 
 // The document's parse handle goes; the next need opens it again (under
@@ -5924,25 +5993,19 @@ bool save_as(long w, long es, long doc, const char *path0)
     bool untitled_launch = launch_untitled(w, es, doc);	// before the name moves
     doc_set_path(w, doc, p.c_str());	// the kind follows the new name
     doc_forget_name(w, doc);
-    var bufs;
-    ui::get(bufs, w, es, "buffers");
-    if ( !bufs.is_null() )
+    long i = buffer_index_of(w, es, doc);
+    if ( i >= 0 )
     {
-	long n = php::count(bufs);
-	for ( long i = 0; i < n; i = i + 1 )
-	{
-	    var r = bufs[i];
-	    if ( r["doc"].as_integer() == doc )
-	    {
-		r["path"] = p;
-		bufs[i] = r;
-		// The untitled LAUNCH buffer (row 0) named: it is the launch
-		// file now, the implicit project's anchor.
-		if ( i == 0 && untitled_launch )
-		    ui::set(w, es, "launchpath", p);
-	    }
-	}
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	var r = bufs[i];
+	r["path"] = p;
+	bufs[i] = r;
 	ui::set(w, es, "buffers", bufs);
+	// The untitled LAUNCH buffer (row 0) named: it is the launch file
+	// now, the implicit project's anchor.
+	if ( i == 0 && untitled_launch )
+	    ui::set(w, es, "launchpath", p);
     }
     return save_and_check(w, es, doc);
 }
@@ -5959,6 +6022,190 @@ bool save_as_quit(long w, long es, long doc, const char *path0)
     if ( doc_modified(w, doc) )
 	return true;			// the write failed; its message stands
     return do_verb(w, es, "q");
+}
+
+// ---- File ▸ Close / Close all (Thonny's) ---------------------------------
+// A tab is a buffer-table row; closing one removes the row, and its
+// document stays in the world (another client may be showing it). One
+// owner removes a row: drop_buffer_row. A buffer with unsaved changes asks
+// first — a QUESTION (@save: y saves, n discards, esc keeps it open); an
+// untitled buffer's yes asks its name through Save As, whose answer then
+// closes it (dlgSAVECLOSE). Close all asks once for every unsaved buffer.
+// The question's subject on the bag: closeidx (the row asked about; -1 =
+// Close all).
+void save_all(long w, long es, long doc);		// defined with the actions below
+
+// Remove row `idx`. The active row first hands the session to the tab on
+// its right, else its left (switch_buffer's whole restore); every index
+// past it moves down one — the active one and each window row's — and a
+// window that showed it shows the new active buffer. madcide always has a
+// buffer, so the table's last row never goes: a named file's row gives way
+// to the untitled buffer, and the untitled buffer itself is emptied (one
+// undo step) and left clean.
+void drop_buffer_row(long w, long es, long idx)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    long n = php::count(bufs);
+    var row = bufs[idx];
+    long d = row["doc"].as_integer();
+    if ( n == 1 )
+    {
+	if ( doc_untitled(w, d) )
+	{
+	    long size = ui::text_size(w, d);
+	    if ( size > 0 )
+	    {
+		edit_checkpoint(w, es, d, es_int(w, es, "caret", 0));
+		ed_text_erase(w, es, d, 0, size);
+	    }
+	    ui::set(w, d, "modified", false);
+	    ui::set(w, es, "caret", 0);
+	    select_clear(w, es);
+	    return;
+	}
+	edit_file(w, es, d, "");	// the untitled buffer: a new row, active
+	ui::get(bufs, w, es, "buffers");
+	n = php::count(bufs);
+    }
+    long cur = es_int(w, es, "bufidx", 0);
+    if ( idx == cur )
+    {
+	cur = idx + 1 < n ? idx + 1 : idx - 1;
+	switch_buffer(w, es, d, cur);
+	ui::get(bufs, w, es, "buffers");	// the switch saved the rows
+    }
+    var kept = {};
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( i != idx )
+	    kept[] = bufs[i];
+    ui::set(w, es, "buffers", kept);
+    if ( cur > idx )
+	cur = cur - 1;
+    ui::set(w, es, "bufidx", cur);
+    var ws;
+    ui::get(ws, w, es, "windows");
+    if ( ws.is_null() )
+	return;
+    long nw = php::count(ws);
+    for ( long k = 0; k < nw; k = k + 1 )
+    {
+	var wr = ws[k];
+	long b = wr["bufidx"].as_integer();
+	if ( b == idx )
+	    b = cur;
+	else if ( b > idx )
+	    b = b - 1;
+	wr["bufidx"] = b;
+	ws[k] = wr;
+    }
+    ui::set(w, es, "windows", ws);
+}
+
+// File ▸ Close: the active buffer, asking first when it has unsaved
+// changes.
+void close_buffer(long w, long es, long doc)
+{
+    ensure_buffer_table(w, es, doc);
+    long idx = es_int(w, es, "bufidx", 0);
+    var row;
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    row = bufs[idx];
+    long d = row["doc"].as_integer();
+    if ( !doc_modified(w, d) )
+    {
+	drop_buffer_row(w, es, idx);
+	return;
+    }
+    var nm;
+    doc_name(nm, w, d);
+    ui::set(w, es, "closeidx", idx);
+    var q = format("Save changes to {}? (y)es (n)o (^C)", php::basename(nm));
+    start_prompt(w, es, q.c_str(), pmCLOSEASK);
+}
+
+// File ▸ Close all: every buffer; one question when any has unsaved
+// changes.
+void close_all(long w, long es, long doc)
+{
+    ensure_buffer_table(w, es, doc);
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    long dirty = 0;
+    for ( var b : bufs )
+	if ( doc_modified(w, b["doc"].as_integer()) )
+	    dirty = dirty + 1;
+    ui::set(w, es, "closeidx", -1);
+    if ( dirty == 0 )
+    {
+	close_answer(w, es, doc, cmdPNO);
+	return;
+    }
+    var q = format("Save changes to {} file{}? (y)es (n)o (^C)", dirty,
+		   dirty == 1 ? "" : "s");
+    start_prompt(w, es, q.c_str(), pmCLOSEASK);
+}
+
+// The question's answer. y: the buffer is saved, then closed — an untitled
+// one asks its name first (the close follows the answer); for Close all,
+// Save All runs and every buffer it left clean closes (an untitled one
+// stays open, unsaved). n: closed without saving. Anything else: nothing
+// closes.
+void close_answer(long w, long es, long doc, long a)
+{
+    end_prompt(w, es);
+    if ( a != cmdPYES && a != cmdPNO )
+	return;
+    long idx = es_int(w, es, "closeidx", -1);
+    if ( idx >= 0 )
+    {
+	var bufs;
+	ui::get(bufs, w, es, "buffers");
+	var row = bufs[idx];
+	long d = row["doc"].as_integer();
+	if ( a == cmdPYES )
+	{
+	    if ( doc_untitled(w, d) )
+	    {
+		save_as_ask(w, es, d, dlgSAVECLOSE);
+		return;
+	    }
+	    save_and_check(w, es, d);
+	    if ( doc_modified(w, d) )
+		return;			// the write failed; its message stands
+	}
+	drop_buffer_row(w, es, idx);
+	return;
+    }
+    if ( a == cmdPYES )
+	save_all(w, es, doc);
+    // Close all: the last row first, so the indices still to come hold.
+    var bufs2;
+    ui::get(bufs2, w, es, "buffers");
+    for ( long i = php::count(bufs2) - 1; i >= 0; i = i - 1 )
+    {
+	var r = bufs2[i];
+	if ( a == cmdPYES && doc_modified(w, r["doc"].as_integer()) )
+	    continue;			// untitled, or its write failed
+	drop_buffer_row(w, es, i);
+	ui::get(bufs2, w, es, "buffers");
+    }
+}
+
+// Save As's answer on a buffer File ▸ Close asked about: written under the
+// name, then closed (a failed write leaves it open, its message standing).
+void save_as_close(long w, long es, long doc, const char *path0)
+{
+    var p = path0;			// ring discipline: own the text first
+    if ( strlen(p.c_str()) == 0 )
+	return;
+    save_as(w, es, doc, p.c_str());
+    if ( doc_modified(w, doc) )
+	return;
+    long idx = buffer_index_of(w, es, doc);
+    if ( idx >= 0 )
+	drop_buffer_row(w, es, idx);
 }
 
 // A native file dialog answered (the dialog event, S4): open edits the
@@ -5980,6 +6227,9 @@ bool dialog_result(long w, long es, long doc, var &ev)
 	    return save_as(w, es, doc, path.c_str());
 	case dlgSAVEQUIT:
 	    return save_as_quit(w, es, doc, path.c_str());
+	case dlgSAVECLOSE:
+	    save_as_close(w, es, doc, path.c_str());
+	    return true;
 	case dlgOPENPROJECT:
 	    proj_open(w, es, doc, path.c_str());
 	    return true;
@@ -6478,7 +6728,7 @@ bool save_quit(long w, long es, long doc)
 {
     if ( doc_untitled(w, doc) )
     {
-	save_as_ask(w, es, doc, true);	// the name first; the answer quits
+	save_as_ask(w, es, doc, dlgSAVEQUIT);	// the name first; the answer quits
 	return true;
     }
     if ( !do_verb(w, es, "w") )
@@ -6495,7 +6745,7 @@ bool save_and_check(long w, long es, long doc)
 {
     if ( doc_untitled(w, doc) )
     {
-	save_as_ask(w, es, doc, false);
+	save_as_ask(w, es, doc, dlgSAVE);
 	return true;
     }
     bool run = do_verb(w, es, "w");
@@ -7632,6 +7882,12 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdSAVEALL:
 		save_all(w, es, doc);
 		return true;
+	    case cmdCLOSE:
+		close_buffer(w, es, doc);
+		return true;
+	    case cmdCLOSEALL:
+		close_all(w, es, doc);
+		return true;
 	    case cmdSAVEQUIT:
 		return save_quit(w, es, doc);
 	    case cmdQUIT:
@@ -7873,7 +8129,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    }
 	    case cmdSAVEAS:
-		save_as_ask(w, es, doc, false);
+		save_as_ask(w, es, doc, dlgSAVE);
 		return true;
 	    case cmdOPENPROJECT:
 	    {
@@ -9436,21 +9692,7 @@ void IdeSession::dialog_fallback(var &req)
     long dlg = dlgOPEN;
     if ( !dk.is_null() )
 	dlg = dk.as_integer();
-    switch ( dlg )
-    {
-	case dlgSAVE:
-	    start_prompt(w, es, "Save as", pmSAVEAS);
-	    return;
-	case dlgSAVEQUIT:
-	    start_prompt(w, es, "Save as", pmSAVEASQUIT);
-	    return;
-	case dlgOPENPROJECT:
-	    start_prompt(w, es, "Project file to open", pmOPENPROJECT);
-	    return;
-	default:
-	    break;
-    }
-    start_prompt(w, es, "Name of file to edit", pmEDITFILE);
+    start_prompt(w, es, dlg_prompt_label(dlg), dlg_prompt_mode(dlg));
 }
 
 // A terminal request the client cannot serve (no terminal to suspend —

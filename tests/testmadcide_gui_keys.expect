@@ -1,6 +1,8 @@
 == thonny
 new: primary+n
 open: primary+o
+close: primary+w
+closeall: primary+shift+w
 save: primary+s
 saveall: primary+alt+s
 saveas: primary+shift+s
@@ -14,6 +16,8 @@ togglecomment: primary+3
 == vscode
 new: primary+n
 open: primary+o
+close: primary+w
+closeall: primary+k primary+w
 save: primary+s
 saveall: primary+k s
 saveas: primary+shift+s

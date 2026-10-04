@@ -31,6 +31,8 @@ File save Save [editable]
 File saveall Save All
 File saveas Save As… [editable]
 File savequit Save and Exit [editable]
+File close Close
+File closeall Close All
 File -
 File project Project…
 File openproject Open Project…

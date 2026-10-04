@@ -4,11 +4,13 @@
 // Cmd on macOS: the spelling is the profile's, so the line is the same on
 // every platform), or (unbound). Oracle: Thonny's default keys (each
 // command's default_sequence in Thonny's source: New Ctrl+N, Open Ctrl+O,
-// Save Ctrl+S, Save All Ctrl+Alt+S, Save as Ctrl+Shift+S, Toggle comment
-// Ctrl+3, Dedent Shift+Tab) and VS Code's published Linux keymap (New File
-// Ctrl+N, Save All Ctrl+K S, Replace Ctrl+H, Indent / Outdent line Ctrl+] /
-// Ctrl+[, Toggle line comment Ctrl+/). File ▸ New had no key in either
-// profile while both headers still listed it as a command madcide lacked.
+// Close Ctrl+W, Close all Ctrl+Shift+W, Save Ctrl+S, Save All Ctrl+Alt+S,
+// Save as Ctrl+Shift+S, Toggle comment Ctrl+3, Dedent Shift+Tab) and VS
+// Code's published Linux keymap (New File Ctrl+N, Close Ctrl+W, Close All
+// Ctrl+K Ctrl+W, Save All Ctrl+K S, Replace Ctrl+H, Indent / Outdent line
+// Ctrl+] / Ctrl+[, Toggle line comment Ctrl+/). File ▸ New had no key in
+// either profile while both headers still listed it as a command madcide
+// lacked.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -39,6 +41,8 @@ void profile_keys(const char *profile)
     println("== {}", profile);
     bound(table, "new", cmdNEW);
     bound(table, "open", cmdEDITFILE);
+    bound(table, "close", cmdCLOSE);
+    bound(table, "closeall", cmdCLOSEALL);
     bound(table, "save", cmdSAVE);
     bound(table, "saveall", cmdSAVEALL);
     bound(table, "saveas", cmdSAVEAS);

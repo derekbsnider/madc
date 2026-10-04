@@ -1,0 +1,168 @@
+// File ▸ Close and Close all (chthonia parity rows, Thonny's File menu): a
+// tab is a buffer-table row; closing one removes the row (its document
+// stays in the world). A buffer with unsaved changes asks first — "Save
+// changes to NAME? (y)es (n)o (^C)", answered by the @save scope: y saves
+// then closes (an untitled buffer asks its name through Save As and closes
+// on the answer), n closes without saving, esc keeps it. Close all asks once
+// for every unsaved buffer. The active tab hands over to its right
+// neighbour, else its left; madcide always has a buffer, so the last named
+// tab gives way to the untitled buffer and a lone untitled buffer is
+// emptied instead. Oracle: Thonny's Close / Close all ("Do you want to save
+// changes…?" Yes / No / Cancel per unsaved editor) and Tk's notebook, which
+// selects the next tab when the current one goes. Each line: the table
+// (`*` = active, `+` = unsaved), whether a question is up, the message.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void key(IdeSession &S, long doc, const char *name, ui::key code)
+{
+    var e = { "event": "key", "event_code": ui::event_kind::key, "key": name,
+	      "key_code": code, "mods": 0 };
+    S.apply_ide_event(doc, e);
+}
+
+void type(IdeSession &S, long doc, const char *text)
+{
+    var e = { "event": "text", "event_code": ui::event_kind::text, "text": text };
+    S.apply_ide_event(doc, e);
+}
+
+long act(IdeSession &S)
+{
+    return es_int(S.w, S.es, "adoc", 0);
+}
+
+void table(const char *label, IdeSession &S)
+{
+    var bufs;
+    ui::get(bufs, S.w, S.es, "buffers");
+    long cur = es_int(S.w, S.es, "bufidx", 0);
+    var s = "";
+    long i = 0;
+    bool agree = false;
+    for ( var b : bufs )
+    {
+	long d = b["doc"].as_integer();
+	var nm;
+	doc_name(nm, S.w, d);
+	s = format("{}{}{}{} ", s, i == cur ? "*" : "", php::basename(nm),
+		   doc_modified(S.w, d) ? "+" : "");
+	if ( i == cur && d == act(S) )
+	    agree = true;
+	i = i + 1;
+    }
+    var m;
+    ui::get(m, S.w, S.es, "msg");
+    println("{}: [{}] active-agrees={} asking={} msg=[{}]", label, php::trim(s),
+	    agree ? 1 : 0, prompt_active(S.w, S.es) ? 1 : 0, m);
+}
+
+void disk(const char *label, const char *path)
+{
+    var t;
+    php::file_get_contents(t, path);
+    println("{}: [{}]", label, php::str_replace("\n", "|", t));
+}
+
+int main()
+{
+    const char *pa = "madc_ide_close_a.txt";
+    const char *pb = "madc_ide_close_b.txt";
+    const char *pc = "madc_ide_close_c.txt";
+    const char *pu = "madc_ide_close_u.txt";
+    php::file_put_contents(pa, "a\n");
+    php::file_put_contents(pb, "b\n");
+    php::file_put_contents(pc, "c\n");
+
+    IdeSession S;
+    long da = S.open(pa, false);
+    load_profile(S.w, S.es, "thonny");
+    edit_file(S.w, S.es, da, pb);
+    edit_file(S.w, S.es, act(S), pc);
+    table("three", S);
+    // A clean close of the last tab: its left neighbour takes over.
+    S.post(act(S), cmdCLOSE);
+    table("close-clean", S);
+
+    // An unsaved buffer asks; esc keeps it, n closes it unsaved.
+    type(S, act(S), "B");
+    S.post(act(S), cmdCLOSE);
+    var label;
+    ui::get(label, S.w, S.es, "prompt");
+    println("question: [{}]", label);
+    var ch;
+    question_choices(ch, S.w, S.es, "save");
+    var bs = "";
+    for ( var c : ch )
+	bs = format("{}{} ", bs, c["label"]);
+    println("buttons: [{}]", php::trim(bs));
+    key(S, act(S), "esc", ui::key::esc);
+    table("esc-keeps", S);
+    S.post(act(S), cmdCLOSE);
+    type(S, act(S), "n");
+    table("no-discards", S);
+    disk("disk-b", pb);
+
+    // y saves then closes; the last named tab gives way to the untitled one.
+    type(S, act(S), "A");
+    S.post(act(S), cmdCLOSE);
+    type(S, act(S), "y");
+    table("yes-saves", S);
+    disk("disk-a", pa);
+
+    // A lone untitled buffer: Close empties it (n discards its text).
+    type(S, act(S), "zz");
+    S.post(act(S), cmdCLOSE);
+    type(S, act(S), "n");
+    var ut;
+    ui::text(ut, S.w, act(S));
+    table("untitled-emptied", S);
+    println("untitled-text: [{}]", ut);
+
+    // An untitled buffer's y: Save As asks the name, the answer closes it.
+    type(S, act(S), "u");
+    S.post(act(S), cmdCLOSE);
+    type(S, act(S), "y");
+    table("untitled-saveas-asks", S);
+    type(S, act(S), pu);
+    key(S, act(S), "enter", ui::key::enter);
+    table("untitled-saved-closed", S);
+    disk("disk-u", pu);
+
+    // Close all: one question; y saves the named ones and closes every
+    // clean buffer — the untitled one, unsaved, stays.
+    edit_file(S.w, S.es, act(S), pb);
+    type(S, act(S), "2");
+    S.post(act(S), cmdNEW);
+    type(S, act(S), "w");
+    table("before-closeall", S);
+    S.post(act(S), cmdCLOSEALL);
+    ui::get(label, S.w, S.es, "prompt");
+    println("closeall-question: [{}]", label);
+    type(S, act(S), "y");
+    table("closeall-yes", S);
+    disk("disk-b2", pb);
+
+    // Window rows follow the renumbering: two windows on the active tab,
+    // which closes — both show its neighbour.
+    edit_file(S.w, S.es, act(S), pa);
+    edit_file(S.w, S.es, act(S), pc);
+    S.post(act(S), cmdSPLITW);
+    S.post(act(S), cmdCLOSE);
+    table("split-close", S);
+    var ws;
+    ui::get(ws, S.w, S.es, "windows");
+    var wb = "";
+    for ( var wr : ws )
+	wb = format("{}{} ", wb, wr["bufidx"]);
+    println("windows: [{}] (active row {})", php::trim(wb), es_int(S.w, S.es, "bufidx", 0));
+    S.close();
+
+    // a test leaves nothing in its working directory
+    php::unlink(pa);
+    php::unlink(pb);
+    php::unlink(pc);
+    php::unlink(pu);
+    return 0;
+}

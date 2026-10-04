@@ -15,9 +15,8 @@
 # Save All (Ctrl+K S; macOS ⌥⌘S).
 #
 # VS Code's keys whose command madcide does not have yet are listed, not
-# invented: Close (Ctrl+W), Close All (Ctrl+K Ctrl+W),
-# Find previous (Shift+F3), Trigger suggestion (Ctrl+Space), Move line
-# (Alt+Up / Alt+Down), Insert line below / above (Ctrl+Enter,
+# invented: Find previous (Shift+F3), Trigger suggestion (Ctrl+Space), Move
+# line (Alt+Up / Alt+Down), Insert line below / above (Ctrl+Enter,
 # Ctrl+Shift+Enter), Go to Definition (F12), next / previous problem (F8 /
 # Shift+F8), the Command Palette (Ctrl+Shift+P, F1), the debugger's steps
 # and breakpoints (F9, F10, F11, Shift+F11), zoom (Ctrl+= / Ctrl+-) and full
@@ -27,6 +26,8 @@
 # File management
 primary+n new
 primary+o editfile
+primary+w close
+primary+k primary+w closeall
 primary+s save
 primary+shift+s saveas
 primary+k s saveall
