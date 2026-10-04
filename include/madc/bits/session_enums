@@ -40,6 +40,15 @@ namespace madc {
     // the session, IPython's ask_exit — a terminal ends, an IDE pane starts
     // a fresh session; no argv).
     enum class session_payload : unsigned char { none, load, run, run_here, build, call, open, quit };
+    // A session command (plan §41.8a, D13/D24; the engine's
+    // InteractiveSession::Command aliases it): what an entry's `%name`,
+    // `:name` or `.name` names, an alias's command included (cling's `.L` is
+    // load). none: no command of the session's — an IDE's own (plan §7f,
+    // ide::repl_command), or a typo the session refuses.
+    enum class session_command : unsigned char
+    {
+	none, help, type, pinfo, whos, load, run, build, call, open, edit, quit
+    };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`
     // (%whos, madcide's Variables view, plan §41.11a) is one of these codes.

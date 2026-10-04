@@ -45,7 +45,13 @@
 //      starts (an earlier name is gone); `.L FILE` loads FILE; `.x
 //      FILE(ARGS)` loads FILE and shows the call of the function named
 //      after it; `%build FILE -o OUT` builds FILE's executable; `%edit
-//      NAME` opens the file that defines NAME at its line.
+//      NAME` opens the file that defines NAME at its line;
+//  13. a plugin's REPL command (ide::repl_command, plan §7f): `%hi WHO`
+//      (and `:hi WHO`) runs the command it names with WHO before the
+//      session sees the entry, the entry shown as a taken one; %help lists
+//      it after the session's own commands; a name the session owns, a
+//      name its rule does not read whole, a repeat and a code that names no
+//      command are refused.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -82,6 +88,13 @@ long transcript_size(long w, long es)
 void input_text(var &out, long w, long es)
 {
     ui::text(out, w, repl_input_doc(w, es));
+}
+
+// Pin 13's command: keeps its argument where the test reads it.
+bool hi_handler(long w, long es, long doc, const char *arg)
+{
+    ui::set(w, es, "test.hi", arg);
+    return true;
 }
 
 int main()
@@ -417,6 +430,37 @@ int main()
 	    rust::contains(got.c_str(), "\n15\n") != 0,
 	    rust::contains(got.c_str(), "undefined reference to 'quad'") != 0,
 	    rust::contains(got.c_str(), "\n4201\n") != 0,
+	    es_int(w, es, "replbusy", -1));
+
+    // 13. A plugin's REPL command: the IDE answers it before the session.
+    ui::set(w, es, "consolefocus", repl_view(w));
+    long hc = plugin_command(w, "hi", "Hi", hi_handler);
+    bool reg = plugin_repl_command(w, "hi", "%hi [WHO]", "say hello", hc);
+    bool own = plugin_repl_command(w, "load", "%load X", "mine", hc);
+    bool alias = plugin_repl_command(w, "q", "%q", "mine", hc);
+    bool dash = plugin_repl_command(w, "h-i", "%h-i", "mine", hc);
+    bool again = plugin_repl_command(w, "hi", "%hi", "again", hc);
+    bool nocmd = plugin_repl_command(w, "ho", "%ho", "none", 999999);
+    println("ide cmd: registered={} refused={}{}{}{}{}", reg, own, alias, dash,
+	    again, nocmd);
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "%hi bob");
+    var who;
+    ui::get(who, w, es, "test.hi");
+    enter_line(S, doc, w, es, ":hi ann");
+    var who2;
+    ui::get(who2, w, es, "test.hi");
+    enter_line(S, doc, w, es, "%help");
+    transcript_since(got, w, es, mark);
+    // The IDE's rows follow the session's: positions in ONE copy of the text
+    // (each c_str() is its own ring copy).
+    const char *g = got.c_str();
+    const char *quit_at = strstr(g, "%quit");
+    const char *ide_at = strstr(g, "IDE commands:");
+    println("ide cmd: ran={} {} shown={} listed={} after={} busy={}", who, who2,
+	    rust::contains(got.c_str(), "%hi bob\n") != 0,
+	    rust::contains(got.c_str(), "IDE commands:\n%hi [WHO]  say hello\n") != 0,
+	    quit_at != 0 && ide_at != 0 && quit_at < ide_at,
 	    es_int(w, es, "replbusy", -1));
     S.close();				// stops the pump and the session
     php::unlink(path);

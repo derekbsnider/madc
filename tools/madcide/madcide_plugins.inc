@@ -270,7 +270,7 @@ bool plugin_manifest_read(var &m, var &why, var &dir, const char *name0)
 // (testmadcide_bundles pins the two to one reading).
 const char *default_bundle_text()
 {
-    return "{ \"name\": \"default\", \"title\": \"Workbench\", \"api\": 2,"
+    return "{ \"name\": \"default\", \"title\": \"Workbench\", \"api\": 3,"
 	   " \"contributes\": { \"keys\": \"joe\", \"status\": \"joe\","
 	   " \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\" } }";
 }
@@ -814,6 +814,48 @@ long plugin_command_hosted(long w, const char *name0, const char *title0,
 	       "hid": hid };
     ui::set(w, reg, "commands", rows);
     return code;
+}
+
+// Register a REPL command (API 3; plan §7f, the IDE layer): `%name ARGS`
+// typed in the REPL pane runs command `code` (any command: a plugin's own,
+// registered first) with ARGS. The name is one the session's rule reads as a
+// whole command name (madc::session_command_of — the one rule), names none
+// of the session's own commands or aliases, and is new. False = refused.
+bool plugin_repl_command(long w, const char *name0, const char *usage0,
+			 const char *summary0, long code)
+{
+    var name = name0;		// ring discipline: own the texts first
+    var usage = usage0;
+    var summary = summary0;
+    var q;
+    var typed = format("%{}", name);
+    if ( !madc::session_command_of(q, typed.c_str()) || !(q["word"] == name)
+	 || !(q["command"] == madc::session_command::none) )
+	return false;
+    var cn;
+    cmd_name_w(cn, w, code);
+    if ( code == cmdNONE || strlen(cn.c_str()) == 0 )
+	return false;
+    if ( registry_named_index(w, "repl", name) >= 0 )
+	return false;
+    long reg = plugin_registry_make(w);
+    var rows;
+    registry_rows(rows, w, "repl");
+    rows[] = { "name": name, "usage": usage, "summary": summary, "code": code };
+    ui::set(w, reg, "repl", rows);
+    return true;
+}
+
+// The command a REPL command name runs (plugin_repl_command); cmdNONE when
+// no plugin registered the name.
+long plugin_repl_code(long w, var &name)
+{
+    long at = registry_named_index(w, "repl", name);
+    if ( at < 0 )
+	return cmdNONE;
+    var rows;
+    registry_rows(rows, w, "repl");
+    return rows[at]["code"].as_integer();
 }
 
 // A host's invocation, sent to its child (madcide_plugin_host.inc).

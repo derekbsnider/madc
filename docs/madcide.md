@@ -368,7 +368,7 @@ A plugin can carry code. Its manifest names the source, one madc file in its
 directory:
 
 ```json
-{ "name": "hello", "api": 2, "code": "hello.mad" }
+{ "name": "hello", "api": 3, "code": "hello.mad" }
 ```
 
 The source includes `<madcide/plugin>` and defines the activation madcide
@@ -401,9 +401,15 @@ running madcide. A library loads in well under a millisecond; a source costs
 a compile at every launch (about 16 ms for the first plugin and 7 ms for each
 further one with the installed madcide), so a plugin ships fast with its
 library and works without one. A handler calls madcide only through `ide::`
-(`command`, `view`, `event` at activation; `run`, `command_id`, `get`, `set`,
-`show` from a handler), so a plugin binds to nothing of madcide's own. The
-code stays loaded until the session closes.
+(`command`, `view`, `event`, `repl_command` at activation; `run`,
+`command_id`, `get`, `set`, `show` from a handler), so a plugin binds to
+nothing of madcide's own. The code stays loaded until the session closes.
+
+`ide::repl_command(w, "vars", "%vars [NAME]", "the Variables view", handler)`
+(plugin API 3) registers a command the REPL pane answers itself: typed as
+`%vars a`, `.vars a` or `:vars a`, its handler runs with `a` before the
+session sees the entry, and `%help` lists it under "IDE commands:" after the
+session's own. A name the session's commands or aliases use is refused.
 
 `ide::event` subscribes a handler to the REPL pane's events, whose kinds
 `<madcide/plugin_api>` names: `reTAKEN` (an entry ran), `reRAN` (F5's program
@@ -455,7 +461,7 @@ A plugin's code can run in a process of its own, so a crash in it leaves the
 editor running. The manifest asks for it beside its code:
 
 ```json
-{ "name": "hello", "api": 2, "code": "hello.mad", "transport": "host" }
+{ "name": "hello", "api": 3, "code": "hello.mad", "transport": "host" }
 ```
 
 and `"plugins.isolate": true` in `settings.json` does it for every plugin.

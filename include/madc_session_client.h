@@ -296,6 +296,7 @@ int64_t session_run(int64_t handle, value &argv);
 int64_t session_call(int64_t handle, value &argv);
 int64_t session_build(int64_t handle, const char *path, const char *text,
 		      const char *out);
+bool session_command_of(value &out, const char *text);
 int64_t session_poll(value &reply, int64_t handle);
 value &session_output(value &out, int64_t handle);
 bool session_input(int64_t handle, const char *text);

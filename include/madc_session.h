@@ -153,11 +153,16 @@ public:
     // line starts with `%name`, `:name` or `.name` is a command, never C.
     // The typed name, a command's or an alias's (cling's `.L`, plan §7f),
     // becomes one of these codes once, at input. `?NAME` is %pinfo NAME, and
-    // `?` alone %help (IPython).
-    enum class Command : unsigned char
-    {
-	help, type, pinfo, whos, load, run, build, call, open, edit, quit
-    };
+    // `?` alone %help (IPython). The codes' one text is <bits/session_enums>,
+    // the dialect's too.
+    typedef ::madc::session_command Command;
+    // What `text` is as an entry (plan §7f, the IDE layer, which answers its
+    // own commands before the session sees them): false when it is no
+    // command; else the name typed (`L`; `pinfo` or `help` for `?NAME` and
+    // `?`), the command it names (none: none of the session's) and the rest
+    // of its first line, without the blanks before it.
+    static bool command_of(const std::string &text, std::string &word,
+			   Command &code, std::string &argument);
     // What the last taken command asks its host (IPython's payloads; the
     // codes are <bits/session_enums>' session_payload), with payload_argv()
     // — the file, then its arguments. A host that honors them says so with

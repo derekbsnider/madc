@@ -83,10 +83,16 @@ bool ide_api_show(long w, long es, long kind)
     return show_view(w, es, kind);
 }
 
+bool ide_api_repl_command(long w, const char *name, const char *usage,
+			  const char *summary, long code)
+{
+    return plugin_repl_command(w, name, usage, summary, code);
+}
+
 const ide_api madcide_api = { MADCIDE_PLUGIN_API, ide_api_command,
 			      ide_api_view, ide_api_event, ide_api_run,
 			      ide_api_command_id, ide_api_get, ide_api_set,
-			      ide_api_show };
+			      ide_api_show, ide_api_repl_command };
 
 // ---- the code's transports ---------------------------------------------------
 // Where plugin `name`'s library is: <dir>/<name><suffix>, the target's
@@ -213,8 +219,10 @@ void registry_mark(var &mark, long w)
     registry_rows(v, w, "views");
     var e;
     registry_rows(e, w, "events");
+    var r;
+    registry_rows(r, w, "repl");
     mark = { "commands": php::count(c), "views": php::count(v),
-	     "events": php::count(e) };
+	     "events": php::count(e), "repl": php::count(r) };
 }
 
 // Take back every row registered after `mark` (a refused activation leaves
@@ -224,7 +232,7 @@ void registry_rollback(long w, var &mark)
     long reg = plugin_registry(w);
     if ( reg == 0 )
 	return;
-    var lists = { "commands", "views", "events" };
+    var lists = { "commands", "views", "events", "repl" };
     for ( var l : lists )
     {
 	var rows;

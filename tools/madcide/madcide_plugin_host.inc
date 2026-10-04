@@ -137,6 +137,7 @@ void plugin_seat_request(var &out, long w, long es, long tier, var &req)
 	case plvCOMMAND:
 	case plvVIEW:
 	case plvEVENT:
+	case plvREPL_COMMAND:
 	{
 	    out = { "ok": false, "error": "a plugin registers at its activation" };
 	    return;
@@ -220,6 +221,16 @@ bool plugin_host_converse(var &done, madc::channel &ch, long w, long es,
 	{
 	    bool ok = plugin_event_hosted(w, msg["kind"].as_integer(), host,
 					  msg["hid"].as_integer());
+	    reply = { "ok": ok };
+	}
+	else if ( verb == plvREPL_COMMAND )
+	{
+	    // A REPL command names a command the host registered: data only.
+	    var nm = msg["name"];
+	    var us = msg["usage"];
+	    var sm = msg["summary"];
+	    bool ok = plugin_repl_command(w, nm.c_str(), us.c_str(), sm.c_str(),
+					  msg["code"].as_integer());
 	    reply = { "ok": ok };
 	}
 	else
@@ -694,10 +705,19 @@ bool seat_api_show(long w, long es, long kind)
     return plugin_host_call(r, req) && r["ok"].as_boolean();
 }
 
+bool seat_api_repl_command(long w, const char *name, const char *usage,
+			   const char *summary, long code)
+{
+    var req = { "plugin": plugin_verb_name(plvREPL_COMMAND), "name": name,
+		"usage": usage, "summary": summary, "code": code };
+    var r;
+    return plugin_host_call(r, req) && r["ok"].as_boolean();
+}
+
 const ide_api madcide_seat_api = { MADCIDE_PLUGIN_API, seat_api_command,
 				   seat_api_view, seat_api_event, seat_api_run,
 				   seat_api_command_id, seat_api_get, seat_api_set,
-				   seat_api_show };
+				   seat_api_show, seat_api_repl_command };
 
 // The child's next message: a pending invocation first, else the next
 // envelope line. False = madcide is gone.

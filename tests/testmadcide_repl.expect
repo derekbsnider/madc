@@ -46,3 +46,5 @@ typed load: live=true here=true no main=true missing once=true busy=0
 build: said=true built=true busy=0
 edit: file=testrepl_runcmd_lib.mad line=3 editor has keys=true busy=0
 dot: ended=true loaded=true fresh=true called=true busy=0
+ide cmd: registered=true refused=falsefalsefalsefalsefalse
+ide cmd: ran=bob ann shown=true listed=true after=true busy=0

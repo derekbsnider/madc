@@ -580,7 +580,7 @@ and a plugin can only observe REPL events (`ide::event`), not add a command.
    - A file command's diagnostics show once: a recorded diagnostic is
      marked when rendered (`Program::Diagnostic::rendered`), and the
      session's end-of-entry render skips the marked ones.
-   - **`.` as a third prefix** (owner, 2026-10-04; next): cling's and
+   - **`.` as a third prefix** (owner, 2026-10-04; done): cling's and
      Node's `.help`, `.load` reach the same table as `%` and `:`. Their own
      spellings are alias ROWS resolving to our commands, one meaning under
      every prefix (D24): `.L` = `%load`, `.q` / `.exit` = a new `%quit`,
@@ -589,15 +589,20 @@ and a plugin can only observe REPL events (`ide::event`), not add a command.
      `hello(1, 2)`), so it is its own command, falling back to `main`. `%help`
      names each row's aliases. Safe in C/C++: an entry never starts with `.`
      and a letter (`.5` starts with a digit; a continuation line is not an
-     entry's start).
-   - `%build FILE [-o OUT]`: the in-process native build (the Build menu's
-     `madc_parse_build` over a parse of FILE), the executable beside FILE.
+     entry's start). `%call FILE[(ARGS)]` (alias `.x`) is the call command;
+     both done.
+   - `%build FILE [-o OUT]` (done): the in-process native build (the Build
+     menu's `madc_parse_build` over a parse of FILE), the executable beside
+     FILE.
 3. **The IDE layer** on the same payloads: `%open FILE` and `%edit NAME`
    (the name's definition, from the bindings' file and line) are engine
    commands whose payload a host honors (madcide opens the editor; the
    terminal names `$EDITOR`, as IPython's `%edit` does). A plugin's own
    command is `ide::repl_command`, answered by the IDE before the session
-   sees the entry; `%help` lists both layers.
+   sees the entry; `%help` lists both layers. Done: `%open` and `%edit`
+   (payload `open`; the terminal runs `madc::run_terminal_editor`), and
+   `ide::repl_command` (plugin API 3), recognized through the session's one
+   rule (`madc::session_command_of`).
 4. **`%git VERB`:** the calls the Git view makes (§7e), one implementation
    behind the menu and the command. The read verbs come with §7e stage 1:
    `log [FILE]`, `show REV[:FILE]`, `blame FILE[:LINE]`, `status`,
@@ -611,8 +616,8 @@ A (the REPL, which every chthonia user sees first; done) → B (measured, no
 defect; done) → D1 (the probe; done) → D2 → D3 → D4 with C folded in (the
 Mac build is chthonia's Mac build) → the parity rows (§7a) → Projects and
 building (§7c) → the libgit2 floor (1.8.7 / 1.9.7, owner 2026-10-04) →
-REPL commands and the Variables row (§7f: the row, `%load` and `%run` done;
-`%build`, the IDE layer and `%git` next) → Help and Markdown (§7d) → Git
+REPL commands and the Variables row (§7f: the row, `%load`, `%run`, the `.`
+prefix, `%call`, `%build` and the IDE layer done; `%git` next) → Help and Markdown (§7d) → Git
 (§7e) → Recent files and the rest of §7a → the debugger arc.
 Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working
 on all three platforms with Thonny's functionality. Everything above the

@@ -805,6 +805,12 @@ namespace madc {
     //     output waits. Made once per handle and reused; it follows restarts,
     //     and a closed session's case is dead.
     //   session_close(h): stop the backend and free the handle.
+    //   session_command_of(out, text): what `text` is as an entry, asked of
+    //     the session's own rule with no session (plan §7f: an IDE answers
+    //     its own commands before the session sees them): false when it is
+    //     no command; else out = {word (the name typed), command (a
+    //     madc::session_command code: none when the session has no such
+    //     command), argument (the rest of its first line)}.
     // Thread contract: a handle is confined to the thread that opened it.
     int64_t session_open(const char *std);
     bool session_running(int64_t handle);
@@ -817,6 +823,7 @@ namespace madc {
     int64_t session_call(int64_t handle, value &argv);
     int64_t session_build(int64_t handle, const char *path, const char *text,
 			  const char *out);
+    bool session_command_of(value &out, const char *text);
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);

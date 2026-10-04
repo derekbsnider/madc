@@ -2398,6 +2398,31 @@ TEST_CASE("session commands: %open FILE and %edit NAME (§7f)")
     std::remove(lib.c_str());
 }
 
+// The one rule a host reads an entry's command by (an IDE answers its own
+// commands before the session sees the entry): the word, its command (none
+// for a word the session does not own) and the rest of the line.
+TEST_CASE("session commands: command_of reads an entry as the session does (§7f)")
+{
+    std::string word, arg;
+    InteractiveSession::Command code = InteractiveSession::Command::help;
+    REQUIRE(InteractiveSession::command_of(".L lib.c", word, code, arg));
+    CHECK(word == "L");
+    CHECK(code == InteractiveSession::Command::load);
+    CHECK(arg == "lib.c");
+    REQUIRE(InteractiveSession::command_of("%hi  bob ann", word, code, arg));
+    CHECK(word == "hi");
+    CHECK(code == InteractiveSession::Command::none);
+    CHECK(arg == "bob ann");
+    REQUIRE(InteractiveSession::command_of(":quit", word, code, arg));
+    CHECK(code == InteractiveSession::Command::quit);
+    CHECK(arg.empty());
+    REQUIRE(InteractiveSession::command_of("?x", word, code, arg));
+    CHECK(code == InteractiveSession::Command::pinfo);
+    CHECK(arg == "x");
+    CHECK_FALSE(InteractiveSession::command_of("int x;", word, code, arg));
+    CHECK_FALSE(InteractiveSession::command_of("%1", word, code, arg));
+}
+
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
 // knows of a name, in IPython's fields, each overload with its location
 // (Julia), from the walk completion reads: `?` describes a name exactly

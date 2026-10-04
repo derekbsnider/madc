@@ -1733,7 +1733,7 @@ enum plugin_host_state : unsigned char { hsNONE = 0, hsRUNNING, hsRESTARTING, hs
 // calls (command, view, event at activation; run, command_id, get, set,
 // show) and its activation's end (activated) — and what madcide sends it
 // (start, invoke). The word is read once, at the line.
-enum plugin_verb : unsigned char { plvNONE = 0, plvSTART, plvCOMMAND, plvVIEW, plvEVENT, plvRUN, plvCOMMAND_ID, plvGET, plvSET, plvSHOW, plvACTIVATED, plvINVOKE, plvLAST };
+enum plugin_verb : unsigned char { plvNONE = 0, plvSTART, plvCOMMAND, plvVIEW, plvEVENT, plvRUN, plvCOMMAND_ID, plvGET, plvSET, plvSHOW, plvACTIVATED, plvINVOKE, plvREPL_COMMAND, plvLAST };
 const char *plugin_verb_name(long v)
 {
     switch ( v )
@@ -1749,6 +1749,7 @@ const char *plugin_verb_name(long v)
 	case plvSHOW: return "show";
 	case plvACTIVATED: return "activated";
 	case plvINVOKE: return "invoke";
+	case plvREPL_COMMAND: return "repl_command";
     }
     return "";
 }

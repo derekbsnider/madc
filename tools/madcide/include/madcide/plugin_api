@@ -15,7 +15,7 @@
 // <madcide/plugin>), and madcide refuses either when it is not the version
 // it serves. The table below is append-only: an entry added at its end
 // moves this number.
-#define MADCIDE_PLUGIN_API 2
+#define MADCIDE_PLUGIN_API 3
 
 // A contributed command's handler, run by the dispatcher with the command's
 // argument. False = it ended the session (the dispatcher's quit verdict).
@@ -57,6 +57,14 @@ struct ide_api
     // kind, from view): its pane comes up with it active. False = no pane
     // of the layout hosts it (the status line says so). API 2.
     bool (*show)(long w, long es, long kind);
+    // Registration, at activation: a REPL command (plan §7f, the IDE layer)
+    // — `%name ARGS` typed in the REPL pane runs command `code` with ARGS
+    // (its argument) before the session sees the entry, under every prefix
+    // (`.name`, `:name`), and %help lists it with `usage` and `summary`.
+    // False = refused: a name the session's own commands or aliases use, a
+    // name already taken, or no such command. API 3.
+    bool (*repl_command)(long w, const char *name, const char *usage,
+			 const char *summary, long code);
 };
 
 // A plugin library's two entries, looked up by madcide when it loads the

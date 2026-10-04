@@ -131,22 +131,22 @@ int main()
     mkdirs(made, bad.c_str());
     var bp = format("{}/bad.plugin", bad);
     var m;
-    put(files, bp, "{ \"name\": \"bad\", \"api\": 2, \"colour\": \"red\" }");
+    put(files, bp, "{ \"name\": \"bad\", \"api\": 3, \"colour\": \"red\" }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-field: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"contributes\": { \"commands\": {} } }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"contributes\": { \"commands\": {} } }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-kind: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"other\", \"api\": 2 }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"other\", \"api\": 3 }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-name: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3 }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 4 }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-api: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"contributes\": { \"keys\": \"../joe\" } }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"contributes\": { \"keys\": \"../joe\" } }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-path: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"contributes\": \"joe\" }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"contributes\": \"joe\" }");
     plugin_manifest_read(m, why, bad, "bad");
     println("bundles-refuse-contributes: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
     php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", ");
@@ -163,7 +163,7 @@ int main()
     var mine = format("{}/mine", plugins);
     mkdirs(made, mine.c_str());
     var mp = format("{}/mine.plugin", mine);
-    put(files, mp, "{ \"name\": \"mine\", \"title\": \"Mine\", \"api\": 2,"
+    put(files, mp, "{ \"name\": \"mine\", \"title\": \"Mine\", \"api\": 3,"
 		   " \"contributes\": { \"keys\": \"pico\", \"layout\": \"mine\","
 		   " \"settings\": { \"std\": \"c11\" } } }");
     var ml = format("{}/mine.layout", mine);
@@ -204,7 +204,7 @@ int main()
     var ud = format("{}/default", plugins);
     mkdirs(made, ud.c_str());
     var up = format("{}/default.plugin", ud);
-    put(files, up, "{ \"name\": \"default\", \"api\": 2, \"contributes\": { \"keys\": \"emacs\","
+    put(files, up, "{ \"name\": \"default\", \"api\": 3, \"contributes\": { \"keys\": \"emacs\","
 		   " \"status\": \"joe\", \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\" } }");
     probe(r, path, "");
     println("bundles-override: bundle={} keys={} user-dir={}", r["bundle"], r["keys"], r["dir"] == ud ? 1 : 0);
@@ -214,10 +214,10 @@ int main()
     var nk = format("{}/nokeys", plugins);
     mkdirs(made, nk.c_str());
     var np = format("{}/nokeys.plugin", nk);
-    put(files, np, "{ \"name\": \"nokeys\", \"api\": 2, \"contributes\": { \"keys\": \"nosuch\" } }");
+    put(files, np, "{ \"name\": \"nokeys\", \"api\": 3, \"contributes\": { \"keys\": \"nosuch\" } }");
     probe(r, path, "nokeys");
     println("bundles-nokeys: bundle={} keys={} msg={}", r["bundle"], r["keys"], r["msg"]);
-    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 2, \"colour\": \"red\" }");
+    php::file_put_contents(bp.c_str(), "{ \"name\": \"bad\", \"api\": 3, \"colour\": \"red\" }");
     probe(r, path, "bad");
     var said = php::str_replace(cfg.c_str(), "CFG", r["msg"].c_str());
     println("bundles-refused: bundle={} keys={} msg={}", r["bundle"], r["keys"], said);

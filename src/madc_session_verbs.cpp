@@ -323,4 +323,19 @@ bool session_close(int64_t handle)
     return session_handles().close(handle);	// the client's destructor stops it
 }
 
+bool session_command_of(value &out, const char *text)
+{
+    std::string word, argument;
+    InteractiveSession::Command code = InteractiveSession::Command::none;
+    out = value();
+    if ( !text || !InteractiveSession::command_of(text, word, code, argument) )
+	return false;
+    std::map<std::string, value> f;
+    f["word"] = value(word);
+    f["command"] = value((int64_t)code);	// a madc::session_command code
+    f["argument"] = value(argument);
+    out = value::make_object(f);
+    return true;
+}
+
 } // namespace madc

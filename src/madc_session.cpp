@@ -189,6 +189,21 @@ std::string command_argument(const std::string &text, const CommandText &c)
 
 } // namespace
 
+bool InteractiveSession::command_of(const std::string &text, std::string &word,
+				    Command &code, std::string &argument)
+{
+    CommandText c = command_text(text);
+    if ( !c.is_command() )
+	return false;
+    word = c.name(text);
+    const CommandRow *row = command_named(word);
+    code = row ? row->code : Command::none;
+    const std::string rest = text.substr(c.name_end, c.line_end - c.name_end);
+    const size_t b = rest.find_first_not_of(" \t");
+    argument = b == std::string::npos ? std::string() : rest.substr(b);
+    return true;
+}
+
 InteractiveSession::InteractiveSession()
     : prog(new Program()), jit(new CirJitSession()), entry_count(0),
       submit_count(0), showed_command(false),
@@ -526,6 +541,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return edit_command(command_argument(text, c), name);
 	case Command::quit:
 	    return quit_command(command_argument(text, c), name);
+	case Command::none:		// no row names it
+	    break;
     }
     return false;
 }

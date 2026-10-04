@@ -78,13 +78,13 @@ int main()
     var mp = format("{}/hosted.plugin", hdir);
     var m;
     var why;
-    put(files, mp, "{\"name\": \"hosted\", \"api\": 2, \"code\": \"hosted.mad\", \"transport\": \"library\"}\n");
+    put(files, mp, "{\"name\": \"hosted\", \"api\": 3, \"code\": \"hosted.mad\", \"transport\": \"library\"}\n");
     plugin_manifest_read(m, why, hdir, "hosted");
     println("transport-library: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(mp.c_str(), "{\"name\": \"hosted\", \"api\": 2, \"transport\": \"host\"}\n");
+    php::file_put_contents(mp.c_str(), "{\"name\": \"hosted\", \"api\": 3, \"transport\": \"host\"}\n");
     plugin_manifest_read(m, why, hdir, "hosted");
     println("transport-no-code: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
-    php::file_put_contents(mp.c_str(), "{\"name\": \"hosted\", \"api\": 2, \"code\": \"hosted.mad\", \"transport\": \"host\"}\n");
+    php::file_put_contents(mp.c_str(), "{\"name\": \"hosted\", \"api\": 3, \"code\": \"hosted.mad\", \"transport\": \"host\"}\n");
     var sp = format("{}/hosted.mad", hdir);
     put(files, sp,
 	"#include <madcide/plugin>\n"

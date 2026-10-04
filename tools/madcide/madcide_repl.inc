@@ -206,6 +206,7 @@ void repl_pump(long w, long es, long h, long stopc);
 void repl_pane_sync(long w, long es);
 bool repl_run_payload(long w, long es, var &r);
 bool repl_restart(long w, long es, long doc);
+void repl_ide_help(var &out, long w);
 
 // F5's rows into Problems (plan §41.11a step 3): the replies to its load
 // and to its run carry the rows the unit recorded, citing the buffer's
@@ -235,6 +236,7 @@ void repl_clear_marks(long w, long es)
     ui::set(w, es, "replbseq", 0);
     ui::set(w, es, "replruncall", 0);
     ui::set(w, es, "replbuildseq", 0);
+    ui::set(w, es, "replhelpseq", 0);
 }
 
 // The `--std=` spelling a backend for `doc` takes: the standard the buffer
@@ -365,6 +367,14 @@ void repl_reply(long w, long es, var &r)
 	var sv = r["shown"];
 	if ( strlen(sv.c_str()) > 0 )
 	    repl_feed(w, es, format("{}\n", sv));
+	if ( seq == es_int(w, es, "replhelpseq", 0) )
+	{
+	    // %help: the IDE's own commands follow the session's.
+	    ui::set(w, es, "replhelpseq", 0);
+	    var more;
+	    repl_ide_help(more, w);
+	    repl_feed(w, es, more.c_str());
+	}
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
 	repl_publish(w, es, reTAKEN, r);
@@ -531,6 +541,55 @@ void repl_pump(long w, long es, long h, long stopc)
 }
 
 // ---- the REPL's commands ----
+// The IDE's own REPL commands (plan §7f; ide::repl_command) as %help lists
+// them after the session's: a heading, then each usage and summary. Empty
+// when no plugin registered one.
+void repl_ide_help(var &out, long w)
+{
+    out = "";
+    var rows;
+    registry_rows(rows, w, "repl");
+    if ( php::count(rows) == 0 )
+	return;
+    long width = 0;
+    for ( var r : rows )
+    {
+	var u = r["usage"];
+	if ( strlen(u.c_str()) > width )
+	    width = strlen(u.c_str());
+    }
+    out = "IDE commands:\n";
+    for ( var r : rows )
+    {
+	var u = r["usage"];
+	var sm = r["summary"];
+	out = format("{}{}{}{}\n", out, u, php::str_repeat(" ", width + 2 - strlen(u.c_str())), sm);
+    }
+}
+
+// An IDE REPL command typed (query: session_command_of's row for the
+// entry): answered here, before the session sees the entry — the entry shows
+// and goes to history as a taken one does, then its command runs through the
+// one dispatcher with the rest of the line as its argument. False = the
+// entry names no IDE command.
+bool repl_ide_command(long w, long es, var &text, var &query)
+{
+    var word = query["word"];
+    long code = plugin_repl_code(w, word);
+    if ( code == cmdNONE || !(query["command"] == madc::session_command::none) )
+	return false;
+    var p;
+    repl_prompt(p, w, es);
+    var shown;
+    console_entry_display(shown, p.c_str(), text.c_str());
+    repl_feed(w, es, format("{}\n", shown));
+    repl_history_push(w, es, text.c_str());
+    repl_set_input(w, es, "");
+    var arg = query["argument"];
+    ide_api_run(w, es, active_doc(w, es, 0), code, arg.c_str());
+    return true;
+}
+
 void repl_enter(long w, long es)
 {
     long h = es_int(w, es, "replh", 0);
@@ -560,6 +619,11 @@ void repl_enter(long w, long es)
     var trimmed = php::rtrim(s);
     if ( strlen(trimmed.c_str()) == 0 )
 	return;
+    // What the entry is as a command, by the session's own rule.
+    var query;
+    bool command = madc::session_command_of(query, s);
+    if ( command && repl_ide_command(w, es, text, query) )
+	return;
     // D11: a blank last line submits what is there (a finished if with no
     // else runs; an unfinished entry is refused).
     long last = len;
@@ -572,6 +636,8 @@ void repl_enter(long w, long es)
     long seq = madc::session_offer(h, s, blank_last);
     ui::set(w, es, "replbusy", seq);
     ui::set(w, es, "replsent", text);
+    bool help = command && query["command"] == madc::session_command::help;
+    ui::set(w, es, "replhelpseq", help ? seq : 0);
 }
 
 void repl_complete(long w, long es)
