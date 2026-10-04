@@ -513,17 +513,59 @@ and Chthonia's menu and layout show it.
    they need TLS and SSH in the Windows and macOS libgit2 builds (built
    today with the network backends off).
 
-Packaging: on Linux the module binds the system libgit2, so once Chthonia
-shows git, its `.deb`/`.rpm` depend on the libgit2 runtime package; the
-Windows and macOS bundles already link libgit2 statically into the module,
-and its notice ships (`THIRD_PARTY_NOTICES/libgit2-COPYING.txt`).
+Packaging: every target links libgit2 statically into the module, Linux
+included since the 1.8.7 / 1.9.7 floor (owner, 2026-10-04: Ubuntu's system
+libgit2 is 1.7.2), so no package depends on a libgit2 runtime package; its
+notice ships beside the module (`share/doc/madc/libgit2-copyright`,
+`THIRD_PARTY_NOTICES/libgit2-COPYING.txt`).
+
+## 7f. REPL commands, and the Variables row (owner, 2026-10-04)
+
+The owner: Run writes `%run hello.c` in the REPL, but typing it is refused
+("unknown command '%run'"); add `%run`, `%load` and maybe `%build`; then
+"access to % commands for git operations". Today the engine session has
+four commands (`InteractiveSession::command_rows`: help, type, pinfo, whos),
+and a plugin can only observe REPL events (`ide::event`), not add a command.
+
+1. **The Variables row** (owner: "why do we need the type twice? and we
+   should support showing the content … when it is a char *"). The row
+   form (`__madc_show_row`: `%whos` and the Variables view) prints a pointer
+   through `__madc_dump_sh_ptr`, the entry show's re-enterable spelling
+   `(const char *) 0x…`; both consumers already have a Type column. The row
+   spells the value alone, as gdb does inside an aggregate and CodeLLDB's
+   Variables view does: a pointer is its address, and a pointer to a
+   character type is gdb's `0x… "Test"`. The text is read through a
+   fault-safe, bounded read: a new runtime owner (`process_vm_readv` on
+   self on Linux, `vm_read_overwrite` on macOS, `ReadProcessMemory` on
+   Windows; the searched concept "read memory that may fault" has no owner
+   in the tree), cut at the row's width with `…`; memory that cannot be read
+   shows `0x… <unreadable>` (gdb: `<error: Cannot access memory …>`). The
+   entry show (`p` at the prompt) keeps its re-enterable spelling.
+2. **Engine commands** (madc's REPL, every host): `%run FILE [ARGS]` (D16:
+   a fresh namespace, the file's `main` run with ARGS split by the shell's
+   rules, its names left for the prompt), `%load FILE` (Julia's `include`
+   into the current session), `%build FILE [-o OUT]` (the in-process native
+   build). F5 submits the typed `%run` line, so the shown command and the
+   run are one path.
+3. **The IDE command layer:** `ide::repl_command`, a plugin's `%name`
+   answered by the IDE before the session sees the entry; `%open FILE`,
+   `%edit NAME` (the name's definition in the editor, from the bindings'
+   file and line), and `%git`. `%help` lists both layers.
+4. **`%git VERB`:** the calls the Git view makes (§7e), one implementation
+   behind the menu and the command. The read verbs come with §7e stage 1:
+   `log [FILE]`, `show REV[:FILE]`, `blame FILE[:LINE]`, `status`,
+   `diff [FILE]`; `status` and `diff` are new `madcgit` reads (the module
+   has open, head, refs, revparse, log, show, blame and dirty). The writing
+   verbs (`add`, `commit -m`, `checkout`) come with stage 2.
 
 ## 8. Order
 
 A (the REPL, which every chthonia user sees first; done) → B (measured, no
 defect; done) → D1 (the probe; done) → D2 → D3 → D4 with C folded in (the
 Mac build is chthonia's Mac build) → the parity rows (§7a) → Projects and
-building (§7c) → Help and Markdown (§7d) → Git (§7e) → the debugger arc.
+building (§7c) → the libgit2 floor (1.8.7 / 1.9.7, owner 2026-10-04) →
+REPL commands and the Variables row (§7f) → Help and Markdown (§7d) → Git
+(§7e) → Recent files and the rest of §7a → the debugger arc.
 Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working
 on all three platforms with Thonny's functionality. Each step is its own
 commit with its reducer, Tier 1 + Tier 2 per commit, and the batch after
