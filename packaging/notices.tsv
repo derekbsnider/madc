@@ -1,0 +1,29 @@
+# packaging/notices.tsv — what each package's binaries carry from someone
+# else's code, and the notice that must ship beside them. The data list
+# scripts/package_install_gate.sh checks every artifact against: on the
+# artifact's platform, each CARRIER must be in the artifact and so must its
+# NOTICE (both by file name, wherever the layout puts them). A carrier gains
+# third-party code (a static link, a frozen header grove) => a row here, in
+# the same commit.
+#
+# platform	carrier	notice	component (license)
+linux	libmadc.so.0	copyright	madc (MPL-2.0)
+linux	libmadcwebview.so	webview-copyright	webview/webview (MIT)
+linux	libmadcgit.so	libgit2-copyright	libgit2 (GPLv2 with the linking exception)
+linux	libmadcmark.so	cmark-gfm-copyright	cmark-gfm (BSD-2, MIT)
+windows	libmadc-0.dll	LICENSE	madc (MPL-2.0)
+windows	libmadc-0.dll	zstd-LICENSE.txt	zstd (BSD)
+windows	libstdc++-6.dll	GCC-COPYING3.txt	the GCC runtime (GPLv3)
+windows	libstdc++-6.dll	GCC-RUNTIME-LIBRARY-EXCEPTION.txt	the GCC runtime library exception
+windows	libwinpthread-1.dll	mingw-w64-copyright.txt	mingw-w64 winpthreads
+windows	madcwebview.dll	webview-LICENSE.txt	webview/webview (MIT)
+windows	madcgit.dll	libgit2-COPYING.txt	libgit2 (GPLv2 with the linking exception)
+windows	madcmark.dll	cmark-gfm-COPYING.txt	cmark-gfm (BSD-2, MIT)
+macos	libmadc-0.dylib	LICENSE	madc (MPL-2.0)
+macos	libmadc-0.dylib	zstd-LICENSE.txt	zstd (BSD)
+macos	libmadc-0.dylib	libc++-copyright.txt	LLVM libc++ headers, frozen into the forest (Apache-2.0 with LLVM exception)
+macos	libmadc-0.dylib	darwin-libc-NOTICE.txt	Apple libc headers in the C prelude
+macos	libmadc-0.dylib	APSL-2.0.txt	Apple Public Source License 2.0
+macos	libmadcwebview.dylib	webview-LICENSE.txt	webview/webview (MIT)
+macos	libmadcgit.dylib	libgit2-COPYING.txt	libgit2 (GPLv2 with the linking exception)
+macos	libmadcmark.dylib	cmark-gfm-COPYING.txt	cmark-gfm (BSD-2, MIT)

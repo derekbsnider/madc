@@ -2232,6 +2232,22 @@ int main(void) { return x; }
 
 ## Open questions
 
+### B173. The Linux packages ship no GCC notice for the libstdc++ groves in their forest
+
+- Found 2026-10-04 while writing `packaging/notices.tsv` (the shipped-notices
+  check in `scripts/package_install_gate.sh`).
+- The macOS package ships `libc++-copyright.txt` because "the frozen C++
+  groves derive from LLVM's libc++ headers"
+  (`scripts/package_release_macos.sh`). The Windows zip ships
+  `GCC-COPYING3.txt` and `GCC-RUNTIME-LIBRARY-EXCEPTION.txt`, but for the
+  `libstdc++-6.dll` it carries. The Linux forest in `libmadc.so.0` holds groves
+  frozen from libstdc++'s headers (GPLv3 with the GCC Runtime Library
+  Exception), and the .deb, .rpm and tarball ship no GCC notice.
+- Decide: does a grove frozen from libstdc++'s headers carry their notice, as
+  the macOS package does for libc++'s? If it does, it is a
+  `packaging/notices.tsv` row (`linux libmadc.so.0 …`) plus the install line
+  in `scripts/stage_install.sh`.
+
 ### B10. `__builtin_types_compatible_p` in C++
 
 ```cpp

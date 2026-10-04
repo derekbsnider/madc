@@ -17,6 +17,10 @@
 #
 # Per-artifact probes (each asserts its failure mode loudly, and every
 # positive probe has a NEGATIVE CONTROL proving the gate can fail):
+#   every    the shipped notices: each carrier packaging/notices.tsv names for
+#            the artifact's platform is in it, and so is its notice — a file
+#            check, so mactar runs it on Linux too [control: hide the last
+#            row's notice => reported missing].
 #   deb/rpm  dpkg -x / rpm2cpio|cpio extract; installed madc runs a probe
 #            program (output asserted) with LD_LIBRARY_PATH=<root libdir>
 #            (an extracted root has no ldconfig — the real install
@@ -94,6 +98,44 @@ write_probes() {
     # classifier looks for after first paint.
     printf '// pk4probe — package_install_gate editor probe\n' \
         > "$GATE_TMP/pk4probe.mad"
+}
+
+# ---------- shipped notices (packaging/notices.tsv) ----------
+# A static check — file names only — so it runs on every artifact, mactar
+# included where the container cannot execute darwin binaries.
+NOTICES=packaging/notices.tsv
+
+# notices_missing <platform> <root>: one line per row whose carrier or notice
+# is absent from the extracted artifact (by file name, anywhere under root).
+notices_missing() {
+    local platform="$1" root="$2" p carrier notice rest
+    while IFS=$'\t' read -r p carrier notice rest; do
+        case "$p" in ''|'#'*) continue ;; esac
+        [ "$p" = "$platform" ] || continue
+        [ -n "$(find "$root" -name "$carrier" -print -quit)" ] || echo "carrier $carrier"
+        [ -n "$(find "$root" -name "$notice" -print -quit)" ] || echo "notice $notice (for $carrier)"
+    done < "$NOTICES"
+}
+
+# check_notices <kind> <platform> <root>: every carrier the platform's rows
+# name ships, and so does its notice [control: hide the last row's notice —
+# the check must report it].
+check_notices() {
+    local kind="$1" platform="$2" root="$3" rows missing last hidden
+    rows=$(awk -F'\t' -v p="$platform" '$1 == p' "$NOTICES" | wc -l)
+    [ "$rows" -gt 0 ] || fail "$kind" "$NOTICES has no $platform rows"
+    missing=$(notices_missing "$platform" "$root")
+    [ -z "$missing" ] || fail "$kind" "missing from the artifact ($NOTICES): $(echo $missing)"
+    ok "$kind" "every carrier ships its notice ($rows rows, $NOTICES)"
+    last=$(awk -F'\t' -v p="$platform" '$1 == p { n = $3 } END { print n }' "$NOTICES")
+    hidden=$(find "$root" -name "$last" -print -quit)
+    mv "$hidden" "$hidden.hidden"
+    missing=$(notices_missing "$platform" "$root")
+    mv "$hidden.hidden" "$hidden"
+    case "$missing" in
+        *"notice $last "*) ok "$kind" "negative control: hidden $last => reported missing" ;;
+        *) fail "$kind" "negative control broken: hidden $last was not reported" ;;
+    esac
 }
 
 # ---------- the linux probe battery ----------
@@ -286,6 +328,7 @@ gate_deb() {
     rm -rf "$root"; mkdir -p "$root"
     dpkg -x "$artifact" "$root" || fail deb "dpkg -x refused $artifact"
     root=$(readlink -f "$root")
+    check_notices deb linux "$root"
     run_linux deb "$root" "$root/usr/bin" "$root/usr/lib/x86_64-linux-gnu"
     echo "package_install_gate: PASS deb ($artifact)"
 }
@@ -298,6 +341,7 @@ gate_rpm() {
     ( cd "$root" && rpm2cpio "$abs" | cpio -idm --quiet ) \
         || fail rpm "rpm2cpio|cpio refused $artifact"
     root=$(readlink -f "$root")
+    check_notices rpm linux "$root"
     run_linux rpm "$root" "$root/usr/bin" "$root/usr/lib64"
     echo "package_install_gate: PASS rpm ($artifact)"
 }
@@ -310,6 +354,7 @@ gate_tar() {
     root=$(echo "$scratch"/madc-*-linux-x86_64)
     [ -d "$root" ] || fail tar "expected one madc-*-linux-x86_64 root in $artifact"
     root=$(readlink -f "$root")
+    check_notices tar linux "$root"
     run_linux tar "$root" "$root/bin" ""
     # tarball-only negative control: hide the shipped library — the run
     # must FAIL, proving the green run above bound THIS lib via $ORIGIN
@@ -333,6 +378,7 @@ gate_winzip() {
     unzip -q "$artifact" -d "$scratch" || fail winzip "unzip refused $artifact"
     root=$(echo "$scratch"/madc-*-windows-x86_64)
     [ -d "$root" ] || fail winzip "expected one madc-*-windows-x86_64 root in $artifact"
+    check_notices winzip windows "$root"
     bindir=$(readlink -f "$root/bin")
     export WINEDEBUG=-all
     wineserver -p 2> /dev/null || true
@@ -394,18 +440,19 @@ gate_winzip() {
 gate_mactar() {
     local artifact="$1" scratch="$GATE_TMP/mactar" root out host want passed floor tmo
     [ -f "$artifact" ] || fail mactar "artifact not found: $artifact"
-    host=$(uname -s)
-    if [ "$host" != Darwin ]; then
-        echo "package_install_gate: SKIP mactar ($artifact — darwin binaries do not execute on $host; the release.yml mac job runs this leg)"
-        return 0
-    fi
-    tmo=$(command -v timeout || command -v gtimeout || true)
-    [ -n "$tmo" ] || fail mactar "no timeout/gtimeout on this host (brew coreutils)"
     rm -rf "$scratch"; mkdir -p "$scratch"
     tar -C "$scratch" -xzf "$artifact" || fail mactar "tar refused $artifact"
     root=$(echo "$scratch"/madc-*-macos-*)
     [ -d "$root" ] || fail mactar "expected one madc-*-macos-<arch> root in $artifact"
     root=$(cd "$root" && pwd)
+    check_notices mactar macos "$root"
+    host=$(uname -s)
+    if [ "$host" != Darwin ]; then
+        echo "package_install_gate: SKIP mactar's run legs ($artifact — darwin binaries do not execute on $host; the release.yml mac job runs them)"
+        return 0
+    fi
+    tmo=$(command -v timeout || command -v gtimeout || true)
+    [ -n "$tmo" ] || fail mactar "no timeout/gtimeout on this host (brew coreutils)"
     want=$(uname -m)
     case "$root" in
         *"-macos-$want") ;;

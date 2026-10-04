@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### packaging: notices.tsv and installation gate for shipped licenses
+
+New file `packaging/notices.tsv` lists what each platform's binaries carry from other code and the notice that must ship beside it (rows: platform carrier notice component). `scripts/package_install_gate.sh` check_notices runs on every artifact (deb, rpm, tar, winzip, mactar), verifying each carrier exists and its notice ships by file name. BUGS.md B173 filed: Linux packages ship no GCC notice for libstdc++ groves frozen in their forest — an owner decision.
+
 ### scripts/package_release_macos.sh: zstd-LICENSE.txt shipped in macOS tarballs
 
 The macOS tarballs now carry THIRD_PARTY_NOTICES/zstd-LICENSE.txt. libmadc-0.dylib statically links the pinned zstd (BSD-licensed); the packager reads the LICENSE from the MODE's DARWIN_ZSTD_DIR and refuses to package without it.
