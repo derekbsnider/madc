@@ -31,7 +31,7 @@
 # ../bin/libmadc-0.dll); at runtime those imports bind to the loaded libmadc-0.dll.
 MADCGIT_SRC = modules/madcgit/madcgit.cpp
 MADCGIT_FLOOR = modules/madcgit/libgit2_floor.h
-MADCGIT_HDRS = $(INCDIR)/madcdis/git_repo.h $(INCDIR)/madc/madcgit.h $(INCDIR)/handle_table.h $(MADCGIT_FLOOR)
+MADCGIT_HDRS = $(INCDIR)/madcdis/git_repo.h $(INCDIR)/madc/bits/git_enums $(INCDIR)/madc/madcgit.h $(INCDIR)/handle_table.h $(MADCGIT_FLOOR)
 MADCGIT_BUILD_DIR = ../obj/madcgit/$(MODE)
 MADCGIT_DEFAULT =
 # Where scripts/stage_libgit2.sh stages the per-target minimal static libgit2

@@ -22,6 +22,7 @@
 #include "libmadc/error.h"
 #include "libmadc/value.h"
 #include "madcdis/source_adapter.h"
+#include "madc/bits/git_enums"		// git::file_state — a status row's one enum text
 
 #include <cstdint>
 #include <string>
@@ -64,6 +65,31 @@ struct GitBlameRow
     GitBlameRow() : line(0), count(0), when(0) {}
 };
 
+// A file's row of `git status` (plan §7e): its path (a rename's new path,
+// `from` its old one), and its state on each side.
+struct GitStatusRow
+{
+    std::string path;
+    std::string from;		// a rename's source; "" otherwise
+    git::file_state index;	// the index against HEAD
+    git::file_state worktree;	// the working tree against the index
+    GitStatusRow()
+	: index(git::file_state::unmodified), worktree(git::file_state::unmodified) {}
+};
+
+// One hunk of a diff: the lines it spans on each side (1-based starts, as
+// its `@@ -a,b +c,d @@` header says; a side with no lines starts at the
+// line before) and that header.
+struct GitHunk
+{
+    int64_t old_start;
+    int64_t old_lines;
+    int64_t new_start;
+    int64_t new_lines;
+    std::string header;
+    GitHunk() : old_start(0), old_lines(0), new_start(0), new_lines(0) {}
+};
+
 class GitRepo
 {
 public:
@@ -85,6 +111,8 @@ public:
     // (a root commit that has the path counts) — exact, no heuristics.
     bool log(std::vector<GitCommit> &out, const std::string &path, size_t limit,
 	     error *err = (error *)0) const;
+    // The commit `rev` (any rev-parse spec) names: its row as log's.
+    bool commit(const std::string &rev, GitCommit &out, error *err = (error *)0) const;
     // The blob's bytes at `rev` (any rev-parse spec) for `path`.
     bool show(const std::string &rev, const std::string &path, std::string &text,
 	      error *err = (error *)0) const;
@@ -99,6 +127,17 @@ public:
 		      error *err = (error *)0) const;
     // True when `path`'s working-tree state differs from HEAD/index.
     bool dirty(const std::string &path, bool &out, error *err = (error *)0) const;
+    // `git status`: every file whose index or working tree differs, untracked
+    // ones included (an untracked directory is one row, `dir/`, as git's
+    // default shows it), ignored ones not; renames in the index are found.
+    bool status(std::vector<GitStatusRow> &out, error *err = (error *)0) const;
+    // `path` at `rev` (any rev-parse spec; a path absent there is an empty
+    // file, so a new file's every line is added) against `text` (a buffer's
+    // live text, or the file's bytes): the unified patch git prints and its
+    // hunks. Equal sides answer an empty patch and no hunks.
+    bool diff(const std::string &rev, const std::string &path,
+	      const std::string &text, std::string &patch,
+	      std::vector<GitHunk> &hunks, error *err = (error *)0) const;
 
 private:
     GitRepo(const GitRepo &);
@@ -112,9 +151,13 @@ private:
 //   commit: {sha, author, email, when, summary}
 //   ref:    {name, sha}
 //   blame:  {line, count, sha, author, when, summary}
+//   status: {path, from, index, worktree} (the two states: git::file_state codes)
+//   hunk:   {old_start, old_lines, new_start, new_lines, header}
 value git_commit_value(const GitCommit &c);
 value git_ref_value(const GitRefRow &r);
 value git_blame_value(const GitBlameRow &b);
+value git_status_value(const GitStatusRow &s);
+value git_hunk_value(const GitHunk &h);
 
 // The madcdis face: `git://<repo path>[?path=<file>]` — a `git` scheme row in
 // DataSource (storage / file / path_like / local) with record families

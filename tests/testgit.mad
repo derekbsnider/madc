@@ -59,6 +59,36 @@ int main()
     git::relpath(rp3, h, "/");
     println("relpath-outside-error: {}", strlen(rp3["error"].c_str()) > 0 ? 1 : 0);
 
+    // §7e: git status's rows (a file this test writes is untracked; the
+    // state is a git::file_state code) and a file at HEAD against a text.
+    php::file_put_contents("madc_testgit_probe.txt", "probe\n");
+    var st;
+    git::status(st, h);
+    bool probe_untracked = false;
+    for ( var r : st["rows"] )
+	if ( r["path"] == "madc_testgit_probe.txt"
+	     && r["worktree"] == git::file_state::untracked )
+	    probe_untracked = true;
+    php::unlink("madc_testgit_probe.txt");
+    println("status-untracked-probe: {}", probe_untracked ? 1 : 0);
+    println("status-workdir: {}", strlen(st["workdir"].c_str()) > 0 ? 1 : 0);
+    var cm;
+    git::commit(cm, h, "HEAD");
+    var cmsha = cm["sha"];
+    println("commit-head-matches: {}", cmsha == hd["sha"]
+	    && strlen(cm["summary"].c_str()) > 0 ? 1 : 0);
+    var df;
+    git::diff(df, h, "HEAD", "VERSION", edited.c_str());
+    var hk = df["hunks"][php::count(df["hunks"]) - 1];
+    println("diff-adds-line: {}",
+	    rust::contains(df["patch"].c_str(), "+an uncommitted line\n") != 0 ? 1 : 0);
+    println("diff-hunk-shape: {}",
+	    hk["new_lines"].as_integer() == hk["old_lines"].as_integer() + 1 ? 1 : 0);
+    var unchanged;
+    git::diff(unchanged, h, "HEAD", "VERSION", shown.c_str());
+    println("diff-equal-empty: {}", strlen(unchanged["patch"].c_str()) == 0
+	    && php::count(unchanged["hunks"]) == 0 ? 1 : 0);
+
     var bad;
     git::show(bad, h, "HEAD", "no/such/file.txt");
     println("missing-path-error: {}", strlen(bad["error"].c_str()) > 0 ? 1 : 0);

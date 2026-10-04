@@ -22,6 +22,14 @@
 //                                                an uncommitted hunk has sha ""
 //   madcgit_relpath(out, h, path)             -> {path} relative to the working
 //                                                tree, both sides canonicalised
+//   madcgit_status(out, h)                    -> {rows: [{path, from, index, worktree}],
+//                                                workdir}: git status's rows, their paths
+//                                                relative to workdir; the states are
+//                                                git::file_state codes (<bits/git_enums>)
+//   madcgit_commit(out, h, rev)               -> {sha, author, email, when, summary}
+//   madcgit_diff(out, h, rev, path, text)     -> {patch, hunks: [{old_start, old_lines,
+//                                                new_start, new_lines, header}]}
+//                                                path at rev against TEXT; equal = ""
 // Thread contract: a handle is used only from the thread that opened it.
 int64_t madcgit_open(const char *path);
 bool    madcgit_close(int64_t handle);
@@ -33,3 +41,6 @@ void   *madcgit_blame(void *result, int64_t handle, const char *path, int64_t li
 void   *madcgit_dirty(void *result, int64_t handle, const char *path);
 void   *madcgit_blame_text(void *result, int64_t handle, const char *path, const char *text, int64_t line, int64_t count);
 void   *madcgit_relpath(void *result, int64_t handle, const char *path);
+void   *madcgit_status(void *result, int64_t handle);
+void   *madcgit_commit(void *result, int64_t handle, const char *rev);
+void   *madcgit_diff(void *result, int64_t handle, const char *rev, const char *path, const char *text);

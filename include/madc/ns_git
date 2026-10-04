@@ -9,6 +9,7 @@
 // open answers 0 for a path with no repository above it. The wrappers are
 // the dialect's carrier-return convention (the out-parameter, returned).
 // THREAD CONTRACT: a handle is used only from the thread that opened it.
+#include <bits/git_enums>	// git::file_state: a status row's codes
 import madcgit;
 
 namespace git {
@@ -32,4 +33,11 @@ namespace git {
 	{ madcgit_blame_text(&out, handle, path, text, line, count); return out; }
     value &relpath(value &out, int64_t handle, const char *path)
 	{ madcgit_relpath(&out, handle, path); return out; }
+    value &status(value &out, int64_t handle)
+	{ madcgit_status(&out, handle); return out; }
+    value &commit(value &out, int64_t handle, const char *rev)
+	{ madcgit_commit(&out, handle, rev); return out; }
+    value &diff(value &out, int64_t handle, const char *rev, const char *path,
+		const char *text)
+	{ madcgit_diff(&out, handle, rev, path, text); return out; }
 }

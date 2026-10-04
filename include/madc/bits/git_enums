@@ -1,0 +1,23 @@
+// madc embedded <bits/git_enums> — the git namespace's codes as ENUMS, the
+// ONE text for two readers: the engine (madcdis/git_repo.h's GitStatusRow
+// holds these) and the dialect (<ns_git> includes it, so a view switches on
+// `row["worktree"] == git::file_state::modified` — an enumerator the compiler
+// checks — instead of comparing a word or a status letter).
+// Plain C++11 enums, nothing else (dialect-lean).
+//
+// Thread contract: constants.
+#ifndef __MADC_BITS_GIT_ENUMS
+#define __MADC_BITS_GIT_ENUMS 1
+
+namespace git {
+    // A file's state on one side of `git status` (plan §7e): the index
+    // against HEAD, or the working tree against the index. untracked and
+    // ignored are working-tree states; conflicted is both sides' (`UU`).
+    enum class file_state : unsigned char
+    {
+	unmodified, added, modified, deleted, renamed, typechange, untracked,
+	ignored, conflicted
+    };
+}
+
+#endif
