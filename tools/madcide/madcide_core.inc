@@ -8429,6 +8429,19 @@ void compose_editor_split(var &kids, long w, long es, long doc, var &node,
     kids.push(g);
 }
 
+// The window's title, Thonny's `Thonny  -  <path>  @  <line> : <col>`: the
+// product's name, the document (`untitled` without a file) and the caret's
+// row and column as the status line counts them (over `nav`, the text the
+// caret moves in). A root hint the terminal ignores and a window shows.
+void window_title(var &out, long w, long doc, long nav, long caret)
+{
+    var name;
+    doc_name(name, w, doc);
+    long line = line_of(w, nav, caret);
+    long col = caret - line_start_of(w, nav, line) + 1;
+    out = format("{} - {} @ {} : {}", product_in_use().name, name, line, col);
+}
+
 void IdeSession::compose_ide_tree(var &root, long doc)
 {
     long caret = es_int(w, es, "caret", 0);
@@ -8789,8 +8802,12 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     var tbar;
     if ( compose_toolbar(tbar, w, es, doc, nav) )
 	rh["toolbar"] = tbar;
-    if ( !rh.is_null() )
-	r["hints"] = rh;
+    // The window's title (window_title): every compose, so it follows the
+    // file and the caret; the host is told only when it changed.
+    var title;
+    window_title(title, w, doc, nav, caret);
+    rh["title"] = title;
+    r["hints"] = rh;
     root = r;
 }
 

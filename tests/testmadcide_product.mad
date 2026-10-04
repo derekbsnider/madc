@@ -11,7 +11,9 @@
 //   4. a session opened with no --profile, no bundle by the program's name
 //      and no settings opens the product's bundle (chthonia), and its code
 //      is the plugin LINKED into this program: transport `linked`, nothing
-//      loaded or compiled, its Variables command registered.
+//      loaded or compiled, its Variables command registered;
+//   5. the window's title is Thonny's shape under the product's name: the
+//      composed root's `title` hint, `chthonia - <file> @ <row> : <col>`.
 // This unit links the plugin as chthonia's program does (chthonia.json):
 // its code is compiled here, beside the base.
 #include "../tools/texteditor/lined_core.inc"
@@ -78,6 +80,9 @@ int main()
 	    doc > 0 ? 1 : 0, b,
 	    plugin_transport_name(plugin_active_transport(S.w, "chthonia")),
 	    cmd_of_w(S.w, "variables") != 0 ? 1 : 0);
+    var root;
+    S.compose_ide_tree(root, doc);
+    println("product-title: [{}]", root["hints"]["title"]);
     S.close();
     php::unlink(path);
     return 0;
