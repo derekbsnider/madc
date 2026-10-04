@@ -9,9 +9,9 @@ macos	yes	a480870b6bb9	2026-10-03	BUILD lane: hosted builds + release-macos rc=0
 genuine-win	release	1bddf869e673	2026-10-03	1845/0/0TO/82skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed madc-release-x86-64-windows.exe built at dc6f8f82b content, MADC_SKIP_EXT="win64 win"; +1 skip = testsession_stop, no fork on Windows). win_suite rc=0, 816s
 brew-linux	release	e19b9d5673e8	2026-10-03	1918/0/0TO/9skip - scripts/brew_lane.sh on the container at e19b9d567 (code = aeb92da3a, v0.101.0): brew install --build-bottle + brew bottle (madc-0.101.0.x86_64_linux.bottle.tar.gz) + the keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc, 594s
 tests-jit	batch	42effb0215a4	2026-10-03	1925 passed, 0 failed, 0 timed out, 9 skipped — batch (container, bin/madc -O0) at 0e2cb6099 content: 1924/1 (testidemenu, pinned the File menu before File > New), fixed in the next commit and re-run 1/0 JIT/EXE/OBJ
-c-testsuite	commit	4f14b2180e09	2026-10-04	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing) — fast tier (container)
-c-torture	commit	4f14b2180e09	2026-10-04	c-torture: 1613 passed, 3 compile-failed, 8 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 11 failing, 0 outside baseline, 0 baseline tests now passing — fast tier (container)
-c2mir-tests	commit	4f14b2180e09	2026-10-04	c2mir-tests: 314 passed, 50 failed (0 outside baseline, 0 baseline tests now passing) — fast tier (container)
-gui	commit	4f14b2180e09	2026-10-04	gui: 25 passed, 0 failed, 0 timed out, 0 skipped | EXE: 25 passed, 0 failed (of 25 JIT-passing tests) | OBJ: 25 passed, 0 failed (of 25 JIT-passing tests) — fast tier (container)
-gxx-c++11	no	4f14b2180e09	2026-10-04	gxx-c++11: 1501 passed, 445 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 445 failing, 0 outside baseline, 0 baseline tests now passing — fast tier (container)
-index-c	yes	4f14b2180e09	2026-10-04	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 84.8420s, 50, 50, 0 — fast tier (container)
+c-testsuite	commit	94295fcd61ce	2026-10-04	220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing) — fast tier (container)
+c-torture	commit	94295fcd61ce	2026-10-04	1613 passed, 3 compile-failed, 8 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 11 failing, 0 outside baseline, 0 baseline t — fast tier (container)
+c2mir-tests	commit	94295fcd61ce	2026-10-04	314 passed, 50 failed (0 outside baseline, 0 baseline tests now passing) — fast tier (container)
+gui	commit	94295fcd61ce	2026-10-04	25 passed, 0 failed, 0 timed out, 0 skipped | EXE: 25 passed, 0 failed (of 25 JIT-passing tests) | OBJ: 25 passed, 0 failed (of 25 JIT-passi — fast tier (container)
+gxx-c++11	no	94295fcd61ce	2026-10-04	1501 passed, 445 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 445 failing, 0 outside baseline, 0 baseline tests no — fast tier (container)
+index-c	yes	94295fcd61ce	2026-10-04	50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 89.4914s, 50, 50, 0 — fast tier (container)
