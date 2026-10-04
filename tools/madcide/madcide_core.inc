@@ -5224,8 +5224,9 @@ void build_subst(var &out, const char *cmd, long w, long es, long doc)
 // The [build] buffer if it already exists, else 0 — a NON-creating lookup
 // for read-only callers (the composer's live-build panel), so composition
 // never mints a buffer as a side effect.
-// ONE finder for a pseudo-buffer by its bracketed name ([build],
-// [terminal]) — non-creating: composition never mints a buffer.
+// ONE finder for a buffer by its path or a pseudo-buffer by its bracketed
+// name ([build], [terminal]) — non-creating: composition never mints a
+// buffer (a typed %run's file reads its open buffer through it too).
 long buffer_doc_named(long w, long es, const char *name)
 {
     var bufs;

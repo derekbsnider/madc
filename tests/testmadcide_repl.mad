@@ -34,6 +34,13 @@
 //      The session sets c11 at the start, as `--std=c11` would (the buffer
 //      is a .mad file, which would be madc); the configuration directory is
 //      this test's fixture (MADCIDE_CONFIG_DIR in testmadcide_repl.env).
+//  11. typed file commands (plan §7f): `%run FILE ARGS` runs FILE from disk
+//      in a fresh session with the shell-split ARGS (`answer` is gone);
+//      `%load` of the open buffer's file loads its live, unsaved text (the
+//      disk still holds `add`); `%run -i` adds a file's names to this
+//      session, and runs no main when the file has none (the session's main
+//      is an earlier file's); a file that does not open is refused, its
+//      error shown once.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -346,6 +353,33 @@ int main()
     var rows;
     ui::get(rows, w, es, "test.bound");
     println("bindings: subscribed={} rows={}", subscribed, rows);
+
+    // 11. Typed file commands (plan §7f): the engine parses the line and asks
+    // the pane (a payload), which reads the file, an open buffer as its live
+    // text, as F5 does.
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "%run tests/testrepl_runcmd_prog.mad a \"b c\"");
+    enter_line(S, doc, w, es, "twice(21)");
+    enter_line(S, doc, w, es, "answer");
+    transcript_since(got, w, es, mark);
+    println("typed run: argv={} names={} fresh={}",
+	    rust::contains(got.c_str(), "main argc=3 [a] [b c]\n") != 0,
+	    rust::contains(got.c_str(), "\n42\n") != 0,
+	    rust::contains(got.c_str(), "undeclared identifier 'answer'") != 0);
+    ui::text_load(w, doc, "int quad(int v) { return 4 * v; }\n");
+    mark = transcript_size(w, es);
+    enter_line(S, doc, w, es, "%load madc_ide_repl.mad");
+    enter_line(S, doc, w, es, "quad(3)");
+    enter_line(S, doc, w, es, "%run -i tests/testrepl_runcmd_lib.mad");
+    enter_line(S, doc, w, es, "thrice(twice(1))");
+    enter_line(S, doc, w, es, "%load tests/no_such_file.mad");
+    transcript_since(got, w, es, mark);
+    println("typed load: live={} here={} no main={} missing once={} busy={}",
+	    rust::contains(got.c_str(), "\n12\n") != 0,
+	    rust::contains(got.c_str(), "\n6\n") != 0,
+	    rust::contains(got.c_str(), "main argc") == 0,
+	    python::count(got.c_str(), "Failed to open file") == 1,
+	    es_int(w, es, "replbusy", -1));
     S.close();				// stops the pump and the session
     php::unlink(path);
     php::unlink(setp.c_str());		// the Language choice's settings.json

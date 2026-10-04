@@ -25,7 +25,8 @@ typedef bool (*cmd_handler)(long w, long es, long doc, const char *arg);
 // the kind it subscribed to (repl_event).
 typedef void (*event_handler)(long w, long es, long doc, var &event);
 // The REPL pane's reply events, the kinds an event handler subscribes to:
-// an entry taken, F5's run returned, F5's load refused, the session
+// an entry taken, a file's run returned (F5, %run; or the file loaded with
+// no main to run, %load's), a file's load refused, the session
 // stopped, the session's names answered (replbindings: the reply carries
 // their rows). madcide publishes them and a plugin names them, so this is
 // their one text; reLAST bounds the range. Append-only, as the table is.
