@@ -9,11 +9,19 @@
 # feeding 460 #define lines through the lexer breaks on the macro bodies.
 #
 # Host/std-specific: gitignored, regenerated each build; `make clean` refreshes.
+#
+# The output (MADC_PREDEF_MACROS_OUT, src/Makefile): a mode that captures a
+# foreign compiler (darwin hosted+cross, windows hosted) writes its own table
+# into its obj tree — the SYS_INCLUDES_CPP precedent — since every mode
+# regenerates at parse time and two modes' tables differ; the host modes
+# share src/predefined_macros.cpp. The temp file is per process, so two
+# concurrent writers of one table cannot interleave into it.
 set -u
 
 CXX="${CXX:-c++}"
 STD="${MADC_PREDEF_STD:-c++17}"
-OUT="$(dirname "$0")/../src/predefined_macros.cpp"
+OUT="${MADC_PREDEF_MACROS_OUT:-$(dirname "$0")/../src/predefined_macros.cpp}"
+TMP="$OUT.tmp.$$"
 
 # GCC posture (MADC_PREDEF_GCC_POSTURE=<gnuc version, e.g. 13.3.0>): drop the
 # __clang__/__llvm__ identity macros and present the given GCC version, so the
@@ -96,23 +104,23 @@ END {
     print "const MadcPredefObj  *madc_predefined_objects()  { return madc_predefined_obj; }"
     print "const MadcPredefFunc *madc_predefined_functions() { return madc_predefined_func; }"
 }
-' > "$OUT.tmp"
+' > "$TMP"
 
 # A near-empty capture means the compiler probe or the filter pipeline
 # FAILED (a real -dM table has hundreds of entries) — installing it would
 # silently strip every predefined macro from the built madc (the exact G2
 # silent-degradation class; a non-executable filter script did precisely
 # this once). Keep the previous table and fail loudly instead.
-if [ "$(grep -c '{"' "$OUT.tmp")" -lt 50 ]; then
-    rm -f "$OUT.tmp"
+if [ "$(grep -c '{"' "$TMP")" -lt 50 ]; then
+    rm -f "$TMP"
     echo "gen_predefined_macros: capture came back (near) empty — refusing to install" >&2
     exit 1
 fi
 
 # Idempotent write: rewrite only on real content change, so the parse-time
 # regeneration in src/Makefile never churns mtimes / forces rebuilds.
-if cmp -s "$OUT.tmp" "$OUT" 2>/dev/null; then
-    rm -f "$OUT.tmp"
+if cmp -s "$TMP" "$OUT" 2>/dev/null; then
+    rm -f "$TMP"
 else
-    mv "$OUT.tmp" "$OUT"
+    mv "$TMP" "$OUT"
 fi

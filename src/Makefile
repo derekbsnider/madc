@@ -518,13 +518,21 @@ MADC_PREDEF_GCC_POSTURE = 13.3.0
 export MADC_PREDEF_GCC_POSTURE
 endif
 HOSTTAB_CXX ?= $(CXX)
+# Per-mode predefined-macro table: the modes with a per-mode include table
+# capture a foreign compiler, whose macros differ from the host's (and from
+# each other's: two darwin arches) — one shared src/ file flipped between
+# them, and concurrent sub-makes of two modes interleaved into it.
+ifdef SYS_INCLUDES_CPP
+PREDEF_MACROS_CPP = $(OBJDIR)/predefined_macros.cpp
+export MADC_PREDEF_MACROS_OUT = $(PREDEF_MACROS_CPP)
+endif
 # The host-derived tables (system include paths, predefined macros) are
 # regenerated at PARSE time like embedded_headers.cpp — placed HERE because
 # hosted modes override $(CXX) above, and the tables must match the compiler
 # whose binary they end up inside (a mode switch silently left the previous
 # toolchain's tables in place before; the generators are idempotent, so an
 # unchanged toolchain never churns mtimes).
-HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" MADC_LINKLIBS_STANDIN="$(MADC_LINKLIBS_STANDIN)" MADC_SYS_INCLUDES_OUT="$(MADC_SYS_INCLUDES_OUT)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(HOSTTAB_CXX)" MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
+HOSTTAB_GEN := $(shell mkdir -p $(OBJDIR); CXX="$(HOSTTAB_CXX)" MADC_SYS_INCLUDE_PREFIX_MAP="$(MADC_SYS_INCLUDE_PREFIX_MAP)" MADC_LINKLIBS_STANDIN="$(MADC_LINKLIBS_STANDIN)" MADC_SYS_INCLUDES_OUT="$(MADC_SYS_INCLUDES_OUT)" ../scripts/gen_sys_includes.sh >/dev/null 2>&1; CXX="$(HOSTTAB_CXX)" MADC_PREDEF_GCC_POSTURE="$(MADC_PREDEF_GCC_POSTURE)" MADC_PREDEF_MACROS_OUT="$(MADC_PREDEF_MACROS_OUT)" ../scripts/gen_predefined_macros.sh >/dev/null 2>&1; echo done)
 # Regenerate embedded_headers.cpp NOW, at Makefile parse time, before any target
 # is evaluated — so an edited/added/DELETED embedded header is reflected in
 # embedded_headers.o within a SINGLE make. The generators are idempotent (rewrite
@@ -1479,6 +1487,12 @@ endif
 # foreign header world (darwin hosted+cross, windows hosted) sets it.
 ifdef SYS_INCLUDES_CPP
 $(OBJDIR)/sys_include_paths.o: $(SYS_INCLUDES_CPP) $(DEPENDS)
+	@mkdir -p $(OBJDIR)
+	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+endif
+# Its predefined-macro twin (PREDEF_MACROS_CPP above), same shape.
+ifdef PREDEF_MACROS_CPP
+$(OBJDIR)/predefined_macros.o: $(PREDEF_MACROS_CPP) $(DEPENDS)
 	@mkdir -p $(OBJDIR)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 endif

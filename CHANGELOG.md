@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### build: per-mode predefined-macro table (concurrent-make write race)
+
+The modes that capture a foreign compiler (darwin hosted+cross, windows hosted) regenerate a predefined-macro table at parse time. All modes' sub-makes regenerated `src/predefined_macros.cpp` concurrently, causing a race where three writes to one shared file interleaved, creating redefinition errors in per-mode objects. The fix mirrors the existing `sys_include_paths.cpp` approach: modes with `SYS_INCLUDES_CPP` now get `PREDEF_MACROS_CPP = $(OBJDIR)/predefined_macros.cpp`, with a per-mode compile rule. Gen script writes a per-process temp (`"$OUT.tmp.$$"`) before compare-and-move to prevent interleaving between concurrent make sub-processes.
+
+Measurements: `make -C src -j8 madcgit-windows madcgit-macos libmadcgit` rc=0 after; `src/predefined_macros.cpp` holds `__x86_64__` and `__linux__`; `obj/hosted-x86-64-windows/predefined_macros.cpp` holds `_WIN32`, `_WIN64`, `__MINGW64__`; `obj/hosted-arm64-macos/predefined_macros.cpp` holds `__APPLE__`, `__aarch64__`; `obj/hosted-x86-64-macos/predefined_macros.cpp` holds `__APPLE__`, `__x86_64__`. Hosted Windows madc runs `tests/testgit.mad` under wine: all 20 expected lines.
+
+Validation: Tier 1 `scripts/run_tests.sh --exe --obj testgit testgraphpast testnexus_layers`: 3 passed 0 failed (JIT), EXE 2 passed 0 failed, OBJ 2 passed 0 failed; Tier 2 `scripts/fast_lanes.sh` GREEN (c-testsuite 220 passed 0 failed, c-torture 1614 passed 0 outside baseline, c2mir-tests 314 passed 0 outside baseline, gui 26 passed 0 failed EXE/OBJ, gxx-c++11 1501 passed 0 outside baseline, index-c 50 passed 50 tasks ok). (One run over the tree holding both this commit and its sibling commit.)
+
 ### madcgit: libgit2 v1.9.7 on every target, the 1.8.7 / 1.9.7 floor in one header
 
 Owner request (2026-10-04): "make sure we're using libgit2 version 1.9.7 / 1.8.7 or newer". Before this change `src/madcgit.mk` pinned libgit2 v1.7.2 for the Windows and macOS static archives, and Linux linked the system 1.7.2 through pkg-config. The `.deb` Recommends listed libgit2-1.7.

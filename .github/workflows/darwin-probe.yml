@@ -148,7 +148,7 @@ jobs:
           mkdir -p tmp/freeze-evidence
           cp obj/hosted-${{ matrix.arch }}-macos/forest.bin.dump.txt obj/hosted-${{ matrix.arch }}-macos/forest.bin.freeze.log \
              obj/hosted-${{ matrix.arch }}-macos/forest.bin.tu.cpp obj/hosted-${{ matrix.arch }}-macos/sys_include_paths.cpp \
-             obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/.MANIFEST src/predefined_macros.cpp tmp/freeze-evidence/
+             obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/.MANIFEST obj/hosted-${{ matrix.arch }}-macos/predefined_macros.cpp tmp/freeze-evidence/
           cp obj/hosted-${{ matrix.arch }}-macos/darwin_prelude/*.h tmp/freeze-evidence/ 2>/dev/null || true
           ls -la tmp/freeze-evidence
       - name: run the STRIPPED release binary — the hello gate
