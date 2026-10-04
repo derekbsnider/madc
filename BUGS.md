@@ -707,6 +707,36 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B171. `std::map<std::string, T>::find("literal")` is refused: the heterogeneous `find<_Kt>` is chosen
+
+```cpp
+#include <stdio.h>
+#include <map>
+#include <string>
+int main()
+{
+	std::map<std::string, int> m;
+	m["cy"] = 1;
+	printf("%d %d\n", m.find("cy")->second, (int)(m.find("zz") == m.end()));
+	return 0;
+}
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`): `1 1`. madc `--std=c++17` (at
+  55cb04451, and v0.101.0 alike): `cir error: parse-once internal: tsubst
+  bailed on the covered instantiation '..._find__o2__mti__...' of
+  std::map::find<_Kt> [why: tsubst: unresolved dependent member body]` at
+  `stl_map.h:1225`, then `1 untranslatable node(s); not compiling`.
+- `find(std::string("cy"))`, `count(std::string("cy"))` and `at("bo")` work.
+- Where: overload resolution. C++14's `template<typename _Kt> auto
+  find(const _Kt&) -> decltype(_M_t._M_find_tr(__x))` exists only for a
+  transparent comparator: `_M_find_tr`'s `__has_is_transparent_t<_Compare,
+  _Kt>` default fails for `std::less<std::string>`, so g++ drops the
+  template by SFINAE and calls `find(const key_type&)` through the
+  converting constructor. madc keeps the template (an exact match for
+  `const char (&)[3]`), and the instantiation then bails.
+- Found 2026-10-04 testing `std::map<std::string, int>` after B170.
+
 ### B167. `#include <windows.h>` is refused on win64: absent from the forest, and in C++
 
 ```c

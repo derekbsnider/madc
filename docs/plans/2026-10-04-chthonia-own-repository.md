@@ -127,8 +127,11 @@ published.
    `%build`, the IDE layer, `%git`), §7d (Help and Markdown on cmark-gfm),
    §7e stage 1 (Git), and §7a (recent files, font size, Full screen,
    Interrupt/Send EOF, the Windows console). The debugger arc is after.
-   Plus B30 (`std::map` brace initialization), and §3 here: `libmadcide`,
-   the installed harness headers, the minimum-version contract.
+   Plus B30 (`std::map` brace initialization) — DONE 2026-10-04 (e6d7b05a1,
+   with the copied-reference-argument fix 49ace4461 under it and B170's
+   `std::map<std::string, T>` insert / brace-init crash, 55cb04451) — and §3
+   here: `libmadcide`, the installed harness headers, the minimum-version
+   contract.
 2. **The external build, proved inside madc.** In-tree Chthonia builds as
    the repository will: linking `libmadcide` against an INSTALLED madc
    (`stage_install.sh`), its tests through the installed harness headers —

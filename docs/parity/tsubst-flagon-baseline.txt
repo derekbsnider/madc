@@ -46,10 +46,10 @@
 # is progress here, not regression — fallbacks stay 0 everywhere.
 testset 10 0
 testmap 11 0
-testvector 15 0
-testsubscript 35 0
-testcontainerdtor 34 0
-testmadc_ns 34 0
+testvector 17 0
+testsubscript 45 0
+testcontainerdtor 36 0
+testmadc_ns 37 0
 testlocalclassraii 1 0
 # Then the scalar-ref-param slice: the blanket reference-param guard deleted
 # (untyped N_DEREF types from the concrete shell decl) + is_size1_pointer no
