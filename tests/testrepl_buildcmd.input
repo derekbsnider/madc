@@ -1,0 +1,5 @@
+%build tests/testrepl_runcmd_prog.mad -o testrepl_buildcmd_prog
+system("./testrepl_buildcmd_prog built ok");
+remove("testrepl_buildcmd_prog");
+%build tests/testrepl_buildcmd_bad.mad -o testrepl_buildcmd_bad
+printf("bad built: %d\n", fopen("testrepl_buildcmd_bad", "r") != 0);

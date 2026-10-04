@@ -234,6 +234,7 @@ void repl_clear_marks(long w, long es)
     ui::set(w, es, "replrunseq", 0);
     ui::set(w, es, "replbseq", 0);
     ui::set(w, es, "replruncall", 0);
+    ui::set(w, es, "replbuildseq", 0);
 }
 
 // The `--std=` spelling a backend for `doc` takes: the standard the buffer
@@ -452,6 +453,22 @@ void repl_reply(long w, long es, var &r)
 	repl_feed(w, es, rd.c_str());
 	repl_problems(w, es, r);
 	repl_publish(w, es, reRAN, r);
+	return;
+    }
+    if ( r["kind"] == madc::session_reply::build )
+    {
+	// %build's file built (or refused): what was built, its diagnostics,
+	// and its rows into Problems, as F5's are.
+	if ( seq != es_int(w, es, "replbuildseq", 0) )
+	    return;
+	ui::set(w, es, "replbuildseq", 0);
+	ui::set(w, es, "replbusy", 0);
+	var bsv = r["shown"];
+	if ( strlen(bsv.c_str()) > 0 )
+	    repl_feed(w, es, format("{}\n", bsv));
+	var brd = r["rendered"];
+	repl_feed(w, es, brd.c_str());
+	repl_problems(w, es, r);
 	return;
     }
     if ( r["kind"] == madc::session_reply::stopped )
@@ -756,8 +773,9 @@ void repl_run(long w, long es, long doc)
 // A typed file command (plan §7f): the engine split the line and asks, as
 // IPython's payloads do, for its file to be loaded — %load (nothing runs),
 // %run -i (main runs in this session), %run (main runs in a fresh one,
-// which is this pane's to start) or %call (the session then calls the
-// function named after the file, else its main). An open buffer of the file is its live
+// which is this pane's to start), %call (the session then calls the
+// function named after the file, else its main) or %build (the session
+// builds it). An open buffer of the file is its live
 // text and compiles under its standard, as F5 runs it; otherwise the file
 // loads from disk (session_load's empty text reads it) under the active
 // buffer's. False when nothing was sent.
@@ -778,6 +796,18 @@ bool repl_run_payload(long w, long es, var &r)
 	var noargs = {};
 	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), noargs, "", false,
 			      false);
+    }
+    if ( r["payload"] == madc::session_payload::build )
+    {
+	// %build: the session builds the file's live text to argv[1].
+	if ( php::count(argv) < 2 )
+	    return false;
+	var out = argv[1];
+	long bs = madc::session_build(es_int(w, es, "replh", 0), p.c_str(),
+				      text.c_str(), out.c_str());
+	ui::set(w, es, "replbuildseq", bs);
+	ui::set(w, es, "replbusy", bs);
+	return bs != 0;
     }
     if ( r["payload"] == madc::session_payload::call )	// then the call
 	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, "", false,

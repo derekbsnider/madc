@@ -1,0 +1,1 @@
+the REPL is JIT-only (plan §42 D19): %build runs in a live session, not an artifact

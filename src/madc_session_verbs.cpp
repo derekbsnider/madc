@@ -129,6 +129,12 @@ madc::value reply_row(const SessionClient::Reply &r)
 	case madc::session_reply::bindings:
 	    f["rows"] = r.rows.is_array() ? r.rows : madc::value::make_array();
 	    break;
+	case madc::session_reply::build:
+	    f["ok"] = madc::value(r.ok);
+	    f["shown"] = madc::value(r.shown);
+	    f["rendered"] = madc::value(r.rendered);
+	    f["diagnostics"] = reply_diagnostics(r);
+	    break;
     }
     return madc::value::make_object(f);
 }
@@ -224,6 +230,15 @@ int64_t session_run(int64_t handle, value &argv)
 int64_t session_call(int64_t handle, value &argv)
 {
     return run_request(handle, argv, true);
+}
+
+int64_t session_build(int64_t handle, const char *path, const char *text,
+		      const char *out)
+{
+    SessionHandle *s = session_of(handle);
+    return s ? (int64_t)s->client.build(path ? path : "", text ? text : "",
+					out ? out : "")
+	     : 0;
 }
 
 int64_t session_poll(value &reply, int64_t handle)

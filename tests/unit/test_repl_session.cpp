@@ -32,7 +32,9 @@ thread_local bool madc_verbose = false;
 #include "../../src/madc_posix_io.h"
 
 #include <cstdio>
+#include <cstdlib>		// std::system: %build's executable runs
 #include <cstring>
+#include <sys/wait.h>		// WEXITSTATUS
 #include <unistd.h>
 
 namespace {
@@ -2281,6 +2283,70 @@ TEST_CASE("session commands: %call (.x) calls the function named after FILE (§7
     CHECK(h.shown() == "30");
 
     const std::string files[] = { f2, f0, fb, m1, m2, nf, fh };
+    for ( const std::string &f : files )
+	std::remove(f.c_str());
+}
+
+// `%build FILE [-o OUT]` (plan §7f; madcide's Build): FILE compiled to a
+// native executable under the session's standard, OUT by default FILE
+// without its extension; a refused FILE's diagnostics are the session's. A
+// payload host gets FILE and OUT, and build_file builds the text it hands
+// over (an editor's buffer), not the file.
+TEST_CASE("session commands: %build FILE [-o OUT] (§7f)")
+{
+    std::string prog = temp_source("int main(void) { return 3; }\n", "madc_repl_build");
+    std::string bad = temp_source("int main(void) { return nope; }\n",
+				  "madc_repl_buildbad");
+    const std::string out = prog + "_exe";
+    const std::string named = prog + "_named.c";	// an extension to drop
+    {
+	std::ofstream f(named.c_str());
+	f << "int main(void) { return 5; }\n";
+    }
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit("%build " + prog + " -o " + out));
+    CHECK(s.shown() == "built " + out);
+    int rc = std::system(out.c_str());
+    CHECK(WEXITSTATUS(rc) == 3);
+    std::remove(out.c_str());
+    REQUIRE(s.submit(".build " + named));		// OUT: FILE without .c
+    CHECK(s.shown() == "built " + prog + "_named");
+    rc = std::system((prog + "_named").c_str());
+    CHECK(WEXITSTATUS(rc) == 5);
+    std::remove((prog + "_named").c_str());
+    // Refused: a FILE with no extension and no -o, no FILE, -o without OUT,
+    // and a FILE that does not compile (its diagnostics are the session's;
+    // nothing is built).
+    CHECK_FALSE(s.submit("%build " + prog));
+    CHECK(first_error(s) == "%build: FILE has no extension to drop; name the"
+			    " executable: %build FILE -o OUT");
+    CHECK_FALSE(s.submit("%build"));
+    CHECK(first_error(s) == "%build needs a FILE");
+    CHECK_FALSE(s.submit("%build " + prog + " -o"));
+    CHECK(first_error(s) == "%build takes one FILE and -o OUT");
+    err.str("");
+    CHECK_FALSE(s.submit("%build " + bad + " -o " + out));
+    CHECK(err.str().find("undeclared identifier 'nope'") != std::string::npos);
+    CHECK(first_error(s).find("nope") != std::string::npos);
+    CHECK_FALSE(std::ifstream(out.c_str()).good());
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit("%build " + named));
+    CHECK(h.payload() == madc::session_payload::build);
+    CHECK(h.payload_argv() == (std::vector<std::string>{ named, prog + "_named" }));
+    CHECK_FALSE(std::ifstream((prog + "_named").c_str()).good());	// nothing built
+    REQUIRE(h.build_file(named, "int main(void) { return 6; }\n", out));
+    CHECK(h.shown() == "built " + out);
+    rc = std::system(out.c_str());
+    CHECK(WEXITSTATUS(rc) == 6);			// the text handed over
+
+    const std::string files[] = { prog, bad, named, out };
     for ( const std::string &f : files )
 	std::remove(f.c_str());
 }

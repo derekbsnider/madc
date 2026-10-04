@@ -82,8 +82,8 @@ public:
 	// An offer's: the verdict, and once taken, the result, the shown
 	// value, the entries taken so far (REPL[N]), the rendered diagnostics
 	// (the text the CLI prints) and their rows (diagnostic rows: severity,
-	// phase, message, file, line, column). A call's run reply (%call) has
-	// a shown value too.
+	// phase, message, file, line, column). A call's run reply (%call) and
+	// a build's reply (%build) have a shown value too.
 	InteractiveSession::OfferState state;
 	bool ok;
 	unsigned submitted;
@@ -95,7 +95,8 @@ public:
 	// `argv`, for the host to load (%load), run here (%run -i) or run in
 	// a fresh session (%run, D16: restart, load, run, as F5 does), or to
 	// load it and make the call (%call: argv is the file and the call's
-	// text); or, with no argv, to end the session (%quit).
+	// text), to build it (%build: argv is the file and the executable);
+	// or, with no argv, to end the session (%quit).
 	::madc::session_payload payload;
 	std::vector<std::string> argv;
 	// A completion's: the word's start and the names.
@@ -140,6 +141,10 @@ public:
     // The names the session defined, as rows (%whos's; madcide's Variables
     // view, plan §41.11a step 3d). Answered between entries.
     unsigned bindings();
+    // %build's (InteractiveSession::build_file): FILE built to `out`, from
+    // `text` (an editor's buffer) or, when it is empty, the file at path.
+    unsigned build(const std::string &path, const std::string &text,
+		   const std::string &out);
     // Text for the program's stdin: a scanf in an entry reads it. False when
     // the backend is not running. It waits while the pipe is full.
     bool input(const std::string &text);
@@ -167,6 +172,8 @@ public:
 		 std::string &output, bool call = false);
     int continues_wait(const std::string &line, Reply &reply);
     int bindings_wait(Reply &reply, int timeout_ms = -1);
+    int build_wait(const std::string &path, const std::string &out,
+		   Reply &reply, std::string &output);
 
     // Readiness, for a select (plan §41.9a slice 2). pending(): 1 when a
     // reply or output waits (or the backend's end, which poll() reports), 0
@@ -244,12 +251,16 @@ private:
     // A taken command's ask (IPython's payloads): load_file(argv[0])
     // (%load), run_file(argv) (%run -i), or, for %run's fresh session
     // (D16), the backend restarted first, as F5 does; call_file(argv)
-    // (%call); %quit ends the session (ended()). False when it was refused
+    // (%call); build_file(argv) (%build); %quit ends the session
+    // (ended()). False when it was refused
     // or did not start.
     bool honor(const SessionClient::Reply &reply);
     // %call's: FILE (argv[0]) loaded, then the call (argv[1], the call's
     // text) made by the backend; shown() is its value.
     bool call_file(const std::vector<std::string> &argv);
+    // %build's: FILE (argv[0]) built to OUT (argv[1]) by the backend, from
+    // the file; shown() says what was built.
+    bool build_file(const std::vector<std::string> &argv);
     // FILE loaded into the session (D25), its diagnostics shown; false
     // when it was refused. *defines_main: FILE defined main.
     bool load_file(const std::string &path, bool *defines_main = NULL);
@@ -280,6 +291,8 @@ int64_t session_complete(int64_t handle, const char *text, int64_t caret);
 int64_t session_load(int64_t handle, const char *path, const char *text);
 int64_t session_run(int64_t handle, value &argv);
 int64_t session_call(int64_t handle, value &argv);
+int64_t session_build(int64_t handle, const char *path, const char *text,
+		      const char *out);
 int64_t session_poll(value &reply, int64_t handle);
 value &session_output(value &out, int64_t handle);
 bool session_input(int64_t handle, const char *text);

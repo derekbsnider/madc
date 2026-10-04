@@ -81,14 +81,16 @@ namespace {
 // a program file into the session, then its main (`madc -i file`).
 // `continues` is D11's question: does a line continue an if that ended an
 // entry (its first word is the session's `else`). `bindings`: the names the
-// session defined, as rows (InteractiveSession::bindings, %whos's).
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, unknown };
+// session defined, as rows (InteractiveSession::bindings, %whos's). `build`:
+// %build's (InteractiveSession::build_file), the host's text of a file.
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
     { "begin", Op::begin }, { "offer", Op::offer }, { "complete", Op::complete },
     { "running", Op::running }, { "load", Op::load }, { "run", Op::run },
     { "continues", Op::continues }, { "bindings", Op::bindings },
+    { "build", Op::build },
 };
 
 const char *op_name(Op op)
@@ -137,6 +139,7 @@ const PayloadRow payload_rows[] = {
     { "load", madc::session_payload::load },
     { "run", madc::session_payload::run },
     { "run_here", madc::session_payload::run_here },
+    { "build", madc::session_payload::build },
     { "call", madc::session_payload::call },
     { "quit", madc::session_payload::quit },
 };
@@ -351,6 +354,15 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 		break;
 	    case Op::continues:
 		rep["continues"] = session.continues_if(req.value("text", std::string()));
+		break;
+	    case Op::build:
+		// %build's: the host's text of the file (an editor's buffer),
+		// or, without, the file at path.
+		rep["ok"] = session.build_file(req.value("path", std::string()),
+					       req.value("text", std::string()),
+					       req.value("out", std::string()));
+		rep["shown"] = session.shown();
+		attach_diagnostics(rep, session);
 		break;
 	    case Op::bindings:
 	    {
@@ -800,6 +812,20 @@ unsigned SessionClient::run(const std::vector<std::string> &argv, bool call)
     return send(req.dump()) ? seq : 0;
 }
 
+unsigned SessionClient::build(const std::string &path, const std::string &text,
+			      const std::string &out)
+{
+    nlohmann::json req;
+    const unsigned seq = next_seq++;
+    req["seq"] = seq;
+    req["op"] = op_name(Op::build);
+    req["path"] = path;
+    if ( !text.empty() )
+	req["text"] = text;
+    req["out"] = out;
+    return send(req.dump()) ? seq : 0;
+}
+
 bool SessionClient::input(const std::string &text)
 {
     if ( !wire || !process )
@@ -923,6 +949,10 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::continues:
 	    reply.kind = Reply::Kind::continues;
 	    reply.continues = j.value("continues", false);
+	    break;
+	case Op::build:
+	    reply.kind = Reply::Kind::build;
+	    reply.shown = j.value("shown", std::string());
 	    break;
 	case Op::bindings:
 	    reply.kind = Reply::Kind::bindings;
@@ -1071,6 +1101,8 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	return load_file(reply.argv[0]);
     if ( reply.payload == madc::session_payload::call )
 	return call_file(reply.argv);
+    if ( reply.payload == madc::session_payload::build )
+	return build_file(reply.argv);
     if ( reply.payload == madc::session_payload::run && !client.restart() )
     {
 	err << "madc: " << client.last_error() << std::endl;
@@ -1149,6 +1181,20 @@ bool BackendSession::call_file(const std::vector<std::string> &argv)
     return r.ok;
 }
 
+// %build's: the backend builds the file (this host has no buffer of it).
+bool BackendSession::build_file(const std::vector<std::string> &argv)
+{
+    if ( argv.size() != 2 )
+	return false;
+    SessionClient::Reply r;
+    std::string output;
+    int rc = client.build_wait(argv[0], argv[1], r, output);
+    if ( !settle(rc, r, output) )
+	return false;
+    shown_text = r.shown;
+    return r.ok;
+}
+
 bool BackendSession::ended(int &status) const
 {
     if ( has_ended )
@@ -1211,6 +1257,13 @@ int SessionClient::run_wait(const std::vector<std::string> &argv, Reply &reply,
 			    std::string &output, bool call)
 {
     return wait_reply(run(argv, call), reply, output, -1,
+		      InteractiveSession::TakenHook());
+}
+
+int SessionClient::build_wait(const std::string &path, const std::string &out,
+			      Reply &reply, std::string &output)
+{
+    return wait_reply(build(path, std::string(), out), reply, output, -1,
 		      InteractiveSession::TakenHook());
 }
 

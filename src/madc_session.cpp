@@ -66,6 +66,8 @@ const CommandRow command_rows[] = {
       "define FILE's names in this session; nothing runs" },
     { "run", InteractiveSession::Command::run, "%run [-i] FILE [ARGS]",
       "FILE's main with ARGS, in a fresh session (-i: this one); its names stay" },
+    { "build", InteractiveSession::Command::build, "%build FILE [-o OUT]",
+      "FILE built to a native executable, OUT (default: FILE without its extension)" },
     { "call", InteractiveSession::Command::call, "%call FILE[(ARGS)]",
       "FILE loaded, then the function named after it called with ARGS, else FILE's main" },
     { "quit", InteractiveSession::Command::quit, "%quit",
@@ -508,6 +510,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return load_command(command_argument(text, c), name);
 	case Command::run:
 	    return run_file_command(command_argument(text, c), name);
+	case Command::build:
+	    return build_command(command_argument(text, c), name);
 	case Command::call:
 	    return call_command(command_argument(text, c), name);
 	case Command::quit:
@@ -625,6 +629,8 @@ bool InteractiveSession::file_command(madc::session_payload kind,
 	return load(words[0]);
     if ( kind == madc::session_payload::call )
 	return load(words[0]) && call_file(words[0], words[1], NULL);
+    if ( kind == madc::session_payload::build )
+	return build_file(words[0], std::string(), words[1]);
     std::vector<char *> argv;
     for ( std::string &w : words )
 	argv.push_back(&w[0]);
@@ -669,6 +675,132 @@ bool InteractiveSession::call_command(const std::string &argument,
     words.push_back(argument.substr(b, file_end - b));
     words.push_back(call);
     return file_command(madc::session_payload::call, words);
+}
+
+// `%build FILE [-o OUT]` (plan §7f; madcide's Build): FILE compiled to a
+// native executable, OUT by default FILE without its extension (the Build
+// menu's {base}). FILE is the host's to read, as %load's is: the `build`
+// payload for a host that honors payloads, else build_file here.
+bool InteractiveSession::build_command(const std::string &argument,
+				       const std::string &name)
+{
+    std::vector<std::string> words;
+    if ( !ns_common::shell_words(argument, words) )
+    {
+	command_error("%build: no closing quotation, or a backslash at the end",
+		      name);
+	return false;
+    }
+    std::string file, out;
+    for ( size_t i = 0; i < words.size(); ++i )
+    {
+	if ( words[i] == "-o" && i + 1 < words.size() && out.empty() )
+	    out = words[++i];
+	else if ( words[i] != "-o" && file.empty() )
+	    file = words[i];
+	else
+	{
+	    command_error("%build takes one FILE and -o OUT", name);
+	    return false;
+	}
+    }
+    if ( file.empty() )
+    {
+	command_error("%build needs a FILE", name);
+	return false;
+    }
+    if ( out.empty() )
+    {
+	const size_t sep = file.find_last_of("/\\");
+	const size_t base = sep == std::string::npos ? 0 : sep + 1;
+	const size_t dot = file.rfind('.');
+	if ( dot == std::string::npos || dot <= base )
+	{
+	    command_error("%build: FILE has no extension to drop; name the"
+			  " executable: %build FILE -o OUT", name);
+	    return false;
+	}
+	out = file.substr(0, dot);
+    }
+    std::vector<std::string> fw;
+    fw.push_back(file);
+    fw.push_back(out);
+    return file_command(madc::session_payload::build, fw);
+}
+
+// A build's diagnostic rows (madc_parse_build's) recorded as the session's,
+// so they render as every entry's do and a host's rows carry them.
+static void record_diagnostic_rows(Program &prog, const madc::value &rows)
+{
+    if ( !rows.is_array() )
+	return;
+    for ( const madc::value &r : rows.as_array() )
+    {
+	if ( !r.is_object() )
+	    continue;
+	const std::map<std::string, madc::value> &f = r.as_object();
+	std::map<std::string, madc::value>::const_iterator it;
+	const int64_t sev = (it = f.find("severity_code")) == f.end()
+			  ? 0 : it->second.as_integer();
+	const int64_t phase = (it = f.find("phase_code")) == f.end()
+			    ? 0 : it->second.as_integer();
+	const std::string message = (it = f.find("message")) == f.end()
+				  ? std::string() : it->second.as_string();
+	const std::string file = (it = f.find("file")) == f.end()
+			       ? std::string() : it->second.as_string();
+	const int64_t line = (it = f.find("line")) == f.end()
+			   ? 0 : it->second.as_integer();
+	const int64_t column = (it = f.find("column")) == f.end()
+			     ? 0 : it->second.as_integer();
+	prog.add_diagnostic((Program::DiagnosticSeverity)sev,
+			    (Program::DiagnosticPhase)phase, message,
+			    file.empty() ? NULL : prog.intern_file(file),
+			    (int)line, (int)column);
+    }
+}
+
+bool InteractiveSession::build_file(const std::string &path,
+				    const std::string &text,
+				    const std::string &out)
+{
+    showed_command = true;
+    command_output.clear();
+    prog->clear_diagnostics();		// the build's rows only
+    std::string source = text;
+    if ( source.empty() )
+    {
+	std::ifstream file(path.c_str(), std::ios::binary);
+	if ( !file )
+	{
+	    prog->record_frontend_error(Program::DiagnosticPhase::lexer,
+					"Failed to open file", path.c_str(), 0, 0);
+	    render_pending_diagnostics();
+	    return false;
+	}
+	std::ostringstream read;
+	read << file.rdbuf();
+	source = read.str();
+    }
+    // The live-tree build (the Build menu's): a parse of FILE under the
+    // session's standard, emitted from that tree.
+    std::string display(path), kind("exe"), target(out);
+    madc::value rows;
+    bool ok = false;
+    int64_t h = madc_parse_open(&source, &display, (int64_t)prog->language_std);
+    if ( h != 0 )
+    {
+	ok = madc_parse_build(&rows, h, &kind, &target);
+	madc_parse_close(h);
+    }
+    record_diagnostic_rows(*prog, rows);
+    if ( h == 0 )
+	prog->add_diagnostic(Program::DiagnosticSeverity::error,
+			     Program::DiagnosticPhase::compiler,
+			     "%build: no parse of " + path + " opened");
+    render_pending_diagnostics();
+    if ( ok )
+	command_output = "built " + out;
+    return ok;
 }
 
 // Does a session unit (an entry, a loaded file) define a function NAME?

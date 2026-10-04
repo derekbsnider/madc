@@ -759,6 +759,11 @@ namespace madc {
     //     status: main's return value; shown: a call's value) rows. The
     //     cores of %load, %run and %call (D25), and madcide's F5 (plan
     //     §41.10a).
+    //   session_build(h, path, text, out): %build's build (plan §7f): the
+    //     file built to the executable `out` under the session's standard,
+    //     from `text` (an editor's buffer) or, with "", the file at path.
+    //     Its seq; the reply is a `build` row (ok, shown: what was built,
+    //     rendered, diagnostics).
     //   session_bindings(h): the names the session defined (%whos's rows;
     //     madcide's Variables view, plan §41.11a step 3d). Its seq; the
     //     reply is a `bindings` row whose rows are {name, kind (a
@@ -780,7 +785,8 @@ namespace madc {
     //     command asks the pane to do with argv, the file and its
     //     arguments — load it, run it here, or run it in a fresh session,
     //     reading an open buffer's live text; load it and session_call
-    //     argv: %call; or, with no argv, end the session: %quit); a load's
+    //     argv: %call; session_build argv[0] to argv[1]: %build; or, with
+    //     no argv, end the session: %quit); a load's
     //     ok, rendered,
     //     diagnostics and main (the file defined main, so running it runs
     //     main: one an earlier unit defined is not the file's); a run's ok,
@@ -808,6 +814,8 @@ namespace madc {
     int64_t session_load(int64_t handle, const char *path, const char *text);
     int64_t session_run(int64_t handle, value &argv);
     int64_t session_call(int64_t handle, value &argv);
+    int64_t session_build(int64_t handle, const char *path, const char *text,
+			  const char *out);
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);

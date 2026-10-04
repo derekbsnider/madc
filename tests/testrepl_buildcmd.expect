@@ -1,0 +1,3 @@
+built testrepl_buildcmd_prog
+main argc=3 [built] [ok]
+bad built: 0
