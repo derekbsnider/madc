@@ -29,8 +29,10 @@ class Madc < Formula
   depends_on "autoconf" => :build
   depends_on "automake" => :build
   # pkg-config finds libgit2 for the madcgit module (the IDE's git layer, as
-  # the packages ship it); the GUI's webview module needs webkitgtk, which
-  # Homebrew does not carry, so it is left out.
+  # the packages ship it), built only when that libgit2 meets the module's
+  # floor (1.8.7 / 1.9.7 or newer, src/modules/madcgit/libgit2_floor.h). The GUI's
+  # webview module needs webkitgtk, which Homebrew does not carry, so it is
+  # left out.
   depends_on "pkgconf" => :build
   depends_on "libgit2"
   depends_on "zstd"

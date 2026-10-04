@@ -129,7 +129,7 @@ jobs:
           # reads THIS host's SDK from the MODE (print-MACOS_SDK), so the recipe
           # serves the native build with no path hardcoded to the container.
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
-          ls -la "$LIBGIT2_DIR/libgit2-${{ matrix.arch }}-macos.a" "$LIBGIT2_DIR/src/include/git2.h"
+          ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee probe-make.log

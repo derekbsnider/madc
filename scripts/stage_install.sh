@@ -109,6 +109,15 @@ gzip -9n < docs/man/madc.1 > "$p/share/man/man1/madc.1.gz"
 gzip -9n < docs/man/madcide.1 > "$p/share/man/man1/madcide.1.gz"
 install -m 644 LICENSE "$p/share/doc/madc/copyright"
 install -m 644 third_party/webview/LICENSE "$p/share/doc/madc/webview-copyright"
+# libmadcgit.so statically links the pinned libgit2 (GPLv2 WITH the linking
+# exception, which permits linking into a differently-licensed program): its
+# notice ships wherever the module does, from the staged source it was built
+# from (src/madcgit.mk's LIBGIT2_STAGE). A module built against a system
+# libgit2 (the Homebrew formula's; MADCGIT_LIBGIT2 empty) links no copy, and
+# that library's own package carries its notice.
+if [ -f "$root/$libdir/libmadcgit.so" ] && [ -n "$(make -C src -s print-MADCGIT_LIBGIT2)" ]; then
+	install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$p/share/doc/madc/libgit2-copyright"
+fi
 gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
 # The example config keeps its real name: share/doc is not on madc.ini's
 # search path, so it can never shadow a user's config.

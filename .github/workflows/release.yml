@@ -116,7 +116,7 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
             g++-13 clang make autoconf rpm cpio libzstd-dev zlib1g-dev \
-            libwebkitgtk-6.0-dev libgit2-dev
+            libwebkitgtk-6.0-dev cmake
       - name: configure
         # configure and include/config.h.in are autoconf/autoheader OUTPUT,
         # untracked by design — a clean checkout regenerates them
@@ -124,6 +124,15 @@ jobs:
         run: |
           autoreconf -i
           ./configure
+      - name: stage the minimal static libgit2 (the madcgit module links it on Linux too)
+        # Ubuntu's libgit2-dev is 1.7.2, below the floor (1.8.7 / 1.9.7 or
+        # newer, owner 2026-10-04), so the module statically links the tag
+        # src/madcgit.mk pins, staged under a runner-writable dir. It reads
+        # the build's CC/AR from src/Makefile, so it runs AFTER configure.
+        run: |
+          echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh host
+          ls -la "$(LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh --path host)"
       - name: build + package + install-gate smoke (deb, rpm, tarball)
         run: |
           # Suite skipped, citation: a v* tag exists only on content the
@@ -204,7 +213,7 @@ jobs:
         # MODE's own CC/AR from src/Makefile, so it must run AFTER configure.
         run: |
           bash scripts/stage_libgit2.sh x86-64-windows
-          ls -la /workspace/libgit2/libgit2-x86-64-windows.a /workspace/libgit2/src/include/git2.h
+          ls -la "$(bash scripts/stage_libgit2.sh --path x86-64-windows)"
       - name: initialize wine prefix
         # A fresh runner HOME has no ~/.wine; without this, the FIRST wine
         # invocation happens inside forest_pack_windows.sh's freeze and the
@@ -309,7 +318,7 @@ jobs:
         # path hardcoded to the container.
         run: |
           bash scripts/stage_libgit2.sh ${{ matrix.arch }}-macos
-          ls -la "$LIBGIT2_DIR/libgit2-${{ matrix.arch }}-macos.a" "$LIBGIT2_DIR/src/include/git2.h"
+          ls -la "$(bash scripts/stage_libgit2.sh --path ${{ matrix.arch }}-macos)"
       - name: make release-macos — host arch, self-frozen, stripped, verified
         run: |
           make -C src -j"$(sysctl -n hw.ncpu)" release-macos 2>&1 | tee release-make.log

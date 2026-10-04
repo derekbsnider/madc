@@ -269,10 +269,13 @@ madcide file.mad --lsp --attach 127.0.0.1:7777  # or name one explicitly
 
 The MCP seat's history verbs (`graph.history`, `graph.commits`,
 `graph.revision`, `graph.diff`, blame provenance) read the repository through
-the **`madcgit` module** — madc's read-only binding of the *system* libgit2
-(`lib/libmadcgit.so`, built when `libgit2-dev` is present and loaded on first
-use). libgit2 is a dependency of the IDE's nexus, never part of madc: without
-the module those verbs answer exactly as for a file outside any repository.
+the **`madcgit` module** — madc's read-only binding of libgit2
+(`lib/libmadcgit.so`, loaded on first use). The module links libgit2
+statically: `src/madcgit.mk` pins the tag (1.9.7; the floor is 1.8.7 /
+1.9.7), `scripts/stage_libgit2.sh host` builds it, and the module is built
+when that archive is present. Nothing named libgit2 ships, and no package
+depends on a system libgit2. Without the module those verbs answer exactly as
+for a file outside any repository.
 
 An ordinary `madcide file.mad` listens on a **loopback ephemeral port** so it
 can be joined; `--no-serve` opts out. `--serve <host:port>` runs headless on a

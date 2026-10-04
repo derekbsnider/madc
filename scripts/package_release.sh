@@ -28,9 +28,9 @@
 #   /usr/lib/<multiarch|lib64>/libmadcwebview.so the platform webview library (WebKitGTK 6.0 / GTK4 +
 #                                               native chrome; GUI programs: import madcwebview) —
 #                                               a WEAK dependency (Recommends): madc never loads it itself
-#   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view over the
-#                                               SYSTEM libgit2 (the nexus's PAST verbs; git:: programs) —
-#                                               a WEAK dependency too: libgit2 is the IDE's, not madc's
+#   /usr/lib/<multiarch|lib64>/libmadcgit.so    the madcgit module: madc's read-only git view, the
+#                                               pinned libgit2 linked in statically (the nexus's PAST
+#                                               verbs; git:: programs) — no libgit2 package needed
 #   /usr/share/madcide/profiles/                keybinding/theme profiles
 #   /usr/share/madcide/plugins/                 the shipped plugins (bundles: default, …)
 #   /usr/share/madcide/include/madcide/         the plugin API headers (<madcide/plugin>)
@@ -38,6 +38,7 @@
 #   /usr/share/man/man1/madc.1.gz + madcide.1.gz
 #   /usr/share/doc/madc/copyright               LICENSE (MPL-2.0)
 #   /usr/share/doc/madc/webview-copyright       webview/webview (MIT) — the webview library's notice
+#   /usr/share/doc/madc/libgit2-copyright       libgit2's COPYING — linked into libmadcgit.so
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
 #
@@ -111,9 +112,17 @@ make -C src -j"$(nproc)" release > /dev/null
 # libwebkitgtk-6.0-dev in release.yml) and shipped as a WEAK dependency:
 # madc itself never loads it, only a program that imports it does.
 make -C src -j"$(nproc)" libmadcwebview > /dev/null
-# The madcgit module (src/madcgit.mk): the read-only git view over the build
-# host's libgit2 (libgit2-dev in release.yml), shipped as a WEAK dependency —
-# the nexus degrades to "no repository" without it.
+# The madcgit module (src/madcgit.mk): the read-only git view, statically
+# linking the pinned libgit2 scripts/stage_libgit2.sh staged for this host
+# (the floor: 1.8.7 / 1.9.7 or newer; Ubuntu's libgit2 is 1.7.2). The
+# packages depend on no libgit2, so the stage is required: madcgit.mk's
+# system-libgit2 arm (the Homebrew formula's) would leave a runtime
+# dependency no package declares.
+lg2=$(bash scripts/stage_libgit2.sh --path host)
+if [ ! -f "$lg2" ]; then
+    echo "package_release: $lg2 missing — bash scripts/stage_libgit2.sh host" >&2
+    exit 1
+fi
 make -C src -j"$(nproc)" libmadcgit > /dev/null
 
 if ldd bin/madc-release | grep -Eq "qdbm|gdbm|libdb|sqlite"; then
@@ -175,7 +184,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: ${MAINT}
 Depends: libc6 (>= 2.38), libstdc++6, libgcc-s1, zlib1g, libzstd1
-Recommends: libwebkitgtk-6.0-4, libgtk-4-1, libgit2-1.7
+Recommends: libwebkitgtk-6.0-4, libgtk-4-1
 Homepage: ${HOMEPAGE}
 Description: ${SUMMARY}
 $(printf '%s\n' "$DESC_BODY" | sed 's/^/ /')
@@ -227,6 +236,7 @@ ${DESC_BODY}
 /usr/share/madcide
 %doc /usr/share/doc/madc/copyright
 %doc /usr/share/doc/madc/webview-copyright
+%doc /usr/share/doc/madc/libgit2-copyright
 %doc /usr/share/doc/madc/changelog.gz
 %doc /usr/share/doc/madc/examples/madc.ini
 /usr/share/man/man1/madc.1.gz
@@ -285,11 +295,11 @@ share/applications/chthonia.desktop and share/icons/hicolor are its
 desktop entry and icon; copy them under ~/.local/share to add it to
 your desktop's application menu.
 
-Git: lib/libmadcgit.so is madc's read-only view of a git repository over
-the system libgit2 (the \`git::\` namespace; madcide's MCP seat reads
-history, blame and revisions through it). It is loaded on first use, so
-without libgit2 installed madc runs unchanged and the IDE's history
-answers as for a file outside any repository.
+Git: lib/libmadcgit.so is madc's read-only view of a git repository, with
+libgit2 linked into it (the \`git::\` namespace; madcide's MCP seat reads
+history, blame and revisions through it). It is loaded on first use and
+needs no libgit2 installed; libgit2's notice is
+share/doc/madc/libgit2-copyright.
 
 It needs the WebKitGTK 6.0 and GTK 4 runtime libraries installed
 (Debian/Ubuntu: libwebkitgtk-6.0-4 libgtk-4-1; Fedora: webkitgtk6.0

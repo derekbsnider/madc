@@ -143,7 +143,7 @@ install -m 644 /workspace/zstd/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/zstd-LI
 install -m 644 third_party/webview/LICENSE "$STAGE/$ROOT/THIRD_PARTY_NOTICES/webview-LICENSE.txt"
 # madcgit.dll statically links libgit2 (GPLv2 WITH the linking exception, which
 # permits linking into a differently-licensed application): its notice ships.
-install -m 644 "${LIBGIT2_DIR:-/workspace/libgit2}/src/COPYING" "$STAGE/$ROOT/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
+install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" "$STAGE/$ROOT/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
 
 cat > "$STAGE/$ROOT/README-windows.txt" <<EOF
 madc ${VER} for Windows (x86_64)

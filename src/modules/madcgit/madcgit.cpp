@@ -4,9 +4,10 @@
 // value shapers, and the module's C API (include/madc/madcgit.h — what
 // `import madcgit;` binds). Read-only: nothing here writes a repository.
 //
-// libgit2 is the SYSTEM library (pkg-config libgit2), a dependency of the
-// IDE's nexus and never part of madc (owner ruling 2026-09-15, superseding the
-// L4a vendoring): this file is compiled into lib/libmadcgit.so by
+// libgit2 is a dependency of the IDE's nexus and never part of madc (owner
+// ruling 2026-09-15, superseding the L4a vendoring): linked statically from the
+// pinned stage (src/madcgit.mk), or a system libgit2 at the floor
+// (libgit2_floor.h). This file is compiled into lib/libmadcgit.so by
 // src/madcgit.mk, never into libmadc — the engine's export surface carries no
 // git_* symbol (scripts/check-c-abi-surface.sh). The module binds libmadc's
 // own symbols (value, error, the error composer, the path canonicalizer) at
@@ -19,7 +20,7 @@
 					// check-one-error-composer.sh)
 #include "madc_posix_io.h"		// canonical_path_for_compare — THE path canonicalizer
 
-#include <git2.h>
+#include "libgit2_floor.h"		// <git2.h>, refused below the floor
 
 #include <cstdint>
 #include <cstring>

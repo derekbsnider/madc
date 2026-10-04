@@ -211,7 +211,7 @@ package_arch() {
     # libmadcgit.dylib statically links libgit2 (GPLv2 WITH the linking
     # exception, which permits linking into a differently-licensed application):
     # its notice ships.
-    install -m 644 "${LIBGIT2_DIR:-/workspace/libgit2}/src/COPYING" \
+    install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" \
         "$stage/$root/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
     local ide_text=""
     if [ "$ide" = 1 ]; then

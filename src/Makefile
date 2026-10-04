@@ -745,8 +745,9 @@ pkgconfigdir ?= $(libdir)/pkgconfig
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
 MADDAT_TESTSRCS = $(TESTDIR)/test_libmadc_bdb.cpp $(TESTDIR)/test_libmadc_gdbm.cpp $(TESTDIR)/test_libmadc_qdbm.cpp $(TESTDIR)/test_libmadc_sqlite.cpp
-# The madcgit module's unit test links the module and the system libgit2:
-# madcgit.mk builds it (and adds it to TESTBINS) where pkg-config finds libgit2.
+# The madcgit module's unit test links the module and libgit2 (the staged
+# archive, or a system libgit2 at the floor): madcgit.mk builds it (and adds
+# it to TESTBINS) where one of them is present.
 MODULE_TESTSRCS = $(TESTDIR)/test_gitrepo.cpp
 ifeq ($(HAVE_MADCDAT),1)
 ACTIVE_TESTSRCS = $(filter-out $(MODULE_TESTSRCS), $(TESTSRCS))

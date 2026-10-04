@@ -7,13 +7,21 @@
 # symbol (scripts/check-c-abi-surface.sh).
 #
 # HOW libgit2 REACHES EACH TARGET (docs/plans/2026-09-15-madcgit-cross-targets-plan.md):
-#   Linux/host — the SYSTEM libgit2 (libgit2-dev, pkg-config), a weak dep the
-#     OS provides; `all` builds the module where pkg-config finds it.
-#   Windows/macOS bundles — NO package manager supplies libgit2 at runtime, so
-#     libgit2 is a BUILD REQUIREMENT statically linked INTO libmadcgit: the
-#     minimal read-only static archive scripts/stage_libgit2.sh cross-builds
-#     ($(LIBGIT2_DIR)/libgit2-<target>.a). Nothing named libgit2 ships. These
-#     arms mirror webview.mk's per-mode cross pattern.
+#   every target, Linux included — libgit2 is a BUILD REQUIREMENT statically
+#     linked INTO libmadcgit: the minimal read-only static archive
+#     scripts/stage_libgit2.sh builds for the target
+#     ($(LIBGIT2_STAGE)/libgit2-<target>.a). Nothing named libgit2 ships, and
+#     no package depends on a system libgit2. The cross arms mirror
+#     webview.mk's per-mode pattern. One exception, on the Linux/host arm
+#     only: with no stage, a SYSTEM libgit2 at the floor builds the module
+#     (Homebrew's formula depends on its own libgit2).
+#   THE FLOOR (owner 2026-10-04): libgit2 1.8.7 or 1.9.7, or newer — the
+#     releases carrying libgit2's security fixes. LIBGIT2_TAG below is the ONE
+#     pin; the staged paths carry it, so a bump re-stages.
+#     modules/madcgit/libgit2_floor.h is the ONE statement of the floor: the
+#     module refuses to compile below it, and the host arm preprocesses it to
+#     judge a system libgit2. Ubuntu 24.04's system libgit2 is 1.7.2, below the
+#     floor, which is why Linux links the staged archive too.
 #
 # The module binds libmadc's own symbols (madc::value, madc::error, the error
 # composer, the path canonicalizer) at LOAD, from the image that imported it.
@@ -22,12 +30,19 @@
 # so there the module links libmadc's import lib (../lib/libmadc.dll.a from
 # ../bin/libmadc-0.dll); at runtime those imports bind to the loaded libmadc-0.dll.
 MADCGIT_SRC = modules/madcgit/madcgit.cpp
-MADCGIT_HDRS = $(INCDIR)/madcdis/git_repo.h $(INCDIR)/madc/madcgit.h $(INCDIR)/handle_table.h
+MADCGIT_FLOOR = modules/madcgit/libgit2_floor.h
+MADCGIT_HDRS = $(INCDIR)/madcdis/git_repo.h $(INCDIR)/madc/madcgit.h $(INCDIR)/handle_table.h $(MADCGIT_FLOOR)
 MADCGIT_BUILD_DIR = ../obj/madcgit/$(MODE)
 MADCGIT_DEFAULT =
 # Where scripts/stage_libgit2.sh stages the per-target minimal static libgit2
-# and the pinned source's public headers (mirrors DARWIN_ZSTD_DIR).
+# and the pinned source's public headers (mirrors DARWIN_ZSTD_DIR), one
+# directory per pinned tag.
 LIBGIT2_DIR ?= /workspace/libgit2
+LIBGIT2_TAG := v1.9.7
+LIBGIT2_STAGE = $(LIBGIT2_DIR)/$(LIBGIT2_TAG)
+LIBGIT2_INCLUDE = $(LIBGIT2_STAGE)/src/include
+# The host's own stage target: x86-64-linux, aarch64-linux.
+LIBGIT2_HOST_TARGET := $(shell uname -m | tr _ -)-linux
 
 ifeq ($(MODE),hosted-x86-64-windows)
 # --- Windows bundle: madcgit.dll (row .windows) beside madc.exe. Self-contained
@@ -36,8 +51,8 @@ ifeq ($(MODE),hosted-x86-64-windows)
 # backends off. Uses the SAME UCRT libstdc++/pthread runtime as madc (webview
 # discipline) — never an MSVCRT libstdc++ copy.
 MADCGIT_LIBRARY = ../bin/madcgit.dll
-MADCGIT_LIBGIT2 = $(LIBGIT2_DIR)/libgit2-x86-64-windows.a
-MADCGIT_CFLAGS = -I$(LIBGIT2_DIR)/src/include
+MADCGIT_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-x86-64-windows.a
+MADCGIT_CFLAGS = -I$(LIBGIT2_INCLUDE)
 MADCGIT_LINK_FLAGS = -shared -static-libgcc -L$(WIN_UCRT_LIBSTDCXX)/lib
 MADCGIT_LIBS = $(MADCGIT_LIBGIT2) -L../lib -lmadc.dll -lws2_32 -lsecur32 -lpthread
 MADCGIT_LINK_PREREQ = ../bin/libmadc-0.dll
@@ -47,19 +62,36 @@ else ifdef HOSTED_DARWIN_TARGET
 # every mac). madc:: stays undefined -> -undefined dynamic_lookup, bound at
 # dlopen from madc (which exports its globals to dlsym without -rdynamic).
 MADCGIT_LIBRARY = $(LIBDIR)/madcgit/$(DARWIN_ARCH)-macos/libmadcgit.dylib
-MADCGIT_LIBGIT2 = $(LIBGIT2_DIR)/libgit2-$(DARWIN_ARCH)-macos.a
-MADCGIT_CFLAGS = -I$(LIBGIT2_DIR)/src/include
+MADCGIT_LIBGIT2 = $(LIBGIT2_STAGE)/libgit2-$(DARWIN_ARCH)-macos.a
+MADCGIT_CFLAGS = -I$(LIBGIT2_INCLUDE)
 MADCGIT_LINK_FLAGS = $(DARWIN_LD_FLAGS) -dynamiclib -Wl,-install_name,@rpath/libmadcgit.dylib -undefined dynamic_lookup
 MADCGIT_LIBS = $(MADCGIT_LIBGIT2) -lz
 MADCGIT_LINK_PREREQ =
 else
-# --- Linux/host: the SYSTEM libgit2 (libgit2-dev), the read-only weak dep.
-MADCGIT_AVAILABLE := $(shell pkg-config --exists libgit2 2>/dev/null && echo 1)
-MADCGIT_CFLAGS := $(shell pkg-config --cflags libgit2 2>/dev/null)
-MADCGIT_LIBS := $(shell pkg-config --libs libgit2 2>/dev/null)
-MADCGIT_LIBRARY = $(LIBDIR)/libmadcgit.so
-MADCGIT_LINK_FLAGS = -shared -fPIC -Wl,-soname,libmadcgit.so
+# --- Linux/host: the staged static libgit2 for this host
+# (scripts/stage_libgit2.sh host), linked into libmadcgit.so with the system
+# zlib madc already depends on. With no stage, a system libgit2 (pkg-config)
+# builds the module when the floor header preprocesses cleanly against its
+# flags; MADCGIT_LIBGIT2 stays empty then (no archive linked, no notice to
+# ship: the system package carries its own). `all` builds the module where
+# either is present; a release (package_release.sh) requires the stage.
+MADCGIT_STAGED = $(LIBGIT2_STAGE)/libgit2-$(LIBGIT2_HOST_TARGET).a
+ifneq ($(wildcard $(MADCGIT_STAGED)),)
+MADCGIT_LIBGIT2 = $(MADCGIT_STAGED)
+MADCGIT_AVAILABLE := 1
+MADCGIT_CFLAGS = -I$(LIBGIT2_INCLUDE)
+MADCGIT_LIBS = $(MADCGIT_LIBGIT2) -lz -lpthread
+else
 MADCGIT_LIBGIT2 =
+MADCGIT_CFLAGS := $(shell pkg-config --cflags libgit2 2>/dev/null)
+MADCGIT_AVAILABLE := $(shell pkg-config --exists libgit2 2>/dev/null && $(CXX) -E -x c++ $(MADCGIT_CFLAGS) $(MADCGIT_FLOOR) >/dev/null 2>&1 && echo 1)
+MADCGIT_LIBS := $(shell pkg-config --libs libgit2 2>/dev/null)
+endif
+MADCGIT_LIBRARY = $(LIBDIR)/libmadcgit.so
+# --exclude-libs,ALL: the static archive's git_* stay internal to the module.
+# Modules load RTLD_GLOBAL (madc_dl_open_global), so an exported copy would
+# enter the process's global scope beside any libgit2 a program loads itself.
+MADCGIT_LINK_FLAGS = -shared -fPIC -Wl,-soname,libmadcgit.so -Wl,--exclude-libs,ALL
 MADCGIT_LINK_PREREQ =
 ifeq ($(MADCGIT_AVAILABLE),1)
 MADCGIT_DEFAULT = $(MADCGIT_LIBRARY)
@@ -90,7 +122,7 @@ ifeq ($(MODE),hosted-x86-64-windows)
 else ifdef HOSTED_DARWIN_TARGET
 	@test -f $(MADCGIT_LIBGIT2) || { echo 'madcgit ($(MODE)) needs $(MADCGIT_LIBGIT2) — scripts/stage_libgit2.sh $(DARWIN_ARCH)-macos' >&2; exit 1; }
 else
-	@pkg-config --exists libgit2 || { echo 'madcgit needs libgit2 (libgit2-dev — scripts/provision_container.sh)' >&2; exit 1; }
+	@test -n "$(MADCGIT_AVAILABLE)" || { echo 'madcgit needs libgit2 1.8.7, 1.9.7 or newer: $(MADCGIT_STAGED) (scripts/stage_libgit2.sh host), or a system libgit2 at the floor' >&2; exit 1; }
 endif
 
 # A command stamp makes flag/toolchain changes rebuild the library, while
