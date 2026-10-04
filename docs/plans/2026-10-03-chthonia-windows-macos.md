@@ -200,6 +200,14 @@ Plugin design §9.3 and §9.4, in its own order:
      `chthonia.mad` and `chthonia_main.mad` (the descriptor and `main`).
      It has `"kind": "gui"`, so on Windows the image is a GUI-subsystem
      program: no console window (Step B).
+   - Its `"icon": "chthonia.ico"` (the owner's artwork, six images from 16
+     to 256 px) is the Windows icon. Done 2026-10-04: madc's PE writer lays
+     the manifest's icon out as `.rsrc` (RT_ICON 1..6, RT_GROUP_ICON 32512),
+     byte-identical to what windres + mingw-gcc produce (gated by
+     `verify_pe_release.sh` check 8). On genuine Windows 11, Explorer's icon
+     for chthonia.exe and its window's class icon (title bar, taskbar) are
+     the emblem. Linux and macOS take the owner's `Chthonia.png` in
+     packaging (a desktop file, the app bundle's `.icns`), D4.
    - The window's title is the product's name and the file, Thonny's
      `Thonny - <path> @ <line> : <col>`. Today the web target opens every
      window titled `madc` (`src/ns_ui.cpp`), and there is no op to change

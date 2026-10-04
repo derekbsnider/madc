@@ -1,6 +1,7 @@
 {
   "output": "chthonia",
   "kind": "gui",
+  "icon": "chthonia.ico",
   "tus": [
     "../madcide/madcide_base.mad",
     { "file": "../madcide/plugins/chthonia/chthonia.mad",
