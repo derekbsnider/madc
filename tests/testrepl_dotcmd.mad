@@ -1,6 +1,8 @@
 // The `.` prefix typed in the REPL (plan §7f): `madc -i` loads this file,
 // then the entries in testrepl_dotcmd.input run. cling's `.L FILE` is %load,
-// `.type` reaches the table %type does, `.?` lists the commands with their
-// aliases, `.5` stays C, and `.q` ends the REPL with status 0: the `exit(3)`
-// typed after it never runs (it would fail the test's status).
+// `.type` reaches the table %type does, `.x FILE(ARGS)` (%call) loads FILE
+// and calls the function named after it (a FILE without one runs its main),
+// `.?` lists the commands with their aliases, `.5` stays C, and `.q` ends
+// the REPL with status 0: the `exit(3)` typed after it never runs (it would
+// fail the test's status).
 int base = 7;

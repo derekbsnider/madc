@@ -751,10 +751,14 @@ namespace madc {
     //     as one unit (its statics are session names); with text, the text
     //     is the unit and path names it (an editor's buffer), with "" the
     //     file at path. session_run(h, argv): call its main with argv (an
-    //     array of strings: the path, then the arguments). Each returns its
+    //     array of strings: the path, then the arguments).
+    //     session_call(h, argv): %call's call once its file is loaded (argv
+    //     is the offer reply's: the file, then the call's text) — the
+    //     function named after the file, else its main. Each returns its
     //     seq; the replies are `load` (ok, rendered) and `run` (ok, rendered,
-    //     status: main's return value) rows. The cores of %load and %run
-    //     (D25), and madcide's F5 (plan §41.10a).
+    //     status: main's return value; shown: a call's value) rows. The
+    //     cores of %load, %run and %call (D25), and madcide's F5 (plan
+    //     §41.10a).
     //   session_bindings(h): the names the session defined (%whos's rows;
     //     madcide's Variables view, plan §41.11a step 3d). Its seq; the
     //     reply is a `bindings` row whose rows are {name, kind (a
@@ -775,8 +779,9 @@ namespace madc {
     //     returns), payload (a madc::session_payload code: what a taken
     //     command asks the pane to do with argv, the file and its
     //     arguments — load it, run it here, or run it in a fresh session,
-    //     reading an open buffer's live text; or, with no argv, end the
-    //     session: %quit); a load's ok, rendered,
+    //     reading an open buffer's live text; load it and session_call
+    //     argv: %call; or, with no argv, end the session: %quit); a load's
+    //     ok, rendered,
     //     diagnostics and main (the file defined main, so running it runs
     //     main: one an earlier unit defined is not the file's); a run's ok,
     //     rendered, status (main's) and diagnostics (the rows recorded since
@@ -802,6 +807,7 @@ namespace madc {
     int64_t session_complete(int64_t handle, const char *text, int64_t caret);
     int64_t session_load(int64_t handle, const char *path, const char *text);
     int64_t session_run(int64_t handle, value &argv);
+    int64_t session_call(int64_t handle, value &argv);
     int64_t session_bindings(int64_t handle);
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);

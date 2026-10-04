@@ -42,7 +42,9 @@
 //      is an earlier file's); a file that does not open is refused, its
 //      error shown once;
 //  12. the `.` prefix (plan §7f): `.q` ends the session and a fresh one
-//      starts (an earlier name is gone); `.L FILE` loads FILE.
+//      starts (an earlier name is gone); `.L FILE` loads FILE; `.x
+//      FILE(ARGS)` loads FILE and shows the call of the function named
+//      after it.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -384,17 +386,20 @@ int main()
 	    es_int(w, es, "replbusy", -1));
 
     // 12. The `.` prefix (plan §7f): `.q` ends the session and the pane
-    // starts a fresh one, as when a backend ends; `.L` is %load.
+    // starts a fresh one, as when a backend ends; `.L` is %load; `.x` loads
+    // its file and the session calls the function named after it.
     mark = transcript_size(w, es);
     enter_line(S, doc, w, es, ".q");
     enter_line(S, doc, w, es, ".L tests/testrepl_runcmd_lib.mad");
     enter_line(S, doc, w, es, "thrice(5)");
     enter_line(S, doc, w, es, "quad(3)");
+    enter_line(S, doc, w, es, ".x tests/testrepl_dotcmd_area.mad(6, 7)");
     transcript_since(got, w, es, mark);
-    println("dot: ended={} loaded={} fresh={} busy={}",
+    println("dot: ended={} loaded={} fresh={} called={} busy={}",
 	    rust::contains(got.c_str(), "[the session ended; a new one started]") != 0,
 	    rust::contains(got.c_str(), "\n15\n") != 0,
 	    rust::contains(got.c_str(), "undefined reference to 'quad'") != 0,
+	    rust::contains(got.c_str(), "\n4201\n") != 0,
 	    es_int(w, es, "replbusy", -1));
     S.close();				// stops the pump and the session
     php::unlink(path);

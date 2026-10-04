@@ -2,6 +2,9 @@
 thrice(base)
 .type base * 2.5
 .5 + base
+.x tests/testrepl_dotcmd_area.mad(6, 7)
+testrepl_dotcmd_area(2, 3)
+.x tests/testrepl_runcmd_prog.mad
 .?
 .q
 exit(3);

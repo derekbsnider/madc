@@ -66,6 +66,8 @@ const CommandRow command_rows[] = {
       "define FILE's names in this session; nothing runs" },
     { "run", InteractiveSession::Command::run, "%run [-i] FILE [ARGS]",
       "FILE's main with ARGS, in a fresh session (-i: this one); its names stay" },
+    { "call", InteractiveSession::Command::call, "%call FILE[(ARGS)]",
+      "FILE loaded, then the function named after it called with ARGS, else FILE's main" },
     { "quit", InteractiveSession::Command::quit, "%quit",
       "end the session" },
 };
@@ -85,6 +87,7 @@ const AliasRow alias_rows[] = {
     { "L", InteractiveSession::Command::load },		// cling's .L
     { "q", InteractiveSession::Command::quit },		// cling's .q
     { "exit", InteractiveSession::Command::quit },	// Node's .exit
+    { "x", InteractiveSession::Command::call },		// cling's .x
 };
 
 const size_t alias_count = sizeof(alias_rows) / sizeof(alias_rows[0]);
@@ -505,6 +508,8 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return load_command(command_argument(text, c), name);
 	case Command::run:
 	    return run_file_command(command_argument(text, c), name);
+	case Command::call:
+	    return call_command(command_argument(text, c), name);
 	case Command::quit:
 	    return quit_command(command_argument(text, c), name);
     }
@@ -618,11 +623,135 @@ bool InteractiveSession::file_command(madc::session_payload kind,
     }
     if ( kind == madc::session_payload::load )
 	return load(words[0]);
+    if ( kind == madc::session_payload::call )
+	return load(words[0]) && call_file(words[0], words[1], NULL);
     std::vector<char *> argv;
     for ( std::string &w : words )
 	argv.push_back(&w[0]);
     argv.push_back(NULL);
     return run_file((int)words.size(), argv.data());
+}
+
+// `%call FILE(ARGS)` (cling's .x; plan §7f): FILE is the argument up to its
+// `(`, and the call's parenthesized ARGS end the line; without them the call
+// takes none. The command's words are FILE and the call's text: the line with
+// everything before its `(` blanked, so the call's diagnostics cite the
+// columns typed. FILE loads, here or by a host that honors payloads (the
+// `call` payload), and call_file makes the call.
+bool InteractiveSession::call_command(const std::string &argument,
+				      const std::string &name)
+{
+    static const char blanks[] = " \t\r";
+    const size_t open = argument.find('(');
+    size_t file_end = open == std::string::npos ? argument.size() : open;
+    while ( file_end > 0 && strchr(blanks, argument[file_end - 1]) )
+	--file_end;
+    const size_t b = argument.find_first_not_of(blanks);
+    if ( b == std::string::npos || b >= file_end )
+    {
+	command_error("%call needs a FILE", name);
+	return false;
+    }
+    std::string call;
+    if ( open == std::string::npos )
+	call = std::string(file_end, ' ') + "()";
+    else
+    {
+	const size_t close = argument.find_last_not_of(blanks);
+	if ( argument[close] != ')' )
+	{
+	    command_error("%call's arguments end the line: %call FILE(ARGS)", name);
+	    return false;
+	}
+	call = std::string(open, ' ') + argument.substr(open, close + 1 - open);
+    }
+    std::vector<std::string> words;
+    words.push_back(argument.substr(b, file_end - b));
+    words.push_back(call);
+    return file_command(madc::session_payload::call, words);
+}
+
+// Does a session unit (an entry, a loaded file) define a function NAME?
+// The bindings' rows (%whos's) are the one record.
+bool InteractiveSession::defines_function(const std::string &name)
+{
+    std::vector<Program::SessionBinding> found;
+    prog->session_bindings(found);
+    for ( const Program::SessionBinding &b : found )
+	if ( b.kind == madc::name_kind::function && b.name == name )
+	    return true;
+    return false;
+}
+
+bool InteractiveSession::call_file(const std::string &path,
+				   const std::string &call, int *status)
+{
+    const std::string name = "REPL[" + std::to_string(submit_count) + "]";
+    showed_command = true;
+    command_output.clear();
+    // The function is named after FILE: its name without the directory and
+    // the last extension (cling's rule). Else FILE's own main (a main an
+    // earlier unit defined is not FILE's, as for %run).
+    const size_t sep = path.find_last_of("/\\");
+    std::string stem = sep == std::string::npos ? path : path.substr(sep + 1);
+    const size_t dot = stem.rfind('.');
+    if ( dot != std::string::npos && dot > 0 )
+	stem.erase(dot);
+    std::string callee;
+    if ( defines_function(stem) )
+	callee = stem;
+    else if ( load_main )
+	callee = "main";
+    else
+    {
+	command_error("%call: " + path + " defines no function " + stem
+		      + ", and no main", name);
+	render_pending_diagnostics();
+	return false;
+    }
+    const size_t open = call.find('(');
+    const size_t close = call.rfind(')');
+    if ( open == std::string::npos || close == std::string::npos || close < open )
+    {
+	command_error("%call FILE(ARGS)", name);
+	render_pending_diagnostics();
+	return false;
+    }
+    if ( callee == "main"
+      && call.find_first_not_of(" \t", open + 1) == close )
+    {
+	// main with no arguments runs as %run -i runs it: argv is FILE.
+	std::string arg0(path);
+	char *argv[] = { &arg0[0], NULL };
+	int st = 0;
+	const bool ok = run_main(1, argv, &st);
+	if ( status )
+	    *status = st;
+	render_pending_diagnostics();
+	return ok;
+    }
+    // The call is an entry under the command's REPL[N]: callee(ARGS), the
+    // callee's name ending at the `(`, its value shown (D10) and kept by
+    // none (a command keeps no result, D12).
+    const std::string text = open >= callee.size()
+	? std::string(open - callee.size(), ' ') + callee + call.substr(open)
+	: callee + call.substr(open);
+    Program::EntryTransaction entry(*prog);
+    prog->entry_number = submit_count;
+    Program::EntryVerdict verdict = prog->parse_entry(text, name);
+    render_pending_diagnostics();
+    if ( verdict != Program::EntryVerdict::Complete
+      && verdict != Program::EntryVerdict::CompleteExtendable )
+	return false;
+    bool linked = false;
+    const bool ok = link_and_run(*prog, *jit, entry, prog->intern_file(name), linked);
+    if ( linked )
+    {
+	++entry_count;
+	prog->session_units.insert(name);
+    }
+    command_output = prog->entry_shown;
+    return ok;
 }
 
 // `%type EXPR` (plan §41.8a): the expression's type, never run. It is parsed

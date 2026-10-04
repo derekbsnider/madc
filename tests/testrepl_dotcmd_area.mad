@@ -1,0 +1,3 @@
+// The file testrepl_dotcmd.input calls with cling's `.x`: the function named
+// after the file is called with the arguments typed.
+int testrepl_dotcmd_area(int w, int h) { return w * h * 100 + 1; }

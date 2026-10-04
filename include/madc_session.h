@@ -154,7 +154,7 @@ public:
     // The typed name, a command's or an alias's (cling's `.L`, plan §7f),
     // becomes one of these codes once, at input. `?NAME` is %pinfo NAME, and
     // `?` alone %help (IPython).
-    enum class Command : unsigned char { help, type, pinfo, whos, load, run, quit };
+    enum class Command : unsigned char { help, type, pinfo, whos, load, run, call, quit };
     // What the last taken command asks its host (IPython's payloads; the
     // codes are <bits/session_enums>' session_payload), with payload_argv()
     // — the file, then its arguments. A host that honors them says so with
@@ -162,8 +162,9 @@ public:
     // file, an IDE's open buffer as its live text, and only a client can
     // start a FRESH session for %run, D16). With any other host the session
     // loads %load's and %run -i's file itself, and %run refuses, naming
-    // %run -i. %quit's payload has no argv; a host that honors no payloads
-    // reads %quit from ended().
+    // %run -i. %call's payload is FILE, then the call's text: the host loads
+    // FILE, then asks for the call (call_file). %quit's payload has no argv;
+    // a host that honors no payloads reads %quit from ended().
     madc::session_payload payload() const { return payload_kind; }
     const std::vector<std::string> &payload_argv() const { return payload_args; }
     void host_honors_payloads(bool on) { payload_host = on; }
@@ -171,6 +172,16 @@ public:
     // not the file's: a second main is refused): only then does running the
     // file run main (run_file, and a host's run after its load).
     bool loaded_main() const { return load_main; }
+    // %call's call (cling's .x; plan §7f), once FILE (`path`) is loaded: the
+    // function named after FILE (its name without the directory and the last
+    // extension), else FILE's main, with the arguments `call` holds — the
+    // command's line with everything before its `(` blanked, so a diagnostic
+    // cites the column typed. The call is an entry under the command's
+    // REPL[N]; its value is shown() and kept by none (D12). FILE's main with
+    // no arguments runs as %run -i runs it (argv: FILE; its return value to
+    // *status). False when the session defines neither, or the call was
+    // refused or stopped.
+    bool call_file(const std::string &path, const std::string &call, int *status);
     // The names the session defined (plan §41.11a step 3d): the one owner
     // %whos and the bindings wire op read. A row per object and function a
     // session unit (an entry, a loaded file) defined, sorted by name:
@@ -201,7 +212,10 @@ private:
     // shell's rules (ns_common::shell_words).
     bool load_command(const std::string &argument, const std::string &name);
     bool run_file_command(const std::string &argument, const std::string &name);
+    bool call_command(const std::string &argument, const std::string &name);
     bool quit_command(const std::string &argument, const std::string &name);
+    // A session unit (an entry, a loaded file) defines a function NAME.
+    bool defines_function(const std::string &name);
     // A file command's file, once it opens: the payload `kind` for a host
     // that honors payloads, else loaded (and run) here.
     bool file_command(madc::session_payload kind, std::vector<std::string> &words);

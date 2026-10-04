@@ -2178,6 +2178,113 @@ TEST_CASE("session commands: the `.` prefix, alias rows and %quit (§7f)")
     std::remove(lib.c_str());
 }
 
+// TEXT in a fresh temporary file, each `@` in it replaced by the file's stem
+// (its name without the directory and an extension: the function %call
+// calls); the path, the stem through `stem`.
+static std::string temp_named_source(const char *text, const char *prefix,
+				     std::string &stem)
+{
+    std::string path;
+    int fd = madc::detail::make_temp_file(prefix, path);
+    REQUIRE(fd >= 0);
+    const size_t sep = path.find_last_of("/\\");
+    stem = sep == std::string::npos ? path : path.substr(sep + 1);
+    const size_t dot = stem.rfind('.');
+    if ( dot != std::string::npos && dot > 0 )
+	stem.erase(dot);
+    std::string body;
+    for ( const char *p = text; *p; ++p )
+	body += *p == '@' ? stem : std::string(1, *p);
+    CHECK(madc::detail::write_fd_without_sigpipe(fd, body.data(), body.size())
+	  == (ssize_t)body.size());
+    ::close(fd);
+    return path;
+}
+
+// cling's `.x FILE(ARGS)` (plan §7f): FILE loads, then the function named
+// after it is called with ARGS (none without them), its value shown and its
+// diagnostics citing the columns typed; a FILE with no such function runs its
+// own main (with no ARGS as %run -i runs it); one with neither is refused. A
+// payload host gets FILE and the call's text, loads FILE, and call_file
+// makes the call.
+TEST_CASE("session commands: %call (.x) calls the function named after FILE (§7f)")
+{
+    std::string two, zero, bad, solo, withargs, none, host;
+    std::string f2 = temp_named_source("int @(int a, int b) { return a * 10 + b; }\n",
+				       "madc_repl_calltwo", two);
+    std::string f0 = temp_named_source("int @(void) { return 7; }\n",
+				       "madc_repl_callzero", zero);
+    std::string fb = temp_named_source("int @(int a, int b) { return a + b; }\n",
+				       "madc_repl_callbad", bad);
+    std::string m1 = temp_named_source(
+	"int solo_ran = 0;\n"
+	"int main(int argc, char **argv) { solo_ran = argc + 40; return 0; }\n",
+	"madc_repl_callsolo", solo);
+    std::string m2 = temp_named_source(
+	"int args_ran = 0;\n"
+	"int main(int argc, char **argv) { args_ran = argc; return 5; }\n",
+	"madc_repl_callargs", withargs);
+    std::string nf = temp_named_source("int nothing_here = 1;\n",
+				       "madc_repl_callnone", none);
+    std::string fh = temp_named_source("int @(int a, int b) { return a * b; }\n",
+				       "madc_repl_callhost", host);
+
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    std::ostringstream err;
+    s.program().error_stream = &err;
+    REQUIRE(s.submit(".x " + f2 + "(4, 2)"));
+    CHECK(s.shown() == "42");
+    REQUIRE(s.submit(two + "(1, 1)"));		// its names stay
+    CHECK(s.shown() == "11");
+    REQUIRE(s.submit("%call " + f0));		// no ARGS: it takes none
+    CHECK(s.shown() == "7");
+    REQUIRE(s.submit(".x " + m1));		// FILE's main, as %run -i runs it
+    REQUIRE(s.submit("solo_ran"));
+    CHECK(s.shown() == "41");
+    // Refused: the call's undeclared argument at the column typed, a FILE
+    // with neither function, no FILE, and text after the call.
+    err.str("");
+    CHECK_FALSE(s.submit(".x " + fb + "(4, nope)"));
+    CHECK(err.str().find(":1:" + std::to_string(3 + fb.size() + 5) + ": ")
+	  != std::string::npos);
+    CHECK(err.str().find("undeclared identifier 'nope'") != std::string::npos);
+    CHECK_FALSE(s.submit(".x " + nf));
+    CHECK(first_error(s) == "%call: " + nf + " defines no function " + none
+			    + ", and no main");
+    CHECK_FALSE(s.submit("%call"));
+    CHECK(first_error(s) == "%call needs a FILE");
+    CHECK_FALSE(s.submit("%call " + f2 + "(1, 2) + 3"));
+    CHECK(first_error(s) == "%call's arguments end the line: %call FILE(ARGS)");
+
+    // A second main is refused, so FILE's main with ARGS has its own session.
+    InteractiveSession t;
+    REQUIRE(t.begin("--std=c17"));
+    REQUIRE(t.submit(".x " + m2 + "(3, 0)"));	// FILE's main, called with ARGS
+    CHECK(t.shown() == "5");
+    REQUIRE(t.submit("args_ran"));
+    CHECK(t.shown() == "3");
+
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit(".x " + fh + "(5, 6)"));
+    CHECK(h.payload() == madc::session_payload::call);
+    REQUIRE(h.payload_argv().size() == 2u);
+    CHECK(h.payload_argv()[0] == fh);
+    CHECK(h.payload_argv()[1] == std::string(3 + fh.size(), ' ') + "(5, 6)");
+    CHECK(h.function(host.c_str()) == (void *)NULL);	// nothing loaded yet
+    const std::vector<std::string> argv = h.payload_argv();
+    REQUIRE(h.load(argv[0]));
+    int status = -1;
+    REQUIRE(h.call_file(argv[0], argv[1], &status));
+    CHECK(h.shown() == "30");
+
+    const std::string files[] = { f2, f0, fb, m1, m2, nf, fh };
+    for ( const std::string &f : files )
+	std::remove(f.c_str());
+}
+
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
 // knows of a name, in IPython's fields, each overload with its location
 // (Julia), from the walk completion reads: `?` describes a name exactly

@@ -137,6 +137,7 @@ const PayloadRow payload_rows[] = {
     { "load", madc::session_payload::load },
     { "run", madc::session_payload::run },
     { "run_here", madc::session_payload::run_here },
+    { "call", madc::session_payload::call },
     { "quit", madc::session_payload::quit },
 };
 
@@ -362,15 +363,26 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    case Op::run:
 	    {
 		// main(argc, argv) at the entry boundary: the path, then the
-		// program's arguments. Its status is not the backend's.
+		// program's arguments. Its status is not the backend's. With
+		// `call` (%call's, cling's .x), argv is the file and the call's
+		// text, and call_file makes the call; its value shows.
 		std::vector<std::string> args =
 		    req.value("argv", std::vector<std::string>());
-		std::vector<char *> argv;
-		for ( std::string &a : args )
-		    argv.push_back(&a[0]);
-		argv.push_back(NULL);
 		int status = 0;
-		rep["ok"] = session.run_main((int)args.size(), argv.data(), &status);
+		if ( req.value("call", false) )
+		{
+		    rep["ok"] = args.size() == 2
+				&& session.call_file(args[0], args[1], &status);
+		    rep["shown"] = session.shown();
+		}
+		else
+		{
+		    std::vector<char *> argv;
+		    for ( std::string &a : args )
+			argv.push_back(&a[0]);
+		    argv.push_back(NULL);
+		    rep["ok"] = session.run_main((int)args.size(), argv.data(), &status);
+		}
 		rep["status"] = status;
 		attach_diagnostics(rep, session);
 		break;
@@ -776,13 +788,15 @@ unsigned SessionClient::bindings()
     return send(req.dump()) ? seq : 0;
 }
 
-unsigned SessionClient::run(const std::vector<std::string> &argv)
+unsigned SessionClient::run(const std::vector<std::string> &argv, bool call)
 {
     nlohmann::json req;
     const unsigned seq = next_seq++;
     req["seq"] = seq;
     req["op"] = op_name(Op::run);
     req["argv"] = argv;
+    if ( call )
+	req["call"] = true;
     return send(req.dump()) ? seq : 0;
 }
 
@@ -904,6 +918,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 	case Op::run:
 	    reply.kind = Reply::Kind::run;
 	    reply.status = j.value("status", 0);
+	    reply.shown = j.value("shown", std::string());	// a call's
 	    break;
 	case Op::continues:
 	    reply.kind = Reply::Kind::continues;
@@ -1054,6 +1069,8 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	return true;
     if ( reply.payload == madc::session_payload::load )
 	return load_file(reply.argv[0]);
+    if ( reply.payload == madc::session_payload::call )
+	return call_file(reply.argv);
     if ( reply.payload == madc::session_payload::run && !client.restart() )
     {
 	err << "madc: " << client.last_error() << std::endl;
@@ -1116,6 +1133,22 @@ bool BackendSession::run_file(int argc, char **argv)
     return true;
 }
 
+// %call's (cling's .x): FILE loaded, then the backend's call_file makes the
+// call; its value is the entry's shown.
+bool BackendSession::call_file(const std::vector<std::string> &argv)
+{
+    if ( argv.size() != 2 || !load_file(argv[0]) )
+	return false;
+    SessionClient::Reply r;
+    std::string output;
+    HostIgnoresInterrupt quiet;
+    int rc = client.run_wait(argv, r, output, true);
+    if ( !settle(rc, r, output) )
+	return false;
+    shown_text = r.shown;
+    return r.ok;
+}
+
 bool BackendSession::ended(int &status) const
 {
     if ( has_ended )
@@ -1175,9 +1208,10 @@ int SessionClient::load_wait_text(const std::string &text, const std::string &pa
 }
 
 int SessionClient::run_wait(const std::vector<std::string> &argv, Reply &reply,
-			    std::string &output)
+			    std::string &output, bool call)
 {
-    return wait_reply(run(argv), reply, output, -1, InteractiveSession::TakenHook());
+    return wait_reply(run(argv, call), reply, output, -1,
+		      InteractiveSession::TakenHook());
 }
 
 int SessionClient::continues_wait(const std::string &line, Reply &reply)

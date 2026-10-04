@@ -233,6 +233,7 @@ void repl_clear_marks(long w, long es)
     ui::set(w, es, "replloadseq", 0);
     ui::set(w, es, "replrunseq", 0);
     ui::set(w, es, "replbseq", 0);
+    ui::set(w, es, "replruncall", 0);
 }
 
 // The `--std=` spelling a backend for `doc` takes: the standard the buffer
@@ -396,14 +397,19 @@ void repl_reply(long w, long es, var &r)
     }
     if ( r["kind"] == madc::session_reply::load )
     {
-	// A file loaded (F5's buffer, a typed %run's or %load's file): its
-	// main, when it defined one, runs, and the lines typed meanwhile are
-	// main's stdin, as for a running entry; %load's runs nothing. Refused:
+	// A file loaded (F5's buffer, a typed %run's, %load's or %call's
+	// file): its main, when it defined one, runs (%call's: its call), and
+	// the lines typed meanwhile are its stdin, as for a running entry;
+	// %load's runs nothing. Refused:
 	// its diagnostics, and the prompt is the session's (a fresh run's is
 	// fresh and empty).
 	if ( seq != es_int(w, es, "replloadseq", 0) )
 	    return;
 	ui::set(w, es, "replloadseq", 0);
+	// %call's file: the session makes the call (the function named after
+	// the file, else its main), whether or not the file defined main.
+	bool calls = es_int(w, es, "replruncall", 0) != 0;
+	ui::set(w, es, "replruncall", 0);
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
 	repl_problems(w, es, r);
@@ -415,7 +421,7 @@ void repl_reply(long w, long es, var &r)
 	}
 	var argv;
 	ui::get(argv, w, es, "replrunargv");
-	if ( php::count(argv) == 0 || !(r["main"] == true) )
+	if ( !calls && (php::count(argv) == 0 || !(r["main"] == true)) )
 	{
 	    // Nothing runs (%load, or a file without main: a main an
 	    // earlier unit defined is not the file's): its work is done.
@@ -423,7 +429,8 @@ void repl_reply(long w, long es, var &r)
 	    repl_publish(w, es, reRAN, r);
 	    return;
 	}
-	long rs = madc::session_run(es_int(w, es, "replh", 0), argv);
+	long h = es_int(w, es, "replh", 0);
+	long rs = calls ? madc::session_call(h, argv) : madc::session_run(h, argv);
 	ui::set(w, es, "replrunseq", rs);
 	ui::set(w, es, "replbusy", rs);
 	ui::set(w, es, "replrunning", 1);
@@ -431,12 +438,16 @@ void repl_reply(long w, long es, var &r)
     }
     if ( r["kind"] == madc::session_reply::run )
     {
-	// F5's main returned: what it printed came before this reply.
+	// F5's main (or %call's call) returned: what it printed came before
+	// this reply.
 	if ( seq != es_int(w, es, "replrunseq", 0) )
 	    return;
 	ui::set(w, es, "replrunseq", 0);
 	ui::set(w, es, "replbusy", 0);
 	ui::set(w, es, "replrunning", 0);
+	var sv = r["shown"];			// a %call's value
+	if ( strlen(sv.c_str()) > 0 )
+	    repl_feed(w, es, format("{}\n", sv));
 	var rd = r["rendered"];
 	repl_feed(w, es, rd.c_str());
 	repl_problems(w, es, r);
@@ -667,9 +678,11 @@ void repl_on_language(long w, long es, long doc, var &event)
 // restarts a session that already existed under `doc`'s standard first, so
 // the run is clean and an entry still running stops with the old one.
 // `line`, when not empty, goes to the transcript as the prompt's entry (F5's
-// `%run name args`; a typed command's line is already there).
+// `%run name args`; a typed command's line is already there). `call`
+// (%call): argv is the file and the call's text, and the session makes the
+// call (session_call) instead of running main.
 bool repl_load_file(long w, long es, long doc, const char *p, const char *text,
-		    var &argv, const char *line, bool fresh)
+		    var &argv, const char *line, bool fresh, bool call)
 {
     var path = p;			// ring discipline: own the texts first
     var body = text;
@@ -691,6 +704,7 @@ bool repl_load_file(long w, long es, long doc, const char *p, const char *text,
 	console_entry_display(shown, pr.c_str(), shown_line.c_str());
 	repl_feed(w, es, format("{}\n", shown));
     }
+    ui::set(w, es, "replruncall", call ? 1 : 0);
     long seq = madc::session_load(h, path.c_str(), body.c_str());
     ui::set(w, es, "replloadseq", seq);
     ui::set(w, es, "replrunpath", path);
@@ -735,13 +749,15 @@ void repl_run(long w, long es, long doc)
 	line = format("%run {} {}", name, args);
     var argv;
     program_argv(argv, p.c_str(), args.c_str());
-    repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, line.c_str(), true);
+    repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, line.c_str(), true,
+		   false);
 }
 
 // A typed file command (plan §7f): the engine split the line and asks, as
 // IPython's payloads do, for its file to be loaded — %load (nothing runs),
-// %run -i (main runs in this session) or %run (main runs in a fresh one,
-// which is this pane's to start). An open buffer of the file is its live
+// %run -i (main runs in this session), %run (main runs in a fresh one,
+// which is this pane's to start) or %call (the session then calls the
+// function named after the file, else its main). An open buffer of the file is its live
 // text and compiles under its standard, as F5 runs it; otherwise the file
 // loads from disk (session_load's empty text reads it) under the active
 // buffer's. False when nothing was sent.
@@ -760,10 +776,14 @@ bool repl_run_payload(long w, long es, var &r)
     if ( r["payload"] == madc::session_payload::load )
     {
 	var noargs = {};
-	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), noargs, "", false);
+	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), noargs, "", false,
+			      false);
     }
+    if ( r["payload"] == madc::session_payload::call )	// then the call
+	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, "", false,
+			      true);
     return repl_load_file(w, es, doc, p.c_str(), text.c_str(), argv, "",
-			  r["payload"] == madc::session_payload::run);
+			  r["payload"] == madc::session_payload::run, false);
 }
 
 // The console view's state (repl.pane), as composition reads it: the

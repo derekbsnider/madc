@@ -86,7 +86,8 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["submitted"] = madc::value((int64_t)r.submitted);
 	    f["diagnostics"] = reply_diagnostics(r);
 	    // A taken command's ask (a session_payload code; argv is the file,
-	    // then its arguments): the pane honors it (%load, %run, %run -i).
+	    // then its arguments): the pane honors it (%load, %run, %run -i,
+	    // %call, %quit).
 	    f["payload"] = madc::value((int64_t)r.payload);
 	    if ( r.payload != madc::session_payload::none )
 	    {
@@ -115,7 +116,10 @@ madc::value reply_row(const SessionClient::Reply &r)
 	    f["rendered"] = madc::value(r.rendered);
 	    f["diagnostics"] = reply_diagnostics(r);
 	    if ( r.kind == madc::session_reply::run )
+	    {
 		f["status"] = madc::value((int64_t)r.status);
+		f["shown"] = madc::value(r.shown);	// a call's value
+	    }
 	    else
 		f["main"] = madc::value(r.defines_main);
 	    break;
@@ -200,7 +204,8 @@ int64_t session_bindings(int64_t handle)
     return s ? (int64_t)s->client.bindings() : 0;
 }
 
-int64_t session_run(int64_t handle, value &argv)
+// session_run's and session_call's one request: argv as strings.
+static int64_t run_request(int64_t handle, value &argv, bool call)
 {
     SessionHandle *s = session_of(handle);
     if ( !s || !argv.is_array() )
@@ -208,7 +213,17 @@ int64_t session_run(int64_t handle, value &argv)
     std::vector<std::string> args;
     for ( const value &a : argv.as_array() )
 	args.push_back(a.is_string() ? a.as_string() : std::string());
-    return (int64_t)s->client.run(args);
+    return (int64_t)s->client.run(args, call);
+}
+
+int64_t session_run(int64_t handle, value &argv)
+{
+    return run_request(handle, argv, false);
+}
+
+int64_t session_call(int64_t handle, value &argv)
+{
+    return run_request(handle, argv, true);
 }
 
 int64_t session_poll(value &reply, int64_t handle)

@@ -82,7 +82,8 @@ public:
 	// An offer's: the verdict, and once taken, the result, the shown
 	// value, the entries taken so far (REPL[N]), the rendered diagnostics
 	// (the text the CLI prints) and their rows (diagnostic rows: severity,
-	// phase, message, file, line, column).
+	// phase, message, file, line, column). A call's run reply (%call) has
+	// a shown value too.
 	InteractiveSession::OfferState state;
 	bool ok;
 	unsigned submitted;
@@ -92,8 +93,9 @@ public:
 	// A taken command's ask of its host (IPython's payloads; a
 	// <bits/session_enums> session_payload): the file and its arguments in
 	// `argv`, for the host to load (%load), run here (%run -i) or run in
-	// a fresh session (%run, D16: restart, load, run, as F5 does); or,
-	// with no argv, to end the session (%quit).
+	// a fresh session (%run, D16: restart, load, run, as F5 does), or to
+	// load it and make the call (%call: argv is the file and the call's
+	// text); or, with no argv, to end the session (%quit).
 	::madc::session_payload payload;
 	std::vector<std::string> argv;
 	// A completion's: the word's start and the names.
@@ -127,7 +129,11 @@ public:
     unsigned load(const std::string &path);
     // The same for a file's text, named `path` (an editor's buffer).
     unsigned load_text(const std::string &text, const std::string &path);
-    unsigned run(const std::vector<std::string> &argv);
+    // With `call` (%call's, cling's .x), argv is the file and the call's
+    // text: the session calls the function named after the file, else its
+    // main (InteractiveSession::call_file), and the reply's shown is the
+    // call's value.
+    unsigned run(const std::vector<std::string> &argv, bool call = false);
     // D11's question, asked of the session's standard: does `line` continue
     // an if that ended an entry (its first word is `else`)?
     unsigned continues(const std::string &line);
@@ -158,7 +164,7 @@ public:
     int load_wait_text(const std::string &text, const std::string &path,
 		       Reply &reply, std::string &output);
     int run_wait(const std::vector<std::string> &argv, Reply &reply,
-		 std::string &output);
+		 std::string &output, bool call = false);
     int continues_wait(const std::string &line, Reply &reply);
     int bindings_wait(Reply &reply, int timeout_ms = -1);
 
@@ -237,9 +243,13 @@ private:
     bool settle(int rc, const SessionClient::Reply &reply, const std::string &output);
     // A taken command's ask (IPython's payloads): load_file(argv[0])
     // (%load), run_file(argv) (%run -i), or, for %run's fresh session
-    // (D16), the backend restarted first, as F5 does; %quit ends the
-    // session (ended()). False when it was refused or did not start.
+    // (D16), the backend restarted first, as F5 does; call_file(argv)
+    // (%call); %quit ends the session (ended()). False when it was refused
+    // or did not start.
     bool honor(const SessionClient::Reply &reply);
+    // %call's: FILE (argv[0]) loaded, then the call (argv[1], the call's
+    // text) made by the backend; shown() is its value.
+    bool call_file(const std::vector<std::string> &argv);
     // FILE loaded into the session (D25), its diagnostics shown; false
     // when it was refused. *defines_main: FILE defined main.
     bool load_file(const std::string &path, bool *defines_main = NULL);
@@ -269,6 +279,7 @@ int64_t session_offer(int64_t handle, const char *text, bool final);
 int64_t session_complete(int64_t handle, const char *text, int64_t caret);
 int64_t session_load(int64_t handle, const char *path, const char *text);
 int64_t session_run(int64_t handle, value &argv);
+int64_t session_call(int64_t handle, value &argv);
 int64_t session_poll(value &reply, int64_t handle);
 value &session_output(value &out, int64_t handle);
 bool session_input(int64_t handle, const char *text);

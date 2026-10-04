@@ -1,6 +1,10 @@
 21
 double
 7.5
+4201
+601
+main argc=1
 %load FILE             define FILE's names in this session; nothing runs (also .L)
+%call FILE[(ARGS)]     FILE loaded, then the function named after it called with ARGS, else FILE's main (also .x)
 %quit                  end the session (also .q, .exit)
 Each name is also written with `:` or `.` (`:type EXPR`, `.L FILE`).
