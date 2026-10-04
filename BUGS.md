@@ -682,6 +682,25 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B167. `#include <windows.h>` is refused on win64 (objidl.h: `CLIPFORMAT`)
+
+```c
+#include <windows.h>
+int main(void) { return 0; }
+```
+
+- x86_64-w64-mingw32-gcc 13 (`-std=c17`): compiles, exit 0. madc
+  `--std=c17` under wine (2026-10-04), both `bin/madc-hosted-x86-64-windows.exe`
+  and the release set's `madc.exe`: exit 1, 515 errors, the first
+  `objidl.h:9546:9: Expecting type after 'typedef', got 'CLIPFORMAT'`.
+  `#include <objidl.h>` alone: exit 1, 1016 errors.
+- So a C program for Windows that includes `<windows.h>` does not compile
+  with madc on Windows. `tests/testwebviewrunstop` declares the Win32
+  types it needs by hand for this reason.
+- Layer not yet traced: where `CLIPFORMAT` should have been declared
+  (`wtypes.h`) on madc's include path before `objidl.h` uses it.
+- Found 2026-10-04 writing the reducer for the Windows window-loop stop.
+
 ### B164. The forest pack's header compile refuses libstdc++ 13 template bodies (28 errors, the build stays green)
 
 `make -C src release` runs `scripts/forest_pack.sh --image

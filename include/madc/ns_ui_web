@@ -9,7 +9,7 @@
 // engine's (ui_web/page.js + page.css, embedded); the host only hosts.
 //
 // THREAD CONTRACT: a host is confined to the thread that opened it; the
-// page's bound callback runs inside webview_run on that same thread;
+// page's bound callback runs inside madcwebview_run on that same thread;
 // webview_dispatch is the only cross-thread door and nothing here uses it.
 import madcwebview;
 
@@ -19,7 +19,7 @@ namespace ui_web {
 	webview_t view;
 	void *ctx;		// the engine session — ui::post_event's key
 	int posted;		// events posted during the current run()
-	int running;		// inside webview_run (terminate is meaningful)
+	int running;		// inside madcwebview_run (a stop is meaningful)
 	int ticked;		// the tick ended the current run() (nothing posted)
 	char *clip;		// the last clipboard read (clip_get's answer),
 				// the host's until the next read
@@ -29,17 +29,18 @@ namespace ui_web {
     // (menu_activate); a GUI test opens one window.
     host *__last_host = 0;
 
-    // An event posted from inside the platform loop stops it ONCE per run:
-    // the platform delivers terminate through its own idle queue, so a
-    // second terminate for a second event in the same run would fire in a
-    // LATER run and end it with nothing posted — read as the window
-    // closing. Posted OUTSIDE run (the test seam's activate), the event is
+    // An event posted from inside the platform loop stops it ONCE per run
+    // (madcwebview_stop): GTK delivers terminate through its own idle queue,
+    // so a second terminate for a second event in the same run would fire in
+    // a LATER run and end it with nothing posted — read as the window
+    // closing. (Win32's stop is a flag the loop reads, which a second call
+    // only sets again.) Posted OUTSIDE run (the test seam's activate), the event is
     // queued and the engine reads it before running again: no terminate,
     // or the same stale idle would end the next run empty.
     void posted_event(host *h)
     {
 	if ( h->posted++ == 0 && h->running && !h->ticked )
-	    webview_terminate(h->view);	// run() returns; the engine drains the events
+	    madcwebview_stop(h->view);	// run() returns; the engine drains the events
     }
 
     // The tick (the engine's `tick` op, madcwebview_tick): ends the running
@@ -55,7 +56,7 @@ namespace ui_web {
 	if ( h->running && !h->posted && !h->ticked )
 	{
 	    h->ticked = 1;
-	    webview_terminate(h->view);
+	    madcwebview_stop(h->view);
 	}
     }
 
@@ -302,18 +303,19 @@ namespace ui_web {
 	return webview_eval(h->view, js) == WEBVIEW_ERROR_OK ? 0 : 1;
     }
 
-    // Run the platform loop until the page posts ONE event (on_event
-    // terminates the loop) or the armed tick ends it, then return 0; the
-    // loop ending with nothing posted and no tick means the window closed: 1.
+    // Run the platform loop (madcwebview_run) until the page posts ONE event
+    // (on_event stops the loop) or the armed tick ends it, then return 0; the
+    // window closed: 1 — said by the loop where the platform can tell
+    // (Win32), else by the loop ending with nothing posted and no tick.
     int64_t run(void *hv)
     {
 	host *h = (host *)hv;
 	h->posted = 0;
 	h->ticked = 0;
 	h->running = 1;
-	webview_error_t rc = webview_run(h->view);
+	int rc = madcwebview_run(h->view);
 	h->running = 0;
-	if ( rc != WEBVIEW_ERROR_OK )
+	if ( rc != 0 )
 	    return 1;
 	return (h->posted || h->ticked) ? 0 : 1;
     }

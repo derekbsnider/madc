@@ -1351,6 +1351,50 @@ WEBVIEW_API int madcwebview_tick(webview_t w, unsigned ms, madcwebview_tick_fn c
 	return 0;
 }
 
+// The engine's wait: the UI thread's loop, ended by a FLAG (madcwebview_stop)
+// read after every dispatch. Upstream's terminate is a WM_QUIT, and a modal
+// loop running inside a dispatch — a menu being tracked, a file dialog —
+// takes a WM_QUIT for itself (the dialog ends; the menu loop consumes it), so
+// the engine's periodic tick could end the user's dialog, or its quit be lost
+// and leave the engine waiting on a loop nothing would end again. Every stop comes from a
+// callback dispatched inside this loop (through such a modal loop too), so
+// the flag is read as soon as that dispatch returns: no wake message. The
+// flag is the RUN's, not the window's: WM_NCDESTROY erases the window's
+// menu_state while a dispatch is under way. UI-thread confined (thread_local);
+// a nested run keeps the outer run's flag and restores it.
+static thread_local bool *run_stop = 0;
+
+WEBVIEW_API int madcwebview_run(webview_t w)
+{
+	if (!w)
+		return 1;
+	bool stop = false;
+	bool *outer = run_stop;
+	run_stop = &stop;
+	int rc = 0;
+	MSG msg;
+	while (!stop) {
+		BOOL got = GetMessageW(&msg, nullptr, 0, 0);
+		if (got <= 0) {		// WM_QUIT: upstream's on window destroy (or an error)
+			rc = 1;
+			break;
+		}
+		TranslateMessage(&msg);
+		DispatchMessageW(&msg);
+	}
+	run_stop = outer;
+	return rc;
+}
+
+WEBVIEW_API int madcwebview_stop(webview_t w)
+{
+	if (!w)
+		return 1;
+	if (run_stop)
+		*run_stop = true;
+	return 0;
+}
+
 // The clipboard: CF_UNICODETEXT, opened on the window. Windows text keeps
 // "\r\n" line ends, so set writes them; get passes on what it holds.
 WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text)
@@ -1415,4 +1459,20 @@ WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 
 } // extern "C"
 
+#endif
+
+#ifndef _WIN32
+// The engine's wait on GTK and Cocoa: upstream's loop and terminate. Their
+// loop does not tell a close from a stop (0 either way).
+extern "C" {
+WEBVIEW_API int madcwebview_run(webview_t w)
+{
+	return webview_run(w) == WEBVIEW_ERROR_OK ? 0 : 1;
+}
+
+WEBVIEW_API int madcwebview_stop(webview_t w)
+{
+	return webview_terminate(w) == WEBVIEW_ERROR_OK ? 0 : 1;
+}
+} // extern "C"
 #endif

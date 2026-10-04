@@ -1,0 +1,2 @@
+run-stop: rc=0 stop-fired=1 quit-seen=0
+stop-outside-run: ok
