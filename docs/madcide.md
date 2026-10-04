@@ -47,9 +47,9 @@ Windows, WebKitGTK 6 / GTK 4 on Linux, WKWebView on macOS).
 
 Every key binding is data in `tools/madcide/profiles/*.keys`: `joe` (the
 default — the full JOE/WordStar set), `pico`, `emacs`, `neovim` (a modal
-personality that starts in normal mode), `thonny` (Thonny's keys: Ctrl+S,
-Ctrl+Z/Y, Ctrl+X/C/V, Ctrl+A, F5 to run, Ctrl+F2 to stop; chthonia's
-default) and `vscode` (VS Code's default keymap; Ctrl+K opens its chords).
+personality that starts in normal mode), `chthonia` (Chthonia's keys,
+after Thonny's: Ctrl+S, Ctrl+Z/Y, Ctrl+X/C/V, Ctrl+A, F5 to run, Ctrl+F2 to
+stop; chthonia's default) and `vscode` (VS Code's default keymap; Ctrl+K opens its chords).
 Each lists, in its header, the keys whose command madcide does not have
 yet. `^T` opens Options; its Keymap
 row cycles profiles for the session; `^K H` shows the loaded profile's own
@@ -104,7 +104,7 @@ comment is `//` for C, C++ and madc (an untitled buffer counts as madc),
 and `--` for Lua. A file with no line comment, such as plain text,
 refuses. Each command is one undo step and leaves the selection covering
 the whole lines. With a selection that crosses a line, Tab indents
-instead of replacing the selection. The Thonny keys bind Shift+Tab and
+instead of replacing the selection. The Chthonia keys bind Shift+Tab and
 Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
 Shift+Tab and Ctrl+/.
 
@@ -121,7 +121,7 @@ question is a dialog with Yes, No, All and Cancel buttons. The answer keys
 are the `@replace` scope's, so a key profile can respell them (as with
 `@confirm`).
 
-File ▸ Save All (`saveall`; Ctrl+Alt+S in the Thonny keys, Ctrl+K S in
+File ▸ Save All (`saveall`; Ctrl+Alt+S in the Chthonia keys, Ctrl+K S in
 the VS Code keys) writes every buffer that has unsaved changes. The
 buffer you are in stays the active one. An untitled buffer has no file
 to write, so Save All leaves it and counts it; Save names it. The status
@@ -129,7 +129,7 @@ line reports what happened, for example `Saved 2 files. 1 untitled (Save
 As names it).`
 
 File ▸ Close and Close All (`close`, `closeall`; Ctrl+W and Ctrl+Shift+W in
-the Thonny keys, Ctrl+W and Ctrl+K Ctrl+W in the VS Code keys) close the
+the Chthonia keys, Ctrl+W and Ctrl+K Ctrl+W in the VS Code keys) close the
 current tab or every tab. A buffer with unsaved changes asks `Save changes
 to NAME? (y)es (n)o (^C)`. `y` saves and closes, `n` closes without
 saving, and Esc keeps the buffer open. In a window the question is a
@@ -409,7 +409,7 @@ madcide's own REPL pane is a plugin compiled into madcide: its commands
 `@repl` scope) and its view `repl` register the way a plugin's do, so a key
 profile, a menu or a layout names them as it names any plugin's. `replclear`
 empties the transcript and keeps the session and its names (Thonny's Edit ▸
-Clear shell, Ctrl+L in the `thonny` keys).
+Clear shell, Ctrl+L in the `chthonia` keys).
 
 View ▸ Program arguments… (`progargs`) sets the words F5 passes the program
 after its path, as Thonny's does. The prompt starts with the current words.

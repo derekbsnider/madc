@@ -1,4 +1,4 @@
-chthonia-open: doc=1 bundle=chthonia keys=thonny
+chthonia-open: doc=1 bundle=chthonia keys=chthonia
 chthonia-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=1
 chthonia-menu: [File Edit Run View Tools Help] run=[replrun replstop language]
 chthonia-repl: live=1 running=1

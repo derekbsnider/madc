@@ -77,7 +77,7 @@ int main()
 
     IdeSession S;
     long da = S.open(pa, false);
-    load_profile(S.w, S.es, "thonny");
+    load_profile(S.w, S.es, "chthonia");
     edit_file(S.w, S.es, da, pb);
     edit_file(S.w, S.es, act(S), pc);
     table("three", S);

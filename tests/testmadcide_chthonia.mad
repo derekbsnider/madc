@@ -286,9 +286,9 @@ int main()
     println("keystyle-list: tools=[{}] listed={} marked={}", ids,
 	    rust::contains(kt, "Key bindings") != 0 && rust::contains(kt, "Emacs") != 0
 	    && rust::contains(kt, "JOE") != 0 && rust::contains(kt, "Vim") != 0
-	    && rust::contains(kt, "Pico") != 0 && rust::contains(kt, "Thonny") != 0
+	    && rust::contains(kt, "Pico") != 0 && rust::contains(kt, "Chthonia") != 0
 	    && rust::contains(kt, "VS Code") != 0,
-	    rust::contains(kt, "Thonny  (current)") != 0);
+	    rust::contains(kt, "Chthonia  (current)") != 0);
     var kch = { "event": "choose", "event_code": ui::event_kind::choose,
 		"option": 6, "action": "", "action_code": cmdCHOICE };
     S.apply_ide_event(doc, kch);

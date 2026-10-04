@@ -1,4 +1,4 @@
-keys: thonny two-point=0
+keys: chthonia two-point=0
 shift-right-x3: [hello world|second line|] caret=3 sel=0..3 gui=1 clip=[]
 typed-over: [Jlo world|second line|] caret=1 sel=none gui=0 clip=[]
 shift-end: [Jlo world|second line|] caret=9 sel=1..9 gui=1 clip=[]

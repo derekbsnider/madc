@@ -81,7 +81,7 @@ int main()
 
     IdeSession S;
     long doc = S.open(path, false);
-    load_profile(S.w, S.es, "thonny");
+    load_profile(S.w, S.es, "chthonia");
     var tree0;
     S.compose_ide_tree(tree0, doc);
     var js0 = js::stringify(tree0);

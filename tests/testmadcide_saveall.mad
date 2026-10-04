@@ -44,7 +44,7 @@ int main()
 
     IdeSession S;
     long da = S.open(pa, false);
-    load_profile(S.w, S.es, "thonny");
+    load_profile(S.w, S.es, "chthonia");
     type(S, da, "A");
     edit_file(S.w, S.es, da, pb);
     long db = active_doc(S.w, S.es, da);

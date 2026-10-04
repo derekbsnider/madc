@@ -1,7 +1,7 @@
 // Thonny's clipboard keys in a REAL window (plan §41.11a step 3e, slice 4):
 // the page sends Ctrl+A, Ctrl+C, Ctrl+End and Ctrl+V as a user would type
 // them (its keydown handler spells them); the engine resolves them through
-// thonny.keys (selectall, copy, bottom, paste); the session parks the
+// chthonia.keys (selectall, copy, bottom, paste); the session parks the
 // clipboard requests and the client serves them against the window's
 // platform clipboard (GTK's, under Xvfb). Copy puts the buffer's text on
 // the system clipboard, and Paste reads it back from there. Oracle:
@@ -37,7 +37,7 @@ int main()
     php::file_put_contents(path, "hello\n");
     IdeSession S;
     long doc = S.open(path, false);
-    load_profile(S.w, S.es, "thonny");	// as Tools ▸ Key bindings… loads it
+    load_profile(S.w, S.es, "chthonia");	// as Tools ▸ Key bindings… loads it
     long w = S.world();
     long t = ui::open(ui::WEB);
     if ( !t )

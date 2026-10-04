@@ -67,7 +67,7 @@ int main()
 
     IdeSession S;
     long doc = S.open(path, false);
-    load_profile(S.w, S.es, "thonny");
+    load_profile(S.w, S.es, "chthonia");
     S.post(doc, cmdINDENT);
     show("indent-caret-line", S, doc);
     S.post(doc, cmdDEDENT);
@@ -89,7 +89,7 @@ int main()
     S.post(doc, cmdTOGGLECOMMENT);
     show("uncomment-again", S, doc);
 
-    // Tab over the selection indents its lines; Shift+Tab (thonny.keys)
+    // Tab over the selection indents its lines; Shift+Tab (chthonia.keys)
     // dedents them.
     key(S, doc, "tab", ui::key::tab, 0);
     show("tab-indents", S, doc);

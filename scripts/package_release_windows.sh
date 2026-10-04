@@ -202,7 +202,7 @@ It needs the Microsoft Edge WebView2 Runtime, which Windows 11 (and any
 machine with Microsoft Edge) already has.
 
 chthonia (bin\\chthonia.exe): the easy GUI to learn C and C++, built on
-madcide and laid out as Thonny is — the editor, the Shell (a C REPL) below
+madcide and laid out for learning — the editor, the Shell (a C REPL) below
 it, the Variables view beside it, Run (F5) and Stop on the toolbar. It
 opens a window; give it a file to open:
 

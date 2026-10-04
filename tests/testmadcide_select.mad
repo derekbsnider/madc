@@ -66,7 +66,7 @@ int main()
     // loads it.
     IdeSession S;
     long doc = S.open(path, false);
-    load_profile(S.w, S.es, "thonny");
+    load_profile(S.w, S.es, "chthonia");
     var kp;
     ui::get(kp, S.w, S.es, "profile");
     println("keys: {} two-point={}", kp, es_flag(S.w, S.es, "selblock") ? 1 : 0);

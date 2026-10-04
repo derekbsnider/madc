@@ -59,7 +59,7 @@ void profile_keys(const char *profile)
 
 int main()
 {
-    profile_keys("thonny");
+    profile_keys("chthonia");
     profile_keys("vscode");
     return 0;
 }

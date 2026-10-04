@@ -241,6 +241,43 @@ run_linux() {
         1:*"1 problem"*) ok "$kind" "negative control: a syntax error => chthonia -c check reports 1 problem (rc 1)" ;;
         *) fail "$kind" "negative control broken: chthonia -c check over a syntax error (rc $rc: $out)" ;;
     esac
+
+    # 7. installed chthonia offers every shipped key style from its menu:
+    #    Tools ▸ Key bindings… is on its Tools menu, and the list it opens
+    #    names the six styles share/madcide/profiles carries [control: hide
+    #    the profiles => the list names none of them].
+    keystyle_gate "$kind" "$chthonia" "$chk" "$pdir" timeout "${runenv[@]}"
+}
+
+# The installed chthonia's key styles (probe 7, every artifact that runs it):
+# `-c "menushow Tools"` lists the Key bindings… row, `-c keystyle` lists the
+# styles by their display names, all six; with the profiles directory hidden
+# the list names none. `tmo` is the platform's timeout command (timeout, or
+# brew coreutils' gtimeout on a Mac runner); the rest is the run environment.
+KEY_STYLES=("Chthonia" "VS Code" "Vim" "Emacs" "JOE" "Pico")
+keystyle_gate() {
+    local kind="$1" chthonia="$2" file="$3" pdir="$4" tmo="$5"
+    shift 5
+    local out style missing="" named=""
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$chthonia" "$file" -c "menushow Tools" ) 2>&1 )
+    case "$out" in
+        *"Key bindings"*) ok "$kind" "installed chthonia's Tools menu has Key bindings…" ;;
+        *) fail "$kind" "installed chthonia's Tools menu has no Key bindings… row (got: $out)" ;;
+    esac
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$chthonia" "$file" -c keystyle ) 2>&1 )
+    for style in "${KEY_STYLES[@]}"; do
+        case "$out" in *". $style"*) ;; *) missing="$missing [$style]" ;; esac
+    done
+    [ -z "$missing" ] || fail "$kind" "installed chthonia's Key bindings list lacks$missing (got: $out)"
+    ok "$kind" "installed chthonia's Key bindings list names all ${#KEY_STYLES[@]} styles"
+    mv "$pdir" "$pdir.hidden"
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$chthonia" "$file" -c keystyle ) 2>&1 )
+    mv "$pdir.hidden" "$pdir"
+    for style in "${KEY_STYLES[@]}"; do
+        case "$out" in *". $style"*) named="$named [$style]" ;; esac
+    done
+    [ -z "$named" ] || fail "$kind" "negative control broken: profiles hidden but the list still names$named"
+    ok "$kind" "negative control: hidden profiles => the Key bindings list names no style"
 }
 
 gate_deb() {
@@ -433,6 +470,8 @@ gate_mactar() {
         1:*"1 problem"*) ok mactar "negative control: a syntax error => chthonia -c check reports 1 problem (rc 1)" ;;
         *) fail mactar "negative control broken: chthonia -c check over a syntax error (rc $rc: $out)" ;;
     esac
+    # 1d. its key styles, the menu row and the list (keystyle_gate).
+    keystyle_gate mactar "$root/bin/chthonia" "$chk" "$root/share/madcide/profiles" "$tmo"
 
     # 2. the Mac battery against the extracted tarball layout (bin/madc +
     # lib/libmadc_rt.a beside it = leg 6c's shape). The full output is the

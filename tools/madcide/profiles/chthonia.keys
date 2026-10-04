@@ -1,4 +1,5 @@
-# madcide keybinding profile: Thonny's keys (plan §41.11a step 3e) — each
+# madcide keybinding profile: Chthonia's keys (plan §41.11a step 3e), the
+# chthonia bundle's own. They follow Thonny's defaults — each
 # command's `default_sequence` in Thonny's source (github.com/thonny/thonny,
 # master, read 2026-09-30) onto the one action vocabulary. `primary` is
 # Ctrl, or Cmd on macOS: Thonny binds each command both ways. Thonny's
@@ -15,7 +16,7 @@
 # the font size (Ctrl+plus, Ctrl+minus) and Full screen (F11). Thonny's
 # Find & Replace is one dialog on Ctrl+F: here Ctrl+F finds, and Edit ▸
 # Replace… is the menu's row (no key of its own).
-@title Thonny
+@title Chthonia
 
 # File
 primary+n new
