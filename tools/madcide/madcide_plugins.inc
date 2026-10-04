@@ -272,7 +272,8 @@ const char *default_bundle_text()
 {
     return "{ \"name\": \"default\", \"title\": \"Workbench\", \"api\": 3,"
 	   " \"contributes\": { \"keys\": \"joe\", \"status\": \"joe\","
-	   " \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\" } }";
+	   " \"theme\": \"default\", \"menu\": \"default\", \"layout\": \"default\","
+	   " \"help\": \"default\" } }";
 }
 
 // The user's settings.json (§5.2), in the configuration directory, onto the
@@ -481,6 +482,7 @@ bool bundle_base_load(long w, long es, var &dir, var &why)
     if ( strlen(dir.c_str()) == 0 )
 	js::parse(base, default_bundle_text());
     ui::set(w, es, "bundlebase", base);
+    ui::set(w, es, "bundlebasedir", dir);	// its help's directory (madcide_help.inc)
     return ok;
 }
 
@@ -1029,6 +1031,8 @@ long view_row_cmd(long kind)
 	return cmdGOTO;
     if ( kind == viewOUTLINE )
 	return cmdGOTODEF;
+    if ( kind == viewHELP )
+	return cmdHELPTOPIC;	// a link row (madcide_help.inc)
     if ( view_contributed(kind) )
 	return cmd_view_row_base() + kind - view_contrib_base();
     return cmdNONE;
@@ -1041,6 +1045,8 @@ long view_of_row_cmd(long code)
 	return viewPROBLEMS;
     if ( code == cmdGOTODEF )
 	return viewOUTLINE;
+    if ( code == cmdHELPTOPIC )
+	return viewHELP;
     if ( cmd_view_row(code) )
 	return view_contrib_base() + code - cmd_view_row_base();
     return viewNONE;

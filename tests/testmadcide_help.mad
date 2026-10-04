@@ -1,0 +1,119 @@
+// madcide's Help topics (plan docs/plans/2026-10-03-chthonia-windows-macos.md
+// §7d; tools/madcide/madcide_help.inc): a bundle's Markdown pages in the Help
+// view. The Chthonia bundle's help (plugins/chthonia/chthonia.help/):
+// helpcontents opens contents.md (its title from the first heading, a
+// contents line a link row); a choose on a link row opens that topic, with a
+// row back to the contents; the made topic `menus` lists the loaded menus,
+// each item's key in the loaded key style, its command and its description —
+// the default bundle's commands.md, since the Chthonia bundle has none; an
+// unknown topic is refused on the status line. The default bundle
+// (plugins/default/default.help/): its own contents.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// The help rows' index (1-based, the choose's option) of the first row whose
+// content contains `needle`; 0 when none.
+long row_with(long w, long es, const char *needle)
+{
+    var rows;
+    ui::get(rows, w, es, "helprows");
+    long i = 1;
+    for ( var r : rows )
+    {
+	if ( perl::index(r["content"].c_str(), needle) >= 0 )
+	    return i;
+	i = i + 1;
+    }
+    return 0;
+}
+
+void row_at(var &out, long w, long es, long i)
+{
+    var rows;
+    ui::get(rows, w, es, "helprows");
+    out = rows[i - 1];
+}
+
+int main()
+{
+    const char *path = "madc_ide_help.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+
+    IdeSession S;
+    long doc = S.open(path, false, "chthonia");
+    long w = S.w;
+    long es = S.es;
+    println("module: {}", markdown::available());
+
+    // 1. Help ▸ Help Contents: contents.md in the Help view.
+    bool cont = true;
+    S.command(doc, cmd_of_w(w, "helpcontents"), "", cont);
+    var topic;
+    ui::get(topic, w, es, "helptopic");
+    var title;
+    ui::get(title, w, es, "helptitle");
+    println("contents: topic={} title={} shown={}", topic, title, view_shown(w, es, viewHELP));
+    long gs = row_with(w, es, "Getting started");
+    var gr;
+    row_at(gr, w, es, gs);
+    println("contents-link: row={} target={}", gr["content"], gr["target"]);
+    var node;
+    help_view_node(node, w, es, false);
+    var lnk = node["children"][gs - 1];
+    println("node: label={} link-code={}", node["label"],
+	    lnk["hints"]["code"].as_integer() == cmdHELPTOPIC);
+
+    // 2. A choose on the link row opens its topic.
+    var ch = { "event": "choose", "event_code": ui::event_kind::choose,
+	       "option": gs, "action": "", "action_code": view_row_cmd(viewHELP) };
+    S.apply_ide_event(doc, ch);
+    ui::get(topic, w, es, "helptopic");
+    ui::get(title, w, es, "helptitle");
+    var back;
+    row_at(back, w, es, 1);
+    println("chosen: topic={} title={} back={} back-target={}", topic, title,
+	    back["content"], back["target"]);
+    long code = row_with(w, es, "printf(");
+    var cr;
+    row_at(cr, w, es, code);
+    println("code-row: {}", cr["content"]);
+
+    // 3. The made topic: the loaded menus, keys and descriptions.
+    S.command(doc, cmd_of_w(w, "helptopic"), "menus", cont);
+    ui::get(title, w, es, "helptitle");
+    var run;
+    row_at(run, w, es, row_with(w, es, "— replrun"));
+    println("menus: title={} run-heading={}", title, row_with(w, es, "Run") > 0);
+    println("menus-run: {}", run["content"]);
+
+    // 4. A table row, padded under its header and rule.
+    S.command(doc, cmd_of_w(w, "helptopic"), "shell", cont);
+    var hdr;
+    row_at(hdr, w, es, row_with(w, es, "Entry"));
+    var rule;
+    row_at(rule, w, es, row_with(w, es, "Entry") + 1);
+    println("table: header={} rule={}", hdr["content"], perl::index(rule["content"].c_str(), "──") == 0);
+
+    // 5. An unknown topic.
+    S.command(doc, cmd_of_w(w, "helptopic"), "nosuch", cont);
+    var msg;
+    ui::get(msg, w, es, "msg");
+    ui::get(topic, w, es, "helptopic");
+    println("unknown: msg={} topic={}", msg, topic);
+
+    // 6. The default bundle's own help.
+    IdeSession D;
+    long ddoc = D.open(path, false);
+    D.command(ddoc, cmd_of_w(D.w, "helpcontents"), "", cont);
+    var dt;
+    ui::get(dt, D.w, D.es, "helptitle");
+    var dm;
+    row_at(dm, D.w, D.es, row_with(D.w, D.es, "Menus and commands"));
+    println("default: title={} menus-target={}", dt, dm["target"]);
+
+    S.close();
+    D.close();
+    php::unlink(path);
+    return 0;
+}

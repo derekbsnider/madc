@@ -8,6 +8,7 @@
     "status": "chthonia",
     "layout": "chthonia",
     "menu": "chthonia",
+    "help": "chthonia",
     "settings": {
       "std": ""
     }

@@ -167,6 +167,7 @@ void action_event(var &e, long code, const char *arg)
 #include "madcide_plugin_host.inc"	// the host transport: a plugin's code in a child process
 #include "madcide_lang.inc"		// the session's language standard (--std=, `language`)
 #include "madcide_repo.inc"		// a buffer's git repository + the %G status seat
+#include "madcide_help.inc"		// Help's topics: a bundle's Markdown pages (plan §7d)
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -1073,7 +1074,7 @@ const char *default_layout_text()
     return "# baked default layout — profile data\n"
 	   "@window main\n"
 	   "pane editor tabs views source focus\n"
-	   "pane sidebar left 20% tabs views outline hidden\n"
+	   "pane sidebar left 20% tabs views outline help hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
@@ -8143,6 +8144,19 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		toggle_pane(w, es, paneHELP);
 		return true;
 	    }
+	    case cmdHELPCONTENTS:
+	    {
+		// Help ▸ Help Contents: the bundle's first topic.
+		help_open(w, es, "contents");
+		return true;
+	    }
+	    case cmdHELPTOPIC:
+	    {
+		// A topic by name (the palette's, -c's), else the one open now
+		// (the Help tab's click), else the contents.
+		help_topic_cmd(w, es, ev);
+		return true;
+	    }
 	    case cmdABOUT:
 	    {
 		// Help ▸ About (Thonny's): the product's About lines.
@@ -8439,6 +8453,10 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdBLD_PROJ_BUILD:
 	    case cmdBLD_PROJ_RUN:
 		build_choose(w, es, doc, ev["option"].as_integer());
+		return true;
+	    case cmdHELPTOPIC:
+		// A Help row: a link opens its topic (madcide_help.inc).
+		help_choose(w, es, ev["option"].as_integer());
 		return true;
 	    case cmdGOTO:
 	    case cmdGOTODEF:
@@ -8758,6 +8776,13 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    outn["content"] = bt;
 	    outn["hints"] = { "tail": 1 };	// a band shows the stream's END
 	    pkids.push(outn);
+	    break;
+	}
+	case viewHELP:
+	{
+	    var hn;
+	    help_view_node(hn, w, es, focus);
+	    pkids.push(hn);
 	    break;
 	}
 	case viewOUTLINE:

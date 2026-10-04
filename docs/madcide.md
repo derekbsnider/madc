@@ -271,6 +271,28 @@ one opens the file as that commit holds it, read-only (`[NAME @ SHA]`);
 The status line's `%G` seat (Chthonia's shows it beside Row and Col) is the
 branch, with `*` when the file differs from its last commit.
 
+## Help
+
+**Help ▸ Help Contents** opens the Help view (a sidebar tab) at the
+profile's contents page; **Help ▸ Keyboard Help** still lists the key
+style's bindings. Help pages are Markdown, read through the `madcmark`
+module. A topic shows as a list of rows, and each link has a row of its
+own. Choosing a link opens its topic, and every topic but the contents
+starts with a row back to the contents. `helptopic NAME` (the palette's
+**Help Topic…**) opens a topic by name.
+
+A profile contributes its help as a directory: `"help": "chthonia"` in
+`chthonia.plugin` names `chthonia.help/` beside the manifest, one
+`TOPIC.md` per topic, starting at `contents.md`. A topic the profile does
+not have comes from the default profile's (`default.help/`). One topic is
+generated instead of read: `menus` (link to it as `[Menus and
+commands](menus)`). It lists every menu of the loaded menus; for each item
+it gives the key that runs it in the current key style, its command name,
+and its description. The descriptions come from `commands.md`: a
+`## COMMAND` heading per command with the paragraph under it, the
+profile's over the default profile's. A heading that names no command is
+reported on the status line.
+
 ## Sharing a session
 
 One madcide session can carry more than one client: the editor you are typing

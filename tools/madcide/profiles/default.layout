@@ -20,5 +20,5 @@
 # terminal shows nothing the user did not open.
 @window main
 pane editor tabs views source focus
-pane sidebar left 20% tabs views outline hidden
+pane sidebar left 20% tabs views outline help hidden
 pane panel bottom 25% tabs views problems output terminal repl hidden

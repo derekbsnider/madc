@@ -29,7 +29,7 @@ enum ide_cmd : unsigned short
     cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
     cmdDELLINE, cmdDELWORD, cmdDISCARD,
-    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
+    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
     cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
@@ -90,6 +90,8 @@ void cmd_table(var &t)
     rows[] = { "name": "gotoline", "code": cmdGOTOLINE };
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
+    rows[] = { "name": "helpcontents", "code": cmdHELPCONTENTS };
+    rows[] = { "name": "helptopic", "code": cmdHELPTOPIC };
     rows[] = { "name": "indent", "code": cmdINDENT };
     rows[] = { "name": "insertfile", "code": cmdINSERTFILE };
     rows[] = { "name": "keystyle", "code": cmdKEYSTYLE };
@@ -638,7 +640,7 @@ long view_show_cmd(long kind)
 	case viewTERMINAL: return cmdTERMINAL;
 	case viewOUTLINE: return cmdOUTLINE;
 	case viewPROJECT: return cmdPROJECT;
-	case viewHELP: return cmdHELP;
+	case viewHELP: return cmdHELPTOPIC;	// the current topic (madcide_help.inc)
     }
     return cmdNONE;
 }
@@ -655,6 +657,7 @@ bool cmd_takes_arg(long code)
 	case cmdKEYSTYLE:
 	case cmdLANGUAGE:
 	case cmdMENUSHOW:	// the menu's title (a toolbar arrow's)
+	case cmdHELPTOPIC:	// the topic (a link row's, the palette's)
 	case cmdPASTE:		// the text to paste (a client's platform read)
 	    return true;
     }
@@ -1797,9 +1800,11 @@ long plugin_verb_of(var &word)
 // A CONTRIBUTION's kind (§5.3): the words under "contributes". The data kinds
 // name a file in its existing format, and the kind's word IS the file's
 // extension (`"layout": "chthonia"` is chthonia.layout); `settings` carries
-// the plugin's setting defaults. Stage A serves these; the code kinds
-// (commands, views, events) join with the contribution points.
-enum contribution_kind : unsigned char { cbNONE = 0, cbKEYS, cbLAYOUT, cbMENU, cbTHEME, cbSTATUS, cbSETTINGS, cbLAST };
+// the plugin's setting defaults; `help` names a DIRECTORY the same way
+// (`"help": "chthonia"` is chthonia.help/, the bundle's Markdown topics —
+// madcide_help.inc). Stage A serves these; the code kinds (commands, views,
+// events) join with the contribution points.
+enum contribution_kind : unsigned char { cbNONE = 0, cbKEYS, cbLAYOUT, cbMENU, cbTHEME, cbSTATUS, cbSETTINGS, cbHELP, cbLAST };
 const char *contribution_kind_name(long k)
 {
     switch ( k )
@@ -1810,6 +1815,7 @@ const char *contribution_kind_name(long k)
 	case cbTHEME: return "theme";
 	case cbSTATUS: return "status";
 	case cbSETTINGS: return "settings";
+	case cbHELP: return "help";
     }
     return "";
 }
@@ -1822,8 +1828,9 @@ long contribution_kind_of(var &word)
 	    return k;
     return cbNONE;
 }
-// A data kind names a FILE (every kind but settings).
+// A data kind is a WORD naming its file (help: its directory) — every kind
+// but settings.
 bool contribution_is_data(long k)
 {
-    return k >= cbKEYS && k <= cbSTATUS;
+    return k > cbNONE && k < cbLAST && k != cbSETTINGS;
 }

@@ -62,7 +62,8 @@ View progargs Program arguments…
 Tools keystyle Key bindings…
 Tools options Options…
 
-Help help Help
+Help helpcontents Help Contents
+Help help Keyboard Help
 Help about About Chthonia
 
 # The toolbar (the placement word `toolbar`, plan §41.11a): its buttons, each
