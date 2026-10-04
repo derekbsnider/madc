@@ -18,6 +18,7 @@
 // shapes).
 
 #include "madcide_enums.inc"	// ide_cmd + the state discriminators, as codes
+#include "madcide_product.inc"	// the product in use: name, bundle, face, linked plugin
 #include "madcide_plugins.inc"	// bundles: the manifest, the search path, settings
 
 // The bag's discriminator slots — ONE reader and ONE writer each (V0.5d):

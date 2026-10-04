@@ -172,13 +172,76 @@ Plugin design §9.3 and §9.4, in its own order:
      D2 replaces it with the real split.
 2. madcide's base as a linkable object, and `madcide_main(argc, argv,
    product)`.
-3. The product descriptor (name, configuration directory, default bundle,
-   GUI by default), and the chthonia build that links the plugin's object.
-4. Packaging: the standalone chthonia package (libmadc, madc, `chthonia`) for
-   Windows and macOS, then the MSIX (PK6).
+   - `tools/madcide/madcide_base.inc` holds the include list that
+     `madcide.mad` has today, plus `madcide_main`, which takes over `main`'s
+     body.
+   - `madcide.mad` is that include plus madcide's descriptor and a
+     one-line `main`. It stays one unit, so every script and test that
+     builds or runs it is unchanged.
+   - `madcide_base.mad` is the include alone, with no `main`: the unit a
+     product links, and the object madc-devel ships later.
+   - `<madcide/product>` (beside `<madcide/plugin>`) declares the descriptor
+     and `madcide_main`, and is all a product's own unit includes.
+   - The descriptor reaches the base through one pointer, written once by
+     `madcide_main` before any session or thread starts and read-only after
+     that (thread contract).
+3. The product descriptor, and the chthonia build.
+   - `struct ide_product { name; bundle; level; plugin; activate; }` holds:
+     - the program's name: the usage text, the window title, and the
+       configuration directory (`~/.config/<name>`, `%APPDATA%/<name>`);
+     - the bundle it opens when no flag, program name or setting names one;
+     - the face it opens with no flag: `ui::TUI` for madcide, `ui::WEB` (a
+       window) for chthonia; `--tui` asks for the console;
+     - the plugin linked into it, and that plugin's activation.
+   - A bundle whose plugin the product links activates the linked code (a
+     `linked` transport) and never loads the plugin's library or source.
+   - The chthonia build is a native project manifest,
+     `tools/chthonia/chthonia.json`: madcide's base, the plugin's
+     `chthonia.mad` and `chthonia_main.mad` (the descriptor and `main`).
+     It has `"kind": "gui"`, so on Windows the image is a GUI-subsystem
+     program: no console window (Step B).
+   - The window's title is the product's name and the file, Thonny's
+     `Thonny - <path> @ <line> : <col>`. Today the web target opens every
+     window titled `madc` (`src/ns_ui.cpp`), and there is no op to change
+     it. It needs a `title` op in `ui_host_ops`.
+4. Packaging: chthonia ships in each platform's madc package, and as the
+   standalone chthonia package (libmadc, madc, `chthonia`) for Windows and
+   macOS, then the MSIX (PK6).
+   - macOS: madcide and chthonia must be built by the native madc in the
+     release job's Mac step (`package_release_macos.sh` on a darwin host).
+     The container's cross madc only emits objects, and building a plugin
+     runs the built madcide. The tarball takes the Linux layout:
+     `bin/madcide`, `bin/chthonia`, and `share/madcide/{profiles,plugins,
+     include,verbs,checks}`.
+   - madcide's data staging is written twice today: `stage_install.sh`
+     (`share/madcide`) and `package_release_windows.sh` (beside the exe). A
+     third copy for the Mac must not be added: one staging script serves
+     all three platforms.
+
+## 7a. Thonny parity: what chthonia has and what it lacks
+
+Thonny is the oracle (owner, 2026-09-30). Rows are features a Thonny user
+reaches for, by menu.
+
+| Area | chthonia has | chthonia lacks |
+|---|---|---|
+| File | New, Open, Save, Save As, Quit; toolbar New/Open/Save | Close, Close all, Save All, Recent files |
+| Edit | Undo, Redo, Cut, Copy, Paste, Select all, Find, Go to line | Replace, Toggle comment, Indent/Dedent selection, Clear shell |
+| View | Shell, Variables, Problems | Outline (madcide has it; chthonia's menu hides it), font size, Full screen, Program arguments |
+| Run | Run (F5), Stop; toolbar Run/Stop | Debug, Step over/into/out, Resume, Run to cursor, breakpoints, Interrupt, Send EOF; toolbar Debug and the steps |
+| Tools / Help | Key bindings, Help | Options, About |
+| Window | a window | the product's name and file in the title (it says `madc`); no console window on Windows (D3) |
+
+The debugger is the largest gap: there is no stepper. It is its own arc
+(the JIT executes, `mir-interp-not-assumed`) and is designed separately.
+Every other row is a command over machinery that exists.
 
 ## 8. Order
 
 A (the REPL, which every chthonia user sees first; done) → B (measured, no
-defect; done) → D1 (the probe; done) → C (D5) → D2–D4. Each step is its own commit with its
-reducer, Tier 1 + Tier 2 per commit, and the batch after each step.
+defect; done) → D1 (the probe; done) → D2 → D3 → D4 with C folded in (the
+Mac build is chthonia's Mac build) → the parity rows (§7a) → the debugger
+arc. Owner, 2026-10-04: the chthonia binary comes first, GUI by default,
+working on all three platforms with Thonny's functionality. Each step is its
+own commit with its reducer, Tier 1 + Tier 2 per commit, and the batch after
+each step.

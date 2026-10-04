@@ -1,0 +1,37 @@
+// <madcide/product> — the header a PRODUCT built on madcide includes (plugin
+// design §9.3; docs/plans/2026-10-03-chthonia-windows-macos.md §7): the
+// descriptor that makes madcide's base a product, and the base's entry.
+//
+// A product is its own program: madcide's base (madcide_base.mad) linked
+// with the product's plugin and the product's own unit, whose main is
+//
+//     int main(int argc, char **argv)
+//     {
+//         return madcide_main(argc, argv, my_product);
+//     }
+//
+// The descriptor is DATA of the build, never a name test: the product's name
+// (usage, window title, configuration directory), the bundle it opens, the
+// face it opens with no flag, and the plugin linked into it.
+//
+// Thread contract: madcide_main records the descriptor once, before any
+// session or thread starts; nothing writes it after.
+#ifndef __MADCIDE_PRODUCT_H
+#define __MADCIDE_PRODUCT_H 1
+
+#include "plugin_api"
+
+struct ide_product
+{
+    const char *name;		// the program's name: usage, title, configuration directory
+    const char *bundle;		// the bundle it opens when nothing else names one ("" = default)
+    ui::level level;		// the face it opens with no flag (ui::TUI, ui::WEB = a window)
+    const char *plugin;		// the plugin linked into it ("" = none) ...
+    plugin_activate_fn activate;	// ... and that plugin's activation
+};
+
+// madcide's base: the command line read, then the face it asks for, as the
+// product describes. The exit status is the program's.
+int madcide_main(int argc, char **argv, const ide_product &product);
+
+#endif
