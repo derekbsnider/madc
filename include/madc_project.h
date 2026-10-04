@@ -26,6 +26,11 @@ struct ProjectManifest {
 	std::string entry = "main";	// entry symbol
 	std::string output_name;	// informational in v1 (no object output)
 	ProjectKind kind = ProjectKind::console;
+	// "icon": the program's Windows icon file (.ico), resolved against the
+	// manifest's directory; "" = none. A PE image carries it as its icon
+	// resources (Explorer, the window); ELF and Mach-O images carry no
+	// icon, but the file is read and checked on every target.
+	std::string icon;
 };
 
 // The manifest spelling of a kind and back (the one table): "console" /

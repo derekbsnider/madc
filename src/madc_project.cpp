@@ -162,6 +162,14 @@ bool read_native_object(const json &root, const std::string &manifest_dir,
 			return false;
 		}
 	}
+	if (root.contains("icon")) {
+		if (!root["icon"].is_string()
+		    || root["icon"].get<std::string>().empty()) {
+			err = "\"icon\" must name an icon file";
+			return false;
+		}
+		out.icon = resolve(manifest_dir, root["icon"].get<std::string>());
+	}
 	return true;
 }
 } // namespace

@@ -180,3 +180,36 @@ TEST_CASE("read_project_manifest: native object — the project kind: absent = "
 	CHECK(k == ProjectKind::gui);
 	CHECK_FALSE(project_kind_from_name("GUI", k));	// the spelling is the table's
 }
+
+TEST_CASE("read_project_manifest: native object — the icon: absent = none, a "
+	  "name resolves against the manifest's directory, a non-name refuses") {
+	// The program's Windows icon (.ico): a PE image carries it as its
+	// icon resources (madc_pe_icon.h).
+	ProjectManifest m; std::string err;
+	std::string plain = write_tmp("native_icon_none.prj.json", "{\"tus\":[]}");
+	REQUIRE(read_project_manifest(plain, m, err));
+	CHECK(m.icon.empty());
+
+	ProjectManifest i;
+	std::string named = write_tmp("native_icon.prj.json",
+				      "{\"tus\":[],\"icon\":\"app.ico\"}");
+	REQUIRE(read_project_manifest(named, i, err));
+	CHECK(i.icon == "/tmp/app.ico");
+
+	ProjectManifest abs;
+	std::string absolute = write_tmp("native_icon_abs.prj.json",
+					 "{\"tus\":[],\"icon\":\"/x/app.ico\"}");
+	REQUIRE(read_project_manifest(absolute, abs, err));
+	CHECK(abs.icon == "/x/app.ico");
+
+	ProjectManifest empty;
+	std::string e = write_tmp("native_icon_empty.prj.json",
+				  "{\"tus\":[],\"icon\":\"\"}");
+	CHECK_FALSE(read_project_manifest(e, empty, err));
+	CHECK(err.find("icon") != std::string::npos);
+	ProjectManifest notstr;
+	std::string num = write_tmp("native_icon_num.prj.json",
+				    "{\"tus\":[],\"icon\":7}");
+	CHECK_FALSE(read_project_manifest(num, notstr, err));
+	CHECK(err.find("icon") != std::string::npos);
+}

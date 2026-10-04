@@ -357,7 +357,25 @@ typedef struct MIR_object_exec_params {
      console subsystem (-mconsole, the default).  ELF and Mach-O targets
      ignore it: a GUI program is an ordinary program there. */
   int gui_subsystem_p;
+  /* PE targets: the image's resources (.rsrc) -- what link.exe takes from a
+     compiled .res: each entry is one resource named by numbers (type, id,
+     language) with its bytes, laid out as the three-level directory the
+     loader's FindResource walks.  The caller builds the entries (an .ico
+     becomes RT_ICON images plus an RT_GROUP_ICON directory, windres's
+     job); order is free, and a repeated (type, id, lang) triple refuses
+     the emit.  NULL / 0 = no .rsrc section.  ELF and Mach-O targets ignore
+     them: their icons live outside the image (a .desktop file, a bundle). */
+  const struct MIR_object_resource *resources;
+  size_t n_resources;
 } MIR_object_exec_params;
+
+typedef struct MIR_object_resource {
+  uint32_t type; /* RT_* (3 = RT_ICON, 14 = RT_GROUP_ICON, 24 = RT_MANIFEST) */
+  uint32_t id;   /* the resource's numeric name, < 0x80000000 */
+  uint32_t lang; /* LANGID; 0x409 = en-US, windres's default */
+  const void *data;
+  size_t size;
+} MIR_object_resource;
 
 /* Apple targets (MIR_TARGET_APPLE_P builds): MIR_object_emit_executable
    assembles a Mach-O64 MH_EXECUTE image instead of ELF -- PIE, linked

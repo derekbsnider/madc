@@ -135,7 +135,7 @@ open dialog in the window, a prompt in the terminal).
 
 The manifest is JSON — `tus` (the files, or objects with `file`,
 `directory`, `defines`, `include_dirs`, `std`, `stdlib`), `entry`,
-`output`, `kind` and `commands`:
+`output`, `kind`, `icon` and `commands`:
 
 ```json
 { "tus": ["main.mad", "util.mad"], "output": "app", "kind": "console",
@@ -147,6 +147,14 @@ kind** row while a manifest is open; toggling it persists the manifest.
 A gui project's Windows executable gets the GUI subsystem (no console
 window at start — what `-mwindows` does for a single file), and Run sends
 its output to the window's Output tab instead of the Terminal.
+
+`icon` names the program's Windows icon file (`.ico`), relative to the
+manifest. A project's Windows executable carries it as its icon
+resources, the way `windres` would build them from `32512 ICON "app.ico"`.
+Explorer shows it for the file, and a window the program opens shows it in
+the title bar and taskbar. Linux and macOS executables carry no icon (a
+desktop file or an app bundle supplies one there), but the file is read and
+checked on every platform, so a bad `icon` fails the build everywhere.
 
 ## The language standard
 

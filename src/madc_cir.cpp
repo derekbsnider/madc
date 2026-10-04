@@ -55,6 +55,7 @@ extern "C" {
 #include "c2mir/c2mir_api.h"
 #include "mir-gen.h"
 #include "mir-debug.h"
+#include "madc_pe_icon.h"
 }
 
 extern thread_local bool madc_verbose;
@@ -2563,12 +2564,47 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 }
 #endif
 
+static bool cir_read_file(const char *path, std::vector<unsigned char> &bytes);
+
+// What a build says about its image beyond the code: the PE subsystem (the
+// CLI's -mwindows, a manifest's "kind": "gui") and the program's icon (a
+// manifest's "icon", an .ico file). The ELF and Mach-O writers carry
+// neither; the icon file is still read and checked on every target, so a
+// manifest naming a bad one fails the same way everywhere.
+struct CirImageTraits {
+    bool gui_subsystem = false;
+    std::string icon_path;	// "" = no icon
+};
+
+// The icon as the image's resources (PE targets: RT_ICON + RT_GROUP_ICON,
+// madc_pe_icon.h). `icon` owns the bytes the entries point at and outlives
+// the emit. False = unreadable or not an icon file (printed).
+static bool cir_icon_attach(MIR_object_exec_params &xp, const std::string &path,
+			    PeIcon &icon)
+{
+    if (path.empty()) return true;
+    std::vector<unsigned char> bytes;
+    if (!cir_read_file(path.c_str(), bytes)) return false;
+    std::string err;
+    if (!icon.parse(std::move(bytes), err)) {
+	fprintf(stderr, "madc: %s: %s\n", path.c_str(), err.c_str());
+	return false;
+    }
+#if MADC_TARGET_WINDOWS_P
+    xp.resources = icon.resources().data();
+    xp.n_resources = icon.resources().size();
+#else
+    (void)xp;
+#endif
+    return true;
+}
+
 // capture out of ctx and write it to disk. Shared by the single-TU session
 // (emit_native_executable) and the --project whole-program lane.
 static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 				   const std::vector<std::string> &needed,
 				   const std::string &runpath,
-				   MadcNativeKind kind, bool gui_subsystem)
+				   MadcNativeKind kind, const CirImageTraits &traits)
 {
     bool shared = kind == mnkShared;
     // Conditional runtime dependency: a program whose every dynamic import
@@ -2609,12 +2645,15 @@ static bool cir_write_native_image(MIR_context_t ctx, const char *out_path,
 	libs.push_back(l.c_str());
 #endif
     MIR_object_exec_params xp;
-    cir_fill_exec_params(xp, kind, libs, runpath, gui_subsystem);
+    cir_fill_exec_params(xp, kind, libs, runpath, traits.gui_subsystem);
     // The output basename: Apple targets' ad-hoc code-signature identifier,
     // a PE DLL's own name in its export directory (ignored by the ELF
     // writer).
     const char *out_base = strrchr(out_path, '/');
     xp.identifier = out_base ? out_base + 1 : out_path;
+    PeIcon icon;
+    if (!cir_icon_attach(xp, traits.icon_path, icon))
+	return false;
     std::vector<uint8_t> pack_blob;
     if (madc_pack_forest_path && !cir_pack_forest_load(pack_blob))
 	return false;
@@ -2638,8 +2677,10 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 					   MadcNativeKind kind)
 {
     if (!ctx || !mod) return false;
+    CirImageTraits traits;
+    traits.gui_subsystem = madc_gui_subsystem;
     return cir_write_native_image(ctx, out_path, needed, runpath, kind,
-				  madc_gui_subsystem);
+				  traits);
 }
 
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
@@ -7181,10 +7222,13 @@ int madc_project_emit_native(MadcEngine &engine,
 					all_libs.push_back(l);
 		cir_native_link_env(flavor, all_libs, needed, runpath);
 		// The manifest's kind decides the subsystem for a project
-		// build (the CLI's -mwindows is the single-TU lane's spelling).
+		// build (the CLI's -mwindows is the single-TU lane's
+		// spelling); its "icon" is the image's icon.
+		CirImageTraits traits;
+		traits.gui_subsystem = manifest.kind == ProjectKind::gui;
+		traits.icon_path = manifest.icon;
 		ok = cir_write_native_image(ctx, out_path, needed, runpath,
-					    kind,
-					    manifest.kind == ProjectKind::gui);
+					    kind, traits);
 	}
 	teardown();
 	return ok ? 0 : -1;

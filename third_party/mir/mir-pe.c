@@ -808,13 +808,17 @@ fail:
                           -shared dynamic-symbol rule), through an export
                           directory in .rdata named after
                           params->identifier.
+   resources:           params->resources become .rsrc (the loader's
+                          type / id / language directory); the caller
+                          turns an .ico into RT_ICON + RT_GROUP_ICON
+                          entries, as windres does for link.
 
    No code signature, no checksum (unsigned images verify neither), no
    .pdata/.xdata (the W3.1 posture note); subsystem CONSOLE, or WINDOWS_GUI
    when params->gui_subsystem_p (gcc's -mwindows).
-   Section order: .text / .rdata (import metadata) / .mir.addrpool (+ the
-   stub's six slots) / .mir.init / .data (+ .bss as the virtual tail) /
-   .reloc. */
+   Section order: .text / .mirpool (the address pool + the stub's six
+   slots) / .mirinit / .data (+ .bss as the virtual tail) / .rdata (import
+   metadata) / .rsrc (only with resources) / .reloc. */
 
 #define PEX_IMAGE_BASE 0x140000000ull
 #define PEX_DLL_IMAGE_BASE 0x180000000ull
@@ -833,8 +837,11 @@ fail:
 #define PEX_SUBSYSTEM_CONSOLE 3u
 #define PEX_DIR_EXPORT 0
 #define PEX_DIR_IMPORT 1
+#define PEX_DIR_RESOURCE 2
 #define PEX_DIR_BASERELOC 5
 #define PEX_N_DIRS 16
+/* a resource's bytes start 8-aligned within .rsrc */
+#define PEX_RES_ALIGN(v) (((v) + 7u) & ~(uint64_t) 7u)
 /* base-relocation entry type in the high nibble */
 #define PEX_REL_DIR64 0xAu
 
@@ -1009,6 +1016,129 @@ static const char *pex_attribute (const char *name, const char *const *needed, s
 #endif
 }
 
+/* ---- .rsrc: params->resources as the loader's three-level directory
+   (type, then id, then language), every level's entries ascending by
+   number -- FindResource binary-searches them. */
+static int pex_res_cmp (const MIR_object_resource *a, const MIR_object_resource *b) {
+  if (a->type != b->type) return a->type < b->type ? -1 : 1;
+  if (a->id != b->id) return a->id < b->id ? -1 : 1;
+  if (a->lang != b->lang) return a->lang < b->lang ? -1 : 1;
+  return 0;
+}
+
+/* the end of the sorted run starting at k that shares its type (by_id = 0)
+   or its type and id (by_id = 1) */
+static size_t pex_res_run (const MIR_object_resource *res, const size_t *ord, size_t n, size_t k,
+                           int by_id) {
+  size_t e = k + 1;
+  while (e < n && res[ord[e]].type == res[ord[k]].type
+         && (!by_id || res[ord[e]].id == res[ord[k]].id))
+    e++;
+  return e;
+}
+
+/* the number of distinct ids in the type run starting at k */
+static size_t pex_res_ids (const MIR_object_resource *res, const size_t *ord, size_t n, size_t k) {
+  size_t e = pex_res_run (res, ord, n, k, 0), c = 0;
+  for (size_t j = k; j < e; j = pex_res_run (res, ord, n, j, 1)) c++;
+  return c;
+}
+
+/* IMAGE_RESOURCE_DIRECTORY: no named entries, `ids` numbered ones */
+static void pex_res_dir (dwbuf_t *b, size_t ids) {
+  buf_u32 (b, 0); /* Characteristics */
+  buf_u32 (b, 0); /* TimeDateStamp: deterministic */
+  buf_u16 (b, 0); /* version */
+  buf_u16 (b, 0);
+  buf_u16 (b, 0);
+  buf_u16 (b, (uint16_t) ids);
+}
+
+/* Lay out the section's bytes for RVA `rva`: the root, every type
+   directory, every id directory (a 16-byte header + 8-byte entries each;
+   a subdirectory's offset carries the high bit), the 16-byte data entries
+   (OffsetToData is an RVA, not a section offset), then each resource's
+   bytes, 8-aligned.  -1 = a repeated (type, id, lang), a number with the
+   high bit set (that bit marks a NAME string), or no memory. */
+static int pex_build_rsrc (const MIR_object_resource *res, size_t n, uint32_t rva, dwbuf_t *out) {
+  size_t *ord = malloc (n * sizeof (size_t));
+  if (ord == NULL) return -1;
+  for (size_t i = 0; i < n; i++) ord[i] = i;
+  for (size_t i = 1; i < n; i++) { /* insertion sort: resource lists are small */
+    size_t key = ord[i], j = i;
+    for (; j > 0 && pex_res_cmp (&res[ord[j - 1]], &res[key]) > 0; j--) ord[j] = ord[j - 1];
+    ord[j] = key;
+  }
+  int rc = -1;
+  size_t n_types = 0, n_ids = 0;
+  for (size_t k = 0; k < n; k++) {
+    const MIR_object_resource *r = &res[ord[k]], *prev = k > 0 ? &res[ord[k - 1]] : NULL;
+    if (r->type >= 0x80000000u || r->id >= 0x80000000u || r->lang >= 0x80000000u
+        || r->size > 0x7fffffffu || (r->size != 0 && r->data == NULL))
+      goto out;
+    if (prev != NULL && pex_res_cmp (prev, r) == 0) goto out;
+    if (prev == NULL || prev->type != r->type) n_types++;
+    if (prev == NULL || prev->type != r->type || prev->id != r->id) n_ids++;
+  }
+  uint64_t types_at = 16 + 8 * (uint64_t) n_types;
+  uint64_t ids_at = types_at + 16 * (uint64_t) n_types + 8 * (uint64_t) n_ids;
+  uint64_t entries_at = ids_at + 16 * (uint64_t) n_ids + 8 * (uint64_t) n;
+  uint64_t data_at = PEX_RES_ALIGN (entries_at + 16 * (uint64_t) n);
+  uint64_t end = data_at;
+  for (size_t k = 0; k < n; k++) end = PEX_RES_ALIGN (end + res[ord[k]].size);
+  if (end > 0x7fffffffu) goto out;
+  uint64_t at;
+  /* the root: one entry per type */
+  pex_res_dir (out, n_types);
+  at = types_at;
+  for (size_t k = 0; k < n; k = pex_res_run (res, ord, n, k, 0)) {
+    buf_u32 (out, res[ord[k]].type);
+    buf_u32 (out, 0x80000000u | (uint32_t) at);
+    at += 16 + 8 * (uint64_t) pex_res_ids (res, ord, n, k);
+  }
+  /* a type directory: one entry per id */
+  at = ids_at;
+  for (size_t k = 0; k < n; k = pex_res_run (res, ord, n, k, 0)) {
+    size_t e = pex_res_run (res, ord, n, k, 0);
+    pex_res_dir (out, pex_res_ids (res, ord, n, k));
+    for (size_t j = k; j < e; j = pex_res_run (res, ord, n, j, 1)) {
+      buf_u32 (out, res[ord[j]].id);
+      buf_u32 (out, 0x80000000u | (uint32_t) at);
+      at += 16 + 8 * (uint64_t) (pex_res_run (res, ord, n, j, 1) - j);
+    }
+  }
+  /* an id directory: one entry per language, naming its data entry */
+  at = entries_at;
+  for (size_t j = 0; j < n; j = pex_res_run (res, ord, n, j, 1)) {
+    size_t e = pex_res_run (res, ord, n, j, 1);
+    pex_res_dir (out, e - j);
+    for (size_t k = j; k < e; k++) {
+      buf_u32 (out, res[ord[k]].lang);
+      buf_u32 (out, (uint32_t) at);
+      at += 16;
+    }
+  }
+  /* the data entries */
+  at = data_at;
+  for (size_t k = 0; k < n; k++) {
+    buf_u32 (out, rva + (uint32_t) at);
+    buf_u32 (out, (uint32_t) res[ord[k]].size);
+    buf_u32 (out, 0); /* CodePage */
+    buf_u32 (out, 0); /* Reserved */
+    at = PEX_RES_ALIGN (at + res[ord[k]].size);
+  }
+  /* the bytes */
+  for (size_t k = 0; k < n; k++) {
+    while (out->len < PEX_RES_ALIGN (out->len)) buf_u8 (out, 0);
+    if (res[ord[k]].size != 0) buf_bytes (out, res[ord[k]].data, res[ord[k]].size);
+  }
+  while (out->len < end) buf_u8 (out, 0);
+  rc = out->len == end ? 0 : -1; /* a short buffer = a failed allocation */
+out:
+  free (ord);
+  return rc;
+}
+
 static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *params, void **buf,
                                size_t *size) {
   int dll_p = params->shared_p != 0;                  /* a DLL (see the header note) */
@@ -1028,7 +1158,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   size_t n_afix = 0, cap_afix = 0;
   size_t *exports = NULL; /* a DLL's exported symbols, by name */
   size_t n_exports = 0;
-  dwbuf_t rdata = {0}, relsec = {0};
+  dwbuf_t rdata = {0}, relsec = {0}, rsrcsec = {0};
 
 #define PEX_ALIGN(v, a) (((v) + (uint64_t) (a) -1) & ~((uint64_t) (a) -1))
   /* ---- the entry symbol: a defined text function */
@@ -1297,7 +1427,15 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     edir_size = (uint32_t) (rdata_rva + rdata.len) - edir_rva;
   }
   uint64_t rdata_size = rdata.len;
-  uint64_t reloc_rva = PEX_ALIGN (rdata_rva + (rdata_size ? rdata_size : 1), PEX_SEC_ALIGN);
+  /* ---- .rsrc (params->resources), between .rdata and .reloc as ld and
+     link.exe place it; absent when there are none */
+  uint64_t rsrc_rva = PEX_ALIGN (rdata_rva + (rdata_size ? rdata_size : 1), PEX_SEC_ALIGN);
+  if (params->n_resources != 0
+      && pex_build_rsrc (params->resources, params->n_resources, (uint32_t) rsrc_rva, &rsrcsec)
+           != 0)
+    goto done;
+  uint64_t rsrc_size = rsrcsec.len;
+  uint64_t reloc_rva = rsrc_size != 0 ? PEX_ALIGN (rsrc_rva + rsrc_size, PEX_SEC_ALIGN) : rsrc_rva;
 
   /* ---- .reloc: DIR64 fixups grouped into 4K-page blocks (sorted --
      the fixup list is built in reloc order, which is not RVA order) */
@@ -1326,14 +1464,15 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   uint64_t image_end = PEX_ALIGN (reloc_rva + (reloc_size ? reloc_size : 1), PEX_SEC_ALIGN);
 
   /* ---- file layout */
-  int nsects = 6;
+  int nsects = rsrc_size != 0 ? 7 : 6;
   uint64_t hdr_size = PEX_ALIGN (64 + 4 + 20 + 240 + (uint64_t) nsects * 40, PEX_FILE_ALIGN);
   uint64_t text_fo = hdr_size;
   uint64_t pool_fo = PEX_ALIGN (text_fo + text_size, PEX_FILE_ALIGN);
   uint64_t init_fo = PEX_ALIGN (pool_fo + pool_size, PEX_FILE_ALIGN);
   uint64_t data_fo = PEX_ALIGN (init_fo + init_size, PEX_FILE_ALIGN);
   uint64_t rdata_fo = PEX_ALIGN (data_fo + data_size, PEX_FILE_ALIGN);
-  uint64_t reloc_fo = PEX_ALIGN (rdata_fo + rdata_size, PEX_FILE_ALIGN);
+  uint64_t rsrc_fo = PEX_ALIGN (rdata_fo + rdata_size, PEX_FILE_ALIGN);
+  uint64_t reloc_fo = PEX_ALIGN (rsrc_fo + rsrc_size, PEX_FILE_ALIGN);
   uint64_t total = PEX_ALIGN (reloc_fo + reloc_size, PEX_FILE_ALIGN);
 
   p = calloc (1, (size_t) total);
@@ -1359,6 +1498,7 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
   if (init_size != 0) memcpy (p + init_fo, obj->initarr.p, init_size);
   if (data_size != 0) memcpy (p + data_fo, obj->data.p, data_size);
   if (rdata_size != 0) memcpy (p + rdata_fo, rdata.p, rdata_size);
+  if (rsrc_size != 0) memcpy (p + rsrc_fo, rsrcsec.p, rsrc_size);
   if (reloc_size != 0) memcpy (p + reloc_fo, relsec.p, reloc_size);
 
   /* ---- patch the stub: its slot disps, init-array bounds and (an
@@ -1450,7 +1590,8 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
     buf_u8 (&h, 14); /* linker versions: cosmetic */
     buf_u8 (&h, 0);
     buf_u32 (&h, (uint32_t) text_size);              /* SizeOfCode */
-    buf_u32 (&h, (uint32_t) (pool_size + init_size + data_size + rdata_size + reloc_size));
+    buf_u32 (&h, (uint32_t) (pool_size + init_size + data_size + rdata_size + rsrc_size
+                             + reloc_size));
     buf_u32 (&h, (uint32_t) bss_size);               /* SizeOfUninitializedData */
     buf_u32 (&h, (uint32_t) text_rva);               /* AddressOfEntryPoint = the stub (a DLL's DllMain) */
     buf_u32 (&h, (uint32_t) text_rva);               /* BaseOfCode */
@@ -1482,6 +1623,9 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       } else if (k == PEX_DIR_IMPORT) {
         buf_u32 (&h, idt_rva);
         buf_u32 (&h, idt_size);
+      } else if (k == PEX_DIR_RESOURCE && rsrc_size != 0) {
+        buf_u32 (&h, (uint32_t) rsrc_rva);
+        buf_u32 (&h, (uint32_t) rsrc_size);
       } else if (k == PEX_DIR_BASERELOC && reloc_size != 0) {
         buf_u32 (&h, (uint32_t) reloc_rva);
         buf_u32 (&h, (uint32_t) reloc_size);
@@ -1496,21 +1640,25 @@ static int pe_emit_executable (MIR_object_t obj, const MIR_object_exec_params *p
       const char *nm;
       uint64_t rva, vsz, fo, rsz;
       uint32_t chars;
-    } st[6] = {
+      int present;
+    } st[7] = {
       {".text", text_rva, text_size, text_fo, PEX_ALIGN (text_size, PEX_FILE_ALIGN),
-       PE_SCN_CNT_CODE | PE_SCN_MEM_EXECUTE | PE_SCN_MEM_READ},
+       PE_SCN_CNT_CODE | PE_SCN_MEM_EXECUTE | PE_SCN_MEM_READ, 1},
       {".mirpool", pool_rva, pool_size, pool_fo, PEX_ALIGN (pool_size, PEX_FILE_ALIGN),
-       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE},
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE, 1},
       {".mirinit", init_rva, init_size, init_fo, PEX_ALIGN (init_size, PEX_FILE_ALIGN),
-       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE},
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE, 1},
       {".data", data_rva, data_span, data_fo, PEX_ALIGN (data_size, PEX_FILE_ALIGN),
-       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE},
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | PE_SCN_MEM_WRITE, 1},
       {".rdata", rdata_rva, rdata_size, rdata_fo, PEX_ALIGN (rdata_size, PEX_FILE_ALIGN),
-       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ},
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ, 1},
+      {".rsrc", rsrc_rva, rsrc_size, rsrc_fo, PEX_ALIGN (rsrc_size, PEX_FILE_ALIGN),
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ, rsrc_size != 0},
       {".reloc", reloc_rva, reloc_size, reloc_fo, PEX_ALIGN (reloc_size, PEX_FILE_ALIGN),
-       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | 0x02000000u /* MEM_DISCARDABLE */},
+       PE_SCN_CNT_INIT_DATA | PE_SCN_MEM_READ | 0x02000000u /* MEM_DISCARDABLE */, 1},
     };
-    for (int k = 0; k < 6; k++) {
+    for (int k = 0; k < 7; k++) {
+      if (!st[k].present) continue;
       char f[8] = {0};
       memcpy (f, st[k].nm, strlen (st[k].nm) > 8 ? 8 : strlen (st[k].nm));
       buf_bytes (&h, f, 8);
@@ -1550,5 +1698,6 @@ done:
   free (exports);
   free (rdata.p);
   free (relsec.p);
+  free (rsrcsec.p);
   return rc;
 }
