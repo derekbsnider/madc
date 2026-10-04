@@ -5,6 +5,8 @@
 #include "madc_posix_io.h"
 
 #include <cerrno>
+#include <climits>	// PIPE_BUF: read_process_memory's span
+#include <cstdint>	// uintptr_t: read_process_memory's page arithmetic
 #include <cstdlib>
 #include <cstring>
 #ifdef _WIN32
@@ -617,6 +619,71 @@ unsigned long long process_resident_bytes()
 		return 0;
 	return pages_resident * (unsigned long long)page_size;
 #endif
+}
+
+std::size_t read_process_memory(void *dst, const void *src, std::size_t size)
+{
+	std::size_t page = 4096;
+#ifdef _WIN32
+	SYSTEM_INFO si;
+	GetSystemInfo(&si);
+	if ( si.dwPageSize )
+		page = si.dwPageSize;
+#else
+	long page_size = ::sysconf(_SC_PAGESIZE);
+	if ( page_size > 0 )
+		page = (std::size_t)page_size;
+	int fds[2];
+	if ( ::pipe(fds) != 0 )
+		return 0;
+	set_fd_close_on_exec(fds[0]);
+	set_fd_close_on_exec(fds[1]);
+#endif
+	std::size_t done = 0;
+	while ( done < size )
+	{
+		std::uintptr_t at = reinterpret_cast<std::uintptr_t>(src) + done;
+		std::size_t span = page - (std::size_t)(at % page);
+		if ( span > size - done )
+			span = size - done;
+#ifdef _WIN32
+		SIZE_T got = 0;
+		if ( !ReadProcessMemory(GetCurrentProcess(),
+					reinterpret_cast<const void *>(at),
+					static_cast<char *>(dst) + done, span, &got) )
+			break;
+		done += (std::size_t)got;
+		if ( (std::size_t)got < span )
+			break;
+#else
+		// At most PIPE_BUF bytes into an empty pipe: the write never blocks.
+		if ( span > PIPE_BUF )
+			span = PIPE_BUF;
+		ssize_t w;
+		do
+			w = ::write(fds[1], reinterpret_cast<const void *>(at), span);
+		while ( w < 0 && errno == EINTR );
+		if ( w <= 0 )
+			break;
+		std::size_t back = 0;
+		while ( back < (std::size_t)w )
+		{
+			ssize_t r = read_fd(fds[0], static_cast<char *>(dst) + done + back,
+					    (std::size_t)w - back);
+			if ( r <= 0 )
+				break;
+			back += (std::size_t)r;
+		}
+		done += back;
+		if ( back < span )
+			break;
+#endif
+	}
+#ifndef _WIN32
+	::close(fds[0]);
+	::close(fds[1]);
+#endif
+	return done;
 }
 
 } // namespace detail

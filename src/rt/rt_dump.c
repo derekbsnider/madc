@@ -895,11 +895,16 @@ void __madc_dump_sh_cstr(void *sink, const char *s, int cxx)
     __madc_dump_sh_text(sink, s, (long long)strlen(s));
 }
 
+/* An EMPTY type word is a binding row's value (%whos, the Variables view):
+ * the row's own column names the type, so the value is the address alone, as
+ * gdb shows a pointer inside an aggregate. NULL still means `void *`. */
 void __madc_dump_sh_ptr(void *sink, const char *type, const void *p, int cxx)
 {
-    sink_putc(sink, '(');
-    sink_puts(sink, type ? type : "void *");
-    sink_puts(sink, ") ");
+    if (!type || *type) {
+	sink_putc(sink, '(');
+	sink_puts(sink, type ? type : "void *");
+	sink_puts(sink, ") ");
+    }
     // Never %p: its spelling is implementation-defined (no 0x on win64).
     if (!p)
 	sink_puts(sink, cxx ? "nullptr" : "NULL");
@@ -913,6 +918,11 @@ void __madc_dump_sh_enum(void *sink, const char *scope, const char *name,
     if (name && *name) {
 	sink_puts(sink, scope);
 	sink_puts(sink, name);
+	return;
+    }
+    /* An empty type word: a binding row's value, the number alone. */
+    if (type && !*type) {
+	sink_printf(sink, "%lld", v);
 	return;
     }
     sink_putc(sink, '(');

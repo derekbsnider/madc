@@ -928,16 +928,27 @@ private:
 	// The show's limits (plan §41.11a step 3d). An entry's show follows
 	// text (a `char *` shows its string) and walks every element. A binding
 	// row (`__madc_show_row`: %whos, madcide's Variables view) follows no
-	// pointer, text included, walks at most `elements` of an aggregate and
-	// then `…`, and calls no code the session wrote: a class with a method
-	// a session unit defined walks by its members, never its container
-	// protocol. Set for one show's lowering (lower_show_call).
+	// pointer but a character pointer, whose text it reads through the
+	// fault-safe copy (gdb's `0x… "Test"`, __madc_dump_sh_rowtext); walks at
+	// most `elements` of an aggregate and then `…`; spells no type, which
+	// the row's own column names (show_spells_type); and calls no code the
+	// session wrote: a class with a method a session unit defined walks by
+	// its members, never its container protocol. Set for one show's
+	// lowering (lower_show_call).
 	struct ShowLimits
 	{
 		bool row;
 		long elements;		// 0: every element
 	};
 	ShowLimits m_show_limits = { false, 0 };
+	// Whether a show spells the value's type before it, D10's re-enterable
+	// spelling (`(struct P){ … }`, `(int *) 0x…`, `(enum E) 7`): never in a
+	// binding row, whose own column names the type, and never for an
+	// aggregate NESTED in another (`nested`), which shows its braces alone.
+	// A runtime type word is then empty, which __madc_dump_sh_ptr /
+	// __madc_dump_sh_enum show as the value alone.
+	bool show_spells_type(bool nested) const
+	{ return !nested && !m_show_limits.row; }
 	std::map<DataDefCLASS *, bool> m_row_session_class;	// the rule's cache
 	bool row_class_has_session_method(DataDefCLASS *cls);
 	// The row form's element bound: `n` shown of `count` (count when no bound).
@@ -958,9 +969,14 @@ private:
 	// be handed to two parents — the walk rebuilds instead of sharing, the
 	// same discipline aggregate_member_init_stmts follows for `path`.
 	typedef std::function<node_t()> DumpAccess;
-	// dfShow's pointer: its type and address, never its pointee (§6.4).
+	// dfShow's pointer: its type (none in a binding row) and address, never
+	// its pointee (§6.4).
 	bool dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 			       std::vector<node_t> &out, TokenBase *origin);
+	// A binding row's character pointer: __madc_dump_sh_rowtext (the
+	// address, then the text through the fault-safe copy).
+	bool dump_show_row_text(const DumpAccess &acc, std::vector<node_t> &out,
+				TokenBase *origin);
 	// dfShow's class with non-public members: its type and address.
 	bool dump_show_object(const DumpAccess &acc, class DataDefCLASS *cls,
 			      std::vector<node_t> &out, TokenBase *origin);

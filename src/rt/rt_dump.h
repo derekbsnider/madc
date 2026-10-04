@@ -200,7 +200,9 @@ size_t __madc_c_escape(const char *s, size_t n, int quote, char *out,
 /* Re-enterable spellings: the text, entered again, yields the value. One line,
  * no framing, no newline. A pointer is never followed (§6.4); CXX picks C++'s
  * null (`nullptr`) over C's (`NULL`). TYPE is the compile-time spelling of the
- * pointer or enum type (`int *`, `enum E`). */
+ * pointer or enum type (`int *`, `enum E`); an EMPTY TYPE is a binding row's
+ * value (%whos, the Variables view), whose type the row's own column names,
+ * so the value shows alone (`0x…`, `3`). */
 void __madc_dump_sh_i64(void *sink, long long v, int is_unsigned);
 void __madc_dump_sh_f64(void *sink, double v, int is_float);
 void __madc_dump_sh_ldbl(void *sink, long double v);
@@ -229,6 +231,15 @@ void __madc_dump_sh_textchar(void *sink, int c);
 /* A container's close after N elements: ` }`, or `}` when it had none, so an
  * empty one reads `{ }`. */
 void __madc_dump_sh_close(void *sink, long long n);
+
+/* --- the binding row's host half (src/madc_cir.cpp) --------------------- */
+/* A row's character pointer, gdb's form: the address, then the text it points
+ * to (`0x… "Test"`), read through madc::detail::read_process_memory, so a wild
+ * or dangling pointer shows `0x1 <unreadable>` and never faults the session.
+ * At most a row's worth of text is read; text with no NUL within it ends with
+ * gdb's `...`. A row is a session's (JIT) value only, never an AOT image's, so
+ * this lives outside the ledger lane with the session's other row runtime. */
+void __madc_dump_sh_rowtext(void *sink, const void *p, int cxx);
 
 /* --- the C++ half: the madc::value walk (src/rt_dump_value.cpp) --------- */
 /* NOT part of the strict-C11 ledger lane, and it cannot be: a value's `array`

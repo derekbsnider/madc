@@ -797,7 +797,8 @@ bool CirBuilder::dump_struct(DumpFlavor fl, const DumpAccess &acc,
 	if (show) {
 		const bool cxx = m_prog && m_prog->is_cpp_mode();
 		std::string word = dump_show_type_word(sdd);
-		out.push_back(dump_show_text(nested ? std::string("{ ")
+		out.push_back(dump_show_text(!show_spells_type(nested)
+					     ? std::string("{ ")
 					     : cxx ? word + "{ "
 						   : "(" + word + "){ ", origin));
 		if (sdd->union_layout && nshow > 1)
@@ -929,7 +930,7 @@ bool CirBuilder::dump_array(DumpFlavor fl, const DumpAccess &acc, DataDef *elem,
 	}
 	if (show) {
 		std::string open = "{ ";
-		if (!nested && !(m_prog && m_prog->is_cpp_mode())) {
+		if (show_spells_type(nested) && !(m_prog && m_prog->is_cpp_mode())) {
 			std::string word = dump_show_type_word(elem);
 			for (size_t d = dim_ix; d < dims.size(); d++)
 				word += "[" + std::to_string((unsigned long long)dims[d])
@@ -1685,8 +1686,9 @@ bool CirBuilder::dump_enum(DumpFlavor fl, const DumpAccess &acc,
 		const bool named = !edd->enum_name.empty()
 				   && edd->enum_name.compare(0, 2, "__") != 0;
 		std::string scope = (cxx && named) ? tag + "::" : std::string();
-		std::string ty = named ? dump_show_type_word(edd)
-				       : dump_show_type_word(under);
+		std::string ty = !show_spells_type(false) ? std::string()
+				 : named ? dump_show_type_word(edd)
+					 : dump_show_type_word(under);
 		need_dump_extern("__madc_dump_sh_enum",
 				 { { {N_CHAR}, true }, { {N_CHAR}, true },
 				   { {N_CHAR}, true }, { {N_LONG, N_LONG}, false } });
@@ -1882,7 +1884,8 @@ bool CirBuilder::dump_show_object(const DumpAccess &acc, DataDefCLASS *cls,
 				  std::vector<node_t> &out, TokenBase *origin)
 {
 	const bool cxx = m_prog && m_prog->is_cpp_mode();
-	std::string word = dump_class_type_word(cls) + " &";
+	std::string word = show_spells_type(false) ? dump_class_type_word(cls) + " &"
+						   : std::string();
 	need_dump_extern("__madc_dump_sh_ptr",
 			 { { {N_CHAR}, true }, { {N_VOID}, true },
 			   { {N_INT}, false } });
@@ -1903,7 +1906,8 @@ bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 	// of a function pointer) decays to its pointer.
 	DataDef *pdd = (dd->as_funcdef_dd() && m_prog) ? m_prog->getPointerType(dd)
 							: dd;
-	std::string word = dump_show_type_word(pdd);
+	std::string word = show_spells_type(false) ? dump_show_type_word(pdd)
+						   : std::string();
 	need_dump_extern("__madc_dump_sh_ptr",
 			 { { {N_CHAR}, true }, { {N_VOID}, true },
 			   { {N_INT}, false } });
@@ -1912,6 +1916,19 @@ bool CirBuilder::dump_show_pointer(const DumpAccess &acc, DataDef *dd,
 	append(a, node2(N_CAST, void_ptr_type(), acc(), origin));
 	append(a, integer(cxx ? 1 : 0, origin));
 	out.push_back(dump_call_stmt("__madc_dump_sh_ptr", a, origin));
+	return true;
+}
+
+bool CirBuilder::dump_show_row_text(const DumpAccess &acc,
+				    std::vector<node_t> &out, TokenBase *origin)
+{
+	const bool cxx = m_prog && m_prog->is_cpp_mode();
+	need_dump_extern("__madc_dump_sh_rowtext",
+			 { { {N_VOID}, true }, { {N_INT}, false } });
+	node_t a = list();
+	append(a, node2(N_CAST, void_ptr_type(), acc(), origin));
+	append(a, integer(cxx ? 1 : 0, origin));
+	out.push_back(dump_call_stmt("__madc_dump_sh_rowtext", a, origin));
 	return true;
 }
 
@@ -2435,9 +2452,11 @@ bool CirBuilder::dump_any(DumpFlavor fl, const DumpAccess &acc, DataDef *dd,
 			return dump_struct(fl, acc, sdd, depth, nested, out, origin,
 					   why);
 		}
-		// A row follows no pointer, text included.
-		if (dd->is_function()
-		    || (dd->is_pointer() && (!dd->is_cstr() || m_show_limits.row)))
+		// A row follows no pointer but a character pointer, whose text it
+		// reads through the fault-safe copy.
+		if (m_show_limits.row && dd->is_cstr())
+			return dump_show_row_text(acc, out, origin);
+		if (dd->is_function() || (dd->is_pointer() && !dd->is_cstr()))
 			return dump_show_pointer(acc, dd, out, origin);
 		return dump_scalar(fl, acc, dd, depth, out, origin, why);
 	}

@@ -136,6 +136,17 @@ unsigned long long process_cpu_microseconds();
 // POSIX-only subprocess machinery instead).
 unsigned long long process_resident_bytes();
 
+// Copy up to `size` bytes of THIS process's memory at `src` into `dst`,
+// stopping at the first byte that cannot be read; returns the count copied
+// (0 when `src` itself cannot be read). A debugger's read, never a fault: the
+// POSIX arm hands each span to write(2) on the call's own pipe, which answers
+// EFAULT for an unmapped or unreadable address instead of raising SIGSEGV;
+// the Win32 arm is ReadProcessMemory on the current process. Page by page,
+// so a span that runs off the end of a mapping keeps the bytes before it.
+// Thread-safe: no shared state; a concurrent writer to `src` races as any
+// read of that memory does.
+std::size_t read_process_memory(void *dst, const void *src, std::size_t size);
+
 #ifdef _WIN32
 // GetLastError code -> trimmed FormatMessage text ("Windows error N" when
 // the system has no message). The one Win32-error formatter — error-path

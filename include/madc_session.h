@@ -155,8 +155,9 @@ public:
     // %whos and the bindings wire op read. A row per object and function a
     // session unit (an entry, a loaded file) defined, sorted by name:
     // {name, kind (a madc::name_kind code), type (the source's spelling),
-    // value (an object's, the show's row form: no pointer followed, text
-    // included, at most 16 elements of an aggregate, 80 columns), file,
+    // value (an object's, the show's row form: no type spelled, no pointer
+    // followed but a character pointer's text through the fault-safe copy,
+    // `0x… "Test"`, at most 16 elements of an aggregate, 80 columns), file,
     // line}. The values come from one quiet entry, which takes no number,
     // keeps no result and says nothing; its module stays loaded, as every
     // entry's does.

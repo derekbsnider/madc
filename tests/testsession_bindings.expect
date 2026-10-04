@@ -1,5 +1,5 @@
 bindings: true
 count object=true function=false type=int value=3 at REPL[1]:1
-p object=true function=false type=char * value=(char *) 0x1 at REPL[2]:1
+p object=true function=false type=char * value=0x1 <unreadable> at REPL[2]:1
 square object=false function=true type=int (int) value= at REPL[3]:1
 running: true

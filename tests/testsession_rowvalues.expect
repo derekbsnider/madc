@@ -1,0 +1,11 @@
+arr = { 1, 2, 3 }
+e = 7
+f = B
+ip = 0x10
+lng: address=0x cut=…
+p = 0x1 <unreadable>
+pt = { .x = 1, .name = 0x1 <unreadable> }
+s: address=0x text="Test"
+u: address=0x text="éééééééééééééééééééééééééééééééééééééééé"...
+z = NULL
+running: true

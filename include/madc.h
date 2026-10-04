@@ -7595,7 +7595,8 @@ public:
     void show_entry_value(size_t decls_before);
     // A binding row's value (plan §41.11a step 3d): while set, the entry's
     // run shows each of these objects through the show's row form
-    // (`__madc_show_row`: no pointer followed, text included, at most 16
+    // (`__madc_show_row`: no type spelled, no pointer followed but a
+    // character pointer's text read through the fault-safe copy, at most 16
     // elements of an aggregate), and each text is appended to
     // entry_rows_shown, in order (__madc_session_bind). The session sets
     // them for its one quiet entry, which takes no number and keeps no

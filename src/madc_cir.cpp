@@ -1744,6 +1744,37 @@ extern "C" void __madc_session_bind(void *sink)
     b->prog->entry_rows_shown.push_back(text);
 }
 
+// A row's character pointer (rt_dump.h states the contract): the address,
+// then the text through the fault-safe copy. Reading one byte past a row's 80
+// columns is enough to know the text is longer than the row can show.
+extern "C" void __madc_dump_sh_rowtext(void *sink, const void *p, int cxx)
+{
+    __madc_dump_sh_ptr(sink, "", p, cxx);
+    if (!p)
+	return;
+    char text[81];
+    size_t got = madc::detail::read_process_memory(text, p, sizeof text);
+    if (got == 0) {
+	__madc_dump_raw(sink, " <unreadable>", 13);
+	return;
+    }
+    const char *nul = static_cast<const char *>(memchr(text, '\0', got));
+    size_t len = nul ? (size_t)(nul - text) : got;
+    if (!nul) {
+	// The read may end inside a UTF-8 sequence: keep whole characters.
+	size_t lead = len;
+	while (lead > 0 && ((unsigned char)text[lead - 1] & 0xC0) == 0x80)
+	    --lead;
+	if (lead > 0
+	    && madc::utf8_seq_len((unsigned char)text[lead - 1]) > len - (lead - 1))
+	    len = lead - 1;
+    }
+    __madc_dump_raw(sink, " ", 1);
+    __madc_dump_sh_text(sink, text, (long long)len);
+    if (!nul)
+	__madc_dump_raw(sink, "...", 3);
+}
+
 static void cir_call_tu_init(void *code)
 {
     ((void (*)(int, char **, char **))code)(0, NULL, NULL);

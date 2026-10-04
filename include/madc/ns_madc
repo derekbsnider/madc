@@ -759,7 +759,8 @@ namespace madc {
     //     madcide's Variables view, plan §41.11a step 3d). Its seq; the
     //     reply is a `bindings` row whose rows are {name, kind (a
     //     madc::name_kind code), type (the source's spelling), value (an
-    //     object's: no pointer followed, at most 16 elements, 80 columns),
+    //     object's, no type spelled: no pointer followed but a character
+    //     pointer's text, `0x… "Test"`, at most 16 elements, 80 columns),
     //     file, line (where an entry or a loaded file declared it)}, sorted
     //     by name. Answered between entries.
     //   session_poll(reply, h): 1 with a reply, 0 when none waits, -1 when

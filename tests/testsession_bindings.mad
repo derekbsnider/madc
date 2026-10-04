@@ -2,8 +2,10 @@
 // session_bindings asks for the names the session defined, and the reply's
 // rows carry each one's name, kind (a madc::name_kind code), type (the
 // source's spelling), value (an object's, the row form) and place (the entry
-// that declared it). A pointer's row shows its address and follows nothing:
-// `char *p = (char *)1;` neither reads memory nor ends the backend.
+// that declared it). A pointer's row shows its address; a character
+// pointer's text is read through a fault-safe copy, so `char *p = (char *)1;`
+// shows `0x1 <unreadable>` and never ends the backend
+// (tests/testsession_rowvalues.mad owns the row's spellings).
 
 // The next reply, passing over running notices; the program's output
 // printed before it is appended to `out`.
