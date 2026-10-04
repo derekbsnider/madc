@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### ui: sidebar placement on right side of the editor (Thonny's layout model)
+
+A sidebar may now sit to the right of the editor and panel, per the layout's `pane sidebar right` declaration (chthonia's Variables panel placement). Before this change the web page drew every sidebar on the left: page.js ignored the region op's `side` value, and page.css had one fixed grid layout. After: page.js records op.side on the workbench's data-sidebar-side attribute, and page.css applies a right-hand layout when set, moving the sidebar's border and splitter from right to left and reversing splitter drag direction (a right-side sidebar grows leftward from the workbench's right edge). The probe in madcide_chthonia compares the sidebar's and editor's getBoundingClientRect().left to verify the sidebar sits right of the editor. Validation: Tier 1 tests/gui/madcide_chthonia prints `sidebar-right=1` at both checkpoints; JIT 1/0, EXE 1/0, OBJ 1/0. Tier 2 scripts/fast_lanes.sh GREEN (c-testsuite 220/0, c-torture 1613 passed 11 failing all in baseline, c2mir-tests 314/50 all in baseline, gui 25/25 JIT+EXE+OBJ, gxx-c++11 1501 passed all failures in baseline, index-c 50/50). Genuine Windows 11: chthonia.exe window shows Variables to the right of the editor.
+
 ### madcide: the window's title is the product's name, the file and the caret, as Thonny's is
 
 The composed root carries a `title` hint every frame: `<product> - <file> @ <row> : <col>` (Thonny's `Thonny - <path> @ <line> : <col>`), the file `untitled` without one and the row and column as the status line counts them. A window shows it through the host's `title` op, sent only when it changes; the terminal ignores it. chthonia's window reads `chthonia - hello.c @ 1 : 1` where every window read `madc`. Test: `testmadcide_product` pins `chthonia - madc_ide_product.c @ 1 : 1`. Validation: Tier 1 `run_tests.sh --exe --obj` over testuihostfake, testui*, testmadcide_product, testmadcide_chthonia, testidemenu, testmadcide_serve*: 26/0 JIT, EXE and OBJ. Tier 2 scripts/fast_lanes.sh GREEN (all six lanes 0 outside baseline).

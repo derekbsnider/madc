@@ -119,6 +119,22 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
     "foot foot foot";
   flex: 1 1 auto; min-height: 0;
 }
+/* A right-hand sidebar (the layout's `pane sidebar right`: Thonny's
+   Variables) spans the editor and the panel on the right; its border and
+   its splitter move to its left edge. */
+.node.group.workbench[data-sidebar-side="right"] {
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "toolbar toolbar toolbar"
+    "rail editor sidebar"
+    "rail panel sidebar"
+    "statusbar statusbar statusbar"
+    "foot foot foot";
+}
+.workbench[data-sidebar-side="right"] > .slot[data-slot="sidebar"] {
+  border-right: none; border-left: 1px solid #2d3448; }
+.workbench[data-sidebar-side="right"]:has(> .slot[data-slot="sidebar"]:not(:empty)) > .splitter[data-for="sidebar"] {
+  justify-self: start; margin-right: 0; margin-left: -2px; }
 /* The toolbar (plan §41.11a): the root's `toolbar` rows as a row of
    buttons across the top; empty (the default menu places none), the slot
    takes no space. */

@@ -91,7 +91,10 @@
     var dragging = null;
     function size(e) {
       var r = wb.getBoundingClientRect();
-      var v = horizontal ? (r.bottom - e.clientY - dragging.foot) : (e.clientX - r.left - dragging.rail);
+      // A right-hand sidebar grows leftward, from the workbench's right edge.
+      var v = horizontal ? (r.bottom - e.clientY - dragging.foot)
+            : wb.dataset.sidebarSide === 'right' ? (r.right - e.clientX)
+            : (e.clientX - r.left - dragging.rail);
       var lim = horizontal ? r.height : r.width;
       v = Math.max(48, Math.min(lim * 0.9, v));
       wb.style.setProperty('--' + varName, Math.round(v) + 'px');
@@ -265,6 +268,11 @@
       // percent, read here into the workbench var (as px against the current
       // workbench, the unit the splitter uses) so a fresh viewer and the TUI
       // share the session's size. A stored per-viewer size still wins.
+      // The sidebar's SIDE (the layout's `pane sidebar right`, Thonny's
+      // Variables): the workbench lays the sidebar to the right of the
+      // editor and the panel when it says so (page.css), else to the left.
+      if (op.region === 'sidebar')
+        container.dataset.sidebarSide = op.side === 'right' ? 'right' : 'left';
       if (op.region === 'sidebar' || op.region === 'panel') {
         var horiz = op.region === 'panel';
         var vn = horiz ? 'panel-h' : 'sidebar-w';

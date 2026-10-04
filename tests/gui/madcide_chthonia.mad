@@ -28,15 +28,18 @@ void click_button(long t, const char *label)
 }
 
 // What the page shows: whether the panel's edit node carries `out`, and
-// whether the sidebar carries `row`.
+// whether the sidebar carries `row`, and whether the sidebar sits right of
+// the editor (chthonia.layout's `pane sidebar right`, Thonny's Variables).
 void probe(long t, const char *out, const char *row)
 {
     ui::eval_page(t, format(
 	"(function(){{var p=document.querySelector('.slot[data-slot=\"panel\"]');"
 	"var e=p?p.querySelector('.edit'):null;var tx=e?e.textContent:'';"
 	"var s=document.querySelector('[data-slot=\"sidebar\"]');var st=s?s.textContent:'';"
+	"var ed=document.querySelector('[data-slot=\"editor\"]');"
+	"var rt=(s&&ed&&s.getBoundingClientRect().left>ed.getBoundingClientRect().left)?1:0;"
 	"window.madc(JSON.stringify({{kind:'snapshot',text:'output='+(tx.indexOf('{}')>=0?1:0)"
-	"+' row='+(st.indexOf('{}')>=0?1:0)}}));}})()", out, row));
+	"+' row='+(st.indexOf('{}')>=0?1:0)+' sidebar-right='+rt}}));}})()", out, row));
 }
 
 int main()
