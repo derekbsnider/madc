@@ -21,7 +21,7 @@ The plugin design settled what the product is (`docs/plans/2026-09-30-madcide-pl
 | Symptom | Cause | State |
 |---|---|---|
 | Run in `madcide.exe` printed madcide's usage (exit 2) | The Windows Run spawned the running executable with `--run-frozen=` on its command line; only the madc CLI reads that option (from 7225fa035, 2026-09-08). Another AOT program re-ran itself without end. | **Fixed** 6a8a692b4 |
-| The REPL tab: "the backend process is POSIX-only for now (plan 41.9a)" | `SessionClient::start` forks; its `_WIN32` arm refuses | Step A |
+| The REPL tab: "the backend process is POSIX-only for now (plan 41.9a)" | `SessionClient::start` forks; its `_WIN32` arm refuses | **Fixed** (Step A) |
 | 12 s before the window appears | Not traced. Launches without a window measured under 0.3 s, so the cost is in the window path | Step B |
 | The macOS tarball has no madcide | An AOT madcide binds libmadc's value runtime; on macOS that is `libmadc-0.dylib`, the darwin port's D5, not built yet | Step C |
 
@@ -43,6 +43,33 @@ Kinds today: `frozen` (a live parse frozen to a snapshot: `parse_run`,
 `--exe` pass is the one that was red. No lane runs that pass (B166).
 
 ## 4. Step A — the Windows REPL backend: a third kind of the same owner
+
+**Built (2026-10-04).** As designed below, with these specifics:
+
+- The session's request stream is a DataChannel on both platforms: POSIX
+  adopts the socketpair's ends (`detail::socket_channel_over`, the socket
+  channel's own constructor); Windows accepts the child's `tcp://` connection
+  on a `listen://127.0.0.1:0` listener. One protocol text serves both, and the
+  client's waits go through one helper (`poll()` on POSIX, the reactor's
+  probe `taskio::poll_readable` on a 5 ms cadence on Windows).
+- The token is 128 bits from `rand_s` (the OS generator). A connection whose
+  first line is not the token is closed and the listener keeps waiting.
+- A run child of any kind ends quietly on a fault (`madc_crash_quiet_child`):
+  a top-level filter ends the process with the exception code, after madc's
+  report when the CLI installed it, so no crash dialog (Windows) and no
+  debugger (wine, whose default filter ignores `SEM_NOGPFAULTERRORBOX`). The
+  client reports the status. madcide spells a Windows status the way Windows
+  tools do, `0xC0000005`.
+- Gates: `testsession_*` (5) and `testmadcide_repl` lost their win64/wine64
+  skips and pass under wine, as scripts and as Windows executables (an exe
+  serves its own backend through `<ns_madc>`'s initializer).
+  `testsession_pump` has a win64 twin: a crashed backend's status is
+  -1073741819 there (oracle: a mingw-gcc program `_spawnl`'s a faulting child
+  under wine and prints that status).
+- Residue: the CLI REPL (`madc`, `madc -i`) still runs its session in-process
+  on Windows. Its backend copies the configured Program (the command line,
+  madc.ini), which cannot cross a process boundary. `testrepl_crash` keeps
+  its win64 skip.
 
 The POSIX backend (`src/madc_session_client.cpp`) is a fork child with three
 channels:
