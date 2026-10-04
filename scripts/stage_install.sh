@@ -13,7 +13,9 @@
 # Inputs, built before it runs (from the repo root): bin/madc-release,
 # lib/release/libmadc.so (the forest inside), lib/release/libmadc_rt.a,
 # madcide compiled by that release compiler ($MADC_STAGE_MADCIDE, default
-# tmp/madcide-pkg) and the shipped plugins built by that madcide
+# tmp/madcide-pkg), chthonia compiled by it from tools/chthonia/chthonia.json
+# ($MADC_STAGE_CHTHONIA, default tmp/chthonia-pkg) and the shipped plugins
+# built by that madcide
 # ($MADC_STAGE_PLUGINS, default tmp/plugins-pkg). The optional modules
 # (lib/libmadcwebview.so, lib/libmadcgit.so: weak dependencies, a program
 # that imports them loads them) are staged when they were built;
@@ -29,10 +31,11 @@ root="$1"
 libdir="$2"
 prefix="$3"
 madcide="${MADC_STAGE_MADCIDE:-tmp/madcide-pkg}"
+chthonia="${MADC_STAGE_CHTHONIA:-tmp/chthonia-pkg}"
 plugins="${MADC_STAGE_PLUGINS:-tmp/plugins-pkg}"
 p="$root${prefix:+/$prefix}"
 
-for f in bin/madc-release lib/release/libmadc.so lib/release/libmadc_rt.a "$madcide"; do
+for f in bin/madc-release lib/release/libmadc.so lib/release/libmadc_rt.a "$madcide" "$chthonia"; do
 	if [ ! -f "$f" ]; then
 		echo "stage_install: missing $f (build it first)" >&2
 		exit 1
@@ -90,6 +93,14 @@ for m in libmadcwebview.so libmadcgit.so; do
 	fi
 done
 install -m 755 "$madcide" "$p/bin/madcide"
+# chthonia, the learning IDE built on madcide's base: a window by default.
+# Its desktop entry and the hicolor icons (the images of its .ico, the one
+# source of its artwork — the Windows .rsrc reads the same file) make it a
+# launchable application on a Linux desktop.
+install -m 755 "$chthonia" "$p/bin/chthonia"
+mkdir -p "$p/share/applications"
+install -m 644 tools/chthonia/chthonia.desktop "$p/share/applications/chthonia.desktop"
+python3 scripts/ico_png_images.py tools/chthonia/chthonia.ico "$p/share/icons/hicolor" chthonia
 # madcide's data (profiles, plugins, the plugin API headers, the line
 # editor's verbs and checks): the one staging owner, into share/madcide —
 # where resolve_data_dir and resolve_profile_dir look in an install.

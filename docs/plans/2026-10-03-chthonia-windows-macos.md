@@ -215,6 +215,36 @@ Plugin design §9.3 and §9.4, in its own order:
 4. Packaging: chthonia ships in each platform's madc package, and as the
    standalone chthonia package (libmadc, madc, `chthonia`) for Windows and
    macOS, then the MSIX (PK6).
+   **In each platform's madc package — done 2026-10-04 (Windows earlier).**
+   - Linux: `package_release.sh` (and the Homebrew formula) builds
+     `tmp/chthonia-pkg` with the release compiler. `stage_install.sh` stages:
+     - `bin/chthonia`;
+     - `share/applications/chthonia.desktop`;
+     - `share/icons/hicolor/<n>x<n>/apps/chthonia.png`, written by
+       `scripts/ico_png_images.py` losslessly from the six images of
+       `chthonia.ico`, the one source of the artwork.
+     The rpm lists them. The install gate's Linux legs add chthonia's usage
+     line, `-c check` over a `<stdio.h>` program from `/tmp` (clean, rc 0), a
+     syntax-error control (1 problem, rc 1), and the desktop entry and icon.
+     A `stage_install.sh` tarball passed `package_install_gate.sh tar` on the
+     container with every leg green. The deb and rpm builds themselves run
+     with `package_release.sh` at the release tier.
+   - macOS: on a darwin host of the tarball's arch, `package_release_macos.sh`
+     builds madcide, chthonia and the plugins with that arch's release madc.
+     It stages `bin/madcide`, `bin/chthonia`, `share/madcide` (the one
+     staging script) and `madcide.1`, and the README describes them. A cross
+     host packages the compiler alone and prints a stated SKIP. The mactar
+     gate adds the same chthonia legs.
+     The commands were proven by hand on the Intel Mac with the x86_64
+     tarball's thin madc:
+     - madcide and chthonia build;
+     - `build_shipped_plugins.sh` builds `chthonia.dylib`;
+     - the staging writes 32 files;
+     - the installed chthonia, run from `/tmp`, prints its usage line, its
+       `-c check` is clean (rc 0), and the control reports 1 problem (rc 1).
+     The first scripted run is the release job's Mac step.
+   - Open: an app bundle with an `.icns` for macOS (the Dock and Finder
+     icon), the standalone chthonia packages, and the MSIX.
    - macOS: madcide and chthonia must be built by the native madc in the
      release job's Mac step (`package_release_macos.sh` on a darwin host).
      The container's cross madc only emits objects, and building a plugin

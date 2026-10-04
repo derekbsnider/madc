@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Chthonia
+GenericName=C and C++ IDE
+Comment=An easy window to learn C and C++: edit, run, and try code in the shell
+Exec=chthonia %F
+Icon=chthonia
+Terminal=false
+Categories=Development;IDE;Education;
+MimeType=text/x-csrc;text/x-chdr;text/x-c++src;text/x-c++hdr;
+Keywords=C;C++;programming;learn;REPL;

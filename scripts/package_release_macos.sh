@@ -21,7 +21,11 @@
 #   madc-<ver>-macos-<arch>/lib/libmadcwebview.dylib  the platform webview library
 #                                             (WKWebView + native chrome; GUI programs:
 #                                             import madcwebview) — macOS 13.3+
-#   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz
+#   madc-<ver>-macos-<arch>/bin/madcide       the IDE, AOT-compiled by bin/madc  } darwin host of
+#   madc-<ver>-macos-<arch>/bin/chthonia      the learning IDE (a window)       } this arch only
+#   madc-<ver>-macos-<arch>/share/madcide/    madcide's data (profiles, plugins, plugin headers,
+#                                             verbs, checks — scripts/stage_madcide_data.sh)
+#   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz (+ madcide.1.gz with the IDE)
 #   madc-<ver>-macos-<arch>/share/doc/madc/examples/madc.ini
 #   madc-<ver>-macos-<arch>/LICENSE
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libc++-copyright.txt
@@ -143,6 +147,24 @@ package_arch() {
         exit 1
     fi
 
+    # madcide and chthonia (owner ruling 2026-09-01: the packages ship the
+    # IDE; chthonia plan §7 D4), AOT-compiled by THIS arch's release madc and
+    # the plugins built by that madcide — the package_release.sh shape. Only
+    # a darwin host of this arch can run them (building a plugin runs the
+    # built madcide), so a cross host packages the compiler alone and says so.
+    local ide=0
+    if [ "$HOST_OS" = Darwin ] && [ "$(uname -m | sed 's/x86_64/x86-64/')" = "$bin_arch" ]; then
+        ide=1
+        echo "== madcide + chthonia + plugins ($bin_arch, AOT via $bin) =="
+        rm -f "tmp/madcide-pkg-$bin_arch" "tmp/chthonia-pkg-$bin_arch"
+        mkdir -p tmp
+        "$bin" -o "tmp/madcide-pkg-$bin_arch" tools/madcide/madcide.mad
+        "$bin" --project tools/chthonia/chthonia.json -o "tmp/chthonia-pkg-$bin_arch"
+        scripts/build_shipped_plugins.sh "tmp/plugins-pkg-$bin_arch" "tmp/madcide-pkg-$bin_arch"
+    else
+        echo "package_release_macos: SKIP madcide/chthonia for $bin_arch — they are built by the $bin_arch release madc on a darwin host of that arch (the release.yml mac job); this tarball carries the compiler alone"
+    fi
+
     rm -rf "$stage"
     mkdir -p "$stage/$root/bin" "$stage/$root/lib" "$stage/$root/share/man/man1" \
              "$stage/$root/share/doc/madc/examples" "$stage/$root/THIRD_PARTY_NOTICES"
@@ -156,6 +178,14 @@ package_arch() {
     install -m 755 "$webview" "$stage/$root/lib/libmadcwebview.dylib"
     install -m 755 "$madcgit" "$stage/$root/lib/libmadcgit.dylib"
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
+    if [ "$ide" = 1 ]; then
+        install -m 755 "tmp/madcide-pkg-$bin_arch" "$stage/$root/bin/madcide"
+        install -m 755 "tmp/chthonia-pkg-$bin_arch" "$stage/$root/bin/chthonia"
+        # madcide's data under share/madcide, where an installed madcide
+        # looks (<exedir>/../share/madcide): the one staging owner.
+        scripts/stage_madcide_data.sh "$stage/$root/share/madcide" "tmp/plugins-pkg-$bin_arch"
+        gzip -9n < docs/man/madcide.1 > "$stage/$root/share/man/man1/madcide.1.gz"
+    fi
     install -m 644 LICENSE "$stage/$root/LICENSE"
     # The frozen C++ groves derive from LLVM's libc++ headers
     # (Apache-2.0-with-LLVM-exception): carry the license text — the pinned
@@ -183,6 +213,21 @@ package_arch() {
     # its notice ships.
     install -m 644 "${LIBGIT2_DIR:-/workspace/libgit2}/src/COPYING" \
         "$stage/$root/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
+    local ide_text=""
+    if [ "$ide" = 1 ]; then
+        ide_text="
+madcide (bin/madcide): the madc IDE — a terminal editor (bin/madcide
+file.c), or a window with --gui. Its keybinding profiles, plugins and
+the line editor's verbs live in share/madcide next to this README.
+
+chthonia (bin/chthonia): the easy GUI to learn C and C++, built on
+madcide and laid out as Thonny is — the editor, the Shell (a C REPL) below
+it, the Variables view beside it, Run (F5) and Stop on the toolbar. It
+opens a window by default (--tui asks for the terminal):
+
+    bin/chthonia file.c
+"
+    fi
     cat > "$stage/$root/README-macos.txt" <<EOF
 madc ${VER} for macOS (${pkg_arch})
 ====================================
@@ -220,10 +265,9 @@ bin/ (or next to the madc that built it), so keep bin/ and lib/ together.
 
 GUI programs: lib/libmadcwebview.dylib is madc's binding of the platform
 webview (WKWebView) with the native menu bar and file dialogs. A program
-that says \`import madcwebview;\` (madc's ui "web" target — madcide's
---gui mode, once madcide ships here) loads it from this lib/ next to
-bin/madc. It requires macOS 13.3 or later.
-
+that says \`import madcwebview;\` (madc's ui "web" target) loads it from
+this lib/ next to bin/madc. It requires macOS 13.3 or later.
+${ide_text}
 share/doc/madc/examples/madc.ini is a documented example configuration
 file; to use one, copy it to ~/.config/madc/madc.ini.
 EOF

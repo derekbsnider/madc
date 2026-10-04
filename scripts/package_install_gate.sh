@@ -31,6 +31,9 @@
 #            foreign cwd (scripts/madcide_save_quit_pty.py: joe's keys, then
 #            the rescue keys with the profiles hidden) [control: hide
 #            share/madcide/verbs => it refuses to start, with the reason].
+#            installed chthonia prints its usage line and `-c check`s a
+#            <stdio.h> program clean from a foreign cwd [control: a syntax
+#            error => 1 problem, rc 1]; its desktop entry and icon ship.
 #   tar      same probes with NO LD_LIBRARY_PATH at all (env -u) — the
 #            run-time $ORIGIN proof (the packager's ldd check is static;
 #            this one executes) [control: hide lib/libmadc.so.0 => madc
@@ -50,6 +53,9 @@
 #            — the forest served from the shipped lib/libmadc-0.dylib, the
 #            thin CLI carrying none [control: hide lib/libmadc-0.dylib =>
 #            madc must fail to run];
+#            the shipped chthonia prints its usage line and `-c check`s a
+#            <stdio.h> program clean from a foreign cwd [control: a syntax
+#            error => 1 problem, rc 1];
 #            scripts/mac_battery.sh against the extracted tarball layout
 #            holds the PASS floor (MAC_BATTERY_FLOOR, default 8 = the
 #            owner-hardware baseline) and prints every FAIL line [control:
@@ -202,6 +208,38 @@ run_linux() {
     case "$out" in
         *"EXITED rc=1 "*"VERBSMISSING"*) ok "$kind" "negative control: hidden verbs => refused to start ($out)" ;;
         *) fail "$kind" "negative control broken: verbs hidden but madcide did not refuse (got: $out)" ;;
+    esac
+
+    # 6. installed chthonia (the learning IDE on madcide's base): its usage
+    #    line, then `-c check` from a foreign cwd over a C file that includes
+    #    <stdio.h> — the installed verbs (share/madcide) and the forest in the
+    #    installed libmadc serve it — clean; [control: a file with a syntax
+    #    error reports its problem and exits 1, proving the check read it].
+    #    Its desktop entry and the 256 px icon are in the artifact.
+    local chthonia="$bindir/chthonia" chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
+    [ -x "$chthonia" ] || fail "$kind" "no executable $chthonia in the artifact"
+    [ -f "$root/${libdir:+usr/}share/applications/chthonia.desktop" ] \
+        || fail "$kind" "no share/applications/chthonia.desktop in the artifact"
+    [ -f "$root/${libdir:+usr/}share/icons/hicolor/256x256/apps/chthonia.png" ] \
+        || fail "$kind" "no share/icons/hicolor/256x256/apps/chthonia.png in the artifact"
+    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$chthonia" --help ) 2>&1 )
+    case "$out" in
+        *"usage: chthonia"*) ok "$kind" "installed chthonia prints its usage line" ;;
+        *) fail "$kind" "installed chthonia --help did not print its usage line (got: $out)" ;;
+    esac
+    printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
+    printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
+    out=$( ( cd /tmp && ulimit -t 120 && timeout 60 "${runenv[@]}" "$chthonia" "$chk" -c check ) 2>&1 )
+    local rc=$?
+    case "$rc:$out" in
+        0:*Problems*) ok "$kind" "installed chthonia -c check over <stdio.h> is clean (rc 0)" ;;
+        *) fail "$kind" "installed chthonia -c check over <stdio.h> was not clean (rc $rc: $out)" ;;
+    esac
+    out=$( ( cd /tmp && ulimit -t 120 && timeout 60 "${runenv[@]}" "$chthonia" "$bad" -c check ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        1:*"1 problem"*) ok "$kind" "negative control: a syntax error => chthonia -c check reports 1 problem (rc 1)" ;;
+        *) fail "$kind" "negative control broken: chthonia -c check over a syntax error (rc $rc: $out)" ;;
     esac
 }
 
@@ -366,6 +404,34 @@ gate_mactar() {
     case "$out" in
         *"$MARKER"*) fail mactar "negative control broken: lib/libmadc-0.dylib hidden but madc still ran" ;;
         *) ok mactar "negative control: hidden lib/libmadc-0.dylib => madc does not run" ;;
+    esac
+
+    # 1c. the IDE (a darwin host of this arch builds it into the tarball):
+    # chthonia's usage line, then `-c check` from a foreign cwd over a
+    # <stdio.h> program — share/madcide's verbs and the library's forest
+    # serve it — clean [control: a syntax error => 1 problem, rc 1].
+    [ -x "$root/bin/madcide" ] || fail mactar "no executable bin/madcide in the artifact"
+    [ -x "$root/bin/chthonia" ] || fail mactar "no executable bin/chthonia in the artifact"
+    [ -d "$root/share/madcide/verbs" ] || fail mactar "no share/madcide/verbs in the artifact"
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/chthonia" --help ) 2>&1 )
+    case "$out" in
+        *"usage: chthonia"*) ok mactar "shipped chthonia prints its usage line" ;;
+        *) fail mactar "shipped chthonia --help did not print its usage line (got: $out)" ;;
+    esac
+    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c" rc
+    printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
+    printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$root/bin/chthonia" "$chk" -c check ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        0:*Problems*) ok mactar "shipped chthonia -c check over <stdio.h> is clean (rc 0)" ;;
+        *) fail mactar "shipped chthonia -c check over <stdio.h> was not clean (rc $rc: $out)" ;;
+    esac
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$root/bin/chthonia" "$bad" -c check ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        1:*"1 problem"*) ok mactar "negative control: a syntax error => chthonia -c check reports 1 problem (rc 1)" ;;
+        *) fail mactar "negative control broken: chthonia -c check over a syntax error (rc $rc: $out)" ;;
     esac
 
     # 2. the Mac battery against the extracted tarball layout (bin/madc +
