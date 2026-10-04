@@ -17,11 +17,15 @@
 # before substitution (the macro is hidden only for the rescan of its
 # replacement, 6.10.3.4p2). madc hid it for the argument pre-expansion too.
 # 1611 -> 1612 passed, 4 -> 3 compile-failed.
+#
+# SHRUNK 2026-10-04: pr122000.c passes. It calls `__sync_add_and_fetch`, gcc's
+# legacy atomic builtin, which madc did not have (an implicit declaration,
+# then an undefined import at link); the __sync_ family now rides the
+# __atomic_ table. 1613 -> 1614 passed, 3 -> 2 compile-failed.
 
-# --- compile-failed (3) ---
+# --- compile-failed (2) ---
 int-compare.c
 medce-1.c
-pr122000.c
 
 # SHRUNK 2026-09-22: bcp-1.c passes. It entered this list that same day and
 # left it hours later, and the round trip is the useful record.

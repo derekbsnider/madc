@@ -6324,7 +6324,9 @@ node_t CirBuilder::ptr_type_node(DataDef *dd)
 
 // The GCC __atomic_* family (include/atomic_builtins.h) lowers to the helper
 // named `__madc` + the builtin's name minus one leading underscore
-// (va_helpers.cpp). A sized form passes the object's size first, as c2mir's
+// (va_helpers.cpp); a legacy __sync_* row reaches the helper of the __atomic_
+// builtin it is, its implied memory order standing where that builtin's
+// order operand goes. A sized form passes the object's size first, as c2mir's
 // own sizeof of `*p`, so a pattern body's copy measures the concrete type. A
 // value operand travels as unsigned long long; an object-yielding result is
 // cast back to the object's type (operand 0's pointee, unqualified). Every
@@ -6390,6 +6392,11 @@ node_t CirBuilder::lower_atomic_builtin(TokenCallFunc *tcf,
 	auto value = [&](TokenBase *a) -> node_t {
 		return node2(N_CAST, ull_type(), translate_expr(a), tb);
 	};
+	// The memory order: operand i, or the order a __sync_ row implies.
+	auto order = [&](size_t i) -> node_t {
+		return ab.implied_order != 0 ? integer(ab.implied_order, tb)
+					     : translate_expr(args[i]);
+	};
 	const std::vector<c2mir_node_code_t> ull = { N_UNSIGNED, N_LONG, N_LONG };
 	const ExternParam size_p = { ull, false };
 	const ExternParam addr_p = { { N_VOID }, true };
@@ -6416,7 +6423,21 @@ node_t CirBuilder::lower_atomic_builtin(TokenCallFunc *tcf,
 	case AtomicForm::ValueArith:
 		append(a, address(args[0]));
 		append(a, value(args[1]));
-		append(a, translate_expr(args[2]));
+		append(a, order(2));
+		params.insert(params.end(), { addr_p, value_p, int_p });
+		break;
+	case AtomicForm::SyncCompareValue:	// (p, old, new, mo)
+	case AtomicForm::SyncCompareBool:
+		append(a, address(args[0]));
+		append(a, value(args[1]));
+		append(a, value(args[2]));
+		append(a, order(3));
+		params.insert(params.end(), { addr_p, value_p, value_p, int_p });
+		break;
+	case AtomicForm::SyncRelease:	// (p, mo): store_n of 0
+		append(a, address(args[0]));
+		append(a, node2(N_CAST, ull_type(), integer(0, tb), tb));
+		append(a, order(1));
 		params.insert(params.end(), { addr_p, value_p, int_p });
 		break;
 	case AtomicForm::ValueCompare:	// (p, exp, des, weak, s, f)
@@ -6455,7 +6476,7 @@ node_t CirBuilder::lower_atomic_builtin(TokenCallFunc *tcf,
 		params.insert(params.end(), { size_p, addr_p });
 		break;
 	case AtomicForm::Fence:		// (mo)
-		append(a, translate_expr(args[0]));
+		append(a, order(0));
 		params.push_back(int_p);
 		break;
 	case AtomicForm::LockFreeConstant:
@@ -6467,7 +6488,7 @@ node_t CirBuilder::lower_atomic_builtin(TokenCallFunc *tcf,
 		ret = ull;
 	else if (atomic_form_yields_bool(form))
 		ret = { N_INT };
-	std::string sym = std::string("__madc") + (ab.name + 1);
+	std::string sym = std::string("__madc") + atomic_builtin_helper_base(ab);
 	need_output_extern(sym.c_str(), false, params, ret);
 	node_t call = node2(N_CALL, id(sym.c_str(), tb), a, tb);
 	if (!atomic_form_yields_object(form))

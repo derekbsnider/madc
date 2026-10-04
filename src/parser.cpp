@@ -60720,7 +60720,7 @@ Program::AtomicCallCheck Program::atomic_builtin_call_error(
     AtomicCallCheck out;
     AtomicForm form = ab.form;
     const std::string fn = std::string("'") + ab.name + "'";
-    size_t want = atomic_form_arity(form);
+    size_t want = atomic_builtin_arity(ab);
     if ( args.size() != want )
     {
 	out.message = std::string(args.size() < want ? "too few" : "too many")

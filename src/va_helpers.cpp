@@ -520,6 +520,50 @@ MADC_ATOMIC_RMW(xor_fetch)
 MADC_ATOMIC_RMW(nand_fetch)
 #undef MADC_ATOMIC_RMW
 
+// __sync_val_compare_and_swap / __sync_bool_compare_and_swap: the expected
+// value is an operand, not an address — the one shape the __atomic_ helpers
+// do not take. Either yields from one strong compare-exchange at `mo` (gcc
+// implies SEQ_CST): the value the object held, or whether it was replaced.
+namespace {
+template <typename U>
+unsigned long long madc_sync_cas_as(volatile void *p, unsigned long long old,
+				    unsigned long long desired, int mo, int *swapped)
+{
+	U e = (U)old;
+	*swapped = __atomic_compare_exchange_n((volatile U *)p, &e, (U)desired,
+					       false, mo, mo);
+	return e;
+}
+
+unsigned long long madc_sync_cas(const char *op, size_t n, volatile void *p,
+				 unsigned long long old, unsigned long long desired,
+				 int mo, int *swapped)
+{
+	switch (n) {
+	case 1: return madc_sync_cas_as<uint8_t>(p, old, desired, mo, swapped);
+	case 2: return madc_sync_cas_as<uint16_t>(p, old, desired, mo, swapped);
+	case 4: return madc_sync_cas_as<uint32_t>(p, old, desired, mo, swapped);
+	case 8: return madc_sync_cas_as<uint64_t>(p, old, desired, mo, swapped);
+	}
+	madc_atomic_unsupported(op, n);
+}
+} // namespace
+
+extern "C" unsigned long long __madc_sync_val_compare_and_swap(size_t n, volatile void *p,
+		unsigned long long old, unsigned long long desired, int mo)
+{
+	int swapped = 0;
+	return madc_sync_cas("__sync_val_compare_and_swap", n, p, old, desired, mo, &swapped);
+}
+
+extern "C" int __madc_sync_bool_compare_and_swap(size_t n, volatile void *p,
+		unsigned long long old, unsigned long long desired, int mo)
+{
+	int swapped = 0;
+	madc_sync_cas("__sync_bool_compare_and_swap", n, p, old, desired, mo, &swapped);
+	return swapped;
+}
+
 // The object (generic) forms: any size, operands by address.
 extern "C" void __madc_atomic_load(size_t n, const volatile void *p, void *ret, int mo)
 {

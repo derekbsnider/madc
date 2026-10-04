@@ -724,16 +724,42 @@ int main(void) { return 0; }
      headers on disk) the release set's `madc.exe` refuses it with
      `Failed to open include file: windows.h`. Under wine the container's
      mingw headers answer through `Z:` and hide this.
-  2. C++: `madc.exe --std=c++17` on the reducer: exit 1, 920 errors. The
-     first is `psdk_inc/intrin-impl.h:667:5: use of undeclared identifier
-     '__builtin_ia32_sfence'` (the body of the inline `__faststorefence`;
-     gcc predeclares its `__builtin_ia32_*` builtins, madc declares none,
-     and C's implicit declaration is what let the C form through). The rest
-     follow it: `windef.h:74` `Expecting type in struct definition, got
-     'LONG'`, then `HANDLE`, `LPCSTR`, `HRESULT`, ... not types. Layer of
-     the cascade not yet traced (whether winnt.h's typedefs are lost to the
-     first error's recovery).
+  2. C++: `madc.exe --std=c++17` on the reducer: exit 1. Two gcc builtin
+     gaps were on its path and are fixed (`__builtin_ia32_sfence`,
+     `tests/testia32sfence`; the `__sync_*` family, `tests/testsyncbuiltins`):
+     920 errors became 382. What stops it now is B169: mingw's `<intrin.h>`
+     includes gcc's own `<x86intrin.h>` (for `__GNUC__` >= 4.9), and the first
+     error is `ia32intrin.h:41:10: use of undeclared identifier
+     '__builtin_ia32_bsrsi'`. The rest follow it (`FILETIME`,
+     `LPDEBUG_EVENT`, ... not types): an error inside one inline body loses
+     the enclosing `extern "C"` block's later declarations (winnt.h opens
+     `extern "C" {`, reaches the intrinsics, then declares its types).
+  - Packaging (1) waits on (2): the Windows forest pack compiles its header
+    list as ONE C++ translation unit (`scripts/forest_pack_windows.sh`), so
+    `windows.h` joins the list only when C++ parses it quietly.
 - Found 2026-10-04 writing the reducer for the Windows window-loop stop.
+
+### B169. gcc's x86 intrinsic headers are refused in C++ (`<x86intrin.h>`: 4477 errors)
+
+```cpp
+#include <x86intrin.h>
+int main() { return 0; }
+```
+
+- g++ 13 and clang++ 18 (`-std=c++17`, x86-64 Linux): compile, exit 0.
+  madc `--std=c++17` (Linux, 2026-10-04): exit 1, 4477 parse errors, the
+  first `ia32intrin.h:41:10: use of undeclared identifier
+  '__builtin_ia32_bsrsi'`. madc `--std=c17` on the same file: exit 0 (C's
+  implicit declarations carry the calls; nothing reaches them).
+- gcc's intrinsic headers (`/usr/lib/gcc/x86_64-linux-gnu/13/include/*intrin*.h`)
+  call `__builtin_ia32_*` 7582 times, most of them vector builtins over
+  `vector_size` types; madc declares only `__builtin_ia32_sfence` (mapped to a
+  runtime helper). Mapping them one by one is not the fix; this is the SIMD
+  track's surface (KG Feature `SIMD vector types`, Decision
+  `simd_raise_mir_upstream`).
+- Windows: mingw's `<intrin.h>` includes `<x86intrin.h>`, and winnt.h
+  reaches it, so this is what stops C++ `<windows.h>` (B167).
+- Found 2026-10-04 tracing the C++ form of B167.
 
 ### B164. The forest pack's header compile refuses libstdc++ 13 template bodies (28 errors, the build stays green)
 
