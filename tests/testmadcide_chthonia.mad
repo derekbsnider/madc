@@ -1,18 +1,17 @@
-// The chthonia profile (plan §41.11a step 1; plugins Stage A): the teaching
-// bundle madcide ships, tools/madcide/plugins/chthonia — Thonny's keys,
-// chthonia.layout (the editor, and below it the REPL as the visible panel's
-// first tab with Problems beside it; the Variables view in the right
-// sidebar), chthonia.menu (the
-// beginner's subset of the command vocabulary) and chthonia.mad (its code,
-// the Variables view). Pins:
+// The chthonia profile: the teaching bundle madcide ships,
+// tools/madcide/plugins/chthonia — the Chthonia key style, chthonia.layout
+// (the editor, and below it the REPL as the visible panel's first tab with
+// Problems, Output and Terminal beside it; the Variables view in the right
+// sidebar), chthonia.menu (the beginner's subset of the command vocabulary)
+// and chthonia.mad (its code, the Variables view). Pins:
 //   1. `open(path, ro, "chthonia")` (the command line's --profile) loads the
 //      shipped bundle: the runner's MADCIDE_CONFIG_DIR names no user
 //      directory, so nothing overrides it;
-//   2. its keys are Thonny's, and its layout shows the REPL, with no Outline,
-//      Project or Terminal pane, and a sidebar;
-//   3. the menu bar is File, Edit, Run, View, Tools, Help: Run's rows are
-//      replrun (F5's), replstop and language, and there is no Build or
-//      Window menu;
+//   2. its keys are the Chthonia style, and its layout shows the REPL in
+//      front (Outline, Project and Terminal not showing), and a sidebar;
+//   3. the menu bar is File, Edit, Run, Build, View, Tools, Help: Run's rows
+//      are replrun (F5's), replstop and language, and there is no Window
+//      menu;
 //   4. a REPL session is running at open, because the layout shows it;
 //   5. the default profile, over the same file, starts none (its layout
 //      keeps the REPL hidden) and keeps its own menu bar;
@@ -22,9 +21,9 @@
 //      command's code — and the default menu places none; Run's arrow
 //      (`menushow Run`) lists the Run menu as a choice, an unknown menu is
 //      said, and File ▸ New (`new`) opens the untitled buffer;
-//   7. Tools ▸ Key bindings… (plan §41.11a step 3e): the six styles listed by
-//      their @title names (JOE, Vim, Emacs, Pico, Thonny, VS Code) with the
-//      current one, Thonny, marked; choosing VS Code rebinds and keeps it
+//   7. Tools ▸ Key bindings…: the six styles listed by their @title names
+//      (Chthonia, Emacs, JOE, Vim, Pico, VS Code) with the current one,
+//      Chthonia, marked; choosing VS Code rebinds and keeps it
 //      for this bundle in settings.json (this test's configuration
 //      directory, its .env), so the next chthonia session opens with it
 //      while the default bundle keeps its own keys;
@@ -39,9 +38,14 @@
 //  10. View ▸ Outline and Tools ▸ Options (§7a Thonny parity): the View and
 //      Tools menus list them; outline shows in the sidebar beside Variables
 //      (the file's main) and toggles back; options opens and closes its pane.
-//  11. Edit ▸ Clear shell (`replclear`, Thonny's Ctrl+L), in pins 8-9's
-//      session: the transcript had text and is empty; the session is live
-//      and the Variables rows stay.
+//  11. Edit ▸ Clear shell (`replclear`, Ctrl+L), in pins 8-9's session: the
+//      transcript had text and is empty; the session is live and the
+//      Variables rows stay.
+//  12. Projects and building: File lists Project…, Open Project… and Add
+//      Current File to Project; the Build menu as the window composes it is
+//      Build… followed by the build rows (Check, Build, Run, Stop); its Build
+//      row, run in this bundle, builds the file into an executable (the
+//      file's name without its extension), which the test then removes.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -307,6 +311,44 @@ int main()
     println("variables-code: transport-source={}",
 	    plugin_active_transport(S.w, "chthonia") == ptSOURCE ? 1 : 0);
     variables_gate(S, doc, "variables");
+
+    // 12. Projects and building.
+    menu_bar(titles, ids, S.w, S.es, "File");
+    println("chthonia-file: [{}]", ids);
+    var bar;
+    compose_menu_bar(bar, S.w, S.es, doc, doc);
+    var bmrows = "";
+    for ( var bm : bar["bar"] )
+	if ( bm["title"] == "Build" )
+	    for ( var it : bm["items"] )
+		if ( it["sep"].is_null() )
+		    bmrows = format("{}[{}={}]", bmrows, it["id"], it["title"]);
+    println("chthonia-build-menu: {}", bmrows);
+    // The menu's row for the first native build, found by its action in the
+    // build rows' data (row n is build-<n>), never by its title.
+    var bcmds;
+    ui::get(bcmds, S.w, S.es, "buildcmds");
+    var build_id = "";
+    long bn = 0;
+    for ( var bc : bcmds )
+    {
+	bn = bn + 1;
+	if ( bc["act"] == cmdBLD_NATIVE && strlen(build_id.c_str()) == 0 )
+	    build_id = format("build-{}", bn);
+    }
+    var be;
+    ev_action(be, build_id.c_str(), "");
+    S.apply_ide_event(doc, be);
+    // The build task runs while this one waits; the REPL's session is a task
+    // that never ends, so wait on the build alone (bounded), not a drain.
+    for ( long waited = 0; waited < 60000 && es_int(S.w, S.es, "buildlive", 0) != 0;
+	  waited = waited + 10 )
+	madc::sleep_ms(10);
+    ui::get(msg, S.w, S.es, "msg");
+    bool exe_built = php::file_exists("madc_ide_chthonia");
+    println("chthonia-build: built-msg={} exe={}", msg.index("Built") >= 0 ? 1 : 0, exe_built ? 1 : 0);
+    if ( exe_built )
+	php::unlink("madc_ide_chthonia");
     S.close();
 
     IdeSession S2;

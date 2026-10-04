@@ -1,8 +1,8 @@
 chthonia-open: doc=1 bundle=chthonia keys=chthonia
 chthonia-views: repl=1 problems-tab=0 outline=0 project=0 terminal=0 sidebar=1
-chthonia-menu: [File Edit Run View Tools Help] run=[replrun replstop language]
+chthonia-menu: [File Edit Run Build View Tools Help] run=[replrun replstop language]
 chthonia-repl: live=1 running=1
-chthonia-outline: view=[repl variables problems outline progargs] tools=[keystyle options] shown=1 rows=[main] hidden=1 sidebar-back=1 options=1 closed=1
+chthonia-outline: view=[repl variables problems output terminal outline progargs] tools=[keystyle options] shown=1 rows=[main] hidden=1 sidebar-back=1 options=1 closed=1
 chthonia-toolbar: New=new:new Open=editfile:open Save=save:save | Run=replrun:run>Run Stop=replstop:stop codes=1
 chthonia-dropdown: pane=choice label=Run rows=[Run][Stop][Language…]
 chthonia-dropdown-unknown: No menu 'Debug'.
@@ -15,6 +15,9 @@ variables-goto: square-line=1
 variables-entry: [count int 3|main int (void)|square int (int)|y int 7|]
 variables-clear: had-text=1 empty=1 live=1 rows=[count int 3|main int (void)|square int (int)|y int 7|]
 variables-stop: [(empty)|]
+chthonia-file: [new editfile close closeall save saveall saveas  project openproject projaddcur  quit]
+chthonia-build-menu: [build=Build…][build-1=Check (in-process)][build-2=Build (in-process)][build-3=Build object (in-process)][build-4=Run][build-5=Run native][build-6=Stop]
+chthonia-build: built-msg=1 exe=1
 keystyle-reopen: keys=vscode
 default-open: bundle=default repl-shown=0 live=0 replh=0
 default-menu: [File Edit Search View Window Build Help]

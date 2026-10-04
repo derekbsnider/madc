@@ -47,6 +47,9 @@ primary+l replclear
 # names left for the prompt); Ctrl+F2 is Stop/Restart backend.
 f5 replrun
 primary+f2 replstop
+# Build: Ctrl+B (Cmd+B on macOS) lists the Build menu's rows — Check, Build,
+# Run, Stop (Xcode's and Sublime Text's build key; Thonny binds none).
+primary+b build
 # Tk's text motions
 ctrl+left wordleft
 ctrl+right wordright

@@ -1,13 +1,13 @@
-# chthonia's workbench (plan §41.11a): the teaching layout, Thonny's shape.
-# The editor above, and below it the REPL as the visible panel's first tab
-# with Problems beside it; on the right the Variables view (chthonia's own
-# code, chthonia.mad: the session's names) with the Outline as its second
-# tab (View ▸ Outline shows it there, as Thonny's does). No project tree, no
-# Terminal or Output (F5's output is the REPL's). A pane visible at startup
-# whose active View is the REPL starts its session when the window opens
-# (init_view_es).
+# Chthonia's workbench: the teaching layout. The editor above, and below it
+# the REPL as the visible panel's first tab, with Problems, Output (a
+# build's messages) and Terminal (the program Build ▸ Run starts) beside it;
+# on the right the Variables view (Chthonia's own code, chthonia.mad: the
+# session's names) with the Outline as its second tab (View ▸ Outline shows
+# it there). No project tree: File ▸ Project… lists the project's files. A
+# pane visible at startup whose active view is the REPL starts its session
+# when the window opens (init_view_es).
 # The same format as profiles/default.layout.
 @window main
 pane editor tabs views source focus
 pane sidebar right 25% tabs views variables outline
-pane panel bottom 35% tabs views repl problems
+pane panel bottom 35% tabs views repl problems output terminal

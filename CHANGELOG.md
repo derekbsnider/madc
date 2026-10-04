@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### madcide, chthonia: projects and native builds — Build menu, Project rows, Output/Terminal tabs
+
+The owner directed: "Chthonia needs a way to handle projects and building executables like madcide does... Thonny might not have that, but those things are inherently important to a C/C++ IDE." Chthonia now ships project rows and a Build menu with the build commands under it, and tabs for Output and Terminal in the bottom pane alongside the REPL.
+
+tools/madcide/plugins/chthonia/chthonia.menu: File menu gains `project`, `openproject`, `projaddcur` rows (Project…, Open Project…, Add Current File to Project); new Build menu after Run carries `build` row (Build…) under which the window lists the build rows (Check, Build, Build object, Run, Run native, Stop); View menu gains `output`, `terminal` rows (Output, Terminal). Header comment rewritten.
+
+tools/madcide/plugins/chthonia/chthonia.layout: bottom panel's views are now `repl problems output terminal` (Outline stays in the right sidebar); header comment rewritten.
+
+tools/madcide/profiles/chthonia.keys: primary+b build (Ctrl+B on Linux/Windows, Cmd+B on macOS).
+
+tools/madcide/profiles/vscode.keys: primary+shift+b build (Ctrl+Shift+B, the VS Code standard).
+
+tests/testmadcide_chthonia.mad: pins 2, 3, 7, 11 rewritten to match the Chthonia key style, Build menu, and six profile names; new pin 12 reads the Build menu's composition via `compose_menu_bar` and runs the native Build row (matched by its `cmdBLD_NATIVE` action in `buildcmds` data, never by title). Bounded wait on `buildlive` with madc::sleep_ms, because the bundle's live REPL session is a task that never ends (madc::task_drain hung on the first run).
+
+tests/testmadcide_chthonia.expect: chthonia-menu gains Build; chthonia-outline's View ids gain output, terminal; three new output lines for file menu ids, the composed Build menu and its six build rows, and a built executable result.
+
+docs/madcide.md: section "Build and Run" gains a paragraph on Chthonia's Build menu, its keys (Ctrl+B, Cmd+B), Project rows, Output/Terminal tabs, and how F5 (Run) differs from Build ▸ Run.
+
+docs/plans/2026-10-03-chthonia-windows-macos.md: §7c marked done (the toolbar Build button is not part of this commit; ui::icon has no build picture yet); new §7e, Git in Chthonia (the owner's request to show madcide's git support in Chthonia; stage 1 read-only, stage 2 writing is the owner's call when scheduling).
+
+Validation: Tier 1 `scripts/fix_lanes.sh "testmadcide*" "testidemenu" "testvised" "testide*"`: 52 passed, 0 failed (JIT), EXE 47 passed, 0 failed, OBJ 47 passed, 0 failed; Tier 2 scripts/fast_lanes.sh GREEN (c-testsuite 220 passed, 0 failed (0 outside baseline); c-torture 1614 passed, 10 failing, 0 outside baseline; c2mir-tests 314 passed, 50 failed, 0 outside baseline; gui 26 passed, 0 failed | EXE 26 | OBJ 26; gxx-c++11 1501 passed, 445 compile-failed, 0 outside baseline; index-c 50/50 tasks OK).
+
 ### madcide, chthonia: the key style is Chthonia's own — Thonny profile renamed
 
 The owner directed: "don't use the name Thonny inside Chthonia (I see it in the help)"; "the only thing appropriate to use it for would be for selecting keybindings"; "maybe instead of calling the Thonny keybinding profile 'Thonny', we should call it 'Chthonia'". The key profile is now titled and named Chthonia; no text Chthonia shows or ships names Thonny (the Key bindings list shows Chthonia), and madcide's manual still cites Thonny as the model in its parity sentences.

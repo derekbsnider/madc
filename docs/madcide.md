@@ -230,6 +230,13 @@ Check / Build / Run plus the manifest's own `commands`. Diagnostics land in
 the Diagnostics pane (terminal) or the Problems tab (window); a failed
 check or build opens it, and Enter on a row goes to the line.
 
+Chthonia has the same: its Build menu lists these rows (Ctrl+B in the
+Chthonia keys, Ctrl+Shift+B in the VS Code keys, opens them as a list), its
+File menu has Project…, Open Project… and Add Current File to Project, and
+its bottom panel has Output and Terminal tabs beside the Shell and
+Problems. F5 (Run ▸ Run) runs the file in the Shell, where Variables shows
+its names; Build ▸ Run starts the built program in the Terminal tab.
+
 In the terminal, Run hands the program the real terminal (JOE's `^K Z`
 shape) and returns after a key press. In the window, the bottom panel
 takes it: a console program runs on a pseudo-terminal in the **Terminal**

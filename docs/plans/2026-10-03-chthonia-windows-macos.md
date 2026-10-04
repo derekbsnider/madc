@@ -403,8 +403,14 @@ out. The change is the bundle's data:
 
 Gate: `testmadcide_chthonia` pins the menu bar (`[File Edit Run Build View
 Tools Help]`), the File and Build ids, the panel's views, and a Build row
-run from the Chthonia bundle producing an executable that runs; the key
-pins move with the bindings.
+run from the Chthonia bundle producing an executable; the key pins move
+with the bindings.
+
+**Done 2026-10-04** as described. The test picks the Build row by its
+action in the build rows' data and waits on `buildlive` (the REPL's session
+is a task that never ends, so a task drain would not return). Not done: a
+Build button on the toolbar — `ui::icon` has no build picture, and adding
+one touches every renderer; the menu and Ctrl+B carry it.
 
 ## 7d. Help, and Markdown (owner, 2026-10-04)
 
@@ -471,13 +477,38 @@ topic and Menus-and-commands pins in the madcide tests.
 Thread contract: the parser is a pure function; a bundle's help topics are
 read-only data loaded per session.
 
+## 7e. Git in Chthonia (owner, 2026-10-04)
+
+The owner: "since we have libgit support already for madcide, I think
+Chthonia should include/reveal git support". What exists: the `madcgit`
+module, madc's read-only view of a local repository over libgit2, which
+madcide reaches only through its agent seat (the graph verbs `status`,
+`history`, `commits`, `revision`, `diff`, and git provenance for blame). No
+menu, view or status field shows any of it. The work is in madcide's base,
+and Chthonia's menu and layout show it.
+
+1. **Stage 1 — show what exists (read-only):** the branch and the file's
+   state against the last commit on the status line and the tabs; View ▸
+   Changes (the buffer's diff against the last commit); View ▸ History (the
+   file's commits; choosing one shows that revision read-only through the
+   view seam); blame for the caret's line.
+2. **Stage 2 — writing (the owner's call):** init, stage and commit, which
+   extends `madcgit` past its read-only design; push and pull last, since
+   they need TLS and SSH in the Windows and macOS libgit2 builds (built
+   today with the network backends off).
+
+Packaging: on Linux the module binds the system libgit2, so once Chthonia
+shows git, its `.deb`/`.rpm` depend on the libgit2 runtime package; the
+Windows and macOS bundles already link libgit2 statically into the module,
+and its notice ships (`THIRD_PARTY_NOTICES/libgit2-COPYING.txt`).
+
 ## 8. Order
 
 A (the REPL, which every chthonia user sees first; done) → B (measured, no
 defect; done) → D1 (the probe; done) → D2 → D3 → D4 with C folded in (the
 Mac build is chthonia's Mac build) → the parity rows (§7a) → Projects and
-building (§7c) → Help and Markdown (§7d) → the debugger arc. Owner,
-2026-10-04: the chthonia binary comes first, GUI by default, working on all
-three platforms with Thonny's functionality. Each step is its
-own commit with its reducer, Tier 1 + Tier 2 per commit, and the batch after
+building (§7c) → Help and Markdown (§7d) → Git (§7e) → the debugger arc.
+Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working
+on all three platforms with Thonny's functionality. Each step is its own
+commit with its reducer, Tier 1 + Tier 2 per commit, and the batch after
 each step.

@@ -70,6 +70,8 @@ f5 replrun
 ctrl+f5 replrun
 shift+f5 replstop
 ctrl+` terminal
+# Run Build Task (Ctrl+Shift+B; macOS ⇧⌘B): the Build menu's rows.
+primary+shift+b build
 # Quit: VS Code's on Linux (Ctrl+Q) and macOS (⌘Q), off its sheets.
 primary+q quit
 # The project window's keys (@project scope — profile data; the baked

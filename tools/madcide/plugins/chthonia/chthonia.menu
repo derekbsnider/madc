@@ -1,10 +1,11 @@
-# chthonia's menu (plan §41.11a): a beginner's subset of the one command
-# vocabulary, in the format of profiles/default.menu, laid out as Thonny's
-# menus are (its rows for the commands madcide has; step 3e). No Build,
-# Project or Views rows: the power surface is not advertised. View ▸
-# Variables joins as its command lands; View ▸ Outline shows the outline in
-# the sidebar beside Variables (chthonia.layout). Thonny rows whose command
-# madcide does not have yet: View ▸ the font size, Full screen.
+# Chthonia's menu: a beginner's subset of the one command vocabulary, in the
+# format of profiles/default.menu. File carries the project rows (a second
+# file added to the program makes it a project) and Build the native build:
+# the Build… item's menu lists the build rows themselves (Check, Build, Run,
+# Stop, and a project's own). View ▸ Outline shows the outline in the
+# sidebar beside Variables (chthonia.layout); Output and Terminal are the
+# bottom panel's tabs for a build and the program it runs. Not yet here:
+# View ▸ the font size, Full screen.
 
 File new New
 File editfile Open…
@@ -13,6 +14,10 @@ File closeall Close all
 File save Save [editable]
 File saveall Save All
 File saveas Save As… [editable]
+File -
+File project Project…
+File openproject Open Project…
+File projaddcur Add Current File to Project
 File -
 File quit Quit
 
@@ -39,9 +44,13 @@ Run replrun Run
 Run replstop Stop
 Run language Language…
 
+Build build Build…
+
 View repl Shell
 View variables Variables
 View problems Problems
+View output Output
+View terminal Terminal
 View outline Outline
 View progargs Program arguments…
 
