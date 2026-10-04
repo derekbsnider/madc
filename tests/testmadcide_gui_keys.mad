@@ -1,0 +1,61 @@
+// The keys the Thonny and VS Code profiles bind to the File and Edit menu
+// commands — what a window's menu shows beside each row. Each line lists
+// the profile's own spellings bound to the command (`primary` is Ctrl, or
+// Cmd on macOS: the spelling is the profile's, so the line is the same on
+// every platform), or (unbound). Oracle: Thonny's default keys (each
+// command's default_sequence in Thonny's source: New Ctrl+N, Open Ctrl+O,
+// Save Ctrl+S, Save All Ctrl+Alt+S, Save as Ctrl+Shift+S, Toggle comment
+// Ctrl+3, Dedent Shift+Tab) and VS Code's published Linux keymap (New File
+// Ctrl+N, Save All Ctrl+K S, Replace Ctrl+H, Indent / Outdent line Ctrl+] /
+// Ctrl+[, Toggle line comment Ctrl+/). File ▸ New had no key in either
+// profile while both headers still listed it as a command madcide lacked.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void bound(var &table, const char *what, long code)
+{
+    array ks;
+    php::array_keys(ks, table);
+    var s = "";
+    for ( var k : ks )
+	if ( table[k.c_str()].as_integer() == code )
+	    s = format("{}{} ", s, k);
+    var shown = php::trim(s);
+    if ( strlen(shown.c_str()) == 0 )
+	shown = "(unbound)";
+    println("{}: {}", what, shown);
+}
+
+void profile_keys(const char *profile)
+{
+    const char *path = "madc_ide_gui_keys.txt";
+    php::file_put_contents(path, "x\n");
+    IdeSession S;
+    S.open(path, false);
+    load_profile(S.w, S.es, profile);
+    var table;
+    S.key_table(table);
+    println("== {}", profile);
+    bound(table, "new", cmdNEW);
+    bound(table, "open", cmdEDITFILE);
+    bound(table, "save", cmdSAVE);
+    bound(table, "saveall", cmdSAVEALL);
+    bound(table, "saveas", cmdSAVEAS);
+    bound(table, "undo", cmdUNDO);
+    bound(table, "redo", cmdREDO);
+    bound(table, "find", cmdFIND);
+    bound(table, "replace", cmdREPLACE);
+    bound(table, "indent", cmdINDENT);
+    bound(table, "dedent", cmdDEDENT);
+    bound(table, "togglecomment", cmdTOGGLECOMMENT);
+    S.close();
+    php::unlink(path);
+}
+
+int main()
+{
+    profile_keys("thonny");
+    profile_keys("vscode");
+    return 0;
+}

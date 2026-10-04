@@ -1,0 +1,26 @@
+== thonny
+new: primary+n
+open: primary+o
+save: primary+s
+saveall: primary+alt+s
+saveas: primary+shift+s
+undo: primary+z
+redo: primary+y
+find: primary+f
+replace: (unbound)
+indent: (unbound)
+dedent: shift+tab
+togglecomment: primary+3
+== vscode
+new: primary+n
+open: primary+o
+save: primary+s
+saveall: primary+k s
+saveas: primary+shift+s
+undo: primary+z
+redo: primary+y
+find: primary+f
+replace: primary+h
+indent: primary+]
+dedent: primary+[ shift+tab
+togglecomment: primary+/
