@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### scripts/package_release_macos.sh: zstd-LICENSE.txt shipped in macOS tarballs
+
+The macOS tarballs now carry THIRD_PARTY_NOTICES/zstd-LICENSE.txt. libmadc-0.dylib statically links the pinned zstd (BSD-licensed); the packager reads the LICENSE from the MODE's DARWIN_ZSTD_DIR and refuses to package without it.
+
 ### madcgit: `status` and `diff` reads — git status rows and file diffs
 
 New shared enum text `include/madc/bits/git_enums` carries `git::file_state` (the nine codes: unmodified, added, modified, deleted, renamed, typechange, untracked, ignored, conflicted) — read by both the engine (madcdis/git_repo.h's GitStatusRow holds them on each side) and the dialect (<ns_git> includes it, so a script switches on `row["worktree"] == git::file_state::modified` instead of comparing a status letter). Three new GitRepo reads: `status()` answers git status's rows — path, rename source (if renamed), and state on each side (index against HEAD, worktree against index); untracked files included (an untracked directory shows as one row `dir/`), ignored ones not, renames in the index found, sorted by path. `commit(rev)` reads the commit a rev names (any rev-parse spec), same row as log answers. `diff(rev, path, text)` diffs path at rev against text (a buffer's live text or file bytes, through libgit2's git_patch_from_blob_and_buffer): the unified patch git prints and its hunks (old_start, old_lines, new_start, new_lines, header); a path absent at rev is an empty file (new file: every line added); equal sides answer empty patch and no hunks; bad rev is refused. Value shapers git_status_value / git_hunk_value. Three new C API functions (madcgit_status, madcgit_commit, madcgit_diff) and dialect wrappers (git::status, git::commit, git::diff). Tests: unit test cases verify status rows (clean tree, then file states), diff hunks and patch text (modified, equal, new file, bad rev; git and madc outputs match). tests/testgit.mad probes status (untracked file, workdir non-empty), commit (HEAD match), diff (hunks, equality, new line).

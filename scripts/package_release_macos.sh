@@ -35,6 +35,7 @@
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/APSL-2.0.txt
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/webview-LICENSE.txt  (webview/webview, MIT)
 #   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/libgit2-COPYING.txt, cmark-gfm-COPYING.txt
+#   madc-<ver>-macos-<arch>/THIRD_PARTY_NOTICES/zstd-LICENSE.txt  (zstd, BSD — linked into libmadc-0.dylib)
 #   madc-<ver>-macos-<arch>/README-macos.txt  ad-hoc signing / quarantine notes
 # and refreshes their lines in dist/SHA256SUMS (other lines preserved — run
 # scripts/package_release.sh FIRST; it rewrites that file wholesale).
@@ -224,6 +225,16 @@ package_arch() {
     # its notice ships.
     install -m 644 "$(make -C src -s print-LIBGIT2_STAGE)/src/COPYING" \
         "$stage/$root/THIRD_PARTY_NOTICES/libgit2-COPYING.txt"
+    # libmadc-0.dylib statically links the pinned zstd (BSD, the
+    # scripts/stage_darwin_zstd.sh stage the hosted MODE links): its notice
+    # ships, as the Windows zip's does.
+    local zstd_license
+    zstd_license="$(make -C src -s MODE="hosted-${bin_arch}-macos" print-DARWIN_ZSTD_DIR)/LICENSE"
+    if [ ! -f "$zstd_license" ]; then
+        echo "package_release_macos: $zstd_license missing — the zstd stage libmadc-0.dylib links (scripts/stage_darwin_zstd.sh)" >&2
+        exit 1
+    fi
+    install -m 644 "$zstd_license" "$stage/$root/THIRD_PARTY_NOTICES/zstd-LICENSE.txt"
     # libmadcmark.dylib statically links cmark-gfm (BSD-2 and MIT): its notice
     # ships.
     install -m 644 "$(make -C src -s print-CMARK_GFM_STAGE)/src/COPYING" \
