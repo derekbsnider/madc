@@ -615,6 +615,10 @@ REPL commands and the Variables row (§7f: the row, `%load` and `%run` done;
 `%build`, the IDE layer and `%git` next) → Help and Markdown (§7d) → Git
 (§7e) → Recent files and the rest of §7a → the debugger arc.
 Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working
-on all three platforms with Thonny's functionality. Each step is its own
+on all three platforms with Thonny's functionality. Everything above the
+debugger arc is madc v0.102.0's scope — the release Chthonia's own repository
+depends on, with B30 fixed and `libmadcide` shipped — and Chthonia's release
+follows it the same day (the split plan's §6,
+`2026-10-04-chthonia-own-repository.md`). Each step is its own
 commit with its reducer, Tier 1 + Tier 2 per commit, and the batch after
 each step.
