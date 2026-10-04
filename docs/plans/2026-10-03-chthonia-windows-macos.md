@@ -137,6 +137,26 @@ Plugin design §9.3 and §9.4, in its own order:
 1. The two-TU link probe: split a small piece of madcide into two translation
    units and link them. Multi-object madc builds are tested only at fixture
    scale, and madcide is one unit.
+
+   **Done (2026-10-04): it links and behaves identically.** The piece is the
+   command line, `madcide_args.inc`. Its unit holds that file after a one-line
+   prototype of `lang_kind_of`. The main unit is `madcide.mad` with that one
+   include replaced by a header holding `struct ide_args` and the three
+   prototypes. The two units link through a `--project` manifest of the two
+   `.mad` files. Calls cross both ways: main to `ide_args_parse` /
+   `ide_usage` / `ide_face_needs_file`, and the args unit back to
+   `lang_kind_of`. A struct with a `ui::level` member crosses by reference
+   beside a `var &`. Results against the one-unit build:
+   - Linux AOT (`madc --project m.json -o madcide-split`): `--bogus` and
+     `--std=c99x` refused with the same text and exit 2; `--help` exits 0.
+     `-c language` (under `--std=c11`), `-c outline`, `-c check` and
+     `--std=c++20 … -c check` match byte for byte.
+   - Linux JIT (`madc --project m.json madcide <args>`, the program name
+     first, as `--project` passes argv): `-c language` matches byte for byte.
+   - Windows AOT (the hosted PE under wine): `-c language` matches once CR is
+     stripped, and `--bogus` is refused.
+   - Files: four in `tmp/madcide_split/` (not tracked); the recipe is above.
+     D2 replaces it with the real split.
 2. madcide's base as a linkable object, and `madcide_main(argc, argv,
    product)`.
 3. The product descriptor (name, configuration directory, default bundle,
@@ -146,6 +166,7 @@ Plugin design §9.3 and §9.4, in its own order:
 
 ## 8. Order
 
-A (the REPL, which every chthonia user sees first) → B (measure, then fix)
-→ D1 (the probe) → C (D5) → D2–D4. Each step is its own commit with its
+A (the REPL, which every chthonia user sees first; done) → B (measure, then
+fix: waits on the owner, since it opens a window on the owner's desktop) → D1
+(the probe; done) → C (D5) → D2–D4. Each step is its own commit with its
 reducer, Tier 1 + Tier 2 per commit, and the batch after each step.
