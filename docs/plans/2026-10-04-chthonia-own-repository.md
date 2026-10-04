@@ -113,14 +113,18 @@ form. madc is unaffected.
    contract (§3.1–3.3), in a madc release.
 4. The cut: create the repository (`derekbsnider/chthonia`), a fresh initial
    commit of the sanitized files (§5), its CI building against the released
-   madc-devel, its packaging (§4); madc's packagers stop building Chthonia.
+   madc-devel, its packaging (§4). In the same madc change, the files §2
+   lists leave madc, and madc's packagers, install gate and documentation
+   stop naming Chthonia (§7).
 5. MSIX and the macOS `.app`/`.dmg` in the Chthonia repository.
 
-## 7. Open (the owner's)
+## 7. Settled (owner, 2026-10-04)
 
-- The repository's visibility at creation, and Chthonia's licence (madc is
-  MPL-2.0).
-- Whether one madc release keeps shipping Chthonia during the transition.
+- Licence: MPL-2.0, madc's.
+- Visibility: the same as madc's (public).
+- After the cut madc does not include, distribute or package Chthonia in any
+  form; there is no transitional madc release carrying it. Chthonia depends
+  on madc, and madc does not know Chthonia.
 
 Thread contract: none at run time — this plan moves files and packaging; no
 runtime state is added.
