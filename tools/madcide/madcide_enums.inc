@@ -33,7 +33,7 @@ enum ide_cmd : unsigned short
     cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdSAVE, cmdSAVEAS,
+    cmdREFRESH, cmdREPLACE, cmdSAVE, cmdSAVEAS,
     cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOGGLECOMMENT, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
@@ -43,7 +43,7 @@ enum ide_cmd : unsigned short
     cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
     cmdPGUP, cmdPGDN, cmdBACKSPACE, cmdDEL, cmdENTER,
     // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @insert) ----
-    cmdPCOMMIT, cmdPCANCEL, cmdPDELCHAR, cmdPYES, cmdPROJCLOSE, cmdPROJDELCHAR,
+    cmdPCOMMIT, cmdPCANCEL, cmdPDELCHAR, cmdPYES, cmdPNO, cmdPALL, cmdPROJCLOSE, cmdPROJDELCHAR,
     cmdPROJADD, cmdPROJDEL, cmdPROJOPEN, cmdMODESOPEN, cmdMODESCLOSE, cmdPANECLOSE,
     cmdTERMUNFOCUS, cmdVINORMAL,
     // ---- the vi grammar (@normal): operators, the G motion, insert entries ----
@@ -112,6 +112,7 @@ void cmd_table(var &t)
     rows[] = { "name": "quit", "code": cmdQUIT };
     rows[] = { "name": "redo", "code": cmdREDO };
     rows[] = { "name": "refresh", "code": cmdREFRESH };
+    rows[] = { "name": "replace", "code": cmdREPLACE };
     rows[] = { "name": "save", "code": cmdSAVE };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
@@ -151,6 +152,8 @@ void cmd_table(var &t)
     rows[] = { "name": "pcancel", "code": cmdPCANCEL };
     rows[] = { "name": "pdelchar", "code": cmdPDELCHAR };
     rows[] = { "name": "pyes", "code": cmdPYES };
+    rows[] = { "name": "pno", "code": cmdPNO };
+    rows[] = { "name": "pall", "code": cmdPALL };
     rows[] = { "name": "projclose", "code": cmdPROJCLOSE };
     rows[] = { "name": "projdelchar", "code": cmdPROJDELCHAR };
     rows[] = { "name": "projadd", "code": cmdPROJADD };
@@ -303,7 +306,7 @@ enum ide_prompt : unsigned char
 {
     pmNONE = 0, pmCONFIRM, pmFIND, pmGOTOLINE, pmINSERTFILE, pmEDITFILE,
     pmSAVEAS, pmOPENPROJECT, pmBUFSEL, pmPROJADD, pmTABWIDTH, pmTHEME, pmCOLON,
-    pmSAVEASQUIT
+    pmSAVEASQUIT, pmREPLACE, pmREPLACEWITH, pmREPLACEASK
 };
 const char *prompt_name(long m)
 {
@@ -322,6 +325,9 @@ const char *prompt_name(long m)
 	case pmTHEME: return "theme";
 	case pmCOLON: return "colon";
 	case pmSAVEASQUIT: return "saveasquit";
+	case pmREPLACE: return "replace";
+	case pmREPLACEWITH: return "replacewith";
+	case pmREPLACEASK: return "replaceask";
     }
     return "";
 }

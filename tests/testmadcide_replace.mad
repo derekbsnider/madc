@@ -1,0 +1,146 @@
+// Edit ▸ Replace (chthonia parity row, Thonny's Find & Replace; nano's ^\
+// flow): a "Replace" prompt (the text to find), a "Replace with" prompt
+// (empty = delete), then a QUESTION at each match from the caret on —
+// wrapping once to the top and stopping where the walk began — whose
+// answers are the @replace scope's actions: y replaces (one undo step), n
+// skips, a replaces this match and every one after it (one undo step), esc
+// stops. The match is lit while asked about; the walk ends with
+// "Replaced N occurrence(s)." Model: GNU nano's documented ^\ flow
+// ("Search (to replace)", "Replace with", "Replace this instance?" Y/N/A/^C,
+// wrapping, "Replaced N occurrences"); nano is not installed on the
+// container, so its documentation is the oracle. Pins:
+//   1. y, n, y over "cat bat cat\ncat\n" from offset 0: the first and third
+//      matches change, the walk ends at the end (the wrap finds nothing
+//      before its start), one undo takes back the last replacement only;
+//   2. `a` from the end of "cat cat\ncat\n", replacing "cat" with "a cat":
+//      the walk wraps to the top, each match changes once (the inserted
+//      "cat"s are never asked about), and one undo takes back all three;
+//   3. an empty replacement deletes; no match says "Not found."; esc stops
+//      the walk with its count and unlights the match;
+//   4. the question is a dialog in a window: Yes / No / All / Cancel from
+//      the @replace scope (the confirm's stay Yes / No);
+//   5. a read-only buffer refuses the command.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void key(IdeSession &S, long doc, const char *name, ui::key code)
+{
+    var e = { "event": "key", "event_code": ui::event_kind::key, "key": name,
+	      "key_code": code, "mods": 0 };
+    S.apply_ide_event(doc, e);
+}
+
+void type(IdeSession &S, long doc, const char *text)
+{
+    var e = { "event": "text", "event_code": ui::event_kind::text, "text": text };
+    S.apply_ide_event(doc, e);
+}
+
+// The two prompts, answered.
+void replace(IdeSession &S, long doc, const char *find, const char *with)
+{
+    S.post(doc, cmdREPLACE);
+    type(S, doc, find);
+    key(S, doc, "enter", ui::key::enter);
+    if ( strlen(with) > 0 )
+	type(S, doc, with);
+    key(S, doc, "enter", ui::key::enter);
+}
+
+void show(const char *label, IdeSession &S, long doc)
+{
+    var t;
+    ui::text(t, S.w, doc);
+    long caret = es_int(S.w, S.es, "caret", 0);
+    var r;
+    var sel = "none";
+    if ( selection_range(r, S.w, S.es, caret) )
+	sel = format("{}..{}", r["lo"], r["hi"]);
+    var m;
+    ui::get(m, S.w, S.es, "msg");
+    println("{}: [{}] caret={} sel={} asking={} msg=[{}]", label,
+	    php::str_replace("\n", "|", t), caret, sel,
+	    cur_pmode(S.w, S.es) == pmREPLACEASK ? 1 : 0, m);
+}
+
+void labels(const char *label, IdeSession &S, const char *scope)
+{
+    var ch;
+    question_choices(ch, S.w, S.es, scope);
+    var s = "";
+    for ( var c : ch )
+	s = format("{}{} ", s, c["label"]);
+    println("{}: [{}]", label, php::trim(s));
+}
+
+int main()
+{
+    const char *path = "madc_ide_replace.txt";
+    php::file_put_contents(path, "cat bat cat\ncat\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    load_profile(S.w, S.es, "thonny");
+    var tree0;
+    S.compose_ide_tree(tree0, doc);
+    var js0 = js::stringify(tree0);
+    println("dialog-before: choices={}", js0.index("\"choices\"") >= 0 ? 1 : 0);
+    replace(S, doc, "cat", "dog");
+    show("ask-first", S, doc);
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var js = js::stringify(tree);
+    println("dialog: choices={}", js.index("\"choices\"") >= 0 ? 1 : 0);
+    labels("replace-buttons", S, "replace");
+    labels("confirm-buttons", S, "confirm");
+    type(S, doc, "y");
+    show("yes", S, doc);
+    type(S, doc, "n");
+    show("no", S, doc);
+    type(S, doc, "y");
+    show("yes-end", S, doc);
+    S.post(doc, cmdUNDO);
+    show("undo-one", S, doc);
+
+    // All, from the end: the walk wraps; the replacement holds the pattern.
+    S.post(doc, cmdSELECTALL);
+    type(S, doc, "cat cat\ncat\n");
+    replace(S, doc, "cat", "a cat");
+    show("ask-wrapped", S, doc);
+    type(S, doc, "a");
+    show("all", S, doc);
+    S.post(doc, cmdUNDO);
+    show("undo-all", S, doc);
+
+    // Delete (an empty replacement), not found, esc mid-walk.
+    S.post(doc, cmdSELECTALL);
+    type(S, doc, "x1x2x");
+    S.post(doc, cmdTOP);
+    replace(S, doc, "x", "");
+    type(S, doc, "a");
+    show("delete", S, doc);
+    replace(S, doc, "zzz", "q");
+    show("not-found", S, doc);
+    S.post(doc, cmdTOP);
+    replace(S, doc, "2", "two");
+    key(S, doc, "esc", ui::key::esc);
+    show("esc", S, doc);
+    S.close();
+
+    // A read-only buffer refuses before any prompt.
+    IdeSession R;
+    long rd = R.open(path, true);
+    R.post(rd, cmdREPLACE);
+    var rm;
+    ui::get(rm, R.w, R.es, "msg");
+    var ro;
+    ui::get(ro, R.w, R.es, "ro_msg");
+    println("readonly: prompt={} refused={}", prompt_active(R.w, R.es) ? 1 : 0,
+	    strlen(rm.c_str()) > 0 && rm == ro ? 1 : 0);
+    R.close();
+
+    // a test leaves nothing in its working directory
+    php::unlink(path);
+    return 0;
+}

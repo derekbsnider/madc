@@ -104,7 +104,20 @@ comment is `//` for C, C++ and madc (an untitled buffer counts as madc),
 and `--` for Lua. A file with no line comment, such as plain text,
 refuses. Each command is one undo step and leaves the selection covering
 the whole lines. With a selection that crosses a line, Tab indents
-instead of replacing the selection. The Thonny keys bind Shift+Tab and
+instead of replacing the selection.
+
+Edit ▸ Replace… (`replace`; Ctrl+H in the VS Code keys, `^\` in the Pico
+keys) works like nano's replace. It asks for the text to find, then for
+the text to put in its place; an empty answer deletes each match. It then
+stops at each match from the caret on, lights it, and asks "Replace this
+one?": `y` replaces it, `n` skips it, `a` replaces it and every match after
+it, and Esc or ^C stops. The search runs to the end of the buffer, wraps
+once to the top, and ends where it began, so text a replacement put in is
+never asked about. Each `y` is one undo step, and an `a` makes the rest one
+undo step. The status line reports how many it replaced. In a window the
+question is a dialog with Yes, No, All and Cancel buttons. The answer keys
+are the `@replace` scope's, so a key profile can respell them (as with
+`@confirm`). The Thonny keys bind Shift+Tab and
 Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
 Shift+Tab and Ctrl+/.
 

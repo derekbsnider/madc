@@ -1,0 +1,16 @@
+dialog-before: choices=0
+ask-first: [cat bat cat|cat|] caret=3 sel=0..3 asking=1 msg=[]
+dialog: choices=1
+replace-buttons: [Yes No All Cancel]
+confirm-buttons: [Yes No]
+yes: [dog bat cat|cat|] caret=11 sel=8..11 asking=1 msg=[]
+no: [dog bat cat|cat|] caret=15 sel=12..15 asking=1 msg=[]
+yes-end: [dog bat cat|dog|] caret=15 sel=none asking=0 msg=[Replaced 2 occurrences.]
+undo-one: [dog bat cat|cat|] caret=15 sel=none asking=0 msg=[]
+ask-wrapped: [cat cat|cat|] caret=3 sel=0..3 asking=1 msg=[]
+all: [a cat a cat|a cat|] caret=17 sel=none asking=0 msg=[Replaced 3 occurrences.]
+undo-all: [cat cat|cat|] caret=3 sel=none asking=0 msg=[]
+delete: [12] caret=2 sel=none asking=0 msg=[Replaced 3 occurrences.]
+not-found: [12] caret=2 sel=none asking=0 msg=[Not found.]
+esc: [12] caret=2 sel=none asking=0 msg=[Replaced 0 occurrences.]
+readonly: prompt=0 refused=1

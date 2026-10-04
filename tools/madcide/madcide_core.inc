@@ -381,6 +381,10 @@ const char *modal_default_keys_text()
 	   "@confirm y pyes\n"
 	   "@confirm n pcancel\n"
 	   "@confirm esc pcancel\n"
+	   "@replace y pyes\n"
+	   "@replace n pno\n"
+	   "@replace a pall\n"
+	   "@replace esc pcancel\n"
 	   "@project esc projclose\n"
 	   "@project backspace projdelchar\n"
 	   "@project ins projadd\n"
@@ -2538,19 +2542,44 @@ void status_expand(var &out, var &segs, long w, long es, long doc, long caret,
 // plain row. This builds CONTENT from the editor state only; WHERE the
 // row goes is the screen model's decision (compose_ide_tree appends it
 // last) — a different editor personality places the same row elsewhere.
-// The confirm question's answers as a chrome-drawing client shows them
-// (the dialog's buttons): the @confirm scope's ACTIONS — profile data
-// binds their keys; this table gives each its title and the order a
-// dialog lays them. An action the scope does not bind gets no button, so
-// a profile that respells the question's keys keeps the dialog honest.
-void confirm_choices(var &out, long w, long es)
+// A QUESTION is a prompt mode answered by single keys — its answers are the
+// actions of one modal scope (profile data): the y/n confirm (@confirm) and
+// Replace's question at each match (@replace). The scope a mode reads; ""
+// = the mode is a typed prompt, not a question.
+const char *question_scope(long mode)
+{
+    switch ( mode )
+    {
+	case pmCONFIRM: return "confirm";
+	case pmREPLACEASK: return "replace";
+    }
+    return "";
+}
+
+// A question's answers as a chrome-drawing client shows them (the dialog's
+// buttons): the scope's ACTIONS — profile data binds their keys; this table
+// gives each its title and the order a dialog lays them. An action the
+// scope does not bind gets no button, so a profile that respells the
+// question's keys keeps the dialog honest. The cancel is "No" where it is
+// the question's no (the confirm), "Cancel" beside a separate no.
+void question_choices(var &out, long w, long es, const char *scope)
 {
     var mk;
     modal_keys(mk, w, es);
-    var sc = mk["confirm"];
+    var sc = mk[scope];
+    bool has_no = false;
+    if ( !sc.is_null() )
+	for ( var a : sc )
+	    if ( a == cmdPNO )
+		has_no = true;
     var titles = {};
     titles[] = { "code": cmdPYES, "label": "Yes" };
-    titles[] = { "code": cmdPCANCEL, "label": "No" };
+    titles[] = { "code": cmdPNO, "label": "No" };
+    titles[] = { "code": cmdPALL, "label": "All" };
+    var cancel = { "code": cmdPCANCEL, "label": "No" };
+    if ( has_no )
+	cancel["label"] = "Cancel";
+    titles[] = cancel;
     var rows = {};
     for ( var t : titles )
     {
@@ -2597,7 +2626,7 @@ void scope_key_action(var &out, long w, long es, const char *scope,
 // contract, so every pane's choose arm runs unchanged) under the label
 // the caller gives (null = no primary: a pane whose rows do nothing on
 // choose); Close posts the action the pane's @scope binds to esc — a
-// scope that binds no cancel gets no Close button (confirm_choices'
+// scope that binds no cancel gets no Close button (question_choices'
 // honesty rule). The filter is the text the core holds (null = the pane
 // does not filter). The terminal reads none of it.
 void dialog_hints(var &box, long w, long es, const char *scope,
@@ -2665,14 +2694,15 @@ bool compose_overlay_row(var &row, long w, long es)
     ui::get(pr, w, es, "prompt");
     if ( !pr.is_null() && strlen(pr.c_str()) > 0 )
     {
-	if ( cur_pmode(w, es) == pmCONFIRM )
+	const char *qs = question_scope(cur_pmode(w, es));
+	if ( strlen(qs) > 0 )
 	{
 	    st["content"] = pr;	// the label spells its own keys (y,n,^C)
 	    // The question as a DIALOG in a window: the label and its
 	    // answers as buttons — each fires the scope's action by name
 	    // (scope_action_named), what its key does in the terminal.
 	    var ch;
-	    confirm_choices(ch, w, es);
+	    question_choices(ch, w, es, qs);
 	    var cf = { "label": pr };
 	    cf["choices"] = ch;
 	    var h = { "popup": 1 };
@@ -2830,6 +2860,136 @@ void insert_file(long w, long es, long doc, long caret, const char *path)
     ui::set(w, es, "msg", format("Inserted {} bytes.", tn));
 }
 
+// ---- Replace (Edit ▸ Replace; nano's ^\ flow) ---------------------------
+// Two prompts — the text to find, the text to put in its place (empty =
+// delete it) — then a QUESTION at each match, walking from the caret to the
+// end and wrapping once to the top, stopping where it began: y replaces the
+// match (one undo step), n leaves it, a replaces it and every match after it
+// (one undo step), esc or ^C stops. The match is lit as a GUI selection
+// while the question is up; the walk ends with the count. The walk's state
+// on the bag: rfind / rwith (the answers), rat (the match asked about),
+// rstop (where the walk began, carried through each replacement by
+// shift_offset), rwrap (the walk has wrapped), rcount (replacements made).
+
+// The next match at or after `from` in the walk: past the end it wraps
+// once to the top, where a match must end by rstop. -1 = none left.
+long replace_next(long w, long es, long doc, long from)
+{
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    long n = strlen(pat.c_str());
+    if ( !es_flag(w, es, "rwrap") )
+    {
+	long hit = ui::text_find(w, doc, from, pat.c_str());
+	if ( hit >= 0 )
+	    return hit;
+	ui::set(w, es, "rwrap", true);
+	from = 0;
+    }
+    long hit2 = ui::text_find(w, doc, from, pat.c_str());
+    if ( hit2 < 0 || hit2 + n > es_int(w, es, "rstop", 0) )
+	return -1;
+    return hit2;
+}
+
+// The walk is over: the question goes, the match unlit, and the count is
+// the message.
+void replace_end(long w, long es)
+{
+    end_prompt(w, es);
+    select_clear(w, es);
+    long c = es_int(w, es, "rcount", 0);
+    ui::set(w, es, "msg", format("Replaced {} occurrence{}.", c, c == 1 ? "" : "s"));
+}
+
+// Ask about the match at `at` (lit, the caret after it); none = the end.
+void replace_ask(long w, long es, long doc, long at)
+{
+    if ( at < 0 )
+    {
+	replace_end(w, es);
+	return;
+    }
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    long n = strlen(pat.c_str());
+    ui::set(w, es, "rat", at);
+    ui::set(w, es, "caret", at + n);
+    select_span(w, es, at, at + n);
+    start_prompt(w, es, "Replace this one? (y)es (n)o (a)ll (^C)", pmREPLACEASK);
+}
+
+// Replace the match at rat; `checkpoint` makes it its own undo step. The
+// next search starts after the replacement.
+long replace_one(long w, long es, long doc, bool checkpoint)
+{
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    var with;
+    ui::get(with, w, es, "rwith");
+    long at = es_int(w, es, "rat", 0);
+    long n = strlen(pat.c_str());
+    long m = strlen(with.c_str());
+    if ( checkpoint )
+	edit_checkpoint(w, es, doc, es_int(w, es, "caret", at));
+    select_clear(w, es);
+    ed_text_erase(w, es, doc, at, n);
+    if ( m > 0 )
+	ed_text_insert(w, es, doc, at, with.c_str());
+    // The stop keeps its place before text put in AT it (the walk began
+    // there; the replacement is behind it, never asked about again).
+    long stop = shift_offset(es_int(w, es, "rstop", 0), at, -n, true);
+    ui::set(w, es, "rstop", shift_offset(stop, at, m, false));
+    ui::set(w, es, "rcount", es_int(w, es, "rcount", 0) + 1);
+    ui::set(w, es, "caret", at + m);
+    ui::set(w, doc, "modified", true);
+    return at + m;
+}
+
+// The two answers are in: start the walk at the caret.
+void replace_begin(long w, long es, long doc, long caret)
+{
+    ui::set(w, es, "rstop", caret);
+    ui::set(w, es, "rwrap", false);
+    ui::set(w, es, "rcount", 0);
+    long at = replace_next(w, es, doc, caret);
+    if ( at < 0 )
+    {
+	ui::set(w, es, "msg", "Not found.");
+	return;
+    }
+    replace_ask(w, es, doc, at);
+}
+
+// The question's answer (an @replace action; anything else stops).
+void replace_answer(long w, long es, long doc, long a)
+{
+    var pat;
+    ui::get(pat, w, es, "rfind");
+    long at = es_int(w, es, "rat", 0);
+    if ( a == cmdPYES )
+    {
+	replace_ask(w, es, doc, replace_next(w, es, doc, replace_one(w, es, doc, true)));
+	return;
+    }
+    if ( a == cmdPNO )
+    {
+	replace_ask(w, es, doc, replace_next(w, es, doc, at + strlen(pat.c_str())));
+	return;
+    }
+    if ( a == cmdPALL )
+    {
+	long next = replace_one(w, es, doc, true);
+	for ( long hit = replace_next(w, es, doc, next); hit >= 0;
+	      hit = replace_next(w, es, doc, next) )
+	{
+	    ui::set(w, es, "rat", hit);
+	    next = replace_one(w, es, doc, false);
+	}
+    }
+    replace_end(w, es);
+}
+
 // AST-5 buffers (defined after the view machinery): ^K E open-or-switch.
 void edit_file(long w, long es, long olddoc, const char *path);
 // The ^P project window (defined after the buffer machinery): the prompt
@@ -2871,7 +3031,9 @@ bool finish_prompt(long w, long es, long doc, long caret)
     var in;
     ui::get(in, w, es, "pinput");
     end_prompt(w, es);
-    if ( strlen(in.c_str()) == 0 )
+    // An empty answer is no answer — except Replace's text to put in, where
+    // empty means delete each match.
+    if ( strlen(in.c_str()) == 0 && mode != pmREPLACEWITH )
 	return true;
     if ( mode == pmCOLON )
 	return colon_command(w, es, doc, caret, in);
@@ -2879,6 +3041,18 @@ bool finish_prompt(long w, long es, long doc, long caret)
     {
 	ui::set(w, es, "search", in.c_str());
 	do_find(w, es, doc, caret);
+	return true;
+    }
+    if ( mode == pmREPLACE )
+    {
+	ui::set(w, es, "rfind", in.c_str());
+	start_prompt(w, es, "Replace with", pmREPLACEWITH);
+	return true;
+    }
+    if ( mode == pmREPLACEWITH )
+    {
+	ui::set(w, es, "rwith", in.c_str());
+	replace_begin(w, es, doc, caret);
 	return true;
     }
     if ( mode == pmGOTOLINE )
@@ -2979,17 +3153,24 @@ bool finish_prompt(long w, long es, long doc, long caret)
 bool prompt_event(long w, long es, long doc, long caret, var &ev)
 {
     var kind = ev["event_code"];
-    if ( cur_pmode(w, es) == pmCONFIRM )
+    long qmode = cur_pmode(w, es);
+    const char *qs = question_scope(qmode);
+    if ( strlen(qs) > 0 )
     {
-	// Single-key question: characters AND keys consult @confirm
-	// (a confirm reads its answer characters — unlike a prompt,
+	// Single-key question: characters AND keys consult its scope
+	// (a question reads its answer characters — unlike a prompt,
 	// whose characters are input). ^C arrives as its BOUND action
 	// (discard in the JOE profile), so any action cancels too.
 	// Unbound keys leave the question standing.
 	var a;
-	if ( scoped_action(a, w, es, "confirm", ev)
-	  || scope_action_named(a, w, es, "confirm", ev) )
+	if ( scoped_action(a, w, es, qs, ev)
+	  || scope_action_named(a, w, es, qs, ev) )
 	{
+	    if ( qmode == pmREPLACEASK )
+	    {
+		replace_answer(w, es, doc, a.as_integer());
+		return true;
+	    }
 	    if ( a == cmdPYES )
 	    {
 		var vb;
@@ -3002,7 +3183,12 @@ bool prompt_event(long w, long es, long doc, long caret, var &ev)
 	    return true;
 	}
 	if ( kind == ui::event_kind::action )
-	    end_prompt(w, es);
+	{
+	    if ( qmode == pmREPLACEASK )
+		replace_answer(w, es, doc, cmdPCANCEL);
+	    else
+		end_prompt(w, es);
+	}
 	return true;
     }
     if ( kind == ui::event_kind::text )
@@ -7409,6 +7595,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdFINDNEXT:
 	    {
 		do_find(w, es, nav, caret);
+		return true;
+	    }
+	    case cmdREPLACE:
+	    {
+		if ( !es_flag(w, es, "editable") )
+		    refuse_edit(w, es);
+		else
+		    start_prompt(w, es, "Replace", pmREPLACE);
 		return true;
 	    }
 	    case cmdGOTOLINE:
