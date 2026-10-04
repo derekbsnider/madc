@@ -1,4 +1,4 @@
-// chthonia's code (plan §41.11a step 6): the Variables view, Thonny's — the
+// chthonia's code (plan §41.11a step 6): the Symbols view — the
 // names the REPL session defined, each with its type and its value, kept
 // current after every entry and every F5 run and emptied when the session
 // stops. A row the program's file defined goes to its definition when it is
@@ -13,15 +13,15 @@
 // each world's view kind, written at that world's activation.
 #include <madcide/plugin>
 
-var chthonia_kinds;	// world -> the Variables view's kind (an object from the first activation)
+var chthonia_kinds;	// world -> the Symbols view's kind (an object from the first activation)
 
 // The bag key the view's rows live on (the plugin's own: `chthonia.`).
 const char *chthonia_rows_key()
 {
-    return "chthonia.vars";
+    return "chthonia.symbols";
 }
 
-// View ▸ Variables: show the view.
+// View ▸ Symbols: show the view.
 bool chthonia_show(long w, long es, long doc, const char *arg)
 {
     var k = chthonia_kinds[format("{}", w)];
@@ -68,10 +68,10 @@ void chthonia_cleared(long w, long es, long doc, var &event)
 extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
 {
     ide::bind(api);
-    long show = ide::command(w, "variables", "Variables", chthonia_show);
+    long show = ide::command(w, "symbols", "Symbols", chthonia_show);
     if ( show == 0 )
 	return false;
-    long kind = ide::view(w, "variables", "Variables", chthonia_rows_key(),
+    long kind = ide::view(w, "symbols", "Symbols", chthonia_rows_key(),
 			  show);
     if ( kind == 0 )
 	return false;

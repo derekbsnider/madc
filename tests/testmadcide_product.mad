@@ -11,7 +11,7 @@
 //   4. a session opened with no --profile, no bundle by the program's name
 //      and no settings opens the product's bundle (chthonia), and its code
 //      is the plugin LINKED into this program: transport `linked`, nothing
-//      loaded or compiled, its Variables command registered;
+//      loaded or compiled, its Symbols command registered;
 //   5. the window's title is Thonny's shape under the product's name: the
 //      composed root's `title` hint, `chthonia - <file> @ <row> : <col>`;
 //   6. what the program says about itself is under the product's name: an
@@ -128,10 +128,10 @@ int main()
     long doc = S.open(path, false);
     var b;
     ui::get(b, S.w, S.es, "bundle");
-    println("product-open: doc={} bundle={} transport={} variables={}",
+    println("product-open: doc={} bundle={} transport={} symbols={}",
 	    doc > 0 ? 1 : 0, b,
 	    plugin_transport_name(plugin_active_transport(S.w, "chthonia")),
-	    cmd_of_w(S.w, "variables") != 0 ? 1 : 0);
+	    cmd_of_w(S.w, "symbols") != 0 ? 1 : 0);
     var root;
     S.compose_ide_tree(root, doc);
     println("product-title: [{}]", root["hints"]["title"]);

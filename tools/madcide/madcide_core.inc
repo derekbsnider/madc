@@ -8129,7 +8129,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		// The outline View toggles where the layout hosts it (the
 		// sidebar by default): shown -> dismissed (a pane of its own
 		// hides; beside other tabs, the one it replaced returns —
-		// chthonia's Variables); else refresh + show.
+		// chthonia's Symbols); else refresh + show.
 		if ( view_shown(w, es, viewOUTLINE) )
 		    dismiss_view(w, es, viewOUTLINE);
 		else

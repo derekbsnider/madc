@@ -248,7 +248,7 @@ the line editor's verbs live in share/madcide next to this README.
 
 chthonia (bin/chthonia): the easy GUI to learn C and C++, built on
 madcide and laid out for learning — the editor, the Shell (a C REPL) below
-it, the Variables view beside it, Run (F5) and Stop on the toolbar. It
+it, the Symbols view beside it, Run (F5) and Stop on the toolbar. It
 opens a window by default (--tui asks for the terminal):
 
     bin/chthonia file.c

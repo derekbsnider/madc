@@ -1,4 +1,4 @@
-// A binding row's value (plan §7f, the Variables view and %whos): the row's
+// A binding row's value (plan §7f, the Symbols view and %whos): the row's
 // own column names the type, so the value spells none — gdb's `info locals`
 // is the oracle, the listing whose type is likewise elsewhere (gdb 15 on
 // tmp/rowvalues_oracle.c: `s = 0x555555556004 "Test"`, `p = 0x1 <error:

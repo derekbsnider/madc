@@ -18,7 +18,7 @@
 //      after the fourth end the plugin stops and its command says it is not
 //      running;
 //   5. settings.json's "plugins.isolate" runs chthonia's code in a child: its
-//      Variables view fills after F5 as it does in madcide's process.
+//      Symbols view fills after F5 as it does in madcide's process.
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env).
 #include "../tools/texteditor/lined_core.inc"
@@ -191,7 +191,7 @@ int main()
     var rows;
     for ( long waited = 0; waited < 20000; waited = waited + 10 )
     {
-	ui::get(rows, C.w, C.es, "chthonia.vars");
+	ui::get(rows, C.w, C.es, "chthonia.symbols");
 	if ( rows.is_array() && php::count(rows) > 0 )
 	    break;
 	madc::sleep_ms(10);

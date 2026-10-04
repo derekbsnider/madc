@@ -23,7 +23,7 @@ int main()
     builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
     bundle_select(w, es, "chthonia");	// the shipped bundle: its menu
-    plugins_activate(w, es);		// its code first: the menu names its Variables
+    plugins_activate(w, es);		// its code first: the menu names its Symbols
     ui::set(w, es, "profile", "pico");
     load_status(w, es, "joe");
     load_theme(w, es, "default");

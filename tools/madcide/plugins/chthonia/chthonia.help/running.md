@@ -4,7 +4,7 @@
 in the shell: a fresh session loads the buffer, unsaved edits included,
 and runs its `main`. What the program prints appears in the shell, and
 what it reads is typed there. When it finishes, its names stay at the
-shell's prompt, and the **Variables** view lists them.
+shell's prompt, and the **Symbols** view lists them.
 
 **Run ▸ Stop** stops a program that is still running.
 

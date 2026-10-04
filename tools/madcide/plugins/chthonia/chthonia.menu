@@ -3,7 +3,7 @@
 # file added to the program makes it a project) and Build the native build:
 # the Build… item's menu lists the build rows themselves (Check, Build, Run,
 # Stop, and a project's own). View ▸ Outline shows the outline in the
-# sidebar beside Variables (chthonia.layout); Output and Terminal are the
+# sidebar beside Symbols (chthonia.layout); Output and Terminal are the
 # bottom panel's tabs for a build and the program it runs. View ▸ Changes,
 # History and Blame line are git's (madcide_git.inc): the file against its
 # last commit, its commits, who last changed the caret's line. Not yet here:
@@ -49,7 +49,7 @@ Run language Language…
 Build build Build…
 
 View repl Shell
-View variables Variables
+View symbols Symbols
 View problems Problems
 View output Output
 View terminal Terminal

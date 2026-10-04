@@ -1,5 +1,5 @@
 // chthonia in the window (plan §41.11a step 6): the chthonia bundle opened
-// as the command line's --profile opens it, its code active (the Variables
+// as the command line's --profile opens it, its code active (the Symbols
 // view in the right sidebar). A click on the toolbar's Run posts replrun:
 // the editor's buffer runs into a fresh session, main's output reaches the
 // REPL tab on the pump's wakes, and the sidebar draws the program's names.
@@ -29,7 +29,7 @@ void click_button(long t, const char *label)
 
 // What the page shows: whether the panel's edit node carries `out`, and
 // whether the sidebar carries `row`, and whether the sidebar sits right of
-// the editor (chthonia.layout's `pane sidebar right`, Thonny's Variables).
+// the editor (chthonia.layout's `pane sidebar right`, the Symbols view).
 void probe(long t, const char *out, const char *row)
 {
     ui::eval_page(t, format(

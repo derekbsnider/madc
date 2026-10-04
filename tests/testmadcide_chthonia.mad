@@ -1,9 +1,9 @@
 // The chthonia profile: the teaching bundle madcide ships,
 // tools/madcide/plugins/chthonia — the Chthonia key style, chthonia.layout
 // (the editor, and below it the REPL as the visible panel's first tab with
-// Problems, Output and Terminal beside it; the Variables view in the right
+// Problems, Output and Terminal beside it; the Symbols view in the right
 // sidebar), chthonia.menu (the beginner's subset of the command vocabulary)
-// and chthonia.mad (its code, the Variables view). Pins:
+// and chthonia.mad (its code, the Symbols view). Pins:
 //   1. `open(path, ro, "chthonia")` (the command line's --profile) loads the
 //      shipped bundle: the runner's MADCIDE_CONFIG_DIR names no user
 //      directory, so nothing overrides it;
@@ -27,7 +27,7 @@
 //      for this bundle in settings.json (this test's configuration
 //      directory, its .env), so the next chthonia session opens with it
 //      while the default bundle keeps its own keys;
-//   8. the Variables view (plan §41.11a step 6), its code activated from
+//   8. the Symbols view (plan §41.11a step 6), its code activated from
 //      source: after F5 on §34's program plus a global its rows read
 //      `count int 3` and `square int (int)`; choosing `square` moves the
 //      caret to its line; an entry `int y = 7;` adds its row; Stop empties
@@ -36,11 +36,11 @@
 //      (a copy of the bundle in this test's configuration directory, which
 //      the search path puts first).
 //  10. View ▸ Outline and Tools ▸ Options (§7a Thonny parity): the View and
-//      Tools menus list them; outline shows in the sidebar beside Variables
+//      Tools menus list them; outline shows in the sidebar beside Symbols
 //      (the file's main) and toggles back; options opens and closes its pane.
 //  11. Edit ▸ Clear shell (`replclear`, Ctrl+L), in pins 8-9's session: the
 //      transcript had text and is empty; the session is live and the
-//      Variables rows stay.
+//      Symbols rows stay.
 //  12. Projects and building: File lists Project…, Open Project… and Add
 //      Current File to Project; the Build menu as the window composes it is
 //      Build… followed by the build rows (Check, Build, Run, Stop); its Build
@@ -117,10 +117,10 @@ void toolbar_rows(var &out, IdeSession &S, long doc)
     out = format("{}codes={}", out, ok);
 }
 
-// The Variables view's rows as its pane composes them, `|`-separated.
-void variables_rows(var &out, IdeSession &S, long doc)
+// The Symbols view's rows as its pane composes them, `|`-separated.
+void symbols_rows(var &out, IdeSession &S, long doc)
 {
-    var vn = "variables";
+    var vn = "symbols";
     long kind = view_of_w(S.w, vn);
     var cur;
     layout_get(cur, S.w, S.es);
@@ -139,7 +139,7 @@ void variables_rows(var &out, IdeSession &S, long doc)
 }
 
 // Pins 8-9 over one session: F5, a row chosen, an entry, Stop.
-void variables_gate(IdeSession &S, long doc, const char *label)
+void symbols_gate(IdeSession &S, long doc, const char *label)
 {
     long w = S.w;
     long es = S.es;
@@ -152,12 +152,12 @@ void variables_gate(IdeSession &S, long doc, const char *label)
     S.apply_ide_event(doc, e);
     settle(w, es, false);
     var got;
-    variables_rows(got, S, doc);
+    symbols_rows(got, S, doc);
     println("{}-f5: [{}]", label, got);
-    var vn = "variables";
+    var vn = "symbols";
     long kind = view_of_w(w, vn);
     var rows;
-    ui::get(rows, w, es, "chthonia.vars");
+    ui::get(rows, w, es, "chthonia.symbols");
     long opt = 0;
     long i = 1;
     for ( var r : rows )
@@ -173,7 +173,7 @@ void variables_gate(IdeSession &S, long doc, const char *label)
     println("{}-goto: square-line={}", label,
 	    es_int(w, es, "caret", -1) == caret_to_line(w, doc, 3, 0) ? 1 : 0);
     enter_line(S, doc, w, es, "int y = 7;");
-    variables_rows(got, S, doc);
+    symbols_rows(got, S, doc);
     println("{}-entry: [{}]", label, got);
     // Edit ▸ Clear shell (`replclear`, §7a; Thonny's Ctrl+L): the transcript
     // empties, the session and its names stay.
@@ -183,14 +183,14 @@ void variables_gate(IdeSession &S, long doc, const char *label)
     S.apply_ide_event(doc, e);
     var tafter;
     ui::text(tafter, w, repl_doc_if_any(w, es));
-    variables_rows(got, S, doc);
+    symbols_rows(got, S, doc);
     println("{}-clear: had-text={} empty={} live={} rows=[{}]", label,
 	    strlen(tbefore.c_str()) > 0 ? 1 : 0, strlen(tafter.c_str()) == 0 ? 1 : 0,
 	    es_int(w, es, "repllive", 0), got);
     ev_action(e, "replstop", "");
     S.apply_ide_event(doc, e);
     settle(w, es, false);
-    variables_rows(got, S, doc);
+    symbols_rows(got, S, doc);
     println("{}-stop: [{}]", label, got);
 }
 
@@ -226,8 +226,8 @@ int main()
 	    h != 0 && madc::session_running(h) ? 1 : 0);
     // View ▸ Outline and Tools ▸ Options (§7a Thonny parity): the View menu
     // lists outline and Tools lists options; `outline` shows the outline in
-    // the sidebar beside Variables (the file's main), again hides it and the
-    // sidebar shows Variables again; `options` opens the Options pane.
+    // the sidebar beside Symbols (the file's main), again hides it and the
+    // sidebar shows Symbols again; `options` opens the Options pane.
     var vtitles;
     var vids;
     menu_bar(vtitles, vids, S.w, S.es, "View");
@@ -307,10 +307,10 @@ int main()
     json_object_read(kept, why, spath);
     println("keystyle-choose: keys={} msg={} kept={}", k, msg, kept["keys"]["chthonia"]);
 
-    // 8. The Variables view, its code from source.
-    println("variables-code: transport-source={}",
+    // 8. The Symbols view, its code from source.
+    println("symbols-code: transport-source={}",
 	    plugin_active_transport(S.w, "chthonia") == ptSOURCE ? 1 : 0);
-    variables_gate(S, doc, "variables");
+    symbols_gate(S, doc, "symbols");
 
     // 12. Projects and building.
     menu_bar(titles, ids, S.w, S.es, "File");
@@ -394,9 +394,9 @@ int main()
     long ldoc = L.open(path, false, "chthonia");
     if ( built )
 	bwhy = "";		// the library's path: its suffix is the platform's
-    println("variables-lib: built={}{} transport-library={}", built ? 1 : 0, bwhy,
+    println("symbols-lib: built={}{} transport-library={}", built ? 1 : 0, bwhy,
 	    plugin_active_transport(L.w, "chthonia") == ptLIBRARY ? 1 : 0);
-    variables_gate(L, ldoc, "variables-lib");
+    symbols_gate(L, ldoc, "symbols-lib");
     L.close();
     for ( var f : parts )
 	php::unlink(format("{}/{}", bdir, f));

@@ -2572,8 +2572,8 @@ TEST_CASE("?name: where a keyword comes from")
     }
 }
 
-// Plan §41.11a step 3d: the bindings owner, IPython's %whos and madcide's
-// Variables view. The session's own objects and functions only (an included
+// Plan §41.11a step 3d: the bindings owner, IPython's %whos and Chthonia's
+// Symbols view. The session's own objects and functions only (an included
 // header's, a reserved name and a result never), sorted by name, each with
 // its type, its value in the show's row form (no pointer followed, text
 // included; at most 16 elements of an aggregate, then `…`) and its origin.

@@ -234,7 +234,7 @@ Chthonia has the same: its Build menu lists these rows (Ctrl+B in the
 Chthonia keys, Ctrl+Shift+B in the VS Code keys, opens them as a list), its
 File menu has Project…, Open Project… and Add Current File to Project, and
 its bottom panel has Output and Terminal tabs beside the Shell and
-Problems. F5 (Run ▸ Run) runs the file in the Shell, where Variables shows
+Problems. F5 (Run ▸ Run) runs the file in the Shell, where Symbols shows
 its names; Build ▸ Run starts the built program in the Terminal tab.
 
 In the terminal, Run hands the program the real terminal (JOE's `^K Z`
@@ -484,9 +484,9 @@ quote or a trailing backslash is refused, and the old words stay; an empty
 answer clears them. They last until the session ends. Build ▸ Run does not
 pass them.
 
-The shipped `chthonia` plugin carries code: the Variables view in chthonia's
-right sidebar (View ▸ Variables), Thonny's; the sidebar's second tab is the
-Outline (View ▸ Outline, which toggles it; toggled off, Variables shows
+The shipped `chthonia` plugin carries code: the Symbols view in chthonia's
+right sidebar (View ▸ Symbols); the sidebar's second tab is the
+Outline (View ▸ Outline, which toggles it; toggled off, Symbols shows
 again). It lists the names the REPL session
 defined, each with its type and value (`count int 3`, `square int (int)`),
 refreshed after every entry and every F5 run and emptied when the session
