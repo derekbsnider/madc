@@ -275,6 +275,9 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
             font: 14px/1.5 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
             white-space: pre; }
 .dlg-list .opt { padding: 1px 14px; cursor: pointer; }
+/* An empty row is a blank line (the terminal draws one): a zero-width space
+   gives it the list's line box — About's blank lines between its parts. */
+.dlg-list .opt:empty::before { content: "\200b"; }
 .dlg-list .opt:hover { background: #343b52; }
 .dlg-list .opt.sel { background: var(--sb-active, #2f3a55); box-shadow: inset 3px 0 0 var(--accent, #9fc2ff); color: #f2f4ff; }
 .node.popup.dialog.focus .dlg-list .opt.sel { background: #3b4a6b; }

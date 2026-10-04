@@ -1,0 +1,6 @@
+ABOUT open
+ABOUT action=about
+ABOUT title=About Chthonia rows=10 blank=4 flat=0
+ABOUT action=paneclose
+ABOUT closed=1
+ABOUT closed
