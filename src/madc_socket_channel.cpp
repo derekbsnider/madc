@@ -917,6 +917,18 @@ private:
 
 namespace detail {
 
+std::unique_ptr<DataChannel> socket_channel_over(int fd, const std::string &name)
+{
+	if ( fd < 0 )
+		return std::unique_ptr<DataChannel>();
+	ChannelCapabilities capabilities;
+	capabilities.read = true;
+	capabilities.write = true;
+	capabilities.half_close = true;
+	return std::unique_ptr<DataChannel>(new SocketDataChannel(
+		fd, name, name, capabilities, SocketSemantics::byte_stream));
+}
+
 void register_socket_channel_factories(DataChannelRegistry &registry)
 {
 	registry.register_factory(

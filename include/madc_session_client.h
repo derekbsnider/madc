@@ -57,8 +57,10 @@ public:
 
     // Start the backend: fork, build the session, begin(std_option) there.
     // False when it cannot start (or begin refuses the standard; the
-    // backend's rendered diagnostics are then in last_error()). POSIX only
-    // for now: Windows has no fork (plan §41.9a).
+    // backend's rendered diagnostics are then in last_error()). Windows has
+    // no fork: the backend is a run child of self that builds a fresh
+    // Program (madc_run_child.h), so a make_program factory is refused
+    // there (a configured Program cannot cross a process boundary).
     bool start(const std::string &std_option = std::string(),
 	       const ProgramFactory &make_program = ProgramFactory());
     // Start again with the same standard and factory (after a stop).
@@ -166,6 +168,9 @@ public:
     const std::string &standard() const { return standard_name; }
 
 private:
+    // Start the backend process and connect the wire (POSIX: fork over a
+    // socketpair; Windows: a run child of self over a loopback connection).
+    bool spawn_backend();
     bool send(const std::string &line);
     bool take_line(std::string &line);
     void read_output(std::string &output, int timeout_ms);
@@ -178,7 +183,9 @@ private:
     bool busy() const;
 
     std::unique_ptr<madc::Process> process;
-    int fd;				// the parent's end of the socketpair
+    // The requests and replies: the parent's end of the socketpair (POSIX)
+    // or the loopback connection the child made (Windows); null = no backend.
+    std::unique_ptr<madc::DataChannel> wire;
     std::string inbuf;			// reply bytes not yet a whole line
     bool output_done;			// the output pipe reached its end
     unsigned next_seq;
@@ -225,6 +232,13 @@ private:
     bool has_ended;
     int end_status;
 };
+
+// A session backend as a run child of self (Windows; madc_run_child.h, kind
+// `session`): `request` is "<endpoint> <token> <on-terminal 0|1> [std]".
+// It connects to the client's loopback listener, sends the token as the
+// first line, then serves one session on a fresh Program. Returns the
+// process's exit status.
+int madc_session_serve_child(const std::string &request);
 
 // The script surface (<ns_madc>'s session_* verbs, src/madc_session_verbs.cpp),
 // declared here for C++ hosts and tests; the contract is <ns_madc>'s.

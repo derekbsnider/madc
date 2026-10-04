@@ -1,0 +1,4 @@
+# Labels whose line legitimately DIFFERS from tests/testsession_pump.expect on win64:
+# a crashed backend's exit status is the NTSTATUS (0xC0000005, access
+# violation, as a signed int) where POSIX reports 128 + SIGSEGV.
+crash

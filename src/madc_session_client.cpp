@@ -6,8 +6,17 @@
  * requests and replies are JSON lines on a socketpair, through the one
  * value<->JSON bridge (wt_value_to_json); the program's own stdout and
  * stderr are the Process's output pipe.
+ *
+ * Windows has no fork: the backend is a run child of self
+ * (include/madc_run_child.h, kind `session`), and the requests ride a
+ * loopback connection the child makes to the client's listener, checked by
+ * a token — Jupyter's kernel transport (ports plus a key). Both ends speak
+ * through a DataChannel, so the protocol below is one text for both.
  */
 
+#ifdef _WIN32
+#define _CRT_RAND_S		// rand_s: the session token (the OS generator)
+#endif
 #include <cerrno>
 #include <cstdio>
 #include <cctype>
@@ -24,7 +33,13 @@
 #include <fstream>
 #include <memory>
 #include <stdint.h>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 
+#ifdef _WIN32
+#include <io.h>			// _dup2: the backend's stderr onto its output pipe
+#endif
 #ifndef _WIN32
 #include <poll.h>
 #include <signal.h>
@@ -44,7 +59,9 @@
 #include "madcdis/process.h"
 #include "madcdis/world_text.h"	// wt_value_to_json / wt_json_to_value
 #include "rt/rt_task.h"		// __madc_task_atfork_child
-#include "madc_task_io.h"	// taskio::handle_closing
+#include "madc_task_io.h"	// taskio::handle_closing, taskio::poll_readable
+#include "madc_datachannel_internal.h"	// socket_channel_over: the socketpair's ends
+#include "madc_run_child.h"	// Windows: the backend is a run child of self
 
 namespace madc {
 // src/madc_program.cpp: the one diagnostic-row builder, and the fork child's
@@ -55,7 +72,6 @@ void run_child_prologue(bool merge_stderr);
 #endif
 }
 
-#ifndef _WIN32
 // The wire's words. Text only on the wire, each converted once at each end
 // (enum-over-strings): the request's op, the offer's verdict.
 namespace {
@@ -115,25 +131,80 @@ InteractiveSession::OfferState state_of(const std::string &name)
 }
 
 // One line out, whole; a peer that went away is an error, never a SIGPIPE
-// (the client must outlive its backend).
-bool write_line(int fd, const std::string &line)
+// (the client must outlive its backend — the socket channel's write).
+bool write_line(madc::DataChannel &wire, const std::string &line)
 {
-    std::string out = line + "\n";
-    size_t done = 0;
-    while ( done < out.size() )
-    {
-	int flags = 0;
-#ifdef MSG_NOSIGNAL
-	flags = MSG_NOSIGNAL;
-#endif
-	ssize_t n = ::send(fd, out.data() + done, out.size() - done, flags);
-	if ( n < 0 && errno == EINTR )
-	    continue;
-	if ( n <= 0 )
-	    return false;
-	done += (size_t)n;
-    }
+    const std::string out = line + "\n";
+    return madc::write_all(wire, out.data(), out.size());
+}
+
+// One read of the wire: false at its end (the peer closed) or an error.
+bool read_wire(madc::DataChannel &wire, std::string &into)
+{
+    char chunk[4096];
+    size_t got = 0;
+    if ( !wire.read(chunk, sizeof(chunk), got) || got == 0 )
+	return false;
+    into.append(chunk, got);
     return true;
+}
+
+// A channel's read side as a waitable handle; value -1 when it has none.
+madc::poll_handle wait_handle_of(madc::DataChannel *c)
+{
+    madc::PollableDataChannel *pc = c ? madc::pollable_surface(c) : NULL;
+    madc::poll_handle h = { -1, madc::poll_handle_kind::descriptor };
+    if ( pc && pc->read_poll_handle() >= 0 )
+    {
+	h.value = pc->read_poll_handle();
+	h.kind = pc->read_poll_kind();
+    }
+    return h;
+}
+
+// Wait up to timeout_ms (-1: no limit) until one of `hs` reads readable
+// (data, its end, or an error the read surfaces). The mask of the readable
+// ones; 0 when the time ran out, -1 when the wait itself failed. POSIX
+// blocks in poll(). Windows has no one wait over a socket and a pipe, so it
+// probes each with the reactor's own probe (taskio::poll_readable) on a
+// short cadence.
+int wait_any_readable(const std::vector<madc::poll_handle> &hs, int timeout_ms)
+{
+#ifndef _WIN32
+    std::vector<struct pollfd> p;
+    for ( const madc::poll_handle &h : hs )
+    {
+	struct pollfd one = { (int)h.value, POLLIN, 0 };
+	p.push_back(one);
+    }
+    for (;;)
+    {
+	int r = ::poll(p.data(), p.size(), timeout_ms);
+	if ( r < 0 && errno == EINTR )
+	    continue;
+	if ( r <= 0 )
+	    return r;
+	int mask = 0;
+	for ( size_t i = 0; i < p.size(); ++i )
+	    if ( p[i].revents & (POLLIN | POLLHUP | POLLERR) )
+		mask |= 1 << i;
+	return mask;
+    }
+#else
+    const std::chrono::steady_clock::time_point deadline =
+	std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    for (;;)
+    {
+	int mask = 0;
+	for ( size_t i = 0; i < hs.size(); ++i )
+	    if ( madc::taskio::poll_readable(hs[i].value, hs[i].kind) )
+		mask |= 1 << i;
+	if ( mask != 0 || timeout_ms == 0
+	  || (timeout_ms > 0 && std::chrono::steady_clock::now() >= deadline) )
+	    return mask;
+	std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+#endif
 }
 
 // A reply's diagnostic rows: what the unit it answers recorded (a taken
@@ -149,7 +220,8 @@ void attach_diagnostics(nlohmann::json &rep, InteractiveSession &session)
 // The backend: one session, a request per line until the channel closes.
 // The program's output is flushed before each reply, so the client reads
 // an entry's output before its result.
-int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_option)
+int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
+		  const std::string &std_option)
 {
     InteractiveSession session(std::move(prog));
     std::ostringstream err;
@@ -168,22 +240,15 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
     // The standard in force, by its canonical name (the prompt's, D22).
     hello["standard"] = Program::standard_canonical_name(session.program().language_std);
     flush_program();
-    if ( !write_line(fd, hello.dump()) || !hello["ok"].get<bool>() )
+    if ( !write_line(wire, hello.dump()) || !hello["ok"].get<bool>() )
 	return 1;
     std::string buf;
-    char chunk[4096];
     for (;;)
     {
 	size_t nl;
 	while ( (nl = buf.find('\n')) == std::string::npos )
-	{
-	    ssize_t n = ::read(fd, chunk, sizeof(chunk));
-	    if ( n < 0 && errno == EINTR )
-		continue;
-	    if ( n <= 0 )
+	    if ( !read_wire(wire, buf) )
 		return 0;		// the client closed the channel
-	    buf.append(chunk, (size_t)n);
-	}
 	const std::string line = buf.substr(0, nl);
 	buf.erase(0, nl + 1);
 	nlohmann::json req = nlohmann::json::parse(line, nullptr, false);
@@ -209,7 +274,7 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 		    nlohmann::json note;
 		    note["seq"] = seq;
 		    note["op"] = op_name(Op::running);
-		    write_line(fd, note.dump());
+		    write_line(wire, note.dump());
 		};
 		InteractiveSession::Offered o;
 		if ( req.value("final", false) )
@@ -282,13 +347,12 @@ int serve_session(int fd, std::unique_ptr<Program> prog, const std::string &std_
 	}
 	rep["rendered"] = err.str();
 	flush_program();
-	if ( !write_line(fd, rep.dump()) )
+	if ( !write_line(wire, rep.dump()) )
 	    return 0;
     }
 }
 
 } // namespace
-#endif
 
 SessionClient::Reply::Reply()
     : kind(Kind::offer), seq(0), state(InteractiveSession::OfferState::taken),
@@ -298,7 +362,7 @@ SessionClient::Reply::Reply()
 }
 
 SessionClient::SessionClient()
-    : fd(-1), output_done(false), next_seq(1), answered_seq(0), inherit_stdio(false)
+    : output_done(false), next_seq(1), answered_seq(0), inherit_stdio(false)
 {
 }
 
@@ -314,16 +378,14 @@ SessionClient::~SessionClient()
 
 bool SessionClient::running() const
 {
-    return fd >= 0;
+    return wire != nullptr;
 }
 
 // The backend answers its requests in order, one reply each.
 bool SessionClient::busy() const
 {
-    return fd >= 0 && answered_seq + 1 < next_seq;
+    return wire && answered_seq + 1 < next_seq;
 }
-
-#ifndef _WIN32
 
 bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make)
 {
@@ -332,6 +394,52 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
     make_program = make;
     error_text.clear();
     standard_name.clear();
+    inbuf.clear();
+    output_done = false;
+    next_seq = 1;
+    answered_seq = 0;
+    // The spawn may leave the greeting's first bytes in inbuf (they can
+    // arrive with the connection's token).
+    if ( !spawn_backend() )
+	return false;
+    // The backend's first line says whether its session began.
+    Reply hello;
+    std::string output;
+    std::vector<madc::poll_handle> hs(1, wait_handle_of(wire.get()));
+    for (;;)
+    {
+	std::string line;
+	if ( take_line(line) )
+	{
+	    nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
+	    bool ok = !j.is_discarded() && j.value("ok", false);
+	    if ( ok )
+		standard_name = j.value("standard", std::string());
+	    if ( !ok )
+	    {
+		error_text = j.is_discarded() ? std::string("session: no greeting")
+					      : j.value("rendered", std::string());
+		while ( !error_text.empty() && error_text[error_text.size() - 1] == '\n' )
+		    error_text.erase(error_text.size() - 1);	// a message, not a rendered block
+		stop();
+	    }
+	    return ok;
+	}
+	if ( wait_any_readable(hs, -1) < 0 || !read_wire(*wire, inbuf) )
+	{
+	    error_text = "session: the backend ended before it began";
+	    stopped(hello, output);
+	    return false;
+	}
+    }
+}
+
+#ifndef _WIN32
+
+// The backend: this process forked through the one spawn owner; the
+// requests ride a socketpair.
+bool SessionClient::spawn_backend()
+{
     int sv[2];
     if ( ::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 )
     {
@@ -357,7 +465,9 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 	    setvbuf(stdin, NULL, _IONBF, 0);
 	::close(parent_end);
 	std::unique_ptr<Program> prog(factory ? factory() : std::unique_ptr<Program>(new Program()));
-	return serve_session(child_end, std::move(prog), opt);
+	std::unique_ptr<madc::DataChannel> child_wire =
+	    madc::detail::socket_channel_over(child_end, "session");
+	return serve_session(*child_wire, std::move(prog), opt);
     };
     process.reset(new madc::Process(madc::DataSource("exec://<madcsession>"), options));
     madc::error perr;
@@ -370,48 +480,121 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 	return false;
     }
     ::close(child_end);
-    fd = parent_end;
-    inbuf.clear();
-    output_done = false;
-    next_seq = 1;
-    answered_seq = 0;
-    // The backend's first line says whether its session began.
-    Reply hello;
-    std::string output;
+    wire = madc::detail::socket_channel_over(parent_end, "session");
+    return true;
+}
+
+#else
+
+namespace {
+
+// The loopback connection's key: 128 bits from the OS generator, as hex.
+std::string session_token()
+{
+    std::string t;
+    for ( int i = 0; i < 4; ++i )
+    {
+	unsigned int r = 0;
+	if ( rand_s(&r) != 0 )
+	    return std::string();
+	char hex[9];
+	snprintf(hex, sizeof(hex), "%08x", r);
+	t += hex;
+    }
+    return t;
+}
+
+} // namespace
+
+// The backend: a run child of self (no fork). It connects to this
+// listener and sends the token first; the first connection that does is
+// the wire. A child that dies before it connects ends its output pipe.
+bool SessionClient::spawn_backend()
+{
+    if ( make_program )
+    {
+	error_text = "session: a configured Program cannot cross to a Windows"
+		     " backend (it builds its own)";
+	return false;
+    }
+    const std::string token = session_token();
+    madc::error lerr;
+    std::unique_ptr<madc::DataChannel> listener =
+	madc::DataChannelRegistry::instance().open(
+	    madc::DataSource("listen://127.0.0.1:0"), madc::ChannelOpenMode::read_write, &lerr);
+    madc::AcceptorDataChannel *acceptor =
+	listener ? madc::acceptor_surface(listener.get()) : NULL;
+    if ( token.empty() || !acceptor )
+    {
+	error_text = "session: no loopback listener for the backend";
+	return false;
+    }
+    madc::ProcessOptions options;
+    // Piped: the child moves its stderr onto the output pipe. On the host's
+    // terminal: all three are the host's.
+    options.inherit_stderr = true;
+    options.inherit_stdin = inherit_stdio;
+    options.inherit_stdout = inherit_stdio;
+    process = madc_run_child_process(
+	rckSession, acceptor->local_endpoint() + " " + token + " "
+		    + (inherit_stdio ? "1" : "0") + " " + std_option, options);
+    madc::error perr;
+    if ( !process->start(&perr) )
+    {
+	error_text = "session: the backend did not start";
+	process.reset();
+	return false;
+    }
+    std::string early;		// what a child printed before it connected
+    std::vector<madc::poll_handle> hs;
+    hs.push_back(wait_handle_of(listener.get()));
+    madc::DataChannel *out = inherit_stdio ? NULL : &process->stdout_channel();
+    if ( out && wait_handle_of(out).value >= 0 )
+	hs.push_back(wait_handle_of(out));
     for (;;)
     {
-	std::string line;
-	if ( take_line(line) )
+	std::unique_ptr<madc::DataChannel> conn;
+	madc::AcceptResult r = acceptor->accept(conn, &lerr);
+	if ( r == madc::AcceptResult::accepted )
 	{
-	    nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
-	    bool ok = !j.is_discarded() && j.value("ok", false);
-	    if ( ok )
-		standard_name = j.value("standard", std::string());
-	    if ( !ok )
+	    // The token is the connection's first line.
+	    std::string first;
+	    std::vector<madc::poll_handle> ch(1, wait_handle_of(conn.get()));
+	    while ( first.find('\n') == std::string::npos
+		 && wait_any_readable(ch, 5000) > 0 && read_wire(*conn, first) )
+		;
+	    const size_t nl = first.find('\n');
+	    if ( nl != std::string::npos && first.compare(0, nl, token) == 0 )
 	    {
-		error_text = j.is_discarded() ? std::string("session: no greeting")
-					      : j.value("rendered", std::string());
-		while ( !error_text.empty() && error_text[error_text.size() - 1] == '\n' )
-		    error_text.erase(error_text.size() - 1);	// a message, not a rendered block
-		stop();
+		wire = std::move(conn);
+		inbuf = first.substr(nl + 1);
+		return true;
 	    }
-	    return ok;
+	    continue;		// not the child: refused, keep listening
 	}
-	struct pollfd p = { fd, POLLIN, 0 };
-	int r = ::poll(&p, 1, -1);
-	if ( r < 0 && errno == EINTR )
+	if ( r == madc::AcceptResult::error )
+	    break;
+	int ready = wait_any_readable(hs, -1);
+	if ( ready < 0 )
+	    break;
+	// A pending connection first: a child that refused its standard
+	// connects, says so and exits, so its output ends at once — the
+	// refusal is on the connection, not lost with the pipe.
+	if ( ready & 1 )
 	    continue;
-	char chunk[4096];
-	ssize_t n = r > 0 ? ::read(fd, chunk, sizeof(chunk)) : -1;
-	if ( n <= 0 )
-	{
-	    error_text = "session: the backend ended before it began";
-	    stopped(hello, output);
-	    return false;
-	}
-	inbuf.append(chunk, (size_t)n);
+	if ( hs.size() > 1 && (ready & 2) && !read_wire(*out, early) )
+	    break;		// the child's output ended unconnected: it is gone
     }
+    error_text = "session: the backend ended before it connected";
+    if ( !early.empty() )
+	error_text += ": " + early;
+    process->terminate();
+    process->wait();
+    process.reset();
+    return false;
 }
+
+#endif
 
 // A task parked on the streams (a select on the session's case) wakes and
 // re-reads them: a restart replaces both, and epoll forgets a closed one.
@@ -427,11 +610,7 @@ void SessionClient::stop()
 {
     const bool computing = busy();
     release_waiters();
-    if ( fd >= 0 )
-    {
-	::close(fd);			// the backend's read sees EOF and returns
-	fd = -1;
-    }
+    wire.reset();			// the backend's read sees EOF and returns
     if ( process )
     {
 	// A busy backend never reaches that read (an endless entry, Stop's
@@ -446,7 +625,7 @@ void SessionClient::stop()
 
 bool SessionClient::send(const std::string &line)
 {
-    return fd >= 0 && write_line(fd, line);
+    return wire && write_line(*wire, line);
 }
 
 bool SessionClient::take_line(std::string &line)
@@ -465,26 +644,16 @@ void SessionClient::read_output(std::string &output, int timeout_ms)
     if ( !process || output_done )
 	return;
     madc::DataChannel &out = process->stdout_channel();
-    madc::PollableDataChannel *pc = madc::pollable_surface(&out);
-    intptr_t h = pc ? pc->read_poll_handle() : -1;
-    if ( h < 0 )
+    std::vector<madc::poll_handle> hs(1, wait_handle_of(&out));
+    if ( hs[0].value < 0 )
 	return;
-    for (;;)
+    while ( wait_any_readable(hs, timeout_ms) > 0 )
     {
-	struct pollfd p = { (int)h, POLLIN, 0 };
-	int r = ::poll(&p, 1, timeout_ms);
-	if ( r < 0 && errno == EINTR )
-	    continue;
-	if ( r <= 0 || !(p.revents & (POLLIN | POLLHUP)) )
-	    return;
-	char chunk[4096];
-	size_t got = 0;
-	if ( !out.read(chunk, sizeof(chunk), got) || got == 0 )
+	if ( !read_wire(out, output) )
 	{
 	    output_done = true;		// its end: never readable again
 	    return;
 	}
-	output.append(chunk, got);
 	timeout_ms = 0;			// then only what is already there
     }
 }
@@ -494,11 +663,7 @@ int SessionClient::stopped(Reply &reply, std::string &output)
 {
     read_output(output, 0);
     release_waiters();
-    if ( fd >= 0 )
-    {
-	::close(fd);
-	fd = -1;
-    }
+    wire.reset();
     reply = Reply();
     reply.kind = Reply::Kind::stopped;
     if ( process )
@@ -586,7 +751,7 @@ unsigned SessionClient::run(const std::vector<std::string> &argv)
 
 bool SessionClient::input(const std::string &text)
 {
-    if ( fd < 0 || !process )
+    if ( !wire || !process )
 	return false;
     madc::DataChannel &in = process->stdin_channel();
     size_t done = 0;
@@ -608,71 +773,53 @@ void SessionClient::take_output(std::string &output)
 void SessionClient::wait_handles(std::vector<madc::poll_handle> &out) const
 {
     out.clear();
-    if ( fd < 0 )
+    if ( !wire )
 	return;
-    madc::poll_handle socket_end = { fd, madc::poll_handle_kind::descriptor };
-    out.push_back(socket_end);
-    madc::PollableDataChannel *pc =
-	process && !output_done ? madc::pollable_surface(&process->stdout_channel()) : NULL;
-    if ( pc && pc->read_poll_handle() >= 0 )
-    {
-	madc::poll_handle pipe_end = { pc->read_poll_handle(), pc->read_poll_kind() };
+    out.push_back(wait_handle_of(wire.get()));
+    madc::poll_handle pipe_end =
+	process && !output_done ? wait_handle_of(&process->stdout_channel())
+				: wait_handle_of(NULL);
+    if ( pipe_end.value >= 0 )
 	out.push_back(pipe_end);
-    }
 }
 
 int SessionClient::pending() const
 {
-    if ( fd < 0 )
+    if ( !wire )
 	return -1;
     if ( inbuf.find('\n') != std::string::npos )
 	return 1;
     std::vector<madc::poll_handle> hs;
     wait_handles(hs);
-    for ( const madc::poll_handle &h : hs )
-    {
-	struct pollfd p = { (int)h.value, POLLIN, 0 };
-	if ( ::poll(&p, 1, 0) > 0 )
-	    return 1;
-    }
-    return 0;
+    return wait_any_readable(hs, 0) > 0 ? 1 : 0;
 }
 
 int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 {
-    if ( fd < 0 )
+    if ( !wire )
 	return stopped(reply, output);
-    madc::PollableDataChannel *pc =
-	process && !output_done ? madc::pollable_surface(&process->stdout_channel()) : NULL;
-    const int out_fd = pc ? (int)pc->read_poll_handle() : -1;
     std::string line;
     while ( !take_line(line) )
     {
-	struct pollfd p[2] = { { fd, POLLIN, 0 }, { out_fd, POLLIN, 0 } };
-	int r = ::poll(p, out_fd >= 0 ? 2 : 1, timeout_ms);
-	if ( r < 0 && errno == EINTR )
-	    continue;
+	std::vector<madc::poll_handle> hs;
+	wait_handles(hs);		// the wire, then the output pipe (until its end)
+	int r = wait_any_readable(hs, timeout_ms);
 	if ( r == 0 )
 	    return 0;
 	if ( r < 0 )
 	    return stopped(reply, output);
-	// The socket first: the backend writes a running notice before the
+	// The wire first: the backend writes a running notice before the
 	// entry prints, so once a line is whole, its op decides where the
 	// output waiting in the pipe belongs (below). The pipe is drained
 	// only while no line is, so a full pipe never stalls the backend.
-	if ( p[0].revents & (POLLIN | POLLHUP | POLLERR) )
+	if ( r & 1 )
 	{
-	    char chunk[4096];
-	    ssize_t n = ::read(fd, chunk, sizeof(chunk));
-	    if ( n < 0 && errno == EINTR )
-		continue;
-	    if ( n <= 0 )
+	    if ( !read_wire(*wire, inbuf) )
 		return stopped(reply, output);
-	    inbuf.append(chunk, (size_t)n);
 	    if ( inbuf.find('\n') != std::string::npos )
 		continue;
 	}
-	if ( out_fd >= 0 && (p[1].revents & (POLLIN | POLLHUP)) )
+	if ( r & 2 )
 	    read_output(output, 0);
     }
     nlohmann::json j = nlohmann::json::parse(line, nullptr, false);
@@ -733,106 +880,6 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
     }
     return 1;
 }
-
-#else	// _WIN32: no fork (plan §41.9a names a child of self as the later lane)
-
-bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make)
-{
-    std_option = std_opt;
-    make_program = make;
-    error_text = "session: the backend process is POSIX-only for now (plan 41.9a)";
-    return false;
-}
-
-void SessionClient::stop()
-{
-}
-
-bool SessionClient::send(const std::string &)
-{
-    return false;
-}
-
-bool SessionClient::take_line(std::string &)
-{
-    return false;
-}
-
-void SessionClient::read_output(std::string &, int)
-{
-}
-
-void SessionClient::release_waiters() const
-{
-}
-
-int SessionClient::stopped(Reply &reply, std::string &)
-{
-    reply = Reply();
-    reply.kind = Reply::Kind::stopped;
-    return -1;
-}
-
-unsigned SessionClient::offer(const std::string &, bool)
-{
-    return 0;
-}
-
-bool SessionClient::input(const std::string &)
-{
-    return false;
-}
-
-void SessionClient::take_output(std::string &)
-{
-}
-
-void SessionClient::wait_handles(std::vector<madc::poll_handle> &out) const
-{
-    out.clear();
-}
-
-int SessionClient::pending() const
-{
-    return -1;
-}
-
-unsigned SessionClient::complete(const std::string &, size_t)
-{
-    return 0;
-}
-
-unsigned SessionClient::load(const std::string &)
-{
-    return 0;
-}
-
-unsigned SessionClient::load_text(const std::string &, const std::string &)
-{
-    return 0;
-}
-
-unsigned SessionClient::run(const std::vector<std::string> &)
-{
-    return 0;
-}
-
-unsigned SessionClient::continues(const std::string &)
-{
-    return 0;
-}
-
-unsigned SessionClient::bindings()
-{
-    return 0;
-}
-
-int SessionClient::poll(Reply &reply, std::string &output, int)
-{
-    return stopped(reply, output);
-}
-
-#endif
 
 bool SessionClient::restart()
 {
@@ -1063,4 +1110,40 @@ int SessionClient::bindings_wait(Reply &reply, int timeout_ms)
     std::string output;
     return wait_reply(bindings(), reply, output, timeout_ms,
 		      InteractiveSession::TakenHook());
+}
+
+int madc_session_serve_child(const std::string &request)
+{
+    std::istringstream words(request);
+    std::string endpoint, token, on_terminal, std_opt;
+    words >> endpoint >> token >> on_terminal;
+    std::getline(words >> std::ws, std_opt);
+    if ( token.empty() || (on_terminal != "0" && on_terminal != "1") )
+    {
+	fprintf(stderr, "madc: '%s' names no session backend\n", request.c_str());
+	return 1;
+    }
+    if ( on_terminal == "1" )
+	setvbuf(stdin, NULL, _IONBF, 0);	// the host reads the same stdin
+#ifdef _WIN32
+    else
+    {
+	// Piped: stderr joins the output pipe, as the fork child's prologue
+	// moves it (the CRT's fd 2 and the process's standard error handle).
+	fflush(stderr);
+	_dup2(_fileno(stdout), _fileno(stderr));
+    }
+#else
+    madc::run_child_prologue(on_terminal != "1");	// the fork child's own steps
+#endif
+    madc::error err;
+    std::unique_ptr<madc::DataChannel> wire =
+	madc::DataChannelRegistry::instance().open(
+	    madc::DataSource("tcp://" + endpoint), madc::ChannelOpenMode::read_write, &err);
+    if ( !wire || !write_line(*wire, token) )
+    {
+	fprintf(stderr, "madc: the session backend cannot reach %s\n", endpoint.c_str());
+	return 1;
+    }
+    return serve_session(*wire, std::unique_ptr<Program>(new Program()), std_opt);
 }

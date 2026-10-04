@@ -28,10 +28,12 @@
 namespace madc { struct ProcessOptions; class Process; }
 
 // What the child runs: a frozen snapshot of a live parse (madc_cir_freeze's
-// container) or a --project manifest.
-enum MadcRunChildKind { rckFrozen, rckProject };
+// container), a --project manifest, or an interactive session's backend
+// (madc_session_client.h: the request names the client's listener).
+enum MadcRunChildKind { rckFrozen, rckProject, rckSession };
 
-// Parent: the run child for `path` (the snapshot or the manifest) — THIS
+// Parent: the run child for `path` (the snapshot, the manifest, or the
+// session's connection words) — THIS
 // executable, with the request in its environment and the caller's
 // options otherwise (stdio, cleanup_paths). Not started.
 std::unique_ptr<madc::Process> madc_run_child_process(

@@ -181,8 +181,11 @@ int main()
     enter_line(S, doc, w, es, "int *p = 0; *p = 1;");
     enter_line(S, doc, w, es, "x");
     transcript_since(got, w, es, mark);
+    // The status is the platform's: 128 + SIGSEGV on POSIX, the NTSTATUS
+    // of an access violation on Windows (testsession_pump pins the numbers).
     println("crash: said={} fresh={}",
-	    rust::contains(got.c_str(), "[the session stopped (exit 139); a new one started]") != 0,
+	    rust::contains(got.c_str(), "[the session stopped (exit 139); a new one started]") != 0
+	    || rust::contains(got.c_str(), "[the session stopped (exit 0xC0000005); a new one started]") != 0,
 	    rust::contains(got.c_str(), "undeclared") != 0);
 
     // 6. The composed node, then the keyboard back.

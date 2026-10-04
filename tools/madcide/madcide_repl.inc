@@ -418,7 +418,13 @@ void repl_reply(long w, long es, var &r)
     if ( r["kind"] == madc::session_reply::stopped )
     {
 	repl_clear_marks(w, es);
-	var st = r["exit_status"];
+	// A Windows backend's crash status is an NTSTATUS (0xC0000005: an
+	// access violation), negative as an int: spelled as Windows tools
+	// spell it. POSIX statuses (128 + signal for a signal) stay decimal.
+	long code = r["exit_status"].as_integer();
+	var st = format("{}", code);
+	if ( code < 0 )
+	    st = format("0x{:08X}", code & 4294967295);
 	if ( r["restarted"] == true )
 	    repl_feed(w, es, format("[the session stopped (exit {}); a new one started]\n", st));
 	else

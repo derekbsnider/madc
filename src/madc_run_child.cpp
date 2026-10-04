@@ -24,7 +24,9 @@
 #include "madc.h"		// MadcEngine: the project child's engine
 #include "madc_cir.h"		// madc_cir_execute_frozen
 #include "madc_project.h"	// read_project_manifest, madc_project_execute
+#include "madc_crash.h"		// madc_crash_quiet_child
 #include "madc_run_child.h"
+#include "madc_session_client.h"	// madc_session_serve_child: the session kind
 #include "madcdis/process.h"	// Process, ProcessOptions
 
 namespace {
@@ -39,13 +41,14 @@ const char *run_child_kind_name(MadcRunChildKind kind)
     {
 	case rckFrozen:  return "frozen";
 	case rckProject: return "project";
+	case rckSession: return "session";
     }
     return "";
 }
 
 bool run_child_kind_from_name(const std::string &word, MadcRunChildKind &kind)
 {
-    for ( int k = rckFrozen; k <= rckProject; ++k )
+    for ( int k = rckFrozen; k <= rckSession; ++k )
 	if ( word == run_child_kind_name((MadcRunChildKind)k) )
 	{
 	    kind = (MadcRunChildKind)k;
@@ -89,6 +92,7 @@ int64_t madc_serve_run_child()
 	return -1;
     const std::string text(request);
     forget_run_child_variable();
+    madc_crash_quiet_child();		// the parent reports a crash's status
 
     // "<kind> <path>": the path is the rest of the value (a Windows temp
     // path may hold spaces).
@@ -123,6 +127,9 @@ int64_t madc_serve_run_child()
 	    rc = madc_project_execute(engine, manifest, 1, guest_argv);
 	    break;
 	}
+	case rckSession:
+	    rc = madc_session_serve_child(path);
+	    break;
     }
     fflush(NULL);
     std::cout.flush();

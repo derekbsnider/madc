@@ -159,7 +159,7 @@ void madc_install_crash_handler(void)
 // prints the same name + address + backtrace shape as the POSIX handler,
 // then returns CONTINUE_SEARCH so WER / a debugger / the NTSTATUS exit
 // code still happen (the analogue of re-raising with SIG_DFL).
-static LONG WINAPI crash_filter(EXCEPTION_POINTERS *xp)
+static void crash_report(EXCEPTION_POINTERS *xp)
 {
     DWORD code = (xp && xp->ExceptionRecord)
 	       ? xp->ExceptionRecord->ExceptionCode : 0;
@@ -194,7 +194,27 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS *xp)
     void *frames[64];
     int nf = (int)CaptureStackBackTrace(0, 64, frames, NULL);
     crash_print_backtrace(frames, nf);
+}
+
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS *xp)
+{
+    crash_report(xp);
     return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// A quiet child's filters (madc_crash_quiet_child): EXECUTE_HANDLER ends the
+// process with the exception code as its exit status, before WER or a
+// debugger is consulted — wine's default filter does not honour
+// SEM_NOGPFAULTERRORBOX, a top-level filter is consulted first everywhere.
+static LONG WINAPI crash_filter_quiet(EXCEPTION_POINTERS *xp)
+{
+    crash_report(xp);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+static LONG WINAPI silent_filter(EXCEPTION_POINTERS *)
+{
+    return EXCEPTION_EXECUTE_HANDLER;
 }
 
 void madc_install_crash_handler(void)
@@ -207,3 +227,14 @@ void madc_install_crash_handler(void)
     SetUnhandledExceptionFilter(crash_filter);
 }
 #endif
+
+void madc_crash_quiet_child(void)
+{
+#ifdef _WIN32
+    SetErrorMode(GetErrorMode() | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    // The CLI installed its reporter: keep the report, end quietly after
+    // it. Any other image (an AOT host): end quietly.
+    if ( SetUnhandledExceptionFilter(silent_filter) == crash_filter )
+	SetUnhandledExceptionFilter(crash_filter_quiet);
+#endif
+}
