@@ -34,10 +34,12 @@ namespace madc {
     // session); build (%build: argv is FILE, then OUT — the host hands
     // FILE's text to the session's build); call (%call FILE(ARGS), cling's
     // .x: argv is FILE, then the call's text — loaded, then a run with
-    // `call` calls the function named after FILE, else its main); quit
-    // (%quit: end the session, IPython's ask_exit — a terminal ends, an IDE
-    // pane starts a fresh session; no argv).
-    enum class session_payload : unsigned char { none, load, run, run_here, build, call, quit };
+    // `call` calls the function named after FILE, else its main); open
+    // (%open, %edit: argv is FILE, then the line when one is named — an IDE
+    // opens its editor there, a terminal runs $EDITOR); quit (%quit: end
+    // the session, IPython's ask_exit — a terminal ends, an IDE pane starts
+    // a fresh session; no argv).
+    enum class session_payload : unsigned char { none, load, run, run_here, build, call, open, quit };
     // What a top-level name names (plan §41.8a; the engine's
     // Program::TopLevelName::Kind aliases it): a binding row's `kind`
     // (%whos, madcide's Variables view, plan §41.11a) is one of these codes.

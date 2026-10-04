@@ -785,8 +785,9 @@ namespace madc {
     //     command asks the pane to do with argv, the file and its
     //     arguments — load it, run it here, or run it in a fresh session,
     //     reading an open buffer's live text; load it and session_call
-    //     argv: %call; session_build argv[0] to argv[1]: %build; or, with
-    //     no argv, end the session: %quit); a load's
+    //     argv: %call; session_build argv[0] to argv[1]: %build; open
+    //     argv[0] in the editor at line argv[1] when there is one: %open,
+    //     %edit; or, with no argv, end the session: %quit); a load's
     //     ok, rendered,
     //     diagnostics and main (the file defined main, so running it runs
     //     main: one an earlier unit defined is not the file's); a run's ok,

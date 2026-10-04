@@ -44,7 +44,8 @@
 //  12. the `.` prefix (plan §7f): `.q` ends the session and a fresh one
 //      starts (an earlier name is gone); `.L FILE` loads FILE; `.x
 //      FILE(ARGS)` loads FILE and shows the call of the function named
-//      after it; `%build FILE -o OUT` builds FILE's executable.
+//      after it; `%build FILE -o OUT` builds FILE's executable; `%edit
+//      NAME` opens the file that defines NAME at its line.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -401,6 +402,16 @@ int main()
     println("build: said={} built={} busy={}",
 	    rust::contains(got.c_str(), "\nbuilt madc_ide_build_prog\n") != 0,
 	    built, es_int(w, es, "replbusy", -1));
+    // %edit: the editor opens the file a session unit defined the name in,
+    // at its line, and takes the keyboard (last: the input loses it).
+    enter_line(S, doc, w, es, "%edit thrice");
+    long edoc = active_doc(w, es, 0);
+    var ename;
+    doc_name(ename, w, edoc);
+    println("edit: file={} line={} editor has keys={} busy={}",
+	    php::basename(ename.c_str()),
+	    line_of(w, edoc, es_int(w, es, "caret", 0)),
+	    es_int(w, es, "consolefocus", -1) == 0, es_int(w, es, "replbusy", -1));
     println("dot: ended={} loaded={} fresh={} called={} busy={}",
 	    rust::contains(got.c_str(), "[the session ended; a new one started]") != 0,
 	    rust::contains(got.c_str(), "\n15\n") != 0,

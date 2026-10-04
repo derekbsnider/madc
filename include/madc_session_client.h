@@ -95,8 +95,10 @@ public:
 	// `argv`, for the host to load (%load), run here (%run -i) or run in
 	// a fresh session (%run, D16: restart, load, run, as F5 does), or to
 	// load it and make the call (%call: argv is the file and the call's
-	// text), to build it (%build: argv is the file and the executable);
-	// or, with no argv, to end the session (%quit).
+	// text), to build it (%build: argv is the file and the executable),
+	// to open it in an editor (%open, %edit: argv is the file, then the
+	// line when one is named); or, with no argv, to end the session
+	// (%quit).
 	::madc::session_payload payload;
 	std::vector<std::string> argv;
 	// A completion's: the word's start and the names.
@@ -251,7 +253,8 @@ private:
     // A taken command's ask (IPython's payloads): load_file(argv[0])
     // (%load), run_file(argv) (%run -i), or, for %run's fresh session
     // (D16), the backend restarted first, as F5 does; call_file(argv)
-    // (%call); build_file(argv) (%build); %quit ends the session
+    // (%call); build_file(argv) (%build); the terminal's editor
+    // (%open, %edit: madc::run_terminal_editor); %quit ends the session
     // (ended()). False when it was refused
     // or did not start.
     bool honor(const SessionClient::Reply &reply);

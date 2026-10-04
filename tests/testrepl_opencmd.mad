@@ -1,0 +1,8 @@
+// %open and %edit typed in the REPL (plan §7f, the IDE layer): `madc -i`
+// loads this file, then the entries in testrepl_opencmd.input run. The
+// terminal's editor is $EDITOR (testrepl_opencmd.env sets echo, which prints
+// what it was given): %open FILE gives it FILE, which need not exist, and
+// %edit NAME gives it `+LINE` and the file a session unit defined NAME in —
+// this file's `base` at its line, a loaded file's function at its own.
+
+int base = 7;

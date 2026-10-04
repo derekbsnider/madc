@@ -1,0 +1,4 @@
+.L tests/testrepl_runcmd_lib.mad
+%edit thrice
+%open tests/testrepl_opencmd_new_file.c
+.edit base

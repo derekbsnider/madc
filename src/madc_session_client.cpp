@@ -141,6 +141,7 @@ const PayloadRow payload_rows[] = {
     { "run_here", madc::session_payload::run_here },
     { "build", madc::session_payload::build },
     { "call", madc::session_payload::call },
+    { "open", madc::session_payload::open },
     { "quit", madc::session_payload::quit },
 };
 
@@ -1103,6 +1104,16 @@ bool BackendSession::honor(const SessionClient::Reply &reply)
 	return call_file(reply.argv);
     if ( reply.payload == madc::session_payload::build )
 	return build_file(reply.argv);
+    if ( reply.payload == madc::session_payload::open )
+    {
+	// %open, %edit: this terminal's editor, at the line when one is named.
+	std::string why;
+	const int line = reply.argv.size() > 1 ? atoi(reply.argv[1].c_str()) : 0;
+	if ( madc::run_terminal_editor(reply.argv[0], line, why) )
+	    return true;
+	err << "madc: " << why << std::endl;
+	return false;
+    }
     if ( reply.payload == madc::session_payload::run && !client.restart() )
     {
 	err << "madc: " << client.last_error() << std::endl;

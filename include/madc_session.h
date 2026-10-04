@@ -154,7 +154,10 @@ public:
     // The typed name, a command's or an alias's (cling's `.L`, plan §7f),
     // becomes one of these codes once, at input. `?NAME` is %pinfo NAME, and
     // `?` alone %help (IPython).
-    enum class Command : unsigned char { help, type, pinfo, whos, load, run, build, call, quit };
+    enum class Command : unsigned char
+    {
+	help, type, pinfo, whos, load, run, build, call, open, edit, quit
+    };
     // What the last taken command asks its host (IPython's payloads; the
     // codes are <bits/session_enums>' session_payload), with payload_argv()
     // — the file, then its arguments. A host that honors them says so with
@@ -164,7 +167,9 @@ public:
     // loads %load's and %run -i's file itself, and %run refuses, naming
     // %run -i. %call's payload is FILE, then the call's text: the host loads
     // FILE, then asks for the call (call_file). %build's is FILE, then OUT:
-    // the host hands FILE's text (an open buffer's) to build_file. %quit's payload has no argv;
+    // the host hands FILE's text (an open buffer's) to build_file. %open's
+    // and %edit's is FILE, then the line when one is named: an IDE opens
+    // its editor there; the terminal runs madc::run_terminal_editor. %quit's payload has no argv;
     // a host that honors no payloads reads %quit from ended().
     madc::session_payload payload() const { return payload_kind; }
     const std::vector<std::string> &payload_argv() const { return payload_args; }
@@ -223,6 +228,11 @@ private:
     bool run_file_command(const std::string &argument, const std::string &name);
     bool build_command(const std::string &argument, const std::string &name);
     bool call_command(const std::string &argument, const std::string &name);
+    bool open_command(const std::string &argument, const std::string &name);
+    bool edit_command(const std::string &argument, const std::string &name);
+    // FILE in its host's editor at `line` (0: none): the `open` payload,
+    // else madc::run_terminal_editor.
+    bool open_in_editor(const std::string &path, int line, const std::string &name);
     bool quit_command(const std::string &argument, const std::string &name);
     // A session unit (an entry, a loaded file) defines a function NAME.
     bool defines_function(const std::string &name);
@@ -250,5 +260,13 @@ private:
     InteractiveSession(const InteractiveSession &);
     InteractiveSession &operator=(const InteractiveSession &);
 };
+
+namespace madc {
+// The terminal's editor (%open, %edit; IPython's %edit): $EDITOR (its words
+// split by the shell's rules), else vi (notepad on Windows), given `+LINE`
+// before `path` when `line` > 0 (never the notepad default), on this
+// terminal, waited for. False when it did not start (`why` says so).
+bool run_terminal_editor(const std::string &path, int line, std::string &why);
+}
 
 #endif

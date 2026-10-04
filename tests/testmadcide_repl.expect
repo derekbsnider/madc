@@ -44,4 +44,5 @@ bindings: subscribed=true rows=answer int = 42 @ REPL[1]:1;
 typed run: argv=true names=true fresh=true
 typed load: live=true here=true no main=true missing once=true busy=0
 build: said=true built=true busy=0
+edit: file=testrepl_runcmd_lib.mad line=3 editor has keys=true busy=0
 dot: ended=true loaded=true fresh=true called=true busy=0

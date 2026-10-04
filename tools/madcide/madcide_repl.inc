@@ -774,8 +774,8 @@ void repl_run(long w, long es, long doc)
 // IPython's payloads do, for its file to be loaded — %load (nothing runs),
 // %run -i (main runs in this session), %run (main runs in a fresh one,
 // which is this pane's to start), %call (the session then calls the
-// function named after the file, else its main) or %build (the session
-// builds it). An open buffer of the file is its live
+// function named after the file, else its main), %build (the session
+// builds it) or %open / %edit (the editor opens it). An open buffer of the file is its live
 // text and compiles under its standard, as F5 runs it; otherwise the file
 // loads from disk (session_load's empty text reads it) under the active
 // buffer's. False when nothing was sent.
@@ -796,6 +796,21 @@ bool repl_run_payload(long w, long es, var &r)
 	var noargs = {};
 	return repl_load_file(w, es, doc, p.c_str(), text.c_str(), noargs, "", false,
 			      false);
+    }
+    if ( r["payload"] == madc::session_payload::open )
+    {
+	// %open, %edit: the file in the editor, at the line when one is
+	// named, and the editor takes the keyboard. Nothing is owed.
+	long from = active_doc(w, es, 0);
+	edit_file(w, es, from, p.c_str());
+	if ( php::count(argv) > 1 )
+	{
+	    var ln = argv[1];
+	    ui::set(w, es, "caret", caret_to_line(w, active_doc(w, es, from),
+						  php::intval(ln), 0));
+	}
+	ui::set(w, es, "consolefocus", 0);
+	return false;
     }
     if ( r["payload"] == madc::session_payload::build )
     {

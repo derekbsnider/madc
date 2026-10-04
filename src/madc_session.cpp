@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -39,6 +40,7 @@
 #include "madc_type_spelling.h"
 #include "madcdis/text_buffer.h"	// the one word rule (word_byte)
 #include "madcdis/text_utf16.h"	// madc::line_width: %whos's columns
+#include "madcdis/process.h"	// the terminal's editor (%open, %edit)
 
 // The command registry (plan §41.8a, D13/D24): one row per command. A typed
 // name becomes its code once, at input (command_named); what follows
@@ -70,6 +72,10 @@ const CommandRow command_rows[] = {
       "FILE built to a native executable, OUT (default: FILE without its extension)" },
     { "call", InteractiveSession::Command::call, "%call FILE[(ARGS)]",
       "FILE loaded, then the function named after it called with ARGS, else FILE's main" },
+    { "open", InteractiveSession::Command::open, "%open FILE",
+      "FILE in an editor: the IDE's, else $EDITOR" },
+    { "edit", InteractiveSession::Command::edit, "%edit NAME",
+      "the file that defines NAME, in an editor at its line" },
     { "quit", InteractiveSession::Command::quit, "%quit",
       "end the session" },
 };
@@ -514,9 +520,136 @@ bool InteractiveSession::run_command(const std::string &text,
 	    return build_command(command_argument(text, c), name);
 	case Command::call:
 	    return call_command(command_argument(text, c), name);
+	case Command::open:
+	    return open_command(command_argument(text, c), name);
+	case Command::edit:
+	    return edit_command(command_argument(text, c), name);
 	case Command::quit:
 	    return quit_command(command_argument(text, c), name);
     }
+    return false;
+}
+
+// The terminal's editor (its contract is madc_session.h's), run by the one
+// spawn owner (Process): no shell.
+bool madc::run_terminal_editor(const std::string &path, int line,
+			       std::string &why)
+{
+    const char *env = getenv("EDITOR");
+    std::vector<std::string> words;
+    const bool chosen = env && *env;
+    if ( !chosen )
+#ifdef _WIN32
+	words.push_back("notepad");
+#else
+	words.push_back("vi");
+#endif
+    else if ( !ns_common::shell_words(env, words) || words.empty() )
+    {
+	why = "$EDITOR is no command: " + std::string(env);
+	return false;
+    }
+    ProcessOptions options;
+    options.args.assign(words.begin() + 1, words.end());
+#ifdef _WIN32
+    const bool line_mark = line > 0 && chosen;
+#else
+    const bool line_mark = line > 0;
+#endif
+    if ( line_mark )
+	options.args.push_back("+" + std::to_string(line));
+    options.args.push_back(path);
+    options.inherit_stdin = true;
+    options.inherit_stdout = true;
+    options.inherit_stderr = true;
+    Process editor(DataSource("exec://" + words[0]), options);
+    if ( !editor.start() )
+    {
+	why = "the editor '" + words[0] + "' did not start";
+	return false;
+    }
+    editor.wait();
+    return true;
+}
+
+// `%open FILE` (plan §7f, the IDE layer): FILE in an editor; it need not
+// exist (an editor starts a new file). open_in_editor names the editor.
+bool InteractiveSession::open_command(const std::string &argument,
+				      const std::string &name)
+{
+    std::vector<std::string> words;
+    if ( !ns_common::shell_words(argument, words) )
+    {
+	command_error("%open: no closing quotation, or a backslash at the end",
+		      name);
+	return false;
+    }
+    if ( words.size() != 1 )
+    {
+	command_error("%open takes one FILE", name);
+	return false;
+    }
+    return open_in_editor(words[0], 0, name);
+}
+
+// `%edit NAME` (IPython's %edit; plan §7f): the file a session unit defined
+// NAME in, at its line — the bindings' origin (%whos's). A name an entry
+// defined has no file to open.
+bool InteractiveSession::edit_command(const std::string &argument,
+				      const std::string &name)
+{
+    size_t b = argument.find_first_not_of(" \t\r");
+    size_t e = argument.find_last_not_of(" \t\r");
+    const std::string word = b == std::string::npos
+			   ? std::string() : argument.substr(b, e - b + 1);
+    bool ok = !word.empty() && !isdigit((unsigned char)word[0]);
+    for ( size_t i = 0; ok && i < word.size(); ++i )
+	ok = madc::hub::text_buffer::word_byte(word[i]);
+    if ( !ok )
+    {
+	command_error("%edit takes a name", name);
+	return false;
+    }
+    std::vector<Program::SessionBinding> found;
+    prog->session_bindings(found);
+    for ( const Program::SessionBinding &r : found )
+    {
+	if ( r.name != word )
+	    continue;
+	const std::string file = r.file ? r.file : "";
+	if ( file.empty() || !std::ifstream(file.c_str()) )
+	{
+	    command_error("%edit: '" + word + "' was defined in "
+			  + (file.empty() ? std::string("no file") : file)
+			  + ", which is no file to open", name);
+	    return false;
+	}
+	return open_in_editor(file, r.line, name);
+    }
+    command_error("%edit: '" + word + "' is not a name the session defined",
+		  name);
+    return false;
+}
+
+// The editor is its host's: the `open` payload (argv: FILE, then the line
+// when one is named) for a host that honors payloads — an IDE opens its
+// editor, the terminal's client runs run_terminal_editor — else the session
+// runs the terminal's editor itself.
+bool InteractiveSession::open_in_editor(const std::string &path, int line,
+					const std::string &name)
+{
+    if ( payload_host )
+    {
+	payload_kind = madc::session_payload::open;
+	payload_args.assign(1, path);
+	if ( line > 0 )
+	    payload_args.push_back(std::to_string(line));
+	return true;
+    }
+    std::string why;
+    if ( madc::run_terminal_editor(path, line, why) )
+	return true;
+    command_error(why, name);
     return false;
 }
 

@@ -2351,6 +2351,53 @@ TEST_CASE("session commands: %build FILE [-o OUT] (§7f)")
 	std::remove(f.c_str());
 }
 
+// `%open FILE` and `%edit NAME` (plan §7f, the IDE layer): the file in its
+// host's editor — the `open` payload (FILE, then the line %edit names, from
+// the bindings' origin) for a payload host, else the terminal's editor
+// ($EDITOR) run by the session. A name an entry defined has no file.
+TEST_CASE("session commands: %open FILE and %edit NAME (§7f)")
+{
+    std::string lib = temp_source("int seven = 7;\nint thrice(int v) { return 3 * v; }\n",
+				  "madc_repl_editlib");
+    InteractiveSession h;
+    REQUIRE(h.begin("--std=c17"));
+    h.host_honors_payloads(true);
+    REQUIRE(h.submit("%open " + lib + "_new.c"));		// need not exist
+    CHECK(h.payload() == madc::session_payload::open);
+    CHECK(h.payload_argv() == std::vector<std::string>{ lib + "_new.c" });
+    REQUIRE(h.load(lib));
+    REQUIRE(h.submit("int x = 1;"));
+    REQUIRE(h.submit("%edit thrice"));
+    CHECK(h.payload() == madc::session_payload::open);
+    CHECK(h.payload_argv() == (std::vector<std::string>{ lib, "2" }));
+    REQUIRE(h.submit(".edit seven"));
+    CHECK(h.payload_argv() == (std::vector<std::string>{ lib, "1" }));
+    CHECK_FALSE(h.submit("%edit x"));
+    CHECK(first_error(h) == "%edit: 'x' was defined in REPL[2], which is no file to open");
+    CHECK_FALSE(h.submit("%edit nosuch"));
+    CHECK(first_error(h) == "%edit: 'nosuch' is not a name the session defined");
+    CHECK_FALSE(h.submit("%edit 1x"));
+    CHECK(first_error(h) == "%edit takes a name");
+    CHECK_FALSE(h.submit("%open"));
+    CHECK(first_error(h) == "%open takes one FILE");
+
+    // No payload host: the session runs the terminal's editor ($EDITOR).
+    const char *was = getenv("EDITOR");
+    const std::string saved = was ? was : "";
+    setenv("EDITOR", "true", 1);
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=c17"));
+    REQUIRE(s.submit("%open " + lib));
+    CHECK(s.payload() == madc::session_payload::none);
+    REQUIRE(s.load(lib));
+    REQUIRE(s.submit("%edit thrice"));
+    if ( was )
+	setenv("EDITOR", saved.c_str(), 1);
+    else
+	unsetenv("EDITOR");
+    std::remove(lib.c_str());
+}
+
 // Slice 2 (plan §41.8a): `?name` / `%pinfo name` describe what the session
 // knows of a name, in IPython's fields, each overload with its location
 // (Julia), from the walk completion reads: `?` describes a name exactly
