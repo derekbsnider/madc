@@ -269,6 +269,11 @@ class web_model
     // changes no title, key or enablement costs nothing on the wire).
     std::string _menu_json;
     bool _menu_dirty;	// edit key -> its basis
+    // The window's title (the root's `title` hint), handed to the host only
+    // when it differs from the last compose's ("" = none given: the host
+    // keeps the title it opened with).
+    std::string _title;
+    bool _title_dirty;
     std::set<std::string> _seen;		// edit keys this compose visited
 
     // A node op that carries a focus flag, patched after end_compose()
@@ -1080,7 +1085,7 @@ class web_model
     }
 
 public:
-    web_model() : _rows(24), _cols(80), _menu_dirty(false) {}
+    web_model() : _rows(24), _cols(80), _menu_dirty(false), _title_dirty(false) {}
 
     void set_bindings(const tui_bindings &b) { _keys.set_bindings(b); }
     const std::string &pending_chord() const { return _keys.pending(); }
@@ -1122,6 +1127,9 @@ public:
 	const std::string mj = menu_json_of(tree);
 	_menu_dirty = mj != _menu_json;
 	_menu_json = mj;
+	const std::string tt = hint_str(tree.hints, "title");
+	_title_dirty = tt != _title;
+	_title = tt;
 	return ops.dump();
     }
 
@@ -1129,6 +1137,11 @@ public:
     // compose with a menu: yes; a compose that dropped it: yes, to "".)
     bool menu_changed() const { return _menu_dirty; }
     const std::string &menu_json() const { return _menu_json; }
+
+    // Did the last compose change the window's title? ("" = the root gave
+    // none; the host then keeps the title it shows.)
+    bool title_changed() const { return _title_dirty; }
+    const std::string &title() const { return _title; }
 
     // Forget what the page holds: the NEXT compose paints every edit node
     // in full (ui::refresh — the grid model's painted-grid reset).

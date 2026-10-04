@@ -119,7 +119,17 @@ const char *fake_clip_get(void *host)
     return "one\r\ntwo";
 }
 
-static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get };
+// The window's title: the composed root's `title` hint, sent only when it
+// changes (and never an empty one).
+int title_calls = 0;
+int64_t fake_title(void *host, const char *text)
+{
+    title_calls++;
+    println("fake title: {}", text);
+    return 0;
+}
+
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get, fake_title };
 static bool fake_registered = ui::register_host("fake", ui::WEB, &fake_ops);
 // Another host: one entry differs (no clipboard read).
 static ui::ui_host_ops other_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, 0 };
@@ -216,6 +226,13 @@ int main()
     root["hints"] = { "menu": mmenu2 };
     ui::render(t, w, root);		// a changed title: sent
     println("menu calls after changed render: {}", menu_calls);
+    println("title calls before a title: {}", title_calls);
+    root["hints"] = { "menu": mmenu2, "title": "fake - a.c @ 1 : 1" };
+    ui::render(t, w, root);		// a title: sent
+    ui::render(t, w, root);		// the same title: not sent again
+    root["hints"] = { "menu": mmenu2, "title": "fake - a.c @ 2 : 1" };
+    ui::render(t, w, root);		// the caret moved: sent
+    println("title calls: {}", title_calls);
 
     // Native dialogs: the fake host has the op, so the target says yes; the
     // request goes out as JSON and the answer comes back as a dialog event.

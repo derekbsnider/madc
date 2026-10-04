@@ -1066,6 +1066,41 @@ TEST_CASE("compose — a content row's prompt / confirm hints become quick-input
     CHECK((*pl).find("popup") == (*pl).end());
 }
 
+// A root carrying only a `title` hint (`title` "" = none).
+static uinode title_tree(world &w, const char *title)
+{
+    roles r = roles::standard(w);
+    uinode root(r.group);
+    uinode edit(r.edit);
+    edit.content = madc::value(std::string("ab"));
+    root.add(edit);
+    if ( *title )
+    {
+	std::map<std::string, madc::value> h;
+	h["title"] = madc::value(std::string(title));
+	root.hints = madc::value::make_object(h);
+    }
+    return root;
+}
+
+TEST_CASE("compose — the root's title hint reaches the host only when it changes")
+{
+    world w;
+    roles r = roles::standard(w);
+    web_model m;
+    m.compose(r, title_tree(w, ""));		// no title: nothing to send
+    CHECK(!m.title_changed());
+    CHECK(m.title().empty());
+    m.compose(r, title_tree(w, "chthonia - a.c @ 1 : 1"));
+    CHECK(m.title_changed());
+    CHECK(m.title() == "chthonia - a.c @ 1 : 1");
+    m.compose(r, title_tree(w, "chthonia - a.c @ 1 : 1"));	// the same: not again
+    CHECK(!m.title_changed());
+    m.compose(r, title_tree(w, "chthonia - a.c @ 2 : 1"));	// the caret moved
+    CHECK(m.title_changed());
+    CHECK(m.title() == "chthonia - a.c @ 2 : 1");
+}
+
 TEST_CASE("compose — the root's menu hint becomes the host's menu JSON with bound chords, sent only on change")
 {
     world w;

@@ -262,6 +262,15 @@ namespace ui_web {
 	return h->clip;
     }
 
+    // The window's title (the engine's `title` op): the composed root's
+    // `title` hint, sent when it changes. 0 = shown.
+    int64_t title(void *hv, const char *text)
+    {
+	host *h = (host *)hv;
+	webview_set_title(h->view, text);
+	return 0;
+    }
+
     // The test seam: choose a menu item by its command id as the user would
     // (the platform fires the action; the event reaches the engine).
     // 0 = fired; 1 = no window, no menu, or no such item.
@@ -321,5 +330,5 @@ namespace ui_web {
 
 }
 
-static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick, ui_web::clip_set, ui_web::clip_get };
+static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick, ui_web::clip_set, ui_web::clip_get, ui_web::title };
 static bool __ui_web_registered = ui::register_host("web", ui::WEB, &__ui_web_ops);

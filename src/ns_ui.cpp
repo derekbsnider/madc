@@ -100,8 +100,8 @@ const std::string *find_embedded_header(const std::string &name);
 // A script-hosted ui TARGET (the web target is one, a test fake is
 // another): a table of C function pointers a madc fragment fills and
 // registers ONCE under a target name. LAYOUT CONTRACT with the script-side
-// declaration in include/madc/ns_ui (namespace ui) — the same four
-// pointers in the same order, append-only, keep both in sync. The engine
+// declaration in include/madc/ns_ui (namespace ui) — the same pointers in
+// the same order, append-only, keep both in sync. The engine
 // calls them on the opening thread only (design §3.7).
 namespace ui {
     typedef void *(*ui_host_open_fn)(const char *title, const char *page,
@@ -114,6 +114,7 @@ namespace ui {
     typedef int64_t (*ui_host_tick_fn)(void *host, int64_t ms);
     typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
     typedef const char *(*ui_host_clip_get_fn)(void *host);
+    typedef int64_t (*ui_host_title_fn)(void *host, const char *text);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -142,6 +143,9 @@ namespace ui {
 				// now ("" = it holds none); the host owns it
 				// until its next call; NULL = no clipboard
 				// here; optional
+	ui_host_title_fn title;	// show `text` as the window's title (the
+				// composed root's `title` hint, sent when it
+				// changes); 0 = shown; optional
     };
 }
 
@@ -486,6 +490,10 @@ struct ui_dom_frontend : ui_frontend
 	// against the bindings, reaches the host only when it changed.
 	if ( ops->menu && model.menu_changed() )
 	    ops->menu(host, model.menu_json().c_str());
+	// The window's title: the composed root's `title` hint, sent when it
+	// changed and is not empty.
+	if ( ops->title && model.title_changed() && !model.title().empty() )
+	    ops->title(host, model.title().c_str());
     }
     // The window's wait is the cooperative scheduler's ONE blocking
     // decision, as the terminal's is (src/ui_term.cpp): fire what is due
