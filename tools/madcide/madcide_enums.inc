@@ -33,7 +33,7 @@ enum ide_cmd : unsigned short
     cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
-    cmdREFRESH, cmdREPLACE, cmdSAVE, cmdSAVEAS,
+    cmdREFRESH, cmdREPLACE, cmdSAVE, cmdSAVEALL, cmdSAVEAS,
     cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOGGLECOMMENT, cmdTOP, cmdUNDO, cmdVIEW,
     cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
@@ -114,6 +114,7 @@ void cmd_table(var &t)
     rows[] = { "name": "refresh", "code": cmdREFRESH };
     rows[] = { "name": "replace", "code": cmdREPLACE };
     rows[] = { "name": "save", "code": cmdSAVE };
+    rows[] = { "name": "saveall", "code": cmdSAVEALL };
     rows[] = { "name": "saveas", "code": cmdSAVEAS };
     rows[] = { "name": "savequit", "code": cmdSAVEQUIT };
     rows[] = { "name": "selectall", "code": cmdSELECTALL };

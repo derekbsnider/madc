@@ -6503,6 +6503,64 @@ bool save_and_check(long w, long es, long doc)
     return run;
 }
 
+// File ▸ Save All (Thonny's): every buffer with unsaved changes is written
+// by the `w` verb — the one persistence owner — with that buffer as the
+// verb's subject (the actor's "adoc", _subject.madv's rule) for the call,
+// the active buffer's restored after. A buffer with no file yet is left
+// for Save As and counted; a write the verb refuses is counted too. The
+// active buffer's diagnostics refresh when it was written (check-on-save).
+// A session without the buffer table (headless) saves its one document.
+void save_all(long w, long es, long doc)
+{
+    var bufs;
+    ui::get(bufs, w, es, "buffers");
+    if ( bufs.is_null() || php::count(bufs) == 0 )
+    {
+	if ( doc_modified(w, doc) )
+	    save_and_check(w, es, doc);
+	else
+	    ui::set(w, es, "msg", "Nothing to save.");
+	return;
+    }
+    long active = es_int(w, es, "adoc", doc);
+    long saved = 0;
+    long untitled = 0;
+    long failed = 0;
+    for ( var b : bufs )
+    {
+	long d = b["doc"].as_integer();
+	if ( !doc_modified(w, d) )
+	    continue;
+	if ( doc_untitled(w, d) )
+	{
+	    untitled = untitled + 1;
+	    continue;
+	}
+	ui::set(w, es, "adoc", d);
+	var out;
+	ui::act(out, w, es, "w", "");
+	if ( doc_modified(w, d) )
+	    failed = failed + 1;
+	else
+	    saved = saved + 1;
+    }
+    ui::set(w, es, "adoc", active);
+    if ( saved > 0 && !doc_modified(w, active) )
+	refresh_diags(w, es, active);
+    // The message names only what happened: saved, left untitled, refused.
+    var m = "Nothing to save.";
+    var parts = {};
+    if ( saved > 0 )
+	parts[] = format("Saved {} file{}.", saved, saved == 1 ? "" : "s");
+    if ( untitled > 0 )
+	parts[] = format("{} untitled (Save As names it).", untitled);
+    if ( failed > 0 )
+	parts[] = format("{} could not be written.", failed);
+    if ( php::count(parts) > 0 )
+	m = php::implode(" ", parts);
+    ui::set(w, es, "msg", m.c_str());
+}
+
 // The vi COLON LINE (owner ruling 2026-08-31: modes are general — joe
 // reaches it through the ^N modes palette, a modal personality's
 // @normal ":" will enter the same line). One ex command, interpreted
@@ -7571,6 +7629,9 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		return true;
 	    case cmdSAVE:
 		return save_and_check(w, es, doc);
+	    case cmdSAVEALL:
+		save_all(w, es, doc);
+		return true;
 	    case cmdSAVEQUIT:
 		return save_quit(w, es, doc);
 	    case cmdQUIT:

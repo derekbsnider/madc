@@ -9,12 +9,11 @@
 # has one key per binding).
 #
 # Thonny's keys whose command madcide does not have yet are listed, not
-# invented: File ▸ New (Ctrl+N), Close (Ctrl+W), Close all (Ctrl+Shift+W),
-# Save All (Ctrl+Alt+S); Edit ▸ Auto-complete (Ctrl+Space); Run ▸
-# Interrupt (Ctrl+C in the Shell — here Ctrl+C copies everywhere and
-# Ctrl+F2 stops), Send EOF (Ctrl+D), the debugger (F6, F7, F8, Ctrl+F5,
-# Shift+F5, Ctrl+F8); View ▸ the font size (Ctrl+plus, Ctrl+minus) and
-# Full screen (F11). Thonny's Find & Replace is one dialog on Ctrl+F: here
+# invented: File ▸ New (Ctrl+N), Close (Ctrl+W), Close all (Ctrl+Shift+W);
+# Edit ▸ Auto-complete (Ctrl+Space); Run ▸ Interrupt (Ctrl+C in the Shell —
+# here Ctrl+C copies everywhere and Ctrl+F2 stops), Send EOF (Ctrl+D), the
+# debugger (F6, F7, F8, Ctrl+F5, Shift+F5, Ctrl+F8); View ▸ the font size
+# (Ctrl+plus, Ctrl+minus) and Full screen (F11). Thonny's Find & Replace is one dialog on Ctrl+F: here
 # Ctrl+F finds, and Edit ▸ Replace… is the menu's row (no key of its own).
 @title Thonny
 
@@ -22,6 +21,7 @@
 primary+o editfile
 primary+s save
 primary+shift+s saveas
+primary+alt+s saveall
 primary+q quit
 alt+f4 quit
 # Edit

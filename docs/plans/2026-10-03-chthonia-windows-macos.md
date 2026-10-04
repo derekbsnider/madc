@@ -364,7 +364,7 @@ reaches for, by menu.
 
 | Area | chthonia has | chthonia lacks |
 |---|---|---|
-| File | New, Open, Save, Save As, Quit; toolbar New/Open/Save | Close, Close all, Save All, Recent files |
+| File | New, Open, Save, Save As, Quit; toolbar New/Open/Save; Save All (2026-10-04: `saveall`, Ctrl+Alt+S) | Close, Close all, Recent files |
 | Edit | Undo, Redo, Cut, Copy, Paste, Select all, Find, Go to line, Clear shell (2026-10-04: `replclear`, Ctrl+L), Indent/Dedent selected lines and Toggle comment (2026-10-04: `indent` / `dedent` / `togglecomment`; Tab over a multi-line selection, Shift+Tab, Ctrl+3), Replace (2026-10-04: `replace`, nano's flow — find, replace with, a y/n/a question per match as a Yes/No/All/Cancel dialog in a window) | — |
 | View | Shell, Variables, Problems, Outline (2026-10-04: the sidebar's second tab; toggling it off returns Variables) | font size, Full screen, Program arguments |
 | Run | Run (F5), Stop; toolbar Run/Stop | Debug, Step over/into/out, Resume, Run to cursor, breakpoints, Interrupt, Send EOF; toolbar Debug and the steps |

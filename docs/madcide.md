@@ -117,7 +117,14 @@ never asked about. Each `y` is one undo step, and an `a` makes the rest one
 undo step. The status line reports how many it replaced. In a window the
 question is a dialog with Yes, No, All and Cancel buttons. The answer keys
 are the `@replace` scope's, so a key profile can respell them (as with
-`@confirm`). The Thonny keys bind Shift+Tab and
+`@confirm`).
+
+File ▸ Save All (`saveall`; Ctrl+Alt+S in the Thonny keys, Ctrl+K S in
+the VS Code keys) writes every buffer that has unsaved changes. The
+buffer you are in stays the active one. An untitled buffer has no file
+to write, so Save All leaves it and counts it; Save names it. The status
+line reports what happened, for example `Saved 2 files. 1 untitled (Save
+As names it).` The Thonny keys bind Shift+Tab and
 Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
 Shift+Tab and Ctrl+/.
 
