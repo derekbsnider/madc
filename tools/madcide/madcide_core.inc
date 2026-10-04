@@ -3814,10 +3814,20 @@ void switch_buffer(long w, long es, long olddoc, long idx)
 // The seed row (ensure_buffer_table) is the one deliberate exception — it
 // carries the LIVE interaction state of the buffer being adopted, not
 // fresh zeroes.
+void ensure_buffer_table(long w, long es, long doc);
 void push_buffer_row(long w, long es, long nd, const char *path)
 {
     var bufs;
     ui::get(bufs, w, es, "buffers");
+    long ad = active_doc(w, es, 0);
+    if ( bufs.is_null() && ad != 0 && ad != nd )
+    {
+	// No table yet (headless): the buffer the session drives is row 0
+	// first (ensure_buffer_table's seed), so a pushed [repl] or [build]
+	// never hides it from the buffer finder.
+	ensure_buffer_table(w, es, ad);
+	ui::get(bufs, w, es, "buffers");
+    }
     if ( bufs.is_null() )
     {
 	var fresh = {};
@@ -9573,8 +9583,11 @@ bool init_view_es(long w, long es, long doc, const char *path,
     publish_event(w, es, doc, seOPEN, opened);
     ui::set(w, es, "hint", 1);	// the transient bottom startup hint
     // The buffer table (AST-5): row 0 = the launch file; ^K E grows it.
-    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family).
-    push_buffer_row(w, es, doc, p.c_str());
+    // ONE fresh-row owner (push_buffer_row — the gated dupaudit family). A
+    // buffer the open made first (a REPL pane's that could not start)
+    // seeded the launch file's row already.
+    if ( buffer_index_of(w, es, doc) < 0 )
+	push_buffer_row(w, es, doc, p.c_str());
     ui::set(w, es, "bufidx", 0);
     // Presence (client-server V3c): register this client as a viewer of the
     // launch document — the anchor registry shifts every client's caret in

@@ -3,7 +3,9 @@
 // input field the keyboard. Pins:
 //   1. typed text edits the input buffer and never the editor's buffer or
 //      caret; enter offers it: a taken entry lands in the transcript after
-//      the prompt, then what it printed, then its shown value;
+//      the prompt, then what it printed, then its shown value; the
+//      transcript's [repl] row, the first a headless session pushes, comes
+//      after the editor's buffer (row 0), which its path still finds;
 //   2. an unfinished entry keeps editing on a new line, and the finished
 //      one shows its continuation indented to the prompt's width;
 //   3. a refused entry shows its diagnostics; up / down walk the history
@@ -114,6 +116,11 @@ int main()
 	    es_int(w, es, "caret", -1), repl_field_caret(w, es));
     ev_key(e, "left");
     S.apply_ide_event(doc, e);
+    // Headless, no buffer table exists until the transcript's [repl] row:
+    // the editor's buffer is seeded as row 0 first, so its path finds it.
+    println("table: editor row={} found={} repl row={}",
+	    buffer_index_of(w, es, doc), buffer_doc_named(w, es, path) == doc,
+	    buffer_index_of(w, es, repl_doc(w, es)));
     println("motion: field caret={} editor caret={}", repl_field_caret(w, es),
 	    es_int(w, es, "caret", -1));
     ev_key(e, "enter");

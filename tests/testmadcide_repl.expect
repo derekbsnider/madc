@@ -1,5 +1,6 @@
 show: tab=repl live=1 focus=1 standard=c11
 typed: input=int x = 6 * 7; editor untouched=true editor caret=5 field caret=14
+table: editor row=0 found=true repl row=1
 motion: field caret=13 editor caret=5
 c11> printf("hi %d\n", x);
 hi 42
