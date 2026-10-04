@@ -17984,30 +17984,13 @@ FuncDef *CirBuilder::find_initializer_list_ctor(DataDefCLASS *cdd,
 		DataDefCLASS *ilc = as_class_instance(fd->parameters[1]);
 		if (!ilc) ilc = param_object_class(fd->parameters[1], refp);
 		DataDef *elem = ilc ? initializer_list_element_type(ilc) : NULL;
-		// A CLASS element type whose list needs CONVERSION construction
-		// into the slots (an aggregate initializer of `std::string[2]`
-		// from two `const char *` faulted inside
-		// basic_string::_M_construct for `vector<string> v{"a","b"}`)
-		// still declines — the constructed-array slice, task #56.
-		// Elements ALREADY of the element class need no slot
-		// construction: the lowered element value initializes the slot
-		// as a struct value (the same by-value copy every class
-		// temporary makes under the current temp model), so
-		// [dcl.init.list]/4 holds — `vector<value>{value(10),
-		// value(32)}` takes the initializer-list ctor exactly like g++
-		// (embed_hello's pgm.call args; without this the list fell to
-		// plain overloading, deduced the range ctor with
-		// _InputIterator = the ELEMENT class — a candidate g++'s
-		// _RequireInputIter SFINAEs away — and died in tsubst on
-		// iterator_traits<V>::iterator_category).
-		if (elem && as_class_instance(elem)) {
-			DataDefCLASS *ec = as_class_instance(elem);
-			for (TokenBase *e : elems)
-				if (class_behind(ctor_arg_datadef(e)) != ec) {
-					elem = NULL;
-					break;
-				}
-		}
+		// A CLASS element type: every element copy-initializes a slot of
+		// the backing array ([dcl.init.list]/5) — a converting ctor for
+		// `vector<string>{"a", "b"}`, a braced clause for
+		// `map<int, int>{{1, 10}}`'s pairs (braced_clause_initializes);
+		// initializer_list_literal constructs the slots
+		// (class_array_list_init) when the class needs construction.
+		DataDefCLASS *ec = elem ? as_class_instance(elem) : NULL;
 		{
 			// Same env knob as the ctor-overload trace: when a braced
 			// list picks the wrong ctor the question is always "was
@@ -18035,10 +18018,12 @@ FuncDef *CirBuilder::find_initializer_list_ctor(DataDefCLASS *cdd,
 		int total = 0;
 		bool ok = true;
 		for (TokenBase *e : elems) {
-			int s = score_arg_to_param(ctor_arg_datadef(e), elem,
-						   false, true,
-						   is_zero_integer_literal(e),
-						   false);
+			TokenStructLit *sl = (ec && e) ? e->as_struct_lit_tok() : NULL;
+			int s = sl ? (braced_clause_initializes(ec, sl) ? 2 : -1)
+				   : score_arg_to_param(ctor_arg_datadef(e), elem,
+							false, true,
+							is_zero_integer_literal(e),
+							false);
 			if (s < 0) { ok = false; break; }
 			total += s;
 		}
@@ -18069,6 +18054,17 @@ bool CirBuilder::takes_whole_braced_list(DataDefCLASS *cdd,
 	    || find_initializer_list_ctor(cdd, elems) != NULL;
 }
 
+bool CirBuilder::braced_clause_initializes(DataDefCLASS *cdd,
+					   TokenStructLit *clause)
+{
+	if (!cdd || !clause)
+		return false;
+	if (cdd->is_aggregate())
+		return true;
+	return takes_whole_braced_list(cdd, clause->inits)
+	    || select_or_instantiate_ctor(cdd, clause->inits) != NULL;
+}
+
 FuncDef *CirBuilder::initializer_list_ctor(DataDefCLASS *cdd,
 					   const std::vector<TokenBase *> &elems,
 					   TokenBase *origin, node_t *arg_out)
@@ -18096,6 +18092,40 @@ node_t CirBuilder::initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 					    TokenBase *origin)
 {
 	if (!ilc || !elem) return NULL;
+	DataDefCLASS *ec = as_class_instance(elem);
+	if (class_elements_need_construction(ec)) {
+		// [dcl.init.list]/5: the backing array is `const E a[N] = {...}`,
+		// each slot copy-initialized from its clause — the declared
+		// array's owner builds it, in a cleanup-tagged temp declared in
+		// the enclosing block ahead of the statement, which outlives the
+		// initializer_list ([dcl.init.list]/6).
+		char tname[40];
+		snprintf(tname, sizeof(tname), "__madc_iltmp_%d", m_strtmp_counter++);
+		const uint32_t n = (uint32_t)elems.size();
+		Variable *tmp = new Variable(tname, *ec, n, NULL, false);
+		tmp->dims.push_back(n);
+		tmp->flags |= vfLOCAL | vfFIXEDARRAY;
+		m_pending_stmts.push_back(var_decl(tmp, origin));
+		std::vector<node_t> stmts;
+		class_array_list_init(tname, std::vector<size_t>(1, (size_t)n),
+			[&]() -> node_t { return integer((int64_t)n, origin); },
+			ec, elems, false, true, origin, stmts);
+		for (node_t st : stmts)
+			m_pending_stmts.push_back(st);
+		node_t ispec = list();
+		append_lit_type_spec(ispec, ilc, std::string());
+		node_t itype = node2(N_TYPE, ispec, node2(N_DECL, ignore(), list()));
+		node_t iinits = list();
+		// &a[0]: the decay spelled, as for the compound literal below.
+		append(iinits, node2(N_INIT, list(),
+				     node1(N_ADDR, node2(N_IND, id(tname, origin),
+							 integer(0, origin), origin),
+					   origin)));
+		append(iinits, node2(N_INIT, list(), integer((int64_t)n, origin)));
+		node_t lit = node2(N_COMPOUND_LITERAL, itype, iinits, origin);
+		CIR_NODE(lit)->set_datadef(ilc);
+		return lit;
+	}
 	// (E[N]){e0, e1, ...} — the array declarator is SIZED explicitly. The
 	// count is known here, and c2mir mis-sizes an UNSIZED array compound
 	// literal nested in a struct compound literal in assignment context
@@ -19200,7 +19230,12 @@ bool CirBuilder::braced_class_array_needs_construction(Variable *v,
 	return v && tdecl && cdd
 	    && v->is_fixed_array()
 	    && !tdecl->init_list.empty()
-	    && (!cdd->is_aggregate() || class_has_object_members(cdd));
+	    && class_elements_need_construction(cdd);
+}
+
+bool CirBuilder::class_elements_need_construction(DataDefCLASS *cdd)
+{
+	return cdd && (!cdd->is_aggregate() || class_has_object_members(cdd));
 }
 
 // `new T[n]{e0, ...}` for a NON-class element: evaluate n once, zero the

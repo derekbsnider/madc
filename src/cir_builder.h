@@ -2205,6 +2205,10 @@ public:
 	bool initializer_copies_class(TokenBase *init, DataDefCLASS *cdd);
 	bool braced_class_array_needs_construction(Variable *v,
 			       TokenDecl *tdecl, DataDefCLASS *cdd);
+	// The class half of that rule: an element of `cdd` is constructed, never
+	// C-initialized — a declared array's and an initializer list's backing
+	// array alike ([dcl.init.list]/5: `const E a[N] = { ... }`).
+	bool class_elements_need_construction(DataDefCLASS *cdd);
 	// THE owner of a class array's elements from a braced list
 	// ([dcl.init.aggr]/3-5, [dcl.init.list]): each element is copy-
 	// initialized from its initializer-clause (a braced element list-
@@ -2396,10 +2400,19 @@ public:
 	// question the declaration lanes ask before threading an initializer.
 	bool takes_whole_braced_list(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &elems);
+	// [over.ics.list]/7-8: an element of class `cdd` can be list-initialized
+	// from the braced clause — through cdd's own initializer-list ctor, a
+	// ctor its clauses select (a member template instantiated, as the
+	// construction will), or as an aggregate. A user-defined conversion.
+	bool braced_clause_initializes(DataDefCLASS *cdd,
+				       class TokenStructLit *clause);
 	// The braced-list argument itself: `(IL){ (E[N]){e0,...}, N }`. The
 	// backing array is a compound literal, so it has automatic storage in
 	// the enclosing block — which outlives the initializer_list temporary,
-	// as [dcl.init.list]/6 requires.
+	// as [dcl.init.list]/6 requires. An element class that needs
+	// construction (class_elements_need_construction) gets a cleanup-tagged
+	// array temp in the enclosing block instead (m_pending_stmts), each slot
+	// copy-initialized by class_array_list_init, the declared array's owner.
 	node_t initializer_list_literal(DataDefCLASS *ilc, DataDef *elem,
 			       const std::vector<TokenBase *> &elems,
 			       TokenBase *origin);

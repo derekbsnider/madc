@@ -1,0 +1,30 @@
+// An initializer list whose element is a class that needs construction
+// ([dcl.init.list]/5: the backing array is `const E a[N] = { ... }`, each
+// element copy-initialized from its clause) — a std::pair from a braced pair,
+// a std::string from a literal, a user class through its converting
+// constructor (BUGS.md B30).
+#include <stdio.h>
+#include <map>
+#include <string>
+#include <vector>
+
+struct Name {
+	std::string s;
+	Name(const char *p) : s(p) {}
+};
+
+int main()
+{
+	std::map<int, int> m = { { 3, 30 }, { 1, 10 }, { 4, 40 }, { 2, 20 }, { 1, 99 } };
+	printf("map: size=%zu", m.size());
+	for (auto &kv : m)
+		printf(" %d:%d", kv.first, kv.second);
+	printf("\n");
+	std::vector<std::string> vs = { "x", "yz" };
+	printf("strings: %zu %s %zu\n", vs.size(), vs[1].c_str(), vs[1].size());
+	std::vector<Name> names = { "ab", "cde" };
+	printf("names: %zu %s\n", names.size(), names[1].s.c_str());
+	std::vector<std::pair<int, int> > pv = { { 1, 2 }, { 3, 4 } };
+	printf("pairs: %zu %d %d\n", pv.size(), pv[1].first, pv[1].second);
+	return 0;
+}

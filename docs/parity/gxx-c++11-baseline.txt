@@ -307,8 +307,6 @@ g++.dg/cpp0x/initlist-deduce2.C
 g++.dg/cpp0x/initlist-deduce3.C
 g++.dg/cpp0x/initlist-explicit-sfinae.C
 g++.dg/cpp0x/initlist-explicit2.C
-g++.dg/cpp0x/initlist-opt2.C
-g++.dg/cpp0x/initlist-opt5.C
 g++.dg/cpp0x/initlist-opt7.C
 g++.dg/cpp0x/initlist-overload1.C
 g++.dg/cpp0x/initlist-ref3.C
@@ -331,7 +329,6 @@ g++.dg/cpp0x/initlist54.C
 g++.dg/cpp0x/initlist67.C
 g++.dg/cpp0x/initlist73.C
 g++.dg/cpp0x/initlist96.C
-g++.dg/cpp0x/initlist98.C
 g++.dg/cpp0x/keywords2.C
 g++.dg/cpp0x/lambda/lambda-61148.C
 g++.dg/cpp0x/lambda/lambda-80947.C

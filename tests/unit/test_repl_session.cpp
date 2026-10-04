@@ -2359,8 +2359,7 @@ TEST_CASE("session bindings: C++ containers, a class the session wrote, a qualif
     REQUIRE(c.submit("static std::string t = \"x\";"));
     REQUIRE(c.submit("t += \"y\";"));
     REQUIRE(c.submit("#include <map>"));
-    REQUIRE(c.submit("std::map<int, int> m;"));	// brace-initialized: B30
-    REQUIRE(c.submit("m[1] = 10; m[2] = 20;"));
+    REQUIRE(c.submit("std::map<int, int> m = { { 2, 20 }, { 1, 10 } };"));
     madc::value rows;
     c.bindings(rows);
     // A container's row is its elements: the Type column names it.

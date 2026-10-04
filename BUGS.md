@@ -1513,41 +1513,6 @@ int main(void)
   one-dimensional array, which fits madc's flattened array storage, so the
   inner braces initialize scalars.
 
-### B30. Two initializer-list constructions of standard containers are refused
-
-- Found 2026-09-26, while testing D10's container display.
-
-```cpp
-#include <cstdio>
-#include <map>
-#include <string>
-#include <vector>
-int main()
-{
-	std::map<int, int> m = { { 1, 10 }, { 2, 20 } };
-	std::vector<std::string> vs = { "x", "y" };
-	printf("%zu %zu\n", m.size(), vs.size());
-	return 0;
-}
-```
-
-- g++: `2 2`. madc `--std=c++17`, one error per line:
-  - line 7: `constructor argument coercion cycle (no viable converting
-    constructor)`;
-  - line 8: `no matching constructor for call to 'vector_std____cxx11__…'`,
-    naming the vector's constructor with one `char*` argument.
-- `std::vector<int> v = { 1, 2, 3 }` works, and a map filled by assignment
-  shows fine.
-- 2026-10-04 (at 55586e7f1 + the %run work): the map's declaration is now
-  refused as `cir error: cannot lower defaulted copy/move constructor` (a
-  block-scope `std::map<int, int> m = { { 1, 10 }, { 2, 20 } };` at `4:8`
-  of a 7-line reducer), the same at namespace scope and at the C++ REPL's
-  prompt (`REPL[N]: 1 untranslatable node(s); not compiling`). The REPL's
-  row test fills its map by assignment until this is fixed.
-- Where: not traced. Both are the initializer-list constructor over an
-  element that needs its own conversion: a pair from a braced pair, and a
-  string from a literal.
-
 ### B31. `std::vector`'s `operator==` is refused
 
 - Found 2026-09-26, while re-entering D10's shown containers.
