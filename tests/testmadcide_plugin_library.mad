@@ -273,7 +273,7 @@ int main()
     println("hello-repl: {}", hc != cmdNONE && plugin_repl_code(S.w, hn) == hc ? 1 : 0);
 
     // 3. A second view of the world activates nothing twice (the active rows:
-    // the three plugins and madcide's builtin REPL pane).
+    // the three plugins and madcide's builtin modules, the REPL pane and git).
     long es2 = S.spawn_view(doc);
     var m2;
     ui::get(m2, S.w, es2, "msg");

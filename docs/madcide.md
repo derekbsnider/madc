@@ -245,6 +245,24 @@ keyboard back to the editor (a click in an editor window does too) — and
 a gui program opens its own window while its output streams into the
 **Output** tab. Every stream ends with the program's exit status.
 
+## Git
+
+`%git VERB` in the REPL (the `git` command anywhere else) reads the
+repository above the file, read-only, and prints in the transcript what git
+prints for the same question:
+
+| Verb | What it prints | git's own |
+|------|----------------|-----------|
+| `status` | `## BRANCH`, then each changed file as `XY PATH`, untracked last | `git status -sb` |
+| `log [-n N] [FILE]` | the last N commits (20 by default), FILE's only when named | `git log --format='%h %s (%ar, %an)'` |
+| `show REV` | the commit's sha, author, date and summary | `git show --no-patch` |
+| `show REV:FILE` | FILE as REV holds it | `git show REV:FILE` |
+| `blame FILE[:LINE]` | who last changed each line (or LINE alone) | `git blame --date=relative` |
+| `diff [FILE]` | FILE against its last commit; with no FILE, every changed file | `git diff HEAD` |
+
+A file open in the editor answers with its live text, so `diff` and `blame`
+include unsaved edits. Dates are git's relative ones (`3 days ago`).
+
 ## Sharing a session
 
 One madcide session can carry more than one client: the editor you are typing

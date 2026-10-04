@@ -427,6 +427,37 @@ long menu_place_of(var &word)
 // <madcide/plugin_api> when a plugin outside madcide needs them.
 enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLANGUAGE, seLAST };
 
+// The IDE's git verbs (plan docs/plans/2026-10-03-chthonia-windows-macos.md
+// §7e stage 1, §7f item 4; madcide_git.inc): `%git VERB` converts its word
+// ONCE (git_verb_of, over git_verb_table — the one list of names and their
+// usages, %help's too) and dispatches on the code. gtNONE = no such verb.
+enum git_verb : unsigned char { gtNONE = 0, gtLOG, gtSHOW, gtBLAME, gtSTATUS, gtDIFF };
+
+void git_verb_table(var &out)
+{
+    long lg = gtLOG;
+    long sh = gtSHOW;
+    long bl = gtBLAME;
+    long st = gtSTATUS;
+    long df = gtDIFF;
+    out = {};
+    out[] = { "name": "log", "code": lg, "usage": "log [-n N] [FILE]" };
+    out[] = { "name": "show", "code": sh, "usage": "show REV[:FILE]" };
+    out[] = { "name": "blame", "code": bl, "usage": "blame FILE[:LINE]" };
+    out[] = { "name": "status", "code": st, "usage": "status" };
+    out[] = { "name": "diff", "code": df, "usage": "diff [FILE]" };
+}
+
+long git_verb_of(var &word)
+{
+    var t;
+    git_verb_table(t);
+    for ( var r : t )
+	if ( r["name"] == word )
+	    return r["code"].as_integer();
+    return gtNONE;
+}
+
 // A kind plugin_event subscribes to: a repl_event or a session_event.
 bool event_kind_ok(long kind)
 {

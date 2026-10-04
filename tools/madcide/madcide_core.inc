@@ -10228,11 +10228,15 @@ bool IdeSession::vi_event(long doc, long nav, var &ev, bool &cont)
 // at its activation (builtins_activate), and nothing above names its
 // functions (check-madcide-command-registry.sh).
 #include "madcide_repl.inc"	// the panel's REPL tab (plan §41.9a)
+#include "madcide_git.inc"	// the IDE's git: %git's read verbs (plan §7e, §7f)
 
 void builtin_plugins(var &out)
 {
     builtin_activate_fn repl = repl_activate;
     int64_t ra = (int64_t)repl;
+    builtin_activate_fn git = git_activate;
+    int64_t ga = (int64_t)git;
     out = {};
     out[] = { "name": "repl", "activate": ra };
+    out[] = { "name": "git", "activate": ga };
 }

@@ -51,7 +51,8 @@
 //      session sees the entry, the entry shown as a taken one; %help lists
 //      it after the session's own commands; a name the session owns, a
 //      name its rule does not read whole, a repeat and a code that names no
-//      command are refused.
+//      command are refused; madcide's own `%git` (madcide_git.inc) is listed
+//      first.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -459,7 +460,8 @@ int main()
     const char *ide_at = strstr(g, "IDE commands:");
     println("ide cmd: ran={} {} shown={} listed={} after={} busy={}", who, who2,
 	    rust::contains(got.c_str(), "%hi bob\n") != 0,
-	    rust::contains(got.c_str(), "IDE commands:\n%hi [WHO]  say hello\n") != 0,
+	    rust::contains(got.c_str(), "IDE commands:\n%git VERB  the repository's log") != 0
+		&& rust::contains(got.c_str(), "\n%hi [WHO]  say hello\n") != 0,
 	    quit_at != 0 && ide_at != 0 && quit_at < ide_at,
 	    es_int(w, es, "replbusy", -1));
     S.close();				// stops the pump and the session

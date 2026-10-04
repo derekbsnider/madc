@@ -54,7 +54,7 @@ void tool_answer(var &out, var &snap)
 }
 
 // The layer owner and this node's offers (madcide_layers.inc, included right
-// after the PAST axis — it reads git_handle_of from there): graph.status
+// after the PAST axis; git_handle_of is the core's madcide_git.inc): graph.status
 // reports both, so the declarations come first (Nexus L4e).
 long asset_layers_of(long w, long es, long doc, long node);
 void node_offers(var &out, long w, long es);
