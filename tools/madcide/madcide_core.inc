@@ -7501,6 +7501,12 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		toggle_pane(w, es, paneHELP);
 		return true;
 	    }
+	    case cmdABOUT:
+	    {
+		// Help ▸ About (Thonny's): the product's About lines.
+		toggle_pane(w, es, paneABOUT);
+		return true;
+	    }
 	    case cmdOPTIONS:
 	    {
 		toggle_pane(w, es, paneOPTIONS);
@@ -8439,7 +8445,7 @@ void window_title(var &out, long w, long doc, long nav, long caret)
     doc_name(name, w, doc);
     long line = line_of(w, nav, caret);
     long col = caret - line_start_of(w, nav, line) + 1;
-    out = format("{} - {} @ {} : {}", product_in_use().name, name, line, col);
+    out = format("{} - {} @ {} : {}", product_title(), name, line, col);
 }
 
 void IdeSession::compose_ide_tree(var &root, long doc)
@@ -8582,6 +8588,20 @@ void IdeSession::compose_ide_tree(var &root, long doc)
 		var title;
 		if ( keys_title_line(title, line) )
 		    continue;
+		items[] = { "role": "item", "content": line };
+		nrows = nrows + 1;
+	    }
+	    var nofilter;
+	    dialog_hints(box, w, es, "pane", "", nofilter);	// no primary: rows do nothing on choose
+	}
+	else if ( pane == paneABOUT )
+	{
+	    // About = the product descriptor's lines (product_about)
+	    box["label"] = format("About {}", product_title());
+	    var lines;
+	    product_about(lines);
+	    for ( var line : lines )
+	    {
 		items[] = { "role": "item", "content": line };
 		nrows = nrows + 1;
 	    }

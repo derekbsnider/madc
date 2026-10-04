@@ -16,7 +16,12 @@
 //      composed root's `title` hint, `chthonia - <file> @ <row> : <col>`;
 //   6. what the program says about itself is under the product's name: an
 //      MCP client's tool descriptions read `chthonia '<command>' command`,
-//      never the base's `madcide`.
+//      never the base's `madcide`;
+//   7. Help ▸ About is the descriptor's: madcide's own (its name, the home
+//      page, the madc it runs on, the copyright, the MPL-2.0 summary) and a
+//      product's (its title and its OWN version — 9.8.7 here, never madc's),
+//      the year the build's (__DATE__), the pane a dialog titled
+//      `About <title>` with a Close button and no primary.
 // This unit links the plugin as chthonia's program does (chthonia.json):
 // its code is compiled here, beside the base.
 #include "../tools/texteditor/lined_core.inc"
@@ -30,7 +35,42 @@
 #include "../tools/madcide/plugins/chthonia/chthonia.mad"	// the plugin, linked in
 
 const ide_product test_product = { "chthonia", "chthonia", ui::WEB, "chthonia",
-				   madcide_plugin_activate };
+				   madcide_plugin_activate, "Chthonia", "9.8.7",
+				   "https://example.org/chthonia", "A. Holder",
+				   "Line one.\nLine two." };
+
+// About's lines joined by `|`, the madc version and the copyright year
+// replaced by their sources' names (they change with the build).
+void about_line(var &out)
+{
+    var rows;
+    product_about(rows);
+    const char *date = __DATE__;
+    var year = date + strlen(date) - 4;
+    out = "";
+    for ( var r : rows )
+    {
+	var t = php::str_replace(madc::sys.version, "<sys.version>", r.c_str());
+	t = php::str_replace(format("(c) {} ", year), "(c) <__DATE__> ", t.c_str());
+	out = format("{}|{}", out, t);
+    }
+}
+
+// The popup box in a composed tree (role choice), or null.
+void find_popup(var &out, var &node)
+{
+    if ( node["role"] == "choice" )
+    {
+	out = node;
+	return;
+    }
+    for ( var k : node["children"] )
+    {
+	find_popup(out, k);
+	if ( !out.is_null() )
+	    return;
+    }
+}
 
 // The face the command line asks for (-1 = refused).
 long face_of(int argc, const char **argv)
@@ -44,6 +84,11 @@ long face_of(int argc, const char **argv)
 
 int main()
 {
+    // 7a. madcide's own About.
+    var ab;
+    about_line(ab);
+    println("product-about-base: {}", ab);
+
     // 1. madcide's own.
     const ide_product &m = product_in_use();
     const char *n0[1] = { "madcide" };
@@ -90,6 +135,20 @@ int main()
     var root;
     S.compose_ide_tree(root, doc);
     println("product-title: [{}]", root["hints"]["title"]);
+
+    // 7b. The product's About, and its pane.
+    var pa;
+    about_line(pa);
+    println("product-about: {}", pa);
+    toggle_pane(S.w, S.es, paneABOUT);
+    var root2;
+    S.compose_ide_tree(root2, doc);
+    var box;
+    find_popup(box, root2);
+    var dlg = box["hints"]["dialog"];
+    println("product-about-pane: label=[{}] rows={} buttons={} first=[{}]",
+	    box["label"], php::count(box["children"]), php::count(dlg["buttons"]),
+	    dlg["buttons"][0]["label"]);
 
     // 6. The tool descriptions an MCP client reads.
     var tools;

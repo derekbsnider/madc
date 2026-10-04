@@ -4,15 +4,21 @@
 // plugin's code, and this one, which names the product and calls the base.
 //
 // The descriptor is the whole difference from madcide: chthonia's name (its
-// usage, its window title, its configuration directory), its bundle, a
-// window by default (--tui gives the console), and its plugin linked in.
+// usage, its configuration directory), its bundle, a window by default
+// (--tui gives the console), its plugin linked in, and what Help ▸ About
+// says — Chthonia, its own version (chthonia_version.h, apart from madc's),
+// the home page, the copyright holder and the MPL-2.0 summary.
 //
 // Thread contract: <madcide/product>'s — main hands the descriptor to the
 // base, which records it before any session or thread starts.
 #include <madcide/product>
+#include "chthonia_version.h"
 
 const ide_product chthonia_product = { "chthonia", "chthonia", ui::WEB,
-				       "chthonia", madcide_plugin_activate };
+				       "chthonia", madcide_plugin_activate,
+				       "Chthonia", CHTHONIA_VERSION,
+				       "https://github.com/derekbsnider/madc",
+				       "Derek Snider", MADCIDE_MPL2_SUMMARY };
 
 int main(int argc, char **argv)
 {

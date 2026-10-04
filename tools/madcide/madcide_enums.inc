@@ -26,7 +26,7 @@ enum ide_cmd : unsigned short
 {
     cmdNONE = 0,			// unbound chord / unknown name
     // ---- the command registry (profiles/default.menu) ----
-    cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
+    cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCOLON, cmdCOPY, cmdCUT, cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP,
     cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
@@ -65,6 +65,7 @@ enum ide_cmd : unsigned short
 void cmd_table(var &t)
 {
     var rows = {};
+    rows[] = { "name": "about", "code": cmdABOUT };
     rows[] = { "name": "bend", "code": cmdBEND };
     rows[] = { "name": "blockcopy", "code": cmdBLOCKCOPY };
     rows[] = { "name": "blockdel", "code": cmdBLOCKDEL };
@@ -276,7 +277,8 @@ ui::key motion_key_of(long code)
 // show_view.
 enum ide_pane : unsigned char
 {
-    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT, paneCHOICE
+    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT, paneCHOICE,
+    paneABOUT
 };
 const char *pane_name(long p)
 {
@@ -288,6 +290,7 @@ const char *pane_name(long p)
 	case paneMODES: return "modes";
 	case panePROJECT: return "project";
 	case paneCHOICE: return "choice";
+	case paneABOUT: return "about";
     }
     return "";
 }

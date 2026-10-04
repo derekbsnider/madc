@@ -11,8 +11,12 @@
 //     }
 //
 // The descriptor is DATA of the build, never a name test: the product's name
-// (usage, window title, configuration directory), the bundle it opens, the
-// face it opens with no flag, and the plugin linked into it.
+// (usage, configuration directory), the bundle it opens, the face it opens
+// with no flag, the plugin linked into it, and what Help ▸ About says: the
+// name as shown (the window title too), the product's own version (tracked
+// apart from madc's), its home page, its copyright holder and a summary of
+// its licence. The About fields are appended: a descriptor that leaves them
+// out (0) shows the name alone.
 //
 // Thread contract: madcide_main records the descriptor once, before any
 // session or thread starts; nothing writes it after.
@@ -23,12 +27,25 @@
 
 struct ide_product
 {
-    const char *name;		// the program's name: usage, title, configuration directory
+    const char *name;		// the program's name: usage, configuration directory
     const char *bundle;		// the bundle it opens when nothing else names one ("" = default)
     ui::level level;		// the face it opens with no flag (ui::TUI, ui::WEB = a window)
     const char *plugin;		// the plugin linked into it ("" = none) ...
     plugin_activate_fn activate;	// ... and that plugin's activation
+    const char *title;		// the name as shown: the window title, About (0 = name)
+    const char *version;	// the product's own version, apart from madc's (0 = none)
+    const char *url;		// its home page, in About (0 = none)
+    const char *copyright;	// the holder in About's "Copyright (c) <year> <holder>" (0 = none)
+    const char *license;	// About's licence summary, lines split at '\n' (0 = none)
 };
+
+// The licence summary of a product under madc's own licence, the Mozilla
+// Public License 2.0: what it is, its disclaimer of warranty (§6) and its
+// limitation of liability (§7), in brief. The licence's text is authoritative.
+#define MADCIDE_MPL2_SUMMARY \
+    "Licensed under the Mozilla Public License 2.0 (MPL-2.0).\n" \
+    "Provided \"as is\", without warranty of any kind, express or implied.\n" \
+    "No contributor is liable for any damages arising from its use."
 
 // madcide's base: the command line read, then the face it asks for, as the
 // product describes. The exit status is the program's.
