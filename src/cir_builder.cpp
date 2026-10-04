@@ -13711,6 +13711,16 @@ static DataDefCLASS *class_behind(DataDef *dd)
 	return NULL;
 }
 
+// The class whose operator[] a named-variable subscript calls, or NULL when
+// the subscript is built-in: TokenSubscript::form_of's rule. Never
+// class_behind of the variable's type — madc stores an array flattened (an
+// array of std::string types as std::string), and class_behind would also
+// take a pointer to a class for the class.
+static DataDefCLASS *subscript_operand_class(TokenSubscript *tsub)
+{
+	return tsub ? as_class_instance(tsub->operator_operand_type()) : NULL;
+}
+
 // A reference operand IS the referenced object in every expression context
 // (C++ semantics); madc stores a reference variable as DataDefPTR(T) +
 // vfREFERENCE, so resolution must unwrap it or the operand looks like a
@@ -20559,7 +20569,7 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 	auto overload_arg_datadef = [this](TokenBase *arg) -> DataDef * {
 		if (!arg) return NULL;
 		if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg)) {
-			DataDefCLASS *ccls = class_behind(tsub->object.type);
+			DataDefCLASS *ccls = subscript_operand_class(tsub);
 			Variable *omv = class_subscript_operator(ccls, tsub->index);
 			FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
 			if (ofd && ofd->returns_reference()) {
@@ -22456,7 +22466,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin,
 		lcls = &ddARRAY;
 	if (!lcls && class_subscript_is_object(top->left)) {
 		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
-		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;
+		DataDefCLASS *ccls = subscript_operand_class(lsub);
 		Variable *omv = lsub ? class_subscript_operator(ccls, lsub->index)
 				     : NULL;
 		FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
@@ -23635,7 +23645,7 @@ node_t CirBuilder::class_subscript_addr_on(DataDefCLASS *cls, node_t recv_addr,
 node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 {
 	if (!tsub) return NULL;
-	DataDefCLASS *cls = class_behind(tsub->object.type);
+	DataDefCLASS *cls = subscript_operand_class(tsub);
 	if (!cls) return NULL;
 	Variable *mv = class_subscript_operator(cls, tsub->index);
 	if (!mv) return NULL;
@@ -23659,7 +23669,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 {
 	node_t call = class_subscript_addr(tsub, origin);
 	if (!call) return NULL;
-	DataDefCLASS *cls = class_behind(tsub->object.type);
+	DataDefCLASS *cls = subscript_operand_class(tsub);
 	Variable *mv = class_subscript_operator(cls, tsub->index);
 	FuncDef *callee = mv ? (mv->type ? mv->type->as_funcdef_dd() : NULL) : NULL;
 	// operator[] conventionally returns T& -> deref to the lvalue so the
@@ -23671,7 +23681,7 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 {
 	TokenSubscript *tsub = (arg ? arg->as_subscript_tok() : NULL);
 	if (!tsub) return false;
-	DataDefCLASS *cls = class_behind(tsub->object.type);
+	DataDefCLASS *cls = subscript_operand_class(tsub);
 	if (!cls) return false;
 	// Static: ranked on the index TYPE (the return-class question an
 	// overload set differing only in value category answers alike).

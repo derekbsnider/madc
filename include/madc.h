@@ -1657,15 +1657,16 @@ public:
         // parameter otherwise fell to the int default and `v[i].field`
         // then looked the member up on the VECTOR.
         DataDef *bt = referent_type(o.type);
-        if ( o.is_fixed_array() )
+        Form form = form_of(o);
+        if ( form == Form::array )
             _datatype = o.type; // C fixed array: subscript yields element of base type
-        else if ( bt->is_pointer() )
+        else if ( form == Form::pointer )
         {
             // Raw pointer: ptr[i] == *(ptr + i). Element type = pointed-to type.
             DataDefPTR *pdd = pointer_dd_of(bt);
             _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         }
-        else if ( bt->type() == DataType::dtSIMD )
+        else if ( form == Form::simd )
             _datatype = static_cast<DataDefSIMD *>(bt)->element_type;
         else if ( DataDef *e = subscript_operator_element_type(bt, idx) )
             // A class with `T& operator[](...)` (a real madc template container
@@ -1676,6 +1677,36 @@ public:
             _datatype = e;
         else
             _datatype = &ddINT64; // madc array (madc::value): default to int
+    }
+
+    // How a subscript on the variable `o` applies ([expr.sub],
+    // [over.match.oper]/1: operator[] is looked up only for an operand of
+    // CLASS type): a fixed array subscripts built-in, whatever its element
+    // (madc stores an array flattened, so its type is the ELEMENT's — an
+    // array of std::string types as std::string); so does a pointer; a SIMD
+    // vector by lane; anything else is the operand itself, a reference as its
+    // referent. The ONE rule the type above and the CIR lowering's operator[]
+    // dispatch (operator_operand_type) read. (A madc carrier is no class here:
+    // its subscript is the slot model's, CirBuilder::is_carrier_keyed_subscript.)
+    enum class Form : unsigned char { array, pointer, simd, operand };
+    static Form form_of(const Variable &o)
+    {
+        if ( o.is_fixed_array() )
+            return Form::array;
+        DataDef *bt = referent_type(o.type);
+        if ( bt && bt->is_pointer() )
+            return Form::pointer;
+        if ( bt && bt->type() == DataType::dtSIMD )
+            return Form::simd;
+        return Form::operand;
+    }
+    // The operand a class operator[] applies to — the referent of a
+    // reference — or NULL when the subscript is built-in (an array, a
+    // pointer, a SIMD lane).
+    DataDef *operator_operand_type() const
+    {
+        return form_of(object) == Form::operand ? referent_type(object.type)
+						: NULL;
     }
 
     // The type a reference denotes (`T &` -> `T`); any other type as is.

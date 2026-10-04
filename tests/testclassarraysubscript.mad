@@ -1,0 +1,35 @@
+// A subscript calls a class's operator[] only when its operand has CLASS
+// type ([over.match.oper]/1, [expr.sub]). An ARRAY of a class that declares
+// operator[] (std::string, std::vector, a user class) subscripts built-in
+// and picks an element, and so does a POINTER to one; a REFERENCE to one is
+// the class and calls its operator[]. madc stores an array flattened (an
+// array of std::string types as std::string), and the CIR lowering took
+// that type for the operand: `s[1].size()` called std::string::operator[]
+// on the whole array and read garbage (SIGSEGV), a vector or user-class
+// array mistyped every element (c2mir warnings, exit 1). The rule is
+// TokenSubscript::form_of, which every operator[] dispatch now asks.
+// Oracle: g++ 13 and clang++ 18, -std=c++17, print the lines below.
+#include <cstdio>
+#include <string>
+#include <vector>
+
+struct Row { int v[2]; int operator[](int i) const { return v[i] * 100; } };
+
+int main()
+{
+	std::string s[2] = { "x", "yz" };
+	std::string *ps = s;
+	std::string &rs = s[1];
+	std::vector<int> vs[2];
+	vs[1].push_back(7);
+	Row r[2] = { { { 1, 2 } }, { { 3, 4 } } };
+	Row *pr = r;
+	const Row &rr = r[1];
+	printf("strings: %s %zu %c %zu %c\n", s[0].c_str(), s[1].size(), s[1][1],
+	       ps[1].size(), rs[0]);
+	printf("vectors: %zu %zu %d\n", vs[0].size(), vs[1].size(), vs[1][0]);
+	printf("rows: %d %d %d %d\n", r[1][0], r[0][1], pr[1][1], rr[0]);
+	s[0] += "w";
+	printf("assigned: %s %zu\n", s[0].c_str(), s[0].size());
+	return 0;
+}
