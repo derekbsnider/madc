@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### lexer: auto-include for namespace fragments mentioning intrinsics
+
+A namespace fragment (like `<ns_ui_web>`) mentioning an unqualified intrinsic (like `println` from bits/std_format) now auto-includes the intrinsic provider even when the user program doesn't mention it. Before: `ns_ui_web:117:6: error: use of undeclared identifier 'println'` unless the program itself said print/println/format. The fix: `fragment_may_pull_header()` now returns true for bits/* fragments on unqualified use, allowing dialect intrinsics inside a namespace fragment to resolve. Reducer tests/testuiwebenum_alone: a program with only `ui::WEB` (naming the UI level) and printf compiles to correct output. Validation: Tier 1 71 neighbor tests: JIT 71/0, EXE 62/0, OBJ 62/0, check-dialect-lean OK; Tier 2 scripts/fast_lanes.sh GREEN (all six lanes 0 outside baseline).
+
 ### madcide: the base is a unit of its own, entered through madcide_main with a product descriptor
 
 madcide's layers now live in `tools/madcide/madcide_base.inc`, with `madcide_main(argc, argv, product)` holding what was `main`. `madcide.mad` is that include plus a one-line `main` that passes madcide's own descriptor, so it is still one unit and every script and test that builds it is unchanged. `tools/madcide/madcide_base.mad` is the base alone, with no `main`: the unit a product links (plugin design §9.3). `<madcide/product>` declares `struct ide_product` (name, bundle, default face, linked plugin and its activation) and `madcide_main`; `madcide_product.inc` holds madcide's descriptor and the one record of the product in use, written once before any session starts. Nothing reads the descriptor yet (D3). A probe product (the base plus a unit holding a descriptor and `main`) linked through a `--project` manifest runs `-c outline` the same as madcide. Validation: Tier 1 `run_tests.sh --exe` over testmadcide*, testide*, testbuildcancel, testgraphpast, testmcpclient and testnexus*: 49/0 JIT, 42/0 EXE. Tier 2 scripts/fast_lanes.sh GREEN (all six lanes 0 outside baseline).

@@ -1667,9 +1667,13 @@ static bool fragment_may_pull_header(const char *header, bool qualified_use)
     // -static-libmadc gate a madarray_destruct the ledger never carried).
     // The C++ system headers are extensionless as well (<string>, <vector>)
     // and are never embedded: a fragment's `getline` must not pull <string>
-    // (madcide paid the whole libstdc++ parse for it).
+    // (madcide paid the whole libstdc++ parse for it). An intrinsic provider
+    // (bits/*: bits/std_format for print/println/format) is no namespace
+    // surface: any mention of an intrinsic reaches it, so <ns_ui_web>'s
+    // `println(stderr, ...)` compiles in a program that says no println
+    // itself.
     if ( embedded_dialect_fragment_p(h) && find_embedded_header(h) )
-	return qualified_use;
+	return qualified_use || h.compare(0, 3, "ns_") != 0;
     return h.size() > 2 && h.compare(h.size() - 2, 2, ".h") == 0;
 }
 
