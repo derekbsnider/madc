@@ -27169,7 +27169,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// real `T*`; the pointed-to T is base_type of that DataDefPTR.
 			if (tcf->var.name == "__destroy" && tcf->parameters.size() == 1)
 				return lower_destroy_arg(tcf->parameters[0], true);
-			const char *rt = builtin_output_runtime(tcf->var.name);
+			// The runtime printer serves a callee the program has no
+			// body for (the builtin registration, or a bare prototype
+			// `void puti(int);`); a program's own definition of the name
+			// is the function the call reaches.
+			const FuncDef *callee_fd = tcf->var.type
+				? tcf->var.type->as_funcdef_dd() : NULL;
+			const char *rt = (callee_fd && callee_fd->body_parsed)
+				? "" : builtin_output_runtime(tcf->var.name);
 			if (rt[0]) {
 				static const std::map<std::string, ExternParam> sigs = {
 					{"madc_puti",     {{N_LONG, N_LONG}, false}},
