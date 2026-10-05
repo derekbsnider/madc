@@ -1,4 +1,4 @@
-// chthonia's code (plan §41.11a step 6): the Symbols view — the
+// chthonia's code: the Symbols view — the
 // names the REPL session defined, each with its type and its value, kept
 // current after every entry and every F5 run and emptied when the session
 // stops. A row the program's file defined goes to its definition when it is

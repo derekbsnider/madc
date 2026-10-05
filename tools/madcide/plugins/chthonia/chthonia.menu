@@ -75,7 +75,7 @@ Help helpcontents Help Contents
 Help help Keyboard Help
 Help about About Chthonia
 
-# The toolbar (the placement word `toolbar`, plan §41.11a): its buttons, each
+# The toolbar (the placement word `toolbar`): its buttons, each
 # with its picture — {ICON [MENU]}, ui::icon's vocabulary and the menu its
 # arrow drops down (the mockup's Run ▾). Debug, the steps and the
 # breakpoints join with the debugger.

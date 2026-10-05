@@ -1,5 +1,4 @@
-// chthonia — the easy GUI to learn C and C++ (plugin design §9.3; docs/plans/
-// 2026-10-03-chthonia-windows-macos.md §7 D3): a product built on madcide.
+// chthonia — the easy GUI to learn C and C++: a product built on madcide.
 // Its program is two units (chthonia.json), the chthonia plugin's code and
 // this one, which names the product and calls the base, linked with
 // madcide's base, the library libmadcide.

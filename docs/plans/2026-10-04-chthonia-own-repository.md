@@ -244,6 +244,12 @@ form. madc is unaffected.
   madc so the Chthonia tree holds no list of what it is avoiding. A local
   `commit-msg` hook (`.git/hooks`, uncommitted) runs the message half on
   each commit.
+  **Written (2026-10-05):** with no argument it checks madc's moving set
+  (`tools/chthonia/`, `tools/madcide/plugins/chthonia/`) and runs in
+  `make gates`, so a Chthonia file cannot gain such text before the move;
+  `--checkout DIR` checks a Chthonia checkout (its tracked files, the agent
+  files it must not track, every commit message); `--message FILE` is the
+  hook's half. The moving set's comments had their pass the same day.
 
 ## 6. Order: madc v0.102.0, then Chthonia's release right behind it
 

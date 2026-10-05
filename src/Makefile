@@ -1213,6 +1213,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-anchor-owner.sh
 	@cd .. && bash scripts/check-one-blank-run.sh
 	@cd .. && bash scripts/check-chthonia-boundary.sh
+	@cd .. && bash scripts/chthonia_sanitize_check.sh
 	@cd .. && bash scripts/check-madcide-harness.sh
 	@cd .. && bash scripts/check-one-event-builder.sh
 	@cd .. && bash scripts/check-fragment-inline-vars.sh
