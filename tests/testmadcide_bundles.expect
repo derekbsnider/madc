@@ -21,3 +21,5 @@ bundles-nokeys: bundle=nokeys keys=joe msg=No keys 'nosuch'. The default keys 'j
 bundles-refused: bundle=default keys=joe msg=Profile 'bad' refused: CFG/plugins/bad/bad.plugin: unknown field 'colour' — the default profile is in use.
 bundles-unknown: bundle=default msg=No profile 'nosuch' — the default profile is in use.
 bundles-path: bundle=default msg='../mine' is not a profile name — the default profile is in use.
+bundles-plugpath-split: a b C:\x D:\y
+bundles-plugpath-search: dirs=3 second=1 extra=1 mine-user=1 default-shipped=1

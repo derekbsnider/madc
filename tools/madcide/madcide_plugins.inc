@@ -116,8 +116,24 @@ bool plugin_name_ok(const char *name)
     return true;
 }
 
+// The directories of a path list (MADCIDE_PLUGIN_PATH), appended to `out` in
+// order: separated as the platform's PATH is (';' on Windows, where ':' is a
+// drive's, else ':'); an empty entry names nothing.
+void plugin_path_dirs(array &out, const char *list, bool win)
+{
+    if ( list == 0 )
+	return;
+    array parts;
+    php::explode(parts, win ? ";" : ":", list);
+    for ( var d : parts )
+	if ( strlen(d.c_str()) > 0 )
+	    out.push(d);
+}
+
 // The plugin search path (§5.1): the user's plugins/ first, so a user's
-// bundle overrides a shipped one of the same name, then the shipped
+// bundle overrides a shipped one of the same name; then MADCIDE_PLUGIN_PATH's
+// directories, where a bundle is found from its own checkout without being
+// installed (a product's tests and its uninstalled build); then the shipped
 // plugins/ (beside this file in the source tree, else the install layouts:
 // resolve_data_dir, the one data-location owner).
 void plugin_dirs(array &out)
@@ -126,6 +142,8 @@ void plugin_dirs(array &out)
     madcide_config_dir(cfg);
     if ( strlen(cfg.c_str()) > 0 )
 	out.push(format("{}/plugins", cfg));
+    plugin_path_dirs(out, getenv("MADCIDE_PLUGIN_PATH"),
+		     strcmp(madc::sys.platform, "win32") == 0);
     var shipped;
     resolve_data_dir(shipped, "madcide", php::dirname(__FILE__), "plugins");
     out.push(shipped);

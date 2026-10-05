@@ -28,6 +28,12 @@
 //      /usr/local/bin/chthonia, a chthonia.exe — ahead of settings.json's
 //      "profile"; the command line still beats it, and a name no bundle has
 //      falls through to settings.json.
+//  11. MADCIDE_PLUGIN_PATH (plugin_path_dirs): its directories in order, split
+//      at ':' (';' on Windows, where "C:\x" keeps its drive), empty entries
+//      skipped; the search path is the configuration directory, then those
+//      directories, then the shipped plugins — a bundle only there is found,
+//      a user bundle of the same name still wins, and the shipped default is
+//      still found.
 // The configuration directory is this test's fixture (MADCIDE_CONFIG_DIR in
 // the .env); the runner points every other test at none.
 #include "../tools/texteditor/lined_core.inc"
@@ -225,6 +231,34 @@ int main()
     println("bundles-unknown: bundle={} msg={}", r["bundle"], r["msg"]);
     probe(r, path, "../mine");
     println("bundles-path: bundle={} msg={}", r["bundle"], r["msg"]);
+
+    // 11. The plugin path: its split, then the search order (this test's
+    //     .env names one directory).
+    array pd;
+    plugin_path_dirs(pd, "a::b:", false);
+    plugin_path_dirs(pd, "C:\\x;;D:\\y", true);
+    plugin_path_dirs(pd, NULL, false);
+    println("bundles-plugpath-split: {}", php::implode(" ", pd));
+    var envdir = getenv("MADCIDE_PLUGIN_PATH");
+    var ex = format("{}/extra", envdir);
+    mkdirs(made, ex.c_str());
+    var exp = format("{}/extra.plugin", ex);
+    put(files, exp, "{ \"name\": \"extra\", \"api\": 3 }");
+    var em = format("{}/mine", envdir);
+    mkdirs(made, em.c_str());
+    var emp = format("{}/mine.plugin", em);
+    put(files, emp, "{ \"name\": \"mine\", \"api\": 3 }");
+    array sd;
+    plugin_dirs(sd);
+    var fx;
+    bool fe = plugin_find(fx, "extra");
+    var fm;
+    plugin_find(fm, "mine");
+    var fd;
+    plugin_find(fd, "default");
+    println("bundles-plugpath-search: dirs={} second={} extra={} mine-user={} default-shipped={}",
+	    php::count(sd), sd[1] == envdir ? 1 : 0, fe && fx == ex ? 1 : 0, fm == mine ? 1 : 0,
+	    fd == ddir ? 1 : 0);
 
     // Remove every file, then every directory this test made.
     long nf = php::count(files);

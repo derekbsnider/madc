@@ -203,11 +203,17 @@ A profile is a plugin directory,
 .IR name / name .plugin
 (JSON) beside the data files it carries, found first in the user's
 .I plugins
-directory and then in the shipped one (a
+directory, then in each directory of
+.B MADCIDE_PLUGIN_PATH
+(separated as
+.B PATH
+is: a colon, or a semicolon on Windows), and then in the shipped one (a
 .I plugins
 directory beside
 .I profiles
 above), so a user's profile overrides a shipped one of the same name.
+.B MADCIDE_PLUGIN_PATH
+finds a plugin in its own checkout without installing it.
 The user's configuration directory holds
 .I settings.json
 and

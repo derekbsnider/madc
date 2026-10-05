@@ -151,13 +151,14 @@ run_linux() {
     [ -x "$madc" ]    || fail "$kind" "no executable $madc in the artifact"
     [ -x "$madcide" ] || fail "$kind" "no executable $madcide in the artifact"
 
-    # MADCIDE_CONFIG_DIR: no ambient user settings.json or plugins/ (the
-    # run_tests.sh hermeticity); the artifact's own data is what is gated.
+    # MADCIDE_CONFIG_DIR: no ambient user settings.json or plugins/, and no
+    # MADCIDE_PLUGIN_PATH (the run_tests.sh hermeticity); the artifact's own
+    # data is what is gated.
     local -a runenv
     if [ -n "$libdir" ]; then
-        runenv=(env "LD_LIBRARY_PATH=$libdir" "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
+        runenv=(env -u MADCIDE_PLUGIN_PATH "LD_LIBRARY_PATH=$libdir" "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     else
-        runenv=(env -u LD_LIBRARY_PATH "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
+        runenv=(env -u MADCIDE_PLUGIN_PATH -u LD_LIBRARY_PATH "MADCIDE_CONFIG_DIR=$GATE_TMP/no-config")
     fi
 
     # 1. installed madc runs a program

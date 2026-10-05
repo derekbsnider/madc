@@ -494,8 +494,12 @@ A profile is a plugin: a directory `<name>/` holding its manifest
 `<name>.plugin` (JSON) and the data files it carries (keys, layout, menu,
 theme, status line). madcide looks in the user's `plugins/` directory first
 (`~/.config/madcide/plugins`, `%APPDATA%\madcide\plugins` on Windows, or
-`$MADCIDE_CONFIG_DIR/plugins`), then in the shipped one, so a user's plugin
-overrides a shipped plugin of the same name.
+`$MADCIDE_CONFIG_DIR/plugins`), then in each directory of
+`MADCIDE_PLUGIN_PATH`, then in the shipped one, so a user's plugin overrides a
+shipped plugin of the same name. `MADCIDE_PLUGIN_PATH` is a list separated as
+`PATH` is (`:`, or `;` on Windows); it finds a plugin in its own checkout
+without installing it, for its tests and a build of a product that has not
+been installed.
 
 A plugin can carry code. Its manifest names the source, one madc file in its
 directory:

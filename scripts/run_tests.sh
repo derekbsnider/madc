@@ -240,8 +240,11 @@ EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
 # developer's, never the suite's — the same hermeticity as --no-config: point it
 # at a directory that does not exist, so no test reads an ambient
 # ~/.config/madcide. A test that needs one names its own fixture directory in
-# its .env (MADCIDE_CONFIG_DIR=tmp/…), which env(1) applies over this.
+# its .env (MADCIDE_CONFIG_DIR=tmp/…), which env(1) applies over this. The
+# developer's plugin path (MADCIDE_PLUGIN_PATH) is theirs too: unset, and a
+# test that needs one names it in its .env.
 export MADCIDE_CONFIG_DIR="$REPO_ROOT/tmp/madcide-no-config"
+unset MADCIDE_PLUGIN_PATH
 
 # A separate fixture directory uses the same runner (GUI, etc.).
 TEST_DIR="${MADC_TEST_DIR:-tests}"
