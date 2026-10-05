@@ -60839,6 +60839,16 @@ void Program::apply_template_call_return_inference(TokenCallFunc *tc)
     (void)*this;
     if ( !tc || !tc->var.type || !tc->var.type->is_function() )
 	return;
+    // The deduced SPECIALIZATION's type is the call's type ([temp.deduct]):
+    // once instantiation pinned it (instantiate_namespace_fn_template_for_call),
+    // this inference — read from the parse-bound placeholder, which can be
+    // ANOTHER overload of the set (`I mb(I)` beside the more specialized
+    // `auto mb(wrap<I>) -> decltype(mb(it.base()))`, std::__miter_base's
+    // move_iterator unwrap) — must not replace it.
+    if ( tc->return_override
+      && tc->deduction.outcome == FnTemplateDeduction::Outcome::Deduced
+      && tc->deduction.specialization )
+	return;
     FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
     if ( !fd || fd->template_return_param_name.empty()
       || fd->template_return_deduce_arg_index < 0 )
