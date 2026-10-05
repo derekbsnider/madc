@@ -32,6 +32,7 @@
 
 #include "madc_session.h"
 #include "madc_session_interrupt.h"	// D8: the interrupt between processes
+#include "madc_session_stdin.h"	// Send EOF: the backend's fresh stdin
 #include "libmadc/value.h"
 #include "madcdis/datachannel.h"	// poll_handle
 
@@ -152,11 +153,16 @@ public:
     // the backend is not running. It waits while the pipe is full.
     bool input(const std::string &text);
     // Interrupt the running entry (D8, plan madc-repl-thonny §41.12a): it
-    // returns to the prompt at its next loop back-edge, the session kept; a
+    // returns to the prompt at its next loop iteration, the session kept; a
     // second one before it polled ends the backend (the next poll reports
     // it stopped, and the client starts a fresh one). One while no entry runs
     // does nothing. False = no backend, or no way to reach it.
     bool interrupt();
+    // Send EOF (plan madc-repl-thonny §41.12a): the program's stdin ends —
+    // it reads what input() sent, then the end — and the backend reads a
+    // fresh one from the next request on. False = no backend, its stdin is
+    // the host's terminal (set_inherit_stdio), or the hand-off failed.
+    bool eof();
 
     // Wait up to timeout_ms (-1: no limit) for the next reply. The output the
     // backend printed before it is appended to `output` first. 1: a reply;
@@ -228,6 +234,7 @@ private:
     std::string standard_name;
     bool inherit_stdio;			// the backend's stdio is the host's
     madc::SessionInterruptor interruptor;	// D8: reaches the backend
+    madc::SessionStdinHandOff stdin_handoff;	// Send EOF: the fresh stdin's way in
     SessionClient(const SessionClient &);
     SessionClient &operator=(const SessionClient &);
 };

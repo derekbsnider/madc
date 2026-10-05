@@ -3416,7 +3416,27 @@ function an earlier entry defined, the session's names kept after each; idle
 does nothing; a second interrupt into `getchar` restarts the backend),
 `testmadcide_replinterrupt` (Run ▸ Interrupt, Copy's interrupt, both messages
 with nothing running). The interrupt's diagnostic has no source position, so
-the CLI prints it as `REPL[n]:0:0: error: interrupted`. Send EOF is next.
+the CLI prints it as `REPL[n]:0:0: error: interrupted`.
+
+Progress (2026-10-05): Send EOF done. `Process::renew_stdin` (the old write
+end closes, a fresh pipe replaces it), the hand-off
+(`src/madc_session_stdin.cpp`: `SessionStdinHandOff` — POSIX passes the read
+end over a socketpair made with the backend, `SCM_RIGHTS`; Windows
+duplicates it into the backend and the request names its handle — and
+`session_stdin_take`, which puts it on fd 0), the request `stdin` (no seq,
+no reply), `SessionClient::eof` and `madc::session_eof`; every request
+starts with stdin's end-of-file state clear (`clearerr(stdin)`,
+`std::cin.clear()` in `serve_session`), so the entry after one that read to
+the end reads new input — after Send EOF, and after a terminal's own Ctrl-D
+in `madc -i`, where the next entry's `getchar()` returned -1 at once before; madcide's `repleof` (Run ▸ Send
+EOF in both menus; `@repl ^d` in `chthonia.keys`), which sends what the input
+line holds first. Gates: `testsession_eof` (two lines then the end; the next
+entry reads new input; a second Send EOF; one while idle),
+`testmadcide_repleof` (Run ▸ Send EOF with a partial line typed, and with
+nothing running), `testrepl_terminalkeys` (Ctrl-D in `madc -i` on a
+pseudo-terminal, then a read of new input). Measured on the way: a C session refuses `long n =
+lines();` at file scope, as gcc does (C11 6.7.9p4), but through c2mir's
+message (BUGS.md B16), so the tests assign to declared globals.
 
 ## 42. Decisions (owner, 2026-09-25)
 

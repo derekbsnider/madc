@@ -3,7 +3,7 @@
 // madc forked — nothing execs), its transcript in the tab and an input field
 // under it. madcide's first BUILTIN plugin (plan §41.11a step 8): included
 // at the end of madcide_core.inc, it registers through the plugin points at
-// its activation (repl_activate) — its eleven commands, its console view
+// its activation (repl_activate) — its twelve commands, its console view
 // `repl` (vsCONSOLE: the core composes it from `repl.pane` and routes the
 // keyboard to its input while the input has it, `consolefocus`) and its
 // handlers of the session's open, stop and close — and the core names none
@@ -23,8 +23,8 @@
 // in memory, at the input's first / last line), replunfocus.
 //
 // While an entry runs, the input is the program's standard input: enter
-// sends the line (Thonny's shell). A crash restarts the session (the
-// verbs' rule) and the transcript says so.
+// sends the line (Thonny's shell), repleof ends it (Send EOF). A crash
+// restarts the session (the verbs' rule) and the transcript says so.
 //
 // F5 (`replrun`, plan §41.10a) runs the editor's buffer into the tab: a
 // fresh session, `%run <name>` in the transcript, the buffer's live text
@@ -936,7 +936,7 @@ bool repl_cmd_stop(long w, long es, long doc, const char *arg)
 
 // Interrupt (`replinterrupt`, Thonny's Run ▸ Interrupt; D8, plan
 // madc-repl-thonny §41.12a): the running entry, or F5's load or run, returns
-// to the prompt at its next loop back-edge with the session kept, its reply
+// to the prompt at its next loop iteration with the session kept, its reply
 // saying `interrupted`; a second one before it does ends the backend and a
 // fresh session starts (the transcript says so, as for a crash). False =
 // nothing runs.
@@ -955,6 +955,37 @@ bool repl_cmd_interrupt(long w, long es, long doc, const char *arg)
 	ui::set(w, es, "msg", "");
     else
 	ui::set(w, es, "msg", "Nothing is running in the shell.");
+    return true;
+}
+
+// Send EOF (`repleof`, Thonny's Run ▸ Send EOF and its Ctrl+D in the Shell;
+// plan madc-repl-thonny §41.12a): the running entry's standard input ends.
+// What the input line holds goes first, as a terminal's Ctrl-D sends the line
+// typed so far; then the program's next read sees the end, and the entry
+// after it reads new input. False = nothing runs.
+bool repl_eof(long w, long es)
+{
+    long h = es_int(w, es, "replh", 0);
+    if ( h == 0 || es_int(w, es, "replbusy", 0) == 0 )
+	return false;
+    var text;
+    ui::text(text, w, repl_input_doc(w, es));
+    if ( es_int(w, es, "replrunning", 0) != 0 && strlen(text.c_str()) > 0 )
+    {
+	madc::session_input(h, text.c_str());
+	repl_feed(w, es, text.c_str());
+	repl_set_input(w, es, "");
+    }
+    return madc::session_eof(h);
+}
+
+bool repl_cmd_eof(long w, long es, long doc, const char *arg)
+{
+    if ( repl_eof(w, es) )
+	ui::set(w, es, "msg", "");
+    else
+	ui::set(w, es, "msg", "Nothing is running in the shell.");
+    repl_pane_sync(w, es);
     return true;
 }
 
@@ -1070,6 +1101,7 @@ bool repl_activate(long w)
     return plugin_command(w, "replrun", "Run in REPL", repl_cmd_run) != 0
 	&& plugin_command(w, "replstop", "Stop the REPL", repl_cmd_stop) != 0
 	&& plugin_command(w, "replinterrupt", "Interrupt the REPL", repl_cmd_interrupt) != 0
+	&& plugin_command(w, "repleof", "Send EOF to the REPL", repl_cmd_eof) != 0
 	&& plugin_command(w, "replclear", "Clear the shell", repl_cmd_clear) != 0
 	&& plugin_command(w, "replbindings", "REPL bindings", repl_cmd_bindings) != 0
 	&& plugin_command(w, "replenter", "REPL enter", repl_cmd_enter) != 0

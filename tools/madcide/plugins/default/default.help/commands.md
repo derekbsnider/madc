@@ -132,6 +132,11 @@ shell's input does the same, as Ctrl+C does in a terminal. A program waiting
 inside a library call cannot stop there: interrupt it again, and the shell
 starts a fresh session.
 
+## repleof
+Ends the standard input of what the shell is running, as Ctrl+D does in a
+terminal: what the input line holds is sent first, then the program's next
+read sees the end of its input. What you run after it reads new input.
+
 ## replclear
 Clears the shell's transcript.
 

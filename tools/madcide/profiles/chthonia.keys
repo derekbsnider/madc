@@ -10,10 +10,11 @@
 # has one key per binding).
 #
 # Thonny's keys whose command madcide does not have yet are listed, not
-# invented: Edit ▸ Auto-complete (Ctrl+Space); Run ▸ Send EOF (Ctrl+D), the
-# debugger (F6, F7, F8, Ctrl+F5, Shift+F5, Ctrl+F8). Run ▸ Interrupt is
-# Thonny's Ctrl+C in the Shell: Copy with nothing selected in the Shell's
-# input interrupts (the console rule; no line here). Thonny's
+# invented: Edit ▸ Auto-complete (Ctrl+Space); the debugger (F6, F7, F8,
+# Ctrl+F5, Shift+F5, Ctrl+F8). Run ▸ Interrupt is Thonny's Ctrl+C in the
+# Shell: Copy with nothing selected in the Shell's input interrupts (the
+# console rule; no line here). Run ▸ Send EOF is Ctrl+D in the Shell's
+# input (@repl), a terminal's key on every platform. Thonny's
 # Find & Replace is one dialog on Ctrl+F: here Ctrl+F finds, and Edit ▸
 # Replace… is the menu's row (no key of its own).
 @title Chthonia
@@ -47,6 +48,7 @@ primary+l replclear
 # names left for the prompt); Ctrl+F2 is Stop/Restart backend.
 f5 replrun
 primary+f2 replstop
+@repl ^d repleof
 # Build: Ctrl+B (Cmd+B on macOS) lists the Build menu's rows — Check, Build,
 # Run, Stop (Xcode's and Sublime Text's build key; Thonny binds none).
 primary+b build

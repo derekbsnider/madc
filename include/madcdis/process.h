@@ -5,6 +5,7 @@
 #include "madcdis/datachannel.h"
 
 #include <cstddef>
+#include <cstdint>	// intptr_t: renew_stdin's child end
 #include <functional>
 #include <map>
 #include <memory>
@@ -101,6 +102,15 @@ public:
 	// cross-process interrupt (the session's interrupt rides an event,
 	// madc_session_interrupt.h).
 	bool interrupt();
+	// Send EOF (plan madc-repl-thonny §41.12a): the child's stdin ends — this
+	// write end closes, so the child reads what was written, then the end —
+	// and a fresh pipe replaces it; stdin_channel() writes the fresh one from
+	// now on. `child_end` is the fresh read end, for the caller to deliver
+	// (include/madc_session_stdin.h): POSIX, an fd of THIS process, which the
+	// caller passes over a socket and closes; Windows, a handle already open
+	// IN the child (duplicated into it). False: not started, exited, or the
+	// child's stdin is inherited or a terminal.
+	bool renew_stdin(intptr_t &child_end, error *err = nullptr);
 
 	// Spawn `executable` with the caller's full argv (argv[0] included)
 	// and ALL stdio inherited — no pipes, no channels — then wait.

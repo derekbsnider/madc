@@ -85,14 +85,17 @@ namespace {
 // entry (its first word is the session's `else`). `bindings`: the names the
 // session defined, as rows (InteractiveSession::bindings, %whos's). `build`:
 // %build's (InteractiveSession::build_file), the host's text of a file.
-enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, unknown };
+// `stdin`: Send EOF's (plan §41.12a) — the backend takes the fresh stdin the
+// client handed over (madc_session_stdin.h); the one request with no seq and
+// no reply.
+enum class Op : unsigned char { begin, offer, complete, running, load, run, continues, bindings, build, stdin_renew, unknown };
 
 struct OpRow { const char *name; Op op; };
 const OpRow op_rows[] = {
     { "begin", Op::begin }, { "offer", Op::offer }, { "complete", Op::complete },
     { "running", Op::running }, { "load", Op::load }, { "run", Op::run },
     { "continues", Op::continues }, { "bindings", Op::bindings },
-    { "build", Op::build },
+    { "build", Op::build }, { "stdin", Op::stdin_renew },
 };
 
 const char *op_name(Op op)
@@ -254,7 +257,7 @@ void attach_diagnostics(nlohmann::json &rep, InteractiveSession &session)
 // The program's output is flushed before each reply, so the client reads
 // an entry's output before its result.
 int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
-		  const std::string &std_option)
+		  const std::string &std_option, int stdin_socket)
 {
     InteractiveSession session(std::move(prog));
     // A file command's payload is the client's to honor: it reads the file
@@ -292,9 +295,20 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	if ( req.is_discarded() || !req.is_object() )
 	    continue;
 	const Op op = op_of(req.value("op", std::string()));
+	if ( op == Op::stdin_renew )
+	{
+	    // Send EOF: fd 0 is the fresh pipe from here on.
+	    madc::session_stdin_take(stdin_socket, req.value("handle", (uint64_t)0));
+	    continue;
+	}
 	// An interrupt from before this request (one sent while the backend
 	// waited) is none; one from here on waits for the entry's first poll.
 	madc_session_interrupt_reset();
+	// stdin's end-of-file state (stdio's and std::cin's) is clear, as a
+	// fresh program's: an entry reads new input after an earlier one read
+	// to the end (Send EOF, or a terminal's Ctrl-D).
+	clearerr(stdin);
+	std::cin.clear();
 	err.str(std::string());
 	err.clear();
 	nlohmann::json rep;
@@ -407,6 +421,7 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	    }
 	    case Op::begin:
 	    case Op::running:
+	    case Op::stdin_renew:	// taken above, no reply
 	    case Op::unknown:
 		rep["ok"] = false;
 		break;
@@ -523,7 +538,19 @@ bool SessionClient::spawn_backend()
     const std::string opt = std_option;
     const ProgramFactory factory = make_program;
     const bool on_terminal = inherit_stdio;
-    options.child_body = [parent_end, child_end, opt, factory, on_terminal]() -> int {
+    // Send EOF's way in (a piped stdin only; a terminal ends its own): the
+    // fresh read end crosses this socketpair.
+    if ( !on_terminal && !stdin_handoff.open() )
+    {
+	error_text = "session: no stdin hand-off for the backend";
+	::close(parent_end);
+	::close(child_end);
+	return false;
+    }
+    const int handoff_end = on_terminal ? -1 : stdin_handoff.backend_end();
+    madc::SessionStdinHandOff *handoff = &stdin_handoff;
+    options.child_body = [parent_end, child_end, opt, factory, on_terminal,
+			  handoff_end, handoff]() -> int {
 	__madc_task_atfork_child();	// a fork child running madc code
 	madc::run_child_prologue(!on_terminal);
 	// The host reads the same stdin unbuffered, so an entry's scanf and
@@ -531,11 +558,12 @@ bool SessionClient::spawn_backend()
 	if ( on_terminal )
 	    setvbuf(stdin, NULL, _IONBF, 0);
 	::close(parent_end);
+	handoff->in_backend();
 	madc::session_interrupt_arm_backend(std::string());	// SIGINT (D8)
 	std::unique_ptr<Program> prog(factory ? factory() : std::unique_ptr<Program>(new Program()));
 	std::unique_ptr<madc::DataChannel> child_wire =
 	    madc::detail::socket_channel_over(child_end, "session");
-	return serve_session(*child_wire, std::move(prog), opt);
+	return serve_session(*child_wire, std::move(prog), opt, handoff_end);
     };
     process.reset(new madc::Process(madc::DataSource("exec://<madcsession>"), options));
     madc::error perr;
@@ -545,9 +573,11 @@ bool SessionClient::spawn_backend()
 	process.reset();
 	::close(parent_end);
 	::close(child_end);
+	stdin_handoff.close();
 	return false;
     }
     ::close(child_end);
+    stdin_handoff.started();
     wire = madc::detail::socket_channel_over(parent_end, "session");
     return true;
 }
@@ -859,6 +889,22 @@ bool SessionClient::interrupt()
     return wire && process && interruptor.send(*process);
 }
 
+// Send EOF: the old stdin ends at once (renew closes its write end); the
+// backend takes the fresh one when it reads this request — after the
+// running entry, since it reads requests in order.
+bool SessionClient::eof()
+{
+    if ( !wire || !process || inherit_stdio )
+	return false;
+    uint64_t handle = 0;
+    if ( !stdin_handoff.renew(*process, handle) )
+	return false;
+    nlohmann::json req;
+    req["op"] = op_name(Op::stdin_renew);
+    req["handle"] = handle;
+    return send(req.dump());
+}
+
 void SessionClient::take_output(std::string &output)
 {
     read_output(output, 0);
@@ -977,6 +1023,7 @@ int SessionClient::poll(Reply &reply, std::string &output, int timeout_ms)
 		reply.rows = madc::hub::detail::wt_json_to_value(j["rows"]);
 	    break;
 	case Op::begin:
+	case Op::stdin_renew:	// a request's only: never a reply
 	case Op::unknown:
 	    break;
     }
@@ -1323,5 +1370,5 @@ int madc_session_serve_child(const std::string &request)
 	return 1;
     }
     madc::session_interrupt_arm_backend(token);	// the event, the console (D8)
-    return serve_session(*wire, std::unique_ptr<Program>(new Program()), std_opt);
+    return serve_session(*wire, std::unique_ptr<Program>(new Program()), std_opt, -1);
 }

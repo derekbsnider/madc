@@ -291,6 +291,12 @@ bool session_interrupt(int64_t handle)
     return s && s->client.interrupt();
 }
 
+bool session_eof(int64_t handle)
+{
+    SessionHandle *s = session_of(handle);
+    return s && s->client.eof();
+}
+
 // A new backend for a handle: under its standard (std_opt NULL) or under
 // another one. The handle, its readable case and a pump parked on it carry
 // over; the output not yet taken goes with the old backend.

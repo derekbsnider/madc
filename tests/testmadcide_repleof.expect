@@ -1,0 +1,5 @@
+no session: msg=[Nothing is running in the shell.]
+idle: msg=[Nothing is running in the shell.]
+eof: msg=[]
+count: c11> n|5|
+after: c11> c == 'x'|1|

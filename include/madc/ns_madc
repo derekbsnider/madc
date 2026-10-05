@@ -814,11 +814,16 @@ namespace madc {
     //   session_output(out, h): what the program printed since the last call.
     //   session_input(h, text): text for the program's stdin.
     //   session_interrupt(h): interrupt the running entry (D8): it returns
-    //     to the prompt at its next loop back-edge, its offer (or run)
+    //     to the prompt at its next loop iteration, its offer (or run)
     //     answering with the runtime diagnostic `interrupted` and the
     //     session's state kept. A second one before the entry polled ends
     //     the backend (a stop reply; a fresh backend starts). One while no
     //     entry runs does nothing. False = no backend.
+    //   session_eof(h): Send EOF (plan §41.12a): the program's standard
+    //     input ends — its reads take what session_input sent, then see the
+    //     end — and the entry after the running one reads a fresh stdin
+    //     (its end-of-file indicator clear). False = no backend, or its
+    //     stdin is the host's terminal (the terminal's own Ctrl-D ends it).
     //   session_restart(h): a new backend; its state starts empty.
     //   session_restart(h, std): the same under another standard (`c17` or
     //     `--std=c17`, as session_open takes it): the language changes.
@@ -850,6 +855,7 @@ namespace madc {
     value &session_output(value &out, int64_t handle);
     bool session_input(int64_t handle, const char *text);
     bool session_interrupt(int64_t handle);
+    bool session_eof(int64_t handle);
     bool session_restart(int64_t handle);
     bool session_restart(int64_t handle, const char *standard);
     int64_t session_readable(int64_t handle);

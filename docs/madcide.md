@@ -538,8 +538,8 @@ each row with `name`, `kind`, `type`, `value`, `file` and `line`) and
 there.
 
 madcide's own REPL pane is a plugin compiled into madcide: its commands
-(`repl`, `replrun`, `replstop`, `replinterrupt`, `replclear`, `replbindings`,
-and the input's `replenter`, `replcomplete`, `replolder`, `replnewer`,
+(`repl`, `replrun`, `replstop`, `replinterrupt`, `repleof`, `replclear`,
+`replbindings`, and the input's `replenter`, `replcomplete`, `replolder`, `replnewer`,
 `replunfocus` in the `@repl` scope) and its view `repl` register the way a
 plugin's do, so a key profile, a menu or a layout names them as it names any
 plugin's. `replclear` empties the transcript and keeps the session and its
@@ -556,6 +556,14 @@ Shell's input interrupts too, as a terminal's Ctrl+C does, so Ctrl+C in the
 Shell is Interrupt under every key style that binds it to Copy. The command
 publishes nothing; Copy's interrupt is the `seINTERRUPT` event, whose reply
 names the console view, and the REPL pane answers it for its own view.
+
+`repleof` (Run ▸ Send EOF, Thonny's; Ctrl+D in the Shell's input under the
+`chthonia` keys) ends the running entry's standard input. What the input line
+holds goes first, as a terminal's Ctrl-D sends the line typed so far; then
+the program's read returns the end of its input (`getchar` gives `EOF`). The
+entry after it reads new input. With nothing running, the status line says
+"Nothing is running in the shell." On the host's own terminal (`madc -i`) the
+terminal's Ctrl-D does this, and `madc::session_eof` answers false.
 
 View ▸ Program arguments… (`progargs`) sets the words F5 passes the program
 after its path, as Thonny's does. The prompt starts with the current words.

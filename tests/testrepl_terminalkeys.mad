@@ -4,7 +4,9 @@
 // docs/plans/madc-repl-thonny-plan-2026-09-24.md §41.12a). Ctrl-\ (SIGQUIT)
 // ends the backend and a fresh session answers the next entry: the host
 // ignores both keys while an entry runs, as system(3) does while its child
-// runs, so the REPL itself lives on.
+// runs, so the REPL itself lives on. Ctrl-D ends a reading entry's input,
+// and the next entry reads new input: each entry starts with stdin's
+// end-of-file state clear (plan §41.12a, Send EOF).
 
 // What the REPL wrote, until `want` appears or `ms` pass.
 bool read_until(var &got, madc::channel &c, const char *want, long ms)
@@ -53,6 +55,20 @@ void key_entry(madc::channel &c, const char *label, const char *loop,
 	    got.index("interrupted") >= 0, got.index("a new one started") >= 0);
 }
 
+// Start an entry that reads its input, type `keys` once it runs, and wait
+// for the prompt after it.
+void reading_entry(madc::channel &c, const char *line, const char *keys)
+{
+    var got = "";
+    var text = format("{}\r", line);
+    c.write(text);
+    read_until(got, c, line, 20000);
+    madc::sleep_ms(300);
+    got = "";
+    c.write(keys);
+    read_until(got, c, "c11> ", 20000);
+}
+
 int main()
 {
     var uri = format("pty://{} --no-config --std=c11 -i", madc::compiler_path());
@@ -69,6 +85,17 @@ int main()
     enter(got, c, "int fresh = 7;");
     enter(got, c, "fresh");
     println("fresh: {}", got.index("\n7\r\n") >= 0);
+
+    // Ctrl-D: the reading entry sees its input's end; the next one reads.
+    enter(got, c, "#include <stdio.h>");
+    enter(got, c, "long lines(void) { long k = 0; int ch; while ((ch = getchar()) != EOF) if (ch == 10) k++; return k; }");
+    enter(got, c, "long k = 0; int ch = 0;");
+    reading_entry(c, "k = lines();", "one\rtwo\r\x04");
+    enter(got, c, "k");
+    println("ctrl-d: {}", got.index("\n2\r\n") >= 0);
+    reading_entry(c, "ch = getchar();", "x\r");
+    enter(got, c, "ch == 'x'");
+    println("after ctrl-d: {}", got.index("\n1\r\n") >= 0);
 
     c.write("%quit\r");
     var rest = "";
