@@ -598,6 +598,8 @@ int main(int argc, char **argv)
     bool do_emit = false;         // --emit=c11|mc11: render cir_node tree as C, no run
     CirEmitLang emit_lang = celC11;
     const char *project_manifest = NULL;  // --project <compile_commands.json>
+    std::vector<std::string> cli_include_dirs; // -I as given: a --project build adds them to every TU
+    std::vector<std::string> cli_define_args;  // -D as given: likewise
     std::vector<std::string> link_libs;   // -l<name>: TARGET spellings (madc_modules) opened RTLD_GLOBAL
     std::vector<std::string> cc_link_args; // -l<name> → DT_NEEDED in AOT mode
     bool compile_object = false;          // -c: emit a relocatable .o, no run
@@ -693,6 +695,8 @@ int main(int argc, char **argv)
             if ( *path == '\0' && i + 1 < argc )
                 path = argv[++i];
             prog->add_include_dir(path);	// guards empty + normalizes trailing '/'
+            if ( *path )
+                cli_include_dirs.push_back(path);
             filearg = i + 1;
         } else if (strncmp(argv[i], "-D", 2) == 0) {
             // -DNAME, -DNAME=VALUE, or -D NAME (repeatable). A bare NAME defines
@@ -703,6 +707,8 @@ int main(int argc, char **argv)
             if ( *def == '\0' && i + 1 < argc )
                 def = argv[++i];
             prog->add_cli_define(def);	// guards empty + splits NAME[=VALUE]
+            if ( *def )
+                cli_define_args.push_back(def);
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-pch") == 0) {
             emit_pch = true;
@@ -1097,6 +1103,17 @@ int main(int argc, char **argv)
         {
             std::cerr << "madc --project: " << err << std::endl;
             return 1;
+        }
+        // The command line's -I and -D apply to every TU, after the TU's
+        // own (gcc's `-I dir a.c b.c`; a compilation database's extra
+        // arguments, as clang's tools append them): a TU's own directories
+        // are searched first, and a -D here overrides the manifest's.
+        for ( ProjectTU &tu : manifest.tus )
+        {
+            tu.include_dirs.insert(tu.include_dirs.end(),
+                                   cli_include_dirs.begin(), cli_include_dirs.end());
+            tu.defines.insert(tu.defines.end(),
+                              cli_define_args.begin(), cli_define_args.end());
         }
     }
     madc_install_resource_guards(manifest.tus.size(), config);
