@@ -1,0 +1,19 @@
+// The # operator puts a `\` before each `"` and `\` of a string literal or
+// character constant only (C11 6.10.3.2p2): a `\` of any other token stays
+// as written, so `STR(\n)` is the one-character string "\n", while
+// `STR("a\n")` and `STR('\t')` keep their escapes spelled. madc escaped
+// every `\` of the argument.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect lines.
+#include <stdio.h>
+#include <string.h>
+#define STR(x) #x
+int main(void)
+{
+	const char *bare = STR(\n);
+	const char *lit = STR("a\n");
+	const char *ch = STR('\t');
+	printf("bare: %zu %d\n", strlen(bare), bare[0]);
+	printf("lit: %s %zu\n", lit, strlen(lit));
+	printf("char: %s\n", ch);
+	return 0;
+}

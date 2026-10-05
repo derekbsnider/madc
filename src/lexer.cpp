@@ -2809,10 +2809,14 @@ static std::string stringify_macro_arg(const std::string &raw)
 	    out += ' ';
 	    pending_space = false;
 	}
+	// C11 6.10.3.2p2: a `\` is inserted before each `"` and `\` of a
+	// character constant or string literal — only there; a `\` of any
+	// other token passes through as written (`#x` of `\n` is "\n").
 	std::string spelling = macro_token_text(raw, tokens[i]);
+	bool literal = tokens[i].kind == MacroReplacementToken::rtLiteral;
 	for ( size_t j = 0; j < spelling.size(); ++j )
 	{
-	    if ( spelling[j] == '"' || spelling[j] == '\\' )
+	    if ( literal && (spelling[j] == '"' || spelling[j] == '\\') )
 		out += '\\';
 	    out += spelling[j];
 	}

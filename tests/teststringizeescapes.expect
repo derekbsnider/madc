@@ -1,0 +1,3 @@
+bare: 1 10
+lit: "a\n" 5
+char: '\t'
