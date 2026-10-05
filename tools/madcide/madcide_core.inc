@@ -1917,6 +1917,14 @@ void refresh_spans(long w, long es, long doc, long h)
 // full parse's spans replace these when the handle lands.
 void lex_first_spans(long w, long es, long doc)
 {
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	// Not the compiler's text (madcide_lang.inc): no C colour on prose,
+	// and none of the previous buffer's spans (they live on the es).
+	var none = {};
+	ui::set(w, es, "hspans", none);
+	return;
+    }
     var t;
     ui::text(t, w, doc);
     var p;
@@ -1933,6 +1941,11 @@ void lex_first_spans(long w, long es, long doc)
 // enclosing-function query never runs the compiler.
 long ensure_phandle(long w, long es, long doc)
 {
+    // A kind that is not the compiler's never gets a parse (a README is not
+    // C): no handle, so no diagnostics, outline or compiler colour; every
+    // caller reads 0 as "no parse", as after a failed open.
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+	return 0;
     long h = es_int(w, doc, "phandle", 0);
     if ( h != 0 )
 	return h;
@@ -1999,6 +2012,12 @@ long reparse_buffer(long w, long es, long doc)
 // compiler.
 long refresh_diags(long w, long es, long doc)
 {
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	var none = {};		// a text kind has no compiler diagnostics
+	ui::set(w, es, "diags", none);
+	return 0;
+    }
     long h = reparse_buffer(w, es, doc);
     var diags;
     madc::parse_check(diags, h);
@@ -2039,6 +2058,14 @@ void show_output(long w, long es)
 // The check ACTION: refresh + report + show the pane.
 void run_check(long w, long es, long doc)
 {
+    long k = doc_kind(w, doc);
+    if ( !kind_reaches_compiler(k) )
+    {
+	refresh_diags(w, es, doc);
+	ui::set(w, es, "msg", format("Check: a {} file is not compiled.",
+				     madc::file_kind_name(k)));
+	return;
+    }
     long n = refresh_diags(w, es, doc);
     show_diags(w, es);
     if ( n == 0 )

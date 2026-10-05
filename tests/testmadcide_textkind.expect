@@ -1,0 +1,3 @@
+md: reaches=false handle=false diags=0 msg=Check: a markdown file is not compiled.
+txt: reaches=false handle=false diags=0 msg=Check: a text file is not compiled.
+c: reaches=true handle=true diags=1 msg=Check: 1 problem(s).

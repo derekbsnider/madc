@@ -43,6 +43,18 @@ long kind_family(long k)
     return madc::fkUNKNOWN;
 }
 
+// Does a buffer of kind `k` reach the compiler (its parse handle, its lexical
+// colour, Check, Build and Run)? A kind of the compiler's ranges does; so
+// does madc::fkUNKNOWN — an untitled buffer, an extension no table names —
+// which compiles under the session's standard (doc_standard). Every OTHER
+// kind the vocabulary names is not the compiler's: Markdown and the other
+// text formats, the languages it does not read yet, the binaries. Prose is
+// never lexed as C (a README's "can't" is not a character constant).
+bool kind_reaches_compiler(long k)
+{
+    return k == madc::fkUNKNOWN || kind_family(k) != madc::fkUNKNOWN;
+}
+
 // A kind that names a standard: a C or a C++ standard, or the madc dialect —
 // never a family head (madc::fkC is "C, standard unspecified") and never
 // madc::fkMC11 (the IR's text, not a standard).
