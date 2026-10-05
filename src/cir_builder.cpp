@@ -27026,8 +27026,29 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						translate_expr(parg), tb));
 				return node2(N_CALL, id(dsym.c_str(), tb), a, tb);
 			};
+			// In a Tree-1 pattern, an argument whose pointee is neither a
+			// template parameter (the deferred marker above) nor a known
+			// type — a dependent call's result (`_Destroy(__addressof(*it))`)
+			// — has no element to destroy YET: the call stays an ordinary
+			// dependent call the instance copy re-resolves. Lowering it here
+			// baked the no-dtor `0` into every instance.
+			auto destroy_element_pending = [&](TokenBase *parg) -> bool {
+				if (!m_tsubst_pattern_mode || !parg)
+					return false;
+				DataDef *argdd = parg->datadef();
+				if (tsubst_destroy_marker_datadef(parg, argdd))
+					return false;
+				DataDefPTR *pdd = pointer_dd_of(argdd);
+				DataDef *elem = pdd ? pdd->base_type : NULL;
+				if (!elem)
+					return true;
+				DataDefCLASS *ec = elem->unqualified()->as_class_dd();
+				return ec && (ec->is_dependent_placeholder
+					      || ec->has_dependent_surface);
+			};
 			if (inline_fd && inline_fd->inline_builtin_kind == "destroy"
-			    && tcf->parameters.size() == 1)
+			    && tcf->parameters.size() == 1
+			    && !destroy_element_pending(tcf->parameters[0]))
 				return lower_destroy_arg(tcf->parameters[0], true);
 			// php::print_r / php::var_dump: declared in <ns_php>,
 			// defined nowhere — the compiler generates the dumper for

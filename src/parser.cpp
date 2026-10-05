@@ -61329,14 +61329,28 @@ static bool skipped_template_body_is_inline_destroy(
 	  && i + 1 < tokens.size() && tokens[i + 1]
 	  && tokens[i + 1]->id() == TokenID::tkOpBrk )
 	    return true;
-	if ( t->id() == TokenID::tkDeRef
-	  && i + 2 < tokens.size()
-	  && tokens[i + 1] && tokens[i + 1]->id() == TokenID::tkBnot
-	  && tokens[i + 2] && is_contextual_identifier_token(tokens[i + 2])
-	  && pnames.count(contextual_identifier_name(tokens[i + 2])) )
-	    return true;
     }
-    return false;
+    // `{ p->~T(); }` — the body IS the destroy (std::_Destroy(_Tp*)): its one
+    // statement is a destructor call through a type parameter. A body that
+    // does anything else is an ordinary template whose instances run all of
+    // it; the shape once matched `->~T` ANYWHERE in the body, so a call to
+    // `{ p->~T(); ++count; }` lowered to the bare destructor call.
+    size_t open = tokens.size();
+    for ( size_t i = 0; i < tokens.size(); ++i )
+	if ( tokens[i] && tokens[i]->id() == TokenID::tkOpBrc )
+	{ open = i; break; }
+    if ( open + 9 != tokens.size() || !tokens.back()
+      || tokens.back()->id() != TokenID::tkClBrc )
+	return false;
+    TokenBase *const *b = &tokens[open + 1];
+    return b[0] && is_contextual_identifier_token(b[0])
+	&& b[1] && b[1]->id() == TokenID::tkDeRef
+	&& b[2] && b[2]->id() == TokenID::tkBnot
+	&& b[3] && is_contextual_identifier_token(b[3])
+	&& pnames.count(contextual_identifier_name(b[3]))
+	&& b[4] && b[4]->id() == TokenID::tkOpBrk
+	&& b[5] && b[5]->id() == TokenID::tkClBrk
+	&& b[6] && b[6]->id() == TokenID::tkSemi;
 }
 
 // Identity reference-cast body (`{ return static_cast<_Tp&&>(__t); }` —
