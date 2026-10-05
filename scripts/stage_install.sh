@@ -142,6 +142,12 @@ gzip -9n < CHANGELOG.md > "$p/share/doc/madc/changelog.gz"
 install -m 644 docs/examples/madc.ini "$p/share/doc/madc/examples/madc.ini"
 # dpkg-deb requires plain 0755 directories. GNU chmod's NUMERIC modes
 # deliberately preserve a directory's setgid bit (inherited from the
-# checkout), so it must be cleared symbolically first.
+# checkout), so it must be cleared symbolically first. Files get the modes an
+# install gives every user, whatever this host's umask and the checkout's
+# modes: 0755 with an execute bit, else 0644 (the copied plugin bundles keep
+# the checkout's modes, and the files written by redirection — the gzipped
+# pages, the icons — the umask's).
 find "$root" -type d -exec chmod g-s {} +
 find "$root" -type d -exec chmod 0755 {} +
+find "$root" -type f -perm -0100 -exec chmod 0755 {} +
+find "$root" -type f ! -perm -0100 -exec chmod 0644 {} +

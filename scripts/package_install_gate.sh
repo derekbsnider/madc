@@ -20,7 +20,9 @@
 #   every    the shipped notices: each carrier packaging/notices.tsv names for
 #            the artifact's platform is in it, and so is its notice — a file
 #            check, so mactar runs it on Linux too [control: hide the last
-#            row's notice => reported missing].
+#            row's notice => reported missing]. Except winzip: every entry
+#            of the artifact's listing is readable by every user, every
+#            directory searchable [control: a 0640 entry => reported].
 #   deb/rpm  dpkg -x / rpm2cpio|cpio extract; installed madc runs a probe
 #            program (output asserted) with LD_LIBRARY_PATH=<root libdir>
 #            (an extracted root has no ldconfig — the real install
@@ -135,6 +137,24 @@ check_notices() {
     case "$missing" in
         *"notice $last "*) ok "$kind" "negative control: hidden $last => reported missing" ;;
         *) fail "$kind" "negative control broken: hidden $last was not reported" ;;
+    esac
+}
+
+# check_modes <kind> <long listing>: every entry of the artifact (its own
+# listing, so no extraction's umask intervenes) is readable by every user and
+# every directory searchable [control: a 0640 entry => reported].
+modes_wrong() {
+    awk 'substr($1, 8, 1) != "r" || (substr($1, 1, 1) == "d" && substr($1, 10, 1) !~ /[xt]/)' <<< "$1"
+}
+check_modes() {
+    local kind="$1" wrong
+    wrong=$(modes_wrong "$2")
+    [ -z "$wrong" ] || fail "$kind" "entries another user cannot read: $(echo "$wrong" | head -5 | tr '\n' ';')"
+    ok "$kind" "every entry is readable, and every directory searchable, by every user"
+    wrong=$(modes_wrong "-rw-r----- root/root 1 2026-10-05 12:00 ./usr/pk4modes")
+    case "$wrong" in
+        *pk4modes*) ok "$kind" "negative control: a 0640 entry => reported" ;;
+        *) fail "$kind" "negative control broken: a 0640 entry was not reported" ;;
     esac
 }
 
@@ -330,6 +350,7 @@ gate_deb() {
     dpkg -x "$artifact" "$root" || fail deb "dpkg -x refused $artifact"
     root=$(readlink -f "$root")
     check_notices deb linux "$root"
+    check_modes deb "$(dpkg-deb -c "$artifact")"
     run_linux deb "$root" "$root/usr/bin" "$root/usr/lib/x86_64-linux-gnu"
     echo "package_install_gate: PASS deb ($artifact)"
 }
@@ -343,6 +364,7 @@ gate_rpm() {
         || fail rpm "rpm2cpio|cpio refused $artifact"
     root=$(readlink -f "$root")
     check_notices rpm linux "$root"
+    check_modes rpm "$(rpm -qlvp "$artifact")"
     run_linux rpm "$root" "$root/usr/bin" "$root/usr/lib64"
     echo "package_install_gate: PASS rpm ($artifact)"
 }
@@ -356,6 +378,7 @@ gate_tar() {
     [ -d "$root" ] || fail tar "expected one madc-*-linux-x86_64 root in $artifact"
     root=$(readlink -f "$root")
     check_notices tar linux "$root"
+    check_modes tar "$(tar -tzvf "$artifact")"
     run_linux tar "$root" "$root/bin" ""
     # tarball-only negative control: hide the shipped library — the run
     # must FAIL, proving the green run above bound THIS lib via $ORIGIN
@@ -447,6 +470,7 @@ gate_mactar() {
     [ -d "$root" ] || fail mactar "expected one madc-*-macos-<arch> root in $artifact"
     root=$(cd "$root" && pwd)
     check_notices mactar macos "$root"
+    check_modes mactar "$(tar -tzvf "$artifact")"
     host=$(uname -s)
     if [ "$host" != Darwin ]; then
         echo "package_install_gate: SKIP mactar's run legs ($artifact — darwin binaries do not execute on $host; the release.yml mac job runs them)"
