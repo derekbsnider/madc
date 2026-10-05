@@ -39628,11 +39628,16 @@ std::string Program::canonical_arg_key_fragment(
     // while every use site — spelled from the declared-type canonical dd —
     // keyed int32_tP: the specialization was invisible and the primary
     // instantiated silently (tests/testptrbuiltinspec.mad).
+    // A QUALIFIED core (`pmr::string`, a namespace's typedef — libstdc++ 11's
+    // `template<> struct hash<pmr::string>`) resolves through the spelling
+    // owner, which reads the namespace's types; the flat named lookup does
+    // not, and the specialization keyed on the raw spelling while its use
+    // sites key the class it names.
     if ( !core.empty() && core.find('<') == std::string::npos )
     {
 	DataDef *cdd = resolve_builtin_type_spelling(core);
 	if ( !cdd )
-	    cdd = resolve_named_datadef(core);
+	    cdd = resolve_arg_spelling_datadef(*this, core);
 	if ( cdd )
 	{
 	    const std::string &cs = cdd->canonical_cpp_spelling();
