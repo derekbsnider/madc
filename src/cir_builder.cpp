@@ -13867,6 +13867,10 @@ DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 			}
 		}
 	}
+	// An array operand is no class object, whatever its (flattened) element
+	// — Program::operand_object_class's rule, through the one array owner.
+	if (m_prog->array_operand_type(t))
+		return NULL;
 	DataDef *dd = t->datadef();
 	if (DataDefCLASS *c = as_class_instance(dd))
 		return c;

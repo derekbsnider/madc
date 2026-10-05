@@ -21593,6 +21593,13 @@ DataDefCLASS *Program::operand_object_class(TokenBase *operand)
 {
     if ( !operand )
 	return NULL;
+    // An operand that denotes an ARRAY is no class object, whatever its
+    // element ([conv.array]): madc stores an array flattened, so datadef()
+    // names the element, and `a + 1` over an array of a class with a
+    // constructor typed as D::operator+'s missing result (int) instead of
+    // the decayed D*.
+    if ( array_operand_type(operand) )
+	return NULL;
     DataDef *dd = operand->datadef();
     if ( DataDefCLASS *c = (dd ? dd->as_class_dd() : NULL) )
 	return c;
