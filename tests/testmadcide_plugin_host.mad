@@ -82,9 +82,19 @@ int main()
     println("transport-no-code: {}", php::str_replace(cfg.c_str(), "CFG", why.c_str()));
     php::file_put_contents(mp.c_str(), "{\"name\": \"hosted\", \"api\": 3, \"code\": \"hosted.mad\", \"transport\": \"host\"}\n");
     var sp = format("{}/hosted.mad", hdir);
+    // hcrash crashes on purpose and dumps no core: the child's ~330 MB core
+    // fed to a crash collector (core_pattern a pipe — WSL's, apport,
+    // systemd-coredump — which a core limit of 0 does not stop) made each
+    // crash cost seconds and the test time out under load. Linux: the child
+    // stops being dumpable; elsewhere: a core limit of 0.
     put(files, sp,
 	"#include <madcide/plugin>\n"
 	"extern \"C\" int getpid(void);\n"
+	"#ifdef __linux__\n"
+	"extern \"C\" int prctl(int option, ...);\n"
+	"#else\n"
+	"extern \"C\" int setrlimit(int resource, const long *limit);\n"
+	"#endif\n"
 	"bool hosted_greet(long w, long es, long doc, const char *arg)\n"
 	"{\n"
 	"    long pid = getpid();\n"
@@ -102,6 +112,12 @@ int main()
 	"}\n"
 	"bool hosted_crash(long w, long es, long doc, const char *arg)\n"
 	"{\n"
+	"#ifdef __linux__\n"
+	"    prctl(4, 0);\n"			// PR_SET_DUMPABLE
+	"#else\n"
+	"    long none[2] = { 0, 0 };\n"
+	"    setrlimit(4, none);\n"		// RLIMIT_CORE
+	"#endif\n"
 	"    int *p = (int *)0;\n"
 	"    *p = 1;\n"
 	"    return true;\n"
