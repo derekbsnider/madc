@@ -153,6 +153,8 @@ Shows the editor's modes.
 
 ## view
 Shows the program as the compiler sees it: its tree, its C, its assembly.
+On a Markdown file, shows the text as it reads, with the formatting
+characters hidden.
 
 ## panel
 Shows or hides the panel below the editor.

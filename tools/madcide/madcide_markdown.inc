@@ -379,3 +379,252 @@ bool md_spans(var &rows, const char *text0)
     md_node_spans(rows, lines, doc);
     return true;
 }
+
+// ---- the concealing lens: a Markdown text as it reads (plan §7d, consumer 3)
+// The formatted view of a Markdown buffer: its text with the formatting
+// characters CONCEALED, and the coordinate map back to the stored text
+// (madcdis/doc_lens.h: copy segments {disp, stored, len}; a stored byte in no
+// segment is concealed). What is concealed comes from the tree's source
+// positions (cmark's: exact for blocks and for an inline's delimiters):
+//  - an emphasis, strong, strikethrough, link or image: its range minus its
+//    children's — `**`, `_`, `~~`, `[` and `](url "title")`, `![`, `<` `>`;
+//  - a code span: the backtick runs just outside its content;
+//  - a heading: the `#`s before its text (and closing ones, or a setext
+//    underline, after it);
+//  - a block quote: each line's leading `>` prefix;
+//  - a fenced code block: its fence lines, with their newlines;
+//  - a text run: an escape's backslash (`\*` reads `*`).
+// An entity stays as written (showing `&` for `&amp;` would need synthetic
+// display bytes, not a concealment). List markers, tables, HTML and rules
+// stay: they read as text.
+
+// Each line's starting byte offset (line 1 at index 0).
+void text_line_starts(var &out, var &text)
+{
+    out = {};
+    out[] = 0;
+    const char *p = text.c_str();
+    long n = strlen(p);
+    for ( long i = 0; i < n; i = i + 1 )
+	if ( p[i] == '\n' )
+	    out[] = i + 1;
+}
+
+// A 1-based (line, column) as a byte offset; -1 off the text.
+long md_off(var &starts, long line, long col)
+{
+    if ( line < 1 || line > php::count(starts) )
+	return -1;
+    return starts[line - 1].as_integer() + col - 1;
+}
+
+// One concealed range [s, e) — ignored when empty or off the text. A range
+// is ONE integer, s * 2^32 + e, so the ranges sort as numbers (php::sort).
+void md_cut(var &cut, long s, long e)
+{
+    if ( s >= 0 && e > s )
+	cut[] = s * 4294967296 + e;
+}
+
+bool md_ascii_punct(long c)
+{
+    const char *pc = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
+    for ( long i = 0; pc[i] != 0; i = i + 1 )
+	if ( pc[i] == c )
+	    return true;
+    return false;
+}
+
+void md_conceal_node(var &cut, var &starts, var &text, var &n)
+{
+    long n_len = strlen(text.c_str());
+    long ns = md_off(starts, n["line"].as_integer(), n["col"].as_integer());
+    long ne = md_off(starts, n["end_line"].as_integer(), n["end_col"].as_integer()) + 1;
+    var kids;
+    keyed_get(kids, n, "children");
+    // the children's extent: the first and the last child with a position
+    // (a soft break reports none)
+    long cs = -1;
+    long ce = -1;
+    if ( !kids.is_null() )
+	for ( var c : kids )
+	{
+	    if ( c["line"].as_integer() < 1 )
+		continue;
+	    long s = md_off(starts, c["line"].as_integer(), c["col"].as_integer());
+	    long e = md_off(starts, c["end_line"].as_integer(), c["end_col"].as_integer()) + 1;
+	    if ( cs < 0 )
+		cs = s;
+	    ce = e;
+	}
+    var k = n["kind"];
+    if ( k == markdown::node_kind::emph || k == markdown::node_kind::strong
+      || k == markdown::node_kind::strikethrough || k == markdown::node_kind::link
+      || k == markdown::node_kind::image || k == markdown::node_kind::heading )
+    {
+	if ( cs >= 0 && ns >= 0 )
+	{
+	    md_cut(cut, ns, cs);
+	    md_cut(cut, ce, ne);
+	}
+    }
+    else if ( k == markdown::node_kind::code )
+    {
+	// the content's range; the backtick runs sit just outside it
+	const char *p = text.c_str();
+	long s = ns;
+	long e = ne;
+	while ( s > 0 && p[s - 1] == '`' )
+	    s = s - 1;
+	while ( e < n_len && p[e] == '`' )
+	    e = e + 1;
+	md_cut(cut, s, ns);
+	md_cut(cut, ne, e);
+	return;
+    }
+    else if ( k == markdown::node_kind::block_quote )
+    {
+	// every line's quote prefix — its `>`s, each with one space — from the
+	// quote's column on its first line (a list marker before it stays) and
+	// past the indentation on the rest (which stays); a lazy line has none
+	const char *p = text.c_str();
+	long first = n["line"].as_integer();
+	long last = n["end_line"].as_integer();
+	for ( long l = first; l <= last; l = l + 1 )
+	{
+	    long o = md_off(starts, l, l == first ? n["col"].as_integer() : 1);
+	    if ( o < 0 )
+		break;
+	    long q = o;
+	    long from = -1;
+	    long end = q;
+	    while ( q < n_len )
+	    {
+		while ( q < n_len && p[q] == ' ' )
+		    q = q + 1;
+		if ( q >= n_len || p[q] != '>' )
+		    break;
+		if ( from < 0 )
+		    from = q;
+		q = q + 1;
+		if ( q < n_len && p[q] == ' ' )
+		    q = q + 1;
+		end = q;
+	    }
+	    if ( from >= 0 )
+		md_cut(cut, from, end);
+	}
+    }
+    else if ( k == markdown::node_kind::code_block )
+    {
+	if ( !n["fenced"].as_boolean() )
+	    return;
+	long first = n["line"].as_integer();
+	long last = n["end_line"].as_integer();
+	long nl = php::count(starts);
+	// the opening fence line, its newline with it: from the block's column,
+	// back over the indentation before it (a list marker stays)
+	const char *p = text.c_str();
+	long o1 = md_off(starts, first, n["col"].as_integer());
+	long lo = md_off(starts, first, 1);
+	while ( o1 > lo && p[o1 - 1] == ' ' )
+	    o1 = o1 - 1;
+	long e1 = first < nl ? starts[first].as_integer() : n_len;
+	md_cut(cut, o1, e1);
+	// the opening fence: its character and its length
+	long f = o1;
+	while ( f < e1 && p[f] == ' ' )
+	    f = f + 1;
+	long fch = f < n_len ? (long)p[f] : 0;
+	long flen = 0;
+	while ( f + flen < e1 && p[f + flen] == fch )
+	    flen = flen + 1;
+	// the closing fence line when there is one (an unclosed block runs on
+	// to its container's end): container prefix, a run of the opening
+	// fence's character at least as long, spaces — the whole line goes
+	if ( last > first && flen >= 3 )
+	{
+	    long o2 = md_off(starts, last, 1);
+	    long e2 = last < nl ? starts[last].as_integer() : n_len;
+	    long q = o2;
+	    while ( q < e2 && (p[q] == ' ' || p[q] == '>') )
+		q = q + 1;
+	    long run = 0;
+	    while ( q < e2 && p[q] == fch )
+	    {
+		q = q + 1;
+		run = run + 1;
+	    }
+	    while ( q < e2 && (p[q] == ' ' || p[q] == '\n') )
+		q = q + 1;
+	    if ( run >= flen && q == e2 )
+		md_cut(cut, o2, e2);
+	}
+	return;
+    }
+    else if ( k == markdown::node_kind::text )
+    {
+	// an escape's backslash, inside the text run's source
+	const char *p = text.c_str();
+	long i = ns;
+	while ( i >= 0 && i + 1 < ne && i + 1 < n_len )
+	{
+	    if ( p[i] == '\\' && md_ascii_punct((long)(unsigned char)p[i + 1]) )
+	    {
+		md_cut(cut, i, i + 1);
+		i = i + 2;
+	    }
+	    else
+		i = i + 1;
+	}
+	return;
+    }
+    if ( !kids.is_null() )
+	for ( var c : kids )
+	    md_conceal_node(cut, starts, text, c);
+}
+
+// The display text and its map: the stored text's visible runs, in order.
+// False when the madcmark module is absent.
+bool md_conceal(var &display, var &map, const char *text0)
+{
+    var text = text0;		// ring discipline: own the text first
+    if ( !markdown::available() )
+	return false;
+    var doc;
+    markdown::parse(doc, text.c_str());
+    var starts;
+    text_line_starts(starts, text);
+    var cut = {};
+    md_conceal_node(cut, starts, text, doc);
+    // in stored order; overlaps merge as the walk below skips them
+    php::sort(cut);
+    long nc = php::count(cut);
+    long n = strlen(text.c_str());
+    var segs = {};
+    var shown = "";
+    long pos = 0;
+    long disp = 0;
+    for ( long i = 0; i <= nc; i = i + 1 )
+    {
+	long s = n;
+	long e = n;
+	if ( i < nc )
+	{
+	    long key = cut[i].as_integer();
+	    s = key / 4294967296;
+	    e = key % 4294967296;
+	}
+	if ( s > pos )
+	{
+	    segs[] = { "disp": disp, "stored": pos, "len": s - pos };
+	    shown = format("{}{}", shown, perl::substr(text, pos, s - pos));
+	    disp = disp + s - pos;
+	}
+	if ( e > pos )
+	    pos = e;
+    }
+    display = shown;
+    map = segs;
+    return true;
+}

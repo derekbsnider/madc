@@ -1873,8 +1873,9 @@ void load_status(long w, long es, const char *name)
 // its own). A class the scheme does not style is plain on both, so its
 // span is not emitted. ONE converter, three feeders: parse_spans
 // (refresh_spans, the full-parse state), lex_spans (colour at load
-// before the parse lands) and the view lens (enter_view: the lexer's
-// classes over the EMITTED text). `doc` is the buffer whose lines the
+// before the parse lands) and the view lens (lens_render: the lexer's
+// classes over the EMITTED text, or a concealing lens's stored-text spans
+// carried through its map). `doc` is the buffer whose lines the
 // rows address; `dest` is the entity the rows land on — the state bag
 // for the document's own spans, the view buffer for a lens's (owner
 // 2026-09-09: every emitted code view is coloured). Like the status
@@ -2418,10 +2419,31 @@ void view_spans(var &out, long w, long es, var &v)
 	ui::get(out, w, es, "hspans");
 }
 
+// A CONCEALING lens (plan 2026-10-03 §7d): its display is the stored text
+// with bytes hidden — the formatted view of a Markdown buffer — so its map
+// is exact both ways and the caret projects through it on entry and exit.
+// The compiler's renders (mc11 / c11 / c++) are wholly rendered instead.
+bool lens_conceals(long lang)
+{
+    return lang == madc::fkMARKDOWN;
+}
+
+// A render language's name as a View shows it: a concealing lens is
+// "formatted" (its subject's kind is the same), a compiler render its kind's
+// name (madc::file_kind_name: "mc11" / "c11" / "c++").
+void lens_lang_name(var &out, long lang)
+{
+    if ( lens_conceals(lang) )
+	out = "formatted";
+    else
+	out = madc::file_kind_name(lang);
+}
+
 // THE lens-up rule, one seat (dupaudit family view_active_predicate): a
 // lens is up iff the focused View is a code render (viewCODE). Out = the
-// render language's name (madc::file_kind_name: "mc11" / "c11" / "c++"),
-// "" otherwise; false = the identity lens (a source View, or no View yet).
+// render language's name (lens_lang_name: "mc11" / "c11" / "c++" /
+// "formatted"), "" otherwise; false = the identity lens (a source View, or
+// no View yet).
 bool lens_name(var &out, long w, long es)
 {
     out = "";
@@ -2430,7 +2452,7 @@ bool lens_name(var &out, long w, long es)
 	return false;
     if ( v["kind"].as_integer() != viewCODE )
 	return false;
-    out = madc::file_kind_name(v["lang"].as_integer());
+    lens_lang_name(out, v["lang"].as_integer());
     return true;
 }
 
@@ -3609,22 +3631,98 @@ long nav_doc(long w, long es, long doc)
     return view_text_entity(v, doc);
 }
 
-// Re-represent the focused View as a code View in `lang` (madc::fkMC11 /
-// fkC11 / fkCPP — the kinds the emitter renders). False = the buffer does
-// not translate (the compiler's own rows surface; the View is unchanged).
+// Stored-space span rows {line, column, length, class} carried onto a
+// concealing lens's display through its map: each span's two ends project
+// (ui::lens_to_display — a concealed run inside a span just vanishes), and
+// the display offset becomes a display (line, column). A span whose bytes
+// are all concealed drops.
+void lens_spans(var &out, var &rows, var &stored, var &display, var &map)
+{
+    out = {};
+    var sst;
+    text_line_starts(sst, stored);
+    var dst;
+    text_line_starts(dst, display);
+    long nd = php::count(dst);
+    for ( var r : rows )
+    {
+	long l = r["line"].as_integer();
+	if ( l < 1 || l > php::count(sst) )
+	    continue;
+	long s = sst[l - 1].as_integer() + r["column"].as_integer();
+	long ds = ui::lens_to_display(map, s);
+	long de = ui::lens_to_display(map, s + r["length"].as_integer());
+	if ( ds < 0 || de <= ds )
+	    continue;
+	// the display line holding ds: the last line start at or before it
+	long lo = 0;
+	long hi = nd - 1;
+	while ( lo < hi )
+	{
+	    long mid = (lo + hi + 1) / 2;
+	    if ( dst[mid].as_integer() <= ds )
+		lo = mid;
+	    else
+		hi = mid - 1;
+	}
+	out[] = { "line": lo + 1, "column": ds - dst[lo].as_integer(),
+		  "length": de - ds, "class": r["class"] };
+    }
+}
+
+// A lens's render of text `t` (named `p`) in `lang`: the display text, its
+// coordinate map and its colour (span rows over the display). A concealing
+// lens hides the Markdown formatting (md_conceal) and carries the stored
+// text's own spans through the map; a compiler render is madc::emit's text
+// and map (V5), coloured by the lexer alone over the emitted text. False =
+// the text does not render.
+bool lens_render(var &shown, var &vmap, var &vrows, var &t, var &p, long lang)
+{
+    if ( lens_conceals(lang) )
+    {
+	if ( !md_conceal(shown, vmap, t.c_str()) )
+	    return false;
+	var srows;
+	md_spans(srows, t.c_str());
+	lens_spans(vrows, srows, t, shown, vmap);
+	return true;
+    }
+    if ( !madc::emit(shown, vmap, t.c_str(), p.c_str(), lang) )
+	return false;
+    madc::lex_spans(vrows, shown.c_str(), p.c_str());
+    return true;
+}
+
+// Re-represent the focused View as a lens in `lang`: a code View of the
+// emitter's render (madc::fkMC11 / fkC11 / fkCPP), or the formatted view of
+// a Markdown buffer (madc::fkMARKDOWN, a concealing lens). False = the
+// buffer does not render that way (a compiler render surfaces the
+// compiler's own rows; the View is unchanged).
 bool enter_lens(long w, long es, long doc, long lang)
 {
     var t;
     ui::text(t, w, doc);
     var p;
     doc_name(p, w, doc);
+    var lname;
+    lens_lang_name(lname, lang);
+    if ( lens_conceals(lang) && doc_kind(w, doc) != lang )
+    {
+	ui::set(w, es, "msg", format("View: {} applies to a {} buffer.", lname,
+				     madc::file_kind_name(lang)));
+	return false;
+    }
     var emitted;
     var vmap;			// V5: the source↔display coordinate map, beside the text
-    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
+    var vrows;
+    if ( !lens_render(emitted, vmap, vrows, t, p, lang) )
     {
 	// The buffer does not translate: surface the compiler's own rows
 	// instead of a bare refusal.
-	run_check(w, es, doc);
+	if ( lens_conceals(lang) )
+	    ui::set(w, es, "msg", "View: the Markdown module is not available.");
+	else
+	    run_check(w, es, doc);
 	return false;
     }
     long id = ensure_focused_view(w, es, doc);
@@ -3643,30 +3741,38 @@ bool enter_lens(long w, long es, long doc, long lang)
 				// document and carries no kind)
     // Colour on the lens (owner 2026-09-09: every emitted code view is
     // syntax-coloured): the render buffer carries its OWN highlight spans —
-    // the lexer-alone classification (the colour-at-load path) over the
-    // EMITTED text, through the one converter, landing on the render
+    // lens_render's rows, through the one converter, landing on the render
     // buffer; the composer attaches the spans of whichever buffer it
     // shows (view_spans). The emitted text is already indented — the
     // emitter's own layout (src/cir_emit_c.cpp), one owner for --emit and
     // every lens.
-    var vrows;
-    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
     spans_to_hspans(w, es, vd, vrows, vd);
+    // the stored-space caret: the one parked on entry from the source View,
+    // or a concealing lens's display caret carried back (a lens-to-lens
+    // cycle never re-parks)
+    long scaret = es_int(w, es, "caret", 0);
     if ( v["kind"].as_integer() != viewCODE )
-	ui::set(w, es, "ocaret", es_int(w, es, "caret", 0));	// the CONTAINER
+	ui::set(w, es, "ocaret", scaret);	// the CONTAINER
 				// parks its stored-space caret (never the row)
+    else
+	scaret = es_int(w, es, "ocaret", 0);
     v["kind"] = viewCODE;
     v["lang"] = lang;
     v["generator"] = genMADC;
     v["vbuf"] = vd;
     v["map"] = vmap;		// V5: fills the vmap that was EMPTY (design §2.6)
     view_store(w, es, v);
-    ui::set(w, es, "caret", 0);
+    // a concealing lens keeps the caret where it was (projected); a
+    // compiler render starts at the top
+    long dcaret = 0;
+    if ( lens_conceals(lang) )
+	dcaret = ui::lens_to_display(vmap, scaret);
+    ui::set(w, es, "caret", dcaret < 0 ? 0 : dcaret);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     ui::set(w, es, "editable", false);
     ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
-    ui::set(w, es, "msg", format("View: {}", madc::file_kind_name(lang)));
+    ui::set(w, es, "msg", format("View: {}", lname));
     return true;
 }
 
@@ -3675,8 +3781,18 @@ bool enter_lens(long w, long es, long doc, long lang)
 void exit_lens(long w, long es, long doc)
 {
     var v;
+    long back = es_int(w, es, "ocaret", 0);
     if ( view_row(v, w, es, focused_view(w, es)) )
     {
+	if ( v["kind"].as_integer() == viewCODE && lens_conceals(v["lang"].as_integer()) )
+	{
+	    // the caret moved over the formatted text: where it reads, the
+	    // stored text's caret lands (the earlier side of a concealed run)
+	    var m = v["map"];
+	    long s = ui::lens_to_stored(m, es_int(w, es, "caret", 0));
+	    if ( s >= 0 )
+		back = s;
+	}
 	long subject = v["subject"].as_integer();
 	v["kind"] = viewSOURCE;
 	v["lang"] = doc_kind(w, subject);
@@ -3686,14 +3802,15 @@ void exit_lens(long w, long es, long doc)
 	v["map"] = nomap;
 	view_store(w, es, v);
     }
-    ui::set(w, es, "caret", es_int(w, es, "ocaret", 0));
+    ui::set(w, es, "caret", back);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     derive_access(w, es);	// the file's own verdict returns
 }
 
 // A STANDALONE code View of `subject` in `lang` (madc::fkMC11 / fkC11 /
-// fkCPP): a NEW View with its own render buffer, coloured like the lens, the
+// fkCPP, or a Markdown subject's formatted view, madc::fkMARKDOWN): a NEW
+// View with its own render buffer, coloured like the lens, the
 // subject untouched — for a `viewsplit right mc11` second pane (source left,
 // MC11 right) that does NOT re-represent the focused View. 0 = the subject
 // does not translate. The focused re-representation stays enter_lens; this is
@@ -3704,9 +3821,12 @@ long make_code_view(long w, long es, long subject, long lang)
     ui::text(t, w, subject);
     var p;
     doc_name(p, w, subject);
+    if ( lens_conceals(lang) && doc_kind(w, subject) != lang )
+	return 0;
     var emitted;
     var vmap;			// V5: the source↔display coordinate map
-    if ( !madc::emit(emitted, vmap, t.c_str(), p.c_str(), lang) )
+    var vrows;
+    if ( !lens_render(emitted, vmap, vrows, t, p, lang) )
 	return 0;
     long id = view_new(w, es, subject, viewCODE, lang);
     var v;
@@ -3714,8 +3834,6 @@ long make_code_view(long w, long es, long subject, long lang)
     long vd = ui::create(w, "view-buffer");
     ui::text_load(w, vd, emitted.c_str());
     ui::set(w, vd, "path", p);		// the status %n seat: a display path
-    var vrows;
-    madc::lex_spans(vrows, emitted.c_str(), p.c_str());
     spans_to_hspans(w, es, vd, vrows, vd);
     v["generator"] = genMADC;
     v["vbuf"] = vd;
@@ -6786,7 +6904,8 @@ bool cxx_view_applies(long w, long es, long doc)
 }
 
 // ^K A (IDE-9e moved it off ^K N, now nextw): original -> mc11 -> c11
-// [-> c++ on a C/C++ buffer] -> original.
+// [-> c++ on a C/C++ buffer] -> original; a Markdown buffer: original ->
+// formatted -> original; any other text kind has no other view.
 // A failed enter falls back to the original — the session is never
 // trapped inside a stale view.
 // The cycle REPLACES the focused View's representation in place (one View
@@ -6797,9 +6916,16 @@ void cycle_view(long w, long es, long doc)
     var v;
     bool up = view_row(v, w, es, focused_view(w, es))
 	   && v["kind"].as_integer() == viewCODE;
+    long k = doc_kind(w, doc);
     if ( !up )
     {
-	enter_lens(w, es, doc, madc::fkMC11);
+	if ( lens_conceals(k) )
+	    enter_lens(w, es, doc, k);
+	else if ( kind_reaches_compiler(k) )
+	    enter_lens(w, es, doc, madc::fkMC11);
+	else
+	    ui::set(w, es, "msg", format("View: a {} file has no other view.",
+					 madc::file_kind_name(k)));
 	return;
     }
     switch ( v["lang"].as_integer() )
@@ -7347,6 +7473,8 @@ long viewrepr_lang_of(var &word)
 	return madc::fkC11;
     if ( a == "cpp" || a == "c++" || a == "cxx" )
 	return madc::fkCPP;
+    if ( a == "formatted" )
+	return madc::fkMARKDOWN;	// the concealing lens (lens_conceals)
     return 0;			// source / src / unknown = a source pane
 }
 
@@ -7407,14 +7535,26 @@ void view_split(long w, long es, long doc, long dir, long lang)
     if ( lang != 0 )
     {
 	nv = make_code_view(w, es, subject, lang);
+	var lname;
+	lens_lang_name(lname, lang);
 	if ( nv == 0 )
 	{
 	    ui::set(w, es, "msg",
 		    format("Cannot render {} — the buffer does not translate.",
-			   madc::file_kind_name(lang)));
+			   lname));
 	    return;
 	}
 	pcar = 0;			// a fresh code render starts at the top
+	if ( lens_conceals(lang) )
+	{
+	    // a concealing lens opens where the caret reads
+	    var nvr;
+	    view_row(nvr, w, es, nv);
+	    var m = nvr["map"];
+	    long d = ui::lens_to_display(m, ca);
+	    if ( d > 0 )
+		pcar = d;
+	}
 	tkind = viewCODE;
     }
     else
@@ -8666,7 +8806,9 @@ void compose_view_node(var &ed, long w, long es, long id, long doc,
 void view_lens_hints(var &eh, long w, long es, var &v)
 {
     long lang = v["lang"].as_integer();
-    eh["view"] = madc::file_kind_name(lang);
+    var lname;
+    lens_lang_name(lname, lang);
+    eh["view"] = lname;
     eh["lang_code"] = lang;
     eh["map"] = v["map"];
     var vhs;

@@ -1,0 +1,85 @@
+// The concealing lens (plan docs/plans/2026-10-03-chthonia-windows-macos.md
+// §7d, consumer 3; tools/madcide/madcide_markdown.inc md_conceal): ^K A on a
+// Markdown buffer shows its text as it reads — the `#`s, `**`, backticks,
+// `[` `](x.md)`, an escape's backslash, the `> ` quote prefixes and the fence
+// lines concealed — over a map whose copy segments are the visible runs. The
+// stored-text colour rides through the map (a fence line's span drops); the
+// caret projects in (the same character) and back out (the earlier side of a
+// concealed run); the view is read-only and the cycle is original ->
+// formatted -> original. A plain-text buffer has no other view.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void show(var &out, var &t)
+{
+    out = php::str_replace("\n", "|", t.c_str());
+}
+
+int main()
+{
+    const char *path = "madc_ide_mdlens.md";
+    php::file_put_contents(path,
+	"# Title\n\nSome **bold** and `code`, a [link](x.md) and \\*stars\\*.\n\n> quoted\n> line\n\n```c\nint x;\n```\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    long w = S.w;
+    long es = S.es;
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    load_theme(w, es, "default");
+    var st;
+    ui::text(st, w, doc);
+    ui::set(w, es, "caret", perl::index(st.c_str(), "bold"));
+    bool cont = true;
+    S.command(doc, cmdVIEW, "", cont);	// original -> formatted
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    long vd = v["vbuf"].as_integer();
+    var dt;
+    ui::text(dt, w, vd);
+    var shown;
+    show(shown, dt);
+    println("display: {}", shown);
+    var vname;
+    lens_name(vname, w, es);
+    var m = v["map"];
+    var msg;
+    ui::get(msg, w, es, "msg");
+    println("lens: name={} msg={} segments={} editable={}", vname, msg, php::count(m),
+	    es_flag(w, es, "editable") ? 1 : 0);
+    for ( var sg : m )
+	println("seg disp={} stored={} len={}", sg["disp"], sg["stored"], sg["len"]);
+    long dc = es_int(w, es, "caret", 0);
+    println("caret in: display={} reads={}", dc, perl::substr(dt, dc, 4));
+    var hs;
+    ui::get(hs, w, vd, "hspans");
+    for ( var sp : hs )
+    {
+	long s = sp["s"].as_integer();
+	long e = sp["e"].as_integer();
+	println("span {} {}", sp["c"], perl::substr(dt, s, e - s));
+    }
+    println("spans={}", php::count(hs));
+    // the caret over the formatted text, back to the stored text
+    ui::set(w, es, "caret", perl::index(dt.c_str(), "link"));
+    S.command(doc, cmdVIEW, "", cont);	// formatted -> original
+    long sc = es_int(w, es, "caret", 0);
+    view_row(v, w, es, focused_view(w, es));
+    println("caret out: stored={} reads={} source={} editable={}", sc,
+	    perl::substr(st, sc, 5), v["kind"].as_integer() == viewSOURCE ? 1 : 0,
+	    es_flag(w, es, "editable") ? 1 : 0);
+    S.close();
+    php::unlink(path);
+
+    const char *tpath = "madc_ide_mdlens.txt";
+    php::file_put_contents(tpath, "plain\n");
+    IdeSession T;
+    long tdoc = T.open(tpath, false);
+    T.command(tdoc, cmdVIEW, "", cont);
+    ui::get(msg, T.w, T.es, "msg");
+    view_row(v, T.w, T.es, focused_view(T.w, T.es));
+    println("text: msg={} source={}", msg, v["kind"].as_integer() == viewSOURCE ? 1 : 0);
+    T.close();
+    php::unlink(tpath);
+    return 0;
+}

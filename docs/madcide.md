@@ -70,7 +70,7 @@ The JOE defaults most worth knowing:
 | `^_` · `^^` · `^Y` · `^W` | undo · redo · delete line · delete word |
 | `^K ;` · `^B` · `^K I` · `^P` | check · Build… · outline · the Project window |
 | `^K O` `^K N` `^K P` · `^K 0` `^K 1` | split / next / previous window · close / only window |
-| `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses, indented and syntax-coloured like the source) |
+| `^K A` | cycle the code view: the source, its MC11 lowering, C11, C++ (read-only lenses, indented and syntax-coloured like the source); on a Markdown buffer, the source and its formatted view |
 | `^N` · `^K Z` | the Modes palette (`:` = the vi colon line, `v` = vi modal editing) · a shell |
 
 A binding's keys may carry modifiers: `ctrl+shift+s`, `ctrl+f2`,
@@ -312,6 +312,17 @@ save. A buffer whose kind is not the compiler's (Markdown, plain text, the
 other text formats) is never parsed as C: it has no parse, no diagnostics
 and no outline, and Check says it is not compiled.
 
+`^K A` on a Markdown buffer switches it to its **formatted view**: the same
+text with the formatting characters hidden. That covers a heading's `#`s,
+the `**`, `_` and `~~` around emphasis, a code span's backticks, a link's
+`[` and `](target)`, a quote's `>`, a fenced block's fence lines and an
+escape's backslash. Entities, list markers and tables stay as written. The
+view keeps the buffer's colours and its cursor: the cursor lands on the
+same character, and `^K A` again returns to the source at the character
+the cursor reached. The view is read-only for now (editing through it
+comes next). `:viewsplit right formatted` puts it beside the source, and
+`:viewopen formatted` switches the focused pane to it.
+
 ## Sharing a session
 
 One madcide session can carry more than one client: the editor you are typing
@@ -405,7 +416,8 @@ side — and the sidebar and bottom panel are fixed-slot chrome. The colon line
   MC11 on the right** (V5 will correlate their carets). `:viewsplit bottom …`
   splits horizontally instead.
 - `:viewfocus next|prev` moves the focus between panes; `:viewopen
-  mc11|c11|cpp|source` re-represents the focused pane in place; `:viewclose`
+  mc11|c11|cpp|formatted|source` re-represents the focused pane in place
+  (`formatted` is a Markdown buffer's formatted view); `:viewclose`
   closes it (the split collapses to its sibling; the first pane stays open —
   quit closes that).
 - `:viewdock left|right|top|bottom` moves the focused chrome pane (the sidebar

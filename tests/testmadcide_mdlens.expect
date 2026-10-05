@@ -1,0 +1,23 @@
+display: Title||Some bold and code, a link and *stars*.||quoted|line||int x;|
+lens: name=formatted msg=View: formatted segments=12 editable=0
+seg disp=0 stored=2 len=12
+seg disp=12 stored=16 len=4
+seg disp=16 stored=22 len=5
+seg disp=21 stored=28 len=4
+seg disp=25 stored=33 len=4
+seg disp=29 stored=38 len=4
+seg disp=33 stored=49 len=5
+seg disp=38 stored=55 len=6
+seg disp=44 stored=62 len=4
+seg disp=48 stored=68 len=7
+seg disp=55 stored=77 len=6
+seg disp=61 stored=88 len=7
+caret in: display=12 reads=bold
+span bold Title
+span bold bold
+span cyan code
+span bold link
+span cyan int x;
+spans=5
+caret out: stored=37 reads=[link source=1 editable=1
+text: msg=View: a text file has no other view. source=1

@@ -488,6 +488,39 @@ The lens takes the ranges and scans for the backtick runs, the escapes and
 the entities; nothing needs patching in the dependency. Still to check:
 the help pane's scrolling on a rendered window.
 
+**The lens, slice 1: read-only (2026-10-05).** `^K A` on a Markdown buffer
+cycles original → formatted → original; a compiler kind keeps mc11 → c11
+[→ c++], and another text kind has no other view. `md_conceal`
+(`madcide_markdown.inc`) takes the concealed ranges from the tree:
+- an emphasis, strong, strikethrough, link, image or heading: its range
+  minus its children's;
+- a code span: the backtick runs outside its content;
+- a block quote: each line's `>` prefix;
+- a fenced code block: its fence lines, with their newlines;
+- a text run: each escape's backslash.
+
+Its map is the visible runs, as copy segments. An entity stays as written:
+its decoded form would be synthetic bytes, not a concealment. List markers,
+tables, HTML and rules read as text. The lens rides the existing seat
+(`enter_lens`: a View with its own render buffer, read-only, `lens_render`
+shared with `make_code_view`):
+- its colour is the stored text's spans, carried through the map
+  (`lens_spans`);
+- the caret projects in (`lens_to_display`) and back out (`lens_to_stored`,
+  the earlier side of a concealed run);
+- `viewsplit right formatted` puts it beside the source, cursor-synced
+  through the same map.
+
+**Slice 2: the put direction.** An insertion in the formatted view lands in
+the stored text at `lens_to_stored` of its display offset. The earlier
+side of a boundary means text typed after `bold` stays inside `**bold**`,
+and text typed before it stays outside. The lens then re-renders and the
+caret re-projects. A deletion removes the visible bytes in its range. A
+concealed run strictly inside the range goes with it, and one at its edges
+stays. A construct the deletion leaves empty (`****`, `[]()`) goes whole.
+Undo and the change log stay in stored offsets: the lens never holds a
+history of its own.
+
 Gates: a conformance lane over the CommonMark spec examples (a ratchet,
 like the C lanes); the shipped-notices check in `package_install_gate.sh`
 — a data list of the libraries each package links, each artifact carrying
@@ -627,8 +660,9 @@ building (§7c) → the libgit2 floor (1.8.7 / 1.9.7, owner 2026-10-04) →
 REPL commands and the Variables row (§7f: the row, `%load`, `%run`, the `.`
 prefix, `%call`, `%build`, the IDE layer and `%git`'s read verbs done) → Help and Markdown
 (§7d: the `madcmark` module on all three platforms, the shipped-notices check,
-Help's topics, Markdown Preview and `.md` highlighting done; the concealing
-lens and the CommonMark conformance lane to go) → Git
+Help's topics, Markdown Preview, `.md` highlighting, the CommonMark
+conformance lane and the concealing lens's read-only slice done; the lens's
+put direction to go) → Git
 (§7e: stage 1 done with `%git`) → Recent files and the rest of §7a → the
 debugger arc.
 Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working
