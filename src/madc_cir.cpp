@@ -177,7 +177,7 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 	const char *lib = madc_stdlib_probe_standin_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!madcdl_open_global(lib))
+	if (!madcdl_open_global(lib))	// system runtime: a fixed image, not a user library
 	    fprintf(stderr, "madc: warning: probe stand-in runtime %s: %s\n",
 		    lib, madcdl_error());
     }
@@ -196,7 +196,7 @@ static void cir_open_stdlib_runtime(const madc_stdlib_flavor *flavor)
 	const char *lib = flavor->link_libs[i];
 	if (!opened.insert(lib).second)
 	    continue;
-	if (!madcdl_open_global(lib))
+	if (!madcdl_open_global(lib))	// system runtime: a fixed image, not a user library
 	    fprintf(stderr, "madc: warning: stdlib flavor %s runtime %s: %s\n",
 		    flavor->name ? flavor->name : "?", lib, madcdl_error());
     }
@@ -1449,11 +1449,13 @@ bool CirJitSession::build_frozen(const void *image, size_t image_len,
 
     // Recreate the freezing process's link environment (#load / -l dlopens)
     // BEFORE materialize + link, so import resolution sees the same symbols.
+    // The same opener as the freezing run's -l (madc_module_open).
     for (size_t i = 0; i < forest->libs().size(); ++i) {
 	const std::string &lib = forest->libs()[i];
-	if (!madcdl_open_global(lib.c_str())) {
+	std::string lerr;
+	if (!madc_module_open(lib, lerr)) {
 	    fprintf(stderr, "madc: frozen forest needs %s: %s\n",
-		    lib.c_str(), madcdl_error());
+		    lib.c_str(), lerr.c_str());
 	    teardown();
 	    return false;
 	}

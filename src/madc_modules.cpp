@@ -123,19 +123,20 @@ std::string madc_module_library_spelling(const std::string &name)
 	return madc_module_library_spelling(name, madc_target_os);
 }
 
-void *madc_module_open(const std::string &spelling, std::string &error)
+void *madc_module_open(const std::string &spelling, std::string &error,
+		       bool bind_now)
 {
 	error.clear();
 	if (!is_path_spelling(spelling)) {
 		std::string libdir = madc_self_lib_dir();
 		if (!libdir.empty()) {
 			std::string beside = libdir + "/" + spelling;
-			if (void *h = madcdl_open_global(beside.c_str()))
+			if (void *h = madcdl_open_global(beside.c_str(), bind_now))
 				return h;
 			(void)madcdl_error();	// consume; the loader's own search follows
 		}
 	}
-	void *h = madcdl_open_global(spelling.c_str());
+	void *h = madcdl_open_global(spelling.c_str(), bind_now);
 	if (!h) {
 		const char *e = madcdl_error();
 		error = e ? e : "cannot open";

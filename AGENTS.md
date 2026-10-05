@@ -117,7 +117,10 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    `check-one-path-within.sh`); a library's platform spelling (the `lib`
    prefix, `.so` / `.dylib` / `.dll`, the real runtime image names) is
    `madc_module_library_spelling()` in `src/madc_modules.cpp` (gated by
-   `check-one-library-spelling.sh`); a parse over its own token run — an
+   `check-one-library-spelling.sh`), and a library a program names (`import`,
+   `#load`, `"libs"`, `-l`) opens through `madc_module_open()` beside it —
+   madc's own lib directory first (gated by `check-one-library-opener.sh`);
+   a parse over its own token run — an
    isolated sub-stream or a run injected ahead of the live stream — is
    `Program::NestedTokenStream`, which also returns the outer read context
    (`curToken` / `prevToken` / `ParsePosition`) on every exit (gated by

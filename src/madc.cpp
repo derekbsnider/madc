@@ -1218,14 +1218,18 @@ int main(int argc, char **argv)
     // before any compile/run so it applies to both the single-file and
     // --project paths. In AOT mode nothing reads import addresses (they become
     // undefined ELF symbols) — the libs go to the host link line instead.
+    // The opener is import's (madc_module_open): madc's own lib directory
+    // first, then the loader, so an installed madc's -lmadcide finds the
+    // libmadcide beside it.
     for ( const std::string &lib : link_libs )
     {
         if ( emit_native )
             break;
-        if ( !madcdl_open_global(lib.c_str(), /*bind_now=*/true) )
+        std::string lerr;
+        if ( !madc_module_open(lib, lerr, /*bind_now=*/true) )
         {
             std::cerr << "madc: -l: failed to load " << lib << ": "
-                      << madcdl_error() << std::endl;
+                      << lerr << std::endl;
             return 1;
         }
         prog->loaded_lib_paths.push_back(lib);   // the frozen-forest link closure

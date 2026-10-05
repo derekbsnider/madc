@@ -68,7 +68,11 @@ std::string madc_module_library_spelling(const std::string &name);	// for madc_t
 // Open a spelled library through the madc_dl seam into the default symbol
 // scope: a bare spelling is tried beside the running binary first
 // (<exe dir>/../lib/<spelling>, the relocatable install shape the runpath
-// uses), then as the loader itself searches. NULL + `error` on failure.
-void *madc_module_open(const std::string &spelling, std::string &error);
+// uses), then as the loader itself searches. `bind_now` resolves every
+// reference at open (the command line's -l: fail-fast). The one opener for
+// `import`, a manifest's "libs", -l and a frozen forest's recorded
+// libraries. NULL + `error` on failure.
+void *madc_module_open(const std::string &spelling, std::string &error,
+		       bool bind_now = false);
 
 #endif
