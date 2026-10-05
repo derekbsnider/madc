@@ -1,0 +1,128 @@
+// <madcide/harness> — the header a PRODUCT's tests include (plan
+// docs/plans/2026-10-04-chthonia-own-repository.md §3a, slice 3): the session
+// they drive (<madcide/session>), madcide's codes (<madcide/vocabulary>), the
+// base's functions they read the session's state through, and the drive
+// helpers a test client uses — the event builders, settle and enter_line.
+// The test links madcide's base, libmadcide (a manifest's "libs":
+// ["madcide"], or -lmadcide), which defines every function declared here;
+// scripts/check-madcide-harness.sh holds each declaration to its definition
+// in the base. madc's own madcide tests include it after the base's sources.
+//
+// Thread contract: a test drives its session from one thread; settle waits
+// for the session's own pump.
+#ifndef __MADCIDE_HARNESS_H
+#define __MADCIDE_HARNESS_H 1
+
+#include "vocabulary"
+#include "session"
+
+// ---- the base's functions a test reads the session through ---------------
+// The editor-state bag and its popup pane.
+long es_int(long w, long es, const char *key, long dflt);
+long cur_pane(long w, long es);
+void set_pane(long w, long es, long p);
+const char *pane_name(long p);
+// Commands by name (a test's input boundary) and back.
+long cmd_of_w(long w, const char *name);
+void cmd_name_w(var &out, long w, long code);
+// Documents, buffers and the session's language world.
+long setup_editor(long w, const char *path, bool ro);
+bool doc_untitled(long w, long doc);
+long caret_to_line(long w, long doc, long line, long col);
+void switch_buffer(long w, long es, long olddoc, long idx);
+long field_caret(long w, long fdoc);
+long lang_world(long w);
+void builtins_activate(long w, long es);
+// The layout, its Views and the chrome a window shows.
+void layout_get(var &lo, long w, long es);
+long slot_shown(long w, long es, long slot);
+bool view_shown(long w, long es, long kind);
+long view_of_w(long w, var &name);
+long view_row_cmd(long kind);
+long chrome_hosting(var &lo, long kind, long &tab);
+void compose_chrome_pane(var &out, long w, long es, long doc, var &c);
+bool compose_menu_bar(var &out, long w, long es, long doc, long nav);
+// The REPL pane.
+long repl_doc_if_any(long w, long es);
+long repl_view(long w);
+// Bundles, plugins and the configuration directory.
+void madcide_config_dir(var &out);
+bool json_object_read(var &out, var &why, var &path);
+bool plugin_find(var &dir, const char *name0);
+void plugin_library_path(var &out, var &dir, const char *name);
+bool plugin_build(var &why, var &rows, const char *dir0);
+long plugin_active_transport(long w, const char *name);
+
+// ---- driving the session as a client does ---------------------------------
+// The event builders a client sends (text, key, action), the settle that
+// lets the session's pump answer, and the REPL pane's input. Inline: every
+// unit that includes this header keeps one copy.
+
+inline void ev_text(var &e, const char *t)
+{
+    var f = { "event": "text", "event_code": ui::event_kind::text, "text": t };
+    e = f;
+}
+
+inline void ev_key(var &e, const char *k)
+{
+    var f = { "event": "key", "event_code": ui::event_kind::key, "key": k,
+	      "key_code": ui::key_code(k) };
+    e = f;
+}
+
+inline void ev_action(var &e, const char *a, const char *seq)
+{
+    var f = { "event": "action", "event_code": ui::event_kind::action,
+	      "action": a, "seq": seq };
+    e = f;
+}
+
+// Let the pump run until nothing is outstanding (or `ms` passed): an offer
+// answered, a completion answered — or, with `running`, until the offered
+// entry has been taken and runs.
+inline void settle(long w, long es, bool running)
+{
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	if ( running && es_int(w, es, "replrunning", 0) != 0 )
+	    return;
+	if ( !running && es_int(w, es, "replbusy", 0) == 0
+	     && es_int(w, es, "replcseq", 0) == 0
+	     && es_int(w, es, "replbseq", 0) == 0 )
+	    return;
+	madc::sleep_ms(10);
+    }
+    println("settle: timed out");
+}
+
+// Type a line into whatever has the keyboard, then press enter and settle.
+inline void enter_line(IdeSession &S, long doc, long w, long es, const char *text)
+{
+    var e;
+    if ( strlen(text) > 0 )
+    {
+	ev_text(e, text);
+	S.apply_ide_event(doc, e);
+    }
+    ev_key(e, "enter");
+    S.apply_ide_event(doc, e);
+    settle(w, es, false);
+}
+
+// Has the REPL pane's input the keyboard (1 / 0)? A console's focus is its
+// view's kind (consolefocus).
+inline long repl_focused(long w, long es)
+{
+    return es_int(w, es, "consolefocus", 0) == repl_view(w) ? 1 : 0;
+}
+
+// The REPL input's caret: the field's own, kept on its document (-1 = no
+// input yet).
+inline long repl_field_caret(long w, long es)
+{
+    long rin = es_int(w, es, "replin", 0);
+    return rin == 0 ? -1 : field_caret(w, rin);
+}
+
+#endif

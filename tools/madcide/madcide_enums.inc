@@ -22,44 +22,8 @@
 // as an integer; a misspelt enumerator does not compile.
 //
 // Thread contract: constants and pure functions over them.
-enum ide_cmd : unsigned short
-{
-    cmdNONE = 0,			// unbound chord / unknown name
-    // ---- the command registry (profiles/default.menu) ----
-    cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
-    cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
-    cmdDELLINE, cmdDELWORD, cmdDISCARD,
-    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdFONTLARGER, cmdFONTSMALLER, cmdFULLSCREEN, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
-    cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMDPREVIEW,
-    cmdMDPREVIEWROW, cmdMENUSHOW, cmdMODES,
-    cmdNEW, cmdNEXTW, cmdONLYWIN,
-    cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
-    cmdPROBLEMS, cmdPROFILE, cmdPROGARGS, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdRECENT, cmdREDO,
-    cmdREFRESH, cmdREPLACE, cmdSAVE, cmdSAVEALL, cmdSAVEAS,
-    cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
-    cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOGGLECOMMENT, cmdTOP, cmdUNDO, cmdVIEW,
-    cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
-    cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
-    cmdVIMODE, cmdWORDLEFT, cmdWORDRIGHT,
-    // ---- motions: the action name IS the key spelling (edit_key's keys) ----
-    cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
-    cmdPGUP, cmdPGDN, cmdBACKSPACE, cmdDEL, cmdENTER,
-    // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @insert) ----
-    cmdPCOMMIT, cmdPCANCEL, cmdPDELCHAR, cmdPYES, cmdPNO, cmdPALL, cmdPROJCLOSE, cmdPROJDELCHAR,
-    cmdPROJADD, cmdPROJDEL, cmdPROJOPEN, cmdMODESOPEN, cmdMODESCLOSE, cmdPANECLOSE,
-    cmdTERMUNFOCUS, cmdVINORMAL,
-    // ---- the vi grammar (@normal): operators, the G motion, insert entries ----
-    cmdVIDELETE, cmdVICHANGE, cmdVIGOTO, cmdVIINSERT, cmdVIINSERTBOL, cmdVIAPPEND,
-    cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
-    // ---- pane-row verbs: diagnostics/outline goto, the editor menu's w f q,
-    //      the ^T Options rows, the choice list's rows, the ^B palette's rows ----
-    cmdGOTO, cmdGOTODEF, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
-    cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdCHOICE, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
-    cmdBLD_STOP, cmdBLD_PROJ_CHECK, cmdBLD_PROJ_BUILD, cmdBLD_PROJ_RUN,
-    cmdBUILDROW				// a Build MENU row "build-<n>": the
-					// NAME carries the 1-based row (an
-					// argument, not a discriminator)
-};
+#include "include/madcide/vocabulary"	// ide_cmd, ide_pane, ide_slot, ide_view:
+					// the codes a product and its tests use
 
 // The ONE name <-> code table (rows, source order = the enum's groups). Built
 // on demand — the callers that convert many names (parse_keys, load_menu)
@@ -295,11 +259,6 @@ ui::key motion_key_of(long code)
 // tool Views (problems, outline, output, terminal) are not panes here: they
 // live in the layout's chrome panes (V2, design §2.2) and show through
 // show_view.
-enum ide_pane : unsigned char
-{
-    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT, paneCHOICE,
-    paneABOUT
-};
 const char *pane_name(long p)
 {
     switch ( p )
@@ -513,7 +472,6 @@ long bmode_of(var &m)
 // chrome, docked by the client's layout), or the editor region. Placement is
 // the layout's data (profiles/default.layout); slot_name is its wire word
 // (the page docks by `region`).
-enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL, slotEDITOR };
 const char *slot_name(long s)
 {
     switch ( s )
@@ -594,11 +552,6 @@ long pmode_of(var &name)
 // shows) and, from V2, the layout profile's INPUT words (`views source
 // problems`) — view_of converts once at load; a misspelling is viewNONE, the
 // caller's refusal, never a dead View.
-enum ide_view : unsigned char
-{
-    viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
-    viewPROJECT, viewOUTLINE, viewHELP, viewMDPREVIEW
-};
 const char *view_name(long k)
 {
     switch ( k )

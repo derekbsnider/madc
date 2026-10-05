@@ -1,0 +1,73 @@
+// <madcide/vocabulary> — madcide's public codes: the commands (ide_cmd),
+// the popup panes (ide_pane), the layout slots (ide_slot) and the Views'
+// kinds (ide_view). madcide's base dispatches on them, and a product and its
+// tests (<madcide/harness>) name them, so they live here, installed with the
+// plugin API headers; the base's own madcide_enums.inc includes this file
+// and keeps the names, the converters and its internal vocabularies.
+//
+// Prefixed UNSCOPED enums with a fixed base (the owner's spelling): a
+// misspelt enumerator does not compile; `var == cmdSAVE` compares as an
+// integer.
+//
+// Thread contract: constants.
+#ifndef __MADCIDE_VOCABULARY_H
+#define __MADCIDE_VOCABULARY_H 1
+
+enum ide_cmd : unsigned short
+{
+    cmdNONE = 0,			// unbound chord / unknown name
+    // ---- the command registry (profiles/default.menu) ----
+    cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
+    cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
+    cmdDELLINE, cmdDELWORD, cmdDISCARD,
+    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdFONTLARGER, cmdFONTSMALLER, cmdFULLSCREEN, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
+    cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMDPREVIEW,
+    cmdMDPREVIEWROW, cmdMENUSHOW, cmdMODES,
+    cmdNEW, cmdNEXTW, cmdONLYWIN,
+    cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
+    cmdPROBLEMS, cmdPROFILE, cmdPROGARGS, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdRECENT, cmdREDO,
+    cmdREFRESH, cmdREPLACE, cmdSAVE, cmdSAVEALL, cmdSAVEAS,
+    cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
+    cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOGGLECOMMENT, cmdTOP, cmdUNDO, cmdVIEW,
+    cmdVIEWCLOSE, cmdVIEWDOCK, cmdVIEWFOCUS, cmdVIEWOPEN, cmdVIEWSIZE,
+    cmdVIEWSPLIT, cmdVIEWSYNC, cmdVIEWWINDOW,
+    cmdVIMODE, cmdWORDLEFT, cmdWORDRIGHT,
+    // ---- motions: the action name IS the key spelling (edit_key's keys) ----
+    cmdLEFT, cmdRIGHT, cmdUP, cmdDOWN, cmdHOME, cmdEND,
+    cmdPGUP, cmdPGDN, cmdBACKSPACE, cmdDEL, cmdENTER,
+    // ---- modal-scope actions (@prompt @confirm @project @modes @pane @terminal @insert) ----
+    cmdPCOMMIT, cmdPCANCEL, cmdPDELCHAR, cmdPYES, cmdPNO, cmdPALL, cmdPROJCLOSE, cmdPROJDELCHAR,
+    cmdPROJADD, cmdPROJDEL, cmdPROJOPEN, cmdMODESOPEN, cmdMODESCLOSE, cmdPANECLOSE,
+    cmdTERMUNFOCUS, cmdVINORMAL,
+    // ---- the vi grammar (@normal): operators, the G motion, insert entries ----
+    cmdVIDELETE, cmdVICHANGE, cmdVIGOTO, cmdVIINSERT, cmdVIINSERTBOL, cmdVIAPPEND,
+    cmdVIAPPENDEOL, cmdVIOPENBELOW, cmdVIOPENABOVE,
+    // ---- pane-row verbs: diagnostics/outline goto, the editor menu's w f q,
+    //      the ^T Options rows, the choice list's rows, the ^B palette's rows ----
+    cmdGOTO, cmdGOTODEF, cmdW, cmdF, cmdQ, cmdOPT_TABWIDTH, cmdOPT_SCHEME,
+    cmdOPT_KEYMAP, cmdOPT_PROJKIND, cmdCHOICE, cmdBLD_CHECK, cmdBLD_NATIVE, cmdBLD_RUN, cmdBLD_RUN_CMD,
+    cmdBLD_STOP, cmdBLD_PROJ_CHECK, cmdBLD_PROJ_BUILD, cmdBLD_PROJ_RUN,
+    cmdBUILDROW				// a Build MENU row "build-<n>": the
+					// NAME carries the 1-based row (an
+					// argument, not a discriminator)
+};
+
+// The POPUP pane a client shows (paneNONE = none up).
+enum ide_pane : unsigned char
+{
+    paneNONE = 0, paneHELP, paneOPTIONS, paneBUILD, paneMODES, panePROJECT, paneCHOICE,
+    paneABOUT
+};
+
+// A layout SLOT: where a pane sits — a popup, the sidebar, the panel or the
+// editor region.
+enum ide_slot : unsigned char { slotNONE = 0, slotPOPUP, slotSIDEBAR, slotPANEL, slotEDITOR };
+
+// A View's projection KIND — what a View shows.
+enum ide_view : unsigned char
+{
+    viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
+    viewPROJECT, viewOUTLINE, viewHELP, viewMDPREVIEW
+};
+
+#endif

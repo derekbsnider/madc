@@ -129,6 +129,20 @@ Slices:
    the base functions product tests call, declared there and defined in the
    base. Installed in `share/madcide/include/madcide/`. Chthonia's tests
    include it and link `libmadcide` instead of the base's sources.
+   **Done (2026-10-05):** three headers. `<madcide/vocabulary>` holds the
+   codes a product names (`ide_cmd`, `ide_pane`, `ide_slot`, `ide_view`;
+   `madcide_enums.inc` includes it). `<madcide/session>` holds `IdeSession`
+   (`madcide_core.inc` includes it). `<madcide/harness>` includes both and
+   declares the 29 base functions product tests call; its drive helpers
+   are `inline`, taken from `madcide_repl_drive.inc`, which is gone. The
+   six madcide tests that used the drive file include the harness.
+   `check-madcide-harness.sh` holds each declaration to a definition in
+   the base. `testmadcide_harness` builds libmadcide, then runs a product
+   that includes only the harness and links the library through its
+   manifest. That product first failed: the auto-include scan read every
+   angle include as a system header. It now classifies by the resolved
+   path, as gcc and clang do (`testautoincludeangle`). The staging script
+   already installed every header in the directory.
 4. **The version contract:** the manifest's `"madc": "0.102.0"` is the
    minimum; a build by an older madc refuses with both versions.
 5. **The boundary gate:** `check-chthonia-boundary.sh` with no exception —

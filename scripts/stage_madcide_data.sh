@@ -20,9 +20,13 @@
 #   plugins/           the shipped plugins (bundles: <name>/<name>.plugin, the
 #                      data files it carries, and its code as source plus its
 #                      built library) — the plugin search path's second arm
-#   include/madcide/   the plugin API headers a plugin's code includes
-#                      (<madcide/plugin>): --build-plugin puts this directory
-#                      on the include path, and `madc -shared -I` names it
+#   include/madcide/   the public headers: the plugin API a plugin's code
+#                      includes (<madcide/plugin>; --build-plugin puts this
+#                      directory on the include path, and `madc -shared -I`
+#                      names it), and the harness a product's tests include
+#                      (<madcide/harness>, with <madcide/session> and
+#                      <madcide/vocabulary>; their manifest's include_dirs
+#                      names it and its "libs" names libmadcide)
 #   verbs/, checks/    the line editor's verb and check bodies (save, quit and
 #                      the rest are verbs): madcide refuses to start without
 #                      them rather than run an editor that cannot save or quit

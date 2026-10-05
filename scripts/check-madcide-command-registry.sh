@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # check-madcide-command-registry.sh — ONE action vocabulary (S1, 2026-09-08;
 # re-anchored on the command ENUM, V0.5c 2026-09-09).
-# The vocabulary is `enum ide_cmd` in tools/madcide/madcide_enums.inc; its
+# The vocabulary is `enum ide_cmd` in <madcide/vocabulary> (tools/madcide/
+# include/madcide/vocabulary, included by madcide_enums.inc); its
 # names live in the ONE table cmd_table() beside it (`{ "name": "save",
 # "code": cmdSAVE }` rows); profiles/default.menu is the command REGISTRY
 # (every command a menu bar or a palette shows has exactly one row: its
@@ -47,7 +48,13 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CORE="$ROOT/tools/madcide/madcide_core.inc"
-ENUMS="$ROOT/tools/madcide/madcide_enums.inc"
+# The vocabulary (`enum ide_cmd`) is the public <madcide/vocabulary>; the
+# names and the command table stay in madcide_enums.inc, which includes it.
+# The checks read the two as one text.
+ENUMS=$(mktemp)
+cat "$ROOT/tools/madcide/include/madcide/vocabulary" \
+    "$ROOT/tools/madcide/madcide_enums.inc" > "$ENUMS"
+trap 'rm -f "$ENUMS"' EXIT
 MENU="$ROOT/tools/madcide/profiles/default.menu"
 PROFILES="$ROOT/tools/madcide/profiles"
 PLUGINS="$ROOT/tools/madcide/plugins"

@@ -1,0 +1,71 @@
+// <madcide/harness> (docs/plans/2026-10-04-chthonia-own-repository.md §3a,
+// slice 3): a product's test, built the way madcide's packages build a
+// product — its own unit, linked with madcide's base as the library
+// libmadcide — includes the harness and drives a session through the class
+// (<madcide/session>), the codes (<madcide/vocabulary>), the base functions
+// the harness declares and its drive helpers. This test builds libmadcide
+// from madcide_base.mad (madc::build_native "shared"), names it and the
+// public include directory in the program's manifest, and runs the program
+// (madc::project_run): every declaration the program calls must resolve
+// against the library (scripts/check-madcide-harness.sh holds each one to
+// its definition).
+// Pins: the program opens a session, shows and closes the Options pane by
+// its command code, converts the command's name both ways, and types one
+// character into its buffer (the caret moves to 1; hello.c is a named file,
+// not an untitled one); the run's status is 0.
+// Oracle: n/a for gcc/clang (madcide's own API); the in-tree madcide tests,
+// which compile the base's sources, answer the same panes and commands.
+int main()
+{
+	var dir = "tmp/testmadcide_harness";
+	php::mkdir(dir.c_str());
+	var lib = format("{}/libmadcide{}", dir, madc::library_suffix());
+	var d;
+	bool built = madc::build_native(d, "tools/madcide/madcide_base.mad", "shared", lib.c_str());
+	println("library: ok={} rows={}", built ? 1 : 0, php::count(d));
+
+	var hello = format("{}/hello.c", dir);
+	php::file_put_contents(hello.c_str(), "int main(void) { return 0; }\n");
+	var prog = format("{}/prod.mad", dir);
+	php::file_put_contents(prog.c_str(), format(
+		"#include <madcide/harness>\n"
+		"int main()\n{{\n"
+		"\tIdeSession S;\n"
+		"\tlong doc = S.open(\"{}\", false, \"\");\n"
+		"\tbool oc = true;\n"
+		"\tS.command(doc, cmdOPTIONS, \"\", oc);\n"
+		"\tprintln(\"harness-options: {{}} {{}}\", cur_pane(S.w, S.es) == paneOPTIONS ? 1 : 0,\n"
+		"\t\tpane_name(cur_pane(S.w, S.es)));\n"
+		"\tS.command(doc, cmdOPTIONS, \"\", oc);\n"
+		"\tprintln(\"harness-closed: {{}}\", cur_pane(S.w, S.es) == paneNONE ? 1 : 0);\n"
+		"\tvar name;\n"
+		"\tcmd_name_w(name, S.w, cmdOPTIONS);\n"
+		"\tprintln(\"harness-command: {{}} {{}}\", name, cmd_of_w(S.w, \"options\") == cmdOPTIONS ? 1 : 0);\n"
+		"\tvar e;\n"
+		"\tev_text(e, \"x\");\n"
+		"\tS.apply_ide_event(doc, e);\n"
+		"\tprintln(\"harness-typed: caret={{}} untitled={{}}\", es_int(S.w, S.es, \"caret\", -1),\n"
+		"\t\tdoc_untitled(S.w, doc) ? 1 : 0);\n"
+		"\tS.close();\n"
+		"\treturn 0;\n}}\n", hello));
+
+	var abs_lib;
+	madc::canonical_path(abs_lib, lib.c_str());
+	var abs_inc;
+	madc::canonical_path(abs_inc, "tools/madcide/include");
+	var incs = { abs_inc };
+	var tu = { "file": "prod.mad", "include_dirs": incs };
+	var tus = { tu };
+	var libs = { abs_lib };
+	var m = { "tus": tus, "entry": "main", "libs": libs };
+	var manifest = format("{}/prod.prj.json", dir);
+	php::file_put_contents(manifest.c_str(), js::stringify(m));
+	println("run: status={}", madc::project_run(manifest.c_str()));
+
+	php::unlink(manifest.c_str());
+	php::unlink(prog.c_str());
+	php::unlink(hello.c_str());
+	php::unlink(lib.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

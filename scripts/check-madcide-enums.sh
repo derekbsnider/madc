@@ -41,12 +41,15 @@ CORE="$ROOT/tools/madcide/madcide_core.inc"
 CLIENT="$ROOT/tools/madcide/madcide_client.inc"
 ONCE="$ROOT/tools/madcide/madcide_once.inc"
 ENUMS="$ROOT/tools/madcide/madcide_enums.inc"
-# The seat layer (Nexus L4c): checked with the same rules.
+# The seat layer (Nexus L4c): checked with the same rules. So are the public
+# headers (include/madcide/*): <madcide/session> holds the IdeSession class,
+# moved out of madcide_core.inc (plan 2026-10-04-chthonia-own-repository.md
+# §3a slice 3), and stays under the core's rules.
 SEAT_FILES=$(ls "$ROOT"/tools/madcide/madcide_mcp.inc "$ROOT"/tools/madcide/madcide_past.inc \
 	"$ROOT"/tools/madcide/madcide_propose.inc "$ROOT"/tools/madcide/madcide_seat.inc \
 	"$ROOT"/tools/madcide/madcide_nexus.inc "$ROOT"/tools/madcide/madcide_tests.inc \
 	"$ROOT"/tools/madcide/madcide_mcpclient.inc "$ROOT"/tools/madcide/madcide_layers.inc \
-	"$ROOT"/tools/madcide/madcide_lsp.inc 2>/dev/null)
+	"$ROOT"/tools/madcide/madcide_lsp.inc "$ROOT"/tools/madcide/include/madcide/* 2>/dev/null)
 
 # The name words: every `return "word";` inside the five name converters.
 name_words()
