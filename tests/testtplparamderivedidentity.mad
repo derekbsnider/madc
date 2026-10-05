@@ -1,0 +1,64 @@
+// A template parameter's identity is its (name, index), never its name alone:
+// `_ForwardIterator` is parameter 0 of one member template and parameter 1 of
+// another (libstdc++ 11's _Destroy_aux<false>::__destroy and
+// __uninitialized_copy<false>::__uninit_copy), and the type of `*first` /
+// `typename _It::value_type` in each pattern derives from THAT template's
+// parameter. g++ 13.3 and clang++ 18.1 (-std=c++17) print the .expect lines.
+#include <cstdio>
+#include <new>
+#include <memory>
+#include <utility>
+
+template<typename T, typename... A> void construct(T *p, A &&...a) { ::new ((void *)p) T(std::forward<A>(a)...); }
+template<typename T> void destroy(T *p) { p->~T(); }
+
+// `*first` where _ForwardIterator is template parameter 0.
+template<bool B> struct destroy_aux {
+	template<typename _ForwardIterator>
+	static void go(_ForwardIterator first, _ForwardIterator last)
+	{
+		for (; first != last; ++first)
+			destroy(std::addressof(*first));
+	}
+};
+
+// `*cur` where _ForwardIterator is template parameter 1.
+template<bool B> struct ucopy {
+	template<typename _InputIterator, typename _ForwardIterator>
+	static _ForwardIterator go(_InputIterator first, _InputIterator last, _ForwardIterator result)
+	{
+		_ForwardIterator cur = result;
+		for (; first != last; ++first, (void)++cur)
+			construct(std::addressof(*cur), *first);
+		return cur;
+	}
+};
+
+// `typename _It::value_type` where _It is parameter 0, then parameter 1.
+template<bool B> struct first_vt {
+	template<typename _It> static int size_of(_It) { typedef typename _It::value_type vt; return (int)sizeof(vt); }
+};
+template<bool B> struct second_vt {
+	template<typename _A, typename _It> static int size_of(_A, _It) { typedef typename _It::value_type vt; return (int)sizeof(vt); }
+};
+struct It1 { typedef char value_type; };
+struct It2 { typedef double value_type; };
+
+struct S {
+	int v;
+	S(int x) : v(x * 10) {}
+	~S() { printf("~S %d\n", v); }
+};
+
+int main()
+{
+	int src[3] = { 1, 2, 3 };
+	alignas(S) unsigned char buf[3 * sizeof(S)];
+	S *out = (S *)buf;
+	destroy_aux<false>::go(out, out);		// parameter 0 first
+	S *end = ucopy<false>::go(src, src + 3, out);
+	printf("constructed: %d %d %d %ld\n", out[0].v, out[1].v, out[2].v, (long)(end - out));
+	destroy_aux<false>::go(out, end);
+	printf("value_type: %d %d\n", first_vt<false>::size_of(It1()), second_vt<false>::size_of(0, It2()));
+	return 0;
+}

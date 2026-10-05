@@ -1562,14 +1562,26 @@ static DataDef *rebuild_dependent_derived(Program *prog, DataDefCLASS *shell,
 			DataDef *now = scls
 				? Program::class_member_type(scls, org.member)
 				: NULL;
+			DataDefTemplateParam *stp =
+				dynamic_cast<DataDefTemplateParam *>(org.source);
 			fprintf(stderr, "DERIVPROBE shell=%s kind=%d member=%s"
-				" source=%s src=%s same=%d src_now=%s\n",
+				" source=%s src_index=%d src=%s same=%d src_now=%s\n",
 				shell->name.c_str(), (int)org.kind,
 				org.member.c_str(),
 				org.source ? org.source->name.c_str() : "-",
+				stp ? (int)stp->param_index : -1,
 				src ? src->name.c_str() : "-",
 				(int)(src == org.source),
 				now ? now->name.c_str() : "(none)");
+			for (std::map<DataDef *, DataDef *>::const_iterator
+				     bi = subst.begin(); bi != subst.end(); ++bi) {
+				DataDefTemplateParam *btp =
+					dynamic_cast<DataDefTemplateParam *>(bi->first);
+				fprintf(stderr, "DERIVPROBE   bind %s/%d -> %s\n",
+					bi->first ? bi->first->name.c_str() : "-",
+					btp ? (int)btp->param_index : -1,
+					bi->second ? bi->second->name.c_str() : "-");
+			}
 		}
 	}
 	if (!src || src == org.source)

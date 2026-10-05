@@ -7997,6 +7997,20 @@ static std::string dependent_surface_reason(DataDef *dd,
 static std::string serialize_token_range(const std::vector<TokenBase *> &toks,
 					 size_t begin, size_t end);
 
+// The spelling that KEYS an opaque derived from `dd` (its `X__deref`, its
+// `Owner__member`). The opaque's DependentDerivedOrigin records `dd` itself,
+// and tsubst re-derives through the binding by that identity, so the key is
+// the identity: a template parameter is its (name, index) — the
+// intern_template_param pool's key. By name alone, `_ForwardIterator` as
+// parameter 0 of one template and parameter 1 of another shared ONE opaque
+// whose recipe named the first, which the second's binding never maps.
+static std::string dependent_derivation_key(DataDef *dd)
+{
+    if ( DataDefTemplateParam *tp = dynamic_cast<DataDefTemplateParam *>(dd) )
+	return tp->name + "__p" + std::to_string(tp->param_index);
+    return dd->name;
+}
+
 DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
 						       const std::string &member_name,
 						       const std::vector<std::vector<TokenBase *> > *member_template_args)
@@ -8021,7 +8035,8 @@ DataDefCLASS *Program::materialize_dependent_member_type(DataDef *owner,
 	    args_spelling += serialize_token_range((*member_template_args)[i], 0,
 						   (*member_template_args)[i].size());
 	}
-    std::string dep_name = owner->name + "__" + sanitize_template_fragment(member_name);
+    std::string dep_name = dependent_derivation_key(owner) + "__"
+			 + sanitize_template_fragment(member_name);
     if ( member_template_args )
 	dep_name += "__" + sanitize_template_fragment(args_spelling);
     flat_datatype_map_iter have = datatype_map.find(dep_name);
@@ -8125,9 +8140,10 @@ void Program::stamp_opaque_mint_context(DataDefCLASS *dep)
     static const char *mtp = ::getenv("MADC_MTI_PROBE_CLASS");
     if ( mtp && *mtp && dep->name.find(mtp) != std::string::npos )
 	fprintf(stderr, "MTIPROBE opaque-mint name=%s dep_parse=%d concrete=%d"
-		" from=%p\n", dep->name.c_str(),
+		" in=%s from=%p\n", dep->name.c_str(),
 		(int)dependent_parse_in_progress,
-		(int)dep->opaque_concrete_tag, __builtin_return_address(0));
+		(int)dep->opaque_concrete_tag, cur_func_name.c_str(),
+		__builtin_return_address(0));
 }
 
 DataDef *Program::dependent_deref_result_type(DataDef *dd)
@@ -8141,7 +8157,8 @@ DataDef *Program::dependent_deref_result_type(DataDef *dd)
     std::string spelling = dd->canonical_cpp_spelling().empty()
 			 ? dd->name : dd->canonical_cpp_spelling();
     DataDefCLASS *dep = materialize_opaque_class_type(
-	sanitize_template_fragment(dd->name + "__deref"), "*" + spelling);
+	sanitize_template_fragment(dependent_derivation_key(dd) + "__deref"),
+	"*" + spelling);
     // Record the derivation so tsubst can re-derive the CONCRETE deref type
     // under an instance substitution (see DependentDerivedOrigin).
     if ( dep && dep->is_dependent_placeholder
