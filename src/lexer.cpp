@@ -2029,7 +2029,9 @@ TokenBase *Program::tokenize_import_directive()
 			       + "#pragma madc module_end\n");
 	return getToken();
     }
-    bind_module_namespace(alias, spelling, /*link_form=*/alias.empty());
+    std::string err;
+    if ( !bind_module_namespace(alias, spelling, /*link_form=*/alias.empty(), err) )
+	Throw << "import: cannot load '" << spelling << "': " << err << flush;
     DBG(std::cout << "import " << name << (alias.empty() ? std::string() : " as " + alias)
 		  << " -> " << spelling << std::endl);
     if ( alias.empty() )
@@ -2037,24 +2039,26 @@ TokenBase *Program::tokenize_import_directive()
     return getToken();
 }
 
-// The binder shared by `import` and the low-level `#load`. JIT: open the
-// spelled library into the default symbol scope (madc_module_open: beside the
-// running binary's ../lib first, then the loader's own search) — or, under
-// --no-auto-load or in an emit-only cross madc, bind to the program's own
-// scope: the library is linked, not loaded. A namespace (alias form) records
-// the spelling the member lowering passes to __madc_dl_member; the link form
-// records it for the native link closure (module_link_libs).
-void Program::bind_module_namespace(const std::string &ns, const std::string &spelling,
-				    bool link_form)
+// The binder shared by `import`, the low-level `#load` and a project
+// manifest's "libs". JIT: open the spelled library into the default symbol
+// scope (madc_module_open: beside the running binary's ../lib first, then the
+// loader's own search) — or, under --no-auto-load or in an emit-only cross
+// madc, bind to the program's own scope: the library is linked, not loaded. A
+// namespace (alias form) records the spelling the member lowering passes to
+// __madc_dl_member; the link form records it for the native link closure
+// (module_link_libs). False + err: the library did not open; the caller
+// words the refusal.
+bool Program::bind_module_namespace(const std::string &ns, const std::string &spelling,
+				    bool link_form, std::string &err)
 {
     void *handle = NULL;
+    err.clear();
 #ifndef MADC_CROSS_TARGET
     if ( is_auto_library_loading_enabled() )
     {
-	std::string err;
 	handle = madc_module_open(spelling, err);
 	if ( !handle )
-	    Throw << "import: cannot load '" << spelling << "': " << err << flush;
+	    return false;
 	loaded_lib_paths.push_back(spelling);	// the frozen-forest link closure
     }
 #endif
@@ -2071,6 +2075,7 @@ void Program::bind_module_namespace(const std::string &ns, const std::string &sp
 	dl_library_spelling[ns] = spelling;
 	namespace_variables_for_write(ns);	// create the (empty) namespace
     }
+    return true;
 }
 
 void Program::tokenize_embedded_header_text(const std::string &name,
@@ -7215,7 +7220,9 @@ TokenBase *Program::_getToken()
 		    // #load "spelling" as ns; — the low-level directive (tooling /
 		    // fixtures, like #pragma): the import binder with the file spelled
 		    // VERBATIM — you name the file, you own the platform. testdlopen.
-		    bind_module_namespace(ns_name, libname, /*link_form=*/false);
+		    std::string err;
+		    if ( !bind_module_namespace(ns_name, libname, /*link_form=*/false, err) )
+			Throw << "#load: cannot load '" << libname << "': " << err << flush;
 		    return getToken();
 		}
 		if ( directive == "define" )

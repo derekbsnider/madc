@@ -55,6 +55,71 @@ The test for a feature: if a madcide user would want it, it is base.
    §2 under "Moves" include only madcide's public headers, so the boundary
    cannot erode before the cut.
 
+### 3a. Designed against the code (2026-10-05)
+
+What exists (survey at 652cbf4ba):
+- `-shared` already builds madc units into a shared library in-process
+  (`build_native(.., "shared", ..)` → `madc_cir_emit_native`, kind
+  `mnkShared`; madcide's `--build-plugin` uses it). MIR writes the image: its
+  DT_NEEDED is `libmadc.so.0`, then the runtimes, then the `-l` spellings, and
+  its RUNPATH is `$ORIGIN/../lib` plus madc's libdir. Every defined global is
+  exported (no visibility control). References inside the image resolve when
+  it is emitted — no PLT — so a product cannot interpose on the base's own
+  calls; exporting the base's ~1000 functions is untidy, not unsafe.
+- `-l<name>` (or a path) already links a library into `--project` builds: the
+  native closure (`madc_project_emit_native` joins the CLI's `-l` with the
+  TUs' `module_link_libs`) and the JIT (`-l` libraries `dlopen`ed
+  `RTLD_GLOBAL` before the run). `bin/madc` binds the engine as
+  `libmadc.so.0`, so a JIT-run product and a loaded `libmadcide` share one
+  engine, as plugin libraries already do (`testmadcide_plugin_library`).
+- No manifest key names a library; there is no `-L`; madc writes no static
+  archive (`-c` and `-r -o x.o` are its only relocatable forms).
+- The base finds its data through the running binary
+  (`resolve_data_dir`: `<exedir>/../share/madcide/<sub>`, then beside the
+  exe), so a product installed beside madc finds madcide's data.
+- `madcide_main` is the base's one entry (`madcide_base.inc`), a C++ name;
+  a product's plugin calls the base only through the `ide_api` table it is
+  handed, never by symbol.
+- Chthonia's tests include the base's SOURCES
+  (`madcide_core.inc` + `madcide_repl_drive.inc`) and call its internals
+  (`setup_editor`, `builtins_activate`, `es_int`, `repl_doc_if_any`, …).
+
+Slices:
+1. **A manifest names the libraries it links:** `"libs": ["madcide"]` (a name
+   spelled by `madc_module_library_spelling`, or a path), read by
+   `read_project_manifest`, joined to the native closure beside `-l`, and
+   opened before a JIT run the way `import` opens a module (madc's `../lib`
+   first). Gate: a project linking a madc-built shared library, run JIT and
+   built `--exe`.
+   **Done (2026-10-05):** each entry binds on the first TU through
+   `Program::bind_module_namespace` (link form), the binder `import` and
+   `#load` use. The binder now reports a library that does not open, and
+   each caller words the refusal. A build opens the library into the
+   building process, as `import` does. Gate: `tests/testproject_libs`.
+2. **`libmadcide` built and installed:** `madcide_base.mad` built `-shared`
+   into `lib/libmadcide` (the platform's spelling) by the build and the
+   packagers, staged into `<libdir>` by `stage_install.sh`; `chthonia.json`
+   names `"libs": ["madcide"]` and drops the base unit; the boundary gate's
+   one exception goes. The static form: madc has no archive writer, so the
+   static base is the one relocatable object `-r` writes, linked as a unit —
+   the archive format is not needed for madc's own link.
+3. **`<madcide/harness>`:** `IdeSession` (the class definition moves out of
+   `madcide_core.inc` into the header, which the base includes — one
+   definition, so the layout cannot drift) and the drive helpers
+   (`madcide_repl_drive.inc`'s event builders, `settle`, `enter_line`) plus
+   the base functions product tests call, declared there and defined in the
+   base. Installed in `share/madcide/include/madcide/`. Chthonia's tests
+   include it and link `libmadcide` instead of the base's sources.
+4. **The version contract:** the manifest's `"madc": "0.102.0"` is the
+   minimum; a build by an older madc refuses with both versions.
+5. **The boundary gate:** `check-chthonia-boundary.sh` with no exception —
+   Chthonia's manifest names no base source, and its tests include only
+   installed headers.
+
+Thread contract: none new — `libmadcide` is the base's code, whose contract
+(the session's thread) is unchanged; the manifest's libraries are opened once,
+before the program runs.
+
 ## 4. Packaging in the Chthonia repository
 
 - **Linux**: `.deb` (one per supported Ubuntu release, as madc's), `.rpm`,

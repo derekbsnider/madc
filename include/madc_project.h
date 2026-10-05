@@ -31,6 +31,14 @@ struct ProjectManifest {
 	// resources (Explorer, the window); ELF and Mach-O images carry no
 	// icon, but the file is read and checked on every target.
 	std::string icon;
+	// "libs": the libraries the program links, as `-l` names them on the
+	// command line — a name (`madcide`: madc_module_library_spelling makes
+	// it libmadcide.so / libmadcide.dylib / madcide.dll) or a path, resolved
+	// against the manifest's directory. Each binds through the binder
+	// `import` uses (Program::bind_module_namespace, link form): a run opens
+	// it (madc's own lib directory first), a native build records it as
+	// needed.
+	std::vector<std::string> libs;
 };
 
 // The manifest spelling of a kind and back (the one table): "console" /

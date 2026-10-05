@@ -1,0 +1,107 @@
+// A project manifest's "libs" (docs/plans/2026-10-04-chthonia-own-repository.md
+// §3a, slice 1): the libraries a program links, named in its manifest, bind
+// through the binder `import` uses — a run opens each before the program
+// links, a native build names each in its image.
+// Pins:
+//   1. a library built "shared" and named in "libs" serves the project's
+//      call on both lanes, project_run (JIT) and project_build "exe": main
+//      returns pl_add(3, 4), so each lane's exit status is 7;
+//   2. a path entry resolves against the manifest's directory;
+//   3. refusals: a library that does not open (the run never starts, the
+//      build answers rows), "libs" that is not an array, an entry that is
+//      not text.
+// Oracle: g++ 13 and clang++ 18 over the same two sources (the library
+// `-shared -fPIC`, the program linked against it) print `sum 42` and exit 7.
+
+// The manifest at `path`: one TU, main.mad, and `libs` spelled as JSON.
+void write_manifest(var &path, const char *libs)
+{
+	php::file_put_contents(path.c_str(),
+		format("{{\"tus\": [\"main.mad\"], \"entry\": \"main\", \"libs\": {}}}\n",
+		       libs));
+}
+
+// The first row's message of a build's diagnostics ("" = no rows).
+void first_message(var &out, var &rows)
+{
+	out = "";
+	if ( php::count(rows) > 0 )
+		out = rows[0]["message"];
+}
+
+int main()
+{
+	var dir = "tmp/testproject_libs";
+	php::mkdir(dir.c_str());
+	var libsrc = format("{}/pl.mad", dir);
+	php::file_put_contents(libsrc.c_str(),
+		"extern \"C\" long pl_add(long a, long b)\n{\n\treturn a + b;\n}\n");
+	var main_src = format("{}/main.mad", dir);
+	php::file_put_contents(main_src.c_str(),
+		"extern \"C\" long pl_add(long a, long b);\n"
+		"int main()\n{\n\tprintln(\"sum {}\", pl_add(40, 2));\n"
+		"\treturn (int)pl_add(3, 4);\n}\n");
+	var lib = format("{}/libpl{}", dir, madc::library_suffix());
+	var d;
+	bool built = madc::build_native(d, libsrc.c_str(), "shared", lib.c_str());
+	println("library: ok={} rows={}", built ? 1 : 0, php::count(d));
+
+	// With nothing in "libs" the call has no definition. (First: a build
+	// opens what it binds into the building process, as `import` does, and
+	// a later run's child would inherit it.)
+	var none = format("{}/none.prj.json", dir);
+	write_manifest(none, "[]");
+	println("unbound-run: status={}", madc::project_run(none.c_str()));
+
+	// 1. The library by its full path: the native image records it, so the
+	// artifact finds it from any directory.
+	var abs;
+	madc::canonical_path(abs, lib.c_str());
+	var manifest = format("{}/libs.prj.json", dir);
+	write_manifest(manifest, format("[\"{}\"]", abs));
+	long rrc = madc::project_run(manifest.c_str());
+	println("run: status={}", rrc);
+	var prog = format("{}/prog", dir);
+	bool ok = madc::project_build(d, manifest.c_str(), "exe", prog.c_str());
+	println("build: ok={} rows={}", ok ? 1 : 0, php::count(d));
+	long rc = system(format("./{}", prog));
+	println("exe: status={}", (rc >> 8) & 0xff);
+	php::unlink(prog.c_str());
+
+	// 2. A path entry is the manifest's, as a TU's file is.
+	var rel = format("{}/rel.prj.json", dir);
+	write_manifest(rel, format("[\"./libpl{}\"]", madc::library_suffix()));
+	println("relative: status={}", madc::project_run(rel.c_str()));
+
+	// 3. Refusals.
+	var gone = format("{}/gone.prj.json", dir);
+	write_manifest(gone, "[\"madc_no_such_lib\"]");
+	long grc = madc::project_run(gone.c_str());
+	println("missing-run: status={}", grc);
+	var never = format("{}/never", dir);
+	bool gok = madc::project_build(d, gone.c_str(), "exe", never.c_str());
+	println("missing-build: ok={} rows>=1 {}", gok ? 1 : 0,
+		php::count(d) >= 1 ? 1 : 0);
+	var m;
+	var bad = format("{}/bad.prj.json", dir);
+	write_manifest(bad, "\"pl\"");
+	println("notarray-run: {}", madc::project_run(bad.c_str()));
+	madc::project_build(d, bad.c_str(), "exe", never.c_str());
+	first_message(m, d);
+	println("notarray-build: {}", m);
+	write_manifest(bad, "[5]");
+	madc::project_build(d, bad.c_str(), "exe", never.c_str());
+	first_message(m, d);
+	println("nottext-build: {}", m);
+
+	php::unlink(bad.c_str());
+	php::unlink(gone.c_str());
+	php::unlink(none.c_str());
+	php::unlink(rel.c_str());
+	php::unlink(manifest.c_str());
+	php::unlink(lib.c_str());
+	php::unlink(main_src.c_str());
+	php::unlink(libsrc.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

@@ -195,7 +195,7 @@ open dialog in the window, a prompt in the terminal).
 
 The manifest is JSON — `tus` (the files, or objects with `file`,
 `directory`, `defines`, `include_dirs`, `std`, `stdlib`), `entry`,
-`output`, `kind`, `icon` and `commands`:
+`output`, `kind`, `icon`, `libs` and `commands`:
 
 ```json
 { "tus": ["main.mad", "util.mad"], "output": "app", "kind": "console",
@@ -221,6 +221,14 @@ Explorer shows it for the file, and a window the program opens shows it in
 the title bar and taskbar. Linux and macOS executables carry no icon (a
 desktop file or an app bundle supplies one there), but the file is read and
 checked on every platform, so a bad `icon` fails the build everywhere.
+
+`libs` names the libraries the program links, the way `-l` names them on
+the command line: a name (`"madcide"` is `libmadcide.so`,
+`libmadcide.dylib` or `madcide.dll`) or a path, relative to the manifest.
+Each binds as a link-form `import` does. A run opens it before the
+program links, looking in madc's own `lib` directory first, and a build
+records it as a library the executable needs. A library that does not
+open stops the run or the build with the loader's reason.
 
 ## The language standard
 

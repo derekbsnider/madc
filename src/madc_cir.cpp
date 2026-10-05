@@ -6896,6 +6896,29 @@ static bool project_parse_all(MadcEngine &engine,
 		pt.name = tu.file;
 		parsed.push_back(std::move(pt));
 	}
+	// The manifest's "libs" bind on the first TU as a link-form `import`
+	// in it would: the library opens before the program links, a native
+	// build's closure names it (module_link_libs), and a GUI module row
+	// lifts the memory guard (module-map data, as `import` reads it).
+	Program &first = *parsed.front().prog;
+	for (const std::string &lib : manifest.libs) {
+		if (!first.is_dynamic_library_loading_enabled()) {
+			fprintf(stderr, "madc: \"libs\": library binding is disabled"
+					" by registration policy\n");
+			return false;
+		}
+		std::string spelling = madc_module_library_spelling(lib);
+		const MadcModuleSpec *row = madc_module_find_spelled(spelling);
+		if (row && (row->flags & MADC_MODULE_GUI))
+			first.bound_gui_module = true;
+		std::string err;
+		if (!first.bind_module_namespace("", spelling,
+						 /*link_form=*/true, err)) {
+			fprintf(stderr, "madc: \"libs\": cannot load '%s': %s\n",
+				spelling.c_str(), err.c_str());
+			return false;
+		}
+	}
 	return true;
 }
 

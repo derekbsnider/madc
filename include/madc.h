@@ -6837,11 +6837,13 @@ public:
 					       const char *origin_name);
 	// import (C++20 [cpp.pre] made whole; docs/language/import.md): the
 	// directive-position test, the directive reader, and the binder it
-	// shares with the low-level #load (verbatim file spelling).
+	// shares with the low-level #load (verbatim file spelling) and a
+	// project manifest's "libs". The binder reports a library it cannot
+	// open (false + err); each caller words the refusal.
 	bool import_directive_position();
 	TokenBase *tokenize_import_directive();
-	void bind_module_namespace(const std::string &ns, const std::string &spelling,
-				   bool link_form);
+	bool bind_module_namespace(const std::string &ns, const std::string &spelling,
+				   bool link_form, std::string &err);
 	void tokenize_embedded_header_text(const std::string &name,
 					 const std::string &text,
 					 bool protocol_visit);

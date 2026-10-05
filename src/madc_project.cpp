@@ -1,4 +1,5 @@
 #include "madc_project.h"
+#include "madc_posix_io.h"	// host_path_dirname: is a "libs" entry a path
 #include "json.hpp"
 #include <fstream>
 #include <cctype>
@@ -169,6 +170,24 @@ bool read_native_object(const json &root, const std::string &manifest_dir,
 			return false;
 		}
 		out.icon = resolve(manifest_dir, root["icon"].get<std::string>());
+	}
+	// "libs": the libraries the program links, named as -l names them; a
+	// path is the manifest's, as a TU's file is.
+	if (root.contains("libs")) {
+		if (!root["libs"].is_array()) {
+			err = "\"libs\" is not an array";
+			return false;
+		}
+		for (const auto &l : root["libs"]) {
+			if (!l.is_string() || l.get<std::string>().empty()) {
+				err = "a \"libs\" entry must name a library";
+				return false;
+			}
+			std::string lib = l.get<std::string>();
+			if (!madc::detail::host_path_dirname(lib).empty())
+				lib = resolve(manifest_dir, lib);
+			out.libs.push_back(lib);
+		}
 	}
 	return true;
 }
