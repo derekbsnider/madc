@@ -1,0 +1,46 @@
+// A call `f(x)` inside a member function template whose `f` names a
+// parameter (or local) of a template type parameter Fn ([expr.call]/1): for a
+// class Fn it calls Fn::operator(), for a function pointer or function it
+// calls through the value. By value, by reference, from a local copy, from a
+// non-static member template and from a member template of a class template.
+// g++ 13.3 and clang++ 18.1 (-std=c++17) print the .expect lines.
+#include <stdio.h>
+struct caller
+{
+	template<typename Fn>
+	static int call(Fn f, int x) { return f(x); }
+	template<typename Fn>
+	static int call_local(Fn f, int x) { Fn g = f; return g(x) + 100; }
+	template<typename Fn>
+	static int call_ref(Fn &f, int x) { return f(x); }
+	template<typename Fn>
+	int call_inst(Fn f, int x) const { return f(x) + base; }
+	template<typename Fn>
+	static double calld(Fn f, int x) { return f(x); }
+	int base;
+};
+template<typename T>
+struct holder
+{
+	T k;
+	template<typename Fn>
+	T apply(Fn f) const { return f(k); }
+};
+struct add { int k; int operator()(int x) const { return x + k; } };
+static int add3(int x) { return x + 3; }
+static double half(double x) { return x / 2; }
+int main()
+{
+	add a{5};
+	int (*fp)(int) = add3;
+	caller c{1000};
+	holder<int> h{9};
+	printf("fnptr: %d %d %d %d\n", caller::call(add3, 2), caller::call_local(add3, 1),
+	       caller::call_ref(fp, 4), c.call_inst(add3, 0));
+	printf("functor: %d %d %d %d\n", caller::call(a, 2), caller::call_local(a, 1),
+	       caller::call_ref(a, 4), c.call_inst(a, 0));
+	printf("lambda: %d %d %d\n", caller::call([](int v) { return v * 2; }, 4),
+	       caller::call([](int v) { return v + 7; }, 4), h.apply(add3));
+	printf("mixed: %g %g\n", caller::calld(add3, 2), caller::calld(half, 3));
+	return 0;
+}

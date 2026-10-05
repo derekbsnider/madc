@@ -2103,6 +2103,18 @@ static bool tsubst_call_can_rewrite_after_subst(TokenCallFunc *tcf)
 		      || !fd->method_display_name.empty());
 }
 
+// A member call whose receiver is a type-dependent NAMED reference or object
+// (`f(x)` / `f.m()` with `Fn &f` or `Fn f`): the pattern passes the receiver's
+// ADDRESS as the call's first argument (class_method_call's dependent arm),
+// and the copy re-resolves the call on the substituted receiver. A pointer
+// receiver is not one.
+static bool tsubst_named_dependent_receiver(TokenMember *tm)
+{
+	return tm && !tm->parent_expr && tm->object.type
+	    && template_param_under_type_layers(tm->object.type)
+	    && (tm->object.is_reference() || !tm->object.type->is_pointer());
+}
+
 static bool tsubst_call_has_pack_expansion_arg(TokenCallFunc *tcf)
 {
 	if (!tcf)
@@ -3164,10 +3176,17 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	}
 	if (concrete_param_types_out)
 		*concrete_param_types_out = concrete_param_types;
+	TokenMember *tm = dynamic_cast<TokenMember *>(tcf);
+	// [temp.dep.expr]: a member call on a type-dependent NAMED receiver is
+	// dependent through the receiver alone — `f(1)` with `Fn &f` names Fn's
+	// operator() whatever its arguments are, so the call re-resolves on the
+	// substituted receiver even when no argument type changed.
+	if (!changed && tsubst_named_dependent_receiver(tm)
+	    && subst_datadef_active(tm->object.type, *subst) != tm->object.type)
+		changed = true;
 	if (!changed && !system_header_call)
 		return NULL;
 
-	TokenMember *tm = dynamic_cast<TokenMember *>(tcf);
 	// A STATIC member-template call (`_Alloc_traits::construct(...)`) has no
 	// receiver expression (not a TokenMember) and is not a namespace
 	// function — the free path below can neither find nor instantiate it.
@@ -3473,6 +3492,97 @@ void CirBuilder::rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 	const char *interned = c2mir_uniq_str(c2m, sym.c_str(), sym.size() + 1);
 	dst->base.u.s.s = interned;
 	dst->base.u.s.len = sym.size() + 1;
+}
+
+// [expr.call]/1: the parser reads `f(x)` on a type-dependent NAMED receiver
+// as a dependent operator() member call (class_method_call's dependent arm
+// emits the receiver's ADDRESS first). An instance whose receiver
+// substitutes to a function pointer or a function (Fn = int(*)(int),
+// Fn& = int(&)(int)) calls THROUGH that value instead: the callee is the
+// copied address's dereference, each argument binds to the pointer's formal
+// (copied_call_arg_for_formal), and a reference-returning signature yields
+// its referent. NULL for any other receiver — a class keeps the operator()
+// member-call rebuild.
+cir_node *CirBuilder::tsubst_call_through_dependent_value(cir_node *src,
+	TokenMember *tm, const std::map<DataDef *, DataDef *> *subst)
+{
+	if (!src || !subst || !m_prog || !tsubst_named_dependent_receiver(tm))
+		return NULL;
+	DataDef *rt = subst_datadef_active(tm->object.type, *subst);
+	if (rt && rt->is_reference())
+		rt = static_cast<DataDefPTR *>(rt)->base_type;
+	DataDefFPTR *fpt = rt ? m_prog->function_value_pointer_type(rt) : NULL;
+	FuncDef *sig = fpt ? fpt->target : NULL;
+	node_t src_args = c2mir_node_op(src->as_node(), 1);
+	node_t recv = src_args ? c2mir_node_first_op(src_args) : NULL;
+	if (!sig || !recv)
+		return NULL;
+	node_t callee = NULL;
+	node_t args = NULL;
+	std::vector<node_t> prefix;
+	if (tsubst_call_has_pack_expansion_arg(tm)) {
+		// A pack argument fans out in the generic list copy; its elements
+		// take the pointer's prototype conversions.
+		cir_node *copied = copy_cir_subtree(CIR_NODE(src_args), subst);
+		node_t first = copied ? c2mir_node_first_op(copied->as_node()) : NULL;
+		if (!first)
+			return NULL;
+		c2mir_op_remove(copied->as_node(), first);
+		callee = first;
+		args = copied->as_node();
+	} else {
+		cir_node *copied = copy_cir_subtree(CIR_NODE(recv), subst);
+		if (!copied)
+			return NULL;
+		callee = copied->as_node();
+		args = list();
+		size_t pi = 0;
+		for (node_t a = c2mir_node_next_op(recv); a != NULL;
+		     a = c2mir_node_next_op(a), ++pi) {
+			TokenBase *arg = pi < tm->parameters.size()
+				? tm->parameters[pi] : NULL;
+			DataDef *pt = pi < sig->parameters.size()
+				? sig->parameters[pi] : NULL;
+			DataDef *at = (arg && arg->datadef())
+				? subst_datadef_active(arg->datadef(), *subst) : NULL;
+			node_t bound = copied_call_arg_for_formal(arg, a, pt,
+				pt && sig->is_ref_param(pi),
+				pt && const_ref_param(sig, pi), subst, prefix, at);
+			if (!bound)
+				return CIR_NODE(error_node(
+					"tsubst: failed call-through-value arg copy", tm));
+			append(args, bound);
+		}
+	}
+	// The pointer's prototype takes exactly these arguments ([expr.call]/7).
+	// A capturing lambda's value is its hoisted function, whose captures
+	// are trailing parameters the call cannot supply (B178: no closure
+	// object): refuse loudly rather than call it short.
+	size_t nargs = 0;
+	for (node_t a = c2mir_node_first_op(args); a != NULL; a = c2mir_node_next_op(a))
+		++nargs;
+	if (sig->has_captures
+	    || (!sig->is_varargs && nargs != sig->parameters.size()))
+		return CIR_NODE(error_node(
+			"tsubst: call through a function pointer whose prototype"
+			" takes a different number of arguments (a capturing"
+			" lambda passed by value has no closure object)", tm));
+	node_t call = node2(N_CALL, node1(N_DEREF, callee, tm), args, tm);
+	CIR_NODE(call)->synth_from_origin = src->synth_from_origin;
+	CIR_NODE(call)->tree1_origin = src->self;
+	node_t result = m_tsubst_copy_under_deref
+		? call : reference_call_result(sig, call, tm);
+	if (result != call)
+		CIR_NODE(result)->tree1_origin = src->self;
+	if (prefix.empty())
+		return CIR_NODE(result);
+	node_t items = list();
+	for (node_t p : prefix)
+		append(items, p);
+	append(items, node2(N_EXPR, list(), result, tm));
+	node_t stmt_expr = node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tm), tm);
+	CIR_NODE(stmt_expr)->tree1_origin = src->self;
+	return CIR_NODE(stmt_expr);
 }
 
 cir_node *CirBuilder::tsubst_relower_deferred_construction(
@@ -4541,6 +4651,9 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 		TokenCallFunc *tcf =
 			dynamic_cast<TokenCallFunc *>(madc_token_for_slot(src->origin_id));
 		TokenMember *tmm = dynamic_cast<TokenMember *>(tcf);
+		if (cir_node *through =
+			    tsubst_call_through_dependent_value(src, tmm, subst))
+			return through;
 		// Receiver-aware member-call rebuild (Phase-5 slice 4b KIND): a Tree-1
 		// member call is claimed at the CALL level, where the callee id is op0
 		// BY CONSTRUCTION — never by matching the id's spelling against
@@ -14652,18 +14765,23 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	// as `this`; copy-time rewrite_copied_dependent_call_id re-resolves it
 	// per instantiation (substituted receiver -> findMethodOverload ->
 	// member-template instantiate) and renames the id, or sets an error node
-	// -> self-detecting fallback. NAMED reference-param receivers only (a
-	// pointer-stored variable whose value IS the referent address); other
-	// receiver shapes stay NULL -> pattern error -> fallback.
-	if (!recv_class && m_tsubst_pattern_mode && !tm->parent_expr
-	    && template_param_under_type_layers(tm->object.type)
-	    && tm->object.is_reference()
+	// -> self-detecting fallback. NAMED receivers only: a reference (its
+	// pointer-stored value IS the referent address) or an object (`Fn f`,
+	// whose address the `this` slot takes — the copy drops the `&` where the
+	// instance parameter already holds it, an invisible reference). A
+	// receiver that substitutes to a function pointer or function is
+	// rebuilt by the copy as a call through that value
+	// (tsubst_call_through_dependent_value). Pointer receivers stay NULL.
+	if (!recv_class && m_tsubst_pattern_mode
+	    && tsubst_named_dependent_receiver(tm)
 	    && tsubst_call_can_rewrite_after_subst(tm)) {
 		FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
 		std::string sym = func_emit_name(tm->var, callee);
 		if (!sym.empty()) {
 			node_t args = list();
-			append(args, id(tm->object.name.c_str(), origin));	// allowed-exception: tsubst pattern placeholder
+			node_t recv = id(tm->object.name.c_str(), origin);	// allowed-exception: tsubst pattern placeholder
+			append(args, tm->object.is_reference()
+				     ? recv : node1(N_ADDR, recv, origin));
 			// Unknown formals (deduced at instantiation): a REFERENCE-
 			// returning call argument (std::forward/std::move) forwards
 			// its POINTER — its call value already IS the object/scalar

@@ -3088,6 +3088,12 @@ public:
 	void rename_copied_pack_value_id(cir_node *src, cir_node *dst);
 	void rewrite_copied_dependent_call_id(cir_node *src, cir_node *dst,
 					      const std::map<DataDef *, DataDef *> *subst);
+	// The instance of a dependent named-receiver call (`f(x)`, Fn f) whose
+	// receiver substitutes to a function pointer or function: a call through
+	// that value. NULL for any other receiver.
+	cir_node *tsubst_call_through_dependent_value(cir_node *src,
+		class TokenMember *tm,
+		const std::map<DataDef *, DataDef *> *subst);
 };
 
 // Peel ALL pointer levels off `dd` to its base type, returning the star count.

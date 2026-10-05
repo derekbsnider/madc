@@ -1863,6 +1863,57 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
 
 ## Diagnostics
 
+### B178. A capturing lambda passed by value has no closure object
+
+```cpp
+#include <stdio.h>
+template<typename Fn> static int callf(Fn f, int x) { return f(x); }
+struct caller { template<typename Fn> static int call(Fn f, int x) { return f(x); } };
+int main()
+{
+	int bias = 7;
+	printf("%d %d\n", callf([bias](int v) { return v + bias; }, 4),
+	       caller::call([bias](int v) { return v + bias; }, 4));
+	return 0;
+}
+```
+
+- Found 2026-10-05 while fixing calls of a dependent callable in member
+  function templates (`tests/testdependentcallable`).
+- g++ 13 and clang++ 18: `11 11` ([expr.prim.lambda.closure]: the lambda is
+  an object of a unique closure class whose operator() reads the captured
+  copy). madc `--std=c++17`: the free template fails "undeclared identifier
+  bias" at 2:63; the member template refuses "call through a function
+  pointer whose prototype takes a different number of arguments".
+- Where: the lambda lowers to a hoisted function whose captures are
+  trailing PARAMETERS (`int f(int v, int bias)`), typed as that function's
+  pointer, and each call site in the defining scope supplies the captured
+  values. A lambda that leaves its scope as a value — a template argument,
+  a returned or stored callable — carries no captures. The value needs the
+  closure class: its captures as members, its body as operator().
+
+### B179. A function template's `Fn&` bound to a function declares `void *`
+
+```cpp
+#include <stdio.h>
+static int add3(int x) { return x + 3; }
+template<typename Fn> static int callt(Fn &f, int x) { return f(x); }
+int main() { printf("%d\n", callt(add3, 7)); return 0; }
+```
+
+- Found 2026-10-05 with B178.
+- g++ 13 and clang++ 18: `10` ([temp.deduct.call]/3: a reference parameter
+  deduces Fn = int(int), the function type, and `f` is `int (&)(int)`).
+  madc `--std=c++17`: "called object is not a function or function pointer"
+  at 3:64 — the instance declares `void *f` (`--emit=c11`), and `(*f)(x)`
+  calls through it. The same parameter spelled `int (&f)(int)` emits
+  `int (*f)(int)`.
+- Where: deduction binds Fn to the argument's DataDef, the NAMED function's
+  own FuncDef, which is no type; the declarator then knows no function type
+  to reference. The function type is the !ptr_syntax DataDefFPTR over the
+  signature (what `P<int(int)>` binds), and nothing mints it from a FuncDef
+  (getPointerType mints only the pointer; fnptr_twin goes the other way).
+
 ### B161. libc++: copying a `std::unique_ptr` is reported as "no matching constructor"
 
 ```cpp
