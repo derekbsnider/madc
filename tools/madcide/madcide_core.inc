@@ -3777,14 +3777,19 @@ bool enter_lens(long w, long es, long doc, long lang)
 }
 
 // Back to the source View: the row's representation returns to the
-// subject's own text and kind; the container's parked caret returns.
+// subject's own text and kind; the container's parked caret returns. With
+// no lens up (lens_name, the one lens-up rule) there is nothing to leave:
+// the parked caret is stale and the caret stays where it is.
 void exit_lens(long w, long es, long doc)
 {
+    var up;
+    if ( !lens_name(up, w, es) )
+	return;
     var v;
     long back = es_int(w, es, "ocaret", 0);
     if ( view_row(v, w, es, focused_view(w, es)) )
     {
-	if ( v["kind"].as_integer() == viewCODE && lens_conceals(v["lang"].as_integer()) )
+	if ( lens_conceals(v["lang"].as_integer()) )
 	{
 	    // the caret moved over the formatted text: where it reads, the
 	    // stored text's caret lands (the earlier side of a concealed run)

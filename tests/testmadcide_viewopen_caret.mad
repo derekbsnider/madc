@@ -1,0 +1,48 @@
+// `viewopen source` and a failed `viewopen mc11` leave the caret where it is
+// when no lens is up (tools/madcide/madcide_core.inc exit_lens). The caret
+// a lens parks on entry ("ocaret") is a lens's to return; with no lens up it
+// is stale — the caret must not jump to it.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// `:viewopen <repr>` — the colon line's event, its word on the event
+void viewopen(IdeSession &S, long doc, const char *repr)
+{
+    var e;
+    action_event(e, cmdVIEWOPEN, repr);
+    S.apply_ide_event(doc, e);
+}
+
+int main()
+{
+    const char *path = "madc_ide_viewopen_caret.mad";
+    php::file_put_contents(path, "int main()\n{\n    return 0;\n}\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    long w = S.w;
+    long es = S.es;
+    ui::set(w, es, "caret", 15);
+    viewopen(S, doc, "mc11");	// a lens parks caret 15
+    viewopen(S, doc, "source");	// and returns it
+    println("lens round trip: caret={}", es_int(w, es, "caret", -1));
+    ui::set(w, es, "caret", 3);
+    viewopen(S, doc, "source");	// no lens up
+    println("source on source: caret={}", es_int(w, es, "caret", -1));
+    S.close();
+    php::unlink(path);
+
+    // a buffer that does not translate: the enter fails, the caret stays
+    const char *bpath = "madc_ide_viewopen_caret_bad.mad";
+    php::file_put_contents(bpath, "int main(\n");
+    IdeSession B;
+    long bdoc = B.open(bpath, false);
+    ui::set(B.w, B.es, "caret", 4);
+    viewopen(B, bdoc, "mc11");
+    var bname;
+    println("failed lens: caret={} up={}", es_int(B.w, B.es, "caret", -1),
+	    lens_name(bname, B.w, B.es) ? 1 : 0);
+    B.close();
+    php::unlink(bpath);
+    return 0;
+}

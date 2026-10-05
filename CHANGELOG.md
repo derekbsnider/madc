@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### madcide: exit_lens — fix caret jump when no lens is up
+
+exit_lens set the caret to the parked caret position ("ocaret") unconditionally, even when no lens was up. view_open calls exit_lens when opening source or when viewopen <repr> fails to enter a lens, so with no lens the caret jumped to a stale parked position or 0 when nothing had been parked. Fix: exit_lens returns early when no lens is up (tested through lens_name, the one lens-up rule); the caret, the block markers and the access verdict stay unchanged. Its callers (e.g. switch_buffer) are unchanged.
+
+Test: tests/testmadcide_viewopen_caret.mad drives viewopen actions. Measured before: `lens round trip: caret=15`, `source on source: caret=15` (caret had been set to 3), `failed lens: caret=0 up=0` (caret had been set to 4; the buffer "int main(" does not translate). After the fix: 15, 3, and 4 with up=0.
+
+Validation: Tier 1 testmadcide_viewopen_caret testmadcide testmadcide_mdlens testmadcide_layout testmadcide_chthonia testidemenu: 6 passed, EXE 6/0, OBJ 6/0. Tier 2 (scripts/fast_lanes.sh, seven lanes) green: c-testsuite 220, c-torture 1614, c2mir-tests 314, gui 26/0, gxx-c++11 1504, index-c 50/50, commonmark 664 of 670.
+
 ### madcide: Markdown lens — concealed formatting for readability
 
 ^K A on a Markdown buffer cycles original view → formatted view → original. The formatted view shows the buffer's text with formatting characters concealed: emphasis, strong, strikethrough, link, image, heading markers; code span backticks; block quote `>` prefixes; fenced code block fence lines; escape backslashes. The map projects spans onto display coordinates (visible runs with offsets stored and concealed). New in madcide_markdown.inc: md_conceal and helpers text_line_starts, md_off, md_cut, md_ascii_punct, md_conceal_node. madcide_core.inc: lens_conceals (fkMARKDOWN), lens_lang_name, lens_spans, lens_render (the one render step enter_lens and make_code_view share). A buffer that is not Markdown refuses the formatted view. Caret entry projects to display; exit carries display back to stored text. Test: tests/testmadcide_mdlens.mad tests the 12 map segments, caret projection, five coloured spans (Title, bold, code, link, int x), and read-only until after exit; .txt buffer reports "View: a text file has no other view." Validation: Tier 1 testmadcide_mdlens testmadcide_mdspans testmadcide_mdpreview testmadcide_textkind testmadcide testmadcide_layout testmarkdown testidemenu testmadcide_chthonia: 9 passed, EXE 9/0, OBJ 9/0. Tier 2 (scripts/fast_lanes.sh) green, 0 outside baseline: c-testsuite 220, c-torture 1614, c2mir-tests 314, gui 26/0, gxx-c++11 1504, index-c 50/50, commonmark 664 of 670.
