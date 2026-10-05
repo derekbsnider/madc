@@ -8,6 +8,8 @@
 // the complex carriers are complex float/double — the sizes assert THAT
 // approximation, not gcc's native half (gcc: sizeof(_Float16 _Complex)==4).
 // ABI fidelity for real half-floats is the Tier-3 floor gap, roadmapped.
+// C content, compiled as GNU C (.flags): a C++ identity has the _FloatN
+// names only from the g++ release that added them (testfloatngxx).
 #include <stdio.h>
 
 static _Float16 _Complex g;
