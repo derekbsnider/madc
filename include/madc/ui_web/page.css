@@ -5,7 +5,7 @@
    so a scheme that omits one keeps the default look. */
 html, body { margin: 0; padding: 0; height: 100%;
              background: var(--bg, #1b1d24); color: var(--fg, #d9dbe4); }
-body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+body { font: var(--font-size, 14px)/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
        overflow: hidden; }
 #root { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 #kb { position: fixed; left: -1000px; top: 0; width: 1px; height: 1px; opacity: 0; }
@@ -246,7 +246,7 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
 .qi-label { color: #c9cde0; }
 .qi-input { display: flex; align-items: center; padding: 5px 9px; min-height: 1.35em;
             background: var(--bg, #1b1d24); border: 1px solid var(--accent, #9fc2ff);
-            border-radius: 4px; font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            border-radius: 4px; font: var(--font-size, 14px)/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
             white-space: pre; }
 .qi-hint { color: #7d829a; font-size: 11px; }
 .node.popup.confirm { min-width: 28em; gap: 14px; }
@@ -272,7 +272,7 @@ body { font: 14px/1.35 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", mono
              background: var(--sb-bg, #262b3a); border-bottom: 1px solid var(--sb-line, #343b52); }
 .dlg-filter { margin: 0 14px; }
 .dlg-list { display: flex; flex-direction: column; overflow: auto; min-height: 0;
-            font: 14px/1.5 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
+            font: var(--font-size, 14px)/1.5 var(--font, "DejaVu Sans Mono", "Menlo", "Consolas", monospace);
             white-space: pre; }
 .dlg-list .opt { padding: 1px 14px; cursor: pointer; }
 /* An empty row is a blank line (the terminal draws one): a zero-width space

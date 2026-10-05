@@ -470,7 +470,10 @@ namespace ui {
     // clipboard here. Both optional.
     // title(host, text): show text as the window's title — the composed
     // root's `title` hint, sent when it changes; 0 = shown; optional.
-    // LAYOUT CONTRACT with src/ns_ui.cpp — the same ten pointers in the
+    // fullscreen(host, on): the window full screen — on = 1 enters, 0
+    // leaves, -1 toggles its current state; 0 = done, nonzero = not here;
+    // optional.
+    // LAYOUT CONTRACT with src/ns_ui.cpp — the same eleven pointers in the
     // same order, append-only, keep both in sync.
     typedef void *(*ui_host_open_fn)(const char *title, const char *page, void *ctx);
     typedef void  (*ui_host_close_fn)(void *host);
@@ -482,6 +485,7 @@ namespace ui {
     typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
     typedef const char *(*ui_host_clip_get_fn)(void *host);
     typedef int64_t (*ui_host_title_fn)(void *host, const char *text);
+    typedef int64_t (*ui_host_fullscreen_fn)(void *host, int64_t on);
     struct ui_host_ops {
 	ui_host_open_fn  open;
 	ui_host_close_fn close;
@@ -493,6 +497,7 @@ namespace ui {
 	ui_host_clip_set_fn clip_set;
 	ui_host_clip_get_fn clip_get;
 	ui_host_title_fn title;
+	ui_host_fullscreen_fn fullscreen;
     };
     // A host registers under a target name AND declares the UI level it
     // serves (ui::WEB for a page in a webview); open(level) picks the first
@@ -539,4 +544,9 @@ namespace ui {
     bool    clipboards(int64_t t);
     bool    clipboard_set(int64_t t, const char *text);
     bool    clipboard_get(value &out, int64_t t);
+    // The window full screen (View ▸ Full screen): on = 1 enters it, 0
+    // leaves it, -1 toggles the window's current state. True = done; false
+    // = this target has no window to make full screen (the terminal, a
+    // browser page, a bad handle).
+    bool    fullscreen(int64_t t, int64_t on);
 }

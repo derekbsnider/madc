@@ -166,6 +166,15 @@ Shows or hides the panel below the editor.
 ## refresh
 Redraws the screen.
 
+## fontlarger
+Makes the window's text one size larger. The size is remembered for the next session. A terminal keeps its own font.
+
+## fontsmaller
+Makes the window's text one size smaller.
+
+## fullscreen
+Puts the window in full screen, or takes it out. A terminal keeps its own window.
+
 ## splitw
 Splits the window in two.
 

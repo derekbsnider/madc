@@ -129,7 +129,17 @@ int64_t fake_title(void *host, const char *text)
     return 0;
 }
 
-static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get, fake_title };
+// Full screen: the host keeps the window's state; -1 toggles it from
+// whatever it is now (the user may have left full screen by other means).
+bool fake_full = false;
+int64_t fake_fullscreen(void *host, int64_t on)
+{
+    fake_full = on < 0 ? !fake_full : on != 0;
+    println("fake fullscreen: {} -> {}", on, fake_full ? "full" : "windowed");
+    return 0;
+}
+
+static ui::ui_host_ops fake_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, fake_clip_get, fake_title, fake_fullscreen };
 static bool fake_registered = ui::register_host("fake", ui::WEB, &fake_ops);
 // Another host: one entry differs (no clipboard read).
 static ui::ui_host_ops other_ops = { fake_open, fake_close, fake_eval, fake_run, fake_menu, fake_dialog, fake_tick, fake_clip_set, 0 };
@@ -248,6 +258,12 @@ int main()
     bool got = ui::clipboard_get(clip, t);
     println("clipboard get -> {} [{}] {}", got ? "answered" : "refused",
 	    php::str_replace("\n", "|", clip), strchr(clip.c_str(), '\r') ? "CR kept" : "no CR");
+    println("fullscreen toggle -> {}", ui::fullscreen(t, -1) ? "done" : "refused");
+    fake_full = false;			// the user left it by the platform's means
+    println("fullscreen toggle -> {}", ui::fullscreen(t, -1) ? "done" : "refused");
+    println("fullscreen leave -> {}", ui::fullscreen(t, 0) ? "done" : "refused");
+    println("fullscreen enter -> {}", ui::fullscreen(t, 1) ? "done" : "refused");
+    println("fullscreen bad handle -> {}", ui::fullscreen(t + 1000, -1) ? "done" : "refused");
     var ev;
     while ( ui::event(ev, t, w) )
     {

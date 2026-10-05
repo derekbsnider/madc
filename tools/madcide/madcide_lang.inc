@@ -195,17 +195,7 @@ bool lang_save(long w, long es, long k)
     var spelling = "file";
     if ( k != 0 )
 	spelling = madc::file_kind_name(k);
-    var us;
-    ui::get(us, w, es, "usersettings");
-    if ( us.is_null() || !us.is_object() )
-    {
-	var top = { "std": spelling };
-	us = top;
-    }
-    else
-	us["std"] = spelling;
-    ui::set(w, es, "usersettings", us);
-    return user_settings_save(w, es);
+    return setting_put(w, es, "std", spelling);
 }
 
 void doc_forget_parse(long w, long doc);	// madcide_core.inc

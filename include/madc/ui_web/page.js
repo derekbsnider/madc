@@ -244,6 +244,9 @@
       for (var tk in op.theme)
         if (Object.prototype.hasOwnProperty.call(op.theme, tk))
           document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
+      // A new --font-size changes the text cell, not the window: re-report
+      // the rows x cols it now holds (no ResizeObserver fires for it).
+      reportSize();
     }
     // The @presence palette (client-server V3c): slot -> colour spec on the
     // root group; set a --pcaret-<slot> custom property the .pslot-<slot> rule

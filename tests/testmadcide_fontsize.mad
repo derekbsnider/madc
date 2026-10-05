@@ -1,0 +1,97 @@
+// View ▸ Increase / Decrease font size (plan docs/plans/2026-10-03-chthonia-
+// windows-macos.md §7a; tools/madcide/madcide_core.inc font_step): a window's
+// text size, settings.json's "font_size", 8 to 36. Unset, the root carries no
+// font-size and the page keeps its own (page.css's 14px). A step from the
+// default goes from 14; each is kept in settings.json and rides the root's
+// theme hint as `font-size` (page.js applies it as --font-size); past either
+// end the size stays and the status line says the range; a new session reads
+// the kept size. A terminal (no window: the bag's haspanel false) keeps its
+// own font: the command says so and keeps nothing, and the View menu's two
+// items are disabled there (the context fact `window`).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+// The root's font-size hint, or "(none)".
+void hint(var &out, IdeSession &S, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var th = tree["hints"]["theme"];
+    out = "(none)";
+    if ( !th.is_null() && !th["font-size"].is_null() )
+	out = th["font-size"];
+}
+
+// The View menu item `id`'s enablement: 1 unless the composer said 0.
+long item_enabled(IdeSession &S, long doc, const char *id)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    for ( var m : tree["hints"]["menu"]["bar"] )
+	for ( var it : m["items"] )
+	    if ( !it["id"].is_null() && it["id"] == id )
+		return it["enabled"].is_null() ? 1 : it["enabled"].as_integer();
+    return -1;
+}
+
+void step(IdeSession &S, long doc, long code, const char *label)
+{
+    bool cont = true;
+    S.command(doc, code, "", cont);
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    var h;
+    hint(h, S, doc);
+    println("{}: msg=[{}] hint={} size={}", label, msg, h, font_size(S.w, S.es));
+}
+
+int main()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    var sj = format("{}/settings.json", cfg);
+    if ( php::file_exists(sj.c_str()) )
+	php::unlink(sj.c_str());
+    const char *path = "madc_fontsize.txt";
+    php::file_put_contents(path, "x\n");
+
+    IdeSession S;
+    long doc = S.open(path, false);
+    var h;
+    hint(h, S, doc);
+    println("default: hint={} size={}", h, font_size(S.w, S.es));
+    println("terminal menu: larger={} smaller={}", item_enabled(S, doc, "fontlarger"),
+	    item_enabled(S, doc, "fontsmaller"));
+    step(S, doc, cmdFONTLARGER, "terminal larger");
+    println("terminal kept: {}", php::file_exists(sj.c_str()) ? 1 : 0);
+
+    S.panel(true);			// what run_ide says of a window
+    println("window menu: larger={} smaller={}", item_enabled(S, doc, "fontlarger"),
+	    item_enabled(S, doc, "fontsmaller"));
+    step(S, doc, cmdFONTLARGER, "larger");
+    var kept;
+    var why;
+    json_object_read(kept, why, sj);
+    println("kept: font_size={}", kept["font_size"]);
+    step(S, doc, cmdFONTSMALLER, "smaller");
+    step(S, doc, cmdFONTSMALLER, "smaller");
+    var top = 36;
+    setting_put(S.w, S.es, "font_size", top);
+    step(S, doc, cmdFONTLARGER, "at the top");
+    var bottom = 8;
+    setting_put(S.w, S.es, "font_size", bottom);
+    step(S, doc, cmdFONTSMALLER, "at the bottom");
+    step(S, doc, cmdFONTLARGER, "from the bottom");
+    S.close();
+
+    IdeSession N;			// a new session reads settings.json
+    long ndoc = N.open(path, false);
+    hint(h, N, ndoc);
+    println("new session: hint={} size={}", h, font_size(N.w, N.es));
+    N.close();
+
+    php::unlink(path);
+    php::unlink(sj.c_str());
+    return 0;
+}

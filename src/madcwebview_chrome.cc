@@ -534,6 +534,23 @@ WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 	cb(r.text.c_str(), arg);
 	return 0;
 }
+
+// Full screen: the window's own (gtk_window_fullscreen), the menu bar kept —
+// the window manager makes it cover the monitor.
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	GtkWindow *win = GTK_WINDOW(st->win);
+	bool full = gtk_window_is_fullscreen(win);
+	bool want = on < 0 ? !full : on != 0;
+	if (want && !full)
+		gtk_window_fullscreen(win);
+	else if (!want && full)
+		gtk_window_unfullscreen(win);
+	return 0;
+}
 } // extern "C"
 
 #elif defined(__APPLE__)
@@ -935,6 +952,29 @@ WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 	cb(u ? u : "", arg);
 	return 0;
 }
+
+// Full screen: the window's own space (toggleFullScreen:, animated — the
+// style mask reports the change once it is done). The window is made a
+// full-screen primary window first, so the call is never ignored.
+namespace {
+const unsigned long style_fullscreen = 1UL << 14;	// NSWindowStyleMaskFullScreen
+const unsigned long behavior_fullscreen = 1UL << 7;	// NSWindowCollectionBehaviorFullScreenPrimary
+} // namespace
+
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	unsigned long beh = send<unsigned long>(st->win, sel("collectionBehavior"));
+	if (!(beh & behavior_fullscreen))
+		send<void>(st->win, sel("setCollectionBehavior:"), beh | behavior_fullscreen);
+	bool full = (send<unsigned long>(st->win, sel("styleMask")) & style_fullscreen) != 0;
+	bool want = on < 0 ? !full : on != 0;
+	if (want != full)
+		send<void>(st->win, sel("toggleFullScreen:"), (id)0);
+	return 0;
+}
 } // extern "C"
 
 #else
@@ -990,8 +1030,15 @@ struct menu_state {
 	void *arg;
 	madcwebview_tick_fn tick_cb;	// the armed one-shot tick (WM_TIMER)
 	void *tick_arg;
+	bool full;			// full screen: the style and placement
+	LONG_PTR full_style;		// it restores on leaving
+	WINDOWPLACEMENT full_place;
 	menu_state() : w(0), win(0), bar(0), root(0), subclassed(false), cb(0), arg(0),
-		       tick_cb(0), tick_arg(0) {}
+		       tick_cb(0), tick_arg(0), full(false), full_style(0)
+	{
+		memset(&full_place, 0, sizeof(full_place));
+		full_place.length = sizeof(full_place);
+	}
 };
 
 std::map<webview_t, menu_state> &states()
@@ -1454,6 +1501,40 @@ WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 	}
 	CloseClipboard();
 	cb(text.c_str(), arg);
+	return 0;
+}
+
+// Full screen: Win32 has no window state for it, so the window drops its
+// frame (WS_OVERLAPPEDWINDOW) and covers its monitor; leaving puts the style
+// and the placement back. The menu bar stays.
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	bool want = on < 0 ? !st->full : on != 0;
+	if (want && !st->full) {
+		MONITORINFO mi;
+		memset(&mi, 0, sizeof(mi));
+		mi.cbSize = sizeof(mi);
+		if (!GetWindowPlacement(st->win, &st->full_place)
+		    || !GetMonitorInfoW(MonitorFromWindow(st->win, MONITOR_DEFAULTTONEAREST), &mi))
+			return 1;
+		st->full_style = GetWindowLongPtrW(st->win, GWL_STYLE);
+		SetWindowLongPtrW(st->win, GWL_STYLE, st->full_style & ~(LONG_PTR)WS_OVERLAPPEDWINDOW);
+		SetWindowPos(st->win, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top,
+			     mi.rcMonitor.right - mi.rcMonitor.left,
+			     mi.rcMonitor.bottom - mi.rcMonitor.top,
+			     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+		st->full = true;
+	} else if (!want && st->full) {
+		SetWindowLongPtrW(st->win, GWL_STYLE, st->full_style);
+		SetWindowPlacement(st->win, &st->full_place);
+		SetWindowPos(st->win, NULL, 0, 0, 0, 0,
+			     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER
+			     | SWP_FRAMECHANGED);
+		st->full = false;
+	}
 	return 0;
 }
 

@@ -115,6 +115,7 @@ namespace ui {
     typedef int64_t (*ui_host_clip_set_fn)(void *host, const char *text);
     typedef const char *(*ui_host_clip_get_fn)(void *host);
     typedef int64_t (*ui_host_title_fn)(void *host, const char *text);
+    typedef int64_t (*ui_host_fullscreen_fn)(void *host, int64_t on);
     struct ui_host_ops
     {
 	ui_host_open_fn	 open;	// build the surface; the engine's `ctx` is
@@ -146,6 +147,10 @@ namespace ui {
 	ui_host_title_fn title;	// show `text` as the window's title (the
 				// composed root's `title` hint, sent when it
 				// changes); 0 = shown; optional
+	ui_host_fullscreen_fn fullscreen; // the window full screen: on = 1
+				// enters, 0 leaves, -1 toggles its current
+				// state; 0 = done; nonzero = not here;
+				// optional
     };
 }
 
@@ -250,6 +255,9 @@ struct ui_frontend
     virtual bool clipboards() const { return false; }
     virtual bool clipboard_set(const char *) { return false; }
     virtual bool clipboard_get(std::string &) { return false; }
+    // The window full screen (on: 1 enter, 0 leave, -1 toggle). A grid is
+    // the terminal's own window: false.
+    virtual bool fullscreen(int) { return false; }
 };
 
 struct ui_grid_frontend : ui_frontend
@@ -613,6 +621,10 @@ struct ui_dom_frontend : ui_frontend
 	    return false;
 	out = t;
 	return true;
+    }
+    bool fullscreen(int on)
+    {
+	return host && ops->fullscreen && ops->fullscreen(host, on) == 0;
     }
 };
 
@@ -1882,6 +1894,14 @@ bool clipboard_get(madc::value &out, int64_t t)
     }
     out = madc::value(lf);
     return true;
+}
+
+// The window full screen (View ▸ Full screen): on = 1 enters, 0 leaves, -1
+// toggles the window's current state.
+bool fullscreen(int64_t t, int64_t on)
+{
+    ui_frontend *f = ui_frontend_get(t);
+    return f && f->fullscreen(on < 0 ? -1 : on != 0);
 }
 
 int64_t rows(int64_t t)

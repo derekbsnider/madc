@@ -94,6 +94,15 @@ WEBVIEW_API int madcwebview_clipboard_set(webview_t w, const char *text);
 WEBVIEW_API int madcwebview_clipboard_get(webview_t w, madcwebview_text_fn cb,
 					  void *arg);
 
+/* Full screen (View ▸ Full screen): on = 1 enters it, 0 leaves it, -1
+ * toggles the window's CURRENT state — so a window the user took out of
+ * full screen by the platform's own means toggles from where it is. The
+ * menu bar stays. Nonzero = no window here. GTK4: gtk_window_fullscreen
+ * (the window manager covers the monitor); Cocoa: toggleFullScreen: (its
+ * own space, animated); Win32: the frame dropped and the monitor covered,
+ * the style and placement restored on leaving. UI thread only. */
+WEBVIEW_API int madcwebview_fullscreen(webview_t w, int on);
+
 #ifdef __cplusplus
 }
 #endif

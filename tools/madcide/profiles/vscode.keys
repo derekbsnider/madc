@@ -19,8 +19,8 @@
 # line (Alt+Up / Alt+Down), Insert line below / above (Ctrl+Enter,
 # Ctrl+Shift+Enter), Go to Definition (F12), next / previous problem (F8 /
 # Shift+F8), the Command Palette (Ctrl+Shift+P, F1), the debugger's steps
-# and breakpoints (F9, F10, F11, Shift+F11), zoom (Ctrl+= / Ctrl+-) and full
-# screen (F11).
+# and breakpoints (F9, F10, F11, Shift+F11 — F11 is full screen until
+# then). Zoom (Ctrl+= / Ctrl+-) is the font size.
 @title VS Code
 
 # File management
@@ -65,6 +65,10 @@ primary+shift+u output
 primary+\ splitw
 primary+k primary+left prevw
 primary+k primary+right nextw
+# Zoom in / out (Ctrl+= / Ctrl+-): the window's font size; full screen (F11)
+primary+= fontlarger
+primary+- fontsmaller
+f11 fullscreen
 # Run (F5 / Ctrl+F5) and stop (Shift+F5); the integrated terminal
 f5 replrun
 ctrl+f5 replrun

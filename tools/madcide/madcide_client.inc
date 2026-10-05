@@ -70,6 +70,14 @@ void client_service(IdeSession &S, long t)
 	ui::clipboard_set(t, req["text"].c_str());
 	return;
     }
+    // Full screen: the window's own state, toggled; a window that cannot
+    // (a browser page) says so.
+    if ( kind == rqFULLSCREEN )
+    {
+	if ( !ui::fullscreen(t, -1) )
+	    S.request_refused(req);
+	return;
+    }
     if ( kind == rqPASTE )
     {
 	var txt;

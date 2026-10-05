@@ -1,16 +1,18 @@
-// The keys the Thonny and VS Code profiles bind to the File and Edit menu
-// commands — what a window's menu shows beside each row. Each line lists
+// The keys the Thonny and VS Code profiles bind to the File, Edit and View
+// menu commands — what a window's menu shows beside each row. Each line lists
 // the profile's own spellings bound to the command (`primary` is Ctrl, or
 // Cmd on macOS: the spelling is the profile's, so the line is the same on
 // every platform), or (unbound). Oracle: Thonny's default keys (each
 // command's default_sequence in Thonny's source: New Ctrl+N, Open Ctrl+O,
 // Close Ctrl+W, Close all Ctrl+Shift+W, Save Ctrl+S, Save All Ctrl+Alt+S,
-// Save as Ctrl+Shift+S, Toggle comment Ctrl+3, Dedent Shift+Tab) and VS
-// Code's published Linux keymap (New File Ctrl+N, Close Ctrl+W, Close All
-// Ctrl+K Ctrl+W, Save All Ctrl+K S, Replace Ctrl+H, Indent / Outdent line
-// Ctrl+] / Ctrl+[, Toggle line comment Ctrl+/). File ▸ New had no key in
-// either profile while both headers still listed it as a command madcide
-// lacked.
+// Save as Ctrl+Shift+S, Toggle comment Ctrl+3, Dedent Shift+Tab, Increase
+// / Decrease font size Ctrl+plus / Ctrl+minus, Full screen F11; Chthonia
+// binds Ctrl+= beside Ctrl+plus, which is Ctrl+Shift+= on most layouts) and
+// VS Code's published Linux keymap (New File Ctrl+N, Close Ctrl+W, Close
+// All Ctrl+K Ctrl+W, Save All Ctrl+K S, Replace Ctrl+H, Indent / Outdent
+// line Ctrl+] / Ctrl+[, Toggle line comment Ctrl+/, Zoom in / out Ctrl+= /
+// Ctrl+-, Toggle Full Screen F11). File ▸ New had no key in either profile
+// while both headers still listed it as a command madcide lacked.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -53,6 +55,9 @@ void profile_keys(const char *profile)
     bound(table, "indent", cmdINDENT);
     bound(table, "dedent", cmdDEDENT);
     bound(table, "togglecomment", cmdTOGGLECOMMENT);
+    bound(table, "fontlarger", cmdFONTLARGER);
+    bound(table, "fontsmaller", cmdFONTSMALLER);
+    bound(table, "fullscreen", cmdFULLSCREEN);
     S.close();
     php::unlink(path);
 }

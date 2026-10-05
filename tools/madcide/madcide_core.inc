@@ -141,8 +141,9 @@ class IdeSession
 					// itself is the layout's (V2)
 	void dialog_fallback(var &req);	// the client could not show it:
 					// the request's prompt instead
-	void request_refused(var &req);	// the client cannot hand over a
-					// terminal for this request: say so
+	void request_refused(var &req);	// the client cannot serve this
+					// request (no terminal to hand over,
+					// no full screen): say so
 	void pending_chord(const char *pcs);
 	long keys_generation();		// moves when the key table changes
 	void key_table(var &out);
@@ -1435,6 +1436,65 @@ void toggle_slot(long w, long es, long slot)
 // Schemes are just theme files: profiles/<name>.theme, swapped by name
 // (the profile-swap precedent). False = no such theme (the previous one
 // stays); an es "scheme" records the loaded name.
+// ---- View ▸ Increase / Decrease font size (plan 2026-10-03 §7a) ----------
+// The window's text size, in pixels: settings.json's "font_size", 8 to 36,
+// page.css's own 14 when unset. A window applies it through the root theme
+// hint (--font-size, below); a terminal keeps its own font.
+long font_size_min() { return 8; }
+long font_size_max() { return 36; }
+
+// The size in force; 0 = none set (the page's own).
+long font_size(long w, long es)
+{
+    var fs;
+    setting_get(fs, w, es, "font_size");
+    if ( fs.is_null() || !fs.is_integer() )
+	return 0;
+    long n = fs.as_integer();
+    if ( n < font_size_min() )
+	n = font_size_min();
+    if ( n > font_size_max() )
+	n = font_size_max();
+    return n;
+}
+
+// One step larger (+1) or smaller (-1), kept in settings.json. A terminal
+// draws with its own font: there the command says so and changes nothing.
+void font_step(long w, long es, long delta)
+{
+    if ( !es_flag(w, es, "haspanel") )
+    {
+	ui::set(w, es, "msg", "A terminal keeps its own font size.");
+	return;
+    }
+    long n = font_size(w, es);
+    if ( n == 0 )
+	n = 14;
+    n = n + delta;
+    if ( n < font_size_min() || n > font_size_max() )
+    {
+	ui::set(w, es, "msg", format("The font size stays {} (from {} to {}).",
+				     n - delta, font_size_min(), font_size_max()));
+	return;
+    }
+    var v = n;
+    if ( setting_put(w, es, "font_size", v) )
+	ui::set(w, es, "msg", format("Font size {}.", n));
+}
+
+// View ▸ Full screen: the window's client toggles it (the parked request;
+// the session never holds a window). A terminal's window is the terminal's.
+void full_screen(long w, long es)
+{
+    if ( !es_flag(w, es, "haspanel") )
+    {
+	ui::set(w, es, "msg", "A terminal keeps its own window.");
+	return;
+    }
+    var rq = { "kind": rqFULLSCREEN, "pause": 0 };
+    ui::set(w, es, "termreq", rq);
+}
+
 bool load_theme(long w, long es, const char *name)
 {
     var tname = name;		// ring discipline: own the text first
@@ -1671,6 +1731,7 @@ void menu_context(var &ctx, long w, long es, long doc, long nav)
     bool building = es_int(w, es, "buildlive", 0) != 0;
     bool modal = cur_vimode(w, es) != viOFF;
     bool viewing = nav != doc;
+    bool window = es_flag(w, es, "haspanel");	// a window, not a terminal
     bool formatted = false;
     if ( viewing && focused_lens_conceals(w, es) )
     {
@@ -1685,7 +1746,7 @@ void menu_context(var &ctx, long w, long es, long doc, long nav)
     ctx = { "editable": editable, "dirty": dirty, "selection": selection,
 	    "split": split, "buffers": buffers, "project": project,
 	    "building": building, "modal": modal, "viewing": viewing,
-	    "formatted": formatted };
+	    "formatted": formatted, "window": window };
 }
 
 // Does a [when] clause hold? `key`, `!key`, joined by `&&`; an empty
@@ -8708,6 +8769,15 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		}
 		return true;
 	    }
+	    case cmdFONTLARGER:
+		font_step(w, es, 1);
+		return true;
+	    case cmdFONTSMALLER:
+		font_step(w, es, -1);
+		return true;
+	    case cmdFULLSCREEN:
+		full_screen(w, es);
+		return true;
 	    case cmdRECENT:
 	    {
 		// File ▸ Recent Files…: its argument (a choice row's, the
@@ -9951,6 +10021,20 @@ void IdeSession::compose_ide_tree(var &root, long doc)
     // menu data), so the bag is built by keyed assignment (`{}` would be
     // an empty ARRAY); nothing loaded = no hints, as before.
     var rh;
+    // The font size the user chose (font_size) rides the same bag as the
+    // page's --font-size; unset, the page keeps its own.
+    long fsz = font_size(w, es);
+    if ( fsz > 0 )
+    {
+	var px = format("{}px", fsz);
+	if ( gt.is_null() || php::count(gt) == 0 )
+	{
+	    var only = { "font-size": px };
+	    gt = only;
+	}
+	else
+	    gt["font-size"] = px;
+    }
     if ( !gt.is_null() && php::count(gt) > 0 )
 	rh["theme"] = gt;
     // The @presence palette (V3c): the scheme's round-robin caret colours
@@ -10295,9 +10379,15 @@ void IdeSession::dialog_fallback(var &req)
 // was silently dropped before polish P3b-1 (fix-what-you-find).
 void IdeSession::request_refused(var &req)
 {
+    long kind = req["kind"].as_integer();
+    if ( kind == rqFULLSCREEN )
+    {
+	ui::set(w, es, "msg", "This window cannot go full screen.");
+	return;
+    }
     ui::set(w, es, "msg",
 	    format("This client has no terminal to hand over for '{}'.",
-		   req_name(req["kind"].as_integer())));
+		   req_name(kind)));
 }
 
 void IdeSession::pending_chord(const char *pcs)

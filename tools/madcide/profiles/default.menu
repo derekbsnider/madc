@@ -14,7 +14,8 @@
 # `!key` to negate, `a && b` to join. Context keys: editable dirty
 # selection split buffers project building modal viewing formatted (a
 # Markdown buffer's formatted view: it edits the file, so editable and
-# viewing judge the file there).
+# viewing judge the file there) window (the client is a window, not a
+# terminal).
 # An optional {ICON} is the picture a renderer draws for the item (ui::icon:
 # new open save run debug stop step-over step-into step-out breakpoints); an
 # unknown word refuses the menu. On a `toolbar` row a second word, {ICON
@@ -89,6 +90,9 @@ View terminal Terminal
 View repl REPL
 View progargs Program Arguments…
 View -
+View fontlarger Increase Font Size [window]
+View fontsmaller Decrease Font Size [window]
+View fullscreen Full Screen [window]
 View refresh Refresh Screen
 
 Window splitw Split Window

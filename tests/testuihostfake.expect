@@ -28,6 +28,15 @@ clipboard get (none yet) -> refused
 fake clip_set: one|two
 clipboard set -> taken
 clipboard get -> answered [one|two] no CR
+fake fullscreen: -1 -> full
+fullscreen toggle -> done
+fake fullscreen: -1 -> full
+fullscreen toggle -> done
+fake fullscreen: 0 -> windowed
+fullscreen leave -> done
+fake fullscreen: 1 -> full
+fullscreen enter -> done
+fullscreen bad handle -> refused
 event dialog open /tmp/picked.mad code 0
 event text hi
 event focus

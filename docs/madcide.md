@@ -419,6 +419,19 @@ The window arranges the editor with the pieces an IDE user expects:
   File…, Save As…, Open Project…).
 - **The status bar** as chrome: the file name, row/column, the modified
   badge, the pending chord, the enclosing function.
+- **The font size** — View → Increase Font Size and Decrease Font Size
+  (`fontlarger`, `fontsmaller`; Ctrl+plus or Ctrl+= and Ctrl+minus in the
+  Chthonia keys, Ctrl+= and Ctrl+- in the VS Code keys) make the window's
+  text one pixel larger or smaller, from 8 to 36 (14 until you change it).
+  The size is kept in `settings.json` (`"font_size"`), so the next session
+  opens at it. A terminal keeps its own font: there the two menu items are
+  disabled and the command says so.
+- **Full screen** — View → Full Screen (`fullscreen`; F11 in the Chthonia
+  and VS Code keys) puts the window in full screen and takes it out again;
+  the menu bar stays. It toggles the window's real state, so after leaving
+  full screen by the platform's own means one press enters it again. A
+  terminal keeps its own window, and a browser page's full screen is the
+  browser's (its F11).
 
 Nothing the window shows is a second implementation: every dialog, tab
 and menu item is the same command the terminal's keys run, composed once

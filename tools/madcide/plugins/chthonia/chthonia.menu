@@ -7,8 +7,8 @@
 # buffer rendered there; Output and Terminal are the
 # bottom panel's tabs for a build and the program it runs. View ▸ Changes,
 # History and Blame line are git's (madcide_git.inc): the file against its
-# last commit, its commits, who last changed the caret's line. Not yet here:
-# View ▸ the font size, Full screen.
+# last commit, its commits, who last changed the caret's line. View ▸
+# Increase / Decrease font size and Full screen: the window's.
 
 File new New
 File editfile Open…
@@ -61,6 +61,10 @@ View gitchanges Changes
 View githistory History…
 View gitblame Blame line
 View progargs Program arguments…
+View -
+View fontlarger Increase font size [window]
+View fontsmaller Decrease font size [window]
+View fullscreen Full screen [window]
 
 Tools keystyle Key bindings…
 Tools options Options…

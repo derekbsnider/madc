@@ -29,7 +29,7 @@ enum ide_cmd : unsigned short
     cmdABOUT, cmdBEND, cmdBLOCKCOPY, cmdBLOCKDEL, cmdBLOCKMOVE, cmdBOTTOM, cmdBUFSEL,
     cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
     cmdDELLINE, cmdDELWORD, cmdDISCARD,
-    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
+    cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdFONTLARGER, cmdFONTSMALLER, cmdFULLSCREEN, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
     cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMDPREVIEW,
     cmdMDPREVIEWROW, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
@@ -88,6 +88,9 @@ void cmd_table(var &t)
     rows[] = { "name": "editfile", "code": cmdEDITFILE };
     rows[] = { "name": "find", "code": cmdFIND };
     rows[] = { "name": "findnext", "code": cmdFINDNEXT };
+    rows[] = { "name": "fontlarger", "code": cmdFONTLARGER };
+    rows[] = { "name": "fontsmaller", "code": cmdFONTSMALLER };
+    rows[] = { "name": "fullscreen", "code": cmdFULLSCREEN };
     rows[] = { "name": "gotoline", "code": cmdGOTOLINE };
     rows[] = { "name": "groww", "code": cmdGROWW };
     rows[] = { "name": "help", "code": cmdHELP };
@@ -365,7 +368,8 @@ enum ide_req : unsigned char
 {
     rqNONE = 0, rqREFRESH, rqFILEDIALOG, rqRUN, rqPROJRUN, rqCMD, rqSHELL,
     rqCLIPSET,		// put the session's copy on the platform clipboard
-    rqPASTE		// read the platform clipboard and paste it
+    rqPASTE,		// read the platform clipboard and paste it
+    rqFULLSCREEN	// toggle the window full screen
 };
 const char *req_name(long k)
 {
@@ -379,6 +383,7 @@ const char *req_name(long k)
 	case rqSHELL: return "shell";
 	case rqCLIPSET: return "clipset";
 	case rqPASTE: return "paste";
+	case rqFULLSCREEN: return "fullscreen";
     }
     return "";
 }

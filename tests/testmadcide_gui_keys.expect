@@ -13,6 +13,9 @@ replace: (unbound)
 indent: (unbound)
 dedent: shift+tab
 togglecomment: primary+3
+fontlarger: primary+= primary+plus
+fontsmaller: primary+-
+fullscreen: f11
 == vscode
 new: primary+n
 open: primary+o
@@ -28,3 +31,6 @@ replace: primary+h
 indent: primary+]
 dedent: primary+[ shift+tab
 togglecomment: primary+/
+fontlarger: primary+=
+fontsmaller: primary+-
+fullscreen: f11

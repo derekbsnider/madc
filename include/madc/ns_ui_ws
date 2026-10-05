@@ -83,10 +83,11 @@ namespace ui_ws {
     }
 }
 
-// No menu / dialog / tick / clipboard op: a ws window has no native menu bar
-// or file dialog, no platform loop to bound (readline is the cooperative
-// wait), and a page asks the user before it reads the clipboard — so the
-// application keeps its own copy (plan §41.11a step 3e).
+// No menu / dialog / tick / clipboard / full-screen op: a ws window has no
+// native menu bar or file dialog, no platform loop to bound (readline is the
+// cooperative wait), and a page asks the user before it reads the clipboard
+// — so the application keeps its own copy (plan §41.11a step 3e); the
+// browser's own full screen is the browser's (F11).
 static ui::ui_host_ops __ui_ws_ops = {
     ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0, 0, 0
 };

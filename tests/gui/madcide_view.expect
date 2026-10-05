@@ -1,0 +1,8 @@
+VIEW open
+VIEW ctrl+= size=15 msg=[Font size 15.]
+VIEW ctrl+plus size=16 msg=[Font size 16.]
+VIEW ctrl+- size=15 msg=[Font size 15.]
+VIEW page font-size 15px
+VIEW f11 size=15 msg=[]
+VIEW kept font_size=15
+VIEW closed

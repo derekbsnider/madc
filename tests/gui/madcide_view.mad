@@ -1,0 +1,118 @@
+// View ▸ the font size and Full screen in a REAL window (plan
+// docs/plans/2026-10-03-chthonia-windows-macos.md §7a): the page sends
+// Ctrl+=, Ctrl+plus, Ctrl+- and F11 as a user would type them (its keydown
+// handler spells them); the engine resolves them through chthonia.keys
+// (fontlarger, fontlarger, fontsmaller, fullscreen); the font size lands in
+// settings.json and rides the root's theme hint, and the session's
+// full-screen request is served against the window's platform call
+// (madcwebview_fullscreen — GTK's, under Xvfb), which takes it. The page's
+// body is drawn at the chosen size (its computed font-size).
+#include "../../tools/texteditor/lined_core.inc"
+#include "../../tools/texteditor/editor_events.inc"
+#include "../../tools/madcide/madcide_core.inc"
+#include "../../tools/madcide/madcide_args.inc"
+#include "../../tools/madcide/madcide_discover.inc"
+#include "../../tools/madcide/madcide_client.inc"
+
+// A key pressed in the page: its keydown handler spells it and posts it.
+void press(long t, const char *key, bool ctrl)
+{
+    ui::eval_page(t, "window.__press=function(k,c){document.getElementById('kb')"
+		     ".dispatchEvent(new KeyboardEvent('keydown',"
+		     "{key:k,ctrlKey:c,bubbles:true,cancelable:true}));};");
+    var js = format("window.__press('{}',{})", key, ctrl ? "true" : "false");
+    ui::eval_page(t, js.c_str());
+}
+
+// The page's text size as the browser computed it (the body's font-size,
+// which reads --font-size), posted back as a snapshot event.
+void probe_font(long t)
+{
+    ui::eval_page(t, "window.madc(JSON.stringify({kind:'snapshot',"
+		     "text:getComputedStyle(document.body).fontSize}))");
+}
+
+void show(IdeSession &S, long t, long doc)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    ui::render(t, S.world(), tree);
+}
+
+int main()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    var sj = format("{}/settings.json", cfg);
+    if ( php::file_exists(sj.c_str()) )
+	php::unlink(sj.c_str());
+    const char *path = "madc_ide_view_gui.txt";
+    php::file_put_contents(path, "hello\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    load_profile(S.w, S.es, "chthonia");	// as Tools ▸ Key bindings… loads it
+    long w = S.world();
+    long t = ui::open(ui::WEB);
+    if ( !t )
+	return 1;
+    S.panel(true);			// what run_ide says of a window
+    var table;
+    S.key_table(table);
+    ui::bind_keys(t, table);
+    println("VIEW open");
+    var ev;
+    int started = 0;
+    int acts = 0;
+    while ( ui::event(ev, t, w) )
+    {
+	var kind = ev["event_code"];
+	if ( kind == ui::event_kind::resize )
+	{
+	    S.viewport(ui::cols(t), ui::rows(t));
+	    show(S, t, doc);
+	    if ( !started )
+	    {
+		started = 1;
+		press(t, "=", true);
+	    }
+	    continue;
+	}
+	if ( ev["event"] == "snapshot" )
+	{
+	    println("VIEW page font-size {}", ev["text"]);
+	    press(t, "F11", false);
+	    continue;
+	}
+	if ( kind != ui::event_kind::action )
+	    continue;
+	long adoc = S.active(doc);
+	ui::set(S.w, S.es, "msg", "");
+	S.apply_ide_event(adoc, ev);
+	client_service(S, t);
+	show(S, t, adoc);
+	var msg;
+	ui::get(msg, S.w, S.es, "msg");
+	println("VIEW {} size={} msg=[{}]", ev["seq"], font_size(S.w, S.es), msg);
+	acts = acts + 1;
+	if ( acts == 1 )
+	    press(t, "+", true);
+	else if ( acts == 2 )
+	    press(t, "-", true);
+	else if ( acts == 3 )
+	    probe_font(t);
+	else if ( acts == 4 )
+	    press(t, "F11", false);
+	else
+	    break;
+    }
+    var kept;
+    var why;
+    json_object_read(kept, why, sj);
+    println("VIEW kept font_size={}", kept["font_size"]);
+    ui::close(t);
+    S.close();
+    php::unlink(path);
+    php::unlink(sj.c_str());
+    println("VIEW closed");
+    return 0;
+}

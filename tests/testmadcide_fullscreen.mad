@@ -1,0 +1,90 @@
+// View ▸ Full screen (plan docs/plans/2026-10-03-chthonia-windows-macos.md
+// §7a): the session parks a full-screen request (it never holds a window)
+// and the window's client toggles the window's own state through
+// ui::fullscreen — the host's `fullscreen` op (madcwebview_fullscreen in a
+// real window). A terminal keeps its own window: there the command says so,
+// parks nothing, and the View menu's item is disabled (the context fact
+// `window`). A window whose host has no full screen (a browser page, the ws
+// seat) refuses with a message.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+#include "../tools/madcide/madcide_client.inc"
+
+void *fake_open(const char *title, const char *page, void *ctx) { return ctx; }
+void fake_close(void *host) {}
+int64_t fake_eval(void *host, const char *js) { return 0; }
+int64_t fake_run(void *host) { return 1; }
+
+bool fake_full = false;
+int64_t fake_fullscreen(void *host, int64_t on)
+{
+    fake_full = on < 0 ? !fake_full : on != 0;
+    println("host fullscreen: {} -> {}", on, fake_full ? "full" : "windowed");
+    return 0;
+}
+
+static ui::ui_host_ops full_ops = { fake_open, fake_close, fake_eval, fake_run, 0, 0, 0, 0, 0, 0, fake_fullscreen };
+static bool full_registered = ui::register_host("fakefull", ui::WEB, &full_ops);
+static ui::ui_host_ops page_ops = { fake_open, fake_close, fake_eval, fake_run };
+static bool page_registered = ui::register_host("fakepage", ui::WEB, &page_ops);
+
+long item_enabled(IdeSession &S, long doc, const char *id)
+{
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    for ( var m : tree["hints"]["menu"]["bar"] )
+	for ( var it : m["items"] )
+	    if ( !it["id"].is_null() && it["id"] == id )
+		return it["enabled"].is_null() ? 1 : it["enabled"].as_integer();
+    return -1;
+}
+
+void show(IdeSession &S, const char *label)
+{
+    var msg;
+    ui::get(msg, S.w, S.es, "msg");
+    var rq;
+    ui::get(rq, S.w, S.es, "termreq");
+    var kind = "none";
+    if ( !rq.is_null() )
+	kind = req_name(rq["kind"].as_integer());
+    println("{}: msg=[{}] request={}", label, msg, kind);
+}
+
+int main()
+{
+    println("hosts: {} {}", full_registered ? 1 : 0, page_registered ? 1 : 0);
+    const char *path = "madc_fullscreen.txt";
+    php::file_put_contents(path, "x\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    bool cont = true;
+    println("terminal menu: {}", item_enabled(S, doc, "fullscreen"));
+    S.command(doc, cmdFULLSCREEN, "", cont);
+    show(S, "terminal");
+
+    S.panel(true);			// what run_ide says of a window
+    println("window menu: {}", item_enabled(S, doc, "fullscreen"));
+    ui::set(S.w, S.es, "msg", "");
+    S.command(doc, cmdFULLSCREEN, "", cont);
+    show(S, "parked");
+    long t = ui::open("fakefull");
+    client_service(S, t);
+    show(S, "served");
+    S.command(doc, cmdFULLSCREEN, "", cont);
+    client_service(S, t);
+    fake_full = false;			// the user left it by the platform's means
+    S.command(doc, cmdFULLSCREEN, "", cont);
+    client_service(S, t);
+    ui::close(t);
+
+    long p = ui::open("fakepage");
+    S.command(doc, cmdFULLSCREEN, "", cont);
+    client_service(S, p);
+    show(S, "page");
+    ui::close(p);
+    S.close();
+    php::unlink(path);
+    return 0;
+}

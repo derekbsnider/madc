@@ -358,6 +358,28 @@ bool user_settings_save(long w, long es)
     return true;
 }
 
+// A setting the user chose: settings.json's top-level `key` set to `value`
+// on the bag's usersettings, and the file written (user_settings_save:
+// false, with the reason on the status line, when it cannot be — the value
+// still holds for the session). The one writer of a top-level setting: the
+// language standard, the key style, the font size.
+bool setting_put(long w, long es, const char *key0, var &value)
+{
+    var key = key0;		// ring discipline: own the text first
+    var us;
+    ui::get(us, w, es, "usersettings");
+    if ( us.is_null() || !us.is_object() )
+    {
+	var top;
+	top[key.c_str()] = value;
+	us = top;
+    }
+    else
+	us[key.c_str()] = value;
+    ui::set(w, es, "usersettings", us);
+    return user_settings_save(w, es);
+}
+
 // The key style a bundle keeps (plan §41.11a step 3e): settings.json's
 // "keys" object, by bundle name (`"keys": { "chthonia": "vscode" }`), so a
 // choice made in one bundle leaves the others' keys as they ship. "" when
@@ -397,15 +419,7 @@ bool keys_choice_save(long w, long es, const char *name0)
     }
     else
 	ks[b.c_str()] = name;
-    if ( us.is_null() || !us.is_object() )
-    {
-	var top = { "keys": ks };
-	us = top;
-    }
-    else
-	us["keys"] = ks;
-    ui::set(w, es, "usersettings", us);
-    return user_settings_save(w, es);
+    return setting_put(w, es, "keys", ks);
 }
 
 void path_sans_ext(var &out, var &p);	// madcide_core.inc: THE {base} rule
