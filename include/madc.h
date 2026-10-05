@@ -4716,11 +4716,27 @@ public:
 	{ pgm.template_arg_resolve_depth = 0; }
 	~TemplateArgReplayScope() { pgm.template_arg_resolve_depth = saved; }
     };
+    // The parse is in an in-flight class template specialization's OWN body
+    // (its declarative region, not a method body parsed eagerly within it).
+    bool class_instantiation_body_open() const
+    {
+	return !class_inst_compound_bases.empty()
+	    && compounds.size() == class_inst_compound_bases.back();
+    }
     bool template_arg_deferral_context() const
     {
-	return template_arg_resolve_depth > 0
-	    && !class_inst_compound_bases.empty()
-	    && compounds.size() == class_inst_compound_bases.back();
+	return template_arg_resolve_depth > 0 && class_instantiation_body_open();
+    }
+    // [class.nest]: a tag declared in an open aggregate's body belongs to that
+    // aggregate (Owner::tag) — always in the strict C++ modes. C and the madc
+    // dialect keep C's file-scope nested tags (C programs run under the
+    // default mode), but a class template specialization has no C reading:
+    // each specialization owns its nested tags, or every instantiation of
+    // aligned_storage<_Len,_Align> collides on its `union type`.
+    bool open_aggregates_own_nested_tags() const
+    {
+	return is_cpp_mode()
+	    || (presents_as_cpp() && class_instantiation_body_open());
     }
     void complete_deferred_arg_instantiations(size_t mark);
     // [temp.inst]/2: a class template-id NAMED while one of its type

@@ -14078,13 +14078,14 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	return NULL;
 
     std::string tname = contextual_identifier_name(tb);
-    // [class]/2 (strict C++ modes): a tag declared in an OPEN data-only
+    // [class]/2 (where open aggregates own their nested tags —
+    // open_aggregates_own_nested_tags): a tag declared in an OPEN data-only
     // aggregate — or in one enclosing it — is a type name right after its
     // declaration: the sibling `struct rec { type t; }` beside `union type`,
     // the member `std::vector<Saved> saved;` of the aggregate that declared
     // Saved. Only a SCOPED hit (Owner::tag): a flat tag keeps today's path,
     // which register_cpp_aggregate_name already serves.
-    if ( is_cpp_mode() && !aggregate_scope_stack.empty() )
+    if ( open_aggregates_own_nested_tags() && !aggregate_scope_stack.empty() )
     {
 	datadef_map_citer vis = find_visible_struct_tag(tname);
 	if ( vis != struct_map.end() && vis->first != tname )
@@ -47081,15 +47082,16 @@ std::string Program::scoped_struct_tag(const std::string &name)
     std::string block = block_scoped_struct_tag(name);
     if ( block != name )
 	return block;
-    // [class.nest] in the STRICT C++ modes (--std= determines semantics): a
-    // tag declared inside a data-only aggregate's open body belongs to that
-    // aggregate, whatever function or class context triggered its parse.
-    // Bare keys made every instantiation of aligned_storage<_Len,_Align>
-    // collide on its nested `union type` (type_traits:2101, 17 self-host
-    // units). C AND the madc dialect keep C's file-scope tags: C programs
-    // (`struct C { struct D {...} attr; }; struct D d;`, gcc-torture
-    // pr39339) run under the default mode.
-    if ( is_cpp_mode() && !aggregate_scope_stack.empty() )
+    // [class.nest] (open_aggregates_own_nested_tags — --std= determines
+    // semantics): a tag declared inside a data-only aggregate's open body
+    // belongs to that aggregate, whatever function or class context
+    // triggered its parse. Bare keys made every instantiation of
+    // aligned_storage<_Len,_Align> collide on its nested `union type`
+    // (type_traits:2101, 17 self-host units). C AND the madc dialect keep
+    // C's file-scope tags for C aggregates: C programs (`struct C { struct D
+    // {...} attr; }; struct D d;`, gcc-torture pr39339) run under the
+    // default mode.
+    if ( open_aggregates_own_nested_tags() && !aggregate_scope_stack.empty() )
 	return aggregate_scope_stack.back()->name + "::" + name;
     if ( DataDefCLASS *owner = nested_aggregate_owner() )
 	return owner->name + "::" + name;
@@ -47109,9 +47111,9 @@ datadef_map_citer Program::find_visible_struct_tag(const std::string &name)
     }
     // ...then every enclosing open aggregate outward (`struct rec { type
     // t; }` names the sibling union its OWNER declared), then the class
-    // owner the open aggregates sit in, then the flat registration. Strict
-    // C++ modes only (the aggregate keys exist only there).
-    if ( is_cpp_mode() )
+    // owner the open aggregates sit in, then the flat registration. Only
+    // where the aggregate keys exist (open_aggregates_own_nested_tags).
+    if ( open_aggregates_own_nested_tags() )
     {
 	for ( size_t i = aggregate_scope_stack.size(); i-- > 0; )
 	{
@@ -47291,7 +47293,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     auto nested_store_key = [&](DataDefSTRUCT *nested, const std::string &sname)
 	-> std::string
     {
-	if ( !pgm.is_cpp_mode() || pgm.aggregate_scope_stack.empty() )
+	if ( !pgm.open_aggregates_own_nested_tags()
+	  || pgm.aggregate_scope_stack.empty() )
 	    return sname;
 	DataDefSTRUCT *owner = pgm.aggregate_scope_stack.back();
 	return pgm.key_nested_aggregate(nested, sname, owner->name,
