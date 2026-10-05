@@ -3051,7 +3051,8 @@ public:
 	cir_node *tsubst_dependent_operator(cir_node *src,
 				const std::map<DataDef *, DataDef *> &subst);
 	DataDef *tsubst_dependent_operator_type(class TokenBase *tb,
-				const std::map<DataDef *, DataDef *> &subst);
+				const std::map<DataDef *, DataDef *> &subst,
+				ArgValueCategory *category = NULL);
 	// The instance parameter a copied N_ID names when that parameter holds
 	// its object's ADDRESS — a reference, or a by-value class passed by
 	// invisible reference — else NULL; and the address of the object a

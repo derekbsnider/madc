@@ -2665,13 +2665,21 @@ cir_node *CirBuilder::tsubst_dependent_operator(cir_node *src,
 }
 
 DataDef *CirBuilder::tsubst_dependent_operator_type(TokenBase *tb,
-				const std::map<DataDef *, DataDef *> &subst)
+				const std::map<DataDef *, DataDef *> &subst,
+				ArgValueCategory *category)
 {
 	TsubstOperatorPlan plan;
 	if (!tsubst_operator_plan(tb, subst, plan))
 		return NULL;
-	if (plan.rebuilt)
+	// The rebuilt expression is a CALL of the operator function the instance
+	// resolved ([over.oper]); its value category is that call's — an xvalue
+	// for move_iterator's `T&& operator*()` — never the pattern's builtin
+	// `*` (an lvalue), or a forwarding argument deduced `T&` and copied.
+	if (plan.rebuilt) {
+		if (category)
+			*category = arg_value_category(plan.rebuilt);
 		return plan.rebuilt->datadef();
+	}
 	if (plan.op->id() != TokenID::tkInc && plan.op->id() != TokenID::tkDec)
 		return NULL;
 	// A step's type is its operand's (TokenInc / TokenDec::datadef()).
@@ -3028,16 +3036,21 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 	// `result_type`: the argument's substituted result when it is not the
 	// substituted `pdd` itself (a re-resolved inner call is typed by its
 	// winner's referent, its category read from the winner's return).
+	// `category`: the argument's category when the caller already knows it
+	// (a rebuilt dependent operator); Unknown reads it from the origin.
 	auto append_substituted_param = [&](TokenBase *origin, DataDef *pdd,
 					    const std::map<DataDef *, DataDef *> &smap,
-					    bool zero, DataDef *result_type) {
+					    bool zero, DataDef *result_type,
+					    ArgValueCategory category
+						= ArgValueCategory::Unknown) {
 		DataDef *sdd = subst_datadef_active(pdd, smap);
 		at.push_back(tsubst_overload_arg_type(sdd));
 		concrete_param_types.push_back(sdd);
 		param_origins.push_back(origin);
 		zeros.push_back(zero);
-		cats.push_back(substituted_arg_value_category(origin,
-			result_type ? result_type : sdd));
+		cats.push_back(category != ArgValueCategory::Unknown ? category
+			: substituted_arg_value_category(origin,
+				result_type ? result_type : sdd));
 		if (sdd != pdd)
 			changed = true;
 	};
@@ -3137,11 +3150,13 @@ Variable *CirBuilder::resolve_copied_dependent_call(
 			}
 		}
 		// Likewise an argument that is an operator on a dependent operand
-		// (`emplace_back(*__first)` with an iterator class): typed by the
-		// operator the instance resolves, not the pattern's placeholder.
-		if (DataDef *odd = tsubst_dependent_operator_type(p, *subst)) {
+		// (`emplace_back(*__first)` with an iterator class): typed — and
+		// categorized — by the operator the instance resolves, not the
+		// pattern's placeholder.
+		ArgValueCategory ocat = ArgValueCategory::Unknown;
+		if (DataDef *odd = tsubst_dependent_operator_type(p, *subst, &ocat)) {
 			changed = true;
-			append_substituted_param(p, odd, *subst, false, NULL);
+			append_substituted_param(p, odd, *subst, false, NULL, ocat);
 			continue;
 		}
 		append_substituted_param(p, p ? p->datadef() : NULL, *subst,
