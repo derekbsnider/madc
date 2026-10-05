@@ -6856,6 +6856,25 @@ TokenBase *Program::_getToken()
 		    // skip whitespace
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
+		    // C11 6.10.2p4: an operand that is neither form is
+		    // macro-replaced as ordinary text and must then read as one
+		    // of them. The replaced operand re-enters the stream ahead
+		    // of the line's end, so the reader below takes it exactly
+		    // as a written one. The fidelity record keeps the line as
+		    // written.
+		    std::string written_operand;
+		    if ( source.peek() != '<' && source.peek() != '"' )
+		    {
+			while ( source.good() && !source.eof()
+			     && source.peek() != '\n' && source.peek() != '\r' )
+			    written_operand += source.get();
+			std::string replaced = macro_replace_text(written_operand);
+			if ( replaced.empty()
+			  || (replaced[0] != '<' && replaced[0] != '"') )
+			    Throw << "#" << directive
+				  << " expects \"FILENAME\" or <FILENAME>" << flush;
+			source.pushback(replaced);
+		    }
 		    // read filename: "file" or <file>
 		    char delim = source.get();
 		    char end_delim = (delim == '<') ? '>' : '"';
@@ -6875,8 +6894,9 @@ TokenBase *Program::_getToken()
 			fidelity_include_directives.push_back(std::make_pair(
 			    std::string(source.fname()),
 			    std::string("#") + directive + " "
-			    + (delim == '<' ? "<" : "\"") + incfile
-			    + (delim == '<' ? ">" : "\"")));
+			    + (!written_operand.empty() ? written_operand
+			       : (delim == '<' ? "<" : "\"") + incfile
+				 + (delim == '<' ? ">" : "\""))));
 		    // posix/<name> is a compiler-internal storage namespace. A
 		    // user include must name the public native header; otherwise a
 		    // supplement could be served without its required real provider.
@@ -8549,20 +8569,7 @@ TokenBase *Program::_getToken()
 			if ( i < arg_served.size() )
 			    own_region_paint = arg_served[i];
 			source.inherit_macro_disables(saved, "", &own_region_paint);
-			std::string expanded_arg;
-			TokenBase *at;
-			while ( (at = getToken()) )
-			{
-			    switch ( at->type() )
-			    {
-				case TokenType::ttSpace: expanded_arg += ' '; break;
-				case TokenType::ttTab:   expanded_arg += '\t'; break;
-				case TokenType::ttEOL:   expanded_arg += '\n'; break;
-				default:
-				    expanded_arg += madc_token_spelling(at);
-				    break;
-			    }
-			}
+			std::string expanded_arg = spell_expanded_source();
 			param_paint[param].insert(
 			    source.expanded_macro_names().begin(),
 			    source.expanded_macro_names().end());
@@ -9076,6 +9083,60 @@ void Program::refuse_open_conditional_groups(size_t groups_at_entry)
     source.setpos(g.line, g.column);
     source.refusal_cause = ::madc::diag_cause::end_of_input;
     Throw << "unterminated #" << name << flush;
+}
+
+std::string Program::spell_expanded_source()
+{
+    std::string out;
+    TokenBase *t;
+    while ( (t = getToken()) )
+    {
+	switch ( t->type() )
+	{
+	    case TokenType::ttSpace: out += ' '; break;
+	    case TokenType::ttTab:   out += '\t'; break;
+	    case TokenType::ttEOL:   out += '\n'; break;
+	    default:
+		out += madc_token_spelling(t);
+		break;
+	}
+    }
+    return out;
+}
+
+std::string Program::macro_replace_text(const std::string &text)
+{
+    Source saved = std::move(source);
+    bool saved_suppress_auto_include_scan = suppress_auto_include_scan;
+    suppress_auto_include_scan = true;
+    source = Source();
+    source.fname(saved.fname());
+    source.str(text);
+    std::string spelled;
+    try
+    {
+	spelled = spell_expanded_source();
+    }
+    catch(...)
+    {
+	source = std::move(saved);
+	suppress_auto_include_scan = saved_suppress_auto_include_scan;
+	throw;
+    }
+    source = std::move(saved);
+    suppress_auto_include_scan = saved_suppress_auto_include_scan;
+    std::string out;
+    for ( char c : spelled )
+    {
+	bool space = c == ' ' || c == '\t' || c == '\n' || c == '\r';
+	if ( !space )
+	    out += c;
+	else if ( !out.empty() && out.back() != ' ' )
+	    out += ' ';
+    }
+    if ( !out.empty() && out.back() == ' ' )
+	out.pop_back();
+    return out;
 }
 
 // evaluate #if condition: supports defined(NAME), !, &&, ||, ?:, the

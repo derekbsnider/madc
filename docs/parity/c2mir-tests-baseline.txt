@@ -48,7 +48,6 @@
 lacc/declaration-default-int.c
 lacc/declarator-parens.c
 lacc/function-incomplete.c
-lacc/include.c
 lacc/initialize-array.c
 lacc/initialize-object.c
 lacc/initialize-string.c

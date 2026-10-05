@@ -6920,6 +6920,13 @@ public:
     // Called at every define_map write site: directive, forest replay, CLI -D.
     void note_std_abi_define(const std::string &name, const std::string &value);
     std::string expandIfMacros(const std::string &raw);
+    // Macro-replace what remains of the current Source and return its
+    // spelling, whitespace kept (a macro argument's pre-expansion).
+    std::string spell_expanded_source();
+    // `text` macro-replaced as ordinary text in a throwaway Source (C11
+    // 6.10.2p4: a computed #include operand), spelled, whitespace runs
+    // collapsed to one space and trimmed.
+    std::string macro_replace_text(const std::string &text);
     bool should_tokenize_include(const std::string &path);
     // positional=false skips the token-stream position gates (declaration
     // head, member access, non-std qualifier) for callers feeding names

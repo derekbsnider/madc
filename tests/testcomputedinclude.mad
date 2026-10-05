@@ -1,0 +1,23 @@
+// An #include whose operand is neither <...> nor "..." is macro-replaced
+// first and must then read as one of those forms (C11 6.10.2p4): an
+// object-like macro naming <stddef.h>, a function-like macro building
+// <stdio.h> around a macro argument, and a stringizing macro naming a quoted
+// header beside this file. `include` defined as a macro leaves the
+// directive's name alone. madc read the operand's first character as the
+// delimiter (`#include HEADER` opened "EADER").
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#define include do not include
+#define HEADER <stddef.h>
+#define ANGLE(name) <name>
+#define STDIO stdio.h
+#define QUOTE(name) #name
+#include HEADER
+#include ANGLE(STDIO)
+#include QUOTE(testcomputedinclude_helper.h)
+
+int main(void)
+{
+	size_t n = sizeof(int);
+	printf("computed: %zu %d\n", n, helper_answer());
+	return 0;
+}
