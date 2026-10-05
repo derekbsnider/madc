@@ -79,6 +79,12 @@ inline void ev_action(var &e, const char *a, const char *seq)
     e = f;
 }
 
+// An action no key sequence posted (a menu row, a button, a test's command).
+inline void ev_action(var &e, const char *a)
+{
+    ev_action(e, a, "");
+}
+
 // Let the pump run until nothing is outstanding (or `ms` passed): an offer
 // answered, a completion answered — or, with `running`, until the offered
 // entry has been taken and runs.

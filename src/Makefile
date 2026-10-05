@@ -1214,6 +1214,7 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-blank-run.sh
 	@cd .. && bash scripts/check-chthonia-boundary.sh
 	@cd .. && bash scripts/check-madcide-harness.sh
+	@cd .. && bash scripts/check-one-event-builder.sh
 	@cd .. && bash scripts/check-fragment-inline-vars.sh
 	@cd .. && bash scripts/check-module-exports.sh
 	@cd .. && bash scripts/check-one-style-vocabulary.sh

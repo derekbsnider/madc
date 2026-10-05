@@ -12,12 +12,7 @@
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
-
-void ev_action(var &e, const char *a)
-{
-    e = { "event": "action", "event_code": ui::event_kind::action,
-	  "action": a, "seq": "" };
-}
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_text, ev_key, ev_action
 
 void ev_dialog(var &e, const char *mode, const char *path)
 {
