@@ -35494,6 +35494,8 @@ struct Program::ClassRegistrationJournal::State
 	ptr_type_cache_transaction;
     registration_map<std::pair<DataDef *, bool>, DataDefREF *>::transaction_state
 	ref_type_cache_transaction;
+    registration_map<FuncDef *, DataDefFPTR *>::transaction_state
+	function_type_cache_transaction;
     registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *>::transaction_state
 	qualified_type_cache_transaction;
     funcdef_map_t::transaction_state funcdef_map_transaction;
@@ -35683,6 +35685,7 @@ Program::ClassRegistrationJournal::ClassRegistrationJournal(
     pgm.literal_map.begin_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.begin_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.begin_transaction(state->ref_type_cache_transaction);
+    pgm.function_type_cache.begin_transaction(state->function_type_cache_transaction);
     pgm.qualified_type_cache.begin_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.begin_transaction(
 	state->namespace_fn_overload_sets_transaction);
@@ -36052,6 +36055,7 @@ void Program::ClassRegistrationJournal::commit()
     pgm.literal_map.commit_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.commit_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.commit_transaction(state->ref_type_cache_transaction);
+    pgm.function_type_cache.commit_transaction(state->function_type_cache_transaction);
     pgm.qualified_type_cache.commit_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.commit_transaction(
 	state->namespace_fn_overload_sets_transaction);
@@ -36220,6 +36224,7 @@ void Program::ClassRegistrationJournal::rollback()
     pgm.literal_map.rollback_transaction(state->literal_map_transaction);
     pgm.ptr_type_cache.rollback_transaction(state->ptr_type_cache_transaction);
     pgm.ref_type_cache.rollback_transaction(state->ref_type_cache_transaction);
+    pgm.function_type_cache.rollback_transaction(state->function_type_cache_transaction);
     pgm.qualified_type_cache.rollback_transaction(state->qualified_type_cache_transaction);
     pgm.namespace_fn_overload_sets.rollback_transaction(
 	state->namespace_fn_overload_sets_transaction);
@@ -55353,6 +55358,21 @@ DataDefFPTR *Program::fnptr_twin(DataDefFPTR *fn_type)
     return twin;
 }
 
+// The function TYPE of a named function: the other direction of
+// getPointerType's FuncDef fold. A FuncDef is the named function's own
+// DataDef, no type a template parameter can be; a function lvalue deduces
+// this for `T&` ([temp.deduct.call]/3), interned like its pointer.
+DataDefFPTR *Program::function_type_of(FuncDef *fd)
+{
+    auto it = function_type_cache.find(fd);
+    if ( it != function_type_cache.end() )
+	return it->second;
+    DataDefFPTR *ft = new DataDefFPTR(fd);
+    ft->ptr_syntax = false;
+    function_type_cache[fd] = ft;
+    return ft;
+}
+
 // A pointer to member function's `target` is the member's function TYPE —
 // what parseFnPtrParams and parse_member_signature_qualifiers build for the
 // declarator `R (C::*)(A) const`, and what every reader of the member pointer
@@ -62607,6 +62627,14 @@ static int fn_template_deduce_param(const std::string &spelling,
     // pointee is a declared type but the direct scalar arm sees the raw
     // expression dd (integer literals carry the ddINT flavor twin).
     DataDef *dd = canonical_template_binding_dd(arg_dd);
+    // [temp.deduct.call]/2-3: an argument of FUNCTION type — a named
+    // function, whose DataDef is its FuncDef, no type — deduces the function
+    // type for a reference parameter (`Fn&` from add3: int(int)) and, by
+    // [conv.func], its pointer for a by-value one (int(*)(int)).
+    if ( pgm && shape.stars == 0 )
+	if ( FuncDef *fn = dd->as_funcdef_dd() )
+	    dd = shape.amps == 0 ? pgm->getPointerType(fn)
+				 : pgm->function_type_of(fn);
     // An expression never has reference type ([expr.type]/1): an rvalue-
     // reference-typed argument denotes its referent, as an lvalue when named
     // (`int&& r`) — deducing through the lvalue reference — else as an xvalue,

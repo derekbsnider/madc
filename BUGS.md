@@ -1892,28 +1892,6 @@ int main()
   a returned or stored callable — carries no captures. The value needs the
   closure class: its captures as members, its body as operator().
 
-### B179. A function template's `Fn&` bound to a function declares `void *`
-
-```cpp
-#include <stdio.h>
-static int add3(int x) { return x + 3; }
-template<typename Fn> static int callt(Fn &f, int x) { return f(x); }
-int main() { printf("%d\n", callt(add3, 7)); return 0; }
-```
-
-- Found 2026-10-05 with B178.
-- g++ 13 and clang++ 18: `10` ([temp.deduct.call]/3: a reference parameter
-  deduces Fn = int(int), the function type, and `f` is `int (&)(int)`).
-  madc `--std=c++17`: "called object is not a function or function pointer"
-  at 3:64 — the instance declares `void *f` (`--emit=c11`), and `(*f)(x)`
-  calls through it. The same parameter spelled `int (&f)(int)` emits
-  `int (*f)(int)`.
-- Where: deduction binds Fn to the argument's DataDef, the NAMED function's
-  own FuncDef, which is no type; the declarator then knows no function type
-  to reference. The function type is the !ptr_syntax DataDefFPTR over the
-  signature (what `P<int(int)>` binds), and nothing mints it from a FuncDef
-  (getPointerType mints only the pointer; fnptr_twin goes the other way).
-
 ### B161. libc++: copying a `std::unique_ptr` is reported as "no matching constructor"
 
 ```cpp

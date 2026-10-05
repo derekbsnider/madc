@@ -5158,6 +5158,7 @@ public:
     // stays its own object
     std::map<std::pair<DataDef *, size_t>, DataDefSIMD *> simd_type_cache;
     registration_map<std::pair<DataDef *, bool>, DataDefREF *> ref_type_cache; // cached reference types: (referent, is_rvalue) -> T& / T&&
+    registration_map<FuncDef *, DataDefFPTR *> function_type_cache; // a named function's function TYPE (function_type_of)
     // cached cv-qualified DataDefs: ONE variant per (unqualified base, CvQual mask)
     registration_map<std::pair<DataDef *, unsigned>, DataDefQUAL *> qualified_type_cache;
     funcdef_map_t  funcdef_map;		// function definitions
@@ -8168,6 +8169,10 @@ public:
     // The pointer-to-function twin of a FUNCTION type (a fresh DataDefFPTR over
     // the same signature, ptr_syntax set) — `*` on a function type, [dcl.fct]/5.
     DataDefFPTR *fnptr_twin(DataDefFPTR *fn_type);
+    // The function TYPE a named function has ([dcl.fct]): the DataDefFPTR over
+    // its FuncDef with ptr_syntax clear, ONE per function — what a reference
+    // parameter deduces from a function lvalue ([temp.deduct.call]/3).
+    DataDefFPTR *function_type_of(FuncDef *fd);
     // The function TYPE of a non-static member function — the `T` of
     // `T C::*` ([dcl.mptr]/3): its signature without the hidden __this
     // receiver (parameter 0 of a method FuncDef), the shape a
