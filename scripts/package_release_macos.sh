@@ -170,6 +170,9 @@ package_arch() {
         rm -f "tmp/madcide-pkg-$bin_arch" "tmp/chthonia-pkg-$bin_arch"
         mkdir -p tmp
         "$bin" -o "tmp/madcide-pkg-$bin_arch" tools/madcide/madcide.mad
+        # libmadcide (madcide's base as a library) into this madc's own lib
+        # directory (bin/../lib), where chthonia's manifest "libs" finds it.
+        "$bin" -shared -o lib/libmadcide.dylib tools/madcide/madcide_base.mad
         "$bin" --project tools/chthonia/chthonia.json -o "tmp/chthonia-pkg-$bin_arch"
         scripts/build_shipped_plugins.sh "tmp/plugins-pkg-$bin_arch" "tmp/madcide-pkg-$bin_arch"
     else
@@ -193,6 +196,7 @@ package_arch() {
     if [ "$ide" = 1 ]; then
         install -m 755 "tmp/madcide-pkg-$bin_arch" "$stage/$root/bin/madcide"
         install -m 755 "tmp/chthonia-pkg-$bin_arch" "$stage/$root/bin/chthonia"
+        install -m 755 lib/libmadcide.dylib "$stage/$root/lib/libmadcide.dylib"
         # madcide's data under share/madcide, where an installed madcide
         # looks (<exedir>/../share/madcide): the one staging owner.
         scripts/stage_madcide_data.sh "$stage/$root/share/madcide" "tmp/plugins-pkg-$bin_arch"

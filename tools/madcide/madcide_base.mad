@@ -1,4 +1,5 @@
-// madcide_base.mad — madcide's base as a unit of its own, with no main: what
-// a product links (<madcide/product>; plugin design §9.3). A product's own
-// unit defines main, which calls madcide_main with the product's descriptor.
+// madcide_base.mad — madcide's base as a unit of its own, with no main: built
+// `-shared` as libmadcide, the library a product links (<madcide/product>;
+// plugin design §9.3). A product's own unit defines main, which calls
+// madcide_main with the product's descriptor.
 #include "madcide_base.inc"

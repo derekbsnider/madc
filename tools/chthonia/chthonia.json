@@ -2,8 +2,8 @@
   "output": "chthonia",
   "kind": "gui",
   "icon": "chthonia.ico",
+  "libs": [ "madcide" ],
   "tus": [
-    "../madcide/madcide_base.mad",
     { "file": "../madcide/plugins/chthonia/chthonia.mad",
       "include_dirs": [ "../madcide/include" ] },
     { "file": "chthonia_main.mad",

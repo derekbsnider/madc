@@ -152,6 +152,12 @@ fi
 echo "== madcide (AOT via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release -o tmp/madcide-pkg tools/madcide/madcide.mad )
 strip --strip-unneeded tmp/madcide-pkg
+# libmadcide: madcide's base as the library a product links (chthonia below
+# names it in its manifest's "libs"), built by the same compiler into that
+# compiler's own lib directory (bin/../lib), where a manifest's library is
+# found first.
+echo "== libmadcide (via the release compiler) =="
+( ulimit -t 240; timeout 300 bin/madc-release -shared -o lib/libmadcide.so tools/madcide/madcide_base.mad )
 # chthonia: the product built on madcide's base, by the same compiler.
 echo "== chthonia (AOT via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release --project tools/chthonia/chthonia.json -o tmp/chthonia-pkg )

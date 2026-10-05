@@ -103,6 +103,25 @@ Slices:
    one exception goes. The static form: madc has no archive writer, so the
    static base is the one relocatable object `-r` writes, linked as a unit —
    the archive format is not needed for madc's own link.
+   **Shared form done (2026-10-05):** every packager builds libmadcide with
+   its release madc into the directory that madc searches first (`lib/` on
+   Linux and macOS, the release set beside `madc.exe` on Windows) and ships
+   it beside libmadc; `chthonia.json` names `"libs": ["madcide"]`, and the
+   boundary gate has no exception. Measured on Linux: the library builds in
+   2.4 s (2.3 MB, 981 functions exported, no SONAME, so chthonia's image
+   names `libmadcide.so`), and chthonia then builds in 0.12 s. Linking it
+   showed both images registering the web host: `register_host` now
+   compares an `identity` the host states (`testuiwebtwoimages`). Measured
+   under wine with the release set: `madcide.dll` builds in 1.5 s (1.9 MB)
+   beside `madc.exe`, chthonia.exe builds against it in 0.17 s and imports
+   `madcide.dll`, and `--help` prints.
+   **Static form verified (2026-10-05):** madcide's base compiled to one
+   object (`madc -c`, 12 s) links with the product's units' objects
+   (`madc -o chthonia base.o plugin.o main.o`, 0.19 s) into a 2.3 MB image
+   that needs only libmadc and the system libraries. It first refused a
+   duplicate `ui_web::__last_host`: a fragment's namespace-scope variable
+   is now `inline` (`testfragmentobjects`, gated by
+   `check-fragment-inline-vars.sh`).
 3. **`<madcide/harness>`:** `IdeSession` (the class definition moves out of
    `madcide_core.inc` into the header, which the base includes — one
    definition, so the layout cannot drift) and the drive helpers

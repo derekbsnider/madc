@@ -85,6 +85,11 @@ export WINEPATH="Z:$(pwd | sed 's,/,\\,g')\\bin\\release-windows"
 wineserver -p || true
 rm -f tmp/madcide-pkg.exe
 ( ulimit -t 600; timeout 600 wine "$BIN" -o tmp/madcide-pkg.exe tools/madcide/madcide.mad )
+# madcide.dll: madcide's base as a library, built into the release set
+# beside madc.exe — where a PE finds its DLLs, and where chthonia's
+# manifest "libs" finds it.
+echo "== madcide.dll (via the release PE under wine) =="
+( ulimit -t 600; timeout 600 wine "$BIN" -shared -o "$SET/madcide.dll" tools/madcide/madcide_base.mad )
 # chthonia.exe: the product built on madcide's base (tools/chthonia/
 # chthonia.json, a GUI-subsystem image: no console window).
 echo "== chthonia.exe (AOT via the release PE under wine) =="
@@ -100,6 +105,7 @@ mkdir -p "$STAGE/$ROOT/bin" "$STAGE/$ROOT/lib" "$STAGE/$ROOT/THIRD_PARTY_NOTICES
 install -m 755 "$BIN" "$STAGE/$ROOT/bin/madc.exe"
 install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
 install -m 755 tmp/chthonia-pkg.exe "$STAGE/$ROOT/bin/chthonia.exe"
+install -m 755 "$SET/madcide.dll" "$STAGE/$ROOT/bin/madcide.dll"
 # madcide's data beside the exe — PE binding's adjacency rule extended to
 # data: the search arms end at <exedir> (resolve_profile_dir,
 # resolve_data_dir's last arm). The one staging owner.

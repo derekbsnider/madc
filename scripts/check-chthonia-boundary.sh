@@ -18,19 +18,19 @@
 #     tools/madcide/include/madcide/) or a quoted file in the includer's own
 #     directory;
 #   - the build manifest (tools/chthonia/chthonia.json) names only paths
-#     inside the moving set or the public include directory, plus the ONE
-#     named exception, ../madcide/madcide_base.mad (madcide's base compiled
-#     from source until madc-devel ships libmadcide, plan §3.1).
+#     inside the moving set or the public include directory: madcide's base
+#     is the library libmadcide ("libs": ["madcide"], plan §3a), never a
+#     source the build compiles.
 #
 # Negative control: a synthetic file including a madcide internal, and a
-# manifest naming one, must FAIL; a public include and a sibling include
-# must PASS — else the gate itself is broken and we fail loudly.
+# manifest naming one (the base's unit, madcide_base.mad, included), must
+# FAIL; a public include, a sibling include and a manifest linking
+# libmadcide must PASS — else the gate itself is broken and we fail loudly.
 
 set -u
 cd "$(dirname "$0")/.." || exit 2
 
 PUBLIC_DIR=tools/madcide/include/madcide
-EXCEPTION=../madcide/madcide_base.mad
 
 # check_includes FILE... — prints each include outside the rule; 0 = clean.
 check_includes() {
@@ -61,7 +61,7 @@ check_manifest() {
 	local f="$1" p bad=0
 	for p in $(grep -oE '"\.\./[^"]*"' "$f" | tr -d '"'); do
 		case "$p" in
-		"$EXCEPTION"|../madcide/include|../madcide/plugins/chthonia/*) ;;
+		../madcide/include|../madcide/plugins/chthonia/*) ;;
 		*) echo "$f: $p"; bad=1 ;;
 		esac
 	done
@@ -74,7 +74,8 @@ printf '#include "../madcide/madcide_core.inc"\n' > "$tmpd/bad.mad"
 printf '#include <madcide/plugin>\n#include "sibling.h"\n' > "$tmpd/good.mad"
 : > "$tmpd/sibling.h"
 printf '{ "tus": [ "../madcide/madcide_core.inc" ] }\n' > "$tmpd/bad.json"
-printf '{ "tus": [ "%s", { "include_dirs": [ "../madcide/include" ] } ] }\n' "$EXCEPTION" > "$tmpd/good.json"
+printf '{ "tus": [ "../madcide/madcide_base.mad" ] }\n' > "$tmpd/base.json"
+printf '{ "libs": [ "madcide" ], "tus": [ { "include_dirs": [ "../madcide/include" ] } ] }\n' > "$tmpd/good.json"
 fail_control() {
 	rm -rf "$tmpd"
 	echo "check-chthonia-boundary: CONTROL FAILED — $1" >&2
@@ -83,7 +84,8 @@ fail_control() {
 check_includes "$tmpd/bad.mad" >/dev/null && fail_control "an include of a madcide internal passed"
 check_includes "$tmpd/good.mad" >/dev/null || fail_control "a public include or a sibling include failed"
 check_manifest "$tmpd/bad.json" >/dev/null && fail_control "a manifest naming a madcide internal passed"
-check_manifest "$tmpd/good.json" >/dev/null || fail_control "the manifest's named exception or the public include dir failed"
+check_manifest "$tmpd/base.json" >/dev/null && fail_control "a manifest compiling madcide's base from source passed"
+check_manifest "$tmpd/good.json" >/dev/null || fail_control "a manifest linking libmadcide with the public include dir failed"
 rm -rf "$tmpd"
 
 # --- the tree ---------------------------------------------------------------
@@ -106,4 +108,4 @@ if [ $status -ne 0 ]; then
 	echo "  -> Chthonia depends on madcide through $PUBLIC_DIR only (plan docs/plans/2026-10-04-chthonia-own-repository.md §2)" >&2
 	exit 1
 fi
-echo "check-chthonia-boundary: OK (Chthonia uses madcide's public headers only; one named exception, $EXCEPTION)"
+echo "check-chthonia-boundary: OK (Chthonia uses madcide's public headers and links libmadcide)"

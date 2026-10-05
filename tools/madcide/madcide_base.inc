@@ -2,7 +2,8 @@
 // 2026-10-03-chthonia-windows-macos.md §7 D2): every layer of the IDE, and
 // madcide_main, the entry a product calls with its descriptor
 // (<madcide/product>). madcide.mad is this plus madcide's own descriptor and
-// main; madcide_base.mad is this alone, the unit a product links.
+// main; madcide_base.mad is this alone, built as the library a product
+// links (libmadcide).
 //
 // Thread contract: madcide_main runs on the main thread; it records the
 // product (product_use) before any session or thread starts.

@@ -2,8 +2,10 @@
 // design §9.3; docs/plans/2026-10-03-chthonia-windows-macos.md §7): the
 // descriptor that makes madcide's base a product, and the base's entry.
 //
-// A product is its own program: madcide's base (madcide_base.mad) linked
-// with the product's plugin and the product's own unit, whose main is
+// A product is its own program: the product's plugin and the product's own
+// unit, linked with madcide's base, the library libmadcide (the manifest's
+// `"libs": ["madcide"]`; madc builds it from madcide_base.mad and installs
+// it beside libmadc). The product's unit's main is
 //
 //     int main(int argc, char **argv)
 //     {
