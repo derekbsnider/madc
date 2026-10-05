@@ -6234,6 +6234,20 @@ public:
     // is_cpp_mode() excludes the (lower-valued) C enumerators. NEVER active in C.
     bool cpp_keyword_active(LanguageStd min_std) const
     { return language_std == STD_MADC || (is_cpp_mode() && language_std >= min_std); }
+    // A _FloatN spelling (_Float16 … _Float64x) is a built-in type in C (GCC
+    // 7+, every g++ madc announces) and, in C++, from the g++ release that
+    // added it there: _Float16 in GCC 12, the rest in GCC 13. A C++ session
+    // presenting as an older g++ (Ubuntu 22.04's 11) leaves the name an
+    // identifier, which glibc 2.35's bits/floatn.h then typedefs. The g++ is
+    // the one the captured predefines impersonate (captured_gxx_major).
+    bool floatn_keyword_active(const std::string &spelling) const
+    { return !presents_as_cpp() || cpp_floatn_builtin(spelling, captured_gxx_major()); }
+    // Whether g++ `gxx_major` has `spelling` as a built-in type in C++; 0 is a
+    // clang identity, which keeps the built-ins (clang's set is not modelled).
+    static bool cpp_floatn_builtin(const std::string &spelling, int gxx_major);
+    // The g++ major the captured predefines (gen_predefined_macros.sh)
+    // impersonate — the __GNUC__ madc announces; 0 for a clang identity.
+    static int captured_gxx_major();
     // The __cplusplus value a given C++ LanguageStd mandates (C++26 uses g++'s
     // provisional 202400L until the standard fixes one).
     static const char *cplusplus_value_for(LanguageStd std) {

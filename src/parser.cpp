@@ -3988,7 +3988,7 @@ DataDef *Program::resolve_builtin_type_spelling(const std::string &name)
     // The _FloatN spellings ride the nearest-supported approximation (no
     // dd of their own); a real _Float128/_Float64x type is its own slice.
     if ( name == "double" || name == "_Float64" || name == "_Float128"
-      || name == "_Float32x" || name == "_Float64x" )
+      || name == "_Float32x" || name == "_Float64x" || name == "__float128" )
 	return &ddDOUBLE;
     if ( name == "int8_t" ) return &ddINT8;
     if ( name == "int16_t" ) return &ddINT16;

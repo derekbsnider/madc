@@ -1310,7 +1310,7 @@ static bool gnu_attribute_text_has_supported_name(const std::string &text)
     return false;
 }
 
-static int compound_type_specifier_flag(const std::string &w)
+static int compound_type_specifier_flag(const std::string &w, const Program &pgm)
 {
     enum {
 	TS_CHAR     = 1 << 2,
@@ -1340,9 +1340,14 @@ static int compound_type_specifier_flag(const std::string &w)
     if ( w == "unsigned" ) return TS_UNSIGNED;
     if ( w == "__int128" ) return TS_INT128;
     if ( w == "_Complex" || w == "__complex__" || w == "__complex" ) return TS_COMPLEX;
-    if ( w == "_Float16" || w == "_Float32" ) return TS_FLOATN_F;
-    if ( w == "_Float64" || w == "_Float128"
-      || w == "_Float32x" || w == "_Float64x" ) return TS_FLOATN_D;
+    // A _FloatN spelling is a specifier only where it is a built-in type
+    // (Program::floatn_keyword_active); elsewhere it is an identifier, the
+    // name a header's typedef declares (`typedef long double _Float64x;`).
+    if ( (w == "_Float16" || w == "_Float32") && pgm.floatn_keyword_active(w) )
+	return TS_FLOATN_F;
+    if ( (w == "_Float64" || w == "_Float128"
+       || w == "_Float32x" || w == "_Float64x") && pgm.floatn_keyword_active(w) )
+	return TS_FLOATN_D;
     return 0;
 }
 
@@ -1362,7 +1367,8 @@ static bool compound_type_qualifier_word(const std::string &w)
 	|| w == "__restrict" || w == "__restrict__";
 }
 
-static bool expansion_is_compound_type_specifiers(const std::string &text, int &flags)
+static bool expansion_is_compound_type_specifiers(const std::string &text, int &flags,
+						   const Program &pgm)
 {
     flags = 0;
     size_t i = 0;
@@ -1378,7 +1384,7 @@ static bool expansion_is_compound_type_specifiers(const std::string &text, int &
 	std::string word;
 	while ( i < text.size() && (text[i] == '_' || isalnum((unsigned char)text[i])) )
 	    word += text[i++];
-	int flag = compound_type_specifier_flag(word);
+	int flag = compound_type_specifier_flag(word, pgm);
 	if ( !flag )
 	    return false;
 	flags += flag;
@@ -6337,6 +6343,37 @@ void Program::add_keywords()
 }
 
 // add static tokens for base data types
+int Program::captured_gxx_major()
+{
+    // Read once: the captured table is fixed for the process (immutable after
+    // the thread-safe static initialization). The build compiler's own
+    // identity stands in when the capture names none, as for the __GNUC__
+    // seed in _tokenizer_init.
+    static const int major = [] {
+#ifdef __clang__
+	int m = 0;
+#else
+	int m = __GNUC__;
+#endif
+	for ( const MadcPredefObj *o = madc_predefined_objects(); o->name; ++o )
+	{
+	    if ( strcmp(o->name, "__clang__") == 0 )
+		return 0;
+	    if ( strcmp(o->name, "__GNUC__") == 0 )
+		m = atoi(o->value);
+	}
+	return m;
+    }();
+    return major;
+}
+
+bool Program::cpp_floatn_builtin(const std::string &spelling, int gxx_major)
+{
+    if ( gxx_major == 0 )
+	return true;
+    return gxx_major >= (spelling == "_Float16" ? 12 : 13);
+}
+
 void Program::add_datatypes()
 {
     // Idempotent: globals get the same fixed ABI slot every time, so
@@ -6374,6 +6411,10 @@ void Program::add_datatypes()
     static TokenDataType tkFLOAT128("_Float128", ddDOUBLE);
     static TokenDataType tkFLOAT32X("_Float32x", ddDOUBLE);
     static TokenDataType tkFLOAT64X("_Float64x", ddDOUBLE);
+    // __float128 — gcc's binary128 type (glibc 2.35's bits/floatn.h names it
+    // for every C++ compile: `typedef __float128 _Float128;`): the same
+    // nearest-supported approximation as _Float128, in every mode.
+    static TokenDataType tkGNU_FLOAT128("__float128", ddDOUBLE);
     static TokenDataType tkDECIMAL32("_Decimal32", ddFLOAT);
     static TokenDataType tkDECIMAL64("_Decimal64", ddDOUBLE);
     static TokenDataType tkDECIMAL128("_Decimal128", ddDOUBLE);
@@ -6436,13 +6477,16 @@ void Program::add_datatypes()
 	datatype_map[tkCHAR32_T.str] = &tkCHAR32_T;
     }
     datatype_map[tkMAX_ALIGN_T.str] = &tkMAX_ALIGN_T;
-    datatype_map[tkFLOAT16.str] = &tkFLOAT16;
     datatype_map[tkBF16.str] = &tkBF16;
-    datatype_map[tkFLOAT32.str] = &tkFLOAT32;
-    datatype_map[tkFLOAT64.str] = &tkFLOAT64;
-    datatype_map[tkFLOAT128.str] = &tkFLOAT128;
-    datatype_map[tkFLOAT32X.str] = &tkFLOAT32X;
-    datatype_map[tkFLOAT64X.str] = &tkFLOAT64X;
+    // The _FloatN spellings, where this session's compiler has them
+    // (floatn_keyword_active: C, and C++ from g++ 12/13); elsewhere they stay
+    // identifiers for a header's typedef to declare.
+    TokenDataType *floatn[] = { &tkFLOAT16, &tkFLOAT32, &tkFLOAT64,
+				&tkFLOAT128, &tkFLOAT32X, &tkFLOAT64X };
+    for ( TokenDataType *t : floatn )
+	if ( floatn_keyword_active(t->str) )
+	    datatype_map[t->str] = t;
+    datatype_map[tkGNU_FLOAT128.str] = &tkGNU_FLOAT128;
     datatype_map[tkDECIMAL32.str] = &tkDECIMAL32;
     datatype_map[tkDECIMAL64.str] = &tkDECIMAL64;
     datatype_map[tkDECIMAL128.str] = &tkDECIMAL128;
@@ -8660,16 +8704,8 @@ TokenBase *Program::_getToken()
 		// short/int/char/double in any order (C99 6.7.2).
 		// Uses a bitmap accumulator (chibicc-style) so order doesn't
 		// matter: `unsigned long long int` = `long unsigned int long`.
-		if ( word == "unsigned"   || word == "signed"
-		  || word == "long"       || word == "short"
-		  || word == "int"        || word == "char"
-		  || word == "double"     || word == "float"
-		  || word == "__int128"
-		  || word == "_Complex"   || word == "__complex__"
-		  || word == "__complex"
-		  || word == "_Float16"   || word == "_Float32"
-		  || word == "_Float64"   || word == "_Float128"
-		  || word == "_Float32x"  || word == "_Float64x" )
+		// The words are compound_type_specifier_flag's, its one list.
+		if ( compound_type_specifier_flag(word, *this) )
 		{
 		    enum {
 			TS_VOID     = 1 << 0,
@@ -8686,7 +8722,7 @@ TokenBase *Program::_getToken()
 			TS_FLOATN_F = 1 << 22,	// _Float16/_Float32 (~float)
 			TS_FLOATN_D = 1 << 24,	// _Float64/.../_Float64x (~double)
 		    };
-		    int counter = compound_type_specifier_flag(word);
+		    int counter = compound_type_specifier_flag(word, *this);
 		    // Accumulate subsequent type-specifier keywords.
 		    // ws_count reports the whitespace consumed BEFORE the
 		    // word: a rejected lookahead must give it back (as one
@@ -8713,7 +8749,7 @@ TokenBase *Program::_getToken()
 		    {
 			int ws_count = 0;
 			std::string w = read_word(ws_count);
-			int flag = compound_type_specifier_flag(w);
+			int flag = compound_type_specifier_flag(w, *this);
 			if ( flag )
 			{
 			    counter += flag;
@@ -8732,7 +8768,7 @@ TokenBase *Program::_getToken()
 			       && define_map.find(w) != define_map.end() )
 			{
 			    int expanded_flags = 0;
-			    if ( expansion_is_compound_type_specifiers(define_map[w], expanded_flags) )
+			    if ( expansion_is_compound_type_specifiers(define_map[w], expanded_flags, *this) )
 			    {
 				counter += expanded_flags;
 				consumed.push_back(w);
