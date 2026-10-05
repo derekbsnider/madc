@@ -7627,6 +7627,32 @@ static bool is_incomplete_template_class_type(TokenDataType *tdt)
     return tdt && is_incomplete_class_datadef(&tdt->definition);
 }
 
+// The first type argument that is a class AWAITING its definition — declared
+// only, or a concrete specialization still a pending shell — or NULL
+// (shells_awaiting_argument). A dependent placeholder is not one (the
+// dependent-surface rule owns those), and neither is a class whose definition
+// is being parsed or instantiated right now: a body naming its own enclosing
+// class keeps the in-flight rules (self-reference, template_arg_resolve_depth).
+DataDefCLASS *Program::awaited_class_argument(
+	const std::vector<TokenDataType *> &args) const
+{
+    for ( size_t i = 0; i < args.size(); ++i )
+    {
+	DataDefCLASS *cls = args[i]
+	    ? dynamic_cast<DataDefCLASS *>(args[i]->definition.unqualified())
+	    : NULL;
+	if ( !cls || cls->is_dependent_placeholder
+	  || !is_incomplete_class_datadef(cls) )
+	    continue;
+	if ( class_inst_in_progress.count(cls->name)
+	  || std::find(class_scope_stack.begin(), class_scope_stack.end(), cls)
+	       != class_scope_stack.end() )
+	    continue;
+	return cls;
+    }
+    return NULL;
+}
+
 DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
 {
     if ( !cls || !is_incomplete_class_datadef(cls) )
@@ -7642,6 +7668,7 @@ DataDefCLASS *Program::complete_shell_class_type(DataDefCLASS *cls)
     // shell, a spelling-matched-spec template — must leave the caller exactly
     // as it was (SilentReplay owns that discipline).
     SilentReplay sr(*this);
+    CompletionDemandScope demand(*this, cls->name);
     TokenDataType *real = NULL;
     try
     {
@@ -10831,6 +10858,38 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	}
     }
 
+    // The pending-shell lane's reach: the pending record replays a list of
+    // TYPE arguments by the template's bare name, so a non-type or pack
+    // argument keeps the eager path, never inside a dependent parse. A
+    // MEMBER class template (td.owner_class) keeps it too: the bare name does
+    // not carry the owner (`__alloc_traits<A,T>::rebind<T>` stayed a shell in
+    // a class pattern, "could not resolve type ... name='other'"). So does a
+    // template whose body lives in a PARTIAL SPECIALIZATION (td swapped to
+    // the matched spec above; the primary is bodyless — `common_type<T,U>`,
+    // `__common_type2_imp<T,U,void>`): the replay re-enters by the primary's
+    // name and the cache-hit branch hands a bodyless primary's shell straight
+    // back, before spec matching, so such a shell could never complete (the
+    // libc++ <locale> freeze: `common_type<int64_t, int64_t>::type`
+    // unresolved in chrono's duration spec).
+    bool all_type_args = true;
+    for ( size_t i = 0; i < arg_tokens_by_slot.size() && all_type_args; ++i )
+	if ( !arg_tokens_by_slot[i].empty() )
+	    all_type_args = false;
+    const bool shell_replayable = !dependent_parse_in_progress
+	&& !td.body.empty() && !dependent_surface && !placeholder_arg
+	&& !td.owner_class && !td.is_partial_specialization
+	&& !template_has_parameter_pack(td.typeparam_is_pack)
+	&& pack_subst.empty() && token_pack_subst.empty()
+	&& all_type_args;
+    // [temp.inst]/2: naming a specialization never requires it complete. One
+    // whose argument awaits its definition (awaited_class_argument) stays a
+    // pending shell until a completeness demand names THIS shell
+    // (class_completion_demand) or the argument is defined
+    // (complete_shells_awaiting).
+    DataDefCLASS *awaited_arg = shell_replayable
+	&& registered_mangled != class_completion_demand
+	? awaited_class_argument(type_args) : NULL;
+
     // Already instantiated? Return a use-site clone of the cached type.
     flat_datatype_map_iter have = datatype_map.find(registered_mangled);
     // Env-gated probe (MADC_MTI_PROBE_CLASS=<substr>): every template-use
@@ -10886,6 +10945,10 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	    deferred_arg_instantiations.push_back(registered_mangled);
 	    return use_site_type_token(cached, tb);
 	}
+	// Named again while an argument still awaits its definition: the
+	// pending shell stays one (awaited_arg above).
+	if ( awaited_arg && has_pending_template_instantiation(registered_mangled) )
+	    return use_site_type_token(cached, tb);
     }
     // A variadic template admitted to the real path (template_pack_real_instantiable)
     // but instantiated with a STILL-DEPENDENT arg stays an opaque dependent shell —
@@ -10917,34 +10980,14 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
     // flight, such an argument becomes the same pending shell a bodyless
     // template mints, completed by the enclosing instantiation the moment its
     // class is complete (complete_deferred_arg_instantiations) or by any
-    // completeness demand before that. Type arguments only — the pending
-    // record replays type args; a non-type or pack argument keeps the eager
-    // path — and never inside a dependent parse.
-    bool all_type_args = true;
-    for ( size_t i = 0; i < arg_tokens_by_slot.size() && all_type_args; ++i )
-	if ( !arg_tokens_by_slot[i].empty() )
-	    all_type_args = false;
-    // A MEMBER class template (td.owner_class) keeps the eager path: the
-    // pending record replays by the bare template name, which does not carry
-    // the owner (`__alloc_traits<A,T>::rebind<T>` stayed a shell in a class
-    // pattern, "could not resolve type ... name='other'"). So does a
-    // template whose body lives in a PARTIAL SPECIALIZATION (td swapped to the
-    // matched spec above; the primary is bodyless — `common_type<T,U>`,
-    // `__common_type2_imp<T,U,void>`): the replay re-enters by the primary's
-    // name and the cache-hit branch hands a bodyless primary's shell straight
-    // back, before spec matching, so a deferred shell of such a template could
-    // never complete (the libc++ <locale> freeze: `common_type<int64_t,
-    // int64_t>::type` unresolved in chrono's duration spec).
+    // completeness demand before that. Only where the pending record can
+    // replay it (shell_replayable above).
     bool deferred_arg = template_arg_deferral_context()
-		     && !dependent_parse_in_progress
-		     && !td.body.empty() && !dependent_surface
-		     && !placeholder_arg && !recursive_opaque
-		     && !td.owner_class && !td.is_partial_specialization
-		     && !template_has_parameter_pack(td.typeparam_is_pack)
-		     && pack_subst.empty() && token_pack_subst.empty()
-		     && all_type_args;
+		     && shell_replayable && !recursive_opaque;
+    // A specialization whose argument awaits its definition (awaited_arg).
+    bool awaits_arg = awaited_arg && !recursive_opaque;
     if ( td.body.empty() || (pack_real_inst && dependent_surface)
-      || placeholder_arg || recursive_opaque || deferred_arg
+      || placeholder_arg || recursive_opaque || deferred_arg || awaits_arg
       || indirect_type_use )
     {
 	++_class_inst_opaque;
@@ -10991,13 +11034,15 @@ TokenDataType *Program::instantiate_template_use(const std::string &tname,
 	datatype_map[registered_mangled] = tdt;
 	if ( !td.defining_namespace.empty() )
 	    namespace_datatype_map[td.defining_namespace][registered_mangled] = tdt;
-	if ( unresolved_surface || deferred_arg )
+	if ( unresolved_surface || deferred_arg || awaits_arg )
 	    record_dependent_shell_origin(*this, fwd, td, tname,
 					  arg_spellings,
 					  shell_origin_arg_tokens);
 	record_pending_template_instantiation(*this, tname, registered_mangled, canon, type_args);
 	if ( deferred_arg )
 	    deferred_arg_instantiations.push_back(registered_mangled);
+	if ( awaits_arg )
+	    shells_awaiting_argument[awaited_arg->name].push_back(registered_mangled);
 	return use_site_type_token(tdt, tb);
     }
 
@@ -13260,19 +13305,74 @@ void Program::complete_deferred_arg_instantiations(size_t mark)
 	if ( have == datatype_map.end()
 	  || !is_incomplete_template_class_type((TokenDataType *)(*have)) )
 	    continue;
+	// An argument that still awaits its definition keeps the shell
+	// pending past the enclosing class too (shells_awaiting_argument).
+	const PendingTemplateInstantiation *rec =
+	    find_pending_template_instantiation(name);
+	if ( DataDefCLASS *still = rec ? awaited_class_argument(rec->args) : NULL )
+	{
+	    shells_awaiting_argument[still->name].push_back(name);
+	    continue;
+	}
 	request_template_instantiation_completion(name);
     }
 }
 
-bool Program::has_pending_template_instantiation(const std::string &mangled_name) const
+const Program::PendingTemplateInstantiation *
+Program::find_pending_template_instantiation(const std::string &mangled_name) const
 {
     for ( std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::const_iterator pi =
 	      pending_template_instantiations.begin();
 	  pi != pending_template_instantiations.end(); ++pi )
 	for ( size_t i = 0; i < pi->second.size(); ++i )
 	    if ( pi->second[i].mangled_name == mangled_name )
-		return true;
-    return false;
+		return &pi->second[i];
+    return NULL;
+}
+
+bool Program::has_pending_template_instantiation(const std::string &mangled_name) const
+{
+    return find_pending_template_instantiation(mangled_name) != NULL;
+}
+
+// The shells filed under a class that has just been defined
+// (shells_awaiting_argument): each is a specialization named while that class
+// awaited its definition. One whose arguments are all defined now is
+// instantiated here, SILENTLY (complete_shell_class_type) — this is eager
+// instantiation at its earliest faithful point, not a completeness demand, so
+// a specialization that cannot be built stays the pending shell C++ leaves it
+// until something requires it complete. One with another argument still
+// awaiting its definition is filed under that one.
+void Program::complete_shells_awaiting(const std::string &completed_class)
+{
+    // A pattern parse or capture instantiates nothing (instantiate_template_use).
+    if ( dependent_parse_in_progress || class_pattern_capture_in_progress )
+	return;
+    std::map<std::string, std::vector<std::string> >::iterator ai =
+	shells_awaiting_argument.find(completed_class);
+    if ( ai == shells_awaiting_argument.end() )
+	return;
+    std::vector<std::string> shells;
+    shells.swap(ai->second);
+    shells_awaiting_argument.erase(ai);
+    for ( size_t i = 0; i < shells.size(); ++i )
+    {
+	flat_datatype_map_iter have = datatype_map.find(shells[i]);
+	if ( have == datatype_map.end()
+	  || !is_incomplete_template_class_type((TokenDataType *)(*have)) )
+	    continue;
+	const PendingTemplateInstantiation *rec =
+	    find_pending_template_instantiation(shells[i]);
+	if ( !rec )
+	    continue;
+	if ( DataDefCLASS *still = awaited_class_argument(rec->args) )
+	{
+	    shells_awaiting_argument[still->name].push_back(shells[i]);
+	    continue;
+	}
+	complete_shell_class_type(
+	    dynamic_cast<DataDefCLASS *>(&((TokenDataType *)(*have))->definition));
+    }
 }
 
 static bool split_template_id_spelling(const std::string &s, std::string &outer,
@@ -13334,6 +13434,7 @@ static std::string pending_instantiation_from_canonical_identity(
 bool Program::request_template_instantiation_completion(const std::string &mangled_name)
 {
     template_completion_requested.insert(mangled_name);
+    CompletionDemandScope demand(*this, mangled_name);
     for ( std::map<std::string, std::vector<Program::PendingTemplateInstantiation>>::iterator pi =
 	      pending_template_instantiations.begin();
 	  pi != pending_template_instantiations.end(); ++pi )
@@ -13380,6 +13481,22 @@ DataDef *Program::complete_class_type_on_demand(DataDef *dd)
 	if ( DataDefCLASS *real = complete_shell_class_type(cls) )
 	    return real;
     return out;
+}
+
+// A context that requires a COMPLETE class ([expr.ref]/4 member access,
+// [expr.new]/1): a concrete specialization still a pending shell — named
+// while an argument awaited its definition (shells_awaiting_argument), or a
+// forward instantiation — is instantiated now, in place
+// (complete_class_type_on_demand). A dependent shell, a dependent parse and
+// a complete class are left as they are: there is nothing to instantiate.
+// Returns the possibly-refreshed type, as complete_class_type_on_demand does.
+DataDef *Program::require_complete_class(DataDef *dd)
+{
+    DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+    if ( !cls || cls->is_dependent_placeholder || dependent_parse_in_progress
+      || class_pattern_capture_in_progress || !is_incomplete_class_datadef(cls) )
+	return dd;
+    return complete_class_type_on_demand(cls);
 }
 
 // A non-static data member's declared type, read at the member's type head
@@ -33005,6 +33122,10 @@ TokenBase *Program::parsePostfixChainFrom(TokenBase *result, Variable *var)
 		    obj_type = pt->base_type;
 		}
 		    }
+		    // [expr.ref]/4: the class is complete here — completed in
+		    // place, the type keeps its cv spelling (see above).
+		    if ( obj_type )
+			require_complete_class(obj_type->unqualified());
 		    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
 			Throw(mtb) << "member reference type "
 			    << (obj_type ? "'" + obj_type->name + "' " : "")
@@ -41431,6 +41552,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // must never see the DataDefQUAL wrapper (the arrow arm
 		    // peels at its pointee extraction for the same reason).
 		    struct_type = struct_type->unqualified();
+		    // [expr.ref]/4: the class is complete here.
+		    struct_type = require_complete_class(struct_type);
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 		    {
 			// UFCS (--std=madc): a non-class receiver (int, char *, array).
@@ -41884,6 +42007,8 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			arrow_object_cv = ptr_type->base_type->cv_quals();
 			base = ptr_type->base_type->unqualified();
 		    }
+		    // [expr.ref]/4: the class is complete here.
+		    base = require_complete_class(base);
 		    if ( !base->is_struct() && !base->is_object() )
 		    {
 			// UFCS (--std=madc): `->` on a non-struct pointee (char *, int *).
@@ -48279,6 +48404,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     apply_aggregate_attributes(dds, trail_attrs, true);
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
     dds->finalize(pgm.presents_as_cpp()); // round up size; C++ empty aggregate => 1
+    pgm.complete_shells_awaiting(dds->name);
 
     // A struct that contains an OBJECT member by value is — per C++ — a
     // NON-TRIVIAL class: those members must be
@@ -50699,6 +50825,7 @@ void Program::complete_class_aggregate(DataDefCLASS *ddc)
     }
     if ( forest_arena_enabled )
 	forest_arena_record_aggregate(ddc);
+    complete_shells_awaiting(ddc->name);
 }
 
 // A defaulted/deleted DEFAULT constructor is dropped from the class's ctor
@@ -57204,6 +57331,8 @@ TokenBase *TokenNEW::parse(Program &pgm)
     TokenDataType *tdt = pgm.resolve_declared_type_token(tn, true, true);
     if ( tdt )
     {
+	// [expr.new]/1: the allocated type is complete — completed in place.
+	pgm.require_complete_class(tdt->definition.unqualified());
 	if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(&tdt->definition) )
 	    alloc_class = c;
 	else

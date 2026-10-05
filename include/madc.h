@@ -4723,6 +4723,33 @@ public:
 	    && compounds.size() == class_inst_compound_bases.back();
     }
     void complete_deferred_arg_instantiations(size_t mark);
+    // [temp.inst]/2: a class template-id NAMED while one of its type
+    // arguments is a class awaiting its definition (declared only, or a
+    // concrete specialization still a pending shell) is not instantiated
+    // where it is named — libstdc++ 11's `pmr::string` over the declared-only
+    // polymorphic_allocator<char> is never complete in C++ (Ubuntu 22.04's
+    // <string>). It becomes a pending shell, filed here under that
+    // argument's name. A completeness demand instantiates it
+    // (class_completion_demand); so does the argument's own definition
+    // (complete_shells_awaiting) — the point from which eager instantiation
+    // builds the same class.
+    std::map<std::string, std::vector<std::string> > shells_awaiting_argument;
+    DataDefCLASS *awaited_class_argument(const std::vector<TokenDataType *> &args) const;
+    void complete_shells_awaiting(const std::string &completed_class);
+    // The shell a completeness demand is completing right now
+    // (request_template_instantiation_completion, complete_shell_class_type):
+    // the one template-id instantiate_template_use instantiates even while an
+    // argument awaits its definition. Keyed, not a flag, so the template-ids
+    // its instantiation names keep their own rule.
+    std::string class_completion_demand;
+    struct CompletionDemandScope {
+	Program &pgm;
+	std::string saved;
+	CompletionDemandScope(Program &p, const std::string &shell)
+	    : pgm(p), saved(p.class_completion_demand)
+	{ pgm.class_completion_demand = shell; }
+	~CompletionDemandScope() { pgm.class_completion_demand = saved; }
+    };
     // Alias-template uses currently being resolved (keyed tname + arg spellings).
     // Re-entering the SAME key is a resolution CYCLE (a self-referential trait, now
     // reachable because variadic members really instantiate) — it short-circuits to
@@ -8621,7 +8648,10 @@ public:
     // Is a lazy completion RECORDED for this mangled instance (the
     // :7776-arm's pending record)? Read-only twin of the request above.
     bool has_pending_template_instantiation(const std::string &mangled_name) const;
+    const PendingTemplateInstantiation *find_pending_template_instantiation(
+	const std::string &mangled_name) const;
     DataDef *complete_class_type_on_demand(DataDef *dd);
+    DataDef *require_complete_class(DataDef *dd);
     // A non-static data member's type head, read as the storage context it
     // is ([class.mem]: complete) — see parser.cpp. The second call completes
     // a type that arrived through an alias.
