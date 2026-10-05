@@ -51,8 +51,6 @@ lacc/function-incomplete.c
 lacc/initialize-array.c
 lacc/initialize-object.c
 lacc/initialize-string.c
-lacc/linebreak.c
-lacc/preprocess.c
 lacc/printstr.c
 lacc/sizeof.c
 lacc/string-addr.c

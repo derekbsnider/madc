@@ -6521,35 +6521,58 @@ void Program::add_datatypes()
 // by hand: a `/* */` block comment counts as whitespace and may span physical
 // newlines, so skip it IN FULL (else its continuation lines leak as directives/
 // code). Stop at the first newline NOT inside a block comment; `//` ends the line.
+static void skip_directive_space(Source &source);
 static void skip_directive_line_tail(Source &source)
+{
+    for ( ;; )
+    {
+	skip_directive_space(source);
+	if ( !source.good() || source.eof() )
+	    break;
+	int c = source.peek();
+	if ( c == '\n' || c == '\r' || c < 0 )
+	    break;
+	source.get();
+    }
+}
+
+// The white space INSIDE a directive line, CHAR-LEVEL — the one comment rule
+// both directive readers share (the `#` of an active line, skipConditionalBlock's
+// `#`, and skip_directive_line_tail above): spaces, tabs, and comments, each
+// comment one space (C11 5.1.1.2p1 phase 3) — a block comment may span physical
+// newlines, `//` runs to the line's end. Stops before the line's end or the
+// first other character (a lone '/' is given back).
+static void skip_directive_space(Source &source)
 {
     while ( source.good() && !source.eof() )
     {
 	int c = source.peek();
-	if ( c == '\n' || c == '\r' )
-	    break;
-	if ( c == '/' )
+	if ( c == ' ' || c == '\t' || c == '\f' || c == '\v' )
 	{
-	    int row = source.line();
 	    source.get();
-	    int col = source.column();
-	    int n = source.peek();
-	    if ( n == '*' )
-	    {
-		source.get();
-		source.consume_block_comment(row, col);
-		continue;
-	    }
-	    if ( n == '/' )
-	    {
-		while ( source.good() && !source.eof()
-		     && source.peek() != '\n' && source.peek() != '\r' )
-		    source.get();
-		break;
-	    }
-	    continue;   // a lone '/', already consumed
+	    continue;
 	}
+	if ( c != '/' )
+	    return;
+	int row = source.line();
 	source.get();
+	int col = source.column();
+	int n = source.peek();
+	if ( n == '*' )
+	{
+	    source.get();
+	    source.consume_block_comment(row, col);
+	    continue;
+	}
+	if ( n == '/' )
+	{
+	    while ( source.good() && !source.eof()
+		 && source.peek() != '\n' && source.peek() != '\r' )
+		source.get();
+	    return;
+	}
+	source.pushback_reread("/");
+	return;
     }
 }
 
@@ -6827,8 +6850,18 @@ TokenBase *Program::_getToken()
 		}
 		return make_rem(word);
 	    }
-	    while ( source.peek() == ' ' || source.peek() == '\t' )
-		source.get();
+	    // A comment between `#` and the directive name is white space.
+	    {
+	    const int hash_line = source.line();
+	    skip_directive_space(source);
+	    // C11 6.10.7: the null directive — a line holding `#` and nothing
+	    // else (white space and comments aside) — has no effect. Only at the
+	    // start of a line: a `#` after a token on its line stays a token.
+	    int after = source.peek();
+	    if ( (after == '\n' || after == '\r' || after < 0)
+	      && hash_line != source.last_token_line() )
+		return getToken();
+	    }
 	    // #include directive
 	    if ( isalpha(source.peek()) )
 	    {
@@ -8985,9 +9018,8 @@ TokenBase *Program::skipConditionalBlock()
 		source.get();
 	    continue;
 	}
-	// skip whitespace after #
-	while ( source.peek() == ' ' || source.peek() == '\t' )
-	    source.get();
+	// skip whitespace (comments included) after #
+	skip_directive_space(source);
 	// read directive word
 	std::string dir;
 	while ( source.good() && !source.eof() && isalpha(source.peek()) )

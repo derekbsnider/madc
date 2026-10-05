@@ -1,0 +1,24 @@
+// A comment between `#` and a directive's name is white space, one spanning
+// lines included (C11 5.1.1.2p1 phase 3), and a line holding only `#` —
+// white space and comments aside — is the null directive (C11 6.10.7), in an
+// active group and in a skipped one. madc read such a `#` as a token, and a
+// skipped group whose `#endif` carried a comment never closed.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+# /* a comment */ define ONE 1
+#/*
+  spanning lines
+*/define TWO 2
+#
+#
+# /* only a comment */
+# // only a line comment
+#if 0
+# /* skipped */ error "a skipped group"
+#
+# /* closes the skipped group */ endif
+int main(void)
+{
+	printf("null: %d %d\n", ONE, TWO);
+	return 0;
+}
