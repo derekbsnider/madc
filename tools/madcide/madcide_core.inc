@@ -1904,8 +1904,29 @@ void spans_to_hspans(long w, long es, long doc, var &rows, long dest)
     ui::set(w, dest, "hspans", hs);
 }
 
+// A text kind's colour (a kind that is not the compiler's, madcide_lang.inc):
+// a Markdown buffer's spans come from its tree (madcide_markdown.inc
+// md_spans, through the one converter); the other text kinds have none yet.
+// Replaces the session's spans either way, so no other buffer's stay up.
+void refresh_text_spans(long w, long es, long doc)
+{
+    var rows = {};
+    if ( doc_kind(w, doc) == madc::fkMARKDOWN )
+    {
+	var t;
+	ui::text(t, w, doc);
+	md_spans(rows, t.c_str());
+    }
+    spans_to_hspans(w, es, doc, rows, es);
+}
+
 void refresh_spans(long w, long es, long doc, long h)
 {
+    if ( !kind_reaches_compiler(doc_kind(w, doc)) )
+    {
+	refresh_text_spans(w, es, doc);	// no parse: the text kind's own colour
+	return;
+    }
     var rows;
     madc::parse_spans(rows, h);
     spans_to_hspans(w, es, doc, rows, es);
@@ -1919,10 +1940,10 @@ void lex_first_spans(long w, long es, long doc)
 {
     if ( !kind_reaches_compiler(doc_kind(w, doc)) )
     {
-	// Not the compiler's text (madcide_lang.inc): no C colour on prose,
-	// and none of the previous buffer's spans (they live on the es).
-	var none = {};
-	ui::set(w, es, "hspans", none);
+	// Not the compiler's text (madcide_lang.inc): no C colour on prose —
+	// the kind's own (refresh_text_spans), which also replaces the
+	// previous buffer's spans (they live on the es).
+	refresh_text_spans(w, es, doc);
 	return;
     }
     var t;
@@ -2016,6 +2037,7 @@ long refresh_diags(long w, long es, long doc)
     {
 	var none = {};		// a text kind has no compiler diagnostics
 	ui::set(w, es, "diags", none);
+	refresh_text_spans(w, es, doc);	// its colour refreshes as a parse's would
 	return 0;
     }
     long h = reparse_buffer(w, es, doc);

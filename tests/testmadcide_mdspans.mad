@@ -1,0 +1,44 @@
+// A Markdown buffer's highlighting (plan docs/plans/2026-10-03-chthonia-
+// windows-macos.md §7d, consumer 2; tools/madcide/madcide_markdown.inc
+// md_spans): spans from the markdown:: tree's source positions through the
+// one converter every buffer's colour takes (spans_to_hspans) — a heading
+// and strong text `keyword`, a code span with its backticks and each line of
+// a fenced block `string`, a link `type`, a list item's marker `number` —
+// under the default scheme (keyword/type bold, string/number cyan). At load
+// (lex_first_spans) and again after Check (no compiler: a Markdown buffer's
+// colour is its tree's).
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void print_spans(const char *label, long w, long es)
+{
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    for ( var sp : hs )
+	println("{} s={} e={} c={}", label, sp["s"], sp["e"], sp["c"]);
+    println("{} spans={}", label, php::count(hs));
+}
+
+int main()
+{
+    const char *path = "madc_ide_mdspans.md";
+    php::file_put_contents(path,
+	"# Title\n\nSome **bold** and `code` and a [link](x.md).\n\n- item\n\n1. one\n\n```\nfenced\n```\n");
+    IdeSession S;
+    long doc = S.open(path, false);
+    long w = S.w;
+    long es = S.es;
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    load_theme(w, es, "default");
+    lex_first_spans(w, es, doc);
+    print_spans("load", w, es);
+    bool cont = true;
+    S.command(doc, cmdCHECK, "", cont);
+    var hs;
+    ui::get(hs, w, es, "hspans");
+    println("check spans={}", php::count(hs));
+    S.close();
+    php::unlink(path);
+    return 0;
+}

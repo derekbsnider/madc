@@ -247,3 +247,135 @@ bool md_text_rows(var &rows, const char *text0)
     md_blocks_rows(rows, blocks, "", "");
     return true;
 }
+
+// ---- highlighting: a Markdown buffer's spans (plan §7d, consumer 2) --------
+// The rows madcide_core.inc's spans_to_hspans converts for every buffer —
+// {line, column, length, class}, column 0-based, one row per source line —
+// from the tree's source positions (cmark's: 1-based lines and columns, the
+// end column inclusive). The class is a theme word: a heading and strong
+// text `keyword`, a code span and a code block `string`, a link and an image
+// `type`, HTML and a thematic break `comment`, a list item's marker
+// `number`. A styled node is one span and its children are not walked, so
+// spans never overlap; an unstyled node's children are.
+
+// The theme class of a node's span; "" = none (its children are walked).
+const char *md_span_class(var &n)
+{
+    if ( n["kind"] == markdown::node_kind::heading || n["kind"] == markdown::node_kind::strong )
+	return "keyword";
+    if ( n["kind"] == markdown::node_kind::code || n["kind"] == markdown::node_kind::code_block )
+	return "string";
+    if ( n["kind"] == markdown::node_kind::link || n["kind"] == markdown::node_kind::image )
+	return "type";
+    if ( n["kind"] == markdown::node_kind::html_block || n["kind"] == markdown::node_kind::html_inline
+      || n["kind"] == markdown::node_kind::thematic_break )
+	return "comment";
+    return "";
+}
+
+// One span row per source line of [l1:c1 .. l2:c2] (1-based, c2 inclusive)
+// over the text's `lines`.
+void md_range_spans(var &rows, array &lines, long l1, long c1, long l2, long c2,
+		    const char *cls0)
+{
+    var cls = cls0;		// ring discipline: own the text first
+    long nl = php::count(lines);
+    for ( long l = l1; l <= l2; l = l + 1 )
+    {
+	if ( l < 1 || l > nl )
+	    continue;
+	var ln = lines[l - 1];
+	long len = strlen(ln.c_str());
+	long s = 0;
+	if ( l == l1 )
+	    s = c1 - 1;
+	long e = len;
+	if ( l == l2 && c2 < len )
+	    e = c2;
+	if ( e > s )
+	    rows[] = { "line": l, "column": s, "length": e - s, "class": cls };
+    }
+}
+
+// A code span's range covers its content only (cmark): widen it over the
+// backtick runs just outside, on its one line.
+void md_code_span(var &rows, array &lines, var &n)
+{
+    long l = n["line"].as_integer();
+    if ( l < 1 || l > php::count(lines) || n["end_line"].as_integer() != l )
+    {
+	md_range_spans(rows, lines, l, n["col"].as_integer(), n["end_line"].as_integer(),
+		       n["end_col"].as_integer(), "string");
+	return;
+    }
+    var ln = lines[l - 1];
+    const char *p = ln.c_str();
+    long len = strlen(p);
+    long s = n["col"].as_integer() - 1;
+    long e = n["end_col"].as_integer();
+    while ( s > 0 && p[s - 1] == '`' )
+	s = s - 1;
+    while ( e < len && p[e] == '`' )
+	e = e + 1;
+    if ( e > s )
+	rows[] = { "line": l, "column": s, "length": e - s, "class": "string" };
+}
+
+// A list item's marker (`-`, `1.`, with a task box `- [ ]`): from the item's
+// column to its first block's, on the item's first line.
+void md_item_marker(var &rows, array &lines, var &item)
+{
+    long l = item["line"].as_integer();
+    if ( l < 1 || l > php::count(lines) )
+	return;
+    var ln = lines[l - 1];
+    const char *p = ln.c_str();
+    long len = strlen(p);
+    long s = item["col"].as_integer() - 1;
+    long e = s + 1;
+    var kids = item["children"];
+    if ( !kids.is_null() && php::count(kids) > 0 && kids[0]["line"].as_integer() == l )
+	e = kids[0]["col"].as_integer() - 1;
+    if ( e > len )
+	e = len;
+    while ( e > s + 1 && p[e - 1] == ' ' )
+	e = e - 1;
+    if ( e > s )
+	rows[] = { "line": l, "column": s, "length": e - s, "class": "number" };
+}
+
+void md_node_spans(var &rows, array &lines, var &n)
+{
+    var cls = md_span_class(n);
+    if ( strlen(cls.c_str()) > 0 )
+    {
+	if ( n["kind"] == markdown::node_kind::code )
+	    md_code_span(rows, lines, n);
+	else
+	    md_range_spans(rows, lines, n["line"].as_integer(), n["col"].as_integer(),
+			   n["end_line"].as_integer(), n["end_col"].as_integer(), cls.c_str());
+	return;
+    }
+    if ( n["kind"] == markdown::node_kind::item )
+	md_item_marker(rows, lines, n);
+    var kids;
+    keyed_get(kids, n, "children");
+    if ( kids.is_null() )
+	return;
+    for ( var c : kids )
+	md_node_spans(rows, lines, c);
+}
+
+// A Markdown text's span rows. False when the madcmark module is absent.
+bool md_spans(var &rows, const char *text0)
+{
+    var text = text0;		// ring discipline: own the text first
+    if ( !markdown::available() )
+	return false;
+    var doc;
+    markdown::parse(doc, text.c_str());
+    array lines;
+    php::explode(lines, "\n", text.c_str());
+    md_node_spans(rows, lines, doc);
+    return true;
+}

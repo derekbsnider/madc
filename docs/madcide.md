@@ -304,6 +304,14 @@ moves the cursor to the line it came from. Choosing a link opens the file it
 names, relative to the buffer; a URL or an anchor is shown on the status
 line.
 
+A Markdown buffer is coloured from its tree, through the same theme classes
+as code: headings and strong text as keywords, code spans and code blocks as
+strings, links as types, list markers as numbers, HTML and rules as
+comments. Like a code buffer's, its colour refreshes on load, Check and
+save. A buffer whose kind is not the compiler's (Markdown, plain text, the
+other text formats) is never parsed as C: it has no parse, no diagnostics
+and no outline, and Check says it is not compiled.
+
 ## Sharing a session
 
 One madcide session can carry more than one client: the editor you are typing

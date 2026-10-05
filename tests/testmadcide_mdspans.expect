@@ -1,0 +1,11 @@
+load s=0 e=7 c=bold
+load s=14 e=22 c=bold
+load s=27 e=33 c=cyan
+load s=40 e=52 c=bold
+load s=55 e=56 c=cyan
+load s=63 e=65 c=cyan
+load s=71 e=74 c=cyan
+load s=75 e=81 c=cyan
+load s=82 e=85 c=cyan
+load spans=9
+check spans=9
