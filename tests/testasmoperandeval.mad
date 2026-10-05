@@ -1,0 +1,32 @@
+// A GNU asm statement evaluates each operand expression exactly once, the
+// template or no template: `asm ("" : : "r" (bump(&x)))` calls bump. madc
+// has no inline asm (c2mir), so an asm lowers to what an EMPTY template
+// leaves observable — the operands evaluated, and a matching ("0")
+// constraint's input copied to its output. madc skipped every operand
+// shape it did not recognize, `bump(&x)` included.
+// gcc 13.3 and clang 18.1 (-std=gnu11) print the .expect line.
+#include <stdio.h>
+static int calls;
+static int bump(int *p)
+{
+	*p += 1;
+	calls++;
+	return *p;
+}
+static int *slot(int *p)
+{
+	calls++;
+	return p;
+}
+int main(void)
+{
+	int x = 0, y = 5, o = 0;
+	asm volatile ("" : : "r" (&x) : "memory");
+	asm volatile ("" : : "r" (bump(&x)) : "memory");
+	asm __volatile__ ("" :: "r" (bump(&x)), [named] "m" (y));
+	asm ("" : "=r" (o) : "0" (bump(&y)));
+	asm ("" : "+r" (*slot(&y)));
+	asm volatile ("" ::: "memory");
+	printf("asm: %d %d %d %d\n", x, y, o, calls);
+	return 0;
+}

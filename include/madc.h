@@ -9072,11 +9072,12 @@ public:
     // cleared) by the function-declaration parse, reset at each statement.
     bool pending_weak_binding;
     TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
-    // Skip (or lower the recognized `=r`/`+r`/`+m`/... copy shapes of) a GNU
-    // asm STATEMENT. `tb` is the asm introducer (identifier or reserved
-    // tkCPPKEYWORD spelling). Shared by both the ttIdentifier and ttKeyword
-    // arms of parseStatement so reserving `asm` as a keyword does not lose the
-    // statement-level skip.
+    // Read a GNU asm STATEMENT and lower it to its operands' observable
+    // effect (each operand expression evaluated once; under an empty
+    // template a matching constraint copies its input to its output).
+    // `tb` is the asm introducer (identifier or reserved tkCPPKEYWORD
+    // spelling). Shared by both the ttIdentifier and ttKeyword arms of
+    // parseStatement so reserving `asm` as a keyword keeps the statement.
     TokenBase *skip_gnu_asm_statement(TokenBase *tb);
     void skip_c23_attributes();
     size_t parse_gnu_vector_size_attribute();

@@ -1853,6 +1853,7 @@ static bool cpp_keyword_leads_declaration(TokenBase *tb)
 
 static bool is_contextual_identifier_token(TokenBase *tb);	// defined with the identifier readers below
 static std::string contextual_identifier_name(TokenBase *tb);
+static void copy_token_location(TokenBase *dst, TokenBase *src);
 
 // Balanced-delimiter depth for token scans: (), [], {}, <>. The hand-rolled
 // "++paren … --angle … >>" if-else chain is copy-pasted across many scanners;
@@ -2319,172 +2320,164 @@ TokenBase *Program::consume_gnu_asm_label(TokenBase *nt,
     return nt;
 }
 
-// Skip (or lower the recognized copy shapes of) a GNU asm STATEMENT.
-// `tb` is the asm introducer; shared by the ttIdentifier and ttKeyword
-// arms of parseStatement so reserving `asm` as a keyword keeps the skip.
-// A token the asm skipper already consumed while probing a clause: +1 for a
-// `(` it opened, -1 for a `)` it closed, 0 otherwise.
-static int consumed_paren_balance(const TokenBase *t)
-{
-    if ( !t )
-	return 0;
-    if ( t->id() == TokenID::tkOpBrk )
-	return 1;
-    if ( t->id() == TokenID::tkClBrk )
-	return -1;
-    return 0;
-}
-
+// A GNU asm STATEMENT (gcc "Extended Asm"; basic asm is its template-only
+// form): asm qualifiers ( template [: outputs [: inputs [: clobbers
+// [: labels]]]] ) ; — an operand is `[name] "constraint" ( expression )`.
+// `tb` is the asm introducer; shared by the ttIdentifier and ttKeyword arms
+// of parseStatement so reserving `asm` as a keyword keeps the statement.
+// c2mir has no inline asm and a template's instructions never run, so the
+// statement lowers to what its OPERANDS make observable: each operand
+// expression evaluated exactly once, in order (outputs, then inputs). Under
+// an EMPTY template a matching constraint ("0", "[name]") is exact as well —
+// the input sits in its output's location — so it lowers to `output = input`.
 TokenBase *Program::skip_gnu_asm_statement(TokenBase *tb)
 {
-	    // optional volatile qualifier
-	    if ( peekToken()
-	      && peekToken()->type() == TokenType::ttKeyword
-	      && peekToken()->id() == TokenID::tkVOLATILE )
-		nextToken();
-	    else if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
-	    {
-		std::string q = ((TokenIdent *)peekToken())->spelling();
-		if ( q == "volatile" || q == "__volatile__" )
-		    nextToken();
-	    }
-	    TokenBase *ob = nextToken();
-	    if ( ob && ob->id() == TokenID::tkOpBrk )
-	    {
-		TokenBase *tmpl = nextToken();
-		bool parsed_simple_copy = false;
-		if ( tmpl && tmpl->type() == TokenType::ttString
-		  && ((TokenStr *)tmpl)->spelling_empty()
-		  && peekToken() && peekToken()->id() == TokenID::tkColon )
-		{
-		    nextToken(); // ':'
-		    TokenBase *out_c = nextToken();
-		    TokenBase *out_ob = nextToken();
-		    if ( out_c && out_c->type() == TokenType::ttString
-		      && out_ob && out_ob->id() == TokenID::tkOpBrk )
-		    {
-			std::string out_constraint = ((TokenStr *)out_c)->str;
-			if ( out_constraint == "+m" )
-			{
-			    // Through the operand's `)`, then the asm's own.
-			    if ( consume_through_open_parens(1) )
-				consume_through_open_parens(1);
-			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				return nextToken();
-			    return tb;
-			}
-			TokenBase *out_tb = nextToken();
-			TokenBase *out_expr = out_tb ? parseExpression(out_tb, true) : NULL;
-			TokenBase *out_cb = nextToken();
-			TokenBase *next_clause = nextToken();
-			if ( out_expr
-			  && out_cb && out_cb->id() == TokenID::tkClBrk
-			  && next_clause && next_clause->id() == TokenID::tkClBrk )
-			{
-			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				nextToken();
-			    if ( out_constraint == "+r" )
-				return out_expr;
-			    return tb;
-			}
-			if ( out_expr
-			  && out_cb && out_cb->id() == TokenID::tkClBrk
-			  && next_clause && next_clause->id() == TokenID::tkSemi )
-			{
-			    if ( out_constraint == "+r" )
-				return out_expr;
-			    return next_clause;
-			}
-			TokenBase *in_c = nextToken();
-			TokenBase *in_ob = nextToken();
-			if ( out_expr
-			  && out_cb && out_cb->id() == TokenID::tkClBrk
-			  && next_clause && next_clause->id() == TokenID::tkColon
-			  && in_c && in_c->type() == TokenType::ttString
-			  && in_ob && in_ob->id() == TokenID::tkOpBrk )
-			{
-			    TokenBase *in_tb = nextToken();
-			    TokenBase *in_expr = in_tb ? parseExpression(in_tb, true) : NULL;
-			    TokenBase *in_cb = nextToken();
-			    TokenBase *close = nextToken();
-			    std::string in_constraint = ((TokenStr *)in_c)->str;
-			    // If close is ':' (clobber list), consume
-			    // remaining tokens up to outer ')'.
-			    if ( close && close->id() == TokenID::tkColon )
-			    {
-				consume_through_open_parens(1);
-				close = new TokenClBrk();
-			    }
-			    if ( in_expr
-			      && in_cb && in_cb->id() == TokenID::tkClBrk
-			      && close && close->id() == TokenID::tkClBrk
-			      && out_constraint == "=r"
-			      && in_constraint == "0" )
-			    {
-				TokenAssign *assign = new TokenAssign();
-				assign->file = tb->file;
-				assign->line = tb->line;
-				assign->column = tb->column;
-				assign->left = out_expr;
-				assign->right = in_expr;
-				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				    nextToken();
-				return assign;
-			    }
-			    if ( in_expr
-			      && in_cb && in_cb->id() == TokenID::tkClBrk
-			      && close && close->id() == TokenID::tkClBrk
-			      && out_constraint == "=m"
-			      && in_constraint == "m" )
-			    {
-				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				    return nextToken();
-				return tb;
-			    }
-			    // Unrecognized two-operand asm pattern — consume
-			    // any remaining tokens until the outer asm ')' is
-			    // found, then return as no-op. We track paren
-			    // depth starting from `close` (which may be `,`,
-			    // `:`, or a paren itself).
-			    {
-				// 1 for the outer '(' consumed at asm entry,
-				// adjusted by `close` itself.
-				consume_through_open_parens(
-				    1 + consumed_paren_balance(close));
-				parsed_simple_copy = true;
-				if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				    return nextToken();
-				return tb;
-			    }
-			}
-			// Unrecognized asm pattern — the output operand
-			// was consumed but the remaining clauses don't match
-			// a known shape. Consume any remaining tokens until
-			// the outer asm ')' is balanced. The outer '(' was
-			// consumed at asm entry; out_ob/out_cb cancel; so we
-			// need 1 more ')' to close, adjusted by any parens
-			// in in_c and in_ob.
-			{
-			    // 1 for the outer '(', adjusted by in_c and in_ob.
-			    consume_through_open_parens(
-				1 + consumed_paren_balance(in_c)
-				  + consumed_paren_balance(in_ob));
-			    parsed_simple_copy = true;
-			    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-				return nextToken();
-			    return tb;
-			}
-		    }
-		}
-		if ( !parsed_simple_copy )
-		    consume_through_open_parens(1);
-	    }
-	    // Return the semicolon as the statement (no-op).
-	    // If the asm is the body of `if (...) asm(...);`, the
-	    // caller needs a non-NULL return.
-	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-		return nextToken();
-	    return tb;
+    // asm-qualifiers, in any order: volatile, inline, goto.
+    for ( TokenBase *q = peekToken(); q; q = peekToken() )
+    {
+	bool qualifier = q->id() == TokenID::tkVOLATILE
+		      || q->id() == TokenID::tkGOTO;
+	if ( !qualifier && is_contextual_identifier_token(q) )
+	{
+	    std::string name = contextual_identifier_name(q);
+	    qualifier = name == "volatile" || name == "__volatile__"
+		     || name == "__volatile" || name == "inline"
+		     || name == "__inline__" || name == "__inline"
+		     || name == "goto";
+	}
+	if ( !qualifier )
+	    break;
+	nextToken();
+    }
+    TokenBase *open = nextToken();
+    if ( !open || open->id() != TokenID::tkOpBrk )
+	Throw(open ? open : tb) << "Expecting '(' after asm" << flush;
+
+    struct AsmOperand
+    {
+	std::string name;	// `[name]`, empty when unnamed
+	std::string constraint;
+	TokenBase *expr;
+    };
+    std::vector<AsmOperand> operands[2];	// outputs, inputs
+    bool empty_template = true;
+    // 0 template, 1 outputs, 2 inputs, 3 clobbers, 4 goto labels.
+    int section = 0;
+    for ( ;; )
+    {
+	TokenBase *t = nextToken();
+	if ( !t )
+	    Throw(tb) << "Expecting ')' to close the asm statement" << flush;
+	if ( t->id() == TokenID::tkClBrk )
+	    break;
+	// `::` is two clause separators (`asm ("" :: "r" (x))`).
+	if ( t->id() == TokenID::tkColon || t->id() == TokenID::tkNS )
+	{
+	    section += t->id() == TokenID::tkNS ? 2 : 1;
+	    if ( section > 4 )
+		Throw(t) << "Too many ':' in asm statement" << flush;
+	    continue;
+	}
+	if ( t->id() == TokenID::tkComma && section > 0 )
+	    continue;
+	if ( section == 0 || section == 3 )
+	{
+	    if ( t->type() != TokenType::ttString )
+		Throw(t) << (section == 0 ? "Expecting string literal asm template"
+				   : "Expecting string literal asm clobber") << flush;
+	    if ( section == 0 && !((TokenStr *)t)->spelling_empty() )
+		empty_template = false;
+	    continue;
+	}
+	if ( section == 4 )
+	{
+	    if ( !is_contextual_identifier_token(t) )
+		Throw(t) << "Expecting label name in asm goto" << flush;
+	    continue;
+	}
+	AsmOperand op;
+	if ( t->id() == TokenID::tkOpSqr )
+	{
+	    TokenBase *name = nextToken();
+	    if ( !is_contextual_identifier_token(name) )
+		Throw(name ? name : t) << "Expecting asm operand name after '['" << flush;
+	    op.name = contextual_identifier_name(name);
+	    TokenBase *close = nextToken();
+	    if ( !close || close->id() != TokenID::tkClSqr )
+		Throw(close ? close : name) << "Expecting ']' after asm operand name" << flush;
+	    t = nextToken();
+	}
+	if ( !t || t->type() != TokenType::ttString )
+	    Throw(t ? t : tb) << "Expecting string literal asm operand constraint" << flush;
+	op.constraint = ((TokenStr *)t)->str;
+	TokenBase *eopen = nextToken();
+	if ( !eopen || eopen->id() != TokenID::tkOpBrk )
+	    Throw(eopen ? eopen : t) << "Expecting '(' before asm operand" << flush;
+	TokenBase *first = nextToken();
+	op.expr = first ? parseExpression(first, true) : NULL;
+	TokenBase *eclose = nextToken();
+	if ( !op.expr || !eclose || eclose->id() != TokenID::tkClBrk )
+	    Throw(eclose ? eclose : eopen) << "Expecting ')' after asm operand" << flush;
+	operands[section - 1].push_back(op);
+    }
+    if ( !peekToken() || peekToken()->id() != TokenID::tkSemi )
+	Throw(peekToken() ? peekToken() : tb) << "Expecting ';' after asm statement" << flush;
+    TokenBase *semi = nextToken();
+
+    // The output a matching input constraint names: its number ("0") or its
+    // `[name]`; -1 when the input names none.
+    std::vector<AsmOperand> &outs = operands[0];
+    auto tied_output = [&outs](const std::string &c) -> int {
+	if ( c.size() > 2 && c.front() == '[' && c.back() == ']' )
+	{
+	    for ( size_t o = 0; o < outs.size(); o++ )
+		if ( outs[o].name == c.substr(1, c.size() - 2) )
+		    return (int)o;
+	    return -1;
+	}
+	if ( c.empty() || c.find_first_not_of("0123456789") != std::string::npos )
+	    return -1;
+	size_t o = (size_t)std::stoul(c);
+	return o < outs.size() ? (int)o : -1;
+    };
+    std::vector<bool> output_assigned(outs.size(), false);
+    std::vector<TokenBase *> effects;
+    if ( empty_template )
+	for ( const AsmOperand &in : operands[1] )
+	{
+	    int o = tied_output(in.constraint);
+	    if ( o >= 0 )
+		output_assigned[o] = true;
+	}
+    for ( size_t o = 0; o < outs.size(); o++ )
+	if ( !output_assigned[o] )
+	    effects.push_back(outs[o].expr);
+    for ( const AsmOperand &in : operands[1] )
+    {
+	int o = empty_template ? tied_output(in.constraint) : -1;
+	if ( o < 0 )
+	{
+	    effects.push_back(in.expr);
+	    continue;
+	}
+	TokenAssign *assign = new TokenAssign();
+	copy_token_location(assign, tb);
+	assign->left = outs[o].expr;
+	assign->right = in.expr;
+	effects.push_back(assign);
+    }
+    if ( effects.empty() )
+	return semi;	// nothing observable: the statement is a no-op
+    TokenBase *seq = effects[0];
+    for ( size_t e = 1; e < effects.size(); e++ )
+    {
+	TokenComma *comma = new TokenComma();
+	copy_token_location(comma, tb);
+	comma->left = seq;
+	comma->right = effects[e];
+	seq = comma;
+    }
+    return seq;
 }
 
 // Skip C23 [[...]] attributes: [[gnu::noipa]], [[nodiscard]], etc.
