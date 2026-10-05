@@ -6,24 +6,25 @@
 //   2. the configuration directory is named by the product
 //      ($XDG_CONFIG_HOME/<name>, %APPDATA%/<name> on Windows,
 //      ~/.config/<name>), the base's override still first;
-//   3. chthonia's face with no flag is the window, --tui the console, --gui
-//      and --line as before; the usage is under chthonia's name;
+//   3. the product's face with no flag is the window, --tui the console,
+//      --gui and --line as before; the usage is under the product's name;
 //   4. a session opened with no --profile, no bundle by the program's name
-//      and no settings opens the product's bundle (chthonia), and its code
-//      is the plugin LINKED into this program: transport `linked`, nothing
-//      loaded or compiled, its Symbols command registered;
-//   5. the window's title is Thonny's shape under the product's name: the
-//      composed root's `title` hint, `chthonia - <file> @ <row> : <col>`;
+//      and no settings opens the product's bundle (learner, written into
+//      this test's configuration directory), and its code is the plugin
+//      LINKED into this program: transport `linked`, nothing loaded or
+//      compiled, its command registered;
+//   5. the window's title is under the product's name: the composed root's
+//      `title` hint, `Learner - <file> @ <row> : <col>`;
 //   6. what the program says about itself is under the product's name: an
-//      MCP client's tool descriptions read `chthonia '<command>' command`,
+//      MCP client's tool descriptions read `learner '<command>' command`,
 //      never the base's `madcide`;
 //   7. Help ▸ About is the descriptor's: madcide's own (its name, the home
 //      page, the madc it runs on, the copyright, the MPL-2.0 summary) and a
 //      product's (its title and its OWN version — 9.8.7 here, never madc's),
 //      the year the build's (__DATE__), the pane a dialog titled
 //      `About <title>` with a Close button and no primary.
-// This unit links the plugin as chthonia's program does (chthonia.json):
-// its code is compiled here, beside the base.
+// This unit links its plugin as a product's program does (its manifest's
+// units): the plugin's code below is compiled here, beside the base.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -32,12 +33,45 @@
 #include "../tools/madcide/madcide_client.inc"
 #include "../tools/madcide/madcide_api.inc"
 #include "../tools/madcide/madcide_mcp.inc"
-#include "../tools/madcide/plugins/chthonia/chthonia.mad"	// the plugin, linked in
+// The product's plugin, linked in: one command.
+#include <madcide/plugin>
 
-const ide_product test_product = { "chthonia", "chthonia", ui::WEB, "chthonia",
-				   madcide_plugin_activate, "Chthonia", "9.8.7",
-				   "https://example.org/chthonia", "A. Holder",
+bool learner_greet(long w, long es, long doc, const char *arg)
+{
+    return true;
+}
+
+extern "C" bool madcide_plugin_activate(const ide_api *api, long w)
+{
+    ide::bind(api);
+    return ide::command(w, "lgreet", "Greet", learner_greet) != 0;
+}
+
+const ide_product test_product = { "learner", "learner", ui::WEB, "learner",
+				   madcide_plugin_activate, "Learner", "9.8.7",
+				   "https://example.org/learner", "A. Holder",
 				   "Line one.\nLine two." };
+
+// The product's bundle in the configuration directory: a manifest naming
+// its code (the linked plugin's source, never compiled here).
+void write_bundle()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    php::mkdir(cfg.c_str());
+    var pl = format("{}/plugins", cfg);
+    php::mkdir(pl.c_str());
+    var b = format("{}/learner", pl);
+    php::mkdir(b.c_str());
+    php::file_put_contents(format("{}/learner.plugin", b),
+	"{ \"name\": \"learner\", \"api\": 3, \"code\": \"learner.mad\" }\n");
+    php::file_put_contents(format("{}/learner.mad", b),
+	"#include <madcide/plugin>\n"
+	"bool learner_greet(long w, long es, long doc, const char *arg) { return true; }\n"
+	"extern \"C\" bool madcide_plugin_activate(const ide_api *api, long w)\n"
+	"{\n    ide::bind(api);\n"
+	"    return ide::command(w, \"lgreet\", \"Greet\", learner_greet) != 0;\n}\n");
+}
 
 // About's lines joined by `|`, the madc version and the copyright year
 // replaced by their sources' names (they change with the build).
@@ -97,41 +131,42 @@ int main()
 
     // 2. The configuration directory.
     var c1;
-    config_dir_of(c1, "chthonia", NULL, "/x", "/a", "/h", true);
+    config_dir_of(c1, "learner", NULL, "/x", "/a", "/h", true);
     var c2;
-    config_dir_of(c2, "chthonia", NULL, NULL, "/a", "/h", true);
+    config_dir_of(c2, "learner", NULL, NULL, "/a", "/h", true);
     var c3;
-    config_dir_of(c3, "chthonia", NULL, NULL, "/a", "/h", false);
+    config_dir_of(c3, "learner", NULL, NULL, "/a", "/h", false);
     var c4;
-    config_dir_of(c4, "chthonia", "/o", "/x", "/a", "/h", true);
+    config_dir_of(c4, "learner", "/o", "/x", "/a", "/h", true);
     println("product-config: xdg={} appdata={} home={} override={}", c1, c2, c3, c4);
 
-    // 3. chthonia's faces and usage.
+    // 3. The product's faces and usage.
     product_use(test_product);
-    const char *f1[1] = { "chthonia" };
-    const char *f2[2] = { "chthonia", "--tui" };
-    const char *f3[2] = { "chthonia", "--gui" };
-    const char *f4[2] = { "chthonia", "--line" };
+    const char *f1[1] = { "learner" };
+    const char *f2[2] = { "learner", "--tui" };
+    const char *f3[2] = { "learner", "--gui" };
+    const char *f4[2] = { "learner", "--line" };
     println("product-face: none-web={} tui={} gui-web={} line={}",
 	    face_of(1, f1) == ui::WEB ? 1 : 0, face_of(2, f2) == ui::TUI ? 1 : 0,
 	    face_of(2, f3) == ui::WEB ? 1 : 0, face_of(2, f4) == ui::LINE ? 1 : 0);
     var usage;
     ide_usage(usage);
-    println("product-usage: chthonia={} madcide={}",
-	    usage.index("usage: chthonia [<file>]") >= 0 ? 1 : 0,
+    println("product-usage: learner={} madcide={}",
+	    usage.index("usage: learner [<file>]") >= 0 ? 1 : 0,
 	    usage.index("madcide") >= 0 ? 1 : 0);
 
     // 4. The product's bundle, its plugin linked.
     const char *path = "madc_ide_product.c";
     php::file_put_contents(path, "int main(void) { return 0; }\n");
+    write_bundle();
     IdeSession S;
     long doc = S.open(path, false);
     var b;
     ui::get(b, S.w, S.es, "bundle");
-    println("product-open: doc={} bundle={} transport={} symbols={}",
+    println("product-open: doc={} bundle={} transport={} command={}",
 	    doc > 0 ? 1 : 0, b,
-	    plugin_transport_name(plugin_active_transport(S.w, "chthonia")),
-	    cmd_of_w(S.w, "symbols") != 0 ? 1 : 0);
+	    plugin_transport_name(plugin_active_transport(S.w, "learner")),
+	    cmd_of_w(S.w, "lgreet") != 0 ? 1 : 0);
     var root;
     S.compose_ide_tree(root, doc);
     println("product-title: [{}]", root["hints"]["title"]);
@@ -158,7 +193,7 @@ int main()
     for ( var t : tools )
     {
 	var d = t["description"];
-	if ( d.index("chthonia '") == 0 )
+	if ( d.index("learner '") == 0 )
 	    named++;
 	if ( d.index("madcide") >= 0 )
 	    base++;
@@ -166,5 +201,8 @@ int main()
     println("product-mcp: named={} base={}", named > 0 ? 1 : 0, base);
     S.close();
     php::unlink(path);
+    var cfg;
+    madcide_config_dir(cfg);
+    system(format("rm -rf {}", cfg));
     return 0;
 }

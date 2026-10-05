@@ -214,8 +214,8 @@ rm -rf "$BIND_DIR"
 #    the cross gcc; the reader prints each resource's (type, id, language,
 #    size, code page, bytes — the group directory in hex, an image as a
 #    digest) after checking every directory level ascends and the data
-#    directory names the .rsrc section. chthonia's icon is the input: six DIB
-#    images, 16 to 256 px.
+#    directory names the .rsrc section. webview's example icon is the input:
+#    13 images, 16 to 256 px, the sixth (256 px) a PNG.
 pe_resources() {
     python3 - "$1" <<'PY'
 import struct, sys, hashlib
@@ -262,7 +262,7 @@ PY
 ICON_DIR=tmp/verify_pe_icon
 rm -rf "$ICON_DIR"
 mkdir -p "$ICON_DIR"
-cp tools/chthonia/chthonia.ico "$ICON_DIR/app.ico"
+cp third_party/webview/examples/resources/windows/webview.ico "$ICON_DIR/app.ico"
 printf 'int main(void) { return 0; }\n' > "$ICON_DIR/hello.c"
 printf '{ "output": "icon", "icon": "app.ico", "tus": [ "hello.c" ] }\n' > "$ICON_DIR/icon.prj.json"
 printf '{ "output": "plain", "tus": [ "hello.c" ] }\n' > "$ICON_DIR/plain.prj.json"

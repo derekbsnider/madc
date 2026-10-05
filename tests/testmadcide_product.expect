@@ -1,10 +1,10 @@
 product-about-base: |madcide||https://github.com/derekbsnider/madc||MadC <sys.version>||Copyright (c) <__DATE__> Derek Snider||Licensed under the Mozilla Public License 2.0 (MPL-2.0).|Provided "as is", without warranty of any kind, express or implied.|No contributor is liable for any damages arising from its use.
 product-base: name=madcide bundle=[] tui=1 linked=0
-product-config: xdg=/x/chthonia appdata=/a/chthonia home=/h/.config/chthonia override=/o
+product-config: xdg=/x/learner appdata=/a/learner home=/h/.config/learner override=/o
 product-face: none-web=1 tui=1 gui-web=1 line=1
-product-usage: chthonia=1 madcide=0
-product-open: doc=1 bundle=chthonia transport=linked symbols=1
-product-title: [Chthonia - madc_ide_product.c @ 1 : 1]
-product-about: |Chthonia 9.8.7||https://example.org/chthonia||MadC <sys.version>||Copyright (c) <__DATE__> A. Holder||Line one.|Line two.
-product-about-pane: label=[About Chthonia] rows=10 buttons=1 first=[Close]
+product-usage: learner=1 madcide=0
+product-open: doc=1 bundle=learner transport=linked command=1
+product-title: [Learner - madc_ide_product.c @ 1 : 1]
+product-about: |Learner 9.8.7||https://example.org/learner||MadC <sys.version>||Copyright (c) <__DATE__> A. Holder||Line one.|Line two.
+product-about-pane: label=[About Learner] rows=10 buttons=1 first=[Close]
 product-mcp: named=1 base=0

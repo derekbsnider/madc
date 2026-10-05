@@ -1,4 +1,4 @@
-// The toolbar in the window (plan §41.11a, step 2): chthonia.menu places
+// The toolbar in the window (plan §41.11a, step 2): a bundle's menu places
 // New, Open, Save, a divider, Run and Stop on the toolbar (the placement
 // word `toolbar`), each with its picture ({ICON}, ui::icon) and Run with
 // its arrow dropping the Run menu down ({run Run}); the composed root
@@ -7,27 +7,47 @@
 // workbench's top row — the picture, Run's label beside it, a ▾ posting
 // `menushow Run`, a divider. A click on Save posts the row's action by
 // name, which arrives as the session's action event carrying its command's
-// code (the headless pins: tools/chthonia/tests/bundle.mad, test_web_model).
-// Runs under Xvfb through the gui lane.
+// code (the headless pin: test_web_model).
+// The bundle is this test's own (tbtest), written into the directory its
+// .env puts on MADCIDE_PLUGIN_PATH. Runs under Xvfb through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
+
+// The bundle: a manifest naming its menu, and the menu — File's and Run's
+// rows, then the toolbar's.
+void write_bundle(const char *dir0)
+{
+    var dir = dir0;
+    php::mkdir(dir.c_str());
+    var b = format("{}/tbtest", dir);
+    php::mkdir(b.c_str());
+    php::file_put_contents(format("{}/tbtest.plugin", b),
+	"{ \"name\": \"tbtest\", \"api\": 3, \"contributes\": { \"menu\": \"tbtest\" } }\n");
+    php::file_put_contents(format("{}/tbtest.menu", b),
+	"File new New\nFile editfile Open…\nFile save Save [editable]\n"
+	"Run replrun Run\nRun replstop Stop\n"
+	"toolbar new {new} New\ntoolbar editfile {open} Open\n"
+	"toolbar save {save} Save [editable]\ntoolbar -\n"
+	"toolbar replrun {run Run} Run\ntoolbar replstop {stop} Stop\n");
+}
 
 int main()
 {
     const char *path = "madc_ide_toolbar_gui.mad";
     php::file_put_contents(path, "int main() { return 0; }\n");
+    const char *plugins = getenv("MADCIDE_PLUGIN_PATH");
+    write_bundle(plugins);
     long w = ui::world_new();
     long doc = setup_editor(w, path, false);
     long es = ui::entity_by_name(w, "editor-state");
     builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
     ui::set(w, es, "profile_dir", "tools/madcide/profiles");
-    bundle_select(w, es, "chthonia");	// the shipped bundle: its menu
-    plugins_activate(w, es);		// its code first: the menu names its Symbols
+    bundle_select(w, es, "tbtest");	// this test's bundle: its menu
     ui::set(w, es, "profile", "pico");
     load_status(w, es, "joe");
     load_theme(w, es, "default");
-    load_menu(w, es, "chthonia");
+    load_menu(w, es, "tbtest");
     IdeSession S;
     S.attach(w, es);
     push_buffer_row(w, es, doc, path);
@@ -80,5 +100,6 @@ int main()
     println("TOOLBAR closed");
     // a test leaves nothing in its working directory
     remove(path);
+    system(format("rm -rf {}", plugins));
     return 0;
 }

@@ -400,13 +400,24 @@ if check "$tmpcore" "$ENUMS" "$MENU" "$PROFILES" "$PLUGINS" "$PLUGINSINC" "contr
 	     "shadowing a built-in went undetected (the contribution marker went blind)." >&2
 	exit 1
 fi
+# The shipped plugins copied, plus a synthetic bundle zzbundle (an empty
+# menu and code) that the controls below write into.
+fresh_plugins()
+{
+	rm -rf "$tmpplug"
+	tmpplug=$(mktemp -d)
+	(cd "$PLUGINS" && find . -type f) | while read -r f; do
+		mkdir -p "$tmpplug/$(dirname "$f")"
+		cat "$PLUGINS/$f" > "$tmpplug/$f"
+	done
+	mkdir -p "$tmpplug/zzbundle"
+	: > "$tmpplug/zzbundle/zzbundle.menu"
+	: > "$tmpplug/zzbundle/zzbundle.mad"
+}
 # (g) a bundle menu naming an unknown word — and, positively, the same word
 # accepted once shipped code contributes it (the gate learns the range)
-(cd "$PLUGINS" && find . -type f) | while read -r f; do
-	mkdir -p "$tmpplug/$(dirname "$f")"
-	cat "$PLUGINS/$f" > "$tmpplug/$f"
-done
-echo "Help zzgreet Greet" >> "$tmpplug/chthonia/chthonia.menu"
+fresh_plugins
+echo "Help zzgreet Greet" >> "$tmpplug/zzbundle/zzbundle.menu"
 if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control" 2>/dev/null; then
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — negative control: a bundle menu" \
@@ -423,18 +434,9 @@ fi
 # (i) a bundle's own code: a word its .mad registers (ide::command) is
 # accepted in ITS menu and refused in another bundle's, and a plugin's code
 # contributing a built-in's name is refused
-fresh_plugins()
-{
-	rm -rf "$tmpplug"
-	tmpplug=$(mktemp -d)
-	(cd "$PLUGINS" && find . -type f) | while read -r f; do
-		mkdir -p "$tmpplug/$(dirname "$f")"
-		cat "$PLUGINS/$f" > "$tmpplug/$f"
-	done
-}
 fresh_plugins
-echo "Help zzown Own" >> "$tmpplug/chthonia/chthonia.menu"
-printf '%s\n' '    long zz = ide::command(w, "zzown", "Own", zz_own);' >> "$tmpplug/chthonia/chthonia.mad"
+echo "Help zzown Own" >> "$tmpplug/zzbundle/zzbundle.menu"
+printf '%s\n' '    long zz = ide::command(w, "zzown", "Own", zz_own);' >> "$tmpplug/zzbundle/zzbundle.mad"
 if ! check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control"; then
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — positive control: a bundle menu" \
@@ -451,7 +453,7 @@ if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control"
 	exit 1
 fi
 fresh_plugins
-printf '%s\n' '    long zz = ide::command(w, "save", "Save", zz_save);' >> "$tmpplug/chthonia/chthonia.mad"
+printf '%s\n' '    long zz = ide::command(w, "save", "Save", zz_save);' >> "$tmpplug/zzbundle/zzbundle.mad"
 if check "$CORE" "$ENUMS" "$MENU" "$PROFILES" "$tmpplug" "$PLUGINSINC" "control" 2>/dev/null; then
 	rm -rf "$tmpcore" "$tmpenums" "$tmpmenu" "$tmpprof" "$tmpplug" "$tmpinc"
 	echo "check-madcide-command-registry: FAIL — negative control: a plugin's code" \

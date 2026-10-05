@@ -1091,14 +1091,14 @@ TEST_CASE("compose — the root's title hint reaches the host only when it chang
     m.compose(r, title_tree(w, ""));		// no title: nothing to send
     CHECK(!m.title_changed());
     CHECK(m.title().empty());
-    m.compose(r, title_tree(w, "chthonia - a.c @ 1 : 1"));
+    m.compose(r, title_tree(w, "madcide - a.c @ 1 : 1"));
     CHECK(m.title_changed());
-    CHECK(m.title() == "chthonia - a.c @ 1 : 1");
-    m.compose(r, title_tree(w, "chthonia - a.c @ 1 : 1"));	// the same: not again
+    CHECK(m.title() == "madcide - a.c @ 1 : 1");
+    m.compose(r, title_tree(w, "madcide - a.c @ 1 : 1"));	// the same: not again
     CHECK(!m.title_changed());
-    m.compose(r, title_tree(w, "chthonia - a.c @ 2 : 1"));	// the caret moved
+    m.compose(r, title_tree(w, "madcide - a.c @ 2 : 1"));	// the caret moved
     CHECK(m.title_changed());
-    CHECK(m.title() == "chthonia - a.c @ 2 : 1");
+    CHECK(m.title() == "madcide - a.c @ 2 : 1");
 }
 
 TEST_CASE("compose — the root's menu hint becomes the host's menu JSON with bound chords, sent only on change")
@@ -1457,7 +1457,7 @@ TEST_CASE("compose — the root's toolbar hint becomes button rows with the boun
 
 TEST_CASE("compose — a toolbar row's icon goes out as its name, a separator as a divider, a drop as its action and argument")
 {
-    // The chthonia mockup's toolbar: a row's `icon` (a ui::icon code) is sent
+    // An IDE toolbar: a row's `icon` (a ui::icon code) is sent
     // as the name the page draws (ui_icon_name); a {sep} row is a divider,
     // never leading or trailing; a row's `drop` ({action, code, arg}) is its
     // dropdown arrow, whose code joins the action map so the posted name

@@ -1,15 +1,15 @@
 // Help ▸ About in the window (docs/plans/2026-10-03-chthonia-windows-macos.md
-// §7a, Thonny's About): the `about` action posted from the page opens the
-// About pane as a dialog — titled `About <title>`, the descriptor's lines
-// (madcide_product.inc product_about), each blank line between the parts a
-// real blank line of the list's height (an empty row is not collapsed), and a
-// Close button that closes it. Runs under Xvfb through the gui lane.
+// §7a): the `about` action posted from the page opens the About pane as a
+// dialog — titled `About <title>`, the descriptor's lines (madcide_product.inc
+// product_about), each blank line between the parts a real blank line of the
+// list's height (an empty row is not collapsed), and a Close button that
+// closes it. Runs under Xvfb through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"
 #include "../../tools/madcide/madcide_core.inc"
 
-const ide_product about_product = { "chthonia", "", ui::WEB, "", 0, "Chthonia", "9.8.7",
-				    "https://example.org/chthonia", "A. Holder",
+const ide_product about_product = { "learner", "", ui::WEB, "", 0, "Learner", "9.8.7",
+				    "https://example.org/learner", "A. Holder",
 				    "Line one.\nLine two." };
 
 void render(IdeSession &S, long t, long doc)

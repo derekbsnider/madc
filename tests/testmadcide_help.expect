@@ -1,7 +1,7 @@
 module: true
-contents: topic=contents title=Chthonia Help shown=true
+contents: topic=contents title=Sample Help shown=true
 contents-link: row=• Getting started target=getting-started.md
-node: label=Help — Chthonia Help link-code=true
+node: label=Help — Sample Help link-code=true
 chosen: topic=getting-started title=Getting started back=◂ Contents back-target=contents.md
 code-row:            printf("Hello!\n");
 menus: title=Menus and commands run-heading=true

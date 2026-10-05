@@ -7,8 +7,9 @@
 // Before the fix the program was refused: "ns_ui_web:117:6: use of
 // undeclared identifier 'println'", unless the program itself happened to
 // say print/println/format. So this program says none of them: its output is
-// printf's. chthonia's main unit (tools/chthonia/chthonia_main.mad) has the
-// same shape: a descriptor naming ui::WEB, and no output of its own.
+// printf's. An IDE product's main unit (a madcide product built on the
+// base) has the same shape: a descriptor naming ui::WEB, and no output of
+// its own.
 // Oracle: n/a for gcc/clang (the dialect's auto-include); the C analogue
 // `long level = 3; printf(...)` prints the same line under gcc 13 and
 // clang 18.

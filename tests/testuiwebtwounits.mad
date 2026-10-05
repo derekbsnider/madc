@@ -2,9 +2,9 @@
 // asks for. Each unit gets <ns_ui_web> from the auto-include, so each runs
 // the fragment's initializer, which registers the web host. The program
 // links one copy of the host's functions, so the second registration is the
-// same host again: it is accepted with nothing said. chthonia's program
-// (tools/chthonia/chthonia.json) has the same shape: madcide's base and
-// chthonia's main both name the level.
+// same host again: it is accepted with nothing said. An IDE product built on
+// madcide has the same shape: madcide's base and the product's main unit
+// both name the level.
 // Before the fix every run of such a program began with "ui::register_host:
 // target 'web' is already registered" on stderr (.expect_quiet gates it).
 // The C++ precedent: <iostream>'s ios_base::Init object, constructed in

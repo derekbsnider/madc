@@ -109,13 +109,14 @@ TEST_CASE("PeIcon: what is not an icon file refuses, naming the fault") {
 	CHECK(err.find("image 1") != std::string::npos);
 }
 
-TEST_CASE("PeIcon: chthonia's icon matches windres's resources for it") {
-	// The oracle: GNU windres 2.41.90 on `32512 ICON "chthonia.ico"`,
-	// linked by x86_64-w64-mingw32-gcc; the image's .rsrc read back holds
-	// RT_ICON 1..6 at these sizes and this RT_GROUP_ICON, language 1033.
+TEST_CASE("PeIcon: an icon with a PNG image matches windres's resources for it") {
+	// The oracle: GNU windres 2.41.90 on `32512 ICON "app.ico"` (webview's
+	// example icon, 13 images, the sixth a PNG), linked by
+	// x86_64-w64-mingw32-gcc; the image's .rsrc read back holds RT_ICON 1..13
+	// at these sizes and this RT_GROUP_ICON, language 1033.
 	std::vector<uint8_t> file;
-	const char *paths[] = { "../tools/chthonia/chthonia.ico",
-				"tools/chthonia/chthonia.ico" };
+	const char *paths[] = { "../third_party/webview/examples/resources/windows/webview.ico",
+				"third_party/webview/examples/resources/windows/webview.ico" };
 	for (const char *p : paths) {
 		FILE *fp = fopen(p, "rb");
 		if (!fp) continue;
@@ -124,21 +125,26 @@ TEST_CASE("PeIcon: chthonia's icon matches windres's resources for it") {
 		fclose(fp);
 		break;
 	}
-	REQUIRE(file.size() == 370070);
+	REQUIRE(file.size() == 55011);
 	PeIcon icon;
 	std::string err;
 	REQUIRE(icon.parse(file, err));
 	const std::vector<MIR_object_resource> &r = icon.resources();
-	REQUIRE(r.size() == 7);
-	const size_t sizes[] = { 270376, 67624, 16936, 9640, 4264, 1128 };
-	for (size_t i = 0; i < 6; i++) {
+	REQUIRE(r.size() == 14);
+	const size_t sizes[] = { 744, 296, 3752, 2216, 1384, 3517, 16936,
+				 9640, 6760, 4264, 2440, 1720, 1128 };
+	for (size_t i = 0; i < 13; i++) {
 		CHECK(r[i].type == 3);
 		CHECK(r[i].id == i + 1);
 		CHECK(r[i].size == sizes[i]);
 	}
-	CHECK(hex_of(r[6]) ==
-	      "000001000600"
-	      "00000000010020002820040001008080000001002000280801000200"
-	      "40400000010020002842000003003030000001002000a82500000400"
-	      "2020000001002000a810000005001010000001002000680400000600");
+	CHECK(hex_of(r[13]) ==
+	      "000001000d00"
+	      "2020100001000400e802000001001010100001000400280100000200"
+	      "3030000001000800a80e000003002020000001000800a80800000400"
+	      "10100000010008006805000005000000000001002000bd0d00000600"
+	      "40400000010020002842000007003030000001002000a82500000800"
+	      "2828000001002000681a000009002020000001002000a81000000a00"
+	      "1818000001002000880900000b001414000001002000b80600000c00"
+	      "1010000001002000680400000d00");
 }

@@ -25,7 +25,7 @@
 //      a path leave the default profile in use, the reason on the status line;
 //  10. the program's own name (madc::sys.argv[0], its basename without the
 //      extension) selects the bundle of that name with no flag — a link
-//      /usr/local/bin/chthonia, a chthonia.exe — ahead of settings.json's
+//      /usr/local/bin/learner, a learner.exe — ahead of settings.json's
 //      "profile"; the command line still beats it, and a name no bundle has
 //      falls through to settings.json.
 //  11. MADCIDE_PLUGIN_PATH (plugin_path_dirs): its directories in order, split
@@ -184,12 +184,17 @@ int main()
     probe(r, path, "default");
     println("bundles-cli: bundle={} keys={} window={}", r["bundle"], r["keys"], r["window"]);
 
-    // 10. The program's own name (settings.json still says "mine").
+    // 10. The program's own name (settings.json still says "mine"): a user
+    //     bundle `learner`, the name of a program linked or renamed to it.
+    var ld = format("{}/learner", plugins);
+    mkdirs(made, ld.c_str());
+    var lp = format("{}/learner.plugin", ld);
+    put(files, lp, "{ \"name\": \"learner\", \"api\": 3 }");
     var a0 = madc::sys.argv[0];
-    madc::sys.argv[0] = "/usr/local/bin/chthonia";
+    madc::sys.argv[0] = "/usr/local/bin/learner";
     probe(r, path, "");
     var pl = r["bundle"];
-    madc::sys.argv[0] = "chthonia.exe";
+    madc::sys.argv[0] = "learner.exe";
     probe(r, path, "");
     var pe = r["bundle"];
     probe(r, path, "default");

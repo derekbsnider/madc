@@ -1,12 +1,13 @@
 // madcide's Help topics (plan docs/plans/2026-10-03-chthonia-windows-macos.md
 // §7d; tools/madcide/madcide_help.inc): a bundle's Markdown pages in the Help
-// view. The Chthonia bundle's help (plugins/chthonia/chthonia.help/):
-// helpcontents opens contents.md (its title from the first heading, a
-// contents line a link row); a choose on a link row opens that topic, with a
-// row back to the contents; the made topic `menus` lists the loaded menus,
-// each item's key in the loaded key style, its command and its description —
-// the default bundle's commands.md, since the Chthonia bundle has none; an
-// unknown topic is refused on the status line. The default bundle
+// view. This test's bundle (helptest, written into its configuration
+// directory's plugins/, its .env) carries help pages, a menu and the
+// chthonia key style: helpcontents opens contents.md (its title from the
+// first heading, a contents line a link row); a choose on a link row opens
+// that topic, with a row back to the contents; the made topic `menus` lists
+// the loaded menus, each item's key in the loaded key style, its command and
+// its description — the default bundle's commands.md, since this bundle has
+// none; an unknown topic is refused on the status line. The default bundle
 // (plugins/default/default.help/): its own contents.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
@@ -35,13 +36,45 @@ void row_at(var &out, long w, long es, long i)
     out = rows[i - 1];
 }
 
+// The bundle: its manifest, its menu and its help pages.
+void write_bundle()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    php::mkdir(cfg.c_str());
+    var pl = format("{}/plugins", cfg);
+    php::mkdir(pl.c_str());
+    var b = format("{}/helptest", pl);
+    php::mkdir(b.c_str());
+    var h = format("{}/helptest.help", b);
+    php::mkdir(h.c_str());
+    php::file_put_contents(format("{}/helptest.plugin", b),
+	"{ \"name\": \"helptest\", \"api\": 3, \"contributes\": { \"keys\": \"chthonia\","
+	" \"menu\": \"helptest\", \"help\": \"helptest\" } }\n");
+    php::file_put_contents(format("{}/helptest.menu", b),
+	"File save Save [editable]\nRun replrun Run\nRun replstop Stop\nHelp helpcontents Help Contents\n");
+    php::file_put_contents(format("{}/contents.md", h),
+	"# Sample Help\n\nA sample bundle's help.\n\n"
+	"- [Getting started](getting-started.md)\n- [The shell](shell.md)\n"
+	"- [Menus and commands](menus)\n");
+    php::file_put_contents(format("{}/getting-started.md", h),
+	"# Getting started\n\n1. **File ▸ New** opens an empty buffer.\n"
+	"2. Type a program, for example:\n\n   ```c\n   #include <stdio.h>\n\n"
+	"   int main(void)\n   {\n       printf(\"Hello!\\n\");\n       return 0;\n   }\n"
+	"   ```\n\n3. **Run ▸ Run** runs it.\n");
+    php::file_put_contents(format("{}/shell.md", h),
+	"# The shell\n\n| Entry | What it does |\n|:--|:--|\n"
+	"| `int x = 6 * 7;` | declares `x` |\n| `x + 1` | prints `43` |\n");
+}
+
 int main()
 {
     const char *path = "madc_ide_help.c";
     php::file_put_contents(path, "int main(void) { return 0; }\n");
+    write_bundle();
 
     IdeSession S;
-    long doc = S.open(path, false, "chthonia");
+    long doc = S.open(path, false, "helptest");
     long w = S.w;
     long es = S.es;
     println("module: {}", markdown::available());
@@ -115,5 +148,8 @@ int main()
     S.close();
     D.close();
     php::unlink(path);
+    var cfg;
+    madcide_config_dir(cfg);
+    system(format("rm -rf {}", cfg));
     return 0;
 }
