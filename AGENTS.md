@@ -160,7 +160,7 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
 
 6. **THREE test tiers, not two — name the one you are running.**
    TIER 1 targeted, per change (seconds). **TIER 2 `bash scripts/fast_lanes.sh`,
-   per COMMIT that touches code — SIX conformance lanes in under three
+   per COMMIT that touches code — SEVEN conformance lanes in under three
    minutes, and NOT optional.** After each BATCH of fixes (never per fix),
    the batch checkpoint `bash scripts/batch_lane.sh`: the whole tests/ suite,
    JIT only, about ten minutes. TIER 3 `bash scripts/seam_battery.sh`, ONCE
@@ -285,7 +285,7 @@ another test — runners skip it; skip it when running by hand too.
 
 `/commit` (`.claude/commands/commit.md`) is the commit path: it names the test
 tier the change needs, runs Tier 1 (targeted) and Tier 2
-(`scripts/fast_lanes.sh` — six conformance lanes, under three minutes), and
+(`scripts/fast_lanes.sh` — seven conformance lanes, under three minutes), and
 writes the four rule trailers. Use it instead of deciding the tier per commit;
 choosing between "a few targeted tests" and "the multi-hour battery" is the
 documented way this goes wrong. The pre-push hook enforces the commit tier on
@@ -409,7 +409,7 @@ that fails any of these is not merged.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [build.md](.claude/rules/build.md)               |    35 | `make -C src`, the in-tree MIR subtree model   |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 74 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (six lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | 74 | THREE tiers: targeted per change · `scripts/fast_lanes.sh` per COMMIT (seven lanes, under three minutes, gated by the pre-push hook on every branch) · `scripts/batch_lane.sh` (tests/ JIT) per BATCH of fixes · `scripts/fix_lanes.sh` = Tier 1 + Tier 2 as ONE per-fix command · `scripts/seam_battery.sh` once per merge wave (the full suite on the packed -O2 binary, headerless; on-disk subsets; exe + obj on the same binary) — and the merge wave is the SEAM the arc's plan names (its release boundary), never a slice/phase/V · a red test's history across releases: `scripts/release_bins.sh run` |
 | [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
 | [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
 

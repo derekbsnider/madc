@@ -187,7 +187,7 @@ change.
 
 The fast tier is fast because it leaves out the one suite madc's own features
 are tested in: `tests/*.mad`. Its lanes are external conformance corpora
-(c-testsuite, c-torture, c2mir, index-c, the g++.dg subset) plus the GUI
+(c-testsuite, c-torture, c2mir, index-c, the g++.dg subset, the CommonMark spec) plus the GUI
 directory. Between seams, nothing ran `tests/` except each fix's own Tier 1
 selection, and Tier 1 tests only what the author thought to test.
 

@@ -13,7 +13,7 @@ Run this.**
 
 - **Tier 1 — targeted.** Seconds. The new/affected tests plus the touched
   subsystem's neighbors, and the reducer with its gcc/clang oracle.
-- **Tier 2 — fast conformance.** Under three minutes for all six lanes.
+- **Tier 2 — fast conformance.** Under three minutes for all seven lanes.
   `bash scripts/fast_lanes.sh`. Runs whenever the commit touches CODE_PATHS
   (`src include third_party tests scripts tools examples`).
 - **Tier 3 — the seam battery.** NOT run here. It gates the merge wave

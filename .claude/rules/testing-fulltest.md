@@ -10,7 +10,7 @@ and produces exactly the oscillation this rule exists to stop.
   TIER 2  FAST CONFORMANCE, per COMMIT that touches CODE_PATHS (src include
           third_party tests scripts tools examples) — UNDER THREE MINUTES,
           all of it: `bash scripts/fast_lanes.sh` (c-testsuite, c-torture,
-          c2mir-tests, gui, index-c, gxx-c++11). It is a RATCHET against
+          c2mir-tests, gui, index-c, gxx-c++11, commonmark). It is a RATCHET against
           recorded baselines, it records each green lane in the ledger, and
           `scripts/lane_ledger.sh check --commit` reports its freshness.
           BATCH CHECKPOINT, per BATCH of fixes, never per fix (owner
