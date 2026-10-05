@@ -11029,8 +11029,10 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       SWAP (t1, t2, temp);
       SWAP (e1, e2, e);
       SWAP (op1, op2, op);
-      NL_REMOVE (r->u.ops, op1);
-      NL_APPEND (r->u.ops, op1);
+      /* The integer (op2 after the swap) moves behind the pointer: gen reads
+         the HEAD as the indexed operand. */
+      NL_REMOVE (r->u.ops, op2);
+      NL_APPEND (r->u.ops, op2);
     }
     e = create_expr (c2m_ctx, r);
     e->u.lvalue_node = r;
