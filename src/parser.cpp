@@ -58041,6 +58041,7 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    consume_template_close(nextToken());
 	    return out;
 	}
+	StreamMark arg_start = mark_stream();
 	TokenBase *at = nextToken();
 	if ( !at )
 	    return out;
@@ -58060,9 +58061,22 @@ std::vector<DataDef *> Program::capture_call_template_args()
 	    // type — and no reference- or function-type SFINAE default over T
 	    // could ever fail (g++.dg sfinae8/12/15: `f<int&>`, `f<void()>`).
 	    adt = fold_template_arg_declarator(adt, at, &cv_spelling);
-	    dd = &adt->definition;
+	    // [temp.arg]/2: the type-id reading claims an argument only when the
+	    // WHOLE argument is a type-id. A type head the argument continues
+	    // past — `X<T>::value`, an enumerator or static member of a class
+	    // template specialization (std::copy's `__copy_move_a<
+	    // __is_move_iterator<_II>::__value>`) — is an expression: read the
+	    // argument again from its start as a non-type argument.
+	    if ( !is_template_param_separator(peekToken()) )
+	    {
+		rewind_stream(arg_start);
+		at = nextToken();
+		adt = NULL;
+	    }
+	    else
+		dd = &adt->definition;
 	}
-	else
+	if ( !adt )
 	{
 	    // NON-TYPE template argument (`addN<5>`, `get<0>`, or a constant
 	    // EXPRESSION — libc++ basic_string::__recommend's

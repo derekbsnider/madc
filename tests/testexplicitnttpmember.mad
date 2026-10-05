@@ -1,0 +1,33 @@
+// An explicit non-type template argument spelled as a member of a class
+// template specialization — `f<X<T>::value>(...)`, an enumerator or a static
+// const member — is an expression, not a type-id ([temp.arg]/2: the type-id
+// reading needs the WHOLE argument to be one). std::copy is spelled exactly
+// so (`__copy_move_a<__is_move_iterator<_II>::__value>(...)`); madc read
+// `X<T>` as a type argument, dropped the list and left the call unresolved
+// ("import of undefined item").
+// Oracle: g++ 13 and clang++ 18 print the .expect lines.
+#include <stdio.h>
+#include <algorithm>
+template<typename T> struct ismv { enum { value = 0 }; };
+template<typename T> struct cval { static const bool value = true; };
+template<bool B, typename I, typename O>
+O cma(I f, I l, O r)
+{
+	for (; f != l; ++f, ++r)
+		*r = *f + (B ? 100 : 0);
+	return r;
+}
+template<typename I, typename O>
+O mycopy(I f, I l, O r) { return cma<ismv<I>::value>(f, l, r); }
+int main()
+{
+	int a[3] = { 1, 2, 3 }, b[3] = { 0, 0, 0 }, c[3] = { 0, 0, 0 };
+	int *e1 = cma<ismv<int *>::value>(a, a + 3, b);
+	int *e2 = cma<cval<int *>::value>(a, a + 3, c);
+	printf("member: %d %d %d %d\n", b[2], (int)(e1 - b), c[2], (int)(e2 - c));
+	int *e3 = mycopy(a, a + 3, b);
+	int d[3] = { 0, 0, 0 };
+	int *e4 = std::copy(a, a + 3, d);
+	printf("copy: %d %d %d %d\n", b[1], (int)(e3 - b), d[2], (int)(e4 - d));
+	return 0;
+}
