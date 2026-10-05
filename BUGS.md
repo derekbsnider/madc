@@ -742,6 +742,71 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B184. A `std::string` reached through a pointer member and a subscript has no members
+
+```cpp
+#include <cstdio>
+#include <string>
+struct holder { std::string *b; };
+int main()
+{
+	std::string s[2] = { "a", "bc" };
+	holder h;
+	h.b = s;
+	std::string *local = h.b;
+	printf("local: %s\n", local[1].c_str());
+	printf("member: %s %zu\n", h.b[1].c_str(), h.b[1].size());
+	return 0;
+}
+```
+
+- Found 2026-10-05 while reducing the Ubuntu 22.04 `std::vector<std::string>`
+  crashes.
+- g++ 13 and clang++ 18 (`-std=c++17`): `local: bc` / `member: bc 2`. madc
+  (`--std=c++17` and the default mode): "member reference is not a structure
+  or union" at 11:43. The local pointer's `local[1].c_str()` compiles, as does
+  a user class through the same shape (`struct Q { int get() const; }` held as
+  `Q *b`, `h.b[1].get()`); `(h.b)[1].c_str()` is refused too.
+- Where: the `.` arm of the expression parser takes a `TokenSubscriptExpr`
+  receiver's class from `TokenSubscriptExpr::datadef()` (the element type),
+  and that type fails the `is_struct() || is_object()` test for
+  `std::string` — the element type of a pointer MEMBER's subscript, not of a
+  pointer variable's.
+
+### B183. An unevaluated call to a member function template overload set types as the parse-bound overload
+
+```cpp
+#include <cstdio>
+template<class P> struct wrap { P p; };
+struct S {
+	template<class I> static I base_of(I i) { return i; }
+	template<class P> static P base_of(wrap<P> w) { return w.p; }
+};
+int main()
+{
+	int a[2] = { 4, 9 };
+	wrap<int *> w;
+	w.p = a + 1;
+	decltype(S::base_of(w)) ds = a;
+	printf("static member: %d\n", *ds);
+	return 0;
+}
+```
+
+- Found 2026-10-05 while fixing the same gap for NAMESPACE function
+  templates (`tests/testdecltypeoverloadselect`, which an unevaluated call now
+  selects through `Program::pin_unevaluated_fn_template_return`).
+- g++ 13 (`-std=c++17`): `static member: 4`. madc `--std=c++17`: "cannot
+  dereference non-pointer type" at 13:41 — `ds` is typed `wrap<int *>`, the
+  generic overload's return; a class template's static member template set
+  (`U<int>::base_of(w)`) does the same.
+- Where: an evaluated call selects a member template's specialization in
+  `instantiate_member_fn_template_for_call` (its own deduce-only +
+  `best_deduced_fn_template` loop over per-candidate synthesized templates),
+  which parseCallFunc skips in an unevaluated operand; nothing else ranks the
+  set, so the identity-return inference reads the placeholder the parse
+  bound. In a SFINAE test the same shape is a silent wrong answer.
+
 ### B182. A constexpr call with explicit template arguments is not a constant expression
 
 ```cpp
