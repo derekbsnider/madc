@@ -707,6 +707,36 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B175. A REPL entry that starts with a class template's qualified call is refused
+
+```cpp
+template <int N> struct T { static int g(int x) { return x + N; } };
+T<3>::g(2)
+T<3>::g(2);
+```
+
+- Found 2026-10-05 while writing the D8 interrupt's template reducer
+  (`tests/testsession_interrupt`), with `bin/madc` built from `6cff51f28`
+  plus the D8 working tree, `--std=c++17 -i`.
+- madc refuses both entries: `REPL[n]:1:5: error: Expecting identifier after
+  type`, the caret at `::g`. A class that is not a template is taken:
+  `struct S { static int f(int x) { return x + 1; } };` then `S::f(2)` shows
+  `3`. Inside a function the same call compiles (`void go() {
+  Aux<false>::run(a, a + 3); }`, and in a file's `main` it returns what g++
+  13's build returns).
+- clang-repl 20 takes `T<3>::g(2);` as a statement, and
+  `printf("%d\n", T<3>::g(2));` prints `5`.
+- Where (2026-10-05): the entry's top level runs `parseStatement`, whose
+  datatype arm asks `Program::datatype_statement_starts_qualified_expr`
+  whether `T<3>::g` starts an expression; its follower set (`[`, `=`, `;`,
+  `++`, `--`, `.`, `->`) has no `(`. Not traced further: why the same call
+  inside a function is taken. The KG Gap
+  `qualified_template_id_compound_assign_statement` is the same predicate's
+  missing compound assignment (its fix is shelved in
+  `tmp/patches/compound-assign-follower.patch`).
+- A core-parser change, so it gets its own focused session (owner,
+  2026-09-13), after B174, with that Gap.
+
 ### B174. A variable that hides a type name reads as that type after `(`
 
 ```cpp
