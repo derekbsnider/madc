@@ -1,0 +1,19 @@
+// Two function or function-pointer types bound to one template parameter are
+// two specializations ([temp.type]/1): `callf(add3, 2)` binds Fn = int(*)(int)
+// and `callf(half, 3)` Fn = double(*)(double). madc spelled every function
+// pointer's binding by its DataDef name ("funcptr", or the empty name of a
+// named function), so the second call reused the first's instance.
+// g++ 13.3 and clang++ 18.1 (-std=c++17) print the .expect lines.
+#include <stdio.h>
+template<typename Fn> static double callf(Fn f, int x) { return f(x); }
+static int add3(int x) { return x + 3; }
+static double half(double x) { return x / 2; }
+static long twice(long x) { return x * 2; }
+int main()
+{
+	int (*pa)(int) = add3;
+	double (*ph)(double) = half;
+	printf("free: %g %g %g\n", callf(add3, 2), callf(half, 3), callf(twice, 4));
+	printf("ptr: %g %g\n", callf(pa, 5), callf(ph, 5));
+	return 0;
+}

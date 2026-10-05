@@ -5915,6 +5915,28 @@ static std::string template_binding_identity_spelling(DataDef *dd)
 		return reference_spelling(
 		    template_binding_identity_spelling(r->base_type),
 		    dd->is_rvalue_reference());
+    // A function type or function pointer spells STRUCTURALLY: every
+    // DataDefFPTR is named "funcptr" and a named function's own DataDef (a
+    // FuncDef) carries no type name, so by name every function binding was
+    // ONE — `call(add3)` and `call(half)` shared the int(*)(int) instance.
+    // A function TYPE (`Fn&` bound to a function) spells `int (int)`, apart
+    // from its pointer `int (*)(int)`.
+    FuncDef *fn_type = dd->as_funcdef_dd();
+    DataDefFPTR *fp = fn_type ? NULL : dd->as_fptr_dd();
+    FuncDef *sig = fn_type ? fn_type : fp ? fp->target : NULL;
+    // [expr.prim.lambda.closure]/1: every lambda is its own closure type. A
+    // CAPTURING one, typed here by its hoisted function (or its pointer), is
+    // no function (B178) and never shares a binding with another value of
+    // the same signature: its identity is its unique hoisted symbol.
+    if ( sig && sig->has_captures && !sig->local_emit_name.empty() )
+	return "{closure " + sig->local_emit_name + "}";
+    if ( fn_type )
+	return DataDefFPTR(fn_type).structural_spelling(false);
+    if ( fp && !fp->ptr_syntax )
+	return fp->structural_spelling(false);
+    std::string fps = fptr_structural_spelling(dd);
+    if ( !fps.empty() )
+	return fps;
     DataDef *canon = canonical_template_binding_dd(dd);
     return canon ? canon->name : dd->name;
 }
@@ -62518,12 +62540,15 @@ static std::string fn_template_call_shape_suffix(TokenCallFunc *tc,
 	{
 	    TokenBase *arg = tc->parameters[i];
 	    DataDef *dd = arg ? arg->datadef() : NULL;
-	    shape += dd ? dd->name : std::string("?");
+	    // The identity spelling every identity former compares: a bare
+	    // name tells no two function (pointer) types apart.
+	    shape += dd ? template_binding_identity_spelling(dd) : std::string("?");
 	    shape += fn_template_call_arg_is_lvalue(arg, pgm) ? "@L," : "@R,";
 	}
 	shape += ")";
 	for ( DataDef *ea : tc->explicit_template_args )
-	    shape += "<" + (ea ? ea->name : std::string("?")) + ">";
+	    shape += "<" + (ea ? template_binding_identity_spelling(ea)
+			       : std::string("?")) + ">";
     }
     else
 	shape += ")";
