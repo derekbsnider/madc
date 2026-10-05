@@ -21,7 +21,9 @@ madc --capabilities=json
 ```
 
 The response is a versioned JSON manifest describing the compiler version and
-target, the accepted `--std=` C/C++ standards, project-mode support, the
+target, the accepted `--std=` C/C++ standards, the `-stdlib=` flavors this
+build serves (`input.stdlib_flavors` — a build host without libc++ builds a
+libstdc++-only madc), project-mode support, the
 execution and native-output modes, the CIR emission targets, the introspection
 surfaces, and the public `libmadc` / C API boundary. The advertised standards
 and emit targets are derived from the same sources the compiler enforces, so

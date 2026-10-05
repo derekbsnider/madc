@@ -12,6 +12,10 @@
 #     (manifest ⊆ recognizer — the anti-drift guarantee, rule #7).
 #   - emit_targets comes from CIR_EMIT_TARGETS; this gate compares the manifest
 #     against that macro read straight out of src/cir_emit_c.h.
+#   - stdlib_flavors comes from the generated flavor table -stdlib= looks up;
+#     every advertised flavor must be accepted by -stdlib= (the test runner
+#     skips a test pinning a flavor this list lacks, so a list that lied would
+#     hide tests).
 #
 # The negative control is built in: aliases the recognizer ACCEPTS but the
 # manifest must NOT advertise (c90, c, c++, cpp20) are asserted absent, and an
@@ -48,12 +52,13 @@ LEVEL_NAMES=$(awk '/inline const char \*ui_level_name/ { on = 1 } on && /^}/ { e
 
 # 2. Structural + derived-content assertions. Emit the canonical standard list
 #    on stdout so the shell can drive the recognizer-acceptance loop below.
-python3 - "$D/manifest.json" VERSION "$EMIT_MACRO" "$LEVEL_NAMES" >"$D/std_names" <<'PY'
+python3 - "$D/manifest.json" VERSION "$EMIT_MACRO" "$LEVEL_NAMES" "$D/flavor_names" >"$D/std_names" <<'PY'
 import json, pathlib, sys
 m = json.loads(pathlib.Path(sys.argv[1]).read_text())
 want_version = pathlib.Path(sys.argv[2]).read_text().strip()
 emit_macro = sys.argv[3].split("|")
 level_names = [n for n in sys.argv[4].split("|") if n]
+flavor_out = pathlib.Path(sys.argv[5])
 
 def die(msg):
     sys.stderr.write("capabilities_json_gate: " + msg + "\n"); sys.exit(1)
@@ -113,6 +118,15 @@ for s in ("object", "executable", "shared", "relocatable"):
     if s not in m["native_outputs"]: die("%s missing from native_outputs" % s)
 if "show-stats" not in m["introspection"]: die("show-stats missing from introspection")
 
+# input.stdlib_flavors: the -stdlib= flavors this build serves. The build that
+# runs this gate probed a C++ compiler, so libstdc++ or libc++ is among them;
+# the shell below checks each against the -stdlib= recognizer.
+flavors = m["input"]["stdlib_flavors"]
+if not isinstance(flavors, list) or not flavors: die("input.stdlib_flavors missing or empty")
+if not ({"libstdc++", "libc++"} & set(flavors)): die("input.stdlib_flavors names no C++ stdlib: %r" % flavors)
+if len(flavors) != len(set(flavors)): die("input.stdlib_flavors repeats a flavor")
+flavor_out.write_text("\n".join(flavors) + "\n")
+
 # Hand the canonical standards to the shell for the recognizer loop.
 print("\n".join(c + cpp))
 PY
@@ -138,6 +152,19 @@ if timeout 60 "$BIN" "--std=nope-not-a-standard" "$D/trivial.mad" >/dev/null 2>&
     fail "the recognizer accepted a bogus --std= (acceptance loop is not meaningful)"
 fi
 
+# Same tie for the stdlib flavors: every advertised one is accepted by
+# -stdlib=, and an unbuilt one is rejected (the negative control).
+while read -r flavor; do
+    [ -n "$flavor" ] || continue
+    if ! timeout 60 "$BIN" "-stdlib=$flavor" "$D/trivial.mad" >/dev/null 2>"$D/flavor.err"; then
+        echo "capabilities_json_gate: manifest advertises -stdlib=$flavor but the compiler rejects it"
+        cat "$D/flavor.err"; exit 1
+    fi
+done <"$D/flavor_names"
+if timeout 60 "$BIN" "-stdlib=nope-not-a-flavor" "$D/trivial.mad" >/dev/null 2>&1; then
+    fail "the recognizer accepted a bogus -stdlib= (flavor acceptance loop is not meaningful)"
+fi
+
 # The recognizer refactor (strcmp chain -> one table) must keep every ACCEPTED
 # alias the manifest deliberately does NOT advertise, plus the gnu-prefix
 # transform that maps onto a base standard. A dropped spelling here is the
@@ -156,4 +183,4 @@ fi
 grep -q "Unknown capabilities format" "$D/unknown.err" \
     || { echo "capabilities_json_gate: unsupported-format diagnostic missing"; cat "$D/unknown.err"; exit 1; }
 
-echo "capabilities_json_gate: OK — schema 1 manifest; standards+emit_targets derived from their owners; negative controls green"
+echo "capabilities_json_gate: OK — schema 1 manifest; standards+emit_targets+stdlib_flavors derived from their owners; negative controls green"

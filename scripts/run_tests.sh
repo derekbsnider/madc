@@ -129,6 +129,8 @@ MADC_EXE_ADVISORY="${MADC_EXE_ADVISORY:-}"
 # machine reads the fixture protocol's answer without re-implementing it:
 #   {"test","family":"mad","result":"pass|fail|timeout","exit","seconds","detail"}
 #   {"test","family":"mad","result":"skip","reason":"mir|stdlib|domain"}
+#   (stdlib: a --stdlib= lane's .<flavor>_skip, or a test pinning a -stdlib=
+#   flavor the binary was not built with)
 #   {"test","family":"mad","lane":"exe|obj","result":"pass|fail"}
 #   {"note": "<a caveat line>"}   {"summary":{"passed","failed","timed_out","skipped"}}
 # The exit status is unchanged. Human output is untouched without the flag.
@@ -200,6 +202,15 @@ fi
 # the default-lane baseline.
 MADC_SKIP_EXT="${MADC_SKIP_EXT:-}"
 
+# The -stdlib= flavors the binary under test was BUILT with — a build-host
+# property (a host with no libc++ builds a libstdc++-only madc), read once from
+# its capability manifest. A test whose .flags pins a flavor outside this list
+# is outside the binary's domain: skipped (reason stdlib) and counted on its own
+# summary line. A binary whose manifest cannot be read here lists nothing, and
+# then nothing is skipped this way.
+BUILT_FLAVORS=$($MADC_WRAPPER "$MADC" --capabilities=json 2>/dev/null \
+    | sed -n '/"stdlib_flavors"/,/]/p' | grep -o '"[^"]*"' | grep -v '"stdlib_flavors"' | tr -d '"\r' | tr '\n' ' ')
+
 # Remaining positional arguments are basename GLOBS selecting a SUBSET of the
 # suite: `run_tests.sh 'testmadceval*' testevalexterncapture`. No test name is
 # hard-coded here — the caller supplies the pattern, so this stays a generic
@@ -265,6 +276,8 @@ OBJ_FAIL=0
 SELECTED=0
 STDLIB_SKIPPED=0
 DOMAIN_SKIPPED=0
+UNBUILT_SKIPPED=0
+UNBUILT_FLAVORS=""
 for t in "$TEST_DIR"/*.mad; do
     [ -f "$t" ] || continue
     base=$(basename "$t" .mad)
@@ -323,6 +336,22 @@ for t in "$TEST_DIR"/*.mad; do
         DOMAIN_SKIPPED=$((DOMAIN_SKIPPED+1))
         skipped "$base" domain
         continue
+    fi
+
+    # A test pinning a -stdlib= flavor this binary was not built with.
+    if [ -n "$BUILT_FLAVORS" ] && [ -f "$flags_file" ]; then
+        pinned=$(grep -o -e '-stdlib=[^[:space:]]*' "$flags_file" | head -1)
+        pinned="${pinned#-stdlib=}"
+        case " $BUILT_FLAVORS " in
+            *" $pinned "*) ;;
+            *)  if [ -n "$pinned" ]; then
+                    SKIP=$((SKIP+1))
+                    UNBUILT_SKIPPED=$((UNBUILT_SKIPPED+1))
+                    case " $UNBUILT_FLAVORS " in *" $pinned "*) ;; *) UNBUILT_FLAVORS="$UNBUILT_FLAVORS $pinned" ;; esac
+                    skipped "$base" stdlib
+                    continue
+                fi ;;
+        esac
     fi
 
     # Execution-domain expect VARIANT: a test whose CORRECT output differs on
@@ -599,6 +628,11 @@ if [ -n "$STDLIB_NAME" ]; then
     # Never let a FLAVORED run read as the default-lane baseline. The two lanes
     # measure different libraries and legitimately have different skip sets.
     say "FLAVORED RUN — -stdlib=$STDLIB_NAME ($STDLIB_SKIPPED test(s) carry a .${STDLIB_SKIP_EXT}_skip); NOT the default-lane baseline"
+fi
+if [ $UNBUILT_SKIPPED -gt 0 ]; then
+    # Loud on purpose: a build that LOST a flavor it should have would skip
+    # every test pinning it, and this line is where that shows.
+    say "FLAVOR NOT BUILT —$UNBUILT_FLAVORS: $UNBUILT_SKIPPED test(s) pin a -stdlib= flavor this madc was not built with (it serves: $BUILT_FLAVORS); NOT the default-lane baseline"
 fi
 if [ -n "$MADC_SKIP_EXT" ]; then
     say "DOMAIN RUN — $MADC_SKIP_EXT ($DOMAIN_SKIPPED test(s) carry a domain skip fixture); NOT the default-lane baseline"

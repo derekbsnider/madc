@@ -6871,6 +6871,10 @@ public:
     // property, so the diagnostic has to name what this binary actually has).
     bool set_stdlib_flavor_option(const std::string &arg);
     std::string stdlib_flavor_names() const;	// ", "-joined, for that diagnostic
+    // The flavor names this binary was built with (the generated table's
+    // named entries, in table order) — the diagnostic and the capability
+    // manifest both read this one list.
+    static std::vector<std::string> supported_stdlib_flavor_names();
     // The selected flavor, defaulted: table entry 0 when no -stdlib= was given.
     const madc_stdlib_flavor *active_stdlib_flavor() const;
     // Push the std ABI inline namespace into the mangler when `name` is one of

@@ -5224,16 +5224,23 @@ const std::vector<std::string> &Program::sys_include_prefixes_canonical() const
     return _canon_prefixes;
 }
 
+std::vector<std::string> Program::supported_stdlib_flavor_names()
+{
+    std::vector<std::string> out;
+    for ( int i = 0; madc_stdlib_flavors[i].name; ++i )
+	if ( *madc_stdlib_flavors[i].name )
+	    out.push_back(madc_stdlib_flavors[i].name);
+    return out;
+}
+
 std::string Program::stdlib_flavor_names() const
 {
     std::string out;
-    for ( int i = 0; madc_stdlib_flavors[i].name; ++i )
+    for ( const std::string &name : supported_stdlib_flavor_names() )
     {
-	if ( !*madc_stdlib_flavors[i].name )
-	    continue;
 	if ( !out.empty() )
 	    out += ", ";
-	out += madc_stdlib_flavors[i].name;
+	out += name;
     }
     // A build host with no C++ compiler to probe records no flavor NAME at all;
     // say so rather than printing an empty list.
