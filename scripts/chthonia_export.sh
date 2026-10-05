@@ -3,14 +3,16 @@
 # (docs/plans/2026-10-04-chthonia-own-repository.md §2 "Moves", §5, §6 step
 # 3): a new git repository with one commit, ready for its remote.
 #
-#   scripts/chthonia_export.sh DIR
+#   scripts/chthonia_export.sh [--madc VER] DIR
 #
-# DIR must not exist. The tree:
+# DIR must not exist. VER is the madc release Chthonia is cut against
+# (default: this checkout's VERSION) — the export runs before the release
+# bumps VERSION, since the cut deletes the moving set. The tree:
 #   tools/chthonia/*                  → DIR/ (the product, its scripts, tests,
 #                                       packaging, CI, README, licence)
 #   tools/madcide/plugins/chthonia/*  → DIR/plugins/chthonia/ (the bundle)
 #   chthonia.json                     its plugin unit at plugins/chthonia/, and
-#                                     "madc": VERSION, the release it is cut
+#                                     "madc": VER, the release it is cut
 #                                     against (the oldest that builds it)
 # The repository (§5): a fresh history whose one commit is under this
 # checkout's git identity (the owner's) with a plain message; madc's agent
@@ -24,17 +26,25 @@
 # Only tracked files move (git ls-files), so build/, dist/ and tmp/ never do.
 set -eu
 cd "$(dirname "$0")/.." || exit 2
+ver=$(cat VERSION)
+if [ $# -ge 2 ] && [ "$1" = --madc ]; then
+	ver=$2
+	shift 2
+fi
 if [ $# -ne 1 ]; then
-	echo "usage: $0 DIR" >&2
+	echo "usage: $0 [--madc VER] DIR" >&2
 	exit 2
 fi
+case "$ver" in
+[0-9]*.[0-9]*.[0-9]*) ;;
+*) echo "chthonia_export: '$ver' is not a release version (MAJOR.MINOR.PATCH)" >&2; exit 2 ;;
+esac
 dir=$1
 if [ -e "$dir" ]; then
 	echo "chthonia_export: $dir exists — name a new directory" >&2
 	exit 1
 fi
 madc=$PWD
-ver=$(cat VERSION)
 name=$(git config user.name)
 email=$(git config user.email)
 if [ -z "$name" ] || [ -z "$email" ]; then

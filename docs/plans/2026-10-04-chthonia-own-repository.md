@@ -354,10 +354,12 @@ published.
 3. **The Chthonia repository, prepared.** The sanitized initial commit (§5)
    built from those files; its CI installs madc from a madc release's
    assets and builds, tests and packages on Linux, Windows and macOS.
-   **Prepared (2026-10-05):** `scripts/chthonia_export.sh DIR` makes the
-   repository from the moving set: `tools/chthonia/` at its top, the bundle
-   at `plugins/chthonia/`, `chthonia.json` naming that unit and
-   `"madc": VERSION`; one commit under this checkout's git identity with a
+   **Prepared (2026-10-05):** `scripts/chthonia_export.sh [--madc VER] DIR`
+   makes the repository from the moving set: `tools/chthonia/` at its top,
+   the bundle at `plugins/chthonia/`, `chthonia.json` naming that unit and
+   `"madc": VER` (default `VERSION`; the cut runs it with `--madc 0.102.0`
+   before deleting the set, since `/release` bumps `VERSION` after the
+   cut); one commit under this checkout's git identity with a
    plain message; agent files excluded through `.git/info/exclude`; the
    local `.claude/settings.json` (§5), which git must report ignored; a
    `commit-msg` hook running `chthonia_sanitize_check.sh --message`; then
