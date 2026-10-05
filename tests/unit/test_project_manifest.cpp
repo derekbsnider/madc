@@ -3,6 +3,7 @@ thread_local bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "doctest.h"
 #include "madc_project.h"
+#include "libmadc/sysinfo.h"	// madc::sys.version: the running release
 #include <cstdio>
 
 // Helper: write a temp file, return its path (in /tmp, unique per test name).
@@ -212,4 +213,44 @@ TEST_CASE("read_project_manifest: native object — the icon: absent = none, a "
 				    "{\"tus\":[],\"icon\":7}");
 	CHECK_FALSE(read_project_manifest(num, notstr, err));
 	CHECK(err.find("icon") != std::string::npos);
+}
+
+TEST_CASE("read_project_manifest: native object — \"madc\" is the oldest madc "
+	  "release that builds the project: absent = any, an older madc refuses "
+	  "naming both versions, a non-version refuses") {
+	// The running version is madc::sys.version (the build's VERSION).
+	const std::string running = madc::sys.version;
+	ProjectManifest m; std::string err;
+	std::string plain = write_tmp("native_madc_none.prj.json", "{\"tus\":[]}");
+	REQUIRE(read_project_manifest(plain, m, err));
+	CHECK(m.madc_min.empty());
+
+	ProjectManifest same;
+	std::string eq = write_tmp("native_madc_same.prj.json",
+				   "{\"tus\":[],\"madc\":\"" + running + "\"}");
+	REQUIRE(read_project_manifest(eq, same, err));
+	CHECK(same.madc_min == running);
+
+	// Fields compare as numbers: 0.99.0 is older than 0.101.0.
+	ProjectManifest older;
+	std::string old = write_tmp("native_madc_older.prj.json",
+				    "{\"tus\":[],\"madc\":\"0.99.0\"}");
+	CHECK(read_project_manifest(old, older, err));
+
+	ProjectManifest newer;
+	std::string fut = write_tmp("native_madc_newer.prj.json",
+				    "{\"tus\":[],\"madc\":\"999999.0.0\"}");
+	CHECK_FALSE(read_project_manifest(fut, newer, err));
+	CHECK(err == "this project needs madc 999999.0.0 or newer (this is madc "
+		     + running + ")");
+
+	const char *bad[] = { "\"1.2\"", "\"1.2.3.4\"", "\"v1.2.3\"", "\"1.2.x\"",
+			      "\"\"", "\" 1.2.3\"", "7", "null" };
+	for (const char *b : bad) {
+		ProjectManifest r;
+		std::string f = write_tmp("native_madc_bad.prj.json",
+					  std::string("{\"tus\":[],\"madc\":") + b + "}");
+		CHECK_FALSE(read_project_manifest(f, r, err));
+		CHECK(err == "\"madc\" must be a release version (major.minor.patch)");
+	}
 }

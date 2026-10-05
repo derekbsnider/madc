@@ -39,6 +39,10 @@ struct ProjectManifest {
 	// it (madc's own lib directory first), a native build records it as
 	// needed.
 	std::vector<std::string> libs;
+	// "madc": the oldest madc release that builds the project
+	// ("major.minor.patch", VERSION's form); "" = any. The reader refuses
+	// the manifest when the running madc is older, naming both versions.
+	std::string madc_min;
 };
 
 // The manifest spelling of a kind and back (the one table): "console" /

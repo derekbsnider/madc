@@ -7973,7 +7973,12 @@ int64_t internal_program_project_run(::Program &self,
     ProjectManifest manifest;
     std::string err;
     if ( !read_project_manifest(manifest_path, manifest, err) )
+    {
+	// stdio is the guest's, so the refusal says why there, as the
+	// child's own read does (madc_run_child) and the CLI's.
+	fprintf(stderr, "madc: %s\n", err.c_str());
 	return -1;
+    }
     if ( manifest.tus.empty() )
 	return -2;
 #ifdef _WIN32

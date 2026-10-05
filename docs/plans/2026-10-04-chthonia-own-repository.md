@@ -145,6 +145,19 @@ Slices:
    already installed every header in the directory.
 4. **The version contract:** the manifest's `"madc": "0.102.0"` is the
    minimum; a build by an older madc refuses with both versions.
+   **Done (2026-10-05):** `read_project_manifest` reads `"madc"` (VERSION's
+   form, `major.minor.patch`, compared field by field as numbers). An older
+   madc refuses before it parses anything: `this project needs madc X or
+   newer (this is madc Y)`. A value of any other form refuses too. Every
+   manifest consumer reads through it: `madc --project`, `project_run`
+   (which now prints a refusal's reason on stderr instead of returning -1
+   silently), `project_build`'s rows and the run child. A madc from before
+   the key ignores it, as it ignores any key it does not know. Gates:
+   `tests/unit/test_project_manifest.cpp`, `tests/testproject_madcversion`.
+   The tree's VERSION reads 0.101.0 until the release commit, so the key
+   goes into Chthonia's manifest in its own repository at the cut, not
+   into the in-tree `chthonia.json` (built by this madc, always the same
+   version).
 5. **The boundary gate:** `check-chthonia-boundary.sh` with no exception —
    Chthonia's manifest names no base source, and its tests include only
    installed headers.

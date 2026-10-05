@@ -1,0 +1,31 @@
+// A project manifest's "madc" names the oldest madc release that builds the
+// project. A madc that is older refuses the manifest before anything is
+// parsed, naming both versions ("this project needs madc 999999.0.0 or newer
+// (this is madc X.Y.Z)", on stderr: project_run's stdio is the guest's);
+// the running release itself, or an older one, builds and runs. A value that
+// is not major.minor.patch refuses too. tests/unit/test_project_manifest.cpp
+// pins the refusals' text.
+// Oracle: n/a for gcc/clang (madc's own manifest key); the CLI
+// (`madc --project`) reads the manifest through the same reader.
+int main()
+{
+	var dir = "tmp/testproject_madcversion";
+	php::mkdir(dir.c_str());
+	var src = format("{}/prog.mad", dir);
+	php::file_put_contents(src.c_str(),
+		"int main()\n{\n\tprintln(\"prog: ran\");\n\treturn 0;\n}\n");
+	var mins = { "999999.0.0", madc::sys.version, "0.1.0", "1.x" };
+	var names = { "newer", "same", "older", "malformed" };
+	var manifest = format("{}/prog.prj.json", dir);
+	for ( long i = 0; i < php::count(mins); i++ )
+	{
+		var tus = { "prog.mad" };
+		var m = { "tus": tus, "madc": mins[i] };
+		php::file_put_contents(manifest.c_str(), js::stringify(m));
+		println("{}: status={}", names[i], madc::project_run(manifest.c_str()));
+	}
+	php::unlink(manifest.c_str());
+	php::unlink(src.c_str());
+	php::rmdir(dir.c_str());
+	return 0;
+}

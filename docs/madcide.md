@@ -195,7 +195,7 @@ open dialog in the window, a prompt in the terminal).
 
 The manifest is JSON — `tus` (the files, or objects with `file`,
 `directory`, `defines`, `include_dirs`, `std`, `stdlib`), `entry`,
-`output`, `kind`, `icon`, `libs` and `commands`:
+`output`, `kind`, `icon`, `libs`, `madc` and `commands`:
 
 ```json
 { "tus": ["main.mad", "util.mad"], "output": "app", "kind": "console",
@@ -229,6 +229,13 @@ Each binds as a link-form `import` does. A run opens it before the
 program links, looking in madc's own `lib` directory first, and a build
 records it as a library the executable needs. A library that does not
 open stops the run or the build with the loader's reason.
+
+`madc` names the oldest madc release that builds the project, in
+VERSION's form (`"madc": "0.102.0"`). An older madc refuses the manifest
+before it parses anything and names both versions: `this project needs
+madc 0.102.0 or newer (this is madc 0.101.0)`. A value that is not
+`major.minor.patch` refuses too. A madc from before the key existed
+ignores it, as it ignores any key it does not know.
 
 ## The language standard
 
