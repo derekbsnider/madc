@@ -233,7 +233,10 @@ form. madc is unaffected.
   `.aider.conf.yml`, `.github/copilot-instructions.md`. Guidance for working
   on Chthonia lives in madc (this plan, and a madc doc for the Chthonia
   workflow); any local agent file in a Chthonia checkout is excluded through
-  `.git/info/exclude`, which is never committed.
+  `.git/info/exclude`, which is never committed. A checkout carries a local
+  `.claude/settings.json` with `"includeCoAuthoredBy": false` (owner,
+  2026-10-05), excluded the same way, so an assistant there adds no
+  co-author line (`chthonia_export.sh` writes both).
 - **Content**: comments and documentation read as ordinary project text —
   no dated owner rulings ("owner 2026-09-30"), no references to madc plan
   sections or sessions, no assistant or tool names. Every file moved in §2
@@ -351,6 +354,24 @@ published.
 3. **The Chthonia repository, prepared.** The sanitized initial commit (§5)
    built from those files; its CI installs madc from a madc release's
    assets and builds, tests and packages on Linux, Windows and macOS.
+   **Prepared (2026-10-05):** `scripts/chthonia_export.sh DIR` makes the
+   repository from the moving set: `tools/chthonia/` at its top, the bundle
+   at `plugins/chthonia/`, `chthonia.json` naming that unit and
+   `"madc": VERSION`; one commit under this checkout's git identity with a
+   plain message; agent files excluded through `.git/info/exclude`; the
+   local `.claude/settings.json` (§5), which git must report ignored; a
+   `commit-msg` hook running `chthonia_sanitize_check.sh --message`; then
+   `--checkout` must pass. Its CI is `tools/chthonia/.github/workflows/ci.yml`
+   (inert in madc): the madc release named by `chthonia.json` (or a
+   dispatch's `madc_tag`; a draft reads with the `MADC_RELEASES_TOKEN`
+   secret) installed from its assets on ubuntu-24.04, windows-latest,
+   macos-14 and macos-15-intel; build, tests (the window tests under
+   xvfb-run on Linux), packages, and on Linux and macOS the tarball
+   installed into the madc folder and `check_install.sh`; a `v*` tag drafts
+   the release. `tools/chthonia/README.md` is its user documentation.
+   `scripts/chthonia_lane.sh --installed TARBALL --exported` runs that Linux
+   job's steps from an export: green on the container. The repository's
+   creation on GitHub, the first push and the secret are the owner's.
 4. **The cut, in madc.** The §2 "Moves" files leave; packagers, the install
    gate and the documentation stop naming Chthonia. `VERSION` = 0.102.0.
    What leaves madc's packaging has its replacement in

@@ -124,7 +124,8 @@ plain_modes() {
 
 # capped SECONDS COMMAND... — COMMAND under a wall-clock limit (coreutils'
 # timeout; gtimeout where Homebrew's coreutils provides it, as on a Mac) and
-# the same CPU limit, so a hang fails instead of running on.
+# the same CPU limit where the shell can set one (Git Bash on Windows cannot),
+# so a hang fails instead of running on.
 tmo=$(command -v timeout || command -v gtimeout || true)
 capped() {
 	if [ -z "$tmo" ]; then
@@ -133,5 +134,5 @@ capped() {
 	fi
 	local s=$1
 	shift
-	(ulimit -t "$s"; "$tmo" "$s" "$@")
+	(ulimit -t "$s" 2> /dev/null || true; "$tmo" "$s" "$@")
 }

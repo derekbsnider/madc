@@ -12,6 +12,10 @@
 #       an INSTALLED madc: the relocatable tarball package_release.sh writes,
 #       unpacked, with its own libmadcide and share/madcide/include — what
 #       Chthonia's CI installs
+#   --exported (with either form)
+#       the scripts run from Chthonia's repository as scripts/chthonia_export.sh
+#       makes it (§6 step 3), not from tools/chthonia: with --installed, what
+#       Chthonia's CI runs on Linux
 #
 # Steps: build chthonia (scripts/build.sh), run it (--help prints its usage),
 # run the console tests, then the window tests under xvfb-run when the host
@@ -29,18 +33,31 @@
 set -u
 cd "$(dirname "$0")/.." || exit 2
 mode=tree
-if [ "${1:-}" = "--installed" ]; then
-	mode=installed
-	tarball=${2:-}
-	if [ ! -f "$tarball" ]; then
-		echo "usage: $0 [--installed TARBALL]" >&2
-		exit 2
-	fi
+exported=0
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--installed)
+		mode=installed
+		tarball=${2:-}
+		shift 2 || shift
+		;;
+	--exported) exported=1; shift ;;
+	*) tarball= ; mode=usage; break ;;
+	esac
+done
+if [ $mode = usage ] || { [ $mode = installed ] && [ ! -f "$tarball" ]; }; then
+	echo "usage: $0 [--installed TARBALL] [--exported]" >&2
+	exit 2
 fi
 work=$PWD/tmp/chthonia-lane
 rm -rf "$work"
 mkdir -p "$work" tmp/logs
 log=$PWD/tmp/logs/chthonia-lane-$(date +%Y%m%d-%H%M%S).log
+cdir=$PWD/tools/chthonia
+if [ $exported = 1 ]; then
+	cdir=$work/repo
+	bash scripts/chthonia_export.sh "$cdir" >> "$log" 2>&1 || { echo "chthonia: FAILED — the export (log $log)"; tail -20 "$log" >&2; exit 1; }
+fi
 case "$(uname -s)" in
 Darwin) so=dylib; libpath=DYLD_LIBRARY_PATH ;;
 *) so=so; libpath=LD_LIBRARY_PATH ;;
@@ -73,7 +90,7 @@ else
 fi
 
 echo "== build ($madc) ==" >> "$log"
-MADC="$madc" MADCIDE_INCLUDE="$inc" bash tools/chthonia/scripts/build.sh -o "$work/chthonia" \
+MADC="$madc" MADCIDE_INCLUDE="$inc" bash "$cdir"/scripts/build.sh -o "$work/chthonia" \
 	>> "$log" 2>&1 || fail "chthonia did not build"
 help=$(env "$libpath=$libdir" timeout 60 "$work/chthonia" --help 2>&1)
 case "$help" in
@@ -82,7 +99,7 @@ case "$help" in
 esac
 
 echo "== tests ==" >> "$log"
-MADC="$madc" MADCIDE_INCLUDE="$inc" bash tools/chthonia/scripts/run_tests.sh >> "$log" 2>&1
+MADC="$madc" MADCIDE_INCLUDE="$inc" bash "$cdir"/scripts/run_tests.sh >> "$log" 2>&1
 trc=$?
 tests=$(grep -E '^[0-9]+ passed, [0-9]+ failed$' "$log" | tail -1)
 
@@ -94,7 +111,7 @@ if command -v xvfb-run > /dev/null 2>&1; then
 	fi
 	echo "== gui ==" >> "$log"
 	MADC="$madc" MADCIDE_INCLUDE="$inc" timeout -k 3 600 xvfb-run -a \
-		bash tools/chthonia/scripts/run_tests.sh --gui >> "$log" 2>&1
+		bash "$cdir"/scripts/run_tests.sh --gui >> "$log" 2>&1
 	grc=$?
 	gui=$(grep -E '^[0-9]+ passed, [0-9]+ failed$' "$log" | tail -1)
 fi
@@ -106,7 +123,7 @@ if command -v dpkg-deb > /dev/null 2>&1 && command -v rpmbuild > /dev/null 2>&1;
 	builder=()
 	[ $mode = tree ] && builder=("MADCIDE=$work/chthonia")
 	env MADC="$madc" MADCIDE_INCLUDE="$inc" ${builder[@]+"${builder[@]}"} \
-		bash tools/chthonia/scripts/package_linux.sh -o "$work/dist" >> "$log" 2>&1 \
+		bash "$cdir"/scripts/package_linux.sh -o "$work/dist" >> "$log" 2>&1 \
 		|| fail "the Linux packages did not build"
 	pkgs=ok
 	if [ $mode = installed ]; then
@@ -114,7 +131,7 @@ if command -v dpkg-deb > /dev/null 2>&1 && command -v rpmbuild > /dev/null 2>&1;
 		tgz=$(ls "$work"/dist/chthonia-*-linux-*.tar.gz)
 		tar -tzf "$tgz" | grep -v '/$' | while IFS= read -r f; do rm -f "$folder/$f"; done
 		tar -xzf "$tgz" -C "$folder" || fail "cannot unpack $tgz into $folder"
-		bash tools/chthonia/scripts/check_install.sh "$folder" >> "$log" 2>&1 \
+		bash "$cdir"/scripts/check_install.sh "$folder" >> "$log" 2>&1 \
 			|| fail "the installed Chthonia did not pass scripts/check_install.sh"
 		installed=" | install: ok"
 	fi
