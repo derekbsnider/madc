@@ -4016,7 +4016,7 @@ void lens_put_repair(long w, long es, long doc, var &before, long seq0)
     long n = php::count(mine);
     if ( n < 1 || n > 2 )
 	return;
-    long p = mine[0]["at"].as_integer();
+    int64_t p = mine[0]["at"].as_integer();
     long e = p + mine[0]["del"].as_integer();
     var ins = mine[0]["ins"];
     if ( n == 2 )
