@@ -23,6 +23,14 @@
 # gate itself is broken and we fail loudly.
 
 set -u
+# A FILE or DIR argument is the caller's path (a commit-msg hook passes
+# .git/COMMIT_EDITMSG, relative to its checkout): resolve it before moving
+# to madc's top.
+target=
+case "${1:-}" in
+--message) [ -f "${2:-}" ] && target=$(cd "$(dirname "$2")" && pwd)/$(basename "$2") ;;
+--checkout) [ -d "${2:-}" ] && target=$(cd "$2" && pwd) ;;
+esac
 cd "$(dirname "$0")/.." || exit 2
 
 # Text that identifies an assistant, its sessions, or madc's process.
@@ -70,8 +78,8 @@ rm -rf "$tmpd"
 status=0
 case "${1:-}" in
 --message)
-	[ -f "${2:-}" ] || { echo "usage: $0 --message FILE" >&2; exit 2; }
-	if ! out=$(scan_message "$2"); then
+	[ -n "$target" ] || { echo "usage: $0 --message FILE" >&2; exit 2; }
+	if ! out=$(scan_message "$target"); then
 		echo "chthonia_sanitize_check: the commit message identifies AI assistance or madc's process:" >&2
 		echo "$out" >&2
 		exit 1
@@ -79,8 +87,8 @@ case "${1:-}" in
 	exit 0
 	;;
 --checkout)
-	dir=${2:-}
-	git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 || { echo "usage: $0 --checkout DIR (a git checkout)" >&2; exit 2; }
+	dir=$target
+	[ -n "$dir" ] && git -C "$dir" rev-parse --git-dir > /dev/null 2>&1 || { echo "usage: $0 --checkout DIR (a git checkout)" >&2; exit 2; }
 	agents=$(git -C "$dir" ls-files | grep -E "$AGENT_FILES")
 	if [ -n "$agents" ]; then
 		echo "chthonia_sanitize_check: the checkout tracks agent instruction files:" >&2
