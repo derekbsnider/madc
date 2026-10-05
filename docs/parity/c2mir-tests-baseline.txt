@@ -47,7 +47,6 @@
 # __attribute__((cleanup)), which the in-tree MIR supports natively.
 lacc/declaration-default-int.c
 lacc/declarator-parens.c
-lacc/declare-auto-func.c
 lacc/function-incomplete.c
 lacc/include.c
 lacc/initialize-array.c

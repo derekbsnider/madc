@@ -73897,10 +73897,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    TokenBase *open = nextToken();
 	    if ( !open || open->id() != TokenID::tkOpBrk )
 	    {
-		// Mixed declaration list: `float fx(), inita(), a, b;`
-		// After a function declarator continuation, fall back to the
-		// normal variable declarator parser when the next name is not
-		// followed by `(`.
+		// Mixed declaration list: `float fx(), inita(), a, b;` — the
+		// next declarator is an object's. It continues as the list's
+		// TAIL through the stream, push_declarator_list_tail's model:
+		// the statement parser reads `T a ...;` as the next declaration
+		// and keeps what it returns. A parseDeclaration call made here
+		// dropped that — the initializer, so a block-scope
+		// `int f(int), b = 2;` left b uninitialized.
 		// HEAP token, never a stack local: parseDeclaration records tb
 		// as TopDecl.origin (and MC11-IR keeps originating tokens for
 		// the life of the tree), so a stack token here is a dangling
@@ -73913,8 +73916,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		tdt->file = nt->file;
 		tdt->line = nt->line;
 		tdt->column = nt->column;
+		pushToken(tdt);
 		pop_param_scope();
-		parseDeclaration(tdt);
 		return;
 	    }
 	    pop_param_scope();
