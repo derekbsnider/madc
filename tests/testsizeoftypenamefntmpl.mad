@@ -1,0 +1,25 @@
+// Oracle (g++ 13, clang++ 18, -std=c++17): "sizeof: 2 8 2 4".
+// sizeof / alignof of a typename-specifier inside a function template body
+// (`sizeof(typename S::value_type)`): the operand is a type-id, measured for
+// each instantiation's S.
+#include <stdio.h>
+
+struct A { typedef short value_type; };
+struct B { typedef double value_type; };
+template<typename T> struct holder { typedef T value_type; };
+
+template<typename S>
+int value_bytes(const S &) { return sizeof(typename S::value_type); }
+
+template<typename S>
+int value_align() { return alignof(typename S::value_type); }
+
+int main()
+{
+	A a;
+	B b;
+	holder<int> h;
+	printf("sizeof: %d %d %d %d\n", value_bytes(a), value_bytes(b),
+	       value_align<A>(), value_bytes(h));
+	return 0;
+}

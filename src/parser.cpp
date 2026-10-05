@@ -15757,6 +15757,19 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	    return &tdt->definition;
     }
 
+    // sizeof(typename T::type) / alignof(...): a typename-specifier
+    // ([temp.res]/5) is a type-id. The one declared-type resolver owns it
+    // (resolve_typename_type_token); read as an expression, the operand
+    // failed and the function template's instantiation was dropped — an
+    // undefined MIR import at the call.
+    if ( !is_c_mode() && is_contextual_identifier_token(type_tb)
+      && contextual_identifier_name(type_tb) == "typename" )
+    {
+	if ( TokenDataType *tdt =
+		resolve_declared_type_token(type_tb, true, true) )
+	    return &tdt->definition;
+    }
+
     if ( type_tb->type() == TokenType::ttDataType )
     {
 	// Template-id operand whose template name lexed as a datatype
