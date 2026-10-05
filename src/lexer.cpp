@@ -7115,12 +7115,16 @@ TokenBase *Program::_getToken()
 		    // print/php::/value identifiers there get the same
 		    // auto-include service the main file gets (suppressing both
 		    // is the residue that forced advent.mad to spell out its
-		    // includes). A quoted include that resolves INTO a system
-		    // path stays suppressed — classify by the resolved path,
-		    // not the spelling. User units are also RECORDED: the
-		    // auto-include prelude must insert before the first
+		    // includes). Classify by the resolved path, not the
+		    // spelling, both ways: a quoted include that resolves INTO
+		    // a system path stays suppressed, and an angle include
+		    // found in one of the program's own include directories
+		    // (-I, a manifest's include_dirs — madcide's installed
+		    // <madcide/harness>) is the program's code, as gcc reads a
+		    // -I header as the user's. User units are also RECORDED:
+		    // the auto-include prelude must insert before the first
 		    // user-code token, module or main.
-		    if ( is_system || is_system_header_path(full_path.c_str()) )
+		    if ( is_system_header_path(full_path.c_str()) )
 			suppress_auto_include_scan = true;
 		    else
 			auto_include_user_units.insert(intern_file(full_path));
