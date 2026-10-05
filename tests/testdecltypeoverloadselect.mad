@@ -1,0 +1,45 @@
+// An unevaluated call's type is the type of the specialization overload
+// resolution SELECTS ([temp.over]/1, [dcl.type.decltype]): `base_of(w)` with
+// `I base_of(I)` beside the more specialized `P base_of(wrap<P>)` is int *, in
+// a decltype and in a trailing return type alike — libstdc++'s
+// `__niter_base(reverse_iterator<_It>) -> decltype(__make_reverse_iterator(
+// __niter_base(__it.base())))`, which std::copy over reverse iterators reaches.
+// g++ 13.3 and clang++ 18.1 (-std=c++17) print the .expect lines.
+#include <cstdio>
+#include <vector>
+#include <algorithm>
+
+template<class I> I base_of(I i) { return i; }
+template<class P> struct wrap { P p; P base() const { return p; } };
+template<class P> P base_of(wrap<P> w) { return w.p; }
+
+template<class I> struct rev {
+	I cur;
+	rev(I c) : cur(c) {}
+	I base() const { return cur; }
+};
+template<class I> rev<I> make_rev(I i) { return rev<I>(i); }
+template<class I> auto base_of(rev<I> r) -> decltype(make_rev(base_of(r.base())))
+{
+	return make_rev(base_of(r.base()));
+}
+
+int main()
+{
+	int a[2] = { 4, 9 };
+	wrap<int *> w;
+	w.p = a + 1;
+	decltype(base_of(w)) dt = a;
+	printf("decltype: %d %d\n", *dt, *base_of(w));
+	rev<wrap<int *> > r(w);
+	auto b = base_of(r);
+	printf("trailing: %d\n", *b.base());
+	std::vector<int> v;
+	v.push_back(1);
+	v.push_back(2);
+	v.push_back(3);
+	int out[3];
+	std::copy(v.rbegin(), v.rend(), out);
+	printf("copy: %d %d %d\n", out[0], out[1], out[2]);
+	return 0;
+}

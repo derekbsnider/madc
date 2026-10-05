@@ -8515,6 +8515,11 @@ public:
     // A free/namespace function-template call's DECLARED return type (a
     // reference return as its DataDefREF), formed without an instantiation.
     DataDef *resolve_namespace_fn_template_call_return_type(TokenCallFunc *tc);
+    // An UNEVALUATED deduced call to a function-template overload SET: pin
+    // the call's return to the type of the specialization overload
+    // resolution selects (the evaluated lane's candidate order), formed
+    // without an instantiation. Returns whether it pinned one.
+    bool pin_unevaluated_fn_template_return(TokenCallFunc *tc);
     // Key-based core of the above: resolve a free/namespace function-template
     // call's return type from "ns::name" + the explicit type arguments. Called
     // by the TokenCallFunc entry AND recursively for a `decltype(inner_call)`
@@ -8524,10 +8529,15 @@ public:
     // return-only): the call's argument value types, paired positionally with
     // the candidate's parameter spellings — serves an unevaluated deduced call
     // (`decltype(addr(x))`) whose explicit-args list is empty.
+    // `ranked` (optional): the candidates to try, in order, in place of every
+    // template registered under `key`; `deduced` (optional, with a `ranked`
+    // of one): that candidate's binding as call deduction formed it.
     DataDef *resolve_fn_template_return_by_key(const std::string &key,
 				const std::vector<DataDef *> &explicit_args,
 				int depth,
-				const std::vector<DataDef *> *call_arg_types = NULL);
+				const std::vector<DataDef *> *call_arg_types = NULL,
+				const std::vector<FnTemplateDef *> *ranked = NULL,
+				const std::map<std::string, DataDef *> *deduced = NULL);
     // Resolve `decltype ( IDENT < targs > ( args ) )` (substituted tokens) by
     // recursing into IDENT's template return type in namespace `ns`. No emit.
     DataDef *resolve_decltype_call_return(const std::vector<TokenBase *> &sub,

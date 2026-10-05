@@ -32397,11 +32397,16 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	instantiate_member_fn_template_for_call(tc);
     }
 
+    // An unevaluated deduced call's specialization is selected here — the
+    // instantiation that selects for an evaluated call is suppressed above.
+    bool unevaluated_selected = unevaluated_operand_depth > 0
+			     && pin_unevaluated_fn_template_return(tc);
+
     // [temp.arg.explicit]: an explicit template argument FIXES its
     // parameter, while the identity-return inference deduces T from the
     // argument — so it serves a deduced call, and an explicit-argument call
     // only when the substituting lane below forms nothing.
-    if ( tc->explicit_template_args.empty() )
+    if ( tc->explicit_template_args.empty() && !unevaluated_selected )
 	apply_template_call_return_inference(tc);
     check_atomic_builtin_call(tc);
 
@@ -63365,6 +63370,8 @@ static bool free_operator_concrete_param_matches(Program &pgm,
 // it), empty where deduction formed the parameter from the argument.
 // `declared_params_out` (per argument): the parameter's declared spelling
 // either way — its reference declarator decides what the argument may bind.
+// `deduced_binding_out` (deduce_only): the binding deduction formed, by
+// template-parameter name.
 static bool try_instantiate_namespace_fn_template(Program &pgm,
 	Program::FnTemplateDef &ft, const std::string &key, TokenCallFunc *tc,
 	std::vector<DataDef *> *type_args_out = NULL,
@@ -63373,7 +63380,8 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
 	bool relaxed_concrete_class_params = false,
 	bool deduce_only = false,
 	std::vector<std::string> *concrete_params_out = NULL,
-	std::vector<std::string> *declared_params_out = NULL)
+	std::vector<std::string> *declared_params_out = NULL,
+	std::map<std::string, DataDef *> *deduced_binding_out = NULL)
 {
     InstTimer _it(pgm, pgm._inst_fn_count);	// --show-stats
     if ( type_args_out )
@@ -64075,7 +64083,11 @@ static bool try_instantiate_namespace_fn_template(Program &pgm,
     if ( pack_empty && binding.count(pack_param) )
 	{ FTPROBE("exit-53233"); return false; }
     if ( deduce_only )
+    {
+	if ( deduced_binding_out )
+	    *deduced_binding_out = binding;
 	return true;
+    }
 #ifdef MADC_DEBUG_CTORTMPL
     if ( getenv("MADC_DEBUG_CTORTMPL") && !tid_packs.empty() )
     {
@@ -66974,6 +66986,70 @@ static int best_deduced_fn_template(Program &pgm, TokenCallFunc *tc,
     return best;
 }
 
+// [temp.func.order]: a call's function-template candidates, most specialized
+// first, so a first-viable selection picks the most specialized overload that
+// deduces. Incomparable candidates keep registration order.
+static std::vector<Program::FnTemplateDef *> fn_templates_most_specialized_first(
+	Program &pgm, std::vector<Program::FnTemplateDef> &templates)
+{
+    std::vector<Program::FnTemplateDef *> order;
+    for ( size_t vi = 0; vi < templates.size(); ++vi )
+    {
+	Program::FnTemplateDef *cand = &templates[vi];
+	size_t pos = order.size();
+	for ( size_t j = 0; j < order.size(); ++j )
+	    if ( po_more_specialized(pgm, *cand, *order[j]) )
+	    { pos = j; break; }
+	order.insert(order.begin() + pos, cand);
+    }
+    return order;
+}
+
+// [temp.over]/1: every template whose deduction succeeds contributes its
+// specialization, and the best of them ([over.match.best]) is the one a call
+// takes — it is tried first. The rest keep `order` behind it, for a candidate
+// that fails past deduction (substitution, a missing default). `relaxed` is
+// the second viability pass (a concrete named-class parameter no deduction
+// touches stops vetoing). `viable_out` (optional), per returned entry: whether
+// its deduction succeeded.
+static std::vector<Program::FnTemplateDef *> fn_template_attempt_order(
+	Program &pgm, const std::vector<Program::FnTemplateDef *> &order,
+	const std::string &fn_key, TokenCallFunc *tc, bool relaxed,
+	std::vector<bool> *viable_out = NULL)
+{
+    std::vector<Program::FnTemplateDef *> attempt = order;
+    std::vector<bool> deduced(order.size(), false);
+    if ( order.size() > 1 || viable_out )
+    {
+	std::vector<std::vector<std::string> > concrete(order.size());
+	std::vector<std::vector<std::string> > declared(order.size());
+	std::vector<std::vector<std::string> > typeparams(order.size());
+	for ( size_t k = 0; k < order.size(); ++k )
+	{
+	    deduced[k] = try_instantiate_namespace_fn_template(pgm, *order[k],
+				fn_key, tc, NULL, NULL, NULL, relaxed,
+				true, &concrete[k], &declared[k]);
+	    typeparams[k] = order[k]->typeparams;
+	}
+	int b = order.size() > 1
+	      ? best_deduced_fn_template(pgm, tc, deduced, concrete,
+					 declared, typeparams)
+	      : -1;
+	if ( b > 0 )
+	    std::rotate(attempt.begin(), attempt.begin() + b,
+			attempt.begin() + b + 1);
+    }
+    if ( viable_out )
+    {
+	viable_out->assign(attempt.size(), false);
+	for ( size_t j = 0; j < attempt.size(); ++j )
+	    for ( size_t k = 0; k < order.size(); ++k )
+		if ( attempt[j] == order[k] )
+		    (*viable_out)[j] = deduced[k];
+    }
+    return attempt;
+}
+
 Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 {
     if ( !tc )
@@ -67001,19 +67077,8 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
 	tc->deduction.outcome = FnTemplateDeduction::Outcome::Deferred;
 	return NULL;
     }
-    // Order candidates most-specialized first ([temp.func.order]) so the
-    // first-viable selection below picks the most specialized overload that
-    // deduces. Incomparable candidates keep registration order.
-    std::vector<Program::FnTemplateDef *> order;
-    for ( size_t vi = 0; vi < mi->size(); ++vi )
-    {
-	Program::FnTemplateDef *cand = &(*mi)[vi];
-	size_t pos = order.size();
-	for ( size_t j = 0; j < order.size(); ++j )
-	    if ( po_more_specialized(*this, *cand, *order[j]) )
-	    { pos = j; break; }
-	order.insert(order.begin() + pos, cand);
-    }
+    std::vector<Program::FnTemplateDef *> order =
+	fn_templates_most_specialized_first(*this, *mi);
     Variable *inst = NULL;
     // Two viability passes, the member-template lane's rule
     // (instantiate_member_fn_template_for_call): STRICT over every
@@ -67023,31 +67088,8 @@ Variable *Program::instantiate_namespace_fn_template_for_call(TokenCallFunc *tc)
     // `f(T, N)` called as `f(t, 2)` with `N(int)`).
     for ( int relax_pass = 0; relax_pass < 2; ++relax_pass )
     {
-    // [temp.over]/1: every template whose deduction succeeds contributes its
-    // specialization, and the best of them ([over.match.best]) is the one
-    // instantiated — it is tried first. The rest keep the most-specialized
-    // order behind it, for a candidate that fails past deduction
-    // (substitution, a missing default).
-    std::vector<Program::FnTemplateDef *> attempt = order;
-    if ( order.size() > 1 )
-    {
-	std::vector<bool> deduced(order.size(), false);
-	std::vector<std::vector<std::string> > concrete(order.size());
-	std::vector<std::vector<std::string> > declared(order.size());
-	std::vector<std::vector<std::string> > typeparams(order.size());
-	for ( size_t k = 0; k < order.size(); ++k )
-	{
-	    deduced[k] = try_instantiate_namespace_fn_template(*this, *order[k],
-				fn_key, tc, NULL, NULL, NULL, relax_pass != 0,
-				true, &concrete[k], &declared[k]);
-	    typeparams[k] = order[k]->typeparams;
-	}
-	int b = best_deduced_fn_template(*this, tc, deduced, concrete,
-					 declared, typeparams);
-	if ( b > 0 )
-	    std::rotate(attempt.begin(), attempt.begin() + b,
-			attempt.begin() + b + 1);
-    }
+    std::vector<Program::FnTemplateDef *> attempt =
+	fn_template_attempt_order(*this, order, fn_key, tc, relax_pass != 0);
     for ( Program::FnTemplateDef *cand : attempt )
 	if ( try_instantiate_namespace_fn_template(*this, *cand, fn_key, tc,
 						   NULL, NULL, &inst,
@@ -69025,6 +69067,81 @@ DataDef *Program::resolve_namespace_fn_template_call_return_type(
 					     0);
 }
 
+// [temp.over]/1, [over.match.best]: a call's type is the type of the
+// specialization overload resolution SELECTS, evaluated or not — an
+// unevaluated operand ([dcl.type.decltype]) forms the call without
+// instantiating a definition. An evaluated call selects in
+// instantiate_namespace_fn_template_for_call, which an unevaluated one skips,
+// and the identity-return inference reads the parse-bound placeholder, ONE
+// overload of the set (`I f(I)` beside `P f(wrap<P>)`: libstdc++'s
+// `decltype(__niter_base(it))` typed the generic overload's `_Iterator`). So
+// the selection is made here in the evaluated lane's order, and the best
+// viable candidate's return is formed alone — never a lesser candidate's. A
+// single template, a deferred (dependent) call, or a return this lane cannot
+// form pins nothing: the inference and the registration-order resolver answer,
+// as before.
+bool Program::pin_unevaluated_fn_template_return(TokenCallFunc *tc)
+{
+    FuncDef *fd = tc ? dynamic_cast<FuncDef *>(tc->var.type) : NULL;
+    if ( !fd || fd->function_display_name.empty() || tc->parameters.empty()
+      || !tc->explicit_template_args.empty() )
+	return false;
+    if ( fn_template_deduction_deferred(*this, tc) )
+	return false;
+    std::string key = fd->namespace_name + "::" + fd->function_display_name;
+    std::vector<FnTemplateDef> *mi = thawed_fn_templates(key);
+    // Env-gated probe (MADC_DT_PROBE, the decltype family): the selection's
+    // candidate count — a set of one, or none, is not this lane's.
+    static const char *dtp = ::getenv("MADC_DT_PROBE");
+    if ( dtp && *dtp )
+	fprintf(stderr, "[dtprobe] uneval-select key=%s templates=%zu\n",
+		key.c_str(), mi == fn_template_map.end() ? (size_t)0 : mi->size());
+    if ( mi == fn_template_map.end() || mi->size() < 2 )
+	return false;
+    std::vector<FnTemplateDef *> order =
+	fn_templates_most_specialized_first(*this, *mi);
+    FnTemplateDef *best = NULL;
+    bool best_relaxed = false;
+    for ( int relax_pass = 0; relax_pass < 2 && !best; ++relax_pass )
+    {
+	std::vector<bool> viable;
+	std::vector<FnTemplateDef *> attempt =
+	    fn_template_attempt_order(*this, order, key, tc, relax_pass != 0,
+				      &viable);
+	for ( size_t k = 0; k < attempt.size() && !best; ++k )
+	    if ( viable[k] )
+	    {
+		best = attempt[k];
+		best_relaxed = relax_pass != 0;
+	    }
+    }
+    if ( !best )
+	return false;
+    // Its binding as the evaluated lane's deduction forms it (template-id
+    // parameters included — `wrap<P>` against `wrap<int *>`).
+    std::map<std::string, DataDef *> deduced;
+    if ( !try_instantiate_namespace_fn_template(*this, *best, key, tc, NULL,
+			NULL, NULL, best_relaxed, true, NULL, NULL, &deduced) )
+	return false;
+    std::vector<DataDef *> arg_types;
+    arg_types.reserve(tc->parameters.size());
+    for ( TokenBase *p : tc->parameters )
+	arg_types.push_back(p ? operand_value_datadef(p) : NULL);
+    std::vector<FnTemplateDef *> selected(1, best);
+    DataDef *rt = resolve_fn_template_return_by_key(key, std::vector<DataDef *>(),
+						    0, &arg_types, &selected,
+						    &deduced);
+    if ( dtp && *dtp )
+	fprintf(stderr, "[dtprobe] uneval-select key=%s best=#%d -> %s\n",
+		key.c_str(), (int)(best - &(*mi)[0]),
+		rt ? rt->name.c_str() : "(not formed)");
+    if ( !rt || rt == &ddAUTO )
+	return false;
+    tc->return_override = rt;
+    tc->setDataType(rt);
+    return true;
+}
+
 // Core of resolve_namespace_fn_template_call_return_type: resolve "ns::name" +
 // the explicit type args to the template's return DataDef. Called both by the
 // TokenCallFunc entry above AND recursively for a `decltype(inner_call)` return
@@ -69033,7 +69150,9 @@ DataDef *Program::resolve_fn_template_return_by_key(
 		const std::string &key,
 		const std::vector<DataDef *> &explicit_args,
 		int depth,
-		const std::vector<DataDef *> *call_arg_types)
+		const std::vector<DataDef *> *call_arg_types,
+		const std::vector<FnTemplateDef *> *ranked,
+		const std::map<std::string, DataDef *> *deduced)
 {
     bool have_arg_types = call_arg_types && !call_arg_types->empty();
     if ( depth > 8 || (explicit_args.empty() && !have_arg_types) )
@@ -69055,8 +69174,12 @@ DataDef *Program::resolve_fn_template_return_by_key(
     if ( !in_flight.inserted )
 	return NULL;
     // Candidates: body-bearing (fn_template_map) AND body-less (fn_template_decl_map)
-    // free templates of this name — declval and friends are body-less.
+    // free templates of this name — declval and friends are body-less — unless
+    // the caller ranked them.
     std::vector<FnTemplateDef *> cands;
+    if ( ranked )
+	cands = *ranked;
+    else
     {
 	std::vector<FnTemplateDef> *mi =
 	    thawed_fn_templates(key);
@@ -69072,7 +69195,7 @@ DataDef *Program::resolve_fn_template_return_by_key(
     // transitively (`std::__1::__declval`, where libc++ actually declares
     // it). Same walk find_template_alias's qualified branch does over its
     // own registry; each registry owns its copy today.
-    if ( cands.empty() )
+    if ( cands.empty() && !ranked )
     {
 	size_t sep = key.rfind("::");
 	if ( sep != std::string::npos )
@@ -69237,7 +69360,9 @@ DataDef *Program::resolve_fn_template_return_by_key(
 	// return_override and broke ref-binding of std::get results in the piecewise
 	// pair ctor (map<K,string>::operator[]). Skip such a kind-mismatched candidate
 	// so the viable by-INDEX overload (or full instantiation) supplies the type.
-	std::map<std::string, DataDef *> binding;
+	// A caller-selected candidate starts from the binding call deduction formed.
+	std::map<std::string, DataDef *> binding =
+	    deduced ? *deduced : std::map<std::string, DataDef *>();
 	std::vector<DataDef *> pack_elems;
 	bool kind_mismatch = false;
 	for ( size_t i = 0; i < explicit_args.size(); ++i )
