@@ -1,14 +1,16 @@
 // The session interrupt (D8, plan docs/plans/madc-repl-thonny-plan-2026-09-24.md
 // §41.12a; Thonny's Run ▸ Interrupt, Julia's and IPython's Ctrl-C): an entry
-// that never ends returns to the prompt at its loop's next back-edge, its
+// that never ends returns to the prompt at its loop's next iteration, its
 // reply carrying the runtime diagnostic `interrupted`, and the session keeps
 // what earlier entries made. Every user loop polls — `while`, `for` with a
 // `continue`, `do` — the session's code alone (a session Program's loop body
 // starts with __madc_session_poll). An interrupt while no entry runs does
 // nothing. A wait the entry's loops cannot poll (a read with no input) takes
 // the SECOND interrupt's default: the backend ends and a fresh one starts.
-// A C++ template's loop polls as well (its pattern's tree is copied per
-// instantiation; a body of one call kept the poll's call apart from it).
+// An interrupt that reaches the backend while it still compiles the entry
+// waits for the entry's first poll. A C++ template's loop polls as well
+// (its pattern's tree is copied per instantiation; a body of one call kept
+// the poll's call apart from it).
 // Precedent (plan D8): Julia's and IPython's Ctrl-C returns to the prompt
 // with the session's names kept.
 
@@ -28,20 +30,28 @@ long wait_for(var &r, long h, madc::session_reply kind)
     return 0;
 }
 
-// Offer an entry that runs until interrupted: wait for it to run, let it
-// spin, interrupt it, and report its answer.
-void interrupt_entry(long h, const char *label, const char *text)
+// Offer an entry that runs until interrupted: wait for it to be taken, let
+// it spin `spin_ms`, interrupt it, and report its answer. With no spin the
+// interrupt reaches the backend while it still compiles the entry (the
+// running notice comes before the compile).
+void interrupt_after(long h, const char *label, const char *text, long spin_ms)
 {
     var r;
     madc::session_offer(h, text, true);
     wait_for(r, h, madc::session_reply::running);
-    madc::sleep_ms(50);
+    if ( spin_ms > 0 )
+	madc::sleep_ms(spin_ms);
     bool sent = madc::session_interrupt(h);
     wait_for(r, h, madc::session_reply::offer);
     var said = r["rendered"];
     println("{}: sent={} kind-offer={} ok={} interrupted={}", label, sent,
 	    r["kind"] == madc::session_reply::offer, r["ok"],
 	    said.index("interrupted") >= 0);
+}
+
+void interrupt_entry(long h, const char *label, const char *text)
+{
+    interrupt_after(h, label, text, 50);
 }
 
 // An entry's shown value.
@@ -112,6 +122,13 @@ int main()
     wait_for(r, hx, madc::session_reply::offer);
     println("template defined: ok={}", r["ok"]);
     interrupt_entry(hx, "template", "spin_t();");
+    show(hx, "m > 0");
+    // Interrupted at once, while the backend compiles the entry (std::map's
+    // members instantiate): the interrupt waits for the entry's first poll.
+    madc::session_offer(hx, "#include <map>", true);
+    wait_for(r, hx, madc::session_reply::offer);
+    interrupt_after(hx, "while compiling",
+		    "{ std::map<long, long> mm; for (long i = 0; ; i++) mm[i % 7] = i; }", 0);
     show(hx, "m > 0");
     println("close c++: {}", madc::session_close(hx));
     return 0;

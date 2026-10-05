@@ -58,6 +58,7 @@
 #include "madc_session_client.h"
 #include "madcdis/process.h"
 #include "madc_session_interrupt.h"	// D8: the interrupt between processes
+#include "madc_cir.h"		// madc_session_interrupt_reset
 #include "madcdis/world_text.h"	// wt_value_to_json / wt_json_to_value
 #include "rt/rt_task.h"		// __madc_task_atfork_child
 #include "madc_task_io.h"	// taskio::handle_closing, taskio::poll_readable
@@ -291,6 +292,9 @@ int serve_session(madc::DataChannel &wire, std::unique_ptr<Program> prog,
 	if ( req.is_discarded() || !req.is_object() )
 	    continue;
 	const Op op = op_of(req.value("op", std::string()));
+	// An interrupt from before this request (one sent while the backend
+	// waited) is none; one from here on waits for the entry's first poll.
+	madc_session_interrupt_reset();
 	err.str(std::string());
 	err.clear();
 	nlohmann::json rep;

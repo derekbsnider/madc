@@ -3362,8 +3362,10 @@ program's input short of Stop.
   a deep recursion with no loop) cannot return to the prompt: a SECOND
   interrupt while the first is still pending takes the default action, the
   backend ends, and the client starts a fresh one (D8's second clause).
-- The pending flag: a `volatile sig_atomic_t`, cleared when a boundary arms (an
-  interrupt while idle does nothing). POSIX: the backend's SIGINT handler sets
+- The pending flag: a `volatile sig_atomic_t`, cleared when the backend takes
+  up each request (`madc_session_interrupt_reset`): an interrupt while idle
+  does nothing, and one that arrives while the entry is still compiling (the
+  running notice comes before the compile) waits for its first poll. POSIX: the backend's SIGINT handler sets
   it (the second one restores SIG_DFL and re-raises); the client's
   `session_interrupt` sends SIGINT to the backend's pid, and a terminal's
   Ctrl-C reaches it already (the CLI host ignores SIGINT while an entry runs).

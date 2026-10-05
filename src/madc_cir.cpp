@@ -1719,8 +1719,10 @@ extern "C" void *__madc_session_unbound(const char *sym)
 
 // The interrupt (D8, plan madc-repl-thonny §41.12a). Pending is set by a
 // SIGINT handler or the Windows watcher thread (madc_session_interrupt_raise)
-// and read by the entry's own polls; the outermost boundary clears it as it
-// arms, so an interrupt while no entry runs does nothing.
+// and read by the entry's own polls. The backend clears it as it takes up
+// each request (madc_session_interrupt_reset), so an interrupt while no entry
+// runs does nothing, and one that arrives while the entry is still being
+// compiled waits for its first poll.
 static volatile sig_atomic_t cir_interrupt_pending = 0;
 
 bool madc_session_interrupt_raise()
@@ -1731,8 +1733,14 @@ bool madc_session_interrupt_raise()
     return false;
 }
 
-// The poll a session Program's loops make at every back-edge (the builder's
-// loop_poll_condition). With an interrupt pending and a boundary armed on
+void madc_session_interrupt_reset()
+{
+    cir_interrupt_pending = 0;
+}
+
+// The poll a session Program's loops make once per iteration (the first
+// statement of each user loop's body, CirBuilder::translate_loop_body). With
+// an interrupt pending and a boundary armed on
 // this task, the entry returns to its boundary as an undefined reference
 // does: the runtime diagnostic recorded, no C++ exception, so no script `try`
 // keeps it. A task the entry spawned keeps running; the entry's own next poll
@@ -1851,8 +1859,6 @@ static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
 	return false;
     __madc_except_state_save(b.except_state);
     b.outer = cir_entry_boundary;
-    if (!b.outer)
-	cir_interrupt_pending = 0;	// one from before this entry: none
 
     if (setjmp(b.jb)) {
 	__madc_cleanup_unwind_to(b.cleanup_mark);

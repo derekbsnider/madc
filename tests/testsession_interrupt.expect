@@ -14,3 +14,4 @@ template defined: ok=true
 template: sent=true kind-offer=true ok=false interrupted=true
 m > 0 -> ok=true shown=true
 close c++: true
+while compiling: sent=true kind-offer=true ok=false interrupted=true

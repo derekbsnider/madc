@@ -84,12 +84,16 @@ extern bool madc_no_eval_shims;
 
 // The session's interrupt (D8, plan madc-repl-thonny §41.12a): mark one
 // pending. The entry running at a session boundary returns to it at its next
-// loop back-edge (__madc_session_poll), its state kept. True = one was
+// loop iteration (__madc_session_poll), its state kept. True = one was
 // already pending — the entry has polled none since, so the caller takes the
 // second interrupt's default (the backend ends; the client starts a fresh
 // one). Async-signal-safe: a SIGINT handler and the Windows watcher thread
 // call it.
 bool madc_session_interrupt_raise();
+// The backend takes up its next request: an interrupt pending from before it
+// is none. One raised after it waits for the entry's first poll, however
+// long the entry takes to compile.
+void madc_session_interrupt_reset();
 
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
