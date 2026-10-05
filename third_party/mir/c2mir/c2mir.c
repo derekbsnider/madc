@@ -12162,7 +12162,13 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     node_t last_stmt = NL_TAIL (NL_EL (block->u.ops, 1)->u.ops);
     check (c2m_ctx, block, r);
     if (!last_stmt || last_stmt->code != N_EXPR) {
-      error (c2m_ctx, POS (r), "last statement in statement expression is not an expression");
+      /* GNU: when the last thing in the braces is not an expression, the
+         construct has type void and no value -- glibc's GNU-C assert is
+         `((void) sizeof ((expr) ? 1 : 0), __extension__ ({ if (expr) ; else
+         __assert_fail (...); }))`. */
+      e = create_expr (c2m_ctx, r);
+      *e->type = VOID_TYPE;
+      e->def_node = last_stmt;
       break;
     }
     node_t expr = NL_EL (last_stmt->u.ops, 1);

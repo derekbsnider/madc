@@ -27,6 +27,11 @@
 # cleanup-prefix-attr.c and cleanup-return.c — madc read the attribute and
 # dropped it; the declaration now carries c2mir's own cleanup attribute.
 #
+# SHRUNK 2026-10-05 (seven) by c2mir typing a statement expression whose last
+# statement is not an expression as void (GNU), instead of refusing it:
+# new/issue186-1.c, issue189.c, issue197.c, issue198.c, issue199.c,
+# issue202.c and stmt-exprs.c.
+#
 # The `new/` failures are MIR's own regression tests and are the best
 # available reducers for the C constructs madc still cannot compile in
 # c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
@@ -57,12 +62,6 @@ lacc/typedef.c
 new/add-issue211.c
 new/empty-asm.c
 new/int_min.c
-new/issue186-1.c
-new/issue189.c
-new/issue197.c
-new/issue198.c
-new/issue199.c
-new/issue202.c
 new/issue211.c
 new/issue241.c
 new/issue253.c
@@ -71,7 +70,6 @@ new/propcond-5.c
 new/propcond-6.c
 new/propcond-7.c
 new/ssa-ccp.c
-new/stmt-exprs.c
 new/typedef.c
 new/vector-size.c
 new/weak-linkonce.c

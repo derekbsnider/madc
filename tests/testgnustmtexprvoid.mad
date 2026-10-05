@@ -1,0 +1,24 @@
+// A GNU statement expression whose last statement is not an expression has
+// type void and no value. glibc's <assert.h> in GNU C (no __STRICT_ANSI__)
+// expands assert(e) to `((void) sizeof ((e) ? 1 : 0), __extension__ ({ if (e)
+// ; else __assert_fail (...); }))` — such a construct as a comma operand. c2mir
+// refused it ("last statement in statement expression is not an expression"),
+// so every assert failed to compile under -std=gnu11 / gnu17.
+// Oracle: gcc 13.3 and clang 18.1 (-std=gnu17) print exactly the .expect lines.
+#include <assert.h>
+#include <stdio.h>
+
+static int calls;
+static void bump(void) { calls++; }
+
+int main(void)
+{
+	int x = 1;
+	assert(x == 1);
+	int r = 0;
+	(void)(r = 1, ({ if (r) bump(); else r = 7; }));
+	({ for (int i = 0; i < 3; i++) bump(); });
+	(void)({ int k = 2; while (k--) bump(); });
+	printf("assert: ok r=%d calls=%d\n", r, calls);
+	return 0;
+}
