@@ -38,6 +38,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <deque>
 #include <fstream>
 #include <map>
@@ -151,6 +152,11 @@ namespace ui {
 				// enters, 0 leaves, -1 toggles its current
 				// state; 0 = done; nonzero = not here;
 				// optional
+	const char *identity;	// the host's name for itself (a host
+				// fragment's header name, "ns_ui_web"): two
+				// registrations stating one identity are one
+				// host, from whichever image; NULL = none
+				// (the entries say it); optional
     };
 }
 
@@ -1779,6 +1785,19 @@ void page_html(madc::value &out)
     out = madc::value(ui_dom_frontend::page_html());
 }
 
+// Two registrations of one name are the same host when they state the same
+// identity, or, when the host states none, hold the same entries. Entries
+// identify a host only inside one image: a library and the program that
+// links it are two images, each with its own copy of a host fragment's
+// functions (g++ and clang++ give the same two copies without -rdynamic), so
+// their tables differ though the host is one.
+static bool same_host(const ui_host_ops &a, const ui_host_ops &b)
+{
+    if ( a.identity && a.identity[0] && b.identity )
+	return strcmp(a.identity, b.identity) == 0;
+    return memcmp(&a, &b, sizeof a) == 0;
+}
+
 bool register_host(const char *target, ui::level lvl, const ui_host_ops *ops)
 {
     std::string name = target ? target : "";
@@ -1797,11 +1816,10 @@ bool register_host(const char *target, ui::level lvl, const ui_host_ops *ops)
     // The same host registered again is already served: each unit of a
     // multi-unit program that names its level runs the host fragment's
     // initializer (<ns_ui_web>'s, the <iostream> ios_base::Init shape), and
-    // the program links one copy of the host's functions, so every copy's
-    // table holds the same entries. Another host under a taken name is
-    // refused.
+    // so does each image — a library the program links (libmadcide) names
+    // the level too. Another host under a taken name is refused.
     if ( const ui_host_reg *had = ui_host_named(name) )
-	if ( had->level == lvl && memcmp(had->ops, ops, sizeof *ops) == 0 )
+	if ( had->level == lvl && same_host(*had->ops, *ops) )
 	    return true;
     if ( name == "term" || ui_host_named(name) )
     {

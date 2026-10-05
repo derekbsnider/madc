@@ -498,14 +498,16 @@ namespace ui {
 	ui_host_clip_get_fn clip_get;
 	ui_host_title_fn title;
 	ui_host_fullscreen_fn fullscreen;
+	const char *identity;	// the host's name for itself; NULL = none
     };
     // A host registers under a target name AND declares the UI level it
     // serves (ui::WEB for a page in a webview); open(level) picks the first
     // registered host of that level. False + stderr: no name, no table,
     // no level (ui::NONE), or a name another host holds. The same host
-    // registered again (the same level and the same entries: each unit of a
-    // program that names the level runs its fragment's initializer) is
-    // accepted, with nothing said.
+    // registered again (the same level, and the same `identity` — or, a host
+    // that states none, the same entries: each unit and each image of a
+    // program that names the level runs its fragment's initializer, and
+    // entries differ between images) is accepted, with nothing said.
     bool register_host(const char *target, level lvl, const ui_host_ops *ops);
     // The engine's ONE embedded web page (page.js + page.css): a ws serve
     // seat sends this to a browser over HTTP so page.js connects the socket

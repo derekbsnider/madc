@@ -89,6 +89,7 @@ namespace ui_ws {
 // — so the application keeps its own copy (plan §41.11a step 3e); the
 // browser's own full screen is the browser's (F11).
 static ui::ui_host_ops __ui_ws_ops = {
-    ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0, 0, 0
+    ui_ws::open, ui_ws::close, ui_ws::eval, ui_ws::run, 0, 0, 0, 0, 0, 0, 0,
+    "ns_ui_ws"
 };
 static bool __ui_ws_registered = ui::register_host("ws", ui::WEB, &__ui_ws_ops);

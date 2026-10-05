@@ -340,5 +340,7 @@ namespace ui_web {
 
 }
 
-static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick, ui_web::clip_set, ui_web::clip_get, ui_web::title, ui_web::fullscreen };
+// The identity is this fragment's: a library and the program that links it
+// (libmadcide and chthonia) each register their own copy of the host.
+static ui::ui_host_ops __ui_web_ops = { ui_web::open, ui_web::close, ui_web::eval, ui_web::run, ui_web::menu, ui_web::dialog, ui_web::tick, ui_web::clip_set, ui_web::clip_get, ui_web::title, ui_web::fullscreen, "ns_ui_web" };
 static bool __ui_web_registered = ui::register_host("web", ui::WEB, &__ui_web_ops);
