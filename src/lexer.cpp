@@ -7201,6 +7201,7 @@ TokenBase *Program::_getToken()
 			ReadTimer _rt(_read_seconds);
 			_input_bytes += include_text.size();	// --show-stats: header bytes
 			source.str(include_text);
+			source_phase_one();
 		    }
 		    TokenBase *itb;
 		    if ( !protocol_visit )
@@ -10936,6 +10937,7 @@ TokenProgram *Program::tokenize(const char *fname)
 	if ( file.tellg() > 0 ) _input_bytes += (size_t)file.tellg();
 	file.seekg(0);
 	source.copybuf(file.rdbuf());
+	source_phase_one();
     }
     pack_note_unit(pack_recording ? intern_file(fname) : NULL);	// B4a: main unit first
     Throw.source(source);
@@ -11006,7 +11008,7 @@ bool Program::lex_unit_text(const char *fname, const std::string &text)
 {
     forest_root_file = fname;	// v24 (see tokenize)
     source.fname(fname);
-    { ReadTimer _rt(_read_seconds); source.start_unit(text); }
+    { ReadTimer _rt(_read_seconds); source.start_unit(text); source_phase_one(); }
     _input_bytes += text.size();	// --show-stats: load_buffer main-source bytes
     pack_note_unit(pack_recording ? fname : NULL);	// B4a: main unit first
     Throw.source(source);

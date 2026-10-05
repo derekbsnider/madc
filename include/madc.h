@@ -2611,6 +2611,33 @@ public:
 	}
 	return (unsigned char)_buf[_gpos];
     }
+    // C11 5.1.1.2p1 phase 1 (5.2.1.1): the nine trigraph sequences, replaced
+    // in the loaded text before phase 2's splices read it (`??/` then a
+    // new-line is a splice). The ONE trigraph rule; Program::
+    // trigraphs_active() says when it applies, right after a load. A column
+    // after a trigraph on its line counts the replaced text.
+    void replace_trigraphs()
+    {
+	size_t first = _buf.find("??");
+	if ( first == std::string::npos )
+	    return;
+	static const char from[] = "=(/)'<!>-";
+	static const char to[] = "#[\\]^{|}~";
+	std::string out(_buf, 0, first);
+	out.reserve(_buf.size());
+	for ( size_t i = first; i < _buf.size(); )
+	{
+	    if ( _buf[i] == '?' && i + 2 < _buf.size() && _buf[i + 1] == '?' && _buf[i + 2] )
+		if ( const char *f = strchr(from, _buf[i + 2]) )
+		{
+		    out += to[f - from];
+		    i += 3;
+		    continue;
+		}
+	    out += _buf[i++];
+	}
+	_buf.swap(out);
+    }
     // A C line splice at `pos` (C11 5.1.1.2p1 phase 2): a backslash, then
     // optional spaces/tabs (the gcc/clang extension), then a new-line (\n,
     // \r, or \r\n). Its length in the buffer, 0 when none begins there. The
@@ -6165,6 +6192,17 @@ public:
     bool range_for_enabled() const
     { return language_std == STD_MADC || (is_cpp_mode() && language_std >= STD_CPP11); }
     bool is_cpp_mode() const { return language_std >= STD_CPP98 && language_std <= STD_CPP26; }
+    // Trigraphs (C11 5.2.1.1; C++ until C++17 removed them) are replaced in
+    // the ISO dialects only — gcc's -std=c89 … c17 and c++98 … c++14. A GNU
+    // dialect, C23, C++17 on and the madc dialect read `??=` as written.
+    bool trigraphs_active() const
+    {
+	return !gnu_dialect
+	    && ((language_std >= STD_C89 && language_std <= STD_C17)
+	     || (language_std >= STD_CPP98 && language_std <= STD_CPP14));
+    }
+    // Phase 1 over the text just loaded into `source` (Source::replace_trigraphs).
+    void source_phase_one() { if ( trigraphs_active() ) source.replace_trigraphs(); }
     // gcc parity for C modes: -std=cNN defines __STRICT_ANSI__, -std=gnuNN
     // (gcc's default dialect) does not — real glibc headers branch on it
     // (features.h suppresses _DEFAULT_SOURCE under strict ANSI, hiding
