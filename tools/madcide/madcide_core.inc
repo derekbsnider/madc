@@ -78,6 +78,10 @@ class IdeSession
 					// the client to open a frontend on;
 					// 0 = the profile + rescue both failed
 	bool apply_ide_event(long doc, var &ev);	// false = quit
+	bool lens_put(long doc, var &ev, long side);	// an edit
+					// through a concealing lens: the
+					// event on the stored text, the
+					// lens re-rendered (plan §7d)
 	void pointer_event(long doc, long nav, var &ev);	// the pointer
 					// arm: the hit node's window tag
 					// (else its subject) picks the
@@ -3693,12 +3697,15 @@ bool lens_render(var &shown, var &vmap, var &vrows, var &t, var &p, long lang)
     return true;
 }
 
-// Re-represent the focused View as a lens in `lang`: a code View of the
-// emitter's render (madc::fkMC11 / fkC11 / fkCPP), or the formatted view of
-// a Markdown buffer (madc::fkMARKDOWN, a concealing lens). False = the
-// buffer does not render that way (a compiler render surfaces the
+// Show the focused View as a lens in `lang`: a code View of the emitter's
+// render (madc::fkMC11 / fkC11 / fkCPP), or the formatted view of a
+// Markdown buffer (madc::fkMARKDOWN, a concealing lens). From the source
+// View it parks the stored caret; over a lens (a cycle step) the parked one
+// stays. A concealing lens's display caret is the stored caret projected —
+// on entry, and again after each edit put through it (lens_put). False =
+// the buffer does not render that way (a compiler render surfaces the
 // compiler's own rows; the View is unchanged).
-bool enter_lens(long w, long es, long doc, long lang)
+bool lens_show(long w, long es, long doc, long lang)
 {
     var t;
     ui::text(t, w, doc);
@@ -3770,10 +3777,41 @@ bool enter_lens(long w, long es, long doc, long lang)
     ui::set(w, es, "caret", dcaret < 0 ? 0 : dcaret);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
+    // the display itself takes no edit: a compiler render is read-only, and
+    // a concealing lens takes its edits through the stored text (lens_put)
+    // — an event that reaches the display unclassified is refused, never
+    // written into the render
     ui::set(w, es, "editable", false);
-    ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
+    if ( lens_conceals(lang) )
+	ui::set(w, es, "ro_msg", "That command does not edit through the formatted view (^K A returns).");
+    else
+	ui::set(w, es, "ro_msg", "Read-only view (^K A returns).");
+    return true;
+}
+
+// Re-represent the focused View as a lens in `lang` (lens_show), saying so.
+bool enter_lens(long w, long es, long doc, long lang)
+{
+    if ( !lens_show(w, es, doc, lang) )
+	return false;
+    var lname;
+    lens_lang_name(lname, lang);
     ui::set(w, es, "msg", format("View: {}", lname));
     return true;
+}
+
+// A View row back on its subject's own text and kind (no render, no map),
+// stored.
+void view_row_source(long w, long es, var &v)
+{
+    long subject = v["subject"].as_integer();
+    v["kind"] = viewSOURCE;
+    v["lang"] = doc_kind(w, subject);
+    v["generator"] = genNONE;
+    v["vbuf"] = subject;
+    var nomap = {};
+    v["map"] = nomap;
+    view_store(w, es, v);
 }
 
 // Back to the source View: the row's representation returns to the
@@ -3798,19 +3836,181 @@ void exit_lens(long w, long es, long doc)
 	    if ( s >= 0 )
 		back = s;
 	}
-	long subject = v["subject"].as_integer();
-	v["kind"] = viewSOURCE;
-	v["lang"] = doc_kind(w, subject);
-	v["generator"] = genNONE;
-	v["vbuf"] = subject;
-	var nomap = {};
-	v["map"] = nomap;
-	view_store(w, es, v);
+	view_row_source(w, es, v);
     }
     ui::set(w, es, "caret", back);
     ui::set(w, es, "mark", -1);
     ui::set(w, es, "bend", -1);
     derive_access(w, es);	// the file's own verdict returns
+}
+
+// ---- the concealing lens's put (plan 2026-10-03 §7d, slice 2) ----------
+// An edit through the formatted view runs on the STORED text: the caret and
+// block project to stored offsets on the side the edit needs (lens_side),
+// the View steps aside to its source for the one event — the ordinary
+// dispatcher, its history and its change log, unchanged — and the lens
+// re-renders over the result with the caret projected back. Undo and the
+// change log stay in stored offsets: the lens holds no history of its own.
+
+// Does `ev` change the text, and on which side of a concealed run?
+long edit_event_side(var &ev)
+{
+    var kind = ev["event_code"];
+    if ( kind == ui::event_kind::text )
+	return lsBEFORE;
+    if ( kind == ui::event_kind::key )
+    {
+	var k = ev["key_code"];
+	return key_edit_side(k);
+    }
+    if ( kind == ui::event_kind::action )
+    {
+	long code = ev_code(ev);
+	ui::key mk = motion_key_of(code);
+	if ( mk != ui::key::none )
+	{
+	    var kv = mk;
+	    return key_edit_side(kv);
+	}
+	return cmd_edit_side(code);
+    }
+    return lsNONE;
+}
+
+// Is the focused View a concealing lens (lens_name: the one lens-up rule)?
+bool focused_lens_conceals(long w, long es)
+{
+    var nm;
+    if ( !lens_name(nm, w, es) )
+	return false;
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    return lens_conceals(v["lang"].as_integer());
+}
+
+// A display offset's stored position on the side an edit needs.
+long lens_put_point(var &map, long d, bool after)
+{
+    if ( after )
+	return ui::lens_to_stored_after(map, d);
+    return ui::lens_to_stored(map, d);
+}
+
+// The change log's newest seq (0 = no log yet): where an event's own
+// splices begin.
+long clog_head(long w)
+{
+    long le = clog_find(w);
+    return le > 0 ? es_int(w, le, "seq", 0) : 0;
+}
+
+// After an edit put through a Markdown lens: what it deleted, repaired
+// (md_put_repair) as one more splice in the same undo step. The edit's own
+// splices are the change log's records of `doc` after `seq0` — exact, never
+// a guess from the texts' difference. A repair applies to one deletion,
+// alone or replaced at the same place (typing over a block); any other
+// shape (an insertion, the line edits' many splices) deleted no visible
+// text to repair.
+void lens_put_repair(long w, long es, long doc, var &before, long seq0)
+{
+    long le = clog_find(w);
+    if ( le <= 0 )
+	return;
+    var recs;
+    clog_records(recs, w, le);
+    var mine = {};
+    for ( var rec : recs )
+	if ( rec["seq"].as_integer() > seq0 && rec["doc"].as_integer() == doc
+	  && clog_kind_of(rec) == ckSPLICE )
+	    mine[] = rec;
+    long n = php::count(mine);
+    if ( n < 1 || n > 2 )
+	return;
+    long p = mine[0]["at"].as_integer();
+    long e = p + mine[0]["del"].as_integer();
+    var ins = mine[0]["ins"];
+    if ( n == 2 )
+    {
+	// a deletion, then what replaced it, at the same place
+	if ( strlen(ins.c_str()) > 0 || mine[1]["del"].as_integer() != 0
+	  || mine[1]["at"].as_integer() != p )
+	    return;
+	ins = mine[1]["ins"];
+    }
+    if ( e <= p )
+	return;			// nothing deleted
+    var fixed;
+    long fcaret = 0;
+    if ( !md_put_repair(fixed, fcaret, before, p, e, ins) )
+	return;
+    // the repaired text over the edited one: one more splice
+    var after;
+    ui::text(after, w, doc);
+    long na = strlen(after.c_str());
+    long nf = strlen(fixed.c_str());
+    long r = 0;
+    long t = 0;
+    {
+	const char *a = after.c_str();
+	const char *f = fixed.c_str();
+	while ( r < na && r < nf && a[r] == f[r] )
+	    r = r + 1;
+	while ( t < na - r && t < nf - r && a[na - 1 - t] == f[nf - 1 - t] )
+	    t = t + 1;
+    }
+    if ( na - t > r )
+	ed_text_erase(w, es, doc, r, na - t - r);
+    if ( nf - t > r )
+    {
+	var piece = perl::substr(fixed, r, nf - t - r);
+	ed_text_insert(w, es, doc, r, piece.c_str());
+    }
+    ui::set(w, es, "caret", fcaret);
+}
+
+bool IdeSession::lens_put(long doc, var &ev, long side)
+{
+    var v;
+    view_row(v, w, es, focused_view(w, es));
+    long subject = v["subject"].as_integer();
+    long lang = v["lang"].as_integer();
+    var m = v["map"];
+    // the caret on the edit's side; a block's low end past the concealed
+    // run before it, its high end before the one after it (the runs at a
+    // block's edges stay)
+    long dc = es_int(w, es, "caret", 0);
+    long dm = es_int(w, es, "mark", -1);
+    long db = es_int(w, es, "bend", -1);
+    long sc = lens_put_point(m, dc, side == lsAFTER);
+    long sm = -1;
+    long sb = -1;
+    if ( dm >= 0 )
+    {
+	long de = db >= 0 ? db : dc;
+	long dlo = dm < de ? dm : de;
+	sm = lens_put_point(m, dm, dm == dlo && dm != de);
+	if ( db >= 0 )
+	    sb = lens_put_point(m, db, db == dlo && db != dm);
+	else if ( dc != dm )
+	    sc = lens_put_point(m, dc, dc == dlo);
+    }
+    var before;
+    ui::text(before, w, subject);
+    // the lens steps aside for the one event: the View on its source, the
+    // caret and block in stored offsets, the file's own access verdict
+    view_row_source(w, es, v);
+    ui::set(w, es, "caret", sc);
+    ui::set(w, es, "mark", sm);
+    ui::set(w, es, "bend", sb);
+    derive_access(w, es);
+    long seq0 = clog_head(w);
+    bool cont = apply_ide_event(doc, ev);
+    long code = ev_code(ev);
+    if ( lens_conceals(lang) && code != cmdUNDO && code != cmdREDO )
+	lens_put_repair(w, es, subject, before, seq0);
+    // the lens returns over the edited text, its caret projected
+    lens_show(w, es, subject, lang);
+    return cont;
 }
 
 // A STANDALONE code View of `subject` in `lang` (madc::fkMC11 / fkC11 /
@@ -8032,6 +8232,16 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	bool vcont = true;
 	if ( vi_event(doc, nav, ev, vcont) )
 	    return vcont;
+    }
+
+    // An EDIT through a concealing lens (plan 2026-10-03 §7d, slice 2) runs
+    // on the stored text — the lens's put — and the lens re-renders over
+    // the result; every other event (a motion, find) runs over the display.
+    if ( viewing )
+    {
+	long side = edit_event_side(ev);
+	if ( side != lsNONE && focused_lens_conceals(w, es) )
+	    return lens_put(doc, ev, side);
     }
 
     // A pointing-device gesture (the web target's hit test; a terminal's

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide: Editable concealing lens — edit through formatted Markdown
+
+An edit in a Markdown buffer's formatted view now changes the file (read-only before). New enum lens_side {lsNONE, lsBEFORE, lsAFTER} and edit_event_side classify edit position and event type; apply_ide_event sends events to lens_put when the focused view is a concealing lens. lens_put projects caret and block to stored offsets, runs the dispatcher on stored text, repairs deletions with md_put_repair (taking only visible bytes and line structure; inline construct delimiters stay paired or vanish whole), and re-renders. Test: tests/testmadcide_mdput.mad validates editing (typing, deletion, undo, block selection) through a formatted view. Validation: Tier 1 testmadcide*, testidemenu, testmarkdown: 53 passed, EXE 48/0, OBJ 48/0; Tier 2 green, commonmark 664/670.
+
 ### ui: Lens boundary projection — caret positioning at concealed-text edges
 
 The doc_map (markdown lens's coordinate map) projects display carets to stored offsets. At a gap boundary where concealed text begins or ends, the same display position maps to two different stored positions: the earlier side (before the concealed run) and the later side (past it, where a deletion starting there begins). New method `lens_to_stored_after` returns the boundary's later side; `lens_to_stored` returns the earlier side or any non-boundary offset as before. Updated projection internals: the `project` method takes a `later` boolean selecting which side of a boundary to take. Tests added: test_doc_lens.cpp covers both sides at every gap, and the identity property (display → stored_after → display recovers the display caret).

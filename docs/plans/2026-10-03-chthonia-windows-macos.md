@@ -511,15 +511,35 @@ shared with `make_code_view`):
 - `viewsplit right formatted` puts it beside the source, cursor-synced
   through the same map.
 
-**Slice 2: the put direction.** An insertion in the formatted view lands in
-the stored text at `lens_to_stored` of its display offset. The earlier
-side of a boundary means text typed after `bold` stays inside `**bold**`,
-and text typed before it stays outside. The lens then re-renders and the
-caret re-projects. A deletion removes the visible bytes in its range. A
-concealed run strictly inside the range goes with it, and one at its edges
-stays. A construct the deletion leaves empty (`****`, `[]()`) goes whole.
-Undo and the change log stay in stored offsets: the lens never holds a
-history of its own.
+**Slice 2: the put direction (2026-10-05).** An edit through the formatted
+view runs on the stored text. `lens_put` (madcide_core.inc):
+- **Classifies.** `edit_event_side` sorts the event: typed text, the edit
+  keys (`key_edit_side`) and the mutating commands (`cmd_edit_side`) are
+  edits. Everything else, motions and find included, runs over the display.
+- **Projects.** It moves the caret and block to stored offsets on the side
+  the edit needs (`lens_side`):
+  - typing, Enter, Tab, Backspace and paste take the boundary's earlier
+    side (`lens_to_stored`), so text typed after `bold` stays inside
+    `**bold**` and text typed before it stays outside;
+  - a forward deletion takes the later side (`lens_to_stored_after`, added
+    to `doc_map` for this);
+  - a block takes its low end's later side and its high end's earlier side.
+- **Steps aside.** The View goes back to its source for the one event, and
+  the ordinary dispatcher runs, with its undo history and change log.
+- **Re-renders.** The lens re-renders over the result (`lens_show`) and the
+  caret projects back.
+
+A deletion takes only the visible bytes of its range, plus the line
+structure inside it (a quote's `>`s, a heading's `#`s, fence lines). The
+delimiters of an inline construct stay paired. When the deletion takes all
+of a construct's visible text, the construct goes whole (`md_put_repair`;
+nested constructs go with their parent, and an escape goes with its
+character). The repair reads the edit's exact splices from the change log
+and applies them as one more splice in the same undo step. Undo and the
+change log stay in stored offsets: the lens holds no history of its own.
+The display stays read-only to anything unclassified, so an unforeseen
+edit is refused rather than written into the render. vi's operator grammar
+edits through the lens later.
 
 Gates: a conformance lane over the CommonMark spec examples (a ratchet,
 like the C lanes); the shipped-notices check in `package_install_gate.sh`
@@ -661,8 +681,7 @@ REPL commands and the Variables row (§7f: the row, `%load`, `%run`, the `.`
 prefix, `%call`, `%build`, the IDE layer and `%git`'s read verbs done) → Help and Markdown
 (§7d: the `madcmark` module on all three platforms, the shipped-notices check,
 Help's topics, Markdown Preview, `.md` highlighting, the CommonMark
-conformance lane and the concealing lens's read-only slice done; the lens's
-put direction to go) → Git
+conformance lane and the editable concealing lens done) → Git
 (§7e: stage 1 done with `%git`) → Recent files and the rest of §7a → the
 debugger arc.
 Owner, 2026-10-04: the chthonia binary comes first, GUI by default, working

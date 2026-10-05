@@ -435,7 +435,17 @@ bool md_ascii_punct(long c)
     return false;
 }
 
-void md_conceal_node(var &cut, var &starts, var &text, var &n)
+// One construct a put must keep whole or drop whole: its range [s, e), its
+// visible text [cs, ce) and whether its delimiters are LINE structure (a
+// heading's `#`s: a deletion that joins the line takes them) rather than a
+// pair around inline text (kept unless the text all goes).
+void md_wrap(var &wraps, long s, long e, long cs, long ce, bool line)
+{
+    if ( s >= 0 && e > s )
+	wraps[] = { "s": s, "e": e, "cs": cs, "ce": ce, "line": line };
+}
+
+void md_conceal_node(var &cut, var &wraps, var &starts, var &text, var &n)
 {
     long n_len = strlen(text.c_str());
     long ns = md_off(starts, n["line"].as_integer(), n["col"].as_integer());
@@ -466,6 +476,7 @@ void md_conceal_node(var &cut, var &starts, var &text, var &n)
 	{
 	    md_cut(cut, ns, cs);
 	    md_cut(cut, ce, ne);
+	    md_wrap(wraps, ns, ne, cs, ce, k == markdown::node_kind::heading);
 	}
     }
     else if ( k == markdown::node_kind::code )
@@ -480,6 +491,7 @@ void md_conceal_node(var &cut, var &starts, var &text, var &n)
 	    e = e + 1;
 	md_cut(cut, s, ns);
 	md_cut(cut, ne, e);
+	md_wrap(wraps, s, e, ns, ne, false);
 	return;
     }
     else if ( k == markdown::node_kind::block_quote )
@@ -572,6 +584,7 @@ void md_conceal_node(var &cut, var &starts, var &text, var &n)
 	    if ( p[i] == '\\' && md_ascii_punct((long)(unsigned char)p[i + 1]) )
 	    {
 		md_cut(cut, i, i + 1);
+		md_wrap(wraps, i, i + 2, i + 1, i + 2, false);	// `\*`: one construct
 		i = i + 2;
 	    }
 	    else
@@ -581,7 +594,25 @@ void md_conceal_node(var &cut, var &starts, var &text, var &n)
     }
     if ( !kids.is_null() )
 	for ( var c : kids )
-	    md_conceal_node(cut, starts, text, c);
+	    md_conceal_node(cut, wraps, starts, text, c);
+}
+
+// A text's concealed ranges (`cut`: s * 2^32 + e keys, in stored order —
+// they may overlap) and its constructs (`wraps`, md_wrap's rows). False when
+// the madcmark module is absent.
+bool md_concealed(var &cut, var &wraps, var &text)
+{
+    cut = {};
+    wraps = {};
+    if ( !markdown::available() )
+	return false;
+    var doc;
+    markdown::parse(doc, text.c_str());
+    var starts;
+    text_line_starts(starts, text);
+    md_conceal_node(cut, wraps, starts, text, doc);
+    php::sort(cut);
+    return true;
 }
 
 // The display text and its map: the stored text's visible runs, in order.
@@ -589,16 +620,11 @@ void md_conceal_node(var &cut, var &starts, var &text, var &n)
 bool md_conceal(var &display, var &map, const char *text0)
 {
     var text = text0;		// ring discipline: own the text first
-    if ( !markdown::available() )
+    var cut;
+    var wraps;
+    if ( !md_concealed(cut, wraps, text) )
 	return false;
-    var doc;
-    markdown::parse(doc, text.c_str());
-    var starts;
-    text_line_starts(starts, text);
-    var cut = {};
-    md_conceal_node(cut, starts, text, doc);
-    // in stored order; overlaps merge as the walk below skips them
-    php::sort(cut);
+    // overlapping ranges merge as the walk below skips them
     long nc = php::count(cut);
     long n = strlen(text.c_str());
     var segs = {};
@@ -626,5 +652,90 @@ bool md_conceal(var &display, var &map, const char *text0)
     }
     display = shown;
     map = segs;
+    return true;
+}
+
+// ---- the concealing lens's put (plan §7d, slice 2): an edit through the
+// formatted view runs on the stored text; this repairs what it deleted.
+// The edit replaced before[p, e) with `ins`. A deletion takes only the
+// VISIBLE bytes of its range and the line structure inside it (a quote's
+// `>`s, a heading's `#`s, fence lines: the lines it joins); the concealed
+// delimiters of an inline construct stay paired — unless the deletion took
+// ALL of that construct's visible text, when the construct goes whole
+// (`**b**` with its `b` deleted leaves nothing, never a bare `****`).
+// Out: the repaired text and the caret just after `ins` in it. False =
+// nothing to repair (the edit's own text stands).
+bool md_put_repair(var &out, long &caret, var &before, long p, long e, var &ins)
+{
+    if ( e <= p )
+	return false;
+    var cut;
+    var wraps;
+    if ( !md_concealed(cut, wraps, before) )
+	return false;
+    long nw = php::count(wraps);
+    // the constructs that go whole: each one whose visible text lies inside
+    // the deletion grown by the constructs already going (nested ones go
+    // with their parent: `***a***` loses both)
+    var gone = {};
+    for ( long i = 0; i < nw; i = i + 1 )
+	gone[] = false;
+    long lo = p;
+    long hi = e;
+    bool grew = true;
+    while ( grew )
+    {
+	grew = false;
+	for ( long i = 0; i < nw; i = i + 1 )
+	{
+	    if ( gone[i].as_boolean() )
+		continue;
+	    var wr = wraps[i];
+	    long cs = wr["cs"].as_integer();
+	    long ce = wr["ce"].as_integer();
+	    if ( ce <= cs || cs < lo || ce > hi )
+		continue;
+	    gone[i] = true;
+	    grew = true;
+	    if ( wr["s"].as_integer() < lo )
+		lo = wr["s"].as_integer();
+	    if ( wr["e"].as_integer() > hi )
+		hi = wr["e"].as_integer();
+	}
+    }
+    // what [lo, hi) keeps: the inline delimiters inside [p, e) of the
+    // constructs that stay (a gone construct's bytes all go; outside
+    // [p, e), [lo, hi) holds only gone constructs)
+    var kept = "";
+    bool repaired = lo < p || hi > e;
+    for ( long i = p; i < e; i = i + 1 )
+    {
+	bool keep = false;
+	for ( long j = 0; j < nw && !keep; j = j + 1 )
+	{
+	    if ( gone[j].as_boolean() )
+		continue;
+	    var wr = wraps[j];
+	    if ( wr["line"].as_boolean() )
+		continue;
+	    long ws = wr["s"].as_integer();
+	    long we = wr["e"].as_integer();
+	    long cs = wr["cs"].as_integer();
+	    long ce = wr["ce"].as_integer();
+	    if ( (i >= ws && i < cs) || (i >= ce && i < we) )
+		keep = true;
+	}
+	if ( keep )
+	{
+	    kept = format("{}{}", kept, perl::substr(before, i, 1));
+	    repaired = true;
+	}
+    }
+    if ( !repaired )
+	return false;
+    long n = strlen(before.c_str());
+    out = format("{}{}{}{}", perl::substr(before, 0, lo), ins, kept,
+		 perl::substr(before, hi, n - hi));
+    caret = lo + strlen(ins.c_str());
     return true;
 }

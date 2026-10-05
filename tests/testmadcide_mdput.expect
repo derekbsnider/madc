@@ -1,0 +1,11 @@
+enter: stored=[# Title||Some **bold** and `code`.||x **bold** y and a \*b.|] display=[Title||Some bold and code.||x bold y and a *b.|] caret=0 lens=formatted
+type at the end of bold: stored=[# Title||Some **bolder** and `code`.||x **bold** y and a \*b.|] display=[Title||Some bolder and code.||x bold y and a *b.|] caret=18 lens=formatted
+type at the start of bold: stored=[# Title||Some X**bolder** and `code`.||x **bold** y and a \*b.|] display=[Title||Some Xbolder and code.||x bold y and a *b.|] caret=13 lens=formatted
+del at the start of code: stored=[# Title||Some X**bolder** and `ode`.||x **bold** y and a \*b.|] display=[Title||Some Xbolder and ode.||x bold y and a *b.|] caret=24 lens=formatted
+undo: stored=[# Title||Some X**bolder** and `code`.||x **bold** y and a \*b.|] display=[Title||Some Xbolder and code.||x bold y and a *b.|] caret=24 lens=formatted
+delete x bo: stored=[# Title||Some X**bolder** and `code`.||**ld** y and a \*b.|] display=[Title||Some Xbolder and code.||ld y and a *b.|] caret=31 lens=formatted
+delete ld: stored=[# Title||Some X**bolder** and `code`.|| y and a \*b.|] display=[Title||Some Xbolder and code.|| y and a *b.|] caret=31 lens=formatted
+del an escaped star: stored=[# Title||Some X**bolder** and `code`.|| y and a b.|] display=[Title||Some Xbolder and code.|| y and a b.|] caret=40 lens=formatted
+type in the heading: stored=[# Titles||Some X**bolder** and `code`.|| y and a b.|] display=[Titles||Some Xbolder and code.|| y and a b.|] caret=6 lens=formatted
+modified=1 editable=0
+exit: stored=[# Titles||Some X**bolder** and `code`.|| y and a b.|] display=[# Titles||Some X**bolder** and `code`.|| y and a b.|] caret=8 lens=

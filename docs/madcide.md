@@ -319,9 +319,18 @@ the `**`, `_` and `~~` around emphasis, a code span's backticks, a link's
 escape's backslash. Entities, list markers and tables stay as written. The
 view keeps the buffer's colours and its cursor: the cursor lands on the
 same character, and `^K A` again returns to the source at the character
-the cursor reached. The view is read-only for now (editing through it
-comes next). `:viewsplit right formatted` puts it beside the source, and
-`:viewopen formatted` switches the focused pane to it.
+the cursor reached. `:viewsplit right formatted` puts it beside the source,
+and `:viewopen formatted` switches the focused pane to it.
+
+You can edit in the formatted view. Typing, Enter, Tab, Backspace, Delete,
+cut, paste, the line edits and undo all change the file itself, and the
+view redraws. Text typed at the end of a **bold** word stays bold, and
+text typed before it does not. Deleting part of a formatted span keeps its
+formatting around what remains. Deleting all of it removes the formatting
+characters too, so a bare `****` is never left behind. Deleting an escaped
+character removes its backslash with it. Undo works on the file, as it
+does in the source view. A command that has no meaning there (vi's
+operators, a block marker) is refused with a message.
 
 ## Sharing a session
 
