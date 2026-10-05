@@ -7,7 +7,8 @@
 //          GSimpleActionGroup inserted on the window under the `menu.`
 //          prefix; the webview widget is re-parented into a vertical box
 //          under the bar (upstream sets the widget as the window's child
-//          and never touches it again). Dialogs: GtkFileDialog (4.10+).
+//          and never touches it again). Dialogs: GtkFileDialog (4.10+;
+//          GtkFileChooserNative on an older GTK 4).
 //          Clipboard: the window's GdkClipboard.
 //   Cocoa: the application's main menu (NSMenu on NSApp — the bar lives at
 //          the top of the screen, the window is untouched); each item
@@ -348,13 +349,15 @@ WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id)
 
 } // extern "C" — the menu API
 
-// ---- file dialogs (S4): GtkFileDialog (GTK 4.10+), asynchronous ----------
+// ---- file dialogs (S4): asynchronous -------------------------------------
 // The dialog runs inside the platform loop the host is already in
 // (webview_run); its completion callback resolves the GFile to a path and
 // hands it to the caller's callback — "" when the user cancelled or the
 // platform reported an error. The context is freed after the one call.
+// GTK 4.10+ has GtkFileDialog; an older GTK 4 (Ubuntu 22.04's 4.6) runs the
+// same dialog through GtkFileChooserNative, which 4.10 deprecates in its
+// favour. The GTK the library is built against picks the arm.
 
-#if GTK_CHECK_VERSION(4, 10, 0)
 namespace {
 
 struct dialog_ctx {
@@ -363,6 +366,18 @@ struct dialog_ctx {
 	bool save;
 };
 
+// The chosen file to the caller's callback, then the context freed.
+void dialog_finish(dialog_ctx *c, GFile *f)
+{
+	char *path = f ? g_file_get_path(f) : 0;
+	if (c->cb)
+		c->cb(path ? path : "", c->arg);
+	if (path)
+		g_free(path);
+	delete c;
+}
+
+#if GTK_CHECK_VERSION(4, 10, 0)
 void on_dialog_done(GObject *source, GAsyncResult *result, gpointer data)
 {
 	dialog_ctx *c = static_cast<dialog_ctx *>(data);
@@ -370,16 +385,11 @@ void on_dialog_done(GObject *source, GAsyncResult *result, gpointer data)
 	GFile *f = c->save
 		? gtk_file_dialog_save_finish(GTK_FILE_DIALOG(source), result, &err)
 		: gtk_file_dialog_open_finish(GTK_FILE_DIALOG(source), result, &err);
-	char *path = f ? g_file_get_path(f) : 0;
-	if (c->cb)
-		c->cb(path ? path : "", c->arg);
-	if (path)
-		g_free(path);
+	dialog_finish(c, f);
 	if (f)
 		g_object_unref(f);
 	if (err)
 		g_error_free(err);
-	delete c;
 }
 
 int dialog_run(webview_t w, const char *title, const char *initial,
@@ -411,6 +421,49 @@ int dialog_run(webview_t w, const char *title, const char *initial,
 	g_object_unref(d);	// the operation holds its own reference
 	return 0;
 }
+#else
+// The chooser is not a widget: the reference _new returns is ours, dropped
+// once it answers. Modal over the window, as GtkFileDialog is by default.
+void on_chooser_response(GtkNativeDialog *d, int response, gpointer data)
+{
+	dialog_ctx *c = static_cast<dialog_ctx *>(data);
+	GFile *f = response == GTK_RESPONSE_ACCEPT
+		? gtk_file_chooser_get_file(GTK_FILE_CHOOSER(d)) : 0;
+	dialog_finish(c, f);
+	if (f)
+		g_object_unref(f);
+	g_object_unref(d);
+}
+
+int dialog_run(webview_t w, const char *title, const char *initial,
+	       madcwebview_dialog_fn cb, void *arg, bool save)
+{
+	menu_state *st = state_of(w);
+	if (!st)
+		return 1;
+	GtkFileChooserNative *n = gtk_file_chooser_native_new(
+		title && *title ? title : NULL, GTK_WINDOW(st->win),
+		save ? GTK_FILE_CHOOSER_ACTION_SAVE : GTK_FILE_CHOOSER_ACTION_OPEN,
+		NULL, NULL);
+	gtk_native_dialog_set_modal(GTK_NATIVE_DIALOG(n), TRUE);
+	if (initial && *initial) {
+		GFile *g = g_file_new_for_path(initial);
+		if (g_file_query_file_type(g, G_FILE_QUERY_INFO_NONE, NULL)
+		    == G_FILE_TYPE_DIRECTORY)
+			gtk_file_chooser_set_current_folder(GTK_FILE_CHOOSER(n), g, NULL);
+		else
+			gtk_file_chooser_set_file(GTK_FILE_CHOOSER(n), g, NULL);
+		g_object_unref(g);
+	}
+	dialog_ctx *c = new dialog_ctx;
+	c->cb = cb;
+	c->arg = arg;
+	c->save = save;
+	g_signal_connect(n, "response", G_CALLBACK(on_chooser_response), c);
+	gtk_native_dialog_show(GTK_NATIVE_DIALOG(n));
+	return 0;
+}
+#endif
 
 } // namespace
 
@@ -431,14 +484,6 @@ WEBVIEW_API int madcwebview_dialog_save(webview_t w, const char *title,
 }
 
 } // extern "C"
-#else
-extern "C" {
-WEBVIEW_API int madcwebview_dialog_open(webview_t, const char *, const char *,
-					madcwebview_dialog_fn, void *) { return 1; }
-WEBVIEW_API int madcwebview_dialog_save(webview_t, const char *, const char *,
-					madcwebview_dialog_fn, void *) { return 1; }
-}
-#endif
 
 // The one-shot UI-thread timer (the window's bounded wait): a GLib timeout
 // source on the main context the webview's loop runs; fires once.

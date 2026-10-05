@@ -1,0 +1,6 @@
+GUI_DIALOG native=yes
+GUI_DIALOG round 0 shown=yes
+GUI_DIALOG round 0 picked=[]
+GUI_DIALOG round 1 shown=yes
+GUI_DIALOG round 1 picked=the initial file
+GUI_DIALOG closed

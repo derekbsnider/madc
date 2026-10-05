@@ -43,9 +43,9 @@ WEBVIEW_API int madcwebview_menu_activate(webview_t w, const char *id);
  * callback fires later, on the UI thread inside the platform's run loop,
  * with the chosen path ("" = cancelled). `initial` names the folder or file
  * the dialog starts at (NULL/"" = the platform's default). Nonzero = no
- * window / no native dialog on this host. GTK4: GtkFileDialog (4.10+);
- * Cocoa: NSOpenPanel / NSSavePanel as a sheet; Win32: IFileOpenDialog /
- * IFileSaveDialog. */
+ * window / no native dialog on this host. GTK4: GtkFileDialog (4.10+),
+ * GtkFileChooserNative on an older GTK 4; Cocoa: NSOpenPanel /
+ * NSSavePanel as a sheet; Win32: IFileOpenDialog / IFileSaveDialog. */
 typedef void (*madcwebview_dialog_fn)(const char *path, void *arg);
 
 WEBVIEW_API int madcwebview_dialog_open(webview_t w, const char *title,

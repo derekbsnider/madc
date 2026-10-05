@@ -510,7 +510,8 @@ draws: a client that can show native dialogs pushes the fact
 park a `filedialog` request — mode, title, the initial path — in the same
 slot the terminal requests ride; the client shows it (`ui::dialog`, the
 host's `dialog` op, `madcwebview_dialog_open` / `_save`: a `GtkFileDialog`
-on GTK 4.10+, an `NSOpenPanel` / `NSSavePanel` sheet on the window on
+on GTK 4.10+ (a `GtkFileChooserNative` on an older GTK 4, such as Ubuntu
+22.04's 4.6), an `NSOpenPanel` / `NSSavePanel` sheet on the window on
 Cocoa, `IFileOpenDialog` / `IFileSaveDialog` on Win32 — asynchronous on
 each: the call returns once the dialog is up and the answer arrives later,
 inside the platform loop the host is already in) and the answer comes
