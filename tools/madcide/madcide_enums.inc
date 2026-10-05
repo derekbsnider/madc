@@ -685,19 +685,19 @@ bool cmd_takes_arg(long code)
 // text through a concealing lens (plan 2026-10-03 §7d, slice 2): typing,
 // a paste and a backward deletion at the boundary's EARLIER side (text
 // typed after `bold` stays inside `**bold**`), a forward deletion at its
-// LATER side (the run before the deleted text stays). lsNONE = the event
+// LATER side (the run before the deleted text stays). sideNONE = the event
 // is no edit — it runs over the display, as a motion does.
-enum lens_side : unsigned char { lsNONE = 0, lsBEFORE, lsAFTER };
+enum lens_side : unsigned char { sideNONE = 0, sideBEFORE, sideAFTER };
 
 // An edit key's side: the keys edit_key changes the text with (`k` an
 // event's key_code — the ui::key enumerator, as edit_key reads it).
 long key_edit_side(var &k)
 {
     if ( k == ui::key::backspace || k == ui::key::enter || k == ui::key::tab )
-	return lsBEFORE;
+	return sideBEFORE;
     if ( k == ui::key::del )
-	return lsAFTER;
-    return lsNONE;
+	return sideAFTER;
+    return sideNONE;
 }
 
 // A command's side: the commands that change the buffer's text and reach
@@ -713,13 +713,13 @@ long cmd_edit_side(long code)
     switch ( code )
     {
 	case cmdDELWORD:
-	    return lsAFTER;
+	    return sideAFTER;
 	case cmdCUT: case cmdPASTE: case cmdINDENT: case cmdDEDENT:
 	case cmdTOGGLECOMMENT: case cmdBLOCKDEL: case cmdUNDO: case cmdREDO:
 	case cmdDELLINE:
-	    return lsBEFORE;
+	    return sideBEFORE;
     }
-    return lsNONE;
+    return sideNONE;
 }
 
 // The commands a text FIELD honours (the REPL pane's input, plan §41.9a):

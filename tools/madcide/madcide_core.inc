@@ -3947,7 +3947,7 @@ long edit_event_side(var &ev)
 {
     var kind = ev["event_code"];
     if ( kind == ui::event_kind::text )
-	return lsBEFORE;
+	return sideBEFORE;
     if ( kind == ui::event_kind::key )
     {
 	var k = ev["key_code"];
@@ -3964,7 +3964,7 @@ long edit_event_side(var &ev)
 	}
 	return cmd_edit_side(code);
     }
-    return lsNONE;
+    return sideNONE;
 }
 
 // Is the focused View a concealing lens (lens_name: the one lens-up rule)?
@@ -4071,7 +4071,7 @@ bool IdeSession::lens_put(long doc, var &ev, long side)
     long dc = es_int(w, es, "caret", 0);
     long dm = es_int(w, es, "mark", -1);
     long db = es_int(w, es, "bend", -1);
-    long sc = lens_put_point(m, dc, side == lsAFTER);
+    long sc = lens_put_point(m, dc, side == sideAFTER);
     long sm = -1;
     long sb = -1;
     if ( dm >= 0 )
@@ -8346,7 +8346,7 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
     if ( viewing )
     {
 	long side = edit_event_side(ev);
-	if ( side != lsNONE && focused_lens_conceals(w, es) )
+	if ( side != sideNONE && focused_lens_conceals(w, es) )
 	    return lens_put(doc, ev, side);
     }
 
