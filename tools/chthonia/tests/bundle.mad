@@ -5,8 +5,9 @@
 // sidebar), chthonia.menu (the beginner's subset of the command vocabulary)
 // and chthonia.mad (its code, the Symbols view). Pins:
 //   1. `open(path, ro, "chthonia")` (the command line's --profile) loads the
-//      shipped bundle: the runner's MADCIDE_CONFIG_DIR names no user
-//      directory, so nothing overrides it;
+//      bundle from Chthonia's own directory (the runner's
+//      MADCIDE_PLUGIN_PATH): this test's MADCIDE_CONFIG_DIR holds no bundle
+//      of that name, so nothing overrides it;
 //   2. its keys are the Chthonia style, and its layout shows the REPL in
 //      front (Outline, Project and Terminal not showing), and a sidebar;
 //   3. the menu bar is File, Edit, Run, Build, View, Tools, Help: Run's rows

@@ -15,8 +15,16 @@
 #
 # Steps: build chthonia (scripts/build.sh), run it (--help prints its usage),
 # run the console tests, then the window tests under xvfb-run when the host
-# has it (the tree form builds libmadcwebview first). One summary line:
-#   chthonia: build ok | tests: N passed, 0 failed | gui: M passed, 0 failed
+# has it (the tree form builds libmadcwebview first), then the Linux packages
+# (scripts/package_linux.sh: .deb, .rpm, tarball, each holding exactly the
+# staged files) when the host has dpkg-deb and rpmbuild. The tree has no
+# madcide program, so there the built chthonia builds its bundle's library
+# (it reads the same --build-plugin); an installed madc's madcide does it in
+# the installed form. The installed form then installs Chthonia's tarball
+# into the unpacked madc folder — first removing every path the tarball
+# carries, so what is checked is the tarball's — and runs
+# scripts/check_install.sh there. One summary line:
+#   chthonia: build ok | tests: N passed, 0 failed | gui: M passed, 0 failed | packages: ok [| install: ok]
 # Record it with scripts/lane_ledger.sh record chthonia "<line>".
 set -u
 cd "$(dirname "$0")/.." || exit 2
@@ -59,6 +67,7 @@ else
 	tar -xf "$tarball" -C "$work" || fail "cannot unpack $tarball"
 	madc=$(ls -d "$work"/*/bin/madc 2>/dev/null | head -1)
 	[ -x "$madc" ] || fail "no bin/madc in $tarball"
+	folder=$(cd "$(dirname "$madc")/.." && pwd)
 	inc=$(cd "$(dirname "$madc")/.." && pwd)/share/madcide/include
 	libdir=$(cd "$(dirname "$madc")/../lib" && pwd)
 fi
@@ -89,5 +98,26 @@ if command -v xvfb-run > /dev/null 2>&1; then
 	grc=$?
 	gui=$(grep -E '^[0-9]+ passed, [0-9]+ failed$' "$log" | tail -1)
 fi
-echo "chthonia: build ok | tests: ${tests:-(no summary)} | gui: ${gui:-(no summary)}"
+
+pkgs="not run (no dpkg-deb or rpmbuild)"
+installed=
+if command -v dpkg-deb > /dev/null 2>&1 && command -v rpmbuild > /dev/null 2>&1; then
+	echo "== packages ==" >> "$log"
+	builder=()
+	[ $mode = tree ] && builder=("MADCIDE=$work/chthonia")
+	env MADC="$madc" MADCIDE_INCLUDE="$inc" ${builder[@]+"${builder[@]}"} \
+		bash tools/chthonia/scripts/package_linux.sh -o "$work/dist" >> "$log" 2>&1 \
+		|| fail "the Linux packages did not build"
+	pkgs=ok
+	if [ $mode = installed ]; then
+		echo "== install ($folder) ==" >> "$log"
+		tgz=$(ls "$work"/dist/chthonia-*-linux-*.tar.gz)
+		tar -tzf "$tgz" | grep -v '/$' | while IFS= read -r f; do rm -f "$folder/$f"; done
+		tar -xzf "$tgz" -C "$folder" || fail "cannot unpack $tgz into $folder"
+		bash tools/chthonia/scripts/check_install.sh "$folder" >> "$log" 2>&1 \
+			|| fail "the installed Chthonia did not pass scripts/check_install.sh"
+		installed=" | install: ok"
+	fi
+fi
+echo "chthonia: build ok | tests: ${tests:-(no summary)} | gui: ${gui:-(no summary)} | packages: $pkgs$installed"
 [ $trc -eq 0 ] && [ $grc -eq 0 ] || { tail -40 "$log" >&2; exit 1; }

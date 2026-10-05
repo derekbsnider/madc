@@ -313,11 +313,51 @@ published.
    - `tests/testmadcide_product` stays in madc (the product descriptor is
      base). It links Chthonia's plugin as its example product, so at the
      cut (step 4) it moves to a product of its own.
+   **Packaging written (2026-10-05):** `tools/chthonia/scripts/`:
+   - `common.sh`, which each script sources: the madc (a command), madcide's
+     headers beside it (`share/madcide/include`, or `include` beside
+     `madc.exe`), the bundle's directory (read from `chthonia.json`'s
+     plugin unit, so the move changes the manifest alone), the checksum
+     file's lines, and the modes a package installs.
+   - `stage.sh linux|macos|windows ROOT`, the one staging: the program, the
+     bundle as one of madcide's shipped plugins (`share/madcide/plugins/
+     chthonia`, `bin\plugins\chthonia` on Windows) with its library built
+     by the madcide beside madc, the desktop entry and icons (Linux), the
+     licence (`tools/chthonia/LICENSE`, MPL-2.0).
+   - `package_linux.sh`: the `.deb` and `.rpm` require the madc that built
+     them or newer (chthonia links libmadc and libmadcide) and WebKitGTK 6.0
+     and GTK 4 (a window is its default); the tarball unpacks into a madc
+     folder. Each is checked to hold exactly the staged files, each
+     readable by every user.
+   - `package_windows.sh` (the zip for madc's folder, with a Windows madc),
+     `package_macos.sh` (the tarball for a madc folder, on a Mac).
+   - `check_install.sh PREFIX`: madc's install-gate probes 6 and 7 for an
+     installed Chthonia, plus its bundle: the menu bar has no Window menu
+     [control: the bundle hidden, the default profile's is listed].
+   - `run_tests.sh` finds the bundle where it is, through
+     `MADCIDE_PLUGIN_PATH`, a base capability: directories the plugin
+     search path takes between the user's and the shipped
+     (`testmadcide_bundles` pin 11), since after the cut an installed madc
+     carries no Chthonia bundle. `ico_png_images.py` moved in: only
+     Chthonia's packaging uses it.
+   The lane runs `package_linux.sh` in both forms; the installed form
+   installs the tarball into the unpacked madc folder, every path it
+   carries removed first, and runs `check_install.sh` there. Measured under
+   wine: `package_windows.sh` against a madc folder made from the release
+   set (its own copy of the bundle removed) wrote the zip, `chthonia.exe`
+   (399 KB) and the bundle with `chthonia.dll` built by `madcide.exe`;
+   unpacked into the folder, `chthonia.exe --help` prints its usage and its
+   menu bar is the bundle's. MSIX, the `.app` and the `.dmg` remain step 8.
 3. **The Chthonia repository, prepared.** The sanitized initial commit (§5)
    built from those files; its CI installs madc from a madc release's
    assets and builds, tests and packages on Linux, Windows and macOS.
 4. **The cut, in madc.** The §2 "Moves" files leave; packagers, the install
    gate and the documentation stop naming Chthonia. `VERSION` = 0.102.0.
+   What leaves madc's packaging has its replacement in
+   `tools/chthonia/scripts/` already: `stage_install.sh`'s program, desktop
+   entry and icons (`stage.sh`), the packagers' chthonia builds
+   (`package_*.sh`), install-gate probes 6 and 7 (`check_install.sh`), and
+   `scripts/chthonia_lane.sh` (Chthonia's CI runs its scripts).
    Tier 3 at this seam, then every platform lane's full suite
    (`lane_ledger.sh check --release`).
 5. **The candidate.** `release.yml` dispatched with `tag: v0.102.0` and

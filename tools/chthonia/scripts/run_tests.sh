@@ -6,43 +6,30 @@
 #   MADC             the madc to run them with, as a command (default: madc
 #                    on PATH)
 #   MADCIDE_INCLUDE  madcide's public headers (default: the installed ones,
-#                    <prefix>/share/madcide/include, beside MADC)
+#                    beside MADC; scripts/common.sh)
 #   --gui            the window tests (tests/gui/), for a display: run this
 #                    under xvfb-run where there is none
 #   NAME...          only these tests (base names, no .mad)
 #
 # Each test is a program that includes <madcide/harness> and links
 # libmadcide. It passes when it exits 0 and every non-empty line of its
-# NAME.expect appears in its standard output. Beside it, NAME.env holds NAME=value
-# words for its environment and NAME.timeout its limit in seconds (default
-# 120). The tests run from Chthonia's top directory, and what they create
-# goes under tmp/.
+# NAME.expect appears in its standard output. Beside it, NAME.env holds
+# NAME=value words for its environment and NAME.timeout its limit in seconds
+# (default 120, wall clock and CPU). The tests run from Chthonia's top
+# directory, and what they create goes under tmp/. Chthonia's bundle is found
+# where it is, not installed: its directory's parent is MADCIDE_PLUGIN_PATH,
+# which madcide searches after the user's plugins and before its shipped
+# ones.
 set -u
-here=$(cd "$(dirname "$0")/.." && pwd)
-madc=${MADC:-madc}
+. "$(dirname "$0")/common.sh"
 dir=tests
 if [ "${1:-}" = "--gui" ]; then
 	dir=tests/gui
 	shift
 fi
-inc=${MADCIDE_INCLUDE:-}
-if [ -z "$inc" ]; then
-	bin=$(command -v "${madc%% *}" || true)
-	if [ -z "$bin" ]; then
-		echo "run_tests.sh: no madc ($madc) — set MADC" >&2
-		exit 1
-	fi
-	inc=$(cd "$(dirname "$bin")/.." && pwd)/share/madcide/include
-fi
-inc=$(cd "$inc" 2>/dev/null && pwd) || { echo "run_tests.sh: no directory $inc" >&2; exit 1; }
-if [ ! -f "$inc/madcide/harness" ]; then
-	echo "run_tests.sh: no <madcide/harness> in $inc — set MADCIDE_INCLUDE" >&2
-	exit 1
-fi
-case "$madc" in
-/*|*" "*) ;;
-*/*) madc=$(cd "$(dirname "$madc")" && pwd)/$(basename "$madc") ;;
-esac
+chthonia_setup || exit 1
+MADCIDE_PLUGIN_PATH=$(dirname "$bundle")
+export MADCIDE_PLUGIN_PATH
 cd "$here" || exit 1
 mkdir -p tmp
 
@@ -63,7 +50,7 @@ for name in ${names[@]+"${names[@]}"}; do
 	limit=120
 	[ -f "$dir/$name.timeout" ] && limit=$(cat "$dir/$name.timeout")
 	# shellcheck disable=SC2086
-	out=$(env ${envs[@]+"${envs[@]}"} timeout "$limit" $madc -I "$inc" -lmadcide "$t" 2> tmp/run_tests.err)
+	out=$(capped "$limit" env ${envs[@]+"${envs[@]}"} $madc -I "$inc" -lmadcide "$t" 2> tmp/run_tests.err)
 	rc=$?
 	why=
 	if [ $rc -ne 0 ]; then

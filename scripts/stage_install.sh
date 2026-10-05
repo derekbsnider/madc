@@ -105,7 +105,7 @@ install -m 755 "$chthonia" "$p/bin/chthonia"
 install -m 644 lib/libmadcide.so "$root/$libdir/libmadcide.so"
 mkdir -p "$p/share/applications"
 install -m 644 tools/chthonia/chthonia.desktop "$p/share/applications/chthonia.desktop"
-python3 scripts/ico_png_images.py tools/chthonia/chthonia.ico "$p/share/icons/hicolor" chthonia
+python3 tools/chthonia/scripts/ico_png_images.py tools/chthonia/chthonia.ico "$p/share/icons/hicolor" chthonia
 # madcide's data (profiles, plugins, the plugin API headers, the line
 # editor's verbs and checks): the one staging owner, into share/madcide —
 # where resolve_data_dir and resolve_profile_dir look in an install.
