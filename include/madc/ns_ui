@@ -276,9 +276,11 @@ namespace ui {
     // strictly inside a gap collapses FORWARD to the next segment;
     // past the end lands just after the last image; an EMPTY map (a
     // wholly rendered view) answers 0. -1 = malformed map / negative
-    // offset.
+    // offset. lens_to_stored_after answers a boundary on its LATER side
+    // (past a concealed run: where a deletion starting there begins).
     int64_t lens_to_display(value &map, int64_t stored);
     int64_t lens_to_stored(value &map, int64_t display);
+    int64_t lens_to_stored_after(value &map, int64_t display);
 
     // ---- level-1 TUI (R5): the addressable-grid frontend, behind the
     // provider seam (the built-in target is the dependency-free

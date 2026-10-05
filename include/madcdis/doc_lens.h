@@ -76,10 +76,16 @@ public:
     bool empty() const { return _segs.empty(); }
 
     // stored caret offset -> display caret offset.
-    size_t to_display(size_t stored) const { return project(stored, false); }
+    size_t to_display(size_t stored) const { return project(stored, false, false); }
     // display caret offset -> stored caret offset (the put direction's
     // coordinate half: where a display-space event lands in the store).
-    size_t to_stored(size_t disp) const { return project(disp, true); }
+    size_t to_stored(size_t disp) const { return project(disp, true, false); }
+    // The same, on a boundary's LATER side: a display offset shared by a
+    // copy's end and the next copy's start lands at that next copy's
+    // start, past the concealed run between them — where a deletion that
+    // STARTS there begins, so the run before the deleted text stays.
+    // Every other offset answers as to_stored.
+    size_t to_stored_after(size_t disp) const { return project(disp, true, true); }
 
     // The map AS data (spans-as-data, exactly like the projection hints):
     // an array of {disp, stored, len} integer rows.
@@ -142,8 +148,10 @@ private:
     }
 
     // The one projection rule, both directions. `from_disp` selects which
-    // axis `from` lives on; the answer is on the other axis.
-    size_t project(size_t from, bool from_disp) const
+    // axis `from` lives on; the answer is on the other axis. `later`
+    // gives a copy's end to the segment after it (the boundary's later
+    // side); the last copy's end is its own either way.
+    size_t project(size_t from, bool from_disp, bool later) const
     {
 	if ( _segs.empty() )
 	    return 0;
@@ -154,7 +162,7 @@ private:
 	    size_t b = from_disp ? s.stored : s.disp;
 	    if ( from < a )
 		return b;		// strictly inside a gap: forward
-	    if ( from <= a + s.len )
+	    if ( from < a + s.len || (from == a + s.len && !later) )
 		return b + (from - a);	// inside the copy (end included)
 	}
 	const seg &l = _segs.back();

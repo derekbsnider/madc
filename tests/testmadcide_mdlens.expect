@@ -13,6 +13,7 @@ seg disp=48 stored=68 len=7
 seg disp=55 stored=77 len=6
 seg disp=61 stored=88 len=7
 caret in: display=12 reads=bold
+boundary: earlier=14 later=16
 span bold Title
 span bold bold
 span cyan code

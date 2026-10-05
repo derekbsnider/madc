@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### ui: Lens boundary projection — caret positioning at concealed-text edges
+
+The doc_map (markdown lens's coordinate map) projects display carets to stored offsets. At a gap boundary where concealed text begins or ends, the same display position maps to two different stored positions: the earlier side (before the concealed run) and the later side (past it, where a deletion starting there begins). New method `lens_to_stored_after` returns the boundary's later side; `lens_to_stored` returns the earlier side or any non-boundary offset as before. Updated projection internals: the `project` method takes a `later` boolean selecting which side of a boundary to take. Tests added: test_doc_lens.cpp covers both sides at every gap, and the identity property (display → stored_after → display recovers the display caret).
+
 ### madcide: exit_lens — fix caret jump when no lens is up
 
 exit_lens set the caret to the parked caret position ("ocaret") unconditionally, even when no lens was up. view_open calls exit_lens when opening source or when viewopen <repr> fails to enter a lens, so with no lens the caret jumped to a stale parked position or 0 when nothing had been parked. Fix: exit_lens returns early when no lens is up (tested through lens_name, the one lens-up rule); the caret, the block markers and the access verdict stay unchanged. Its callers (e.g. switch_buffer) are unchanged.

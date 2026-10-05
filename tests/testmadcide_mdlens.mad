@@ -51,6 +51,10 @@ int main()
 	println("seg disp={} stored={} len={}", sg["disp"], sg["stored"], sg["len"]);
     long dc = es_int(w, es, "caret", 0);
     println("caret in: display={} reads={}", dc, perl::substr(dt, dc, 4));
+    // the boundary before "bold": the earlier side is before the opening
+    // `**`, the later side past it
+    println("boundary: earlier={} later={}", ui::lens_to_stored(m, dc),
+	    ui::lens_to_stored_after(m, dc));
     var hs;
     ui::get(hs, w, vd, "hspans");
     for ( var sp : hs )

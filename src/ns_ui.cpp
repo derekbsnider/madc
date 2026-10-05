@@ -1647,6 +1647,14 @@ int64_t lens_to_stored(madc::value &map, int64_t display)
     return (int64_t)m.to_stored((size_t)display);
 }
 
+int64_t lens_to_stored_after(madc::value &map, int64_t display)
+{
+    madc::hub::doc_map m;
+    if ( display < 0 || !madc::hub::doc_map::from_value(map, m) )
+	return -1;
+    return (int64_t)m.to_stored_after((size_t)display);
+}
+
 // ---- the target-generic session surface (slice 2): open(target) ------
 // The MODEL owns layout, focus, key semantics and diffing; a FRONTEND
 // pairs it with the thing that shows it — the grid frontend behind the
