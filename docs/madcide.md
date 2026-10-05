@@ -329,8 +329,11 @@ text typed before it does not. Deleting part of a formatted span keeps its
 formatting around what remains. Deleting all of it removes the formatting
 characters too, so a bare `****` is never left behind. Deleting an escaped
 character removes its backslash with it. Undo works on the file, as it
-does in the source view. A command that has no meaning there (vi's
-operators, a block marker) is refused with a message.
+does in the source view, and the Edit menu's items are enabled as they
+are there. Cut puts the text the view shows on the clipboard, as Copy
+does. Block markers work. Copy Block and Move Block are refused there,
+because they would copy or move formatting characters you cannot see, and
+vi's operators are refused too.
 
 ## Sharing a session
 

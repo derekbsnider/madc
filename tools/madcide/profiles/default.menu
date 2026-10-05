@@ -12,7 +12,9 @@
 # TITLE is everything after the command. An optional trailing [WHEN] names
 # the context that must hold for the item to be enabled: a context key,
 # `!key` to negate, `a && b` to join. Context keys: editable dirty
-# selection split buffers project building modal viewing.
+# selection split buffers project building modal viewing formatted (a
+# Markdown buffer's formatted view: it edits the file, so editable and
+# viewing judge the file there).
 # An optional {ICON} is the picture a renderer draws for the item (ui::icon:
 # new open save run debug stop step-over step-into step-out breakpoints); an
 # unknown word refuses the menu. On a `toolbar` row a second word, {ICON
@@ -52,8 +54,8 @@ Edit selectall Select All
 Edit -
 Edit mark Mark Block Start [!viewing]
 Edit bend Mark Block End [!viewing]
-Edit blockcopy Copy Block [selection && editable]
-Edit blockmove Move Block [selection && editable]
+Edit blockcopy Copy Block [selection && editable && !formatted]
+Edit blockmove Move Block [selection && editable && !formatted]
 Edit blockdel Delete Block [selection && editable]
 Edit -
 Edit delline Delete Line [editable]

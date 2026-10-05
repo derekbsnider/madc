@@ -1648,6 +1648,7 @@ bool load_menu(long w, long es, const char *name)
 // the menu context reads it).
 long window_count(long w, long es);
 void ensure_build_cmds(long w, long es);	// the Build menu composes the ^B rows
+bool focused_lens_conceals(long w, long es);	// the lens seam, below
 
 // The context a [when] clause is judged against: named FACTS of the
 // session, computed once per compose. A clause names keys from this bag
@@ -1665,9 +1666,21 @@ void menu_context(var &ctx, long w, long es, long doc, long nav)
     bool building = es_int(w, es, "buildlive", 0) != 0;
     bool modal = cur_vimode(w, es) != viOFF;
     bool viewing = nav != doc;
+    bool formatted = false;
+    if ( viewing && focused_lens_conceals(w, es) )
+    {
+	// a concealing lens edits through to the file (lens_put): the edit
+	// items follow the FILE's verdict, its history and block markers are
+	// the file's; `formatted` names what the view still refuses
+	var why;
+	access_verdict(editable, why, w, es);
+	viewing = false;
+	formatted = true;
+    }
     ctx = { "editable": editable, "dirty": dirty, "selection": selection,
 	    "split": split, "buffers": buffers, "project": project,
-	    "building": building, "modal": modal, "viewing": viewing };
+	    "building": building, "modal": modal, "viewing": viewing,
+	    "formatted": formatted };
 }
 
 // Does a [when] clause hold? `key`, `!key`, joined by `&&`; an empty
@@ -3996,6 +4009,12 @@ bool IdeSession::lens_put(long doc, var &ev, long side)
     }
     var before;
     ui::text(before, w, subject);
+    // a cut's clipboard takes what the view shows, as a copy there does
+    long code = ev_code(ev);
+    bool cuts = code == cmdCUT || code == cmdBLOCKDEL;
+    var shownclip;
+    if ( cuts && copy_selection(w, es, v["vbuf"].as_integer(), dc) )
+	ui::get(shownclip, w, es, "clip");
     // the lens steps aside for the one event: the View on its source, the
     // caret and block in stored offsets, the file's own access verdict
     view_row_source(w, es, v);
@@ -4005,9 +4024,13 @@ bool IdeSession::lens_put(long doc, var &ev, long side)
     derive_access(w, es);
     long seq0 = clog_head(w);
     bool cont = apply_ide_event(doc, ev);
-    long code = ev_code(ev);
     if ( lens_conceals(lang) && code != cmdUNDO && code != cmdREDO )
 	lens_put_repair(w, es, subject, before, seq0);
+    if ( !shownclip.is_null() )
+    {
+	ui::set(w, es, "clip", shownclip);
+	clip_publish(w, es);
+    }
     // the lens returns over the edited text, its caret projected
     lens_show(w, es, subject, lang);
     return cont;
@@ -8284,9 +8307,11 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	}
 	// Stored-space interaction state (block markers) and history are
 	// meaningless against a displayed view: the one refusal, up front
-	// (mutating actions below refuse through the editable gate).
-	if ( viewing && (code == cmdMARK || code == cmdBEND
-		     || code == cmdUNDO || code == cmdREDO) )
+	// (mutating actions below refuse through the editable gate). A
+	// concealing lens takes them: its edits reach the file (lens_put,
+	// above, has run undo and redo already) and its block's ends project.
+	if ( viewing && !focused_lens_conceals(w, es)
+	  && (code == cmdMARK || code == cmdBEND || code == cmdUNDO || code == cmdREDO) )
 	{
 	    refuse_edit(w, es);
 	    return true;

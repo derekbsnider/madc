@@ -9,7 +9,10 @@
 //  - undo is the stored text's own;
 //  - deleting part of a construct's text keeps its delimiters paired, and
 //    deleting all of it removes the construct whole;
-//  - deleting an escaped character takes its backslash with it.
+//  - deleting an escaped character takes its backslash with it;
+//  - the Edit menu judges the file (Undo, Cut, Paste enabled; Copy Block
+//    not, a formatted view refuses it); Cut puts what the view shows on
+//    the clipboard; a block marker is taken; Copy Block is refused.
 #include "../tools/texteditor/lined_core.inc"
 #include "../tools/texteditor/editor_events.inc"
 #include "../tools/madcide/madcide_core.inc"
@@ -110,6 +113,36 @@ int main()
     ui::set(w, es, "caret", at(S, "Title", 5));
     type(S, doc, "s");
     show(S, doc, "type in the heading");
+
+    // the Edit menu in the formatted view, with a selection up
+    select(S, "Xbolder", 7);
+    var mb;
+    compose_menu_bar(mb, w, es, doc, nav_doc(w, es, doc));
+    for ( var m : mb["bar"] )
+	if ( m["title"] == "Edit" )
+	    for ( var it : m["items"] )
+		if ( it["id"] == "undo" || it["id"] == "cut" || it["id"] == "paste"
+		  || it["id"] == "mark" || it["id"] == "blockcopy" )
+		    println("menu {} enabled={}", it["id"], it["enabled"].is_null() ? 1 : 0);
+
+    S.command(doc, cmdCUT, "", cont);
+    var clip;
+    ui::get(clip, w, es, "clip");
+    println("cut clip=[{}]", clip);
+    show(S, doc, "cut Xbolder");
+
+    ui::set(w, es, "caret", at(S, "and code", 0));
+    S.command(doc, cmdMARK, "", cont);
+    var msg;
+    ui::get(msg, w, es, "msg");
+    println("mark: at={} msg=[{}]", es_int(w, es, "mark", -1), msg);
+    ui::set(w, es, "caret", at(S, "code", 4));
+    S.command(doc, cmdBEND, "", cont);
+    println("bend: at={}", es_int(w, es, "bend", -1));
+    S.command(doc, cmdBLOCKCOPY, "", cont);
+    ui::get(msg, w, es, "msg");
+    println("blockcopy: msg=[{}]", msg);
+    show(S, doc, "after blockcopy");
 
     var md;
     ui::get(md, w, doc, "modified");

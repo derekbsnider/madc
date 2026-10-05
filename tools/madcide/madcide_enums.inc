@@ -689,10 +689,14 @@ long key_edit_side(var &k)
     return lsNONE;
 }
 
-// A command's side: the commands that change the buffer's text — the
-// clipboard's cut and paste, the line edits, the block moves, the edit
-// history and the deletions (the edit keys spelled as commands are
-// key_edit_side's, through motion_key_of). A new mutating verb goes here.
+// A command's side: the commands that change the buffer's text and reach
+// the stored text through a concealing lens — the clipboard's cut and
+// paste, the line edits, the block deletion, the edit history and the
+// deletions (the edit keys spelled as commands are key_edit_side's,
+// through motion_key_of). Block copy and block move are not among them:
+// over the stored text they would copy or move half a construct's
+// concealed delimiters, so the formatted view refuses them. A new
+// mutating verb goes here.
 long cmd_edit_side(long code)
 {
     switch ( code )
@@ -700,8 +704,8 @@ long cmd_edit_side(long code)
 	case cmdDELWORD:
 	    return lsAFTER;
 	case cmdCUT: case cmdPASTE: case cmdINDENT: case cmdDEDENT:
-	case cmdTOGGLECOMMENT: case cmdBLOCKCOPY: case cmdBLOCKMOVE:
-	case cmdBLOCKDEL: case cmdUNDO: case cmdREDO: case cmdDELLINE:
+	case cmdTOGGLECOMMENT: case cmdBLOCKDEL: case cmdUNDO: case cmdREDO:
+	case cmdDELLINE:
 	    return lsBEFORE;
     }
     return lsNONE;

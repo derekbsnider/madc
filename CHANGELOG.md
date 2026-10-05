@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### madcide: Fix menu and clipboard in formatted view
+
+Menu items gated on editable (Undo, Redo, Cut, Paste, Save, Mark Block Start/End) are now enabled in the formatted Markdown view. The file's read-only verdict determines editability; the view is not counted as viewing, and a new formatted context fact is set. Cut in the formatted view now copies the displayed text to the clipboard instead of the stored bytes with hidden formatting. Block markers, undo and redo now work through the concealing lens; the dispatcher's up-front refusal no longer applies. Block copy and block move are refused with the message "That command does not edit through the formatted view". tools/texteditor/editor_events.inc: access_verdict (the read-only rule's verdict and reason) factored out of derive_access, called by both derive_access and menu_context. default.menu and docs/madcide.md and docs/language/ns-ui.md updated. Validation: Tier 1 testmadcide*, testide*, testmarkdown, testgraphpast, testmcpclient, testnexus_layers, testnexus_records, testvised: 65 passed, EXE 58/0, OBJ 58/0. Tier 2 (scripts/fast_lanes.sh, seven lanes) green, 0 outside baseline.
+
 ### madcide: Editable concealing lens — edit through formatted Markdown
 
 An edit in a Markdown buffer's formatted view now changes the file (read-only before). New enum lens_side {lsNONE, lsBEFORE, lsAFTER} and edit_event_side classify edit position and event type; apply_ide_event sends events to lens_put when the focused view is a concealing lens. lens_put projects caret and block to stored offsets, runs the dispatcher on stored text, repairs deletions with md_put_repair (taking only visible bytes and line structure; inline construct delimiters stay paired or vanish whole), and re-renders. Test: tests/testmadcide_mdput.mad validates editing (typing, deletion, undo, block selection) through a formatted view. Validation: Tier 1 testmadcide*, testidemenu, testmarkdown: 53 passed, EXE 48/0, OBJ 48/0; Tier 2 green, commonmark 664/670.

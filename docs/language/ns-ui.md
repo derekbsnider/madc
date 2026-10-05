@@ -463,7 +463,9 @@ renderer shows the chord the LOADED profile binds to the id, so the
 composed tree stays profile-independent. `[WHEN]` names the context that
 enables the item (`key`, `!key`, joined by `&&`; the keys: `editable`
 `dirty` `selection` `split` `buffers` `project` `building` `modal`
-`viewing`), judged against the session's live facts at every compose. The
+`viewing` `formatted`), judged against the session's live facts at every
+compose. In a Markdown buffer's formatted view, which edits the file,
+`editable` and `viewing` judge the file and `formatted` holds. The
 menu named `palette` lists palette-only commands (a title for every
 command the bar does not carry). `scripts/check-madcide-command-registry.sh`
 (fulltest) keeps the three in agreement: every profile action is registered

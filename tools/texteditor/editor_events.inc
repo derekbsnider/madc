@@ -653,14 +653,17 @@ long caret_to_line(long w, long doc, long line, long col)
     return start + col;
 }
 
-// The typing gate AND its refusal prose, derived ONCE from the
-// enumerated affordances: the read-only rule lives in the shared
-// availability check; the editor stores its verdict and its reason
-// (verb `c`'s enumerated state) on the editor-state bag instead of
-// re-implementing or re-spelling either.
-void derive_access(long w, long es)
+// The read-only rule's verdict on the FILE, from the enumerated
+// affordances (verb `c`'s enumerated state): `editable` and its `reason`.
+// False = no `c` affordance is registered (`editable` stays true). The one
+// reader: derive_access stores it on the bag; a client whose display is
+// read-only over a file that is not (madcide's menus over a lens that
+// edits through to the file) asks it directly.
+bool access_verdict(bool &editable, var &reason, long w, long es)
 {
-    bool editable = true;
+    editable = true;
+    reason = "";
+    bool found = false;
     var affs;
     ui::affordances(affs, w, es);
     for ( var a : affs )
@@ -669,10 +672,24 @@ void derive_access(long w, long es)
 	if ( act == "c" )
 	{
 	    editable = a["enabled"].as_boolean();
-	    var reason = format("{}", a["reason"]);
-	    ui::set(w, es, "ro_msg", reason.c_str());
+	    reason = format("{}", a["reason"]);
+	    found = true;
 	}
     }
+    return found;
+}
+
+// The typing gate AND its refusal prose, derived ONCE from the
+// enumerated affordances: the read-only rule lives in the shared
+// availability check; the editor stores its verdict and its reason
+// (verb `c`'s enumerated state) on the editor-state bag instead of
+// re-implementing or re-spelling either.
+void derive_access(long w, long es)
+{
+    bool editable = true;
+    var reason;
+    if ( access_verdict(editable, reason, w, es) )
+	ui::set(w, es, "ro_msg", reason.c_str());
     ui::set(w, es, "editable", editable);
 }
 
