@@ -70,8 +70,9 @@ class Program;
 bool apply_project_tu_options(Program &prog, const ProjectTU &tu,
 			      std::string &err);
 
-// Engine: build+link+JIT-run the manifest. Returns the program's exit code,
-// or -1 on a build/link error. Defined in madc_cir.cpp.
+// Engine: build+link+JIT-run the manifest. Returns the run's exit status:
+// main()'s return value, or 1 on a build/link error (madc_cir_execute's
+// contract). Defined in madc_cir.cpp.
 // forest_bind: each TU binds grove-backed system #includes from the frozen
 // container (forest_bind_path, or the blob appended to this executable when
 // empty) — the compile-mode default, with silent live fall-through when no

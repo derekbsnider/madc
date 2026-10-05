@@ -298,6 +298,7 @@ for t in "$TEST_DIR"/*.mad; do
     expect_file="${TEST_DIR}/$base.expect"
     expect_err_file="${TEST_DIR}/$base.expect_err"
     expect_quiet_file="${TEST_DIR}/$base.expect_quiet"
+    expect_rc_file="${TEST_DIR}/$base.expect_rc"
     flags_file="${TEST_DIR}/$base.flags"
     env_file="${TEST_DIR}/$base.env"
     mir_skip_file="${TEST_DIR}/$base.mir_skip"
@@ -384,6 +385,11 @@ for t in "$TEST_DIR"/*.mad; do
     # testgraphpast, whose 60 s fixture the JIT leg honoured).
     tmo=10
     [ -f "$timeout_file" ] && read -r tmo < "$timeout_file"
+    # The exit status every run of the test (JIT, exe, obj) must end with:
+    # main's return value IS the status, so a test of that carries it in an
+    # .expect_rc fixture. Default 0.
+    want_rc=0
+    [ -f "$expect_rc_file" ] && read -r want_rc < "$expect_rc_file"
 
     # A test leaves nothing behind in the directory it runs in
     # (.claude/rules/scratch-files.md): a name the JIT run adds to the working
@@ -436,7 +442,7 @@ for t in "$TEST_DIR"/*.mad; do
         if [ $rc -eq 124 ]; then
             ok=0
             timed_out=1
-        elif [ $rc -ne 0 ]; then
+        elif [ $rc -ne $want_rc ]; then
             ok=0
         else
             if [ -f "$expect_file" ]; then
@@ -540,7 +546,7 @@ for t in "$TEST_DIR"/*.mad; do
             fi
             obj_rc=$?
             obj_ok=1
-            if [ $obj_rc -ne 0 ]; then
+            if [ $obj_rc -ne $want_rc ]; then
                 obj_ok=0
             elif [ -f "$expect_file" ]; then
                 while IFS= read -r line; do
@@ -586,7 +592,7 @@ for t in "$TEST_DIR"/*.mad; do
             fi
             exe_rc=$?
             exe_ok=1
-            if [ $exe_rc -ne 0 ]; then
+            if [ $exe_rc -ne $want_rc ]; then
                 exe_ok=0
             elif [ -f "$expect_file" ]; then
                 while IFS= read -r line; do

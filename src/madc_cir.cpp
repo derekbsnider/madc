@@ -2163,7 +2163,7 @@ int madc_cir_execute(Program *prog, const char *source_name,
     bool stop = false;
     if (!session.build(prog, source_name, dump_tree, dump_nodes,
 		       dump_checked, &stop))
-	return stop ? 0 : -1;
+	return stop ? 0 : 1;
 
     bool ok = false;
     // main() is a host-call boundary just like program::call and the
@@ -2185,7 +2185,7 @@ int madc_cir_execute(Program *prog, const char *source_name,
     prog->pop_runtime_scope();
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: main() not found\n");
-	return -1;
+	return 1;
     }
     return result;
 }
@@ -6625,7 +6625,7 @@ int madc_cir_execute_frozen(const char *container_path,
     if (!cir_forest_map_image(container_path, image, image_len)) {
 	fprintf(stderr, "madc: %s: cannot map frozen container\n",
 		container_path ? container_path : "<self-executable>");
-	return -1;
+	return 1;
     }
 
     // A frozen run never parses, so no Program binds the string substrate;
@@ -6638,7 +6638,7 @@ int madc_cir_execute_frozen(const char *container_path,
     auto _th0 = std::chrono::steady_clock::now();  // --show-stats: thaw wall
     CirJitSession session;
     if (!session.build_frozen(image, image_len, "frozen"))
-	return -1;
+	return 1;
     auto _th1 = std::chrono::steady_clock::now();
 
     bool ok = false;
@@ -6646,7 +6646,7 @@ int madc_cir_execute_frozen(const char *container_path,
     int result = session.run_main(user_argc, user_argv, &ok, &exec_secs);
     if (!ok) {
 	fprintf(stderr, "madc: frozen module has no main()\n");
-	return -1;
+	return 1;
     }
     // --show-stats: the frozen lane's phases (no parse — map, thaw+link,
     // run). main() appends the process total.
@@ -6931,7 +6931,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 {
 	if (manifest.tus.empty()) {
 		fprintf(stderr, "madc_project_execute: empty manifest\n");
-		return -1;
+		return 1;
 	}
 
 	// Phase 1: tokenize + parse EVERY TU before any MIR/c2m context exists.
@@ -6943,7 +6943,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 	if (!project_parse_all(engine, group, manifest, forest_bind,
 			       forest_bind_path,
 			       class_pattern_live_capture, parsed))
-		return -1;	// no MIR/c2m created yet — nothing to tear down
+		return 1;	// no MIR/c2m created yet — nothing to tear down
 	// A GUI module row bound by any TU lifts an armed memory guard before
 	// the program runs (the single-TU driver does the same after its parse).
 	for (const CirParsedTU &pt : parsed)
@@ -6975,7 +6975,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		MIR_gen_finish(ctx);
 		c2mir_finish(ctx);
 		MIR_finish(ctx);
-		return -1;
+		return 1;
 	}
 
 	// Builders must outlive MIR_gen()+run: their arenas back the modules.
@@ -7001,7 +7001,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		builders.push_back(builder);	// may be NULL on failure; delete NULL is safe
 		if (!mod) {
 			teardown();
-			return -1;
+			return 1;
 		}
 		modules.push_back(mod);
 	}
@@ -7045,7 +7045,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 		fprintf(stderr, "madc_project_execute: entry '%s' not found\n",
 			manifest.entry.c_str());
 		teardown();
-		return -1;
+		return 1;
 	}
 
 	// Dynamic global initialization, every TU (the engine plays ld.so's
@@ -7068,7 +7068,7 @@ int madc_project_execute(MadcEngine &engine, const ProjectManifest &manifest,
 				" not found in its module\n",
 				parsed[bi].name.c_str(), ini.c_str());
 			teardown();
-			return -1;
+			return 1;
 		}
 		((void (*)(int, char **, char **))icode)(user_argc, user_argv,
 							 nullptr);

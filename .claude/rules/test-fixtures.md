@@ -14,6 +14,8 @@
     timeout) and stderr must contain each non-empty line; EXE pass skips it
   - `tests/foo.expect_quiet` — JIT run must produce EMPTY stderr (content
     of the fixture file is ignored; presence enables the check)
+  - `tests/foo.expect_rc` — the exit status every run (JIT, exe, obj) must
+    end with, in place of 0 (one number: what the gcc-built program exits with)
   - `tests/foo.helper` — `foo.mad` is a compilation unit owned by another
     test (content = one line naming the owner); every suite runner skips
     it as a standalone test

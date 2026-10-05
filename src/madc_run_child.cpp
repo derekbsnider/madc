@@ -66,13 +66,6 @@ void forget_run_child_variable()
 #endif
 }
 
-// The guest's status as the CLI reports it (--run-frozen, --project): a
-// guest that never ran exits 1.
-int run_child_exit_status(int rc)
-{
-    return rc < 0 ? 1 : rc;
-}
-
 } // namespace
 
 std::unique_ptr<madc::Process> madc_run_child_process(
@@ -108,7 +101,7 @@ int64_t madc_serve_run_child()
     }
     std::string path = text.substr(space + 1);
     char *guest_argv[2] = { &path[0], (char *)0 };	// the CLI's argv[0]
-    int rc = -1;
+    int rc = 1;		// a guest that never ran exits 1
     switch ( kind )
     {
 	case rckFrozen:
@@ -133,5 +126,5 @@ int64_t madc_serve_run_child()
     }
     fflush(NULL);
     std::cout.flush();
-    exit(run_child_exit_status(rc));
+    exit(rc);
 }

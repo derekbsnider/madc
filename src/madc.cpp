@@ -1285,7 +1285,7 @@ int main(int argc, char **argv)
                     (_t_now.tv_sec - _t_main.tv_sec)
                     + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
         }
-        return (rc < 0) ? 1 : rc;
+        return rc;
     }
 
     // --dump-forest: print a container's directory + grove payload v2
@@ -1421,7 +1421,7 @@ int main(int argc, char **argv)
 		    (_t_now.tv_sec - _t_main.tv_sec)
 		    + (_t_now.tv_usec - _t_main.tv_usec) / 1e6);
 	}
-	return (rc < 0) ? 1 : rc;
+	return rc;
     }
 
     // No program file (D20, plan §41.5a). An artifact or dump request names
@@ -1953,8 +1953,9 @@ int main(int argc, char **argv)
 	DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
 	print_stats();
 	// main()'s return value IS the process exit status (gcc parity:
-	// `./prog; echo $?`). Negative = infrastructure failure → 1.
-	return (result < 0) ? 1 : result;
+	// `./prog; echo $?`), a negative one included; a run that never
+	// reached main() comes back as 1.
+	return result;
     }
     // Not reached: with no program file the D20 dispatch above ran the REPL
     // or named stdin as the program.

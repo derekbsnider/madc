@@ -55,7 +55,6 @@ lacc/initialize-string.c
 lacc/linebreak.c
 lacc/preprocess.c
 lacc/printstr.c
-lacc/signed-division.c
 lacc/sizeof.c
 lacc/string-addr.c
 lacc/string-index.c

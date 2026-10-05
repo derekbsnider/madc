@@ -65,6 +65,19 @@ reported as `NOISY(stderr):`. Use it on tests that compile real system
 headers, where a reintroduced diagnostic leak would otherwise regress
 silently.
 
+## Why `.expect_rc` exists (2026-10-05)
+
+`main`'s return value is the process exit status (C11 5.1.2.2.3), and a
+test of that contract cannot assert it from inside the program — the
+status only exists once the process ends. Every lane used to require exit
+0, so a program returning anything else could only be tested by the MIR
+corpus's own `.expectrc` files in the c2mir-tests lane. That is where the
+JIT's mapping of every negative `main` value to 1 surfaced
+(`lacc/signed-division.c`: gcc exits 112, madc exited 1). `.expect_rc`
+names the one status the JIT, exe and obj runs must all end with — the
+value the gcc-built program exits with — so the reducer for that fix
+(`testmainnegativestatus`) gates all three lanes in tests/.
+
 ## How to add a new capability
 
 If the runner needs a new knob (say, compiler flags or environment variables), resist the

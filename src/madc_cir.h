@@ -257,7 +257,9 @@ int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
 void cir_finish(c2m_ctx_t c2m);
 
 // Full CIR pipeline: tokenize+parse → CIR translate → c2mir compile → JIT execute.
-// Returns the exit code from main(), or -1 on failure.
+// Returns the run's exit status: main()'s return value as it is (a negative
+// one included — the host keeps what it keeps of a status), or 1 when main()
+// never ran (a failed build; 0 for a --dump-* stop).
 // If dump_tree is true, dumps the c2mir-format tree (c2mir_dump_tree, for
 // c2m -d comparison). If dump_nodes is true, dumps our cir_node tree via
 // the madc-owned walker (cir_dump_nodes, showing +madc fields).
@@ -398,7 +400,8 @@ bool madc_cir_ledger_compile(MadcEngine &engine,
 // `container_path`, or from the blob appended to the running executable
 // when NULL (the /proc/self/exe placement). No parse happens — this is the
 // cross-process consumer of madc_cir_freeze's output. Backs --run-frozen.
-// Returns main()'s exit code, or -1 on failure. show_stats prints the
+// Returns the run's exit status: main()'s return value, or 1 when main()
+// never ran (madc_cir_execute's contract). show_stats prints the
 // lane's phase walls (map, thaw+link, execution) to stderr (--show-stats).
 int madc_cir_execute_frozen(const char *container_path,
 			    int user_argc, char **user_argv,

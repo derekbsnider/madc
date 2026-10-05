@@ -5243,8 +5243,7 @@ public:
 	    char *guest_argv[2];
 	    guest_argv[0] = &argv0[0];
 	    guest_argv[1] = (char *)0;
-	    int rc = madc_cir_execute(child, name.c_str(), 1, guest_argv);
-	    return rc < 0 ? 1 : (rc & 0xff);	// the CLI's own mapping
+	    return madc_cir_execute(child, name.c_str(), 1, guest_argv);
 	};
 	std::unique_ptr<Process> process(
 	    new Process(DataSource("exec://<madcrun>"), options));
@@ -5302,9 +5301,8 @@ public:
 	    char *guest_argv[2];
 	    guest_argv[0] = &argv0[0];
 	    guest_argv[1] = (char *)0;
-	    int rc = madc_project_execute(*engine, manifest, 1, guest_argv,
-					  forest_bind, forest_bind_path);
-	    return rc < 0 ? 1 : (rc & 0xff);
+	    return madc_project_execute(*engine, manifest, 1, guest_argv,
+					forest_bind, forest_bind_path);
 	};
 	std::unique_ptr<Process> process(
 	    new Process(DataSource("exec://<madcproj>"), options));
@@ -7752,10 +7750,8 @@ int64_t internal_program_parse_run(int64_t handle)
 	char *guest_argv[2];
 	guest_argv[0] = &argv0[0];
 	guest_argv[1] = (char *)0;
-	int rc = madc_cir_execute(&child, st->display_name.c_str(), 1,
-				  guest_argv);
-	// The CLI's own mapping: negative = infrastructure failure -> 1.
-	exit(rc < 0 ? 1 : (rc & 0xff));
+	exit(madc_cir_execute(&child, st->display_name.c_str(), 1,
+			      guest_argv));
     }
     int64_t status = -3;
     if ( pid > 0 )
@@ -8003,11 +7999,9 @@ int64_t internal_program_project_run(::Program &self,
 	char *guest_argv[2];
 	guest_argv[0] = &argv0[0];
 	guest_argv[1] = (char *)0;
-	int rc = madc_project_execute(*self.engine, manifest, 1, guest_argv,
-				      self.registration_policy.enable_forest_bind,
-				      self.forest_bind_path);
-	// The CLI's own mapping: negative = infrastructure failure -> 1.
-	exit(rc < 0 ? 1 : (rc & 0xff));
+	exit(madc_project_execute(*self.engine, manifest, 1, guest_argv,
+				  self.registration_policy.enable_forest_bind,
+				  self.forest_bind_path));
     }
     int64_t status = -3;
     if ( pid > 0 )
