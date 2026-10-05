@@ -38,7 +38,14 @@ int madcide_main(int argc, char **argv, const ide_product &product)
     // that is not a flag is the file, an unknown flag refused with the usage.
     ide_args a;
     var why;
-    if ( !ide_args_parse(a, why, argc, (const char **)argv) )
+    bool parsed = ide_args_parse(a, why, argc, (const char **)argv);
+    // A face that speaks on the standard streams (the help, a refusal, the
+    // terminal, a one-shot, a server) needs a console: a Windows GUI image
+    // (chthonia's) starts without one, so it attaches to its parent's. The
+    // window face never does — closing that console would end the window.
+    if ( !parsed || !ide_face_is_window(a) )
+	madc::console_attach();
+    if ( !parsed )
     {
 	println(stderr, "{}: {}", product.name, why);
 	var usage;

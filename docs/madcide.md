@@ -208,6 +208,12 @@ A gui project's Windows executable gets the GUI subsystem (no console
 window at start — what `-mwindows` does for a single file), and Run sends
 its output to the window's Output tab instead of the Terminal.
 
+Chthonia's Windows executable is such a program. Its window opens with no
+console, and every other face — `--help`, a refusal, `--tui`, `--line`,
+`-c`, the servers — attaches to the console it was started from
+(`madc::console_attach`). The window never attaches, so closing the
+command prompt it came from leaves it running.
+
 `icon` names the program's Windows icon file (`.ico`), relative to the
 manifest. A project's Windows executable carries it as its icon
 resources, the way `windres` would build them from `32512 ICON "app.ico"`.

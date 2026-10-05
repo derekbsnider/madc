@@ -467,6 +467,21 @@ namespace madc {
     // when it cannot be. A LAZY module row (madcwebview) compiles and
     // runs without its library — ask this before the first call.
     bool module_available(const char *name);
+    // The console of the process that started this one (plan
+    // 2026-10-03-chthonia-windows-macos.md §7a). A Windows program built as
+    // a GUI image (-mwindows, a manifest's "kind": "gui") starts with no
+    // console, so its standard streams go nowhere: console_attach() attaches
+    // it to its parent's console (a command prompt, a terminal, a launcher
+    // that waits for it) and points each standard stream the parent left
+    // without a handle at that console — a stream the parent redirected to a
+    // file or a pipe stays redirected. True = the process has a console now
+    // (or had one); false = its parent has none (Explorer, a shortcut). Every
+    // other platform's program keeps the terminal it was started from: true.
+    // A window program does not attach for its window: closing the console
+    // it attached to would end it. Thread contract: call it once, from main
+    // and before any thread starts — it rebinds the process's standard
+    // streams.
+    bool console_attach();
     // A shared library opened at run time by PATH — a madcide plugin's
     // library, or any madc-built one (plan §41.11a step 4):
     //   library_open: every reference binds at open, so a library whose

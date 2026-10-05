@@ -369,7 +369,7 @@ reaches for, by menu.
 | View | Shell, Symbols (2026-10-04: renamed from Variables — it lists the session's functions as well as its variables), Problems, Outline (2026-10-04: the sidebar's second tab; toggling it off returns Symbols), Program arguments (2026-10-04: `progargs`, split by `python::shlex_split`; F5 passes them, Build ▸ Run does not); font size (2026-10-05: `fontlarger` / `fontsmaller`, Ctrl+plus / Ctrl+= and Ctrl+minus, 8 to 36 pixels, kept in `settings.json`'s `font_size`; a window only); Full screen (2026-10-05: `fullscreen`, F11, `madcwebview_fullscreen` — GTK4, Cocoa, Win32 — through the host's `fullscreen` op; a window only) | — |
 | Run | Run (F5), Stop; toolbar Run/Stop | Debug, Step over/into/out, Resume, Run to cursor, breakpoints, Interrupt, Send EOF; toolbar Debug and the steps |
 | Tools / Help | Key bindings, Options (2026-10-04: tab width, scheme, keymap), Help, About | — |
-| Window | a window titled `chthonia - <file> @ <line> : <col>`; no console window on Windows (D3) | `--tui`/`--help` from a console on Windows (the GUI-subsystem image does not attach to its parent's console) |
+| Window | a window titled `chthonia - <file> @ <line> : <col>`; no console window on Windows (D3); every console face (`--help`, a refusal, `--tui`, `--line`, `-c`, the servers) attaches to its parent's console (2026-10-05: `madc::console_attach`, `ide_face_is_window`) | a console launcher beside the GUI image (`chthonia.com`, the `devenv.com` pattern) so a command prompt waits for `--tui` instead of returning to its prompt — packaging (split plan §4) |
 
 The debugger is the largest gap: there is no stepper. It is its own arc
 (the JIT executes, `mir-interp-not-assumed`) and is designed separately.

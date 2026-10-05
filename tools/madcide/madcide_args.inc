@@ -199,3 +199,14 @@ const char *ide_face_needs_file(ide_args &a)
 	return "--serve";
     return NULL;
 }
+
+// The flags open the WINDOW (ui::WEB, the editor face) and nothing that
+// speaks on the standard streams: the help, a one-shot, a protocol server,
+// the attach relay, --sessions and --build-plugin all do. Every other run
+// needs a console (madc::console_attach — a Windows GUI image starts
+// without one).
+bool ide_face_is_window(ide_args &a)
+{
+    return a.level == ui::WEB && !a.help && ide_face_needs_file(a) == NULL
+	&& !a.attach && !a.sessions && a.build_plugin == NULL;
+}
