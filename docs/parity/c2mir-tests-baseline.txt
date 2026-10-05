@@ -57,7 +57,6 @@ lacc/preprocess.c
 lacc/printstr.c
 lacc/sizeof.c
 lacc/string-addr.c
-lacc/string-index.c
 lacc/stringify.c
 lacc/struct-assign.c
 lacc/struct-init-swap.c

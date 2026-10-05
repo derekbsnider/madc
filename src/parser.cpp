@@ -43780,6 +43780,32 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			    return done ? ExprStep::Done : ExprStep::Break;
 			}
+			// C11 6.5.2.1p1, [expr.sub]/1: either operand may be the
+			// pointer — `2["World"]` is `"World"[2]`. A `[` after an
+			// integer operand is a subscript (a lambda-introducer never
+			// follows an operand); the element is the index's pointee.
+			// The tree keeps the operands as written (c2mir orders the
+			// pair, as gcc does).
+			if ( dd && dd->is_integer() && isPostfixPosition() )
+			{
+			    TokenBase *base_expr = exStack.top();
+			    exStack.pop();
+			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *clsqr = nextToken();
+			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
+				Throw(tb) << "Expected ] in subscript expression" << flush;
+			    // An array index's element is its ROW (madc stores
+			    // arrays flattened: never the operand's datadef()).
+			    DataDef *elem_type = array_operand_element_type(idx);
+			    DataDef *idx_dd = idx ? idx->datadef() : NULL;
+			    if ( !elem_type && idx_dd && idx_dd->is_pointer() )
+				elem_type = unwrap_subscript_element_type(idx_dd);
+			    if ( !elem_type )
+				Throw(tb) << "subscripted value is neither array nor pointer" << flush;
+			    DBG(cout << "parseExpression: subscript with the pointer as index" << endl);
+			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
+			    return done ? ExprStep::Done : ExprStep::Break;
+			}
 			if ( DataDef *elem_type = dependent_deref_result_type(dd) )
 			{
 			    TokenBase *base_expr = exStack.top();
