@@ -33094,7 +33094,14 @@ void CirBuilder::collect_global_ctors(Program *prog,
 	m_global_ctor_stmts.clear();
 	m_ctor_groups.clear();
 	if (!prog || !prog->tkProgram) return;
-	for (Variable *v : prog->tkProgram->variables) {
+	// By index over the LIVE size: translating a global's initializer can
+	// instantiate a template whose objects join tkProgram->variables, and the
+	// reallocation left a range-for reading freed storage (libstdc++ 11's
+	// std::string globals: SIGSEGV here). A global minted on the way is
+	// visited too, so its construction is queued like every other.
+	std::vector<Variable *> &globals = prog->tkProgram->variables;
+	for (size_t gi = 0; gi < globals.size(); ++gi) {
+		Variable *v = globals[gi];
 		if (!v) continue;
 		// File-scope only (a global is non-LOCAL or a file-scope static).
 		if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC)) continue;
