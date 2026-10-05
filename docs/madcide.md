@@ -121,6 +121,14 @@ question is a dialog with Yes, No, All and Cancel buttons. The answer keys
 are the `@replace` scope's, so a key profile can respell them (as with
 `@confirm`).
 
+File ▸ Recent Files… (`recent`) lists the files you opened or saved most
+recently, newest first, and opens the one you choose. A file no longer on
+the disk is left out, and a new file appears once it is saved. Ten are
+kept, in `recent.json` in the configuration directory (beside
+`settings.json`). Only a window or a terminal session keeps them, so a
+`-c` command line or a script leaves the list alone.
+`recent PATH` opens that file directly.
+
 File ▸ Save All (`saveall`; Ctrl+Alt+S in the Chthonia keys, Ctrl+K S in
 the VS Code keys) writes every buffer that has unsaved changes. The
 buffer you are in stays the active one. An untitled buffer has no file

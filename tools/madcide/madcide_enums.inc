@@ -34,7 +34,7 @@ enum ide_cmd : unsigned short
     cmdMDPREVIEWROW, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
-    cmdPROBLEMS, cmdPROFILE, cmdPROGARGS, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
+    cmdPROBLEMS, cmdPROFILE, cmdPROGARGS, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdRECENT, cmdREDO,
     cmdREFRESH, cmdREPLACE, cmdSAVE, cmdSAVEALL, cmdSAVEAS,
     cmdSAVEQUIT, cmdSELECTALL, cmdSHELL,
     cmdSHRINKW, cmdSPLITW, cmdTERMINAL, cmdTHEME, cmdTOGGLECOMMENT, cmdTOP, cmdUNDO, cmdVIEW,
@@ -119,6 +119,7 @@ void cmd_table(var &t)
     rows[] = { "name": "projaddcur", "code": cmdPROJADDCUR };
     rows[] = { "name": "project", "code": cmdPROJECT };
     rows[] = { "name": "quit", "code": cmdQUIT };
+    rows[] = { "name": "recent", "code": cmdRECENT };
     rows[] = { "name": "redo", "code": cmdREDO };
     rows[] = { "name": "refresh", "code": cmdREFRESH };
     rows[] = { "name": "replace", "code": cmdREPLACE };
@@ -664,6 +665,7 @@ bool cmd_takes_arg(long code)
 	case cmdLANGUAGE:
 	case cmdMENUSHOW:	// the menu's title (a toolbar arrow's)
 	case cmdHELPTOPIC:	// the topic (a link row's, the palette's)
+	case cmdRECENT:		// the file (a Recent files row's)
 	case cmdPASTE:		// the text to paste (a client's platform read)
 	    return true;
     }

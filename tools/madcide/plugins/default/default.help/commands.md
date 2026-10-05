@@ -9,6 +9,10 @@ Opens a new, untitled buffer.
 ## editfile
 Opens a file into a buffer of its own, or switches to it when it is open.
 
+## recent
+Lists the files you opened or saved most recently, newest first, and opens
+the one you choose.
+
 ## save
 Saves the buffer to its file, then checks it.
 

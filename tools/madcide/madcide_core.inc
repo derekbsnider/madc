@@ -131,6 +131,10 @@ class IdeSession
 					// clipboard (plan §41.11a step 3e): a
 					// copy parks a clipset request, a
 					// paste a paste request
+	void remember(bool on);		// the client is a person's window or
+					// terminal: the files opened and saved
+					// are kept as Recent Files (the launch
+					// file noted now)
 	void panel(bool has);		// the client renders REGIONS (a
 					// window): runs and the shell go to a
 					// pty in the Terminal tab; the panel
@@ -174,6 +178,7 @@ void action_event(var &e, long code, const char *arg)
 #include "madcide_markdown.inc"	// the one Markdown renderer: a markdown:: tree as rows (plan §7d)
 #include "madcide_help.inc"		// Help's topics: a bundle's Markdown pages (plan §7d)
 #include "madcide_preview.inc"		// View ▸ Markdown Preview of the buffer being edited (plan §7d)
+#include "madcide_recent.inc"		// File ▸ Recent Files: the person's opened and saved files (plan §7a)
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -4332,6 +4337,7 @@ void edit_file(long w, long es, long olddoc, const char *path0)
     }
     push_buffer_row(w, es, nd, p.c_str());
     switch_buffer(w, es, olddoc, n);
+    recent_note(w, es, p.c_str());	// File ▸ Recent Files (a new file: once saved)
     var nm;
     doc_name(nm, w, nd);
     if ( strlen(note.c_str()) > 0 )
@@ -7222,6 +7228,8 @@ bool save_and_check(long w, long es, long doc)
 	return true;
     }
     bool run = do_verb(w, es, "w");
+    if ( !doc_modified(w, doc) )
+	recent_note_doc(w, es, doc);	// written: File ▸ Recent Files
     refresh_diags(w, es, doc);
     return run;
 }
@@ -7265,7 +7273,10 @@ void save_all(long w, long es, long doc)
 	if ( doc_modified(w, d) )
 	    failed = failed + 1;
 	else
+	{
 	    saved = saved + 1;
+	    recent_note_doc(w, es, d);	// written: File ▸ Recent Files
+	}
     }
     ui::set(w, es, "adoc", active);
     if ( saved > 0 && !doc_modified(w, active) )
@@ -8695,6 +8706,18 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		    ui::set(w, es, "termfocus", 1);
 		    ui::set(w, es, "consolefocus", 0);
 		}
+		return true;
+	    }
+	    case cmdRECENT:
+	    {
+		// File ▸ Recent Files…: its argument (a choice row's, the
+		// seat's, -c's) opens that file, else the choice list.
+		var ra;
+		keyed_get(ra, ev, "arg");
+		var rs = "";
+		if ( !ra.is_null() )
+		    rs = format("{}", ra);
+		recent_files(w, es, doc, rs.c_str());
 		return true;
 	    }
 	    case cmdKEYSTYLE:
@@ -10241,6 +10264,13 @@ void IdeSession::dialogs(bool has)
 void IdeSession::clipboard(bool has)
 {
     ui::set(w, es, "hasclip", has);
+}
+
+void IdeSession::remember(bool on)
+{
+    ui::set(w, es, "remember", on);
+    if ( on )
+	recent_note_doc(w, es, active_doc(w, es, 0));
 }
 
 void IdeSession::panel(bool has)

@@ -1,0 +1,100 @@
+// File ▸ Recent Files (plan docs/plans/2026-10-03-chthonia-windows-macos.md
+// §7a; tools/madcide/madcide_recent.inc): the files a person opened or saved,
+// newest first, in the configuration directory's recent.json. Only a session
+// whose client is a person's window or terminal keeps them (remember, which
+// run_ide sets): the launch file is noted then, an opened file and a saved one
+// go first, a switch to an open buffer is no open, a new file counts once it is
+// saved, ten are kept, the list shows only files that still exist, and a row's
+// file opens. A session without the fact (headless) leaves the list alone.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void show(const char *label)
+{
+    var fs;
+    recent_list(fs);
+    var names = {};
+    for ( var f : fs )
+	names[] = php::basename(f.c_str());
+    println("{}: [{}]", label, php::implode(" ", names));
+}
+
+int main()
+{
+    var cfg;
+    madcide_config_dir(cfg);
+    var rj = format("{}/recent.json", cfg);
+    if ( php::file_exists(rj.c_str()) )
+	php::unlink(rj.c_str());
+    php::file_put_contents("madc_recent_a.md", "# a\n");
+    php::file_put_contents("madc_recent_b.mad", "int main() { return 0; }\n");
+    php::file_put_contents("madc_recent_c.txt", "c\n");
+
+    IdeSession S;
+    long doc = S.open("madc_recent_a.md", false);
+    long w = S.w;
+    long es = S.es;
+    show("headless open");
+    S.remember(true);			// what run_ide says of its window
+    show("remember");
+    edit_file(w, es, doc, "madc_recent_b.mad");
+    edit_file(w, es, active_doc(w, es, doc), "madc_recent_c.txt");
+    show("open b, c");
+    edit_file(w, es, active_doc(w, es, doc), "madc_recent_a.md");
+    show("switch to a");
+    edit_file(w, es, active_doc(w, es, doc), "madc_recent_d.md");
+    show("new d");
+    long d = active_doc(w, es, doc);
+    ed_text_insert(w, es, d, 0, "# d\n");
+    ui::set(w, d, "modified", true);
+    bool cont = true;
+    S.command(d, cmdSAVE, "", cont);
+    show("save d");
+
+    php::unlink("madc_recent_c.txt");	// gone from the disk: not offered
+    S.command(d, cmdRECENT, "", cont);
+    var rows;
+    ui::get(rows, w, es, "choicerows");
+    var label;
+    ui::get(label, w, es, "choicelabel");
+    var titles = {};
+    for ( var r : rows )
+	titles[] = php::basename(r["title"].c_str());
+    println("choice {}: [{}]", label, php::implode(" ", titles));
+    var pick = rows[1];			// madc_recent_b.mad
+    S.command(d, cmdRECENT, pick["arg"].c_str(), cont);
+    var nm;
+    doc_name(nm, w, active_doc(w, es, doc));
+    println("chose: {}", nm);
+
+    for ( long i = 0; i < 12; i = i + 1 )
+    {
+	var f = format("madc_recent_r{}.txt", i);
+	php::file_put_contents(f.c_str(), "r\n");
+	recent_note(w, es, f.c_str());
+    }
+    var all;
+    recent_list(all);
+    println("kept: {} newest={} oldest={}", php::count(all), php::basename(all[0].c_str()),
+	    php::basename(all[php::count(all) - 1].c_str()));
+    S.close();
+
+    IdeSession H;			// no window: no history
+    H.open("madc_recent_b.mad", false);
+    edit_file(H.w, H.es, active_doc(H.w, H.es, 0), "madc_recent_a.md");
+    recent_list(all);
+    println("headless: newest={}", php::basename(all[0].c_str()));
+    H.close();
+
+    for ( long i = 0; i < 12; i = i + 1 )
+    {
+	var f = format("madc_recent_r{}.txt", i);
+	php::unlink(f.c_str());
+    }
+    php::unlink("madc_recent_a.md");
+    php::unlink("madc_recent_b.mad");
+    php::unlink("madc_recent_d.md");
+    php::unlink(rj.c_str());
+    return 0;
+}
