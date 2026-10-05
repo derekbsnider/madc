@@ -76460,6 +76460,14 @@ void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 					size_t specifier_align, Variable *specifier_cleanup)
 {
     declarator_list_continues = true;
+    // Every declarator of the list names the SAME type (C11 6.7p1): a tagless
+    // aggregate named by more than one declarator is recorded so the CIR
+    // emits it once, by its synthetic tag (`struct { short s; } a, b;` makes
+    // `a = b` an assignment between objects of one type).
+    if ( TokenDataType *tdt = dynamic_cast<TokenDataType *>(type_tb) )
+	if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(&tdt->definition) )
+	    if ( sdd->is_anonymous )
+		shared_anonymous_aggregates.insert(sdd);
     // The specifiers' alignment and cleanup, which no pushed token spells: the
     // tail's parseDeclaration takes them as a specifier run's (`AL int a, b;`).
     parsing_decl_align = specifier_align;

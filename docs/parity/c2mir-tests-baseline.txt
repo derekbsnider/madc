@@ -54,8 +54,6 @@ lacc/initialize-string.c
 lacc/printstr.c
 lacc/sizeof.c
 lacc/string-addr.c
-lacc/struct-assign.c
-lacc/struct-init-swap.c
 lacc/typedef.c
 new/empty-asm.c
 new/int_min.c

@@ -8002,6 +8002,12 @@ public:
     // Set by push_declarator_list_tail: the declaration just parsed hands its
     // declarator list on to an injected tail declaration, which owes the `;`.
     bool declarator_list_continues = false;
+    // Tagless aggregates more than one declarator names (`struct { short s; }
+    // a, b;`, recorded by push_declarator_list_tail): ONE type, which the CIR
+    // defines once under its synthetic tag (`__anon_N`) and names after.
+    std::unordered_set<const DataDefSTRUCT *> shared_anonymous_aggregates;
+    bool anonymous_aggregate_shared(const DataDefSTRUCT *sdd) const
+	{ return shared_anonymous_aggregates.count(sdd) != 0; }
     // The pointer to `base`, interned. A pointer to a FUNCTION type IS the
     // function pointer (its fnptr_twin) — [dcl.ptr] over [dcl.fct]: no
     // PTR(function type) is ever built, so every `*` applied anywhere (a

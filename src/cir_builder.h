@@ -337,6 +337,16 @@ class CirBuilder {
 	// module of the interactive session defines (plan §41.2a): the
 	// `extern` form, exactly as if the Variable carried vfEXTERN.
 	bool m_extern_decl = false;
+	// Shared tagless aggregates (Program::anonymous_aggregate_shared) whose
+	// definition under their synthetic tag a var_decl has already emitted:
+	// at file scope (the module's), and in the function body being
+	// translated (func_def saves and restores it — a body's tags die with
+	// it). A later declarator of the same aggregate names the tag.
+	std::set<DataDefSTRUCT *> m_anon_tags_file;
+	std::set<DataDefSTRUCT *> m_anon_tags_body;
+	bool m_in_func_body = false;
+	bool anon_tag_defined(DataDefSTRUCT *sdd) const
+		{ return m_anon_tags_file.count(sdd) || m_anon_tags_body.count(sdd); }
 	// Plan §41.2a: does an earlier entry of the interactive session define
 	// the symbol `sym`, in a module linked into the live context
 	// (Program::session_defined)? Such a definition is declared, never

@@ -9022,7 +9022,18 @@ void CirBuilder::append_var_type_specs(node_t lst, Variable *v, DataDef *base_dd
 				       DataDefSTRUCT *anon_sdd)
 {
 	if (anon_sdd) {
-		append(lst, aggregate_def_node(anon_sdd, ignore(),
+		// A tagless aggregate more than one declarator names is ONE type
+		// (Program::anonymous_aggregate_shared): defined once under its
+		// synthetic tag, named by the tag after (var_decl records the
+		// definition). c2mir's own parse shares one specifier node.
+		bool shared = m_prog && m_prog->anonymous_aggregate_shared(anon_sdd);
+		if (shared && anon_tag_defined(anon_sdd)) {
+			append(lst, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
+					  id(anon_sdd->name.c_str()), ignore()));
+			return;
+		}
+		append(lst, aggregate_def_node(anon_sdd,
+					       shared ? id(anon_sdd->name.c_str()) : ignore(),
 					       anon_members_list(anon_sdd)));
 		return;
 	}
@@ -11430,6 +11441,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		append_var_type_specs(new_list, v, base_dd, anon_sdd);
 		tl = new_list;
 	}
+	// The spec is final: a shared tagless aggregate it DEFINED is named by
+	// its tag from here on, in this body or (at file scope) the module.
+	if (anon_sdd && m_prog && m_prog->anonymous_aggregate_shared(anon_sdd))
+		(m_in_func_body ? m_anon_tags_body : m_anon_tags_file).insert(anon_sdd);
 
 	// The alignment the declaration requests (`_Alignas(16) char c;`,
 	// `char c __attribute__((aligned(16)));`) -> _Alignas in its spec, when
@@ -32437,10 +32452,26 @@ node_t CirBuilder::main_task_join_wrapper(TokenFunc *tf, FuncDef *fd)
 	return wdef;
 }
 
+// A function body's shared-anonymous-aggregate tags (m_anon_tags_body) live
+// and die with it: func_def parks the enclosing body's set (a hoisted lambda
+// or nested function translates inside another body) for its lifetime and
+// puts it back.
+struct AnonTagBodyScope {
+	std::set<DataDefSTRUCT *> &live;
+	std::set<DataDefSTRUCT *> saved;
+	bool &in_body;
+	bool was_in_body;
+	AnonTagBodyScope(std::set<DataDefSTRUCT *> &tags, bool &flag)
+		: live(tags), in_body(flag), was_in_body(flag)
+	{ saved.swap(live); in_body = true; }
+	~AnonTagBodyScope() { live.swap(saved); in_body = was_in_body; }
+};
+
 node_t CirBuilder::func_def(TokenFunc *tf)
 {
 	FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
 	if (!fd) return NULL;
+	AnonTagBodyScope anon_tag_scope(m_anon_tags_body, m_in_func_body);
 #ifdef MADC_DEBUG_CTORINIT
 	fprintf(stderr, "[ctorinit] func-def %s\n", tf->var.name.c_str());
 #endif
