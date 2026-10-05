@@ -1266,7 +1266,8 @@ GnuAttributeKind madc_gnu_attribute_kind(const std::string &name)
 	{ "no_instrument_function", GnuAttributeKind::NoInstrumentFunction },
 	{ "optimize", GnuAttributeKind::Optimize },
 	{ "using_if_exists", GnuAttributeKind::UsingIfExists },
-	{ "weak", GnuAttributeKind::Weak }
+	{ "weak", GnuAttributeKind::Weak },
+	{ "cleanup", GnuAttributeKind::Cleanup }
     };
     for ( size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); ++i )
 	if ( madc_gnu_attribute_word_is(name, entries[i].name) )
@@ -9370,8 +9371,15 @@ int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr
     {
 	// Preserving an attribute is not enough to advertise the complete
 	// compiler contract for it.  Grow this truth set only with an
-	// oracle-backed semantic gate; using_if_exists has both.
-	return madc_gnu_attribute_kind(arg) == GnuAttributeKind::UsingIfExists ? 1 : 0;
+	// oracle-backed semantic gate (the test named beside each kind).
+	switch ( madc_gnu_attribute_kind(arg) )
+	{
+	    case GnuAttributeKind::UsingIfExists:	// tests/testusingifexists
+	    case GnuAttributeKind::Cleanup:		// tests/testcleanupattr
+		return 1;
+	    default:
+		return 0;
+	}
     }
 
     if ( op == "__has_include" || op == "__has_include_next" )

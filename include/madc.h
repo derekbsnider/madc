@@ -73,7 +73,8 @@ enum class GnuAttributeKind : uint8_t {
     NoInstrumentFunction,
     Optimize,
     UsingIfExists,
-    Weak
+    Weak,
+    Cleanup
 };
 
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
@@ -7628,12 +7629,13 @@ public:
     // unless its declarator list continues. The grammar is
     // parse_declaration_body.
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
-    // The declarator's storage class (`static`, `thread_local`, `inline`) and
-    // the alignment the declaration requests onto the object — one owner for
-    // every declaration arm.
+    // The declarator's storage class (`static`, `thread_local`, `inline`), the
+    // alignment the declaration requests and its cleanup(f) onto the object —
+    // one owner for every declaration arm.
     void apply_declaration_storage(class Variable *var, TokenCpnd *code,
 				   bool is_static, bool is_thread_local,
-				   bool is_inline, size_t align);
+				   bool is_inline, size_t align,
+				   class Variable *cleanup = NULL);
     TokenBase *parse_declaration_body(TokenDataType *, bool is_static);
     // What the statement being parsed owes at its end: an expression statement
     // and a jump statement their `;`, an object declaration its `,` or `;`
@@ -8206,7 +8208,8 @@ public:
     void push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 				   bool is_thread_local, bool is_volatile,
 				   bool is_const, bool is_constexpr, bool is_inline,
-				   size_t specifier_align);
+				   size_t specifier_align,
+				   class Variable *specifier_cleanup = NULL);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
 				 unsigned leading_cv = cvNONE,
 				 bool *out_volatile_after_star = nullptr);
@@ -8993,6 +8996,11 @@ public:
     // Set by consume_gnu_attributes on optimize("-fno-strict-aliasing") in any
     // position; consumed (and cleared) by the function-declaration parse.
     bool pending_no_strict_aliasing;
+    // Set by consume_gnu_attributes on cleanup(f): the function f names, for
+    // the declaration whose attribute groups are being read; taken (and
+    // cleared) by parse_declaration_body for its declarators, and dropped by
+    // parseStatement when the statement declared no object.
+    Variable *pending_cleanup_function = nullptr;
     // Set by consume_gnu_attributes on `weak` in any position; consumed (and
     // cleared) by the function-declaration parse, reset at each statement.
     bool pending_weak_binding;

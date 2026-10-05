@@ -22,6 +22,11 @@
 # designator lists hold an index (`.data[1] = {42}`, `.bs[0].cs[0].x = 1`,
 # `.data[1].x = 1, {2}, .data[3] = {3}`).
 #
+# SHRUNK 2026-10-05 (six) by GNU __attribute__((cleanup(f))):
+# new/cleanup-break.c, cleanup-fall.c, cleanup-goto.c, cleanup-matrix.c,
+# cleanup-prefix-attr.c and cleanup-return.c — madc read the attribute and
+# dropped it; the declaration now carries c2mir's own cleanup attribute.
+#
 # The `new/` failures are MIR's own regression tests and are the best
 # available reducers for the C constructs madc still cannot compile in
 # c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
@@ -50,12 +55,6 @@ lacc/struct-init-swap.c
 lacc/struct-padding.c
 lacc/typedef.c
 new/add-issue211.c
-new/cleanup-break.c
-new/cleanup-fall.c
-new/cleanup-goto.c
-new/cleanup-matrix.c
-new/cleanup-prefix-attr.c
-new/cleanup-return.c
 new/empty-asm.c
 new/int_min.c
 new/issue186-1.c

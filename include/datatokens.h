@@ -139,6 +139,11 @@ public:
     // alignment: the object's is the larger of the two
     // (Program::object_alignment); the CIR emits it as `_Alignas`.
     size_t explicit_align = 0;
+    // __attribute__((cleanup(f))) on a block-scope automatic object: the
+    // function called with the object's address when its scope exits (GNU C;
+    // apply_declaration_storage sets it, the CIR emits it as c2mir's own
+    // cleanup attribute). NULL for none.
+    Variable *cleanup_function = nullptr;
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a

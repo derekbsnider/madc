@@ -11803,7 +11803,27 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// for externs in the JIT lane anyway.
 		DataDefCLASS *cdd = (!is_ptr && !is_extern)
 				    ? as_class_instance(base_dd) : NULL;
-		if (cdd && class_needs_dtor(cdd)) {
+		// __attribute__((cleanup(f))) the program wrote (GNU C): c2mir's
+		// own cleanup attribute, called with &v at every scope exit. One
+		// cleanup per object — a destructor or a VLA's free already
+		// claims the slot, and neither may be dropped.
+		Variable *user_cleanup = v->cleanup_function;
+		if (user_cleanup && ((cdd && class_needs_dtor(cdd)) || is_vla_local)) {
+			attr_node = error_node("cleanup attribute on an object that "
+					       "also needs a destructor or a VLA free "
+					       "is not supported", origin);
+		} else if (user_cleanup) {
+			FuncDef *cfd = user_cleanup->type
+				? user_cleanup->type->as_funcdef_dd() : NULL;
+			std::string csym = func_emit_name(*user_cleanup, cfd);
+			referenced_funcs.insert(csym);
+			node_t attr_args = list();
+			append(attr_args, id(csym.c_str(), origin));
+			node_t attrs = list();
+			append(attrs, node2(N_ATTR, id("cleanup", origin),
+					    attr_args, origin));
+			attr_node = attrs;
+		} else if (cdd && class_needs_dtor(cdd)) {
 			// A fixed ARRAY gets the per-(class,N) wrapper: the cleanup
 			// mechanism calls one function with &a (element 0), which
 			// destroyed only a[0] — g++ destroys all N in REVERSE

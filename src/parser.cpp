@@ -2172,6 +2172,25 @@ TokenBase *Program::consume_gnu_attributes(TokenBase *nt,
 			    pushToken(cl);
 		    }
 		}
+		else if ( token_names_gnu_attribute(at, GnuAttributeKind::Cleanup)
+		       && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    // cleanup(f): the function the declared object's scope exit
+		    // calls with the object's address. The declaration being
+		    // read takes it (parse_declaration_body); its parens are
+		    // consumed here, balanced.
+		    nextToken();
+		    TokenBase *fn = nextToken();
+		    Variable *fv = (fn && is_contextual_identifier_token(fn))
+			? findVariable(contextual_identifier_name(fn)) : NULL;
+		    if ( !fv || !fv->type || !fv->type->as_funcdef_dd() )
+			Throw(fn ? fn : at) << "cleanup argument not a function" << flush;
+		    pending_cleanup_function = fv;
+		    TokenBase *cl = nextToken();
+		    if ( cl && cl->id() != TokenID::tkClBrk )
+			pushToken(cl);
+		    continue;
+		}
 		else if ( token_names_gnu_attribute(at, GnuAttributeKind::VectorSize) )
 		    saw_vector_size = true;
 		else if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
@@ -76267,12 +76286,13 @@ size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDe
 void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 					bool is_thread_local, bool is_volatile,
 					bool is_const, bool is_constexpr, bool is_inline,
-					size_t specifier_align)
+					size_t specifier_align, Variable *specifier_cleanup)
 {
     declarator_list_continues = true;
-    // The specifiers' alignment, which no pushed token spells: the tail's
-    // parseDeclaration takes it as a specifier run's (`AL int a, b;`).
+    // The specifiers' alignment and cleanup, which no pushed token spells: the
+    // tail's parseDeclaration takes them as a specifier run's (`AL int a, b;`).
     parsing_decl_align = specifier_align;
+    pending_cleanup_function = specifier_cleanup;
     pushToken(type_tb->clone_origin());
     if ( is_volatile )
 	pushToken(new TokenVOLATILE());
@@ -76303,12 +76323,17 @@ void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 // guard). `static` wins: internal linkage is never vague.
 void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
 					bool is_static, bool is_thread_local,
-					bool is_inline, size_t align)
+					bool is_inline, size_t align,
+					Variable *cleanup)
 {
     if ( !var )
 	return;
     if ( align > var->explicit_align )
 	var->explicit_align = align;
+    // cleanup(f) applies to an automatic object only; gcc ignores it on a
+    // static or file-scope one (with a warning), and so does madc.
+    if ( cleanup && !is_static && !is_thread_local && !file_scope_compound(code) )
+	var->cleanup_function = cleanup;
     // A block-scope `thread_local` implies `static` in C++ ([dcl.stc]/3); C
     // requires the `static` spelled (C11 6.7.1p3 — c2mir diagnoses it, as
     // gcc does).
@@ -76445,6 +76470,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	break;
     }
     object_align = decl_align;
+    // A cleanup(f) in the statement's head or among the specifiers' groups is
+    // every declarator's; one in a declarator's own groups is its object's.
+    Variable *decl_cleanup = pending_cleanup_function;
+    pending_cleanup_function = NULL;
+    Variable *object_cleanup = decl_cleanup;
 
     // check for pointer declarator(s): type * [*...] identifier.
     // base_type is the declared type without any `*`s — comma-continuations
@@ -76835,7 +76865,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = declare_object(code, *auto_decl_type, id, 1, alloc, true, tb);
 	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
-				  object_align);
+				  object_align, object_cleanup);
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
@@ -76877,6 +76907,11 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     {
 	TokenBase *attr = nextToken();
 	nt = consume_gnu_attributes(attr, NULL, &decl_alias_target, &object_align);
+	if ( pending_cleanup_function )
+	{
+	    object_cleanup = pending_cleanup_function;
+	    pending_cleanup_function = NULL;
+	}
 	if ( nt )
 	{
 	    pushToken(nt);
@@ -76984,7 +77019,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				 NULL, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	    apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
-				      object_align);
+				      object_align, object_cleanup);
 	    if ( !decl_typedef_alias.empty() )
 		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
@@ -77066,7 +77101,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		if ( !looks_like_next_decl )
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
-					  gotconst, gotconstexpr, gotinline, decl_align);
+					  gotconst, gotconstexpr, gotinline, decl_align,
+					  decl_cleanup);
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -77259,7 +77295,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 						  true, tb, &arr_dims, decl_object_cv);
 	    provisional_decl_var->fnptr_explicit_stars = decl_fnptr_stars;
 	    apply_declaration_storage(provisional_decl_var, code, gotstatic,
-				      gotthreadlocal, gotinline, object_align);
+				      gotthreadlocal, gotinline, object_align, object_cleanup);
 	    if ( parsing_extern_decl )
 		provisional_decl_var->flags |= vfEXTERN;
 	    // Set dims early so self-referencing init expressions like
@@ -77622,7 +77658,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(code, var);
 	apply_declaration_storage(var, code, gotstatic, gotthreadlocal, gotinline,
-				  object_align);
+				  object_align, object_cleanup);
 	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
 	// read-only-ness (reject assignment to it — P2.4). The variable itself is
 	// const only when const qualifies the VALUE (`const int x`) or is the
@@ -78059,7 +78095,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
-					  gotconst, gotconstexpr, gotinline, decl_align);
+					  gotconst, gotconstexpr, gotinline, decl_align,
+					  decl_cleanup);
 	    }
 	}
 
@@ -78946,7 +78983,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
     // declarator list's tail re-set it for the next statement); one that
     // declared nothing (`AL struct S { ... };`, a typedef) leaves it behind.
     if ( !(r && r->as_decl_tok()) )
+    {
 	parsing_decl_align = 0;
+	pending_cleanup_function = NULL;
+    }
     // The statement's own terminator, paid before its extent is stamped so
     // the extent includes it (as an expression statement's always has).
     StatementTerminator owed = terminator_scope.close();

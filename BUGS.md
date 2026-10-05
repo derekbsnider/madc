@@ -769,6 +769,23 @@ int main() { return 0; }
   gxx-c++11 baseline; its `static_assert(!b)` had passed only because `b`'s
   unset slot read as 0.
 
+### B180. `__has_attribute` outside `#if` is an undeclared identifier
+
+```c
+#include <stdio.h>
+int main(void) { printf("%d\n", __has_attribute(cleanup)); return 0; }
+```
+
+- Found 2026-10-05 while adding `__attribute__((cleanup))`
+  (`tests/testcleanupattr`).
+- gcc 13 (`-std=gnu11`): `1` — it expands `__has_attribute` (and
+  `__has_builtin`) wherever it appears, not only in a `#if` / `#elif`
+  expression; `__has_include` outside a directive is an error there. madc:
+  "use of undeclared identifier 'cleanup'" at 2:47.
+- Where: the preprocessor answers `__has_attribute(...)` only while
+  evaluating a conditional directive; in ordinary text the name reaches the
+  parser unexpanded.
+
 ### B175. A REPL entry that starts with a class template's qualified call is refused
 
 ```cpp
