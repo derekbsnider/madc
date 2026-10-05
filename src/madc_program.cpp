@@ -55,6 +55,7 @@ extern thread_local bool madc_verbose;
 #include "madc_datachannel_internal.h"	// set_channel_error — the run channel factories
 #include "madc_project.h"	// read_project_manifest — the project-handle manifest reader (both shapes)
 #include "madc_run_child.h"	// the Windows Run: a child OF SELF serves the request
+#include "madc_session_interrupt.h"	// HostIgnoresInterrupt: ^C/^\ are the guest's
 #include "handle_table.h"	// THE slot+1 handle-registry rule (parse handles)
 #include "cir_builder.h"	// call_emit_symbol — the one call-symbol resolver
 
@@ -7739,11 +7740,8 @@ int64_t internal_program_parse_run(int64_t handle)
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child
     std::cerr.flush();
-    struct sigaction ign, old_int, old_quit;
-    memset(&ign, 0, sizeof(ign));
-    ign.sa_handler = SIG_IGN;
-    sigaction(SIGINT, &ign, &old_int);
-    sigaction(SIGQUIT, &ign, &old_quit);
+    // ^C and ^\ reach the guest alone until the reap (system(3)).
+    madc::HostIgnoresInterrupt quiet;
     pid_t pid = fork();
     if ( pid == 0 )
     {
@@ -7776,8 +7774,6 @@ int64_t internal_program_parse_run(int64_t handle)
 		status = mapped;
 	}
     }
-    sigaction(SIGINT, &old_int, (struct sigaction *)0);
-    sigaction(SIGQUIT, &old_quit, (struct sigaction *)0);
     return status;
 #endif
 }
@@ -7990,11 +7986,8 @@ int64_t internal_program_project_run(::Program &self,
     fflush(NULL);		// parent's buffered output must not
     std::cout.flush();		// duplicate into the child
     std::cerr.flush();
-    struct sigaction ign, old_int, old_quit;
-    memset(&ign, 0, sizeof(ign));
-    ign.sa_handler = SIG_IGN;
-    sigaction(SIGINT, &ign, &old_int);
-    sigaction(SIGQUIT, &ign, &old_quit);
+    // ^C and ^\ reach the guest alone until the reap (system(3)).
+    madc::HostIgnoresInterrupt quiet;
     pid_t pid = fork();
     if ( pid == 0 )
     {
@@ -8028,8 +8021,6 @@ int64_t internal_program_project_run(::Program &self,
 		status = mapped;
 	}
     }
-    sigaction(SIGINT, &old_int, (struct sigaction *)0);
-    sigaction(SIGQUIT, &old_quit, (struct sigaction *)0);
     return status;
 #endif
 }

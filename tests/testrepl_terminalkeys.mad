@@ -1,0 +1,79 @@
+// A terminal's interrupt keys while an entry runs in the CLI REPL (`madc -i`
+// on a pseudo-terminal). Ctrl-C returns the entry to the prompt with the
+// session's names kept (D8, plan
+// docs/plans/madc-repl-thonny-plan-2026-09-24.md §41.12a). Ctrl-\ (SIGQUIT)
+// ends the backend and a fresh session answers the next entry: the host
+// ignores both keys while an entry runs, as system(3) does while its child
+// runs, so the REPL itself lives on.
+
+// What the REPL wrote, until `want` appears or `ms` pass.
+bool read_until(var &got, madc::channel &c, const char *want, long ms)
+{
+    char buf[4096];
+    for ( long waited = 0; waited < ms; waited = waited + 10 )
+    {
+	while ( c.poll_state() == 1 )
+	{
+	    long n = c.read(buf, 4095);
+	    if ( n <= 0 )
+		return got.index(want) >= 0;
+	    buf[n] = 0;
+	    got = format("{}{}", got, buf);
+	}
+	if ( got.index(want) >= 0 )
+	    return true;
+	madc::sleep_ms(10);
+    }
+    return false;
+}
+
+// Send a line, and wait for the prompt that follows it.
+bool enter(var &got, madc::channel &c, const char *line)
+{
+    got = "";
+    var text = format("{}\r", line);
+    c.write(text);
+    return read_until(got, c, "c11> ", 20000);
+}
+
+// Start a loop that runs until a key ends it, send the key once the loop
+// runs, and say what came back before the next prompt.
+void key_entry(madc::channel &c, const char *label, const char *loop,
+	       const char *key)
+{
+    var got = "";
+    var text = format("{}\r", loop);
+    c.write(text);
+    read_until(got, c, loop, 20000);
+    madc::sleep_ms(300);
+    got = "";
+    c.write(key);
+    bool prompt = read_until(got, c, "c11> ", 20000);
+    println("{}: prompt={} interrupted={} new-session={}", label, prompt,
+	    got.index("interrupted") >= 0, got.index("a new one started") >= 0);
+}
+
+int main()
+{
+    var uri = format("pty://{} --no-config --std=c11 -i", madc::compiler_path());
+    madc::channel c(uri.c_str());
+    var got = "";
+    println("open: {} prompt: {}", c.ok(), read_until(got, c, "c11> ", 20000));
+    enter(got, c, "long n = 0;");
+
+    key_entry(c, "ctrl-c", "while (1) n++;", "\x03");
+    enter(got, c, "n > 0");
+    println("kept: {}", got.index("\n1\r\n") >= 0);
+
+    key_entry(c, "ctrl-backslash", "while (1) n--;", "\x1c");
+    enter(got, c, "int fresh = 7;");
+    enter(got, c, "fresh");
+    println("fresh: {}", got.index("\n7\r\n") >= 0);
+
+    c.write("%quit\r");
+    var rest = "";
+    read_until(rest, c, "never", 2000);
+    c.close();
+    println("host status: {}", c.exit_status());
+    return 0;
+}

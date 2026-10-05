@@ -1,0 +1,1 @@
+Structurally JIT-only: the test drives the LANE'S OWN madc -i on a pseudo-terminal (madc::compiler_path()). In a native artifact the running program is the test itself, not a compiler, so the child would be a copy of the test.

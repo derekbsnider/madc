@@ -55,9 +55,12 @@ private:
     void *event_;
 };
 
-// While an entry runs, a terminal's interrupt is the backend's: the host
-// ignores it for the guard's lifetime (POSIX SIGINT; Windows the console's
-// Ctrl+C), as a shell leaves the interrupt to its foreground job.
+// While a child runs in the foreground — a session entry, a fork Run of a
+// parse handle, a project run (src/madc_program.cpp) — the terminal's
+// interrupt keys are the child's: the host ignores them for the guard's
+// lifetime (POSIX SIGINT and SIGQUIT, as system(3) does while its child runs;
+// Windows the console's Ctrl+C), as a shell leaves them to its foreground job.
+// The one owner of that rule (scripts/check-one-host-interrupt-guard.sh).
 class HostIgnoresInterrupt
 {
 public:

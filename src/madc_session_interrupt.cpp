@@ -159,19 +159,25 @@ bool SessionInterruptor::send(Process &p)
 
 void SessionInterruptor::close() {}
 
-HostIgnoresInterrupt::HostIgnoresInterrupt() : saved_(new struct sigaction)
+// The terminal's interrupt keys: Ctrl-C (SIGINT) and Ctrl-\ (SIGQUIT), the
+// two system(3) ignores while its child runs.
+HostIgnoresInterrupt::HostIgnoresInterrupt() : saved_(new struct sigaction[2])
 {
     struct sigaction ign;
     ign.sa_handler = SIG_IGN;
     sigemptyset(&ign.sa_mask);
     ign.sa_flags = 0;
-    sigaction(SIGINT, &ign, (struct sigaction *)saved_);
+    struct sigaction *saved = (struct sigaction *)saved_;
+    sigaction(SIGINT, &ign, &saved[0]);
+    sigaction(SIGQUIT, &ign, &saved[1]);
 }
 
 HostIgnoresInterrupt::~HostIgnoresInterrupt()
 {
-    sigaction(SIGINT, (struct sigaction *)saved_, NULL);
-    delete (struct sigaction *)saved_;
+    struct sigaction *saved = (struct sigaction *)saved_;
+    sigaction(SIGINT, &saved[0], NULL);
+    sigaction(SIGQUIT, &saved[1], NULL);
+    delete[] saved;
 }
 
 } // namespace madc
