@@ -1,0 +1,119 @@
+// madcide's Markdown Preview (plan docs/plans/2026-10-03-chthonia-windows-
+// macos.md §7d; tools/madcide/madcide_preview.inc): View ▸ Markdown Preview
+// shows the Markdown buffer being edited as rows of the one renderer
+// (madcide_markdown.inc) — a heading, a paragraph and its link's own row, a
+// list's items, a code block's line, each row on its source line. A choose
+// on a row moves the caret to that line; typing changes the rows at the next
+// compose (the refresh rides IdeSession::compose_ide_tree); a choose on a
+// link row opens the linked file beside the buffer. A C buffer is not
+// Markdown, and the preview says so.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+void preview_rows(var &out, long w, long es)
+{
+    ui::get(out, w, es, "mdpreviewrows");
+}
+
+// The rows' index (1-based, the choose's option) of the first row whose
+// content contains `needle`; 0 when none.
+long prow_with(long w, long es, const char *needle)
+{
+    var rows;
+    preview_rows(rows, w, es);
+    long i = 1;
+    for ( var r : rows )
+    {
+	if ( perl::index(r["content"].c_str(), needle) >= 0 )
+	    return i;
+	i = i + 1;
+    }
+    return 0;
+}
+
+void prow_at(var &out, long w, long es, long i)
+{
+    var rows;
+    preview_rows(rows, w, es);
+    out = rows[i - 1];
+}
+
+void choose_row(IdeSession &S, long doc, long option)
+{
+    var ch = { "event": "choose", "event_code": ui::event_kind::choose,
+	       "option": option, "action": "", "action_code": view_row_cmd(viewMDPREVIEW) };
+    S.apply_ide_event(doc, ch);
+}
+
+int main()
+{
+    const char *md = "madc_ide_mdpreview.md";
+    const char *other = "madc_ide_mdpreview_other.md";
+    const char *csrc = "madc_ide_mdpreview.c";
+    php::file_put_contents(md, "# Notes\n\nSome *emphasis* and a [link](madc_ide_mdpreview_other.md).\n\n- one\n- two\n\n```\ncode line\n```\n");
+    php::file_put_contents(other, "# Other\n");
+    php::file_put_contents(csrc, "int main(void) { return 0; }\n");
+
+    IdeSession S;
+    long doc = S.open(md, false);
+    long w = S.w;
+    long es = S.es;
+    println("module: {}", markdown::available());
+
+    // 1. View ▸ Markdown Preview: the buffer's rows beside it.
+    bool cont = true;
+    S.command(doc, cmd_of_w(w, "mdpreview"), "", cont);
+    var h;
+    prow_at(h, w, es, 1);
+    println("shown: {} heading={} level={} line={}", view_shown(w, es, viewMDPREVIEW),
+	    h["content"], h["heading"], h["line"]);
+    var lk;
+    prow_at(lk, w, es, prow_with(w, es, "→ link"));
+    println("link-row: target={} line={}", lk["target"], lk["line"]);
+    var it;
+    prow_at(it, w, es, prow_with(w, es, "two"));
+    println("item: {} line={}", it["content"], it["line"]);
+    var node;
+    preview_view_node(node, w, es, false);
+    println("node: label={} row-code={}", node["label"],
+	    node["children"][0]["hints"]["code"].as_integer() == cmdMDPREVIEWROW);
+
+    // 2. A choose on the code line's row: the caret lands on its source line.
+    long code = prow_with(w, es, "code line");
+    var cr;
+    prow_at(cr, w, es, code);
+    choose_row(S, doc, code);
+    println("goto: row-line={} caret-on-line={}", cr["line"],
+	    es_int(w, es, "caret", -1) == caret_to_line(w, doc, cr["line"].as_integer(), 0));
+
+    // 3. Typing there changes the rows at the next compose.
+    var te = { "event": "text", "event_code": ui::event_kind::text, "text": "new " };
+    S.apply_ide_event(doc, te);
+    var tree;
+    S.compose_ide_tree(tree, doc);
+    var nr;
+    prow_at(nr, w, es, prow_with(w, es, "code line"));
+    println("live: {}", nr["content"]);
+
+    // 4. A choose on the link row opens the linked file.
+    choose_row(S, doc, prow_with(w, es, "→ link"));
+    var an;
+    doc_name(an, w, S.active(doc));
+    println("link-open: {}", php::basename(an.c_str()));
+
+    // 5. A C buffer is not Markdown.
+    IdeSession C;
+    long cdoc = C.open(csrc, false);
+    C.command(cdoc, cmd_of_w(C.w, "mdpreview"), "", cont);
+    var cn;
+    preview_view_node(cn, C.w, C.es, false);
+    println("not-md: {}", cn["children"][0]["content"]);
+
+    S.close();
+    C.close();
+    php::unlink(md);
+    php::unlink(other);
+    php::unlink(csrc);
+    return 0;
+}

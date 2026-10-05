@@ -167,7 +167,9 @@ void action_event(var &e, long code, const char *arg)
 #include "madcide_plugin_host.inc"	// the host transport: a plugin's code in a child process
 #include "madcide_lang.inc"		// the session's language standard (--std=, `language`)
 #include "madcide_repo.inc"		// a buffer's git repository + the %G status seat
+#include "madcide_markdown.inc"	// the one Markdown renderer: a markdown:: tree as rows (plan §7d)
 #include "madcide_help.inc"		// Help's topics: a bundle's Markdown pages (plan §7d)
+#include "madcide_preview.inc"		// View ▸ Markdown Preview of the buffer being edited (plan §7d)
 
 // ---- keybinding profiles as data --------------------------------------
 // ONE rule for profile lines (parse_keys and the help pane share it):
@@ -1074,7 +1076,7 @@ const char *default_layout_text()
     return "# baked default layout — profile data\n"
 	   "@window main\n"
 	   "pane editor tabs views source focus\n"
-	   "pane sidebar left 20% tabs views outline help hidden\n"
+	   "pane sidebar left 20% tabs views outline help mdpreview hidden\n"
 	   "pane panel bottom 25% tabs views problems output terminal repl hidden\n";
 }
 
@@ -8139,6 +8141,13 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 		}
 		return true;
 	    }
+	    case cmdMDPREVIEW:
+	    {
+		// View ▸ Markdown Preview toggles like the outline: the buffer
+		// rendered beside it (madcide_preview.inc).
+		preview_toggle(w, es, doc);
+		return true;
+	    }
 	    case cmdHELP:
 	    {
 		toggle_pane(w, es, paneHELP);
@@ -8457,6 +8466,14 @@ bool IdeSession::apply_ide_event(long doc, var &ev_in)
 	    case cmdHELPTOPIC:
 		// A Help row: a link opens its topic (madcide_help.inc).
 		help_choose(w, es, ev["option"].as_integer());
+		return true;
+	    case cmdMDPREVIEWROW:
+		// A preview row: its source line, or its link's file
+		// (madcide_preview.inc). Stored lines, as a pane row's goto.
+		if ( viewing )
+		    refuse_edit(w, es);
+		else
+		    preview_choose(w, es, doc, ev["option"].as_integer());
 		return true;
 	    case cmdGOTO:
 	    case cmdGOTODEF:
@@ -8783,6 +8800,13 @@ void compose_chrome_pane(var &out, long w, long es, long doc, var &c)
 	    var hn;
 	    help_view_node(hn, w, es, focus);
 	    pkids.push(hn);
+	    break;
+	}
+	case viewMDPREVIEW:
+	{
+	    var mn;
+	    preview_view_node(mn, w, es, focus);
+	    pkids.push(mn);
 	    break;
 	}
 	case viewOUTLINE:
@@ -9117,6 +9141,10 @@ void window_title(var &out, long w, long doc, long nav, long caret)
 
 void IdeSession::compose_ide_tree(var &root, long doc)
 {
+    // The Markdown Preview follows the buffer: re-rendered here, the one seat
+    // every client's frame passes, only when its text changed
+    // (madcide_preview.inc) — the panes below only read.
+    preview_follow(w, es, doc);
     long caret = es_int(w, es, "caret", 0);
     // The View seam at composition: the edit node presents the focused
     // View's text (its render buffer while a lens is up) and, for a code

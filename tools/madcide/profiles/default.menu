@@ -69,6 +69,7 @@ Search replace Replace… [editable]
 Search gotoline Go to Line…
 
 View outline Outline
+View mdpreview Markdown Preview
 View view AST Views
 View gitchanges Changes
 View githistory History…

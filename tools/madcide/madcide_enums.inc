@@ -30,7 +30,8 @@ enum ide_cmd : unsigned short
     cmdBUILD, cmdCHECK, cmdCLOSE, cmdCLOSEALL, cmdCOLON, cmdCOPY, cmdCUT, cmdDEDENT,
     cmdDELLINE, cmdDELWORD, cmdDISCARD,
     cmdEDITFILE, cmdFIND, cmdFINDNEXT, cmdGOTOLINE, cmdGROWW, cmdHELP, cmdHELPCONTENTS, cmdHELPTOPIC,
-    cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMENUSHOW, cmdMODES,
+    cmdINDENT, cmdINSERTFILE, cmdKEYSTYLE, cmdKILLWIN, cmdLANGUAGE, cmdMARK, cmdMDPREVIEW,
+    cmdMDPREVIEWROW, cmdMENUSHOW, cmdMODES,
     cmdNEW, cmdNEXTW, cmdONLYWIN,
     cmdOPENPROJECT, cmdOPTIONS, cmdOUTLINE, cmdOUTPUT, cmdPANEL, cmdPASTE, cmdPREVW,
     cmdPROBLEMS, cmdPROFILE, cmdPROGARGS, cmdPROJADDCUR, cmdPROJECT, cmdQUIT, cmdREDO,
@@ -98,6 +99,8 @@ void cmd_table(var &t)
     rows[] = { "name": "killwin", "code": cmdKILLWIN };
     rows[] = { "name": "language", "code": cmdLANGUAGE };
     rows[] = { "name": "mark", "code": cmdMARK };
+    rows[] = { "name": "mdpreview", "code": cmdMDPREVIEW };
+    rows[] = { "name": "mdpreviewrow", "code": cmdMDPREVIEWROW };
     rows[] = { "name": "menushow", "code": cmdMENUSHOW };
     rows[] = { "name": "modes", "code": cmdMODES };
     rows[] = { "name": "new", "code": cmdNEW };
@@ -584,7 +587,7 @@ long pmode_of(var &name)
 enum ide_view : unsigned char
 {
     viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
-    viewPROJECT, viewOUTLINE, viewHELP
+    viewPROJECT, viewOUTLINE, viewHELP, viewMDPREVIEW
 };
 const char *view_name(long k)
 {
@@ -598,6 +601,7 @@ const char *view_name(long k)
 	case viewPROJECT: return "project";
 	case viewOUTLINE: return "outline";
 	case viewHELP: return "help";
+	case viewMDPREVIEW: return "mdpreview";
     }
     return "";
 }
@@ -615,6 +619,7 @@ const char *view_title(long k)
 	case viewPROJECT: return "Project";
 	case viewOUTLINE: return "Outline";
 	case viewHELP: return "Help";
+	case viewMDPREVIEW: return "Markdown Preview";
     }
     return "";
 }
@@ -622,7 +627,7 @@ long view_of(var &name)
 {
     if ( name.is_null() )
 	return viewNONE;
-    for ( long k = viewSOURCE; k <= viewHELP; k = k + 1 )
+    for ( long k = viewSOURCE; k <= viewMDPREVIEW; k = k + 1 )
 	if ( name == view_name(k) )
 	    return k;
     return viewNONE;
@@ -641,6 +646,7 @@ long view_show_cmd(long kind)
 	case viewOUTLINE: return cmdOUTLINE;
 	case viewPROJECT: return cmdPROJECT;
 	case viewHELP: return cmdHELPTOPIC;	// the current topic (madcide_help.inc)
+	case viewMDPREVIEW: return cmdMDPREVIEW;	// madcide_preview.inc
     }
     return cmdNONE;
 }

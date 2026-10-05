@@ -3,12 +3,13 @@
 # build's messages) and Terminal (the program Build ▸ Run starts) beside it;
 # on the right the Symbols view (Chthonia's own code, chthonia.mad: the
 # session's names — its functions and its variables) with the Outline as its
-# second tab (View ▸ Outline shows it there) and Help as its third (Help ▸
-# Help Contents shows it there). No project tree: File ▸ Project… lists the
-# project's files. A pane visible at startup whose active view is the REPL
-# starts its session when the window opens (init_view_es).
+# second tab (View ▸ Outline shows it there), Help as its third (Help ▸
+# Help Contents shows it there) and the Markdown preview of a .md buffer as
+# its fourth (View ▸ Markdown preview). No project tree: File ▸ Project…
+# lists the project's files. A pane visible at startup whose active view is
+# the REPL starts its session when the window opens (init_view_es).
 # The same format as profiles/default.layout.
 @window main
 pane editor tabs views source focus
-pane sidebar right 25% tabs views symbols outline help
+pane sidebar right 25% tabs views symbols outline help mdpreview
 pane panel bottom 35% tabs views repl problems output terminal

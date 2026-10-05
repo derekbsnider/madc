@@ -293,6 +293,17 @@ and its description. The descriptions come from `commands.md`: a
 profile's over the default profile's. A heading that names no command is
 reported on the status line.
 
+## Markdown Preview
+
+**View ▸ Markdown Preview** (`mdpreview`) shows the Markdown buffer being
+edited, rendered, in a sidebar tab beside it: the same rows as a Help topic
+(Help and the preview share one renderer, `madcide_markdown.inc`). It
+follows the active buffer and stays current as it is typed into; a buffer
+that is not Markdown (its kind, set when it opens) says so. Choosing a row
+moves the cursor to the line it came from. Choosing a link opens the file it
+names, relative to the buffer; a URL or an anchor is shown on the status
+line.
+
 ## Sharing a session
 
 One madcide session can carry more than one client: the editor you are typing

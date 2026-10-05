@@ -626,8 +626,8 @@ Mac build is chthonia's Mac build) → the parity rows (§7a) → Projects and
 building (§7c) → the libgit2 floor (1.8.7 / 1.9.7, owner 2026-10-04) →
 REPL commands and the Variables row (§7f: the row, `%load`, `%run`, the `.`
 prefix, `%call`, `%build`, the IDE layer and `%git`'s read verbs done) → Help and Markdown
-(§7d: the `madcmark` module on all three platforms, the shipped-notices check
-and Help's topics done; Markdown Preview, `.md` highlighting, the concealing
+(§7d: the `madcmark` module on all three platforms, the shipped-notices check,
+Help's topics and Markdown Preview done; `.md` highlighting, the concealing
 lens and the CommonMark conformance lane to go) → Git
 (§7e: stage 1 done with `%git`) → Recent files and the rest of §7a → the
 debugger arc.

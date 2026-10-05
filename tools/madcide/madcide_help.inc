@@ -10,10 +10,11 @@
 // One topic is made, not read: `menus`, every menu of the loaded menus with
 // each item's key in the current key style, its command and its description.
 //
-// The Help view (viewHELP) lists the topic's ROWS: a heading, a paragraph, a
-// list item, a code line, a table row. A link is a row of its own whose
-// target is a topic (`name.md`, `menus`) or a URL; choosing it opens the
-// topic (helptopic) or says the URL. The rows are session state on the bag:
+// The Help view (viewHELP) lists the topic's ROWS, made by the one Markdown
+// renderer (madcide_markdown.inc): a heading, a paragraph, a list item, a
+// code line, a table row. A link is a row of its own whose target is a topic
+// (`name.md`, `menus`) or a URL; choosing it opens the topic (helptopic) or
+// says the URL. The rows are session state on the bag:
 // "helprows" ({content, target}), the topic's name on "helptopic", its title
 // on "helptitle".
 //
@@ -66,214 +67,6 @@ bool help_file(var &out, long w, long es, const char *name0)
 	|| help_file_of(out, w, es, name.c_str(), true);
 }
 
-// A node's inline text, appended to `out`: its leaves' text, a line break a
-// space; inline HTML is left out.
-void help_inline(var &out, var &n)
-{
-    var kids;
-    keyed_get(kids, n, "children");
-    if ( kids.is_null() )
-	return;
-    for ( var c : kids )
-    {
-	if ( c["kind"] == markdown::node_kind::text || c["kind"] == markdown::node_kind::code )
-	    out = format("{}{}", out, c["text"]);
-	else if ( c["kind"] == markdown::node_kind::softbreak
-	       || c["kind"] == markdown::node_kind::linebreak )
-	    out = format("{} ", out);
-	else if ( !(c["kind"] == markdown::node_kind::html_inline) )
-	    help_inline(out, c);
-    }
-}
-
-// The links under a node, in order: {text, url}.
-void help_links(var &out, var &n)
-{
-    var kids;
-    keyed_get(kids, n, "children");
-    if ( kids.is_null() )
-	return;
-    for ( var c : kids )
-    {
-	if ( c["kind"] == markdown::node_kind::link )
-	{
-	    var t = "";
-	    help_inline(t, c);
-	    out[] = { "text": t, "url": c["url"] };
-	}
-	else
-	    help_links(out, c);
-    }
-}
-
-// The paragraph's one link when it holds nothing else (a contents line).
-bool help_sole_link(var &out, var &p)
-{
-    var kids;
-    keyed_get(kids, p, "children");
-    if ( kids.is_null() || php::count(kids) != 1
-      || !(kids[0]["kind"] == markdown::node_kind::link) )
-	return false;
-    out = kids[0];
-    return true;
-}
-
-// A table's rows, each cell padded to its column's width, the columns
-// joined by a bar; a rule under the header row.
-void help_table_rows(var &rows, var &t, const char *indent0)
-{
-    var indent = indent0;	// ring discipline: own the text first
-    var cells = {};
-    var widths = {};
-    for ( var r : t["children"] )
-    {
-	var line = {};
-	long c = 0;
-	for ( var cell : r["children"] )
-	{
-	    var txt = "";
-	    help_inline(txt, cell);
-	    line[] = txt;
-	    long n = strlen(txt.c_str());
-	    if ( c >= php::count(widths) )
-		widths[] = n;
-	    else if ( n > widths[c].as_integer() )
-		widths[c] = n;
-	    c = c + 1;
-	}
-	cells[] = line;
-    }
-    long ri = 0;
-    for ( var r : t["children"] )
-    {
-	var text = format("{}", indent);
-	long c = 0;
-	for ( var txt : cells[ri] )
-	{
-	    if ( c > 0 )
-		text = format("{} │ ", text);
-	    text = format("{}{}", text, php::str_pad(txt, widths[c].as_integer(), " "));
-	    c = c + 1;
-	}
-	rows[] = { "content": php::rtrim(text) };
-	if ( r["header"].as_boolean() )
-	{
-	    long width = 0;
-	    for ( var wd : widths )
-		width = width + wd.as_integer() + 3;
-	    rows[] = { "content": format("{}{}", indent, php::str_repeat("─", width > 3 ? width - 3 : 1)) };
-	}
-	ri = ri + 1;
-    }
-}
-
-void help_blocks_rows(var &rows, var &blocks, const char *lead0, const char *indent0);
-
-// One block's rows: `lead` before its first row, `indent` before the rest (a
-// list item's bullet and its hanging indent, a quote's bar).
-void help_block_rows(var &rows, var &b, const char *lead0, const char *indent0)
-{
-    var lead = lead0;		// ring discipline: own the text first
-    var indent = indent0;
-    if ( b["kind"] == markdown::node_kind::heading || b["kind"] == markdown::node_kind::paragraph )
-    {
-	var link;
-	if ( b["kind"] == markdown::node_kind::paragraph && help_sole_link(link, b) )
-	{
-	    var lt = "";
-	    help_inline(lt, link);
-	    rows[] = { "content": format("{}{}", lead, lt), "target": link["url"] };
-	    return;
-	}
-	var text = "";
-	help_inline(text, b);
-	var row = { "content": format("{}{}", lead, text) };
-	if ( b["kind"] == markdown::node_kind::heading )
-	    row["heading"] = b["level"];
-	rows[] = row;
-	var links = {};
-	help_links(links, b);
-	for ( var l : links )
-	    rows[] = { "content": format("{}→ {}", indent, l["text"]), "target": l["url"] };
-    }
-    else if ( b["kind"] == markdown::node_kind::list )
-    {
-	bool ordered = b["list"] == markdown::list_kind::ordered;
-	long num = b["start"].as_integer();
-	for ( var item : b["children"] )
-	{
-	    // The bullet, and the blank run as wide as it on screen that hangs
-	    // the item's later rows under its text (• is one column).
-	    var bullet = "• ";
-	    long cols = 2;
-	    if ( ordered )
-	    {
-		bullet = format("{}. ", num);
-		cols = strlen(bullet.c_str());
-	    }
-	    if ( item["task"].as_boolean() )
-	    {
-		if ( item["checked"].as_boolean() )
-		    bullet = format("{}[x] ", bullet);
-		else
-		    bullet = format("{}[ ] ", bullet);
-		cols = cols + 4;
-	    }
-	    var first = format("{}{}", indent, bullet);
-	    var hang = format("{}{}", indent, php::str_repeat(" ", cols));
-	    var iblocks = item["children"];
-	    help_blocks_rows(rows, iblocks, first.c_str(), hang.c_str());
-	    num = num + 1;
-	}
-    }
-    else if ( b["kind"] == markdown::node_kind::code_block )
-    {
-	var code = b["text"];
-	array lines;
-	php::explode(lines, "\n", php::rtrim(code));
-	for ( var l : lines )
-	    rows[] = { "content": format("{}    {}", indent, l) };
-    }
-    else if ( b["kind"] == markdown::node_kind::block_quote )
-    {
-	var ql = format("{}│ ", lead);
-	var qi = format("{}│ ", indent);
-	var qblocks = b["children"];
-	help_blocks_rows(rows, qblocks, ql.c_str(), qi.c_str());
-    }
-    else if ( b["kind"] == markdown::node_kind::table )
-	help_table_rows(rows, b, indent.c_str());
-    else if ( b["kind"] == markdown::node_kind::thematic_break )
-	rows[] = { "content": format("{}{}", indent, php::str_repeat("─", 24)) };
-    // an HTML block shows nothing; a footnote's definition reads as its blocks
-    else if ( b["kind"] == markdown::node_kind::footnote_definition )
-    {
-	var fblocks = b["children"];
-	help_blocks_rows(rows, fblocks, lead.c_str(), indent.c_str());
-    }
-}
-
-// A run of blocks: the first block's first row after `lead`, every other row
-// after `indent`; a blank row between top-level blocks (lead "").
-void help_blocks_rows(var &rows, var &blocks, const char *lead0, const char *indent0)
-{
-    var lead = lead0;		// ring discipline: own the text first
-    var indent = indent0;
-    if ( blocks.is_null() )
-	return;
-    bool first = true;
-    for ( var b : blocks )
-    {
-	if ( !first && strlen(indent.c_str()) == 0 )
-	    rows[] = { "content": "" };
-	if ( first )
-	    help_block_rows(rows, b, lead.c_str(), indent.c_str());
-	else
-	    help_block_rows(rows, b, indent.c_str(), indent.c_str());
-	first = false;
-    }
-}
-
 // The command descriptions: commands.md's `## NAME` headings and the
 // paragraph under each — the default bundle's, then the active bundle's over
 // them, by command name. A heading that names no registered command is said
@@ -295,7 +88,7 @@ void help_descriptions(var &out, long w, long es)
 	    if ( blk["kind"] == markdown::node_kind::heading )
 	    {
 		name = "";
-		help_inline(name, blk);
+		md_inline(name, blk);
 		name = php::trim(name);
 		if ( cmd_of_w(w, name.c_str()) == cmdNONE )
 		{
@@ -306,7 +99,7 @@ void help_descriptions(var &out, long w, long es)
 	    else if ( blk["kind"] == markdown::node_kind::paragraph && strlen(name.c_str()) > 0 )
 	    {
 		var t = "";
-		help_inline(t, blk);
+		md_inline(t, blk);
 		d[name.c_str()] = t;
 		name = "";
 	    }
@@ -401,13 +194,13 @@ bool help_open(long w, long es, const char *name0)
 	rows[] = { "content": "" };
     }
     var blocks = doc["children"];
-    help_blocks_rows(rows, blocks, "", "");
+    md_blocks_rows(rows, blocks, "", "");
     var title = format("{}", name);
     for ( var b : doc["children"] )
 	if ( b["kind"] == markdown::node_kind::heading )
 	{
 	    title = "";
-	    help_inline(title, b);
+	    md_inline(title, b);
 	    break;
 	}
     ui::set(w, es, "helprows", rows);

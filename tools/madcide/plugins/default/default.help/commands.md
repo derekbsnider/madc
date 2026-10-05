@@ -96,6 +96,9 @@ Inserts a file's text at the cursor.
 ## outline
 Shows the definitions in the buffer; choosing one moves the cursor to it.
 
+## mdpreview
+Shows the Markdown buffer being edited as it reads, beside it, and keeps it current as the buffer changes; choosing a line moves the cursor to its source, and choosing a link opens the file it names.
+
 ## problems
 Shows the problems the last check found; choosing one moves the cursor to it.
 
