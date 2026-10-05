@@ -186,6 +186,14 @@ public:
     inline void makeconstant() { flags |= vfCONSTANT; }
     inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
     inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
+    // The VALUE is known at parse time: set() into `data` (an enumerator, a
+    // host-installed constant) or, for a const-DECLARED object, baked from an
+    // integral constant initializer (vfCONSTBAKED). vfCONSTANT alone is write
+    // enforcement — a const parameter, a const reference, a const object
+    // initialized at run time all carry it with no value — and is never
+    // evidence of one. Every parse-time constant READ asks this.
+    inline bool holds_constant_value() const
+    { return is_constant() && data && (!(flags & vfCONSTDECL) || (flags & vfCONSTBAKED)); }
     // The parse-time VALUE-SLOT width of a scalar variable's `data` block.
     // madc's `int` carries 64-bit values in these slots — set()/equals()/
     // increment()/decrement() access ddINT data as *(int64_t*) (see the
@@ -391,9 +399,9 @@ public:
     // overrides enum/const-var leaves report 0 even though parse-time
     // constant contexts read them correctly via read_constant_integer.
     virtual int64_t ival() const override
-        { return var.is_constant() ? var.get<int64_t>() : 0; }
+        { return var.holds_constant_value() ? var.get<int64_t>() : 0; }
     virtual double dval() const override
-        { return var.is_constant() ? var.get<double>() : 0; }
+        { return var.holds_constant_value() ? var.get<double>() : 0; }
     virtual bool is_constant() const override { return var.is_constant(); }
     virtual bool is_real() const override { return _datatype->is_real(); }
     virtual void set(int64_t c) override { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }

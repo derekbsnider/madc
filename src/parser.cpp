@@ -2863,6 +2863,16 @@ static bool is_type_query_identifier(const std::string &name)
     return name == "sizeof" || is_alignof_identifier(name);
 }
 
+// An operator whose parenthesized operand is UNEVALUATED — decltype
+// ([dcl.type.decltype]/1), sizeof and alignof ([expr.sizeof]/1,
+// [expr.alignof]), noexcept ([expr.unary.noexcept]/1): a call or member
+// access inside it is no run-time access.
+static bool has_unevaluated_operand(const std::string &name)
+{
+    return is_decltype_identifier(name) || is_type_query_identifier(name)
+	|| name == "noexcept";
+}
+
 static bool is_static_assert_identifier(const std::string &name)
 {
     return name == "_Static_assert" || name == "static_assert";
@@ -15497,7 +15507,7 @@ Variable *Program::resolve_c_identifier(TokenIdent *ident_tb, bool expression_he
 
 static bool read_constant_integer(Variable *var, madc_wide_int &out)
 {
-    if ( !var || !var->is_constant() || !var->data || !var->type || !var->type->is_integer() )
+    if ( !var || !var->holds_constant_value() || !var->type || !var->type->is_integer() )
 	return false;
     switch ( var->type->rawtype() )
     {
@@ -16023,6 +16033,8 @@ static TokenBase *deferred_expression_type_query(Program &pgm, TokenBase *op_tb,
     return query;
 }
 
+static bool is_runtime_sized_type(DataDef *dd);
+
 size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name,
 				    TokenBase **deferred)
 {
@@ -16114,6 +16126,12 @@ size_t Program::evaluate_type_query(TokenBase *op_tb, const std::string &op_name
 	    *deferred = make_type_query_token(op_tb, dd, want_alignof);
 	    return 0;
 	}
+	// No deferral: the constant evaluator's query. A variably modified
+	// type's size is a run-time value, never a constant (its alignment,
+	// the element's, is one).
+	if ( !deferred && !want_alignof && is_runtime_sized_type(dd) )
+	    Throw(type_tb) << op_name << " of a variable length array type is "
+				 "not a constant expression" << flush;
 	return query_datadef_measure(dd, want_alignof);
     }
 
@@ -17821,7 +17839,7 @@ static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
     }
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
     {
-	if ( tv->var.is_constant() )
+	if ( tv->var.holds_constant_value() )
 	{
 	    out = tv->var.get<int64_t>();
 	    return true;
@@ -19116,7 +19134,15 @@ ConstValue Program::parse_constant_primary()
 	if ( is_bool_literal_identifier(name, bool_value) )
 	    return bool_value ? 1 : 0;
 	if ( is_type_query_identifier(name) )
+	{
+	    // The size of a VLA object is a run-time value (C11 6.5.3.4p2:
+	    // the operand is evaluated) — the expression parser's VLA sizeof
+	    // recognizes it; in a constant expression it is a refusal.
+	    if ( try_parse_vla_variable_sizeof(tb, name) )
+		Throw(tb) << name << " of a variable length array is not a "
+			     "constant expression" << flush;
 	    return (madc_wide_int)evaluate_type_query(tb, name);
+	}
 	// noexcept(expr) — [expr.unary.noexcept] in constant context: the
 	// integral_constant base of libc++'s __libcpp_is_nothrow_constructible
 	// fallback (madc presents as GCC, so libc++ compiles its non-builtin
@@ -20021,7 +20047,7 @@ void Program::skip_discarded_statement()
     }
 }
 
-static bool constant_initializer_has_runtime_access(Program &pgm)
+static bool constant_initializer_has_runtime_access(Program &pgm, bool comma_ends)
 {
     // Explicit paren/square/brace, NOT d.top(): this scan never tracked angle
     // brackets, and top() also demands angle == 0 — `a < b;` would open one and
@@ -20032,7 +20058,8 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 	TokenBase *t = pgm.tokens[i];
 	if ( !t )
 	    continue;
-	if ( t->id() == TokenID::tkSemi
+	if ( (t->id() == TokenID::tkSemi
+	   || (comma_ends && t->id() == TokenID::tkComma))
 	  && d.paren == 0 && d.square == 0 && d.brace == 0 )
 	    break;
 	d.update(t);
@@ -20057,12 +20084,13 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 	if ( next && (next->id() == TokenID::tkDot || next->id() == TokenID::tkDeRef) )
 	    return true;
 	std::string name = contextual_identifier_name(t);
-	// A decltype-specifier's operand is UNEVALUATED ([dcl.type.decltype]):
-	// nothing inside it is runtime access, and member/call shapes there
-	// (`decltype(__test<_Tp>(0))::value` — the libc++ detection idiom)
-	// must not veto the fold. Skip the balanced operand extent (DelimDepth
-	// owns balanced-delimiter scanning); the group nets zero on `d`.
-	if ( is_decltype_identifier(name)
+	// An UNEVALUATED operand (decltype, sizeof, alignof, noexcept —
+	// has_unevaluated_operand): nothing inside it is runtime access, and
+	// member/call shapes there (`decltype(__test<_Tp>(0))::value` — the
+	// libc++ detection idiom; `noexcept(value(42))`) must not veto the
+	// fold. Skip the balanced operand extent (DelimDepth owns
+	// balanced-delimiter scanning); the group nets zero on `d`.
+	if ( has_unevaluated_operand(name)
 	  && i + 1 < pgm.tokens.size() && pgm.tokens[i + 1]
 	  && pgm.tokens[i + 1]->id() == TokenID::tkOpBrk )
 	{
@@ -20109,9 +20137,12 @@ static bool constant_initializer_has_runtime_access(Program &pgm)
 // failure the stream/diagnostics are restored and false returned, so the
 // caller falls back to skipping a non-constant initializer. Same
 // save/try/restore idiom as bracket_dim_constant_expression_parses.
-bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
+// `declarator`: a declaration's `= initializer`, which a top-level ',' (the
+// next declarator of its list) ends as well as the ';'.
+bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form,
+						 bool declarator)
 {
-    if ( constant_initializer_has_runtime_access(*this) )
+    if ( constant_initializer_has_runtime_access(*this, declarator) )
 	return false;
     StreamMark saved_tokens = mark_stream();
     size_t saved_diag_count = diagnostics.size();
@@ -20166,7 +20197,8 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
 		    ok = true;
 	    }
 	}
-	else if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+	else if ( peekToken() && (peekToken()->id() == TokenID::tkSemi
+		  || (declarator && peekToken()->id() == TokenID::tkComma)) )
 	    ok = true;
     }
     catch ( ... ) { ok = false; }
@@ -20185,6 +20217,18 @@ bool Program::capture_constant_initializer_value(int64_t &out, bool brace_form)
     if ( recursion_limit_hit )
 	report_constexpr_recursion_limit(*this, fold_anchor);
     return false;
+}
+
+// A const object's initializer value for the declaration's bake: the
+// speculative capture above in its declarator mode, then the stream rewound
+// so the declaration still parses the initializer as its expression.
+bool Program::const_initializer_value(int64_t &out)
+{
+    StreamMark at = mark_stream();
+    nextToken();	// the '='
+    bool ok = capture_constant_initializer_value(out, false, true);
+    rewind_stream(at);
+    return ok;
 }
 
 bool Program::bracket_dim_constant_expression_parses()
@@ -30036,15 +30080,15 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
 	return false;
     if ( is_runtime_eval_scope_helper_name(var->name) )
 	return false;
-    // A parse-time constant (vfCONSTANT without vfCONSTDECL: enum
+    // A parse-time constant (a set() value without vfCONSTDECL: enum
     // constants, host-installed eval binding constants) has no
     // declaration in the emitted module — reads of it FOLD to its value,
     // so the scope-context lowering's by-name capture would emit an
     // undeclared identifier (real glibc headers register hundreds:
     // _ISupper, PTHREAD_*). It is a value, not runtime scope state.
     // const-DECLARED variables (vfCONSTDECL) keep real storage and stay
-    // capturable.
-    if ( var->is_constant() && !(var->flags & vfCONSTDECL) )
+    // capturable, and so does a const PARAMETER (vfCONSTANT, no value).
+    if ( var->holds_constant_value() && !(var->flags & vfCONSTDECL) )
 	return false;
     // A DECLARATION never completed by a definition (vfEXTERN) is excluded by
     // the same rule, but NOT here: whether a definition arrives is a
@@ -77890,6 +77934,20 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	}
 	else if ( nt->id() == TokenID::tkAssign && arr_dims.empty() && init_list.empty() )
 	{
+	    // A const-declared scalar integer bakes its initializer's VALUE when
+	    // that is a constant expression (below); read it before the
+	    // expression parse moves the stream past it. A volatile object is
+	    // never usable in a constant expression ([expr.const]). A dependent
+	    // pattern's evaluator would measure a parameter's PLACEHOLDER
+	    // (`sizeof(T)`), so a pattern bakes only what its parsed tree holds
+	    // without dependence (try_eval_known_integer, below).
+	    bool bakes_const_value = (var->flags & vfCONSTDECL)
+		&& var->type && var->type->is_integer()
+		&& !var->type->is_pointer() && !var->type->is_volatile();
+	    int64_t const_init_value = 0;
+	    bool const_init_folds = bakes_const_value
+		&& !dependent_parse_in_progress
+		&& const_initializer_value(const_init_value);
 	    DBG(std::cout << "parseDeclaration() calling td->initialize = parseExpression" << std::endl);
 	    // conditional=true so `;` stops without being consumed, which lets
 	    // the comma-continuation loop below distinguish "end of decl" (peek
@@ -77936,25 +77994,26 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    // the trivial vs per-element specialization by these const bools, so
 	    // without it vector<string> realloc routed string elements through
 	    // the int __do_uninit_copy and corrupted them. Reads still fold to
-	    // the constant in CIR; the SPEC_DECL initializer still runs.
-	    if ( (var->flags & vfCONSTDECL)
-	      && var->type && var->type->is_integer()
-	      && !var->type->is_pointer() )
+	    // the constant in CIR; the SPEC_DECL initializer still runs. The
+	    // value is the one constant evaluator's (const_initializer_value,
+	    // read above): `N * 2`, a constexpr call; an initializer that is not
+	    // a constant expression bakes nothing and the object reads as itself.
+	    if ( bakes_const_value && dependent_parse_in_progress )
 	    {
 		TokenAssign *cta = dynamic_cast<TokenAssign *>(td->initialize);
-		int64_t cval = 0;
-		if ( cta && cta->right
-		  && try_eval_known_integer(cta->right, cval) )
+		const_init_folds = cta && cta->right
+		    && try_eval_known_integer(cta->right, const_init_value);
+	    }
+	    if ( const_init_folds )
+	    {
+		if ( !var->data && var->type->size > 0 )
 		{
-		    if ( !var->data && var->type->size > 0 )
-		    {
-			var->data = calloc(1, Variable::slot_size(*var->type));
-			if ( var->data )
-			    var->flags |= vfALLOC;
-		    }
-		    if ( var->data && var->set(cval) )
-			var->flags |= vfCONSTBAKED;
+		    var->data = calloc(1, Variable::slot_size(*var->type));
+		    if ( var->data )
+			var->flags |= vfALLOC;
 		}
+		if ( var->data && var->set(const_init_value) )
+		    var->flags |= vfCONSTBAKED;
 	    }
 	}
 	update_pointer_object_size_hints(td->initialize);

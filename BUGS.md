@@ -28,6 +28,41 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B181. A non-type template argument naming a variable is keyed and spliced by its spelling
+
+```cpp
+#include <cstdio>
+template<int K> struct X { static const int v = K; };
+const int N = 3;
+const int GR = N * N + 7;
+int main(int argc, char **argv)
+{
+	const int R = N * N;
+	int x = argc + 2;
+	printf("%d %d %d %d\n", X<R>::v, X<GR>::v, X<N * N>::v, X<x>::v);
+	return 0;
+}
+```
+
+- Found 2026-10-05 while fixing const objects initialized at run time
+  (`tests/testconstruntimeinit*`).
+- g++ 13 and clang++ 18 (`-std=c++17`) reject `X<x>` ("the value of 'x' is
+  not usable in a constant expression" / "non-type template argument is not
+  a constant expression"); without it, g++ prints `9 16 9`. madc
+  `--std=c++17`: exit 0, `9 16 9 0` — and `X<R>` is the type `X_R`, not
+  `X<9>`'s.
+- Where: template-id key formation (`canonical_arg_key_fragment` →
+  `fold_nontype_template_arg`) folds a literal, a trait call or a
+  `...::name` read; a plain identifier keeps its spelling, so the instance is
+  `X_R` — a different type from `X<9>` ([temp.type]/1: equal values, same
+  type). The class body clone then splices the argument's raw tokens for `K`
+  (`splice_nontype_template_arg`), so `v = x` re-reads the NAME wherever the
+  body is parsed: a run-time `x` captures no value and reads 0, and `R` gives
+  9 only because `R`'s declaration baked its value. A non-type argument is a
+  converted constant expression evaluated at the template-id: its VALUE is
+  the key and the splice, and an argument that does not fold (and is not
+  dependent) is an error.
+
 ### B168. `__DATE__` / `__TIME__` are madc's own build date, not the compile's
 
 ```c
@@ -706,6 +741,33 @@ int main() { return (int)alignof(S); }
   operand and refuses a comma.
 
 ## Refuses valid code
+
+### B182. A constexpr call with explicit template arguments is not a constant expression
+
+```cpp
+template<class T> constexpr bool f(T) { return true; }
+constexpr bool b1 = f<int>(3);
+static_assert(b1, "explicit template argument");
+struct mo { mo() = default; mo(mo &&) = default; };
+template<class T> constexpr bool g(T) { return true; }
+constexpr bool b3 = g<mo>(mo{});
+static_assert(b3, "class argument");
+int main() { return 0; }
+```
+
+- Found 2026-10-05 while baking const objects from their constant
+  initializers (`tests/testconstruntimeinit*`).
+- g++ 13 and clang++ 18 (`-std=c++11`): compile. madc `--std=c++11`:
+  "Expecting integer constant expression" at 3:15 and 9:15. The deduced call
+  `f(3)` evaluates.
+- Where: `Program::evaluate_constexpr_function_call` (the constant
+  evaluator's call arm) wants `(` right after the name and reads every
+  argument as an integral constant expression; a template-argument list and
+  a class prvalue argument are outside it, so the initializer bakes no value
+  and the object is no constant. g++.dg `cpp0x/sfinae69.C` is this shape (a
+  SFINAE pair called as `is_throwable<moveonly>(moveonly{})`): it sits in the
+  gxx-c++11 baseline; its `static_assert(!b)` had passed only because `b`'s
+  unset slot read as 0.
 
 ### B175. A REPL entry that starts with a class template's qualified call is refused
 

@@ -11705,6 +11705,16 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		else if (node_t refused = carrier_scalar_conversion_refusal(
 				init_expr, v->type, "initialization", origin))
 			init_node = refused;
+		// A static-storage const object the parser baked from its
+		// constant initializer (vfCONSTBAKED — a constexpr call, `N * 2`)
+		// is constant-initialized ([basic.start.static]/2): the VALUE is
+		// its initializer, never a dynamic assignment, whose target would
+		// read as the folded value itself.
+		else if ((m_file_scope_decl || (v->flags & vfSTATIC))
+			 && (v->flags & vfCONSTBAKED) && v->holds_constant_value()
+			 && v->type && v->type->is_integer() && !v->type->is_pointer()
+			 && !v->is_fixed_array())
+			init_node = constant_value_literal(*v, origin);
 		else {
 		size_t pending_before = m_pending_stmts.size();
 		init_node = translate_expr(init_expr);
@@ -25437,9 +25447,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// get<int64_t>() would return element 0.)
 			// An address use of the variable (folded_read_object, from
 			// node1's N_ADDR) is no read: it translates as the variable.
-			if (tv->var.is_constant() && tv->var.data
-			    && (!(tv->var.flags & vfCONSTDECL)
-				|| (tv->var.flags & vfCONSTBAKED)) && tv->var.type
+			if (tv->var.holds_constant_value() && tv->var.type
 			    && tv->var.type->is_integer() && !tv->var.type->is_pointer()
 			    && !tv->var.is_fixed_array() && tb != m_object_designator)
 				return constant_value_literal(tv->var, tb);
