@@ -359,11 +359,8 @@ const char *dlg_host_mode(long d)
     return d == dlgSAVE || d == dlgSAVEQUIT || d == dlgSAVECLOSE ? "save" : "open";
 }
 
-// Where a menu file's rows go (plan §41.11a, the toolbar): a row's MENU word
-// names the bar menu it joins, except the two PLACEMENT words — `palette`
-// (the command palette only, never the bar) and `toolbar` (the toolbar's
-// buttons) — converted once, at load, onto the menu entry.
-enum menu_place : unsigned char { mpBAR = 0, mpPALETTE, mpTOOLBAR, mpLAST };
+// A menu row's placement word, converted once, at load, onto the menu entry
+// (the codes, menu_place: <madcide/vocabulary>).
 const char *menu_place_name(long p)
 {
     switch ( p )
@@ -1740,12 +1737,7 @@ long plugin_field_of(var &word)
     return pfNONE;
 }
 
-// How a plugin's CODE reached madcide's process (§5.4): compiled into
-// madcide, its library loaded, its source compiled in when it activates, a
-// child process speaking over the seat, or linked into the product
-// (<madcide/product>: chthonia's plugin is part of chthonia's program). An
-// active plugin's row records it.
-enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLINKED, ptLAST };
+// A plugin transport's name (the codes, plugin_transport: <madcide/vocabulary>).
 const char *plugin_transport_name(long t)
 {
     switch ( t )

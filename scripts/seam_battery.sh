@@ -72,6 +72,9 @@ stage gates gates
 # --- 2. the full suite on the shipped Linux artifact -------------------------
 stage headerless headerless
 stage ondisk ondisk
+# Chthonia built and tested as its own repository builds it (libmadcide and
+# the public headers, never the base's sources), on the shipped binary.
+remote chthonia 'MADC_BIN=bin/madc-release bash scripts/chthonia_lane.sh'
 
 # --- 3. the win64 twins ------------------------------------------------------
 stage headerless-win headerless-win

@@ -7,7 +7,7 @@
 // workbench's top row — the picture, Run's label beside it, a ▾ posting
 // `menushow Run`, a divider. A click on Save posts the row's action by
 // name, which arrives as the session's action event carrying its command's
-// code (the headless pins: tests/testmadcide_chthonia.mad, test_web_model).
+// code (the headless pins: tools/chthonia/tests/bundle.mad, test_web_model).
 // Runs under Xvfb through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
 #include "../../tools/texteditor/editor_events.inc"

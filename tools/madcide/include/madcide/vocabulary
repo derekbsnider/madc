@@ -1,6 +1,7 @@
 // <madcide/vocabulary> — madcide's public codes: the commands (ide_cmd),
-// the popup panes (ide_pane), the layout slots (ide_slot) and the Views'
-// kinds (ide_view). madcide's base dispatches on them, and a product and its
+// the popup panes (ide_pane), the layout slots (ide_slot), the Views' kinds
+// (ide_view), a plugin's transport (plugin_transport) and a menu row's
+// placement (menu_place). madcide's base dispatches on them, and a product and its
 // tests (<madcide/harness>) name them, so they live here, installed with the
 // plugin API headers; the base's own madcide_enums.inc includes this file
 // and keeps the names, the converters and its internal vocabularies.
@@ -69,5 +70,16 @@ enum ide_view : unsigned char
     viewNONE = 0, viewSOURCE, viewCODE, viewPROBLEMS, viewOUTPUT, viewTERMINAL,
     viewPROJECT, viewOUTLINE, viewHELP, viewMDPREVIEW
 };
+
+// How a plugin's CODE reached madcide's process: compiled into madcide, its
+// library loaded, its source compiled in when it activates, a child process
+// speaking over the seat, or linked into the product (<madcide/product>). An
+// active plugin's row records it.
+enum plugin_transport : unsigned char { ptNONE = 0, ptBUILTIN, ptLIBRARY, ptSOURCE, ptHOST, ptLINKED, ptLAST };
+
+// Where a menu file's rows go: a row's MENU word names the bar menu it joins,
+// except the two PLACEMENT words — `palette` (the command palette only, never
+// the bar) and `toolbar` (the toolbar's buttons).
+enum menu_place : unsigned char { mpBAR = 0, mpPALETTE, mpTOOLBAR, mpLAST };
 
 #endif

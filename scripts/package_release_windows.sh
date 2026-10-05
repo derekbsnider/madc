@@ -94,7 +94,8 @@ echo "== madcide.dll (via the release PE under wine) =="
 # chthonia.json, a GUI-subsystem image: no console window).
 echo "== chthonia.exe (AOT via the release PE under wine) =="
 rm -f tmp/chthonia-pkg.exe
-( ulimit -t 600; timeout 600 wine "$BIN" --project tools/chthonia/chthonia.json -o tmp/chthonia-pkg.exe )
+( ulimit -t 600; MADC="wine $BIN" MADCIDE_INCLUDE=tools/madcide/include \
+	timeout 600 bash tools/chthonia/scripts/build.sh -o tmp/chthonia-pkg.exe )
 # The shipped plugins: a plugin with code carries its library (a .dll),
 # built by this madcide.exe under wine (plan §41.11a step 6).
 echo "== madcide plugins (each with code built by the packaged madcide.exe) =="

@@ -4,9 +4,7 @@
   "icon": "chthonia.ico",
   "libs": [ "madcide" ],
   "tus": [
-    { "file": "../madcide/plugins/chthonia/chthonia.mad",
-      "include_dirs": [ "../madcide/include" ] },
-    { "file": "chthonia_main.mad",
-      "include_dirs": [ "../madcide/include" ] }
+    "../madcide/plugins/chthonia/chthonia.mad",
+    "chthonia_main.mad"
   ]
 }

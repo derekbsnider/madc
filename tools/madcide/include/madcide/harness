@@ -22,9 +22,10 @@ long es_int(long w, long es, const char *key, long dflt);
 long cur_pane(long w, long es);
 void set_pane(long w, long es, long p);
 const char *pane_name(long p);
-// Commands by name (a test's input boundary) and back.
+// Commands by name (a test's input boundary) and back; an event's code.
 long cmd_of_w(long w, const char *name);
 void cmd_name_w(var &out, long w, long code);
+long ev_code(var &ev);
 // Documents, buffers and the session's language world.
 long setup_editor(long w, const char *path, bool ro);
 bool doc_untitled(long w, long doc);

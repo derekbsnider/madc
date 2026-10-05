@@ -1,5 +1,5 @@
-// The chthonia profile: the teaching bundle madcide ships,
-// tools/madcide/plugins/chthonia — the Chthonia key style, chthonia.layout
+// Chthonia's bundle, the chthonia profile — the Chthonia key style,
+// chthonia.layout
 // (the editor, and below it the REPL as the visible panel's first tab with
 // Problems, Output and Terminal beside it; the Symbols view in the right
 // sidebar), chthonia.menu (the beginner's subset of the command vocabulary)
@@ -27,15 +27,15 @@
 //      for this bundle in settings.json (this test's configuration
 //      directory, its .env), so the next chthonia session opens with it
 //      while the default bundle keeps its own keys;
-//   8. the Symbols view (plan §41.11a step 6), its code activated from
-//      source: after F5 on §34's program plus a global its rows read
+//   8. the Symbols view, its code activated from source: after F5 on a
+//      program of two functions plus a global its rows read
 //      `count int 3` and `square int (int)`; choosing `square` moves the
 //      caret to its line; an entry `int y = 7;` adds its row; Stop empties
 //      the view;
 //   9. the same, its code activated from the library --build-plugin built
 //      (a copy of the bundle in this test's configuration directory, which
 //      the search path puts first).
-//  10. View ▸ Outline and Tools ▸ Options (§7a Thonny parity): the View and
+//  10. View ▸ Outline and Tools ▸ Options: the View and
 //      Tools menus list them; outline shows in the sidebar beside Symbols
 //      (the file's main) and toggles back; options opens and closes its pane.
 //  11. Edit ▸ Clear shell (`replclear`, Ctrl+L), in pins 8-9's session: the
@@ -46,11 +46,7 @@
 //      Build… followed by the build rows (Check, Build, Run, Stop); its Build
 //      row, run in this bundle, builds the file into an executable (the
 //      file's name without its extension), which the test then removes.
-#include "../tools/texteditor/lined_core.inc"
-#include "../tools/texteditor/editor_events.inc"
-#include "../tools/madcide/madcide_core.inc"
-
-#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
+#include <madcide/harness>
 
 // The menu bar's titles, space-separated, and the named menu's command ids.
 void menu_bar(var &titles, var &ids, long w, long es, const char *menu)
@@ -175,7 +171,7 @@ void symbols_gate(IdeSession &S, long doc, const char *label)
     enter_line(S, doc, w, es, "int y = 7;");
     symbols_rows(got, S, doc);
     println("{}-entry: [{}]", label, got);
-    // Edit ▸ Clear shell (`replclear`, §7a; Thonny's Ctrl+L): the transcript
+    // Edit ▸ Clear shell (`replclear`, Ctrl+L): the transcript
     // empties, the session and its names stay.
     var tbefore;
     ui::text(tbefore, w, repl_doc_if_any(w, es));
@@ -224,7 +220,7 @@ int main()
     long h = es_int(S.w, S.es, "replh", 0);
     println("chthonia-repl: live={} running={}", es_int(S.w, S.es, "repllive", 0),
 	    h != 0 && madc::session_running(h) ? 1 : 0);
-    // View ▸ Outline and Tools ▸ Options (§7a Thonny parity): the View menu
+    // View ▸ Outline and Tools ▸ Options: the View menu
     // lists outline and Tools lists options; `outline` shows the outline in
     // the sidebar beside Symbols (the file's main), again hides it and the
     // sidebar shows Symbols again; `options` opens the Options pane.

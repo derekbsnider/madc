@@ -52,7 +52,8 @@ class Madc < Formula
     mkdir_p "tmp"
     system "bin/madc-release", "-o", "tmp/madcide-pkg", "tools/madcide/madcide.mad"
     system "bin/madc-release", "-shared", "-o", "lib/libmadcide.so", "tools/madcide/madcide_base.mad"
-    system "bin/madc-release", "--project", "tools/chthonia/chthonia.json", "-o", "tmp/chthonia-pkg"
+    system "env", "MADC=bin/madc-release", "MADCIDE_INCLUDE=tools/madcide/include",
+           "bash", "tools/chthonia/scripts/build.sh", "-o", "tmp/chthonia-pkg"
     system "scripts/build_shipped_plugins.sh", "tmp/plugins-pkg", "tmp/madcide-pkg"
     system "scripts/stage_install.sh", prefix, "lib", ""
   end

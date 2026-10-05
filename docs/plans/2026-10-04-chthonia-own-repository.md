@@ -27,8 +27,10 @@ base from source (`../madcide/madcide_base.mad`).
 - `tools/madcide/plugins/chthonia/` — the bundle: plugin manifest, menu,
   layout, the Variables view's code.
 - Chthonia's help topics (chthonia plan §7d).
-- Its tests: `tests/testmadcide_chthonia.*`, `tests/gui/madcide_chthonia.mad`,
-  and any other test that exists only for the bundle.
+- Its tests: `tools/chthonia/tests/` (`bundle.mad` and `gui/window.mad`,
+  moved there from `tests/testmadcide_chthonia.*` and
+  `tests/gui/madcide_chthonia.*`), and any other test that exists only for
+  the bundle.
 - Its packaging (§4) and its install-gate probes (Linux 6 and 7, macOS 1c
   and 1d in `scripts/package_install_gate.sh`).
 - Its user documentation (the Chthonia passages of `README.md`,
@@ -161,6 +163,18 @@ Slices:
 5. **The boundary gate:** `check-chthonia-boundary.sh` with no exception —
    Chthonia's manifest names no base source, and its tests include only
    installed headers.
+   **Done (2026-10-05):** Chthonia's tests are in its own directory
+   (`tools/chthonia/tests/`, §6 step 2), so the gate's include rule covers
+   them, and a new rule fails any file of the moving set (sources, scripts,
+   fixtures) that names madcide's sources (`tools/madcide/`,
+   `madcide_base`, `madcide_core`). Running them showed two codes a test
+   names that only the base declared, the plugin transport and a menu
+   row's placement; they moved into `<madcide/vocabulary>`, and `ev_code`
+   joined the harness. It also showed that the command line's `-l` skipped
+   madc's own lib directory, which `import` and `"libs"` search first:
+   `-l` and a frozen forest's libraries now open through
+   `madc_module_open` (`tests/testlink_selflibdir`, gated by
+   `check-one-library-opener.sh`).
 
 Thread contract: none new — `libmadcide` is the base's code, whose contract
 (the session's thread) is unchanged; the manifest's libraries are opened once,
@@ -169,13 +183,16 @@ before the program runs.
 ## 4. Packaging in the Chthonia repository
 
 - **Linux**: `.deb` (one per supported Ubuntu release, as madc's), `.rpm`,
-  and a tarball. The `.deb`/`.rpm` depend on madc's runtime package
-  (libmadc); the tarball carries it.
+  and a tarball. The `.deb`/`.rpm` depend on madc's package; the tarball
+  unpacks into madc's prefix (the install layout below).
 - **Windows**: the zip, and **MSIX** — package identity, the
   `AppxManifest.xml`, the signing certificate, the Evergreen WebView2
   runtime as a declared dependency, Start-menu entry and file associations
-  (`.c`, `.cpp`, `.h`, `.mad`). The package carries `libmadc-0.dll` beside
-  `chthonia.exe` (PE binding is adjacency).
+  (`.c`, `.cpp`, `.h`, `.mad`). The zip unpacks into madc's folder, where
+  `libmadc-0.dll` and `madcide.dll` already sit beside `madc.exe` (PE
+  binding is adjacency). MSIX bundles everything (owner, 2026-10-05): it is
+  sandboxed in its own folder, so it carries madc's runtime (`libmadc-0.dll`,
+  `madcide.dll`) and madcide's data beside `chthonia.exe`.
 - **macOS**: `Chthonia.app` with its `.icns`, in a `.dmg`; notarization when
   the signing identity exists.
 - **Notices**: a Chthonia package that bundles libmadc ships madc's licence
@@ -184,6 +201,20 @@ before the program runs.
   checked by the same shipped-notices gate madc uses (chthonia plan §7d).
 - **Version**: Chthonia's own (`chthonia_version.h`), independent of madc's;
   Help ▸ About shows both.
+- **Installed into madc's prefix (owner, 2026-10-05):** Chthonia requires a
+  madc installation (libmadc, madc, madcide) and installs along with it; it
+  is never installed without the base madc package. madcide's base finds
+  its verbs, checks, profiles and shipped plugins through the running
+  executable (`resolve_data_dir`: `<exedir>/../share/madcide/<sub>`, then
+  `<exedir>/<sub>`), so chthonia beside madc finds them unchanged, and
+  Chthonia's bundle installs as a shipped plugin
+  (`share/madcide/plugins/chthonia`), where the plugin search path already
+  looks. The deb/rpm/tarball install into madc's prefix and depend on madc's
+  packages; the Windows zip unpacks into madc's folder. MSIX is the one
+  format that cannot install into another package's location, so it
+  bundles everything (Windows, above). Chthonia has no Homebrew keg: its
+  Linux packages are the distribution-specific `.deb`/`.rpm` (owner,
+  2026-10-05).
 
 ## 5. A sanitized repository (owner, 2026-10-04)
 
@@ -248,6 +279,34 @@ published.
    (`stage_install.sh`), its tests through the installed harness headers —
    never `madcide_base.mad` source. Its three-platform packaging (§4) is
    written now as files under `tools/chthonia/`, ready to move.
+   **Designed (2026-10-05):**
+   - Chthonia's tests move under `tools/chthonia/tests/`: `bundle.mad`
+     (from `tests/testmadcide_chthonia.*`) and `gui/window.mad` (from
+     `tests/gui/madcide_chthonia.*`), with their fixtures. Each includes
+     `<madcide/harness>` and none of the base's sources; their comments get
+     the §5 pass as they move.
+   - `tools/chthonia/scripts/build.sh` builds Chthonia with a given madc:
+     `madc -I <madcide include dir> --project chthonia.json -o <out>`. A
+     command-line `-I` reaches every unit of a project (2026-10-05), so the
+     manifest names no include directory; the installed one is
+     `<prefix>/share/madcide/include`, the in-tree one
+     `tools/madcide/include`.
+   - `tools/chthonia/scripts/run_tests.sh` runs each test with
+     `madc -I <include dir> -lmadcide`, reading `.env`, `.expect` and
+     `.timeout` the way madc's runner does, and the window tests under
+     `xvfb-run`. It is Chthonia's own, since its repository has no madc
+     scripts.
+   - madc's lane `scripts/chthonia_lane.sh` (ledger row `chthonia`)
+     builds `lib/libmadcide` with the madc under test and runs both scripts
+     against it and `tools/madcide/include`. `--installed` runs them
+     against an installed madc instead: the relocatable tarball
+     `package_release.sh` writes, unpacked, as Chthonia's CI will. Tier 1
+     for a change to madcide or Chthonia; the seam battery runs it on the
+     packed release binary; the installed form runs on a release's
+     packages (step 5's candidate).
+   - `tests/testmadcide_product` stays in madc (the product descriptor is
+     base). It links Chthonia's plugin as its example product, so at the
+     cut (step 4) it moves to a product of its own.
 3. **The Chthonia repository, prepared.** The sanitized initial commit (§5)
    built from those files; its CI installs madc from a madc release's
    assets and builds, tests and packages on Linux, Windows and macOS.
@@ -266,9 +325,7 @@ published.
    draft is published.
 7. **Chthonia's release, the same day.** Its CI re-runs against the
    published packages (the bytes it already tested), then its tag. Its
-   packages require madc ≥ 0.102.0 (`.deb`/`.rpm` Depends, the Homebrew
-   formula's `depends_on "madc"` — the tap update after madc's formula
-   lands, owner-gated as the tap is).
+   packages require madc ≥ 0.102.0 (the `.deb`/`.rpm` Depends).
 8. MSIX and the macOS `.app`/`.dmg`, in the Chthonia repository, as point
    releases if they are not ready for step 7.
 

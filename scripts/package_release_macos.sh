@@ -173,7 +173,8 @@ package_arch() {
         # libmadcide (madcide's base as a library) into this madc's own lib
         # directory (bin/../lib), where chthonia's manifest "libs" finds it.
         "$bin" -shared -o lib/libmadcide.dylib tools/madcide/madcide_base.mad
-        "$bin" --project tools/chthonia/chthonia.json -o "tmp/chthonia-pkg-$bin_arch"
+        MADC="$bin" MADCIDE_INCLUDE=tools/madcide/include \
+            bash tools/chthonia/scripts/build.sh -o "tmp/chthonia-pkg-$bin_arch"
         scripts/build_shipped_plugins.sh "tmp/plugins-pkg-$bin_arch" "tmp/madcide-pkg-$bin_arch"
     else
         echo "package_release_macos: SKIP madcide/chthonia for $bin_arch — they are built by the $bin_arch release madc on a darwin host of that arch (the release.yml mac job); this tarball carries the compiler alone"

@@ -160,7 +160,8 @@ echo "== libmadcide (via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release -shared -o lib/libmadcide.so tools/madcide/madcide_base.mad )
 # chthonia: the product built on madcide's base, by the same compiler.
 echo "== chthonia (AOT via the release compiler) =="
-( ulimit -t 240; timeout 300 bin/madc-release --project tools/chthonia/chthonia.json -o tmp/chthonia-pkg )
+( ulimit -t 240; MADC=bin/madc-release MADCIDE_INCLUDE=tools/madcide/include \
+	timeout 300 bash tools/chthonia/scripts/build.sh -o tmp/chthonia-pkg )
 strip --strip-unneeded tmp/chthonia-pkg
 # The shipped plugins: a plugin with code carries its library, built by
 # this madcide (plan §41.11a step 6); every stage() copies the one set.

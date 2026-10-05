@@ -8,15 +8,18 @@
 # share/madcide/include/madcide). A reach into madcide's internals here would
 # not build in the other repository, and would be found only at the cut.
 #
-# Scope: the files that move — tools/chthonia/ and the bundle,
-# tools/madcide/plugins/chthonia/. Its tests are not in scope yet: they
-# include madcide's internals until madc-devel ships the product test
-# harness (plan §3.2).
+# Scope: the files that move — tools/chthonia/ (the product, its scripts
+# and its tests, tools/chthonia/tests/) and the bundle,
+# tools/madcide/plugins/chthonia/.
 #
 # Rule:
 #   - an #include is a public header (<madcide/NAME>, NAME a file in
 #     tools/madcide/include/madcide/) or a quoted file in the includer's own
-#     directory;
+#     directory — a test's view of the base is <madcide/harness>;
+#   - no file of the moving set (sources, scripts, fixtures) names
+#     madcide's sources (tools/madcide/, madcide_base, madcide_core): its
+#     build and its tests are given madcide's headers and library by the
+#     madc that builds them;
 #   - the build manifest (tools/chthonia/chthonia.json) names only paths
 #     inside the moving set or the public include directory: madcide's base
 #     is the library libmadcide ("libs": ["madcide"], plan §3a), never a
@@ -56,6 +59,15 @@ check_includes() {
 	return $bad
 }
 
+# check_mentions FILE... — prints each line naming madcide's sources; 0 = clean.
+check_mentions() {
+	local out
+	out=$(grep -n -H -E 'tools/madcide/|madcide_base|madcide_core' "$@" 2>/dev/null)
+	[ -z "$out" ] && return 0
+	echo "$out"
+	return 1
+}
+
 # check_manifest FILE — prints each path outside the rule; 0 = clean.
 check_manifest() {
 	local f="$1" p bad=0
@@ -76,6 +88,8 @@ printf '#include <madcide/plugin>\n#include "sibling.h"\n' > "$tmpd/good.mad"
 printf '{ "tus": [ "../madcide/madcide_core.inc" ] }\n' > "$tmpd/bad.json"
 printf '{ "tus": [ "../madcide/madcide_base.mad" ] }\n' > "$tmpd/base.json"
 printf '{ "libs": [ "madcide" ], "tus": [ { "include_dirs": [ "../madcide/include" ] } ] }\n' > "$tmpd/good.json"
+printf 'madc -I ../madcide/include tools/madcide/madcide_base.mad\n' > "$tmpd/bad.sh"
+printf 'madc -I "$MADCIDE_INCLUDE" --project chthonia.json\n' > "$tmpd/good.sh"
 fail_control() {
 	rm -rf "$tmpd"
 	echo "check-chthonia-boundary: CONTROL FAILED — $1" >&2
@@ -86,6 +100,8 @@ check_includes "$tmpd/good.mad" >/dev/null || fail_control "a public include or 
 check_manifest "$tmpd/bad.json" >/dev/null && fail_control "a manifest naming a madcide internal passed"
 check_manifest "$tmpd/base.json" >/dev/null && fail_control "a manifest compiling madcide's base from source passed"
 check_manifest "$tmpd/good.json" >/dev/null || fail_control "a manifest linking libmadcide with the public include dir failed"
+check_mentions "$tmpd/bad.sh" >/dev/null && fail_control "a script naming madcide's base source passed"
+check_mentions "$tmpd/good.sh" >/dev/null || fail_control "a script given madcide's headers failed"
 rm -rf "$tmpd"
 
 # --- the tree ---------------------------------------------------------------
@@ -96,6 +112,13 @@ status=0
 # shellcheck disable=SC2086
 if ! out=$(check_includes $src); then
 	echo "check-chthonia-boundary: Chthonia includes a madcide internal:" >&2
+	echo "$out" >&2
+	status=1
+fi
+others=$(git ls-files tools/chthonia tools/madcide/plugins/chthonia)
+# shellcheck disable=SC2086
+if [ -n "$others" ] && ! out=$(check_mentions $others); then
+	echo "check-chthonia-boundary: a Chthonia file names madcide's sources:" >&2
 	echo "$out" >&2
 	status=1
 fi
