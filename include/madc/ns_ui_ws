@@ -27,8 +27,9 @@ namespace ui_ws {
     // attach() immediately before ui::open("ws"); the cooperative scheduler
     // never yields between those two calls (attach is a bare store, ui::open
     // reaches open() with no park in between), so two seats can never race
-    // this single slot.
-    madc::channel *__pending = 0;
+    // this single slot. Inline: one slot however many units include this
+    // fragment, objects linked included.
+    inline madc::channel *__pending = 0;
 
     void attach(madc::channel *ch)
     {

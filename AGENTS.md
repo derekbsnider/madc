@@ -428,14 +428,14 @@ editing — don't try to memorize all of them.
 | [clang-methodology.md](.claude/rules/clang-methodology.md) | 46 | Same methodology against clang, the co-equal canon; cross-check lowering with both gcc and clang |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [c11-transpiler.md](.claude/rules/c11-transpiler.md) | 70 | `--emit=c11` lowers every C++ feature to strict C11; c2mir limits, lowering patterns, emission hygiene |
-| [embedded-headers.md](.claude/rules/embedded-headers.md) |  67 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
+| [embedded-headers.md](.claude/rules/embedded-headers.md) |  75 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns), a fragment's namespace-scope variables `inline` (gated) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |    15 | GCC as a reference baseline (verbose `-fverbose-asm` disassembly) for codegen / type / runtime parity |
 | [clang-parity.md](.claude/rules/clang-parity.md) |    16 | clang as the co-equal reference baseline (second lowering opinion); both gcc and clang are canon |
 | [indirection.md](.claude/rules/indirection.md) |   114 | **ONE owner per layered-pointer/reference concern**, indexed: the `*` operand is `parseCastExpression` (the engine, bounded) + `build_indirection` (gated by `check-one-deref-builder.sh`); an operand's value + integer promotions (`operand_value_type` / `promoted_operand_type`, gated), type minting/peeling, an array operand's element (`array_operand_element_type`), decay, declarators, symbol counting (angle brackets → `delimiter-tracking.md`) |
 
 ### Total rule footprint
 
-- **36 rules, 1255 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **36 rules, 1260 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
 - **This file (AGENTS.md): ~487 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
 - **Grand total loaded by Claude Code per turn: ~1750 lines.**

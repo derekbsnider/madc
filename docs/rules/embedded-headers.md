@@ -73,3 +73,19 @@ symbols visible only through the returned handle and `dlsym(RTLD_DEFAULT)`
 would not see them. With `RTLD_GLOBAL`, loaded symbols go into the
 process's global symbol table, so `sqrt()` (used after `import m;`)
 resolves without any namespace prefix.
+
+## Why a fragment's namespace-scope variables are `inline`
+
+Every unit that names a fragment's namespace includes the fragment, so a
+plain variable in it is defined once per unit. madc's `--project` lane
+tolerated the copies, but a multi-object link (`madc -c` per unit, then
+`madc -o prog a.o b.o`) refuses the second as a duplicate symbol, as `ld`
+refuses a "multiple definition". On 2026-10-05 the web and ws UI hosts each
+carried one (`ui_web::__last_host`, `ui_ws::__pending`), so chthonia's
+objects (madcide's base, its plugin, its main) would not link: the static
+form of libmadcide. A C++17 `inline` variable is one variable however many
+units define it, and the CIR builder binds it linkonce. A fragment's function
+bodies need no keyword: they arrive through the deferred-body machinery,
+which gives them vague linkage, so two units using `php::` link today.
+`tests/testfragmentobjects` holds the behaviour; the gate holds the rule for
+fragments not yet written.

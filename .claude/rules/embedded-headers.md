@@ -15,6 +15,9 @@
    the build compiles that. `src/embedded_headers.cpp` is a committed `#error`
    STUB — never edit it or commit generated content there (gated by
    `scripts/check-embedded-headers-stub.sh`).
+6. A variable a fragment (`ns_*`, `bits/*`) defines at namespace scope is
+   `inline` (or `static`, `extern`, `constexpr`, `const`). Gated by
+   `scripts/check-fragment-inline-vars.sh`.
 
 ## Declare real return types — never rely on the fallback for signed int
 

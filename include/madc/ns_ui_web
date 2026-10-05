@@ -26,8 +26,9 @@ namespace ui_web {
     };
 
     // The most recently opened host — the test seam's target
-    // (menu_activate); a GUI test opens one window.
-    host *__last_host = 0;
+    // (menu_activate); a GUI test opens one window. Inline: one variable
+    // however many units include this fragment, objects linked included.
+    inline host *__last_host = 0;
 
     // An event posted from inside the platform loop stops it ONCE per run
     // (madcwebview_stop): GTK delivers terminate through its own idle queue,
