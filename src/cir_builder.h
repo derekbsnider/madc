@@ -2755,8 +2755,9 @@ public:
 	// A loop body's own temporaries must live INSIDE the body so they are
 	// re-constructed each iteration; wraps a non-compound body (reusing
 	// translate_branch_stmt) but stashes the loop's init/cond/incr pending temps
-	// first so only the body's temps are wrapped.
-	node_t translate_loop_body(TokenBase *tb);
+	// first so only the body's temps are wrapped. `loop` is the loop's own
+	// token (the session interrupt's poll is the loop's, D8).
+	node_t translate_loop_body(TokenBase *loop, TokenBase *tb);
 	// Class-instance declaration statement (`Foo f(a,b)`, `string s = "x"`,
 	// `iterator it = m.begin()`): storage decl + injected construction (the
 	// 1->N C++ decl lowering), appended to `items`. Shared by

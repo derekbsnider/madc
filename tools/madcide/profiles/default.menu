@@ -108,6 +108,7 @@ Window onlywin Only Window [split]
 Build build Build…
 Build replrun Run in REPL
 Build replstop Stop the REPL
+Build replinterrupt Interrupt the REPL
 Build language Language…
 
 Help helpcontents Help Contents

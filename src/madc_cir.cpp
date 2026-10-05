@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <setjmp.h>
+#include <signal.h>	// sig_atomic_t: the session interrupt's flag (D8)
 #include <chrono>
 #include <sys/stat.h>	// -o: chmod 0755 on the emitted executable
 #include <errno.h>
@@ -1716,6 +1717,39 @@ extern "C" void *__madc_session_unbound(const char *sym)
     longjmp(b->jb, 1);
 }
 
+// The interrupt (D8, plan madc-repl-thonny §41.12a). Pending is set by a
+// SIGINT handler or the Windows watcher thread (madc_session_interrupt_raise)
+// and read by the entry's own polls; the outermost boundary clears it as it
+// arms, so an interrupt while no entry runs does nothing.
+static volatile sig_atomic_t cir_interrupt_pending = 0;
+
+bool madc_session_interrupt_raise()
+{
+    if (cir_interrupt_pending)
+	return true;
+    cir_interrupt_pending = 1;
+    return false;
+}
+
+// The poll a session Program's loops make at every back-edge (the builder's
+// loop_poll_condition). With an interrupt pending and a boundary armed on
+// this task, the entry returns to its boundary as an undefined reference
+// does: the runtime diagnostic recorded, no C++ exception, so no script `try`
+// keeps it. A task the entry spawned keeps running; the entry's own next poll
+// takes the interrupt.
+extern "C" void __madc_session_poll(void)
+{
+    if (!cir_interrupt_pending)
+	return;
+    CirEntryBoundary *b = cir_entry_boundary;
+    if (!b || b->task != __madc_task_current())
+	return;
+    cir_interrupt_pending = 0;
+    b->prog->record_frontend_error(Program::DiagnosticPhase::runtime,
+				   "interrupted", b->entry_name, 0, 0);
+    longjmp(b->jb, 1);
+}
+
 // D10 (plan §41.4a): the show's hand-off. The value text the generated walk
 // captured in SINK is recorded on the running entry's Program
 // (Program::entry_shown), which the session reads (InteractiveSession::shown).
@@ -1801,7 +1835,7 @@ static void cir_call_main(void *call)
 }
 
 // Run an entry's code at the entry's boundary. False when a use of an
-// undefined symbol returned here. The return destroys what the run registered
+// undefined symbol or an interrupt (__madc_session_poll) returned here. The return destroys what the run registered
 // on the exception runtime's cleanup stack, as a throw past it would, and
 // gives that runtime back the state it had when the boundary armed.
 static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
@@ -1817,6 +1851,9 @@ static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
 	return false;
     __madc_except_state_save(b.except_state);
     b.outer = cir_entry_boundary;
+    if (!b.outer)
+	cir_interrupt_pending = 0;	// one from before this entry: none
+
     if (setjmp(b.jb)) {
 	__madc_cleanup_unwind_to(b.cleanup_mark);
 	__madc_except_state_restore(b.except_state);

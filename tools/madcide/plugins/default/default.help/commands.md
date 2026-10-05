@@ -125,6 +125,13 @@ loaded, then its main.
 ## replstop
 Stops what the shell is running.
 
+## replinterrupt
+Interrupts what the shell is running: it returns to the prompt at its next
+loop, and the names you defined stay. Copy with nothing selected in the
+shell's input does the same, as Ctrl+C does in a terminal. A program waiting
+inside a library call cannot stop there: interrupt it again, and the shell
+starts a fresh session.
+
 ## replclear
 Clears the shell's transcript.
 

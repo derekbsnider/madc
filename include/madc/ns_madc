@@ -813,6 +813,12 @@ namespace madc {
     //     backend exited).
     //   session_output(out, h): what the program printed since the last call.
     //   session_input(h, text): text for the program's stdin.
+    //   session_interrupt(h): interrupt the running entry (D8): it returns
+    //     to the prompt at its next loop back-edge, its offer (or run)
+    //     answering with the runtime diagnostic `interrupted` and the
+    //     session's state kept. A second one before the entry polled ends
+    //     the backend (a stop reply; a fresh backend starts). One while no
+    //     entry runs does nothing. False = no backend.
     //   session_restart(h): a new backend; its state starts empty.
     //   session_restart(h, std): the same under another standard (`c17` or
     //     `--std=c17`, as session_open takes it): the language changes.
@@ -843,6 +849,7 @@ namespace madc {
     int64_t session_poll(value &reply, int64_t handle);
     value &session_output(value &out, int64_t handle);
     bool session_input(int64_t handle, const char *text);
+    bool session_interrupt(int64_t handle);
     bool session_restart(int64_t handle);
     bool session_restart(int64_t handle, const char *standard);
     int64_t session_readable(int64_t handle);

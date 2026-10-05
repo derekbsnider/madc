@@ -27596,13 +27596,31 @@ node_t CirBuilder::translate_branch_stmt(TokenBase *tb)
 // enclosing scope, as before). Stash them across the body translation, then
 // restore so the enclosing block still flushes them. (translate_branch_stmt
 // leaves m_pending_stmts empty, so a plain restore is exact.)
-node_t CirBuilder::translate_loop_body(TokenBase *tb)
+node_t CirBuilder::translate_loop_body(TokenBase *loop, TokenBase *tb)
 {
 	std::vector<node_t> saved;
 	saved.swap(m_pending_stmts);
 	node_t body = translate_branch_stmt(tb);
 	m_pending_stmts = saved;
-	return body;
+	if (!m_prog || !m_prog->interactive_session)
+		return body;
+	// The session interrupt's poll (D8, plan madc-repl-thonny §41.12a): in a
+	// session Program every USER loop's body starts with
+	// __madc_session_poll(), so each iteration reaches it, a `continue`'s
+	// included. Every user loop's body comes through here; the compiler's own
+	// loops (array construction and destruction) do not. The poll's origin
+	// is the LOOP: a template's pattern body is copied by tsubst, which
+	// re-resolves a call whose origin is a call token, and a body that is one
+	// call statement (`for (...) std::_Destroy(p);`) would lend it that one.
+	need_output_extern("__madc_session_poll", false, {});
+	node_t items = list();
+	append(items, node2(N_EXPR, list(),
+			    node2(N_CALL, id("__madc_session_poll", loop), list(),
+				  loop),
+			    loop));
+	if (body)
+		append(items, body);
+	return node2(N_BLOCK, list(), items, tb);
 }
 
 // Contextual conversion to bool ([conv]/4): in a boolean context — if/while/
@@ -27849,7 +27867,7 @@ node_t CirBuilder::translate_while(TokenBase *tw)
 	node_t cond = loop_header_expr_scope(translate_cond(w->condition),
 					     mark, tw);
 	return node3(N_WHILE, list(), cond,
-		     translate_loop_body(w->statement), tw);
+		     translate_loop_body(tw, w->statement), tw);
 }
 
 node_t CirBuilder::translate_for(TokenFOR *tf)
@@ -27943,7 +27961,7 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 		for (TokenBase *ex : tf->incr_extras)
 			incr = node2(N_COMMA, incr, translate_expr(ex));
 	incr = loop_header_expr_scope(incr, hdr_mark, tf);
-	node_t body = translate_loop_body(tf->statement);
+	node_t body = translate_loop_body(tf, tf->statement);
 	node_t loop = node5(N_FOR, list(), init, cond, incr, body, tf);
 	// Class-shape for-init: the decl + construction statements precede the
 	// loop inside a synthetic block (see the class_init_items arm above).
@@ -28735,7 +28753,7 @@ node_t CirBuilder::translate_foreach_loop(TokenFOREACH *fe,
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
-	node_t user_body = translate_loop_body(fe->statement);
+	node_t user_body = translate_loop_body(fe, fe->statement);
 	if (user_body) append(body_items, user_body);
 	node_t body = node2(N_BLOCK, list(), body_items, fe);
 
@@ -28832,7 +28850,7 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
-	node_t user_body = translate_loop_body(fe->statement);
+	node_t user_body = translate_loop_body(fe, fe->statement);
 	if (user_body) append(body_items, user_body);
 	node_t body = node2(N_BLOCK, list(), body_items, fe);
 
@@ -28986,7 +29004,7 @@ node_t CirBuilder::translate_foreach_iterator(TokenFOREACH *fe, DataDefCLASS *cl
 				   elem_value(), fe), fe));
 	}
 
-	node_t user_body = translate_loop_body(fe->statement);
+	node_t user_body = translate_loop_body(fe, fe->statement);
 	if (user_body)
 		append(body_items, user_body);
 
@@ -29141,7 +29159,7 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv,
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
-	node_t user_body = translate_loop_body(fe->statement);
+	node_t user_body = translate_loop_body(fe, fe->statement);
 	if (user_body) append(body_items, user_body);
 	node_t body = node2(N_BLOCK, list(), body_items, fe);
 
@@ -29154,7 +29172,7 @@ node_t CirBuilder::translate_do(TokenDO *td)
 	node_t cond = loop_header_expr_scope(translate_cond(td->condition),
 					     mark, td);
 	return node3(N_DO, list(), cond,
-		     translate_loop_body(td->statement), td);
+		     translate_loop_body(td, td->statement), td);
 }
 
 node_t CirBuilder::translate_switch(TokenSWITCH *ts)

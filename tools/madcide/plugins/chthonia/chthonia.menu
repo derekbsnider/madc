@@ -46,6 +46,7 @@ Edit replclear Clear shell
 
 Run replrun Run
 Run replstop Stop
+Run replinterrupt Interrupt
 Run language Language…
 
 Build build Build…

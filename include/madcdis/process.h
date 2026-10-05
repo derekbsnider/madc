@@ -96,6 +96,11 @@ public:
 	// start()); false on pipes — and always on Windows for now.
 	bool is_pty() const;
 	void terminate();
+	// SIGINT to the running child (POSIX), as a terminal's Ctrl-C would
+	// send it. False when it is not running, or on Windows, which has no
+	// cross-process interrupt (the session's interrupt rides an event,
+	// madc_session_interrupt.h).
+	bool interrupt();
 
 	// Spawn `executable` with the caller's full argv (argv[0] included)
 	// and ALL stdio inherited — no pipes, no channels — then wait.

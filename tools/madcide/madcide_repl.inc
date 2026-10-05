@@ -3,7 +3,7 @@
 // madc forked — nothing execs), its transcript in the tab and an input field
 // under it. madcide's first BUILTIN plugin (plan §41.11a step 8): included
 // at the end of madcide_core.inc, it registers through the plugin points at
-// its activation (repl_activate) — its ten commands, its console view
+// its activation (repl_activate) — its eleven commands, its console view
 // `repl` (vsCONSOLE: the core composes it from `repl.pane` and routes the
 // keyboard to its input while the input has it, `consolefocus`) and its
 // handlers of the session's open, stop and close — and the core names none
@@ -934,6 +934,43 @@ bool repl_cmd_stop(long w, long es, long doc, const char *arg)
     return true;
 }
 
+// Interrupt (`replinterrupt`, Thonny's Run ▸ Interrupt; D8, plan
+// madc-repl-thonny §41.12a): the running entry, or F5's load or run, returns
+// to the prompt at its next loop back-edge with the session kept, its reply
+// saying `interrupted`; a second one before it does ends the backend and a
+// fresh session starts (the transcript says so, as for a crash). False =
+// nothing runs.
+bool repl_interrupt(long w, long es)
+{
+    long h = es_int(w, es, "replh", 0);
+    if ( h == 0 || es_int(w, es, "replbusy", 0) == 0 )
+	return false;
+    madc::session_interrupt(h);
+    return true;
+}
+
+bool repl_cmd_interrupt(long w, long es, long doc, const char *arg)
+{
+    if ( repl_interrupt(w, es) )
+	ui::set(w, es, "msg", "");
+    else
+	ui::set(w, es, "msg", "Nothing is running in the shell.");
+    return true;
+}
+
+// Copy with nothing selected in the shell's input (seINTERRUPT): Ctrl+C
+// there interrupts what runs, as in Thonny's Shell; with nothing running,
+// Copy's own "Nothing selected." stands.
+void repl_on_interrupt(long w, long es, long doc, var &event)
+{
+    var view;
+    keyed_get(view, event["reply"], "view");
+    if ( view.is_null() || view.as_integer() != repl_view(w) )
+	return;
+    if ( repl_interrupt(w, es) )
+	ui::set(w, es, "msg", "");
+}
+
 // Clear (`replclear`, Thonny's Edit ▸ Clear shell): the transcript empties —
 // the screen model's own erase-display (CSI 2J, term_screen), the one way
 // its text is cleared; the session, its names and an entry running keep on.
@@ -1032,6 +1069,7 @@ bool repl_activate(long w)
     ui::set(w, rw, "view", view);
     return plugin_command(w, "replrun", "Run in REPL", repl_cmd_run) != 0
 	&& plugin_command(w, "replstop", "Stop the REPL", repl_cmd_stop) != 0
+	&& plugin_command(w, "replinterrupt", "Interrupt the REPL", repl_cmd_interrupt) != 0
 	&& plugin_command(w, "replclear", "Clear the shell", repl_cmd_clear) != 0
 	&& plugin_command(w, "replbindings", "REPL bindings", repl_cmd_bindings) != 0
 	&& plugin_command(w, "replenter", "REPL enter", repl_cmd_enter) != 0
@@ -1042,5 +1080,6 @@ bool repl_activate(long w)
 	&& plugin_event(w, seOPEN, repl_on_open)
 	&& plugin_event(w, seSTOP, repl_on_stop)
 	&& plugin_event(w, seCLOSE, repl_on_close)
-	&& plugin_event(w, seLANGUAGE, repl_on_language);
+	&& plugin_event(w, seLANGUAGE, repl_on_language)
+	&& plugin_event(w, seINTERRUPT, repl_on_interrupt);
 }

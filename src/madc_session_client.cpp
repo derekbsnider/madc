@@ -57,6 +57,7 @@
 #include "madc_session.h"
 #include "madc_session_client.h"
 #include "madcdis/process.h"
+#include "madc_session_interrupt.h"	// D8: the interrupt between processes
 #include "madcdis/world_text.h"	// wt_value_to_json / wt_json_to_value
 #include "rt/rt_task.h"		// __madc_task_atfork_child
 #include "madc_task_io.h"	// taskio::handle_closing, taskio::poll_readable
@@ -526,6 +527,7 @@ bool SessionClient::spawn_backend()
 	if ( on_terminal )
 	    setvbuf(stdin, NULL, _IONBF, 0);
 	::close(parent_end);
+	madc::session_interrupt_arm_backend(std::string());	// SIGINT (D8)
 	std::unique_ptr<Program> prog(factory ? factory() : std::unique_ptr<Program>(new Program()));
 	std::unique_ptr<madc::DataChannel> child_wire =
 	    madc::detail::socket_channel_over(child_end, "session");
@@ -597,6 +599,11 @@ bool SessionClient::spawn_backend()
     options.inherit_stderr = true;
     options.inherit_stdin = inherit_stdio;
     options.inherit_stdout = inherit_stdio;
+    if ( !interruptor.open(token) )	// D8: the event the child waits on
+    {
+	error_text = "session: no interrupt event for the backend";
+	return false;
+    }
     process = madc_run_child_process(
 	rckSession, acceptor->local_endpoint() + " " + token + " "
 		    + (inherit_stdio ? "1" : "0") + " " + std_option, options);
@@ -843,6 +850,11 @@ bool SessionClient::input(const std::string &text)
     return true;
 }
 
+bool SessionClient::interrupt()
+{
+    return wire && process && interruptor.send(*process);
+}
+
 void SessionClient::take_output(std::string &output)
 {
     read_output(output, 0);
@@ -1034,30 +1046,11 @@ bool BackendSession::settle(int rc, const SessionClient::Reply &reply,
     return false;
 }
 
-namespace {
-// While the backend runs an entry, an interrupt is the backend's (D8's
-// interim: it stops, and a fresh one starts); the host ignores it, as a
-// shell leaves the interrupt to its foreground job.
-struct HostIgnoresInterrupt
-{
-#ifndef _WIN32
-    struct sigaction saved;
-    HostIgnoresInterrupt()
-    {
-	struct sigaction ign;
-	memset(&ign, 0, sizeof(ign));
-	ign.sa_handler = SIG_IGN;
-	sigemptyset(&ign.sa_mask);
-	sigaction(SIGINT, &ign, &saved);
-    }
-    ~HostIgnoresInterrupt() { sigaction(SIGINT, &saved, NULL); }
-#else
-    // No backend process on Windows yet (plan §41.9a): the interrupt has
-    // no one else to go to, so the host keeps it.
-    HostIgnoresInterrupt() {}
-#endif
-};
-}
+// While the backend runs an entry, a terminal's interrupt is the backend's
+// (D8: the entry returns to the prompt, the session kept; a second one ends
+// the backend and a fresh one starts): the host ignores it for the call
+// (madc::HostIgnoresInterrupt, madc_session_interrupt.h).
+using madc::HostIgnoresInterrupt;
 
 bool BackendSession::submit(const std::string &text, const TakenHook &taken)
 {
@@ -1325,5 +1318,6 @@ int madc_session_serve_child(const std::string &request)
 	fprintf(stderr, "madc: the session backend cannot reach %s\n", endpoint.c_str());
 	return 1;
     }
+    madc::session_interrupt_arm_backend(token);	// the event, the console (D8)
     return serve_session(*wire, std::unique_ptr<Program>(new Program()), std_opt);
 }

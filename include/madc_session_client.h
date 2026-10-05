@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "madc_session.h"
+#include "madc_session_interrupt.h"	// D8: the interrupt between processes
 #include "libmadc/value.h"
 #include "madcdis/datachannel.h"	// poll_handle
 
@@ -150,6 +151,12 @@ public:
     // Text for the program's stdin: a scanf in an entry reads it. False when
     // the backend is not running. It waits while the pipe is full.
     bool input(const std::string &text);
+    // Interrupt the running entry (D8, plan madc-repl-thonny §41.12a): it
+    // returns to the prompt at its next loop back-edge, the session kept; a
+    // second one before it polled ends the backend (the next poll reports
+    // it stopped, and the client starts a fresh one). One while no entry runs
+    // does nothing. False = no backend, or no way to reach it.
+    bool interrupt();
 
     // Wait up to timeout_ms (-1: no limit) for the next reply. The output the
     // backend printed before it is appended to `output` first. 1: a reply;
@@ -220,6 +227,7 @@ private:
     std::string error_text;
     std::string standard_name;
     bool inherit_stdio;			// the backend's stdio is the host's
+    madc::SessionInterruptor interruptor;	// D8: reaches the backend
     SessionClient(const SessionClient &);
     SessionClient &operator=(const SessionClient &);
 };

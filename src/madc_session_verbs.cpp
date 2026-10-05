@@ -285,6 +285,12 @@ bool session_input(int64_t handle, const char *text)
     return s && s->client.input(text ? text : "");
 }
 
+bool session_interrupt(int64_t handle)
+{
+    SessionHandle *s = session_of(handle);
+    return s && s->client.interrupt();
+}
+
 // A new backend for a handle: under its standard (std_opt NULL) or under
 // another one. The handle, its readable case and a pump parked on it carry
 // over; the output not yet taken goes with the old backend.

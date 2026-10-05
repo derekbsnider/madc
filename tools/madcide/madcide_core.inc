@@ -3594,11 +3594,22 @@ void clip_cut(long w, long es, long doc, long caret)
     clip_publish(w, es);
 }
 
+long console_of_input(long w, long es, long doc);	// the console view (below)
+
 void clip_copy(long w, long es, long doc, long caret)
 {
     if ( !copy_selection(w, es, doc, caret) )
     {
 	ui::set(w, es, "msg", "Nothing selected.");
+	// A console's input with nothing selected: Copy's key interrupts the
+	// console's program, as a terminal's Ctrl+C does (seINTERRUPT; the
+	// console's plugin decides — nothing running leaves the message).
+	long cv = console_of_input(w, es, doc);
+	if ( cv != viewNONE )
+	{
+	    var rep = { "view": cv };
+	    publish_event(w, es, doc, seINTERRUPT, rep);
+	}
 	return;
     }
     clip_publish(w, es);

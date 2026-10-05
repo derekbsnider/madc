@@ -1,0 +1,118 @@
+// The session interrupt (D8, plan docs/plans/madc-repl-thonny-plan-2026-09-24.md
+// §41.12a; Thonny's Run ▸ Interrupt, Julia's and IPython's Ctrl-C): an entry
+// that never ends returns to the prompt at its loop's next back-edge, its
+// reply carrying the runtime diagnostic `interrupted`, and the session keeps
+// what earlier entries made. Every user loop polls — `while`, `for` with a
+// `continue`, `do` — the session's code alone (a session Program's loop body
+// starts with __madc_session_poll). An interrupt while no entry runs does
+// nothing. A wait the entry's loops cannot poll (a read with no input) takes
+// the SECOND interrupt's default: the backend ends and a fresh one starts.
+// A C++ template's loop polls as well (its pattern's tree is copied per
+// instantiation; a body of one call kept the poll's call apart from it).
+// Precedent (plan D8): Julia's and IPython's Ctrl-C returns to the prompt
+// with the session's names kept.
+
+// Poll until a reply of `kind` (or the backend's end) arrives.
+long wait_for(var &r, long h, madc::session_reply kind)
+{
+    for ( long waited = 0; waited < 20000; waited = waited + 10 )
+    {
+	if ( madc::session_poll(r, h) != 0 )
+	{
+	    if ( r["kind"] == kind || r["kind"] == madc::session_reply::stopped )
+		return 1;
+	    continue;
+	}
+	madc::sleep_ms(10);
+    }
+    return 0;
+}
+
+// Offer an entry that runs until interrupted: wait for it to run, let it
+// spin, interrupt it, and report its answer.
+void interrupt_entry(long h, const char *label, const char *text)
+{
+    var r;
+    madc::session_offer(h, text, true);
+    wait_for(r, h, madc::session_reply::running);
+    madc::sleep_ms(50);
+    bool sent = madc::session_interrupt(h);
+    wait_for(r, h, madc::session_reply::offer);
+    var said = r["rendered"];
+    println("{}: sent={} kind-offer={} ok={} interrupted={}", label, sent,
+	    r["kind"] == madc::session_reply::offer, r["ok"],
+	    said.index("interrupted") >= 0);
+}
+
+// An entry's shown value.
+void show(long h, const char *text)
+{
+    var r;
+    madc::session_offer(h, text, true);
+    wait_for(r, h, madc::session_reply::offer);
+    println("{} -> ok={} shown={}", text, r["ok"], r["shown"]);
+}
+
+int main()
+{
+    long h = madc::session_open("c11");
+    var r;
+    madc::session_offer(h, "long n = 0;", true);
+    wait_for(r, h, madc::session_reply::offer);
+
+    // Idle: nothing runs, so nothing happens, and the next entry runs whole.
+    println("idle: sent={}", madc::session_interrupt(h));
+    madc::sleep_ms(50);
+    show(h, "n + 1");
+
+    interrupt_entry(h, "while", "while (1) n = n + 1;");
+    show(h, "n > 0");
+    interrupt_entry(h, "for-continue",
+		    "for (long i = 0; ; i++) { if (i % 2) continue; n = i; }");
+    interrupt_entry(h, "do", "do { n = n - 1; } while (1);");
+    show(h, "n != 0");
+    // A function an earlier entry defined polls too: its loop is the
+    // session's code.
+    madc::session_offer(h, "void spin(void) { for (;;) n = n + 2; }", true);
+    wait_for(r, h, madc::session_reply::offer);
+    interrupt_entry(h, "function", "spin();");
+    show(h, "n > 0");
+
+    // A read with no input: no loop polls inside it. The first interrupt is
+    // pending; the second ends the backend, and a fresh one starts.
+    madc::session_offer(h, "#include <stdio.h>", true);
+    wait_for(r, h, madc::session_reply::offer);
+    madc::session_offer(h, "getchar();", true);
+    wait_for(r, h, madc::session_reply::running);
+    madc::sleep_ms(50);
+    madc::session_interrupt(h);
+    madc::sleep_ms(100);
+    madc::session_interrupt(h);
+    wait_for(r, h, madc::session_reply::offer);
+    println("native wait: stopped={}", r["kind"] == madc::session_reply::stopped);
+    madc::session_offer(h, "int fresh = 1;", true);
+    wait_for(r, h, madc::session_reply::offer);
+    println("fresh session: ok={}", r["ok"]);
+
+    println("close: {}", madc::session_close(h));
+
+    // A template's loop polls too. A member template's instantiation copies
+    // the pattern's tree (parse-once), which re-resolves the pattern's calls;
+    // the body here is one call (libstdc++'s _Destroy_aux::__destroy shape),
+    // and the poll stays the loop's own.
+    long hx = madc::session_open("c++17");
+    madc::session_offer(hx, "long m = 0;", true);
+    wait_for(r, hx, madc::session_reply::offer);
+    madc::session_offer(hx, "template <class T> void bump(T *p) { *p = *p + 1; }", true);
+    wait_for(r, hx, madc::session_reply::offer);
+    madc::session_offer(hx, "template <bool B> struct Spin { template <class T>"
+			" static void run(T *p) { for (;;) bump(p); } };", true);
+    wait_for(r, hx, madc::session_reply::offer);
+    madc::session_offer(hx, "void spin_t(void) { Spin<false>::run(&m); }", true);
+    wait_for(r, hx, madc::session_reply::offer);
+    println("template defined: ok={}", r["ok"]);
+    interrupt_entry(hx, "template", "spin_t();");
+    show(hx, "m > 0");
+    println("close c++: {}", madc::session_close(hx));
+    return 0;
+}

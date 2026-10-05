@@ -431,12 +431,16 @@ long menu_place_of(var &word)
 
 // The session's own events (plan §41.11a step 8): its open (after the layout
 // loads), its tasks' stop (IdeSession::stop_tasks), its close (after the
-// drain) and its language standard's change (madcide_lang.inc), published to
-// the handlers subscribed to them (plugin_event), so a module with a task or
-// a process starts and ends it with the session. Their
+// drain), its language standard's change (madcide_lang.inc) and an interrupt
+// for a console's program (seINTERRUPT: Copy with nothing selected in a
+// console's input — Thonny's Shell, VS Code's and Windows Terminal's Ctrl+C —
+// its reply {view: the console's kind}), published to the handlers
+// subscribed to them (plugin_event), so a module with a task or a process
+// starts and ends it with the session. Their
 // range is disjoint from repl_event's; builtin form first: they join
 // <madcide/plugin_api> when a plugin outside madcide needs them.
-enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLANGUAGE, seLAST };
+enum session_event : unsigned char { seNONE = 32, seOPEN, seSTOP, seCLOSE, seLANGUAGE,
+				     seINTERRUPT, seLAST };
 
 // The IDE's git verbs (plan docs/plans/2026-10-03-chthonia-windows-macos.md
 // §7e stage 1, §7f item 4; madcide_git.inc): `%git VERB` converts its word

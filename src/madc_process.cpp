@@ -1009,6 +1009,16 @@ void Process::terminate()
 #endif
 }
 
+bool Process::interrupt()
+{
+#ifdef _WIN32
+	return false;
+#else
+	return _->has_started && !_->has_exited && _->child > 0
+		&& ::kill(_->child, SIGINT) == 0;
+#endif
+}
+
 int Process::run_and_wait(const std::string &executable,
 			  const std::vector<std::string> &argv,
 			  error *err)

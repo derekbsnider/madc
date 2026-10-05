@@ -10,9 +10,10 @@
 # has one key per binding).
 #
 # Thonny's keys whose command madcide does not have yet are listed, not
-# invented: Edit ▸ Auto-complete (Ctrl+Space); Run ▸ Interrupt (Ctrl+C in
-# the Shell — here Ctrl+C copies everywhere and Ctrl+F2 stops), Send EOF
-# (Ctrl+D), the debugger (F6, F7, F8, Ctrl+F5, Shift+F5, Ctrl+F8). Thonny's
+# invented: Edit ▸ Auto-complete (Ctrl+Space); Run ▸ Send EOF (Ctrl+D), the
+# debugger (F6, F7, F8, Ctrl+F5, Shift+F5, Ctrl+F8). Run ▸ Interrupt is
+# Thonny's Ctrl+C in the Shell: Copy with nothing selected in the Shell's
+# input interrupts (the console rule; no line here). Thonny's
 # Find & Replace is one dialog on Ctrl+F: here Ctrl+F finds, and Edit ▸
 # Replace… is the menu's row (no key of its own).
 @title Chthonia

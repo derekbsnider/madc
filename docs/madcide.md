@@ -538,12 +538,24 @@ each row with `name`, `kind`, `type`, `value`, `file` and `line`) and
 there.
 
 madcide's own REPL pane is a plugin compiled into madcide: its commands
-(`repl`, `replrun`, `replstop`, `replclear`, `replbindings`, and the input's
-`replenter`, `replcomplete`, `replolder`, `replnewer`, `replunfocus` in the
-`@repl` scope) and its view `repl` register the way a plugin's do, so a key
-profile, a menu or a layout names them as it names any plugin's. `replclear`
-empties the transcript and keeps the session and its names (Thonny's Edit ▸
-Clear shell, Ctrl+L in the `chthonia` keys).
+(`repl`, `replrun`, `replstop`, `replinterrupt`, `replclear`, `replbindings`,
+and the input's `replenter`, `replcomplete`, `replolder`, `replnewer`,
+`replunfocus` in the `@repl` scope) and its view `repl` register the way a
+plugin's do, so a key profile, a menu or a layout names them as it names any
+plugin's. `replclear` empties the transcript and keeps the session and its
+names (Thonny's Edit ▸ Clear shell, Ctrl+L in the `chthonia` keys).
+
+`replinterrupt` (Run ▸ Interrupt, Thonny's) returns the running entry to the
+prompt: its transcript shows the runtime error `interrupted`, and the session
+keeps every name earlier entries made. An entry's loops answer it at their
+next iteration; a wait no loop of the session's own code is in (a read with
+no input, a native library call) takes a second interrupt, which ends the
+backend, and a fresh session starts. With nothing running, the status line
+says "Nothing is running in the shell." Copy with nothing selected in the
+Shell's input interrupts too, as a terminal's Ctrl+C does, so Ctrl+C in the
+Shell is Interrupt under every key style that binds it to Copy. The command
+publishes nothing; Copy's interrupt is the `seINTERRUPT` event, whose reply
+names the console view, and the REPL pane answers it for its own view.
 
 View ▸ Program arguments… (`progargs`) sets the words F5 passes the program
 after its path, as Thonny's does. The prompt starts with the current words.

@@ -82,6 +82,15 @@ extern bool madc_gui_subsystem;
 // wherever aot_skip_eval_shims is stamped (the source lanes and --project).
 extern bool madc_no_eval_shims;
 
+// The session's interrupt (D8, plan madc-repl-thonny §41.12a): mark one
+// pending. The entry running at a session boundary returns to it at its next
+// loop back-edge (__madc_session_poll), its state kept. True = one was
+// already pending — the entry has polled none since, so the caller takes the
+// second interrupt's default (the backend ends; the client starts a fresh
+// one). Async-signal-safe: a SIGINT handler and the Windows watcher thread
+// call it.
+bool madc_session_interrupt_raise();
+
 // A compiled-and-linked CIR->c2mir->MIR module held alive for repeated
 // in-process calls — the engine behind libmadc's program::exec / call /
 // eval surface (madc_cir_execute is the same machinery one-shot).
