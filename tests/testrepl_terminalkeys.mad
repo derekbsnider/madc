@@ -7,6 +7,9 @@
 // runs, so the REPL itself lives on. Ctrl-D ends a reading entry's input,
 // and the next entry reads new input: each entry starts with stdin's
 // end-of-file state clear (plan §41.12a, Send EOF).
+// The REPL inherits this program's TERM: the .env fixture pins TERM=dumb,
+// the cooked-line mode whose echo the checks below read (any other TERM
+// gets the line editor's escape sequences around each answer).
 
 // What the REPL wrote, until `want` appears or `ms` pass.
 bool read_until(var &got, madc::channel &c, const char *want, long ms)
