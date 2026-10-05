@@ -1144,6 +1144,13 @@ private:
 	std::vector<node_t> m_pending_top_protos;
 	std::vector<node_t> m_pending_top_defs;
 	int m_dump_fn_counter = 0;
+	// A template argument substituted where the pattern holds a type-spec
+	// marker (copy_cir_subtree) whose C spelling needs declarator parts — a
+	// pointer, an array, a function type — is named by a module-level
+	// typedef, queued with the pending top-level declarations: per-module,
+	// like the dumper memo above.
+	std::map<DataDef *, std::string> m_tsubst_type_aliases;
+	std::string tsubst_type_alias(DataDef *dd);
 	// While a generated dumper's BODY is being built: the names of its column
 	// base local, its depth parameter and its nested parameter. All empty in
 	// the ordinary in-line walk, which is what keeps every column there a

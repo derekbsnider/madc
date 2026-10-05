@@ -4185,6 +4185,40 @@ cir_node *CirBuilder::tsubst_scalar_placement_store(
 			      node2(N_BLOCK, list(), items, tn), tn));
 }
 
+// A type whose C spelling is more than its specifiers: pointer levels, array
+// extents, a function's parameter list live in the DECLARATOR. A reference is
+// not one here — its lowering is the use sites', not the spelling's.
+static bool type_spelled_with_declarator(DataDef *dd)
+{
+	DataDef *u = dd ? dd->unqualified() : NULL;
+	if (!u || u->is_reference())
+		return false;
+	return u->as_pointer_dd() || u->as_fptr_dd() || u->as_funcdef_dd()
+	    || dynamic_cast<DataDefCArray *>(u);
+}
+
+// The module-level typedef naming `dd` (type_spelled_with_declarator) for a
+// substituted type-spec marker: typedef_decl renders the whole type — each
+// pointer level's cv, array extents, a function's signature — and the
+// declaration joins the pending top-level declarations, ahead of every
+// function definition. An aggregate is referenced by its tag; its body is
+// emitted at its own definition point. One typedef per type per module.
+std::string CirBuilder::tsubst_type_alias(DataDef *dd)
+{
+	std::map<DataDef *, std::string>::const_iterator have =
+		m_tsubst_type_aliases.find(dd);
+	if (have != m_tsubst_type_aliases.end())
+		return have->second;
+	std::string alias = "__madc_tsubst_type"
+		+ std::to_string(m_tsubst_type_aliases.size());
+	static const std::set<std::string> no_emitted_structs;
+	node_t decl = typedef_decl(alias, dd, no_emitted_structs, true);
+	if (decl)
+		m_pending_top_protos.push_back(decl);
+	m_tsubst_type_aliases[dd] = alias;
+	return alias;
+}
+
 // Deep-copy a concrete cir_node subtree into fresh arena nodes — the `tsubst`
 // core. Contract is documented on the declaration in cir_builder.h. This is the
 // safe-for-c2mir private materialization: c2mir mutates `attr` on every node_t
@@ -4933,6 +4967,13 @@ cir_node *CirBuilder::copy_cir_subtree(cir_node *src,
 						aggregate_marker
 						? "tsubst: unsupported dependent local aggregate type marker"
 						: "tsubst: unbound template parameter in type marker"));
+				} else if (type_spelled_with_declarator(concrete)) {
+					// The marker sits in a SPECIFIER list; a pointer,
+					// array or function type's C spelling also needs
+					// declarator parts (`int *cur`), which its specifiers
+					// alone drop (`int cur`). Name the whole type instead.
+					append(dst->as_node(),
+					       id(tsubst_type_alias(concrete).c_str()));
 				} else {
 					node_t specs = type_list(concrete);
 					for (node_t sp = c2mir_node_first_op(specs);
@@ -34466,6 +34507,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	m_dump_fn_counter = 0;
 	m_pending_top_protos.clear();
 	m_pending_top_defs.clear();
+	m_tsubst_type_aliases.clear();
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
