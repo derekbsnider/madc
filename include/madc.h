@@ -8173,6 +8173,7 @@ public:
 	bool rvalue_ref = false;
 	std::vector<carray_dim_t> array_dims;		// the top level's `[dim]...`
 	std::vector<TokenBase *> array_dim_exprs;	// (runtime dims: the expression)
+	bool outer_unbounded = false;	// the top level's first `[]` wrote no bound (array_dims[0] == 0 is incomplete, not `[0]`)
 	bool saw_parens = false;	// a `( declarator )` was read
 	bool function_pending = false;	// Declaration mode stopped at `name(`
     };
@@ -8301,7 +8302,8 @@ public:
 				TokenBase *ctx, const char *what,
 				bool capture_runtime_dims,
 				const std::set<std::string> *runtime_names = NULL,
-				bool param_qualifiers = false);
+				bool param_qualifiers = false,
+				bool *first_unbounded = NULL);
     DataDef *nest_carray_dims(DataDef *elem_dd,
 			      const std::vector<carray_dim_t> &dims,
 			      const std::vector<TokenBase *> &dim_exprs,

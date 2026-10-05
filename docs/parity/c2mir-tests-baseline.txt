@@ -55,7 +55,6 @@ lacc/sizeof.c
 lacc/string-addr.c
 lacc/typedef.c
 new/empty-asm.c
-new/int_min.c
 new/issue241.c
 new/issue441.c
 new/ssa-ccp.c

@@ -11506,9 +11506,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		for (size_t d = 0; d < emit_count; d++) {
 			// An unsized extern array (`extern char buf[]`) carries dim 0 —
 			// emit `[]` (incomplete type, compatible with the sized
-			// definition) rather than `[0]`, which conflicts.
-			node_t size = (is_extern && v->dims[d] == 0)
-					? ignore() : integer(v->dims[d]);
+			// definition) rather than `[0]`, which conflicts. So does an
+			// outermost bound the declarator never wrote (vfUNBOUNDED): a
+			// file-scope tentative definition `T a[];` that c2mir, at the
+			// end of the TU, completes to one element (C11 6.9.2p2) — a
+			// written GNU `[0]` keeps its zero length.
+			bool unwritten = v->dims[d] == 0
+				&& (is_extern || (d == 0 && (v->flags & vfUNBOUNDED)));
+			node_t size = unwritten ? ignore() : integer(v->dims[d]);
 			node_t arr = node3(N_ARR, ignore(), list(), size);
 			append(decl_list, arr);
 		}

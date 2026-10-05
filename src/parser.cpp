@@ -55213,8 +55213,9 @@ void Program::parse_array_dimensions(std::vector<carray_dim_t> &dims,
 				     TokenBase *ctx, const char *what,
 				     bool capture_runtime_dims,
 				     const std::set<std::string> *runtime_names,
-				     bool param_qualifiers)
+				     bool param_qualifiers, bool *first_unbounded)
 {
+    const size_t first = dims.size();
     while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
     {
 	nextToken(); // consume '['
@@ -55224,6 +55225,10 @@ void Program::parse_array_dimensions(std::vector<carray_dim_t> &dims,
 	if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
 	{
 	    nextToken(); // consume ']' for an unsized dim
+	    // An unwritten bound and a written `[0]` both store 0; the caller
+	    // that must tell them apart asks for the first one here.
+	    if ( first_unbounded && dims.size() == first )
+		*first_unbounded = true;
 	    dims.push_back(0);
 	    dim_exprs.push_back(NULL);
 	    continue;
@@ -55924,15 +55929,17 @@ DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 	    // function entry. A TYPEDEF's dims, its own and a nested group's, are
 	    // captured where the typedef is reached (C11 6.7.8p3): a later change
 	    // to `n` changes neither `sizeof` of the alias nor an object of it.
+	    bool first_unbounded = false;
 	    parse_array_dimensions(dims, dim_exprs, pk, "array declarator",
 				   (mode == DeclaratorMode::Declaration && out.saw_parens)
 				   || mode == DeclaratorMode::Typedef,
 				   runtime_names,
-				   mode == DeclaratorMode::Parameter);
+				   mode == DeclaratorMode::Parameter, &first_unbounded);
 	    if ( depth == 0 && out.array_dims.empty() )
 	    {
 		out.array_dims = dims;
 		out.array_dim_exprs = dim_exprs;
+		out.outer_unbounded = first_unbounded;
 	    }
 	    // A TYPEDEF's own dims name their outer level after the alias and
 	    // write the v25 DK_CARRAY record (the contract the typedef array
@@ -76706,6 +76713,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     // sentinel, vla_size_expr the outermost runtime count), a typedef'd array
     // base still flattens BEHIND them (alias dims last, as the rotate left them).
     bool decl_name_in_parens = false;
+    bool decl_outer_unbounded = false;	// `T a[]`: no outermost bound written
     int decl_fnptr_stars = -1;
     int n_decl_stars = 0;	// the declarator's top-level stars (the function-typedef variable rule below)
     {
@@ -76724,6 +76732,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	if ( is_fnptr_base )
 	    decl_fnptr_stars = vd.ptr_depth;	// an FPTR base: the alias + this count spell the variable (`DO_FUN *fp`)
 	decl_name_in_parens = vd.saw_parens;
+	decl_outer_unbounded = vd.outer_unbounded;
 	have_decl_id = !vd.name.empty();
 	if ( have_decl_id )
 	{
@@ -77804,6 +77813,8 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 				 &arr_dims, decl_object_cv);
 	    var->fnptr_explicit_stars = decl_fnptr_stars;
 	}
+	if ( var && decl_outer_unbounded )
+	    var->flags |= vfUNBOUNDED;
 	if ( var && !decl_asm_alias.empty() )
 	{
 	    var->asm_label = decl_asm_alias;

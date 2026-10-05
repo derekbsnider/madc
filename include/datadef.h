@@ -376,6 +376,12 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // has been declared in this TU (C11 6.9.2,
 			                        // [basic.def]/2) — Program::declare_object
 			                        // sets it; a second definition is refused
+			  vfUNBOUNDED  =33554432, // the declarator wrote no outermost
+			                        // array bound (`T a[]`): dims[0] == 0
+			                        // means "incomplete", not GNU `[0]` — an
+			                        // extern declaration, or a file-scope
+			                        // tentative definition the end of the TU
+			                        // completes to one element (C11 6.9.2p2)
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:
