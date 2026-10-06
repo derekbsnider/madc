@@ -6201,6 +6201,8 @@ public:
     // gate — the declaration-`auto` path and the range-for element deduction
     // both key on it.
     bool auto_deduction_allowed() const { return !is_c_mode() || language_std == STD_C23; }
+    // C before C23: `auto` is only a storage-class specifier (C11 6.7.1).
+    bool auto_is_storage_class() const { return is_c_mode() && !auto_deduction_allowed(); }
     // C99 introduced declarations in a for initializer; every C++ mode and
     // the madc dialect permits them.
     bool for_init_declaration_enabled() const
@@ -7695,6 +7697,9 @@ public:
     // unless its declarator list continues. The grammar is
     // parse_declaration_body.
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
+    // The declaration after `register` / C's `auto` (the specifier consumed).
+    TokenBase *parse_storage_class_declaration(const char *spelling,
+					       uint32_t var_flags);
     // The declarator's storage class (`static`, `thread_local`, `inline`), the
     // alignment the declaration requests, its cleanup(f) and its `weak`
     // binding onto the object — one owner for every declaration arm.

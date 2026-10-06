@@ -54700,49 +54700,54 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 TokenBase *TokenREGISTER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenREGISTER::parse()" << std::endl);
-    pgm.consume_declaration_attributes();
-    TokenBase *tn = pgm.peekToken();
-    if ( !tn )
-        pgm.Throw << "Unexpected end of input after 'register'" << flush;
+    return pgm.parse_storage_class_declaration("register", vfREGISTER);
+}
 
-    // Accept `register struct ...`, `register TypedefName ...`, and
-    // `register <primitive type> ...`. `register` is a C hint — we set
-    // vfREGISTER for the primitive path where the Variable is numeric;
-    // for struct/typedef paths the flag is dropped (the variable will
-    // still live in a register when it's a pointer, which is typical).
+// The declaration after a storage-class specifier that leaves the type to what
+// follows it — `register`, and C's `auto` (auto_is_storage_class) — the
+// specifier already consumed: a type keyword (`register struct ...`), a typeof,
+// a typedef name, a type token, or, with no type specifier, an implicit int
+// (`register m;`, `auto c = a + b;`). `var_flags` mark the object declared on
+// the typeof / typedef / type paths (vfREGISTER: the primitive path where the
+// Variable is numeric; a keyword-routed declaration keeps its own flags — a
+// register pointer still lives in a register, which is typical).
+TokenBase *Program::parse_storage_class_declaration(const char *spelling,
+						    uint32_t var_flags)
+{
+    consume_declaration_attributes();
+    TokenBase *tn = peekToken();
+    if ( !tn )
+        Throw << "Unexpected end of input after '" << spelling << "'" << flush;
     if ( tn->type() == TokenType::ttKeyword )
-	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	return parseKeyword(static_cast<TokenKeyword *>(nextToken()));
+    TokenDataType *type_tok = NULL;
     if ( tn->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)tn)->spelling();
+	flat_datatype_map_iter tdmi = datatype_map.find(tname);
 	if ( is_typeof_identifier(tname) )
 	{
-	    pgm.nextToken();
-	    TokenBase *decl = pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
-	    if ( decl && decl->type() == TokenType::ttDeclare )
-		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
-	    return decl;
+	    nextToken();
+	    type_tok = parse_typeof_datatype(tn);
 	}
-	flat_datatype_map_iter tdmi = pgm.datatype_map.find(tname);
-	if ( tdmi != pgm.datatype_map.end() )
+	else if ( tdmi != datatype_map.end() )
 	{
-	    pgm.nextToken();
-	    TokenBase *decl = pgm.parseDeclaration((*tdmi));
-	    if ( decl && decl->type() == TokenType::ttDeclare )
-		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
-	    return decl;
+	    nextToken();
+	    type_tok = *tdmi;
 	}
     }
-    TokenDataType *type_tok = NULL;
-    if ( tn->type() == TokenType::ttDataType )
-	type_tok = static_cast<TokenDataType *>(pgm.nextToken());
-    else if ( pgm.implicit_int_declarator_at(tn) )	// `register m;`
-	type_tok = pgm.implicit_int_type_token(tn);
-    else
-        pgm.Throw(tn) << "Expecting type after 'register'" << flush;
-    TokenBase *decl = pgm.parseDeclaration(type_tok);
+    if ( !type_tok )
+    {
+	if ( tn->type() == TokenType::ttDataType )
+	    type_tok = static_cast<TokenDataType *>(nextToken());
+	else if ( implicit_int_declarator_at(tn) )
+	    type_tok = implicit_int_type_token(tn);
+	else
+	    Throw(tn) << "Expecting type after '" << spelling << "'" << flush;
+    }
+    TokenBase *decl = parseDeclaration(type_tok);
     if ( decl && decl->type() == TokenType::ttDeclare )
-        dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
+        dynamic_cast<TokenDecl *>(decl)->var.flags |= var_flags;
     return decl;
 }
 
@@ -76867,6 +76872,11 @@ void Program::unwrap_scalar_braced_initializer()
 
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
+    // C's `auto` before C23 is a storage-class specifier, not a deduced type
+    // (C11 6.7.1): `auto int d = 4;` declares an int, and `auto c = a + b;`
+    // an implicit int. The declaration is the one that follows it.
+    if ( &tb->definition == &ddAUTO && auto_is_storage_class() )
+	return parse_storage_class_declaration("auto", 0);
     declarator_list_continues = false;
     TokenBase *r = parse_declaration_body(tb, is_static);
     // An object declaration owes its terminator as its last act — unless its

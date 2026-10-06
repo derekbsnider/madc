@@ -45,5 +45,4 @@
 # available reducers for the C constructs madc still cannot compile in
 # c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
 # __attribute__((cleanup)), which the in-tree MIR supports natively.
-lacc/declaration-default-int.c
 new/vector-size.c
