@@ -76708,6 +76708,25 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	TokenBase *pk = peekToken();
 	if ( !pk )
 	    break;
+	// `T typedef D;` — `typedef` is a storage-class specifier, legal after
+	// the type as well (C11 6.7p1, 6.7.1): the declaration declares an
+	// alias. The specifiers read so far are re-fed behind the `typedef`
+	// and the statement is TokenTYPEDEF::parse's, the one owner of alias
+	// declarations (push_declarator_list_tail's re-feed model).
+	if ( pk->id() == TokenID::tkTYPEDEF )
+	{
+	    if ( gotstatic || gotthreadlocal || parsing_extern_decl )
+		Throw(pk) << "multiple storage classes in declaration specifiers" << flush;
+	    TokenTYPEDEF *td = dynamic_cast<TokenTYPEDEF *>(nextToken());
+	    if ( !td )
+		Throw(pk) << "Expecting 'typedef'" << flush;
+	    pushToken(tb->clone_origin());
+	    if ( gotvolatile )
+		pushToken(new TokenVOLATILE());
+	    if ( gotconst )
+		pushToken(new TokenCONST());
+	    return td->parse(*this);
+	}
 	if ( pk->id() == TokenID::tkSTATIC )
 	{
 	    gotstatic = true;
