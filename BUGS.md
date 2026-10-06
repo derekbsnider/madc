@@ -605,6 +605,52 @@ int main(void)
   placement stays: it closes the gcc torture tests `20230630-2.c` and
   `20230630-4.c` (d85af3516). The scalar byte swap is not planned.
 
+## Crashes
+
+### B186. A multi-TU C++ `--project` link crashes on win64 — a cross-TU call resolves to a wrong target
+
+Found 2026-10-06 validating the v0.102.0 seam battery: `headerless-win` red
+on `tests/testprojectmtiorder`. The crash is win64-only and deterministic
+(12/12 runs under wine); Linux JIT/exe/obj are green (`exeobj` 2023/0). It is
+a regression: `testprojectmtiorder` passed `headerless-win` at the v0.101.0
+boundary (a480870b6, 1844/0), and a CLEAN build of a480870b6 runs the reducer
+correctly.
+
+Reducer (smaller than the test — the shipped test is three TUs with template
+instances; this is two): one `--project` of three TUs where a non-main TU
+instantiates `std::map<std::string, int>`.
+
+```
+// m1_main.cpp
+#include <cstdio>
+int part_a();
+int main() { std::printf("a=%d\n", part_a()); return 0; }
+// m2_a.cpp
+#include <map>
+#include <string>
+int part_a() { std::map<std::string, int> m; m["alpha"] = 1; return (int)m.size(); }
+// m5_b.cpp
+int part_b() { return 2; }
+```
+
+`wine madc-hosted-x86-64-windows.exe --no-forest-bind --project p.json`
+(TUs m1_main.cpp, m2_a.cpp, m5_b.cpp): madc catches
+`EXCEPTION_ACCESS_VIOLATION` with the backtrace `main+0x18 [JIT]` jumping to
+`0x7…ffd90000` — a consistent offset under a varying ASLR base, so a
+relocation/thunk that is off by a fixed amount, not random garbage. `main+0x18`
+is the call to `part_a` (a plain `int part_a()`), so the multi-TU link gave
+`part_a` a wrong call target. gcc 13.3 and clang 18.1 build the same three TUs
+and print `a=1`. The forest is not involved (`--no-forest-bind` reproduces).
+
+Not reproduced on Linux, so the win64 object-writer / MIR link path is
+implicated, not the parser. The regression sits in a480870b6..260bbe2c5; a
+bisect needs a CLEAN hosted-windows build per step (incremental `make` across
+non-sequential checkouts reuses stale objects and gives a false culprit — a
+ledger-only commit). Suspect range includes the template-instance-naming batch
+(201a6beaa, 87e86edc1, b14b827f4) and the win64 forest-into-DLL split
+(b606ae063). Skipped on win64 (`tests/testprojectmtiorder.win64_skip`) for
+v0.102.0; fix post-release.
+
 ## Accepts invalid code
 
 ### B163. C++ keywords are accepted as variable names under `--std=c++NN`

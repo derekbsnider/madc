@@ -1,0 +1,1 @@
+B186: multi-TU C++ --project link crashes on win64 — a plain cross-TU call (main -> part_a) resolves to a wrong target when the TUs also instantiate std::map<std::string,int>. Green on Linux JIT/exe/obj; deterministic on win64. Filed, fix post-v0.102.0.
