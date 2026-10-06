@@ -2614,8 +2614,13 @@ static bool cir_cxx_runtime_import(const std::string &s)
     return s.compare(0, 2, "_Z") == 0 || s.compare(0, 6, "__cxa_") == 0;
 }
 
+// A user library's load command is its install name, as ld64 records it
+// (madc_darwin_install_name): "@rpath/<file>" for a library madc built or
+// ships, which the runpath's LC_RPATHs find in a relocatable install (the
+// writer emits them for @rpath loads alone). The entry of `other` is
+// rewritten in place — `libs` points into it.
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
-				   const std::vector<std::string> &other,
+				   std::vector<std::string> &other,
 				   std::vector<const char *> &libs)
 {
     for (const std::string &s : imports)
@@ -2623,7 +2628,7 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 	    libs.push_back("/usr/lib/libc++.1.dylib");
 	    break;
 	}
-    for (const std::string &l : other) {
+    for (std::string &l : other) {
 	if (!madc_spelled_library_p(l, TargetOS::Darwin))
 	    continue;
 	// The WORLD's libraries share this list with the user's: libSystem is
@@ -2635,6 +2640,7 @@ static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 	std::string base = madc::detail::host_path_basename(l);
 	if (base.compare(0, 9, "libSystem") == 0 || base.compare(0, 6, "libc++") == 0)
 	    continue;
+	l = madc_darwin_install_name(l);
 	libs.push_back(l.c_str());
     }
 }

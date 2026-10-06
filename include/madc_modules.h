@@ -14,7 +14,8 @@
 // target's suffix (libfoo.so, libfoo.so.2), is verbatim (the -l contract).
 //
 // THREAD-SAFETY CONTRACT: the map is a constant table; the functions are
-// pure except madc_module_open, which is the madc_dl seam's contract.
+// pure except madc_module_open, which is the madc_dl seam's contract, and
+// madc_darwin_install_name, which reads a file and shares no state.
 
 #include <string>
 #include "datadef.h"	// TargetOS, madc_target_os
@@ -74,5 +75,15 @@ std::string madc_module_library_spelling(const std::string &name);	// for madc_t
 // libraries. NULL + `error` on failure.
 void *madc_module_open(const std::string &spelling, std::string &error,
 		       bool bind_now = false);
+
+// The load command a Mach-O image linking `spelling` records — the dylib's
+// own install name (LC_ID_DYLIB), as ld64 records it — read from the file
+// madc_module_open opens first: beside the running binary for a bare
+// spelling, the path itself for a path spelling. Every library madc builds
+// or ships names itself "@rpath/<file>", so a program linking one loads it
+// through the runpath's LC_RPATHs from a relocatable install. A file madc
+// cannot read (a system dylib in the dyld shared cache, a cross host without
+// it) answers the spelling: dyld's default search.
+std::string madc_darwin_install_name(const std::string &spelling);
 
 #endif
