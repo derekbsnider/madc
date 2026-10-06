@@ -11460,7 +11460,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// it — the attr binds the MIR data item LINKONCE (captured STB_WEAK)
 	// so per-TU copies merge at a multi-.o link, and --emit=c11 renders
 	// __attribute__((weak)). An extern reference is not a definition.
-	if ((v->flags & vfLINKONCE) && !is_extern
+	// __attribute__((weak)) is the declared form of the binding and wins
+	// (c2mir binds the item WEAK; a strong definition in another TU
+	// replaces it), as for a function.
+	if ((v->flags & vfWEAK) && !is_extern && !(v->flags & vfSTATIC))
+		append(tl, node2(N_ATTR, id("weak"), list()));
+	else if ((v->flags & vfLINKONCE) && !is_extern
 	    && !(v->flags & vfSTATIC))
 		append(tl, node2(N_ATTR, id("linkonce"), list()));
 
@@ -32586,7 +32591,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// linkonce functions still inline (copies are ODR-identical); main is
 	// never vague. __attribute__((weak)) is the declared form of the same
 	// binding and wins: c2mir binds the item WEAK, and a strong definition
-	// from another TU replaces it (MIR's replaced_weak_func). Weak requires
+	// from another TU replaces it (MIR's replaced_weak_def). Weak requires
 	// external linkage, as for linkonce.
 	if (fd->weak_binding && !fd->internal_linkage)
 		append(ret_type, node2(N_ATTR, id("weak", tf), list(), tf));

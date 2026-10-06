@@ -1885,7 +1885,7 @@ static bool cir_run_at_entry_boundary(Program *prog, const char *entry_name,
 // The stubs for the functions an admitted entry names and nothing defines, in
 // a module of their own that load_and_link loads ahead of the entry's. Each is
 // a WEAK definition, so a later definition replaces it and takes its address
-// (MIR's loader, replaced_weak_func): every reference already bound then
+// (MIR's loader, replaced_weak_def): every reference already bound then
 // reaches the definition. A stub is never in session_defined, so the builder
 // still emits a later definition.
 void CirJitSession::make_function_stubs(const std::vector<std::string> &names)

@@ -382,6 +382,10 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			                        // extern declaration, or a file-scope
 			                        // tentative definition the end of the TU
 			                        // completes to one element (C11 6.9.2p2)
+			  vfWEAK       =67108864, // __attribute__((weak)) on a file-scope
+			                        // object with external linkage: the
+			                        // definition binds weak (STB_WEAK), and a
+			                        // strong one in another TU replaces it
 			} varflag_t;
 
 // The rt{None,Val,Ptr,Ref,DePtr,DeRef} tag-arithmetic macros are retired:

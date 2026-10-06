@@ -3307,6 +3307,7 @@ void Program::_tokenizer_init()
     _lazy_module_tokens.clear();
     pending_no_strict_aliasing = false;
     pending_weak_binding = false;
+    pending_specifier_weak = false;
     while ( !_pack_stack.empty() )
 	_pack_stack.pop();
     _pack_current = 0;

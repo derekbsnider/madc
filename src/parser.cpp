@@ -76457,7 +76457,8 @@ size_t Program::record_global_top_decl(Variable *var, TokenBase *origin, TokenDe
 void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
 					bool is_thread_local, bool is_volatile,
 					bool is_const, bool is_constexpr, bool is_inline,
-					size_t specifier_align, Variable *specifier_cleanup)
+					size_t specifier_align, Variable *specifier_cleanup,
+					bool specifier_weak)
 {
     declarator_list_continues = true;
     // Every declarator of the list names the SAME type (C11 6.7p1): a tagless
@@ -76472,6 +76473,10 @@ void Program::push_declarator_list_tail(TokenBase *type_tb, bool is_static,
     // tail's parseDeclaration takes them as a specifier run's (`AL int a, b;`).
     parsing_decl_align = specifier_align;
     pending_cleanup_function = specifier_cleanup;
+    // The specifiers' `weak` is the tail's; a `weak` in this declarator's own
+    // groups (`int a __attribute__((weak)), b;`) is not.
+    pending_specifier_weak = specifier_weak;
+    pending_weak_binding = false;
     pushToken(type_tb->clone_origin());
     if ( is_volatile )
 	pushToken(new TokenVOLATILE());
@@ -76523,6 +76528,11 @@ void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
 	var->flags |= vfTHREADLOCAL;
     if ( is_inline && !is_static && file_scope_compound(code) )
 	var->flags |= vfLINKONCE;
+    // `weak` (the specifiers' or this declarator's groups): a binding of an
+    // external-linkage object; gcc ignores it on an automatic one and
+    // refuses it on a static one, neither of which madc binds.
+    if ( pending_weak_binding && !is_static && file_scope_compound(code) )
+	var->flags |= vfWEAK;
 }
 
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
@@ -76654,6 +76664,13 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     Variable *decl_cleanup = pending_cleanup_function;
     pending_cleanup_function = NULL;
     Variable *object_cleanup = decl_cleanup;
+    // Likewise `weak`: the head's and the specifiers' is every declarator's
+    // (a list's tail receives it as pending_specifier_weak); pending_weak_binding
+    // stays armed so a function declarator's parse and a declarator's own
+    // groups add to it.
+    bool decl_weak = pending_weak_binding || pending_specifier_weak;
+    pending_specifier_weak = false;
+    pending_weak_binding = decl_weak;
 
     // check for pointer declarator(s): type * [*...] identifier.
     // base_type is the declared type without any `*`s — comma-continuations
@@ -77283,7 +77300,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
 					  gotconst, gotconstexpr, gotinline, decl_align,
-					  decl_cleanup);
+					  decl_cleanup, decl_weak);
 	    }
 	    // A FILE-SCOPE ctor-syntax declaration (`Cls g(args);`, incl. an
 	    // out-of-class static member definition `Cls Cls::less(args);`)
@@ -78279,7 +78296,7 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		// sees it as the start of a new declaration.
 		push_declarator_list_tail(tb, gotstatic, gotthreadlocal, gotvolatile,
 					  gotconst, gotconstexpr, gotinline, decl_align,
-					  decl_cleanup);
+					  decl_cleanup, decl_weak);
 	    }
 	}
 

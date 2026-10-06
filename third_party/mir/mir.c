@@ -2015,6 +2015,44 @@ static void undefined_interface (MIR_context_t ctx) {
   MIR_get_error_func (ctx) (MIR_call_op_error, "undefined call interface");
 }
 
+/* madc fork: the bytes CURR_ITEM occupies in the data section headed by HEAD
+   -- HEAD itself or one of its anonymous continuation items -- or (size_t) -1
+   when CURR_ITEM is no part of that section. */
+static size_t section_item_len (MIR_context_t ctx, MIR_item_t head, MIR_item_t curr_item) {
+  MIR_item_t expr_item;
+
+  if (curr_item != head && MIR_item_name (ctx, curr_item) != NULL) return (size_t) -1;
+  switch (curr_item->item_type) {
+  case MIR_bss_item: return curr_item->u.bss->len;
+  case MIR_data_item:
+    return curr_item->u.data->nel * _MIR_type_size (ctx, curr_item->u.data->el_type);
+  case MIR_ref_data_item:
+  case MIR_lref_data_item: return _MIR_type_size (ctx, MIR_T_P);
+  case MIR_expr_data_item:
+    expr_item = curr_item->u.expr_data->expr_item;
+    if (expr_item->item_type != MIR_func_item || !expr_item->u.func->expr_p
+        || expr_item->u.func->nres != 1)
+      MIR_get_error_func (ctx) (MIR_binary_io_error,
+                                "%s can not be an expr which should be a func w/o calls and "
+                                "memory ops",
+                                MIR_item_name (ctx, expr_item));
+    return _MIR_type_size (ctx, expr_item->u.func->res_types[0]);
+  default: return (size_t) -1;
+  }
+}
+
+/* madc fork: the bytes of the data section headed by ITEM, loaded or not. */
+static size_t data_section_len (MIR_context_t ctx, MIR_item_t item) {
+  size_t len, total = 0;
+
+  for (MIR_item_t curr_item = item; curr_item != NULL;
+       curr_item = DLIST_NEXT (MIR_item_t, curr_item)) {
+    if ((len = section_item_len (ctx, item, curr_item)) == (size_t) -1) break;
+    total += len;
+  }
+  return total;
+}
+
 static MIR_item_t load_bss_data_section (MIR_context_t ctx, MIR_item_t item, int first_only_p) {
   const char *name;
   MIR_item_t curr_item, last_item, expr_item;
@@ -2024,31 +2062,10 @@ static MIR_item_t load_bss_data_section (MIR_context_t ctx, MIR_item_t item, int
   if (item->addr == NULL) {
     /* Calculate section size: */
     for (curr_item = item; curr_item != NULL && curr_item->addr == NULL;
-         curr_item = first_only_p ? NULL : DLIST_NEXT (MIR_item_t, curr_item))
-      if (curr_item->item_type == MIR_bss_item
-          && (curr_item == item || curr_item->u.bss->name == NULL))
-        section_size += curr_item->u.bss->len;
-      else if (curr_item->item_type == MIR_data_item
-               && (curr_item == item || curr_item->u.data->name == NULL))
-        section_size += (curr_item->u.data->nel * _MIR_type_size (ctx, curr_item->u.data->el_type));
-      else if (curr_item->item_type == MIR_ref_data_item
-               && (curr_item == item || curr_item->u.ref_data->name == NULL))
-        section_size += _MIR_type_size (ctx, MIR_T_P);
-      else if (curr_item->item_type == MIR_lref_data_item
-               && (curr_item == item || curr_item->u.lref_data->name == NULL))
-        section_size += _MIR_type_size (ctx, MIR_T_P);
-      else if (curr_item->item_type == MIR_expr_data_item
-               && (curr_item == item || curr_item->u.expr_data->name == NULL)) {
-        expr_item = curr_item->u.expr_data->expr_item;
-        if (expr_item->item_type != MIR_func_item || !expr_item->u.func->expr_p
-            || expr_item->u.func->nres != 1)
-          MIR_get_error_func (
-            ctx) (MIR_binary_io_error,
-                  "%s can not be an expr which should be a func w/o calls and memory ops",
-                  MIR_item_name (ctx, expr_item));
-        section_size += _MIR_type_size (ctx, expr_item->u.func->res_types[0]);
-      } else
-        break;
+         curr_item = first_only_p ? NULL : DLIST_NEXT (MIR_item_t, curr_item)) {
+      if ((len = section_item_len (ctx, item, curr_item)) == (size_t) -1) break;
+      section_size += len;
+    }
     if (section_size % 8 != 0)
       section_size += 8 - section_size % 8; /* we might use 64-bit copying of data */
     if ((item->addr = MIR_malloc (ctx->alloc, section_size)) == NULL) {
@@ -2244,45 +2261,65 @@ static int func_labels_taken_p (MIR_module_t m, MIR_item_t func_item) {
   return FALSE;
 }
 
-/* madc fork: ld's rule that a strong definition replaces a weak one, shared by
-   MIR_load_module and MIR_module_link_check.  A func definition that is not
-   itself weak (strong, or a LINKONCE copy) whose name the environment holds as
-   a WEAK func definition replaces it: the loader gives it the weak one's
-   address (its thunk), so every reference already bound -- a call through an
-   import, a function pointer, a vtable slot -- reaches the new definition, and
-   the function keeps one address.  (A LINKONCE copy replaces a weak definition
-   too: ld keeps the first of two weak symbols, but no valid program has an
-   inline definition and a different weak one of the same function, so only
-   the weak one can be a placeholder.)  Returns the weak func item ITEM
-   replaces, NULL otherwise.  Weak data is not replaced: data references hold
-   the object's own storage, which a later object cannot take over. */
-static MIR_item_t replaced_weak_func (MIR_context_t ctx, MIR_item_t item) {
-  MIR_item_t env_item, weak;
+/* madc fork: a data kind a strong definition can replace in place: data with
+   its storage, never label-address data (lref), which belongs to its body. */
+static int weak_replaceable_data_p (MIR_item_type_t t) {
+  return t == MIR_bss_item || t == MIR_data_item || t == MIR_ref_data_item
+         || t == MIR_expr_data_item;
+}
 
-  if (item->item_type != MIR_func_item || !item->export_p || item->binding == MIR_ITEM_BIND_WEAK)
+/* madc fork: ld's rule that a strong definition replaces a weak one, shared by
+   MIR_load_module and MIR_module_link_check.  A definition that is not itself
+   weak (strong, or a LINKONCE copy) whose name the environment holds as a WEAK
+   definition of the same kind replaces it, keeping its address: a func gets
+   the weak one's thunk, so every reference already bound -- a call through an
+   import, a function pointer, a vtable slot -- reaches the new definition, and
+   the function keeps one address.  Data is loaded INTO the weak object's
+   storage, so every reference already bound to that storage -- the weak
+   module's code and its address-holding data -- reads the strong object; a
+   strong object larger than the weak storage cannot take it over and is not a
+   replacement (each module keeps its own).  (A LINKONCE copy replaces a weak
+   definition too: ld keeps the first of two weak symbols, but no valid program
+   has an inline definition and a different weak one of the same entity, so
+   only the weak one can be a placeholder.)  Returns the weak item ITEM
+   replaces, NULL otherwise. */
+static MIR_item_t replaced_weak_def (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t env_item, weak;
+  int data_p = weak_replaceable_data_p (item->item_type);
+
+  if ((item->item_type != MIR_func_item && !data_p) || !item->export_p
+      || item->binding == MIR_ITEM_BIND_WEAK)
     return NULL;
-  if ((env_item = item_tab_find (ctx, item->u.func->name, &environment_module)) == NULL
-      || (weak = env_item->ref_def) == NULL || weak == item || weak->item_type != MIR_func_item
+  if ((env_item = item_tab_find (ctx, MIR_item_name (ctx, item), &environment_module)) == NULL
+      || (weak = env_item->ref_def) == NULL || weak == item
       || weak->binding != MIR_ITEM_BIND_WEAK)
+    return NULL;
+  if (!data_p) return weak->item_type == MIR_func_item ? weak : NULL;
+  if (!weak_replaceable_data_p (weak->item_type) || weak->addr == NULL
+      || data_section_len (ctx, item) > data_section_len (ctx, weak))
     return NULL;
   return weak;
 }
 
-/* madc fork: the strong definition that replaced WEAK func ITEM
-   (replaced_weak_func, at that definition's load), NULL when ITEM is not one.
-   The replacement took over ITEM's address, so the environment names it, not
-   ITEM, and ITEM's body is dead: MIR_link gives it no interface (it links
-   modules in reverse load order, and the weak body would re-point the shared
-   thunk at itself), and the object writer binds ITEM's references to the
-   replacement's symbol. */
-MIR_item_t _MIR_weak_func_replacement (MIR_context_t ctx, MIR_item_t item) {
-  MIR_item_t env_item;
+/* madc fork: the strong definition that replaced WEAK ITEM (replaced_weak_def,
+   at that definition's load), NULL when ITEM is not one.  The replacement took
+   over ITEM's address, so the environment names it, not ITEM, and ITEM is dead:
+   MIR_link gives a replaced func no interface (it links modules in reverse load
+   order, and the weak body would re-point the shared thunk at itself), and the
+   object writer neither emits a replaced weak item nor binds a reference to
+   it -- its references bind to the replacement's symbol. */
+MIR_item_t _MIR_weak_replacement (MIR_context_t ctx, MIR_item_t item) {
+  MIR_item_t env_item, repl;
+  int data_p = weak_replaceable_data_p (item->item_type);
 
-  if (item->item_type != MIR_func_item || !item->export_p || item->binding != MIR_ITEM_BIND_WEAK)
+  if ((item->item_type != MIR_func_item && !data_p) || !item->export_p
+      || item->binding != MIR_ITEM_BIND_WEAK)
     return NULL;
-  env_item = item_tab_find (ctx, item->u.func->name, &environment_module);
-  if (env_item == NULL || env_item->ref_def == NULL || env_item->ref_def == item) return NULL;
-  return env_item->ref_def;
+  env_item = item_tab_find (ctx, MIR_item_name (ctx, item), &environment_module);
+  if (env_item == NULL || (repl = env_item->ref_def) == NULL || repl == item) return NULL;
+  /* weak data no strong object took over keeps its own storage */
+  if (data_p && repl->addr != item->addr) return NULL;
+  return repl;
 }
 
 /* madc fork: vague linkage in the loader, shared by MIR_load_module and
@@ -2291,7 +2328,7 @@ MIR_item_t _MIR_weak_func_replacement (MIR_context_t ctx, MIR_item_t item) {
    not defined again: the first definition is kept, as ld keeps the first
    COMDAT / weak copy.  Returns that environment item for such a definition of
    module M, NULL otherwise.  A strong definition is not one (it redefines), nor
-   is a LINKONCE func that replaces a weak one (replaced_weak_func).  A func
+   is a LINKONCE func that replaces a weak one (replaced_weak_def).  A func
    whose labels M's label-address data takes is kept whole, and so is
    label-address data itself: both belong to a body that cannot be dropped. */
 static MIR_item_t vague_duplicate_env_item (MIR_context_t ctx, MIR_module_t m, MIR_item_t item) {
@@ -2311,7 +2348,7 @@ static MIR_item_t vague_duplicate_env_item (MIR_context_t ctx, MIR_module_t m, M
   if ((env_item = item_tab_find (ctx, MIR_item_name (ctx, item), &environment_module)) == NULL)
     return NULL;
   if (item->item_type == MIR_func_item
-      && (func_labels_taken_p (m, item) || replaced_weak_func (ctx, item) != NULL))
+      && (func_labels_taken_p (m, item) || replaced_weak_def (ctx, item) != NULL))
     return NULL;
   return env_item;
 }
@@ -2337,9 +2374,11 @@ void MIR_load_module (MIR_context_t ctx, MIR_module_t m) {
         || item->item_type == MIR_ref_data_item || item->item_type == MIR_lref_data_item
         || item->item_type == MIR_expr_data_item) {
       if (item->item_type == MIR_lref_data_item) lref_p = TRUE;
+      /* a strong object replacing a weak one is loaded into its storage */
+      if ((weak_item = replaced_weak_def (ctx, item)) != NULL) item->addr = weak_item->addr;
       item = load_bss_data_section (ctx, item, FALSE);
     } else if (item->item_type == MIR_func_item) {
-      if ((weak_item = replaced_weak_func (ctx, item)) != NULL) item->addr = weak_item->addr;
+      if ((weak_item = replaced_weak_def (ctx, item)) != NULL) item->addr = weak_item->addr;
       if (item->addr == NULL) {
         item->addr = _MIR_get_thunk (ctx);
 #if defined(MIR_DEBUG)
@@ -2405,7 +2444,7 @@ size_t MIR_module_link_check (MIR_context_t ctx, MIR_module_t m,
     } else if (item->export_p && func_redef_prohibited_p (ctx, item)
                && item_tab_find (ctx, item->u.func->name, &environment_module) != NULL
                && vague_duplicate_env_item (ctx, m, item) == NULL
-               && replaced_weak_func (ctx, item) == NULL) {
+               && replaced_weak_def (ctx, item) == NULL) {
       error_type = MIR_repeated_decl_error;
       name = item->u.func->name;
     } else {
@@ -2520,7 +2559,7 @@ void MIR_link (MIR_context_t ctx, void (*set_interface) (MIR_context_t ctx, MIR_
            item = DLIST_NEXT (MIR_item_t, item))
         if (item->item_type == MIR_func_item) {
           finish_func_interpretation (item, ctx->alloc); /* in case if it was used for expr data */
-          if (_MIR_weak_func_replacement (ctx, item) == NULL) set_interface (ctx, item);
+          if (_MIR_weak_replacement (ctx, item) == NULL) set_interface (ctx, item);
         }
     }
     set_interface (ctx, NULL); /* finish interface setting */

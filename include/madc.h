@@ -7683,8 +7683,8 @@ public:
     // parse_declaration_body.
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     // The declarator's storage class (`static`, `thread_local`, `inline`), the
-    // alignment the declaration requests and its cleanup(f) onto the object —
-    // one owner for every declaration arm.
+    // alignment the declaration requests, its cleanup(f) and its `weak`
+    // binding onto the object — one owner for every declaration arm.
     void apply_declaration_storage(class Variable *var, TokenCpnd *code,
 				   bool is_static, bool is_thread_local,
 				   bool is_inline, size_t align,
@@ -8269,7 +8269,8 @@ public:
 				   bool is_thread_local, bool is_volatile,
 				   bool is_const, bool is_constexpr, bool is_inline,
 				   size_t specifier_align,
-				   class Variable *specifier_cleanup = NULL);
+				   class Variable *specifier_cleanup = NULL,
+				   bool specifier_weak = false);
     int consume_declarator_stars(DataDef *&dd, bool *out_const_after_star = nullptr,
 				 unsigned leading_cv = cvNONE,
 				 bool *out_volatile_after_star = nullptr);
@@ -9074,7 +9075,12 @@ public:
     Variable *pending_cleanup_function = nullptr;
     // Set by consume_gnu_attributes on `weak` in any position; consumed (and
     // cleared) by the function-declaration parse, reset at each statement.
+    // An object declarator reads it through apply_declaration_storage.
     bool pending_weak_binding;
+    // A `weak` among a declaration's specifier attributes is every
+    // declarator's: push_declarator_list_tail carries it past the statement
+    // reset to the list's tail, as specifier_cleanup carries cleanup(f).
+    bool pending_specifier_weak = false;
     TokenBase *consume_gnu_asm_label(TokenBase *nt, std::string *alias_target);
     // Read a GNU asm STATEMENT and lower it to its operands' observable
     // effect (each operand expression evaluated once; under an empty
