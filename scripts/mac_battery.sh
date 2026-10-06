@@ -200,11 +200,11 @@ fi
 # --- 4. value intrinsic, include-free ---------------------------------------
 cat > val.mad <<'EOF'
 int main() {
-    value v = 41;
+    var v = 41;
     v = v + 1;
-    value s = "answer=";
-    var joined = s + v;
-    printf("%s\n", joined.c_str());
+    var s = "answer";
+    var joined = s + "=";
+    println("{}{}", joined, v);
     return 0;
 }
 EOF
