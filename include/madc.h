@@ -8797,6 +8797,10 @@ public:
     // TokenENUM::parse and adopts the re-fed enum/int type token. One rule
     // for both data-struct member arms.
     TokenDataType *resolve_enum_member_type(TokenBase *enum_tb);
+    // A struct / union / enum DEFINITION in a C type name, `kw` just taken by
+    // the type-name reader: the defined type, or NULL (nothing consumed)
+    // when no body follows.
+    TokenDataType *aggregate_definition_in_type_name(TokenBase *kw);
     // Resolve a TYPE that spans a token RANGE (e.g. a member-template return
     // type `std::pair<iterator, bool>`) through the canonical type resolver,
     // in an isolated token stream so the live parse position is untouched.

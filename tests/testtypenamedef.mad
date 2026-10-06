@@ -1,0 +1,23 @@
+// A type name's specifiers may DEFINE a struct, union or enum (C11 6.7.7:
+// the specifier-qualifier-list holds a struct-or-union-specifier or an
+// enum-specifier, body included): `sizeof(struct { char a; })`, a cast to
+// `(struct { ... } *)`, a compound literal `(struct { ... }){ ... }`, and a
+// tagged definition whose tag (and an enum's constants) the rest of the
+// block uses. A type name may also begin with any qualifier:
+// `sizeof(volatile char)`. madc refused every one of these forms.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+int main(void)
+{
+	unsigned long s1 = sizeof(struct { char a; int b; });
+	unsigned long s2 = sizeof(volatile char) + sizeof(const volatile short);
+	unsigned long s3 = sizeof(union { char c; double d; });
+	unsigned long s4 = sizeof(enum { E0, E1, E2 });
+	int v = (struct { char a; int b; }){ 1, 2 }.b;
+	void *p = (struct { char a; } *)0;
+	unsigned long s5 = sizeof(struct tnd { int x[3]; });
+	struct tnd t = { { 7, 8, 9 } };
+	printf("typename: %lu %lu %lu %lu %d %d %lu %d %d\n",
+	       s1, s2, s3, s4, v, p == 0, s5, t.x[2], E2);
+	return 0;
+}

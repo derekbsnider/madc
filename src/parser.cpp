@@ -15374,6 +15374,8 @@ bool Program::parse_builtin_types_compatible_operand(TokenBase *type_tb,
 	else
 	    base = resolve_named_datadef(tname);
     }
+    else if ( TokenDataType *def = aggregate_definition_in_type_name(type_tb) )
+	base = &def->definition;	// `struct { ... }` defined in the type name
     else if ( type_tb->type() == TokenType::ttKeyword
 	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
@@ -15909,6 +15911,11 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 {
     DataDef *dd = NULL;
 
+    // A struct / union / enum DEFINITION as the type name's specifier
+    // (`sizeof(struct { char a; })`, C11 6.7.7): the one type-name reader.
+    if ( TokenDataType *def = aggregate_definition_in_type_name(type_tb) )
+	return &def->definition;
+
     if ( is_contextual_identifier_token(type_tb) )
     {
 	std::string tname = contextual_identifier_name(type_tb);
@@ -16014,9 +16021,10 @@ DataDef *Program::resolve_type_query_datadef(TokenBase *type_tb,
 	if ( TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true) )
 	    dd = &tdt->definition;
     }
-    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkCONST )
+    else if ( is_cv_qualifier_token(type_tb) )
     {
-	// sizeof(const type) — skip const qualifier
+	// sizeof(const T), sizeof(volatile T): a qualifier changes neither
+	// size nor alignment (C11 6.2.5p27) — read the type after it.
 	TokenBase *inner = nextToken();
 	return resolve_type_query_datadef(inner, op_name, have_value, query_value);
     }
@@ -44076,7 +44084,11 @@ Program::ExprStep Program::parseExpr_operatorArm(TokenBase *&tb,
 			    // (struct/union Tag *) — peek further
 			    TokenBase *save1 = nextToken(); // consume 'struct' / 'union'
 			    TokenBase *save2 = peekToken();
-			    if ( save2 && save2->type() == TokenType::ttIdentifier )
+			    // A definition (`(struct { int x; } *)p`, the compound
+			    // literal `(struct { int x; }){ 1 }`, C11 6.7.7).
+			    if ( TokenDataType *def = aggregate_definition_in_type_name(save1) )
+				cast_dd = &def->definition;
+			    else if ( save2 && save2->type() == TokenType::ttIdentifier )
 			    {
 				std::string sname = ((TokenIdent *)save2)->spelling();
 				datadef_map_citer sdmi = struct_map.find(sname);
@@ -47399,6 +47411,83 @@ DataDefSTRUCT *Program::mint_incomplete_struct_tag(const std::string &name,
     struct_map.set(store_key, fwd);
     register_cpp_aggregate_name(name, fwd);
     return fwd;
+}
+
+// A struct, union or enum DEFINITION in a C type name (C11 6.7.7: the
+// specifier-qualifier-list's struct-or-union-specifier or enum-specifier
+// carries its body — `sizeof(struct { char a; })`, `(struct { int x; }){ 1 }`,
+// `(union { int i; } *)p`). `kw` is the aggregate keyword the type-name reader
+// just took. A body (`{`, or a tag then `{`) is read and registered as a
+// declaration's would be — through TokenSTRUCT::parse's definition-only mode,
+// or TokenENUM::parse — and its type returned, whatever follows the `}` (an
+// abstract declarator, the `)`) left to the reader. No body: NULL, nothing
+// consumed (a tag reference stays the reader's). C only: C++ forbids defining
+// a type in a type-id ([dcl.fct]/9, [expr.sizeof]/1).
+TokenDataType *Program::aggregate_definition_in_type_name(TokenBase *kw)
+{
+    if ( !kw || kw->type() != TokenType::ttKeyword || !is_c_mode() )
+	return NULL;
+    TokenSTRUCT *aggregate = dynamic_cast<TokenSTRUCT *>(kw);	// struct, union
+    if ( !aggregate && kw->id() != TokenID::tkENUM )
+	return NULL;
+    bool body = false;
+    {
+	StreamMark at_tag = mark_stream();
+	TokenBase *t = nextToken();
+	if ( t && is_contextual_identifier_token(t) )
+	    t = nextToken();
+	body = t && t->id() == TokenID::tkOpBrc;
+	rewind_stream(at_tag);
+    }
+    if ( !body )
+	return NULL;
+    // Definition-only: TokenSTRUCT::parse returns at the `}`, and TokenENUM::
+    // parse re-feeds its type whatever follows the `}`. A type name is no
+    // typedef, and owns none of an enclosing typedef's prefix attributes.
+    const bool saved_def_only = class_definition_only;
+    const bool saved_typedef = parsing_typedef_decl;
+    const size_t saved_prefix_align = typedef_prefix_align;
+    const unsigned saved_prefix_cv = typedef_prefix_cv;
+    auto restore = [&]() {
+	class_definition_only = saved_def_only;
+	parsing_typedef_decl = saved_typedef;
+	typedef_prefix_align = saved_prefix_align;
+	typedef_prefix_cv = saved_prefix_cv;
+    };
+    class_definition_only = true;
+    parsing_typedef_decl = false;
+    typedef_prefix_align = 0;
+    typedef_prefix_cv = cvNONE;
+    TokenBase *def = NULL;
+    try
+    {
+	if ( aggregate )
+	    def = aggregate->parse(*this);
+	else
+	{
+	    // TokenENUM::parse — the one owner of enum bodies — registers the
+	    // enumerators at the enclosing scope and re-feeds the type token.
+	    TokenENUM tenum;
+	    tenum.parse(*this);
+	}
+    }
+    catch(...) { restore(); throw; }
+    restore();
+    if ( !aggregate )
+    {
+	TokenBase *refed = peekToken();
+	if ( !refed || refed->type() != TokenType::ttDataType )
+	    Throw(kw) << "Expecting an enum definition in a type name" << flush;
+	return (TokenDataType *)nextToken();
+    }
+    TokenStructDef *sd = dynamic_cast<TokenStructDef *>(def);
+    if ( !sd || !sd->sdd )
+	Throw(kw) << "Expecting a struct or union definition in a type name" << flush;
+    TokenDataType *tdt = new TokenDataType(
+	(std::string(sd->is_union ? "union " : "struct ") + sd->sdd->name).c_str(),
+	*sd->sdd);
+    copy_token_location(tdt, kw);
+    return tdt;
 }
 
 TokenBase *TokenSTRUCT::parse(Program &pgm)
@@ -56885,7 +56974,10 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	     || after_body->id() == TokenID::tkMul
 	     || after_body->id() == TokenID::tkBand
 	     || after_body->id() == TokenID::tkOpBrk);
-	if ( !declarator_follows )
+	// Definition-only (a type name's enum-specifier,
+	// aggregate_definition_in_type_name): the re-fed type is the reader's,
+	// whatever follows (`sizeof(enum { A, B })`).
+	if ( !declarator_follows && !pgm.class_definition_only )
 	    pgm.Throw(after_body) << "Expecting variable name or ';' after enum definition" << flush;
 	DataDef *refeed_dd = enum_dd;
 	if ( !refeed_dd )
