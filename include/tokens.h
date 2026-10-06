@@ -2269,6 +2269,31 @@ public:
     virtual TokenType type() const override { return TokenType::ttBase; }
 };
 
+// A GNU / clang vector builtin c2mir implements — `__builtin_convertvector(v,
+// T)`, `__builtin_shufflevector(a, b, i...)`, `__builtin_shuffle(a[, b],
+// mask)`: its expression operands, convertvector's target type, and the
+// result type (_datatype; Program::parse_vector_builtin decides it).
+class TokenVectorBuiltin: public TokenBase
+{
+public:
+    enum class Kind { ConvertVector, ShuffleVector, Shuffle };
+    Kind kind;
+    std::vector<TokenBase *> args;
+    DataDef *convert_target = NULL;
+    explicit TokenVectorBuiltin(Kind k) : kind(k) {}
+    virtual TokenType type() const override { return TokenType::ttBase; }
+    static const char *spelling(Kind k)
+    {
+	switch ( k )
+	{
+	case Kind::ConvertVector: return "__builtin_convertvector";
+	case Kind::ShuffleVector: return "__builtin_shufflevector";
+	case Kind::Shuffle:       return "__builtin_shuffle";
+	}
+	return "";
+    }
+};
+
 class TokenBREAK: public TokenKeyword
 {
 public:

@@ -41,8 +41,8 @@
 # --std=c11, the ISO C its expectrc fixtures assume: lacc/pointer-immediate.c,
 # string-conversion.c and struct-padding.c pass.
 #
-# The `new/` failures are MIR's own regression tests and are the best
-# available reducers for the C constructs madc still cannot compile in
-# c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
-# __attribute__((cleanup)), which the in-tree MIR supports natively.
-new/vector-size.c
+# EMPTY 2026-10-06: every test of the corpus passes (359 of 363, the 4 skips
+# counted above). The last entry, new/vector-size.c, left with the vector
+# builtins (__builtin_convertvector, __builtin_shufflevector,
+# __builtin_shuffle). Keep it empty: a failure here is a regression in a
+# corpus madc's own backend ships.

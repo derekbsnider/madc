@@ -8531,6 +8531,14 @@ public:
     DataDef *parse_named_cast_target(TokenBase *cast_tb,
 				     const std::string &cast_name,
 				     TokenBase **type_head = NULL);
+    // A type-name operand (its cv, its type, its abstract declarator) — a
+    // named cast's target, a vector builtin's.
+    DataDef *parse_type_name_operand(TokenBase *ctx, const std::string &what,
+				     TokenBase **type_head = NULL);
+    // __builtin_convertvector / __builtin_shufflevector / __builtin_shuffle,
+    // the stream at the `(` after the name.
+    TokenBase *parse_vector_builtin(TokenBase *name_tb,
+				    TokenVectorBuiltin::Kind kind);
     // THE reader of a cast-expression operand (C11 6.5.3/6.5.4,
     // [expr.unary.op]/1, [expr.cast]): the operand of unary `*`, of a cast,
     // of an unparenthesized sizeof. `first` is its already-consumed first

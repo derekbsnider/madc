@@ -27369,6 +27369,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node2(N_CALL, id("__builtin_va_arg", tb), args, tb);
 	}
 
+	// __builtin_convertvector / __builtin_shufflevector / __builtin_shuffle:
+	// c2mir's own builtins (CONVERT_VECTOR / SHUFFLE_VECTOR / SHUFFLE), called
+	// by name; convertvector's target type is its second operand, an N_TYPE
+	// (c2mir.c: "2nd argument of __builtin_convertvector should be a vector
+	// type").
+	if (TokenVectorBuiltin *tvb = dynamic_cast<TokenVectorBuiltin *>(tb)) {
+		node_t args = list();
+		for (TokenBase *a : tvb->args)
+			append(args, translate_expr(a));
+		if (tvb->convert_target)
+			append(args, node2(N_TYPE, type_list(tvb->convert_target),
+					   node2(N_DECL, ignore(), list())));
+		return node2(N_CALL,
+			     id(TokenVectorBuiltin::spelling(tvb->kind), tb),
+			     args, tb);
+	}
+
 	// __real__ / __imag__ <expr>  ->  c2mir N_REALPART / N_IMAGPART (native
 	// complex support in the madc MIR fork). Yields the scalar component and is
 	// an lvalue when the operand is, so `&(__real dc)` and `__real__ x = v` work.

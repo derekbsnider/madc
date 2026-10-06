@@ -32715,6 +32715,23 @@ DataDef *Program::parse_named_cast_target(TokenBase *cast_tb,
     if ( !peekToken() || peekToken()->id() != TokenID::tkLT )
 	Throw(cast_tb) << "Expecting '<' after " << cast_name << flush;
     nextToken();
+    DataDef *cast_dd = parse_type_name_operand(cast_tb, cast_name + " target",
+					       type_head);
+    skip_expression_whitespace();
+    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
+	Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
+    nextToken();
+    return cast_dd;
+}
+
+// A type-name operand (C11 6.7.7): its leading cv, the type its first token
+// names (resolve_declared_type_token) and its abstract declarator
+// (parse_type_id, the TYPE-ID owner) — consumed up to, not including, the
+// token that ends it. `what` names the operand for the diagnostic; `type_head`,
+// when given, receives the type's first token.
+DataDef *Program::parse_type_name_operand(TokenBase *ctx, const std::string &what,
+					  TokenBase **type_head)
+{
     skip_expression_whitespace();
     unsigned lead_cv = skip_cv_qualifier_tokens();
     TokenBase *type_tb = nextToken();
@@ -32722,14 +32739,102 @@ DataDef *Program::parse_named_cast_target(TokenBase *cast_tb,
 	*type_head = type_tb;
     TokenDataType *tdt = resolve_declared_type_token(type_tb, true, true);
     if ( !tdt )
-	Throw(type_tb ? type_tb : cast_tb) << cast_name << " target is not a type" << flush;
+	Throw(type_tb ? type_tb : ctx) << what << " is not a type" << flush;
     DeclaratorResult decl;
-    DataDef *cast_dd = parse_type_id(&tdt->definition, lead_cv, decl);
-    skip_expression_whitespace();
-    if ( !peekToken() || peekToken()->id() != TokenID::tkGT )
-	Throw(cast_tb) << "Expecting '>' to close " << cast_name << "<...>" << flush;
+    return parse_type_id(&tdt->definition, lead_cv, decl);
+}
+
+// The vector builtin an identifier names, read once at the name.
+static bool vector_builtin_kind(const TokenIdent *tb, TokenVectorBuiltin::Kind &kind)
+{
+    for ( TokenVectorBuiltin::Kind k : { TokenVectorBuiltin::Kind::ConvertVector,
+					 TokenVectorBuiltin::Kind::ShuffleVector,
+					 TokenVectorBuiltin::Kind::Shuffle } )
+	if ( tb->spelling_is(TokenVectorBuiltin::spelling(k)) )
+	{
+	    kind = k;
+	    return true;
+	}
+    return false;
+}
+
+// `__builtin_convertvector(v, T)` (gcc 9+, clang), `__builtin_shufflevector(a,
+// b, i...)` (clang, gcc 12+) and `__builtin_shuffle(a[, b], mask)` (gcc) —
+// the vector builtins c2mir implements, emitted as its calls. The stream is
+// at the `(` after the name. The operands are expressions, convertvector's
+// second a type name. The result: convertvector's T, a vector of the same
+// lane count; shufflevector's a vector of a's element type with one lane per
+// index (simd_type, the anonymous-vector owner); shuffle's a's type.
+TokenBase *Program::parse_vector_builtin(TokenBase *name_tb,
+					 TokenVectorBuiltin::Kind kind)
+{
+    typedef TokenVectorBuiltin::Kind Kind;
+    const std::string name = TokenVectorBuiltin::spelling(kind);
+    if ( !skip_expression_whitespace() || peekToken()->id() != TokenID::tkOpBrk )
+	Throw(name_tb) << "Expecting '(' after " << name << flush;
     nextToken();
-    return cast_dd;
+    TokenVectorBuiltin *vb = new TokenVectorBuiltin(kind);
+    copy_token_location(vb, name_tb);
+    for (;;)
+    {
+	if ( kind == Kind::ConvertVector && vb->args.size() == 1 && !vb->convert_target )
+	    vb->convert_target = parse_type_name_operand(name_tb, name + " target");
+	else
+	{
+	    skip_expression_whitespace();
+	    TokenBase *first = nextToken();
+	    if ( !first )
+		Throw(name_tb) << "Unexpected end of input in " << name << flush;
+	    vb->args.push_back(parseExpression(first, false, false, false, 0, true));
+	}
+	skip_expression_whitespace();
+	TokenBase *sep = nextToken();
+	if ( sep && sep->id() == TokenID::tkClBrk )
+	    break;
+	if ( !sep || sep->id() != TokenID::tkComma )
+	    Throw(sep ? sep : name_tb) << "Expecting ',' or ')' in " << name << flush;
+    }
+    size_t n = vb->args.size();
+    DataDef *first_type = n && vb->args[0]->datadef() ? vb->args[0]->datadef()->unqualified() : NULL;
+    DataDefSIMD *first_vec = first_type ? first_type->as_simd_dd() : NULL;
+    DataDef *result = NULL;
+    switch ( kind )
+    {
+    case Kind::ConvertVector:
+    {
+	DataDefSIMD *to = vb->convert_target ? vb->convert_target->as_simd_dd() : NULL;
+	if ( n != 1 || !vb->convert_target )
+	    Throw(name_tb) << "wrong number of arguments to " << name << flush;
+	if ( !first_vec || !to )
+	    Throw(name_tb) << name << " operands must be vector types" << flush;
+	if ( first_vec->lane_count != to->lane_count )
+	    Throw(name_tb) << name << " operands must have the same number of elements" << flush;
+	result = vb->convert_target;
+	break;
+    }
+    case Kind::Shuffle:
+	if ( n != 2 && n != 3 )
+	    Throw(name_tb) << "wrong number of arguments to " << name << flush;
+	if ( !first_vec )
+	    Throw(name_tb) << "arguments of " << name << " must be vectors" << flush;
+	result = first_type;
+	break;
+    case Kind::ShuffleVector:
+    {
+	if ( n < 3 )
+	    Throw(name_tb) << "wrong number of arguments to " << name << flush;
+	if ( !first_vec || !first_vec->element_type )
+	    Throw(name_tb) << "first two arguments of " << name << " must be vectors" << flush;
+	size_t bytes = first_vec->element_type->size * (n - 2);
+	if ( bytes & (bytes - 1) )
+	    Throw(name_tb) << name << ": " << (n - 2)
+			   << " indices do not form a power-of-two-sized vector" << flush;
+	result = simd_type(first_vec->element_type, bytes);
+	break;
+    }
+    }
+    vb->setDataType(result);
+    return vb;
 }
 
 TokenBase *Program::parse_named_cpp_cast(TokenBase *cast_tb,
@@ -41264,6 +41369,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    tnp->line = tb->line;
 		    tnp->column = tb->column;
 		    exStack.push(tnp);
+		    return done ? ExprStep::Done : ExprStep::Break;
+		}
+		TokenVectorBuiltin::Kind vector_kind;
+		if ( vector_builtin_kind(ident_tb, vector_kind) )
+		{
+		    exStack.push(parse_vector_builtin(tb, vector_kind));
 		    return done ? ExprStep::Done : ExprStep::Break;
 		}
 		if ( ident_tb->spelling_is("__builtin_types_compatible_p") )
