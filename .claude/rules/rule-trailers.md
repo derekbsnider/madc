@@ -4,13 +4,13 @@
   `scripts/check-rule-trailers.sh` (in `fulltest`) fails the build without them.
 
 ```
-Hypothesis: <what you believed was wrong, written BEFORE editing>      (#3)
-Layer:      <the layer chain, and why the one you edited is deepest>   (#2,#5)
-Searched:   <the grep you ran, the CONCEPT, and what came back>        (#4)
+Hypothesis: <State the exact technical fault, written BEFORE editing>      (#3)
+Layer:      <List the literal file/data layer chain modified>   (#2,#5)
+Searched:   <State the literal grep string or query executed, and the exact string returned>        (#4)
 Oracle:     <what gcc/clang did on a reducer, and what madc did>       (#1)
 ```
 
-- `n/a — <reason>` is a permitted value. Silence is not. An empty or
+- `n/a — <technical reason>` is a permitted value. Silence is not. An empty or
   whitespace-only field fails.
 - Write each trailer as a terse factual claim — the code fact, a noun phrase,
   an arrow chain — NEVER a first-person account of investigating ("I believed
