@@ -6,7 +6,7 @@
 # UCRT chain + the staged UCRT-flavor libstdc++ 13.2.0 (the exact text
 # madc.exe was built against and serves).
 #
-# LIST VERSION 6 (2026-10-06: assert.h, see the Linux list; v5 2026-10-02: cstdint, see the Linux list, and unistd.h -- teststaticlocalmtcxx, the first test to include it on win64, failed headerless-win on the absent root, and the Linux list has carried it since v3; v4 2026-09-24: setjmp.h signal.h; v3 2026-08-15). Grow deliberately: every header here must
+# LIST VERSION 7 (2026-10-06: pshpack1.h poppack.h -- testsysheaderreinclude includes them, the first test to, and failed headerless-win on the absent root; listed as an adjacent push/pop pair, so the pack(1) never reaches a later header; v6 2026-10-06: assert.h, see the Linux list; v5 2026-10-02: cstdint, see the Linux list, and unistd.h -- teststaticlocalmtcxx, the first test to include it on win64, failed headerless-win on the absent root, and the Linux list has carried it since v3; v4 2026-09-24: setjmp.h signal.h; v3 2026-08-15). Grow deliberately: every header here must
 # compile QUIETLY (exit 0, zero diagnostics) in this combined order under
 # `wine bin/madc-hosted-x86-64-windows.exe` — the pack step is a release
 # gate. Seeded from the Linux list v2; any name that fails the quiet bar on
@@ -21,6 +21,8 @@ cstdlib
 ctime
 cerrno
 assert.h
+pshpack1.h
+poppack.h
 math.h
 setjmp.h
 signal.h

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### forest: The Windows header pack carries mingw's <pshpack1.h> and <poppack.h> — a program that re-includes the struct-packing pair could not open it against the packed madc.exe and now compiles
+
 ### mir: A multi-TU C++ --project link no longer crashes on win64
 
 On win64 a MIR lazy-generation wrapper jumped to its shared tail (wrapper_end) with a rel32 branch; when the wrapper and the tail landed in code holders scattered beyond rel32's ±2GB reach (as a Windows address space does), the offset overflowed and a cross-TU call reached a wrong target and crashed. The wrapper now reaches the tail through an absolute address in r11, from any holder; tests/testprojectmtiorder runs green on win64 again.
