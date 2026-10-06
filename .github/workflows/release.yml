@@ -333,8 +333,10 @@ jobs:
           echo "DARWIN_ZSTD_DIR=$HOME/zstd" >> "$GITHUB_ENV"
           # madcgit's build-time dep, staged under a runner-writable dir: the
           # container's /workspace/libgit2 default is unwritable on a mac
-          # runner. Same knob darwin-probe.yml sets.
+          # runner. Same knob darwin-probe.yml sets. madcmark's cmark-gfm
+          # likewise (src/madcmark.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
       - name: fetch the pinned input trees (darwin open C headers; the container's exact libc++ text + copyright)
         run: |
           make --version | head -1

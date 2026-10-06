@@ -95,8 +95,10 @@ jobs:
           echo "LIBCXX_HEADERS_HOME=$HOME/libcxx-headers" >> "$GITHUB_ENV"
           # madcgit's build-time dep: the minimal static libgit2 (#2), staged
           # under a runner-writable dir — the container's /workspace/libgit2
-          # default is unwritable here. Staged in its own step below.
+          # default is unwritable here. Staged in its own step below; madcmark's
+          # cmark-gfm likewise (src/madcmark.mk's CMARK_GFM_DIR).
           echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
       - name: fetch the pinned input trees (darwin open C headers; the container's exact libc++ text)
         run: |
           make --version | head -1
