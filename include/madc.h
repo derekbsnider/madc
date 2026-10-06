@@ -3651,7 +3651,13 @@ public:
     // read-caches) to the FPTR, writes its DK_FPTR record (ref0 = the target FuncDef's DK_FUNC
     // record, encoded by forest_arena_record_func) at its own project slot. Idempotent via
     // has_def; the target's own fptr-typed params/return recurse, bounded by the same guard.
+    // A chain ending in a pointer to member records it through forest_arena_record_member_pointer.
     void forest_arena_record_fptr(DataDef *dd);
+    // write-through (v53): record a POINTER-TO-MEMBER type (DataDefMemberPtr /
+    // DataDefMemberFnPtr) — like a fn-ptr, born at its declarator with no completion funnel —
+    // as a DK_MEMBERPTR record at its own project slot: ref0 = the member type (data) or the
+    // signature's DK_FUNC record (function), the owner's type-id and spelling beside it.
+    void forest_arena_record_member_pointer(DataDef *dd);
     // Class-template parse-once representation. TemplateDef is copied across
     // lookup, merge, partial selection, and forest restore, so it owns only a
     // stable Program-lifetime arena id. Pattern nodes use ids and value fields;

@@ -3489,10 +3489,13 @@ static uint32_t forest_pinned_primitive_id(DataDef *dd)
 	// inherits btSimple and reports is_integer()==true with the POINTEE's rawtype
 	// — it is NOT a scalar. Exclude it structurally so the derived-type
 	// record path (DK_PTR/DK_REF/DK_CONST) handles it. Likewise an enum (named
-	// constants), SIMD vector, template param, or _Complex is its own concept.
+	// constants), SIMD vector, template param, or _Complex is its own concept,
+	// and so is a pointer to DATA member — an integer-typed (ptrdiff_t offset)
+	// DataDef whose owner and member type a `long` would lose (DK_MEMBERPTR).
 	if (dynamic_cast<DataDefPTR *>(dd) || dynamic_cast<DataDefQUAL *>(dd) // allowed-exception: structural (exact-class dispatch)
 	    || dynamic_cast<DataDefENUM *>(dd) || dd->is_simd()
-	    || dd->is_template_param() || dd->is_complex())
+	    || dd->is_template_param() || dd->is_complex()
+	    || dd->is_member_pointer())
 		return 0;
 	if (!(dd->is_integer() || dd->is_real()))
 		return 0;
@@ -4186,6 +4189,13 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 			}
 			return;
 		}
+		// v53: a pointer to member ends the chain the same way — no
+		// completion funnel of its own (libstdc++'s _Nocopy_types holds
+		// `void (_Undefined_class::*)()`).
+		if (dd->is_member_pointer()) {
+			forest_arena_record_member_pointer(dd);
+			return;
+		}
 		// REF is-a PTR; both (and CONST) expose the operand as base_type.
 		if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd)) { // allowed-exception: structural (exact-class dispatch)
 			dd = p->base_type;
@@ -4197,6 +4207,57 @@ void Program::forest_arena_record_fptr(DataDef *dd)
 		}
 		return;			// chain ended without an FPTR
 	}
+}
+
+// v53: record a POINTER-TO-MEMBER type reached through a member / param /
+// return cross-ref (forest_arena_record_fptr's walk ends here). The defrec is
+// written BEFORE the member type or signature recurses, so a self-referential
+// chain terminates; has_def makes it idempotent. The owner is a cross-ref
+// only: an undefined owner (_Undefined_class) has no record, and the restore
+// keeps its spelling with owner_class NULL — the parse's own unresolved state.
+void Program::forest_arena_record_member_pointer(DataDef *dd)
+{
+	if (!forest_arena_enabled || !dd)
+		return;
+	DataDefMemberFnPtr *mf = dynamic_cast<DataDefMemberFnPtr *>(dd); // allowed-exception: structural type-graph walk
+	DataDefMemberPtr *md = mf ? NULL : dynamic_cast<DataDefMemberPtr *>(dd); // allowed-exception: structural type-graph walk
+	if (!mf && !md)
+		return;
+	uint32_t tid = type_id_for(dd);
+	if (!madc::dis::arena_id_is_project(tid) || forest_arena.has_def(tid))
+		return;
+	DataDef *owner = mf ? mf->owner_class : md->owner_class;
+	const std::string &owner_name = mf ? mf->owner_name : md->owner_name;
+	madc::dis::defrec r;
+	memset(&r, 0, sizeof(r));
+	r.kind      = madc::dis::DK_MEMBERPTR;
+	r.name_id   = forest_arena.strings.intern(dd->name.c_str());
+	r.size      = (uint32_t)dd->size;
+	r.datatype  = (uint32_t)dd->rawtype();
+	r.disp_id   = owner_name.empty()
+		    ? 0u : forest_arena.strings.intern(owner_name.c_str());
+	r.body_unit = owner ? forest_serialize_type_id(owner) : 0u;
+	if (mf) {
+		r.flags |= madc::dis::DF_MEMBERPTR_FUNCTION;
+		if (mf->is_const_method)
+			r.flags |= madc::dis::DF_MEMBERPTR_CONST_METHOD;
+	}
+	forest_arena.set_def_at(tid, r);	// self-ref guard: write first
+	if (mf) {
+		if (!mf->target)
+			return;
+		r.ref0 = forest_serialize_type_id(mf->target);
+		forest_arena.set_def_at(tid, r);
+		if (madc::dis::arena_id_is_project(r.ref0)
+		    && !forest_arena.has_def(r.ref0))
+			forest_arena_record_func(mf->target);
+		return;
+	}
+	if (!md->member_type)
+		return;
+	r.ref0 = forest_serialize_type_id(md->member_type);
+	forest_arena.set_def_at(tid, r);
+	forest_arena_record_fptr(md->member_type);	// a fn-ptr or member-pointer member
 }
 
 // File-scope global VARIABLE definitions (v13/v14/v16) — the CIR_GLOBALS

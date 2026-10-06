@@ -1851,6 +1851,10 @@ static bool arena_chain_ok(const madc::dis::FrozenDefArena &a, uint32_t tid,
 		case madc::dis::DK_FPTR:
 			return true;	// v22: fn-ptrs materialize in pass 1b (the
 					// target signature never gates member layout)
+		case madc::dis::DK_MEMBERPTR:
+			return true;	// v53: member pointers materialize in pass 1b
+					// (8 bytes or the {ptr, adj} pair — neither the
+					// owner nor the member gates member layout)
 		default:
 			return false;
 		}
@@ -1938,6 +1942,7 @@ static const ForestRecordable &forest_recordable_cached(
 		case madc::dis::DK_CONST:
 		case madc::dis::DK_CARRAY:
 		case madc::dis::DK_FPTR:
+		case madc::dis::DK_MEMBERPTR:
 			e.derived_slots.push_back(s);
 			break;
 		case madc::dis::DK_NSLINK:
@@ -2115,6 +2120,42 @@ static void restore_param(FuncDef *fd, DataDef *pd,
 	fd->const_params.push_back((pr.flags & madc::dis::PF_CONST_PARAM) != 0);
 	const char *sp = pr.cpp_spelling_id ? a.c_str(pr.cpp_spelling_id) : NULL;
 	fd->param_cpp_spellings.push_back(sp ? sp : "");
+}
+
+// A callable's SIGNATURE from its DK_FUNC record (a fn-ptr's target, a member-
+// function pointer's): a declaration-only FuncDef, return + params through the
+// same swizzle. NULL when the record is not a DK_FUNC, or while a signature
+// type is not built yet (pass 1b's fixpoint retries).
+static FuncDef *restore_signature(uint32_t func_tid,
+				  const madc::dis::FrozenDefArena &a,
+				  const std::map<uint32_t, DataDef *> &by_id,
+				  std::vector<DataDef *> &storage)
+{
+	madc::dis::defrec fr;
+	if (!func_tid || !madc::dis::arena_id_is_project(func_tid)
+	    || !a.get_def_at(func_tid, fr) || fr.kind != madc::dis::DK_FUNC)
+		return NULL;
+	DataDef *ret = arena_swizzle(fr.ref0, by_id);
+	if (!ret)
+		return NULL;
+	std::vector<DataDef *> ps(fr.params_count);
+	std::vector<madc::dis::paramrec> prs(fr.params_count);
+	for (uint32_t p = 0; p < fr.params_count; ++p)
+		if (!a.get_payload(fr.params_begin, p, prs[p])
+		    || !(ps[p] = arena_swizzle(prs[p].type_id, by_id)))
+			return NULL;
+	FuncDef *tfd = new FuncDef(*ret);
+	storage.push_back(tfd);
+	for (uint32_t p = 0; p < fr.params_count; ++p)
+		restore_param(tfd, ps[p], prs[p], a);
+	tfd->is_varargs = (fr.flags & madc::dis::DF_IS_VARARGS) != 0;
+	tfd->is_void_params = (fr.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
+	tfd->is_const_method = (fr.flags & madc::dis::DF_IS_CONST_METHOD) != 0;
+	tfd->declaration_only = true;
+	if (fr.name_id)
+		if (const char *fn = a.c_str(fr.name_id))
+			tfd->name = fn;
+	return tfd;
 }
 
 void CirFrozenForest::materialize_pass()
@@ -2403,6 +2444,20 @@ void CirFrozenForest::materialize_pass()
 				work.push_back(tid);
 			}
 		};
+		// A callable's signature (a fn-ptr's, a member-function pointer's):
+		// its return and parameter types join the chase.
+		auto pull_signature = [&](uint32_t func_tid) {
+			madc::dis::defrec fr;
+			if (!func_tid || !a.get_def_at(func_tid, fr)
+			    || fr.kind != madc::dis::DK_FUNC)
+				return;
+			tq.push_back(fr.ref0);
+			for (uint32_t p = 0; p < fr.params_count; ++p) {
+				madc::dis::paramrec pr;
+				if (a.get_payload(fr.params_begin, p, pr))
+					tq.push_back(pr.type_id);
+			}
+		};
 		auto drain_pulls = [&]() {
 		while (!work.empty() || !tq.empty()) {
 			if (!tq.empty()) {
@@ -2427,18 +2482,18 @@ void CirFrozenForest::materialize_pass()
 						admit_agg(tid);
 					else if (r.kind == madc::dis::DK_ENUM)
 						pulled_enums.insert(tid);
-					else if (r.kind == madc::dis::DK_FPTR) {
-						madc::dis::defrec fr;
-						if (r.ref0
-						    && a.get_def_at(r.ref0, fr)
-						    && fr.kind == madc::dis::DK_FUNC) {
-							tq.push_back(fr.ref0);
-							for (uint32_t p = 0; p < fr.params_count; ++p) {
-								madc::dis::paramrec pr;
-								if (a.get_payload(fr.params_begin, p, pr))
-									tq.push_back(pr.type_id);
-							}
-						}
+					else if (r.kind == madc::dis::DK_FPTR)
+						pull_signature(r.ref0);
+					else if (r.kind == madc::dis::DK_MEMBERPTR) {
+						// v53: the owner (when the parse
+						// resolved one) and the member type or
+						// signature.
+						if (r.body_unit)
+							tq.push_back(r.body_unit);
+						if (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION)
+							pull_signature(r.ref0);
+						else
+							tq.push_back(r.ref0);
 					}
 					break;
 				}
@@ -2643,38 +2698,10 @@ void CirFrozenForest::materialize_pass()
 			// never resolves cleanly lacks (its dependents drop with
 			// the closure diagnostic naming the member).
 			if (r.kind == madc::dis::DK_FPTR) {
-				madc::dis::defrec fr;
-				if (!r.ref0 || !madc::dis::arena_id_is_project(r.ref0)
-				    || !a.get_def_at(r.ref0, fr)
-				    || fr.kind != madc::dis::DK_FUNC)
-					continue;
-				DataDef *ret = arena_swizzle(fr.ref0, by_id);
-				if (!ret)
+				FuncDef *tfd = restore_signature(r.ref0, a, by_id,
+								 _mat_storage);
+				if (!tfd)
 					continue;	// not ready this round
-				bool pok = true;
-				std::vector<DataDef *> ps(fr.params_count);
-				std::vector<madc::dis::paramrec> prs(fr.params_count);
-				for (uint32_t p = 0; p < fr.params_count; ++p) {
-					if (!a.get_payload(fr.params_begin, p, prs[p])
-					    || !(ps[p] = arena_swizzle(prs[p].type_id, by_id))) {
-						pok = false;
-						break;
-					}
-				}
-				if (!pok)
-					continue;	// not ready this round
-				FuncDef *tfd = new FuncDef(*ret);
-				_mat_storage.push_back(tfd);
-				for (uint32_t p = 0; p < fr.params_count; ++p)
-					restore_param(tfd, ps[p], prs[p], a);
-				tfd->is_varargs =
-					(fr.flags & madc::dis::DF_IS_VARARGS) != 0;
-				tfd->is_void_params =
-					(fr.flags & madc::dis::DF_IS_VOID_PARAMS) != 0;
-				tfd->declaration_only = true;
-				if (fr.name_id)
-					if (const char *fn = a.c_str(fr.name_id))
-						tfd->name = fn;
 				DataDefFPTR *fpd = new DataDefFPTR(tfd);
 				fpd->ptr_syntax =
 					(r.flags & madc::dis::DF_FPTR_PTR_SYNTAX) != 0;
@@ -2683,6 +2710,37 @@ void CirFrozenForest::materialize_pass()
 						fpd->name = nn;
 				_mat_storage.push_back(fpd);
 				by_id[tid] = fpd;
+				dprog = true;
+				continue;
+			}
+			// v53: a pointer to member — its owner as the parse resolved
+			// it (NULL when it had none, or when the owner did not
+			// restore: the spelling stays, as for an unresolved owner),
+			// then the member type or the signature, which retry.
+			if (r.kind == madc::dis::DK_MEMBERPTR) {
+				DataDef *owner = r.body_unit
+					       ? arena_swizzle(r.body_unit, by_id) : NULL;
+				const char *on = r.disp_id ? a.c_str(r.disp_id) : NULL;
+				std::string owner_name = on ? on : "";
+				DataDef *d;
+				if (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION) {
+					FuncDef *tfd = restore_signature(r.ref0, a, by_id,
+									 _mat_storage);
+					if (!tfd)
+						continue;	// not ready this round
+					d = new DataDefMemberFnPtr(owner, owner_name, tfd,
+						(r.flags & madc::dis::DF_MEMBERPTR_CONST_METHOD) != 0);
+				} else {
+					DataDef *member = arena_swizzle(r.ref0, by_id);
+					if (!member)
+						continue;	// not ready this round
+					d = new DataDefMemberPtr(owner, owner_name, *member);
+				}
+				if (r.name_id)
+					if (const char *nn = a.c_str(r.name_id))
+						d->name = nn;
+				_mat_storage.push_back(d);
+				by_id[tid] = d;
 				dprog = true;
 				continue;
 			}
@@ -2742,10 +2800,14 @@ void CirFrozenForest::materialize_pass()
 		else if (r.kind == madc::dis::DK_CONST)		dk = "const";
 		else if (r.kind == madc::dis::DK_CARRAY)	dk = "carray";
 		else if (r.kind == madc::dis::DK_FPTR)		dk = "fptr";
+		else if (r.kind == madc::dis::DK_MEMBERPTR)	dk = "memberptr";
 		if (!dk)
 			continue;
 		std::string why;
-		if (r.kind == madc::dis::DK_FPTR) {
+		// A member-function pointer's ref0 is a signature, as a fn-ptr's.
+		if (r.kind == madc::dis::DK_FPTR
+		    || (r.kind == madc::dis::DK_MEMBERPTR
+			&& (r.flags & madc::dis::DF_MEMBERPTR_FUNCTION))) {
 			madc::dis::defrec fr;
 			if (!r.ref0 || !madc::dis::arena_id_is_project(r.ref0)
 			    || !a.get_def_at(r.ref0, fr)
