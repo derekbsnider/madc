@@ -43,6 +43,15 @@ std::string canonical_path_for_compare(const std::string &path);
 std::string host_path_dirname(const std::string &path);
 std::string host_path_basename(const std::string &path);
 
+// Does `path` name its own root, so that joining it onto a base directory
+// would be wrong? THE owner of "is this path absolute" for every resolver
+// that joins a relative path to a base (an include, a manifest's file or
+// include_dirs entry, a config value). A leading separator of the
+// splitters' set everywhere; on Windows also a drive (`C:\x`, `C:/x`, and
+// the drive-relative `C:x`, which names its own drive). A '/'-only test
+// joined `Z:\work\inc` onto the manifest's directory.
+bool host_path_absolute(const std::string &path);
+
 // Is `path` inside the directory `dir`? Both are COMPARISON spellings
 // (canonical_path_for_compare). THE owner of "under this directory": dir's
 // spelling, less any trailing separator, must be followed in path by a

@@ -12,6 +12,7 @@ thread_local bool madc_verbose = false;
 using madc::detail::host_path_dirname;
 using madc::detail::host_path_basename;
 using madc::detail::host_path_within;
+using madc::detail::host_path_absolute;
 
 TEST_CASE("host_path_dirname/basename: POSIX separators on every host")
 {
@@ -84,5 +85,36 @@ TEST_CASE("host_path_within: '\\' is a filename character on POSIX")
 {
 	CHECK_FALSE(host_path_within("/repo", "/repo\\file"));
 	CHECK(host_path_within("/repo", "/repo/a\\b", nullptr));
+}
+#endif
+
+TEST_CASE("host_path_absolute: a leading separator names its own root")
+{
+	CHECK(host_path_absolute("/usr/include"));
+	CHECK(host_path_absolute("/"));
+	CHECK_FALSE(host_path_absolute(""));
+	CHECK_FALSE(host_path_absolute("inc"));
+	CHECK_FALSE(host_path_absolute("./inc"));
+	CHECK_FALSE(host_path_absolute("../inc"));
+}
+
+#ifdef _WIN32
+TEST_CASE("host_path_absolute: a drive or either separator on a Windows host")
+{
+	// madc::canonical_path's spelling of a project's include directory:
+	// a '/'-only test joined it onto the manifest's own directory.
+	CHECK(host_path_absolute("Z:\\workspace\\madc\\tmp\\inc"));
+	CHECK(host_path_absolute("C:/src/demo.c"));
+	CHECK(host_path_absolute("c:demo.c"));		// drive-relative: its own drive
+	CHECK(host_path_absolute("\\\\server\\share"));	// UNC
+	CHECK(host_path_absolute("\\rooted"));
+	CHECK_FALSE(host_path_absolute("1:x"));
+	CHECK_FALSE(host_path_absolute("inc\\x.h"));
+}
+#else
+TEST_CASE("host_path_absolute: a drive spelling is a relative name on POSIX")
+{
+	CHECK_FALSE(host_path_absolute("C:\\src"));
+	CHECK_FALSE(host_path_absolute("\\rooted"));
 }
 #endif

@@ -1,5 +1,5 @@
 #include "madc_project.h"
-#include "madc_posix_io.h"	// host_path_dirname: is a "libs" entry a path
+#include "madc_posix_io.h"	// host_path_dirname / host_path_absolute: a "libs" entry, a TU path
 #include "json.hpp"
 #include <algorithm>
 #include <fstream>
@@ -57,7 +57,7 @@ void shell_split(const std::string &cmd, std::vector<std::string> &out) {
 // spelling, not a "./"-prefixed twin of it (buffer paths compare by
 // spelling; "./x" and "x" would open twice).
 std::string resolve(const std::string &base, const std::string &p) {
-	if (p.empty() || p[0] == '/') return p;
+	if (p.empty() || madc::detail::host_path_absolute(p)) return p;
 	if (base.empty() || base == ".") return p;
 	std::string b = base;
 	if (b.back() != '/') b += '/';

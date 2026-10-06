@@ -199,6 +199,21 @@ std::string host_path_basename(const std::string &path)
 	return path.substr(sep + 1);
 }
 
+bool host_path_absolute(const std::string &path)
+{
+	if ( path.empty() )
+		return false;
+	if ( host_path_is_separator(path[0]) )
+		return true;
+#ifdef _WIN32
+	char d = path[0];
+	if ( path.size() >= 2 && path[1] == ':'
+	     && ((d >= 'A' && d <= 'Z') || (d >= 'a' && d <= 'z')) )
+		return true;
+#endif
+	return false;
+}
+
 bool host_path_within(const std::string &dir, const std::string &path,
 		      std::size_t *rel_at)
 {
@@ -659,10 +674,8 @@ std::size_t read_process_memory(void *dst, const void *src, std::size_t size)
 		// At most PIPE_BUF bytes into an empty pipe: the write never blocks.
 		if ( span > PIPE_BUF )
 			span = PIPE_BUF;
-		ssize_t w;
-		do
-			w = ::write(fds[1], reinterpret_cast<const void *>(at), span);
-		while ( w < 0 && errno == EINTR );
+		ssize_t w = write_fd_without_sigpipe(
+			fds[1], reinterpret_cast<const void *>(at), span);
 		if ( w <= 0 )
 			break;
 		std::size_t back = 0;

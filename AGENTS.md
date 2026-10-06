@@ -114,7 +114,9 @@ deepest layer. See `.claude/rules/rule-trailers.md`.
    (`delimiter-tracking.md`); path canonicalization for comparison is
    `canonical_path_for_compare()`, and "is this path inside that directory"
    is `host_path_within()` (the host's separators; gated by
-   `check-one-path-within.sh`); a library's platform spelling (the `lib`
+   `check-one-path-within.sh`), and "is this path absolute" is
+   `host_path_absolute()` (a Windows drive included; gated by
+   `check-one-path-absolute.sh`); a library's platform spelling (the `lib`
    prefix, `.so` / `.dylib` / `.dll`, the real runtime image names) is
    `madc_module_library_spelling()` in `src/madc_modules.cpp` (gated by
    `check-one-library-spelling.sh`), and a library a program names (`import`,

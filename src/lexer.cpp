@@ -5315,7 +5315,7 @@ void Program::note_std_abi_define(const std::string &name, const std::string &va
 
 std::string Program::resolve_include_path(const std::string &incfile, bool is_system)
 {
-    if ( incfile.empty() || incfile[0] == '/' )
+    if ( incfile.empty() || madc::detail::host_path_absolute(incfile) )
 	return incfile;
 
     // Standard C include search order:
@@ -5471,7 +5471,7 @@ size_t Program::include_next_search_list(std::vector<std::string> &search)
 // filesystem fallback for the non-embedded targets.
 std::string Program::resolve_include_next_path(const std::string &incfile)
 {
-    if ( incfile.empty() || incfile[0] == '/' )
+    if ( incfile.empty() || madc::detail::host_path_absolute(incfile) )
 	return incfile;
 
     std::vector<std::string> search;
@@ -6036,7 +6036,7 @@ static bool find_filesystem_precompiled_header(Program &pgm,
 					       std::string &outpath)
 {
     std::vector<std::string> candidates;
-    if ( !incfile.empty() && incfile[0] == '/' )
+    if ( madc::detail::host_path_absolute(incfile) )
 	candidates.push_back(incfile + ".madh");
     else
     {

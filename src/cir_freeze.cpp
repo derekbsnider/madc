@@ -1541,7 +1541,7 @@ int CirFrozenForest::find_unit(const std::string &name) const
 // itself an absolute path.
 int CirFrozenForest::find_unit_path_tail(const std::string &incfile) const
 {
-	if (incfile.empty() || incfile[0] == '/')
+	if (incfile.empty() || madc::detail::host_path_absolute(incfile))
 		return -1;
 	const std::string tail = "/" + incfile;
 	for (std::map<std::string, uint32_t>::const_iterator it =
