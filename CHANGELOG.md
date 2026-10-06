@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [v0.102.0] — 2026-10-06
+
+The Chthonia-split release: everything since v0.101.0, without Chthonia —
+the teaching IDE moves to its own repository, requiring and installing into
+madc. Alongside it, a C-conformance correctness burn-down (declarator
+parentheses, implicit int, C's auto storage class, va_arg type names, the
+vector builtins, initializer edge cases), REPL `.`- and `%`-commands,
+madcide Markdown and git views, and one `.deb` per Ubuntu release.
+
 ### lexer: __FILE_NAME__ is a predefined macro (gcc 12+ / clang) — the current file's last path component as a string literal; __FILE__, __FILE_NAME__ and __LINE__ now answer defined for #ifdef and defined(), where they answered 0 before; the macOS prelude's assert() expands through __FILE_NAME__, so every assert() in a C program stopped failing "use of undeclared identifier '__FILE_NAME__'"
 
 ### madc: A carrier literal element is typed by the called overload, whatever headers the TU parsed — `{ "content": php::rtrim(text) }` compiles once `<string>` is parsed, where it had refused "cannot initialize a value list element of this type"; the refusal had hit ~65 tools/madcide tests on macOS libc++

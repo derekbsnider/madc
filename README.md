@@ -271,78 +271,60 @@ in-tree at `third_party/mir`.
 
 ## Current Release
 
-The current release is **v0.101.0**, the REPL release. Run `madc` with no
-program file and you get an interactive C/C++ session in the spirit of Julia
-and IPython: each entry's definitions carry into the next, results are named
-(`ans`, `_`, `_N`), the terminal edits each entry with history and Tab
-completion, and `%whos`, `%type`, `%help` and `?name` answer questions about
-what you have built so far; `madc -i file` runs a file and keeps its names,
-as `%run file args` does from the prompt (`%run -i` in the same session,
-`%load` to define a file's names without running it).
-A session can also run in its own process, driven from the dialect
-(`madc::session_*`) or from the editor.
+The current release is **v0.102.0**, the Chthonia-split release. v0.102.0 is
+everything since v0.101.0 with the **Chthonia** teaching IDE moved to its own
+repository, where it requires and installs into madc; no madc release ever
+packaged Chthonia, so nothing is lost on upgrade, and libmadcide — madcide's
+base — still ships.
 
-madcide grows a **plugin system** — libraries, source and forked-child
-transports contributing commands, views, event handlers and toolbar rows —
-and its first product on it is **Chthonia**, a teaching IDE modelled on
-Thonny: a REPL pane, a Variables view, F5 diagnostics in the Problems pane,
-Run ▸ Language…, and Thonny's keys by default among six key styles (JOE, Vim,
-Emacs, Pico, Thonny, VS Code) with selection and the platform clipboard. The
-name mixes its two models, Thonny for the IDE and Julia for the REPL, behind a
-C for C/C++ and an h for helper; say it "THO-nee-ah".
+The release carries a **C-conformance correctness burn-down** across
+declarators (redundant declarator-id parentheses, implicit int after a storage
+class or qualifier, C's `auto` storage class, calls through unprototyped
+declarations), declarations and initializers (brace elision in mixed lists,
+braced scalar and string-literal char arrays, a pointer to an array of unknown
+bound), `va_arg` type names, and the GNU/clang **vector builtins**
+(`__builtin_convertvector`, `__builtin_shufflevector`, `__builtin_shuffle`).
+`__FILE_NAME__` becomes a predefined macro.
 
-The release also carries the B-series correctness burn-down, silent wrong
-answers first (value categories and rvalue references, out-of-line overloads
-that bound the wrong body, member pointers, partial specializations, atomics,
-bit-field layout including the Microsoft rules, `volatile` through typedefs,
-multi-TU template instance naming), a Linux Homebrew bottle, and an archive
-of every released binary (`scripts/release_bins.sh`) that classifies a red
-test as a regression or an older defect.
+REPL `.`- and `%`-commands (`.load`, `%call`, `%build`, `%open`/`%edit`,
+`%run`/`%load` session payloads, a Variables view), madcide **Markdown** and
+read-only **git** views, a Help system, projects and native builds, and
+**one `.deb` per Ubuntu release** round it out.
 
-Branch state: v0.101.0 is released on `develop`; the `master` promotion
+Branch state: v0.102.0 is released on `develop`; the `master` promotion
 follows the release-tier lane ledger (every platform lane's FULL suite green
 on this content), with public binaries built by CI for Linux
 (deb/rpm/tarball), Windows x86-64, and macOS (Apple Silicon + Intel).
 
-Latest validated results — the seam battery and the release-tier lanes on
-one content (`aeb92da3a`, 2026-10-03). Measured conformance against third-party suites is published
-separately in [`docs/conformance-coverage.md`](docs/conformance-coverage.md):
+Latest validated results — the seam battery and the native macOS lanes on one
+content (`c3c10e1f3`, 2026-10-06), on the shipped packed -O2 `madc-release`.
+Measured conformance against third-party suites is published separately in
+[`docs/conformance-coverage.md`](docs/conformance-coverage.md):
 
 - Linux, on the shipped packed -O2 `madc-release` with no headers on disk:
-  **1884 passed / 0 failed / 0 timed out / 43 skipped**, plus the 34
-  header-needing tests with headers on disk **34/0**; the whole suite as
-  native artifacts: JIT **1918/0/0/9**, EXE **1748/0**, OBJ **1748/0**;
-  unit tests and every repository gate green
-- the GUI stage under Xvfb: **25/25 JIT, 25/25 EXE, 25/25 OBJ**
-- Windows: the packed Win64 binary under Wine **1844/0/0TO/83skip**; the
-  FULL suite on genuine Windows 11 **1845/0/0TO/82skip**
-- macOS, libc++: the FULL suite on the shipped -O2 packed binary on the
-  GitHub runners, **arm64 1893/0/0TO/34skip, Intel 1894/0/0TO/33skip**
-- Homebrew: the Linux bottle built, poured and `brew test`ed, then the suite
-  on the installed madc **1918/0/0TO/9skip**
-- **C conformance**: gcc `c-torture/execute` **1613/1624 in scope (99.3%)**
-  under `--std=c17`, ratcheted against a baseline of pre-existing failures;
-  c-testsuite **220/220, baseline empty**; index-c **50/50**
-- **C++ conformance**: gcc's own `g++.dg` compile-clean subset — C++11
-  **1501/1946 (77.1%)**, ratcheted
-- macOS cross release on both architectures: 837 units, Mach-O release
-  verifier green; aarch64 long double lane green
-- Colossal Cave Adventure parity: **3 fragments + 94 whole reference logs
-  byte-identical** to the original C game (a permanent fulltest gate)
+  **1992 passed / 0 failed / 43 skipped**, plus the on-disk header-needing
+  subset **34/0**; the whole suite as native artifacts: JIT **2026/0/9**,
+  EXE **1846/0**, OBJ **1846/0**
+- Windows: the packed Win64 PE under Wine, headerless, **1950/0/85 skipped**
+- macOS, libc++, native on both owner Macs: arm64 (macOS 14.8.4)
+  **1995/0/40 skipped**, Intel x86_64 (macOS 15.7.4) **1997/0/38 skipped**
+- static gates: **0 red of 97**
 - **zero compiler warnings on every build lane**, enforced by `-Werror`
 
 ### Recent Releases
 
+- [v0.102.0](docs/release-notes/v0.102.0.md) — **the Chthonia-split release**:
+  the Chthonia teaching IDE moves to its own repository (nothing lost on
+  upgrade; libmadcide still ships); a C-conformance correctness burn-down
+  across declarators, declarations and initializers; `va_arg` type names and
+  the GNU/clang vector builtins; `__FILE_NAME__`; more REPL and madcide
+  (Markdown and git views); and one `.deb` per Ubuntu release.
 - [v0.101.0](docs/release-notes/v0.101.0.md) — **the REPL release**:
   `madc` with no file is an interactive C/C++ session (Julia/IPython
   semantics, named results, `%whos`, line editing, history, completion);
   sessions in their own process; madcide plugins and **Chthonia**, the
   Thonny-style teaching IDE; the B-series correctness burn-down; a Linux
   Homebrew bottle; every release binary archived.
-- [v0.100.1](docs/release-notes/v0.100.1-master.md) — madc compiles every
-  translation unit of its own backend (MIR and c2mir, 33,629 lines), GNU
-  `asm` labels on declarations, the index-c correctness lane, and a
-  preprocessor regression on the macOS SDK fixed before it shipped.
 - [v0.100.0](docs/release-notes/v0.100.0.md) — **the Nexus release**:
   madcide becomes a multi-client session (a window is a client, presence,
   split-tree Views, an event-sourced change log, correlation maps) reachable

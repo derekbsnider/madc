@@ -1,5 +1,5 @@
 {
-  "version": "0.101.0",
+  "version": "0.102.0",
   "date": "2026-10-06",
   "snapshot_note": "2026-10-06 B186 is a RELEASE BLOCKER (owner): madc + Chthonia must run on Linux/macOS/Windows. Bisected to trigger f116ba8bc (innocent, layout perturbation); B186 is a pre-existing layout-sensitive win64 JIT miscompile, cross-TU call to part_a resolves to a fixed wrong offset. Current lead: win64 call/thunk emission in mir-gen-x86_64.c. No release until B186 green. Seam-red triage (8 commits) remains confirmed on packed Linux+win.",
   "head": "9ee115683",
@@ -11,7 +11,7 @@
   "backend": "madc parser -> cir_node (MC11-IR) -> c2mir -> MIR is the SOLE backend. asmjit JIT and the Gecko parser/transpiler were both removed. --backend=mir aliases to cir; there is no --backend=jit.",
   "ir": "MC11-IR: the cir_node tree DERIVES FROM c2mir node_t (c2mir consumes the lowered C11 view) AND carries each node's originating lexed tokens + parse subtree + file/line/col (madc retains the high-level view). Deliberately BOTH. SET IN STONE -- see docs/rules/mc11-ir.md. --dump-cir shows the live backend tree; --emit=c11 is a SEPARATE renderer, never the c2mir feed.",
   "test_status": "v0.101.0 release content (028e31c36; 96b3358a3 Chthonia rename textual): packed headerless 1883/0/0TO/43skip + ondisk 34/0; JIT 1917/0/0TO/9skip, EXE 1747/0, OBJ 1747/0; wine64 1844/0/82skip; fast tier: c-testsuite 220/0, c-torture 1613 (11 baseline), c2mir-tests 314 (50 baseline), gxx-c++11 1501 (445 baseline), index-c 50/50, gui 25x3. Release tier: libcxx jit 1903/0/23skip exe/obj 1735/0; genuine-win 1845/0/81skip; darwin-suite and brew-linux pending (after the develop push / the release build).",
-  "current_phase": "v0.101.0 (the REPL release: REPL + madcide plugins + Chthonia + B-series fixes + Linux Homebrew bottle) cut 2026-10-03; release tier then master. Next arc: the standalone Chthonia product.",
+  "current_phase": "v0.102.0 (the Chthonia-split release: everything since v0.101.0 with the Chthonia teaching IDE moved to its own repository; a C-conformance correctness burn-down across declarators/declarations/initializers, va_arg type names, the GNU/clang vector builtins, __FILE_NAME__, more REPL and madcide, one .deb per Ubuntu release) cut 2026-10-06; release tier then master. Next arc: the standalone Chthonia product.",
   "in_progress": "The develop seam battery at c900ee0c1 (tmp/logs/seam-battery-repl.out), then the merge and the master release tier.",
   "method_per_fix": "reduce -> attribute with GCC + Clang + the in-tree third_party/mir/c2mir path (for madc-path bugs use bin/madc --dump-cir, not emit-C) -> deepest-layer fix -> focused reducer -> make -C src fulltest -> authoritative remote fulltest/libcxx/EXE/OBJ as scope requires -> hosted/domain gates for target changes -> commit with Hypothesis/Layer/Searched/Oracle trailers -> push -> update KG first and mirror status/README/CHANGELOG/ROADMAP. MIR is ordinary in-tree source; there is no fork pin or lockstep release.",
   "known_pre_existing_gaps": [
