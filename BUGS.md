@@ -607,6 +607,31 @@ int main(void)
 
 ## Crashes
 
+### B187. MIR branches between code holders still assume reach on aarch64 and in lazy basic-block generation
+
+Found 2026-10-06 while fixing B186 (fc7ffa868, the x86-64 lazy-gen wrapper).
+The same assumption, that two code holders are within direct-branch reach,
+survives at three sites the fix did not touch:
+
+- `third_party/mir/mir-aarch64.c` `_MIR_get_wrapper`: `b` to `wrapper_end`
+  (±128 MB). In range while every holder comes from the 128 MB reservation
+  (`MIR_CODE_RESERVE_SIZE`, mir.c); once the reservation is exhausted, holders
+  are mapped individually and the range check is only a `mir_assert`, compiled
+  out of release builds. Reachable from madc on arm64 (macOS, aarch64-linux)
+  only after more than 128 MB of JIT code.
+- `third_party/mir/mir-x86_64.c` `_MIR_get_bb_thunk` / `_MIR_replace_bb_thunk`:
+  `jmp rel32` with a silently truncated displacement.
+- `third_party/mir/mir-gen-x86_64.c` `setup_rel32`: exits with "too big
+  offset" instead of truncating.
+
+The last two belong to lazy basic-block generation
+(`MIR_set_lazy_bb_gen_interface`), which madc never selects.
+
+Reducer: the B186 unit test (`tests/unit/test_c2mir.cpp`, "a wrapper beyond
+rel32 reach of the wrapper tail"), with a holder spacing past the target's
+reach (> 128 MB on aarch64) and the lazy-BB interface for the x86-64 sites.
+No gcc/clang analogue: MIR JIT internals.
+
 ## Accepts invalid code
 
 ### B163. C++ keywords are accepted as variable names under `--std=c++NN`
