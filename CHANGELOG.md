@@ -11,6 +11,18 @@ parentheses, implicit int, C's auto storage class, va_arg type names, the
 vector builtins, initializer edge cases), REPL `.`- and `%`-commands,
 madcide Markdown and git views, and one `.deb` per Ubuntu release.
 
+### packaging: The rpm's %files names the staged layout's directories — libmadcide.so ships in the rpm
+
+rpmbuild refused "Installed (but unpackaged) file(s) found: /usr/lib64/libmadcide.so": 0d237a700 staged libmadcide for every package, but the spec's hand-kept per-file list — the one place outside stage_install.sh that named shipped files — was not updated, and the conditional libmadc.so.0.forest side-car was missing from it too. %files now names the staged layout's directories, never its files: /usr/bin/*, /usr/lib64/*, /usr/share/madcide, %doc /usr/share/doc/madc, /usr/share/man/man1/* — so a newly staged file needs no spec edit.
+
+### packaging: The macOS tarball's entries get install modes — scripts/install_modes.sh, one owner for the Linux and macOS stages
+
+A plugin bundle staged by cp -R kept the checkout's modes (0660 on the NAS tree), so the package_install_gate mactar check failed "entries another user cannot read"; stage_install.sh already normalized its root, the macOS packager did not. Mode normalization is now scripts/install_modes.sh — directories 0755, executable files 0755, else 0644 — the one owner shared by stage_install.sh and package_release_macos.sh. Control: a stage with 0660/0640 data, a 0770 tool, 2770 dirs and a umask-0077 page had 6 unreadable entries before, 0 after (the gate's own modes_wrong predicate).
+
+### mac_battery: leg 4 joins text with text, leg 6 spells -c -o before the source file
+
+Since 589e29a28 (D28) a var's + joins text with text and adds numbers; every other pair, text with a number included, is a refused script error. Leg 4 still joined "answer=" with the integer 42, so it aborted on every host (Linux bin/madc-release included) while the darwin-probe battery floor of 8 kept the lane green; the leg now joins two texts and prints the number through println, giving answer=42 on the arm64 Mini's staged madc and the container's madc-release. Leg 6 spelled "madc -c aot.mad -o aot.o", which madc declined as a usage error because arguments after the source file are the program's; with "-c -o aot.o aot.mad" the arm64 Mini (madc 0.102.0) writes aot.o at rc 0 and the load declines loudly — "in-process loading of Mach-O objects is not supported yet" — the leg's .o-load-declined arm.
+
 ### lexer: __FILE_NAME__ is a predefined macro (gcc 12+ / clang) — the current file's last path component as a string literal; __FILE__, __FILE_NAME__ and __LINE__ now answer defined for #ifdef and defined(), where they answered 0 before; the macOS prelude's assert() expands through __FILE_NAME__, so every assert() in a C program stopped failing "use of undeclared identifier '__FILE_NAME__'"
 
 ### madc: A carrier literal element is typed by the called overload, whatever headers the TU parsed — `{ "content": php::rtrim(text) }` compiles once `<string>` is parsed, where it had refused "cannot initialize a value list element of this type"; the refusal had hit ~65 tools/madcide tests on macOS libc++
