@@ -8312,10 +8312,13 @@ public:
 				const std::set<std::string> *runtime_names = NULL,
 				bool param_qualifiers = false,
 				bool *first_unbounded = NULL);
+    // outer_unbounded: the declarator wrote no outermost bound (`[]`) — that
+    // level is marked DataDefCArray::unbounded.
     DataDef *nest_carray_dims(DataDef *elem_dd,
 			      const std::vector<carray_dim_t> &dims,
 			      const std::vector<TokenBase *> &dim_exprs,
-			      const std::string &outer_name, bool forest_record);
+			      const std::string &outer_name, bool forest_record,
+			      bool outer_unbounded = false);
     DataDef *parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 				    const char *what,
 				    bool capture_runtime_dims = false);

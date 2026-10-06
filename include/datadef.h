@@ -2303,6 +2303,10 @@ public:
     DataDef *element_type;
     size_t count;
     TokenBase *count_expr;
+    // The declarator wrote no bound: an array of UNKNOWN size, an incomplete
+    // type (`T (*p)[]`, C11 6.7.6.2p4). count is 0, as for a written GNU
+    // zero-length `[0]`, which is a complete type; the emitter renders `[]`.
+    bool unbounded = false;
 
     DataDefCArray(DataDef &elem, const std::string &alias_name,
 		  size_t cnt, TokenBase *expr = NULL)

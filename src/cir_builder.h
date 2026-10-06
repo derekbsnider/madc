@@ -1794,9 +1794,12 @@ public:
 	// The pointer piece of a declarator — N_POINTER per level, then the
 	// pointee's array dims — shared by var_decl and typedef_decl. level_cv
 	// (dd_peel_pointers' record) gives each level its own qualifiers.
+	// first_unbounded: the pointee's outermost bound was never written
+	// (`T (*p)[]`, peel_pointer_declarator's record) — emitted `[]`.
 	void append_pointer_declarator(node_t decl_list, int levels,
 				       const std::vector<carray_dim_t> &ptr_array_dims,
-				       const std::vector<unsigned> *level_cv = NULL);
+				       const std::vector<unsigned> *level_cv = NULL,
+				       bool first_unbounded = false);
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<carray_dim_t> &lead_dims);

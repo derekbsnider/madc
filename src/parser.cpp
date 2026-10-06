@@ -55423,7 +55423,7 @@ DataDef *Program::nest_carray_dims(DataDef *elem_dd,
 				   const std::vector<carray_dim_t> &dims,
 				   const std::vector<TokenBase *> &dim_exprs,
 				   const std::string &outer_name,
-				   bool forest_record)
+				   bool forest_record, bool outer_unbounded)
 {
     DataDef *arr = elem_dd;
     for ( size_t i = dims.size(); i-- > 0; )
@@ -55432,6 +55432,7 @@ DataDef *Program::nest_carray_dims(DataDef *elem_dd,
 			      ? outer_name : arr->name;
 	DataDefCArray *level = new DataDefCArray(*arr, nm, dims[i],
 						i < dim_exprs.size() ? dim_exprs[i] : NULL);
+	level->unbounded = i == 0 && outer_unbounded;
 	if ( forest_record && forest_arena_enabled )
 	    forest_arena_record_unary(level);	// v25: DK_CARRAY write-through
 	arr = level;
@@ -55469,7 +55470,7 @@ DataDef *Program::qualify_array_elements(DataDef *arr, unsigned cv)
 	elem = c->element_type;
     }
     return nest_carray_dims(getQualifiedType(elem, cv), dims, dim_exprs,
-			    std::string(), false);
+			    std::string(), false, outer->unbounded);
 }
 
 // Pointer-to-array declarator suffix `[N][M]...` — the stream is positioned
@@ -55486,9 +55487,11 @@ DataDef *Program::parse_ptr_array_suffix(DataDef *elem_dd, TokenBase *ctx,
 {
     std::vector<carray_dim_t> dims;
     std::vector<TokenBase *> dim_exprs;
-    parse_array_dimensions(dims, dim_exprs, ctx, what, capture_runtime_dims);
+    bool first_unbounded = false;
+    parse_array_dimensions(dims, dim_exprs, ctx, what, capture_runtime_dims,
+			   NULL, false, &first_unbounded);
     return getPointerType(nest_carray_dims(elem_dd, dims, dim_exprs,
-					   std::string(), false));
+					   std::string(), false, first_unbounded));
 }
 
 // ============================================================================
@@ -56088,7 +56091,8 @@ DataDef *Program::parse_declarator_suffixes(DataDef *dd, DeclaratorMode mode,
 	    // and a typedef's nested group — builds an anonymous chain.
 	    bool alias_level = mode == DeclaratorMode::Typedef && depth == 0;
 	    dd = nest_carray_dims(dd, dims, dim_exprs,
-				  alias_level ? out.name : std::string(), alias_level);
+				  alias_level ? out.name : std::string(), alias_level,
+				  first_unbounded);
 	    continue;
 	}
 	if ( pk && pk->id() == TokenID::tkOpBrk )

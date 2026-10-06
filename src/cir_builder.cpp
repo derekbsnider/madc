@@ -9137,14 +9137,18 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 // rendered `typedef int *`).
 void CirBuilder::append_pointer_declarator(node_t decl_list, int levels,
 					   const std::vector<carray_dim_t> &ptr_array_dims,
-					   const std::vector<unsigned> *level_cv)
+					   const std::vector<unsigned> *level_cv,
+					   bool first_unbounded)
 {
 	for (int s = 0; s < levels; s++)
 		append(decl_list, pointer(level_cv && (size_t)s < level_cv->size()
 					  ? (*level_cv)[s] : cvNONE));
+	// An unwritten pointee bound is `[]` (an incomplete array type, which
+	// `&"ab"`'s `char (*)[3]` converts to); a written `[0]` keeps its zero.
 	for (size_t d = 0; d < ptr_array_dims.size(); d++)
 		append(decl_list, node3(N_ARR, ignore(), list(),
-					 integer(ptr_array_dims[d])));
+					 d == 0 && first_unbounded
+					 ? ignore() : integer(ptr_array_dims[d])));
 }
 
 // Append a function-pointer's return-type specifiers into `spec_list`, and
@@ -9218,7 +9222,8 @@ bool CirBuilder::fnptr_alias_is_fn(const std::string &alias)
 static int dd_ptr_depth(DataDef *dd);      // defined below; counts int** -> 2
 static int peel_pointer_declarator(DataDef *&base_dd,
 				   std::vector<carray_dim_t> &ptr_array_dims,
-				   std::vector<unsigned> *level_cv = NULL); // defined below
+				   std::vector<unsigned> *level_cv = NULL,
+				   bool *pointee_unbounded = NULL); // defined below
 // dd_peel_pointers is declared in cir_builder.h (cir_dump.cpp needs it too).
 
 // Peel DataDefCArray layers off a type, collecting fixed-array dimensions
@@ -9226,11 +9231,17 @@ static int peel_pointer_declarator(DataDef *&base_dd,
 // dims=[2]. A runtime-sized CArray (count_expr != NULL) stops the peel and
 // contributes no dimension (it decays/uses a VLA path elsewhere).
 // Returns the innermost element type; appends each fixed dim to `dims`.
-static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims)
+// `first_unbounded`, when given, says whether the first level peeled was
+// written without a bound (`T (*p)[]` — DataDefCArray::unbounded).
+static DataDef *peel_carray_dims(DataDef *dd, std::vector<carray_dim_t> &dims,
+				 bool *first_unbounded = NULL)
 {
+	const size_t first = dims.size();
 	while (DataDefCArray *ca = (dd ? dd->as_carray_dd() : NULL)) {
 		if (ca->has_runtime_size() || !ca->element_type)
 			break;
+		if (first_unbounded && dims.size() == first)
+			*first_unbounded = ca->unbounded;
 		dims.push_back((carray_dim_t)ca->count);
 		dd = ca->element_type;
 	}
@@ -10281,7 +10292,8 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			}
 		}
 		std::vector<carray_dim_t> adims;
-		DataDef *elem = peel_carray_dims(t, adims);
+		bool pointee_unbounded = false;	// `T (*p)[]`: emitted `[]`
+		DataDef *elem = peel_carray_dims(t, adims, &pointee_unbounded);
 		if (!adims.empty()) {
 			// A direct CArray param (ptr_levels == 0) decays its outermost
 			// dimension to a pointer; an already-decayed DataDefPTR(CArray)
@@ -10303,7 +10315,8 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 				append(pdecl_list, pointer());          // explicit / decayed pointer(s)
 			for (size_t d = first_dim; d < adims.size(); d++)
 				append(pdecl_list, node3(N_ARR, ignore(), list(),
-							 integer(adims[d])));
+							 d == 0 && pointee_unbounded
+							 ? ignore() : integer(adims[d])));
 			return wrap(pspec, pdecl_list);
 		}
 	}
@@ -11133,9 +11146,11 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 		// the same subtraction var_decl makes. -1 = no alias, peel here.
 		int elem_stars = explicit_star_count(slit->array_elem_dd,
 						     slit->typedef_name);
+		bool elem_ptr_unbounded = false;
 		if (elem_stars < 0)
 			elem_ptr_levels = peel_pointer_declarator(elem_spec_dd,
-								  elem_ptr_dims);
+								  elem_ptr_dims, NULL,
+								  &elem_ptr_unbounded);
 		append_lit_type_spec(aspec, elem_spec_dd, slit->typedef_name);
 		node_t adecl_list = list();
 		// A WRITTEN extent sizes the array (C11 6.5.2.5p4: the type is
@@ -11150,7 +11165,8 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 				append(adecl_list, pointer());
 		} else {
 			append_pointer_declarator(adecl_list, elem_ptr_levels,
-						  elem_ptr_dims);
+						  elem_ptr_dims, NULL,
+						  elem_ptr_unbounded);
 		}
 		node_t atype = node2(N_TYPE, aspec,
 				     node2(N_DECL, ignore(), adecl_list));
@@ -11187,8 +11203,10 @@ node_t CirBuilder::decay_array_compound_literal(node_t literal, DataDef *element
 	DataDef *spec_dd = element;
 	std::vector<carray_dim_t> pointee_dims;
 	int stars = explicit_star_count(element, typedef_name);
+	bool pointee_unbounded = false;
 	int levels = stars >= 0 ? 0
-		: peel_pointer_declarator(spec_dd, pointee_dims);
+		: peel_pointer_declarator(spec_dd, pointee_dims, NULL,
+					  &pointee_unbounded);
 	node_t spec = list();
 	append_lit_type_spec(spec, spec_dd, typedef_name);
 	node_t decl = list();
@@ -11197,7 +11215,8 @@ node_t CirBuilder::decay_array_compound_literal(node_t literal, DataDef *element
 		for (int s = 0; s < stars; s++)
 			append(decl, pointer());
 	} else {
-		append_pointer_declarator(decl, levels, pointee_dims);
+		append_pointer_declarator(decl, levels, pointee_dims, NULL,
+					  pointee_unbounded);
 	}
 	return node2(N_CAST,
 		     node2(N_TYPE, spec, node2(N_DECL, ignore(), decl)),
@@ -11334,8 +11353,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// ptr_level_cv keeps each level's own cv and the base's (the spec's).
 	std::vector<carray_dim_t> ptr_array_dims;
 	std::vector<unsigned> ptr_level_cv;
+	bool ptr_array_unbounded = false;
 	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims,
-						       &ptr_level_cv);
+						       &ptr_level_cv,
+						       &ptr_array_unbounded);
 
 	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
 	// has no tag to forward-reference, so the body must be emitted inline in
@@ -11550,7 +11571,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	} else {
 		if (is_ptr)
 			append_pointer_declarator(decl_list, ptr_piece_levels,
-						  ptr_array_dims, &ptr_level_cv);
+						  ptr_array_dims, &ptr_level_cv,
+						  ptr_array_unbounded);
 		// The peeled base's own cv (`volatile int *q`: the pointee).
 		if (v->typedef_name.empty())
 			append_cv_specs(tl, ptr_level_cv.empty() ? cvNONE
@@ -11951,12 +11973,13 @@ int dd_peel_pointers(DataDef *&dd, std::vector<unsigned> *level_cv)
 // dropped: `int *rp`. Returns the pointer depth for append_pointer_declarator.
 static int peel_pointer_declarator(DataDef *&base_dd,
 				   std::vector<carray_dim_t> &ptr_array_dims,
-				   std::vector<unsigned> *level_cv)
+				   std::vector<unsigned> *level_cv,
+				   bool *pointee_unbounded)
 {
 	int levels = dd_peel_pointers(base_dd, level_cv);
 	if (levels > 0) {
 		bool vm_pointee = carray_chain_has_runtime(base_dd);
-		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
+		base_dd = peel_carray_dims(base_dd, ptr_array_dims, pointee_unbounded);
 		if (vm_pointee)
 			ptr_array_dims.clear();
 	}
@@ -12010,7 +12033,9 @@ DataDef *CirBuilder::append_return_declarator(FuncDef *fd, DataDef *ret_dd,
 	DataDef *base = ret_dd;
 	std::vector<unsigned> level_cv;	// each level's own cv + the base's
 	std::vector<carray_dim_t> pointee_dims;
-	int levels = peel_pointer_declarator(base, pointee_dims, &level_cv);
+	bool pointee_unbounded = false;
+	int levels = peel_pointer_declarator(base, pointee_dims, &level_cv,
+					     &pointee_unbounded);
 	if (!alias.empty() && !fd->is_multi_return()) {
 		int stars = explicit_star_count(&fd->return_value_type(), alias);
 		append_decl_type_specs(specs, &fd->return_value_type(), alias);
@@ -12023,10 +12048,11 @@ DataDef *CirBuilder::append_return_declarator(FuncDef *fd, DataDef *ret_dd,
 	// array: `int (&f())[3]` is `int (*f())[3]`, its dims after the address
 	// pointer as a pointer-to-array's follow its levels.
 	if (by_address && levels == 0)
-		base = peel_carray_dims(base, pointee_dims);
+		base = peel_carray_dims(base, pointee_dims, &pointee_unbounded);
 	append_decl_type_specs(specs, base, std::string());
 	append_cv_specs(specs, level_cv.back());	// `volatile int *f(void)`
-	append_pointer_declarator(decl_list, levels, pointee_dims, &level_cv);
+	append_pointer_declarator(decl_list, levels, pointee_dims, &level_cv,
+				  pointee_unbounded);
 	return base;
 }
 
@@ -12359,6 +12385,7 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 	int stars = explicit_star_count(mtype, mtypedef);
 	node_t mspec;
 	std::vector<carray_dim_t> m_ptr_array_dims;	// the pointee's dims, `T (*m)[N]`
+	bool m_ptr_array_unbounded = false;	// its outer bound unwritten, `T (*m)[]`
 	std::vector<unsigned> m_level_cv;	// each level's own cv + the base's (dd_peel_pointers)
 	int m_ptr_levels = 0;
 	if (!mtypedef.empty()) {
@@ -12382,7 +12409,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		// pointer-to-array member (`B<int (*)[3]>::m`) as `int *m`, so
 		// `(*pa.m)[2]` had nothing to subscript.
 		m_ptr_levels = peel_pointer_declarator(mbase, m_ptr_array_dims,
-						       &m_level_cv);
+						       &m_level_cv,
+						       &m_ptr_array_unbounded);
 		// An anonymous nested struct/union member (`struct { ... } f;` or
 		// `union { ... } u;` inside the enclosing aggregate) has no tag to
 		// forward-reference, so type_list would emit `struct anonymous` — an
@@ -12510,7 +12538,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner,
 		// under-declared it and halved the element stride), then the pointee's
 		// dims: the shared pointer-declarator piece.
 		append_pointer_declarator(mdecl_list, m_ptr_levels > 0 ? m_ptr_levels : 1,
-					  m_ptr_array_dims, &m_level_cv);
+					  m_ptr_array_dims, &m_level_cv,
+					  m_ptr_array_unbounded);
 	}
 	node_t mdecl = m.first.empty() ? ignore() : node2(N_DECL, mid, mdecl_list);
 
@@ -24162,8 +24191,10 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	DataDef *base_dd = dd;
 	std::vector<carray_dim_t> ptr_array_dims;
 	std::vector<unsigned> ptr_level_cv;	// each level's own cv + the base's
+	bool ptr_array_unbounded = false;
 	int ptr_piece_levels = peel_pointer_declarator(base_dd, ptr_array_dims,
-						       &ptr_level_cv);
+						       &ptr_level_cv,
+						       &ptr_array_unbounded);
 
 	// Type specifier. A user/std:: CLASS instance is a DataDefCLASS (is-a
 	// DataDefSTRUCT) but reports is_struct() false (basetype btClass), so it must
@@ -24215,7 +24246,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	for (size_t d = 0; d < arr_dims.size(); d++)
 		append(decl_list, node3(N_ARR, ignore(), list(), integer(arr_dims[d])));
 	append_pointer_declarator(decl_list, ptr_piece_levels, ptr_array_dims,
-				  &ptr_level_cv);
+				  &ptr_level_cv, ptr_array_unbounded);
 
 	node_t decl = node2(N_DECL, alias_id, decl_list);
 
