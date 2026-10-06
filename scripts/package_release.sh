@@ -257,6 +257,9 @@ RPMTOP=$(pwd)/tmp/rpmtop
 mkdir -p "$RPMTOP"/{BUILD,RPMS,SPECS,SOURCES,BUILDROOT}
 BUILDROOT="$RPMTOP/BUILDROOT/madc-${VER}-${REL}.x86_64"
 stage "$BUILDROOT" "usr/lib64" usr
+# %files names the staged layout's directories, never its files:
+# stage_install.sh is the one owner of what ships (the deb and the tarball
+# take its tree whole), so a newly staged file needs no edit here.
 cat > "$RPMTOP/SPECS/madc.spec" << EOF
 Name: madc
 Version: ${VER}
@@ -282,23 +285,11 @@ ${DESC_BODY}
 %postun -p /sbin/ldconfig
 
 %files
-/usr/bin/madc
-/usr/bin/madcide
-/usr/lib64/libmadc.so.0
-/usr/lib64/libmadc.so
-/usr/lib64/libmadc_rt.a
-/usr/lib64/libmadcwebview.so
-/usr/lib64/libmadcgit.so
-/usr/lib64/libmadcmark.so
+/usr/bin/*
+/usr/lib64/*
 /usr/share/madcide
-%doc /usr/share/doc/madc/copyright
-%doc /usr/share/doc/madc/webview-copyright
-%doc /usr/share/doc/madc/libgit2-copyright
-%doc /usr/share/doc/madc/cmark-gfm-copyright
-%doc /usr/share/doc/madc/changelog.gz
-%doc /usr/share/doc/madc/examples/madc.ini
-/usr/share/man/man1/madc.1.gz
-/usr/share/man/man1/madcide.1.gz
+%doc /usr/share/doc/madc
+/usr/share/man/man1/*
 EOF
 rpmbuild --define "_topdir $RPMTOP" --buildroot "$BUILDROOT" -bb "$RPMTOP/SPECS/madc.spec"
 cp "$RPMTOP/RPMS/x86_64/madc-${VER}-${REL}.x86_64.rpm" dist/
