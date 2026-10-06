@@ -8443,6 +8443,11 @@ public:
     bool try_parse_implicit_int_function_definition(TokenBase *tb);
     // A file-scope declaration with no type specifier (`y = 4;`): an int.
     bool file_scope_implicit_int_declaration(TokenBase *tb);
+    // Declaration specifiers with no type specifier (`static baz = 42;`,
+    // `register m;`): does `tn` begin the declarator of an implicit int?
+    bool implicit_int_declarator_at(TokenBase *tn);
+    // The `int` type token an omitted type specifier implies, at `at`.
+    TokenDataType *implicit_int_type_token(TokenBase *at);
     bool is_old_style_parameter_declaration_start(TokenBase *tb);
     DataDef *parse_old_style_parameter_base(TokenBase *&nt, unsigned *lead_cv = NULL);
     void parse_old_style_parameter_declaration(TokenBase *nt,

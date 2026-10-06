@@ -1,0 +1,32 @@
+/* C89 6.5.2: declaration specifiers with no type specifier — a storage
+   class or a qualifier alone — declare an int: `static baz = 42;`,
+   `const k = 5;`, `extern e;`, `volatile v = 6;`, `static *sp;`,
+   `register m = 3;`. madc refused every form but `static f(...)`:
+   "Expecting type after 'static'" (and 'const', 'extern', 'volatile',
+   'register').
+   Oracle: gcc -std=c89 and -std=c11, and clang -std=c89, print the .expect
+   lines (clang -std=c11 refuses implicit int). */
+#include <stdio.h>
+
+static baz = 42;
+const k = 5;
+extern e;
+volatile v = 6;
+static *sp;
+e = 7;
+
+int main(void)
+{
+	register m = 3;
+	const ck = 9;
+	static s;
+	volatile vv = 8;
+	register *rp = &s;
+	s += 11;
+	sp = &s;
+	printf("implicit: %d %d %d %d %d %d %d %d %d %d\n", baz, k, e, v, m,
+	       ck, s, vv, *rp, *sp);
+	printf("size: %d %d %d\n", (int)sizeof baz, (int)sizeof *sp,
+	       (int)sizeof *rp);
+	return 0;
+}

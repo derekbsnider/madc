@@ -54733,10 +54733,14 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
 	    return decl;
 	}
     }
-    if ( tn->type() != TokenType::ttDataType )
+    TokenDataType *type_tok = NULL;
+    if ( tn->type() == TokenType::ttDataType )
+	type_tok = static_cast<TokenDataType *>(pgm.nextToken());
+    else if ( pgm.implicit_int_declarator_at(tn) )	// `register m;`
+	type_tok = pgm.implicit_int_type_token(tn);
+    else
         pgm.Throw(tn) << "Expecting type after 'register'" << flush;
-    tn = pgm.nextToken();
-    TokenBase *decl = pgm.parseDeclaration(static_cast<TokenDataType *>(tn));
+    TokenBase *decl = pgm.parseDeclaration(type_tok);
     if ( decl && decl->type() == TokenType::ttDeclare )
         dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
     return decl;
@@ -57155,26 +57159,21 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    else
 	    {
 		pgm.rewind_stream(type_saved);
-		// C89 implicit int: `static funcname(...)` — treat as int
+		// C89 implicit int: `static funcname(...)`, and in C
+		// `static baz = 42;` — the omitted type specifier is int.
 		TokenBase *id_tok = pgm.nextToken();
 		TokenBase *peek2 = pgm.peekToken();
 		pgm.pushToken(id_tok);
-		if ( peek2 && peek2->id() == TokenID::tkOpBrk )
-		{
-		    // HEAP token (same rule as the mixed-comma-list arm):
-		    // parseDeclaration records tb as TopDecl.origin, which
-		    // must outlive this frame.
-		    TokenDataType *tdt = new TokenDataType("int", ddINT);
-		    tdt->file = tn->file;
-		    tdt->line = tn->line;
-		    tdt->column = tn->column;
-		    result = pgm.parseDeclaration(tdt, true);
-		}
+		if ( (peek2 && peek2->id() == TokenID::tkOpBrk)
+		  || pgm.implicit_int_declarator_at(tn) )
+		    result = pgm.parseDeclaration(pgm.implicit_int_type_token(tn), true);
 		else
 		    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
 	    }
 	    }
 	}
+	else if ( pgm.implicit_int_declarator_at(tn) )	// `static *p;`
+	    result = pgm.parseDeclaration(pgm.implicit_int_type_token(tn), true);
 	else
 	    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
     }
@@ -57214,11 +57213,15 @@ TokenBase *TokenCONST::parse(Program &pgm)
 		pgm.nextToken();
 		return pgm.parseDeclaration(pgm.parse_typeof_datatype(tn));
 	    }
+	    Program::StreamMark csaved = pgm.mark_stream();
 	    TokenBase *type_tb = pgm.nextToken();
 	    if ( TokenDataType *resolved =
 		    pgm.resolve_declared_type_token(type_tb, true, true) )
 		return pgm.parseDeclaration(resolved);
+	    pgm.rewind_stream(csaved);
 	}
+	if ( pgm.implicit_int_declarator_at(tn) )	// `const k = 5;`
+	    return pgm.parseDeclaration(pgm.implicit_int_type_token(tn));
 	pgm.Throw(tn) << "Expecting type after 'const'" << flush;
 	return NULL;
 }
@@ -57355,6 +57358,11 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	    }
 	    }
 	}
+	if ( !handled && pgm.implicit_int_declarator_at(tn) )	// `extern e;`
+	{
+	    handled = true;
+	    result = pgm.parseDeclaration(pgm.implicit_int_type_token(tn));
+	}
 	if ( !handled )
 	    pgm.Throw(tn) << "Expecting type after 'extern'" << flush;
     }
@@ -57435,6 +57443,8 @@ TokenBase *TokenVOLATILE::parse(Program &pgm)
 	    return pgm.parseDeclaration(dt ? dt : (*tdmi));
 	}
     }
+    if ( pgm.implicit_int_declarator_at(tn) )	// `volatile v = 6;`
+	return pgm.parseDeclaration(pgm.implicit_int_type_token(tn));
     pgm.Throw(tn) << "Expecting type after 'volatile'" << flush;
     return NULL;
 }
@@ -72485,6 +72495,33 @@ bool Program::file_scope_implicit_int_declaration(TokenBase *tb)
 	      || n->id() == TokenID::tkSemi || n->id() == TokenID::tkOpSqr);
 }
 
+// Do declaration specifiers holding no type specifier — a storage class or a
+// qualifier alone: `static baz = 42;`, `register m;`, `const k = 5;`,
+// `extern e;` — leave the type to default to int (C89 6.5.2; gcc accepts it
+// in every C mode before C23, knr_supported())? `tn` is the token after the
+// specifiers; it must begin a declarator: `*`, or a name that is not a type.
+bool Program::implicit_int_declarator_at(TokenBase *tn)
+{
+    if ( !tn || !is_c_mode() || !knr_supported() )
+	return false;
+    if ( tn->id() == TokenID::tkMul )
+	return true;
+    if ( tn->type() != TokenType::ttIdentifier )
+	return false;
+    std::string name = ((TokenIdent *)tn)->spelling();
+    return !datatype_map.count(name) && !struct_map.count(name);
+}
+
+// The type token an omitted type specifier implies: the `int` keyword's type,
+// on the heap at `at`'s position — parseDeclaration records its token as
+// TopDecl.origin, which must outlive the caller's frame.
+TokenDataType *Program::implicit_int_type_token(TokenBase *at)
+{
+    TokenDataType *implied = new TokenDataType("int", ddINT);
+    copy_token_location(implied, at);
+    return implied;
+}
+
 TokenBase *Program::consume_balanced_parenthesized_suffix(TokenBase *open)
 {
     if ( !open || open->id() != TokenID::tkOpBrk )
@@ -79837,9 +79874,7 @@ TokenBase *Program::parseStatementBody(TokenBase *tb)
 	    if ( file_scope_implicit_int_declaration(tb) )
 	    {
 		pushToken(tb);
-		TokenDataType *implied = new TokenDataType("int", ddINT32);
-		copy_token_location(implied, tb);
-		return parseDeclaration(implied);
+		return parseDeclaration(implicit_int_type_token(tb));
 	    }
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
