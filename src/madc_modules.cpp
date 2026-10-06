@@ -5,6 +5,7 @@
 #include <string.h>
 #include "madc_modules.h"
 #include "madc_dl.h"
+#include "madc_posix_io.h"	// resolve_real_path, host_path_dirname
 
 // The rows. `c` and `m` name the C runtime images by their REAL sonames /
 // install names / module names — a dev-symlink spelling (libm.so) needs the
@@ -187,6 +188,20 @@ std::string madc_darwin_install_name(const std::string &spelling)
 	}
 	std::string id = macho_dylib_id(path);
 	return id.empty() ? spelling : id;
+}
+
+std::string madc_darwin_link_rpath(const std::string &spelling)
+{
+	if (!is_path_spelling(spelling)
+	    || macho_dylib_id(spelling).compare(0, 7, "@rpath/") != 0)
+		return "";
+	// The REAL directory: a versioned link (libx.dylib -> libx.1.dylib)
+	// names the file the install name's <file> is, wherever it lives.
+	std::string dir = madc::detail::host_path_dirname(
+		madc::detail::resolve_real_path(spelling.c_str()));
+	if (dir.size() > 1)
+		dir.pop_back();	// the splitter keeps the trailing separator
+	return dir;
 }
 
 void *madc_module_open(const std::string &spelling, std::string &error,

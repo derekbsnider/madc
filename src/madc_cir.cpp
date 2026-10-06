@@ -2616,8 +2616,9 @@ static bool cir_cxx_runtime_import(const std::string &s)
 
 // A user library's load command is its install name, as ld64 records it
 // (madc_darwin_install_name): "@rpath/<file>" for a library madc built or
-// ships, which the runpath's LC_RPATHs find in a relocatable install (the
-// writer emits them for @rpath loads alone). The entry of `other` is
+// ships, which the runpath's LC_RPATHs find — a relocatable install's lib
+// dir, or the directory a path-linked one was found in (cir_native_link_env)
+// — and the writer emits them for @rpath loads alone. The entry of `other` is
 // rewritten in place — `libs` points into it.
 static void cir_apple_extra_dylibs(const std::vector<std::string> &imports,
 				   std::vector<std::string> &other,
@@ -2765,6 +2766,14 @@ bool CirJitSession::emit_native_executable(const char *out_path,
 				  traits);
 }
 
+// A user library's TARGET spelling: the CLI resolves -l<name> through
+// madc_modules before the link env sees it; a raw -l<name> word from a
+// caller that still forwards one resolves through the same owner.
+static std::string cir_user_library_spelling(const std::string &l)
+{
+    return l.compare(0, 2, "-l") == 0 ? madc_module_library_spelling(l.substr(2)) : l;
+}
+
 // DT_NEEDED / DT_RUNPATH for every produced binary — shared by the
 // single-TU and --project native-emit entries.
 // DT_NEEDED: the madc runtime (its dependency closure brings libmir's
@@ -2819,15 +2828,12 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     needed.push_back("libm.so.6");
     needed.push_back("libc.so.6");
 #endif
-    // User libraries arrive as TARGET spellings (the CLI resolves -l<name>
-    // through madc_modules before it gets here); a raw -l<name> word from a
-    // caller that still forwards one resolves through the same owner. Once
-    // each: `-lm` / `import m;` names libm.so.6, which the base set above
+    // User libraries (cir_user_library_spelling), once each: `-lm` /
+    // `import m;` names libm.so.6, which the base set above
     // already carries on ELF — a repeated DT_NEEDED is noise the linker
     // would never emit.
     for (const std::string &l : user_libs) {
-	std::string spelling = l.compare(0, 2, "-l") == 0
-			       ? madc_module_library_spelling(l.substr(2)) : l;
+	std::string spelling = cir_user_library_spelling(l);
 	if (std::find(needed.begin(), needed.end(), spelling) == needed.end())
 	    needed.push_back(spelling);
     }
@@ -2842,6 +2848,20 @@ static void cir_native_link_env(const madc_stdlib_flavor *flavor,
     // its value stays what it was, unread by the writer.
 #if MADC_TARGET_APPLE_P
     runpath = "@executable_path/../lib:";
+    // A library the link named by PATH whose install name is @rpath/<file>
+    // (every library madc builds) loads from the directory the link found
+    // it in — ld64's `-rpath <dir>` beside the recorded install name
+    // (cir_apple_extra_dylibs) — after the relocatable arm, ahead of the
+    // compiling madc's lib dir and the system fallback.
+    std::vector<std::string> link_dirs;
+    for (const std::string &l : user_libs) {
+	std::string dir = madc_darwin_link_rpath(cir_user_library_spelling(l));
+	if (!dir.empty()
+	    && std::find(link_dirs.begin(), link_dirs.end(), dir) == link_dirs.end()) {
+	    link_dirs.push_back(dir);
+	    runpath += dir + ":";
+	}
+    }
 #elif MADC_TARGET_WINDOWS_P
     runpath = "";
 #else

@@ -15,7 +15,8 @@
 //
 // THREAD-SAFETY CONTRACT: the map is a constant table; the functions are
 // pure except madc_module_open, which is the madc_dl seam's contract, and
-// madc_darwin_install_name, which reads a file and shares no state.
+// madc_darwin_install_name / madc_darwin_link_rpath, which read a file and
+// share no state.
 
 #include <string>
 #include "datadef.h"	// TargetOS, madc_target_os
@@ -85,5 +86,13 @@ void *madc_module_open(const std::string &spelling, std::string &error,
 // cannot read (a system dylib in the dyld shared cache, a cross host without
 // it) answers the spelling: dyld's default search.
 std::string madc_darwin_install_name(const std::string &spelling);
+
+// The LC_RPATH a Mach-O image needs to load `spelling` where the link found
+// it: a PATH spelling whose install name is "@rpath/<file>" (every library
+// madc builds) answers its real directory — ld64 links such a library by
+// path with `-rpath <dir>`, recording the install name. "" for a bare
+// spelling (the runpath's madc lib dir serves it) and for a library whose
+// install name is a fixed path.
+std::string madc_darwin_link_rpath(const std::string &spelling);
 
 #endif
