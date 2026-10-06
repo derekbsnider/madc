@@ -78421,69 +78421,6 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    td->baked_static_init = true; // mark as the defining decl (vs extern)
 	}
 
-	// Global/static SIMD with constant init: write directly to heap storage.
-	if ( !code && var && var->data && var->type && var->type->is_simd()
-	  && !td->init_list.empty() )
-	{
-	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(var->type);
-	    size_t lane_size = vdd->element_type ? vdd->element_type->size : 0;
-	    bool all_constant = lane_size > 0;
-
-	    // Case 1: array of SIMD vectors — each init_list entry is a
-	    // TokenStructLit whose inits hold the per-lane integer values.
-	    if ( !arr_dims.empty() && all_constant )
-	    {
-		for ( size_t ei = 0; all_constant && ei < td->init_list.size(); ++ei )
-		{
-		    TokenStructLit *slit = dynamic_cast<TokenStructLit *>(td->init_list[ei]);
-		    if ( !slit ) { all_constant = false; break; }
-		    for ( size_t li = 0; all_constant && li < slit->inits.size(); ++li )
-		    {
-			int64_t v = 0;
-			if ( !literal_integer_value(slit->inits[li], v) )
-			    all_constant = false;
-		    }
-		}
-		if ( all_constant )
-		{
-		    char *base = (char *)var->data;
-		    size_t simd_bytes = vdd->size;
-		    for ( size_t ei = 0; ei < td->init_list.size(); ++ei )
-		    {
-			TokenStructLit *slit = static_cast<TokenStructLit *>(td->init_list[ei]);
-			for ( size_t li = 0; li < vdd->lane_count && li < slit->inits.size(); ++li )
-			{
-			    int64_t v = 0;
-			    literal_integer_value(slit->inits[li], v);
-			    memcpy(base + ei * simd_bytes + li * lane_size, &v, lane_size);
-			}
-		    }
-		    td->init_list.clear();
-		}
-	    }
-	    // Case 2: single SIMD variable — init_list holds flat lane values.
-	    else if ( arr_dims.empty() && all_constant )
-	    {
-		for ( size_t i = 0; all_constant && i < td->init_list.size(); ++i )
-		{
-		    int64_t v = 0;
-		    if ( !literal_integer_value(td->init_list[i], v) )
-			all_constant = false;
-		}
-		if ( all_constant )
-		{
-		    char *base = (char *)var->data;
-		    for ( size_t i = 0; i < vdd->lane_count && i < td->init_list.size(); ++i )
-		    {
-			int64_t v = 0;
-			literal_integer_value(td->init_list[i], v);
-			memcpy(base + i * lane_size, &v, lane_size);
-		    }
-		    td->init_list.clear();
-		}
-	    }
-	}
-
 	if ( ret_is_ref && nt->id() == TokenID::tkAssign
 	  && arr_dims.empty() && init_list.empty() )
 	{

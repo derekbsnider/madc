@@ -1,0 +1,31 @@
+/* A file-scope GNU vector with an integer initializer kept its value only in
+   madc's own parse-time storage: the parser wrote the lanes there and dropped
+   the initializer list, so the emitted definition was `static v4si g = { };`
+   and every lane read 0 — silently. A float vector, whose lanes were not
+   integer literals, kept its list and was right.
+   Oracle: gcc 13.3 and clang 18.1 (-std=gnu11) print the .expect lines. */
+#include <stdio.h>
+
+typedef int v4si __attribute__ ((vector_size (16)));
+typedef short v4hi __attribute__ ((vector_size (8)));
+typedef float v4sf __attribute__ ((vector_size (16)));
+
+static v4si g = { 5, 6 };
+v4si h = { 1, 2, 3, 4 };
+static v4hi s = { -1, 300 };
+static v4sf f = { 1.5f, 2.5f };
+v4si rows[2] = { { 7, 8 }, { 9, 10, 11, 12 } };
+
+int main(void)
+{
+	static v4si ls = { 13, 14 };
+	v4si l = { 15, 16 };
+	printf("g: %d %d %d %d\n", g[0], g[1], g[2], g[3]);
+	printf("h: %d %d %d %d\n", h[0], h[1], h[2], h[3]);
+	printf("s: %d %d %d %d\n", s[0], s[1], s[2], s[3]);
+	printf("f: %g %g %g %g\n", f[0], f[1], f[2], f[3]);
+	printf("rows: %d %d %d %d %d %d\n", rows[0][0], rows[0][1], rows[0][2],
+	       rows[1][0], rows[1][1], rows[1][3]);
+	printf("local: %d %d %d %d\n", ls[0], ls[1], l[0], l[1]);
+	return 0;
+}

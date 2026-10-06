@@ -52,9 +52,6 @@ medce-1.c
 # --- runtime-failed (9) ---
 20010904-1.c
 20010904-2.c
-pr23135.c
 pr46309.c
 pr49768.c
 pr92904.c
-simd-1.c
-simd-2.c
