@@ -7693,6 +7693,9 @@ public:
 				   bool is_inline, size_t align,
 				   class Variable *cleanup = NULL);
     TokenBase *parse_declaration_body(TokenDataType *, bool is_static);
+    // A scalar's braced initializer, the stream AT its `{`: rewritten as the
+    // one element in parentheses (`{v}` -> `(v)`, `{}` -> `(0)`).
+    void unwrap_scalar_braced_initializer();
     // What the statement being parsed owes at its end: an expression statement
     // and a jump statement their `;`, an object declaration its `,` or `;`
     // (C11 6.8.3, 6.8.6, 6.7; [stmt.expr], [stmt.jump], [dcl.dcl]). The

@@ -76695,6 +76695,69 @@ void Program::apply_declaration_storage(Variable *var, TokenCpnd *code,
 	var->flags |= vfWEAK;
 }
 
+// A SCALAR's braced initializer (C11 6.7.9p11: "optionally enclosed in
+// braces"; `T x{v}`, [dcl.init.list]/3): the stream sits AT the `{`. The
+// list is rewritten as its one element in parentheses, `{ v [,] }` -> `( v )`,
+// for the declaration's `= expr` reader. `{}` is `( 0 )` (value-/empty
+// initialization); braces around the element (`{{v}}`, gcc's "braces around
+// scalar initializer") are peeled; elements after the first (gcc and clang:
+// "excess elements in scalar initializer", dropped) are dropped.
+void Program::unwrap_scalar_braced_initializer()
+{
+    // The `}` matching the `{` at tokens[open]: the one delimiter tracker.
+    // `elem_end` gets the first top-level `,` inside it (or the close).
+    auto match_brace = [this](size_t open, size_t &elem_end) -> size_t {
+	DelimDepth d(this);
+	elem_end = 0;
+	size_t i = open;
+	while ( i < tokens.size() && tokens[i] )
+	{
+	    if ( i > open && d.brace == 1 && !d.paren && !d.square && !d.angle
+	      && tokens[i]->id() == TokenID::tkComma && !elem_end )
+		elem_end = i;
+	    i += delim_scan_step(tokens, i, d);
+	    if ( !d.brace )
+		return i - 1;
+	}
+	Throw(tokens[open]) << "Unterminated '{' in initializer" << flush;
+	return 0;
+    };
+    TokenBase *open = tokens[0];
+    size_t elem_end = 0;
+    const size_t close = match_brace(0, elem_end);
+    if ( !elem_end )
+	elem_end = close;
+    size_t first = 1;
+    // `{{v}}`: the element is itself one braced list spanning it.
+    while ( first < elem_end && tokens[first]->id() == TokenID::tkOpBrc )
+    {
+	size_t inner_end = 0;
+	size_t inner_close = match_brace(first, inner_end);
+	if ( inner_close + 1 != elem_end )
+	    break;
+	if ( !inner_end )
+	    inner_end = inner_close;
+	elem_end = inner_end;
+	++first;
+    }
+    std::vector<TokenBase *> out;
+    TokenBase *lp = new TokenOpBrk();
+    copy_token_location(lp, open);
+    out.push_back(lp);
+    if ( first == elem_end )
+    {
+	TokenBase *zero = new TokenInt(0);
+	copy_token_location(zero, open);
+	out.push_back(zero);
+    }
+    for ( size_t i = first; i < elem_end; ++i )
+	out.push_back(tokens[i]);
+    TokenBase *rp = new TokenClBrk();
+    copy_token_location(rp, tokens[close]);
+    out.push_back(rp);
+    tokens.splice_front(close + 1, out);
+}
+
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
     declarator_list_continues = false;
@@ -77525,6 +77588,14 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     // '=' in front of the '{'. Covers scalars, aggregates/arrays, and class
     // value-init uniformly. The `(` ctor-call syntax is handled above; this is the
     // brace form. References (`T& x{...}`) keep the explicit-init requirement.
+    // An aggregate takes a brace list; anything else is a scalar, whose braced
+    // initializer is its one element.
+    DataDef *brace_target = decl_type ? decl_type->unqualified() : NULL;
+    bool brace_target_is_aggregate = !arr_dims.empty()
+	|| (brace_target && (dynamic_cast<DataDefSTRUCT *>(brace_target) != NULL
+			  || brace_target->as_carray_dd()
+			  || brace_target->is_simd()
+			  || brace_target->basetype() == BaseType::btClass));
     if ( nt->id() == TokenID::tkOpBrc && ret_is_ref
       && decl_type->as_carray_dd() )
     {
@@ -77535,47 +77606,27 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
     }
     else if ( nt->id() == TokenID::tkOpBrc && !ret_is_ref )
     {
-	bool is_aggregate = !arr_dims.empty()
-	    || dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
-	    || (decl_type && decl_type->is_simd())
-	    || (decl_type && decl_type->basetype() == BaseType::btClass);
-	TokenBase *brc = nextToken();            // consume '{'
 	TokenBase *syn = new TokenAssign();
-	syn->file = brc->file; syn->line = brc->line; syn->column = brc->column;
-	if ( is_aggregate )
-	{
-	    pushToken(brc);                      // restore '{' -> '= { ... }'
-	    pushToken(syn);
-	}
-	else
-	{
-	    // Scalar brace-init: a scalar takes 0 or 1 element, so UNWRAP to
-	    // `= <inner>` (empty `{}` -> value-init `= 0`). The aggregate brace-list
-	    // path is only for arrays/structs/classes; routing a scalar there hits a
-	    // separate scalar `= {N}` defect, so unwrap to plain `= expr` instead.
-	    std::vector<TokenBase *> inner;
-	    int depth = 1;
-	    while ( depth > 0 )
-	    {
-		TokenBase *t = nextToken();
-		if ( !t )
-		    Throw(brc) << "Unterminated '{' in initializer" << flush;
-		if ( t->id() == TokenID::tkOpBrc ) { depth++; }
-		else if ( t->id() == TokenID::tkClBrc ) { if ( --depth == 0 ) break; }
-		inner.push_back(t);
-	    }
-	    if ( inner.empty() )
-	    {
-		TokenBase *zero = new TokenInt(0);
-		zero->file = brc->file; zero->line = brc->line; zero->column = brc->column;
-		inner.push_back(zero);
-	    }
-	    // a splice: `T x{v}` goes back as `T x = v`.
-	    for ( size_t i = inner.size(); i-- > 0; )
-		pushToken(inner[i]);             // re-push inner tokens in order
-	    pushToken(syn);                      // '= <inner...>'
-	}
+	copy_token_location(syn, nt);
+	// A scalar `T x{v}` reads as `T x = (v)`; an aggregate keeps its list.
+	if ( !brace_target_is_aggregate )
+	    unwrap_scalar_braced_initializer();
+	pushToken(syn);
 	nt = peekToken();                        // nt is the synthetic '='
+    }
+    // C11 6.7.9p11: a scalar's initializer may be enclosed in braces —
+    // `T x = {v}` reads as `T x = (v)`. C++11 copy-list-initialization has
+    // its own route (respell_braced_list_for_target).
+    else if ( nt->id() == TokenID::tkAssign && !ret_is_ref
+	   && !brace_target_is_aggregate && !cpp_keyword_active(STD_CPP11)
+	   && &tb->definition != &ddAUTO
+	   && tokens.size() > 1 && tokens[1]
+	   && tokens[1]->id() == TokenID::tkOpBrc )
+    {
+	TokenBase *eq = nextToken();		// '='
+	unwrap_scalar_braced_initializer();
+	pushToken(eq);
+	nt = peekToken();
     }
 
     // A ZERO-star declarator whose TYPE is a function TYPEDEF (`typedef void
