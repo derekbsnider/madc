@@ -9137,6 +9137,10 @@ public:
 	    const std::string *src_class_name = NULL);
     // Assorted parse helpers (expression/declaration/statement support).
     DataDef *effective_pointer_type_for_member_access(TokenBase *tb);
+    // A `.` receiver that is a class/struct PRVALUE with no storage of its
+    // own (an operator result, a functional-construction temp, a va_arg
+    // read): typed by its own result, materialized through parent_expr.
+    static bool member_receiver_is_prvalue(const TokenBase *lhs);
     // C++ canon operator-> rewrite: when lhs is a class OBJECT (not a
     // pointer) whose class declares operator->, return the
     // `lhs.operator->()` call token (its datadef() is the pointer the

@@ -1,0 +1,43 @@
+// A va_arg read of a struct or union type is a value of that type (C11
+// 7.16.1.1), and `.` selects a member of it like any struct rvalue:
+// `va_arg(ap, struct S).c[0]`. madc's member-access arm accepted a fixed
+// list of receiver kinds without va_arg ("member reference is not a
+// structure or union").
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect lines.
+#include <stdarg.h>
+#include <stdio.h>
+struct S {
+	char c[40];
+	int n;
+};
+struct P {
+	int x;
+	struct {
+		int v;
+	} in;
+};
+union U {
+	int i;
+	float f;
+};
+static int sum(int count, ...)
+{
+	va_list ap;
+	va_start(ap, count);
+	int a = va_arg(ap, struct S).c[0];
+	int b = va_arg(ap, struct S).n;
+	int c = va_arg(ap, struct P).in.v;
+	int d = va_arg(ap, union U).i;
+	va_end(ap);
+	printf("vaarg: %d %d %d %d\n", a, b, c, d);
+	return a + b + c + d;
+}
+int main(void)
+{
+	struct S s = { { 21, 22 }, 5 };
+	struct P p = { 1, { 9 } };
+	union U u;
+	u.i = 13;
+	printf("total: %d\n", sum(4, s, s, p, u));
+	return 0;
+}

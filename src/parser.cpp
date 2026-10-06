@@ -2952,6 +2952,21 @@ DataDef *Program::effective_pointer_type_for_member_access(TokenBase *tb)
     return NULL;
 }
 
+// The dot arm's one test for a PRVALUE receiver — an expression of
+// class/struct type with no storage of its own: an operator result
+// (`(a + b).m`, `(--j)._M_node`), a functional-construction temp
+// (`T(args).m`), a va_arg read (`va_arg(ap, struct S).c`, C11 7.16.1.1: a
+// value of the named type). Member lookup reads the receiver's own type;
+// the CIR materializes it through the member's parent_expr. A call result
+// has its own arm (its declared return type).
+bool Program::member_receiver_is_prvalue(const TokenBase *lhs)
+{
+    return lhs->type() == TokenType::ttOperator
+	|| lhs->type() == TokenType::ttMultiOp
+	|| lhs->id() == TokenID::tkObjTemp
+	|| dynamic_cast<const TokenVaArg *>(lhs) != NULL;
+}
+
 TokenCallMethod *Program::arrow_operator_call(TokenBase *lhs, TokenBase *loc_tb)
 {
     // type()-gated, not dynamic_cast alone: TokenMember/TokenCallMethod
@@ -41501,9 +41516,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 			      && lhs_dot->type() != TokenType::ttStructLit
 				    && lhs_dot->type() != TokenType::ttCallFunc
 				    && lhs_dot->type() != TokenType::ttCallMethod
-				    && lhs_dot->type() != TokenType::ttOperator   // (a + b).member — operator result object
-				    && lhs_dot->type() != TokenType::ttMultiOp    // (a != b).member etc — multi-symbol operator result object
-				    && lhs_dot->id() != TokenID::tkObjTemp        // T(args).member — functional-ctor temp
+				    && !member_receiver_is_prvalue(lhs_dot)   // (a + b).m, T(args).m, va_arg(ap, S).m
 				    && lhs_dot->id() != TokenID::tkTypeid )   // typeid(x).name() (S5d)
 				    Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var = NULL;
@@ -41636,15 +41649,14 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 				    struct_type = referent_if_reference(ret_type);
 				    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 				}
-			else if ( lhs_dot->type() == TokenType::ttOperator
-			       || lhs_dot->type() == TokenType::ttMultiOp
-			       || lhs_dot->id() == TokenID::tkObjTemp )
+			else if ( member_receiver_is_prvalue(lhs_dot) )
 			{
-			    // (a + b).member or T(args).member — a class-object rvalue
-			    // (an overloaded-operator result typed by
-			    // resolve_object_operator_type, or a functional-construction
-			    // temp TokenObjTemp). The rvalue is materialized at codegen via
-			    // parent_expr (class_this_arg -> translate_expr -> the temp).
+			    // (a + b).member, T(args).member, va_arg(ap, S).member — a
+			    // class-object rvalue (an overloaded-operator result typed by
+			    // resolve_object_operator_type, a functional-construction
+			    // temp TokenObjTemp, a va_arg read of its target type). The
+			    // rvalue is materialized at codegen via parent_expr
+			    // (class_this_arg -> translate_expr -> the temp).
 			    DataDef *op_type = NULL;
 			    if ( TokenObjTemp *ot = dynamic_cast<TokenObjTemp *>(lhs_dot) )
 				op_type = ot->obj_class;
@@ -42007,10 +42019,7 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    // operator/multiop/objtemp). Without parent_expr the synthetic
 		    // __op_expr receiver leaks as an undeclared identifier. ttMultiOp
 		    // (`--`/`++`/`<=` results) must be wired exactly like ttOperator.
-		    bool is_operator_rvalue_lhs =
-			(lhs_dot->type() == TokenType::ttOperator
-			 || lhs_dot->type() == TokenType::ttMultiOp
-			 || lhs_dot->id() == TokenID::tkObjTemp);
+		    bool is_operator_rvalue_lhs = member_receiver_is_prvalue(lhs_dot);
 		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs
 		      || is_callfunc_lhs || is_operator_rvalue_lhs )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
