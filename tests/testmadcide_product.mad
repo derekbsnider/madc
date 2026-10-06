@@ -116,6 +116,23 @@ long face_of(int argc, const char **argv)
     return a.level;
 }
 
+// Remove a directory tree the test made: every file, then the directories,
+// deepest first (no shell: `rm -rf` is not a Windows command).
+void remove_tree(var &dir)
+{
+    var kids;
+    var pat = format("{}/*", dir);
+    perl::glob(kids, pat.c_str());
+    for ( var k : kids )
+    {
+	if ( php::is_dir(k.c_str()) )
+	    remove_tree(k);
+	else
+	    php::unlink(k.c_str());
+    }
+    php::rmdir(dir.c_str());
+}
+
 int main()
 {
     // 7a. madcide's own About.
@@ -203,6 +220,6 @@ int main()
     php::unlink(path);
     var cfg;
     madcide_config_dir(cfg);
-    system(format("rm -rf {}", cfg));
+    remove_tree(cfg);
     return 0;
 }
