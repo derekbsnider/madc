@@ -93,7 +93,7 @@ int main()
 	"#ifdef __linux__\n"
 	"extern \"C\" int prctl(int option, ...);\n"
 	"#else\n"
-	"extern \"C\" int setrlimit(int resource, const long *limit);\n"
+	"#include <sys/resource.h>\n"
 	"#endif\n"
 	"bool hosted_greet(long w, long es, long doc, const char *arg)\n"
 	"{\n"
@@ -115,8 +115,8 @@ int main()
 	"#ifdef __linux__\n"
 	"    prctl(4, 0);\n"			// PR_SET_DUMPABLE
 	"#else\n"
-	"    long none[2] = { 0, 0 };\n"
-	"    setrlimit(4, none);\n"		// RLIMIT_CORE
+	"    struct rlimit none = { 0, 0 };\n"
+	"    setrlimit(RLIMIT_CORE, &none);\n"
 	"#endif\n"
 	"    int *p = (int *)0;\n"
 	"    *p = 1;\n"

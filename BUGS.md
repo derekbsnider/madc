@@ -28,6 +28,38 @@ and clang 18. The madc flags are `--std=c17` for `.c` files and
 
 ## Silent wrong answers
 
+### B193. On macOS, `NDEBUG` does not disable `assert`
+
+```c
+#include <stdio.h>
+static int evals;
+#define NDEBUG 1
+#include <assert.h>
+static void assert_off(void) { assert((evals++, 1)); }
+#undef NDEBUG
+#include <assert.h>
+static void assert_on(void) { assert((evals++, 1)); }
+int main(void) { assert_off(); assert_on(); printf("evals=%d\n", evals); return 0; }
+```
+
+- Found 2026-10-06 running the darwin suite natively on the arm64 Mac Mini
+  (`tests/testsysheaderreinclude`, which carries `.darwin_skip` naming this
+  entry).
+- clang (macOS 14) and gcc 13 / clang 18 (Linux): `evals=1`. madc on macOS:
+  `evals=2`, exit 0 — the first `assert` evaluates under `NDEBUG`.
+- Where: `scripts/gen_darwin_prelude.sh` flattens every served C header,
+  `assert.h` included, into ONE guarded umbrella with `clang -E -dD` and
+  `NDEBUG` unset, so the umbrella carries only the `!NDEBUG` arm's `#define
+  assert(e) …`, every header stub includes the umbrella (so any C header
+  defines `assert`), and a second `#include <assert.h>` under a different
+  `NDEBUG` changes nothing. Apple's real `<assert.h>`, like glibc's and
+  mingw's, is guard-less and redefines `assert` per inclusion.
+- Fix design: drop `#define assert(` from the umbrella; generate a
+  guard-less `assert.h` stub — the umbrella, `#undef assert`, then both
+  arms' `#define assert(` lines taken from two `clang -E -dD` runs of
+  `<assert.h>` (with and without `-DNDEBUG`) under `#ifdef NDEBUG`.
+- Not a regression: the prelude has flattened `assert.h` since August.
+
 ### B181. A non-type template argument naming a variable is keyed and spliced by its spelling
 
 ```cpp
