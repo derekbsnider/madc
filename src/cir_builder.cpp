@@ -27350,16 +27350,40 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (TokenVaArg *tva = dynamic_cast<TokenVaArg *>(tb)) {
 		node_t ap = tva->ap_expr ? translate_expr(tva->ap_expr)
 					 : id(tva->ap_var->name.c_str(), tb);
-		// Build a (T *)0 carrier: base specs of T plus one extra '*'.
-		DataDef *base = tva->target_type;
-		std::vector<unsigned> level_cv;	// T's levels' own cv + the base's
-		int levels = dd_peel_pointers(base, &level_cv) + 1;   // the one pointer-peel owner
+		// va_arg(ap, T) -> __builtin_va_arg(ap, (T *)0). c2m reads the
+		// SEMANTIC type of the 2nd argument and takes its POINTEE as the
+		// result type (c2mir.c, va_arg_p: t2->mode == TM_PTR, ret_type =
+		// t2->u.ptr_type). So the carrier must type as exactly T*. T may be
+		// a function pointer (carrier int(**)(void)) or a pointer to an
+		// array (carrier char(**)[4]); flattening those to a star-chain
+		// dropped the function/array declarator, so c2m typed the pointee
+		// as R* / char** and warned (testvaargtypename). Mint the real T*
+		// and emit its declarator through the fn-ptr owner, or keep the
+		// array dims explicit; a plain pointer chain stays the star loop.
+		DataDef *carrier = m_prog->getPointerType(tva->target_type);	// T*
+		node_t tspec = list();
 		node_t decl_list = list();
-		// [0] is the carrier's own `*`; T's level i is carrier level i + 1.
-		for (int i = 0; i < levels; i++)
-			append(decl_list, pointer(i ? level_cv[i - 1] : cvNONE));
-		node_t tspec = type_list(base);
-		append_cv_specs(tspec, level_cv.back());
+		if (!pointer_to_fnptr_pieces(carrier, tspec, decl_list)) {
+			std::vector<unsigned> level_cv;	// each pointer level's cv
+			DataDef *t = carrier;
+			int ptrs = dd_peel_pointers(t, &level_cv);   // the one pointer-peel owner
+			std::vector<carray_dim_t> adims;
+			bool unbounded = false;
+			DataDef *elem = peel_carray_dims(t, adims, &unbounded);
+			std::vector<unsigned> elem_cv;
+			int elem_ptrs = dd_peel_pointers(elem, &elem_cv);
+			tspec = type_list(elem);
+			append_cv_specs(tspec, elem_cv.empty() ? cvNONE
+							       : elem_cv.back());
+			for (int s = 0; s < elem_ptrs; s++)	// element's own pointers (innermost)
+				append(decl_list, pointer(elem_cv[s]));
+			for (int s = 0; s < ptrs; s++)		// the carrier's pointers (cast result unqualified)
+				append(decl_list, pointer(s ? level_cv[s] : cvNONE));
+			for (size_t d = 0; d < adims.size(); d++)   // the array suffix survives
+				append(decl_list, node3(N_ARR, ignore(), list(),
+							d == 0 && unbounded
+							? ignore() : integer(adims[d])));
+		}
 		node_t type_node = node2(N_TYPE, tspec,
 					 node2(N_DECL, ignore(), decl_list));
 		node_t typeptr = node2(N_CAST, type_node, integer(0));
