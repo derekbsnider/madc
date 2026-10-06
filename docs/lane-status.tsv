@@ -1,13 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
 darwin-suite	release	ac3e355a8244	2026-10-03	arm64 1893/0/0TO/34skip, Intel 1894/0/0TO/33skip — gh run 37137047546 (darwin-probe.yml, feature/repl-teaching-ide-claude at ac3e355a8: the CompletionOffer, session Stop, carrier prototype and arm64 long double twin fixes; testvararith green on arm64)
-c-testsuite	commit	1b19d3d6c942	2026-10-06	c-testsuite: 220 passed, 0 failed (0 outside baseline)
-c-torture	commit	1b19d3d6c942	2026-10-06	c-torture: 1617 passed, 7 failing, 0 outside baseline, 61 skipped (--std=c17)
-c2mir-tests	commit	1b19d3d6c942	2026-10-06	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline)
-gui	commit	1b19d3d6c942	2026-10-06	gui: 27 passed, 0 failed | EXE 27/0 | OBJ 27/0
-gxx-c++11	no	1b19d3d6c942	2026-10-06	gxx-c++11: 1505 passed, 441 failing, 0 outside baseline, 2722 skipped
-index-c	yes	1b19d3d6c942	2026-10-06	index-c: 50/50 tasks OK, 0 failed [-O2]
-commonmark	commit	1b19d3d6c942	2026-10-06	commonmark: 664 passed, 6 failed of 670 (0 outside baseline)
 linux-battery	yes	9a9e232949d7	2026-10-06	seam_battery.sh: gates rc=0 (unit binaries + static gates 97, project_gate GREEN, libcxx_gate OK); headerless 1989/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2023/0/0TO/9skip, EXE 1843/0, OBJ 1843/0
 headerless-win	yes	9a9e232949d7	2026-10-06	1947/0/0TO/85skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine (241 units), seam_battery.sh
 wine64	yes	9a9e232949d7	2026-10-06	the packed PE under wine: headerless-win 1947/0/0TO/85skip + ondisk-win 1/0 — seam_battery.sh
@@ -16,3 +9,10 @@ aarch64-ld	yes	9a9e232949d7	2026-10-06	aarch64_ldouble_lane GREEN (aot + jit on 
 tests-jit	batch	9a9e232949d7	2026-10-06	2023 passed, 0 failed, 0 timed out, 9 skipped (seam exeobj JIT pass, packed -O2)
 genuine-win	release	dfb487284c80	2026-10-06	1947/0/0TO/85skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed bin/release-windows/madc.exe at 9a9e23294 content, MADC_SKIP_EXT="win64 win"); win_suite rc=0
 brew-linux	release	dfb487284c80	2026-10-06	2023/0/0TO/9skip - scripts/brew_lane.sh on the container at 9a9e23294 content (VERSION still 0.101.0): brew install --build-bottle + brew bottle + the keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc
+c-testsuite	commit	9ee11568350b	2026-10-06	c-testsuite: 220 passed, 0 failed (0 outside baseline) [at 5df6d6ff2 content; 9ee115683 = test fixtures only]
+c-torture	commit	9ee11568350b	2026-10-06	c-torture: 1617 passed, 7 failing, 0 outside baseline, 61 skipped (--std=c17) [at 5df6d6ff2 content; 9ee115683 = test fixtures only]
+c2mir-tests	commit	9ee11568350b	2026-10-06	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline) [at 5df6d6ff2 content; 9ee115683 = test fixtures only]
+gui	commit	9ee11568350b	2026-10-06	gui: 27 passed, 0 failed | EXE 27/0 | OBJ 27/0 [at 5df6d6ff2 content; 9ee115683 = test fixtures only]
+gxx-c++11	no	9ee11568350b	2026-10-06	gxx-c++11: 1505 passed, 441 failing, 0 outside baseline, 2722 skipped [at 5df6d6ff2 content; 9ee115683 = test fixtures only]
+index-c	yes	9ee11568350b	2026-10-06	index-c: 50/50 tasks OK, 0 failed [-O2] [at 5df6d6ff2 content; 9ee115683 = test fixtures only]
+commonmark	commit	9ee11568350b	2026-10-06	commonmark: 664 passed, 6 failed of 670 (0 outside baseline) [at 5df6d6ff2 content; 9ee115683 = test fixtures only]
