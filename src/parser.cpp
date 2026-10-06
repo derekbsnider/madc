@@ -48062,6 +48062,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
+	if ( pgm.consume_empty_member_declaration() )
+	    continue;
 	uint32_t member_flags = 0;
 	// The line's cv (before and after the type specifier) — every
 	// declarator on it derives from the cv-qualified base (member_declarator).
@@ -48161,6 +48163,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		} inner_scope(pgm, inner);
 		while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 		{
+		    if ( pgm.consume_empty_member_declaration() )
+			continue;
 		    // Leading cv-qualifiers on the member's type and the
 		    // attribute groups among them (the line's alignment, as in
 		    // the top-level loop), through the ONE owner
@@ -48944,6 +48948,20 @@ bool Program::consume_anonymous_aggregate_open(AggregateAttributes &attrs)
     return true;
 }
 
+// An EMPTY member-declaration, a stray `;` in a class, struct or union body
+// ([class.mem]; in C a GNU extension, gcc -pedantic "extra semicolon in
+// struct or union specified"): consumed, true when there was one. The ONE
+// test every member loop asks — a macro that expands to nothing before its
+// `;`, the `;` after a member function body.
+bool Program::consume_empty_member_declaration()
+{
+    TokenBase *tn = peekToken();
+    if ( !tn || tn->id() != TokenID::tkSemi )
+	return false;
+    nextToken();
+    return true;
+}
+
 void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 						    TokenBase *loc)
 {
@@ -48957,6 +48975,8 @@ void Program::parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 		pushToken(tn);
 	    tn = peekToken();
 	}
+	if ( consume_empty_member_declaration() )
+	    continue;
 	skip_cv_qualifier_tokens();	// the ONE cv owner, not a fourth copy
 	tn = peekToken();
 	if ( !tn )
@@ -51996,15 +52016,11 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	access_flags &= ~vfMUTABLE; // storage specifiers last one member declaration
 	if ( !(tn=pgm.peekToken()) || tn->id() == TokenID::tkClBrc )
 	    break;
-	// [class.mem]: an EMPTY member-declaration — the stray `;` after a
-	// member function body (`int f() { return v; };`, madc.h:2145 — 20
-	// self-host units read it as the start of a member and demanded a
-	// type). gcc/clang accept it (-pedantic: "extra ';'").
-	if ( tn->id() == TokenID::tkSemi )
-	{
-	    pgm.nextToken();
+	// The stray `;` after a member function body (`int f() { return v;
+	// };`, madc.h:2145 — 20 self-host units read it as the start of a
+	// member and demanded a type).
+	if ( pgm.consume_empty_member_declaration() )
 	    continue;
-	}
 	// --- class-scope type aliases: typedef T name; / using name = T; ---
 	if ( tn->id() == TokenID::tkTYPEDEF )
 	{

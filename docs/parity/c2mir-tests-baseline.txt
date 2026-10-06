@@ -52,7 +52,6 @@ lacc/initialize-array.c
 lacc/initialize-object.c
 lacc/initialize-string.c
 lacc/string-addr.c
-new/issue241.c
 new/issue441.c
 new/ssa-ccp.c
 new/vector-size.c

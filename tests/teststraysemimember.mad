@@ -1,0 +1,40 @@
+// A stray `;` in a struct or union body — an EMPTY member-declaration,
+// here also from a macro that expands to nothing before its `;` — is
+// skipped (a GNU extension in C; gcc -pedantic: "extra semicolon in struct
+// or union specified"). madc read it as the start of a member and demanded
+// a type.
+// gcc 13.3 and clang 18.1 (-std=gnu11) print the .expect line.
+#include <stdio.h>
+#define EMPTY_MEMBER
+struct a {
+	EMPTY_MEMBER;
+	int x;;
+	char c;
+	;
+};
+union u {
+	;
+	int i;
+	float f;;
+};
+struct outer {
+	struct {
+		;
+		int p;;
+		int q;
+	} in;
+	EMPTY_MEMBER;
+};
+struct empty {
+	EMPTY_MEMBER;
+};
+int main(void)
+{
+	struct a s = { 4, 'k' };
+	union u v;
+	struct outer o = { { 5, 6 } };
+	v.i = 9;
+	printf("semi: %d %c %d %d %d %zu %zu %zu\n", s.x, s.c, v.i, o.in.p,
+	       o.in.q, sizeof(struct a), sizeof(union u), sizeof(struct empty));
+	return 0;
+}

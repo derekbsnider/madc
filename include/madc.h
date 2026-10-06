@@ -8910,6 +8910,9 @@ public:
     bool qualified_class_head_starts_definition();
     bool consume_anonymous_aggregate_open(AggregateAttributes &attrs);
     DataDefSTRUCT *parse_class_anonymous_aggregate(TokenBase *kw);
+    // A stray `;` in a class/struct/union body (an empty member-declaration):
+    // consumed, true when there was one — every member loop's one test.
+    bool consume_empty_member_declaration();
     void parse_class_anonymous_aggregate_members(DataDefSTRUCT *agg,
 						 TokenBase *loc);
     bool class_body_enum_definition_follows();
