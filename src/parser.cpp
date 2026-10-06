@@ -5966,7 +5966,7 @@ static std::string template_binding_identity_spelling(DataDef *dd)
     // no function (B178) and never shares a binding with another value of
     // the same signature: its identity is its unique hoisted symbol.
     if ( sig && sig->has_captures && !sig->local_emit_name.empty() )
-	return "{closure " + sig->local_emit_name + "}";
+	return "{closure " + sig->local_emit_name + "}"; // allowed-exception: binding identity key, not symbol build
     if ( fn_type )
 	return DataDefFPTR(fn_type).structural_spelling(false);
     if ( fp && !fp->ptr_syntax )
