@@ -7,10 +7,12 @@ bool(true)
 bool(false)
 char('A')
 char(10)
+char[3](2) "hi"
 char *(2) "hi"
 NULL
 === two args
-char *(1) "x"
+int(42)
+char[2](1) "x"
 === struct
 struct Point(2) {
   ["x"]=>
