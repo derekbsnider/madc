@@ -1,0 +1,34 @@
+// A function first declared without a prototype (`int foo();`, C11
+// 6.7.6.3p14) may be called before its definition supplies the parameters:
+// the call is checked against no prototype. madc emitted the definition's
+// prototype ahead of every call, and c2mir refused `foo()` ("too few
+// arguments"). foo never reads its parameter, so the zero-argument calls
+// are well defined.
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+int foo();
+long scale();
+static int bar(void)
+{
+	return foo() + 1;
+}
+static long twice(void)
+{
+	return scale(21L);
+}
+int foo(char *n)
+{
+	(void)n;
+	return 42;
+}
+long scale(long v)
+{
+	return v * 2;
+}
+int (*baz)() = &foo;
+int main(void)
+{
+	printf("unproto: %d %ld %d %ld %d\n", bar(), twice(), foo("x"),
+	       scale(5L), baz());
+	return 0;
+}

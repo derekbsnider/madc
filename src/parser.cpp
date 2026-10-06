@@ -72969,6 +72969,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_const_method = func->is_const_method;
 	    fresh->is_volatile_method = func->is_volatile_method;
 	    fresh->is_member_template = func->is_member_template;
+	    fresh->declared_unprototyped = is_c_mode();
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -72984,6 +72985,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->parameters   = func->parameters;
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
+	    fresh->declared_unprototyped = func->declared_unprototyped;
 	    fresh->return_types = func->return_types;
 	    fresh->multi_ret_struct = func->multi_ret_struct;
 	    fresh->return_typedef_name = func->return_typedef_name;

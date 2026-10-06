@@ -47,6 +47,5 @@
 # __attribute__((cleanup)), which the in-tree MIR supports natively.
 lacc/declaration-default-int.c
 lacc/declarator-parens.c
-lacc/function-incomplete.c
 new/ssa-ccp.c
 new/vector-size.c

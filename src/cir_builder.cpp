@@ -24326,8 +24326,11 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	// (is_void_params). A bare K&R `()` is unprototyped: leave the param list
 	// empty so c2mir imposes no arg-count check at call sites, matching gcc's
 	// gnu89 behavior. Kept in lock-step with func_def and fnptr_func_node.
-	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf
-	    && !has_capture_params) {
+	// A function first declared `int f();` and defined with parameters keeps
+	// that unprototyped `()` here (declared_unprototyped): a call the source
+	// made before the definition was checked against no prototype.
+	if ((nparam == 0 || fd->declared_unprototyped) && !fd->is_varargs
+	    && !ret_via_retbuf && !has_capture_params) {
 		if (fd->is_void_params) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));
 			node_t void_decl = node2(N_DECL, ignore(), list());

@@ -709,6 +709,11 @@ public:
 	return scalar;
     }
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
+    // C: the function was first declared with an empty, unprototyped list
+    // (`int f();`, C11 6.7.6.3p14) and its definition supplied the
+    // parameters. A call before the definition is checked against no
+    // prototype, so the emitted forward declaration keeps `()`.
+    bool declared_unprototyped = false;
     bool no_instrument_function;
     // __attribute__((optimize("-fno-strict-aliasing"))): the CIR builder forwards
     // this as an N_ATTR in the FUNC_DEF specs; c2mir suppresses TBAA per-function.
