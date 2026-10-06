@@ -4970,11 +4970,14 @@ struct machine_code_ctx {
    If the reservation is exhausted or unavailable, fall back to individual
    mappings as before.
 
-   x86-64 is excluded: its direct branches (call/jmp rel32) reach +-2GB, so
-   scattered code holders stay in range without a reservation, and the
-   pre-reservation individual-mapping path has always been correct there.
-   The 128MB reservation only helps reach-limited targets (aarch64 +-128MB),
-   while on a memory-pressured host it needlessly subtracts 128MB of commit
+   x86-64 is excluded, and its code holders are NOT kept within rel32 reach
+   of one another (a Windows address space puts them tens of GB apart).  A
+   branch between holders reaches through an absolute address there: a thunk
+   takes its long form when rel32 cannot reach (_MIR_redirect_thunk), a call
+   stays indirect when rel32 cannot reach (change_calls), and a wrapper jumps
+   to wrapper_end indirectly (_MIR_get_wrapper).  Lazy basic-block generation
+   (bb thunks, setup_rel32) still assumes rel32 reach on x86-64.  On a
+   memory-pressured host the 128MB reservation subtracts 128MB of commit
    headroom from the jitted program itself -- enough to flip a ~2GB-peak
    workload to an out-of-memory NULL allocation.  (madc refinement of the
    upstream PR; proposed back to it.)  */
