@@ -6,10 +6,11 @@
 #   chthonia-<ver>-linux-<arch>.tar.gz    unpacks into a madc folder (madc's
 #                                         relocatable tarball): tar -xzf … -C <madc folder>
 #
-#   scripts/package_linux.sh [-o DIST]
+#   scripts/package_linux.sh [--deb] [-o DIST]
 #
 #   MADC, MADCIDE_INCLUDE, MADCIDE   as build.sh and stage.sh
 #   PKG_RELEASE                      the package revision (default 1)
+#   --deb                            the .deb alone (another Ubuntu release's)
 #   -o DIST                          where the packages go (default dist/),
 #                                    their lines in its SHA256SUMS
 #
@@ -19,17 +20,29 @@
 # is Chthonia's default, so they also require the WebKitGTK 6.0 and GTK 4
 # libraries madc's GUI module binds. Each package is checked to hold exactly
 # the staged files, each readable by every user.
+#
+# One .deb per Ubuntu release, built on it against that release's madc: on
+# Ubuntu the revision is <rel>~ubuntu<VERSION_ID>, as madc's is, and the
+# Depends adds what the binary links at this host's versions
+# (dpkg-shlibdeps), so a package built for a newer release never installs
+# on an older one.
 set -eu
 . "$(dirname "$0")/common.sh"
 dist=$here/dist
+deb_only=0
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--deb) deb_only=1; shift ;;
 	-o) dist=$2; shift 2 ;;
-	*) echo "usage: $0 [-o DIST]" >&2; exit 2 ;;
+	*) echo "usage: $0 [--deb] [-o DIST]" >&2; exit 2 ;;
 	esac
 done
 ver=$(sed -n 's/^#define CHTHONIA_VERSION "\(.*\)"$/\1/p' "$here/chthonia_version.h")
 rel=${PKG_RELEASE:-1}
+debrel=$rel
+if [ "$( (. /etc/os-release 2>/dev/null; echo "${ID:-}") )" = ubuntu ]; then
+	debrel="$rel~ubuntu$( (. /etc/os-release; echo "$VERSION_ID") )"
+fi
 # shellcheck disable=SC2086
 mver=$($madc --version | sed -n 's/^madc \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' | head -1)
 if [ -z "$ver" ] || [ -z "$mver" ]; then
@@ -85,23 +98,39 @@ check_modes() {
 debroot=$work/deb
 stage "$debroot/usr"
 mkdir -p "$debroot/DEBIAN"
+# What the program links at this host's versions; madc's own libraries
+# (libmadc, libmadcide) resolve from the madc that built it (-l).
+mkdir -p "$work/shlibdeps/debian"
+printf 'Source: chthonia\n\nPackage: chthonia\nArchitecture: any\n' > "$work/shlibdeps/debian/control"
+shlibs=$(cd "$work/shlibdeps" && dpkg-shlibdeps -O --ignore-missing-info \
+		-l"$(madc_bindir)/../lib" "$debroot/usr/bin/chthonia" 2> shlibdeps.log |
+	sed -n 's/^shlibs:Depends=//p')
+if [ -z "$shlibs" ]; then
+	echo "package_linux.sh: dpkg-shlibdeps named no dependencies (see $work/shlibdeps/shlibdeps.log)" >&2
+	exit 1
+fi
 cat > "$debroot/DEBIAN/control" << EOF
 Package: chthonia
-Version: $ver-$rel
+Version: $ver-$debrel
 Section: devel
 Priority: optional
 Architecture: $deb_arch
 Maintainer: $maint
-Depends: madc (>= $mver), libwebkitgtk-6.0-4, libgtk-4-1
+Depends: madc (>= $mver), libwebkitgtk-6.0-4, libgtk-4-1, $shlibs
 Homepage: $home
 Description: $summary
 $(printf '%s\n' "$desc" | sed 's/^/ /')
 EOF
 plain_modes "$debroot"
-deb=chthonia_$ver-${rel}_$deb_arch.deb
+deb=chthonia_$ver-${debrel}_$deb_arch.deb
 dpkg-deb --build --root-owner-group "$debroot" "$dist/$deb" > /dev/null
 check "$deb" "$(dpkg-deb -c "$dist/$deb" | awk '$1 !~ /^d/ { print $6 }' | sed 's|^\./usr/||')" "$debroot/usr"
 check_modes "$deb" "$(dpkg-deb -c "$dist/$deb")"
+if [ "$deb_only" = 1 ]; then
+	refresh_sums "$dist" "$deb"
+	echo "package_linux.sh: $dist/$deb (madc >= $mver)"
+	exit 0
+fi
 
 # ---- rpm ----
 rpmtop=$work/rpm

@@ -90,6 +90,43 @@ jobs:
             dist/chthonia-*-linux-*.tar.gz
           if-no-files-found: error
 
+  linux-jammy:
+    # Ubuntu 22.04's .deb, built on 22.04 against madc's 22.04 .deb (one
+    # .deb per Ubuntu release, as madc's). Installed with apt for the build;
+    # checked as a package root, both packages unpacked into it.
+    runs-on: ubuntu-22.04
+    needs: madc
+    env:
+      MADC_TAG: ${{ needs.madc.outputs.tag }}
+      GH_TOKEN: ${{ secrets.MADC_RELEASES_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: madc, from its release's 22.04 .deb
+        run: |
+          gh release download "$MADC_TAG" -R "$MADC_REPO" -p 'madc_*~ubuntu22.04_amd64.deb' -D "$RUNNER_TEMP"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$RUNNER_TEMP"/madc_*~ubuntu22.04_amd64.deb xvfb
+          echo "MADC=/usr/bin/madc" >> "$GITHUB_ENV"
+      - name: build
+        run: bash scripts/build.sh
+      - name: tests
+        run: bash scripts/run_tests.sh
+      - name: window tests
+        run: xvfb-run -a bash scripts/run_tests.sh --gui
+      - name: package (.deb)
+        run: bash scripts/package_linux.sh --deb
+      - name: installed — both packages unpacked into one root
+        run: |
+          root=$RUNNER_TEMP/root
+          dpkg-deb -x "$RUNNER_TEMP"/madc_*~ubuntu22.04_amd64.deb "$root"
+          dpkg-deb -x dist/chthonia_*~ubuntu22.04_amd64.deb "$root"
+          bash scripts/check_install.sh "$root/usr" "$root/usr/lib/x86_64-linux-gnu"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-jammy
+          path: dist/chthonia_*~ubuntu22.04_amd64.deb
+          if-no-files-found: error
+
   windows:
     runs-on: windows-latest
     needs: madc
@@ -164,7 +201,7 @@ jobs:
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos]
+    needs: [linux, linux-jammy, windows, macos]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

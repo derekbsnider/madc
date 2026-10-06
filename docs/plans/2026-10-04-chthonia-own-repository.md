@@ -398,6 +398,72 @@ published.
 8. MSIX and the macOS `.app`/`.dmg`, in the Chthonia repository, as point
    releases if they are not ready for step 7.
 
+## 6a. The owner tests every environment first; Ubuntu 22.04 too (owner, 2026-10-05)
+
+"Before we push anything I want to test on all three environments, and this
+also means that the Ubuntu 22.04 version needs to be built so I can test it
+on my WSL." Nothing is pushed — develop, master, a tag, the Chthonia
+repository — until the owner has tested the built packages on Linux,
+Windows and macOS and says go. Steps 5–7 above follow that test.
+
+**One .deb per Ubuntu release** (owner, 2026-10-04), built ON the release:
+its glibc and libstdc++, and its own headers in the forest. On Ubuntu the
+revision is `<rel>~ubuntu<VERSION_ID>` for madc and Chthonia alike
+(`madc_0.102.0-1~ubuntu22.04_amd64.deb`): an older release's package sorts
+below a newer one's, so a distribution upgrade upgrades it, and Chthonia's
+`madc (>= 0.102.0)` holds for each. Each Depends is what the binaries link
+at the build host's versions (`dpkg-shlibdeps`), so a package for a newer
+release never installs on an older one. `package_release.sh --deb` and
+`package_linux.sh --deb` build the .deb alone; the rpm and the tarballs
+come from 24.04. `release.yml` gains `linux-packages-jammy`, Chthonia's CI
+`linux-jammy` (ubuntu-22.04 runners). Locally the 22.04 packages are built
+in a debootstrap jammy root on the build container (`/workspace/jammy`).
+
+**Measured in the jammy root (2026-10-05):** madc builds clean with g++ 11
+(`-Werror`), C programs run, the modules (madcgit, madcmark, madcwebview)
+build. C++ needed fixes:
+- glibc 2.35's `bits/floatn.h` typedefs `_Float128` (from `__float128`)
+  and the other `_FloatN` names for every C++ compile, since it predates
+  g++ 13. madc announces the host's g++ (11 there) but had g++ 13's C++
+  built-ins and no `__float128`. Fixed: a `_FloatN` spelling is a C++
+  built-in only from the g++ that added it (`_Float16` 12, the rest 13 —
+  `Program::floatn_keyword_active`), and `__float128` is a type; every
+  current lane (g++ 13, mingw 13, clang) is unchanged. Reducer
+  `tests/testfloatngxx`.
+- libstdc++ 11 reaches madc C++ defects that libstdc++ 13 does not. Each was
+  a general defect, reduced to a test that fails on 24.04 too and fixed there
+  (8c65eb4aa … b14b827f4, f29b0db8f, 87e86edc1, efaf8a592): template
+  instantiation (bindings, incomplete arguments, specializations, dependent
+  callables, destructor bodies), const objects baked only from constant
+  initializers, an opaque derived from a template parameter keyed by its
+  (name, index) — the `std::vector<std::string>` reallocation crash — and an
+  unevaluated call taking its selected overload's type (libstdc++'s
+  `__niter_base(reverse_iterator)`).
+- The tests/ suite (JIT) in the root: 405 failing at first; 49 at b14b827f4
+  (32 of them pin `-stdlib=libc++`, which the root lacks — the runner now
+  skips a test pinning a flavor its madc was not built with, d481e70bd);
+  16 + 1 timed out at cacbd8069; 1959 passed, 0 failed, 1 timed out at
+  32b3eba45 — the timeout testmadcide_plugin_host's purposeful plugin
+  crashes, whose ~330 MB cores a piped core_pattern collected (no core now,
+  efaf87abc); 1960 passed, 0 failed, 0 timed out at efaf87abc; 1991 passed,
+  0 failed, 0 timed out, 41 skipped at 22deed106 (after the c2mir-tests
+  fixes; 24.04 at the same content: 2023 passed, 9 skipped — the 32 more
+  skips are the tests pinning `-stdlib=libc++`). Two tests leaned on their caller: testfloatncomplex (C
+  content, now `--std=gnu11`) and testrepl_terminalkeys (TERM, now pinned).
+- The release build's forest pack: libstdc++ 11's `<algorithm>` reaches
+  `<functional>` (13's does not), so the 22.04 pack holds `std::function`'s
+  internals, and the pack gate refused it — `_Nocopy_types` (a pointer to
+  member function of a never-defined class) and `_Any_data` (a union with
+  member functions) had no restorable record, so `_Function_base` dropped.
+  Both were general forest defects, each reduced in `forest_bind_gate.sh`
+  and fixed (8f91aaab0 pointers to members, 5ea9971ef the union-layout
+  class). Then: closure drops 0, fill drops 0, `package_release.sh --deb`
+  rc 0, the .deb's install gate PASS, Depends `libc6 (>= 2.34), libgcc-s1
+  (>= 4.7), libstdc++6 (>= 11), libzstd1 (>= 1.4.0), zlib1g (>= 1:1.2.0)`.
+- GTK 4.6 has no `GtkFileDialog` (4.10): the file dialogs fall back to
+  `GtkFileChooserNative` there (`madcwebview_chrome.cc`), chosen at compile
+  time.
+
 ## 7. Settled (owner, 2026-10-04)
 
 - Licence: MPL-2.0, madc's.

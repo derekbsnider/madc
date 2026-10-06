@@ -20,8 +20,9 @@ libgtk-4-1`; Fedora: `webkitgtk6.0 gtk4`).
 
 Chthonia installs into the madc installation it runs on.
 
-- **Debian, Ubuntu**: with madc's `.deb` installed,
-  `sudo apt install ./chthonia_<version>-1_amd64.deb`.
+- **Ubuntu**: with madc's `.deb` for your Ubuntu release installed,
+  `sudo apt install ./chthonia_<version>-1~ubuntu<release>_amd64.deb` (each
+  Ubuntu release has its own, as madc does: `~ubuntu24.04`, `~ubuntu22.04`).
 - **Fedora**: with madc's `.rpm` installed,
   `sudo dnf install ./chthonia-<version>-1.x86_64.rpm`.
 - **madc's tarball** (Linux, macOS): unpack Chthonia's tarball into the madc

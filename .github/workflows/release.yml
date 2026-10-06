@@ -157,6 +157,43 @@ jobs:
             dist/madc-*-linux-x86_64.tar.gz
           if-no-files-found: error
 
+  linux-packages-jammy:
+    # Ubuntu 22.04's .deb (madc_<ver>-1~ubuntu22.04_amd64.deb), built ON
+    # 22.04: its glibc 2.35 and libstdc++, its g++ 11 headers in the forest
+    # (scripts/package_release.sh: one .deb per Ubuntu release). The rpm and
+    # the tarball come from the 24.04 job alone.
+    runs-on: ubuntu-22.04
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.build_ref || inputs.tag || github.ref_name }}
+      - name: dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq \
+            g++ make autoconf libzstd-dev zlib1g-dev libwebkitgtk-6.0-dev cmake
+      - name: configure
+        run: |
+          autoreconf -i
+          ./configure
+      - name: stage the minimal static libgit2 and cmark-gfm
+        run: |
+          echo "LIBGIT2_DIR=$HOME/libgit2" >> "$GITHUB_ENV"
+          echo "CMARK_GFM_DIR=$HOME/cmark-gfm" >> "$GITHUB_ENV"
+          LIBGIT2_DIR=$HOME/libgit2 bash scripts/stage_libgit2.sh host
+          CMARK_GFM_DIR=$HOME/cmark-gfm bash scripts/stage_cmark_gfm.sh host
+      - name: build + package + install-gate smoke (the .deb)
+        run: |
+          MADC_PKG_SKIP_SUITE=1 MADC_PKG_NO_RESTORE=1 \
+            bash scripts/package_release.sh --deb
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-packages-jammy
+          path: dist/madc_*~ubuntu22.04_amd64.deb
+          if-no-files-found: error
+
   windows-package:
     runs-on: ubuntu-24.04
     needs: gate
@@ -404,7 +441,7 @@ jobs:
 
   attach-release:
     runs-on: ubuntu-24.04
-    needs: [linux-packages, windows-package, macos-package, linux-brew-bottle]
+    needs: [linux-packages, linux-packages-jammy, windows-package, macos-package, linux-brew-bottle]
     steps:
       - uses: actions/download-artifact@v8
         with:

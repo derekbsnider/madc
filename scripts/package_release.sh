@@ -46,8 +46,17 @@
 #   /usr/share/doc/madc/changelog.gz            CHANGELOG.md
 #   /usr/share/doc/madc/examples/madc.ini       documented example config
 #
-# Output artifacts: madc_<ver>-<rel>_amd64.deb, madc-<ver>-<rel>.x86_64.rpm,
+# Output artifacts: madc_<ver>-<debrel>_amd64.deb, madc-<ver>-<rel>.x86_64.rpm,
 # madc-<ver>-linux-x86_64.tar.gz (+ README-linux.txt inside).
+#
+# One .deb per Ubuntu release, each built ON that release (its libc and
+# libstdc++, and its headers in the forest): on Ubuntu <debrel> is
+# <rel>~ubuntu<VERSION_ID> (0.102.0-1~ubuntu22.04), so an older release's
+# package sorts below a newer one's and a distribution upgrade upgrades it.
+# Its Depends is what the shipped binaries link, at this host's versions
+# (dpkg-shlibdeps). `--deb` builds the .deb alone — another Ubuntu release's
+# package, beside the full set built on the newest — and refreshes only its
+# line in dist/SHA256SUMS.
 #
 # libmadc.so.0 ships because madc -o executables reference it at run time
 # (DT_NEEDED); installing it to the system lib dir makes AOT output run
@@ -60,8 +69,19 @@
 set -e
 
 cd "$(dirname "$0")/.."
+DEB_ONLY=0
+case "${1:-}" in
+"") ;;
+--deb) DEB_ONLY=1 ;;
+*) echo "usage: $0 [--deb]" >&2; exit 2 ;;
+esac
 VER=$(cat VERSION)
 REL="${PKG_RELEASE:-1}"
+DEBREL=$REL
+os_id=$( (. /etc/os-release 2>/dev/null; echo "${ID:-}") )
+if [ "$os_id" = ubuntu ]; then
+    DEBREL="${REL}~ubuntu$( (. /etc/os-release; echo "$VERSION_ID") )"
+fi
 MAINT="Derek Snider <coding@psychedeliccanada.ca>"
 HOMEPAGE="https://github.com/derekbsnider/madc"
 SUMMARY="My Advanced Dialect of C - C/C++ JIT compiler and native toolchain"
@@ -197,22 +217,49 @@ DEBROOT=tmp/pkgroot/deb
 stage "$DEBROOT" "usr/lib/x86_64-linux-gnu" usr
 mkdir -p "$DEBROOT/DEBIAN"
 chmod 0755 "$DEBROOT/DEBIAN"
+# Depends: the libraries the shipped binaries link, at the versions this
+# host's packages carry (dpkg-shlibdeps over a minimal debian/control). The
+# webview module is left out: its WebKitGTK and GTK are the Recommends below
+# (madc never loads it itself). The modules' references to libmadc's own
+# symbols (the host process supplies them) are warnings, kept in the log.
+SHLIB=tmp/pkgroot/shlibdeps
+mkdir -p "$SHLIB/debian"
+printf 'Source: madc\n\nPackage: madc\nArchitecture: any\n' > "$SHLIB/debian/control"
+DEBLIB="$PWD/$DEBROOT/usr/lib/x86_64-linux-gnu"
+DEBBIN="$PWD/$DEBROOT/usr/bin"
+DEPENDS=$(cd "$SHLIB" && dpkg-shlibdeps -O --ignore-missing-info -l"$DEBLIB" \
+              "$DEBBIN/madc" "$DEBBIN/madcide" \
+              "$DEBLIB/libmadc.so.0" "$DEBLIB/libmadcide.so" \
+              "$DEBLIB/libmadcgit.so" "$DEBLIB/libmadcmark.so" 2> shlibdeps.log |
+          sed -n 's/^shlibs:Depends=//p')
+if [ -z "$DEPENDS" ]; then
+    echo "package_release: dpkg-shlibdeps named no dependencies (see $SHLIB/shlibdeps.log)" >&2
+    exit 1
+fi
 cat > "$DEBROOT/DEBIAN/control" << EOF
 Package: madc
-Version: ${VER}-${REL}
+Version: ${VER}-${DEBREL}
 Section: devel
 Priority: optional
 Architecture: amd64
 Maintainer: ${MAINT}
-Depends: libc6 (>= 2.38), libstdc++6, libgcc-s1, zlib1g, libzstd1
+Depends: ${DEPENDS}
 Recommends: libwebkitgtk-6.0-4, libgtk-4-1
 Homepage: ${HOMEPAGE}
 Description: ${SUMMARY}
 $(printf '%s\n' "$DESC_BODY" | sed 's/^/ /')
 EOF
 printf 'activate-noawait ldconfig\n' > "$DEBROOT/DEBIAN/triggers"
-DEB="dist/madc_${VER}-${REL}_amd64.deb"
+DEB="dist/madc_${VER}-${DEBREL}_amd64.deb"
 dpkg-deb --build --root-owner-group "$DEBROOT" "$DEB"
+if [ "$DEB_ONLY" = 1 ]; then
+    echo "== install gate (the .deb) =="
+    bash scripts/package_install_gate.sh deb "$DEB"
+    ( cd dist && { grep -v "  $(basename "$DEB")\$" SHA256SUMS 2>/dev/null || true
+                   sha256sum "$(basename "$DEB")"; } > SHA256SUMS.new && mv SHA256SUMS.new SHA256SUMS )
+    echo "packaged $DEB (Depends: $DEPENDS)"
+    exit 0
+fi
 
 # ---------- rpm ----------
 RPMTOP=$(pwd)/tmp/rpmtop
@@ -362,7 +409,7 @@ bash scripts/package_install_gate.sh rpm "dist/madc-${VER}-${REL}.x86_64.rpm"
 bash scripts/package_install_gate.sh tar "dist/$TROOT.tar.gz"
 
 # ---------- checksums ----------
-( cd dist && sha256sum "madc_${VER}-${REL}_amd64.deb" "madc-${VER}-${REL}.x86_64.rpm" \
+( cd dist && sha256sum "$(basename "$DEB")" "madc-${VER}-${REL}.x86_64.rpm" \
                        "$TROOT.tar.gz" > SHA256SUMS )
 echo "== dist/ =="
 ls -la dist/
