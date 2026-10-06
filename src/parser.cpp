@@ -21817,6 +21817,17 @@ DataDef *Program::array_operand_type(TokenBase *e)
 	    base = tv->var.type;
 	    array = true;
 	}
+	// A narrow string literal denotes its array of char, the bytes and
+	// the terminating NUL (C11 6.4.5p6, [lex.string]/6): `&"ab"` points
+	// at a char[3]. madc keeps it as a variable of the decayed pointer
+	// type, so the element is that pointer's pointee.
+	else if ( tv->var.is_string_literal() )
+	    if ( DataDefPTR *lp = pointer_dd_of(tv->var.type) )
+	    {
+		dims.assign(1, tv->var.literal_text().size() + 1);
+		base = lp->base_type;
+		array = true;
+	    }
     }
     else if ( TokenSubscript *ts = root->as_subscript_tok() )
     {

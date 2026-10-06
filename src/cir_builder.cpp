@@ -341,7 +341,9 @@ std::string CirBuilder::var_emit_name(const Variable &v) const
 // TU ever completed the declaration.
 void CirBuilder::note_global_reference(const Variable &v)
 {
-	if (v.flags & (vfLOCAL | vfPARAM))
+	// A string literal's storage is the literal (var_storage_node): no
+	// extern declaration names it.
+	if ((v.flags & (vfLOCAL | vfPARAM)) || v.is_string_literal())
 		return;
 	std::string en = var_emit_name(v);
 	// Env-gated probe (MADC_XTEST_NGR=<substr>): the record decision per
@@ -25508,10 +25510,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			    && tv->var.type->is_integer() && !tv->var.type->is_pointer()
 			    && !tv->var.is_fixed_array() && tb != m_object_designator)
 				return constant_value_literal(tv->var, tb);
-			if (tv->var.is_string_literal()) {
-				const std::string &content = tv->var.literal_text();
-				return str(content.c_str(), content.size() + 1, tb);
-			}
+			if (tv->var.is_string_literal())
+				return var_storage_node(tv->var, tb);
 			// The same fold for a set()-valued `const char *` constant —
 			// a host-installed expression/scope binding. One owner:
 			// baked_cstr_constant (the subscript and deref arms bake
@@ -34702,8 +34702,15 @@ bool CirBuilder::late_bound_object(const Variable &v) const
 // over the session's cell for it (`extern void *__madc_cell_<sym>;`). The
 // session binds the cell once the object is defined; a read before that
 // fails when it runs, with ld's words, and returns to the entry's boundary.
+// A narrow string literal's storage is the literal itself — its array, which
+// a value use decays and `&"ab"` addresses (C11 6.4.5p6); its synthetic
+// `__literal__` variable names nothing in the module.
 node_t CirBuilder::var_storage_node(const Variable &v, TokenBase *origin)
 {
+	if (v.is_string_literal()) {
+		const std::string content = v.literal_text();
+		return str(content.c_str(), content.size() + 1, origin);
+	}
 	if (!late_bound_object(v))
 		return id(var_emit_name(v).c_str(), origin);
 	const std::string sym = var_emit_name(v);

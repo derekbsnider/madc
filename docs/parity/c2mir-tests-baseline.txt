@@ -51,6 +51,5 @@ lacc/function-incomplete.c
 lacc/initialize-array.c
 lacc/initialize-object.c
 lacc/initialize-string.c
-lacc/string-addr.c
 new/ssa-ccp.c
 new/vector-size.c

@@ -1,0 +1,19 @@
+// A string literal is an lvalue array of char (C11 6.4.5p6, 6.5.1p4), so
+// `&"Hello"` is a pointer to that array, `char (*)[6]`, and `*p` is the
+// array again. madc typed `&"Hello"` as a pointer to the decayed `char *`
+// (`sizeof *&"Hello"` measured 8, not 6) and emitted the literal's
+// synthetic `__literal__Hello` variable as storage that nothing defines
+// (MIR: undefined import).
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect lines.
+#include <stdio.h>
+char (*c)[] = &"Hello";
+char (*d)[6] = &"World";
+int main(void)
+{
+	char (*e)[3] = &"ab";
+	printf("addr: %s %s %s %zu %zu %c\n", *c, *d, *e, sizeof(*d),
+	       sizeof(*e), (*d)[1]);
+	printf("size: %zu %zu %zu\n", sizeof(*&"Hello"), sizeof(&"Hello"),
+	       sizeof(**&"Hello"));
+	return 0;
+}
