@@ -742,6 +742,34 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B185. `std::function<R(A)>` has no `operator()`
+
+```cpp
+#include <functional>
+#include <cstdio>
+int twice(int x) { return 2 * x; }
+int main()
+{
+	std::function<int(int)> f = twice;
+	std::printf("set: %d\n", f ? 1 : 0);
+	std::printf("call: %d\n", f(21));
+	return 0;
+}
+```
+
+- Found 2026-10-06 while measuring the Ubuntu 22.04 forest pack (libstdc++
+  11's `<algorithm>` reaches `<functional>`; 24.04's does not).
+- g++ 13 (`-std=c++17`): `set: 1` / `call: 42`. madc (v0.101.0 and HEAD,
+  24.04, libstdc++ 13): `f(21)` is "Malformed expression: 2 operands with no
+  operator between them"; `f.operator()(21)` is "Unidentified member
+  'operator()' in 'function_int32_t__int32_t_'". A user functor's `g(21)`
+  compiles in the same file.
+- Where: the instantiation of libstdc++'s partial specialization
+  `function<_Res(_ArgTypes...)>` — its member set lacks `_Res
+  operator()(_ArgTypes... __args) const`, the call operator whose parameter
+  list is a pack expansion over the function type's parameters.
+- Not a 22.04 ↔ 24.04 parity defect (both fail the same way).
+
 ### B184. A `std::string` reached through a pointer member and a subscript has no members
 
 ```cpp
@@ -850,6 +878,40 @@ int main(void) { printf("%d\n", __has_attribute(cleanup)); return 0; }
 - Where: the preprocessor answers `__has_attribute(...)` only while
   evaluating a conditional directive; in ordinary text the name reaches the
   parser unexpanded.
+
+### B176. A user class template's member function bodies are instantiated with the class
+
+```cpp
+#include <stdio.h>
+template<typename T> struct holder { T *p; int get() const { return p->v; } };
+struct node;
+holder<node> h;
+struct node { int v; };
+int main()
+{
+	node n;
+	n.v = 5;
+	h.p = &n;
+	printf("get: %d\n", h.get());
+	return 0;
+}
+```
+
+- Found 2026-10-05 while writing the Ubuntu 22.04 template-instantiation
+  reducer (`tests/testtmplincompletearg`), `bin/madc` built from `e434684a0`
+  plus that working tree, `--std=c++17`.
+- g++ 13 and clang++ 18: `get: 5`. madc refuses it: `2:72: error: no member
+  named 'v'` — `holder<node>`'s by-value declaration instantiates the class
+  (right, [temp.inst]/2) and with it `get()`'s body (wrong, [temp.inst]/4: a
+  member function's definition is instantiated only where it is used),
+  while `node` is still incomplete.
+- Where: `TokenCLASS::parse`'s deferred method bodies stash LAZILY only for
+  a body from a system header (`is_system_header_path(b.file)`); every other
+  body parses with the class. libstdc++'s own templates are lazy for that
+  reason; a user template is not.
+- The fix moves the laziness from the file test to every template
+  instantiation — a parse-order change across user C++, so it gets its own
+  focused session (owner, 2026-09-13).
 
 ### B175. A REPL entry that starts with a class template's qualified call is refused
 
@@ -2006,6 +2068,35 @@ int main(void) { printf("a32: %zu %zu\n", sizeof(struct L), __alignof__(struct L
   (`lowering-vs-raising.md` Tier 2/3), not only the check.
 
 ## Diagnostics
+
+### B177. A function template instantiation that fails is dropped without a diagnostic
+
+```cpp
+#include <stdio.h>
+struct A { int x; };
+template<typename T> int f(const T &t) { return t.nope; }
+int main()
+{
+	A a;
+	a.x = 1;
+	printf("f: %d\n", f(a));
+	return 0;
+}
+```
+
+- Found 2026-10-05 with B176, while reducing `sizeof(typename S::value_type)`
+  in a function template body (fixed in its own commit,
+  `tests/testsizeoftypenamefntmpl`).
+- g++ 13: `error: 'const struct A' has no member named 'nope'` at 3:51;
+  clang++ 18: `error: no member named 'nope' in 'A'`. madc: `MIR error:
+  import of undefined item f` — the call's instantiation failed, `-v` shows
+  `fn-template instantiation ::f<A,>|… FAILED (placeholder kept)`, and the
+  failure reaches the user only as the missing definition at link time,
+  three layers from the cause.
+- Where: the function-template instantiation's failure arm keeps the
+  placeholder declaration (SFINAE needs the quiet failure while overloads
+  are chosen); once the call is committed to that candidate, the failure is
+  the program's error, and its diagnostic is the one to report.
 
 ### B178. A capturing lambda passed by value has no closure object
 
