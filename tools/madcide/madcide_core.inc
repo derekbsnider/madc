@@ -3965,12 +3965,14 @@ bool IdeSession::lens_put(long doc, var &ev, long side)
     }
     var before;
     ui::text(before, w, subject);
-    // a cut's clipboard takes what the view shows, as a copy there does
+    // a cut's clipboard takes what the view shows, as a copy there does:
+    // the copy rule over the view's own block once the edit is in (the
+    // lens buffer keeps the shown text until lens_show)
     long code = ev_code(ev);
-    bool cuts = code == cmdCUT || code == cmdBLOCKDEL;
-    var shownclip;
-    if ( cuts && copy_selection(w, es, v["vbuf"].as_integer(), dc) )
-	ui::get(shownclip, w, es, "clip");
+    long vbuf = v["vbuf"].as_integer();
+    var shown;
+    bool cuts = (code == cmdCUT || code == cmdBLOCKDEL)
+	&& selection_range(shown, w, es, dc);
     // the lens steps aside for the one event: the View on its source, the
     // caret and block in stored offsets, the file's own access verdict
     view_row_source(w, es, v);
@@ -3982,9 +3984,12 @@ bool IdeSession::lens_put(long doc, var &ev, long side)
     bool cont = apply_ide_event(doc, ev);
     if ( lens_conceals(lang) && code != cmdUNDO && code != cmdREDO )
 	lens_put_repair(w, es, subject, before, seq0);
-    if ( !shownclip.is_null() )
+    if ( cuts )
     {
-	ui::set(w, es, "clip", shownclip);
+	ui::set(w, es, "mark", dm);
+	ui::set(w, es, "bend", db);
+	copy_selection(w, es, vbuf, dc);
+	select_clear(w, es);
 	clip_publish(w, es);
     }
     // the lens returns over the edited text, its caret projected
