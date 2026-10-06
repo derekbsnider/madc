@@ -1886,8 +1886,9 @@ DataDef *CirFrozenForest::restored_def_by_tid(uint32_t tid) const
 // v22 (iostream): POLYMORPHIC classes (vtable / vptr slot) and
 // virtual-base-carrying classes are ADMITTED — the records carry the full
 // vtable state (own_block_off, vbaserec runs, vgrouprec runs) and pass 2
-// restores it verbatim. Union-layout classes stay fenced (their own
-// follow-on), and their dependents cleanly lack, like the v6 fixpoint.
+// restores it verbatim. A union-layout class (a union with member functions:
+// libstdc++'s _Any_data, std::function's buffer) is admitted too: its members
+// overlap by their recorded offsets, restored verbatim.
 struct ForestRecordable {
 	std::vector<uint32_t> agg_ids;	// slot order == id-stamp order
 	std::set<uint32_t> recordable;
@@ -1898,7 +1899,7 @@ struct ForestRecordable {
 	// generation). Slot values feed madc::dis::arena_id_of.
 	std::vector<uint32_t> typedef_slots;	// DK_TYPEDEF
 	std::vector<uint32_t> enum_slots;	// DK_ENUM
-	std::vector<uint32_t> derived_slots;	// DK_PTR/REF/CONST/CARRAY/FPTR
+	std::vector<uint32_t> derived_slots;	// DK_PTR/REF/CONST/CARRAY/FPTR/MEMBERPTR
 	std::vector<uint32_t> ns_slots;		// DK_NSLINK/NSBIND/DEFBODY
 	std::vector<uint32_t> free_func_slots;	// DK_FUNC with DF_IS_FREE_FUNC
 	// Max __anon_N across named records — the anon-tag gensym floor the
@@ -1976,9 +1977,6 @@ static const ForestRecordable &forest_recordable_cached(
 		// Anything half-parsed WITH members/bases stays dropped.
 		if (!(r.flags & madc::dis::DF_IS_COMPLETE)
 		    && (r.members_count || r.bases_count))
-			continue;
-		if (r.kind == madc::dis::DK_CLASS
-		    && (r.flags & madc::dis::DF_UNION_LAYOUT))
 			continue;
 		e.agg_ids.push_back(tid);
 	}
@@ -2620,10 +2618,12 @@ void CirFrozenForest::materialize_pass()
 		if (r.kind == madc::dis::DK_CLASS)
 			sdd = new DataDefCLASS(std::string(nm), r.size,
 					       DataType::dtRESERVED);
-		else {
+		else
 			sdd = new DataDefSTRUCT(std::string(nm), r.size);
-			sdd->union_layout = (r.flags & madc::dis::DF_UNION_LAYOUT) != 0;
-		}
+		// A union with member functions is a CLASS with union layout
+		// (libstdc++'s _Any_data); its members overlap by their recorded
+		// offsets, restored verbatim like every aggregate's.
+		sdd->union_layout = (r.flags & madc::dis::DF_UNION_LAYOUT) != 0;
 		sdd->definition_origin = (r.flags & madc::dis::DF_TU_ROOT_ORIGIN)
 		? AggregateDefinitionOrigin::TranslationUnitRoot
 		: AggregateDefinitionOrigin::Included;
