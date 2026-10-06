@@ -5,8 +5,9 @@
 # it avoids.
 #
 #   scripts/chthonia_sanitize_check.sh
-#       madc's moving set (tools/chthonia/, tools/madcide/plugins/chthonia/):
-#       the files that become Chthonia's repository (run by `make gates`)
+#       its own controls alone (run by `make gates`): madc carries no
+#       Chthonia files, so the gate keeps the checker honest for the
+#       checkouts and hooks that run it
 #   scripts/chthonia_sanitize_check.sh --checkout DIR
 #       a Chthonia checkout, before every push: its tracked files, the agent
 #       files it must not track, and every commit message
@@ -109,8 +110,8 @@ case "${1:-}" in
 	what="the checkout $dir"
 	;;
 "")
-	files=$(git ls-files tools/chthonia tools/madcide/plugins/chthonia)
-	what="madc's moving set (tools/chthonia, tools/madcide/plugins/chthonia)"
+	files=
+	what="its controls"
 	;;
 *)
 	echo "usage: $0 [--checkout DIR | --message FILE]" >&2

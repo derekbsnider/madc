@@ -23,8 +23,8 @@
 #                                             import madcwebview) — macOS 13.3+
 #   madc-<ver>-macos-<arch>/lib/libmadcgit.dylib   the madcgit module (git::, libgit2 linked in)
 #   madc-<ver>-macos-<arch>/lib/libmadcmark.dylib  the madcmark module (markdown::, cmark-gfm linked in)
-#   madc-<ver>-macos-<arch>/bin/madcide       the IDE, AOT-compiled by bin/madc  } darwin host of
-#   madc-<ver>-macos-<arch>/bin/chthonia      the learning IDE (a window)       } this arch only
+#   madc-<ver>-macos-<arch>/bin/madcide       the IDE, AOT-compiled by bin/madc (darwin host of this arch only)
+#   madc-<ver>-macos-<arch>/lib/libmadcide.dylib  madcide's base as a library, for a product built on it
 #   madc-<ver>-macos-<arch>/share/madcide/    madcide's data (profiles, plugins, plugin headers,
 #                                             verbs, checks — scripts/stage_madcide_data.sh)
 #   madc-<ver>-macos-<arch>/share/man/man1/madc.1.gz (+ madcide.1.gz with the IDE)
@@ -158,26 +158,24 @@ package_arch() {
         exit 1
     fi
 
-    # madcide and chthonia (owner ruling 2026-09-01: the packages ship the
-    # IDE; chthonia plan §7 D4), AOT-compiled by THIS arch's release madc and
+    # madcide (owner ruling 2026-09-01: the packages ship the IDE; chthonia
+    # plan §7 D4), AOT-compiled by THIS arch's release madc, libmadcide, and
     # the plugins built by that madcide — the package_release.sh shape. Only
     # a darwin host of this arch can run them (building a plugin runs the
     # built madcide), so a cross host packages the compiler alone and says so.
     local ide=0
     if [ "$HOST_OS" = Darwin ] && [ "$(uname -m | sed 's/x86_64/x86-64/')" = "$bin_arch" ]; then
         ide=1
-        echo "== madcide + chthonia + plugins ($bin_arch, AOT via $bin) =="
-        rm -f "tmp/madcide-pkg-$bin_arch" "tmp/chthonia-pkg-$bin_arch"
+        echo "== madcide + libmadcide + plugins ($bin_arch, AOT via $bin) =="
+        rm -f "tmp/madcide-pkg-$bin_arch"
         mkdir -p tmp
         "$bin" -o "tmp/madcide-pkg-$bin_arch" tools/madcide/madcide.mad
         # libmadcide (madcide's base as a library) into this madc's own lib
-        # directory (bin/../lib), where chthonia's manifest "libs" finds it.
+        # directory (bin/../lib), where a product's manifest "libs" finds it.
         "$bin" -shared -o lib/libmadcide.dylib tools/madcide/madcide_base.mad
-        MADC="$bin" MADCIDE_INCLUDE=tools/madcide/include \
-            bash tools/chthonia/scripts/build.sh -o "tmp/chthonia-pkg-$bin_arch"
         scripts/build_shipped_plugins.sh "tmp/plugins-pkg-$bin_arch" "tmp/madcide-pkg-$bin_arch"
     else
-        echo "package_release_macos: SKIP madcide/chthonia for $bin_arch — they are built by the $bin_arch release madc on a darwin host of that arch (the release.yml mac job); this tarball carries the compiler alone"
+        echo "package_release_macos: SKIP madcide for $bin_arch — they are built by the $bin_arch release madc on a darwin host of that arch (the release.yml mac job); this tarball carries the compiler alone"
     fi
 
     rm -rf "$stage"
@@ -196,7 +194,6 @@ package_arch() {
     gzip -9n < docs/man/madc.1 > "$stage/$root/share/man/man1/madc.1.gz"
     if [ "$ide" = 1 ]; then
         install -m 755 "tmp/madcide-pkg-$bin_arch" "$stage/$root/bin/madcide"
-        install -m 755 "tmp/chthonia-pkg-$bin_arch" "$stage/$root/bin/chthonia"
         install -m 755 lib/libmadcide.dylib "$stage/$root/lib/libmadcide.dylib"
         # madcide's data under share/madcide, where an installed madcide
         # looks (<exedir>/../share/madcide): the one staging owner.
@@ -250,13 +247,6 @@ package_arch() {
 madcide (bin/madcide): the madc IDE — a terminal editor (bin/madcide
 file.c), or a window with --gui. Its keybinding profiles, plugins and
 the line editor's verbs live in share/madcide next to this README.
-
-chthonia (bin/chthonia): the easy GUI to learn C and C++, built on
-madcide and laid out for learning — the editor, the Shell (a C REPL) below
-it, the Symbols view beside it, Run (F5) and Stop on the toolbar. It
-opens a window by default (--tui asks for the terminal):
-
-    bin/chthonia file.c
 "
     fi
     cat > "$stage/$root/README-macos.txt" <<EOF

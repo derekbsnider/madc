@@ -7,12 +7,11 @@
 # extraction on Windows) containing
 #   madc-<ver>-windows-x86_64/bin/madc.exe            the thin CLI (its engine and forest are libmadc-0.dll)
 #   madc-<ver>-windows-x86_64/bin/madcide.exe         the IDE, AOT-compiled by that PE under wine
-#   madc-<ver>-windows-x86_64/bin/chthonia.exe        the learning IDE built on madcide (a window by default)
 #   madc-<ver>-windows-x86_64/bin/profiles/           madcide keybinding/theme profiles (data beside the exe)
 #   madc-<ver>-windows-x86_64/bin/verbs/, checks/     the line editor's verb and check bodies
 #   madc-<ver>-windows-x86_64/bin/libstdc++-6.dll     staged UCRT-flavor C++ runtime
 #   madc-<ver>-windows-x86_64/bin/libwinpthread-1.dll staged UCRT winpthreads
-#   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine carrying the forest (win twin of libmadc.so.0; madc.exe, AOT output, madcide and chthonia bind it)
+#   madc-<ver>-windows-x86_64/bin/libmadc-0.dll       the full madc engine carrying the forest (win twin of libmadc.so.0; madc.exe, AOT output and madcide bind it)
 #   madc-<ver>-windows-x86_64/bin/madcwebview.dll     the platform webview library (WebView2 + native chrome; GUI programs: import madcwebview)
 #   madc-<ver>-windows-x86_64/bin/madcgit.dll         the madcgit module (git::, libgit2 linked in)
 #   madc-<ver>-windows-x86_64/bin/madcmark.dll        the madcmark module (markdown::, cmark-gfm linked in)
@@ -86,16 +85,10 @@ wineserver -p || true
 rm -f tmp/madcide-pkg.exe
 ( ulimit -t 600; timeout 600 wine "$BIN" -o tmp/madcide-pkg.exe tools/madcide/madcide.mad )
 # madcide.dll: madcide's base as a library, built into the release set
-# beside madc.exe — where a PE finds its DLLs, and where chthonia's
+# beside madc.exe — where a PE finds its DLLs, and where a product's
 # manifest "libs" finds it.
 echo "== madcide.dll (via the release PE under wine) =="
 ( ulimit -t 600; timeout 600 wine "$BIN" -shared -o "$SET/madcide.dll" tools/madcide/madcide_base.mad )
-# chthonia.exe: the product built on madcide's base (tools/chthonia/
-# chthonia.json, a GUI-subsystem image: no console window).
-echo "== chthonia.exe (AOT via the release PE under wine) =="
-rm -f tmp/chthonia-pkg.exe
-( ulimit -t 600; MADC="wine $BIN" MADCIDE_INCLUDE=tools/madcide/include \
-	timeout 600 bash tools/chthonia/scripts/build.sh -o tmp/chthonia-pkg.exe )
 # The shipped plugins: a plugin with code carries its library (a .dll),
 # built by this madcide.exe under wine (plan §41.11a step 6).
 echo "== madcide plugins (each with code built by the packaged madcide.exe) =="
@@ -105,7 +98,6 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/$ROOT/bin" "$STAGE/$ROOT/lib" "$STAGE/$ROOT/THIRD_PARTY_NOTICES"
 install -m 755 "$BIN" "$STAGE/$ROOT/bin/madc.exe"
 install -m 755 tmp/madcide-pkg.exe "$STAGE/$ROOT/bin/madcide.exe"
-install -m 755 tmp/chthonia-pkg.exe "$STAGE/$ROOT/bin/chthonia.exe"
 install -m 755 "$SET/madcide.dll" "$STAGE/$ROOT/bin/madcide.dll"
 # madcide's data beside the exe — PE binding's adjacency rule extended to
 # data: the search arms end at <exedir> (resolve_profile_dir,
@@ -176,7 +168,7 @@ The install is self-contained: the C standard headers (mingw-w64/UCRT)
 and the frozen C++ standard-library groves (<string>, <vector>,
 <iostream>, ...) are embedded in libmadc-0.dll, so no compiler
 installation is required — for madc.exe and for every program built on
-it (madcide.exe, chthonia.exe, your own).
+it (madcide.exe, your own).
 Headers outside the packed set are not available on a machine without
 them and fail with a clear error.
 
@@ -214,13 +206,6 @@ DLLs. madcide's window mode is one:
 
 It needs the Microsoft Edge WebView2 Runtime, which Windows 11 (and any
 machine with Microsoft Edge) already has.
-
-chthonia (bin\\chthonia.exe): the easy GUI to learn C and C++, built on
-madcide and laid out for learning — the editor, the Shell (a C REPL) below
-it, the Symbols view beside it, Run (F5) and Stop on the toolbar. It
-opens a window; give it a file to open:
-
-    bin\\chthonia.exe file.c
 
 madc.ini.example (this folder) is a documented example configuration
 file; to use one, copy it to madc.ini next to where you run madc, or

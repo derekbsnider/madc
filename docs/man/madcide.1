@@ -70,20 +70,16 @@ An unknown option is refused with the usage (exit status 2).
 The profile to open under: a bundle naming the keybindings, layout,
 menu, colour scheme and status line, and its settings' defaults.
 Without the option, a program invoked under the name of a profile opens
-under that profile: a link named
-.B chthonia
-to
+under that profile: a link to
 .B madcide
-(or a copy of the binary with that name) needs no option. Otherwise the
+named after an installed bundle (or a copy of the binary with that name)
+needs no option. Otherwise the
 default is the
 .I profile
 setting in
 .IR settings.json ,
 else
 .BR default .
-.B chthonia
-is the learning profile: its own keys (the Chthonia key style), the editor
-with the REPL below it, and a beginner's menu.
 .TP
 .B \-\-gui
 Open in a window (the platform webview).
@@ -91,10 +87,8 @@ Open in a window (the platform webview).
 .B \-\-tui
 Open in the terminal.
 .B madcide
-does without an option;
-.BR chthonia ,
-the learning IDE built as its own program on madcide's base, opens a
-window without one.
+does without an option; a product built as its own program on madcide's
+base chooses its own default.
 .TP
 .B \-\-line
 The line editor: commands from standard input, the screen's text to

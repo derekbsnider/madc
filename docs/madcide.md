@@ -49,14 +49,13 @@ Every key binding is data in `tools/madcide/profiles/*.keys`: `joe` (the
 default — the full JOE/WordStar set), `pico`, `emacs`, `neovim` (a modal
 personality that starts in normal mode), `chthonia` (Chthonia's keys,
 after Thonny's: Ctrl+S, Ctrl+Z/Y, Ctrl+X/C/V, Ctrl+A, F5 to run, Ctrl+F2 to
-stop; chthonia's default) and `vscode` (VS Code's default keymap; Ctrl+K opens its chords).
+stop) and `vscode` (VS Code's default keymap; Ctrl+K opens its chords).
 Each lists, in its header, the keys whose command madcide does not have
 yet. `^T` opens Options; its Keymap
 row cycles profiles for the session; `^K H` shows the loaded profile's own
-bindings. View ▸ Key Bindings… (chthonia's Tools ▸ Key bindings…, the
-`keystyle` command) lists the profiles by their display names and keeps the
+bindings. View ▸ Key Bindings… (the `keystyle` command) lists the profiles by their display names and keeps the
 one chosen for the bundle in use, in `settings.json`'s `"keys"` object
-(`"keys": { "chthonia": "emacs" }`), so the next session of that bundle
+(`"keys": { "default": "emacs" }`), so the next session of that bundle
 opens with it. A profile's display name is its `@title NAME` line; a
 `.keys` file dropped into the profile directory joins the list.
 The JOE defaults most worth knowing:
@@ -165,8 +164,7 @@ menu row's command id resolves the same way and an unknown id refuses the
 menu naming its line. A row may name its picture, `{ICON}` after the
 command (`new`, `open`, `save`, `run`, `debug`, `stop`, `step-over`,
 `step-into`, `step-out`, `breakpoints`); an unknown icon refuses the menu
-the same way. The `toolbar` menu places the window's toolbar buttons
-(chthonia's: New, Open, Save, Run, Stop). A button with an icon shows the
+the same way. The `toolbar` menu places the window's toolbar buttons. A button with an icon shows the
 picture, with its label and key as the tooltip. `{run Run}` adds an arrow
 that drops the file's Run menu down as a list (the `menushow Run` command),
 and a `toolbar -` row is a divider.
@@ -208,8 +206,8 @@ A gui project's Windows executable gets the GUI subsystem (no console
 window at start — what `-mwindows` does for a single file), and Run sends
 its output to the window's Output tab instead of the Terminal.
 
-Chthonia's Windows executable is such a program. Its window opens with no
-console, and every other face — `--help`, a refusal, `--tui`, `--line`,
+A product built on madcide's base as a gui program is such a program. Its
+window opens with no console, and every other face — `--help`, a refusal, `--tui`, `--line`,
 `-c`, the servers — attaches to the console it was started from
 (`madc::console_attach`). The window never attaches, so closing the
 command prompt it came from leaves it running.
@@ -245,7 +243,7 @@ diagnostics, outline, colours, Build and Run), and the REPL runs it.
 `madc`, …) sets it on the command line; without that, settings.json's
 `"std"` does. Unset, each file's family decides: `hello.c` is C17 and its
 REPL a C one, `x.cpp` is C++17 and a `.mad` file is madc. Language… (the
-`language` command, in the Build menu and chthonia's Run menu) changes it in
+`language` command, in the Build menu) changes it in
 a running session. It re-parses every buffer, restarts the REPL and keeps
 the choice in settings.json, and its **By file** row returns to each file's
 own (`language file`).
@@ -258,13 +256,6 @@ forked — nothing execs), Stop, and with a manifest open the project-wide
 Check / Build / Run plus the manifest's own `commands`. Diagnostics land in
 the Diagnostics pane (terminal) or the Problems tab (window); a failed
 check or build opens it, and Enter on a row goes to the line.
-
-Chthonia has the same: its Build menu lists these rows (Ctrl+B in the
-Chthonia keys, Ctrl+Shift+B in the VS Code keys, opens them as a list), its
-File menu has Project…, Open Project… and Add Current File to Project, and
-its bottom panel has Output and Terminal tabs beside the Shell and
-Problems. F5 (Run ▸ Run) runs the file in the Shell, where Symbols shows
-its names; Build ▸ Run starts the built program in the Terminal tab.
 
 In the terminal, Run hands the program the real terminal (JOE's `^K Z`
 shape) and returns after a key press. In the window, the bottom panel
@@ -292,12 +283,12 @@ prints for the same question:
 A file open in the editor answers with its live text, so `diff` and `blame`
 include unsaved edits. Dates are git's relative ones (`3 days ago`).
 
-The View menu shows the same reads for the file you are editing (madcide's
-and Chthonia's): **Changes** opens its diff against the last commit in a
+The View menu shows the same reads for the file you are editing:
+**Changes** opens its diff against the last commit in a
 read-only `[changes]` buffer; **History…** lists its commits, and choosing
 one opens the file as that commit holds it, read-only (`[NAME @ SHA]`);
 **Blame line** says on the status line who last changed the caret's line.
-The status line's `%G` seat (Chthonia's shows it beside Row and Col) is the
+The status line's `%G` seat is the
 branch, with `*` when the file differs from its last commit.
 
 ## Help
@@ -310,8 +301,8 @@ own. Choosing a link opens its topic, and every topic but the contents
 starts with a row back to the contents. `helptopic NAME` (the palette's
 **Help Topic…**) opens a topic by name.
 
-A profile contributes its help as a directory: `"help": "chthonia"` in
-`chthonia.plugin` names `chthonia.help/` beside the manifest, one
+A profile contributes its help as a directory: `"help": "NAME"` in
+`NAME.plugin` names `NAME.help/` beside the manifest, one
 `TOPIC.md` per topic, starting at `contents.md`. A topic the profile does
 not have comes from the default profile's (`default.help/`). One topic is
 generated instead of read: `menus` (link to it as `[Menus and
@@ -593,15 +584,8 @@ quote or a trailing backslash is refused, and the old words stay; an empty
 answer clears them. They last until the session ends. Build ▸ Run does not
 pass them.
 
-The shipped `chthonia` plugin carries code: the Symbols view in chthonia's
-right sidebar (View ▸ Symbols); the sidebar's second tab is the
-Outline (View ▸ Outline, which toggles it; toggled off, Symbols shows
-again). It lists the names the REPL session
-defined, each with its type and value (`count int 3`, `square int (int)`),
-refreshed after every entry and every F5 run and emptied when the session
-stops; choosing a name the program's file defined goes to its line. The
-packages ship it as its source plus its library, built by the packaged
-madcide.
+A packaged plugin with code ships as its source plus its library, built by
+the packaged madcide.
 
 A library built against another plugin API version (it says both), or one
 that cannot be loaded or has no `madcide_plugin_activate`, is refused, and

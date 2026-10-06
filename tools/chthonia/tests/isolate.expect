@@ -1,2 +1,0 @@
-isolate-open: transport-host=1
-isolate-rows: [count int 3|main int (void)|square int (int)|]

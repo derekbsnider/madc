@@ -37,9 +37,10 @@
 #            foreign cwd (scripts/madcide_save_quit_pty.py: joe's keys, then
 #            the rescue keys with the profiles hidden) [control: hide
 #            share/madcide/verbs => it refuses to start, with the reason].
-#            installed chthonia prints its usage line and `-c check`s a
+#            installed madcide prints its usage line and `-c check`s a
 #            <stdio.h> program clean from a foreign cwd [control: a syntax
-#            error => 1 problem, rc 1]; its desktop entry and icon ship.
+#            error => 1 problem, rc 1]; its View menu offers every shipped
+#            key style [control: hide the profiles => none listed].
 #   tar      same probes with NO LD_LIBRARY_PATH at all (env -u) — the
 #            run-time $ORIGIN proof (the packager's ldd check is static;
 #            this one executes) [control: hide lib/libmadc.so.0 => madc
@@ -59,9 +60,9 @@
 #            — the forest served from the shipped lib/libmadc-0.dylib, the
 #            thin CLI carrying none [control: hide lib/libmadc-0.dylib =>
 #            madc must fail to run];
-#            the shipped chthonia prints its usage line and `-c check`s a
+#            the shipped madcide prints its usage line and `-c check`s a
 #            <stdio.h> program clean from a foreign cwd [control: a syntax
-#            error => 1 problem, rc 1];
+#            error => 1 problem, rc 1], and offers every key style;
 #            scripts/mac_battery.sh against the extracted tarball layout
 #            holds the PASS floor (MAC_BATTERY_FLOOR, default 8 = the
 #            owner-hardware baseline) and prints every FAIL line [control:
@@ -273,74 +274,79 @@ run_linux() {
         *) fail "$kind" "negative control broken: verbs hidden but madcide did not refuse (got: $out)" ;;
     esac
 
-    # 6. installed chthonia (the learning IDE on madcide's base): its usage
-    #    line, then `-c check` from a foreign cwd over a C file that includes
-    #    <stdio.h> — the installed verbs (share/madcide) and the forest in the
-    #    installed libmadc serve it — clean; [control: a file with a syntax
-    #    error reports its problem and exits 1, proving the check read it].
-    #    Its desktop entry and the 256 px icon are in the artifact.
-    local chthonia="$bindir/chthonia" chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
-    [ -x "$chthonia" ] || fail "$kind" "no executable $chthonia in the artifact"
-    [ -f "$root/${libdir:+usr/}share/applications/chthonia.desktop" ] \
-        || fail "$kind" "no share/applications/chthonia.desktop in the artifact"
-    [ -f "$root/${libdir:+usr/}share/icons/hicolor/256x256/apps/chthonia.png" ] \
-        || fail "$kind" "no share/icons/hicolor/256x256/apps/chthonia.png in the artifact"
-    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$chthonia" --help ) 2>&1 )
+    # 6. installed madcide's usage line, then `-c check` from a foreign cwd
+    #    over a C file that includes <stdio.h> — the installed verbs
+    #    (share/madcide) and the forest in the installed libmadc serve it —
+    #    clean; [control: a file with a syntax error reports its problem and
+    #    exits 1, proving the check read it].
+    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
+    out=$( ( ulimit -t 120; timeout 60 "${runenv[@]}" "$madcide" --help ) 2>&1 )
     case "$out" in
-        *"usage: chthonia"*) ok "$kind" "installed chthonia prints its usage line" ;;
-        *) fail "$kind" "installed chthonia --help did not print its usage line (got: $out)" ;;
+        *"usage: madcide"*) ok "$kind" "installed madcide prints its usage line" ;;
+        *) fail "$kind" "installed madcide --help did not print its usage line (got: $out)" ;;
     esac
     printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
     printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
-    out=$( ( cd /tmp && ulimit -t 120 && timeout 60 "${runenv[@]}" "$chthonia" "$chk" -c check ) 2>&1 )
-    local rc=$?
-    case "$rc:$out" in
-        0:*Problems*) ok "$kind" "installed chthonia -c check over <stdio.h> is clean (rc 0)" ;;
-        *) fail "$kind" "installed chthonia -c check over <stdio.h> was not clean (rc $rc: $out)" ;;
-    esac
-    out=$( ( cd /tmp && ulimit -t 120 && timeout 60 "${runenv[@]}" "$chthonia" "$bad" -c check ) 2>&1 )
-    rc=$?
-    case "$rc:$out" in
-        1:*"1 problem"*) ok "$kind" "negative control: a syntax error => chthonia -c check reports 1 problem (rc 1)" ;;
-        *) fail "$kind" "negative control broken: chthonia -c check over a syntax error (rc $rc: $out)" ;;
-    esac
+    ide_check_gate "$kind" "installed" "$madcide" "$chk" "$bad" timeout "${runenv[@]}"
 
-    # 7. installed chthonia offers every shipped key style from its menu:
-    #    Tools ▸ Key bindings… is on its Tools menu, and the list it opens
+    # 7. installed madcide offers every shipped key style from its menu:
+    #    View ▸ Key Bindings… is on its View menu, and the list it opens
     #    names the six styles share/madcide/profiles carries [control: hide
     #    the profiles => the list names none of them].
-    keystyle_gate "$kind" "$chthonia" "$chk" "$pdir" timeout "${runenv[@]}"
+    keystyle_gate "$kind" "$madcide" "$chk" "$pdir" timeout "${runenv[@]}"
 }
 
-# The installed chthonia's key styles (probe 7, every artifact that runs it):
-# `-c "menushow Tools"` lists the Key bindings… row, `-c keystyle` lists the
+# An IDE's `-c check` (probe 6, every artifact that runs madcide): over a
+# <stdio.h> program from a foreign cwd it is clean (rc 0); [control: a syntax
+# error => 1 problem, rc 1]. `what` says where the IDE came from
+# (installed, shipped); `tmo` is the platform's timeout command; the rest is
+# the run environment.
+ide_check_gate() {
+    local kind="$1" what="$2" ide="$3" chk="$4" bad="$5" tmo="$6" out rc
+    shift 6
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$chk" -c check ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        0:*Problems*) ok "$kind" "$what madcide -c check over <stdio.h> is clean (rc 0)" ;;
+        *) fail "$kind" "$what madcide -c check over <stdio.h> was not clean (rc $rc: $out)" ;;
+    esac
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$bad" -c check ) 2>&1 )
+    rc=$?
+    case "$rc:$out" in
+        1:*"1 problem"*) ok "$kind" "negative control: a syntax error => madcide -c check reports 1 problem (rc 1)" ;;
+        *) fail "$kind" "negative control broken: madcide -c check over a syntax error (rc $rc: $out)" ;;
+    esac
+}
+
+# The installed madcide's key styles (probe 7, every artifact that runs it):
+# `-c "menushow View"` lists the Key Bindings… row, `-c keystyle` lists the
 # styles by their display names, all six; with the profiles directory hidden
 # the list names none. `tmo` is the platform's timeout command (timeout, or
 # brew coreutils' gtimeout on a Mac runner); the rest is the run environment.
 KEY_STYLES=("Chthonia" "VS Code" "Vim" "Emacs" "JOE" "Pico")
 keystyle_gate() {
-    local kind="$1" chthonia="$2" file="$3" pdir="$4" tmo="$5"
+    local kind="$1" ide="$2" file="$3" pdir="$4" tmo="$5"
     shift 5
     local out style missing="" named=""
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$chthonia" "$file" -c "menushow Tools" ) 2>&1 )
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c "menushow View" ) 2>&1 )
     case "$out" in
-        *"Key bindings"*) ok "$kind" "installed chthonia's Tools menu has Key bindings…" ;;
-        *) fail "$kind" "installed chthonia's Tools menu has no Key bindings… row (got: $out)" ;;
+        *"Key Bindings"*) ok "$kind" "installed madcide's View menu has Key Bindings…" ;;
+        *) fail "$kind" "installed madcide's View menu has no Key Bindings… row (got: $out)" ;;
     esac
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$chthonia" "$file" -c keystyle ) 2>&1 )
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c keystyle ) 2>&1 )
     for style in "${KEY_STYLES[@]}"; do
         case "$out" in *". $style"*) ;; *) missing="$missing [$style]" ;; esac
     done
-    [ -z "$missing" ] || fail "$kind" "installed chthonia's Key bindings list lacks$missing (got: $out)"
-    ok "$kind" "installed chthonia's Key bindings list names all ${#KEY_STYLES[@]} styles"
+    [ -z "$missing" ] || fail "$kind" "installed madcide's Key Bindings list lacks$missing (got: $out)"
+    ok "$kind" "installed madcide's Key Bindings list names all ${#KEY_STYLES[@]} styles"
     mv "$pdir" "$pdir.hidden"
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$chthonia" "$file" -c keystyle ) 2>&1 )
+    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$@" "$ide" "$file" -c keystyle ) 2>&1 )
     mv "$pdir.hidden" "$pdir"
     for style in "${KEY_STYLES[@]}"; do
         case "$out" in *". $style"*) named="$named [$style]" ;; esac
     done
     [ -z "$named" ] || fail "$kind" "negative control broken: profiles hidden but the list still names$named"
-    ok "$kind" "negative control: hidden profiles => the Key bindings list names no style"
+    ok "$kind" "negative control: hidden profiles => the Key Bindings list names no style"
 }
 
 gate_deb() {
@@ -516,34 +522,22 @@ gate_mactar() {
     esac
 
     # 1c. the IDE (a darwin host of this arch builds it into the tarball):
-    # chthonia's usage line, then `-c check` from a foreign cwd over a
+    # madcide's usage line, then `-c check` from a foreign cwd over a
     # <stdio.h> program — share/madcide's verbs and the library's forest
     # serve it — clean [control: a syntax error => 1 problem, rc 1].
     [ -x "$root/bin/madcide" ] || fail mactar "no executable bin/madcide in the artifact"
-    [ -x "$root/bin/chthonia" ] || fail mactar "no executable bin/chthonia in the artifact"
     [ -d "$root/share/madcide/verbs" ] || fail mactar "no share/madcide/verbs in the artifact"
-    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/chthonia" --help ) 2>&1 )
+    out=$( ( ulimit -t 120; "$tmo" 60 "$root/bin/madcide" --help ) 2>&1 )
     case "$out" in
-        *"usage: chthonia"*) ok mactar "shipped chthonia prints its usage line" ;;
-        *) fail mactar "shipped chthonia --help did not print its usage line (got: $out)" ;;
+        *"usage: madcide"*) ok mactar "shipped madcide prints its usage line" ;;
+        *) fail mactar "shipped madcide --help did not print its usage line (got: $out)" ;;
     esac
-    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c" rc
+    local chk="$PWD/$GATE_TMP/pk4chk.c" bad="$PWD/$GATE_TMP/pk4bad.c"
     printf '#include <stdio.h>\nint main(void) { printf("%%d\\n", 5); return 0; }\n' > "$chk"
     printf '#include <stdio.h>\nint main(void) { return 0 }\n' > "$bad"
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$root/bin/chthonia" "$chk" -c check ) 2>&1 )
-    rc=$?
-    case "$rc:$out" in
-        0:*Problems*) ok mactar "shipped chthonia -c check over <stdio.h> is clean (rc 0)" ;;
-        *) fail mactar "shipped chthonia -c check over <stdio.h> was not clean (rc $rc: $out)" ;;
-    esac
-    out=$( ( cd /tmp && ulimit -t 120 && "$tmo" 60 "$root/bin/chthonia" "$bad" -c check ) 2>&1 )
-    rc=$?
-    case "$rc:$out" in
-        1:*"1 problem"*) ok mactar "negative control: a syntax error => chthonia -c check reports 1 problem (rc 1)" ;;
-        *) fail mactar "negative control broken: chthonia -c check over a syntax error (rc $rc: $out)" ;;
-    esac
+    ide_check_gate mactar "shipped" "$root/bin/madcide" "$chk" "$bad" "$tmo"
     # 1d. its key styles, the menu row and the list (keystyle_gate).
-    keystyle_gate mactar "$root/bin/chthonia" "$chk" "$root/share/madcide/profiles" "$tmo"
+    keystyle_gate mactar "$root/bin/madcide" "$chk" "$root/share/madcide/profiles" "$tmo"
 
     # 2. the Mac battery against the extracted tarball layout (bin/madc +
     # lib/libmadc_rt.a beside it = leg 6c's shape). The full output is the

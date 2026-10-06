@@ -1026,7 +1026,7 @@ $(MIRBUILD)/hosted-x86-64-windows/libmir.a: FORCE
 # forest-carriers S4's shared shape on Windows) is one directory, because a
 # PE binds its DLLs by adjacency: the thin madc.exe, the stripped
 # libmadc-0.dll carrying the forest, and the runtime DLLs. madc.exe and every
-# program built on the engine (madcide.exe, chthonia.exe, a user's madc -o
+# program built on the engine (madcide.exe, a product on madcide, a user's madc -o
 # program) load that one engine image, and find the forest in it through
 # the library-image arm. Its own directory also keeps a dev rebuild of
 # bin/libmadc-0.dll (no forest) from ever standing in for the release one.
@@ -1212,7 +1212,6 @@ gates: ../bin/madc $(LIBMADC_SHARED) $(THIN_CLI) $(MONO_CLI) test
 	@cd .. && bash scripts/check-one-key-owner.sh
 	@cd .. && bash scripts/check-one-anchor-owner.sh
 	@cd .. && bash scripts/check-one-blank-run.sh
-	@cd .. && bash scripts/check-chthonia-boundary.sh
 	@cd .. && bash scripts/chthonia_sanitize_check.sh
 	@cd .. && bash scripts/check-madcide-harness.sh
 	@cd .. && bash scripts/check-one-event-builder.sh
@@ -1587,7 +1586,7 @@ endif
 # The library carries the forest (docs/plans/2026-10-03-chthonia-windows-macos.md
 # §7b, forest-carriers S4's shared shape): the same __MADC,__forest section
 # the hosted binary takes, so every program bound to libmadc — the thin CLI
-# below, an AOT madcide or chthonia, a plugin library — reads the frozen
+# below, an AOT madcide or a product on it, a plugin library — reads the frozen
 # headers through the library-image discovery arm. The linker signs after
 # section layout, as for the binary.
 ifdef HOSTED_DARWIN_TARGET

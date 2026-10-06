@@ -18,10 +18,6 @@
 # and relocatable — extract anywhere, $ORIGIN runpaths bind lib/):
 #   /usr/bin/madc                               bin/madc-release
 #   /usr/bin/madcide                            AOT-compiled by that binary
-#   /usr/bin/chthonia                           the learning IDE (tools/chthonia/chthonia.json), AOT-compiled
-#                                               by that binary; a window by default
-#   /usr/share/applications/chthonia.desktop    its desktop entry
-#   /usr/share/icons/hicolor/<n>x<n>/apps/chthonia.png  its icon, 16-256 px (the .ico's images)
 #   /usr/lib/<multiarch|lib64>/libmadc.so.0     lib/release/libmadc.so (stripped pre-pack, forest inside)
 #   /usr/lib/<multiarch|lib64>/libmadc.so       -> libmadc.so.0
 #   /usr/lib/<multiarch|lib64>/libmadc_rt.a     emitted-C runtime (try/catch + VLA; a bare-box cc links it)
@@ -172,17 +168,12 @@ fi
 echo "== madcide (AOT via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release -o tmp/madcide-pkg tools/madcide/madcide.mad )
 strip --strip-unneeded tmp/madcide-pkg
-# libmadcide: madcide's base as the library a product links (chthonia below
-# names it in its manifest's "libs"), built by the same compiler into that
+# libmadcide: madcide's base as the library a product links (a product's
+# manifest names it in its "libs"), built by the same compiler into that
 # compiler's own lib directory (bin/../lib), where a manifest's library is
 # found first.
 echo "== libmadcide (via the release compiler) =="
 ( ulimit -t 240; timeout 300 bin/madc-release -shared -o lib/libmadcide.so tools/madcide/madcide_base.mad )
-# chthonia: the product built on madcide's base, by the same compiler.
-echo "== chthonia (AOT via the release compiler) =="
-( ulimit -t 240; MADC=bin/madc-release MADCIDE_INCLUDE=tools/madcide/include \
-	timeout 300 bash tools/chthonia/scripts/build.sh -o tmp/chthonia-pkg )
-strip --strip-unneeded tmp/chthonia-pkg
 # The shipped plugins: a plugin with code carries its library, built by
 # this madcide (plan §41.11a step 6); every stage() copies the one set.
 echo "== madcide plugins (each with code built by the packaged madcide) =="
@@ -293,9 +284,6 @@ ${DESC_BODY}
 %files
 /usr/bin/madc
 /usr/bin/madcide
-/usr/bin/chthonia
-/usr/share/applications/chthonia.desktop
-/usr/share/icons/hicolor/*/apps/chthonia.png
 /usr/lib64/libmadc.so.0
 /usr/lib64/libmadc.so
 /usr/lib64/libmadc_rt.a
@@ -353,17 +341,6 @@ program that says \`import madcwebview;\` (madc's ui "web" target) loads
 it from this lib/; madcide's window mode is one:
 
     bin/madcide file.c --gui
-
-chthonia (bin/chthonia): the easy GUI to learn C and C++, built on
-madcide and laid out for learning — the editor, the Shell (a C REPL) below
-it, the Symbols view beside it, Run (F5) and Stop on the toolbar. It
-opens a window by default (--tui asks for the terminal):
-
-    bin/chthonia file.c
-
-share/applications/chthonia.desktop and share/icons/hicolor are its
-desktop entry and icon; copy them under ~/.local/share to add it to
-your desktop's application menu.
 
 Git: lib/libmadcgit.so is madc's read-only view of a git repository, with
 libgit2 linked into it (the \`git::\` namespace; madcide's MCP seat reads

@@ -383,6 +383,19 @@ published.
    `scripts/chthonia_lane.sh` (Chthonia's CI runs its scripts).
    Tier 3 at this seam, then every platform lane's full suite
    (`lane_ledger.sh check --release`).
+   **Cut (2026-10-06):** `chthonia_export.sh --madc 0.102.0
+   /workspace/chthonia` made the repository (one commit, `--checkout`
+   clean; its GitHub creation, first push and secret remain the owner's),
+   then the moving set left madc with `chthonia_lane.sh`,
+   `check-chthonia-boundary.sh` and `chthonia_export.sh` (nothing left to
+   export), the seam battery's `chthonia` stage and the ledger's `chthonia`
+   row. The packagers, `stage_install.sh`, the Homebrew formula and the
+   install gate stop building or probing Chthonia: probes 6 and 7 and the
+   macOS 1c/1d run against the installed madcide (its usage, `-c check`,
+   View ▸ Key Bindings… naming all six key styles, the Chthonia key style
+   included — it is base). `docs/madcide.md` and `madcide.1` stop naming
+   the bundle; the Chthonia key style stays documented. `VERSION` stays
+   until `/release` bumps it.
 5. **The candidate.** `release.yml` dispatched with `tag: v0.102.0` and
    `build_ref:` the cut commit: the draft release v0.102.0 holds every
    package. Chthonia's CI installs madc from the draft (a read token for
