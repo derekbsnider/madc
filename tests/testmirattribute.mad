@@ -1,0 +1,20 @@
+// c2mir's attribute-specifier introducer `__mirc_attribute__` (the spelling
+// libc's sys/cdefs.h cannot define away for a non-GNU compiler) reads as
+// `__attribute__`: the same attribute list, the same effects — `aligned`
+// widens the member, `weak` binds the function weak; `linkonce` (a c2mir
+// binding gcc does not know) is ignored as gcc ignores it. madc refused the
+// spelling ("Failed to find type when parsing function parameters").
+// Oracle: gcc 13.3 and clang 18.1 with -D__mirc_attribute__=__attribute__
+// (-std=c11) print the .expect line.
+#include <stdio.h>
+__mirc_attribute__ ((weak)) int wget(void) { return 11; }
+__mirc_attribute__ ((linkonce)) int pick(void) { return 7; }
+struct s {
+	char c;
+	int v __mirc_attribute__ ((aligned (16)));
+};
+int main(void)
+{
+	printf("mirc: %d %d %zu\n", wget(), pick(), sizeof(struct s));
+	return 0;
+}

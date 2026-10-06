@@ -59,4 +59,3 @@ new/issue441.c
 new/ssa-ccp.c
 new/typedef.c
 new/vector-size.c
-new/weak-linkonce.c

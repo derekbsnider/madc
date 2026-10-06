@@ -78,6 +78,10 @@ enum class GnuAttributeKind : uint8_t {
 };
 
 GnuAttributeKind madc_gnu_attribute_kind(const std::string &name);
+// The GNU attribute-specifier introducer: __attribute__ / __attribute, and
+// c2mir's __mirc_attribute__ (the spelling libc's sys/cdefs.h cannot define
+// away) — the one spelling owner.
+bool madc_gnu_attribute_introducer(const std::string &word);
 // alignof / _Alignof / __alignof__ / __alignof — the one spelling owner.
 bool is_alignof_identifier(const std::string &name);
 // An attribute's own words (a `mode` argument's QI, HI, ...) take the same

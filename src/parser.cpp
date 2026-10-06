@@ -1797,7 +1797,7 @@ static bool is_alignment_specifier_name(const std::string &name)
 // may.
 static bool is_attribute_specifier_name(const std::string &name)
 {
-    return name == "__attribute__" || name == "__attribute"
+    return madc_gnu_attribute_introducer(name)
 	|| is_alignment_specifier_name(name);
 }
 

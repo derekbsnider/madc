@@ -1241,6 +1241,12 @@ static bool is_identifier_spelling(const std::string &s)
     return true;
 }
 
+bool madc_gnu_attribute_introducer(const std::string &word)
+{
+    return word == "__attribute__" || word == "__attribute"
+	|| word == "__mirc_attribute__";
+}
+
 bool madc_gnu_attribute_word_is(const std::string &id, const char *word)
 {
     const size_t n = strlen(word);
@@ -8721,7 +8727,7 @@ TokenBase *Program::_getToken()
 		// Most GCC attributes are no-ops for madc. Preserve the few
 		// layout/type/lookup-shaping ones the parser understands and skip
 		// the rest.
-		if ( word == "__attribute__" || word == "__attribute" )
+		if ( madc_gnu_attribute_introducer(word) )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
 			source.get();
