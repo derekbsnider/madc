@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### lexer: __FILE_NAME__ is a predefined macro (gcc 12+ / clang) — the current file's last path component as a string literal; __FILE__, __FILE_NAME__ and __LINE__ now answer defined for #ifdef and defined(), where they answered 0 before; the macOS prelude's assert() expands through __FILE_NAME__, so every assert() in a C program stopped failing "use of undeclared identifier '__FILE_NAME__'"
+
 ### madc: A carrier literal element is typed by the called overload, whatever headers the TU parsed — `{ "content": php::rtrim(text) }` compiles once `<string>` is parsed, where it had refused "cannot initialize a value list element of this type"; the refusal had hit ~65 tools/madcide tests on macOS libc++
 
 ### forest: The Windows header pack carries mingw's <pshpack1.h> and <poppack.h> — a program that re-includes the struct-packing pair could not open it against the packed madc.exe and now compiles

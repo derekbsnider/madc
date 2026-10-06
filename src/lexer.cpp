@@ -8661,23 +8661,16 @@ TokenBase *Program::_getToken()
 		    // empty define — skip and get next token
 		    return getToken();
 		}
-		// Built-in predefined macros: __FILE__ and __LINE__.
-		// Match C semantics — expand to a string literal of the current
-		// filename and an integer constant of the current source line.
-		// Users can still override via #define (handled above).
-		if ( word == "__FILE__" )
+		// Built-in predefined macros: __FILE__, __FILE_NAME__ and
+		// __LINE__ (builtin_position_macro, their one owner). Users can
+		// still override via #define (handled above).
 		{
-		    std::string quoted = "\"";
-		    const char *fn = source.fname();
-		    quoted += (fn ? fn : "<unknown>");
-		    quoted += "\"";
-		    source.pushback_macro(quoted, "");
-		    return getToken();
-		}
-		if ( word == "__LINE__" )
-		{
-		    source.pushback_macro(std::to_string(source.line()), "");
-		    return getToken();
+		    std::string text;
+		    if ( builtin_position_macro(word, &text) )
+		    {
+			source.pushback_macro(text, "");
+			return getToken();
+		    }
 		}
 		// _Pragma("...") — the token form of #pragma (C99, C++11), routed
 		// to the same handler the directive uses. It sits here, after the
@@ -9349,7 +9342,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 		    ++ti;
 		}
 	    }
-	    else if ( word == "__LINE__" )
+	    else if ( builtin_position_macro(word, NULL) )
 	    {
 		// Predefined macros live in getToken's builtin arm, not in
 		// define_map — the string expander needs its own arm or a
@@ -9357,15 +9350,9 @@ std::string Program::expandIfMacros(const std::string &raw)
 		// identifier and evaluates as 0 (c-testsuite 00152). The
 		// define_map probe above ran first, so a user #define of
 		// the name still wins, matching getToken's order.
-		out += std::to_string(source.line());
-		changed = true;
-		++ti;
-	    }
-	    else if ( word == "__FILE__" )
-	    {
-		out += '"';
-		out += source.fname() ? source.fname() : "<unknown>";
-		out += '"';
+		std::string text;
+		builtin_position_macro(word, &text);
+		out += text;
 		changed = true;
 		++ti;
 	    }
@@ -9449,7 +9436,39 @@ bool Program::has_query_operator_implemented(const std::string &op)
 bool Program::macro_name_defined(const std::string &name)
 {
     return define_map.count(name) > 0 || macro_map.count(name) > 0
-	|| has_query_operator_implemented(name);
+	|| has_query_operator_implemented(name)
+	|| builtin_position_macro(name, NULL);
+}
+
+bool Program::builtin_position_macro(const std::string &name, std::string *out)
+{
+    if ( name == "__LINE__" )
+    {
+	if ( out )
+	    *out = std::to_string(source.line());
+	return true;
+    }
+    if ( name != "__FILE__" && name != "__FILE_NAME__" )
+	return false;
+    if ( out )
+    {
+	const char *fn = source.fname();
+	std::string path = fn ? fn : "<unknown>";
+	if ( name == "__FILE_NAME__" )
+	    path = madc::detail::host_path_basename(path);
+	// A string literal of the name, '\\' and '"' escaped (gcc: a Windows
+	// path's separators stay separators, never escape sequences).
+	std::string quoted = "\"";
+	for ( char c : path )
+	{
+	    if ( c == '\\' || c == '"' )
+		quoted += '\\';
+	    quoted += c;
+	}
+	quoted += '"';
+	*out = quoted;
+    }
+    return true;
 }
 
 int64_t Program::evaluateHasQuery(const std::string &op, const std::string &expr,

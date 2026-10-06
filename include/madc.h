@@ -3453,6 +3453,12 @@ protected:
     // on it).
     // (not const: intern_keyed_map::count() is not const-qualified)
     bool macro_name_defined(const std::string &name);
+    // A predefined macro whose text is the current source position —
+    // __FILE__, __FILE_NAME__ (gcc 12+, clang), __LINE__: true, and the
+    // replacement text into *out when given. The ONE list getToken's builtin
+    // arm, the #if expander and macro_name_defined read, so a name is never
+    // expanded but undefined, or defined but left unexpanded.
+    bool builtin_position_macro(const std::string &name, std::string *out);
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
     // The end of an expression (every exit of parseExpression): bind the
     // pending operators, refuse juxtaposed operands, return the one left.
