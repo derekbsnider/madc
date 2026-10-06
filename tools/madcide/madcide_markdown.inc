@@ -419,11 +419,12 @@ long md_off(var &starts, long line, long col)
 }
 
 // One concealed range [s, e) — ignored when empty or off the text. A range
-// is ONE integer, s * 2^32 + e, so the ranges sort as numbers (php::sort).
+// is ONE 64-bit integer, s * 2^32 + e, so the ranges sort as numbers
+// (php::sort); it is read back as int64_t (`long` is 32 bits on win64).
 void md_cut(var &cut, long s, long e)
 {
     if ( s >= 0 && e > s )
-	cut[] = s * 4294967296 + e;
+	cut[] = (int64_t)s * 4294967296 + e;
 }
 
 bool md_ascii_punct(long c)
@@ -637,7 +638,7 @@ bool md_conceal(var &display, var &map, const char *text0)
 	long e = n;
 	if ( i < nc )
 	{
-	    long key = cut[i].as_integer();
+	    int64_t key = cut[i].as_integer();	// 64 bits: `long` is 32 on win64
 	    s = key / 4294967296;
 	    e = key % 4294967296;
 	}
