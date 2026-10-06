@@ -1,0 +1,36 @@
+// An ordinary identifier declared in a block — a parameter, a local —
+// hides a typedef name of an enclosing scope until that block ends (C11
+// 6.2.1p4): with a parameter or local named `value`, `(value)->code` is a
+// member access through it, not a cast to the typedef `value`. After the
+// block, the typedef is visible again. madc kept reading `value` as the
+// typedef ("expected expression before '->'").
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect line.
+#include <stdio.h>
+typedef struct {
+	int i;
+} value;
+union tree_node {
+	int code;
+};
+typedef union tree_node *tree;
+static int via_param(tree value)
+{
+	return (value)->code + 1;
+}
+static int via_local(tree t)
+{
+	tree value = t;
+	return (value)->code * 2;
+}
+int main(void)
+{
+	union tree_node n = { 20 };
+	int x = 0;
+	{
+		int value = 7;
+		x = value;
+	}
+	value v = { 3 };
+	printf("hide: %d %d %d %d\n", via_param(&n), via_local(&n), x, v.i);
+	return 0;
+}

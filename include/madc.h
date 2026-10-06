@@ -3516,6 +3516,9 @@ public:
     std::vector<std::vector<std::pair<std::string, TokenDataType *> > >
 	block_typedef_shadows;
     void register_scoped_typedef(const std::string &alias, TokenDataType *tdt);
+    // An object or parameter declared in a block hides a typedef name of an
+    // enclosing scope until the block ends (C11 6.2.1p4): the same frame.
+    void hide_typedef_name_in_block(const std::string &name);
     void unwind_block_typedef_shadows(size_t depth, const char *site = "?");
     // The struct-TAG twin of the typedef frames: a block-scope definition
     // that re-uses a live struct_map key records the prior mapping (or its

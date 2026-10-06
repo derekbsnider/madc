@@ -31220,6 +31220,8 @@ Variable *Program::declare_object(TokenCpnd *code, DataDef &type, const std::str
     Variable *var = addVariable(code, type, id, count, NULL, alloc);
     if ( var && is_definition )
 	var->flags |= vfDEFINED;
+    if ( var && code && code != tkProgram )
+	hide_typedef_name_in_block(id);
     return var;
 }
 
@@ -31721,6 +31723,27 @@ void Program::register_scoped_typedef(const std::string &alias, TokenDataType *t
 		    compounds.size(), block_typedef_shadows.size(),
 		    cur_func_name.c_str());
     datatype_map[alias] = tdt;
+}
+
+// An ordinary identifier declared in a block (an object, a parameter) hides a
+// typedef name of an enclosing scope until the block ends (C11 6.2.1p4):
+// `(value)->code` with a parameter `value` is a member access, not a cast.
+// The name's flat datatype_map entry is set aside in the block's shadow
+// frame, which unwinding restores — register_scoped_typedef's frame, with no
+// new meaning installed. C modes; a builtin type name is a keyword, never
+// hidden.
+void Program::hide_typedef_name_in_block(const std::string &name)
+{
+    if ( compounds.empty() || !is_c_mode() )
+	return;
+    flat_datatype_map_iter prev = datatype_map.find(name);
+    if ( prev == datatype_map.end() || !*prev || (*prev)->builtin )
+	return;
+    while ( block_typedef_shadows.size() < compounds.size() )
+	block_typedef_shadows.push_back(
+	    std::vector<std::pair<std::string, TokenDataType *> >());
+    block_typedef_shadows.back().push_back(std::make_pair(name, *prev));
+    datatype_map.erase(name);
 }
 
 // The struct-TAG twin of register_scoped_typedef: a block-scope
@@ -74364,6 +74387,11 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	DBG(cout << "parseFunction() setting code->method" << endl);
 	code->method = method;
+	// A parameter's scope is the body's outermost block: its name hides a
+	// file-scope typedef of the same spelling there (C11 6.2.1p4).
+	for ( Variable *pv : method->parameters )
+	    if ( pv && !pv->name.empty() )
+		hide_typedef_name_in_block(pv->name);
     }
     else
     {

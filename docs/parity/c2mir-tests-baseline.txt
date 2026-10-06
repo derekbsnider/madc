@@ -55,5 +55,4 @@ lacc/string-addr.c
 new/issue241.c
 new/issue441.c
 new/ssa-ccp.c
-new/typedef.c
 new/vector-size.c
