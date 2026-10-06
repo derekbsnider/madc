@@ -1,8 +1,6 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
 darwin-suite	release	ac3e355a8244	2026-10-03	arm64 1893/0/0TO/34skip, Intel 1894/0/0TO/33skip — gh run 37137047546 (darwin-probe.yml, feature/repl-teaching-ide-claude at ac3e355a8: the CompletionOffer, session Stop, carrier prototype and arm64 long double twin fixes; testvararith green on arm64)
-genuine-win	release	1bddf869e673	2026-10-03	1845/0/0TO/82skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed madc-release-x86-64-windows.exe built at dc6f8f82b content, MADC_SKIP_EXT="win64 win"; +1 skip = testsession_stop, no fork on Windows). win_suite rc=0, 816s
-brew-linux	release	e19b9d5673e8	2026-10-03	1918/0/0TO/9skip - scripts/brew_lane.sh on the container at e19b9d567 (code = aeb92da3a, v0.101.0): brew install --build-bottle + brew bottle (madc-0.101.0.x86_64_linux.bottle.tar.gz) + the keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc, 594s
 c-testsuite	commit	1b19d3d6c942	2026-10-06	c-testsuite: 220 passed, 0 failed (0 outside baseline)
 c-torture	commit	1b19d3d6c942	2026-10-06	c-torture: 1617 passed, 7 failing, 0 outside baseline, 61 skipped (--std=c17)
 c2mir-tests	commit	1b19d3d6c942	2026-10-06	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline)
@@ -16,3 +14,5 @@ wine64	yes	9a9e232949d7	2026-10-06	the packed PE under wine: headerless-win 1947
 macos	yes	9a9e232949d7	2026-10-06	BUILD lane: hosted builds + release-macos rc=0 on both arches; verify_macho_release OK (837 units arm64 + x86_64) — seam_battery.sh
 aarch64-ld	yes	9a9e232949d7	2026-10-06	aarch64_ldouble_lane GREEN (aot + jit on every fixture) — seam_battery.sh
 tests-jit	batch	9a9e232949d7	2026-10-06	2023 passed, 0 failed, 0 timed out, 9 skipped (seam exeobj JIT pass, packed -O2)
+genuine-win	release	dfb487284c80	2026-10-06	1947/0/0TO/85skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed bin/release-windows/madc.exe at 9a9e23294 content, MADC_SKIP_EXT="win64 win"); win_suite rc=0
+brew-linux	release	dfb487284c80	2026-10-06	2023/0/0TO/9skip - scripts/brew_lane.sh on the container at 9a9e23294 content (VERSION still 0.101.0): brew install --build-bottle + brew bottle + the keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc
