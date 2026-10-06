@@ -1,0 +1,22 @@
+// A string literal enclosed in braces initializes a character array like the
+// bare literal (C11 6.7.9p14, "optionally enclosed in braces"), and so does
+// one in parentheses (gcc and clang; -pedantic: "array initialized from
+// parenthesized string constant"). madc took `char c[] = {"World" "hello"};`
+// as one pointer-valued element — `char c[1]`, sizeof 1 — and refused
+// `char a[7] = ("wat");` ("Expected '{' or string literal for initializer").
+// gcc 13.3 and clang 18.1 (-std=c11) print the .expect lines.
+#include <stdio.h>
+char g[] = (("file"));
+char h[] = { "braced" };
+int main(void)
+{
+	char a[7] = ("wat");
+	char b[] = ("con" "cat");
+	char c[] = { "World" "hello" };
+	char d[8] = { "abc", };
+	printf("paren: %s %zu %s %zu %s %zu\n", a, sizeof(a), b, sizeof(b), g,
+	       sizeof(g));
+	printf("brace: %s %zu %s %zu %s %zu\n", c, sizeof(c), d, sizeof(d), h,
+	       sizeof(h));
+	return 0;
+}

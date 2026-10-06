@@ -49,6 +49,5 @@ lacc/declaration-default-int.c
 lacc/declarator-parens.c
 lacc/function-incomplete.c
 lacc/initialize-array.c
-lacc/initialize-string.c
 new/ssa-ccp.c
 new/vector-size.c

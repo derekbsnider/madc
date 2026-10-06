@@ -9281,6 +9281,10 @@ public:
     // reader of every char-array initializer.
     TokenStructLit *literal_char_array(TokenStr *strtok, size_t count,
 				       bool wide = false, bool pad = true);
+    // `char c[] = {"ab"};` / `char a[7] = ("wat");`: the stream AT a `{` or
+    // `(` that holds only string literals — the enclosure is removed (true);
+    // else unchanged.
+    bool unwrap_enclosed_string_literal();
     // A character array's elements `chars` (no NUL) fitted to `count`
     // (C11 6.7.9p14, [dcl.init.string]): the NUL when there is room, zeros
     // to `count` after it when `pad` (a flattened row keeps its width);

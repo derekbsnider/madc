@@ -75676,6 +75676,45 @@ TokenStructLit *Program::fit_char_array(TokenStructLit *chars, size_t count,
     return chars;
 }
 
+// A string literal ENCLOSED, initializing a character array: in braces,
+// `char c[] = {"ab" "cd"};` (C11 6.7.9p14: "optionally enclosed in braces"),
+// or in parentheses, `char a[7] = ("wat");` (gcc and clang take it;
+// -pedantic: "array initialized from parenthesized string constant"). The
+// stream sits AT the `{` or `(`: when the enclosure holds exactly one string
+// literal (adjacent literals, which literal_char_array concatenates,
+// included; a trailing `,` in braces) it is removed and true is returned;
+// any other shape leaves the stream unchanged.
+bool Program::unwrap_enclosed_string_literal()
+{
+    const bool braced = !tokens.empty() && tokens[0]
+		     && tokens[0]->id() == TokenID::tkOpBrc;
+    size_t n = 0;	// the opening run: one `{`, or any number of `(`
+    while ( n < tokens.size() && tokens[n]
+	 && tokens[n]->id() == (braced ? TokenID::tkOpBrc : TokenID::tkOpBrk)
+	 && !(braced && n == 1) )
+	++n;
+    size_t end = n;	// past the run of string literals
+    while ( end < tokens.size() && tokens[end]
+	 && tokens[end]->type() == TokenType::ttString )
+	++end;
+    if ( !n || end == n )
+	return false;
+    size_t close = end;
+    if ( braced && close < tokens.size() && tokens[close]
+      && tokens[close]->id() == TokenID::tkComma )
+	++close;
+    for ( size_t k = 0; k < n; ++k )
+	if ( close + k >= tokens.size() || !tokens[close + k]
+	  || tokens[close + k]->id() != (braced ? TokenID::tkClBrc
+						 : TokenID::tkClBrk) )
+	    return false;
+    std::vector<TokenBase *> literal;
+    for ( size_t i = n; i < end; ++i )
+	literal.push_back(tokens[i]);
+    tokens.splice_front(close + n, literal);
+    return true;
+}
+
 TokenStructLit *Program::literal_char_array(TokenStr *strtok, size_t count,
 					    bool wide, bool pad)
 {
@@ -77742,6 +77781,12 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 	    TokenBase *peek0 = peekToken();
 	    if ( !peek0 )
 		Throw(nt) << "Expected initializer after '='" << flush;
+	    // `char c[] = {"ab"};` and `char a[7] = ("wat");` initialize a
+	    // character array from the enclosed literal.
+	    if ( arr_dims.size() == 1 && is_char_array_element_type(decl_type)
+	      && (peek0->id() == TokenID::tkOpBrc || peek0->id() == TokenID::tkOpBrk)
+	      && unwrap_enclosed_string_literal() )
+		peek0 = peekToken();
 
 	    auto looks_like_wide_string_payload = [](TokenBase *tok) -> bool {
 		if ( !tok || tok->type() != TokenType::ttString )
