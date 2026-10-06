@@ -292,6 +292,10 @@ ${ide_text}
 share/doc/madc/examples/madc.ini is a documented example configuration
 file; to use one, copy it to ~/.config/madc/madc.ini.
 EOF
+    # Every entry gets the modes an install gives every user (the one owner
+    # stage_install.sh shares): the copied plugin bundles otherwise keep the
+    # checkout's modes and the gzipped pages the umask's.
+    scripts/install_modes.sh "$stage/$root"
     tar -C "$stage" -czf "dist/$root.tar.gz" "$root"
     rm -rf "$stage"
     echo "packaged dist/$root.tar.gz"
