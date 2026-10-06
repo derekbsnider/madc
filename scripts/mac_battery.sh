@@ -270,7 +270,7 @@ printf 'aot 42\n' > aot.expect
 # here. The decline's own words are echoed rather than matched, so the log
 # records what madc actually said instead of a guess.
 rm -f aot.o
-if "$MADC" -c aot.mad -o aot.o > aot.compile.out 2>&1; then
+if "$MADC" -c -o aot.o aot.mad > aot.compile.out 2>&1; then
     AOT_OUT=$("$MADC" aot.o 2>&1); AOT_RC=$?
     if [ $AOT_RC -eq 0 ] && [ "$AOT_OUT" = "$(cat aot.expect)" ]; then
         echo "ok   - AOT object round-trip (-c then run .o)"
