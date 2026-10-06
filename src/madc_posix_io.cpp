@@ -539,6 +539,52 @@ void *map_file_readonly(const char *path, std::size_t &length)
 #endif
 }
 
+void *map_exec_region_at(void *addr, std::size_t length)
+{
+#ifdef _WIN32
+	// VirtualAlloc at an address fails when any page of the range is taken.
+	return VirtualAlloc(addr, length, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE);
+#else
+	int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_FIXED_NOREPLACE
+	flags |= MAP_FIXED_NOREPLACE;
+#endif
+	void *m = ::mmap(addr, length, PROT_EXEC, flags, -1, 0);
+	if ( m == MAP_FAILED )
+		return NULL;
+	if ( m != addr )	// taken as a hint and placed elsewhere
+	{
+		::munmap(m, length);
+		return NULL;
+	}
+	return m;
+#endif
+}
+
+int protect_exec_region(void *addr, std::size_t length, bool writable)
+{
+#ifdef _WIN32
+	DWORD old = 0;
+	return VirtualProtect(addr, length,
+			      writable ? PAGE_EXECUTE_READWRITE : PAGE_EXECUTE_READ,
+			      &old) ? 0 : -1;
+#else
+	return ::mprotect(addr, length,
+			  writable ? PROT_READ | PROT_WRITE | PROT_EXEC
+				   : PROT_READ | PROT_EXEC);
+#endif
+}
+
+int unmap_exec_region(void *addr, std::size_t length)
+{
+#ifdef _WIN32
+	(void)length;	// MEM_RELEASE frees the whole reservation
+	return VirtualFree(addr, 0, MEM_RELEASE) ? 0 : -1;
+#else
+	return ::munmap(addr, length);
+#endif
+}
+
 int make_temp_file(const char *prefix, std::string &path_out)
 {
 	path_out.clear();

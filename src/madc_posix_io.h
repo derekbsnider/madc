@@ -127,6 +127,16 @@ void glob_paths(const std::string &pattern, std::vector<std::string> &out);
 // this signature only.
 void *map_file_readonly(const char *path, std::size_t &length);
 
+// Map `length` bytes of anonymous memory at exactly `addr`, executable and
+// not writable: the shape of a JIT code region (a MIR code allocator's
+// mem_map; its owner flips write access through protect_exec_region). NULL
+// when the range is taken or cannot be placed at `addr`.
+void *map_exec_region_at(void *addr, std::size_t length);
+// Make an exec region writable (`writable`) or read+exec only: 0 on success.
+int protect_exec_region(void *addr, std::size_t length, bool writable);
+// Release a region map_exec_region_at returned: 0 on success.
+int unmap_exec_region(void *addr, std::size_t length);
+
 // Create + open a fresh uniquely-named temporary file: the fd (read/write,
 // binary) is returned, its path through `path_out`; -1 on failure. `prefix`
 // names the purpose ("madc_exec_stdout") — the owner owns placement and

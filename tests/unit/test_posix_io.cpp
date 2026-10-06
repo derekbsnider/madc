@@ -2,6 +2,7 @@
 #define MADC_UNIT_TEST
 #include "doctest.h"
 
+#include <cstdint>
 #include <string>
 
 thread_local bool madc_verbose = false;
@@ -118,3 +119,19 @@ TEST_CASE("host_path_absolute: a drive spelling is a relative name on POSIX")
 	CHECK_FALSE(host_path_absolute("\\rooted"));
 }
 #endif
+
+TEST_CASE("map_exec_region_at: placed exactly, refused when taken, writable on request")
+{
+	// An address far from the image, the heap and the default mapping area.
+	void *want = (void *)(uintptr_t)0x300000000000ULL;
+	const std::size_t len = 4096;
+	void *p = madc::detail::map_exec_region_at(want, len);
+	REQUIRE(p == want);
+	CHECK(madc::detail::map_exec_region_at(want, len) == nullptr);	// taken
+	REQUIRE(madc::detail::protect_exec_region(p, len, true) == 0);
+	*(volatile unsigned char *)p = 0xc3;
+	CHECK(*(volatile unsigned char *)p == 0xc3);
+	CHECK(madc::detail::protect_exec_region(p, len, false) == 0);
+	CHECK(*(volatile unsigned char *)p == 0xc3);
+	CHECK(madc::detail::unmap_exec_region(p, len) == 0);
+}

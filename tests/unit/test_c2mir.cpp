@@ -13,13 +13,7 @@
 #include <utility>
 #include <vector>
 
-#if defined(__linux__) && defined(__x86_64__)
-#include <sys/mman.h>
-// mmap's failure value; mir-code-alloc.h redefines MAP_FAILED as the code
-// allocator contract's NULL.
-static void *const mmap_failed = MAP_FAILED;
-#undef MAP_FAILED
-#endif
+#include "../../src/madc_posix_io.h"	// the one mapping owner (a src/ header: relative, the unit flags carry only -I../include)
 
 extern "C" {
 #include "mir.h"
@@ -118,24 +112,23 @@ static void *far_mem_map(size_t len, void *user_data) {
     for (int tries = 0; tries < 64; tries++) {
 	void *want = (void *)fs->next;
 	fs->next += FAR_CODE_STRIDE;
-	void *p = mmap(want, len, PROT_EXEC,
-		       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
-	if (p == mmap_failed)
+	void *p = madc::detail::map_exec_region_at(want, len);
+	if (p == nullptr)
 	    continue;
 	fs->maps.push_back((uintptr_t)p);
 	return p;
     }
-    return MAP_FAILED;
+    return nullptr;	// the code-allocator contract's failure value
 }
 
 static int far_mem_unmap(void *addr, size_t len, void *) {
-    return munmap(addr, len);
+    return madc::detail::unmap_exec_region(addr, len);
 }
 
 static int far_mem_protect(void *addr, size_t len, MIR_mem_protect_t prot,
 			   void *) {
-    return mprotect(addr, len, prot == PROT_WRITE_EXEC
-			       ? PROT_WRITE | PROT_EXEC : PROT_READ | PROT_EXEC);
+    return madc::detail::protect_exec_region(addr, len,
+					     prot == PROT_WRITE_EXEC);
 }
 #endif
 
