@@ -2689,6 +2689,22 @@ unless stated. The owners already exist: `DelimDepth` with
 scans), `peek_after_balanced_template_id_from`,
 `capture_balanced_group_tokens` and `outofline_declarator_param_arity`.
 
+### B188. Releasing JIT code memory on Windows, spelled three ways — MIR's default leaks
+
+- Found 2026-10-06 adding `madc::detail::unmap_exec_region` (the B186 unit
+  test's code allocator). Three sites release a `VirtualAlloc` region:
+  `mir-debug.c` (`VirtualFree (p, 0, MEM_RELEASE)`), `madc_posix_io.cpp`
+  `unmap_exec_region` (size 0), and `mir-code-alloc-default.c`
+  `default_mem_unmap`, which passes `len`. Win32 requires a size of 0 with
+  `MEM_RELEASE`, so that call fails (`ERROR_INVALID_PARAMETER`) and
+  `code_finish` ignores its result: every code holder of a MIR context
+  stays mapped after `MIR_finish`.
+- madc calls `MIR_finish` at 26 sites (REPL entries, eval contexts, the run
+  teardown), so a long Windows session leaks each context's code pages.
+- The three cannot share one owner (MIR does not depend on madc). Fix: pass
+  0. Reducer: a win64 loop of `MIR_init` / generate / `MIR_finish` whose
+  committed memory grows without the fix.
+
 ### B90. A declarator's top-level cv, restated three times
 
 - Found 2026-09-30 while fixing B89 (a `const char *&` parameter refused as
