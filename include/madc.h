@@ -8234,7 +8234,8 @@ public:
 			      DeclaratorResult &out,
 			      const std::set<std::string> *runtime_names = NULL,
 			      unsigned leading_cv = cvNONE);
-    bool nested_declarator_opens(DeclaratorMode mode);
+    bool nested_declarator_opens(DeclaratorMode mode, size_t at = 0);
+    void drop_redundant_declarator_parens(DeclaratorMode mode);
     bool paren_starts_parameter_list();
     bool declarator_id_token(TokenBase *tb, DeclaratorMode mode);
     bool parse_member_signature_qualifiers();

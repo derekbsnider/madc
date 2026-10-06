@@ -46,6 +46,4 @@
 # c2mir.c (119 errors as of b3dc26b79). Largest cluster: cleanup-* (6),
 # __attribute__((cleanup)), which the in-tree MIR supports natively.
 lacc/declaration-default-int.c
-lacc/declarator-parens.c
-new/ssa-ccp.c
 new/vector-size.c

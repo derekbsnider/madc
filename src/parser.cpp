@@ -55728,26 +55728,54 @@ static bool member_pointer_owner_head(TokenBase *tb)
 // counted it as an opener and read `int(const float&)` as a nested group
 // (g++.dg/cpp0x/variadic16). paren_starts_parameter_list is the complement.
 // ONE home for the shape consume_template_parameter_declarator spelled inline.
-bool Program::nested_declarator_opens(DeclaratorMode mode)
+// `at` reads the `(` that many tokens ahead (drop_redundant_declarator_parens
+// asks it of each level of a group before any of it is read).
+bool Program::nested_declarator_opens(DeclaratorMode mode, size_t at)
 {
-    if ( tokens.size() < 2 || !tokens[0] || tokens[0]->id() != TokenID::tkOpBrk
-      || !tokens[1] )
+    if ( tokens.size() < at + 2 || !tokens[at]
+      || tokens[at]->id() != TokenID::tkOpBrk || !tokens[at + 1] )
 	return false;
-    TokenBase *t1 = tokens[1];
+    TokenBase *t1 = tokens[at + 1];
+    TokenBase *t2 = tokens.size() > at + 2 ? tokens[at + 2] : NULL;
     if ( t1->id() == TokenID::tkMul || t1->id() == TokenID::tkBand
       || t1->id() == TokenID::tkLand || t1->id() == TokenID::tkOpBrk
       || t1->id() == TokenID::tkOpSqr )	// `int ([4])`: a parenthesized abstract array declarator
 	return true;
-    if ( tokens.size() > 2 && tokens[2]
-      && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT)
-      && member_pointer_declarator_ahead(t1, 2) )
+    if ( t2 && (t2->id() == TokenID::tkNS || t2->id() == TokenID::tkLT)
+      && member_pointer_declarator_ahead(t1, at + 2) )
 	return true;			// `(C::*`, `(T1::*` yes; `(std::string` no
     if ( !is_contextual_identifier_token(t1) )
 	return false;
-    if ( tokens.size() > 2 && tokens[2]
-      && (tokens[2]->id() == TokenID::tkNS || tokens[2]->id() == TokenID::tkLT) )
+    if ( t2 && (t2->id() == TokenID::tkNS || t2->id() == TokenID::tkLT) )
 	return false;
     return mode != DeclaratorMode::Abstract && !token_starts_type_name(t1);
+}
+
+// At a `(` (unread): parentheses around the declarator-id alone — `(foo)`,
+// `((foo))` — are redundant: `( declarator )` declares what the declarator
+// does (C11 6.7.6p6), so `int ((foo))(int)` is the function `int foo(int)`.
+// Every level must open a nested declarator (nested_declarator_opens: in
+// `void f(int((x)))` with x a typedef name, the inner `(x)` is a parameter
+// list). The parentheses are removed from the stream, leaving the id for the
+// direct-declarator's id arm; any other shape is left as it is.
+void Program::drop_redundant_declarator_parens(DeclaratorMode mode)
+{
+    if ( mode == DeclaratorMode::Abstract )
+	return;
+    size_t wraps = 0;			// the `(`s ahead of the id
+    while ( nested_declarator_opens(mode, wraps) )
+    {
+	++wraps;
+	if ( tokens[wraps]->id() != TokenID::tkOpBrk )
+	    break;
+    }
+    if ( wraps == 0 || tokens.size() < 2 * wraps + 1
+      || !declarator_id_token(tokens[wraps], mode) )
+	return;
+    for ( size_t k = 1; k <= wraps; ++k )
+	if ( !tokens[wraps + k] || tokens[wraps + k]->id() != TokenID::tkClBrk )
+	    return;
+    tokens.splice_front(2 * wraps + 1, std::vector<TokenBase *>(1, tokens[wraps]));
 }
 
 // At a `(` (tokens[0], unconsumed): can what follows begin a parameter list?
@@ -55964,6 +55992,7 @@ DataDef *Program::parse_declarator_level(DataDef *base, DeclaratorMode mode,
 
     // 2. direct-declarator.
     bool id_here = false;
+    drop_redundant_declarator_parens(mode);
     TokenBase *pk = peekToken();
     if ( pk && pk->id() == TokenID::tkOpBrk && nested_declarator_opens(mode) )
     {
