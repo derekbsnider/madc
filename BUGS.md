@@ -642,14 +642,40 @@ is the call to `part_a` (a plain `int part_a()`), so the multi-TU link gave
 `part_a` a wrong call target. gcc 13.3 and clang 18.1 build the same three TUs
 and print `a=1`. The forest is not involved (`--no-forest-bind` reproduces).
 
-Not reproduced on Linux, so the win64 object-writer / MIR link path is
-implicated, not the parser. The regression sits in a480870b6..260bbe2c5; a
-bisect needs a CLEAN hosted-windows build per step (incremental `make` across
-non-sequential checkouts reuses stale objects and gives a false culprit — a
-ledger-only commit). Suspect range includes the template-instance-naming batch
-(201a6beaa, 87e86edc1, b14b827f4) and the win64 forest-into-DLL split
-(b606ae063). Skipped on win64 (`tests/testprojectmtiorder.win64_skip`) for
-v0.102.0; fix post-release.
+Not reproduced on Linux, so the win64 MIR JIT link/codegen path is implicated,
+not the parser.
+
+Bisected 2026-10-06 (clean hosted-x86-64-windows build per step, obj wiped each
+step; driver `tmp/mti/clean_test.sh`; reducer `tmp/mti/v5abs.cc.json`): GOOD at
+`eeafa28c5`, BAD at its child `f116ba8bc` ("madcmark: Markdown parser module").
+`f116ba8bc` is an innocent trigger: its only hosted-win-exe changes are two
+inert static-table entries in `src/lexer.cpp` (a `markdown::` auto-include the
+reducer never names) and a lazy `madc_modules.cpp` row; `madcmark.mk` sets
+`MADCMARK_LIBRARY` empty for `MODE=hosted-x86-64-windows` (madcmark is not built
+on the win path). So B186 is a pre-existing, LAYOUT-SENSITIVE win64 JIT
+miscompile; `f116ba8bc`'s two extra static entries shift madc's binary layout
+enough to expose it. Deterministic (12/12 at HEAD).
+
+878dcad6b (weak-object data replacement) exonerated: `weak_replaceable_data_p`
+forced to 0 at HEAD, the crash persists.
+
+Crash shape: `main+0x18` (the call to `part_a`, a plain `int part_a()`) jumps to
+a fixed low offset (`…ffd90000`/`…ffda0000`) under a varying ASLR base; the JIT
+backtrace is symbol-less, frames in the `0x140000000` PE-image range. A
+cross-TU call target resolved wrong, consistent with a 32-bit-truncated or
+out-of-±2GB-range call/thunk address (win64 `long` is 32-bit; wine mmap layout
+differs from Linux). std::map<std::string,int> in a non-main TU is required —
+it brings the weak/thunked template instances the wrong-target call runs
+through.
+
+Current lead: win64 call/thunk emission in `third_party/mir/mir-gen-x86_64.c`
+(`store_call_ref`, `change_calls`, `call_refs`, the `call *rel32(rip)` path,
+~L3325/L3512/L3662) and the thunk machinery in `mir.c` (`_MIR_get_thunk`,
+`set_interface`).
+
+Skipped on win64 (`tests/testprojectmtiorder.win64_skip`); the skip is removed
+in the fix commit. Release blocker (owner 2026-10-06): madc and Chthonia must
+run on Linux, macOS and Windows.
 
 ## Accepts invalid code
 
