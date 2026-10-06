@@ -1249,6 +1249,11 @@ public:
     Shape next_shape();
     // Places one clause: at the designated subobject, or the next one.
     void positional(TokenBase *value);
+    // Places the clauses read so far by brace elision against the type
+    // (C11 6.7.9p20) — the slots become member-indexed, a brace-elided run
+    // an explicit nested list. For a list that mixes braced and brace-elided
+    // clauses (`{{1, 2}, 3, 4, 5}`), which no consumer places.
+    void elide_braces() { switch_to_member_indexed(); }
     bool member_indexed() const { return member_indexed_; }
 private:
     struct Frame

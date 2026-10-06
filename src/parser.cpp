@@ -78039,6 +78039,21 @@ TokenBase *Program::parse_declaration_body(TokenDataType *tb, bool is_static)
 		    cursor.positional(parseExpression(next_init));
 		finish_list_element(TokenID::tkClBrc, "}");
 	    }
+	    // An array of aggregates (rows, structs) whose list mixes braced
+	    // elements and brace-elided ones (`{{1, 2}, 3, 4, 5}`) is placed by
+	    // brace elision against the type (C11 6.7.9p20); an all-braced or
+	    // all-elided list keeps its clauses for the consumers.
+	    if ( !cursor.member_indexed() && !arr_dims.empty()
+	      && (arr_dims.size() > 1
+		  || InitializerCursor::Shape::of(decl_type).aggregate()) )
+	    {
+		bool braced_clause = false, elided_clause = false;
+		for ( TokenBase *clause : init_list )
+		    (dynamic_cast<TokenStructLit *>(clause) ? braced_clause
+							    : elided_clause) = true;
+		if ( braced_clause && elided_clause )
+		    cursor.elide_braces();
+	    }
 	    }
 	    // Infer size for arrays with dims[0] == 0; validate count
 	    if ( !arr_dims.empty() )
