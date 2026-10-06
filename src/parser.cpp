@@ -14059,6 +14059,18 @@ TokenDataType *Program::resolve_declared_type_token(TokenBase *tb,
 	if ( bare_name )
 	{
 	    std::string ename = contextual_identifier_name(name_tb);
+	    // A tag the name already declares IS the type, whether or not the
+	    // name is also a type name — in C a tag never is (C11 6.7.2.3p9;
+	    // [basic.lookup.elab]: non-type names are ignored). The ONE
+	    // visible-tag rule finds it; only a name that declares nothing
+	    // first-declares below.
+	    datadef_map_citer vis = find_visible_struct_tag(ename);
+	    if ( vis != struct_map.end() )
+	    {
+		TokenDataType *tdt = new TokenDataType(ename.c_str(), *vis->second);
+		copy_token_location(tdt, name_tb);
+		return tdt;
+	    }
 	    DataDefSTRUCT *sdd = mint_incomplete_struct_tag(ename,
 		    tb->id() == TokenID::tkUNION);
 	    flat_datatype_map_iter mi = datatype_map.find(ename);
@@ -41538,67 +41550,12 @@ Program::ExprStep Program::parseExpr_identifierArm(TokenBase *&tb,
 		    TokenBase *comma_tb = nextToken();
 		    if ( comma_tb->id() != TokenID::tkComma )
 			Throw(comma_tb) << "Expecting ',' after va_list expression in va_arg" << flush;
-		    // second arg: type name
-		    TokenBase *type_tb = nextToken();
-		    while ( is_type_qualifier_token(type_tb) )
-		    {
-			type_tb = nextToken();
-			if ( !type_tb )
-			    Throw(comma_tb) << "Expecting type after qualifier in va_arg" << flush;
-		    }
-		    DataDef *target_dd = NULL;
-		    if ( type_tb->type() == TokenType::ttDataType )
-			target_dd = &((TokenDataType *)type_tb)->definition;
-		    else if ( type_tb->type() == TokenType::ttIdentifier
-		      && ((TokenIdent *)type_tb)->spelling_is("typeof") )
-		    {
-			TokenDataType *typeof_dt = parse_typeof_datatype(type_tb);
-			target_dd = typeof_dt ? &typeof_dt->definition : NULL;
-		    }
-		    else if ( type_tb->type() == TokenType::ttIdentifier )
-		    {
-			std::string tname = ((TokenIdent *)type_tb)->spelling();
-			flat_datatype_map_iter tdmi = datatype_map.find(tname);
-			if ( tdmi != datatype_map.end() )
-			    target_dd = &(*tdmi)->definition;
-			if ( !target_dd )
-			{
-			    datadef_map_citer sdmi = struct_map.find(tname);
-			    if ( sdmi != struct_map.end() )
-				target_dd = sdmi->second;
-			}
-		    }
-		    // handle 'struct Tag' or 'union Tag' as va_arg type
-		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
-			&& (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
-		    {
-			TokenBase *tag_tb = nextToken();
-			if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
-			{
-			    std::string sname = ((TokenIdent *)tag_tb)->spelling();
-			    datadef_map_citer sdmi = struct_map.find(sname);
-			    if ( sdmi != struct_map.end() )
-				target_dd = sdmi->second;
-			}
-		    }
-		    // `va_arg(ap, enum TAG)`: the tag's type, through the one
-		    // elaborated-specifier resolver (this arm read an int).
-		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
-			&& type_tb->id() == TokenID::tkENUM )
-			if ( TokenDataType *etdt =
-				resolve_declared_type_token(type_tb, true, true) )
-			    target_dd = &etdt->definition;
-		    // handle compound type specifiers: unsigned, long, etc.
-		    if ( !target_dd && type_tb->type() == TokenType::ttDataType )
-			target_dd = &((TokenDataType *)type_tb)->definition;
-		    if ( !target_dd )
-			Throw(type_tb) << "Unknown type in va_arg" << flush;
-		    // handle pointer: va_arg(ap, char *)
-		    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
-		    {
-			nextToken(); // consume '*'
-			target_dd = getPointerType(target_dd);
-		    }
+		    // second arg: a type name — the one type-name reader, so an
+		    // abstract declarator (`int (*)(void)`, `char (*)[4]`) is read
+		    // as in a cast, not only a run of trailing `*`s.
+		    TokenBase *type_tb = NULL;
+		    DataDef *target_dd = parse_type_name_operand(comma_tb, "va_arg type",
+								 &type_tb);
 		    // consume closing ) unless a nested typeof/expression parse
 		    // already balanced the token stream to the outer close-paren
 		    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
