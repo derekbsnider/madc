@@ -769,6 +769,64 @@ int main() { return (int)alignof(S); }
 
 ## Refuses valid code
 
+### B192. libc++: `std::map<long, long>::operator[]` does not compile
+
+```cpp
+#include <map>
+#include <cstdio>
+int main()
+{
+	std::map<long, long> mm;
+	for (long i = 0; i < 20; i++)
+		mm[i % 7] = i;
+	std::printf("size=%zu mm[3]=%ld\n", mm.size(), mm[3]);
+	return 0;
+}
+```
+
+- Found 2026-10-06 running the darwin suite natively on the arm64 Mac Mini:
+  testsession_interrupt's compile-interrupt case (now
+  `tests/testsession_interrupt_compiling`, which carries `.libcxx_skip`
+  naming this entry).
+- clang++ (Apple, macOS 14) and clang++ 18 `-stdlib=libc++` (Linux):
+  `size=7 mm[3]=17`. madc on darwin: "cir error: no matching constructor
+  for call to '__tuple_leaf_0_longRR_0(tuple_longRR*)'" at libc++
+  `tuple:473`. madc `-stdlib=libc++` on Linux: "MIR error: import of
+  undefined item tuple_int64_tRR__tuple_int64_tRR". An lvalue key (`long k
+  = i % 7; mm[k] = i;`) fails the same way: both `operator[]` overloads
+  instantiate, and the rvalue one builds `tuple<long&&>` through
+  `forward_as_tuple`. libstdc++: green.
+- Not a regression: the archived v0.100.0 and v0.101.0 fail the same way
+  on Linux `-stdlib=libc++`.
+
+### B190. libc++: a by-reference stand-in call into `std::map` leaves a skipped `__tree` body uncovered
+
+`tests/testtsubststandinref.mad` (B170's reducer, `--std=c++17`) under libc++.
+
+- Found 2026-10-06 running the darwin suite natively on the arm64 Mac Mini
+  (macOS 14.8.4, the -O2 packed `madc-release-arm64-macos`).
+- clang++ 18 `-std=c++20 -stdlib=libc++` (Linux): the `.expect` verbatim
+  (`scalar identity: 1` … `class copy: 4 abc`). madc on darwin: "cir error:
+  tsubst: skipped body with no tsubst coverage (re-parse fallback deleted)
+  @…/libcxx-headers/include/c++/v1/__tree:1798". libstdc++ (Linux, Windows):
+  green.
+- The test is new in this release (55cb04451, 2026-10-04) and never ran on
+  libc++ before; carries `.libcxx_skip` naming this entry.
+
+### B189. libc++: `std::map` brace-initialized from an initializer list fails c2mir's checks
+
+`tests/teststdinitlistconstruct.mad` (B30's reducer, `--std=c++17`) under libc++.
+
+- Found 2026-10-06 running the darwin suite natively on the arm64 Mac Mini.
+- clang++ 18 `-std=c++20 -stdlib=libc++` (Linux): the `.expect` verbatim
+  (`map: size=4 1:10 2:20 3:30 4:40` …). madc on darwin: c2mir check errors
+  in the instantiated libc++ — `map:1212:13: incompatible argument type for
+  struct/union type parameter`, `__tree:1109:69: invalid type argument of
+  unary *`, `__tree:1739:25` / `:1755:25: conversion of non-scalar value
+  requested`. libstdc++ (Linux, Windows): green.
+- The test is new in this release (e6d7b05a1, 2026-10-04) and never ran on
+  libc++ before; carries `.libcxx_skip` naming this entry.
+
 ### B185. `std::function<R(A)>` has no `operator()`
 
 ```cpp
@@ -2575,6 +2633,39 @@ int main(void) { return x; }
   `madc_self_exe_path()` callers).
 
 ## Build and packaging
+
+### B191. On macOS, a dialect call to `php::array_key_exists` binds 760 of the forest's 836 units
+
+```cpp
+void keyed_get(var &out, var &map, const char *key)
+{
+    if ( map.is_object() && php::array_key_exists(key, map) )
+	out = map[key];
+}
+int main()
+{
+    var m = { "a": 1 };
+    var o;
+    keyed_get(o, m, "a");
+    println("{}", o);
+    return 0;
+}
+```
+
+- Found 2026-10-06 running the darwin suite natively on the arm64 Mac Mini
+  (`madc-release-arm64-macos`, -O2 packed).
+- `--show-stats`: darwin "760 units bound / 836 packed"; Linux
+  `madc-release`, the same file: none beyond the C units. `php::rtrim(var)`,
+  `int64_t` and `<ns_ui>` alone bind 0 on darwin; the `array_key_exists` call
+  is the trigger (`tools/texteditor/editor_events.inc:273`, so every
+  madcide program). Wall time 0.15 s against 0.14 s for a lean twin.
+- Consequence: the bound units install libc++'s `_LIBCPP_STRING`, so
+  `<ns_php>`'s `std::string` interop overloads appear in a program that
+  never asked for `<string>` — a dialect-lean violation. Every madcide test
+  on macOS was refused through it until the CIR builder typed a call by its
+  resolved callee (`resolved_call_value_type`); the over-binding remains.
+- Layer not yet found: the trigger is in resolving that call on darwin, not
+  in `<ns_php>`'s text.
 
 ### B172. A native macOS `make -C src` links the modules with GNU ld's flags
 

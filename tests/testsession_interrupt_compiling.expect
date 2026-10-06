@@ -1,0 +1,3 @@
+while compiling: sent=true kind-offer=true ok=false interrupted=true
+m > 0 -> ok=true shown=true
+close c++: true

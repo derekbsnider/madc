@@ -123,13 +123,9 @@ int main()
     println("template defined: ok={}", r["ok"]);
     interrupt_entry(hx, "template", "spin_t();");
     show(hx, "m > 0");
-    // Interrupted at once, while the backend compiles the entry (std::map's
-    // members instantiate): the interrupt waits for the entry's first poll.
-    madc::session_offer(hx, "#include <map>", true);
-    wait_for(r, hx, madc::session_reply::offer);
-    interrupt_after(hx, "while compiling",
-		    "{ std::map<long, long> mm; for (long i = 0; ; i++) mm[i % 7] = i; }", 0);
-    show(hx, "m > 0");
+    // An interrupt while the backend still compiles the entry:
+    // testsession_interrupt_compiling (it needs std::map, which libc++
+    // cannot compile yet — B192 — so it skips there alone).
     println("close c++: {}", madc::session_close(hx));
     return 0;
 }

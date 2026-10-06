@@ -1,0 +1,1 @@
+libstdc++-internal by construction: std::__miter_base is libstdc++'s <bits/stl_algobase.h> helper (the 22.04 __niter_base reducer); libc++ defines no such name, and the real toolchain rejects this source (clang++ -std=c++20 -stdlib=libc++: "no member named '__miter_base' in namespace 'std'").
