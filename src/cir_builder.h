@@ -638,6 +638,11 @@ class CirBuilder {
 	// (std::move(x), a T&/T&& method) — the pointer representation
 	// unwrapped; NULL when arg is not a ref-returning call.
 	DataDef *ref_returning_call_type(TokenBase *arg);
+	// A CALL's value type by its RESOLVED callee's return (a reference
+	// return's referent): the parse-bound Variable is an arbitrary member of
+	// a late-bound overload set. NULL when the token pins its own return
+	// (return_override) or no callee resolves.
+	DataDef *resolved_call_value_type(TokenCallFunc *tcf);
 	// The operand of an IDENTITY reference-cast call (std::move/forward,
 	// inline_builtin_kind "forward") — transparent for TYPE questions;
 	// NULL when fw is not such a call. See cir_builder.cpp.

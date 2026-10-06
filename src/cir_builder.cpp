@@ -7663,28 +7663,46 @@ node_t CirBuilder::object_cstr_arg(TokenBase *arg)
 // Coerce an argument to a class-object pointer for an object/reference
 // parameter. Existing object lvalues pass by address; a value accepted by a
 // converting ctor is materialized into a scope-lived temp.
+DataDef *CirBuilder::resolved_call_value_type(TokenCallFunc *tcf)
+{
+	if (!tcf || tcf->return_override)
+		return NULL;
+	FuncDef *cfd = call_target_funcdef(tcf);
+	// return_value_type() already yields the referent of a reference return.
+	return cfd ? &cfd->return_value_type() : NULL;
+}
+
 DataDef *CirBuilder::ref_returning_call_type(TokenBase *arg)
 {
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
 	if (!tcf) return NULL;
 	FuncDef *raw_fd = call_target_funcdef_raw(tcf);
 	FuncDef *cfd = call_target_funcdef(tcf);
-	// Token half via the one TokenCallFunc owner (override OR the parse-bound
-	// FuncDef); cfd is the CIR-RESOLVED callee, which can differ and is
-	// checked in addition.
-	if (!tcf->call_returns_reference() && !(cfd && cfd->returns_reference()))
-		return NULL;
 	// Type by the call_target_funcdef-RESOLVED callee: for a late-bound
 	// overload set the parse-bound var is an arbitrary set member (the
 	// parser defers resolution to CIR), so the token's own returns() can
 	// name another overload's return type. A parse-time return_override still
 	// wins for the original callee, but if CIR resolves the call to a different
-	// reference-returning overload/template instantiation, that concrete
-	// FuncDef's return is authoritative (e.g. std::get<I>(tuple<T...>) where a
-	// stale non-type template argument override can otherwise name `I`).
-	DataDef *r = (cfd && cfd->returns_reference()
-		   && (!tcf->return_override || cfd != raw_fd))
-		   ? &cfd->return_value_type() : tcf->returns();
+	// overload/template instantiation, that concrete FuncDef alone answers —
+	// whether the call yields a reference at all, and its type (e.g.
+	// std::get<I>(tuple<T...>) where a stale non-type template argument
+	// override can otherwise name `I`; php::rtrim(var &), a const char *,
+	// whose set also holds std::string &rtrim(std::string &) once <string>
+	// is parsed).
+	DataDef *r;
+	if (cfd && cfd != raw_fd) {
+		if (!cfd->returns_reference())
+			return NULL;
+		r = &cfd->return_value_type();
+	} else {
+		// The original callee: the token half via the one TokenCallFunc
+		// owner (override OR the parse-bound FuncDef).
+		if (!tcf->call_returns_reference()
+		    && !(cfd && cfd->returns_reference()))
+			return NULL;
+		r = (cfd && cfd->returns_reference() && !tcf->return_override)
+		    ? &cfd->return_value_type() : tcf->returns();
+	}
 	// Unwrap EXACTLY ONE reference level. return_value_type() already returned
 	// the referent (no longer a reference); the tcf->returns() fallback may
 	// still be the DataDefREF. Gate the strip on is_reference() — a plain
@@ -14082,17 +14100,10 @@ DataDefCLASS *CirBuilder::operand_object_class(TokenBase *t)
 	// `return *this = std::move(__str)` typed rhs by whichever `move`
 	// instantiation registered last (an allocator's), so operator= selection
 	// and the memberwise guard both saw the wrong class.
-	if (TokenCallFunc *tcf = (t ? t->as_callfunc_tok() : NULL)) {
-		if (!tcf->return_override) {
-			if (FuncDef *cfd = call_target_funcdef(tcf)) {
-				// return_value_type() already yields the referent
-				// of a reference return.
-				DataDef *r = &cfd->return_value_type();
-				if (DataDefCLASS *c = as_class_instance(r))
-					return c;
-			}
-		}
-	}
+	if (TokenCallFunc *tcf = (t ? t->as_callfunc_tok() : NULL))
+		if (DataDefCLASS *c =
+			    as_class_instance(resolved_call_value_type(tcf)))
+			return c;
 	// An array operand is no class object, whatever its (flattened) element
 	// — Program::operand_object_class's rule, through the one array owner.
 	if (m_prog->array_operand_type(t))
@@ -17999,6 +18010,13 @@ DataDef *CirBuilder::ctor_arg_datadef(TokenBase *arg)
 	if (m_prog)
 		if (DataDef *adp = m_prog->array_decay_pointer(arg))
 			return adp;
+	// Any other CALL types by its resolved callee too (a scalar or pointer
+	// return): the token's own datadef() is the parse-bound set member's —
+	// std::string &rtrim(std::string &) for php::rtrim(var &)'s const char *
+	// once <string> is parsed, which no carrier row takes.
+	if (TokenCallFunc *tcf = arg->as_callfunc_tok())
+		if (DataDef *r = resolved_call_value_type(tcf))
+			return r;
 	return arg->datadef();
 }
 

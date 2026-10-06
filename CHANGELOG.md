@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+### madc: A carrier literal element is typed by the called overload, whatever headers the TU parsed — `{ "content": php::rtrim(text) }` compiles once `<string>` is parsed, where it had refused "cannot initialize a value list element of this type"; the refusal had hit ~65 tools/madcide tests on macOS libc++
+
 ### forest: The Windows header pack carries mingw's <pshpack1.h> and <poppack.h> — a program that re-includes the struct-packing pair could not open it against the packed madc.exe and now compiles
 
 ### mir: A multi-TU C++ --project link no longer crashes on win64
