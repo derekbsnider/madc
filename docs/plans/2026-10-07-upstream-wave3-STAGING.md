@@ -157,6 +157,19 @@ upstream `make test` green (re-run 2026-10-07). Head: `derekbsnider:<branch>`, b
 > plain char; I left those headers unchanged for you to judge. Happy to
 > rework.
 
+**Amendment (recon 2026-10-07, §5):** D needs a SECOND commit before filing.
+`out_insn` in `mir-gen-aarch64.c` (ours :2418, upstream the same) scans hex
+digits with `char d` against `hex_value()`, which returns `int` and `-1` on a
+non-digit; with plain char unsigned, `(d = hex_value (...)) >= 0` never fails
+and the scan spins. MIR's own gcc build is shielded by `-fsigned-char`
+(GNUmakefile:28, CMakeLists.txt:19), but c2m compiling MIR's own sources (the
+bootstrap tests) under D's unsigned char on aarch64 would hang. `mir-gen-riscv64.c`
+:2197 has the same scan. Fix: `int d` at both sites — in `third_party/mir`
+first (our aarch64 lane already carries unsigned char; fix-what-you-find), then
+the same one-liner as D's second commit, with a sentence in the body:
+"The one place MIR itself relied on signed char — the hex scan in
+`out_insn` — now uses `int`, so the bootstrap builds under the new ABI."
+
 ### PR E — `pr/apple-interp-shim-fp-stack-imm12`
 
 **Title:** aarch64 (Apple): encode a stack FP argument's offset in the interp shim
@@ -211,6 +224,32 @@ C before Cyan sends a duplicate), then D, E, F. Mechanics as wave 1:
 with our aarch64 V128 / Apple va_list work; the aarch64 and macOS lanes).
 These are madc changes, not filings; they ride the next release.
 
+Adoption sources, per §5 (each PR's branch head IS its PR head; nothing
+moved past it): #480 `35185c926`, #479 `976096d37`, #478 `f7594a507`,
+#477 `079a47da8`, #476 Cyan's `625be9104` (byte-equivalent to our planned
+one-liner — adopt HIS with credit; file no PR of our own for #476, he has
+offered one). Merge notes from the recon (read, not run):
+
+- **#479:** ours counts V128 into `xmm_args` (mir-gen-x86_64.c:393, used :671);
+  his `fp_arg_num < 8 ? fp_arg_num : 8` already covers V128 because our
+  `get_arg_reg` (:272–291) bumps `fp_arg_num` for F, D and V128 — drop
+  `xmm_args`, take his line.
+- **#478:** defence in depth on ours. Our #466 adoption (`98bee3d93`) fixed the
+  same root from the gate side (`target_memory_ok_p` compares the byte size,
+  mir-gen-aarch64.c:2724–2744); his c-test should pass on ours without it —
+  RUN it on the aarch64 lane before and after. Cost (one `target_insn_ok_p`
+  per combined mem operand) unmeasured; measure on the index-c lane.
+- **#477:** fixes an OPEN bug of ours — struct HFAs still travel in GPRs
+  (our `93010447b` records it; `caarch64-ABI-code.c:95–141` splits only
+  `_Complex`). Hand merge: `mir-aarch64.c` 4 hunks, `mir-gen-aarch64.c` 3,
+  `caarch64-ABI-code.c` 2, against `d1f6c8539` / `fdaa33b42` / `b70903ed3`.
+  Ours must win on: the `ff_call` long double stride (his hunk reintroduces
+  `sizeof (long double)`), the Apple x9 va_list handoff in the interp shim,
+  and HFA stack placement after our packed Apple ints (needs
+  `stack_arg_slot_start(offset, 8)`). After the merge make `_Complex` and
+  `struct { float, float }` take the same path when FP registers run out.
+  His Apple arms are untested by him: aarch64-linux AND both macOS lanes.
+
 ## 4. New candidates of ours — clean branches still to build
 
 Fifteen of our `third_party/mir` fixes since 2026-07-23 reproduce at upstream
@@ -238,3 +277,39 @@ win64 c2m on the container); the win64 `_MIR_get_wrapper` / wrapper_end pair
 **Pacing (owner's call):** six of ours are already open and unanswered since
 July–August. Proposal: file section 1 now; build all fifteen branches; file
 them in waves of about five, silent wrong code first, as the open ones move.
+
+## 5. Cyan's fork (github.com/cyanogilvie/mir) — recon 2026-10-07
+
+Read-only recon (remote `mir-cyan` on the madc repo; full matrix with shas
+and file:line in the container-side scratch `tmp/cyan-mir-recon.md`, not
+tracked). 21 branches: 8 are heads of his already-merged PRs (#430–#440
+series, all in our tree); 5 are the heads of #477–#481 (branch head == PR
+head, `mergeable_state: clean`); `debug-support` is his integration branch,
+37 commits over a8ab7c31, of which 21 are on no new PR: the June debug series
+(line map — already in our tree), #439 (paramless vararg — ours no longer
+refuses it), a cherry-pick of another contributor's #420, and the October
+items below.
+
+**Our six PRs stand.** Nothing of his touches A, B, D (see the amendment), E
+or F; no textual collision. PR C: his #482 names exactly our four x86-64
+long double sites and he has NO commit for it ("happy to send a PR for that
+part alone if you agree") — file C first, say so on #482. The block half of
+#482 is unimplemented on both sides. #474 (win64 spill area) — he has no
+win64 work. Our Apple stack packing (`d1f6c8539`) and aarch64 V128 are ahead
+of his tree. #481 stays a duplicate of our `8b005a51c` (equivalent bounds).
+
+**Bugs new to us:** #480, #479, #477 — adoptions in §3. #476 is the same
+one-liner we planned (adopt his).
+
+**Not bugfixes — owner's call, none planned:**
+
+| Commit | What | Shape |
+|---|---|---|
+| `5b70140f3` | `MIR_func.cfi` + `.debug_frame`: gdb unwinds JIT frames | +338 over 8 files; 5 conflicts in our grown `mir-debug.c` (loader, ELF/PE). Value: madcide / gdb backtraces through JIT code |
+| `bf72acee4` | calls through forward/import items become direct `bl`/`call` (skip the thunk) | x86 part small (+13 mir-gen.c, 2 lines x86); aarch64 +72 with 8 conflicts and a `gen_record_cfi` dependency. Relevant: c2mir emits `MIR_new_forward` items (c2mir.c:17668), so our calls never go direct today. Interplay with redefinition / lazy gen / bb versioning NOT analysed |
+| `95e7441ae` | micro-inline past the growth limit, 2000-insn budget per caller | heuristic; changes compile time and size for every large function (SMAUG-size) — measure before considering |
+| `b538e8147` | inlining glue stamped with the call site's line | +8 mir.c, debug quality |
+
+**Open from the recon:** whether madc's CIR path ever touches va_list fields
+directly (decides how real #480 is for madc — c2mir does not); #478's compile
+cost; none of his c-tests were run on ours.
