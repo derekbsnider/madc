@@ -1,0 +1,5 @@
+TABSTRIP open
+TABSTRIP 1 tabs=2 active=b.c*
+TABSTRIP 2 tabs=2 active=b.c*
+TABSTRIP 3 action bufsel arg=0
+TABSTRIP closed

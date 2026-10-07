@@ -764,6 +764,11 @@
     } else if (cls === 'edit') {
       return applyEdit(el, op);
     }
+    // The node's tab strip (tabStrip, in elementFor) is its own furniture: a
+    // kind that drew its text above rewrote the node's content and took the
+    // strip with it, so it goes back first — the editor's buffer tabs ride a
+    // content node docked above the editor.
+    if (el._strip && el.firstChild !== el._strip) el.insertBefore(el._strip, el.firstChild);
     // group / separator / node: structure only — children carry it.
     return false;
   }
