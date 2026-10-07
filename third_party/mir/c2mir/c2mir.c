@@ -614,7 +614,7 @@ struct_declaration: st_assert | N_MEMBER(N_SHARE(spec_qual_list), declarator?, a
                                         settled_member_layout?)
 settled_layout: N_LIST:(version, size, align, pack)
 settled_member_layout: N_LIST:(version, byte_offset, bit_offset, bit_width)
-spec_qual_list: N_LIST:(type_qual|type_spec|attr)*
+spec_qual_list: N_LIST:(align_spec|type_qual|type_spec|attr)*
 declarator: the same as direct declarator
 direct_declarator: N_DECL(N_ID,
                           N_LIST:(N_POINTER(type_qual_list) | N_FUNC(id_list|parameter_list)
@@ -4903,6 +4903,9 @@ D (spec_qual_list) {
     spec_pos = curr_token->pos;
     if (C (T_CONST) || C (T_RESTRICT) || C (T_VOLATILE) || C (T_ATOMIC)) {
       P (type_qual);
+      op = r;
+    } else if (C (T_ALIGNAS)) { /* C11 6.7.2.1p1: a member may carry an alignment-specifier */
+      P (align_spec);
       op = r;
     } else if ((op = TRY_A (type_spec, arg)) != err_node) {
       arg = op;
@@ -12132,6 +12135,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     node_t abstract_declarator = NL_NEXT (specs);
     struct decl_spec decl_spec = check_decl_spec (c2m_ctx, specs, r); /* only spec_qual_list here */
 
+    if (decl_spec.align_node != NULL) /* the list allows it for a member, never a type name */
+      error (c2m_ctx, POS (decl_spec.align_node), "_Alignas in a type name");
     type = check_declarator (c2m_ctx, abstract_declarator, FALSE);
     assert (NL_HEAD (abstract_declarator->u.ops)->code == N_IGNORE);
     decl_spec.type = append_type (type, decl_spec.type);
