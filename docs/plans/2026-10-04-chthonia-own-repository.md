@@ -183,14 +183,14 @@ before the program runs.
 ## 4. Packaging in the Chthonia repository
 
 - **Linux**: `.deb` (one per supported Ubuntu release, as madc's), `.rpm`,
-  and a tarball. The `.deb`/`.rpm` depend on madc's package; the tarball
-  unpacks into madc's prefix (the install layout below).
+  and a tarball, each standing alone (below): the tarball is one folder,
+  the `.deb`/`.rpm` install that folder in `/usr/lib/chthonia`.
 - **Windows**: the zip, and **MSIX** — package identity, the
   `AppxManifest.xml`, the signing certificate, the Evergreen WebView2
   runtime as a declared dependency, Start-menu entry and file associations
-  (`.c`, `.cpp`, `.h`, `.mad`). The zip unpacks into madc's folder, where
-  `libmadc-0.dll` and `madcide.dll` already sit beside `madc.exe` (PE
-  binding is adjacency). MSIX bundles everything (owner, 2026-10-05): it is
+  (`.c`, `.cpp`, `.h`, `.mad`). The zip is one folder, madc's with
+  Chthonia in it: `libmadc-0.dll` and `madcide.dll` sit beside `madc.exe`
+  and `chthonia.exe` (PE binding is adjacency). MSIX bundles everything (owner, 2026-10-05): it is
   sandboxed in its own folder, so it carries madc's runtime (`libmadc-0.dll`,
   `madcide.dll`) and madcide's data beside `chthonia.exe`.
 - **macOS**: `Chthonia.app` with its `.icns`, in a `.dmg`; notarization when
@@ -201,18 +201,24 @@ before the program runs.
   checked by the same shipped-notices gate madc uses (chthonia plan §7d).
 - **Version**: Chthonia's own (`chthonia_version.h`), independent of madc's;
   Help ▸ About shows both.
-- **Installed into madc's prefix (owner, 2026-10-05):** Chthonia requires a
-  madc installation (libmadc, madc, madcide) and installs along with it; it
-  is never installed without the base madc package. madcide's base finds
-  its verbs, checks, profiles and shipped plugins through the running
-  executable (`resolve_data_dir`: `<exedir>/../share/madcide/<sub>`, then
-  `<exedir>/<sub>`), so chthonia beside madc finds them unchanged, and
-  Chthonia's bundle installs as a shipped plugin
-  (`share/madcide/plugins/chthonia`), where the plugin search path already
-  looks. The deb/rpm/tarball install into madc's prefix and depend on madc's
-  packages; the Windows zip unpacks into madc's folder. MSIX is the one
-  format that cannot install into another package's location, so it
-  bundles everything (Windows, above). Chthonia has no Homebrew keg: its
+- **Every package stands alone (owner, 2026-10-03, restated 2026-10-07):**
+  "it stands alone and is paired with a madc release and you just run one
+  installer" — the standalone package ships libmadc, madc and the
+  `chthonia` binary (`2026-10-03-chthonia-windows-macos.md`). Each Chthonia
+  package carries the madc release it is paired with (`MADC_PACKAGE`, the
+  same release that builds it; the packagers refuse another version): the
+  zip and the tarballs are madc's folder with Chthonia in it; the `.deb`
+  and `.rpm` install that folder in `/usr/lib/chthonia`, with
+  `/usr/bin/chthonia`, the desktop entry and the icons under `/usr`, and
+  depend on no madc package, so they never disturb a madc installed on its
+  own. madcide's base finds its data through the running executable
+  (`resolve_data_dir`), so the folder works wherever it lands. The
+  Chthonia repository holds no madc code: the bundling is in the binary
+  packages only. CORRECTION: until 0.0.2 this entry read "Installed into
+  madc's prefix (2026-10-05): Chthonia requires a madc installation … and
+  depend on madc's packages", which contradicted the 10-03 decision;
+  v0.0.1 shipped to it and was
+  withdrawn (drafted) the same day. Chthonia has no Homebrew keg: its
   Linux packages are the distribution-specific `.deb`/`.rpm` (owner,
   2026-10-05).
 
@@ -407,7 +413,7 @@ published.
    draft is published.
 7. **Chthonia's release, the same day.** Its CI re-runs against the
    published packages (the bytes it already tested), then its tag. Its
-   packages require madc ≥ 0.102.0 (the `.deb`/`.rpm` Depends).
+   packages each carry madc 0.102.0, one installer apiece (§4).
 8. MSIX and the macOS `.app`/`.dmg`, in the Chthonia repository, as point
    releases if they are not ready for step 7.
 

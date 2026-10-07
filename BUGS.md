@@ -2666,6 +2666,35 @@ int main(void) { return x; }
 
 ## Build and packaging
 
+### B194. A native executable's RUNPATH names the building madc's install and `/usr/local/lib`
+
+```c
+int main(void) { return 0; }
+```
+
+- `madc -o plain hello.c` (madc 0.102.0, the release tarball unpacked at
+  `/workspace/chthonia/tmp/madc-rel/`), then `readelf -d plain`: RUNPATH
+  `[$ORIGIN/../lib:/workspace/chthonia/tmp/madc-rel/madc-0.102.0-linux-x86_64/bin/../lib:/usr/local/lib]`.
+  gcc 13 and clang 18, the same file: no RUNPATH. Measured 2026-10-07.
+- A shipped program carries the build machine's paths: Chthonia 0.0.1's
+  `bin/chthonia`, linked on a GitHub runner, has
+  `/home/runner/work/_temp/madc-0.102.0-linux-x86_64/bin/../lib` and
+  `/usr/local/lib` after `$ORIGIN/../lib`. Harmless where it runs (the
+  `$ORIGIN` entry wins), but a library planted in either directory would
+  load ahead of the system's.
+- gcc's rule: a RUNPATH only from `-Wl,-rpath`. The `$ORIGIN/../lib` entry
+  is what lets a program beside madc's `lib/` run; the absolute entries
+  should not be baked in by default.
+- Found 2026-10-07 inspecting Chthonia's packages.
+
+### B195. madc's driver has no `-L`
+
+- `madc -o x -L/opt/nowhere hello.c` → `-L/opt/nowhere:0:0: error: Failed
+  to open file`; `-L /opt/nowhere` → `-L:0:0: error: Failed to open file`.
+  `madc --help` lists `-l<name>` but no `-L`. gcc and clang take both
+  forms (a library search directory). Measured 2026-10-07, madc 0.102.0.
+- Found 2026-10-07 with B194.
+
 ### B191. On macOS, a dialect call to `php::array_key_exists` binds 760 of the forest's 836 units
 
 ```cpp
