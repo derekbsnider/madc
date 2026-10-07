@@ -155,6 +155,18 @@ extern __typeof (va_arg_builtin) mir_va_arg_obj_export asm ("mir.va_arg")
   __attribute__ ((alias ("va_arg_builtin"), used));
 extern __typeof (va_block_arg_builtin) mir_va_block_arg_obj_export asm ("mir.va_block_arg")
   __attribute__ ((alias ("va_block_arg_builtin"), used));
+#elif defined(__APPLE__) && defined(__GNUC__)
+/* The same exports on Mach-O: wrappers under the '_'-prefixed labels (see
+   mir-aot-export.h), as Mach-O has no alias attribute. */
+#include "mir-aot-export.h"
+void *mir_va_arg_obj_export (void *p, uint64_t t) asm (MIR_AOT_SYM ("mir.va_arg"))
+  __attribute__ ((used));
+void *mir_va_arg_obj_export (void *p, uint64_t t) { return va_arg_builtin (p, t); }
+void mir_va_block_arg_obj_export (void *res, void *p, size_t s, uint64_t ncase)
+  asm (MIR_AOT_SYM ("mir.va_block_arg")) __attribute__ ((used));
+void mir_va_block_arg_obj_export (void *res, void *p, size_t s, uint64_t ncase) {
+  va_block_arg_builtin (res, p, s, ncase);
+}
 #endif
 
 #else
