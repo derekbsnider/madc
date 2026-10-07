@@ -378,7 +378,7 @@ std::string TypeSpeller::argument_word(const std::string &arg) const
 // (past fixed_param_count) are madc's, not the source's.
 std::string TypeSpeller::parameter_list(FuncDef *fd, const Method *m) const
 {
-	const bool cxx = pgm && pgm->is_cpp_mode();
+	const bool cxx = pgm && pgm->presents_as_cpp();
 	size_t first = 0;
 	if (m && !m->parameters.empty() && m->parameters[0]
 	    && m->parameters[0]->name == "__this")
@@ -455,7 +455,7 @@ std::string TypeSpeller::shown(DataDef *dd) const
 {
 	if (!dd)
 		return "void *";
-	const bool cxx = pgm && pgm->is_cpp_mode();
+	const bool cxx = pgm && pgm->presents_as_cpp();
 	// A reference (a function's return, a parameter, a member): its
 	// referent, then `&`. madc lowers T& as T *, which the arms below
 	// would spell; a value's type (the show's) is never one.

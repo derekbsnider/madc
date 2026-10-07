@@ -3,8 +3,9 @@
 // madc_type_spelling.h — the source's spelling of a type (plan §41.8a).
 //
 // A type spelled the way the entry's language writes it: `int *` and
-// `struct P` in C, `P *`, `std::string` and `std::list<int>` in C++, a
-// function pointer as `int (*)(int)`. D10's show bakes it into `(TYPE)
+// `struct P` in C, `P *`, `std::string` and `std::list<int>` in C++ and in
+// the madc dialect (a C++ superset: Program::presents_as_cpp), a function
+// pointer as `int (*)(int)`. D10's show bakes it into `(TYPE)
 // value`, var_dump names a class by it, and the session's `%type` prints
 // it. The one owner of that spelling: CirBuilder's show and var_dump words
 // forward here.

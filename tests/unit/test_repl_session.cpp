@@ -1189,6 +1189,27 @@ TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, madc
     CHECK(s.shown().empty());
 }
 
+// The madc dialect is a C++ superset (Program::presents_as_cpp): a value of a
+// C++ type shows as C++ writes it, `Pt{ .x = 1.0 }` and `std::vector<int>{ 1,
+// 2, 3 }` — never C's compound literal of the lowered tag
+// (`(struct vector_int32_t_std__allocator_int32_t_){ … }`), which the dialect
+// cannot read back.
+TEST_CASE("an entry without its final ; shows its value, re-enterably (D10, madc C++ types)")
+{
+    InteractiveSession s;
+    REQUIRE(s.begin("--std=madc"));
+    REQUIRE(s.submit("#include <vector>\nint k = 0;"));
+    check_reenters(s, "std::vector<int> v1 = { 1, 2, 3 }",
+		   "std::vector<int>{ 1, 2, 3 }",
+		   "(@).size() == 3 && (@)[0] == v1[0] && (@)[2] == v1[2]");
+    REQUIRE(s.submit("struct Pt { double x, y; };"));
+    check_reenters(s, "Pt v2 = { 1.0, 2.5 }", "Pt{ .x = 1.0, .y = 2.5 }",
+		   "(@).y == v2.y");
+    REQUIRE(s.submit("enum E { A, B = 5 };"));
+    check_reenters(s, "E v3 = B", "E::B", "(@) == v3");
+    check_reenters(s, "int *v4 = 0", "(int *) nullptr", "(@) == v4");
+}
+
 // An entry's final bare function name (plan §41.6a, A) shows the function's
 // pointer and never calls it: the entry's end stands for the `;` the entry
 // omitted, and a function name before that `;` decays. WORD is the pointer
@@ -1224,7 +1245,8 @@ TEST_CASE("an entry's final function name shows the function, never a call (§41
 {
     check_function_name_shown("--std=c17", "int (*)(void)");
     check_function_name_shown("--std=c++17", "int (*)()");
-    check_function_name_shown("--std=madc", "int (*)(void)");
+    // The madc dialect spells types as C++ does (presents_as_cpp).
+    check_function_name_shown("--std=madc", "int (*)()");
 }
 
 // An entry's `auto` object is a session global like any declaration's, and

@@ -1,0 +1,71 @@
+// The madc dialect's bindings rows spell a type as the source writes it
+// (Chthonia's Symbols view, its REPL under the default --std=madc): the
+// dialect is a C++ superset (Program::presents_as_cpp), so `std::string`,
+// `std::vector<int>`, `Pt` and `Color` — never the lowered C tag
+// `struct basic_string_char_std__char_traits_char__std__allocator_char_`.
+// Oracle: the same entries in a --std=c++17 session, whose rows are the C++
+// spelling g++ and clang++ write; every madc row's type must equal its
+// c++17 twin's.
+
+// The next reply, passing over running notices.
+long next_reply(var &r, long h)
+{
+    var cases;
+    cases[0] = madc::session_readable(h);
+    for ( ;; )
+    {
+	long got = madc::session_poll(r, h);
+	var o;
+	madc::session_output(o, h);
+	if ( got != 0 && r["kind"] == madc::session_reply::running )
+	    continue;
+	if ( got != 0 )
+	    return got;
+	var fired;
+	madc::chan_select(fired, cases);
+    }
+}
+
+// The rows a session under `std` answers after the entries.
+void rows_after(var &rows, const char *std, var &entries)
+{
+    long h = madc::session_open(std);
+    var r;
+    for ( var e : entries )
+    {
+	madc::session_offer(h, e.c_str(), true);
+	next_reply(r, h);
+    }
+    madc::session_bindings(h);
+    next_reply(r, h);
+    rows = r["rows"];
+    madc::session_close(h);
+}
+
+int main()
+{
+    var entries = {
+	"#include <string>",
+	"#include <vector>",
+	"std::string name = \"bob\";",
+	"std::vector<int> vec{1, 2, 3};",
+	"struct Pt { int x; int y; };",
+	"Pt p{1, 2};",
+	"enum Color { Red, Green };",
+	"Color c = Green;",
+	"std::string greet(std::string s) { return \"hi \" + s; }",
+	"int count() { return 3; }"
+    };
+    var dialect;
+    var cxx;
+    rows_after(dialect, "madc", entries);
+    rows_after(cxx, "c++17", entries);
+    for ( var row : dialect )
+	println("madc: {} type={} value={}", row["name"], row["type"], row["value"]);
+    long same = dialect.size() == cxx.size() ? 1 : 0;
+    for ( long i = 0; same && i < dialect.size(); i = i + 1 )
+	if ( dialect[i]["name"] != cxx[i]["name"] || dialect[i]["type"] != cxx[i]["type"] )
+	    same = 0;
+    println("rows={} same-as-c++17={}", dialect.size(), same);
+    return 0;
+}
