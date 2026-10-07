@@ -18,33 +18,40 @@ const char *LINEED_FILES[9] = { "p", "c", "i", "a", "d", "f", "w", "q", "qbang" 
 const char *LINEED_EDIT_VERBS[5] = { "c", "i", "a", "d", "w" };
 
 // Where a program's DATA directory `sub` lives (the one owner: the line
-// editor's verbs and checks here, madcide's profiles through
-// resolve_profile_dir). The source tree keeps it beside the file that owns
-// it (`src_dir`, the caller's php::dirname(__FILE__): the include-resolved
-// path, from any cwd). An INSTALLED program is an AOT binary whose __FILE__
-// names a build tree that box never had, so the running binary's own
-// directory (madc::compiler_path) anchors the install layouts:
-// <exedir>/../share/<product>/<sub> (the Linux/mac package layout), then
-// <exedir>/<sub> (the Windows zip: data beside the exe). First existing
-// directory wins; nothing found keeps the source-tree spelling, so a
-// report names a real place to fix. Never a cwd-relative path: the editor
-// is started from anywhere.
+// editor's verbs and checks here, madcide's profiles, plugins and headers
+// through their callers). An INSTALLED program's data is its install's: the
+// running binary's own directory (madc::compiler_path) anchors the install
+// layouts, <exedir>/../share/<product>/<sub> (the Linux/mac package layout),
+// then <exedir>/<sub> (the Windows zip: data beside the exe), and they come
+// FIRST. The source tree keeps the data beside the file that owns it
+// (`src_dir`, the caller's php::dirname(__FILE__)), the answer when the
+// running binary has no install layout (madc run from its build tree). It
+// is never consulted first: a library compiled from the tree root spells
+// __FILE__ relative (tools/madcide/...), so an installed program started
+// inside a madc checkout would read that tree's data instead of its own.
+// Nothing found keeps the source-tree spelling, so a report names a real
+// place to fix.
 void resolve_data_dir(var &dir, const char *product, const char *src_dir,
 		      const char *sub)
 {
-    dir = format("{}/{}", src_dir, sub);
-    if ( php::file_exists(dir) )
-	return;
-    var exedir = php::dirname(madc::compiler_path());
-    var share = format("{}/../share/{}/{}", exedir, product, sub);
-    if ( php::file_exists(share) )
+    const char *self = madc::compiler_path();
+    if ( strlen(self) > 0 )		// "" = the platform probe failed
     {
-	dir = share;
-	return;
+	var exedir = php::dirname(self);
+	var share = format("{}/../share/{}/{}", exedir, product, sub);
+	if ( php::file_exists(share) )
+	{
+	    dir = share;
+	    return;
+	}
+	var beside = format("{}/{}", exedir, sub);
+	if ( php::file_exists(beside) )
+	{
+	    dir = beside;
+	    return;
+	}
     }
-    var beside = format("{}/{}", exedir, sub);
-    if ( php::file_exists(beside) )
-	dir = beside;
+    dir = format("{}/{}", src_dir, sub);
 }
 
 // False (with the reason on stderr) when a verb or check body cannot load:

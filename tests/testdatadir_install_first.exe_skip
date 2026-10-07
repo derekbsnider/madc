@@ -1,0 +1,1 @@
+Structurally JIT-only: the test runs the LANE'S OWN madc (madc::compiler_path()), hard-linked into an install shape, as a command line. In a native artifact the running program is the test itself, not a compiler.
