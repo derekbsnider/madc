@@ -1,12 +1,5 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
-c-testsuite	commit	8a3c5518b07a	2026-10-07	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing)
-c-torture	commit	8a3c5518b07a	2026-10-07	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 7 failing, 0 outside baseline, 0 baseline tests now passing
-c2mir-tests	commit	8a3c5518b07a	2026-10-07	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing)
-gui	commit	8a3c5518b07a	2026-10-07	gui: 30 passed, 0 failed, 0 timed out, 0 skipped | EXE: 30 passed, 0 failed (of 30 JIT-passing tests) | OBJ: 30 passed, 0 failed (of 30 JIT-passing tests)
-gxx-c++11	no	8a3c5518b07a	2026-10-07	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 441 failing, 0 outside baseline, 0 baseline tests now passing
-index-c	yes	8a3c5518b07a	2026-10-07	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 85.7972s, 50, 50, 0
-commonmark	commit	8a3c5518b07a	2026-10-07	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing)
 darwin-suite	release	8a3c5518b07a	2026-10-07	darwin-suite (native, libc++, 8a3c5518b content): arm64 Mac Mini macOS 14.8.4 2000 passed / 0 failed / 0 timed out / 41 skipped, mac battery 12/0; Intel MacBook macOS 15.7.4 2002 passed / 0 failed / 0 timed out / 39 skipped (darwin EXE pass advisory, D5)
 linux-battery	yes	8a3c5518b07a	2026-10-07	seam_battery.sh at 8a3c5518b: gates rc=0 (unit binaries + static gates 0 red of 97); headerless 1998/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2032/0/0TO/9skip, EXE 1851/0, OBJ 1851/0
 headerless-win	yes	8a3c5518b07a	2026-10-07	1954/0/0TO/87skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine, seam_battery.sh at 8a3c5518b
@@ -16,3 +9,10 @@ aarch64-ld	yes	8a3c5518b07a	2026-10-07	aarch64_ldouble_lane GREEN — seam_batte
 brew-linux	release	8a3c5518b07a	2026-10-07	2032/0/0TO/9skip - scripts/brew_lane.sh on the container at 8a3c5518b content: brew install --build-bottle + brew bottle + the 0.102.0 keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc (testdatadir_install_first green on the keg)
 genuine-win	release	8a3c5518b07a	2026-10-07	1954/0/0TO/87skip — the FULL suite on the owner Windows 11 box (scripts/win_suite.sh from the container, the packed bin/release-windows/madc.exe at 8a3c5518b content, MADC_SKIP_EXT="win64 win"); win_suite rc=0
 tests-jit	batch	8a3c5518b07a	2026-10-07	2032 passed, 0 failed, 0 timed out, 9 skipped (tests/ JIT, batch_lane at 8a3c5518b content)
+c-testsuite	commit	6dde093062de	2026-10-07	c-testsuite: 220 passed, 0 failed (0 outside baseline, 0 baseline tests now passing)
+c-torture	commit	6dde093062de	2026-10-07	c-torture: 1617 passed, 2 compile-failed, 5 runtime-failed, 0 timed out, 61 skipped (--std=c17) c-torture: 7 failing, 0 outside baseline, 0 baseline tests now passing
+c2mir-tests	commit	6dde093062de	2026-10-07	c2mir-tests: 359 passed, 0 failed, 4 skipped (0 outside baseline, 0 baseline tests now passing)
+gui	commit	6dde093062de	2026-10-07	gui: 30 passed, 0 failed, 0 timed out, 0 skipped | EXE: 30 passed, 0 failed (of 30 JIT-passing tests) | OBJ: 30 passed, 0 failed (of 30 JIT-passing tests)
+gxx-c++11	no	6dde093062de	2026-10-07	gxx-c++11: 1505 passed, 441 compile-failed, 0 runtime-failed, 0 timed out, 2722 skipped gxx-c++11: 441 failing, 0 outside baseline, 0 baseline tests now passing
+index-c	yes	6dde093062de	2026-10-07	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 83.8167s, 50, 50, 0
+commonmark	commit	6dde093062de	2026-10-07	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing)
