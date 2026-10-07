@@ -107,9 +107,15 @@ Autoindent is on by default. Enter starts the new line with the indentation
 the current line has before the caret, so splitting an indented line keeps the
 indentation ahead of the split. After a line that ends in a block opener — `{`
 for C, C++, madc and the languages that share C's braces, `:` for Python — the
-new line gets one more tab. A block closer (`}`) typed first on a line blank up
-to the caret first removes one indentation step, as Edit ▸ Dedent does, and one
-undo takes back both the dedent and the character. The new Edit ▸ Toggle
+new line gets one more indent level. A block closer (`}`) typed first on a line
+blank up to the caret first removes one indentation step, as Edit ▸ Dedent does,
+and one undo takes back both the dedent and the character. That indent level —
+what autoindent adds after a block opener, what a typed Tab inserts and what
+Edit ▸ Indent adds — is each buffer's own, taken from its file: a tab when its
+indented lines start with tabs, otherwise the number of spaces its indentation
+most often steps by; a file with no indented line yet uses its language's level
+(four spaces for Python, two for YAML, a tab for everything else, Makefiles
+included). The new Edit ▸ Toggle
 Autoindent command (`autoindent`, also the `I` row of `^T` Options) turns it off
 or on again and keeps the choice in settings.json's `"autoindent"`; JOE's status
 line shows `A` (`%I`) while it is on. The language's block delimiters come from
