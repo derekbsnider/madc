@@ -2103,7 +2103,10 @@ void key_profile_names(var &out, long w, long es)
 
 // Autoindent's state for the editor layer (editor_events.inc enter_text):
 // on unless the "autoindent" setting says false, and the block delimiters
-// of `doc`'s language (block_open_of / block_close_of).
+// of `doc`'s language (block_open_of / block_close_of). Beside it the
+// buffer's indent unit (Tab, Indent, Dedent and autoindent's level): the
+// one its file shows, decided once and kept on the buffer (indent_detect),
+// else its language's (indent_default_of) until a line shows one.
 void autoindent_prime(long w, long es, long doc)
 {
     var v;
@@ -2111,6 +2114,22 @@ void autoindent_prime(long w, long es, long doc)
     ui::set(w, es, "autoindent", v.is_null() || v.as_boolean());
     ui::set(w, es, "indentopen", block_open_of(w, doc));
     ui::set(w, es, "indentclose", block_close_of(w, doc));
+    // An undecided buffer is probed again only when its line count moves
+    // (es_int "indentprobe"): an indented line arrives with a newline.
+    var unit;
+    ui::get(unit, w, doc, "indentunit");
+    long lines = ui::text_line_count(w, doc);
+    if ( unit.is_null() && es_int(w, doc, "indentprobe", -1) != lines )
+    {
+	indent_detect(unit, w, doc);
+	if ( strlen(unit.c_str()) > 0 )
+	    ui::set(w, doc, "indentunit", unit);
+	else
+	    ui::set(w, doc, "indentprobe", lines);
+    }
+    if ( unit.is_null() || strlen(unit.c_str()) == 0 )
+	unit = indent_default_of(w, doc);
+    ui::set(w, es, "indentunit", unit);
 }
 
 // `autoindent` (Edit ▸ Toggle Autoindent, ^T's I row): flips it, kept in

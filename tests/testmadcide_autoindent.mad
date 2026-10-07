@@ -32,6 +32,41 @@ void enter(IdeSession &S, long doc)
     S.apply_ide_event(doc, e);
 }
 
+// One buffer in its own session: `keys` is typed at `caret` — '\n' is Enter,
+// '\t' the Tab key, '<' Edit ▸ Dedent, any other byte typed text.
+void run_case(const char *label, const char *path, const char *text, long caret, const char *keys)
+{
+    php::file_put_contents(path, text);
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    IdeSession S;
+    S.attach(w, es);
+    ui::set(w, es, "caret", caret);
+    var e;
+    for ( long i = 0; keys[i] != 0; i = i + 1 )
+    {
+	if ( keys[i] == '\n' )
+	    ev_key(e, "enter");
+	else if ( keys[i] == '\t' )
+	    ev_key(e, "tab");
+	else if ( keys[i] == '<' )
+	    ev_action(e, "dedent");
+	else
+	{
+	    var ch = format("{}", (char)keys[i]);
+	    ev_text(e, ch.c_str());
+	}
+	S.apply_ide_event(doc, e);
+    }
+    show(w, doc, label);
+    S.close();
+    php::unlink(path);
+}
+
 int main()
 {
     const char *path = "madc_ide_autoindent.c";
@@ -104,6 +139,13 @@ int main()
 
     S.close();
     php::unlink(path);
+
+    // 7. The indent level is the buffer's: Python's four spaces (Tab and
+    //    Dedent use it too), a C file's own four-space steps, YAML's two.
+    run_case("python", "madc_ide_autoindent.py", "def f():", 8, "\nx = 1\n\t<");
+    run_case("c spaces", "madc_ide_autoindent2.c", "int g(void) {\n    if (x) {", 26, "\n}");
+    run_case("yaml", "madc_ide_autoindent.yaml", "key:", 4, "\n\t");
+
     php::unlink(setp.c_str());
     php::rmdir(cfg.c_str());
     return 0;
