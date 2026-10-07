@@ -15,7 +15,8 @@ Run this.**
   subsystem's neighbors, and the reducer with its gcc/clang oracle.
 - **Tier 2 — fast conformance.** Under three minutes for all seven lanes.
   `bash scripts/fast_lanes.sh`. Runs whenever the commit touches CODE_PATHS
-  (`src include third_party tests scripts tools examples`).
+  (`src include third_party tests scripts tools examples`, less the release
+  tooling — `RELEASE_TOOLING` in `scripts/lane_ledger.sh`).
 - **Tier 3 — the seam battery.** NOT run here. It gates the merge wave
   (`/test`, the platform lanes), never a commit.
 
@@ -29,7 +30,10 @@ Run this.**
 
 2. **Classify the blast radius.** Intersect the staged paths with CODE_PATHS.
    A docs-only commit (`docs/`, `*.md`, `claude_status.json`, `CHANGELOG.md`)
-   skips the audit and Tier 2 and goes to step 7. Anything under `src/`,
+   skips the audit and Tier 2 and goes to step 7, and so does a commit that
+   touches only the release tooling (`RELEASE_TOOLING` in
+   `scripts/lane_ledger.sh`: packaging, the release archive, the gate) — the
+   release workflow's install gates prove it. Anything else under `src/`,
    `include/`, `third_party/`, `tests/`, `scripts/`, `tools/` or `examples/`
    runs it.
 
