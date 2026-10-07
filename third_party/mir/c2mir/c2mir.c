@@ -4556,9 +4556,10 @@ D (asm_spec) {
 static node_t try_attr_spec (c2m_ctx_t c2m_ctx, pos_t pos, node_t *asm_part) {
   node_t r;
 
-  if (c2m_options->pedantic_p) return NULL;
+  if (asm_part != NULL) *asm_part = NULL; /* each declarator gets its own node */
+  /* no GNU attributes or asm in strict ISO mode: err_node is "none" to every caller */
+  if (c2m_options->pedantic_p) return err_node;
   if (asm_part != NULL) {
-    *asm_part = NULL;
     if ((r = TRY (asm_spec)) != err_node) {
       if (c2m_options->pedantic_p)
         error (c2m_ctx, pos, "asm is not implemented");
