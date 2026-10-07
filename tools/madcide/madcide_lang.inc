@@ -135,6 +135,88 @@ const char *block_close_of(long w, long doc)
     return c_syntax_kind(edit_lang_kind(w, doc)) ? "}" : "";
 }
 
+// One indent level in `doc`'s language when its file does not show one:
+// four spaces for Python (PEP 8, Thonny), two for YAML (which refuses
+// tabs), a tab for the rest — a Makefile's recipe lines need one.
+const char *indent_default_of(long w, long doc)
+{
+    switch ( edit_lang_kind(w, doc) )
+    {
+	case madc::fkPYTHON:
+	    return "    ";
+	case madc::fkYAML:
+	    return "  ";
+    }
+    return "\t";
+}
+
+// The indent unit `doc`'s own text shows (VS Code's detectIndentation, in
+// small): over its first lines, a tab when as many indented lines start
+// with a tab as with spaces; else the spaces the indentation most often
+// steps by between neighbouring lines (2..8 — a one-space step is
+// alignment, a C comment's ` *`), four when no step shows. "" = no line
+// is indented yet: the language decides (indent_default_of).
+void indent_detect(var &out, long w, long doc)
+{
+    out = "";
+    long total = ui::text_line_count(w, doc);
+    if ( total > 1000 )
+	total = 1000;
+    long tabs = 0;
+    long spaces = 0;
+    long prev = 0;			// the last non-blank line's space indent
+    var steps = { "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0 };
+    for ( long n = 1; n <= total; n = n + 1 )
+    {
+	var l;
+	ui::text_line(l, w, doc, n);
+	if ( l.is_null() || blank_line(l.c_str()) )
+	    continue;
+	const char *s = l.c_str();
+	if ( s[0] == '\t' )
+	{
+	    tabs = tabs + 1;
+	    continue;			// a tab-led line steps nothing
+	}
+	long k = 0;
+	while ( s[k] == ' ' )
+	    k = k + 1;
+	if ( s[k] == '\t' )
+	    continue;			// mixed: neither vote
+	if ( k > 0 )
+	    spaces = spaces + 1;
+	long d = k - prev;
+	if ( d < 0 )
+	    d = -d;
+	if ( d >= 2 && d <= 8 )
+	{
+	    var key = format("{}", d);
+	    steps[key.c_str()] = steps[key.c_str()].as_integer() + 1;
+	}
+	prev = k;
+    }
+    if ( tabs == 0 && spaces == 0 )
+	return;
+    if ( tabs >= spaces )
+    {
+	out = "\t";
+	return;
+    }
+    long best = 4;
+    long most = 0;
+    for ( long d = 2; d <= 8; d = d + 1 )
+    {
+	var key = format("{}", d);
+	long c = steps[key.c_str()].as_integer();
+	if ( c > most )
+	{
+	    most = c;
+	    best = d;
+	}
+    }
+    out = php::str_repeat(" ", best);
+}
+
 // A standard's spelling where it enters (the command line, the "std"
 // setting, the command's argument), converted once: its kind, or
 // madc::fkUNKNOWN when it names none. A leading `--std=` is madc's own
