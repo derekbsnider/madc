@@ -13,6 +13,8 @@
   var nodes = new Map();            // key -> element
   var visited = new Set();          // keys seen since the last "root" op
   var placed = new Map();           // parent element -> children placed this cycle
+  var appliedTheme = null;          // the theme bag last applied (its JSON)
+  var appliedPresence = null;       // the presence palette last applied (its JSON)
   var lastRows = 0, lastCols = 0;
   var ws = null;                    // the ws transport (V6b), when served over HTTP
 
@@ -218,7 +220,11 @@
     // the row's action by name through the button handler below. No rows:
     // the slot empties, and an empty slot takes no space.
     if (Array.isArray(op.toolbar)) toolbar(el, op.toolbar);
-    else if (el._slots && el._slots.get('toolbar')) el._slots.get('toolbar').textContent = '';
+    else if (el._slots && el._slots.get('toolbar')) {
+      var tbs = el._slots.get('toolbar');
+      tbs.textContent = '';
+      tbs._sig = null;
+    }
     // Slice 3 workbench: a `region` node docks into that region's slot of
     // its parent's grid (the page's own CSS placement, keyed by data-slot),
     // and a parent that holds region'd children becomes the workbench
@@ -240,7 +246,12 @@
     // The @gui theme (slice 3): a node's `theme` bag sets CSS custom
     // properties on the document root, so the workbench CSS reads them via
     // var(--name, fallback). The composer attaches it to the root group.
-    if (op.theme) {
+    // Applied when it CHANGES: the root group carries it every frame, and
+    // re-setting the document's custom properties then re-measuring the cell
+    // (reportSize) forced a restyle and a layout per keystroke.
+    var themeSig = op.theme ? JSON.stringify(op.theme) : null;
+    if (op.theme && themeSig !== appliedTheme) {
+      appliedTheme = themeSig;
       for (var tk in op.theme)
         if (Object.prototype.hasOwnProperty.call(op.theme, tk))
           document.documentElement.style.setProperty('--' + tk, op.theme[tk]);
@@ -252,7 +263,10 @@
     // root group; set a --pcaret-<slot> custom property the .pslot-<slot> rule
     // reads. An edit node's `presence` is a caret ARRAY (handled in applyEdit),
     // so only the palette-OBJECT case is applied here.
-    if (op.presence && !Array.isArray(op.presence)) {
+    // Applied when it changes, as the theme is.
+    var presenceSig = op.presence && !Array.isArray(op.presence) ? JSON.stringify(op.presence) : null;
+    if (presenceSig && presenceSig !== appliedPresence) {
+      appliedPresence = presenceSig;
       for (var ps in op.presence)
         if (Object.prototype.hasOwnProperty.call(op.presence, ps))
           document.documentElement.style.setProperty('--pcaret-' + ps, presenceColour(op.presence[ps]));
@@ -353,6 +367,12 @@
   // argument; a separator row is a divider. The slot is the workbench's.
   function toolbar(el, rows) {
     var s = slotOf(el, 'toolbar');
+    // The root group arrives every frame; rows that did not change leave the
+    // toolbar alone — rebuilding it (its SVG icons re-parsed) relaid out the
+    // workbench grid around the editor on every keystroke.
+    var sig = JSON.stringify(rows);
+    if (s._sig === sig) return;
+    s._sig = sig;
     s.textContent = '';
     for (var i = 0; i < rows.length; i++) {
       var r = rows[i];

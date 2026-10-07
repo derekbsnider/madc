@@ -1,5 +1,7 @@
 TOOLBAR open
 TOOLBAR buttons=New,Open,Save,Run,Stop icons=new,open,save,run,stop text=,,,Run, drop=menushow:Run seps=1
+TOOLBAR kept=1 theme-writes=none
+TOOLBAR kept=1 theme-writes=some
 TOOLBAR event action save code=1
 TOOLBAR saved=1
 TOOLBAR closed

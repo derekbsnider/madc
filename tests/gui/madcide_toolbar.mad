@@ -8,6 +8,13 @@
 // `menushow Run`, a divider. A click on Save posts the row's action by
 // name, which arrives as the session's action event carrying its command's
 // code (the headless pin: test_web_model).
+// The root group carries the toolbar and the @gui theme on EVERY frame: a
+// keystroke's frame leaves both alone — the same button elements (a mark
+// set on the first survives) and no write to the document's custom
+// properties — while a theme change still writes them. Rebuilding the
+// toolbar and re-setting the theme per frame relaid out the workbench
+// around the editor on every keystroke (~170 ms a key in WebKitGTK 2.4x on
+// a 2,000-line buffer, owner report 2026-10-06).
 // The bundle is this test's own (tbtest), written into the directory its
 // .env puts on MADCIDE_PLUGIN_PATH. Runs under Xvfb through the gui lane.
 #include "../../tools/texteditor/lined_core.inc"
@@ -59,7 +66,15 @@ int main()
 	return 1;
     println("TOOLBAR open");
     var ev;
+    var tree;
     int stage = 0;
+    // What the page kept since the mark: the first button's element, and
+    // whether the document's custom properties were written.
+    const char *kept =
+	"(function(){var b=document.querySelector('.slot[data-slot=toolbar] .tb-btn');"
+	"var n=window.__ts||0;window.__ts=0;"
+	"window.madc(JSON.stringify({kind:'snapshot',text:'kept='+(b&&b._mark===1?1:0)"
+	"+' theme-writes='+(n>0?'some':'none')}));";
     while ( ui::event(ev, t, w) )
     {
 	if ( ev["event"] == "resize" )
@@ -68,10 +83,10 @@ int main()
 		continue;
 	    stage = 1;
 	    S.viewport(ui::cols(t), ui::rows(t));
-	    var tree;
 	    S.compose_ide_tree(tree, doc);
 	    ui::render(t, w, tree);
-	    // The buttons as the page drew them, then a click on Save.
+	    // The buttons as the page drew them; then the first one marked and
+	    // the document's custom-property writes counted from here on.
 	    ui::eval_page(t,
 		"(function(){var tb='.slot[data-slot=toolbar] ';"
 		"var bs=document.querySelectorAll(tb+'.tb-btn:not(.tb-drop)');"
@@ -80,12 +95,37 @@ int main()
 		"tx.push(bs[i].textContent);}"
 		"var d=document.querySelector(tb+'.tb-drop');"
 		"var sp=document.querySelectorAll(tb+'.tb-sep').length;"
+		"if(bs.length)bs[0]._mark=1;"
+		"var st=document.documentElement.style,o=st.setProperty;window.__ts=0;"
+		"st.setProperty=function(n,v,q){window.__ts++;return o.call(st,n,v,q);};"
 		"window.madc(JSON.stringify({kind:'snapshot',text:'buttons='+l.join(',')+' icons='+ic.join(',')"
-		"+' text='+tx.join(',')+' drop='+(d?d.dataset.action+':'+d.dataset.arg:'none')+' seps='+sp}));"
-		"for(var k=0;k<bs.length;k++)if(bs[k].getAttribute('aria-label')==='Save')bs[k].click();})()");
+		"+' text='+tx.join(',')+' drop='+(d?d.dataset.action+':'+d.dataset.arg:'none')+' seps='+sp}));})()");
 	}
 	else if ( ev["event"] == "snapshot" )
+	{
 	    println("TOOLBAR {}", ev["text"]);
+	    if ( stage == 1 )
+	    {
+		// A keystroke's frame: the root group arrives again, unchanged.
+		stage = 2;
+		var te = { "event": "text", "event_code": ui::event_kind::text, "text": "x" };
+		S.apply_ide_event(doc, te);
+		S.compose_ide_tree(tree, doc);
+		ui::render(t, w, tree);
+		ui::eval_page(t, format("{}}})()", kept));
+	    }
+	    else if ( stage == 2 )
+	    {
+		// A theme change: its custom properties are written; the
+		// toolbar's rows did not change. Then a click on Save.
+		stage = 3;
+		load_theme(w, es, "vivid");
+		S.compose_ide_tree(tree, doc);
+		ui::render(t, w, tree);
+		ui::eval_page(t, format("{}var bs=document.querySelectorAll('.slot[data-slot=toolbar] .tb-btn:not(.tb-drop)');"
+		    "for(var k=0;k<bs.length;k++)if(bs[k].getAttribute('aria-label')==='Save')bs[k].click();}})()", kept));
+	    }
+	}
 	else if ( ev["event"] == "action" )
 	{
 	    println("TOOLBAR event action {} code={}", ev["action"],
