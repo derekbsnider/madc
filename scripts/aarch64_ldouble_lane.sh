@@ -94,5 +94,28 @@ for fx in tests/cross/aarch64_*.c; do
 	fi
 done
 
-[ "$fail" -eq 0 ] && echo "aarch64_ldouble_lane: GREEN (control; aot + jit on every fixture)" && rm -rf "$D"
+# boot: MIR compiles ITSELF on aarch64-linux (upstream's c2mir-bootstrap-test
+# recipe): the aarch64 c2m compiles MIR's sources to 1.bmir, then runs itself
+# from 1.bmir (-el) to compile them again; both must be byte-identical. Here
+# plain char is UNSIGNED (c2mir's aarch64-linux model) while MIR's gcc build
+# forces -fsigned-char, so MIR's own sources must not depend on char's sign
+# (scripts/check-mir-plain-char.sh is the static half), and the JIT-compiled
+# generator imports libgcc's binary128 routines by name, which the driver must
+# resolve (mir-ld-helper.h).
+if [ -x "$JITB/c2m" ]; then
+	M=third_party/mir
+	BS="$M/mir-gen.c $M/c2mir/c2mir.c $M/c2mir/c2mir-driver.c $M/mir.c $M/mir-debug.c $M/mir-debug-gdb.c"
+	BF="-w -DMIR_BOOTSTRAP -I/usr/aarch64-linux-gnu/include -I$M"
+	if ! timeout 1800 $QEMU "$JITB/c2m" $BF $BS -o "$D/boot1.bmir" > "$D/boot1.log" 2>&1; then
+		echo "RED  boot: stage 1 (gcc-built c2m compiling MIR) failed"; head -3 "$D/boot1.log"; fail=1
+	elif ! timeout 3600 $QEMU "$JITB/c2m" -DMIR_BOOTSTRAP "$D/boot1.bmir" -el $BF $BS -o "$D/boot2.bmir" > "$D/boot2.log" 2>&1; then
+		echo "RED  boot: stage 2 (MIR-compiled c2m compiling MIR) failed"; head -3 "$D/boot2.log"; fail=1
+	elif ! cmp -s "$D/boot1.bmir" "$D/boot2.bmir"; then
+		echo "RED  boot: stage 1 and stage 2 differ"; fail=1
+	else
+		echo "GREEN boot: MIR compiles itself on aarch64; both stages identical"
+	fi
+fi
+
+[ "$fail" -eq 0 ] && echo "aarch64_ldouble_lane: GREEN (control; aot + jit on every fixture; bootstrap)" && rm -rf "$D"
 exit "$fail"

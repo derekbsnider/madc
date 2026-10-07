@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### mir: MIR compiles itself on aarch64, and the long double import names resolve from one header
+
+`scripts/aarch64_ldouble_lane.sh` now runs the c2mir-bootstrap recipe: the
+aarch64 `c2m` compiles MIR's own sources to `boot1.bmir`, then runs itself from
+`boot1.bmir` (`-el`) to compile them again into `boot2.bmir`, and the two must
+be byte-identical. A generator that is itself compiled by `c2m` imports the
+aarch64-linux long double builtins' libgcc binary128 routines (`__addtf3`,
+`__floatditf`, …) by name, but libgcc links them with hidden visibility, so
+`dlsym` never finds them. `third_party/mir/mir-ld-helper.h` is new: it carries
+those routines' address-only declarations — moved out of `mir-gen-aarch64.c`,
+which now includes it — and `MIR_ld_helper_resolver`, which hands back the
+host's addresses on an aarch64-linux host. Every driver's `import_resolver`
+(`c2mir-driver.c`, `mir-bin-driver.c`, `mir-bin-run.c`) now calls it beside
+`MIR_int128_helper_resolver`.
+
 ### c2mir: A source byte is never the end of the file, and MIR's own sources don't depend on plain char's sign
 
 Where plain char is unsigned (aarch64 / ppc64 / s390x Linux, the targets whose

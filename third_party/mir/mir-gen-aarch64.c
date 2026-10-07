@@ -512,9 +512,8 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
    call to "mir.ldadd". Binding the builtins to the runtime routines ends both:
    no helper body exists to recurse, and the import is the name the system
    linker resolves from libgcc -- the same name gcc's object carries. The JIT
-   binds the same routines by address. Declared ADDRESS-ONLY: no C call is ever
-   made through these prototypes, so their C type is deliberately not the
-   routine's (on a cross host, long double is not even binary128). */
+   binds the same routines by address (declared, address-only, in
+   mir-ld-helper.h). */
 #if MIR_TARGET_APPLE_P
 static long double mir_i2ld (int64_t i) { return i; }
 static const char *I2LD = "mir.i2ld";
@@ -556,11 +555,7 @@ static const char *LDLE = "mir.ldle";
   _MIR_builtin_func (ctx, curr_func_item->module, mir_name, helper)
 #define LD_CMP_RES_TYPE MIR_T_I64
 #else
-extern void __floatditf (void), __floatunditf (void), __extendsftf2 (void),
-  __extenddftf2 (void), __fixtfdi (void), __trunctfsf2 (void), __trunctfdf2 (void),
-  __addtf3 (void), __subtf3 (void), __multf3 (void), __divtf3 (void), __negtf2 (void),
-  __eqtf2 (void), __netf2 (void), __lttf2 (void), __getf2 (void), __gttf2 (void),
-  __letf2 (void);
+#include "mir-ld-helper.h" /* the routines' declarations, and their import resolver */
 #define LD_BUILTIN(mir_name, helper, rt) \
   _MIR_builtin_func (ctx, curr_func_item->module, #rt, rt)
 /* libgcc's comparison routines return an ORDERING int (CMPtype: 32 bits on
