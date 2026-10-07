@@ -411,6 +411,11 @@ gate_winzip() {
     check_notices winzip windows "$root"
     bindir=$(readlink -f "$root/bin")
     export WINEDEBUG=-all
+    # Adjacency is the binding under test: a caller's WINEPATH (the Windows
+    # packager points it at bin/release-windows for its own builds) would
+    # serve libmadc-0.dll from elsewhere, and the negative control below
+    # would find the exe still running.
+    unset WINEPATH
     wineserver -p 2> /dev/null || true
 
     # 1. the zipped madc.exe compiles a runtime-needing program with -o,
