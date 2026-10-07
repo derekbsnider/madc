@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### win64: a Windows GUI program run with --tui from a command prompt gets its console
+
+A Windows GUI image (built `-mwindows`, such as `chthonia.exe`) run with `--tui`
+from a Command Prompt printed "ui: the terminal target needs a console on
+stdin/stdout" and refused the terminal UI. `madc::console_attach` reopened the
+inherited console's stdout and stderr write-only (`CONOUT$`, `"w"`), producing
+Win32 handles with no read access, while the terminal target's console probe
+(`GetConsoleMode`, `GetConsoleScreenBufferInfo`, `SetConsoleMode` on the output
+handle) needs read access. The two streams now reopen read/write (`"w+"`), so a
+GUI program attaching its parent command prompt's console gets a usable console
+and the terminal UI opens.
+
 ## [v0.102.1] — 2026-10-07
 
 The Ubuntu 24.04 packaging patch to v0.102.0. The `.deb` built on Ubuntu 24.04
