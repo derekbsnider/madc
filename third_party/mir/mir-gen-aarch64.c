@@ -512,9 +512,8 @@ static void machinize_call (gen_ctx_t gen_ctx, MIR_insn_t call_insn) {
    call to "mir.ldadd". Binding the builtins to the runtime routines ends both:
    no helper body exists to recurse, and the import is the name the system
    linker resolves from libgcc -- the same name gcc's object carries. The JIT
-   binds the same routines by address. Declared ADDRESS-ONLY: no C call is ever
-   made through these prototypes, so their C type is deliberately not the
-   routine's (on a cross host, long double is not even binary128). */
+   binds the same routines by address (declared, address-only, in
+   mir-ld-helper.h). */
 #if MIR_TARGET_APPLE_P
 static long double mir_i2ld (int64_t i) { return i; }
 static const char *I2LD = "mir.i2ld";
@@ -556,11 +555,7 @@ static const char *LDLE = "mir.ldle";
   _MIR_builtin_func (ctx, curr_func_item->module, mir_name, helper)
 #define LD_CMP_RES_TYPE MIR_T_I64
 #else
-extern void __floatditf (void), __floatunditf (void), __extendsftf2 (void),
-  __extenddftf2 (void), __fixtfdi (void), __trunctfsf2 (void), __trunctfdf2 (void),
-  __addtf3 (void), __subtf3 (void), __multf3 (void), __divtf3 (void), __negtf2 (void),
-  __eqtf2 (void), __netf2 (void), __lttf2 (void), __getf2 (void), __gttf2 (void),
-  __letf2 (void);
+#include "mir-ld-helper.h" /* the routines' declarations, and their import resolver */
 #define LD_BUILTIN(mir_name, helper, rt) \
   _MIR_builtin_func (ctx, curr_func_item->module, #rt, rt)
 /* libgcc's comparison routines return an ORDERING int (CMPtype: 32 bits on
@@ -2414,7 +2409,8 @@ static void out_insn (gen_ctx_t gen_ctx, MIR_insn_t insn, const char *replacemen
       && (insn->ops[1].mode == MIR_OP_INT || insn->ops[1].mode == MIR_OP_UINT))
     insn->ops[1].u.u = (insn->ops[1].u.u + 15) & -16;
   for (insn_str = replacement;; insn_str = p + 1) {
-    char ch, ch2, start_ch, d;
+    char ch, ch2, start_ch;
+    int d; /* hex_value () result: -1 ends a digit run, so not a char (unsigned on linux) */
     uint32_t opcode = 0, opcode_mask = 0xffffffff;
     int rd = -1, rn = -1, rm = -1, ra = -1, disp = -1, scale = -1;
     int immr = -1, imms = -1, imm16 = -1, imm16_shift = -1, imm12 = -1, imm12_shift = -1;

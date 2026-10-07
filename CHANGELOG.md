@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+### c2mir: An alignment-specifier on a struct or union member parses (C11 6.7.2.1p1)
+
+A specifier-qualifier-list may hold an `_Alignas`, so `struct { _Alignas (16)
+int x; };` is valid C11 — gcc and clang accept it — but c2m's
+`spec_qual_list` parser had no `align_spec` arm and stopped at the keyword
+("syntax error on struct"). It now reads one, and the existing member-layout
+code already raises the member's offset, the aggregate's alignment and its
+size from `decl_spec.align`. Because the same list also backs a type name, an
+`_Alignas` that reaches a type name (`sizeof (_Alignas (16) int)`) is now the
+error gcc gives there rather than a parse that silently ignored it.
+Alignments above 16 stay rejected on every target (`invalid_alignment`: MIR
+frames are 16-byte aligned). `c-tests/new/alignas-member.c` checks member
+offsets, sizes and alignments for `_Alignas (N)` and `_Alignas (type)` on
+structs and a union against the gcc/clang result.
+
+### mir: MIR compiles itself on aarch64, and the long double import names resolve from one header
+
+`scripts/aarch64_ldouble_lane.sh` now runs the c2mir-bootstrap recipe: the
+aarch64 `c2m` compiles MIR's own sources to `boot1.bmir`, then runs itself from
+`boot1.bmir` (`-el`) to compile them again into `boot2.bmir`, and the two must
+be byte-identical. A generator that is itself compiled by `c2m` imports the
+aarch64-linux long double builtins' libgcc binary128 routines (`__addtf3`,
+`__floatditf`, …) by name, but libgcc links them with hidden visibility, so
+`dlsym` never finds them. `third_party/mir/mir-ld-helper.h` is new: it carries
+those routines' address-only declarations — moved out of `mir-gen-aarch64.c`,
+which now includes it — and `MIR_ld_helper_resolver`, which hands back the
+host's addresses on an aarch64-linux host. Every driver's `import_resolver`
+(`c2mir-driver.c`, `mir-bin-driver.c`, `mir-bin-run.c`) now calls it beside
+`MIR_int128_helper_resolver`.
+
+### c2mir: A source byte is never the end of the file, and MIR's own sources don't depend on plain char's sign
+
+Where plain char is unsigned (aarch64 / ppc64 / s390x Linux, the targets whose
+c2m compiles MIR itself in the c2mir-bootstrap tests), c2m's line buffer popped
+a byte as a char and `cs_unget` stored EOF (-1) there, read back by the next
+`cs_get` as 255 ("syntax error on 255"); where plain char is signed, a source
+byte 0xFF popped from the buffer as -1, i.e. EOF, and ended the translation unit
+early ("unfinished comment"). `cs_get` and `str_getc` now return a source byte
+as unsigned char the way `fgetc` does, and `cs_unget` drops EOF instead of
+pushing it. In `mir-gen-aarch64.c`'s `out_insn`, a `hex_value()` result (-1 for
+"no digit") held in a char and compared `>= 0` never failed once char was
+unsigned, so the hex scan ran off the end of the pattern; the value is an `int`
+now. `c-tests/new/source-byte-ff.c` places byte 0xFF in a comment, a string
+literal and a character constant and returns 0, as gcc and clang do.
+`scripts/check-mir-plain-char.sh` (in `make gates`) keeps MIR's sources from
+depending on plain char's sign.
+
 ## [v0.102.1] — 2026-10-07
 
 The Ubuntu 24.04 packaging patch to v0.102.0. The `.deb` built on Ubuntu 24.04

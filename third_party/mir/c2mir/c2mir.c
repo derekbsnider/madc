@@ -614,7 +614,7 @@ struct_declaration: st_assert | N_MEMBER(N_SHARE(spec_qual_list), declarator?, a
                                         settled_member_layout?)
 settled_layout: N_LIST:(version, size, align, pack)
 settled_member_layout: N_LIST:(version, byte_offset, bit_offset, bit_width)
-spec_qual_list: N_LIST:(type_qual|type_spec|attr)*
+spec_qual_list: N_LIST:(align_spec|type_qual|type_spec|attr)*
 declarator: the same as direct declarator
 direct_declarator: N_DECL(N_ID,
                           N_LIST:(N_POINTER(type_qual_list) | N_FUNC(id_list|parameter_list)
@@ -1043,7 +1043,7 @@ static void add_stream (c2m_ctx_t c2m_ctx, FILE *f, const char *fname,
 
 static int str_getc (c2m_ctx_t c2m_ctx) {
   if (*cs->curr == '\0') return EOF;
-  return *cs->curr++;
+  return (unsigned char) *cs->curr++;
 }
 
 static void add_string_stream (c2m_ctx_t c2m_ctx, const char *pos_fname, const char *str) {
@@ -1127,7 +1127,9 @@ static int cs_get (c2m_ctx_t c2m_ctx) {
       assert (VARR_GET (char, cs->ln, 0) == '\n');
     } else if (len > 0) {
       cs->pos.ln_pos++;
-      return VARR_POP (char, cs->ln);
+      /* A source byte as unsigned char, the way fgetc returns it: where char is signed,
+         byte 0xFF would otherwise read back as -1, i.e. EOF. */
+      return (unsigned char) VARR_POP (char, cs->ln);
     }
     if (cs->fname == NULL || !get_line (c2m_ctx)) return EOF;
     len = VARR_LENGTH (char, cs->ln);
@@ -1138,6 +1140,9 @@ static int cs_get (c2m_ctx_t c2m_ctx) {
 }
 
 static void cs_unget (c2m_ctx_t c2m_ctx, int c) {
+  /* EOF never entered the line buffer, so it is not pushed back: the next cs_get finds the
+     end again.  Stored in a char it would read back as a byte (255 where char is unsigned). */
+  if (c == EOF) return;
   cs->pos.ln_pos--;
   VARR_PUSH (char, cs->ln, c);
 }
@@ -4898,6 +4903,9 @@ D (spec_qual_list) {
     spec_pos = curr_token->pos;
     if (C (T_CONST) || C (T_RESTRICT) || C (T_VOLATILE) || C (T_ATOMIC)) {
       P (type_qual);
+      op = r;
+    } else if (C (T_ALIGNAS)) { /* C11 6.7.2.1p1: a member may carry an alignment-specifier */
+      P (align_spec);
       op = r;
     } else if ((op = TRY_A (type_spec, arg)) != err_node) {
       arg = op;
@@ -12127,6 +12135,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     node_t abstract_declarator = NL_NEXT (specs);
     struct decl_spec decl_spec = check_decl_spec (c2m_ctx, specs, r); /* only spec_qual_list here */
 
+    if (decl_spec.align_node != NULL) /* the list allows it for a member, never a type name */
+      error (c2m_ctx, POS (decl_spec.align_node), "_Alignas in a type name");
     type = check_declarator (c2m_ctx, abstract_declarator, FALSE);
     assert (NL_HEAD (abstract_declarator->u.ops)->code == N_IGNORE);
     decl_spec.type = append_type (type, decl_spec.type);
