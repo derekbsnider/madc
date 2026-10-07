@@ -26,6 +26,12 @@ void register_socket_channel_factories(DataChannelRegistry &registry);
 // bytes is the peer's end, a write never raises SIGPIPE. `name` is its scheme
 // and endpoint in errors.
 std::unique_ptr<DataChannel> socket_channel_over(int fd, const std::string &name);
+#ifndef _WIN32
+// The one owner of "make a connected socket pair": both ends close-on-exec
+// (atomically where the platform can), so a program a later fork+exec starts
+// keeps neither. False with errno set when the pair could not be made.
+bool create_socket_pair(int domain, int socket_type, int protocol, int fds[2]);
+#endif
 void register_exec_channel_factory(DataChannelRegistry &registry);
 // The one owner of "open a filesystem path as a DataChannel" — the file/pipe
 // scheme factory and the record-file storage drivers all delegate here.

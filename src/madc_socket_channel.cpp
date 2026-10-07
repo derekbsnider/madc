@@ -917,6 +917,36 @@ private:
 
 namespace detail {
 
+#ifndef _WIN32
+// A connected socket pair, both ends close-on-exec as create_socket's: no
+// program a later fork+exec starts (a webview's helper processes, a shell)
+// keeps an end, so closing ours really closes it.
+bool create_socket_pair(int domain, int socket_type, int protocol, int fds[2])
+{
+#if defined(SOCK_CLOEXEC)
+	// Atomic close-on-exec at creation: no window for a concurrent
+	// fork+exec in a threaded host to leak an end.
+	return ::socketpair(domain, socket_type | SOCK_CLOEXEC, protocol, fds) == 0;
+#else
+	// Portable fallback (darwin has no SOCK_CLOEXEC): post-hoc owner.
+	if ( ::socketpair(domain, socket_type, protocol, fds) != 0 )
+		return false;
+	for ( int i = 0; i < 2; ++i )
+	{
+		if ( !set_fd_close_on_exec(fds[i]) )
+		{
+			int number = errno;
+			::close(fds[0]);
+			::close(fds[1]);
+			errno = number;
+			return false;
+		}
+	}
+	return true;
+#endif
+}
+#endif
+
 std::unique_ptr<DataChannel> socket_channel_over(int fd, const std::string &name)
 {
 	if ( fd < 0 )

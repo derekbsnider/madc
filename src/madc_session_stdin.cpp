@@ -74,7 +74,7 @@ bool session_stdin_take(int, uint64_t handle)
 #include <sys/uio.h>
 #include <unistd.h>
 
-#include "madc_posix_io.h"	// set_fd_close_on_exec
+#include "madc_datachannel_internal.h"	// create_socket_pair: close-on-exec ends
 
 namespace {
 
@@ -157,11 +157,9 @@ bool SessionStdinHandOff::open()
 {
     close();
     int sv[2];
-    if ( ::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 )
-	return false;
     // Close-on-exec: a program the backend execs keeps neither end.
-    detail::set_fd_close_on_exec(sv[0]);
-    detail::set_fd_close_on_exec(sv[1]);
+    if ( !detail::create_socket_pair(AF_UNIX, SOCK_STREAM, 0, sv) )
+	return false;
     client_end_ = sv[0];
     backend_end_ = sv[1];
     return true;

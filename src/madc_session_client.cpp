@@ -519,11 +519,12 @@ bool SessionClient::start(const std::string &std_opt, const ProgramFactory &make
 #ifndef _WIN32
 
 // The backend: this process forked through the one spawn owner; the
-// requests ride a socketpair.
+// requests ride a socketpair, close-on-exec, so no program this process
+// starts later (a webview's helpers) keeps an end alive past our close.
 bool SessionClient::spawn_backend()
 {
     int sv[2];
-    if ( ::socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0 )
+    if ( !madc::detail::create_socket_pair(AF_UNIX, SOCK_STREAM, 0, sv) )
     {
 	error_text = std::string("session: socketpair: ") + strerror(errno);
 	return false;
