@@ -4206,6 +4206,23 @@ void push_buffer_row(long w, long es, long nd, const char *path)
     ui::set(w, es, "buffers", bufs);
 }
 
+// A PANEL's buffer — the REPL's transcript, a build's output, the Terminal's
+// screen: a buffer-table row (^P reaches it) whose document says so
+// ("panel"), so a close never hands it the editor and Close all leaves it to
+// its panel. The one creator of one; doc_is_panel_buffer reads the mark.
+long new_panel_buffer(long w, long es, const char *name)
+{
+    long nd = new_document(w, name, "");
+    ui::set(w, nd, "panel", 1);
+    push_buffer_row(w, es, nd, name);
+    return nd;
+}
+
+bool doc_is_panel_buffer(long w, long doc)
+{
+    return es_int(w, doc, "panel", 0) != 0;
+}
+
 // The buffer-table row showing `doc` (a document has one row); -1 when
 // none.
 long buffer_index_of(long w, long es, long doc)
@@ -5619,9 +5636,7 @@ long build_doc(long w, long es)
     long existing = build_doc_if_any(w, es);	// ONE finder, no duplicate scan
     if ( existing != 0 )
 	return existing;
-    long nd = new_document(w, "[build]", "");
-    push_buffer_row(w, es, nd, "[build]");
-    return nd;
+    return new_panel_buffer(w, es, "[build]");
 }
 
 // Append one line; the [build] buffer never reads as user-modified.
@@ -5772,9 +5787,7 @@ long term_doc(long w, long es)
     long existing = term_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = new_document(w, "[terminal]", "");
-    push_buffer_row(w, es, nd, "[terminal]");
-    return nd;
+    return new_panel_buffer(w, es, "[terminal]");
 }
 
 void term_feed_text(long w, long tdoc, const char *text)
@@ -6462,13 +6475,30 @@ bool save_as_quit(long w, long es, long doc, const char *path0)
 // Close all).
 void save_all(long w, long es, long doc);		// defined with the actions below
 
-// Remove row `idx`. The active row first hands the session to the tab on
-// its right, else its left (switch_buffer's whole restore); every index
-// past it moves down one — the active one and each window row's — and a
-// window that showed it shows the new active buffer. madcide always has a
-// buffer, so the table's last row never goes: a named file's row gives way
-// to the untitled buffer, and the untitled buffer itself is emptied (one
-// undo step) and left clean.
+// The row a close of row `idx` hands the editor: the nearest EDITING buffer
+// (a file, the untitled buffer, a read-only view the editor shows) on its
+// right, else its left — never a panel's buffer (doc_is_panel_buffer: the
+// REPL's transcript, a build's output, the Terminal's screen), which its
+// panel shows. -1 = no other editing buffer.
+long close_successor_row(long w, var &bufs, long idx)
+{
+    long n = php::count(bufs);
+    for ( long i = idx + 1; i < n; i = i + 1 )
+	if ( !doc_is_panel_buffer(w, bufs[i]["doc"].as_integer()) )
+	    return i;
+    for ( long i = idx - 1; i >= 0; i = i - 1 )
+	if ( !doc_is_panel_buffer(w, bufs[i]["doc"].as_integer()) )
+	    return i;
+    return -1;
+}
+
+// Remove row `idx`. The active row first hands the session to the nearest
+// editing buffer, right then left (close_successor_row; switch_buffer's
+// whole restore); every index past it moves down one — the active one and
+// each window row's — and a window that showed it shows the new active
+// buffer. madcide always has an editing buffer, so the last one never goes:
+// a named file's row gives way to the untitled buffer, and the untitled
+// buffer itself is emptied (one undo step) and left clean.
 void drop_buffer_row(long w, long es, long idx)
 {
     var bufs;
@@ -6476,7 +6506,7 @@ void drop_buffer_row(long w, long es, long idx)
     long n = php::count(bufs);
     var row = bufs[idx];
     long d = row["doc"].as_integer();
-    if ( n == 1 )
+    if ( close_successor_row(w, bufs, idx) < 0 )
     {
 	if ( doc_untitled(w, d) )
 	{
@@ -6498,7 +6528,7 @@ void drop_buffer_row(long w, long es, long idx)
     long cur = es_int(w, es, "bufidx", 0);
     if ( idx == cur )
     {
-	cur = idx + 1 < n ? idx + 1 : idx - 1;
+	cur = close_successor_row(w, bufs, idx);
 	switch_buffer(w, es, d, cur);
 	ui::get(bufs, w, es, "buffers");	// the switch saved the rows
     }
@@ -6607,12 +6637,15 @@ void close_answer(long w, long es, long doc, long a)
     }
     if ( a == cmdPYES )
 	save_all(w, es, doc);
-    // Close all: the last row first, so the indices still to come hold.
+    // Close all: the last row first, so the indices still to come hold. A
+    // panel's buffer stays with its panel (the REPL keeps its transcript).
     var bufs2;
     ui::get(bufs2, w, es, "buffers");
     for ( long i = php::count(bufs2) - 1; i >= 0; i = i - 1 )
     {
 	var r = bufs2[i];
+	if ( doc_is_panel_buffer(w, r["doc"].as_integer()) )
+	    continue;
 	if ( a == cmdPYES && doc_modified(w, r["doc"].as_integer()) )
 	    continue;			// untitled, or its write failed
 	drop_buffer_row(w, es, i);

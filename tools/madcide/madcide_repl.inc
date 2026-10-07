@@ -75,9 +75,7 @@ long repl_doc(long w, long es)
     long existing = repl_doc_if_any(w, es);
     if ( existing != 0 )
 	return existing;
-    long nd = new_document(w, "[repl]", "");
-    push_buffer_row(w, es, nd, "[repl]");
-    return nd;
+    return new_panel_buffer(w, es, "[repl]");
 }
 
 // The input field's buffer: not a buffer-table row (it is the tab's, not a

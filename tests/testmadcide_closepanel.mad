@@ -1,0 +1,72 @@
+// A panel's buffer stays with its panel (owner, Chthonia on Windows: "closing
+// the file buffer pane can result in it becoming a second copy of the REPL
+// pane"). The REPL's transcript, a build's output and the Terminal's screen
+// are buffer-table rows (^P reaches them), made by new_panel_buffer, which
+// marks the document. Pins:
+//   1. File ▸ Close of the only file, with the REPL's [repl] row and a
+//      [build] row after it, hands the editor the untitled buffer — never
+//      a panel's buffer — and both rows keep their documents;
+//   2. Close all leaves the panels' rows too: the transcript keeps what it
+//      showed, and the editor shows the untitled buffer.
+// Oracle: madcide's own contract — the last editing buffer never goes (the
+// untitled one is emptied) — and Thonny, the UX oracle, whose Shell is a
+// view of its own that closing an editor file never touches.
+#include "../tools/texteditor/lined_core.inc"
+#include "../tools/texteditor/editor_events.inc"
+#include "../tools/madcide/madcide_core.inc"
+
+#include "../tools/madcide/include/madcide/harness"	// <madcide/harness>: ev_*, settle, enter_line
+
+// What the editor shows: the untitled buffer (1/0) and a panel's (1/0).
+void editor_shows(long w, long es, long doc, const char *when)
+{
+    long ad = active_doc(w, es, doc);
+    println("{}: editor shows untitled={} panel={}", when,
+	    doc_untitled(w, ad) ? 1 : 0, doc_is_panel_buffer(w, ad) ? 1 : 0);
+}
+
+int main()
+{
+    const char *path = "madc_ide_closepanel.c";
+    php::file_put_contents(path, "int main(void) { return 0; }\n");
+    long w = ui::world_new();
+    long doc = setup_editor(w, path, false);
+    long es = ui::entity_by_name(w, "editor-state");
+    builtins_activate(w, es);	// madcide's own modules, as IdeSession::open activates them
+    ui::set(w, es, "profile_dir", "tools/madcide/profiles");
+    ui::set(w, es, "profile", "joe");
+    IdeSession S;
+    S.attach(w, es);
+
+    var e;
+    ev_action(e, "repl", "");
+    S.apply_ide_event(doc, e);
+    enter_line(S, doc, w, es, "int x = 6 * 7;");
+    long bdoc = build_doc(w, es);	// a build's output row, after [repl]
+    var shown;
+    ui::text(shown, w, repl_doc_if_any(w, es));
+    var buffers;
+    ui::get(buffers, w, es, "buffers");
+    println("rows before: {}", php::count(buffers));
+
+    // 1. File ▸ Close of the only file.
+    ev_action(e, "close", "");
+    S.apply_ide_event(active_doc(w, es, doc), e);
+    editor_shows(w, es, doc, "close");
+    var now;
+    ui::text(now, w, repl_doc_if_any(w, es));
+    println("close: transcript kept={} build kept={}",
+	    now == shown ? 1 : 0, build_doc_if_any(w, es) == bdoc ? 1 : 0);
+
+    // 2. Close all.
+    ev_action(e, "closeall", "");
+    S.apply_ide_event(active_doc(w, es, doc), e);
+    editor_shows(w, es, doc, "close all");
+    ui::text(now, w, repl_doc_if_any(w, es));
+    println("close all: transcript kept={} build kept={}",
+	    now == shown ? 1 : 0, build_doc_if_any(w, es) == bdoc ? 1 : 0);
+
+    S.close();				// stops the pump and the session
+    php::unlink(path);
+    return 0;
+}
