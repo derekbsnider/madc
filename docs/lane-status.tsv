@@ -1,6 +1,5 @@
 # lane	promote	last_green_commit	date	tally
 libcxx	no	96b3358a3d8a	2026-10-03	retired from the release tier 2026-10-03 (owner): the libc++ lane is darwin-suite on the macOS -O2 packed binary; last linux run: jit 1903/0/0TO/23skip; exe 1735/0; obj 1735/0 (-stdlib=libc++, 14 tests carry .libcxx_skip: B157-B161 + libstdc++-internal; at 028e31c36 content) [+ 96b3358a3: textual rename chthonic->chthonia, owner 2026-10-03, not re-run]
-brew-linux	release	8a3c5518b07a	2026-10-07	2032/0/0TO/9skip - scripts/brew_lane.sh on the container at 8a3c5518b content: brew install --build-bottle + brew bottle + the 0.102.0 keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc (testdatadir_install_first green on the keg)
 linux-battery	yes	6d14320aa52c	2026-10-07	seam_battery.sh at 6d14320aa: gates rc=0 (unit binaries + static gates 0 red of 98); headerless 2000/0/0TO/43skip + ondisk 34/0 on packed -O2 madc-release; exeobj JIT 2034/0/0TO/9skip, EXE 1853/0, OBJ 1853/0
 headerless-win	yes	6d14320aa52c	2026-10-07	1956/0/0TO/87skip + ondisk-win 1/0 (33 win64-skipped) — packed PE under wine, seam_battery.sh at 6d14320aa
 wine64	yes	6d14320aa52c	2026-10-07	the packed PE under wine: headerless-win 1956/0/0TO/87skip + ondisk-win 1/0 — seam_battery.sh at 6d14320aa
@@ -16,3 +15,4 @@ gxx-c++11	no	6d14320aa52c	2026-10-07	gxx-c++11: 1505 passed, 441 compile-failed,
 index-c	yes	6d14320aa52c	2026-10-07	index-c: 50/50 tasks OK, 0 failed (rc=0) [-O2] — Summary: 83.2412s, 50, 50, 0
 commonmark	commit	6d14320aa52c	2026-10-07	commonmark: 664 passed, 6 failed (of 670 examples) (0 outside baseline, 0 baseline examples now passing)
 tests-jit	batch	6d14320aa52c	2026-10-07	2034 passed, 0 failed, 0 timed out, 9 skipped (tests/ JIT, batch_lane at 6d14320aa content)
+brew-linux	release	f748c3c5949a	2026-10-07	2034/0/0TO/9skip - scripts/brew_lane.sh on the container at 6d14320aa content: brew install --build-bottle + brew bottle + the 0.102.1 keg POURED back + brew test green; runpath resolves libmadc.so.0 from the keg and from HOMEBREW_PREFIX/lib; suite on the linked madc
