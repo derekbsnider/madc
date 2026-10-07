@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### c2mir: An alignment-specifier on a struct or union member parses (C11 6.7.2.1p1)
+
+A specifier-qualifier-list may hold an `_Alignas`, so `struct { _Alignas (16)
+int x; };` is valid C11 — gcc and clang accept it — but c2m's
+`spec_qual_list` parser had no `align_spec` arm and stopped at the keyword
+("syntax error on struct"). It now reads one, and the existing member-layout
+code already raises the member's offset, the aggregate's alignment and its
+size from `decl_spec.align`. Because the same list also backs a type name, an
+`_Alignas` that reaches a type name (`sizeof (_Alignas (16) int)`) is now the
+error gcc gives there rather than a parse that silently ignored it.
+Alignments above 16 stay rejected on every target (`invalid_alignment`: MIR
+frames are 16-byte aligned). `c-tests/new/alignas-member.c` checks member
+offsets, sizes and alignments for `_Alignas (N)` and `_Alignas (type)` on
+structs and a union against the gcc/clang result.
+
 ### mir: MIR compiles itself on aarch64, and the long double import names resolve from one header
 
 `scripts/aarch64_ldouble_lane.sh` now runs the c2mir-bootstrap recipe: the
