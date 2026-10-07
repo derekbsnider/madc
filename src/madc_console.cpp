@@ -28,7 +28,10 @@ bool std_handle_given(DWORD which)
 // One standard stream onto the attached console: the CRT stream reopened on
 // the console device, its descriptor at the stream's own number (0, 1, 2 —
 // what a write(2)-level caller uses), and the Win32 standard handle set to
-// it (the TUI target reads GetStdHandle).
+// it (the TUI target reads GetStdHandle). The device opens for reading as
+// well as writing: GetConsoleMode, SetConsoleMode and
+// GetConsoleScreenBufferInfo — the terminal target's console test and grid
+// setup — need GENERIC_READ on an output handle, and a "w" open has none.
 void bind_console_stream(FILE *stream, int fd, DWORD which, const char *dev,
 			 const char *mode)
 {
@@ -58,9 +61,9 @@ bool console_attach()
     if ( !in )
 	bind_console_stream(stdin, 0, STD_INPUT_HANDLE, "CONIN$", "r");
     if ( !out )
-	bind_console_stream(stdout, 1, STD_OUTPUT_HANDLE, "CONOUT$", "w");
+	bind_console_stream(stdout, 1, STD_OUTPUT_HANDLE, "CONOUT$", "w+");
     if ( !err )
-	bind_console_stream(stderr, 2, STD_ERROR_HANDLE, "CONOUT$", "w");
+	bind_console_stream(stderr, 2, STD_ERROR_HANDLE, "CONOUT$", "w+");
     return true;
 }
 
