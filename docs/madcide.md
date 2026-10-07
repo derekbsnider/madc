@@ -107,6 +107,16 @@ instead of replacing the selection. The Chthonia keys bind Shift+Tab and
 Ctrl+3, as Thonny does. The VS Code keys bind Ctrl+], Ctrl+[,
 Shift+Tab and Ctrl+/.
 
+Autoindent is on by default. Enter starts the new line with the
+indentation the current line has before the caret. After a line that ends
+in `{` (C, C++, madc and the other languages with C's braces) or `:`
+(Python), the new line gets one more tab. A `}` typed on a line that is
+blank up to the caret first removes one step of indentation, as Dedent
+does; one undo takes back both. Edit ▸ Toggle Autoindent (`autoindent`),
+or the I row of `^T` Options, turns it off or on again; the choice is kept
+in settings.json's `"autoindent"`. JOE's status line shows `A` while it is
+on.
+
 Edit ▸ Replace… (`replace`; Ctrl+H in the VS Code keys, `^\` in the Pico
 keys) works like nano's replace. It asks for the text to find, then for
 the text to put in its place; an empty answer deletes each match. It then

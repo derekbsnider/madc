@@ -66,24 +66,43 @@ bool kind_is_standard(long k)
     return f != madc::fkUNKNOWN && k != f;
 }
 
-// The line-comment opener of `doc`'s language, by its kind (Edit ▸ Toggle
-// comment): "//" for C, C++ and madc and the languages that took theirs, "#"
-// for the shell's family, ";" for INI, "--" for Lua; "" = none the editor
-// knows (plain text, markup, data, a binary). An untitled buffer compiles
-// as madc (doc_standard) and takes madc's.
-const char *line_comment_of(long w, long doc)
+// `doc`'s language for the editing rules below: its kind, an untitled
+// buffer madc's (it compiles as madc, doc_standard).
+long edit_lang_kind(long w, long doc)
 {
     long k = doc_kind(w, doc);
     if ( k == madc::fkUNKNOWN && doc_untitled(w, doc) )
 	k = madc::fkMADC;
+    return k;
+}
+
+// C's syntax lineage: C, C++ and madc, and the languages that took C's
+// braces and line comment.
+bool c_syntax_kind(long k)
+{
     if ( kind_family(k) != madc::fkUNKNOWN )
-	return "//";
+	return true;
     switch ( k )
     {
 	case madc::fkJS: case madc::fkTYPESCRIPT: case madc::fkRUST:
 	case madc::fkGO: case madc::fkJAVA: case madc::fkPHP:
 	case madc::fkSWIFT: case madc::fkKOTLIN: case madc::fkCSHARP:
-	    return "//";
+	    return true;
+    }
+    return false;
+}
+
+// The line-comment opener of `doc`'s language, by its kind (Edit ▸ Toggle
+// comment): "//" for C's syntax lineage, "#" for the shell's family, ";"
+// for INI, "--" for Lua; "" = none the editor knows (plain text, markup,
+// data, a binary).
+const char *line_comment_of(long w, long doc)
+{
+    long k = edit_lang_kind(w, doc);
+    if ( c_syntax_kind(k) )
+	return "//";
+    switch ( k )
+    {
 	case madc::fkSHELL: case madc::fkMAKEFILE: case madc::fkYAML:
 	case madc::fkTOML: case madc::fkPYTHON: case madc::fkPERL:
 	case madc::fkRUBY:
@@ -94,6 +113,26 @@ const char *line_comment_of(long w, long doc)
 	    return "--";
     }
     return "";
+}
+
+// The block delimiters autoindent reads (editor_events.inc enter_text):
+// the characters that, ending a line before Enter, open one more indent
+// level, and the ones that, typed first on a blank-indented line, close
+// one. "{" / "}" for C's syntax lineage, ":" (no closer) for Python; ""
+// for every other language — Enter then copies the line's indentation.
+const char *block_open_of(long w, long doc)
+{
+    long k = edit_lang_kind(w, doc);
+    if ( c_syntax_kind(k) )
+	return "{";
+    if ( k == madc::fkPYTHON )
+	return ":";
+    return "";
+}
+
+const char *block_close_of(long w, long doc)
+{
+    return c_syntax_kind(edit_lang_kind(w, doc)) ? "}" : "";
 }
 
 // A standard's spelling where it enters (the command line, the "std"
